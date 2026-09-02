@@ -217,7 +217,8 @@ def _inline_surface() -> ComposerSurface:
 
 
 def _paint_inline_reframe(crop_image: bytes, *, start: int = 37, rows: int = 933,
-                          preview_height: int = _SHEET_PREVIEW_MAX_H) -> bytes:
+                          preview_height: int = _SHEET_PREVIEW_MAX_H,
+                          y0: int = _SHEET_PREVIEW_Y0) -> bytes:
     """Synthetic 9.134 selected-photo composer, including its removed card-heart lane.
 
     The real Malaika regression is a complete square source card rendered as a 933-row interior
@@ -238,11 +239,48 @@ def _paint_inline_reframe(crop_image: bytes, *, start: int = 37, rows: int = 933
                                      (left_w, preview_height),
                                      interpolation=cv2.INTER_AREA)
     canvas = np.full((_H, _W, 3), _SHEET_BG, dtype=np.uint8)
-    canvas[_SHEET_PREVIEW_Y0:_SHEET_PREVIEW_Y0 + preview_height,
+    canvas[y0:y0 + preview_height,
            _SHEET_PREVIEW_X0:_SHEET_PREVIEW_X0 + _SHEET_PREVIEW_W] = preview
     ok, buf = cv2.imencode(".png", canvas)
     assert ok
     return buf.tobytes()
+
+
+def _with_inline_suggestion_shelf(frame: bytes, *, filled: bool = False,
+                                  pills: int = 2) -> bytes:
+    """Paint only the measured 10.1.0 outlined prompt-shelf geometry, never its text."""
+    image = cv2.imdecode(np.frombuffer(frame, np.uint8), cv2.IMREAD_COLOR)
+    rectangles = [(185, 1003, 711, 1092), (737, 1003, 1070, 1092)]
+    for x0, y0, x1, y1 in rectangles[:pills]:
+        cv2.rectangle(image, (x0, y0), (x1, y1), (220, 220, 220),
+                      thickness=-1 if filled else 3)
+    ok, encoded = cv2.imencode(".png", image)
+    assert ok
+    return encoded.tobytes()
+
+
+def _right_silent_inline_sheet(crop_image: bytes, *, ink_x0: int = _SHEET_PREVIEW_X0,
+                               ink_x1: int = 927, gap_row: int | None = None) -> bytes:
+    """A full card whose right rail is visually indistinguishable from page background.
+
+    This is private-free geometry for the 2026-08-31 Hinge 10.1.0 selected-card halt: its
+    detected median ink was x=96..927 against the comment field x=95..985.  The card still has
+    the full 890px layout width, but only the left attached ink is measurable after the profile
+    heart disappears.  `gap_row` creates an unsupported horizontal break for a hard-boundary
+    control without changing the composer rectangles.
+    """
+    frame = paint_sheet(crop_image)
+    image = cv2.imdecode(np.frombuffer(frame, np.uint8), cv2.IMREAD_COLOR)
+    image[_SHEET_PREVIEW_Y0:_SHEET_PREVIEW_Y0 + _SHEET_PREVIEW_MAX_H,
+          _SHEET_PREVIEW_X0:ink_x0] = _SHEET_BG
+    image[_SHEET_PREVIEW_Y0:_SHEET_PREVIEW_Y0 + _SHEET_PREVIEW_MAX_H,
+          ink_x1:_SHEET_PREVIEW_X0 + _SHEET_PREVIEW_W] = _SHEET_BG
+    if gap_row is not None:
+        image[gap_row:gap_row + item_verify._INLINE_PREVIEW_MAX_INTERNAL_GAP_PX + 1,
+              ink_x0:ink_x1] = _SHEET_BG
+    ok, encoded = cv2.imencode(".png", image)
+    assert ok
+    return encoded.tobytes()
 
 
 def _inline_surface_for(frame: bytes) -> ComposerSurface:
@@ -575,6 +613,146 @@ def test_hinge_10_0_1_bright_photo_edge_does_not_truncate_the_selected_preview_a
     prompt_only = dataclasses.replace(_lookalike_payload(), crops=(prompt,))
     assert not item_verify.verify_sheet_item(
         frame, prompt_only, 1, composer_surface=surface).matched
+
+
+def test_hinge_10_1_suggestion_shelf_proves_the_short_selected_photo_regime():
+    """The 2026-09-01 halt was a new photo -> prompt shelf -> field topology.
+
+    Its exact measured geometry was preview=(95,421)-(985,971), comment y=1124, hence a 153px
+    gap. The selected square card showed 602/974 source rows (38.2%); this synthetic equivalent
+    uses 602/1000 (39.8%) so both the shelf-bound gap and the separate 40% reframe cap are needed.
+    """
+    payload = _payload()
+    selected = payload.item(3)
+    frame = _paint_inline_reframe(
+        selected.image, start=398, rows=602, preview_height=550, y0=421)
+    surface = ComposerSurface(
+        "hinge_inline_v1", Rect(95, 1124, 985, 1302),
+        Rect(390, 1334, 985, 1443), (695, 1390))
+    only = dataclasses.replace(
+        payload, crops=(dataclasses.replace(selected, number=1),))
+
+    # A blind 153px allowance would let blank separation opt into the broader window search.
+    # The old direct topology remains a refusal until the outlined shelf is visible.
+    with pytest.raises(item_verify.SheetVerificationError, match="no bounded outlined"):
+        item_verify.verify_sheet_item(
+            frame, only, 1, composer_surface=surface, absolute_max_dist=10.0)
+
+    shelf_frame = _with_inline_suggestion_shelf(frame)
+    verdict = item_verify.verify_sheet_item(
+        shelf_frame, only, 1, composer_surface=surface, absolute_max_dist=10.0)
+    assert verdict.matched, verdict.reason
+    assert verdict.preview == item_verify.SheetPreview(
+        421, 971, 95, 985, verdict.preview.reason)
+    assert "suggestion shelf" in verdict.preview.reason
+    assert "reframe limit 40%" in verdict.preview.reason
+    assert verdict.comparisons[0].window_px == 602
+
+    # The new structure changes neither item identity nor the absolute content ceiling.
+    foreign = dataclasses.replace(
+        payload, crops=(dataclasses.replace(payload.item(4), number=1),))
+    assert not item_verify.verify_sheet_item(
+        shelf_frame, foreign, 1, composer_surface=surface,
+        absolute_max_dist=10.0).matched
+
+
+@pytest.mark.parametrize("filled,pills", [(True, 2), (False, 1)])
+def test_short_preview_cannot_use_a_filled_bar_or_one_outline_as_a_suggestion_shelf(
+        filled, pills):
+    selected = _payload().item(3)
+    frame = _paint_inline_reframe(
+        selected.image, start=398, rows=602, preview_height=550, y0=421)
+    frame = _with_inline_suggestion_shelf(frame, filled=filled, pills=pills)
+    surface = ComposerSurface(
+        "hinge_inline_v1", Rect(95, 1124, 985, 1302),
+        Rect(390, 1334, 985, 1443), (695, 1390))
+    only = dataclasses.replace(
+        _payload(), crops=(dataclasses.replace(selected, number=1),))
+
+    with pytest.raises(item_verify.SheetVerificationError, match="no bounded outlined"):
+        item_verify.verify_sheet_item(frame, only, 1, composer_surface=surface)
+
+
+def test_left_attached_card_with_a_right_silent_rail_keeps_existing_signature_gates():
+    """The 2026-08-31 one-sided Hinge 10.1.0 halt, reproduced without profile data.
+
+    The live selected card's median visible ink was x=96..927, while its proven comment field
+    was x=95..985.  The full card rect is still the field's 890px column; its final 58px are
+    simply page-coloured after Hinge removes the profile heart.  The existing inline comparison
+    already excludes x=825..985 (18%), so x=927 reaches 102px beyond every compared column.
+    """
+    payload = _payload()
+    selected = payload.item(4)
+    frame = _right_silent_inline_sheet(selected.image, ink_x0=96, ink_x1=927)
+    surface = ComposerSurface("hinge_inline_v1", _V1001_COMMENT, _V1001_SEND, (695, 1390))
+    cv2_mod, np_mod = item_verify._require_vision()
+
+    # The public full-bleed detector deliberately remains strict. Only the independently proven
+    # composer enables this recovery, and its returned rect is the full card while its ink record
+    # keeps the asymmetry auditable.
+    with pytest.raises(item_verify.SheetVerificationError):
+        item_verify.locate_sheet_preview(frame)
+    preview = item_verify._locate_inline_composer_preview(
+        frame, surface, cv2=cv2_mod, np=np_mod)
+    lane = round(_V1001_COMMENT.width * item_verify._INLINE_REFRAME_RIGHT_CONTROL_FRACTION)
+    assert (preview.x0, preview.x1) == (_V1001_COMMENT.x0, _V1001_COMMENT.x1)
+    assert preview.ink_bounds == (96, 927)
+    assert preview.ink_x1 - (_V1001_COMMENT.x1 - lane) == 102
+    assert "left-edge-attached" in preview.reason
+
+    verdict = item_verify.verify_sheet_item(
+        frame, payload, 4, composer_surface=surface, absolute_max_dist=10.0)
+    assert verdict.matched, verdict.reason
+    assert verdict.nearest_index == 4
+
+    # Geometry recovery does not supply identity: the existing complete-payload proof and frozen
+    # absolute ceiling still refuse foreign and prompt-shaped content.
+    wrong_photo = dataclasses.replace(
+        payload, crops=(dataclasses.replace(payload.item(3), number=1),))
+    assert not item_verify.verify_sheet_item(
+        frame, wrong_photo, 1, composer_surface=surface, absolute_max_dist=10.0).matched
+    prompt = dataclasses.replace(_lookalike_payload().item(2), number=1)
+    prompt_only = dataclasses.replace(_lookalike_payload(), crops=(prompt,))
+    assert not item_verify.verify_sheet_item(
+        frame, prompt_only, 1, composer_surface=surface, absolute_max_dist=10.0).matched
+
+
+def test_left_attached_right_silent_regime_requires_the_existing_compared_columns_and_topology():
+    """No mirror, truncated card, distant field, or unsupported internal gap may use the regime."""
+    selected = _payload().item(4)
+    surface = ComposerSurface("hinge_inline_v1", _V1001_COMMENT, _V1001_SEND, (695, 1390))
+    cv2_mod, np_mod = item_verify._require_vision()
+
+    # The last signature column is x=824 when the control-free lane starts at x=825: one pixel
+    # short is still refusal, even though the old 694px compact width floor would be satisfied.
+    before_lane = _right_silent_inline_sheet(selected.image, ink_x0=96, ink_x1=824)
+    with pytest.raises(item_verify.SheetVerificationError, match="not immediately above"):
+        item_verify._locate_inline_composer_preview(
+            before_lane, surface, cv2=cv2_mod, np=np_mod)
+
+    # A 28px left displacement is just outside the existing 27px edge slack.  There is
+    # intentionally no right-attached/mirrored counterpart because the signature excludes only
+    # the right lane.
+    shifted_left = _right_silent_inline_sheet(selected.image, ink_x0=123, ink_x1=927)
+    with pytest.raises(item_verify.SheetVerificationError, match="not immediately above"):
+        item_verify._locate_inline_composer_preview(
+            shifted_left, surface, cv2=cv2_mod, np=np_mod)
+
+    distant = ComposerSurface(
+        "hinge_inline_v1", Rect(95, 1400, 985, 1578), Rect(390, 1610, 985, 1719), (695, 1660))
+    with pytest.raises(item_verify.SheetVerificationError, match="not immediately above"):
+        item_verify._locate_inline_composer_preview(
+            _right_silent_inline_sheet(selected.image, ink_x0=96, ink_x1=927), distant,
+            cv2=cv2_mod, np=np_mod)
+
+    # Four page-coloured rows exceed the separately calibrated three-row bridge. The lower
+    # fragment is intentionally under 300px and the upper one is too distant from the field, so
+    # neither can manufacture a selected-card candidate.
+    broken = _right_silent_inline_sheet(
+        selected.image, ink_x0=96, ink_x1=927, gap_row=800)
+    with pytest.raises(item_verify.SheetVerificationError, match="not immediately above"):
+        item_verify._locate_inline_composer_preview(
+            broken, surface, cv2=cv2_mod, np=np_mod)
 
 
 # The 2026-08-28 pillarbox halt, as numbers. Live Pixel 7a, Hinge 10.1.0, profile `Yvonne`

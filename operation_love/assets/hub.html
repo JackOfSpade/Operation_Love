@@ -30,6 +30,11 @@
   .training-image-position { position:absolute; left:10px; bottom:10px; padding:4px 8px;
                              border-radius:999px; background:rgba(12,12,16,.82);
                              color:#e8e8ea; font-size:11px; z-index:1; }
+  .training-image-error { position:absolute; left:10px; right:10px; bottom:10px; z-index:2;
+                          padding:8px 10px; border-radius:9px; background:rgba(58,20,20,.94);
+                          color:#ffb0b0; font-size:12px; line-height:1.35; }
+  .training-image-wrap .training-image-error { position:relative; left:auto; right:auto; bottom:auto;
+                                                display:block; margin:10px; }
   .training-image-zoom-overlay { position:fixed; inset:0; z-index:1000; display:grid;
                                   place-items:center; min-height:100dvh; height:100dvh;
                                   padding:max(24px, env(safe-area-inset-top)) max(24px, env(safe-area-inset-right)) max(24px, env(safe-area-inset-bottom)) max(24px, env(safe-area-inset-left)); overflow:hidden;
@@ -192,6 +197,7 @@
   <button id="trainingimagezoomclose" class="training-image-zoom-close" type="button" aria-label="Close zoomed image">Close</button>
   <img id="trainingimagezoomed" class="training-image-zoomed-image" alt="">
   <span id="trainingimagezoomposition" class="training-image-position"></span>
+  <span id="trainingimagezoomerror" class="training-image-error" hidden></span>
   <div class="training-image-nav" aria-label="Profile snapshots">
     <button id="trainingimagezoomup" type="button" aria-label="Previous profile snapshot — scroll up" title="Previous snapshot">&#8593;</button>
     <button id="trainingimagezoomdown" type="button" aria-label="Next profile snapshot — scroll down" title="Next snapshot">&#8595;</button>
@@ -317,14 +323,6 @@ function selectRunApps(status){
   return Object.values(status.apps).filter(a => a.mode === 'auto' || a.mode === 'training');
 }
 
-// Only a current, explicitly ready training checkpoint can produce Like/Dislike controls.
-// Completed and executing results are history, never newly actionable after a refresh.
-function pendingTrainingCheckpoint(payload, runId, app){
-  const checkpoints = (payload && Array.isArray(payload.checkpoints)) ? payload.checkpoints : [];
-  return checkpoints.find(c => c && c.pending === true && c.phase === 'waiting_training_decision'
-    && c.run_id === runId && c.app === app && c.action === 'ready') || null;
-}
-
 // A queued/executing card is still useful review evidence, but it is no longer actionable.
 // Keep it on screen so a click never appears to vanish during the device/storage boundary.
 function activeTrainingCheckpoint(payload, runId, app){
@@ -357,6 +355,16 @@ let _trainingBusyKey = '';
 let _trainingBusyRequest = 0;
 let _trainingImageKey = '';
 let _trainingImageIndex = 0;
+let _trainingImageFailedIndex = null;
+// renderTrainingCheckpoint rebuilds the panel's innerHTML, so every render creates a BRAND NEW
+// <img>. The previous render's element is detached but its in-flight request still completes
+// and still fires onload/onerror. Without a generation stamp those stale events race the live
+// latch: a superseded load resolving late would clear a lockout the current frame legitimately
+// set (or latch one over a frame that loaded fine). Each render stamps its handlers, and both
+// the setter and the clearer refuse an event that does not carry the current stamp -- the same
+// shape as _trainingRequest above, which guards the checkpoint fetch for the same reason.
+let _trainingImageRenderGeneration = 0;
+let _trainingImageFailedGeneration = null;
 let _trainingImageZoomed = false;
 let _trainingImageZoomRestoreFocus = null;
 const _trainingIdempotency = new Map();
@@ -423,9 +431,70 @@ function syncTrainingImageState(checkpoint, images){
     if (typeof setTrainingImageZoom === 'function') setTrainingImageZoom(false);
     _trainingImageKey = key;
     _trainingImageIndex = Math.max(0, images.length - 1);
+    _trainingImageFailedIndex = null;
+    _trainingImageFailedGeneration = null;
   } else {
     _trainingImageIndex = Math.max(0, Math.min(_trainingImageIndex, images.length - 1));
+    if (_trainingImageFailedIndex != null && _trainingImageFailedIndex >= images.length) {
+      _trainingImageFailedIndex = null;
+      _trainingImageFailedGeneration = null;
+    }
   }
+}
+
+function setTrainingImageNavigationDisabled(disabled){
+  for (const selector of ['#trainingimageup', '#trainingimagedown',
+                          '#trainingimagezoomup', '#trainingimagezoomdown']) {
+    const control = $(selector);
+    if (control) control.disabled = !!disabled;
+  }
+}
+
+function reportTrainingImageLoadError(generation){
+  // Called two ways: by an <img>'s onerror (stamped with the render that wired it), and with no
+  // argument by renderTrainingCheckpoint to re-apply an existing lockout onto the frame it just
+  // rebuilt. An error from a superseded render is not evidence about the frame on screen now.
+  const stamp = generation === undefined ? _trainingImageRenderGeneration : generation;
+  if (stamp !== _trainingImageRenderGeneration) return;
+  const images = checkpointReviewImages(_trainingCheckpoint);
+  if (!images.length) return;
+  _trainingImageFailedIndex = _trainingImageIndex;
+  _trainingImageFailedGeneration = stamp;
+  const message = 'This profile snapshot could not be loaded. Navigation is paused; keep the Hub open and choose only after the target image is available.';
+  for (const selector of ['#trainingimageerror', '#trainingimagezoomerror']) {
+    const error = $(selector);
+    if (error) { error.textContent = message; error.hidden = false; }
+  }
+  for (const selector of ['#trainingimage', '#trainingimagezoomed']) {
+    const image = $(selector);
+    if (image) image.hidden = true;
+  }
+  const trigger = $('#trainingimagezoom');
+  if (trigger) trigger.disabled = true;
+  setTrainingImageNavigationDisabled(true);
+  for (const selector of ['#traininglike', '#trainingdislike']) {
+    const decision = $(selector);
+    if (decision) decision.disabled = true;
+  }
+}
+
+// Found 2026-09-02: reportTrainingImageLoadError had no counterpart, so a TRANSIENT failure on
+// /api/training/image (a dropped connection, a slow local disk read) permanently locked the
+// checkpoint -- Like/Dislike, navigation and zoom stayed disabled for the rest of that profile
+// even after the image became loadable again, forcing the operator to abandon a profile that
+// already cost minutes of device time. Every poll tick rebuilds #trainingimage with the same
+// src, so the browser keeps retrying on its own; this only has to notice a retry succeeded.
+// It must never flip Like/Dislike on directly -- re-running renderTrainingCheckpoint is what
+// recomputes canDecide, so the normal ready/opener/action-boundary gate still owns that call.
+function clearTrainingImageLoadError(generation, index){
+  if (_trainingImageFailedIndex == null) return;               // nothing latched
+  if (generation !== _trainingImageFailedGeneration) return;   // a superseded render's load
+  if (index !== _trainingImageFailedIndex) return;             // a different snapshot
+  _trainingImageFailedIndex = null;
+  _trainingImageFailedGeneration = null;
+  // Re-render rather than re-enabling controls here: canDecide's ready/opener/action-boundary
+  // gate stays the only thing that may arm Like/Dislike.
+  if (_trainingCheckpoint) renderTrainingCheckpoint(_trainingCheckpoint);
 }
 
 function setTrainingImageZoom(zoomed){
@@ -511,7 +580,7 @@ if (trainingImageZoomOverlay) trainingImageZoomOverlay.onclick = (event) => {
 
 function showTrainingImage(index){
   const images = checkpointReviewImages(_trainingCheckpoint);
-  if (!images.length) return;
+  if (!images.length || _trainingImageFailedIndex != null) return;
   _trainingImageIndex = Math.max(0, Math.min(index, images.length - 1));
   const current = images[_trainingImageIndex];
   const image = $('#trainingimage');
@@ -524,11 +593,13 @@ function showTrainingImage(index){
   const zoomedUp = $('#trainingimagezoomup');
   const zoomedDown = $('#trainingimagezoomdown');
   if (image) {
+    image.hidden = false;
     image.src = current.src;
     image.alt = `Training review — ${current.label}`;
   }
   if (position) position.textContent = `${current.label} · ${_trainingImageIndex + 1}/${images.length}`;
   if (zoomedImage) {
+    zoomedImage.hidden = false;
     zoomedImage.src = current.src;
     zoomedImage.alt = `Zoomed training review — ${current.label}`;
   }
@@ -544,7 +615,7 @@ function showTrainingImage(index){
 }
 
 function moveTrainingImage(delta){
-  if (delta !== -1 && delta !== 1) return;
+  if ((delta !== -1 && delta !== 1) || _trainingImageFailedIndex != null) return;
   showTrainingImage(_trainingImageIndex + delta);
 }
 
@@ -572,6 +643,8 @@ function renderTrainingCheckpoint(checkpoint, message=''){
     if (typeof setTrainingImageZoom === 'function') setTrainingImageZoom(false);
     _trainingImageKey = '';
     _trainingImageIndex = 0;
+    _trainingImageFailedIndex = null;
+    _trainingImageFailedGeneration = null;
     panel.style.display = 'none'; panel.innerHTML = ''; return;
   }
   const image = safeCheckpointImageDataUrl(checkpoint.image_data_url);
@@ -584,6 +657,8 @@ function renderTrainingCheckpoint(checkpoint, message=''){
   const reviewImages = checkpointReviewImages(checkpoint);
   syncTrainingImageState(checkpoint, reviewImages);
   const reviewImage = reviewImages[_trainingImageIndex] || null;
+  const reviewImageAvailable = !!(reviewImage && typeof reviewImage.src === 'string'
+    && reviewImage.src && typeof reviewImage.label === 'string' && reviewImage.label);
   const imageZoomed = typeof _trainingImageZoomed !== 'undefined' && _trainingImageZoomed;
   const item = Number.isInteger(checkpoint.item) ? `item ${checkpoint.item}` : 'selected item';
   const description = typeof checkpoint.item_description === 'string'
@@ -595,7 +670,8 @@ function renderTrainingCheckpoint(checkpoint, message=''){
     && checkpoint.action === 'ready';
   // A malformed local response or a card that has crossed the action boundary must never
   // turn into either decision.
-  const canDecide = Boolean(ready && image && hasOpener);
+  const canDecide = Boolean(ready && image && hasOpener && reviewImageAvailable
+    && _trainingImageFailedIndex == null);
   const command = checkpoint.command === 'like' ? 'Like'
     : checkpoint.command === 'dislike' ? 'Dislike' : 'decision';
   const lifecycle = checkpoint.action === 'queued'
@@ -610,7 +686,7 @@ function renderTrainingCheckpoint(checkpoint, message=''){
       ? 'The opener is already written on this target. Like sends it; Dislike passes this same profile. Your choice becomes training data.'
       : (lifecycle || 'Review data is incomplete, so both decisions are disabled.')}</div>
     <div class="meta" style="margin-top:12px">target · ${escHtml(target)}</div>`
-    + (image ? `<div id="trainingimagewrap" class="training-image-wrap">
+    + (image && reviewImageAvailable ? `<div id="trainingimagewrap" class="training-image-wrap">
          <button id="trainingimagezoom" class="training-image-zoom-trigger" type="button" aria-pressed="${imageZoomed}" aria-label="${imageZoomed ? 'Zoom out' : 'Zoom in'} ${escHtml(reviewImage.label)}" title="${imageZoomed ? 'Zoom out' : 'Zoom in'}">
            <img id="trainingimage" class="target-image" src="${reviewImage.src}" alt="Training review — ${escHtml(reviewImage.label)}">
          </button>
@@ -619,8 +695,9 @@ function renderTrainingCheckpoint(checkpoint, message=''){
            <button id="trainingimageup" type="button" aria-label="Previous profile snapshot — scroll up" title="Previous snapshot"${_trainingImageIndex === 0 ? ' disabled' : ''}>&#8593;</button>
            <button id="trainingimagedown" type="button" aria-label="Next profile snapshot — scroll down" title="Next snapshot"${_trainingImageIndex === reviewImages.length - 1 ? ' disabled' : ''}>&#8595;</button>
          </div>` : ''}
+         <span id="trainingimageerror" class="training-image-error" hidden></span>
        </div>`
-             : `<div class="meta" style="margin-top:6px">Target image was unavailable.</div>`)
+             : `<div class="meta" style="margin-top:6px">Profile review image was unavailable. Decisions are disabled.</div>`)
     + `<div class="meta" style="margin-top:12px">${hasOpener ? 'full opener' : 'opener unavailable'}</div>
        <div class="opener-text">${hasOpener ? escHtml(opener) : 'No complete opener was supplied. This Like cannot be sent.'}</div>`
     + (referenced ? `<div class="meta" style="margin-top:8px">about · ${escHtml(referenced)}</div>` : '')
@@ -637,13 +714,20 @@ function renderTrainingCheckpoint(checkpoint, message=''){
   const zoomedPosition = $('#trainingimagezoomposition');
   const zoomedUp = $('#trainingimagezoomup');
   const zoomedDown = $('#trainingimagezoomdown');
-  if (zoomedImage) {
+  const zoomedError = $('#trainingimagezoomerror');
+  if (zoomedError) { zoomedError.hidden = true; zoomedError.textContent = ''; }
+  if (zoomedImage && reviewImageAvailable) {
+    zoomedImage.hidden = false;
     zoomedImage.src = reviewImage.src;
     zoomedImage.alt = `Zoomed training review — ${reviewImage.label}`;
+  } else if (zoomedImage) {
+    zoomedImage.hidden = true;
+    zoomedImage.removeAttribute('src');
   }
-  if (zoomedPosition) zoomedPosition.textContent = `${reviewImage.label} · ${_trainingImageIndex + 1}/${reviewImages.length}`;
-  if (zoomedUp) zoomedUp.disabled = _trainingImageIndex === 0;
-  if (zoomedDown) zoomedDown.disabled = _trainingImageIndex === reviewImages.length - 1;
+  if (zoomedPosition) zoomedPosition.textContent = reviewImageAvailable
+    ? `${reviewImage.label} · ${_trainingImageIndex + 1}/${reviewImages.length}` : '';
+  if (zoomedUp) zoomedUp.disabled = !reviewImageAvailable || _trainingImageIndex === 0;
+  if (zoomedDown) zoomedDown.disabled = !reviewImageAvailable || _trainingImageIndex === reviewImages.length - 1;
   const likeButton = $('#traininglike');
   const dislikeButton = $('#trainingdislike');
   const imageUpButton = $('#trainingimageup');
@@ -653,7 +737,22 @@ function renderTrainingCheckpoint(checkpoint, message=''){
   if (dislikeButton) dislikeButton.onclick = () => submitTrainingAction('dislike');
   if (imageUpButton) imageUpButton.onclick = () => moveTrainingImage(-1);
   if (imageDownButton) imageDownButton.onclick = () => moveTrainingImage(1);
+  const previewImage = $('#trainingimage');
+  // Stamp this render's handlers so a detached previous <img> finishing late cannot speak for
+  // the frame on screen now (see _trainingImageRenderGeneration). Capture the index too: the
+  // globals are read at EVENT time, and both can have moved on by then.
+  const imageGeneration = ++_trainingImageRenderGeneration;
+  const imageIndexAtRender = _trainingImageIndex;
+  if (previewImage) previewImage.onerror = () => reportTrainingImageLoadError(imageGeneration);
+  if (zoomedImage) zoomedImage.onerror = () => reportTrainingImageLoadError(imageGeneration);
+  // Counterpart to the onerror latch above: a later successful load of this same frame
+  // (see clearTrainingImageLoadError) is the only way out of a fail-closed lockout.
+  if (previewImage)
+    previewImage.onload = () => clearTrainingImageLoadError(imageGeneration, imageIndexAtRender);
+  if (zoomedImage)
+    zoomedImage.onload = () => clearTrainingImageLoadError(imageGeneration, imageIndexAtRender);
   if (imageZoomButton) imageZoomButton.onclick = () => toggleTrainingImageZoom();
+  if (_trainingImageFailedIndex != null) reportTrainingImageLoadError();
   if (restorePreviewFocus && imageZoomButton && typeof imageZoomButton.focus === 'function')
     imageZoomButton.focus();
 }
@@ -668,6 +767,8 @@ function renderTrainingFeedback(result, message=''){
   _trainingCheckpoint = null;
   _trainingImageKey = '';
   _trainingImageIndex = 0;
+  _trainingImageFailedIndex = null;
+  _trainingImageFailedGeneration = null;
   if (!result && !message) { panel.style.display = 'none'; panel.innerHTML = ''; return; }
   const command = result && result.command === 'like' ? 'Like'
     : result && result.command === 'dislike' ? 'Dislike' : 'training decision';
@@ -687,7 +788,8 @@ function renderTrainingFeedback(result, message=''){
 async function submitTrainingAction(command){
   const checkpoint = _trainingCheckpoint;
   const checkpointKey = trainingCheckpointKey(checkpoint);
-  if (!checkpoint || !checkpointKey || trainingActionBusyFor(checkpoint)) return;
+  if (!checkpoint || !checkpointKey || _trainingImageFailedIndex != null
+      || trainingActionBusyFor(checkpoint)) return;
   if (!['like', 'dislike'].includes(command) || (!safeCheckpointImageDataUrl(checkpoint.image_data_url)
       || typeof checkpoint.opener !== 'string' || !checkpoint.opener.trim())) return;
   _trainingActionBusy = true;
@@ -826,7 +928,8 @@ function renderRunStatus(snap){
   const trainingLive = a => {
     const state = a.state || '';
     const app = typeof a.app === 'string' && a.app.trim() ? a.app.trim() : 'app';
-    if(state === 'scoring') return box('wait', `🔴 ${app}: preparing the training checkpoint`);
+    if(state === 'scoring') return box('wait', `🔴 ${app}: preparing the training checkpoint`,
+      typeof a.detail === 'string' ? a.detail : '');
     if(state === 'waiting_approval') return box('wait', `🔴 ${app}: waiting for your Hub decision`);
     if(state === 'acting') return box('wait', `🔴 wait — carrying out your ${app} decision…`,
       'The completed-swipe count updates after the action is confirmed and saved.');
@@ -866,10 +969,14 @@ function renderEval(e){
   };
   const refreshHtml = () => {
     const r = e.refresh;
-    if(!r || !r.live || r.mode !== 'training' || r.since == null) return '';
-    const every = Math.max(1, Math.floor(Number(r.every) || 1));
-    const progress = Math.min(every, Math.max(0, Math.floor(Number(r.since) || 0)));
-    const remaining = Math.max(1, every-progress);
+    // This used to recompute `every - since` here too, its own Math.max(1, ...) standing in
+    // for HubState._attach_refresh's "never show zero" rule. The two disagreed the moment
+    // since reached every: Python rolls that to a full next cycle (`or every`), but the old
+    // JS clamp had already capped progress at every first, so its floor produced 1 instead.
+    // r.remaining is that same never-show-zero value, already computed once in Python and
+    // covered by its own edge-case test -- read it instead of re-deriving it a second way.
+    if(!r || !r.live || r.mode !== 'training' || r.remaining == null) return '';
+    const remaining = Number(r.remaining) || 1;   // defend a malformed local response only
     return `<div class="muted" style="margin-top:10px">Updates after ${remaining} more training label${remaining===1?'':'s'}.</div>`;
   };
   if(e.status !== 'ok'){
@@ -1147,19 +1254,29 @@ $('#removeLatestTraining').onclick = removeLatestTrainingLabel;
 
 async function getReport(){          // generate fresh each time (Copy/Download do this implicitly)
   $('#bughint').textContent = 'generating…';
-  const r = await fetch('/api/bugreport?desc=' + encodeURIComponent($('#bugdesc').value || ''));
-  const md = await r.text();
-  $('#bughint').textContent = md.length + ' chars';
-  return md;
+  // Every other fetch site in this file has an error path; this was the lone exception, so a
+  // hub that is gone/unreachable (the exact moment a bug report is most likely to be wanted)
+  // produced an unhandled promise rejection and a dead Copy/Download button with no feedback.
+  try {
+    const r = await fetch('/api/bugreport?desc=' + encodeURIComponent($('#bugdesc').value || ''));
+    const md = await r.text();
+    $('#bughint').textContent = md.length + ' chars';
+    return md;
+  } catch (_error) {
+    $('#bughint').textContent = 'could not contact the local hub to generate the report';
+    return null;
+  }
 }
 $('#bugcopy').onclick = async () => {
   const md = await getReport();
+  if (md == null) return;
   try { await navigator.clipboard.writeText(md); $('#bughint').textContent = 'copied ✓'; }
   catch(e){ const out = $('#bugout'); out.textContent = md; out.style.display = 'block';
             $('#bughint').textContent = 'copy blocked — select the text below'; }
 };
 $('#bugdl').onclick = async () => {
   const md = await getReport();
+  if (md == null) return;
   const a = document.createElement('a');
   a.href = URL.createObjectURL(new Blob([md], {type:'text/markdown'}));
   a.download = 'operation-love-bug-report.md'; a.click(); URL.revokeObjectURL(a.href);

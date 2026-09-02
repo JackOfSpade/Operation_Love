@@ -330,7 +330,8 @@ import time
 from dataclasses import dataclass
 
 from .base import ActionCancelled
-from .frameshift import ShiftEstimate, estimate_shift
+from .frameshift import (
+    ShiftEstimate, estimate_shift, estimate_shift_with_reverse_recovery)
 from .item_identity import IdentityError, IdentityVerdict, compare_profile_identity
 # The private helpers are imported rather than re-implemented, on `scroll_step.py`'s and
 # `item_index.py`'s own precedent for importing `segment._GUTTER_PX`: this pass must fold hearts
@@ -538,13 +539,65 @@ class ItemNavigationError(RuntimeError):
 
     def __init__(self, code: str, message: str, *, frame: bytes | None = None,
                  frame_index: int | None = None, anchor: "ShiftEstimate | None" = None,
-                 recovery: NavigationRecovery | None = None):
+                 recovery: NavigationRecovery | None = None,
+                 pair_before: bytes | None = None,
+                 measurement: dict | None = None):
         super().__init__(message)
         self.code = code
         self.frame = frame
         self.frame_index = frame_index
         self.anchor = anchor
         self.recovery = recovery
+        # A chain refusal is otherwise lossy at the driver boundary: ``frame`` carries only the
+        # second frame and the estimator's status/reason live only in the exception string.
+        # Preserve the complete failing pair and JSON-safe measurement trace so the debug log
+        # and bug report can explain a live refusal without trying to reproduce it later.
+        self.pair_before = pair_before
+        self.measurement = measurement
+
+
+def _navigation_step_shift(before: bytes, after: bytes, *, content_band,
+                           trust_window_px: int) -> tuple[ShiftEstimate, dict]:
+    """Measure one navigation leg, through frameshift's shared reverse-quorum recovery.
+
+    The strip bank is directional: it cuts source strips from ``before`` and searches for them
+    in ``after``. Autoplay can therefore leave too few stable source strips in that direction
+    while the same calibrated estimator reaches quorum from ``after`` back to ``before``. Only
+    ``SHIFT_NO_CONSENSUS`` earns that reverse check. A beyond-window or no-evidence result stays
+    a refusal; in particular, a nearer reverse correlation must never overrule saturation.
+
+    THE RECOVERY ITSELF is no longer implemented here (2026-09-02): `hinge.HingeDriver.
+    _measured_page_shift` needed the identical policy for the still-photo walk's own return leg
+    and had independently re-derived it, so the decision now lives once in
+    `frameshift.estimate_shift_with_reverse_recovery` and both callers pass their OWN module's
+    patchable ``estimate_shift`` binding into it (`hinge.estimate_shift` / this module's
+    `estimate_shift`, both re-imported at module scope for exactly that reason). This function's
+    remaining job is purely local: build the JSON-safe trace `navigate_to_item`'s
+    ``NAV_CHAIN_BROKEN`` record wants, which `_measured_page_shift` does not need at all.
+
+    The returned trace is JSON-safe even when neither direction measures. It is diagnostic only:
+    callers continue to authorize page coordinates solely from ``ShiftEstimate.delta_px``.
+    """
+    result, forward, reverse = estimate_shift_with_reverse_recovery(
+        before, after, content_band=content_band, trust_window_px=trust_window_px,
+        estimator=estimate_shift)
+
+    def trace(est: ShiftEstimate | None) -> dict | None:
+        if est is None:
+            return None
+        return {
+            "status": est.status,
+            "reason": est.reason,
+            "delta_px": est.delta_px,
+            "consensus_px": est.consensus_px,
+            "confidence": est.confidence,
+            "agreeing": est.agreeing,
+            "dissenting": est.dissenting,
+            "eligible": est.eligible,
+            "saturated": est.saturated,
+        }
+
+    return result, {"forward": trace(forward), "reverse": trace(reverse)}
 
 
 @dataclass(frozen=True)
@@ -993,8 +1046,7 @@ def navigate_to_item(driver, index: ItemIndex, model_index: int, *,
             "distance; a generic or "
             "unsafe bound could turn a foreign card into a target")
 
-    def cancelled(*, frame: bytes | None = None, frame_index: int | None = None,
-                  anchor: ShiftEstimate | None = None) -> None:
+    def cancelled() -> None:
         """Stop before a capture or gesture, leaving the card untouched from this point."""
         if should_stop is not None and should_stop():
             raise ActionCancelled(
@@ -1123,13 +1175,13 @@ def navigate_to_item(driver, index: ItemIndex, model_index: int, *,
                 # it -- a full read-scroll can (measured: a 0.55 read_scroll_frac step moves
                 # ~1299px on the calibrated 2400px screen, past the 900px window this estimate is
                 # trusted within). `_sample_read_step` still owns the dwell and the LANE.
-                cancelled(frame=entry_frame, frame_index=0)
+                cancelled()
                 dwell, _discarded_policy_frac, x_frac = driver._sample_read_step(0, None)
                 frac = _frac_window()[0]
                 driver._scroll_down_one(frac, x_frac)
                 if dwell and dwell > 0:
                     time.sleep(dwell)
-                cancelled(frame=entry_frame, frame_index=0)
+                cancelled()
                 recovered_frame = driver._screencap()
                 # MEASURED like every other leg in this module: the displacement this one gesture
                 # produced, never assumed. `entry_frame` (before the step) and `recovered_frame`
@@ -1330,11 +1382,11 @@ def navigate_to_item(driver, index: ItemIndex, model_index: int, *,
                         frame=frames[0], frame_index=0, anchor=anchor)
                 else:
                     entry_position_attempted = True
-                    cancelled(frame=frames[0], frame_index=0, anchor=anchor)
+                    cancelled()
                     driver._scroll_down_one(position_step.frac, position_step.x_frac)
                     if dwell and dwell > 0:
                         time.sleep(dwell)
-                    cancelled(frame=frames[0], frame_index=0, anchor=anchor)
+                    cancelled()
                     positioned_frame = driver._screencap()
                     positioned_shift = estimate_shift(
                         frames[0], positioned_frame, content_band=content_band,
@@ -1502,25 +1554,57 @@ def navigate_to_item(driver, index: ItemIndex, model_index: int, *,
         # THE ONLY GESTURE. `_scroll_up_one` requires both arguments, which is what makes the
         # `_scroll_down_one(frac)` trap — re-sampling BOTH from the behaviour policy when either
         # is None, and so silently issuing production's cadence — impossible to reach from here.
-        cancelled(frame=frames[i], frame_index=i, anchor=anchor)
+        cancelled()
         driver._scroll_up_one(step.frac, step.x_frac)
         steps.append(step)
         if dwell and dwell > 0:
             time.sleep(dwell)
 
-        cancelled(frame=frames[i], frame_index=i, anchor=anchor)
+        cancelled()
         nxt = driver._screencap()
-        est = estimate_shift(frames[i], nxt, content_band=content_band,
-                             trust_window_px=trust_window_px)
+        est, measurement_trace = _navigation_step_shift(
+            frames[i], nxt, content_band=content_band,
+            trust_window_px=trust_window_px)
         shifts.append(est)
         if est.delta_px is None:
+            forward_trace = measurement_trace["forward"] or {}
+            reverse_trace = measurement_trace["reverse"]
+            navigation_refusal = {
+                "schema_version": 2,
+                "code": NAV_CHAIN_BROKEN,
+                "frame_index": i + 1,
+                "return_outcome": "unavailable_unmeasured",
+                "restored_page_shift_px": None,
+                "planned": {
+                    "step_px": step.step_px,
+                    "bound_px": step.bound_px,
+                    "frac": step.frac,
+                    "window_px": list(step.window_px),
+                    "basis": step.basis,
+                    "spacing_px": step.spacing_px,
+                    "sized_against_px": step.sized_against_px,
+                },
+                "achieved": {
+                    "measurement_status": forward_trace.get("status"),
+                    "measurement_reason": forward_trace.get("reason"),
+                    "measurement_delta_px": forward_trace.get("delta_px"),
+                    "measurement_consensus_px": forward_trace.get("consensus_px"),
+                    "measurement_confidence": forward_trace.get("confidence"),
+                    "measurement_agreeing": forward_trace.get("agreeing"),
+                    "measurement_dissenting": forward_trace.get("dissenting"),
+                    "measurement_eligible": forward_trace.get("eligible"),
+                    "measurement_saturated": forward_trace.get("saturated"),
+                    "reverse": reverse_trace,
+                },
+            }
             raise ItemNavigationError(
                 NAV_CHAIN_BROKEN,
                 f"frames {i} and {i + 1} of this navigation could not be put in one coordinate "
                 f"space: {est.status} — {est.reason}. Without the shift there is no way to tell "
                 "a heart that moved from a heart that arrived, which is exactly how doc 5.10's "
                 "phantom item was fabricated, so the count stops here",
-                frame=nxt, frame_index=i + 1, anchor=anchor)
+                frame=nxt, frame_index=i + 1, anchor=anchor,
+                pair_before=frames[i], measurement=navigation_refusal)
         # THE SIGN FLIP, and it is one line. `estimate_shift` is positive when content moves UP,
         # i.e. for a forward scroll; an upward gesture must therefore measure NEGATIVE, and how
         # far it climbed is the negation. `step_overshoot` is handed that magnitude, so its own

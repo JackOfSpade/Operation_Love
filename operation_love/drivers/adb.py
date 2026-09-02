@@ -315,12 +315,63 @@ class Adb:
 
         This is deliberately only a package-level state probe, not an accessibility-tree read.
         It lets a driver distinguish its own UI from Android System UI (for example the
-        notification shade) before a capture mistakes system chrome for app content. Android
-        has changed the exact ``dumpsys window`` line across releases, so an unreadable or
-        unfamiliar response is represented by ``None`` rather than guessed at.
+        notification shade) before a capture mistakes system chrome for app content.
+
+        ``dumpsys window windows`` is authoritative when it reports a focus field: its
+        ``mCurrentFocus`` names an overlay such as the notification shade, whereas the
+        underlying activity can still be Hinge.  Android 17 on the live Pixel no longer puts
+        either focus field in that particular dump, however; its ``dumpsys activity
+        activities`` output does, under ActivityManager's OWN field names
+        (``mResumedActivity:``/``mFocusedActivity:`` -- see
+        :func:`parse_foreground_activity_package` for the shape and its LIVE-VERIFY caveat;
+        an earlier version of this fallback grepped the WindowManager names against this dump
+        by mistake and silently returned None every time -- Finding 1, 2026-09-02). Use the
+        activity dump only when the window dump contains neither labelled focus field.  A
+        present-but-malformed/conflicting window focus is deliberately *not* retried through
+        activity -- it remains indeterminate rather than risking a stale underlying activity
+        being treated as the foreground surface.
+
+        DO NOT CACHE WHICH DUMP ANSWERED, and do not reorder these two probes.  This runs
+        once per captured frame and once per gesture, so remembering that the activity dump
+        answered last time and asking it FIRST looks like an obvious saving of one always-empty
+        window round trip on an Android-17 session.  It was written that way on 2026-09-02 and
+        reverted the same day, because the two dumps do not answer the same question and are
+        not interchangeable sources for one fact: the window dump reports WHICH WINDOW HAS
+        FOCUS (the notification shade, when it is open), while the activity dump reports which
+        ACTIVITY IS RESUMED -- and Hinge's activity stays resumed underneath the open shade.
+        Ask activity first and it answers ``co.hinge.app`` truthfully; return that and the
+        screen-ownership gate that guards touch input concludes Hinge owns a screen the shade
+        is actually covering.  That is precisely the case this probe exists to catch, so the
+        window dump is asked FIRST on every call, unconditionally, and one extra round trip on
+        a window-incapable device is the correct price.
         """
-        output = _decode(self._run_device(["shell", "dumpsys window windows"]))
-        return parse_foreground_package(output)
+        window_answered, window_package = self._probe_window_foreground()
+        if window_answered:
+            return window_package
+        activity_answered, activity_package = self._probe_activity_foreground()
+        return activity_package if activity_answered else None
+
+    def _probe_window_foreground(self) -> tuple[bool, str | None]:
+        """One ``dumpsys window windows`` round trip: (either focus field present, package)."""
+        window_output = _decode(self._run_device(["shell", "dumpsys window windows"]))
+        current_present, _ = _package_from_focus_lines(window_output, "mCurrentFocus")
+        focused_present, _ = _package_from_focus_lines(window_output, "mFocusedApp")
+        if current_present or focused_present:
+            return True, parse_foreground_package(window_output)
+        return False, None
+
+    def _probe_activity_foreground(self) -> tuple[bool, str | None]:
+        """One ``dumpsys activity activities`` round trip: (either focus field present,
+        package). See :func:`parse_foreground_activity_package` for the field names this
+        checks and the LIVE-VERIFY caveat on this dump shape."""
+        activity_output = _decode(self._run_device(["shell", "dumpsys activity activities"]))
+        resumed_present, _ = _package_from_focus_lines(
+            activity_output, "mResumedActivity", separator=":")
+        focused_present, _ = _package_from_focus_lines(
+            activity_output, "mFocusedActivity", separator=":")
+        if resumed_present or focused_present:
+            return True, parse_foreground_activity_package(activity_output)
+        return False, None
 
     def write_file(self, path: str, data: bytes) -> None:
         """Write bytes to a device file via `cat` redirect. Works for regular files in
@@ -418,14 +469,23 @@ _FOREGROUND_COMPONENT_RE = re.compile(
 )
 
 
-def _package_from_focus_lines(stdout: str, label: str) -> tuple[bool, str | None]:
+def _package_from_focus_lines(
+        stdout: str, label: str, *, separator: str = "=") -> tuple[bool, str | None]:
     """Return ``(label_present, unambiguous_package)`` for one dumpsys focus field.
+
+    ``separator`` distinguishes WindowManager's ``label=value`` shape (``dumpsys window
+    windows``'s ``mCurrentFocus``/``mFocusedApp``, the default here) from ActivityManager's
+    ``label: value`` shape (``dumpsys activity activities``'s ``mResumedActivity``/
+    ``mFocusedActivity`` -- see :func:`parse_foreground_activity_package`). Both dumps wrap
+    the package the same way (a ``pkg/.Class`` or ``pkg/pkg.Class`` component later on the
+    same line), so only the marker differs between the two shapes; the component regex and
+    every ambiguity rule below apply identically to both (Finding 1, 2026-09-02).
 
     Android can report more than one display.  Repeated lines that all name the same package
     are harmless, but conflicting or partially unreadable focus lines are not evidence that
     any one package owns the screen and therefore fail closed to ``None``.
     """
-    marker = re.compile(rf"\b{re.escape(label)}\s*=")
+    marker = re.compile(rf"\b{re.escape(label)}\s*{re.escape(separator)}")
     packages: list[str] = []
     present = False
     for line in stdout.splitlines():
@@ -458,6 +518,42 @@ def parse_foreground_package(stdout: str) -> str | None:
     if current_present:
         return package
     _focused_present, package = _package_from_focus_lines(stdout, "mFocusedApp")
+    return package
+
+
+def parse_foreground_activity_package(stdout: str) -> str | None:
+    """Extract the resumed/focused activity's package from ``dumpsys activity activities``.
+
+    LIVE-VERIFY (Finding 1, 2026-09-02): this is ActivityManager/ActivityTaskManager's OWN
+    dump, and it names focus with ITS OWN field names -- ``mResumedActivity:`` /
+    ``mFocusedActivity:``, colon-separated, each wrapping an
+    ``ActivityRecord{hash u0 pkg/.Class taskId}`` payload. The fallback this function replaces
+    grepped this dump for ``mCurrentFocus``/``mFocusedApp`` instead -- those are WindowManager's
+    field names, from ``dumpsys window windows`` (see :func:`parse_foreground_package`), and
+    they never appear here -- so on the one device that actually needed this fallback (Android
+    17 on the live Pixel, where the window dump has stopped printing either focus field) it
+    silently returned None on every single call, and the caller's "no focus info" and "focus
+    info says nobody" cases became indistinguishable.
+
+    The field names and colon separator above are the documented AOSP shape (the dump text
+    ActivityTaskSupervisor/ActivityStackSupervisor's own ``dump()`` prints), but nobody has
+    captured this exact string off the live Android-17 Pixel yet -- CONFIRM it against a real
+    capture before trusting this path in production. Until then this fails closed to None on
+    anything that does not match, exactly like the window-dump parser above: a wrong guess is
+    worse than no guess (see ``humanized-input-only`` / fail-loud rule).
+
+    Prefer ``mResumedActivity`` (the activity actually running/visible) and fall back to
+    ``mFocusedActivity`` only when resumed is entirely absent, mirroring
+    :func:`parse_foreground_package`'s current-focus-first precedence for the window dump. A
+    present-but-null/malformed/conflicting resumed field must not fall through to a stale
+    focused activity.
+    """
+    resumed_present, package = _package_from_focus_lines(
+        stdout, "mResumedActivity", separator=":")
+    if resumed_present:
+        return package
+    _focused_present, package = _package_from_focus_lines(
+        stdout, "mFocusedActivity", separator=":")
     return package
 
 

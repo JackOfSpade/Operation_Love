@@ -350,6 +350,15 @@ _INLINE_PREVIEW_ONE_EDGE_MIN_WIDTH_FRACTION = 0.74
 # Bridge exactly that measured maximum only after the composer has independently established the
 # surrounding topology.  Four consecutive unsupported rows remain a hard boundary.
 _INLINE_PREVIEW_MAX_INTERNAL_GAP_PX = 3
+# Hinge 10.1.0 can insert a horizontally scrolling shelf of suggested replies between a short
+# selected-photo preview and the comment field.  The 2026-09-01 held-out frame measured a 550px
+# preview, an 89px shelf with 32px gutters, and therefore a 153px photo-to-field gap.  That same
+# renderer shows 602 of a 974px square card (38.2% hidden), beyond the ordinary inline renderer's
+# 30% envelope below.  Neither number is permission to widen the ordinary topology: the larger
+# crop is available only when `_inline_gap_evidence` independently finds the measured row of
+# outlined suggestion pills between this preview and this composer.
+_INLINE_SUGGESTION_MAX_HIDDEN_FRACTION = 0.40
+_INLINE_SUGGESTION_MIN_PILLS = 2
 # A SELECTED PHOTO DOES NOT HAVE TO FILL THE COMPOSER'S CONTENT COLUMN, AND THE SIX-SHEET CORPUS
 # ABOVE CONTAINS NO EXAMPLE THAT DOES NOT.  Every one of those six is a full-bleed photo card,
 # where the photograph happens to run the card edge to edge, so "the preview's ink spans the
@@ -531,6 +540,111 @@ class SheetPreview:
     def ink_width(self) -> int:
         lo, hi = self.ink_bounds
         return hi - lo
+
+
+@dataclass(frozen=True)
+class _InlineGapEvidence:
+    """Which measured preview-to-comment topology, if any, this frame proves."""
+
+    accepted: bool
+    max_gap: int
+    suggestion_shelf: tuple[int, int, int, int] | None
+    reason: str
+
+    @property
+    def max_hidden_fraction(self) -> float:
+        return (_INLINE_SUGGESTION_MAX_HIDDEN_FRACTION
+                if self.suggestion_shelf is not None
+                else _INLINE_REFRAME_MAX_HIDDEN_FRACTION)
+
+
+def _inline_gap_evidence(gray, *, preview_y1: int, preview_height: int, comment,
+                         cv2, np) -> _InlineGapEvidence:
+    """Prove either the ordinary direct gap or Hinge's outlined suggestion-pill shelf.
+
+    The ordinary 25%-of-preview rule protects a still-open composer from adopting an unrelated
+    card that a reviewer scrolled above it.  Keep that rule byte-for-byte.  A larger gap is valid
+    only when it contains the distinct 10.1.0 shelf: at least two wide, shallow, outline-density
+    components on one row, spanning most of the comment column, with independently bounded
+    gutters above and below.  Text alone is too narrow, a filled bar is too dense, and blank
+    whitespace supplies no components, so none can opt into the larger reframe search.
+    """
+    gap = comment.y0 - preview_y1
+    direct_max = max(40, round(preview_height * 0.25))
+    if 0 <= gap <= direct_max:
+        return _InlineGapEvidence(
+            True, direct_max, None,
+            f"direct photo-to-field gap allowed 0..{direct_max}px")
+    if gap <= 0 or preview_y1 < 0 or comment.y0 > gray.shape[0]:
+        return _InlineGapEvidence(
+            False, direct_max, None,
+            f"photo-to-field gap allowed 0..{direct_max}px")
+
+    band = gray[preview_y1:comment.y0]
+    if not band.size:
+        return _InlineGapEvidence(
+            False, direct_max, None,
+            f"photo-to-field gap allowed 0..{direct_max}px")
+
+    frame_width = int(gray.shape[1])
+    probe_hi = min(80, max(9, frame_width // 4))
+    margin_parts = [band[:, 8:probe_hi], band[:, frame_width - probe_hi:frame_width - 8]]
+    margin_samples = [part.reshape(-1) for part in margin_parts if part.size]
+    if not margin_samples:
+        return _InlineGapEvidence(
+            False, direct_max, None,
+            f"photo-to-field gap allowed 0..{direct_max}px")
+    background = float(np.median(np.concatenate(margin_samples)))
+    mask = (band < background - _ROW_BACKGROUND_TOLERANCE).astype(np.uint8)
+    count, _labels, stats, _centres = cv2.connectedComponentsWithStats(mask, connectivity=8)
+
+    min_width = round(comment.width * 0.20)
+    min_height = round(comment.height * 0.30)
+    max_height = round(comment.height * 0.65)
+    edge_slack = max(8, round(comment.width * 0.03))
+    components: list[tuple[int, int, int, int]] = []
+    for x, y, width, height, area in stats[1:count]:
+        x, y, width, height, area = map(int, (x, y, width, height, area))
+        density = area / (width * height)
+        absolute_y = preview_y1 + y
+        if (width >= min_width
+                and min_height <= height <= max_height
+                and 0.015 <= density <= 0.35
+                and x < comment.x1 + edge_slack
+                and x + width > comment.x0 - edge_slack):
+            components.append((x, absolute_y, x + width, absolute_y + height))
+
+    gutter_max = max(12, round(comment.height * 0.25))
+    components.sort()
+    for start in range(len(components)):
+        row = [components[start]]
+        for candidate in components[start + 1:]:
+            if (abs(candidate[1] - row[0][1]) <= 8
+                    and abs(candidate[3] - row[0][3]) <= 8
+                    and candidate[0] >= row[-1][2] + 4):
+                row.append(candidate)
+        if len(row) < _INLINE_SUGGESTION_MIN_PILLS:
+            continue
+        shelf = (row[0][0], min(rect[1] for rect in row),
+                 row[-1][2], max(rect[3] for rect in row))
+        top_gutter = shelf[1] - preview_y1
+        bottom_gutter = comment.y0 - shelf[3]
+        spans_column = (shelf[0] <= comment.x0 + round(comment.width * 0.20)
+                        and shelf[2] >= comment.x1 - edge_slack
+                        and shelf[2] - shelf[0] >= round(comment.width * 0.70))
+        if (spans_column and 0 <= top_gutter <= gutter_max
+                and 0 <= bottom_gutter <= gutter_max):
+            max_gap = (shelf[3] - shelf[1]) + 2 * gutter_max
+            return _InlineGapEvidence(
+                True, max_gap, shelf,
+                f"suggestion shelf ({shelf[0]},{shelf[1]})-({shelf[2]},{shelf[3]}) "
+                f"with {len(row)} outlined pills and gutters {top_gutter}px/{bottom_gutter}px; "
+                f"photo-to-field gap allowed 0..{max_gap}px")
+
+    return _InlineGapEvidence(
+        False, direct_max, None,
+        f"photo-to-field gap allowed 0..{direct_max}px; no bounded outlined suggestion shelf "
+        "bridges the extra space")
 
 
 @dataclass(frozen=True)
@@ -775,7 +889,10 @@ def _locate_inline_composer_preview(frame: bytes, composer_surface, *, cv2, np) 
     def _field_gap(y0: int, y1: int) -> int | None:
         """The run's distance to the comment field, or None when it is not adjacent to it."""
         gap = comment.y0 - y1
-        return gap if 0 <= gap <= max(40, round((y1 - y0) * 0.25)) else None
+        evidence = _inline_gap_evidence(
+            gray, preview_y1=y1, preview_height=y1 - y0, comment=comment,
+            cv2=cv2, np=np)
+        return gap if evidence.accepted else None
 
     def _survey() -> str:
         """Every non-background block above the field, measured, with what it passed AND failed.
@@ -819,14 +936,18 @@ def _locate_inline_composer_preview(frame: bytes, composer_surface, *, cv2, np) 
             # Signed against the field's own edges, so a pillarboxed card reads +191/-191 (inset
             # on both sides) and an ordinary x=53 profile card reads -42/+42 (over on both).
             left_offset, right_offset = x0 - comment.x0, x1 - comment.x1
-            gap, max_gap = comment.y0 - y1, max(40, round(rows * 0.25))
+            gap = comment.y0 - y1
+            gap_evidence = _inline_gap_evidence(
+                gray, preview_y1=y1, preview_height=rows, comment=comment,
+                cv2=cv2, np=np)
             passed: list[str] = []
             failed: list[str] = []
             for ok, text in (
                     (width >= minimum_width, f"width {width}px vs {minimum_width}px"),
                     (rows >= _PREVIEW_MIN_HEIGHT_PX,
                      f"height {rows} rows vs {_PREVIEW_MIN_HEIGHT_PX}"),
-                    (0 <= gap <= max_gap, f"field gap {gap}px vs 0..{max_gap}px"),
+                    (gap_evidence.accepted,
+                     f"field gap {gap}px: {gap_evidence.reason}"),
                     (abs(left_offset) <= slack,
                      f"left edge {left_offset:+d}px vs +-{slack}px"),
                     (abs(right_offset) <= slack,
@@ -837,7 +958,7 @@ def _locate_inline_composer_preview(frame: bytes, composer_surface, *, cv2, np) 
             # Without this the sentence lands on the sheet's own title row -- 210px of text, 42
             # rows tall, symmetric because centred text is -- and a diagnostic that explains the
             # wrong block is worse than one that explains nothing.
-            if (rows >= _PREVIEW_MIN_HEIGHT_PX and 0 <= gap <= max_gap
+            if (rows >= _PREVIEW_MIN_HEIGHT_PX and gap_evidence.accepted
                     and left_offset >= -slack and right_offset <= slack
                     and abs(left_offset + right_offset) <= slack):
                 note = (f" -- it is inset by the same {left_offset}px on both sides, i.e. a card "
@@ -916,6 +1037,35 @@ def _locate_inline_composer_preview(frame: bytes, composer_surface, *, cv2, np) 
                             f"ink at x={x0}..{x1} centred inside the comment field's "
                             f"x={comment.x0}..{comment.x1} ({left_pad}px of card left, "
                             f"{right_pad}px right), with a {gap}px field gap"))))
+
+    if not candidates:
+        # A selected inline card can have a page-coloured right rail after the profile-card heart
+        # disappears.  Its left card edge remains visible, but the row-background probe cannot
+        # distinguish the rail from the page.  This is NOT the symmetric pillarbox regime above:
+        # there is no evidence for a mirrored left-rail variant, and the inline comparison already
+        # discards this exact right control lane from both the sheet and every stored card crop.
+        #
+        # The visible ink must nevertheless reach the START of that already-excluded lane.  Thus
+        # every pixel the signature comparison will inspect is still backed by the observed card;
+        # this is a geometry recovery, not permission to compare blank page.  Keep the normal
+        # compact width, height, gap, composer, and content-verification gates unchanged.
+        right_control_lane = round(
+            comment.width * _INLINE_REFRAME_RIGHT_CONTROL_FRACTION)
+        compared_x1 = comment.x1 - right_control_lane
+        for y0, y1 in _tall_runs(minimum_width):
+            x0, x1 = _columns(y0, y1)
+            gap = _field_gap(y0, y1)
+            if (abs(x0 - comment.x0) <= slack
+                    and compared_x1 <= x1 <= comment.x1 + slack
+                    and gap is not None):
+                candidates.append((gap, SheetPreview(
+                    y0=y0, y1=y1, x0=comment.x0, x1=comment.x1,
+                    ink_x0=x0, ink_x1=x1,
+                    reason=(f"inline-composer-bound left-edge-attached run of rows at least "
+                            f"{minimum_width}px wide, {y1 - y0} rows tall, its "
+                            f"{x1 - x0}px of ink at x={x0}..{x1} reaches the existing "
+                            f"right control-lane start x={compared_x1} inside comment "
+                            f"x={comment.x0}..{comment.x1}, with a {gap}px field gap"))))
 
     if not candidates:
         raise SheetVerificationError(
@@ -1231,7 +1381,9 @@ def _check_reference_provenance(crop, gray, *, signature_grid: tuple[int, int], 
 
 def _compare_item(crop, gray, preview: SheetPreview, sheet: CropSignature, *,
                   grid: tuple[int, int], scale_tolerance: float, cv2, np,
-                  inline_reframe: bool = False):
+                  inline_reframe: bool = False,
+                  inline_reframe_max_hidden_fraction: float =
+                  _INLINE_REFRAME_MAX_HIDDEN_FRACTION):
     """One item measured against the sheet: its swept distance, its window, and its reference.
 
     Returns `(distance_or_None, window_px, reference_signature, reason)`. The reference is the
@@ -1297,14 +1449,14 @@ def _compare_item(crop, gray, preview: SheetPreview, sheet: CropSignature, *,
                 f"bottom {window_px}px of a {crop_height}px crop, swept +-{tolerance}px")
 
     # This is deliberately not a generic patch search. Every candidate keeps the full card
-    # width and all but a bounded edge strip, and a changed layout that hides more than 30% of
-    # the source simply fails. It exists only for a structurally proven inline composer; the
-    # normal modal comparison above retains bottom anchoring exactly.
+    # width and all but a bounded edge strip. The ordinary composer permits the measured 30%;
+    # the short-photo renderer may supply its separately proven 40% only after the outlined
+    # suggestion shelf is detected. The normal modal comparison above retains bottom anchoring.
     nominal_hidden = crop_height - window_px
-    if nominal_hidden > round(crop_height * _INLINE_REFRAME_MAX_HIDDEN_FRACTION):
+    if nominal_hidden > round(crop_height * inline_reframe_max_hidden_fraction):
         return (None, window_px, reference,
                 f"inline composer preview would hide {nominal_hidden}px of this {crop_height}px "
-                f"crop, above the {_INLINE_REFRAME_MAX_HIDDEN_FRACTION:.0%} reframe limit")
+                f"crop, above the {inline_reframe_max_hidden_fraction:.0%} reframe limit")
     best_distance = None
     best_start = None
     best_rows = None
@@ -1323,7 +1475,7 @@ def _compare_item(crop, gray, preview: SheetPreview, sheet: CropSignature, *,
         if not 0 < candidate <= crop_height:
             continue
         max_start = crop_height - candidate
-        if max_start > round(crop_height * _INLINE_REFRAME_MAX_HIDDEN_FRACTION):
+        if max_start > round(crop_height * inline_reframe_max_hidden_fraction):
             continue
         step = max(1, math.ceil(max_start / max(1, _INLINE_REFRAME_ORIGIN_SAMPLES - 1)))
         starts = list(range(0, max_start + 1, step))
@@ -1475,6 +1627,7 @@ def verify_sheet_item(frame: bytes, payload: ItemPayload, model_index: int, *,
             raise
         preview = _locate_inline_composer_preview(
             frame, composer_surface, cv2=cv2, np=np)
+    inline_reframe_max_hidden_fraction = _INLINE_REFRAME_MAX_HIDDEN_FRACTION
     if composer_surface is not None:
         # The located run is where the preview STARTS; under a proven composer its bottom edge is
         # the end of the image block, not the first row a legacy width floor stumbles on. See
@@ -1494,13 +1647,21 @@ def verify_sheet_item(frame: bytes, payload: ItemPayload, model_index: int, *,
         if comment is None or send is None:
             raise SheetVerificationError(
                 "the supplied inline-composer surface has no comment/send rectangles")
+        gap_gray = cv2.imdecode(np.frombuffer(frame, dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
+        if gap_gray is None:
+            raise SheetVerificationError(
+                f"the like-sheet frame did not decode as an image ({len(frame)} bytes), so "
+                "its preview-to-composer topology cannot be checked")
         width_slack = max(8, round(preview.width * 0.03))
         gap = comment.y0 - preview.y1
-        max_gap = max(40, round(preview.height * 0.25))
+        gap_evidence = _inline_gap_evidence(
+            gap_gray, preview_y1=preview.y1, preview_height=preview.height,
+            comment=comment, cv2=cv2, np=np)
+        inline_reframe_max_hidden_fraction = gap_evidence.max_hidden_fraction
         controls_gap = send.y0 - comment.y1
         if (abs(preview.x0 - comment.x0) > width_slack
                 or abs(preview.x1 - comment.x1) > width_slack
-                or not 0 <= gap <= max_gap
+                or not gap_evidence.accepted
                 or not 0 <= controls_gap <= max(60, round(comment.height * 0.40))):
             raise SheetVerificationError(
                 "the selected-card preview is not immediately above the independently detected "
@@ -1508,8 +1669,14 @@ def verify_sheet_item(frame: bytes, payload: ItemPayload, model_index: int, *,
                 f"(preview=({preview.x0},{preview.y0})-({preview.x1},{preview.y1}), "
                 f"comment=({comment.x0},{comment.y0})-({comment.x1},{comment.y1}), "
                 f"send=({send.x0},{send.y0})-({send.x1},{send.y1}), "
-                f"photo-to-field gap={gap}px with allowed 0..{max_gap}px, "
+                f"photo-to-field gap={gap}px ({gap_evidence.reason}), "
                 f"field-to-CTA gap={controls_gap}px)")
+        if gap_evidence.suggestion_shelf is not None:
+            preview = SheetPreview(
+                y0=preview.y0, y1=preview.y1, x0=preview.x0, x1=preview.x1,
+                ink_x0=preview.ink_x0, ink_x1=preview.ink_x1,
+                reason=(preview.reason + "; " + gap_evidence.reason
+                        + f"; inline reframe limit {_INLINE_SUGGESTION_MAX_HIDDEN_FRACTION:.0%}"))
     try:
         sheet = signature_of(frame, y0=preview.y0, y1=preview.y1, x0=preview.x0, x1=preview.x1,
                              grid=grid)
@@ -1594,7 +1761,8 @@ def verify_sheet_item(frame: bytes, payload: ItemPayload, model_index: int, *,
             crop, gray, signature_grid=payload.signature_grid, cv2=cv2, np=np)
         distance, window_px, reference, reason = _compare_item(
             crop, gray, comparison_preview, sheet, grid=grid, scale_tolerance=scale_tolerance, cv2=cv2,
-            np=np, inline_reframe=(composer_surface is not None))
+            np=np, inline_reframe=(composer_surface is not None),
+            inline_reframe_max_hidden_fraction=inline_reframe_max_hidden_fraction)
         measured.append((crop, distance, window_px, reference, reason, int(gray.shape[0])))
 
     # EVERY numbered item, without exception. An item too short to be the rendered window is still

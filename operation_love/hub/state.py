@@ -1,7 +1,8 @@
 """HubState — owns the (at most one) active run and exposes a JSON-able snapshot.
 
 Also tracks live hub-page (browser tab) liveness so the server can shut itself
-down once the last browser tab goes away.
+down once the last browser tab goes away, except at a live Training approval
+checkpoint that must remain available for the owner to reopen and decide.
 """
 from __future__ import annotations
 
@@ -411,6 +412,46 @@ class HubState:
             self._browser_stale_watch_active = False
             self._browser_shutdown_requested = True
             return True
+
+    def browser_close_shutdown_disposition(self) -> str:
+        """Classify the delayed last-tab-close check without exposing run internals.
+
+        The server calls this after its short reload grace.  Keeping the client check and the
+        approval-boundary check together prevents a stale close callback from stopping a run
+        after another page has reopened, and makes the decision boundary durable if a preview
+        tab is unloaded.  A Training worker deliberately pauses at ``waiting_approval`` with a
+        verified composer/checkpoint still live; losing the browser must not turn that pause
+        into a Stop because the only safe way forward is for the owner to reopen the Hub and
+        choose, or explicitly press Stop.
+        """
+        with self._lock:
+            if self._browser_clients:
+                return "client_reopened"
+            if not self.is_running() or self._stop is None or self._stop.is_set():
+                return "shutdown"
+
+            status = self._status
+            if status is not None:
+                try:
+                    apps = status.snapshot().get("apps", {})
+                except Exception:  # noqa: BLE001 -- lifecycle must retain normal shutdown fallback
+                    apps = {}
+                if not isinstance(apps, dict):
+                    apps = {}
+                if any(
+                    isinstance(app_status, dict)
+                    and app_status.get("mode") == "training"
+                    and app_status.get("state") == "waiting_approval"
+                    for app_status in apps.values()
+                ):
+                    return "preserve_training_approval"
+
+            # publish_checkpoint() precedes the worker's waiting_approval status update.  The
+            # bridge query covers that tiny but safety-critical hand-off window without using a
+            # JSON snapshot as a synchronization primitive.
+            if self._training_actions.has_actionable_checkpoint():
+                return "preserve_training_approval"
+            return "shutdown"
 
     def browser_stale_watch_start_failed(self) -> None:
         """Release the stale-watch claim after its watcher thread could not start.
@@ -847,41 +888,6 @@ class HubState:
             return self._training_mix(live_store.load_labels())
         except Exception:  # noqa: BLE001 - the run may close the store between poll and read
             return None
-
-    def _eval_trajectory(self, cfg, samples, result, every: int, live_store=None) -> list:
-        """Historical ranker accuracy curve vs label count, for the hub chart. Reads the
-        COMMITTED labels in swipe order and recomputes grouped CV at each prefix; then ties
-        the final point to the live full-set result so the curve ends exactly on the card.
-        Reuses the running store when given (its ordered read is off the worker lock for
-        BigQuery), else opens a fresh read-only store. Never raises — returns [] on any
-        problem (incl. a store closed mid-read as a run ends)."""
-        try:
-            from ..ranker import make_store
-            from ..ranker.evaluate import quality_trajectory
-            store = live_store if live_store is not None else make_store(cfg, ensure=False)
-            close_after = live_store is None
-            try:
-                loader = getattr(store, "load_labels_ordered", None)
-                ordered = loader() if loader is not None else None
-            except Exception:  # noqa: BLE001 — store closed mid-read; chart just sits out a cycle
-                ordered = None
-            finally:
-                if close_after:
-                    store.close()
-            if not ordered:
-                return []
-            traj = quality_trajectory(ordered, step=every)
-            if result.get("status") == "ok" and result.get("roc_auc"):
-                roc = result.get("roc_auc") or [None, None]
-                live_point = {"labels": len(samples), "identities": result.get("identities"),
-                              "roc_auc": roc[0], "roc_std": roc[1]}
-                if traj and traj[-1]["labels"] >= live_point["labels"]:
-                    traj[-1] = live_point     # live full-set supersedes the committed tail
-                else:
-                    traj.append(live_point)
-            return traj
-        except Exception:  # noqa: BLE001
-            return []
 
     @staticmethod
     def _attach_refresh(result: dict, every: int, live, base, status,

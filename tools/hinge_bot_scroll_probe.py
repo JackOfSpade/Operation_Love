@@ -519,7 +519,17 @@ def chain_items(pair_results: list[PairResult]) -> ChainResult:
                 if was_confirmed:
                     orphaned += 1
             ambiguous_new += len(pair.hearts_b)
-            active = {}
+            # Seed EVERY heart on the far side of this unreliable pair as ambiguous (False) --
+            # never drop the dict to `{}`. `active.get(ai, True)` two lines below defaults a
+            # MISSING key to True (confirmed), so an empty dict silently promoted the very
+            # hearts this branch just refused to vouch for: found 2026-09-02, a heart that
+            # first appears here is ambiguous_new, not distinct_confirmed, but with `active={}`
+            # the next reliable pair forgot that and treated it as an already-confirmed track --
+            # and if THAT pair's successor then missed it, the miss was wrongly folded into
+            # orphaned_tracks, a statistic defined (see ChainResult docstring) as counting only
+            # previously-CONFIRMED tracks. Keying every hearts_b index to False here means a
+            # later `.get(ai, True)` sees the real, honest answer instead of "no data" -> True.
+            active = {bi: False for bi in range(len(pair.hearts_b))}
             continue
 
         matched_a = {ai for ai, _bi in pair.matched}

@@ -301,6 +301,51 @@ def test_a_matching_sheet_is_verified_before_the_opener_is_typed():
     assert adb.taps[1:] == [_COMMENT_RECT.center, _CONFIRM_POINT]
 
 
+class _CountingSheetAdb(SheetAdb):
+    """SheetAdb plus a count of `dumpsys package` round trips, for the memoization test below."""
+
+    def __init__(self, sheet):
+        super().__init__(sheet)
+        self.dumpsys_calls = 0
+
+    def shell(self, command="", **kwargs):
+        if "dumpsys package" in command:
+            self.dumpsys_calls += 1
+        return super().shell(command, **kwargs)
+
+
+def test_one_like_action_issues_exactly_one_targeting_calibration_dumpsys_call():
+    """FINDING 2 (STAGE B2, technical debt): `_refresh_targeting_calibration_binding` used to
+    unconditionally issue `adb shell dumpsys package` on every call, and `_require_targeting_
+    calibration` is reached repeatedly inside a single Like action -- here via
+    `_verifiable_payload`, `_confirm_payload_profile`, `_navigate_to_model_item`, and TWO
+    `_verify_sheet_shows` checks (pre-type and post-type; a Training checkpoint adds a third) --
+    which used to mean that many identical round trips over USB in a few seconds to re-derive a
+    version string that cannot change in that window. The device read is now memoized for the
+    item table's lifetime, so one action costs exactly one round trip.
+
+    ``like()``'s own ``finally`` block invalidates the item table on every path (doc 5.3) -- the
+    SAME boundary a new profile crosses -- so the very next targeting check must read the device
+    again rather than reuse the now-stale binding. The second `like()` call below is expected to
+    refuse (no item table survives the first call's invalidation), but `_verifiable_payload`
+    calls `_require_targeting_calibration` BEFORE it notices the missing payload, which is the
+    one extra device read this second half of the test is about."""
+    adb = _CountingSheetAdb(_SHEETS[0])
+    with pytest.MonkeyPatch.context() as mp:
+        driver = _driver(adb, mp, payload=_payload(), anchor=b"fixture anchor")
+        driver.like("two sentences, no dashes", model_item_index=1)
+        assert adb.dumpsys_calls == 1, (
+            f"expected exactly one dumpsys package round trip for one Like action, got "
+            f"{adb.dumpsys_calls}")
+
+        with pytest.raises(HingeTargetingError):
+            driver.like("second opener, no item table survives the first like", model_item_index=1)
+    assert adb.dumpsys_calls == 2, (
+        "invalidating the item index (like()'s own post-action invalidation, the same "
+        "boundary a new profile crosses) must force the next targeting check to read the "
+        f"device again rather than reuse the stale binding, got {adb.dumpsys_calls}")
+
+
 def test_missing_targeting_calibration_refuses_a_model_item_before_any_gesture():
     adb = SheetAdb(_SHEETS[0])
     with pytest.MonkeyPatch.context() as mp:

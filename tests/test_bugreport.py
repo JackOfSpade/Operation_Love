@@ -84,6 +84,19 @@ def test_completion_assessment_does_not_mislabel_failure_or_live_run(monkeypatch
     assert expected in bugreport._run_completion_assessment_md(hub, "unused.yaml")
 
 
+def test_completion_assessment_names_pending_stop_and_current_run(monkeypatch):
+    hub = _CompletionHub(phase="loading saved data", running=True, app_state="starting")
+    hub._snapshot["status"]["stopping"] = True
+    monkeypatch.setattr(bugreport, "_completion_capture_facts", lambda *_: {})
+
+    md = bugreport._run_completion_assessment_md(hub, "unused.yaml")
+
+    assert "Outcome: STOPPING / INDETERMINATE" in md
+    assert "for run `completion-test-run`" in md
+    assert "stop was requested while phase was 'loading saved data'" in md
+    assert "shutdown and persistence finish" in md
+
+
 def test_completion_assessment_requires_at_least_one_app_status(monkeypatch):
     hub = _CompletionHub()
     hub._snapshot["status"]["apps"] = {}
@@ -203,7 +216,7 @@ def test_final_report_redacts_secrets_from_debug_rows_logs_and_hub_free_text(mon
 
     monkeypatch.setattr(
         bugreport, "_debug_log_md",
-        lambda _config: f"debug JSONL row: {{\"token\": \"{secret}\"}}",
+        lambda _config, _hub=None: f"debug JSONL row: {{\"token\": \"{secret}\"}}",
     )
     try:
         md = bugreport.build_report(_SensitiveHub(), description=f"my key was {secret}")
@@ -314,6 +327,18 @@ def test_status_section_renders_apps():
     assert "| app | mode | state | last | score | decisions |" in md
     assert "| app | mode | state | last | score | swipes |" not in md
     assert "| bumble |" in md
+
+
+def test_status_section_names_the_snapshot_run_and_uptime():
+    snapshot = _FakeHub().snapshot()
+    hub_snapshot = snapshot["status"]
+    hub_snapshot["run_id"] = "current-run-123"
+    hub_snapshot["uptime_s"] = 2.4
+    hub = types.SimpleNamespace(snapshot=lambda: snapshot)
+
+    md = bugreport._status_md(hub)
+
+    assert "status provenance: run `current-run-123` · status uptime: 2s" in md
 
 
 def test_status_section_healthy_run_has_no_diagnostics_section():
@@ -614,6 +639,31 @@ def test_debug_log_section_tails_actions_and_flags_error_shots(tmp_path):
     assert "screenshots: 3" in md
     assert "error shots (kept): 00003_unexpected_error.png" in md
     assert "like did not land" in md                              # actions.jsonl tail inlined
+
+
+def test_debug_log_section_marks_previous_run_separately_from_live_status(tmp_path):
+    previous = tmp_path / "previous-run"
+    previous.mkdir(parents=True)
+    (previous / "actions.jsonl").write_text('{"action": "capture"}\n')
+
+    md = bugreport._one_debug_dir_md(
+        "hinge", {"debug_dir": str(tmp_path)}, current_run_id="new-startup-run")
+
+    assert "latest run:" in md
+    assert "provenance: previous on-disk run" in md
+    assert "current status run is `new-startup-run`" in md
+
+
+def test_debug_log_section_marks_matching_status_run_as_current(tmp_path):
+    current = tmp_path / "current-run"
+    current.mkdir(parents=True)
+    (current / "actions.jsonl").write_text('{"action": "capture"}\n')
+
+    md = bugreport._one_debug_dir_md(
+        "hinge", {"debug_dir": str(tmp_path)}, current_run_id="current-run")
+
+    assert "provenance: current status run" in md
+    assert "previous on-disk run" not in md
 
 
 def test_debug_log_links_full_auto_opener_snapshot_and_landed_outcome(tmp_path):
@@ -1457,6 +1507,43 @@ def test_dwell_navigation_refusal_summary_tolerates_legacy_and_malformed_rows(tm
     assert "unknown page heart: dwell-navigation refusal `bad' # fake heading`" in md
     assert "planned step telemetry unavailable" in md
     assert not any(line.strip().startswith("# fake heading") for line in md.splitlines())
+
+
+def test_dwell_navigation_chain_refusal_reports_pair_and_both_estimator_directions(tmp_path):
+    """A chain refusal must no longer collapse to a code after its frames disappear."""
+    run = tmp_path / "run_dwell_navigation_chain_refusal"
+    run.mkdir(parents=True)
+    record = {
+        "action": "still_photo_dwell_walk_candidate", "heart_ordinal": 8,
+        "outcome": "navigation_refused", "reason": "chain_broken",
+        "before": "00100_still_photo_dwell_walk_candidate_before.png",
+        "after": "00101_still_photo_dwell_walk_candidate_after.png",
+        "navigation_refusal": {
+            "schema_version": 2, "code": "chain_broken", "frame_index": 2,
+            "return_outcome": "unavailable_unmeasured", "restored_page_shift_px": None,
+            "planned": {"step_px": 300, "bound_px": 360, "spacing_px": 1027,
+                        "sized_against_px": 1027, "window_px": [219, 360],
+                        "basis": "measured"},
+            "achieved": {
+                "measurement_status": "no_consensus",
+                "measurement_reason": "forward video strips split",
+                "reverse": {"status": "no_consensus", "delta_px": None,
+                            "reason": "reverse video strips also split"},
+            },
+        },
+    }
+    (run / "actions.jsonl").write_text(json.dumps(record) + "\n")
+
+    md = bugreport._one_debug_dir_md("hinge", {"debug_dir": str(tmp_path)})
+
+    row = next(line for line in md.splitlines() if "page heart 8" in line)
+    assert "dwell-navigation refusal `chain_broken`" in row
+    assert "estimator `no_consensus`" in row
+    assert "reason `forward video strips split`" in row
+    assert "reverse estimator `no_consensus; reverse video strips also split`" in row
+    assert "anchor return `unavailable_unmeasured`" in row
+    assert "before `00100_still_photo_dwell_walk_candidate_before.png`" in row
+    assert "after `00101_still_photo_dwell_walk_candidate_after.png`" in row
 
 
 def test_dwell_navigation_refusal_summary_shows_walk_continue_and_abandon_outcomes(tmp_path):

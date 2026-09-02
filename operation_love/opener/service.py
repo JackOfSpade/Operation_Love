@@ -141,7 +141,7 @@ class OpenerPick:
     that's what `index` is for -- it exists so the hub can show the operator what the
     suggestion is supposed to be about, which is precisely how a mismatch between the opener
     and the item the comment actually hangs under becomes visible instead of silent -- the
-    failure this whole anchor mechanism exists to prevent."""
+    failure this whole opener-to-item binding exists to prevent."""
     text: str
     index: int = ITEM_INDEX_ABSENT
     referenced: str = ""
@@ -571,9 +571,12 @@ class OpenerService:
         # mirroring self.store.record_opener's permanent per-run record. WHY THIS EXISTS: a
         # bug report that says only "accounted_provider_results=1" cannot
         # tell you whether that opener was about the right photo. Recording the model's own
-        # `referenced` string alongside whether the call was anchored (see maybe_opener's
-        # anchor parameter) is exactly the evidence needed to diagnose an out-of-place opener
-        # after the fact -- this is the anchor mechanism's own paper trail. Guarded by
+        # `referenced` string alongside the MODEL ITEM INDEX the pick targeted (OpenerPick.index)
+        # is exactly the evidence needed to diagnose an out-of-place opener after the fact --
+        # this is that item-binding's own paper trail. (Historic note, 2026-09-02: this comment
+        # used to say "whether the call was anchored (see maybe_opener's anchor parameter)".
+        # maybe_opener has no such parameter -- the anchor-SCREENSHOT request shape was removed
+        # project-wide; what survives is the item binding named here.) Guarded by
         # self._lock like every other piece of mutable state on this instance; maybe_opener
         # already runs its whole body under that lock, so the append there needs no extra
         # locking -- only recent_openers_snapshot (a reader that may run on a different

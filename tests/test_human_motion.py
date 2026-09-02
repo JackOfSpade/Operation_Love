@@ -215,6 +215,34 @@ def test_think_time_like_is_faster_than_pass():
     assert min(likes) >= 1.2 and min(passes) >= 1.8            # never below the shift floor
 
 
+def test_think_time_mean_matches_documented_figures():
+    """hm._THINK's (shift, mu, sigma) triples are the calibrated anti-detection params and
+    are the source of truth; the module docstring's "~3.2 s like / ~6.5 s pass" (and
+    _THINK's own inline "mean ~Ns" comments) are DERIVED from them via the shifted-
+    lognormal closed form mean = shift + exp(mu + sigma**2/2) -- never independently
+    chosen. Recompute that closed form straight from hm._THINK and compare against the
+    documented figures below so prose and params can never silently drift apart again
+    (found 2026-09-02: the "pass" prose said ~6.9 s, but the closed-form mean of the
+    actual shipped params -- shift=1.8, mu=1.45, sigma=0.42 -- is ~6.46 s; an arithmetic
+    slip in the comment, not a re-tune, so the fix was to correct the prose to ~6.5 s
+    rather than nudge mu/sigma to hit a round number).
+
+    Tolerance (0.05s) is half the last significant digit of a one-decimal prose figure
+    ("~3.2", "~6.5") -- the rounding slack such a figure implies -- tight enough to catch
+    a re-tuned mu/sigma or a stale comment, loose enough to accept ordinary rounding.
+    Proof the tolerance is tight enough: reinstating the old stale "~6.9 s" figure here
+    fails (|6.456 - 6.9| = 0.44 > 0.05), which is exactly the bug this test exists to catch.
+    """
+    documented_mean_s = {"like": 3.2, "pass": 6.5}
+    for decision, stated in documented_mean_s.items():
+        shift, mu, sigma = hm._THINK[decision]
+        closed_form_mean = shift + math.exp(mu + sigma ** 2 / 2.0)
+        assert abs(closed_form_mean - stated) < 0.05, (
+            f"{decision}: closed-form mean {closed_form_mean:.3f}s no longer matches the "
+            f"documented ~{stated}s -- update human_motion.py's docstring/_THINK comment "
+            f"(never re-tune mu/sigma just to chase a round number in a comment)")
+
+
 def test_deterministic_for_same_seed():
     a = plan_swipe(100, 200, 800, 1500, rng=random.Random(42))
     b = plan_swipe(100, 200, 800, 1500, rng=random.Random(42))

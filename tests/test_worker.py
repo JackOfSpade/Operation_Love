@@ -352,6 +352,92 @@ def _worker(driver, decider, service, store):
                   threading.Event(), mode="auto")
 
 
+def test_capture_progress_callback_publishes_hinge_capture_detail_and_is_cleared():
+    """A driver's long capture can refresh the Hub without gaining a control channel."""
+    from operation_love.status import RunStatus
+
+    class ProgressDriver(FakeDriver):
+        supports_interruptible_capture = True
+
+        def __init__(self):
+            super().__init__(1)
+            self.callbacks = []
+            self.progress = None
+
+        def set_capture_progress_callback(self, callback):
+            self.callbacks.append(callback)
+            self.progress = callback
+
+        def next_profile(self, *, should_stop=None):
+            assert should_stop is not None
+            assert self.progress is not None
+            self.progress("verifying photo item 2 of 3 for motion")
+            return super().next_profile()
+
+    status = RunStatus("run1", ["hinge"], min_labels=1, mode="training")
+    driver = ProgressDriver()
+    worker = Worker("hinge", driver, FakeDecider(), None, FakeStore(), "run1", _Pacing(),
+                    threading.Event(), mode="training", status=status)
+
+    assert worker._capture_profile("next_profile") is not None
+    app = status.app_view("hinge")["app"]
+    assert app["state"] == "scoring"
+    assert app["detail"] is None
+    assert callable(driver.callbacks[0])
+    assert driver.callbacks[-1] is None
+
+
+def test_training_replaces_capture_progress_before_the_gemini_opener_call():
+    """A finished photo read must not masquerade as the active opener request."""
+    from operation_love.status import RunStatus
+    from operation_love.training_actions import TrainingActionBridge
+
+    class ProgressDriver(FakeDriver):
+        accepts_opener = True
+        supports_training_decision = True
+
+        def __init__(self):
+            super().__init__(1)
+            self.progress = None
+            self.capture_updated_at = None
+
+        def set_capture_progress_callback(self, callback):
+            self.progress = callback
+
+        def next_profile(self):
+            assert self.progress is not None
+            self.progress("verifying photo item 3 of 3 for motion")
+            self.capture_updated_at = status.app_view("hinge")["app"]["updated_at"]
+            return super().next_profile()
+
+        def set_training_decision(self, _approval):
+            pytest.fail("an empty opener must stop before any device action")
+
+    class EmptyOpenerService:
+        disabled = False
+        stop_requested = False
+
+        def __init__(self):
+            self.during_request = None
+
+        def maybe_opener(self, *_args, **_kwargs):
+            self.during_request = status.app_view("hinge")["app"]
+            return SimpleNamespace(text="")
+
+    status = RunStatus("run1", ["hinge"], min_labels=1, mode="training")
+    driver, service, stop = ProgressDriver(), EmptyOpenerService(), threading.Event()
+    Worker("hinge", driver, FakeDecider("like"), service, FakeStore(), "run1", _Pacing(), stop,
+           mode="training", status=status,
+           training_action_bridge=TrainingActionBridge()).run()
+
+    assert service.during_request is not None
+    assert service.during_request["state"] == "scoring"
+    assert service.during_request["detail"] == "generating a targeted opener"
+    assert service.during_request["updated_at"] > driver.capture_updated_at
+    # A terminal status never retains an in-flight capture or Gemini description.
+    assert status.app_view("hinge")["app"]["detail"] is None
+
+
 def test_worker_binds_opt_in_driver_debug_to_its_exact_run_id_before_opening():
     class BindingDriver(FakeDriver):
         def __init__(self):

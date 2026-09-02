@@ -496,7 +496,7 @@ _SYSTEM = (
 #
 # Sent (doc 5.7): her name as text, items 1..N each as ONE cropped image in order, the context
 # blocks cropped and unnumbered, a truncation flag when the capture hit its ceiling, and the
-# Part A style guide unchanged. NOT sent: full screenshots, scroll frames, the anchor, and the
+# Part A style guide unchanged. NOT sent: full screenshots, scroll frames, and the
 # endorsement blocks (doc 2.4 -- a tease built on a friend's line is the worst possible
 # ammunition, so they are excluded upstream and never reach this module at all).
 #
@@ -576,10 +576,10 @@ class ItemRequest:
     AN EMPTY `items` IS REFUSED, LOUDLY. Doc 5.1's contract is that the model picks an item, so
     a request offering zero of them cannot be answered honestly -- the only reply available is
     ITEM_INDEX_ABSENT, and paying for a billed API call to be told what we already knew is
-    worse than raising. The zero-image branches that DO exist in _text_part are for the legacy
-    frame/anchor shapes, where the model still had a profile to write about; this shape has
-    nothing at all. Doc 5.3's "treat a missing table as a hard stop, never as a reason to fall
-    back to a fixed coordinate" is the same instinct one layer up.
+    worse than raising. The zero-image branch that DOES exist in _text_part is for the legacy
+    frame shape, where the model still had a profile to write about even with no photos; this
+    shape has nothing at all. Doc 5.3's "treat a missing table as a hard stop, never as a reason
+    to fall back to a fixed coordinate" is the same instinct one layer up.
     """
 
     # `items` is the one field with no default, and that ordering is the point: there is no such
@@ -686,8 +686,7 @@ class ItemRequest:
 
         Never "photo index N": these are not her profile photos in capture order, and telling
         an operator to go look at photo 3 of a profile when the failure is in item 3's CROP
-        sends them to the wrong place entirely -- the same mistake the anchor image's own
-        label in _fit_images_to_budget exists to avoid.
+        sends them to the wrong place entirely.
         """
         if position < self.item_count:
             return f"item {position + FIRST_ITEM_INDEX}'s crop"
@@ -1725,12 +1724,12 @@ class GeminiOpener:
         a capacity cascade instead of re-encoding the same screenshots per model.
 
         ``images`` is renamed from the old ``photos`` because it carries whichever request
-        shape generate() built: her profile photos (plus, when given one, the anchor screenshot
-        appended at the end), or -- on the item-crop shape -- ItemRequest.images, the numbered
-        item crops followed by the unnumbered context crops. All three are encoded identically
-        here; labelling and numbering happen later, in _assemble_parts and _text_part, so this
-        method stays the single place that knows how to turn bytes into an inlineData part and
-        knows nothing about what any of them mean.
+        shape generate() built: her profile photos on the legacy frame shape, or -- on the
+        item-crop shape -- ItemRequest.images, the numbered item crops followed by the
+        unnumbered context crops. Both are encoded identically here; labelling and numbering
+        happen later, in _assemble_parts and _text_part, so this method stays the single place
+        that knows how to turn bytes into an inlineData part and knows nothing about what any
+        of them mean.
         """
         if len(images) > _MAX_REQUEST_IMAGES:
             raise OpenerError(
@@ -1808,10 +1807,10 @@ class GeminiOpener:
                 sentences.append(
                     "Her profile was longer than we could read, so these are only the items "
                     "we saw. Choose from them anyway.")
-            # Byte-identical to the unanchored frame branch's closing instruction on purpose:
-            # the field being answered and what it means did not change with the payload, and
-            # keeping one wording for it means the two shapes cannot drift into telling the
-            # model two different things about the same field.
+            # Byte-identical to the frame branch's closing instruction on purpose: the field
+            # being answered and what it means did not change with the payload, and keeping
+            # one wording for it means the two shapes cannot drift into telling the model two
+            # different things about the same field.
             sentences.append(
                 "Set item_index to the number of the one your opener is clearly about and "
                 "would feel natural directly under, because it explains why that item was "
@@ -1829,10 +1828,10 @@ class GeminiOpener:
                 "Write the opener now."
             )
         else:
-            # photo_count == 0 and no anchor either: the request carries her profile TEXT and
-            # no images at all, so there is no numbered item for the model to choose and no
-            # honest number for it to return. Saying so explicitly, and naming the out-of-band
-            # value, is the whole point: the old copy rendered as "The 0 image(s) above are her
+            # photo_count == 0: the request carries her profile TEXT and no images at all, so
+            # there is no numbered item for the model to choose and no honest number for it to
+            # return. Saying so explicitly, and naming the out-of-band value, is the whole
+            # point: the old copy rendered as "The 0 image(s) above are her
             # profile in scroll order (index 0 first)" and then asked for "the index of the one
             # your opener is about", which invites a confident `0` that is indistinguishable
             # from a real pick of the first item. Under the 1-based contract 0 is out of band
@@ -1916,8 +1915,7 @@ class GeminiOpener:
         the request; the model still has to know it, and left to a paragraph at the end it would
         have to COUNT images to use it -- an inference step, on exactly the kind of enumeration
         this redesign exists to stop leaving to luck. A label adjacent to its image removes the
-        step: there is nothing to count when each image says what it is. Same lesson, and the
-        same placement rule, as the anchor label below.
+        step: there is nothing to count when each image says what it is.
 
         Without ``items`` (including no images at all), the legacy shape remains image parts
         followed by the text part.
@@ -1944,25 +1942,23 @@ class GeminiOpener:
                  image_parts: list[dict[str, Any]] | None = None,
                  retry_hint: str = "",
                  items: ItemRequest | None = None) -> dict[str, Any]:
-        """Build one model's GenerateContent request. ``image_parts`` lets generate() pass
-        in already-encoded photos (and, when anchored, the anchor screenshot appended after
-        them) so a cascade across N models doesn't re-encode the same screenshots N times;
-        when omitted it can only be computed fresh from ``profile.photos``, which never
-        includes an anchor -- so ``anchored`` is forced False in that path below regardless
-        of what the caller passed, rather than claiming an anchor is present when there is no
-        anchor image actually in ``image_parts`` to point at. generate() always passes
-        ``image_parts`` explicitly, so this fallback only matters for a caller that doesn't
-        (there is none in this codebase today, but the method must not silently lie about
-        anchoring if one appears later). ``retry_hint`` is forwarded to _text_part unchanged
-        -- it must reach EVERY model tried in this attempt's cascade, because it describes
-        what the previous attempt got wrong, which stays true no matter which model ends up
-        serving the retry.
+        """Build one model's GenerateContent request. ``image_parts`` lets generate() pass in
+        already-encoded images (the legacy frame shape's profile photos, or the item-crop
+        shape's numbered crops plus context crops) so a cascade across N models doesn't
+        re-encode the same screenshots N times; when omitted it is computed fresh instead --
+        from ``items.images`` when ``items`` is given, else from ``profile.photos``. generate()
+        always passes ``image_parts`` explicitly, so this fallback only matters for a caller
+        that doesn't (there is none in this codebase today, but the method must still build a
+        request that matches ``items`` rather than silently assume the legacy shape).
+        ``retry_hint`` is forwarded to _text_part unchanged -- it must reach EVERY model tried
+        in this attempt's cascade, because it describes what the previous attempt got wrong,
+        which stays true no matter which model ends up serving the retry.
 
         ``items`` (ops/OPENER-REDESIGN.md 5.2/5.7) travels with ``image_parts``: it is what
         those encoded parts ARE, so the no-``image_parts`` fallback below re-encodes from
         ``items.images`` rather than from profile.photos when one is present. Encoding the
         scroll frames while telling the model it is looking at labelled item crops is precisely
-        the kind of silent lie the anchored fallback below already refuses to tell."""
+        the kind of silent lie that fallback exists to refuse to tell."""
         if image_parts is not None:
             resolved_image_parts = list(image_parts)
             resolved_items = items
@@ -2078,18 +2074,15 @@ class GeminiOpener:
                     # bad, skip just this profile" signal, naming which photo and how big it was
                     # so the operator can tell a systemic capture bug from one bad frame.
                     #
-                    # The anchor -- when present, always the LAST entry of ``images`` (see
-                    # generate()) -- gets its own name here instead of "photo index N": it did
-                    # not come from her profile's scroll capture, it came from screenshotting
-                    # the live like screen, so reporting it as a photo index sends the operator
-                    # hunting through her profile photos for a capture bug ("photo index 9" on a
-                    # profile with 6 photos) that is actually in the anchor capture path.
-                    #
-                    # An item-crop request gets its own naming for the same reason, one step
-                    # further: none of its images is a profile photo in capture order at all,
-                    # so "photo index 4" names something that does not exist. ItemRequest
-                    # reports "item 5's crop" or "context crop 2 (unnumbered)" instead, which
-                    # is a thing the operator can actually go and look at.
+                    # An item-crop request gets its own naming here instead of "photo index N":
+                    # none of its images is a profile photo in capture order at all, so "photo
+                    # index 4" names something that does not exist and sends the operator
+                    # hunting through her profile photos for a capture bug that is actually in
+                    # the crop pipeline. ItemRequest reports "item 5's crop" or "context crop 2
+                    # (unnumbered)" instead, which is a thing the operator can actually go and
+                    # look at. The legacy frame shape has no such translation to do -- its
+                    # images ARE her profile photos in capture order, so "photo index N"
+                    # already names the right thing.
                     if items is not None:
                         label = items.describe_image(index)
                     else:
@@ -2137,7 +2130,7 @@ class GeminiOpener:
             f"Gemini opener: request has {len(images)} image(s){composition_note}; the request "
             f"still totals {new_size} bytes encoded even at the smallest compression step "
             f"({image_bytes} bytes of images, {text_bytes} bytes of text -- style guide, "
-            f"profile content, system instruction, and the anchor label when present, "
+            f"profile content, system instruction, and any item/context labels when present, "
             f"including any retry hint), over the "
             f"{_MAX_INLINE_REQUEST_BYTES} byte budget; refusing to silently drop images. "
             "Reduce image count or resolution upstream if images dominate the total, or "

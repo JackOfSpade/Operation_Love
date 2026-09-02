@@ -14,6 +14,9 @@ already exercised bit-for-bit by test_hinge_observe.py:
                           hit; with no such template declared (Bumble's current, real state) it
                           is structurally unable to tap anything at all.
 """
+import re
+from pathlib import Path
+
 import pytest
 
 from operation_love.drivers.android.bumble import BUMBLE_SPEC, BumbleAndroidDriver
@@ -289,6 +292,23 @@ def test_malformed_content_band_is_rejected():
                        content_band=(0.1, 1.5))                # outside 0..1
 
 
+@pytest.mark.parametrize("field,value", [
+    ("content_band", (0.1, 10 ** 400)),
+    ("read_scroll_frac", 10 ** 400),
+    ("safe_rewind_max_frac", 10 ** 400),
+    ("coords", {"like_heart": (10 ** 400, 0.5)}),
+])
+def test_an_oversized_int_is_refused_by_field_name_not_an_overflowerror(field, value):
+    """A config typo with one extra zero is a perfectly valid Python int, and bare
+    `math.isfinite` raises OverflowError on it rather than answering False. Every range check
+    here promises a ValueError naming the field it refused; an OverflowError escapes past the
+    callers that catch ValueError to say WHICH spec is malformed, so the wrong exception is
+    itself the defect (found 2026-09-02, same class as config._is_finite_number and
+    hinge._targeting_finite)."""
+    with pytest.raises(ValueError, match=field):
+        AndroidAppSpec(app="x", package="x.y", calibrated=False, **{field: value})
+
+
 def test_observe_touch_watch_without_identity_band_is_rejected():
     # The touch stream corroborates an identity-proven advance -- it is not a standalone
     # decision source, so declaring it without an identity anchor is refused at construction.
@@ -401,6 +421,93 @@ def test_bumble_mode_registration_derives_training_and_auto_and_fails_closed():
     for mode in ("training", "auto"):
         reason = platforms.unavailable_reason("bumble", mode)
         assert reason and "not calibrated" in reason
+
+
+# --- FINDING 1 (STAGE B2): capability fields replace spec.app == "hinge" string checks -----
+# auto_policy_calibrated / observe_input_serialized / safe_rewind_max_frac (android_spec.py)
+# now drive the four behaviours (auto-policy attachment, the OBSERVE input lease, and the
+# rewind cap + its per-iteration lane) that used to gate on a bare `self.spec.app == "hinge"`
+# / `!= "hinge"` string comparison inside hinge.py. See each field's own comment for what it
+# gates and why. Field-value assertions alone would not catch a mis-wired branch that still
+# checks spec.app somewhere else, so test_no_spec_app_hinge_string_comparison_remains_in_hinge_py
+# below greps the actual source, and the two rewind tests exercise the resulting behaviour
+# through a live driver rather than through the spec object alone.
+
+def test_hinge_and_bumble_spec_declare_the_new_capability_fields():
+    assert HINGE_SPEC.auto_policy_calibrated is True
+    assert HINGE_SPEC.observe_input_serialized is True
+    assert HINGE_SPEC.safe_rewind_max_frac == 0.55
+    assert BUMBLE_SPEC.auto_policy_calibrated is False
+    assert BUMBLE_SPEC.observe_input_serialized is False
+    assert BUMBLE_SPEC.safe_rewind_max_frac is None
+
+
+def test_safe_rewind_max_frac_out_of_range_is_rejected():
+    with pytest.raises(ValueError, match="safe_rewind_max_frac"):
+        AndroidAppSpec(app="x", package="x.y", calibrated=False, safe_rewind_max_frac=1.30)
+    with pytest.raises(ValueError, match="safe_rewind_max_frac"):
+        AndroidAppSpec(app="x", package="x.y", calibrated=False, safe_rewind_max_frac=-0.1)
+
+
+def test_safe_rewind_max_frac_none_is_the_uncapped_default():
+    # None is the sentinel for "this app declares no cap" -- must remain the default so every
+    # existing spec that predates this field (i.e. everything but HINGE_SPEC) is unaffected.
+    spec = AndroidAppSpec(app="x", package="x.y", calibrated=False)
+    assert spec.safe_rewind_max_frac is None
+
+
+def test_no_spec_app_hinge_string_comparison_remains_in_hinge_py():
+    """Regression against reintroducing the app-name check this refactor removes. Grep-based
+    on purpose (not just the field-value test above): a future edit could add a NEW
+    `spec.app == "hinge"` branch anywhere in the module, for a fifth behaviour nobody has
+    thought of yet, and a value-only test would never notice -- only scanning the source
+    catches that shape of regression."""
+    source = Path(hinge.__file__).read_text()
+    hits = re.findall(r'spec\.app\s*[=!]=\s*"hinge"', source)
+    assert hits == [], (
+        f"hinge.py must not gate behaviour on spec.app == / != \"hinge\" ({len(hits)} hit(s) "
+        "found) -- drive it off an AndroidAppSpec capability field instead (android_spec.py)")
+
+
+def test_bumble_rewind_keeps_the_generic_uncapped_undo_distance_and_lane(monkeypatch):
+    """BUMBLE_SPEC.safe_rewind_max_frac is None -- the recovery rewind must keep the ORIGINAL
+    generic max(read_scroll_frac, rewind_scroll_frac) undo distance and the fixed central
+    lane, not Hinge's capped corridor, even though both drivers now run through the exact same
+    _scroll_to_top_unlocked method body."""
+    gestures = []
+    adb = FakeAdb([b"stable"])
+    drv = _drv(BUMBLE_SPEC, adb, read_scroll_frac=0.55, rewind_scroll_frac=0.90)
+    monkeypatch.setattr(drv, "_changed", lambda a, b: False)   # settles on the first stroke
+    monkeypatch.setattr(drv, "_swipe", lambda *args: gestures.append(args))
+
+    assert drv._scroll_to_top_unlocked() is True
+
+    w, h = adb.screen_size()
+    undo_frac = max(0.55, 0.90)                     # legacy_frac: BUMBLE_SPEC declares no cap
+    y_near, y_far = int(h * (0.5 - undo_frac / 2)), int(h * (0.5 + undo_frac / 2))
+    assert gestures == [(int(w * 0.5), y_near, int(w * 0.5), y_far)]
+
+
+def test_hinge_rewind_stays_capped_to_the_declared_safe_corridor(monkeypatch):
+    """HINGE_SPEC.safe_rewind_max_frac is 0.55 -- the recovery rewind must use the CAPPED
+    bounded corridor (fixed x=0.5, distance min(read_scroll_frac, 0.55)) even when
+    rewind_scroll_frac is configured wider, exactly as the removed `spec.app == "hinge"`
+    branch did. identity_band=None makes this a transport-distance test rather than a Hinge
+    identity-band test -- same convention test_hinge_observe.py's sibling
+    test_auto_policy_hinge_undo_* tests use."""
+    gestures = []
+    adb = FakeAdb([b"stable"])
+    drv = _drv(HINGE_SPEC, adb, read_scroll_frac=0.55, rewind_scroll_frac=0.90)
+    drv.identity_band = None
+    monkeypatch.setattr(drv, "_changed", lambda a, b: False)   # settles on the first stroke
+    monkeypatch.setattr(drv, "_swipe", lambda *args: gestures.append(args))
+
+    assert drv._scroll_to_top_unlocked() is True
+
+    w, h = adb.screen_size()
+    undo_frac = 0.55                     # min(read_scroll_frac=0.55, safe_rewind_max_frac=0.55)
+    y_near, y_far = int(h * (0.5 - undo_frac / 2)), int(h * (0.5 + undo_frac / 2))
+    assert gestures == [(int(w * 0.5), y_near, int(w * 0.5), y_far)]
 
 
 # --- like_flow dispatch: driven by the spec, not hardcoded to "hinge" -------

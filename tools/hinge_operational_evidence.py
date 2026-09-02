@@ -31,6 +31,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import sys
 from dataclasses import asdict
 from datetime import datetime, timezone
@@ -118,30 +119,40 @@ def _settings(cfg) -> tuple[str, str, tuple[float, float, float, float], object]
     return serial.strip(), adb_path, band, template
 
 
-def _read_device_evidence(adb: Adb, *, serial: str) -> dict:
-    """Return the read-only device/build facts that bind this trace's pixel geometry."""
+def _read_device_evidence(adb: Adb, *, serial: str, package: str = _PACKAGE) -> dict:
+    """Return the read-only device/build facts that bind this trace's pixel geometry.
+
+    Shared with `tools/hinge_calibrate.py`'s `_device_evidence` -- that tool wraps this with a
+    thin HingeDriver-shaped adapter rather than reimplementing the probe. Found 2026-09-02: the
+    two files had independently hand-rolled this identical ~20-line "getprop/wm density/dumpsys
+    package, then parse versionName" probe, and had already drifted (hinge_calibrate.py's copy
+    was missing the density check below). The versionName parse also now reuses the same
+    anchored multiline regex `operation_love/drivers/hinge.py`'s own
+    `_refresh_targeting_calibration_binding` uses to extract "versionName=..." out of a raw
+    `dumpsys package` dump, instead of a hand-rolled line-scan loop -- the anchored end-of-line
+    match refuses a value with trailing garbage on the same line that a bare
+    `.split("=", 1)[1].strip()` would have silently accepted.
+    """
     model = adb.shell("getprop ro.product.model").strip()
     width, height = adb.screen_size()
     density = adb.shell("wm density").strip()
     package_dump = adb.shell(
-        f"dumpsys package {quote_android_package_id(_PACKAGE)} | grep versionName")
-    version_name = None
-    for line in package_dump.splitlines():
-        line = line.strip()
-        if line.startswith("versionName="):
-            version_name = line.split("=", 1)[1].strip()
-            break
+        f"dumpsys package {quote_android_package_id(package)} | grep versionName")
+    match = re.search(r"(?m)^\s*versionName=(\S+)\s*$", package_dump)
+    version_name = match.group(1) if match else None
     if not model or not density or not version_name:
         raise EvidenceRefused(
-            "could not read complete device/build evidence; refusing an operational trace that "
-            "cannot be bound to one phone and Hinge version")
+            f"could not read complete device/build evidence (model={model!r}, "
+            f"density={density!r}, versionName={version_name!r} from `dumpsys package "
+            f"{package}`); refusing an operational trace that cannot be bound to one phone "
+            "and Hinge version")
     return {
         "serial": serial,
         "model": model,
         "display_w": width,
         "display_h": height,
         "density": density,
-        "hinge_package": _PACKAGE,
+        "hinge_package": package,
         "hinge_version_name": version_name,
     }
 

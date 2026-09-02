@@ -21,6 +21,23 @@ _LIKE_FLOWS = frozenset({"comment_sheet", "direct"})
 _DECIDE_GESTURES = frozenset({"tap", "card_swipe"})
 
 
+def _finite(value: object) -> bool:
+    """``math.isfinite`` that answers False instead of raising on an oversized Python int.
+
+    Every range check in ``__post_init__`` below promises the same thing: a bad field value
+    is refused with a ValueError naming the field. An oversized int (a config typo such as an
+    extra zero, ``10**400``) is a perfectly valid Python int, so bare ``math.isfinite`` raises
+    ``OverflowError: int too large to convert to float`` and the construction dies with the
+    wrong exception and no field name -- past every caller that catches ValueError to report
+    which spec is malformed. Same fix, same reason, as ``config._is_finite_number`` and
+    ``hinge._targeting_finite`` (2026-09-02).
+    """
+    try:
+        return math.isfinite(value)
+    except (TypeError, OverflowError):
+        return False
+
+
 @dataclass(frozen=True)
 class AndroidAppSpec:
     """One Android dating app's identity, action points, and behavioral knobs.
@@ -254,6 +271,57 @@ class AndroidAppSpec:
     # stream corroborates an identity-proven advance, it is not a standalone decision source
     # (enforced in __post_init__ below).
 
+    auto_policy_calibrated: bool = False
+    # Is the calibrated auto-mode BEHAVIOR POLICY (Worker._auto_loop's per-run tuning of read
+    # geometry/dwell/capture-ceiling -- see hinge.py's set_auto_session_policy) actually
+    # MEASURED and safe to apply on THIS app? True only for Hinge, the app the redesign was
+    # calibrated against, mirroring think_time_calibrated above. AndroidDriver.
+    # set_auto_session_policy installs the policy object only when this is True; every other
+    # app -- today just the experimental Bumble path, whose paid-control zones and reading
+    # geometry are different -- retains its legacy, un-policy-tuned behavior even when a
+    # Worker session hands one in. Observe mode never calls set_auto_session_policy at all and
+    # likewise keeps calibrated legacy behavior regardless of this flag. Formerly a bare
+    # `self.spec.app == "hinge"` check inside hinge.py; moved here 2026-09 so the gate is a
+    # declared capability of the spec, not a string comparison against the app's name.
+
+    observe_input_serialized: bool = False
+    # Does this app's passive OBSERVE mode need a cross-process input LEASE serializing
+    # reads/scrolls against a live human decision wait (hinge.py's _observe_input_lease)? A
+    # review controller may take screenshots while the Worker is waiting, but on an app where
+    # this is True it must not also call current_profile/_scroll_to_top: both would move the
+    # same card underneath wait_for_decision and can make a header reflow look like a PASS.
+    # True only for Hinge, the app this OBSERVE redesign exists for; False keeps the lease a
+    # no-op context manager everywhere else -- today just the experimental Bumble path, whose
+    # observe machinery this redesign was never calibrated against. Formerly a bare
+    # `self.spec.app != "hinge"` early-return inside hinge.py; moved here for the same reason
+    # as auto_policy_calibrated above.
+
+    safe_rewind_max_frac: float | None = None
+    # Ceiling (fraction of screen height) on the RECOVERY rewind stroke's DISTANCE and, when
+    # set, ALSO selects the bounded central-corridor LANE (fixed x=0.5, no independently
+    # varied width/position) for that stroke instead of the generic wider/randomized undo
+    # geometry -- see AndroidDriver._scroll_to_top_unlocked in hinge.py, which computes
+    # `min(self.read_scroll_frac, self.spec.safe_rewind_max_frac)`.
+    #
+    # Rewind strokes must stay in Hinge's central, scrollable card region. A former
+    # 0.78-screen ``fast flick`` ran from y=263 to y=2136 on the calibrated 2400px display:
+    # its release was inside Hinge's fixed bottom navigation (the exact gesture that failed
+    # to move the Vicki card in run de89edfe05e1). The driver's generic start-only zone check
+    # cannot establish that an endpoint is safe for a custom Hinge view, so this is a per-app
+    # driver invariant, not a config.yaml-overridable preference -- it is deliberately absent
+    # from config.py's generic `*_frac` override validation. At Hinge's 0.55 the stroke runs
+    # y=540..1860 -- the established read-scroll corridor. A smaller configured
+    # read_scroll_frac shrinks it further (the min() above); `rewind_scroll_frac` can never
+    # enlarge this Hinge gesture again. The bounded retry ceiling, and affirmative top verdict
+    # after each try, remain the authority on arrival rather than a longer physical flick.
+    #
+    # None (the default) means no cap: the generic path keeps its original
+    # max(read_scroll_frac, rewind_scroll_frac) undo distance and independently varied lane --
+    # correct for an app with no measured incident forcing it into a narrower corridor. Was a
+    # bare module constant (_HINGE_SAFE_REWIND_MAX_FRAC) in hinge.py, read through a
+    # `self.spec.app == "hinge"` check; moved here for the same reason as
+    # auto_policy_calibrated above.
+
     def __post_init__(self) -> None:
         if self.like_flow not in _LIKE_FLOWS:
             raise ValueError(
@@ -408,7 +476,7 @@ class AndroidAppSpec:
         # the fixed-chrome bug this field exists to fix (see the measured shift-distance table
         # in hinge.py's module docstring).
         y0, y1 = self.content_band
-        if not (math.isfinite(y0) and math.isfinite(y1) and 0.0 <= y0 < y1 <= 1.0):
+        if not (_finite(y0) and _finite(y1) and 0.0 <= y0 < y1 <= 1.0):
             raise ValueError(
                 f"AndroidAppSpec({self.app!r}).content_band {self.content_band} must be a "
                 f"finite (y0, y1) pair with 0.0 <= y0 < y1 <= 1.0")
@@ -444,18 +512,29 @@ class AndroidAppSpec:
             # The tuple-length check above establishes this 2:2 invariant. Keep strict=True so
             # a future coords shape change cannot silently skip an axis validation.
             for axis, v in zip("xy", value, strict=True):
-                if not (math.isfinite(v) and 0.0 <= v <= 1.0):
+                if not (_finite(v) and 0.0 <= v <= 1.0):
                     raise ValueError(
                         f"AndroidAppSpec({self.app!r}).coords[{key!r}].{axis} = {v!r} is not "
                         f"a fraction in 0..1. coords are fractions of the SCREEN, never "
                         f"pixels -- a value outside 0..1 would pass this rect-based check "
                         f"cleanly and then be silently clamped onto a screen edge by the real "
                         f"touch transport, which can land inside a forbidden zone.")
-        # read_scroll_frac: same reasoning, for the one non-coords fraction field this spec
-        # declares today. Named generically ("*_frac") in config.py's sibling check because
-        # a future field could add another; this one is checked by name since it is the only
-        # dataclass field of this shape.
-        if not (math.isfinite(self.read_scroll_frac) and 0.0 <= self.read_scroll_frac <= 1.0):
+        # read_scroll_frac: same reasoning as the coords check above, for a non-coords fraction
+        # field. Named generically ("*_frac") in config.py's sibling check because a future
+        # field could add another; this one is checked by name since config.py's check only
+        # covers `apps.<app>.*` OVERRIDES, not a spec's own hardcoded default.
+        if not (_finite(self.read_scroll_frac) and 0.0 <= self.read_scroll_frac <= 1.0):
             raise ValueError(
                 f"AndroidAppSpec({self.app!r}).read_scroll_frac must be a fraction in 0..1 "
                 f"(got {self.read_scroll_frac!r})")
+        # safe_rewind_max_frac: same shape check, but optional -- None means "no cap" (see the
+        # field's own comment above), so only a NON-None value is range-checked. This field is
+        # not config.yaml-overridable (a driver invariant, not operator tuning -- see its
+        # comment), so unlike read_scroll_frac it is never reached by config.py's generic
+        # `*_frac` sibling check either; this is its only validation.
+        if (self.safe_rewind_max_frac is not None
+                and not (_finite(self.safe_rewind_max_frac)
+                         and 0.0 <= self.safe_rewind_max_frac <= 1.0)):
+            raise ValueError(
+                f"AndroidAppSpec({self.app!r}).safe_rewind_max_frac must be a fraction in "
+                f"0..1 or None (got {self.safe_rewind_max_frac!r})")

@@ -88,6 +88,22 @@ class _Frame:
             self.heart(heart_y)
         return self
 
+    def round_bottom_corners(self, y0, y1, *, radius=_CORNER_RADIUS_PX, x0=_CARD_X0, x1=_CARD_X1):
+        """Carve only the BOTTOM two corners of an already-painted card rect, leaving its top
+        edge flat full-width. Same arc math as `card()` above (see its docstring for why `ceil`
+        is load-bearing), applied to one edge only, so a fixture can give a card a real rounded
+        corner on the edge under test (segment.py's own corner rule, `_corner_radius`) without
+        also creating one at the edge that a test needs to stay a plain, non-corner boundary."""
+        for i in range(radius):
+            dy = radius - i
+            inset = int(math.ceil(radius - math.sqrt(max(0.0, radius ** 2 - dy ** 2))))
+            if inset <= 0:
+                continue
+            y = y1 - 1 - i
+            self.gray[y, x0:x0 + inset] = self.col[y]
+            self.gray[y, x1 - inset:x1] = self.col[y]
+        return self
+
     def heart(self, cy, cx=_HEART_CX):
         """Stamp the real shipped like glyph centred at (cx, cy)."""
         th, tw = self.template.shape
@@ -332,6 +348,57 @@ def test_two_hearts_prove_a_low_contrast_near_gutter_is_a_card_boundary():
     unproven_result = unproven.segment()
     assert next(run for run in unproven_result.runs if (run.y0, run.y1) == (799, 859)).kind \
         == segment.RUN_TOO_LONG
+
+
+def test_heart_separated_near_gutter_refuses_past_an_unrelated_card_edge():
+    """Regression for the two-pass split in `segment_frame`.
+
+    Layout, top to bottom: card A (with its heart), a 61px candidate near-gutter gap, card B
+    (heartless, flat top, a genuinely ROUNDED bottom corner), a 65px gap that only that rounded
+    corner explains, card C (with its own heart), then an ordinary canonical gutter.
+
+    Card B's rounded bottom proves ITS OWN gap is a real card boundary (RUN_CARD_EDGE) -- and
+    that boundary sits between the 61px candidate gap and card C's heart. `card_edge_run`'s own
+    assertion below is the load-bearing sanity check: without a real intervening boundary this
+    test would not distinguish the bug from the fix at all. Card D exists only so the 53px
+    canonical gutter below card C is a genuine enclosed run (RUN_GUTTER) rather than an
+    open-ended one that runs off the band's own bottom edge (RUN_CLIPPED, never a `boundary_kind`
+    either way) -- without it `following` finds nothing at all regardless of the bug.
+
+    Before the two-pass split, `_heart_separated_near_gutter`'s forward `following` search ran
+    inside the SAME loop that assigns RUN_CARD_EDGE, so at the moment the 61px gap was tested,
+    the run between card B and card C still read as its pre-reclassification RUN_TOO_LONG and
+    was invisible to `following`. The search then skipped straight past the real boundary to the
+    canonical gutter below card C, treated card C's heart as proof, and split the 61px gap --
+    even though the heartless card B in between never exposed a heart of its own. Reverting the
+    segment_frame split (recombining the two loops into one and dropping the pass-1/pass-2
+    comments) reproduces exactly that: the assertions below turn red because the 61px gap is
+    reclassified to RUN_HEART_SEPARATED_NEAR_GUTTER and _extents(r) splits card A from card B.
+    """
+    f = _Frame()
+    f.card(_BAND0, 700, heart_y=610, radius=0)          # card A: heart 90px above the 61px gap
+    f.card(761, 900, radius=0)                          # card B: heartless, flat top
+    f.round_bottom_corners(761, 900, radius=_CORNER_RADIUS_PX)  # ...but a real rounded bottom
+    f.card(965, 1500, heart_y=1411, radius=0)            # card C: its own heart, square shape
+    # 1500..1553 is left as untouched page background: an exact 53px canonical gutter.
+    f.card(1553, 2000, radius=0)                        # card D: closes the gutter run; unused
+
+    r = f.segment()
+
+    assert r.ok, r.failures
+    near_gap = next(run for run in r.runs if (run.y0, run.y1) == (700, 761))
+    card_edge_run = next(run for run in r.runs if (run.y0, run.y1) == (900, 965))
+    # Sanity check first: card B's rounded bottom really is an independently confirmed boundary,
+    # and it really does sit between the candidate gap and card C's heart -- otherwise this test
+    # would not be exercising the bug at all.
+    assert card_edge_run.kind == segment.RUN_CARD_EDGE
+    # The bug: the candidate gap must NOT be promoted just because a heart exists somewhere
+    # further down the profile, past a real boundary that has no heart of its own on either side.
+    assert near_gap.kind == segment.RUN_TOO_LONG
+    # And card A must therefore stay merged with card B rather than being cut at the 61px gap.
+    assert (700, 761) not in _gutters(r)
+    assert (_BAND0, 761) not in _extents(r) and (_BAND0, 700) not in _extents(r)
+    assert any(y0 == _BAND0 and y1 >= 900 for y0, y1 in _extents(r))
 
 
 def test_a_rounded_card_bottom_proves_an_overlong_page_gap_is_a_boundary():
@@ -1341,6 +1408,19 @@ def test_degenerate_band_raises():
     f.card(_BAND0, 1150, heart_y=1090)
     with pytest.raises(segment.SegmentationError, match="analysed band is empty"):
         f.segment(content_band=(0.5, 0.5))
+
+
+def test_band_rows_agrees_with_the_driver_it_mirrors():
+    """`segment._band_rows` is a deliberate byte-for-byte duplicate of `hinge._content_rows`
+    (see `_band_rows`'s own docstring for why it is copied rather than imported: segment.py must
+    stay importable BEFORE hinge.py, which is the importer). `bugreport._content_band_rows` is
+    the repo's OTHER copy of this same arithmetic, and it is protected from drifting by
+    tests/test_bugreport.py::test_content_band_rows_agrees_with_the_driver_it_mirrors -- this is
+    the matching test for THIS copy, modelled on that one and run over the same band/size matrix,
+    so a change to the clamp/rounding rule in one copy and not the other fails loudly here."""
+    for band in ((0.125, 0.875), (0.0, 1.0), (0.3, 0.31), (0.9, 0.1)):
+        for size in (2400, 1920, 2):
+            assert segment._band_rows(band, size) == hinge._content_rows(band, size)
 
 
 def test_missing_cv2_raises_instead_of_degrading(monkeypatch):

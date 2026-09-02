@@ -30,6 +30,7 @@ def test_initial_snapshot():
     assert snap["ranker_ready"] is False
     assert set(snap["apps"]) == {"bumble", "hinge"}
     assert snap["apps"]["bumble"]["state"] == "starting"
+    assert snap["apps"]["bumble"]["detail"] is None
 
 
 def test_record_swipe_and_inc_labels():
@@ -191,6 +192,14 @@ def test_stop_reason_defaults_to_none_and_survives_serialization():
     # app_view() (the per-app overlay/hub read) goes through the same asdict() call.
     view = s.app_view("bumble")
     assert view["app"]["stop_reason"] == "run budget reached"
+
+
+def test_app_detail_is_validated_and_serialized():
+    s = _mk()
+    s.set_app("hinge", state="scoring", detail="verifying photo item 2 of 3")
+    assert s.app_view("hinge")["app"]["detail"] == "verifying photo item 2 of 3"
+    with pytest.raises(ValueError, match="detail"):
+        s.set_app("hinge", detail=1)
 
 
 def test_targeting_calibration_stop_kind_is_valid_and_serialized():

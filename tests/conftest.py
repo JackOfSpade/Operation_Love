@@ -30,14 +30,19 @@ from operation_love import supervisor as _supervisor
 from operation_love import targeting_policy as _targeting_policy
 
 # --- one native thread per xdist worker ------------------------------------------------------
-# Measured 2026-08-22: 60 of the ~3820 tests are 61% of the suite's 19m33s wall clock, and a
-# cProfile of the single slowest one (28.1s) puts 13.4s inside cv2.matchTemplate called from
-# item_index.build_item_index / frameshift.estimate_shift -- production code, real 1080x2400
-# frames.  OpenCV defaults to one thread per CORE (12 here), which is the right default for a
-# serial run and exactly wrong once xdist gives every worker its own process: N workers x N
-# cores is an N-fold oversubscription whose context switching can make the parallel run slower
-# than the serial one.  Under xdist the parallelism comes from the workers, so each worker takes
-# one thread; run serially (`-n0`, or a bare file) and OpenCV keeps its own default untouched.
+# Measured 2026-08-22, on the ~3820 tests that existed then: 60 tests were 61% of the suite's
+# 19m33s serial wall clock, and a cProfile of the single slowest one (28.1s) puts 13.4s inside
+# cv2.matchTemplate called from item_index.build_item_index / frameshift.estimate_shift --
+# production code, real 1080x2400 frames.  That 60-tests/61% concentration and the 19m33s
+# serial figure have NOT been re-measured since and are quoted here only as dated evidence for
+# why OpenCV thread-pinning matters at all.  Re-measured 2026-09-02: the suite has grown to
+# 4549 tests (4544 passed / 5 skipped) and the parallelised run (see [tool.pytest.ini_options]
+# addopts) completes in 259s wall clock under the default -n auto.  OpenCV defaults to one
+# thread per CORE (12 here), which is the right default for a serial run and exactly wrong once
+# xdist gives every worker its own process: N workers x N cores is an N-fold oversubscription
+# whose context switching can make the parallel run slower than the serial one.  Under xdist
+# the parallelism comes from the workers, so each worker takes one thread; run serially
+# (`-n0`, or a bare file) and OpenCV keeps its own default untouched.
 #
 # The env vars are set rather than called because OpenMP/MKL read them at import time and torch,
 # numpy and onnxruntime are imported by test modules, i.e. AFTER this conftest but BEFORE the

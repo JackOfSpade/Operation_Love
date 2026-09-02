@@ -189,7 +189,10 @@ class Worker(threading.Thread):
     def _finish_session(self, state: str = "stopped", *, stop_reason: str | None = None,
                         stop_kind: str | None = None) -> None:
         """Publish a terminal active-mode state, close the driver, and release Training actions."""
-        fields = {"state": state}
+        # ``detail`` describes only in-flight work.  In particular, a long Hinge capture can
+        # publish photo-item progress just before an opener failure; never leave that old
+        # capture message displayed as the explanation for a terminal result.
+        fields = {"state": state, "detail": None}
         if stop_reason:
             fields["stop_reason"] = stop_reason
         if stop_kind:
@@ -259,14 +262,14 @@ class Worker(threading.Thread):
                 f"{exc}"), stop_kind="approval")
             self.stop_event.set()
             return "stop"
-        self._stat(state="waiting_approval")
+        self._stat(state="waiting_approval", detail=None)
         action = bridge.wait_for_action(self, card["profile_token"], self.stop_event)
         if action is None or self.stop_event.is_set():
             bridge.cancel_checkpoint(self, card["profile_token"])
             self.stop_event.set()
             return "stop"
         self._training_claimed_action = action
-        self._stat(state="acting")
+        self._stat(state="acting", detail=None)
         return action["command"]
 
     @staticmethod
@@ -301,11 +304,45 @@ class Worker(threading.Thread):
 
 
     def _capture_profile(self, method: str):
-        """Capture a profile, passing the stop callback only to opt-in drivers."""
+        """Capture a profile, passing stop/progress callbacks only to opt-in drivers."""
         capture = getattr(self.driver, method)
-        if getattr(self.driver, "supports_interruptible_capture", False):
-            return capture(should_stop=self.stop_event.is_set)
-        return capture()
+        if self.mode != "training":
+            if getattr(self.driver, "supports_interruptible_capture", False):
+                return capture(should_stop=self.stop_event.is_set)
+            return capture()
+        set_progress = getattr(self.driver, "set_capture_progress_callback", None)
+        progress_installed = False
+
+        def progress(detail: str) -> None:
+            if not self.stop_event.is_set():
+                try:
+                    self._publish_status(mode=self.mode, state="scoring", detail=detail)
+                except Exception:  # noqa: BLE001 -- capture-status plumbing is observational
+                    pass
+
+        if callable(set_progress):
+            try:
+                set_progress(progress)
+                progress_installed = True
+            except Exception:  # noqa: BLE001 -- optional status hook must not block capture
+                pass
+        self._publish_status(mode=self.mode, state="scoring",
+                             detail="reading this profile and verifying its photo items")
+        try:
+            if getattr(self.driver, "supports_interruptible_capture", False):
+                return capture(should_stop=self.stop_event.is_set)
+            return capture()
+        finally:
+            if progress_installed:
+                try:
+                    set_progress(None)
+                except Exception:  # noqa: BLE001 -- optional status hook must not block capture
+                    pass
+            # The callback can have last reported an individual photo while the final frame was
+            # being processed.  Clear it before the caller moves into local validation or the
+            # potentially slow Gemini model cascade, rather than letting a completed capture
+            # look alive while the Hub's timestamp goes stale.
+            self._publish_status(mode=self.mode, state="scoring", detail=None)
 
 
 
@@ -335,7 +372,8 @@ class Worker(threading.Thread):
             print(f"{self.app.title()} unexpected error in {self.mode} mode; HALTING "
                   f"(no restart) so nothing swipes blindly and the debug logs survive:")
             traceback.print_exc()
-            self._stat(state="error", error=traceback.format_exc().strip().splitlines()[-1])
+            self._stat(state="error", detail=None,
+                       error=traceback.format_exc().strip().splitlines()[-1])
             self.stop_event.set()
         finally:
             try:
@@ -489,8 +527,11 @@ class Worker(threading.Thread):
                         self._stat(state=terminal_state, stop_reason=stop_reason, stop_kind=stop_kind)
                         self.stop_event.set()
                     break
+                self._publish_status(
+                    mode="training", state="scoring",
+                    detail="checking the captured profile for a safe target")
                 if not profile.photos:
-                    self._stat(last_decision="no_photos", state="scoring")
+                    self._stat(last_decision="no_photos", state="scoring", detail=None)
                     self.stop_event.wait(_NO_PHOTO_RETRY_S)
                     continue
 
@@ -527,6 +568,11 @@ class Worker(threading.Thread):
                 if (callable(getattr(self.opener_service, "commit_opener", None))
                         and _accepts_keywords(self.opener_service.maybe_opener, "stage")):
                     opener_kwargs["stage"] = True
+                # This status deliberately covers the whole configured Gemini cascade,
+                # including a timeout or model fallback.  It is observational only: no request
+                # shape, retry policy, timing, or model selection changes here.
+                self._publish_status(
+                    mode="training", state="scoring", detail="generating a targeted opener")
                 pick = self.opener_service.maybe_opener(
                     self.run_id, self.app, profile, **opener_kwargs)
                 if self.stop_event.is_set() or getattr(self.opener_service, "stop_requested", False):
@@ -564,6 +610,9 @@ class Worker(threading.Thread):
                     lambda frame, evidence, profile=profile, pick=pick: self._request_training_decision(
                         profile, pick, frame, evidence))
                 try:
+                    self._publish_status(
+                        mode="training", state="acting",
+                        detail="preparing the review checkpoint")
                     like_kwargs = dict(targeted)
                     if getattr(self.driver, "supports_interruptible_like_navigation", False):
                         like_kwargs["should_stop"] = self.stop_event.is_set

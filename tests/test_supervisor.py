@@ -2084,8 +2084,19 @@ def test_wedged_summary_uses_the_real_join_timeout_not_a_hardcoded_30s(monkeypat
     regardless of the run's ACTUAL bound (105s with the shipped opener config) -- a stale,
     wrong number in an operator-facing message. It must use join_timeout_s like the
     per-worker line just above it already did."""
+    # Do not schedule Stop from the test thread at an arbitrary wall-clock delay: startup has
+    # several deliberate cancellation checks, so under suite load that old 0.1s timer could
+    # fire before this worker was launched.  In that case it cleanly exits rather than wedges,
+    # and this test ends up asserting a shutdown branch it never arranged to exercise.
+    stop_event = threading.Event()
+    driver_closed = threading.Event()
+
     class _WedgedDriver(DatingAppDriver):
         def open_session(self):
+            # This is the precise point at which the worker is uninterruptibly wedged.  Request
+            # shutdown from here so supervisor.run() must join this live worker for its full
+            # mocked one-second bound.
+            stop_event.set()
             time.sleep(2.0)          # ignores stop_event -- simulates a wedged worker;
                                       # must outlast the 1.0s join timeout below to actually wedge
         def next_profile(self):
@@ -2097,7 +2108,7 @@ def test_wedged_summary_uses_the_real_join_timeout_not_a_hardcoded_30s(monkeypat
         def dislike(self):
             pass
         def close(self):
-            pass
+            driver_closed.set()
 
     monkeypatch.setattr(sup, "_worker_join_timeout_s", lambda cfg: 1.0)
     monkeypatch.setattr(sup, "Embedder", _FastEmbedder)
@@ -2106,15 +2117,19 @@ def test_wedged_summary_uses_the_real_join_timeout_not_a_hardcoded_30s(monkeypat
     cfg_path = _write_cfg(tmp_path)
     monkeypatch.setattr(sup, "Capabilities", _Caps)
     monkeypatch.setattr(sup, "make_store", lambda cfg: store)
-    monkeypatch.setattr(sup, "make_driver", lambda app, cfg: _WedgedDriver())
+    driver = _WedgedDriver()
+    monkeypatch.setattr(sup, "make_driver", lambda app, cfg: driver)
     monkeypatch.setattr(sup, "_install_signal_handlers", lambda stop: None)
     _patch_no_adb(monkeypatch)
 
-    stop_event = threading.Event()
-    threading.Timer(0.1, stop_event.set).start()
+    try:
+        sup.run(str(cfg_path), stop_event=stop_event)
 
-    sup.run(str(cfg_path), stop_event=stop_event)
-
-    out = capsys.readouterr().out
-    assert "did not stop within 1s" in out
-    assert "30s" not in out
+        out = capsys.readouterr().out
+        assert "did not stop within 1s" in out
+        assert "30s" not in out
+    finally:
+        # Let the intentionally wedged daemon finish before this test returns -- even if the
+        # assertion above fails.  Otherwise it can print into a later test's capture buffer,
+        # making an unrelated assertion timing-sensitive.
+        assert driver_closed.wait(_LIVENESS_TIMEOUT_S)

@@ -893,6 +893,16 @@ def _heart_separated_near_gutter(
     The standard length rule rightly refuses to infer a boundary from a 59..64px blank span by
     itself. Here, independently matched hearts above and below the page-coloured run provide the
     missing proof: Hinge has one like heart per item, so they cannot belong to one card.
+
+    PRECONDITION, and it is the caller's to keep, not this function's: every run in `runs` must
+    already carry its FINAL kind, including every run AFTER `run_index`. `following`, below,
+    walks forward looking for the nearest run already confirmed as a boundary
+    (`boundary_kinds`), and a run that has not yet been reclassified from RUN_TOO_LONG still
+    looks unconfirmed no matter what it will become a moment later. `segment_frame` enforces
+    this by running its card-corner/scroll-top-media/heart-anchored-media reclassification as a
+    complete first pass over the whole frame before calling this function in a second pass --
+    see the two-pass comment there. Calling this from inside that first, still-in-progress pass
+    (as an earlier revision did) silently widens the search past the true nearest boundary.
     """
     run = runs[run_index]
     if run.kind != RUN_TOO_LONG or not (
@@ -1287,11 +1297,31 @@ def segment_frame(frame: bytes, *, content_band: tuple[float, float], like_templ
         card_width=card_x1 - card_x0, radius_px=card_corner_px,
         ramp_slack=card_corner_ramp_slack_px, dip_px=card_corner_dip_px)
 
-    cuts: list[BackgroundRun] = []
+    # TWO PASSES, not one -- and that split is itself load-bearing, not a style choice.
+    #
+    # PASS 1 resolves every run whose reclassification test depends only on THIS run (plus
+    # is_card/span/hearts, which are fixed for the whole frame) or on an EARLIER run that pass 1
+    # has already resolved (`_leading_low_contrast_media_edge`'s own `runs[:run_index]` scan, safe
+    # because pass 1 itself proceeds left to right): the card-corner test, the guarded scroll-top
+    # media recovery, and the heart-anchored media gutter, in exactly the original priority order.
+    #
+    # PASS 2 runs `_heart_separated_near_gutter`, which searches BOTH directions for the nearest
+    # already-confirmed boundary (`boundary_kinds`, which includes RUN_CARD_EDGE/
+    # RUN_SCROLL_TOP_MEDIA/RUN_HEART_ANCHORED_MEDIA_GUTTER) and so must see every run's FINAL kind
+    # before it looks, not just the runs before the one it is testing.
+    # [bug found 2026-09-02: this used to be one forward loop, and `_heart_separated_near_gutter`'s
+    # forward `following` search could then only ever match RUN_GUTTER -- RUN_CARD_EDGE,
+    # RUN_SCROLL_TOP_MEDIA and RUN_HEART_ANCHORED_MEDIA_GUTTER are all assigned IN PLACE by this
+    # same loop, so a run after the one being tested still carried its PRE-reclassification kind
+    # at call time. That silently widened "the lower card must expose its own heart before the
+    # next independently confirmed boundary" past the true nearest boundary, letting a heart that
+    # belongs to a later, unrelated card validate a spurious cut. See
+    # test_heart_separated_near_gutter_refuses_past_an_unrelated_card_edge for the regression.]
+    # The unanchored-island test has no such dependency (it is computed once, before either pass,
+    # from the run table's shape alone) but stays LAST here too, preserving the original per-run
+    # priority: every rule that can explain a run as a real card boundary must decline before the
+    # island label -- which yields unobserved edges on both sides -- is allowed to apply.
     for i, run in enumerate(runs):
-        if run.kind == RUN_GUTTER:
-            cuts.append(run)
-            continue
         if run.kind != RUN_TOO_LONG:
             continue
         corner_below = _corner_radius(
@@ -1314,19 +1344,29 @@ def segment_frame(frame: bytes, *, content_band: tuple[float, float], like_templ
                 run, hearts=hearts,
                 gutter_level_tolerance=gutter_background_level_tolerance):
             runs[i] = replace(run, kind=RUN_HEART_ANCHORED_MEDIA_GUTTER)
-        elif _heart_separated_near_gutter(
+
+    for i, run in enumerate(runs):
+        if run.kind != RUN_TOO_LONG:
+            continue
+        if _heart_separated_near_gutter(
                 runs, i, hearts=hearts,
                 gutter_level_tolerance=gutter_background_level_tolerance):
             runs[i] = replace(run, kind=RUN_HEART_SEPARATED_NEAR_GUTTER)
         elif island is not None and run.y0 == island[1]:
-            # LAST in the chain, so every rule that can explain this run as a real card boundary
-            # has already declined. On a genuine scroll top the corner rescue above fires first
-            # and keeps RUN_CARD_EDGE, which is what preserves item 1's trusted EDGE_CARD_CORNER
-            # top; the island is still labelled below, by extent, so both shapes agree.
+            # On a genuine scroll top the corner rescue in pass 1 fires first and keeps
+            # RUN_CARD_EDGE, which is what preserves item 1's trusted EDGE_CARD_CORNER top; the
+            # island is still labelled below, by extent, so both shapes agree.
             runs[i] = replace(run, kind=RUN_UNANCHORED_ISLAND)
-        else:
-            continue
-        cuts.append(runs[i])
+
+    # Both passes are done, so every run now carries its FINAL kind. Collect the cuts in frame
+    # order; RUN_GUTTER runs were never touched by either pass above (their kind is fixed the
+    # moment `_background_runs` builds the table) and are picked up here for the first time.
+    cuts: list[BackgroundRun] = [
+        run for run in runs
+        if run.kind in (RUN_GUTTER, RUN_CARD_EDGE, RUN_SCROLL_TOP_MEDIA,
+                        RUN_HEART_ANCHORED_MEDIA_GUTTER, RUN_HEART_SEPARATED_NEAR_GUTTER,
+                        RUN_UNANCHORED_ISLAND)
+    ]
 
     blocks: list[Block] = []
     assigned: set[tuple[int, int]] = set()

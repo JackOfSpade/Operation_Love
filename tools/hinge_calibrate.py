@@ -98,7 +98,7 @@ import yaml
 
 from operation_love import config as cfg_mod
 from operation_love.drivers import hinge as hinge_mod
-from operation_love.drivers.adb import parse_devices_output, quote_android_package_id
+from operation_love.drivers.adb import parse_devices_output
 from operation_love.drivers.frameshift import ShiftEstimationError, estimate_shift
 from operation_love.drivers.hinge import HingeDriver
 from operation_love.drivers.item_crops import (
@@ -129,6 +129,8 @@ from operation_love.private_files import (
     load_private_dotenv,
 )
 from tools._devicelock import run_holding_the_device
+from tools.hinge_operational_evidence import EvidenceRefused as _DeviceEvidenceRefused
+from tools.hinge_operational_evidence import _read_device_evidence as _read_shared_device_evidence
 
 _TOOL_VERSION = "5"
 _CALIBRATION_SCHEMA_VERSION = 3
@@ -284,7 +286,19 @@ _POST_CALIBRATION_OBSERVE_REQUIREMENTS = (
 )
 _HYBRID_CHECKPOINT_SCHEMA_VERSION = 1
 _HYBRID_CHECKPOINT_KIND = "hinge_hybrid_calibration_checkpoint"
-_HYBRID_REVIEW_TOKEN_KIND = "hinge_external_reviewer_decision"
+# There is deliberately no sibling "_HYBRID_REVIEW_TOKEN_KIND" for the reviewer-decision record
+# (`HybridReviewGate.checkpoint`'s `record` dict / `_approved_hybrid_decision`'s `record` arg),
+# unlike _HYBRID_CHECKPOINT_KIND above which IS written (~line 617) and checked on resume
+# (~line 5662). Found 2026-09-02: a `_HYBRID_REVIEW_TOKEN_KIND = "hinge_external_reviewer_
+# decision"` constant sat here unread by any code or string literal, and every real on-disk
+# `manifest.json` under ops/calibration/ (checked across multiple hybrid-reviewed sessions)
+# stores decision records with no "kind" key at all -- only checkpoint_file/checkpoint_sha256/
+# checkpoint_evidence_sha256/frame_file/frame_sha256/claimed_state/action_plan/decision/source/
+# reviewer/human_ground_truth/decided_utc. Adding a `kind` check to `_approved_hybrid_decision`
+# would therefore reject every hybrid-reviewed calibration session captured before this date --
+# real operational evidence, not a fixture that can just be regenerated -- so the constant was
+# deleted rather than wired in. If a tagged review-token schema is wanted later, it must ship
+# alongside a migration for the existing decisions, not just a stricter check.
 _HYBRID_MAX_ADJUSTMENTS_PER_ACTION = 3
 _HYBRID_CAPTURE_MODE = "hybrid_ai_reviewed_automation"
 _HYBRID_REVIEW_SOURCE = "external_ai_review"
@@ -741,34 +755,23 @@ def _preflight_serial(cfg) -> tuple[str, str]:
 def _device_evidence(driver: HingeDriver) -> dict:
     """Model, display size, density, and the Hinge package's versionName -- read-only `adb
     shell` queries (`getprop`, `wm density`, `dumpsys package`), none of which send any input.
-    Raises if the versionName cannot be parsed out, on the same fail-loud rule as everything
-    else here: evidence a later audit cannot actually read is not evidence."""
-    adb = driver.adb
-    model = adb.shell("getprop ro.product.model").strip()
-    w, h = adb.screen_size()
-    density = adb.shell("wm density").strip()
-    dump = adb.shell(
-        f"dumpsys package {quote_android_package_id(driver.package)} | grep versionName")
-    version_name = None
-    for line in dump.splitlines():
-        line = line.strip()
-        if line.startswith("versionName="):
-            version_name = line.split("=", 1)[1].strip()
-            break
-    if not model or not version_name:
-        raise RuntimeError(
-            f"could not read device evidence (model={model!r}, versionName={version_name!r} "
-            f"from `dumpsys package {driver.package}`); refusing to proceed with an "
-            "unidentified device/app build")
-    return {
-        "serial": driver.serial,
-        "model": model,
-        "display_w": w,
-        "display_h": h,
-        "density": density,
-        "hinge_package": driver.package,
-        "hinge_version_name": version_name,
-    }
+    Raises if the evidence cannot be read/parsed, on the same fail-loud rule as everything else
+    here: evidence a later audit cannot actually read is not evidence.
+
+    A thin HingeDriver-shaped adapter over `tools.hinge_operational_evidence`'s own
+    `_read_device_evidence` -- found 2026-09-02: this function and that one had independently
+    hand-rolled the identical ~20-line probe/parse, and had already drifted (this copy was
+    missing that module's density check). One implementation now backs both callers; this
+    wrapper's job is only to unpack the three facts a HingeDriver already carries (`.adb`,
+    `.serial`, `.package`, which -- unlike `hinge_operational_evidence`'s fixed package constant
+    -- can be a config override) and to re-raise the shared helper's `EvidenceRefused` as a
+    plain `RuntimeError`, so every existing caller here keeps seeing the exact exception type
+    it always has."""
+    try:
+        return _read_shared_device_evidence(
+            driver.adb, serial=driver.serial, package=driver.package)
+    except _DeviceEvidenceRefused as exc:
+        raise RuntimeError(str(exc)) from exc
 
 
 def _plan_card_scroll(frame: bytes, *, content_band, like_template, like_threshold,

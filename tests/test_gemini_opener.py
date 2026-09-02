@@ -1589,7 +1589,7 @@ def test_oversized_item_crops_are_all_compressed_and_none_is_dropped(monkeypatch
 def test_over_budget_item_request_error_names_crops_not_photo_indexes(monkeypatch):
     """The operator-facing message must describe what was actually sent. "Reduce photo count"
     on a crop request points at her profile photos, which are not in the request at all --
-    the same wrong-place mistake the anchor image's own label exists to avoid."""
+    it would send the operator to trim something the request never carried."""
     monkeypatch.setattr(opener_module, "_MAX_INLINE_REQUEST_BYTES", 10)
     with pytest.raises(OpenerError) as exc_info:
         _opener(_Transport([])).generate(

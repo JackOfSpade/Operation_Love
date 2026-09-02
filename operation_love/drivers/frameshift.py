@@ -153,7 +153,7 @@ WHAT THIS MODULE DOES NOT DECIDE, AND WHICH LAYER HAS TO
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 # Imported rather than re-declared: these two are already measured-and-cited in segment.py, and
 # a second copy of either would be free to drift away from the module whose blocks this has to
@@ -666,6 +666,71 @@ def estimate_shift(frame_a: bytes, frame_b: bytes, *,
                     pin_margin=pin_margin_px, np=np)
 
 
+def estimate_shift_with_reverse_recovery(before: bytes, after: bytes, *,
+                                         estimator=estimate_shift,
+                                         **kwargs
+                                         ) -> tuple[ShiftEstimate, ShiftEstimate,
+                                                    ShiftEstimate | None]:
+    """`estimate_shift(before, after)`, with the one safe DIRECTIONAL recovery two callers need.
+
+    THE DUPLICATION THIS CLOSES (found 2026-09-02). `hinge.HingeDriver._measured_page_shift`
+    (the still-photo walk's return leg) and `item_nav._navigation_step_shift` (the bottom-up
+    count's own ascending gesture) each independently re-derived the identical policy --
+    "on SHIFT_NO_CONSENSUS retry the reverse pair once and negate a SHIFT_MEASURED result, but
+    never let BEYOND_WINDOW / NO_EVIDENCE be overruled" -- with no cross-reference between them.
+    Two independent copies of one safety rule are two chances for exactly one of them to drift;
+    this is the one copy both now call.
+
+    WHY THE RULE EXISTS AT ALL. NCC is directional: strips are cut from `before` and searched for
+    in `after`, so an autoplay-heavy pair can leave too few stable SOURCE strips in that direction
+    while the exact same calibrated estimator reaches quorum searching the other way. Only
+    `SHIFT_NO_CONSENSUS` earns the reverse attempt -- a `SHIFT_BEYOND_WINDOW` or
+    `SHIFT_NO_EVIDENCE` result stays a refusal, because a nearer reverse correlation must never
+    overrule saturation or silence. (`_measured_page_shift`'s own incident: Lea's retained
+    2026-09-01 pair, whose forward direction split into two stable clusters at +562/+563 and
+    +572/+572 over autoplaying cards, measured -563 in reverse at the estimator's ordinary
+    three-strip quorum; `_navigation_step_shift`'s regression test is the same failure met on the
+    ascending count's own gesture instead of the return leg.)
+
+    `before`/`after` and every keyword other than `estimator` go straight to `estimator`, in both
+    directions, unchanged -- this function knows nothing about `content_band` or
+    `trust_window_px` beyond forwarding them. `ShiftEstimationError` propagates exactly as
+    `estimator` raises it, in either direction: this is a decision layered on TOP of a completed
+    estimate, never a second chance to swallow the "could not look at all" case each caller
+    already lets through unchanged.
+
+    Returns `(result, forward, reverse)`. `result` is `forward` UNLESS the recovery fired, in
+    which case it is `reverse` with `delta_px`/`consensus_px` NEGATED into `forward`'s own
+    before/after sign convention and `reason` rewritten to say so -- built with
+    `dataclasses.replace`, so `estimator` must return a real `ShiftEstimate` (or another
+    dataclass with the same fields) whenever it can report `SHIFT_MEASURED`, not a bare stand-in
+    with only the fields one particular caller happens to read. `forward` and `reverse` are the
+    RAW, un-negated estimates the decision was made from -- `reverse` is None when the recovery
+    never ran -- returned so a caller can log or record exactly what it logged before this was
+    factored out, rather than re-deriving it from `result` alone.
+
+    `estimator` defaults to this module's own `estimate_shift` and exists so a caller whose own
+    module binds a separately patchable name (`hinge.estimate_shift`, `item_nav.estimate_shift`
+    -- both imported at module scope specifically so a test can `monkeypatch.setattr` them) can
+    pass THAT name through, rather than this function silently resolving
+    `frameshift.estimate_shift` underneath a patch aimed at a different module's binding.
+    """
+    forward = estimator(before, after, **kwargs)
+    reverse = None
+    result = forward
+    if forward.status == SHIFT_NO_CONSENSUS:
+        reverse = estimator(after, before, **kwargs)
+        if reverse.status == SHIFT_MEASURED and reverse.delta_px is not None:
+            result = replace(
+                reverse,
+                delta_px=-int(reverse.delta_px),
+                consensus_px=(None if reverse.consensus_px is None
+                              else -int(reverse.consensus_px)),
+                reason=("forward source strips did not reach consensus; reverse source strips "
+                        f"measured the same pair: {reverse.reason}"))
+    return result, forward, reverse
+
+
 def _vote_clusters(voters: Sequence[StripMatch], *, tolerance: int) -> list[list[int]]:
     """The matched offsets split into disjoint groups, each internally within `tolerance`.
 
@@ -790,22 +855,34 @@ def _resolve(strips: tuple[StripMatch, ...], *, frame_size, band, window: int, t
     # value no strip reported, and the pair is refused for want of agreement with a number
     # nothing ever measured.
     #
-    # This runs ONLY when the median has already failed its own quorum, so a pair that measures
-    # today measures identically tomorrow: the rescue cannot reach a bank the ordinary rule
-    # accepts, and it can therefore only ever convert a REFUSAL into a measurement. See
-    # `_exact_cluster_shift` for the evidence bar, which is unanimity-or-nothing.
+    # This runs ONLY when the ordinary median result would be REFUSED, whether that is because it
+    # missed the quorum or because enough eligible strips dissented to miss the confidence floor.
+    # A unique exact cluster is stronger evidence than the latter ratio: an inexact video cluster
+    # does not become a competing page translation merely by occupying more strips.  A pair the
+    # ordinary rule already accepts is untouched.  See `_exact_cluster_shift` for the
+    # unanimity-or-nothing evidence bar.
     split_note = ""
-    if len([s for s in voters if abs(s.delta_px - consensus) <= tolerance]) < min_agreeing:
+    ordinary_agreeing = [s for s in voters if abs(s.delta_px - consensus) <= tolerance]
+    ordinary_eligible = [s for s in strips
+                         if s.state in (STRIP_MATCHED, STRIP_PINNED)
+                         and s.search[0] + pin_margin < consensus < s.search[1] - pin_margin]
+    ordinary_confidence = (len(ordinary_agreeing) / len(ordinary_eligible)
+                           if ordinary_eligible else 0.0)
+    exact_rescued = False
+    if (len(ordinary_agreeing) < min_agreeing
+            or ordinary_confidence < min_confidence):
         rescued = _exact_cluster_shift(strips, voters, tolerance=tolerance,
                                        min_agreeing=min_agreeing)
         if rescued is not None:
             groups = _vote_clusters(voters, tolerance=tolerance)
             split_note = (
                 f"; the bank split into {len(groups)} groups "
-                f"({', '.join('/'.join(f'{v:+d}' for v in g) for g in groups)}) so the "
-                f"{consensus:+d}px median described none of them, and only {rescued:+d}px is "
-                "reported by strips that agree to the pixel")
+                f"({', '.join('/'.join(f'{v:+d}' for v in g) for g in groups)}); the "
+                f"{consensus:+d}px median failed the ordinary "
+                f"{'quorum' if len(ordinary_agreeing) < min_agreeing else 'confidence'} gate, "
+                f"and only {rescued:+d}px is reported by strips that agree to the pixel")
             consensus = rescued
+            exact_rescued = True
     agreeing = [s for s in voters if abs(s.delta_px - consensus) <= tolerance]
     dissenting = [s for s in voters if abs(s.delta_px - consensus) > tolerance]
     # Eligible = every strip that LOCATED ITSELF in frame B (matched or pinned) AND whose range
@@ -854,7 +931,8 @@ def _resolve(strips: tuple[StripMatch, ...], *, frame_size, band, window: int, t
         # and `delta_px` stays None. Requiring only `min_saturation` witnesses here is
         # deliberate: see that constant's comment for why a refusal is held to a lower bar than
         # a measurement.
-        if len(agreeing) >= min_saturation and confidence >= min_confidence:
+        if (len(agreeing) >= min_saturation
+                and (confidence >= min_confidence or exact_rescued)):
             return ShiftEstimate(
                 delta_px=None, status=SHIFT_BEYOND_WINDOW, saturated=True,
                 consensus_px=consensus,
@@ -868,7 +946,8 @@ def _resolve(strips: tuple[StripMatch, ...], *, frame_size, band, window: int, t
                     f"{consensus:+d}px) but do not corroborate each other — {counts}"),
             **common, **common_counts)
 
-    if len(agreeing) >= min_agreeing and confidence >= min_confidence:
+    if (len(agreeing) >= min_agreeing
+            and (confidence >= min_confidence or exact_rescued)):
         return ShiftEstimate(
             delta_px=consensus, status=SHIFT_MEASURED, saturated=False, consensus_px=consensus,
             reason=f"content moved {consensus:+d}px — {counts}{split_note}",

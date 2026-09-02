@@ -2330,7 +2330,8 @@ def _kinds(index):
 # Observation-level helpers, for driving `_assemble` directly
 # =====================================================================================
 
-def _obs(frame_index, page_y0, page_y1, *, complete=True, hearts=(), kind=None, top_kind=None):
+def _obs(frame_index, page_y0, page_y1, *, complete=True, hearts=(), kind=None, top_kind=None,
+         top_observed=None, bottom_observed=None):
     """One hand-written sighting. `hearts` are page rows; x is fixed because a list scroll has
     no horizontal component.
 
@@ -2344,12 +2345,16 @@ def _obs(frame_index, page_y0, page_y1, *, complete=True, hearts=(), kind=None, 
     if kind is None:
         kind = (segment.BLOCK_SELECTABLE if hearts else segment.BLOCK_CONTEXT) if complete \
             else segment.BLOCK_PARTIAL
+    if top_observed is None:
+        top_observed = complete
+    if bottom_observed is None:
+        bottom_observed = complete
     if top_kind is None:
-        top_kind = segment.EDGE_CARD_CORNER if complete else segment.EDGE_BACKGROUND_RUN
+        top_kind = segment.EDGE_CARD_CORNER if top_observed else segment.EDGE_BACKGROUND_RUN
     return item_index.BlockObservation(
         frame_index=frame_index, page_y0=page_y0, page_y1=page_y1,
         frame_y0=page_y0, frame_y1=page_y1, kind=kind, complete=complete,
-        top_observed=complete, bottom_observed=complete,
+        top_observed=top_observed, bottom_observed=bottom_observed,
         hearts=tuple((_HEART_CX, y) for y in hearts), top_kind=top_kind)
 
 
@@ -2583,6 +2588,49 @@ def test_an_empty_capture_raises_rather_than_returning_an_empty_index():
         item_index.build_item_index(
             [], content_band=_CONTENT_BAND, like_template=_TEMPLATE,
             like_threshold=hinge._LIKE_MATCH_THRESHOLD, at_scroll_top=True, identity_band=None)
+
+
+def test_animation_markers_of_the_wrong_length_are_refused():
+    """`animation_markers` is frame-aligned evidence -- one value per frame, in the same order --
+    and the docstring is explicit that a supplied sequence of the wrong length "is refused rather
+    than padded or guessed". Two frames, one marker: the mismatch must stop the build rather than
+    be zipped short or padded with an assumed value."""
+    frames = [_frame(_FULL_SCROLL[0]), _frame(_FULL_SCROLL[1])]
+    with pytest.raises(item_index.ItemIndexError, match="frame-aligned"):
+        item_index.build_item_index(
+            frames, content_band=_CONTENT_BAND, like_template=_TEMPLATE,
+            like_threshold=hinge._LIKE_MATCH_THRESHOLD, at_scroll_top=True, identity_band=None,
+            animation_markers=(False,))
+
+
+def test_video_mute_markers_must_be_records_not_plain_booleans():
+    """The v12 marker parameter takes positioned `VideoMuteMarker` records; the legacy per-frame
+    boolean is `animation_markers`'s job, not this one's. A caller that hands `video_mute_markers`
+    a plain bool or an ad hoc tuple standing in for a record is almost certainly holding the wrong
+    sequence entirely, and treating every entry as truthy (which `any(...)` would do for a
+    truthy-non-empty tuple row) would hide exactly that mistake."""
+    frames = [_frame(_FULL_SCROLL[0]), _frame(_FULL_SCROLL[1])]
+    for bad_markers in ((True, False), ((0, 106, 1150, 1.0),)):
+        with pytest.raises(item_index.ItemIndexError, match="never booleans"):
+            item_index.build_item_index(
+                frames, content_band=_CONTENT_BAND, like_template=_TEMPLATE,
+                like_threshold=hinge._LIKE_MATCH_THRESHOLD, at_scroll_top=True,
+                identity_band=None, video_mute_markers=bad_markers)
+
+
+def test_video_mute_marker_frame_index_outside_the_capture_is_refused():
+    """A marker naming a frame at or past the end of `frames` -- or before its start -- cannot be
+    positioned evidence about THIS capture, and is refused rather than silently ignored by
+    whatever loop would otherwise index past the frame list with it."""
+    frames = [_frame(_FULL_SCROLL[0]), _frame(_FULL_SCROLL[1])]
+    for bad_frame_index in (len(frames), -1):
+        markers = (item_index.VideoMuteMarker(
+            frame_index=bad_frame_index, x=106, y=1150, score=1.0),)
+        with pytest.raises(item_index.ItemIndexError, match="outside this capture"):
+            item_index.build_item_index(
+                frames, content_band=_CONTENT_BAND, like_template=_TEMPLATE,
+                like_threshold=hinge._LIKE_MATCH_THRESHOLD, at_scroll_top=True,
+                identity_band=None, video_mute_markers=markers)
 
 
 # =====================================================================================
@@ -2994,6 +3042,74 @@ def test_a_fully_scanned_partial_between_complete_cards_cannot_hide_an_ordinal()
     assert [block.heart_ordinal for block in blocks] == [1, None, 2]
     assert [block.model_index for block in blocks] == [1, None, 2]
     assert any("retained as uncroppable but is ordinal-safe" in note for note in notes)
+
+
+def test_fully_scanned_partial_with_its_own_observed_edges_cannot_hide_an_ordinal():
+    """The 2026-09-01 Madeleine refusal, reduced to its measured geometry.
+
+    The 1279px heartless block at 2282..3561 was never complete in a single frame, but a
+    canonical gutter observed its top in frames 2/3 and another observed its bottom in frame 4.
+    Frame 3's clean band 1812..3612 then heart-scanned every row of the resolved extent. The
+    lower complete card starts at 3614, two rows past that band, so the older whole-neighbour-
+    interval exception correctly cannot apply; this separate proof is enough for ordinal safety
+    only while the same immediate complete-neighbour bracket remains in force.
+    """
+    observations = [
+        _obs(1, 1544, 2229, hearts=(2140,)),
+        _obs(2, 2282, 3093, complete=False, top_observed=True),
+        _obs(3, 2282, 3561, complete=False, top_observed=True),
+        _obs(4, 2283, 3561, complete=False, bottom_observed=True),
+        _obs(6, 3614, 4588, hearts=(4499,)),
+    ]
+
+    blocks, failures, notes = _assemble(
+        observations, at_scroll_top=False, page_coverage=((1812, 3612),), full=True)
+
+    assert failures == ()
+    partial = blocks[1]
+    assert (partial.page_y0, partial.page_y1) == (2282, 3561)
+    assert partial.kind == item_index.ITEM_PARTIAL
+    assert not partial.complete and partial.croppable == ()
+    assert [block.heart_ordinal for block in blocks] == [1, None, 2]
+    assert [block.model_index for block in blocks] == [1, None, 2]
+    assert any("its own observed edges" in note for note in notes)
+
+
+def test_own_edge_ordinal_safety_requires_complete_neighbours_gutters_edges_and_one_interval():
+    """The Madeleine exception needs its bracket/gutters, does not infer edges or stitch scans."""
+    bounded_above_and_below = [
+        _obs(1, 1544, 2229, hearts=(2140,)),
+        _obs(2, 2282, 3093, complete=False, top_observed=True),
+        _obs(3, 2282, 3561, complete=False, top_observed=True),
+        _obs(4, 2283, 3561, complete=False, bottom_observed=True),
+        _obs(6, 3614, 4588, hearts=(4499,)),
+    ]
+
+    missing_bottom = bounded_above_and_below[:-2] + bounded_above_and_below[-1:]
+    _blocks, missing_edge_failures = _assemble(
+        missing_bottom, at_scroll_top=False, page_coverage=((1812, 3612),))
+    assert any("a heart may sit in the rows that were never inside" in failure
+               for failure in missing_edge_failures)
+
+    incomplete_lower = bounded_above_and_below[:-1] + [
+        _obs(6, 3614, 4588, complete=False, hearts=(4499,)),
+    ]
+    _blocks, incomplete_neighbour_failures = _assemble(
+        incomplete_lower, at_scroll_top=False, page_coverage=((1812, 3612),))
+    assert any("a heart may sit in the rows that were never inside" in failure
+               for failure in incomplete_neighbour_failures)
+
+    large_upper_gap = [_obs(1, 1544, 2100, hearts=(2010,))] + bounded_above_and_below[1:]
+    _blocks, large_gap_failures = _assemble(
+        large_upper_gap, at_scroll_top=False, page_coverage=((1812, 3612),))
+    assert any("a heart may sit in the rows that were never inside" in failure
+               for failure in large_gap_failures)
+
+    for coverage in (((1812, 3560),), ((1812, 3000), (3000, 3612))):
+        _blocks, coverage_failures = _assemble(
+            bounded_above_and_below, at_scroll_top=False, page_coverage=coverage)
+        assert any("a heart may sit in the rows that were never inside" in failure
+                   for failure in coverage_failures)
 
 
 def test_partial_ordinal_safety_needs_one_complete_clean_coverage_interval():

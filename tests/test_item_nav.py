@@ -49,7 +49,8 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from operation_love.drivers import hinge, item_index, item_nav, scroll_step, scroll_top, segment
+from operation_love.drivers import (
+    frameshift, hinge, item_index, item_nav, scroll_step, scroll_top, segment)
 
 _W, _H = 1080, 2400                        # the calibrated Pixel 7a screencap size
 _SEED = 17
@@ -849,6 +850,146 @@ def test_frames_that_cannot_be_put_in_one_coordinate_space_stop_the_count():
 
     assert exc.value.code == item_nav.NAV_CHAIN_BROKEN
     assert len(driver.gestures) == 1
+    assert exc.value.pair_before is not None
+    assert exc.value.frame is not None
+    assert exc.value.measurement["code"] == item_nav.NAV_CHAIN_BROKEN
+    assert exc.value.measurement["planned"]["step_px"] > 0
+    assert exc.value.measurement["achieved"]["measurement_status"] == "beyond_window"
+    assert exc.value.measurement["achieved"]["measurement_reason"]
+    assert exc.value.measurement["achieved"]["reverse"] is None
+
+
+def test_navigation_step_uses_reverse_quorum_when_forward_animation_bank_refuses(
+        monkeypatch):
+    """Regression for the reported still-photo dwell walk's ``chain_broken``.
+
+    Source strips from the pre-scroll frame can split over autoplay while source strips from the
+    settled post-scroll frame reach the ordinary quorum. The reverse result remains a measured
+    pixel displacement; it is negated into navigation's forward coordinate convention and is
+    never replaced by the requested gesture distance.
+    """
+    forward = item_nav.ShiftEstimate(
+        delta_px=None, confidence=0.5, status=frameshift.SHIFT_NO_CONSENSUS,
+        saturated=False, consensus_px=None, reason="forward video strips split",
+        strips=(), frame_size=(1080, 2400), band=(_BAND0, _BAND1),
+        trust_window_px=900, agreeing=2, dissenting=2, eligible=4)
+    reverse = dataclasses.replace(
+        forward, delta_px=563, confidence=1.0, status=frameshift.SHIFT_MEASURED,
+        consensus_px=563, reason="reverse strips reached quorum",
+        agreeing=8, dissenting=0, eligible=8)
+    calls = []
+
+    def measured(first, second, **kwargs):
+        calls.append((first, second, kwargs))
+        return forward if len(calls) == 1 else reverse
+
+    monkeypatch.setattr(item_nav, "estimate_shift", measured)
+
+    result, trace = item_nav._navigation_step_shift(
+        b"before", b"after", content_band=_CONTENT_BAND, trust_window_px=900)
+
+    assert result.delta_px == -563
+    assert result.consensus_px == -563
+    assert result.status == frameshift.SHIFT_MEASURED
+    assert "reverse source strips measured" in result.reason
+    assert [(first, second) for first, second, _kwargs in calls] == [
+        (b"before", b"after"), (b"after", b"before")]
+    assert all(kwargs == {"content_band": _CONTENT_BAND, "trust_window_px": 900}
+               for _first, _second, kwargs in calls)
+    assert trace["forward"]["status"] == frameshift.SHIFT_NO_CONSENSUS
+    assert trace["reverse"]["delta_px"] == 563
+
+
+def test_navigation_step_does_not_reverse_a_beyond_window_refusal(monkeypatch):
+    """Saturation is evidence that the requested step left the trusted correspondence window."""
+    saturated = item_nav.ShiftEstimate(
+        delta_px=None, confidence=1.0, status="beyond_window", saturated=True,
+        consensus_px=-1400, reason="measured beyond trusted window", strips=(),
+        frame_size=(1080, 2400), band=(_BAND0, _BAND1), trust_window_px=900,
+        agreeing=8, dissenting=0, eligible=8)
+    calls = []
+
+    def measured(first, second, **_kwargs):
+        calls.append((first, second))
+        return saturated
+
+    monkeypatch.setattr(item_nav, "estimate_shift", measured)
+
+    result, trace = item_nav._navigation_step_shift(
+        b"before", b"after", content_band=_CONTENT_BAND, trust_window_px=900)
+
+    assert result is saturated
+    assert calls == [(b"before", b"after")]
+    assert trace["reverse"] is None
+
+
+def test_navigate_to_item_threads_a_reverse_recovered_step_into_the_landing(monkeypatch):
+    """The reverse-quorum recovery, driven end to end through the real counting loop.
+
+    The two tests above prove the recovery only in isolation, calling `_navigation_step_shift`
+    directly with a canned reverse `ShiftEstimate`. Neither shows the recovered value actually
+    reaches `offsets` / `climb_px` / `step_overshoot` inside `navigate_to_item`'s own loop, which
+    is where a wrongly-threaded sign or an off-by-one would actually misplace a tap.
+
+    The walk's FIRST ascending gesture has its FORWARD measurement forced to look exactly like
+    the directional autoplay failure this recovery exists for (`SHIFT_NO_CONSENSUS`, no delta);
+    the reverse leg for that SAME pair of frames is left untouched. Its delta is therefore the
+    REAL, pixel-derived shift of these actual synthetic frames -- never a hand-picked number,
+    which the module docstring warns would misalign the heart lookup and raise a DIFFERENT error,
+    making the test pass for the wrong reason.
+    """
+    real_estimate_shift = item_nav.estimate_shift
+    calls = []
+    forced_forward_delta = []
+
+    def flaky(before, after, **kwargs):
+        calls.append((before, after))
+        result = real_estimate_shift(before, after, **kwargs)
+        if len(calls) == 2:
+            # This is the walk's first ascending gesture, on the un-corrupted world: it must
+            # genuinely measure on its own, or forcing NO_CONSENSUS below would not be exercising
+            # the recovery at all -- it would just be the ordinary, unrecoverable refusal.
+            assert result.status == frameshift.SHIFT_MEASURED, (
+                "the fixture's own first ascending gesture did not correlate cleanly, so this "
+                "test would not be exercising the reverse recovery")
+            forced_forward_delta.append(result.delta_px)
+            return dataclasses.replace(
+                result, status=frameshift.SHIFT_NO_CONSENSUS, delta_px=None, consensus_px=None,
+                reason="forced: simulating an autoplay-directional forward refusal")
+        return result
+
+    monkeypatch.setattr(item_nav, "estimate_shift", flaky)
+
+    driver = FakeDriver()
+    target = _navigate(driver, 1)
+
+    # The recovery ran exactly once, on exactly the pair it should have: call 2 is the corrupted
+    # forward leg, call 3 is its reverse -- the same two frames, swapped.
+    assert len(calls) >= 3
+    assert calls[2] == (calls[1][1], calls[1][0])
+
+    # THE THREADING ITSELF. `target.shifts[0]` is the loop's first stored measurement, exactly
+    # the one this test corrupted, and it must be the RECOVERED value: negated back into a real,
+    # negative (ascending) delta, and — because a rigid translation's reverse measurement is the
+    # forward one negated — numerically identical to what the same pair would have measured
+    # absent the corruption.
+    assert target.shifts[0].status == frameshift.SHIFT_MEASURED
+    assert target.shifts[0].delta_px is not None and target.shifts[0].delta_px < 0
+    assert target.shifts[0].delta_px == forced_forward_delta[0]
+    assert "reverse source strips measured the same pair" in target.shifts[0].reason
+    # The ordinary recurrence (`offsets[i+1] = offsets[i] + delta`), unchanged by where the delta
+    # came from -- this is `climb_px`/`offsets` actually consuming the recovered number.
+    assert target.offsets[1] == target.offsets[0] + target.shifts[0].delta_px
+
+    # And the landing is EXACT, on `test_every_item_is_navigated_to_and_lands_on_its_own_heart`'s
+    # own bar: a misaligned offset from a wrongly-threaded recovery would show up here as a
+    # nonzero `agreement_px`, a `NAV_COUNT_DISAGREES` stop, or a heart found at the wrong row --
+    # not as a byte-identical pass all the way to the target item's own heart.
+    assert target.model_index == 1
+    assert target.heart_ordinal == 1
+    assert target.point[1] + target.page_offset == _HEART_PAGE_Y[0]
+    assert target.agreement_px == 0
+    assert target.climbed_px == -sum(est.delta_px for est in target.shifts)
 
 
 # =====================================================================================

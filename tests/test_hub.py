@@ -12,12 +12,14 @@ import os
 import re
 import shutil
 import stat
+import struct
 import subprocess
 import sys
 import threading
 import time
 import urllib.error
 import urllib.request
+import zlib
 from pathlib import Path
 
 import pytest
@@ -560,6 +562,119 @@ def test_hub_tab_close_shuts_server_after_last_client(monkeypatch):
         httpd.shutdown()
         httpd.server_close()   # release the listening socket too; shutdown() alone leaves it open
         _join_hub_watch_threads()
+
+
+def test_hub_tab_close_keeps_waiting_training_approval_alive_until_reopened(monkeypatch,
+                                                                              capsys):
+    """A preview-tab unload must not cancel the verified Training composer checkpoint."""
+    from operation_love.hub import server as hub_server
+    from operation_love.status import RunStatus
+
+    monkeypatch.setattr(hub_server, "_BROWSER_SHUTDOWN_GRACE_S", 0.01)
+    monkeypatch.setattr(hub_server, "_BROWSER_STALE_CHECK_S", 0.01)
+
+    stop = threading.Event()
+    state = HubState("config.yaml")
+    status = RunStatus("training-run", ["hinge"], min_labels=0, mode="training")
+    status.set_app("hinge", mode="training", state="waiting_approval")
+    state._status = status
+    state._stop = stop
+    state._thread = threading.Thread(target=stop.wait, name="waiting-training-run")
+    state._thread.start()
+    _Handler.state = state
+    httpd = _bind("127.0.0.1", 8799)
+    t = threading.Thread(target=httpd.serve_forever, daemon=True)
+    t.start()
+    try:
+        base = f"http://127.0.0.1:{httpd.server_address[1]}"
+        first = json.dumps({"id": "preview-tab"}).encode()
+        code, opened = _post(base, "/api/hub/open", first)
+        assert code == 200 and opened["ok"] is True
+        code, closed = _post(base, "/api/hub/closed", first)
+        assert code == 200 and closed["ok"] is True
+
+        # Let the delayed tab-close callback run. The server and worker must both remain live,
+        # so a user can reopen the exact checkpoint instead of losing the typed composer.
+        time.sleep(0.08)
+        assert t.is_alive() is True
+        assert state.is_running() is True
+        assert stop.is_set() is False
+        assert "keeping the run and verified checkpoint alive" in capsys.readouterr().out
+
+        # A new preview/browser tab gets a normal live Hub. Once the approval boundary is gone,
+        # the established last-tab-close policy still stops the live run and closes the server.
+        reopened = json.dumps({"id": "reopened-tab"}).encode()
+        code, opened = _post(base, "/api/hub/open", reopened)
+        assert code == 200 and opened["ok"] is True
+        status.set_app("hinge", state="scoring")
+        code, closed = _post(base, "/api/hub/closed", reopened)
+        assert code == 200 and closed["ok"] is True
+
+        t.join(timeout=_LIVENESS_TIMEOUT_S)
+        assert t.is_alive() is False
+        assert stop.is_set() is True
+    finally:
+        stop.set()
+        state.wait_for_run(timeout=_LIVENESS_TIMEOUT_S)
+        httpd.shutdown()
+        httpd.server_close()
+        _join_hub_watch_threads()
+
+
+def _tiny_review_png() -> bytes:
+    """A 1x1 PNG that satisfies TrainingActionBridge.publish_checkpoint's strict frame
+    validation (training_actions._raster_mime/_valid_png_idat reject a bare magic number)."""
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return (struct.pack(">I", len(data)) + kind + data
+                + struct.pack(">I", zlib.crc32(kind + data) & 0xffffffff))
+    return (b"\x89PNG\r\n\x1a\n"
+            + chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 0, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(b"\x00\x00")) + chunk(b"IEND", b""))
+
+
+def test_browser_close_preserves_checkpoint_before_worker_reports_waiting_approval():
+    """Covers the has_actionable_checkpoint() fallback in browser_close_shutdown_disposition.
+
+    publish_checkpoint() runs on the training worker's own thread and precedes its status
+    update to waiting_approval by however long that thread takes to report back -- see the
+    comment on browser_close_shutdown_disposition. The only existing end-to-end coverage
+    (test_hub_tab_close_keeps_waiting_training_approval_alive_until_reopened, above) drives
+    the EARLIER status-snapshot branch and never actually opens this hand-off window, so this
+    exercises the bridge fallback directly: a checkpoint is published while self._status is
+    still None, and the disposition must still refuse to let the tab close stop the run.
+    """
+    class _Worker:
+        run_id = "training-run"
+        app = "hinge"
+        mode = "training"
+        training_action_supported = True
+
+        def __init__(self):
+            self.stop_event = threading.Event()
+
+    class _Pick:
+        text = "The typed opener"
+        referenced = "mountain photo"
+        index = 2
+        item_description = "mountain photo"
+
+    st = HubState("config.yaml")
+    st._stop = threading.Event()
+    st._thread = threading.Thread(target=st._stop.wait, name="fake-training-run", daemon=True)
+    st._thread.start()
+    try:
+        worker = _Worker()
+        st._training_actions.register(worker)
+        st._training_actions.publish_checkpoint(worker, _tiny_review_png(), _Pick())
+
+        # The worker has not yet reported waiting_approval: the status snapshot branch above
+        # this one in browser_close_shutdown_disposition cannot be what protects this card.
+        assert st._status is None
+        assert st._training_actions.has_actionable_checkpoint() is True
+        assert st.browser_close_shutdown_disposition() == "preserve_training_approval"
+    finally:
+        st._stop.set()
+        st._thread.join(timeout=_LIVENESS_TIMEOUT_S)
 
 
 def test_hub_tab_stale_heartbeat_shutdown_when_close_beacon_is_missing(monkeypatch):
@@ -1460,10 +1575,12 @@ def test_launcher_rejects_undeclared_or_shell_syntax_extras(tmp_path, monkeypatc
 
 def test_hub_card_shows_label_gated_refresh_progress():
     # The readiness card says when its metrics will next update, without an unexplained ratio.
+    # It must read HubState._attach_refresh's own `remaining` (see the edge-case test below)
+    # rather than re-deriving it from `since`/`every` a second, independently-drifting way.
     assert "Updates after ${remaining} more training label" in _PAGE
     assert "r.mode !== 'training'" in _PAGE          # only while a live training run feeds labels
-    assert "r.since == null" in _PAGE
-    assert "every-progress" in _PAGE
+    assert "r.remaining == null" in _PAGE
+    assert "Number(r.remaining)" in _PAGE
 
 
 def test_attach_refresh_counts_down_to_next_recompute():
@@ -1647,7 +1764,6 @@ def test_eval_snapshot_reads_live_store_while_running(monkeypatch):
     monkeypatch.setattr(eval_mod, "evaluate", lambda s, **kwargs: {
         "status": "ok", "labels": len(s), "identities": len(s), "base_rate": 0.4,
         "pr_auc": [0.7, 0.05], "roc_auc": [0.8, 0.03], "brier": [0.2, 0.0]})
-    monkeypatch.setattr(eval_mod, "quality_trajectory", lambda ordered, step=5: [])
 
     st = HubState("config.yaml")
     st._thread = threading.Thread(target=lambda: time.sleep(0.5))   # fake a live run
@@ -1692,7 +1808,6 @@ def test_eval_snapshot_falls_back_when_live_store_read_fails(monkeypatch):
     monkeypatch.setattr(eval_mod, "evaluate", lambda s, **kwargs: {
         "status": "ok", "labels": len(s), "identities": len(s), "base_rate": 0.4,
         "pr_auc": [0.7, 0.05], "roc_auc": [0.8, 0.03], "brier": [0.2, 0.0]})
-    monkeypatch.setattr(eval_mod, "quality_trajectory", lambda ordered, step=5, **k: [])
 
     st = HubState("config.yaml")
     st._thread = threading.Thread(target=lambda: time.sleep(0.3))
@@ -2400,11 +2515,12 @@ def test_run_status_renders_live_training_once_with_checkpoint_detail_and_swipes
         pytest.skip("node is not available on this machine")
     snap = {"running": True, "status": {"mode": "auto", "apps": {
         "hinge": {"app": "hinge", "mode": "training", "state": "scoring",
-                  "swipes_run": 2},
+                  "swipes_run": 2, "detail": "verifying photo item 2 of 3"},
     }}}
     result = _run_node(_runstatus_script(snap))
     assert result["display"] == "block"
     assert "preparing the training checkpoint" in result["html"]
+    assert "verifying photo item 2 of 3" in result["html"]
     assert "2 swipes this run" in result["html"]
     assert result["html"].count("hinge") == 1
     assert "tap X" not in result["html"] and "Send Like" not in result["html"]
@@ -2847,7 +2963,7 @@ def _training_panel_script(checkpoint):
         "const layout={active:false,classList:{toggle(_name,value){layout.active=!!value;}}};\n"
         "const document={querySelector:(selector)=>selector==='.hub-layout'?layout:null};\n"
         "function $(selector){ return selector==='#trainingpanel' ? panel : buttons[selector]; }\n"
-        "let _trainingCheckpoint=null, _trainingActionBusy=false, _trainingBusyKey='', _trainingBusyRequest=0, _trainingImageKey='', _trainingImageIndex=0; const _trainingIdempotency=new Map();\n"
+        "let _trainingCheckpoint=null, _trainingActionBusy=false, _trainingBusyKey='', _trainingBusyRequest=0, _trainingImageKey='', _trainingImageIndex=0, _trainingImageFailedIndex=null,_trainingImageRenderGeneration=0,_trainingImageFailedGeneration=null; const _trainingIdempotency=new Map();\n"
         # The real state synchronizer closes a modal when the checkpoint changes.  This
         # renderer-only harness has no persistent modal, so its inert stand-in keeps these
         # longstanding markup tests deliberately scoped to the panel itself.
@@ -2875,26 +2991,6 @@ def test_training_panel_is_a_separate_responsive_right_column():
     assert re.search(r'<aside\s+id="trainingpanel"[^>]*aria-live="polite"', _PAGE)
     mode = re.search(r'<select\b[^>]*\bid="mode"[^>]*>(.*?)</select>', _PAGE, re.S)
     assert mode and 'value="training"' in mode.group(1) and 'auto_testing' not in mode.group(1)
-
-
-def test_pending_training_checkpoint_is_only_a_live_ready_decision():
-    if NODE_BIN is None:
-        pytest.skip("node is not available on this machine")
-    fn = _extract_js_function(_PAGE, "pendingTrainingCheckpoint")
-    checkpoints = [
-        {"run_id": "run-1", "app": "hinge", "profile_token": "done", "approval_token": "a",
-         "pending": False, "phase": "waiting_training_decision", "action": "ready"},
-        {"run_id": "run-1", "app": "hinge", "profile_token": "pass", "approval_token": "b",
-         "pending": True, "phase": "waiting_training_decision", "action": "queued"},
-        {"run_id": "run-2", "app": "hinge", "profile_token": "other", "approval_token": "c",
-         "pending": True, "phase": "waiting_training_decision", "action": "ready"},
-        {"run_id": "run-1", "app": "hinge", "profile_token": "live", "approval_token": "d",
-         "pending": True, "phase": "waiting_training_decision", "action": "ready"},
-    ]
-    script = (fn + "\nconst result=pendingTrainingCheckpoint({checkpoints:"
-              + json.dumps(checkpoints) + "},'run-1','hinge');\n"
-              + "console.log(JSON.stringify(result && result.profile_token));\n")
-    assert _run_node(script) == "live"
 
 
 def test_training_panel_shows_full_opener_target_image_and_escapes_text():
@@ -2950,7 +3046,7 @@ def test_training_image_navigation_uses_top_to_bottom_profile_snapshot_order():
     ))
     script = (
         "const elements={}; function $(selector){return elements[selector]||(elements[selector]={setAttribute(){}});}\n"
-        "let _trainingImageIndex=3,_trainingImageZoomed=false; const _trainingCheckpoint={run_id:'run-1',app:'hinge',"
+        "let _trainingImageIndex=3,_trainingImageFailedIndex=null,_trainingImageRenderGeneration=0,_trainingImageFailedGeneration=null,_trainingImageZoomed=false; const _trainingCheckpoint={run_id:'run-1',app:'hinge',"
         "profile_token:'profile-1',approval_token:'approval-1',profile_image_count:3,"
         "image_data_url:'data:image/png;base64,AA=='};\n"
         + functions + "\nmoveTrainingImage(-1);\n"
@@ -2966,6 +3062,249 @@ def test_training_image_navigation_uses_top_to_bottom_profile_snapshot_order():
     assert result["first"]["label"] == "profile snapshot 3 of 3 · 3/4"
     assert result["second"]["index"] == 1
     assert "index=1" in result["second"]["src"]
+
+
+def test_training_preview_up_click_and_failed_or_missing_snapshot_are_recoverable():
+    """The actual rendered Up control must not let a broken review frame take down Hub.
+
+    This covers both the normal click binding (rather than a direct helper call) and the two
+    defensive states that can occur when a local response/image no longer matches the card.
+    """
+    if NODE_BIN is None:
+        pytest.skip("node is not available on this machine")
+    functions = "\n".join((
+        _extract_js_function(_PAGE, "escHtml"),
+        _extract_js_function(_PAGE, "safeCheckpointImageDataUrl"),
+        _extract_js_function(_PAGE, "trainingCheckpointKey"),
+        _extract_js_function(_PAGE, "resetTrainingIdempotencyIfCardChanged"),
+        _extract_js_function(_PAGE, "resetTrainingBusyIfCardChanged"),
+        _extract_js_function(_PAGE, "trainingActionBusyFor"),
+        _extract_js_function(_PAGE, "checkpointReviewImages"),
+        _extract_js_function(_PAGE, "syncTrainingImageState"),
+        _extract_js_function(_PAGE, "setTrainingImageNavigationDisabled"),
+        _extract_js_function(_PAGE, "reportTrainingImageLoadError"),
+        _extract_js_function(_PAGE, "showTrainingImage"),
+        _extract_js_function(_PAGE, "moveTrainingImage"),
+        _extract_js_function(_PAGE, "renderTrainingCheckpoint"),
+    ))
+    checkpoint = {
+        "run_id": "run-1", "app": "hinge", "profile_token": "profile-1",
+        "approval_token": "approval-1", "phase": "waiting_training_decision",
+        "pending": True, "action": "ready", "item": 3, "opener": "Complete opener",
+        "image_data_url": "data:image/png;base64,AA==", "profile_image_count": 3,
+    }
+    script = (
+        "function node(){return {hidden:false,disabled:false,src:'',alt:'',textContent:'',attrs:{},"
+        "setAttribute(k,v){this.attrs[k]=String(v);},removeAttribute(k){delete this.attrs[k];if(k==='src')this.src='';}}}\n"
+        "const elements={}; for(const id of ['#trainingimagezoomed','#trainingimagezoomposition',"
+        "'#trainingimagezoomerror','#trainingimagezoomup','#trainingimagezoomdown'])elements[id]=node();\n"
+        "const panel={style:{display:''},_html:'',get innerHTML(){return this._html;},set innerHTML(value){"
+        "this._html=value; for(const id of ['#trainingimage','#trainingimageup','#trainingimagedown',"
+        "'#trainingimagezoom','#trainingimageerror','#traininglike','#trainingdislike'])"
+        "if(value.includes('id=\\\"'+id.slice(1)+'\\\"'))elements[id]=node();}}; elements['#trainingpanel']=panel;\n"
+        "const layout={classList:{toggle(){}}}; const document={querySelector(s){return s==='.hub-layout'?layout:null;}};"
+        "function $(selector){return elements[selector]||null;} function setTrainingImageZoom(){}\n"
+        "let _trainingCheckpoint=null,_trainingActionBusy=false,_trainingBusyKey='',_trainingBusyRequest=0,"
+        "_trainingImageKey='',_trainingImageIndex=0,_trainingImageFailedIndex=null,_trainingImageRenderGeneration=0,_trainingImageFailedGeneration=null,_trainingImageZoomed=false;"
+        "const _trainingIdempotency=new Map();\n"
+        + functions + "\n"
+        "renderTrainingCheckpoint(" + json.dumps(checkpoint) + "); elements['#trainingimageup'].onclick();"
+        "const afterUp={index:_trainingImageIndex,src:elements['#trainingimage'].src};"
+        "elements['#trainingimage'].onerror(); const afterError={index:_trainingImageIndex,"
+        "up:elements['#trainingimageup'].disabled,down:elements['#trainingimagedown'].disabled,"
+        "like:elements['#traininglike'].disabled,dislike:elements['#trainingdislike'].disabled,"
+        "message:elements['#trainingimageerror'].textContent};\n"
+        "checkpointReviewImages=()=>[]; _trainingImageFailedIndex=null; _trainingImageRenderGeneration=0; _trainingImageFailedGeneration=null; renderTrainingCheckpoint(" + json.dumps(checkpoint) + ");"
+        "console.log(JSON.stringify({afterUp,afterError,fallback:panel.innerHTML}));\n"
+    )
+    result = _run_node(script)
+
+    assert result["afterUp"]["index"] == 2
+    assert "index=2" in result["afterUp"]["src"]
+    assert result["afterError"]["index"] == 2
+    assert result["afterError"]["up"] is True and result["afterError"]["down"] is True
+    assert result["afterError"]["like"] is True and result["afterError"]["dislike"] is True
+    assert "could not be loaded" in result["afterError"]["message"]
+    assert "Profile review image was unavailable" in result["fallback"]
+    assert 'id="trainingimage"' not in result["fallback"]
+
+
+def test_training_image_load_error_clears_once_the_same_frame_loads_successfully():
+    """A TRANSIENT /api/training/image failure must not become a permanent lockout.
+
+    Every poll tick rebuilds #trainingimage with the same src, so the browser keeps retrying
+    on its own; once one of those retries actually succeeds, onload must undo exactly what
+    onerror latched -- without ever flipping Like/Dislike on directly (that stays owned by
+    the normal ready/opener/action-boundary gate re-run inside renderTrainingCheckpoint).
+    """
+    if NODE_BIN is None:
+        pytest.skip("node is not available on this machine")
+    functions = "\n".join((
+        _extract_js_function(_PAGE, "escHtml"),
+        _extract_js_function(_PAGE, "safeCheckpointImageDataUrl"),
+        _extract_js_function(_PAGE, "trainingCheckpointKey"),
+        _extract_js_function(_PAGE, "resetTrainingIdempotencyIfCardChanged"),
+        _extract_js_function(_PAGE, "resetTrainingBusyIfCardChanged"),
+        _extract_js_function(_PAGE, "trainingActionBusyFor"),
+        _extract_js_function(_PAGE, "checkpointReviewImages"),
+        _extract_js_function(_PAGE, "syncTrainingImageState"),
+        _extract_js_function(_PAGE, "setTrainingImageNavigationDisabled"),
+        _extract_js_function(_PAGE, "reportTrainingImageLoadError"),
+        _extract_js_function(_PAGE, "clearTrainingImageLoadError"),
+        _extract_js_function(_PAGE, "showTrainingImage"),
+        _extract_js_function(_PAGE, "moveTrainingImage"),
+        _extract_js_function(_PAGE, "renderTrainingCheckpoint"),
+    ))
+    checkpoint = {
+        "run_id": "run-1", "app": "hinge", "profile_token": "profile-1",
+        "approval_token": "approval-1", "phase": "waiting_training_decision",
+        "pending": True, "action": "ready", "item": 3, "opener": "Complete opener",
+        "image_data_url": "data:image/png;base64,AA==", "profile_image_count": 3,
+    }
+    script = (
+        "function node(){return {hidden:false,disabled:false,src:'',alt:'',textContent:'',attrs:{},"
+        "setAttribute(k,v){this.attrs[k]=String(v);},removeAttribute(k){delete this.attrs[k];if(k==='src')this.src='';}}}\n"
+        "const elements={}; for(const id of ['#trainingimagezoomed','#trainingimagezoomposition',"
+        "'#trainingimagezoomerror','#trainingimagezoomup','#trainingimagezoomdown'])elements[id]=node();\n"
+        "const panel={style:{display:''},_html:'',get innerHTML(){return this._html;},set innerHTML(value){"
+        "this._html=value; for(const id of ['#trainingimage','#trainingimageup','#trainingimagedown',"
+        "'#trainingimagezoom','#trainingimageerror','#traininglike','#trainingdislike'])"
+        "if(value.includes('id=\\\"'+id.slice(1)+'\\\"'))elements[id]=node();}}; elements['#trainingpanel']=panel;\n"
+        "const layout={classList:{toggle(){}}}; const document={querySelector(s){return s==='.hub-layout'?layout:null;}};"
+        "function $(selector){return elements[selector]||null;} function setTrainingImageZoom(){}\n"
+        "let _trainingCheckpoint=null,_trainingActionBusy=false,_trainingBusyKey='',_trainingBusyRequest=0,"
+        "_trainingImageKey='',_trainingImageIndex=0,_trainingImageFailedIndex=null,_trainingImageRenderGeneration=0,_trainingImageFailedGeneration=null,_trainingImageZoomed=false;"
+        "const _trainingIdempotency=new Map();\n"
+        + functions + "\n"
+        "renderTrainingCheckpoint(" + json.dumps(checkpoint) + ");\n"
+        "const beforeError={like:elements['#traininglike'].disabled,dislike:elements['#trainingdislike'].disabled,"
+        "image:elements['#trainingimage']};\n"
+        "const failingImage=elements['#trainingimage']; failingImage.onerror();\n"
+        "const afterError={like:elements['#traininglike'].disabled,dislike:elements['#trainingdislike'].disabled,"
+        "hidden:failingImage.hidden,up:elements['#trainingimageup'].disabled,"
+        "zoom:elements['#trainingimagezoom'].disabled,message:elements['#trainingimageerror'].textContent};\n"
+        # The identical element that reported onerror is what a later successful retry of the
+        # same <img src> fires onload on -- no navigation and no fresh render happened between.
+        "failingImage.onload();\n"
+        "const recoveredImage=elements['#trainingimage'];\n"
+        "const afterRecovery={like:elements['#traininglike'].disabled,dislike:elements['#trainingdislike'].disabled,"
+        "hidden:recoveredImage.hidden,up:elements['#trainingimageup'].disabled,"
+        "zoom:elements['#trainingimagezoom'].disabled,sameNode:recoveredImage===failingImage,"
+        "html:panel.innerHTML};\n"
+        "console.log(JSON.stringify({beforeError:{like:beforeError.like,dislike:beforeError.dislike},"
+        "afterError,afterRecovery}));\n"
+    )
+    result = _run_node(script)
+
+    assert result["beforeError"]["like"] is False and result["beforeError"]["dislike"] is False
+    assert result["afterError"]["like"] is True and result["afterError"]["dislike"] is True
+    assert result["afterError"]["hidden"] is True and result["afterError"]["up"] is True
+    assert result["afterError"]["zoom"] is True
+    assert "could not be loaded" in result["afterError"]["message"]
+    # Recovery must go through a full re-render (a new #trainingimage node), so Like/Dislike
+    # come back through the same canDecide gate a first render would have used -- never a
+    # direct flip of the disabled property on the old, now-discarded element.
+    assert result["afterRecovery"]["sameNode"] is False
+    assert result["afterRecovery"]["like"] is False and result["afterRecovery"]["dislike"] is False
+    assert result["afterRecovery"]["hidden"] is False and result["afterRecovery"]["up"] is False
+    assert result["afterRecovery"]["zoom"] is False
+    assert "Profile review image was unavailable" not in result["afterRecovery"]["html"]
+
+
+def test_a_superseded_training_image_load_cannot_clear_a_live_failure_latch():
+    """renderTrainingCheckpoint rebuilds the panel's innerHTML, so each render creates a NEW
+    <img>. The previous one is detached but its in-flight request still fires onload/onerror
+    at whatever moment the network returns. A stale success arriving after a fresh render must
+    NOT unlock the checkpoint the live frame legitimately locked -- that would re-arm Like on a
+    snapshot the reviewer cannot actually see, which is the exact failure the latch exists to
+    prevent. Symmetrically, a stale FAILURE must not lock a frame that loaded fine."""
+    if NODE_BIN is None:
+        pytest.skip("node is not available on this machine")
+    functions = "\n".join((
+        _extract_js_function(_PAGE, "escHtml"),
+        _extract_js_function(_PAGE, "safeCheckpointImageDataUrl"),
+        _extract_js_function(_PAGE, "trainingCheckpointKey"),
+        _extract_js_function(_PAGE, "resetTrainingIdempotencyIfCardChanged"),
+        _extract_js_function(_PAGE, "resetTrainingBusyIfCardChanged"),
+        _extract_js_function(_PAGE, "trainingActionBusyFor"),
+        _extract_js_function(_PAGE, "checkpointReviewImages"),
+        _extract_js_function(_PAGE, "syncTrainingImageState"),
+        _extract_js_function(_PAGE, "setTrainingImageNavigationDisabled"),
+        _extract_js_function(_PAGE, "reportTrainingImageLoadError"),
+        _extract_js_function(_PAGE, "clearTrainingImageLoadError"),
+        _extract_js_function(_PAGE, "showTrainingImage"),
+        _extract_js_function(_PAGE, "moveTrainingImage"),
+        _extract_js_function(_PAGE, "renderTrainingCheckpoint"),
+    ))
+    checkpoint = {
+        "run_id": "run-1", "app": "hinge", "profile_token": "profile-1",
+        "approval_token": "approval-1", "phase": "waiting_training_decision",
+        "pending": True, "action": "ready", "item": 3, "opener": "Complete opener",
+        "image_data_url": "data:image/png;base64,AA==", "profile_image_count": 3,
+    }
+    script = (
+        "function node(){return {hidden:false,disabled:false,src:'',alt:'',textContent:'',attrs:{},"
+        "setAttribute(k,v){this.attrs[k]=String(v);},removeAttribute(k){delete this.attrs[k];if(k==='src')this.src='';}}}\n"
+        "const elements={}; for(const id of ['#trainingimagezoomed','#trainingimagezoomposition',"
+        "'#trainingimagezoomerror','#trainingimagezoomup','#trainingimagezoomdown'])elements[id]=node();\n"
+        "const panel={style:{display:''},_html:'',get innerHTML(){return this._html;},set innerHTML(value){"
+        "this._html=value; for(const id of ['#trainingimage','#trainingimageup','#trainingimagedown',"
+        "'#trainingimagezoom','#trainingimageerror','#traininglike','#trainingdislike'])"
+        "if(value.includes('id=\\\"'+id.slice(1)+'\\\"'))elements[id]=node();}}; elements['#trainingpanel']=panel;\n"
+        "const layout={classList:{toggle(){}}}; const document={querySelector(s){return s==='.hub-layout'?layout:null;}};"
+        "function $(selector){return elements[selector]||null;} function setTrainingImageZoom(){}\n"
+        "let _trainingCheckpoint=null,_trainingActionBusy=false,_trainingBusyKey='',_trainingBusyRequest=0,"
+        "_trainingImageKey='',_trainingImageIndex=0,_trainingImageFailedIndex=null,"
+        "_trainingImageRenderGeneration=0,_trainingImageFailedGeneration=null,_trainingImageZoomed=false;"
+        "const _trainingIdempotency=new Map();\n"
+        + functions + "\n"
+        "renderTrainingCheckpoint(" + json.dumps(checkpoint) + ");\n"
+        # Keep a handle on generation 1's <img>, then let an ordinary poll tick re-render.
+        "const staleImage=elements['#trainingimage'];\n"
+        "renderTrainingCheckpoint(" + json.dumps(checkpoint) + ");\n"
+        "const liveImage=elements['#trainingimage'];\n"
+        # The frame on screen NOW fails. That is the lockout the reviewer must see.
+        "liveImage.onerror();\n"
+        "const locked={like:elements['#traininglike'].disabled,"
+        "dislike:elements['#trainingdislike'].disabled,"
+        "message:elements['#trainingimageerror'].textContent};\n"
+        # Generation 1's request finally succeeds, long after its element was discarded.
+        "staleImage.onload();\n"
+        "const afterStaleLoad={like:elements['#traininglike'].disabled,"
+        "dislike:elements['#trainingdislike'].disabled,"
+        "message:elements['#trainingimageerror'].textContent,"
+        "sameNode:elements['#trainingimage']===liveImage};\n"
+        # The live frame's OWN load succeeds -- its stamp matches, so this is the one event
+        # allowed to clear the lockout. It re-renders, so a third generation's <img> appears.
+        "liveImage.onload();\n"
+        "const healthyImage=elements['#trainingimage'];\n"
+        "const recovered={like:elements['#traininglike'].disabled,"
+        "dislike:elements['#trainingdislike'].disabled,"
+        "sameNode:healthyImage===liveImage};\n"
+        # Mirror case: generation 2's element now errors, after generation 3 replaced it. A
+        # superseded FAILURE must not lock the frame the reviewer is actually looking at.
+        "liveImage.onerror();\n"
+        "const afterStaleError={like:elements['#traininglike'].disabled,"
+        "dislike:elements['#trainingdislike'].disabled,"
+        "sameNode:elements['#trainingimage']===healthyImage};\n"
+        "console.log(JSON.stringify({locked,afterStaleLoad,recovered,afterStaleError}));\n"
+    )
+    result = _run_node(script)
+
+    assert result["locked"]["like"] is True and result["locked"]["dislike"] is True
+    assert "could not be loaded" in result["locked"]["message"]
+    # The superseded load changed nothing: still locked, and no re-render was triggered.
+    assert result["afterStaleLoad"]["like"] is True
+    assert result["afterStaleLoad"]["dislike"] is True
+    assert "could not be loaded" in result["afterStaleLoad"]["message"]
+    assert result["afterStaleLoad"]["sameNode"] is True
+    # The live element's own load is the one event that may unlock, and it re-renders.
+    assert result["recovered"]["like"] is False and result["recovered"]["dislike"] is False
+    assert result["recovered"]["sameNode"] is False
+    # A superseded onerror likewise cannot lock the frame the reviewer is actually looking at.
+    assert result["afterStaleError"]["like"] is False
+    assert result["afterStaleError"]["dislike"] is False
+    assert result["afterStaleError"]["sameNode"] is True
 
 
 def test_training_image_zoom_keeps_the_modal_open_and_in_sync_while_navigating():
@@ -2994,7 +3333,7 @@ def test_training_image_zoom_keeps_the_modal_open_and_in_sync_while_navigating()
         "const classes=new Set(); const document={activeElement:elements['#trainingimagezoom'],"
         "body:{classList:{toggle(name,on){if(on)classes.add(name);else classes.delete(name);}}},"
         "contains(){return true;}}; function $(selector){return elements[selector]||null;}\n"
-        "let _trainingImageIndex=3,_trainingImageKey='',_trainingImageZoomed=false,"
+        "let _trainingImageIndex=3,_trainingImageKey='',_trainingImageFailedIndex=null,_trainingImageRenderGeneration=0,_trainingImageFailedGeneration=null,_trainingImageZoomed=false,"
         "_trainingImageZoomRestoreFocus=null; const _trainingCheckpoint={run_id:'run-1',app:'hinge',"
         "profile_token:'profile-1',approval_token:'approval-1',profile_image_count:3,"
         "image_data_url:'data:image/png;base64,AA=='};\n"
@@ -3130,7 +3469,7 @@ def test_replacing_a_zoomed_checkpoint_moves_focus_to_its_new_preview_trigger():
         "let _trainingCheckpoint=" + json.dumps(old) + ",_trainingActionBusy=false,_trainingBusyKey='',"
         "_trainingBusyRequest=0,_trainingImageKey=" + json.dumps(json.dumps([
             old["run_id"], old["app"], old["profile_token"], old["approval_token"]])) + ","
-        "_trainingImageIndex=1,_trainingImageZoomed=true,_trainingImageZoomRestoreFocus=oldTrigger;"
+        "_trainingImageIndex=1,_trainingImageFailedIndex=null,_trainingImageRenderGeneration=0,_trainingImageFailedGeneration=null,_trainingImageZoomed=true,_trainingImageZoomRestoreFocus=oldTrigger;"
         "const _trainingIdempotency=new Map();\n"
         + functions + "\nrenderTrainingCheckpoint(" + json.dumps(new) + ");\n"
         "const replacement=elements['#trainingimagezoom']; console.log(JSON.stringify({"
@@ -3246,7 +3585,7 @@ def test_training_choice_posts_the_bound_checkpoint_and_idempotency_token():
     script = (
         "const hubClientId='hub-client';\n"
         "const window={crypto:{randomUUID:()=> 'nonce'}}; const crypto=window.crypto;\n"
-        "const _trainingIdempotency=new Map(); let _trainingActionBusy=false, _trainingBusyKey='', _trainingBusyRequest=0;\n"
+        "const _trainingIdempotency=new Map(); let _trainingActionBusy=false, _trainingBusyKey='', _trainingBusyRequest=0, _trainingImageFailedIndex=null,_trainingImageRenderGeneration=0,_trainingImageFailedGeneration=null;\n"
         "let _trainingCheckpoint={run_id:'run-1',app:'hinge',profile_token:'profile-1',approval_token:'approval-1',opener:'full opener',image_data_url:'data:image/png;base64,AA=='};\n"
         "let posted=null, renders=[], ticks=0;\n"
         "function renderTrainingCheckpoint(checkpoint,message){renders.push([checkpoint,message]);}\n"
@@ -3275,7 +3614,7 @@ def test_training_choice_does_not_post_when_the_review_data_is_missing():
     script = (
         "const hubClientId='hub-client';\n"
         "const window={crypto:{randomUUID:()=> 'nonce'}}; const crypto=window.crypto;\n"
-        "const _trainingIdempotency=new Map(); let _trainingActionBusy=false, _trainingBusyKey='', _trainingBusyRequest=0;\n"
+        "const _trainingIdempotency=new Map(); let _trainingActionBusy=false, _trainingBusyKey='', _trainingBusyRequest=0, _trainingImageFailedIndex=null,_trainingImageRenderGeneration=0,_trainingImageFailedGeneration=null;\n"
         "let _trainingCheckpoint={run_id:'run-1',app:'hinge',profile_token:'profile-1',approval_token:'approval-1',opener:'',image_data_url:''};\n"
         "let posted=null, renders=[], ticks=0;\n"
         "function renderTrainingCheckpoint(checkpoint,message){renders.push([checkpoint,message]);}\n"
@@ -3298,7 +3637,7 @@ def test_training_action_failure_reenables_the_live_card_before_the_next_poll():
     script = (
         "const hubClientId='hub-client';\n"
         "const window={crypto:{randomUUID:()=> 'nonce'}}; const crypto=window.crypto;\n"
-        "const _trainingIdempotency=new Map(); let _trainingActionBusy=false, _trainingBusyKey='', _trainingBusyRequest=0;\n"
+        "const _trainingIdempotency=new Map(); let _trainingActionBusy=false, _trainingBusyKey='', _trainingBusyRequest=0, _trainingImageFailedIndex=null,_trainingImageRenderGeneration=0,_trainingImageFailedGeneration=null;\n"
         "let _trainingCheckpoint={run_id:'run-1',app:'hinge',profile_token:'profile-1',approval_token:'approval-1',opener:'full opener',image_data_url:'data:image/png;base64,AA=='};\n"
         "let renders=[], ticks=0;\n"
         "function renderTrainingCheckpoint(checkpoint,message){renders.push({message,busy:_trainingActionBusy,checkpoint});}\n"
@@ -3326,7 +3665,7 @@ def test_old_hung_training_post_cannot_change_new_card_busy_state():
     script = (
         "const hubClientId='hub-client';\n"
         "const window={crypto:{randomUUID:()=> 'nonce'}}; const crypto=window.crypto;\n"
-        "const _trainingIdempotency=new Map(); let _trainingActionBusy=false, _trainingBusyKey='', _trainingBusyRequest=0;\n"
+        "const _trainingIdempotency=new Map(); let _trainingActionBusy=false, _trainingBusyKey='', _trainingBusyRequest=0, _trainingImageFailedIndex=null,_trainingImageRenderGeneration=0,_trainingImageFailedGeneration=null;\n"
         "const oldCard={run_id:'old',app:'hinge',profile_token:'p1',approval_token:'a1',opener:'full opener',image_data_url:'data:image/png;base64,AA=='};\n"
         "const newCard={run_id:'new',app:'hinge',profile_token:'p2',approval_token:'a2',opener:'full opener',image_data_url:'data:image/png;base64,AA=='};\n"
         "let _trainingCheckpoint=oldCard, resolves=[];\n"
@@ -3526,6 +3865,43 @@ def test_eval_snapshot_cold_start_single_flights_concurrent_pollers(monkeypatch)
     assert len(results) == 5
     assert len(compute_calls) == 1     # only ONE actual computation ran despite 5 pollers
     assert all(r["status"] == "ok" and r["labels"] == 10 for r in results)
+
+
+def test_bug_report_generation_reports_failure_instead_of_an_unhandled_rejection():
+    """getReport() was the lone fetch site in this file with no error path -- a hub that is
+    gone/unreachable at the exact moment a bug report is wanted must not leave a dead button
+    and an unhandled promise rejection behind it; it must say so and hand back null."""
+    if NODE_BIN is None:
+        pytest.skip("node is not available on this machine")
+    fn = _extract_js_function(_PAGE, "getReport")
+    script = (
+        "const hint={textContent:''}; const desc={value:''};\n"
+        "function $(selector){return selector==='#bughint'?hint:selector==='#bugdesc'?desc:null;}\n"
+        "async function fetch(){throw new TypeError('Failed to fetch');}\n"
+        + fn + "\n"
+        "getReport().then(md => console.log(JSON.stringify({md, hint: hint.textContent})));\n"
+    )
+    result = _run_node(script)
+    assert result["md"] is None
+    assert "could not contact the local hub" in result["hint"]
+
+
+def test_bug_report_buttons_never_write_or_download_a_failed_report():
+    # Both callers must check getReport()'s null before touching the clipboard or a Blob. This
+    # is a source-order check (not a node run) because both handlers are anonymous arrow
+    # functions assigned directly to an onclick property, matching this file's established
+    # pattern for asserting other anonymous click-wiring (e.g. imageZoomButton.onclick above).
+    copy_block = re.search(r"\$\('#bugcopy'\)\.onclick = async \(\) => \{(.*?)\n\};",
+                            _PAGE, re.S)
+    dl_block = re.search(r"\$\('#bugdl'\)\.onclick = async \(\) => \{(.*?)\n\};", _PAGE, re.S)
+    assert copy_block and dl_block
+    for block, guarded_call in ((copy_block, "navigator.clipboard.writeText"),
+                                 (dl_block, "document.createElement")):
+        body = block.group(1)
+        get_at = body.index("await getReport()")
+        guard_at = body.index("if (md == null) return;")
+        call_at = body.index(guarded_call)
+        assert get_at < guard_at < call_at
 
 
 def test_bugreport_uses_hub_config_path_not_default():

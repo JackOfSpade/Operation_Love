@@ -466,6 +466,12 @@ def test_hub_training_checkpoint_shows_the_typed_opener_with_like_and_dislike():
         "let _trainingCheckpoint = null; let _trainingRequest = 0;",
         "let _trainingActionBusy = false; let _trainingBusyKey = ''; let _trainingBusyRequest = 0;",
         "let _trainingImageKey = ''; let _trainingImageIndex = 0;",
+        # The image failure latch and its render stamp. Declared rather than left to sloppy-mode
+        # implicit globals: renderTrainingCheckpoint READS _trainingImageRenderGeneration
+        # (`++`), and reading an undeclared name is a ReferenceError even where assigning one
+        # silently would not be.
+        "let _trainingImageFailedIndex = null; let _trainingImageFailedGeneration = null;",
+        "let _trainingImageRenderGeneration = 0;",
         "const _trainingIdempotency = new Map();",
         _extract_js_function(_PAGE, "escHtml"),
         _extract_js_function(_PAGE, "safeCheckpointImageDataUrl"),

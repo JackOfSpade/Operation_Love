@@ -409,10 +409,10 @@ def test_dissenting_strips_are_outvoted_but_counted():
 # =====================================================================================
 # The 2026-08-16 bimodal-bank rescue: `_vote_clusters`, `_pins_allow` and
 # `_exact_cluster_shift`, spliced into `_resolve` at the point where the plain median has
-# already failed its own quorum. A median is the right consensus statistic for ONE moving
-# population; a strip bank that straddles a still page and an autoplaying video is TWO, and
-# the median lands on a value neither population ever reported, so every strip "dissents"
-# from a number nothing measured. The first two tests below are the exact live evidence —
+# failed its ordinary quorum OR confidence gate. A median is the right consensus statistic for
+# ONE moving population; a strip bank that straddles a still page and an autoplaying video is
+# TWO, and the median can either land on a value nothing reported or retain a real cluster that
+# is diluted by the non-rigid one. The first two tests below are the exact live evidence —
 # a real Hinge profile capture that produced a whole 64-frame profile with zero numbered
 # items before this fix — reproduced strip-for-strip from the driver's own debug log. The
 # rest are hand-built banks that isolate one clause of the evidence bar each
@@ -538,6 +538,58 @@ def test_regression_bimodal_saturated_bank_pair_43_44_measures_zero():
     assert "split into" in r.reason
 
 
+def test_regression_exact_static_zero_cluster_overrides_only_the_confidence_floor():
+    """Lea's saved 2026-08-31 tail pair: a unique exact zero cluster is the page.
+
+    The seven matched NCC strips were exactly ``[-5, 0, 0, 6, 5, 0, 11]``.  Their ordinary
+    median is already zero and reaches the three-strip quorum, but only 3/7 eligible strips
+    agree, so the old resolver refused solely on its 0.50 confidence floor.  The other four
+    video-polluted answers form no second exact quorate cluster.  A pinned zero bound is also
+    present and admits zero.  The exact-cluster rule therefore has one principled answer and
+    must report it while retaining the raw coverage telemetry.
+    """
+    strips = [
+        _strip(442, frameshift.STRIP_MATCHED, -5),
+        _strip(726, frameshift.STRIP_MATCHED, 0),
+        _strip(868, frameshift.STRIP_MATCHED, 0),
+        _strip(1152, frameshift.STRIP_MATCHED, 6),
+        _strip(1294, frameshift.STRIP_MATCHED, 5),
+        _strip(1720, frameshift.STRIP_MATCHED, 0),
+        _strip(1862, frameshift.STRIP_MATCHED, 11),
+        # The saved pair's bottom strip was pinned at the LOW end of this exact range.
+        _strip(2004, frameshift.STRIP_PINNED, 0, search=(0, 1704)),
+    ]
+    r = _resolve(strips)
+
+    assert r.status == frameshift.SHIFT_MEASURED, r.reason
+    assert r.delta_px == r.consensus_px == 0
+    assert r.agreeing == 3 and r.dissenting == 4 and r.eligible == 7
+    assert r.confidence == pytest.approx(3 / 7)
+    assert "split into" in r.reason and "confidence gate" in r.reason
+
+
+def test_low_confidence_inexact_median_stays_refused():
+    """Confidence alone is never waived: the rescued cluster must be pixel-exact.
+
+    The median +2 has three nearby votes, but they are +0/+1/+2 rather than one exact answer.
+    With all seven strips eligible its 3/7 confidence is below the ordinary floor, and no exact
+    quorate cluster exists to override that refusal.
+    """
+    r = _resolve([
+        _strip(442, frameshift.STRIP_MATCHED, -10),
+        _strip(726, frameshift.STRIP_MATCHED, 0),
+        _strip(868, frameshift.STRIP_MATCHED, 1),
+        _strip(1152, frameshift.STRIP_MATCHED, 2),
+        _strip(1294, frameshift.STRIP_MATCHED, 10),
+        _strip(1720, frameshift.STRIP_MATCHED, 11),
+        _strip(1862, frameshift.STRIP_MATCHED, 12),
+    ])
+
+    assert r.status == frameshift.SHIFT_NO_CONSENSUS, r.reason
+    assert r.delta_px is None and r.consensus_px is None
+    assert r.confidence == pytest.approx(3 / 7)
+
+
 def test_two_pixel_exact_quorate_groups_are_ambiguous_and_refused():
     """The safety rail `_exact_cluster_shift`'s docstring states in words: a SECOND
     pixel-exact quorate group is a genuine ambiguity, and is refused rather than resolved
@@ -647,9 +699,9 @@ def test_the_only_exact_group_under_quorum_stays_refused():
 
 def test_the_rescue_cannot_touch_a_bank_the_median_already_resolves():
     """The load-bearing guarantee stated in `_resolve`'s own comment: the rescue runs
-    ONLY after the plain median has already failed its own quorum, so a pair that
-    measures today must measure IDENTICALLY tomorrow — same delta, same reason, no split
-    note appended — because the rescue was never consulted. This reuses
+    ONLY after the plain median has already failed its quorum OR confidence gate, so a pair that
+    ordinary rules already accept must measure identically tomorrow — same delta, same reason,
+    no split note appended — because the rescue was never consulted. This reuses
     `test_dissenting_strips_are_outvoted_but_counted`'s unimodal bank (5 strips agreeing
     at +363, one dissenting at -871): the plain median is already +363 with a 5-strip
     quorum, so `_exact_cluster_shift` never runs, and the reason string must contain no

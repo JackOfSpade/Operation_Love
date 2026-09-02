@@ -5,9 +5,18 @@ This module is now home to TWO things:
 
   AndroidDriver  — the app-agnostic driver: perception (screencap + vision) and action
                    (humanized taps/swipes) for ANY Android dating app, parameterised by an
-                   AndroidAppSpec (operation_love/drivers/android_spec.py). Nothing in here
-                   is Hinge-specific anymore except the flow branch selected by
-                   `spec.like_flow`.
+                   AndroidAppSpec (operation_love/drivers/android_spec.py). Every behaviour
+                   this driver varies by app is driven off a SPEC FIELD, never a hardcoded
+                   comparison of `spec.app` against the literal app name — not just the flow
+                   branch selected by `spec.like_flow`, but also whether the calibrated auto-mode
+                   behavior policy applies (`spec.auto_policy_calibrated`), whether OBSERVE
+                   reads/scrolls need the cross-process input lease
+                   (`spec.observe_input_serialized`), and whether the recovery rewind stroke
+                   is capped to a bounded central corridor (`spec.safe_rewind_max_frac`). See
+                   each field's own comment on AndroidAppSpec for what it gates and why —
+                   today all three are True/True/0.55 on HINGE_SPEC and
+                   False/False/None on BUMBLE_SPEC, because this whole redesign was
+                   calibrated on Hinge only.
   HingeDriver    — a thin subclass binding AndroidDriver to HINGE_SPEC.
 
 Bumble's binding (BumbleAndroidDriver + BUMBLE_SPEC) lives in
@@ -99,7 +108,9 @@ from .base import (ActionCancelled, DatingAppDriver, DeckBlockedError, DriverClo
                    ItemTargetingError, OBSERVE_ITEM_INCONCLUSIVE, OBSERVE_ITEM_MATCH,
                    OBSERVE_ITEM_MISMATCH, ObserveItemCheck, _time_bucket, open_debug_log,
                    snapshot_failure_frame)
-from .frameshift import SHIFT_MEASURED, ShiftEstimationError, estimate_shift
+from .frameshift import (
+    SHIFT_MEASURED, SHIFT_NO_CONSENSUS, ShiftEstimationError, estimate_shift,
+    estimate_shift_with_reverse_recovery)
 from .item_crops import (
     CROP_CONTEXT, CROP_EXCLUDED, CROP_ITEM, CROP_UNCROPPABLE, EXCLUSION_NEVER_DWELLED,
     EXCLUSION_NON_PHOTO, NO_NUMBERED_ITEMS_REASON, PHOTO_ONLY_POLICY_ID,
@@ -375,11 +386,29 @@ class TargetingCalibration:
     content_band: tuple[float, float]
 
 
+def _targeting_finite(value: object) -> bool:
+    """math.isfinite without leaking OverflowError for enormous Python integers.
+
+    A config typo (e.g. an extra zero making ``10**400``) is a valid Python int, so
+    ``math.isfinite`` on it raises ``OverflowError: int too large to convert to float``
+    instead of returning False -- turning the documented "unsafe geometry -> refuse"
+    contract below into an uncaught crash out of ``AndroidDriver.__init__``.  config.py
+    already solved this with its own ``_is_finite_number`` helper; this is a local
+    twin rather than an import because hinge.py is deliberately import-light and the two
+    call sites here have a different contract (band/calibration geometry, not general
+    config values) from config.py's validator.
+    """
+    try:
+        return math.isfinite(value)
+    except (TypeError, OverflowError):
+        return False
+
+
 def _targeting_band(value, *, length: int) -> tuple[float, ...] | None:
     """Normalise a stored/effective geometry band, or return None when it is unsafe to use."""
     if not isinstance(value, (list, tuple)) or len(value) != length:
         return None
-    if any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v)
+    if any(isinstance(v, bool) or not isinstance(v, (int, float)) or not _targeting_finite(v)
            for v in value):
         return None
     band = tuple(float(v) for v in value)
@@ -446,7 +475,7 @@ def _parse_targeting_calibration(raw, serial: str | None, *, identity_band, cont
         value = raw[key]
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             return None, f"targeting_calibration.{key} is not a number"
-        if not math.isfinite(value) or value <= 0:
+        if not _targeting_finite(value) or value <= 0:
             return None, f"targeting_calibration.{key} is not finite and > 0"
     if raw["identity_match_max_dist"] >= _TARGETING_IDENTITY_FALSE_MATCH_DISTANCE:
         return None, (
@@ -716,10 +745,13 @@ _PAYWALL_MAX_Y_FRAC = 0.30
 # mathematically-perfect hit on a flat/degraded frame, and a position gate costs nothing.
 
 _OBSERVE_STUCK_S = 90.0
-# The owner measured a single quick manual return flick on this Pixel. It is used solely after
-# profile capture, never for read-scrolling or a decision gesture. 160ms maps to a ~0.36x
-# Fitts-law stroke on UHID and to the same requested duration on the explicit ADB transport.
-_FAST_REWIND_SWIPE_DURATION_MS = 160
+# The recovery rewind's distance cap/lane selector used to live here as
+# _HINGE_SAFE_REWIND_MAX_FRAC (a bare module constant, silently Hinge-only). It is now
+# AndroidAppSpec.safe_rewind_max_frac (android_spec.py) -- a per-app CAPABILITY field, not a
+# hardcoded comparison of `spec.app` against the literal app name -- and HINGE_SPEC below
+# sets it to 0.55. See that field's comment for the full de89edfe05e1 / 0.78h-flick
+# justification; it moved verbatim, not the conclusion alone. _scroll_to_top_unlocked reads
+# self.spec.safe_rewind_max_frac directly.
 # A downward gesture whose ACTION_DOWN begins in Android's top system strip belongs to System
 # UI, not the foreground app, and can expand the notification shade.  The Pixel 7a status bar
 # is well inside 8% of the 2400px panel; every calibrated Hinge gesture begins below 11%.
@@ -881,11 +913,13 @@ _STILL_PHOTO_WALK_SKIP_SLACK = 2
 # verification from the half-nearest-neighbour separation proof onto the far weaker held-out
 # one-item ceiling. Measured on that profile: bound 37.506 with a second item against 7.000 with
 # one.] Continuing is only ever reached when `_return_to_entry_from_measured_position` returned
-# an anchor, which it does only after the chained legs land inside the entry gate AND a direct
-# re-measurement against the entry frame agrees with them -- i.e. exactly the state the loop
-# already requires at the top of every iteration, and exactly what a SUCCESSFUL hop's own return
-# leg establishes. The refused candidate itself stays refused: it is never dwelt and never
-# retried (NEVER SUBSTITUTE).
+# an anchor, which it does only after the chained legs land inside the entry gate and any direct
+# re-measurement the endpoint frames can support agrees with them. Endpoint comparison is
+# deliberately opportunistic: adjacent full-screen cards can leave no shared strip even though
+# every short leg in the chain was measured. This is exactly the state the loop already requires
+# at the top of every iteration, and exactly what a SUCCESSFUL hop's own return leg establishes.
+# The refused candidate itself stays refused: it is never dwelt and never retried
+# (NEVER SUBSTITUTE).
 _STILL_PHOTO_WALK_RETURNED_REFUSAL_BUDGET = 2
 # Frame COUNT range. More frames is more chances to catch a single emitted video frame, and the
 # cost is only screencaps; the low end still gives >= 5 consecutive pairs plus the anchor pair.
@@ -1195,6 +1229,12 @@ HINGE_SPEC = AndroidAppSpec(
     # reports raw lines separately from parsed events precisely so "the platform sent nothing"
     # can never again be confused with "the parser understood nothing".
     observe_touch_watch=False,
+    # This whole redesign -- the auto-mode behavior policy, the OBSERVE input lease, and the
+    # capped/bounded recovery rewind lane -- was calibrated on Hinge and only on Hinge. See
+    # each field's own comment on AndroidAppSpec (android_spec.py) for what it gates and why.
+    auto_policy_calibrated=True,
+    observe_input_serialized=True,
+    safe_rewind_max_frac=0.55,
 )
 
 
@@ -1754,7 +1794,8 @@ def _content_rows(content_band: tuple[float, float], size: int) -> tuple[int, in
 
 
 def _vertical_shift_match(cur, seen, *, threshold: float,
-                          rows: tuple[int, int] | None = None) -> tuple[bool, int, int]:
+                          rows: tuple[int, int] | None = None,
+                          min_overlap_rows: int = 4) -> tuple[bool, int, int]:
     """Whether downsampled frame `cur` could be a vertically-scrolled view of `seen`, at ANY
     vertical offset -- not just the one wait_for_decision's exact-position check already tried.
 
@@ -1799,6 +1840,10 @@ def _vertical_shift_match(cur, seen, *, threshold: float,
     content_band to slice against, and for the direct unit tests below that exercise the
     shift-search arithmetic itself rather than the chrome-exclusion fix.
 
+    `min_overlap_rows` bounds how little shared content can license a match. Four preserves
+    the passive capture/observe calibration; callers with stronger independent evidence may
+    demand more. It changes the searched offset range, never the pixel-distance threshold.
+
     Returns `(matched, shift, overlap_rows)` -- a bool used to be the WHOLE return value, and
     that bool's semantics are unchanged (first offset under `threshold`, scanned in the same
     `-max_shift..max_shift` order as before). `shift` and `overlap_rows` exist because the
@@ -1817,18 +1862,14 @@ def _vertical_shift_match(cur, seen, *, threshold: float,
     r0, r1 = rows if rows is not None else (0, size)
     cur_c, seen_c = cur[r0:r1], seen[r0:r1]
     band_h = cur_c.shape[0]
-    # MEASURED evidence toward a possible future tightening of the match itself (NOT done in
-    # this pass -- see the module docstring's redesign notes for why): of the 4 genuine
-    # same-profile shift-match pairs observed live on the Pixel 7a while diagnosing the
-    # Zorva/Qelix incident, overlap_rows/band_h came out to 9/18, 11/18, 12/18, and 18/18 --
-    # all >= 50%, against a floor this function has always allowed of 4/18 (~22%, the
-    # `band_h - 4` term below). That is suggestive that a >=50% overlap floor could reject
-    # weaker, more coincidental matches without losing a real one -- but 4 samples is far too
-    # few to move a threshold that exists to guard against the ORIGINAL false-PASS bug
-    # (mis-swallowing a genuine advance as "just a scroll"). This needs on-device
-    # LIVE-VERIFY first (see ops/RUNBOOK.md's convention for that), which the new
-    # `overlap_rows` return value is what will finally make possible to gather at scale.
-    max_shift = max(1, min(band_h - 4, math.ceil(_READ_SCROLL_FRAC_MAX * size)))
+    # Four rows is the historical floor used by passive capture/observe continuity. A caller
+    # making a stronger semantic current-profile claim may raise it: capture-time adjacent
+    # frames have a measured legitimate 7/18-row match, while post-decision verification has
+    # independent identity evidence and can afford the stricter half-band rule described at
+    # that call site.
+    min_overlap = max(1, min(band_h, int(min_overlap_rows)))
+    max_shift = max(
+        0, min(band_h - min_overlap, math.ceil(_READ_SCROLL_FRAC_MAX * size)))
     best_shift, best_overlap, best_dist = 0, band_h, None
     for shift in range(-max_shift, max_shift + 1):
         if shift >= 0:
@@ -1851,7 +1892,7 @@ def _vertical_shift_match(cur, seen, *, threshold: float,
 # instance in hand -- the ratio calibration below is itself a standalone, testable fact about
 # two strings, independent of any driver state.
 
-_NAME_MATCH_RATIO = 0.6
+_NAME_MATCH_RATIO = 0.7
 # How close a token OCR'd from identity_top_name_band must score against the stored profile
 # name (difflib.SequenceMatcher(None, a.casefold(), b.casefold()).ratio(), called via
 # _name_token_matches below with the OCR'd TOKEN first and the STORED name second -- this
@@ -1864,12 +1905,15 @@ _NAME_MATCH_RATIO = 0.6
 # incident's OCR reads: "Zorva" vs plausible misreads "Zorba" and "Zorna" score 0.80 --
 # both MUST stay "same". The next profile's OCR'd token ("qelix") against the stored name
 # ("zorva") -- SequenceMatcher(None, "qelix", "zorva"), the call's real argument order --
-# scores 0.00 (as does the reverse order) -- MUST become "new". 0.6
-# sits comfortably below every observed misread and far above every observed genuine
-# difference, i.e. on the safe side of both real data points this fix was built to get right.
+# scores 0.00 (as does the reverse order) -- MUST become "new". The 2026-09-01 Marina ->
+# Sara Training Like added a closer measured negative: Sara(Marina)=0.60, and the old inclusive
+# 0.60 boundary called that clean repeated header read the stored name. 0.70 sits midway between
+# that live negative and the 0.80 live OCR near-misses above. A still-closer Sophia -> Sofia
+# Training pair is resolved by post-action content corroboration, not by weakening this shared
+# passive-observation guard; see `_training_exact_top_name_conflict_candidate`.
 #
 # Ratio alone is not enough: it was calibrated only against substitution-style misreads and
-# scores BELOW 0.6 for a plain TRUNCATION of a longer name ("Zorva" read as "Zo" is 0.57,
+# scores BELOW 0.7 for a plain TRUNCATION of a longer name ("Zorva" read as "Zo" is 0.57,
 # "Katherine" read as "Kat" is 0.50, as "Ka" is 0.36) -- a common tesseract failure (a partial
 # crop at the band edge, tight kerning), and truncation gets WORSE, not better, the longer the
 # stored name is. _name_token_matches below adds a prefix test specifically to close that hole
@@ -1900,7 +1944,7 @@ def _name_token_matches(seen: str, stored: str) -> bool:
         Zorva(Zo)=0.57, Samantha(Sam)=0.55                         -- STORED name was truncated
       genuine differences -- still "new" (no prefix relationship, ratio stays below bar):
         Zorva(Qelix)=0.00, Qelix(Zorva)=0.00, Katherine(Michelle)=0.35,
-        Zorva(Signals)=0.17
+        Zorva(Signals)=0.17, Sara(Marina)=0.60
       genuine same-name misreads -- unaffected, still "same" via the ratio path alone:
         Zorba(Zorva)=0.80, Zorna(Zorva)=0.80, Zorla(Zorva)=0.80, orva(Zorva)=0.89
     """
@@ -2199,12 +2243,18 @@ class AndroidDriver(DatingAppDriver):
         # keeps, not a second copy of that validation.
         self.still_photo_dwell_candidates = max(
             1, int(app_cfg.get("still_photo_dwell_candidates", 3)))
+        # Worker installs this only for the duration of one profile capture. It is a Hub
+        # liveness cue, not a driver control channel: callback failures are ignored and it
+        # cannot request, alter, or interrupt device input.
+        self._capture_progress_callback = None
+        self._capture_progress_detail: str | None = None
         self.dwell_s = float(app_cfg.get("dwell_s", spec.dwell_s))
         self.read_scroll_frac = float(app_cfg.get("read_scroll_frac", spec.read_scroll_frac))
-        # Returning to the top is navigation, not the measured content-reading cadence.  Hinge
-        # supports a much longer manual return stroke, so keep an independent, validated
-        # minimum here.  Never let it be shorter than the forward read step: that would revive
-        # the historical under-travel bug this ledger exists to prevent.
+        # Returning to the top is navigation, not the measured content-reading cadence. Hinge
+        # keeps this setting only for config compatibility: its recovery implementation caps
+        # the actual stroke to the safe central read corridor, and config validation rejects a
+        # larger Hinge value before a session opens. Other Android bindings retain their own
+        # independent return behavior.
         self.rewind_scroll_frac = float(app_cfg.get(
             "rewind_scroll_frac", self.read_scroll_frac))
         self.change_threshold = float(app_cfg.get("change_threshold", spec.change_threshold))
@@ -2289,6 +2339,14 @@ class AndroidDriver(DatingAppDriver):
                 identity_band=self.identity_band, content_band=self.content_band))
         self._targeting_runtime_version_name: str | None = None
         self._targeting_runtime_frame_size: tuple[int, int] | None = None
+        self._targeting_binding_fetched = False
+        # Memoizes the ADB round trip (`dumpsys package` + `screen_size()`) that populates the
+        # two attributes above -- NOT the pass/fail verdict against `self.targeting_calibration`,
+        # which stays cheap to recompute on every call. See
+        # _refresh_targeting_calibration_binding's docstring for the ~6-round-trips-per-action
+        # cost this exists to avoid. Cleared at the same two points that already invalidate the
+        # item table (_index_captured_items, _invalidate_item_index), so a package update or
+        # display-mode change between profiles is still caught on the very next read.
         self.observe_name_ocr = bool(app_cfg.get("observe_name_ocr", True))
         self._touch_watcher: TouchWatcher | None = None   # started in open_session, closed in close()
         self._touch_watch_health_warned = False   # print the event_count==0 warning at most once/run
@@ -2364,6 +2422,10 @@ class AndroidDriver(DatingAppDriver):
         # not just every profile, so an observe_scroll debug record logged right after can
         # report exactly what was seen at the moment THAT verdict was decided.
         self._identity_top_name_read = None
+        # Which calibrated crop produced `_identity_top_name_read`. Unlike
+        # `_identity_name_candidate_source`, this is retained for both same and new reads so
+        # Training can corroborate a clean exact spelling conflict with a content mismatch.
+        self._identity_top_name_read_source = None
         # What the identity OCR concluded ('same' / 'new'), or None if it never ran or never
         # reached a verdict this call. Reset alongside _identity_top_name_read, for the same
         # reason. wait_for_decision reads this immediately after the FIRST _identity_of(cur)
@@ -2414,6 +2476,10 @@ class AndroidDriver(DatingAppDriver):
         # Keeping the structured fact lets a report distinguish a genuinely moving/stuck screen
         # from a settled top whose filter-chip chrome needs a new calibrated fingerprint.
         self._last_scroll_top_diagnostic: dict[str, object] | None = None
+        # The first and final frames of ONE failed bounded rewind, retained only by the recovery
+        # action with DebugLog's existing keep_before/keep_after pool. They are evidence of why
+        # a real device input was refused, not an unbounded per-attempt screenshot stream.
+        self._last_scroll_top_failure_frames: tuple[bytes, bytes] | None = None
         # Is doc 5.5's affirmative scroll-top signal ALIVE on the build this session is driving?
         # `scroll_top.band_pinned_evidence`'s answer, latched here as `(binding, evidence)` and
         # only ever when it proves `pinned=True` -- see `_latch_scroll_top_pinning` for where the
@@ -2577,6 +2643,25 @@ class AndroidDriver(DatingAppDriver):
             raise ValueError("a Hinge driver cannot be rebound to a different Worker run id")
         self._debug_run_id = run_id
 
+    def set_capture_progress_callback(self, callback) -> None:
+        """Install/clear Worker-owned, informational profile-capture progress reporting."""
+        if callback is not None and not callable(callback):
+            raise TypeError("capture progress callback must be callable or None")
+        self._capture_progress_callback = callback
+        self._capture_progress_detail = None
+
+    def _note_capture_progress(self, detail: str | None = None) -> None:
+        """Best-effort Hub heartbeat; it must never affect capture or touch behavior."""
+        if detail is not None:
+            self._capture_progress_detail = detail
+        callback = self._capture_progress_callback
+        if callback is None or not self._capture_progress_detail:
+            return
+        try:
+            callback(self._capture_progress_detail)
+        except Exception:  # noqa: BLE001 -- status plumbing is never a capture dependency
+            pass
+
     def open_session(self) -> None:
         # The last gate before this driver can touch a real phone with a real account on it.
         # Constructing an AndroidDriver is inert (no adb, no touch transport until below), so
@@ -2604,57 +2689,66 @@ class AndroidDriver(DatingAppDriver):
         if self.serial and self.serial not in ready:
             raise DriverClosed(f"{self.spec.app} device {self.serial} not connected (adb devices: {ready})")
         self._adb.screen_size()                       # cache geometry for clamping/coords
+        # A new session must re-read the device even on a driver object that already ran one:
+        # _refresh_targeting_calibration_binding memoizes its dumpsys/screen_size read for one
+        # item-index lifetime, and close() leaves that flag set. Nothing in production reopens a
+        # driver today, but "the first read of a session is always live" is the property that
+        # memo is safe under -- keep it true here rather than relying on that staying so.
+        self._targeting_binding_fetched = False
         self._refresh_targeting_calibration_binding()
         self._adb.shell(
             f"monkey -p {quote_android_package_id(self.package)} "
             "-c android.intent.category.LAUNCHER 1")
         time.sleep(human_cooldown(1.5))               # let the app come to the foreground
         self._touch = self._make_touch()              # genuine UHID touches; adb input fallback
-        self._observe_ready = True                    # only True once fully open (touch ready too)
-        if self.observe_name_ocr and shutil.which("tesseract") is None:
-            # A missing OCR binary cannot weaken the false-PASS guarantee: unresolved identity
-            # stays waiting. It can reduce recall, however, because a real next card at scroll
-            # top has generic filter-chip pixels and needs two matching different-name reads to
-            # become a positive `new/new` decision. One line, once, so that conservative stall
-            # is diagnosable rather than looking like a silent detector failure.
-            print("profile-name OCR unavailable (tesseract not on PATH); identity safety still "
-                  "holds, but a scroll-top card advance may remain unresolved.")
-        if self.observe_touch_watch and not self._auto_session:
-            # Gesture corroboration (layer 3), OBSERVE SESSIONS ONLY -- see self._auto_session
-            # in __init__. Its whole job is to prove a HUMAN pressed something, which only
-            # wait_for_decision ever asks; auto mode drives itself through like()/dislike()
-            # and never calls wait_for_decision at all, so attaching here would hold a
-            # persistent `adb shell getevent` subprocess open for an entire autonomous run
-            # with no reader. That is not merely wasteful: ops/ANTI-BOT-RESEARCH.md's
-            # 2026-08-10 (b) addendum scoped the accepted risk of holding that subprocess open
-            # to observe sessions specifically, so quietly widening it to autonomous runs
-            # would spend risk the log says was never accepted.
-            #
-            # Unlike the OCR probe above, this one DOES fail
-            # loud: without a live touch stream, a card advance can only ever be corroborated
-            # by identity + deck-ready (layers 1/2) -- narrower proof than what
-            # observe_touch_watch=True was asking for. Silently running with it anyway would
-            # be exactly the kind of quiet capability downgrade touch_backend's own "auto
-            # REQUIRES UHID, never silently downgrades" contract exists to prevent (see
-            # _make_touch above) -- so this raises the same way, naming the config key that
-            # accepts the narrower proof deliberately.
-            watcher = TouchWatcher(self.adb_path, self.serial, self._adb.screen_size())
-            try:
-                watcher.start()
-            except TouchWatchUnavailable as exc:
-                raise DriverClosed(
-                    f"{self.spec.app}: gesture corroboration (observe_touch_watch) could not "
-                    f"attach to the device's touch event stream ({exc}). Running observe mode "
-                    f"without it would silently narrow PASS proof back to identity + deck-"
-                    f"ready alone, with no evidence of an actual tap -- fine as a deliberate "
-                    f"choice, not as a silent fallback. Fix the device/permissions (see "
-                    f"ops/ANTI-BOT-RESEARCH.md), or set apps.{self.spec.app}.observe_touch_watch: "
-                    f"false to accept the narrower proof on purpose."
-                ) from exc
-            self._touch_watcher = watcher
-            print(f"{self.spec.app}: touch watcher attached on {watcher.device_path} "
-                  f"({watcher.device_name!r}) — gesture corroboration is live for observe mode.")
         try:
+            self._observe_ready = True                # only True once fully open (touch ready too)
+            if self.observe_name_ocr and shutil.which("tesseract") is None:
+                # A missing OCR binary cannot weaken the false-PASS guarantee: unresolved identity
+                # stays waiting. It can reduce recall, however, because a real next card at scroll
+                # top has generic filter-chip pixels and needs two matching different-name reads to
+                # become a positive `new/new` decision. One line, once, so that conservative stall
+                # is diagnosable rather than looking like a silent detector failure.
+                print("profile-name OCR unavailable (tesseract not on PATH); identity safety "
+                      "still holds, but a scroll-top card advance may remain unresolved.")
+            if self.observe_touch_watch and not self._auto_session:
+                # Gesture corroboration (layer 3), OBSERVE SESSIONS ONLY -- see self._auto_session
+                # in __init__. Its whole job is to prove a HUMAN pressed something, which only
+                # wait_for_decision ever asks; auto mode drives itself through like()/dislike()
+                # and never calls wait_for_decision at all, so attaching here would hold a
+                # persistent `adb shell getevent` subprocess open for an entire autonomous run
+                # with no reader. That is not merely wasteful: ops/ANTI-BOT-RESEARCH.md's
+                # 2026-08-10 (b) addendum scoped the accepted risk of holding that subprocess open
+                # to observe sessions specifically, so quietly widening it to autonomous runs
+                # would spend risk the log says was never accepted.
+                #
+                # Unlike the OCR probe above, this one DOES fail
+                # loud: without a live touch stream, a card advance can only ever be corroborated
+                # by identity + deck-ready (layers 1/2) -- narrower proof than what
+                # observe_touch_watch=True was asking for. Silently running with it anyway would
+                # be exactly the kind of quiet capability downgrade touch_backend's own "auto
+                # REQUIRES UHID, never silently downgrades" contract exists to prevent (see
+                # _make_touch above) -- so this raises the same way, naming the config key that
+                # accepts the narrower proof deliberately. It propagates out to the enclosing
+                # guard below, which is what actually releases the touch transport/ADB link.
+                watcher = TouchWatcher(self.adb_path, self.serial, self._adb.screen_size())
+                try:
+                    watcher.start()
+                except TouchWatchUnavailable as exc:
+                    raise DriverClosed(
+                        f"{self.spec.app}: gesture corroboration (observe_touch_watch) could "
+                        f"not attach to the device's touch event stream ({exc}). Running "
+                        f"observe mode without it would silently narrow PASS proof back to "
+                        f"identity + deck-ready alone, with no evidence of an actual tap -- "
+                        f"fine as a deliberate choice, not as a silent fallback. Fix the "
+                        f"device/permissions (see ops/ANTI-BOT-RESEARCH.md), or set "
+                        f"apps.{self.spec.app}.observe_touch_watch: false to accept the "
+                        f"narrower proof on purpose."
+                    ) from exc
+                self._touch_watcher = watcher
+                print(f"{self.spec.app}: touch watcher attached on {watcher.device_path} "
+                      f"({watcher.device_name!r}) — gesture corroboration is live for observe "
+                      f"mode.")
             if self.debug_log:
                 self._dbg = open_debug_log(self.debug_dir, run_id=self._debug_run_id,
                                            keep_runs=self.debug_keep_runs,
@@ -2666,12 +2760,19 @@ class AndroidDriver(DatingAppDriver):
                     self._dbg.action("observe_release_run_binding", run_id=self._debug_run_id,
                                      app=self.spec.app)
         except BaseException:
-            # Anything after the watcher attaches must hand the subprocess back if it fails.
-            # open_session() raising is NOT followed by a close() call -- the worker treats a
-            # failed open as "this driver never opened" and moves on -- so without this the
-            # `adb shell getevent` process started a few lines above outlives the session that
-            # started it, invisibly, holding the device's touch stream until the whole hub
-            # exits. close() stays idempotent, so the ordinary teardown path is unaffected.
+            # Anything after the UHID touch transport registers (the line right above this
+            # try) must hand it back if open_session() fails partway through -- open_session()
+            # raising is NOT followed by a close() call; the worker treats a failed open as
+            # "this driver never opened" and moves on (Worker._open_session() only flips
+            # _session_opened, which gates Worker.run()'s close(), AFTER open_session()
+            # returns). Without this guard covering the whole rest of the method, a
+            # DriverClosed raised out of the observe_touch_watch block above (its touch
+            # watcher failing to start) would leak the just-registered virtual touchscreen and
+            # the ADB link right past this except -- previously this guard only opened at the
+            # debug-log block below, so the watcher block was NOT covered, and before that at
+            # all this repo already leaked 7 virtual touchscreens once from a different
+            # trigger (see uhid-touch-recipe notes) -- same failure class, different origin
+            # line. close() stays idempotent, so the ordinary teardown path is unaffected.
             self.close()
             raise
 
@@ -3516,22 +3617,23 @@ class AndroidDriver(DatingAppDriver):
     def set_auto_session_policy(self, policy) -> None:
         """Attach Worker-owned behavior state for this autonomous session.
 
-        This redesign is calibrated for Hinge only. AndroidDriver also backs an
-        experimental Bumble path whose paid-control zones and reading geometry are
-        different, so it must retain its legacy plan. Observe mode never calls this
-        method and likewise retains calibrated legacy behavior.
+        This redesign is calibrated only for apps whose spec declares
+        `auto_policy_calibrated=True` (AndroidAppSpec, android_spec.py) -- Hinge today.
+        AndroidDriver also backs an experimental Bumble path whose paid-control zones and
+        reading geometry are different, so it must retain its legacy plan. Observe mode never
+        calls this method and likewise retains calibrated legacy behavior.
 
         Also the ONLY signal this driver has that it is running an AUTONOMOUS session at
         all -- see self._auto_session's docstring in __init__ and open_session()'s touch-
         watcher gate. Worker._auto_loop calls this, unconditionally for any driver that
         defines it, before open_session(); Worker._observe_loop never does. So
         `self._auto_session = True` here is UNCONDITIONAL (unlike self._auto_policy right
-        below, which stays app-gated to Hinge's calibrated behavior only) -- it just
-        records which loop is driving this session, independent of which app it is or
-        whether that app's policy object ends up used for anything.
+        below, which stays gated to auto_policy_calibrated apps only) -- it just records
+        which loop is driving this session, independent of which app it is or whether that
+        app's policy object ends up used for anything.
         """
         self._auto_session = True
-        self._auto_policy = policy if self.spec.app == "hinge" else None
+        self._auto_policy = policy if self.spec.auto_policy_calibrated else None
 
     def set_training_decision(self, decision) -> None:
         """Install/clear the one-card human decision callback for Training mode.
@@ -3742,15 +3844,17 @@ class AndroidDriver(DatingAppDriver):
 
     @contextmanager
     def _observe_input_lease(self, operation: str):
-        """Serialize Hinge OBSERVE reads/scrolls with a live decision wait.
+        """Serialize OBSERVE reads/scrolls with a live decision wait, on apps that need it.
 
         A review controller may take screenshots while the Worker is waiting, but it must not
         call ``current_profile`` or ``_scroll_to_top``: both move the same card and can make a
         header reflow look like a PASS. This fail-closed lease covers same-process helpers and
-        separately launched controllers without touching ADB. It is intentionally only used by
-        Hinge's passive OBSERVE input paths; auto capture/navigation retain their existing flow.
+        separately launched controllers without touching ADB. It is a no-op everywhere the
+        app's spec does not declare `observe_input_serialized=True` (AndroidAppSpec,
+        android_spec.py) -- Hinge's passive OBSERVE input paths are the only ones calibrated
+        for it today; auto capture/navigation retain their existing flow on every app.
         """
-        if self.spec.app != "hinge":
+        if not self.spec.observe_input_serialized:
             yield
             return
         thread_id = threading.get_ident()
@@ -3963,12 +4067,12 @@ class AndroidDriver(DatingAppDriver):
           leaves the profile scrolled down by N * (read_scroll_frac - 0.45) after N swipes,
           which compounds on a long profile (up to ~0.7 screen-heights short at the default
           scroll_captures=8). The two fractions must be tied together, not maintained as
-          separate magic numbers that can drift apart again. ``rewind_scroll_frac`` is a
-          separately configured *minimum* for return strokes, so it may be deliberately longer
-          (the owner can return a Hinge profile with one long flick) but can never undercut a
-          recorded forward step. Auto mode still varies the return lane and distance around that
-          floor. In every mode the screenshot top/settle check below, not a planned swipe count,
-          decides when the rewind is done.
+          separate magic numbers that can drift apart again. On Hinge the return stroke is capped
+          at the ordinary central read corridor: the prior 0.78h fast flick ended in fixed bottom
+          navigation and could be swallowed. Repeated bounded strokes, not a configurable long
+          flick, supply any additional travel. Other Android bindings retain their independent
+          configured return behavior. In every mode the screenshot top check below, not a
+          planned swipe count, decides when the rewind is done.
 
         On apps with an ``identity_band`` (Hinge), screenshot no-motion is only evidence that
         *this swipe* did not move the page.  It is NOT evidence that the page is at its top: a
@@ -3997,6 +4101,7 @@ class AndroidDriver(DatingAppDriver):
         # This is an attempt-local diagnostic.  Do not let a prior failed rewind explain this
         # one: its final detector result is the only evidence a recovery-spent record may name.
         self._last_scroll_top_diagnostic = None
+        self._last_scroll_top_failure_frames = None
         ledger = list(self._capture_scroll_ledger)
 
         # Compatibility for tests/tools (and an in-flight pre-ledger driver) that only set
@@ -4011,16 +4116,56 @@ class AndroidDriver(DatingAppDriver):
             # under-travel, not a target.  Screenshot settling still ends the loop as soon as
             # the real top is reached.  The bound prevents animated/video cards from spinning.
             max_swipes = len(ledger) + 3
-        # Never travel less than a recorded read step. Hinge's configured return stroke may be
-        # deliberately longer than that to replace a long replay with one human-scale flick.
-        legacy_frac = max(self.read_scroll_frac, self.rewind_scroll_frac)
+        # An app whose spec caps the rewind (safe_rewind_max_frac -- see that field's comment
+        # on AndroidAppSpec, android_spec.py, for the de89edfe05e1 / 0.78h-flick history) may
+        # never use the old long, fast flick: its endpoint landed in the fixed bottom
+        # navigation on the calibrated phone, where a custom view can absorb the entire
+        # gesture. Keep it in the same central corridor as a read-scroll instead. Config
+        # validation rejects a larger rewind fraction, and this runtime invariant also protects
+        # direct/test construction from putting a recovery release back in fixed chrome. None
+        # means this app declares no such cap -- the generic max(...) undo distance below.
+        safe_rewind_frac = (min(self.read_scroll_frac, self.spec.safe_rewind_max_frac)
+                             if self.spec.safe_rewind_max_frac is not None else None)
+        legacy_frac = (safe_rewind_frac if safe_rewind_frac is not None
+                       else max(self.read_scroll_frac, self.rewind_scroll_frac))
         mean_forward = (sum(frac for frac, _lane in ledger) / len(ledger)
                         if ledger else legacy_frac)
         settled = False
+        # Keep a bounded account of a failed Hinge rewind. The old report had only its last
+        # verdict, which proved the card was still scrolled but could not say whether any of the
+        # twelve delivered gestures changed the screen. Record detector measurements, geometry,
+        # timing, and a before/after movement fact for each already-bounded swipe; retain only
+        # the first and final frames on the single recovery action, never per-attempt screenshots.
+        initial_detector: dict[str, object] | None = None
+        rewind_attempts: list[dict[str, object]] = []
+        failure_before: bytes | None = None
+        failure_after: bytes | None = None
+
+        def detector_fact(frame: bytes) -> tuple[bool, dict[str, object]]:
+            try:
+                verdict = confirm_scroll_top(
+                    frame, identity_band=self.identity_band,
+                    pinned_evidence=self._pinned_band_evidence())
+            except ScrollTopError as exc:
+                return False, {"scroll_top_error": str(exc) or type(exc).__name__}
+            return bool(verdict.confirmed), {
+                "scroll_top_state": getattr(
+                    verdict, "state", "confirmed_top" if verdict.confirmed else "not recorded"),
+                "scroll_top_distance": getattr(verdict, "distance", None),
+                "scroll_top_alignment_offset_px": getattr(
+                    verdict, "alignment_offset_px", None),
+            }
+
         for _ in range(max_swipes):
             if should_stop is not None and should_stop():
                 return False               # see STOP above: do NOT fall through to the reset
-            if policy_mode and ledger:
+            if safe_rewind_frac is not None:
+                # Keep both endpoints and the lane inside the app's declared safe corridor
+                # (spec.safe_rewind_max_frac). A bounded loop, not a screen-spanning flick,
+                # supplies any extra travel.
+                undo_frac = safe_rewind_frac
+                x_frac = 0.5
+            elif policy_mode and ledger:
                 # Undo in broader, independently varied strokes.  It intentionally is not a
                 # reverse replay of N forward gestures: real people return to the top with a
                 # different hand motion/count, while the settle check below remains the source
@@ -4035,46 +4180,48 @@ class AndroidDriver(DatingAppDriver):
             y_far = int(h * (0.5 + undo_frac / 2))
             x = int(w * x_frac)
             before = self._screencap()
+            if failure_before is None:
+                failure_before = before
+            if self.identity_band is not None and initial_detector is None:
+                _initial_confirmed, initial_detector = detector_fact(before)
             if should_stop is not None and should_stop():
                 return False
-            if self.rewind_scroll_frac > self.read_scroll_frac:
-                # The dedicated long return stroke is a fast flick, not a sequence of ordinary
-                # read drags. It is only reached while returning from an already-complete
-                # capture; no profile frames, labels, taps, or text are produced here.
-                self._swipe(x, y_near, x, y_far,
-                            duration_ms=_FAST_REWIND_SWIPE_DURATION_MS)
-            else:
-                self._swipe(x, y_near, x, y_far)
+            # Standard swipe timing is intentional.  The former 160ms Hinge flick was coupled
+            # with an unsafe release point and was repeatedly swallowed by the live card.
+            self._swipe(x, y_near, x, y_far)
             if not self._interruptible_sleep(human_delay(0.3), should_stop):
                 return False               # stop landed inside the settle wait; same rule as above
             after = self._screencap()
-            # A long return flick can reach the real profile top in one gesture.  When the app
-            # supplies the calibrated identity band, only its affirmative filter-chip verdict
-            # can prove that fact.  In particular, a refuted/unknown/error verdict plus
+            failure_after = after
+            # When Hinge supplies the calibrated identity band, only its affirmative filter-chip
+            # verdict can prove arrival. In particular, a refuted/unknown/error verdict plus
             # byte-identical frames is a failed swipe while still scrolled, not a successful
             # rewind; retry within the bounded ledger-derived budget and preserve that ledger on
-            # failure for the next recovery attempt.  Generic apps have no such signal, so keep
+            # failure for the next recovery attempt. Generic apps have no such signal, so keep
             # their established no-motion heuristic unchanged.
             if self.identity_band is not None:
-                try:
-                    verdict = confirm_scroll_top(
-                        after, identity_band=self.identity_band,
-                        pinned_evidence=self._pinned_band_evidence())
-                    self._last_scroll_top_diagnostic = {
-                        "scroll_top_state": getattr(
-                            verdict, "state",
-                            "confirmed_top" if verdict.confirmed else "not recorded"),
-                        "scroll_top_distance": getattr(verdict, "distance", None),
-                        "scroll_top_alignment_offset_px": getattr(
-                            verdict, "alignment_offset_px", None),
-                    }
-                    if verdict.confirmed:
-                        settled = True
-                        break
-                except ScrollTopError as exc:
-                    self._last_scroll_top_diagnostic = {
-                        "scroll_top_error": str(exc) or type(exc).__name__,
-                    }
+                confirmed, final_detector = detector_fact(after)
+                if confirmed:
+                    changed = None  # arrival proof is stronger than a motion diagnostic
+                else:
+                    try:
+                        changed = self._changed(before, after)
+                    except Exception:  # noqa: BLE001 -- diagnostics cannot alter recovery semantics
+                        changed = None
+                rewind_attempts.append({
+                    "attempt": len(rewind_attempts) + 1,
+                    "start": [x, y_near], "end": [x, y_far],
+                    "duration_ms": 450,
+                    "frame_changed": changed,
+                    "detector": final_detector,
+                })
+                self._last_scroll_top_diagnostic = dict(final_detector)
+                if initial_detector is not None:
+                    self._last_scroll_top_diagnostic["scroll_top_initial"] = initial_detector
+                self._last_scroll_top_diagnostic["scroll_top_attempts"] = rewind_attempts
+                if confirmed:
+                    settled = True
+                    break
                 continue
             if not self._changed(before, after):
                 settled = True
@@ -4082,8 +4229,11 @@ class AndroidDriver(DatingAppDriver):
         if settled:
             self._capture_scrolls = 0
             self._capture_scroll_ledger = []   # affirmatively (or generically) confirmed top
+            self._last_scroll_top_failure_frames = None
             self._clear_capture_entry_recovery()
         elif self.identity_band is not None:
+            if failure_before is not None and failure_after is not None:
+                self._last_scroll_top_failure_frames = (failure_before, failure_after)
             self._spend_capture_entry_recovery(
                 "a bounded scroll-top rewind finished without affirmative filter-chip proof",
                 source="_scroll_to_top_unlocked")
@@ -4140,7 +4290,12 @@ class AndroidDriver(DatingAppDriver):
             try:
                 detector = (self._last_scroll_top_diagnostic
                             if source == "_scroll_to_top_unlocked" else None)
+                frames = (self._last_scroll_top_failure_frames
+                          if source == "_scroll_to_top_unlocked" else None)
                 self._dbg.action("capture_entry_recovery_spent", reason=reason, source=source,
+                                 before=frames[0] if frames is not None else None,
+                                 after=frames[1] if frames is not None else None,
+                                 keep_before=frames is not None, keep_after=frames is not None,
                                  **(detector or {}))
             except Exception:  # noqa: BLE001 — diagnostics must not change recovery safety
                 pass
@@ -4760,6 +4915,96 @@ class AndroidDriver(DatingAppDriver):
         except ScrollTopError:
             return False
 
+    def _restart_index_from_confirmed_top(self, photos: list[bytes], index: ItemIndex,
+                                          animation_markers: tuple[bool, ...],
+                                          video_mute_markers: tuple[VideoMuteMarker, ...],
+                                          ) -> tuple[ItemIndex, int] | None:
+        """Select one independently proved restarted top-to-bottom sweep, if there is one.
+
+        A capture normally begins at Hinge's filter-chip scroll top exactly once.  The reported
+        Alyssa run instead contained a complete first sweep, then a real scroll-top frame, then a
+        second forward sweep.  Joining those two coordinate systems is precisely the phantom-item
+        failure ``item_index`` must refuse.  This driver-level recovery does not repair that
+        correspondence: it discards the obsolete prefix and rebuilds only the later sweep.
+
+        A top-looking identity band alone is not enough to discard any evidence.  The one and
+        only failed correspondence pair must end at that frame; it must independently pass the
+        affirmative non-pinned scroll-top detector; the original and rebuilt sweeps must yield
+        the same exact identity fingerprint, band and grid; and the rebuilt sweep must be both
+        usable and complete to the profile end.  Missing proof leaves the original refusal
+        intact.  The returned index keeps source-frame provenance in the ORIGINAL capture space,
+        so crops never accidentally use the suffix's local indices against the full frame list.
+        """
+        failed_pairs = tuple(
+            pair_index for pair_index, shift in enumerate(index.shifts)
+            if shift.delta_px is None)
+        if (len(photos) < 3 or len(failed_pairs) != 1 or not index.identity.known
+                or self._pinned_band_evidence() is not None):
+            return None
+        if (len(animation_markers) != len(photos)
+                or any(not isinstance(marker, VideoMuteMarker)
+                       for marker in video_mute_markers)):
+            return None
+        restart_at = failed_pairs[0] + 1
+        if not 0 < restart_at < len(photos) - 2:
+            return None
+        try:
+            top = confirm_scroll_top(
+                photos[restart_at], identity_band=self.identity_band,
+                pinned_evidence=self._pinned_band_evidence())
+        except ScrollTopError:
+            return None
+        if not top.confirmed:
+            return None
+
+        # There is exactly one legitimate top in a selected suffix: its first frame.  A second
+        # affirmative top would describe another unconnected sweep, and choosing either one
+        # would be evidence selection.  Frame zero is the expected original top and is excluded.
+        for frame_index, frame in enumerate(photos[1:], start=1):
+            if frame_index == restart_at:
+                continue
+            try:
+                later_top = confirm_scroll_top(
+                    frame, identity_band=self.identity_band,
+                    pinned_evidence=self._pinned_band_evidence())
+            except ScrollTopError:
+                return None
+            if later_top.confirmed:
+                return None
+
+        suffix = photos[restart_at:]
+        suffix_animation = animation_markers[restart_at:]
+        suffix_markers = tuple(
+            VideoMuteMarker(
+                frame_index=marker.frame_index - restart_at,
+                x=marker.x, y=marker.y, score=marker.score)
+            for marker in video_mute_markers if marker.frame_index >= restart_at)
+        try:
+            rebuilt = build_item_index(
+                suffix, content_band=self.content_band,
+                like_template=self._template("like"),
+                like_threshold=_LIKE_MATCH_THRESHOLD,
+                at_scroll_top=True, identity_band=self.identity_band,
+                animation_markers=suffix_animation,
+                video_mute_markers=suffix_markers)
+        except (ItemIndexError, SegmentationError, ShiftEstimationError):
+            return None
+        local_source = tuple(rebuilt.source_frame_indices)
+        if (not rebuilt.usable or not rebuilt.reached_end or not rebuilt.identity.known
+                or index.identity.fingerprint != rebuilt.identity.fingerprint
+                or index.identity.band != rebuilt.identity.band
+                or index.identity.grid != rebuilt.identity.grid
+                or len(local_source) != len(rebuilt.frames)
+                or any(not isinstance(frame_index, int) or isinstance(frame_index, bool)
+                       or not 0 <= frame_index < len(suffix)
+                       for frame_index in local_source)):
+            return None
+        return dataclasses.replace(
+            rebuilt,
+            source_frame_indices=tuple(
+                restart_at + frame_index for frame_index in local_source),
+        ), restart_at
+
     def _plan_enumeration_step(self, frame: bytes, x_frac: float,
                                *, allow_segmentation_failure_fallback: bool = False):
         """Size the next enumeration scroll against what THIS frame's own geometry needs for
@@ -5140,6 +5385,7 @@ class AndroidDriver(DatingAppDriver):
         frames: list[bytes] = []
         first_at = last_at = 0.0
         for position in range(count):
+            self._note_capture_progress()
             if position:
                 # Schedule each observation against the first completed screencap.  ADB
                 # screencaps take material wall time on a real device (~0.7s in the run that
@@ -5177,18 +5423,45 @@ class AndroidDriver(DatingAppDriver):
     def _measured_page_shift(self, before: bytes, after: bytes) -> int | None:
         """How far the page moved between two frames, or None when frameshift could not tell.
 
-        Only a quorate `SHIFT_MEASURED` is an answer; a refusal, a saturation report or an
-        estimator failure is None, and every caller treats None as "this pass cannot claim to
-        know where the card is now" rather than falling back to the distance it asked for. Same
-        contract, and same reason, as `_static_pair_is_the_bottom`: this is the one comparator in
-        the driver that says "I cannot tell" instead of guessing, and the whole value of the
-        re-attach probe is that it never assumes its own gestures landed.
+        Only a quorate `SHIFT_MEASURED` is an answer; a saturation report, an estimator failure,
+        or two directions that both refuse are None, and every caller treats None as "this pass
+        cannot claim to know where the card is now" rather than falling back to the distance it
+        asked for. Same contract, and same reason, as `_static_pair_is_the_bottom`: this is the
+        one comparator in the driver that says "I cannot tell" instead of guessing, and the
+        whole value of the re-attach probe is that it never assumes its own gestures landed.
+
+        THE REVERSE RECOVERY ITSELF now lives in `frameshift.estimate_shift_with_reverse_recovery`
+        (2026-09-02): NCC is directional -- strips are cut from the first frame and searched in
+        the second, so an autoplay-heavy pair can leave too few stable source strips in one
+        direction while the exact same calibrated estimator reaches its ordinary quorum in the
+        other -- and `item_nav._navigation_step_shift` needed the identical policy for the
+        ascending count's own gesture, so it had been independently re-derived twice. Only
+        `SHIFT_NO_CONSENSUS` earns a reverse attempt; every other refusal class stays terminal,
+        in particular a beyond-window result must not be contradicted by a reverse search that
+        happened to lock onto some nearer repeated content. What stays HERE is the one piece
+        unique to this call site: the debug row below, which `_navigation_step_shift`'s own
+        caller does not want in this shape.
         """
         try:
-            shift = estimate_shift(before, after, content_band=self.content_band)
+            _result, shift, reverse = estimate_shift_with_reverse_recovery(
+                before, after, content_band=self.content_band, estimator=estimate_shift)
         except ShiftEstimationError:
             return None
-        return shift.delta_px if shift.status == SHIFT_MEASURED else None
+        if shift.status == SHIFT_MEASURED:
+            return shift.delta_px
+        if (shift.status != SHIFT_NO_CONSENSUS or reverse is None
+                or reverse.status != SHIFT_MEASURED):
+            return None
+        measured = -int(reverse.delta_px)
+        if self._dbg is not None:
+            try:
+                self._dbg.action(
+                    "page_shift_reverse_measurement", delta_px=measured,
+                    forward_status=shift.status, forward_reason=shift.reason,
+                    reverse_status=reverse.status, reverse_reason=reverse.reason)
+            except Exception:  # noqa: BLE001 -- diagnostics never alter shift authority
+                pass
+        return measured
 
     @staticmethod
     def _rebase_item_index_for_anchor(index, page_shift_px: int):
@@ -5523,11 +5796,15 @@ class AndroidDriver(DatingAppDriver):
             except Exception:  # noqa: BLE001 -- diagnostics must never alter capture policy
                 pass
         if eligible is not None and not parked_eligible:
+            self._note_capture_progress(
+                f"verifying still-photo evidence for up to {self.still_photo_dwell_candidates} photo items")
             return self._still_photo_dwell_candidate_walk(
                 {}, frames=frames, index=index, mute_screen=mute_screen,
                 should_stop=should_stop, eligible_heart_ordinals=eligible,
                 entry_anchor=entry_anchor)
 
+        self._note_capture_progress(
+            f"verifying still-photo evidence for photo item 1 of {self.still_photo_dwell_candidates}")
         burst, span_s = self._still_photo_dwell_burst(should_stop)
         if not burst:
             # An empty burst means the passive observation was interrupted (Stop/blank frame) or
@@ -5559,6 +5836,8 @@ class AndroidDriver(DatingAppDriver):
         if target is not None and frames:
             rect = dwell_card_rects(index, len(frames) - 1).get(target)
             if rect is not None:
+                self._note_capture_progress(
+                    f"re-checking photo item 1 of {self.still_photo_dwell_candidates} for motion")
                 probe = self._still_photo_reattach_probe(frames[-1], rect, should_stop)
         if probe is not None:
             evidence = still_photo_reattach_evidence(
@@ -5574,7 +5853,9 @@ class AndroidDriver(DatingAppDriver):
             entry_anchor=entry_anchor)
 
     def _dbg_still_photo_walk_candidate(self, heart_ordinal: int, outcome: str, *,
-                                        frame: bytes | None = None, **fields) -> None:
+                                        frame: bytes | None = None,
+                                        after_frame: bytes | None = None,
+                                        keep_pair: bool = False, **fields) -> None:
         """One best-effort debug row per candidate the K-candidate walk attempted.
 
         Same contract as `_record_still_photo_dwell`: diagnostics only, and a failure to write
@@ -5587,6 +5868,8 @@ class AndroidDriver(DatingAppDriver):
             return
         try:
             self._dbg.action("still_photo_dwell_walk_candidate", before=frame,
+                             after=after_frame, keep_before=keep_pair,
+                             keep_after=keep_pair,
                              heart_ordinal=heart_ordinal, outcome=outcome, **fields)
         except Exception:  # noqa: BLE001 -- diagnostics must never alter a live-run result
             pass
@@ -5641,12 +5924,13 @@ class AndroidDriver(DatingAppDriver):
         Proximity is therefore the only ordering this layer can justify, and bottom-most first is
         cheapest because `navigate_to_item` only walks UP from the entry.
 
-        EVERY NON-TERMINAL HOP RETURNS TO THE ENTRY BEFORE THE NEXT ONE STARTS, because
-        `navigate_to_item` is ASCENDING-ONLY and always anchors on `entry_reference` with a HARD-CODED
-        `reference_offset = int(index.offsets[-1])` (item_nav.py) -- it cannot resume a walk from
-        wherever a previous hop parked the phone, only from the entry the read itself left it at.
-        See `_still_photo_dwell_walk_return_to_entry` for how that return is measured and
-        verified, never assumed.
+        EVERY HOP RETURNS TO THE ENTRY. An intermediate return establishes the next dwell hop's
+        start, while the final return establishes the later model-targeting pass's start:
+        `navigate_to_item` is ASCENDING-ONLY and always anchors on `entry_reference` with a
+        HARD-CODED `reference_offset = int(index.offsets[-1])` (item_nav.py) -- it cannot resume
+        a walk from wherever a prior dwell hop parked the phone, only from the entry the read
+        itself left it at. See `_still_photo_dwell_walk_return_to_entry` for how that return is
+        measured and verified, never assumed.
 
         A REFUSAL ABANDONS THE WALK UNLESS THE PAGE IS PROVABLY BACK AT THE ENTRY; IT NEVER
         FAILS THE CAPTURE (owner rule, restated from the design this implements). An unverified
@@ -5658,11 +5942,12 @@ class AndroidDriver(DatingAppDriver):
         THE ONE EXCEPTION, AND WHY IT IS NOT A RELAXATION (found 2026-08-27, on a live run). A
         post-gesture refusal that carries `item_nav`'s measured `recovery` can be walked back to
         the entry, and `_return_to_entry_from_measured_position` returns an anchor ONLY when the
-        chained legs land inside the ordinary entry gate AND a direct re-measurement against the
-        entry frame agrees with them. That is not "probably fine" -- it is the same measured
-        condition a SUCCESSFUL hop's own return leg has to satisfy before the loop continues past
-        it, so continuing here is exactly as safe as continuing there, and stopping was simply
-        over-conservative. It cost real coverage: on 2026-08-27 one such refusal on the FIRST
+        chained legs land inside the ordinary entry gate and any available direct re-measurement
+        against the entry frame agrees with them. That is not "probably fine" -- it is the same
+        measured condition a SUCCESSFUL hop's own return leg has to satisfy before the loop
+        continues past it, so continuing here is exactly as safe as continuing there, and
+        stopping was simply over-conservative. It cost real coverage: on 2026-08-27 one such
+        refusal on the FIRST
         candidate ended a walk with 1 of 6 photo candidates dwelled, and the one-item payload
         that produced dropped doc 5.6 onto its weakest bound. Bounded by
         `_STILL_PHOTO_WALK_RETURNED_REFUSAL_BUDGET` because, unlike a below-entry skip, each one
@@ -5741,14 +6026,13 @@ class AndroidDriver(DatingAppDriver):
             if walk_index is None:
                 return evidence, None
             nav_index = walk_index.translation.index(heart_ordinal) + 1
-            # A return is an invariant BETWEEN hops, not after the final one.  Keeping the
-            # final, fully measured position as the capture anchor is already supported by
-            # `_index_captured_items`' index rebase, and avoids rejecting a candidate merely
-            # because its (unnecessary) trip back would exceed the small probe-return envelope.
-            # Intermediate hops retain that envelope: their next `navigate_to_item` call has to
-            # start from the enumeration entry, so they still owe a verified return first.
+            # A return is an invariant after every hop. Intermediate hops retain the small,
+            # vetted return-envelope pre-check because another dwell hop follows. The final hop
+            # skips only that pre-check: its dynamic, individually measured return chain still
+            # runs below, because model-selected targeting follows the dwell walk.
             final_hop = (hops_run + 1 >= remaining
-                         or attempt + 1 >= len(candidates))
+                         or attempt + 1 >= len(candidates)
+                         or attempt + 1 >= max_attempts)
             return_budget = (None if final_hop
                              else self._still_photo_dwell_walk_return_budget(
                                  walk_index, nav_index))
@@ -5775,6 +6059,8 @@ class AndroidDriver(DatingAppDriver):
                         return_leg_cap_px=leg_cap_px,
                         return_step_budget=_REATTACH_RETURN_STEPS_SPAN[1])
                     continue
+            self._note_capture_progress(
+                f"verifying photo item {hops_run + 1} of {limit}: moving to the next item")
             candidate_started_at = time.monotonic() if self._dbg is not None else None
             navigation_started_at = candidate_started_at
             try:
@@ -5888,9 +6174,17 @@ class AndroidDriver(DatingAppDriver):
                     # assignment for exactly this reason.
                     entry_anchor = returned_anchor
                     continue
+                navigation_refusal = getattr(exc, "measurement", None)
+                pair_before = getattr(exc, "pair_before", None)
                 self._dbg_still_photo_walk_candidate(
                     heart_ordinal, "unreachable_below_entry" if below_entry
-                    else "navigation_refused", frame=exc.frame, reason=exc.code)
+                    else "navigation_refused",
+                    frame=pair_before if pair_before is not None else exc.frame,
+                    after_frame=exc.frame if pair_before is not None else None,
+                    keep_pair=pair_before is not None,
+                    reason=exc.code, detail=str(exc),
+                    **({"navigation_refusal": navigation_refusal}
+                       if isinstance(navigation_refusal, dict) else {}))
                 if candidate_started_at is not None:
                     self._dbg_still_photo_walk_candidate_timing(
                         heart_ordinal, "unreachable_below_entry" if below_entry
@@ -5921,6 +6215,8 @@ class AndroidDriver(DatingAppDriver):
                             if navigation_started_at is not None else 0.0)
             hops_run += 1
             proof_started_at = time.monotonic() if candidate_started_at is not None else None
+            self._note_capture_progress(
+                f"verifying photo item {hops_run} of {limit} for motion")
             card_evidence, probe, correction = self._still_photo_dwell_over_navigated_target(
                 target, walk_index.block_for(nav_index), heart_ordinal=heart_ordinal,
                 mute_screen=mute_screen, should_stop=should_stop)
@@ -5939,28 +6235,31 @@ class AndroidDriver(DatingAppDriver):
                 self._dbg_still_photo_walk_candidate(
                     heart_ordinal, "parked_unproved", frame=target.frame,
                     climbed_px=target.climbed_px, reason=reason)
-            # A successful final hop has no subsequent ascending navigation to prepare for. Its
-            # navigation, correction and optional probe are all measured legs, so retain their
-            # composed terminal anchor instead of spending a redundant multi-stroke return.
-            # This is not a weaker media decision: the exact same two-burst/reattach evidence
-            # above is still required before the card can be numbered.
+            # Model-selected targeting follows the final dwell hop, even though no further dwell
+            # hops do. Targeting starts bottom-up from the enumeration entry and may choose a
+            # card below this upward-walked candidate, so restore that entry through the same
+            # measured return path as an intermediate hop. An unverified return deliberately
+            # yields no anchor, which the fold turns into a pre-opener refusal.
             if final_hop:
-                terminal_anchor = self._still_photo_dwell_walk_terminal_anchor(
+                return_started_at = time.monotonic() if candidate_started_at is not None else None
+                returned_anchor = self._still_photo_dwell_walk_return_to_entry(
                     target, probe, entry_anchor, correction)
-                if terminal_anchor is None:
+                return_s = (time.monotonic() - return_started_at
+                            if return_started_at is not None else 0.0)
+                if returned_anchor is None:
                     self._dbg_still_photo_walk_candidate(heart_ordinal, "return_unverified")
                     if candidate_started_at is not None:
                         self._dbg_still_photo_walk_candidate_timing(
                             heart_ordinal, "return_unverified", started_at=candidate_started_at,
-                            navigation_s=navigation_s, proof_s=proof_s, return_s=0.0)
+                            navigation_s=navigation_s, proof_s=proof_s, return_s=return_s)
                     return evidence, None
                 if candidate_started_at is not None:
                     self._dbg_still_photo_walk_candidate_timing(
                         heart_ordinal,
                         "proved" if card_evidence is not None else "parked_unproved",
                         started_at=candidate_started_at, navigation_s=navigation_s,
-                        proof_s=proof_s, return_s=0.0)
-                entry_anchor = terminal_anchor
+                        proof_s=proof_s, return_s=return_s)
+                entry_anchor = returned_anchor
                 break
             # UNCONDITIONAL INTERMEDIATE cleanup, on `_still_photo_reattach_probe`'s own
             # precedent (see its
@@ -5995,44 +6294,6 @@ class AndroidDriver(DatingAppDriver):
                     proof_s=proof_s, return_s=return_s)
             entry_anchor = returned_anchor
         return evidence, entry_anchor
-
-    @staticmethod
-    def _still_photo_dwell_walk_terminal_anchor(
-            target, probe, entry_anchor: _MeasuredItemAnchor,
-            correction: _CenteringCorrection | None) -> _MeasuredItemAnchor | None:
-        """Compose the measured anchor left by a final optional dwell hop.
-
-        The normal return helper consumes these same measured legs to get back to the entry.
-        On the final hop there is no later walker that needs that entry, so the composition is
-        sufficient to rebase the item index at the observed terminal frame.  Do not manufacture
-        an anchor from partial or malformed evidence: an unmeasured correction/probe continues
-        to refuse the capture exactly as the return path does.
-        """
-        try:
-            if correction is None:
-                return None
-            climbed_px = target.climbed_px
-            correction_px = correction.total_px
-            entry_shift_px = entry_anchor.page_shift_px
-            if (isinstance(entry_shift_px, bool) or not isinstance(entry_shift_px, int)
-                    or isinstance(climbed_px, bool) or not isinstance(climbed_px, int)
-                    or isinstance(correction_px, bool) or not isinstance(correction_px, int)):
-                return None
-            probe_shift_px = 0
-            frame = correction.frame
-            if probe is not None:
-                probe_shift_px = probe.page_shift_px
-                if isinstance(probe_shift_px, bool) or not isinstance(probe_shift_px, int):
-                    return None
-                if probe.frames:
-                    frame = probe.frames[-1]
-            if not isinstance(frame, bytes):
-                return None
-            return _MeasuredItemAnchor(
-                frame,
-                entry_shift_px - climbed_px + correction_px + probe_shift_px)
-        except (AttributeError, TypeError, ValueError, OverflowError):
-            return None
 
     def _still_photo_dwell_walk_return_budget(self, index, model_index: int) -> tuple[
             int, int, int] | None:
@@ -6325,13 +6586,14 @@ class AndroidDriver(DatingAppDriver):
         max_measurable_step_px = max(1, int(_REATTACH_MAX_EXIT_BAND_FRAC * band_px))
         # Derived from the distance actually owed, unlike the probe's own fixed
         # `_REATTACH_RETURN_STEPS_SPAN`: that span is sized for the probe's own single ~630px
-        # exit, while a multi-card climb can owe several strokes of that size. Worst case (every
-        # stroke only delivers the SMALLEST legal step) plus the same +2 slack the probe's own
-        # return leg budgets for a transport that under-delivers, floored at the probe's own span
-        # so a short climb behaves identically to it.
+        # exit, while a multi-card climb can owe several cap-sized strokes. Add two attempts for
+        # ordinary transport under-delivery, floored at the probe's own span so a short climb
+        # behaves identically to it. This is deliberately not a worst-case minimum-step budget:
+        # doing that would license many extra live gestures on every deep optional hop.
         max_attempts = max(_REATTACH_RETURN_STEPS_SPAN[1],
                            math.ceil(abs(total) / max_measurable_step_px) + 2)
         attempts = 0
+        legs: list[dict[str, object]] = []
         for _attempt in range(max_attempts):
             remaining = -total
             if abs(remaining) <= quantum // 2:
@@ -6340,6 +6602,13 @@ class AndroidDriver(DatingAppDriver):
             frac = min(_READ_SCROLL_FRAC_MAX,
                       max(_READ_SCROLL_FRAC_MIN, frac_for_step_px(int(step_target_px), height)))
             _dwell_s, _step_frac, x_frac = self._sample_read_step(0, None)
+            leg = {
+                "attempt": attempts + 1,
+                "direction": "forward" if remaining > 0 else "reverse",
+                "terminal_shift_before_px": total,
+                "requested_step_px": step_target_px,
+                "requested_frac": frac,
+            }
             if remaining > 0:
                 self._scroll_down_one(frac, x_frac)   # content up: climbing back down the page
             else:
@@ -6352,7 +6621,9 @@ class AndroidDriver(DatingAppDriver):
                     "refused", reason="blank_return_frame", attempts=attempts,
                     initial_terminal_shift_px=initial_total, terminal_shift_px=total,
                     drift_bound_px=quantum, requested_step_px=step_target_px,
-                    requested_frac=frac, before=frame, keep_before=True)
+                    requested_frac=frac,
+                    legs=[*legs, {**leg, "outcome": "blank_return_frame"}],
+                    before=frame, keep_before=True)
                 return None
             step = self._measured_page_shift(frame, following)
             if step is None:
@@ -6360,10 +6631,14 @@ class AndroidDriver(DatingAppDriver):
                     "refused", reason="return_leg_unmeasurable", attempts=attempts,
                     initial_terminal_shift_px=initial_total, terminal_shift_px=total,
                     drift_bound_px=quantum, requested_step_px=step_target_px,
-                    requested_frac=frac, before=frame, after=following,
+                    requested_frac=frac,
+                    legs=[*legs, {**leg, "outcome": "unmeasurable"}],
+                    before=frame, after=following,
                     keep_before=True, keep_after=True)
                 return None
             total += step
+            legs.append({**leg, "outcome": "measured", "measured_shift_px": step,
+                         "terminal_shift_after_px": total})
             frame = following
         drift_bound = step_px_for_frac(_READ_SCROLL_FRAC_MIN, height)
         terminal_shift_px = total
@@ -6376,6 +6651,7 @@ class AndroidDriver(DatingAppDriver):
                 "refused", reason="terminal_drift_exceeds_bound", attempts=attempts,
                 initial_terminal_shift_px=initial_total,
                 terminal_shift_px=terminal_shift_px, drift_bound_px=drift_bound,
+                legs=legs,
                 before=entry_anchor.frame, after=frame,
                 keep_before=True, keep_after=True)
             return None
@@ -6385,7 +6661,8 @@ class AndroidDriver(DatingAppDriver):
                 "refused", reason="direct_remeasure_disagrees", attempts=attempts,
                 initial_terminal_shift_px=initial_total,
                 terminal_shift_px=terminal_shift_px, direct_shift_px=verified,
-                drift_bound_px=drift_bound, before=entry_anchor.frame, after=frame,
+                drift_bound_px=drift_bound, legs=legs,
+                before=entry_anchor.frame, after=frame,
                 keep_before=True, keep_after=True)
             return None
         self._dbg_still_photo_return_chain(
@@ -6393,7 +6670,7 @@ class AndroidDriver(DatingAppDriver):
                                 else "direct_remeasure_unavailable"), attempts=attempts,
             initial_terminal_shift_px=initial_total,
             terminal_shift_px=terminal_shift_px, direct_shift_px=verified,
-            drift_bound_px=drift_bound)
+            drift_bound_px=drift_bound, legs=legs)
         return _MeasuredItemAnchor(
             frame, entry_anchor.page_shift_px + int(terminal_shift_px))
 
@@ -6469,6 +6746,14 @@ class AndroidDriver(DatingAppDriver):
         diagnostic in this module: nothing extra runs, is decoded, or touches the device to
         produce this, and a run with no debug log pays nothing for it.
         """
+        # Called exactly once per capture (this method's own docstring above), i.e. once per
+        # profile -- the same one-profile lifetime _refresh_targeting_calibration_binding's
+        # memoized device read shares with the item table it feeds. Retire that cache here too
+        # (the other retirement point is _invalidate_item_index, for the paths that drop the
+        # table WITHOUT building a fresh one) so a package update or display-mode change is
+        # caught on the very next targeting check of the new profile, not carried over stale
+        # from whichever profile last populated it.
+        self._targeting_binding_fetched = False
         # Keep `index` outside the try so every refusal, including a dependency exception before
         # a result exists, can leave the best evidence we have in actions.jsonl.  The logger is
         # deliberately an observer: no failure in this diagnostic path may change the read's
@@ -6480,6 +6765,7 @@ class AndroidDriver(DatingAppDriver):
         outcome = "unknown"
         try:
             try:
+                self._note_capture_progress("building a safe item index for this profile")
                 with _time_bucket(stamps, "video_mute_markers_s"):
                     video_mute_markers = self._video_mute_marker_rows(photos)
                     animation_markers = tuple(any(marker.frame_index == frame_index
@@ -6500,6 +6786,32 @@ class AndroidDriver(DatingAppDriver):
                 # what later scroll-top gates are allowed to affirm.
                 with _time_bucket(stamps, "scroll_top_pinning_s"):
                     self._latch_scroll_top_pinning(photos, index)
+                # A confirmed top occurring *inside* a failed chain is not an animation repair:
+                # it begins a new page coordinate space.  Keep the first refusal as the default,
+                # then let the narrowly proved same-profile suffix above replace it only when the
+                # two sweeps cannot be confused.  The rebuilt index's source-frame provenance is
+                # translated back to this full capture, so crops, dwell and item provenance all
+                # continue to use the original frame list without an index-space mix-up.
+                if not index.usable:
+                    with _time_bucket(stamps, "item_index_confirmed_restart_s"):
+                        restarted = self._restart_index_from_confirmed_top(
+                            photos, index, animation_markers, video_mute_markers)
+                    if restarted is not None:
+                        index, restart_at = restarted
+                        with _time_bucket(stamps, "scroll_top_pinning_s"):
+                            self._latch_scroll_top_pinning(photos, index)
+                        if self._dbg is not None:
+                            try:
+                                self._dbg.action(
+                                    "item_index_confirmed_restart",
+                                    restart_frame_index=restart_at,
+                                    discarded_prefix_frames=restart_at,
+                                    indexed_frames=len(index.frames),
+                                    reason=("a refused correspondence edge was followed by a "
+                                            "confirmed same-profile scroll top; only the rebuilt "
+                                            "later sweep was indexed"))
+                            except Exception:  # noqa: BLE001 -- debug logging is observational
+                                pass
                 # A confirmed, non-pinned filter-chip signal is independent positive evidence
                 # that this exact first frame is at the profile top. Use it only to retry the
                 # otherwise-identical fold when geometry's supplementary corner check is the
@@ -7434,6 +7746,13 @@ class AndroidDriver(DatingAppDriver):
         finished and this is what survived", which is no longer true the moment the table is
         dropped -- leaving a stale summary here would let a NEXT profile's hard stop appear
         beside THIS profile's leftover "numbered nothing" sentence.
+
+        Also clears `_targeting_binding_fetched`: the item table and the memoized targeting
+        binding read (`_refresh_targeting_calibration_binding`) share the same one-profile
+        lifetime, and this is one of the two points (the other is `_index_captured_items`) doc
+        5.3 already names as "wherever `_current_sigs` is today" -- reusing it here for the
+        binding cache too means a package update or display-mode change is caught on the very
+        next targeting check after ANY reason this table gets dropped, not just a fresh index.
         """
         self._current_item_index = None
         self._current_item_payload = None
@@ -7443,6 +7762,7 @@ class AndroidDriver(DatingAppDriver):
         self._current_items_unavailable = reason
         self._current_items_unnumbered = ""
         self._current_items_unavailable_kind = unavailable_kind
+        self._targeting_binding_fetched = False
 
     def _emit_gesture_timing(self, direction: str, gesture_start: float,
                              stamps: dict[str, float], *,
@@ -8928,8 +9248,26 @@ class AndroidDriver(DatingAppDriver):
                                       selected_model_item_index=model_item_index,
                                       should_stop=should_stop)
         except ItemNavigationError as exc:
-            self._dbg_action("navigate_to_item", exc.frame, item=model_item_index,
-                             outcome="stop", reason=exc.code)
+            # `pair_before` is set only on `NAV_CHAIN_BROKEN` and is the frame BEFORE the
+            # ascending gesture whose shift could not be measured -- raw PNG bytes, which cannot
+            # go through `**fields`: `DebugLog.action` builds `rec = {**fields, ...}` and then
+            # `json.dumps(record)` in `_write()`, and bytes are not JSON-serialisable there --
+            # `_write()`'s own best-effort guard would swallow the failure and silently drop the
+            # WHOLE record, not just the trace. Route it through the established
+            # keep_before/keep_after retained-shot mechanism instead, exactly as
+            # `_dbg_still_photo_walk_candidate` already does for this same field, and forward
+            # only the JSON-safe scalar `measurement` trace as an ordinary record field. Every
+            # other refusal code carries no `pair_before`, so this reduces to today's single
+            # fresh-frame row for them.
+            pair_before = getattr(exc, "pair_before", None)
+            navigation_refusal = getattr(exc, "measurement", None)
+            self._dbg_action(
+                "navigate_to_item", pair_before if pair_before is not None else exc.frame,
+                after=exc.frame if pair_before is not None else dataclasses.MISSING,
+                item=model_item_index, outcome="stop", reason=exc.code,
+                keep_before=pair_before is not None, keep_after=pair_before is not None,
+                **({"navigation_refusal": navigation_refusal}
+                   if isinstance(navigation_refusal, dict) else {}))
             raise HingeTargetingError(
                 f"{self.spec.app}: could not put the tap on model item {model_item_index}, the "
                 f"item the opener was written about -- {exc} [{exc.code}]. Nothing was tapped "
@@ -9130,16 +9468,30 @@ class AndroidDriver(DatingAppDriver):
         cannot spend a provider request and only then discover that its target is unlicensed.
         Once rejected, the calibration stays rejected for the session: changing the phone back
         does not turn a calibration used across two runtime geometries into coherent evidence.
+
+        The live DEVICE READ (``dumpsys package`` + ``screen_size()``) is memoized for one
+        item-index lifetime -- ``self._targeting_binding_fetched`` is cleared inside
+        ``_index_captured_items`` and ``_invalidate_item_index``, the same two points that
+        already retire the item table, so this stays exactly as fresh as the docstring above
+        always claimed ("during a long-running session"). Only the READ is cached; the verdict
+        against ``self.targeting_calibration`` below is recomputed every call, which costs
+        nothing. Before this cache, a single AUTO/Training Like action called this method
+        roughly SIX times (via ``_verifiable_payload``, ``_confirm_payload_profile``,
+        ``_navigate_to_model_item``, and three ``_verify_sheet_shows`` checks), each one an
+        independent USB round trip to re-derive a version string that cannot change inside
+        that window -- one action now costs one round trip, and the next profile's read still
+        gets a fresh one.
         """
         calibration = self.targeting_calibration
         if calibration is None:
             return self._targeting_calibration_unavailable or "no reason was recorded"
-        if self._adb is not None:
+        if self._adb is not None and not self._targeting_binding_fetched:
             package_dump = self.adb.shell(
                 f"dumpsys package {quote_android_package_id(self.package)}")
             match = re.search(r"(?m)^\s*versionName=(\S+)\s*$", package_dump)
             self._targeting_runtime_version_name = match.group(1) if match else None
             self._targeting_runtime_frame_size = self.adb.screen_size()
+            self._targeting_binding_fetched = True
         version = self._targeting_runtime_version_name
         size = self._targeting_runtime_frame_size
         if self._adb is None and version is None and size is None:
@@ -9533,13 +9885,20 @@ class AndroidDriver(DatingAppDriver):
         the frame, missing vision extras -- comes back as a REASON, which the hub renders exactly
         like a mismatch, because to an operator about to type they call for the same action.
 
-        IT NEVER TOUCHES THE TRANSPORT AND IT NEVER LOGS. Both are deliberate: this can be called
-        from the worker's suggestion thread (when the model's answer lands while the sheet is
-        already open) while the worker thread is inside `wait_for_decision` screencapping and
-        writing its own debug records. Pure vision over a frame the caller already holds is the
-        only shape that is safe there -- `DebugLog` appends to one file from one thread by
-        design, and a second writer would interleave records in the artefact a bug report is
-        reconstructed from. The console line the caller prints is this check's record.
+        IT NEVER TOUCHES THE TRANSPORT AND IT NEVER LOGS. Both are deliberate, from when this
+        was designed to be called from the worker's suggestion thread (the model's answer
+        landing while the sheet is already open) while a separate worker thread was inside the
+        OBSERVE `wait_for_decision` loop, screencapping and writing its own debug records: pure
+        vision over a frame the caller already holds was the only shape safe there, because
+        `DebugLog` appends to one file from one thread by design and a second writer would
+        interleave records in the artefact a bug report is reconstructed from. That two-thread
+        OBSERVE design was replaced by supervised Training (commit ea6756e8; see this module's
+        docstring) -- worker.py today has only `_training_loop`/`_auto_loop`, no suggestion
+        thread and no reference to this method, so it currently has no production caller. It is
+        part of the retained OBSERVE review-bridge API (see note_observe_stopped's docstring for
+        that API's status), and the never-touch-transport/never-log constraints are kept as-is
+        because they cost nothing and are exactly what a revived caller would need again. The
+        console line a caller prints is this check's record.
         """
         def result(state: str, reason: str = "") -> ObserveItemCheck:
             return ObserveItemCheck(state, reason)
@@ -9624,16 +9983,25 @@ class AndroidDriver(DatingAppDriver):
     def observe_item_mismatch(self, sheet: bytes, model_item_index: int) -> str:
         """Compatibility wrapper: empty on match, otherwise the operator-facing refusal.
 
-        New Observe state machines consume :meth:`observe_item_check` so a transient unreadable
-        refresh is not confused with positive evidence of the wrong item. Auto and existing
-        external/test callers retain the original string contract.
+        Written for a generation of Observe state machines that would consume
+        :meth:`observe_item_check` directly (its richer state, MATCH/MISMATCH/INCONCLUSIVE, so a
+        transient unreadable refresh is not confused with positive evidence of the wrong item)
+        while existing external/test callers kept this method's original string contract. Those
+        state machines were never built before the in-repo OBSERVE loop was replaced by
+        supervised Training (commit ea6756e8; see this module's docstring) -- worker.py has no
+        reference to either method today. Part of the retained OBSERVE review-bridge API (see
+        note_observe_stopped's docstring for that API's status); this wrapper is kept because
+        the string contract it preserves is still what this suite's tests exercise.
         """
         check = self.observe_item_check(sheet, model_item_index)
         return "" if check.state == OBSERVE_ITEM_MATCH else check.reason
 
     # --- reviewed Observe action bridge ---------------------------------
+    # Part of the retained OBSERVE review-bridge API -- see note_observe_stopped's docstring
+    # for what that means and why it is kept: worker.py's `_training_loop`/`_auto_loop` hold no
+    # reference to anything below, so as of this writing nothing in production calls it.
     def observe_open_targeted_like(self, model_item_index: int, *, should_stop=None) -> None:
-        """Worker-owned wrapper that excludes a second OBSERVE controller mid-action."""
+        """Lease-guarded wrapper that would exclude a second OBSERVE controller mid-action."""
         with self._observe_input_lease("observe_open_targeted_like"):
             return self._observe_open_targeted_like_unlocked(
                 model_item_index, should_stop=should_stop)
@@ -9684,7 +10052,11 @@ class AndroidDriver(DatingAppDriver):
                          verified=True)
 
     def observe_send_targeted_like(self, opener: str, model_item_index: int, *, should_stop=None) -> None:
-        """Worker-owned wrapper that excludes a second OBSERVE controller mid-send."""
+        """Lease-guarded wrapper that would exclude a second OBSERVE controller mid-send.
+
+        Same retained-bridge status as observe_open_targeted_like just above -- see its comment
+        and note_observe_stopped's docstring.
+        """
         with self._observe_input_lease("observe_send_targeted_like"):
             return self._observe_send_targeted_like_unlocked(
                 opener, model_item_index, should_stop=should_stop)
@@ -10053,9 +10425,21 @@ class AndroidDriver(DatingAppDriver):
 
           * DISLIKE resume (`keyboard_recovery=True`, no draft): recovering is safe because no
             text is sent; the X tap does not care what the composer holds.
-          * LIKE resume (`keyboard_recovery=True`, `require_draft=True`): recover, then send only
-            if the draft is PROVABLY the approved one.  An unreadable or absent digest refuses;
-            "could not check" is never "safe to send".
+          * LIKE resume (`keyboard_recovery=True`, `require_draft=True`): the draft proof below
+            applies ONLY inside the RECOVERED branch -- reached solely when the first,
+            unrecovered geometry check (`located = self._training_checkpoint_geometry(...)`
+            right above) finds the pass control already covered, so this driver's own guarded
+            Back press is what raised the question of whether the field was edited.  There, and
+            only there, recover, then send only if the draft is PROVABLY the approved one; an
+            unreadable or absent digest refuses -- "could not check" is never "safe to send".
+            A reviewer who instead dismisses the keyboard THEMSELVES before choosing Like takes
+            the early `if located is not None: return located` above and is never draft-checked
+            at all: no IME evidence survives to prove the field was ever focused, so that path
+            carries the exact same accepted risk `_comment_draft_digest` documents (a general
+            pixel gate there MEASURED a 23% false-refusal rate on real resumes, on a margin too
+            thin to trust -- see that method's docstring). Closing this residual would need a
+            TEXT-level check on that path specifically -- OCR the rect, require a contiguous
+            substring of the approved opener -- never a pixel comparison.
           * PRE-SEND checkpoint (`keyboard_recovery=False`): the keyboard was dismissed moments
             earlier by this same code and no human window has opened yet, so a covered pass
             control is an unknown screen, not a reviewer's tap.  A second Back here would be
@@ -10185,6 +10569,66 @@ class AndroidDriver(DatingAppDriver):
             return None
         return candidate.casefold(), self._identity_name_candidate_source
 
+    def _training_exact_top_name_conflict_candidate(
+            self, frame: bytes, *, current_profile: bool,
+            diagnostics: dict[str, object] | None = None) -> tuple[str, str] | None:
+        """Return a Training-only next-card name when fuzzy identity and content disagree.
+
+        The shared OCR matcher deliberately treats close spellings as the same name because in
+        passive Observe a deterministic OCR error must never manufacture a human decision. A
+        post-action Training verifier has stronger evidence available. The completed 2026-09-01
+        Sophia -> Sofia Like produced exactly this conjunction on two stable frames: a closed
+        composer, ready deck, canonical scroll top, one clean repeated header spelling, and no
+        exact or sufficiently-overlapped match to any captured Sophia frame.
+
+        Content mismatch alone is never proof: an uncaptured scroll position can differ too.
+        Likewise a near-name OCR mismatch alone remains a probable OCR error. Only their
+        conjunction at canonical top produces a candidate, which the outer verifier must still
+        reproduce on a second stable, ready frame from the same calibrated OCR source.
+        """
+        if current_profile or self._identity_top_name_verdict != "same":
+            return None
+        if diagnostics is None:
+            return None
+        if (diagnostics.get("current_profile_branch") != "identity_same_with_content"
+                or diagnostics.get("current_content_exact_matched") is not False
+                or diagnostics.get("current_content_shift_matched") is not False):
+            return None
+        source = self._identity_top_name_read_source
+        if source not in {"top_card_header", "top_card_header_fallback"}:
+            return None
+        text = self._identity_top_name_read
+        candidate = (_clean_first_line_name_candidate(text)
+                     if isinstance(text, str) else None)
+        stored = (self._identity_name or "").strip()
+        if (candidate is None or not stored
+                or candidate.casefold() == stored.casefold()
+                or not _name_token_matches(candidate, stored)):
+            return None
+        try:
+            top = confirm_scroll_top(
+                frame, identity_band=self.identity_band,
+                pinned_evidence=self._pinned_band_evidence())
+        except ScrollTopError as exc:
+            diagnostics.update(
+                name_top_state="error", name_top_confirmed=False,
+                name_top_reason=str(exc))
+            return None
+        diagnostics.update(
+            name_top_state=top.state,
+            name_top_confirmed=top.confirmed,
+            name_top_distance=top.distance,
+            name_top_reason=top.reason,
+        )
+        if not top.confirmed:
+            return None
+        diagnostics.update(
+            name_verdict="exact_name_conflict_after_content",
+            name_candidate=candidate,
+            name_source=source,
+        )
+        return candidate.casefold(), source
+
     @staticmethod
     def _identity_candidate_sha256(candidate: object) -> str | None:
         """A privacy-safe, case-insensitive identity-candidate join key for debug records."""
@@ -10267,6 +10711,11 @@ class AndroidDriver(DatingAppDriver):
         if current_profile:
             return self._training_top_name_advance_proof(
                 frame, diagnostics=diagnostics)
+
+        exact_name_conflict = self._training_exact_top_name_conflict_candidate(
+            frame, current_profile=current_profile, diagnostics=diagnostics)
+        if exact_name_conflict is not None:
+            return "name", exact_name_conflict[0]
 
         index = self._current_item_index
         if index is not None and model_item_index is not None:
@@ -10598,6 +11047,12 @@ class AndroidDriver(DatingAppDriver):
         if training_hook is not None:
             # Training's snapshot is deliberately after the keyboard is gone.  The callback is
             # not allowed to choose a Like while the alternative pass control is obscured.
+            # This is the SINGLE enforcement point for "training requires a typed opener":
+            # neither `opener` nor `training_hook` is rebound for the rest of this method, so
+            # a second `if training_hook is not None and not opener` check further down can
+            # never fire -- it was deleted as dead code rather than kept as a redundant guard,
+            # because a redundant check that never fires is not defense in depth, just an
+            # untested line (see FINDING 4).
             if not opener:
                 raise ActionCancelled(
                     "training requires a typed opener before presenting Like or Dislike; no "
@@ -10678,10 +11133,6 @@ class AndroidDriver(DatingAppDriver):
             # separately-calibrated measured controls.
             send_composer = self._await_sheet_open(tries=3)
             self._raise_if_action_cancelled(should_stop, boundary="send like")
-        if training_hook is not None and not opener:
-            raise ActionCancelled(
-                "training requires a typed opener before the Like/Dislike checkpoint; no device "
-                "decision was sent")
         # A Training decision can return at the same instant a global Hub Stop lands. Re-check
         # at the actual irreversible boundary before any Send Like touch.
         self._raise_if_action_cancelled(should_stop, boundary="Send Like tap")
@@ -10984,6 +11435,7 @@ class AndroidDriver(DatingAppDriver):
         # method, so a stale value from an earlier call must never survive to be misread as
         # THIS call's provenance.
         self._identity_top_name_read = None
+        self._identity_top_name_read_source = None
         self._identity_top_name_verdict = None
         self._identity_name_candidate = None
         self._identity_name_candidate_source = None
@@ -11168,6 +11620,7 @@ class AndroidDriver(DatingAppDriver):
                 # Keep the actual last header read on the existing diagnostic field, including a
                 # prompt-only read.  A later accepted fallback replaces it with its clean source.
                 self._identity_top_name_read = text
+                self._identity_top_name_read_source = source if text else None
                 if not text:
                     attempt["parser"] = "no_text"
                     return
@@ -11511,10 +11964,20 @@ class AndroidDriver(DatingAppDriver):
         """Append a terminal, no-device-I/O marker for Stop during a manual decision wait.
 
         A wait heartbeat is evidence about the screen *while the run was live*.  Once Stop
-        wins, that evidence must not be presented as an ongoing request for a decision.  The
-        worker calls this only after it has observed its stop Event and discarded the in-flight
-        card.  Do not use ``_dbg_action`` here: it takes another screencap, precisely what a
-        shutdown marker must avoid.
+        wins, that evidence must not be presented as an ongoing request for a decision.
+
+        Part of the retained OBSERVE review-bridge API (see this module's docstring): the
+        in-repo OBSERVE loop this was written for -- which used to call this only after it had
+        observed its own stop Event and discarded the in-flight card -- was replaced by
+        supervised Training (commit ea6756e8, "Replace observe flow with supervised training").
+        worker.py today defines only ``_training_loop``/``_auto_loop`` and holds zero references
+        to this method, so as of this writing it has NO PRODUCTION CALLER. It is kept, tested,
+        and deliberately not deleted: ``observe_release_evidence`` is still a live AUTO gate
+        (config.py) and ``tools/hinge_bot_scroll_probe.py`` still drives
+        ``driver.current_profile()``, and this machinery is how that release evidence would be
+        re-gathered if a future Hinge update ever invalidates the current calibration artifact.
+        Do not use ``_dbg_action`` here: it takes another screencap, precisely what a shutdown
+        marker must avoid.
         """
         if self._dbg is None:
             return
@@ -12588,10 +13051,17 @@ class AndroidDriver(DatingAppDriver):
                 # review scroll translates one card's content, whereas a same-name next card
                 # would also have to coincide at a real vertical offset to look current.
                 rows = _content_rows(self.content_band, ds.shape[0])
+                # This branch can discard an already-completed Like as "still current", so its
+                # overlap requirement is deliberately stronger than passive capture continuity.
+                # Four genuine same-profile post-decision matches measured 9/18, 11/18, 12/18
+                # and 18/18 rows. The 2026-09-01 Marina -> Sara Like supplied the negative:
+                # different profiles collided at 4/18. Half-band is the measured boundary here.
+                min_overlap_rows = math.ceil((rows[1] - rows[0]) * 0.5)
                 matched = next(
                     ((index, result) for index, sig in sigs
                      if (result := _vertical_shift_match(
-                         ds, sig, threshold=self.change_threshold, rows=rows))[0]),
+                         ds, sig, threshold=self.change_threshold, rows=rows,
+                         min_overlap_rows=min_overlap_rows))[0]),
                     None)
                 content_match = matched is not None
                 if diagnostics is not None:

@@ -19,9 +19,9 @@ drivers/      app control: Hinge (host-side ADB + vision) — the only
               runnable platform; Bumble uses the same approach on the same
               phone but isn't calibrated yet
 perception/   capture all photos + profile text -> Profile
-vision/       local pyiqa quality filter + ArcFace/CLIP embeddings   [Phase 2]
-ranker/       logistic-regression on YOUR swipe labels (BigQuery/SQLite)  [Phase 3]
-opener/       Gemini writes the opener, enforced JSON output         [Phase 4]
+vision/       local pyiqa quality filter + ArcFace/CLIP embeddings
+ranker/       logistic-regression on YOUR swipe labels (BigQuery/SQLite)
+opener/       Gemini writes the opener, enforced JSON output
 costing.py    client-side spend tracking + per-run budget guard
 supervisor    one worker per enabled app; owns shutdown + flush
 worker.py     the per-app loop, training or auto (replaces main.ahk)

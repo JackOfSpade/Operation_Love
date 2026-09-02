@@ -24,6 +24,7 @@ _FRAME = (b"\x89PNG\r\n\x1a\n"
 class _Worker:
     run_id = "training-run"
     app = "hinge"
+    mode = "training"
     training_action_supported = True
 
     def __init__(self):
@@ -54,6 +55,16 @@ def test_training_checkpoint_has_only_valid_like_dislike_capability():
     assert checkpoint["evidence_id"] == "post-hide"
     assert checkpoint["image_data_url"].startswith("data:image/png;base64,")
     assert bridge.submit(_body(card, "continue"))[2] == 400
+
+
+def test_actionable_checkpoint_query_tracks_only_a_live_unclaimed_decision():
+    bridge, worker = TrainingActionBridge(), _Worker()
+    bridge.register(worker)
+    card = bridge.publish_checkpoint(worker, _FRAME, _Pick())
+
+    assert bridge.has_actionable_checkpoint() is True
+    assert bridge.submit(_body(card))[2] == 202
+    assert bridge.has_actionable_checkpoint() is False
 
 
 def test_training_checkpoint_exposes_ordered_profile_images_only_through_bound_endpoint():

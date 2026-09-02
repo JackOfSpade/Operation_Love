@@ -229,7 +229,14 @@ class _Handler(BaseHTTPRequestHandler):
 
         def _target():
             time.sleep(_BROWSER_SHUTDOWN_GRACE_S)  # reload/new tab gets a moment to register
-            if state and state.has_browser_clients():
+            disposition = state.browser_close_shutdown_disposition() if state else "shutdown"
+            if disposition == "client_reopened":
+                return
+            if disposition == "preserve_training_approval":
+                host, port = server.server_address[:2]
+                print("Hub: browser hub tab closed while a Training approval is waiting; "
+                      "keeping the run and verified checkpoint alive. Reopen "
+                      f"http://{host}:{port}/ to decide, or press Stop deliberately.")
                 return
             if state and state.is_running():
                 print("Hub: browser hub tab closed; stopping active run before shutdown.")

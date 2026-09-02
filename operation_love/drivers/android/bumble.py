@@ -35,6 +35,13 @@ BUMBLE_SPEC = AndroidAppSpec(
     accepts_opener=False,
     think_time_calibrated=False,
     change_threshold=9.0,
+    # Explicit, not just left at the dataclass default: this redesign (auto-mode behavior
+    # policy / OBSERVE input lease / capped recovery-rewind lane) was calibrated on Hinge only
+    # -- see each field's comment on AndroidAppSpec (android_spec.py). Bumble keeps the
+    # generic, un-policy-tuned, uncapped legacy behavior in every case.
+    auto_policy_calibrated=False,
+    observe_input_serialized=False,
+    safe_rewind_max_frac=None,
 )
 
 

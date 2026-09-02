@@ -20,7 +20,11 @@ Models (see ops research + memory):
 - Beta-function pressure/size ramp over the stroke (rise, plateau, decay).
 - Tap: lognormal dwell + damped micro-slip + a pressure pulse.
 - Between-actions: per-decision shifted-lognormal "think time" (like faster than pass),
-  reproducing the measured Hinge baseline (~3.2 s like / ~6.9 s pass).
+  reproducing the measured Hinge baseline (~3.2 s like / ~6.5 s pass). The _THINK
+  (shift, mu, sigma) triples are the calibrated anti-detection parameters and are the
+  source of truth; these prose figures are DERIVED from them via the shifted-lognormal
+  closed-form mean = shift + exp(mu + sigma**2/2) (see _THINK for the worked numbers) —
+  never hand-tune mu/sigma to chase a round number in this docstring.
 """
 from __future__ import annotations
 
@@ -111,10 +115,19 @@ def _stroke_kinematics(r, hz: float):
         "size_peak": r.uniform(0.45, _SIZE_PEAK),
     }
 
-# Per-decision think time: (shift_s, mu, sigma) for shifted-lognormal.
+# Per-decision think time: (shift_s, mu, sigma) for shifted-lognormal. These three numbers
+# ARE the calibrated anti-detection parameters (the authority); the "mean ~Ns" comments and
+# the module docstring's figures are DERIVED, not independently chosen, via the shifted-
+# lognormal closed form mean = shift + exp(mu + sigma**2/2):
+#   like: 1.2 + exp(0.65 + 0.35**2/2) = 1.2 + exp(0.71125) ~= 3.24 s
+#   pass: 1.8 + exp(1.45 + 0.42**2/2) = 1.8 + exp(1.5382)  ~= 6.46 s
+# (found 2026-09-02: the "pass" prose previously said ~6.9 s -- a stale figure that never
+# matched these params, arithmetic error rather than a re-tune. Fixed the prose to ~6.5 s
+# instead of nudging mu/sigma to hit a round number: this triple is a calibrated,
+# measured-baseline parameter set, not free knobs to chase a comment.)
 _THINK = {
     "like": (1.2, 0.65, 0.35),   # mean ~3.2 s
-    "pass": (1.8, 1.45, 0.42),   # mean ~6.9 s
+    "pass": (1.8, 1.45, 0.42),   # mean ~6.5 s
 }
 
 

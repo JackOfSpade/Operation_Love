@@ -798,6 +798,44 @@ def test_terminal_send_refusal_cleans_the_current_unsent_composer(monkeypatch, t
     assert recoveries[0]["failure_stage"] == "terminal_send_refused"
 
 
+def test_approved_hybrid_decision_does_not_require_a_kind_field():
+    """Finding-2 pin (2026-09-02): every real on-disk hybrid_review ledger record (checked
+    across multiple `manifest.json` files under ops/calibration/) carries checkpoint_file/
+    checkpoint_sha256/checkpoint_evidence_sha256/frame_file/frame_sha256/claimed_state/
+    action_plan/decision/source/reviewer/human_ground_truth/decided_utc -- and NO "kind" key.
+    `_approved_hybrid_decision` must keep validating a record shaped exactly like that, on
+    every field it actually checks, without ever gating on a "kind" nothing has ever written.
+    A `_HYBRID_REVIEW_TOKEN_KIND` constant sat unread beside this function for exactly that
+    reason; see the comment beside `_HYBRID_CHECKPOINT_KIND` for why it was deleted rather than
+    wired into an enforced check that would reject every one of those historical sessions."""
+    record = {
+        "checkpoint_file": "/tmp/x/00001.checkpoint.json", "checkpoint_sha256": "a" * 64,
+        "checkpoint_evidence_sha256": "b" * 64,
+        "frame_file": "/tmp/x/00001.png", "frame_sha256": "c" * 64,
+        "claimed_state": "composer_open_before_pass",
+        "action_plan": {"action": "automated_pass", "photo_model_item": None},
+        "decision": "approved", "source": "external_ai_review",
+        "reviewer": {"name": "terra", "model": "gpt-5.6-terra"},
+        "human_ground_truth": False, "decided_utc": "2026-08-14T00:00:00+00:00",
+    }
+    assert "kind" not in record   # exactly the shape every real on-disk record has
+    acceptance = {"reviewer_source": "external_ai_review",
+                  "reviewer": {"name": "terra", "model": "gpt-5.6-terra"}}
+    review = {"decisions": [record]}
+
+    assert cal._approved_hybrid_decision(
+        record, acceptance=acceptance, review=review,
+        action="automated_pass", item=None) is True
+
+
+def test_hybrid_review_token_kind_constant_was_deliberately_removed():
+    """See the comment beside `_HYBRID_CHECKPOINT_KIND`: a `_HYBRID_REVIEW_TOKEN_KIND` constant
+    was found unread (2026-09-02) and deleted rather than enforced, because real on-disk ledger
+    records never carried the field it would have checked for. Re-adding it without a migration
+    for the existing decisions is the regression this guards against."""
+    assert not hasattr(cal, "_HYBRID_REVIEW_TOKEN_KIND")
+
+
 class _RecordingGate:
     """A hybrid gate that approves everything and remembers exactly what it was shown."""
 
@@ -1139,6 +1177,40 @@ def test_post_tap_refusal_diagnostic_frame_is_excluded_from_manifest_evidence(
     assert diagnostic_png.name not in [entry["file"] for entry in manifest["frames"]]
     assert diagnostic_png.name not in json.dumps(manifest["profiles"])
     assert diagnostic_png.name not in manifest_text
+
+
+def test_device_evidence_shares_the_operational_evidence_probe():
+    """Finding-3 pin (2026-09-02): `hinge_calibrate._device_evidence` and
+    `hinge_operational_evidence._read_device_evidence` used to be two independently hand-rolled
+    copies of the identical ~20-line "getprop/wm density/dumpsys package, then parse
+    versionName" probe, and had already drifted (this module's copy was missing the density
+    check the other one had). Assert IDENTITY, not just equal behaviour, so the two can never
+    silently re-diverge onto separate implementations the way they did before."""
+    from tools import hinge_operational_evidence as op_evidence
+
+    assert cal._read_shared_device_evidence is op_evidence._read_device_evidence
+
+
+def test_device_evidence_refuses_on_missing_density(monkeypatch):
+    """Regression for the finding-3 drift: `_device_evidence` used to accept an empty `wm
+    density` reading (no check at all), unlike the operational-evidence probe it now shares,
+    which always refused one. A phone that cannot report its density is exactly the kind of
+    unidentified-build evidence this module's own fail-loud rule exists to catch."""
+    class _Adb:
+        def shell(self, cmd):
+            if "ro.product.model" in cmd:
+                return "Pixel 7a\n"
+            if "wm density" in cmd:
+                return "   \n"   # blank after strip -- the exact case the fix now catches
+            return "versionName=10.1.0\n"
+
+        def screen_size(self):
+            return (1080, 2400)
+
+    driver = SimpleNamespace(adb=_Adb(), serial="PIXEL-TEST", package="co.hinge.app")
+
+    with pytest.raises(RuntimeError, match="device/build evidence"):
+        cal._device_evidence(driver)
 
 
 def test_post_tap_refusal_diagnostic_write_failure_never_masks_the_real_abort(

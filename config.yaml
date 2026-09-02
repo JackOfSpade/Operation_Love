@@ -76,20 +76,23 @@ apps:
     # WHY THE RESIDUAL IS TOLERABLE HERE, restated 2026-08-28 so the next reader does not have
     # to re-derive it: a silently-dropped gesture cannot produce a wrong action, only a refused
     # one, because the navigator measures EVERY reverse gesture's actual page movement.
-    # item_nav.py:1502 computes `climb_px` from the frameshift estimator and hands it to
+    # item_nav.py computes `climb_px` from the frameshift estimator and hands it to
     # `step_overshoot`; `climb_px <= 0` -- "the profile did not move", which is exactly what a
-    # dropped gesture looks like -- raises ItemNavigationError(NAV_SCROLL_STALLED) at
-    # item_nav.py:1531, before any tap. `verify_sheet_item` then independently re-proves the
-    # selected card at the sheet. The transport's blocking round trip was defence-in-depth over
-    # those two content checks, not the only line -- which is what makes trading it for 30% of
-    # every profile's wall clock reasonable.
+    # dropped gesture looks like -- raises ItemNavigationError(NAV_SCROLL_STALLED), before any
+    # tap. `verify_sheet_item` then independently re-proves the selected card at the sheet.
+    # The transport's blocking round trip was defence-in-depth over those two content checks,
+    # not the only line -- which is what makes trading it for 30% of every profile's wall
+    # clock reasonable.
     #
     # NOT the justification, though an earlier draft of this comment wrongly said so:
-    # `agreement_px` is REPORTED, not enforced. It is the worst count-vs-index disagreement
-    # (item_nav.py:1431), consumed only by a debug log line in hinge.py; `_count_disagrees`
-    # passes anything within its 16px tolerance, so a nonzero value does not refuse. The
-    # separate `disagreement` return is what raises NAV_COUNT_DISAGREES. Do not cite
-    # agreement_px as a safety gate.
+    # `agreement_px` is REPORTED, not enforced. It is the worst count-vs-index disagreement,
+    # computed by item_nav.py's `_count_disagrees` and consumed only by a debug log line in
+    # hinge.py; `_count_disagrees` passes anything within its 16px tolerance, so a nonzero
+    # value does not refuse. The separate `disagreement` return is what raises
+    # NAV_COUNT_DISAGREES. Do not cite agreement_px as a safety gate.
+    # (2026-09-02: this block used to cite item_nav.py:NNN line numbers for climb_px,
+    # NAV_SCROLL_STALLED and _count_disagrees; all three had drifted from where an audit found
+    # them. Names don't rot the way line numbers do, so the citations above are by name only.)
     touch_backend: uhid_persistent
     # 2026-08-10: raised 8 -> 12 after a bug report traced a false legacy-observation PASS partly to
     # this ceiling — 2 of the last 3 profiles in that run hit exactly 8 captures (the old
@@ -132,10 +135,11 @@ apps:
     still_photo_dwell_candidates: 3
     dwell_s: 1.1            # per-card read dwell, humanized (Signals #1: read before deciding)
     read_scroll_frac: 0.55  # how far each read-scroll advances the profile
-    # Return navigation is intentionally longer than a read step: a single manual Hinge flick
-    # can travel from a deeply read card to its top. The driver still confirms the filter-chip
-    # header after every stroke and falls back to its bounded retry loop if this does not land.
-    rewind_scroll_frac: 0.78
+    # Hinge rewind stays in the same central corridor as a read scroll. Config validation rejects
+    # values above 0.55, and the driver independently caps direct/test construction: a prior 0.78
+    # fast flick released in fixed bottom navigation and was swallowed instead of rewinding the
+    # card. Extra bounded strokes, each affirmatively checked for filter chips, provide the travel.
+    rewind_scroll_frac: 0.55
     change_threshold: 9.0   # mean grayscale delta (0..255, 24x24) to call a frame region "changed"
     # Host debug log: data/hinge_debug/<run>/ = actions.jsonl + screenshots. AUTO retains an
     # `auto_opener_pre_send` frame after typing the opener on its selected item and before Send.
@@ -186,6 +190,11 @@ apps:
                        #   negative control proving the rule is per-screen-state, not blanket
       - 5d79a2d45bfa   # 2026-08-30 Allison low-contrast gutter incident; frames 7..10 are the
                        #   real-pixel replay for segment._restore_low_contrast_card_surface_at_strict_gutter
+      # The local frames in test_hinge_observe's rewind regression. The earlier capture proves
+      # the Vicki card's genuine filter-chip top; the later refusal proves the old 0.78h fast
+      # rewind left the same card scrolled with its sticky header visible.
+      - 4efcff0d78ca
+      - de89edfe05e1
     halt_on_error: true     # auto mode STOPS on any unexpected error (no restart) so debug logs are preserved
     # Action points as FRACTIONS of the screen (x, y in 0..1). Calibrated live on the Pixel 7a
     # (1080x2400) 2026-06-27. like_heart / pass_x are located by VISION at runtime (template-
@@ -328,9 +337,16 @@ apps:
       verification_file: ops/release/d8547ff144b4/manual-release/hinge_observe_release.json
       verification_sha256: 95e4f6f7b079e7fbcecca86ceeb480eca129ddaac4ec174d9bc013b3d6255d8c
       verified_at: "2026-08-25T05:57:05.701897+00:00"
+# data_dir does NOT set a general data root today -- nothing in operation_love reads
+# cfg.data_dir directly (an audit found this 2026-09-02). Its one real effect is supplying
+# db_file's default below when db_file is omitted, so overriding data_dir alone still moves
+# the sqlite file. It does NOT reach every path an operator might expect: e.g.
+# drivers/hinge.py's per-app debug_dir default (./data/<app>_debug) is independently
+# hardcoded there, not derived from this key.
 paths:
   data_dir: ./data
-  db_file: ./data/operation_love.db        # used only when storage.backend = sqlite
+  db_file: ./data/operation_love.db        # used only when storage.backend = sqlite;
+                                            # defaults to data_dir/operation_love.db if omitted
 
 # --- Storage (system-of-record) ---
 storage:
@@ -341,11 +357,13 @@ storage:
     location: US
     photo_bucket: operation-love-2026-profile-photos
     # Buffer N rows before streaming to BigQuery (low = less seed data lost on a crash/kill).
-    # 1, not 5: a Training session produces 3-20 labels in total, so batching buys nothing
-    # measurable, while at 5 a whole session's labels can sit in process memory until the
-    # shutdown flush. Measured on the run of 2026-08-10: 3 labels, none of them written until
-    # the run ended. The photos DO go to GCS immediately inside record_profile, so a hub
-    # force-quit in that window left orphan photo objects in the bucket with no labels
+    # 1, not the code's own fallback if this key were omitted entirely -- BigQueryStore's
+    # DEFAULT_FLUSH_EVERY (operation_love/ranker/bigquery_store.py) is 25, not 5 as an earlier
+    # draft of this comment said. A Training session produces 3-20 labels in total, so batching
+    # buys nothing measurable, while at 25 an entire session's labels can sit in process memory
+    # until the shutdown flush. Measured on the run of 2026-08-10: 3 labels, none of them
+    # written until the run ended. The photos DO go to GCS immediately inside record_profile,
+    # so a hub force-quit in that window left orphan photo objects in the bucket with no labels
     # pointing at them — the worst of both outcomes.
     #
     # Accepted trade: a row BigQuery rejects now halts the run on the spot (the insert error

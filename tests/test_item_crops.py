@@ -1027,6 +1027,36 @@ def test_the_autoplay_aim_point_is_the_screen_centre_and_never_moves_with_the_co
         below, frame_height=height, content_band=_CONTENT_BAND) == pytest.approx(0.100)
 
 
+def test_card_center_offset_frac_requires_a_positive_frame_height():
+    """The first of the function's two guards: a frame height of zero or less cannot ever contain
+    a card, and dividing a real card-centre distance by a band height derived from it would
+    produce a meaningless fraction rather than an honest refusal."""
+    rect = (_CARD_X0, 800, _CARD_X1, 1200)
+    for bad_height in (0, -1):
+        with pytest.raises(item_crops.ItemCropError, match="frame height must be positive"):
+            item_crops.card_center_offset_frac(
+                rect, frame_height=bad_height, content_band=_CONTENT_BAND)
+
+
+def test_card_center_offset_frac_requires_an_ordered_content_band():
+    """The second guard: a degenerate (`(0.5, 0.5)`) or inverted (`(0.9, 0.1)`) band has a zero or
+    negative height, and using it as this fraction's denominator would silently produce inf/nan
+    or a sign-flipped offset instead of refusing."""
+    rect = (_CARD_X0, 800, _CARD_X1, 1200)
+    for bad_band in ((0.9, 0.1), (0.5, 0.5)):
+        with pytest.raises(item_crops.ItemCropError, match="must be an ordered band"):
+            item_crops.card_center_offset_frac(rect, frame_height=_H, content_band=bad_band)
+
+
+def test_card_center_offset_frac_checks_frame_height_before_the_content_band():
+    """Pairing a NEGATIVE frame height with an INVERTED band pins WHICH guard fires on an input
+    that would trip either one on its own: the frame-height check runs first in the function body
+    and must be the one that actually catches it, not the band-ordering check underneath it."""
+    rect = (_CARD_X0, 800, _CARD_X1, 1200)
+    with pytest.raises(item_crops.ItemCropError, match="frame height must be positive"):
+        item_crops.card_center_offset_frac(rect, frame_height=-1, content_band=(0.9, 0.1))
+
+
 @pytest.mark.parametrize("drift", [True, -0.01, float("nan"), float("inf")])
 def test_still_photo_gate_rejects_a_corrupt_reobservation_measurement(drift):
     """A BROKEN measurement is not a MISSING one, and only the missing case falls through.
@@ -1708,6 +1738,46 @@ def test_frames_that_are_not_the_indexed_frames_are_refused():
     untouched[unused] = _frame(_FULL_SCROLL[-1] + 1)
     with pytest.raises(item_crops.ItemCropError, match=f"frame {unused} is not the frame"):
         item_crops.build_item_payload(untouched, index)
+
+
+def test_confident_photo_heart_ordinals_refuses_an_unusable_index_before_any_crop_is_made():
+    """`confident_photo_heart_ordinals` is `build_item_payload`'s cheap pre-pass and inherits the
+    same doc 5.3 hard stop rather than re-deriving it (see
+    test_an_unusable_index_is_a_hard_stop_before_any_crop_is_made above): a numbering that
+    contradicts itself is not a safe list to pick still-photo dwell candidates from either."""
+    scrolls = (0, _STEP * 4)                   # a step far past the trust window
+    index = _index(scrolls)
+    assert not index.usable and index.blocks == ()
+
+    with pytest.raises(item_crops.ItemCropError,
+                       match="refusing to classify crops from an unusable"):
+        item_crops.confident_photo_heart_ordinals([_frame(s) for s in scrolls], index)
+
+
+def test_confident_photo_heart_ordinals_refuses_a_frame_count_that_does_not_match_the_index():
+    """The byte-identical sibling of `build_item_payload`'s frame-count guard (see
+    test_frames_that_are_not_the_indexed_frames_are_refused above): the index's page coordinates
+    only mean anything against the exact capture they were measured on."""
+    index, frames = _full()
+
+    with pytest.raises(item_crops.ItemCropError, match="frame\\(s\\) given for an index"):
+        item_crops.confident_photo_heart_ordinals(frames[:-1], index)
+
+
+def test_confident_photo_heart_ordinals_refuses_an_empty_capture():
+    """The empty-frames guard, not the frame-count guard above it. Passing `frames=()` against
+    `_full()`'s eleven-frame index would trip the COUNT guard first (0 != 11) and never reach
+    this one, so this hand-assembles an index over ZERO frames instead -- the only way
+    `len(frames) == len(index.frames)` can hold while `frames` is itself empty, exactly the
+    construction `build_item_payload`'s own comment above this guard anticipates ("this only
+    catches a hand-assembled index"). `build_item_index` itself already refuses an empty capture
+    (test_an_empty_capture_raises_rather_than_returning_an_empty_index in test_item_index.py), so
+    a real caller can only ever reach this shape by hand, exactly as done here."""
+    empty_index = dataclasses.replace(_fake_index(()), frames=())
+    assert empty_index.usable and empty_index.frames == () and empty_index.blocks == ()
+
+    with pytest.raises(item_crops.ItemCropError, match="no frames to classify"):
+        item_crops.confident_photo_heart_ordinals((), empty_index)
 
 
 def test_a_page_class_this_module_has_no_policy_for_is_refused():

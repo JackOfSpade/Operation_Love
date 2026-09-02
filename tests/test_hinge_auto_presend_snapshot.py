@@ -701,6 +701,147 @@ def test_training_advance_accepts_repeated_new_name_despite_photo_collision(
     assert probe["names_agree"] is True
 
 
+def test_training_like_accepts_sara_after_marina_despite_four_row_collision(
+        tmp_path, monkeypatch):
+    """End-to-end regression for the 2026-09-01 completed-but-unlabelled Like.
+
+    Hinge had advanced from Marina to two stable ready frames of Sara. The clean Sara header
+    nevertheless fuzzy-matched Marina at the old 0.60 boundary, while four coincidental rows
+    at shift +14 matched one Marina capture signature. Together those false ``same`` signals
+    made the verifier reject a Like that the retained loading/next-deck frames proved landed.
+    """
+    import numpy as np
+
+    driver, _adb = _driver([])
+    driver._dbg = HingeDebugLog(str(tmp_path), run_id="training-marina-sara-advance")
+    driver._identity_name = "Marina"
+    driver._identity_sig = np.zeros((16, 64), dtype="int16")
+    driver._identity_top_sig = np.full((16, 64), 200, dtype="int16")
+
+    rng = np.random.default_rng(17)
+    size = 24
+    r0, r1 = hinge._content_rows(driver.content_band, size)
+    marina_sig = rng.integers(0, 255, size=(size, size)).astype("int16")
+    sara_frame_sig = rng.integers(0, 255, size=(size, size)).astype("int16")
+    sara_frame_sig[r0 + 14:r1] = marina_sig[r0:r1 - 14]
+    driver._current_sigs = [marina_sig]
+    frames = iter((b"SARA_TOP_FIRST", b"SARA_TOP_SECOND"))
+
+    monkeypatch.setattr(driver, "_screencap", lambda: next(frames))
+    monkeypatch.setattr(driver, "_deck_blocked_reason", lambda _frame: None)
+    monkeypatch.setattr(driver, "_locate_inline_composer", lambda _frame: None)
+    monkeypatch.setattr(driver, "_observe_deck_ready", lambda _frame: True)
+    monkeypatch.setattr(driver, "_changed", lambda _before, _after: False)
+    monkeypatch.setattr(driver, "_interruptible_sleep", lambda *_a, **_kw: True)
+    monkeypatch.setattr(hinge, "_downsample", lambda _frame: sara_frame_sig)
+    monkeypatch.setattr(
+        hinge, "_band", lambda _frame, _rect: driver._identity_top_sig)
+    monkeypatch.setattr(
+        hinge, "confirm_scroll_top",
+        lambda *_a, **_kw: SimpleNamespace(
+            state="confirmed_top", confirmed=True, distance=0.0,
+            reason="canonical scroll top confirmed"))
+    monkeypatch.setattr(
+        driver, "_ocr_band",
+        lambda _frame, _rect, psm="7", **_kw: "Sara" if psm == "6" else None)
+
+    assert driver._verify_training_like_landed(2) == "name"
+
+    records = [
+        json.loads(line)
+        for line in (driver._dbg.dir / "actions.jsonl").read_text().splitlines()
+    ]
+    probe = next(record for record in records if record["action"] == "training_advance_probe")
+    assert probe["outcome"] == "accepted"
+    assert probe["first"]["name_candidate"] == "Sara"
+    assert probe["second"]["name_candidate"] == "Sara"
+    assert probe["names_agree"] is True
+
+
+def test_training_like_accepts_sofia_after_sophia(tmp_path, monkeypatch):
+    """End-to-end regression for the reported completed Sophia -> Sofia Like.
+
+    The post-send loading screen settled on a visibly different ready card, but the clean Sofia
+    header scored 0.727 against stored Sophia and the fuzzy-name guard called it the same person.
+    Two stable, canonically-top Sofia reads must license the landed training label while the
+    measured 0.80 Zorva OCR near-misses remain protected by the lower-level calibration test.
+    """
+    import numpy as np
+
+    driver, _adb = _driver([])
+    driver._dbg = HingeDebugLog(str(tmp_path), run_id="training-sophia-sofia-advance")
+    driver._identity_name = "Sophia"
+    driver._identity_sig = np.zeros((16, 64), dtype="int16")
+    driver._identity_top_sig = np.full((16, 64), 200, dtype="int16")
+    driver._current_sigs = [np.zeros((24, 24), dtype="int16")]
+    sofia_sig = np.full((24, 24), 150, dtype="int16")
+    frames = iter((b"SOFIA_TOP_FIRST", b"SOFIA_TOP_SECOND"))
+
+    monkeypatch.setattr(driver, "_screencap", lambda: next(frames))
+    monkeypatch.setattr(driver, "_deck_blocked_reason", lambda _frame: None)
+    monkeypatch.setattr(driver, "_locate_inline_composer", lambda _frame: None)
+    monkeypatch.setattr(driver, "_observe_deck_ready", lambda _frame: True)
+    monkeypatch.setattr(driver, "_changed", lambda _before, _after: False)
+    monkeypatch.setattr(driver, "_interruptible_sleep", lambda *_a, **_kw: True)
+    monkeypatch.setattr(hinge, "_downsample", lambda _frame: sofia_sig)
+    monkeypatch.setattr(
+        hinge, "_band", lambda _frame, _rect: driver._identity_top_sig)
+    monkeypatch.setattr(
+        hinge, "confirm_scroll_top",
+        lambda *_a, **_kw: SimpleNamespace(
+            state="confirmed_top", confirmed=True, distance=0.0,
+            reason="canonical scroll top confirmed"))
+    monkeypatch.setattr(
+        driver, "_ocr_band",
+        lambda _frame, _rect, psm="7", **_kw: "Sofia" if psm == "6" else None)
+
+    assert driver._verify_training_like_landed(3) == "name"
+
+    records = [
+        json.loads(line)
+        for line in (driver._dbg.dir / "actions.jsonl").read_text().splitlines()
+    ]
+    probe = next(record for record in records if record["action"] == "training_advance_probe")
+    assert probe["outcome"] == "accepted"
+    assert probe["first"]["composer_open"] is False
+    assert probe["first"]["deck_ready"] is True
+    assert probe["first"]["name_candidate"] == "Sofia"
+    assert probe["second"]["name_candidate"] == "Sofia"
+    assert probe["stable"] is True
+    assert probe["names_agree"] is True
+
+
+def test_training_exact_name_conflict_still_rejects_matching_profile_content(monkeypatch):
+    """A likely OCR spelling error cannot become a label when the captured card still matches."""
+    import numpy as np
+
+    driver, _adb = _driver([])
+    driver._identity_name = "Sophia"
+    driver._identity_sig = np.zeros((16, 64), dtype="int16")
+    driver._identity_top_sig = np.full((16, 64), 200, dtype="int16")
+    captured_sig = np.zeros((24, 24), dtype="int16")
+    driver._current_sigs = [captured_sig]
+
+    monkeypatch.setattr(hinge, "_downsample", lambda _frame: captured_sig.copy())
+    monkeypatch.setattr(
+        hinge, "_band", lambda _frame, _rect: driver._identity_top_sig)
+    monkeypatch.setattr(
+        hinge, "confirm_scroll_top",
+        lambda *_a, **_kw: SimpleNamespace(
+            state="confirmed_top", confirmed=True, distance=0.0,
+            reason="canonical scroll top confirmed"))
+    monkeypatch.setattr(
+        driver, "_ocr_band",
+        lambda _frame, _rect, psm="7", **_kw: "Sofia" if psm == "6" else None)
+
+    diagnostics = {}
+    assert driver._training_profile_advance_proof(
+        b"SAME_PROFILE_WITH_OCR_VARIANT", 3, diagnostics=diagnostics) is None
+    assert diagnostics["current_profile"] is True
+    assert diagnostics["current_content_exact_matched"] is True
+    assert diagnostics["name_verdict"] == "same"
+
+
 def test_training_advance_rejects_non_top_name_candidate_on_current_profile(monkeypatch):
     """A sticky-header OCR hallucination cannot override positive same-profile content proof."""
     driver, _adb = _driver([])

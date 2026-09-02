@@ -375,6 +375,27 @@ class TrainingActionBridge:
                 self._cards.pop(key, None)
             self._lock.notify_all()
 
+    def has_actionable_checkpoint(self) -> bool:
+        """Whether a live Training worker has a decision ready for Hub review.
+
+        This is deliberately a small locked query instead of making lifecycle code inspect
+        ``snapshot()`` output.  A checkpoint is actionable only while its owner is still
+        registered and it is waiting for the owner's first Like/Dislike choice; a queued or
+        executing action is no longer a browser decision boundary.
+        """
+        with self._lock:
+            for key, card in self._cards.items():
+                worker = self._workers.get(key)
+                if worker is None:
+                    continue
+                if (getattr(worker, "mode", None) == "training"
+                        and getattr(worker, "training_action_supported", False)
+                        and card.get("phase") == "waiting_training_decision"
+                        and card.get("action") == "ready"
+                        and not card.get("pending")):
+                    return True
+            return False
+
     def snapshot(self, *, run_id: str | None = None, app: str | None = None) -> dict:
         with self._lock:
             cards = []

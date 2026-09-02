@@ -5,6 +5,7 @@ import json
 import math
 import re
 import tempfile
+from pathlib import Path
 
 import pytest
 import yaml
@@ -100,6 +101,25 @@ def test_hand_built_sections_reject_unknown_keys(section, bad_key):
 @pytest.mark.parametrize("value", [None, [], {}, True, 12, ""])
 def test_paths_require_nonempty_string_scalars(key, value):
     _expect_error({**BASE, "paths": {key: value}}, f"paths.{key}")
+
+
+def test_db_file_default_derives_from_data_dir():
+    """Found 2026-09-02: db_file's default used to be a second, independent './data/...'
+    literal, so overriding paths.data_dir without also setting paths.db_file silently left
+    the sqlite file under the OLD hardcoded root -- the dead half of data_dir an audit found
+    (nothing else in operation_love reads cfg.data_dir at runtime). Mutating db_file's default
+    back to a bare literal, decoupled from data_dir, must make the middle assertion fail."""
+    default_cfg = _load(BASE)                       # both keys omitted: unchanged combo
+    assert default_cfg.data_dir == Path("data")
+    assert default_cfg.db_file == Path("data/operation_love.db")
+
+    overridden = _load({**BASE, "paths": {"data_dir": "./somewhere_else"}})
+    assert overridden.data_dir == Path("somewhere_else")
+    assert overridden.db_file == Path("somewhere_else/operation_love.db")  # now follows it
+
+    explicit = _load({**BASE, "paths": {
+        "data_dir": "./somewhere_else", "db_file": "./elsewhere.db"}})
+    assert explicit.db_file == Path("elsewhere.db")  # an explicit db_file still wins outright
 
 
 def test_bigquery_section_rejects_non_mapping_and_unknown_keys():
@@ -1185,6 +1205,21 @@ def test_android_app_frac_setting_rejects_a_bool():
     _expect_error(d, "apps.bumble.read_scroll_frac")
 
 
+@pytest.mark.parametrize("key", ["read_scroll_frac", "rewind_scroll_frac"])
+@pytest.mark.parametrize("value", [0, c._MAX_HINGE_SAFE_SCROLL_FRAC + 0.01, 0.78])
+def test_hinge_scroll_fractions_cannot_escape_the_central_rewind_corridor(key, value):
+    d = {**BASE, "apps": {"hinge": {key: value}}}
+    _expect_error(d, f"apps.hinge.{key} must be in (0, {c._MAX_HINGE_SAFE_SCROLL_FRAC}]")
+
+
+def test_hinge_central_rewind_fraction_boundaries_pass():
+    d = {**BASE, "apps": {"hinge": {
+        "read_scroll_frac": c._MAX_HINGE_SAFE_SCROLL_FRAC,
+        "rewind_scroll_frac": c._MAX_HINGE_SAFE_SCROLL_FRAC,
+    }}}
+    c.validate(_load(d))
+
+
 def test_android_app_frac_and_coords_within_range_pass():
     d = {**BASE, "mode": "auto", "enabled_apps": ["bumble"],
          "apps": {"bumble": {"read_scroll_frac": 0.6,
@@ -1554,6 +1589,29 @@ def test_bound_evidence_rejects_malformed_scalars_before_reading_the_artifact(
             path, digest, artifact, **{key: value}))
 
     _expect_error(d, f"still_photo_bound_evidence.{key}")
+
+
+def test_bound_evidence_max_video_exact_run_s_has_a_derived_ceiling(tmp_path, monkeypatch):
+    """max_video_exact_run_s becomes a live-device dwell-window FLOOR downstream (Hinge's
+    _still_photo_dwell_burst multiplies it by STILL_PHOTO_DWELL_WINDOW_SAFETY_FACTOR), so an
+    unbounded/typo'd value would park the bot motionless on one card for hours -- see
+    config.py's _MAX_STILL_PHOTO_VIDEO_EXACT_RUN_S. The exact ceiling must still install
+    readiness (it is a real, usable value, not merely tolerated), and one step over it must
+    fail before the artifact is even read, same as the other malformed-scalar checks above."""
+    ceiling = c._MAX_STILL_PHOTO_VIDEO_EXACT_RUN_S
+    accepted = _bound_config(
+        tmp_path, monkeypatch,
+        artifact_overrides={"max_video_exact_run_s": ceiling},
+        evidence=lambda path, digest, artifact: _bound_evidence(
+            path, digest, artifact, max_video_exact_run_s=ceiling))
+    c.validate(_load(accepted))
+    assert tp.installed_still_photo_bound().max_video_exact_run_s == ceiling
+
+    rejected = _bound_config(
+        tmp_path, monkeypatch,
+        evidence=lambda path, digest, artifact: _bound_evidence(
+            path, digest, artifact, max_video_exact_run_s=ceiling + 0.001))
+    _expect_error(rejected, "max_video_exact_run_s must not exceed")
 
 
 def test_bound_evidence_must_be_a_mapping(tmp_path, monkeypatch):

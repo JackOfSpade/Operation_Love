@@ -15,6 +15,7 @@ from .targeting_policy import (
     HINGE_PHOTO_SELECTION_POLICY_ID, HINGE_SUPERSEDED_PHOTO_SELECTION_POLICY_IDS,
     STILL_PHOTO_BOUND_CIRCULAR_ACCEPTANCE, STILL_PHOTO_BOUND_CIRCULAR_CHANNEL,
     STILL_PHOTO_BOUND_GROUND_TRUTH_CHANNEL, STILL_PHOTO_CENTERED_AUTOPLAY_ASSUMPTION,
+    STILL_PHOTO_DWELL_WINDOW_SAFETY_FACTOR,
     StillPhotoAssumptionAcceptance, StillPhotoBoundSummary,
     clear_installed_still_photo_bound, hinge_targeting_unavailable_reason,
     install_accepted_still_photo_assumption, install_verified_still_photo_bound,
@@ -187,7 +188,12 @@ _AI_OBSERVE_RELEASE_ARTIFACT_KEYS = {
     "automation_provenance_sha256", "independent_review_sha256", "verified_at",
 }
 _AI_OBSERVE_RELEASE_ACCEPTANCE = "I_ACCEPT_AI_REVIEWED_OBSERVE_RELEASE_RISK"
-_AI_OBSERVE_CONTROLLER_KEYS = {"schema_version", "source", "acceptance", "executor"}
+
+# Hinge's current fixed bottom navigation begins below the ordinary 0.55-screen read corridor.
+# A 0.78 recovery flick released inside that chrome and was repeatedly swallowed in live run
+# de89edfe05e1. Keep configuration aligned with AndroidDriver's Hinge-only gesture invariant:
+# a larger value must fail at startup rather than being silently capped or ignored.
+_MAX_HINGE_SAFE_SCROLL_FRAC = 0.55
 
 
 def _section(cls, name: str, raw_section):
@@ -344,13 +350,26 @@ def load(path: str | Path = "config.yaml") -> Config:
     bigquery_raw = _mapping_or_empty(storage_raw.get("bigquery"), "storage.bigquery")
     _reject_unknown_keys(bigquery_raw, _BIGQUERY_KEYS, "storage.bigquery")
     limits_raw = {} if raw.get("limits") is None else raw.get("limits")
+    data_dir = _path_from_raw(paths, "data_dir", "./data")
     return Config(
         enabled_apps=list(enabled_apps),
         mode=raw.get("mode", "training"),
         apps=apps_raw,
         limits=limits_raw,
-        data_dir=_path_from_raw(paths, "data_dir", "./data"),
-        db_file=_path_from_raw(paths, "db_file", "./data/operation_love.db"),
+        data_dir=data_dir,
+        # db_file's default derives from data_dir (rather than a second, independent
+        # "./data/..." literal) so an operator who overrides paths.data_dir without also
+        # setting paths.db_file gets the sqlite file placed under the root they actually
+        # configured, instead of a hardcoded path that silently ignored data_dir -- the dead
+        # link an audit found 2026-09-02. This does not change the resolved default when
+        # BOTH keys are left at their defaults (data_dir/"operation_love.db" == the old
+        # literal), and it does not change the shipped config.yaml, which sets both keys
+        # explicitly. What data_dir still does NOT control: ranker/__init__.py's SQLiteStore
+        # is the only reader of cfg.db_file; other data-directory paths an operator might
+        # expect this to reach -- e.g. drivers/hinge.py's per-app debug_dir default
+        # (./data/<app>_debug) -- remain independently hardcoded there, not derived from
+        # this key.
+        db_file=_path_from_raw(paths, "db_file", str(data_dir / "operation_love.db")),
         ranker=_section(RankerCfg, "ranker", raw.get("ranker", {})),
         quality_filter=_section(QualityCfg, "quality_filter", raw.get("quality_filter", {})),
         opener=_section(OpenerCfg, "opener", raw.get("opener", {})),
@@ -679,6 +698,17 @@ def _validate_hinge_still_photo_bound_evidence(cfg: Config) -> None:
         raise ValueError(
             "Config: apps.hinge.still_photo_bound_evidence.max_video_exact_run_s must be a "
             f"finite number of seconds (got {_safe_value_repr(run_s)})")
+    # See _MAX_STILL_PHOTO_VIDEO_EXACT_RUN_S: this value becomes a live-device dwell-window
+    # FLOOR (x STILL_PHOTO_DWELL_WINDOW_SAFETY_FACTOR), not merely a recorded measurement, so an
+    # unbounded/typo'd number is an operational mistake -- the bot going motionless on one card
+    # for hours -- not useful tuning. This is a validation ceiling on operator input, not a
+    # runtime timing constant: it does not touch how `human_cooldown` randomizes the dwell it
+    # anchors, only how large that anchor is allowed to be.
+    if run_s > _MAX_STILL_PHOTO_VIDEO_EXACT_RUN_S:
+        raise ValueError(
+            "Config: apps.hinge.still_photo_bound_evidence.max_video_exact_run_s must not "
+            f"exceed {_MAX_STILL_PHOTO_VIDEO_EXACT_RUN_S} seconds "
+            f"(got {_safe_value_repr(run_s)})")
     # The circular AI-labelled channel (owner decision 2026-08-21) labels its videos with the
     # same mute-glyph matcher whose blind spot the bound is meant to quantify, so it can never
     # claim human ground truth and is licensed only by the owner's recorded acceptance.  The
@@ -1129,7 +1159,7 @@ def _validate_hinge_ai_observe_controller(cfg: Config) -> None:
         "Training records only the Hub user's manual Like/Dislike decision.")
 
 # worker.py's _pace() scales human_motion.think_time_s()'s WHOLE draw (including its
-# shifted-lognormal floor: shift=1.2s for "like"/1.8s for "pass", means ~3.2s/~6.9s) by
+# shifted-lognormal floor: shift=1.2s for "like"/1.8s for "pass", means ~3.2s/~6.5s) by
 # swipe_delay_s / this default. Below this floor the scaled floor drops under ~0.35s and
 # the mean under ~1s on the fast tail — no longer distinguishable from scripted,
 # machine-speed swiping, the exact behaviour this project's anti-bot design exists to
@@ -1152,6 +1182,16 @@ _MAX_ANDROID_SCROLL_CAPTURES = 100
 # this ceiling is far tighter than scroll_captures' -- a value this high is already several times
 # more cards than any real Hinge profile carries.
 _MAX_STILL_PHOTO_DWELL_CANDIDATES = 20
+# apps.hinge.still_photo_bound_evidence.max_video_exact_run_s is not a diagnostic number: Hinge's
+# `_still_photo_dwell_burst` multiplies it by STILL_PHOTO_DWELL_WINDOW_SAFETY_FACTOR and hands the
+# result to `human_cooldown` as the FLOOR of a live-device screen-capture dwell window, so a
+# typo'd value (e.g. 3600) would park the bot motionless on one profile card for hours -- same
+# "operational mistake, not useful tuning" reasoning as scroll_captures and
+# still_photo_dwell_candidates above. Derived from _MAX_ANDROID_DWELL_S (the ceiling already
+# applied to a directly-configured dwell_s) divided by the safety factor, rather than a second
+# hardcoded number, so the two bounds cannot drift apart if the safety factor is ever retuned:
+# at this ceiling the resulting anchor is exactly _MAX_ANDROID_DWELL_S, never more.
+_MAX_STILL_PHOTO_VIDEO_EXACT_RUN_S = _MAX_ANDROID_DWELL_S / STILL_PHOTO_DWELL_WINDOW_SAFETY_FACTOR
 
 
 def _require_bool(value, label: str) -> None:
@@ -1626,6 +1666,18 @@ def _validate_android_fractions(cfg: Config) -> None:
                     f"(operation_love/drivers/hinge.py's AndroidDriver); an out-of-range "
                     f"value clamps onto a screen edge on a real device instead of failing, "
                     f"which can land inside a forbidden zone undetected.")
+        if app == "hinge":
+            for key in ("read_scroll_frac", "rewind_scroll_frac"):
+                if key not in app_cfg:
+                    continue
+                value = app_cfg[key]
+                _require_finite_real(value, f"apps.hinge.{key}")
+                if not 0 < value <= _MAX_HINGE_SAFE_SCROLL_FRAC:
+                    raise ValueError(
+                        f"Config: apps.hinge.{key} must be in (0, "
+                        f"{_MAX_HINGE_SAFE_SCROLL_FRAC}] so Hinge recovery stays in its "
+                        "central scrollable corridor rather than releasing in fixed bottom "
+                        f"navigation (got {_safe_value_repr(value)})")
 
 
 # opener.max_attempts, opener.request_timeout_s and opener.advisory_deadline_s sanity

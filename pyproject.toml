@@ -46,11 +46,14 @@ bq = ["google-cloud-bigquery>=3.20", "google-cloud-storage>=2.16"]
 dev = [
     "pytest>=8.0",
     # The suite is dominated by a handful of tests that drive the real OpenCV pipeline over
-    # full-resolution 1080x2400 synthetic frames: 60 of ~3800 tests are 61% of the wall clock,
-    # and cv2.matchTemplate inside build_item_index/estimate_shift is most of that. There is
-    # nothing to delete -- the expensive tests are the high-fidelity ones -- so the suite is
-    # parallelised across processes instead (see tests/conftest.py for why OpenCV is pinned to
-    # one thread per worker, and [tool.pytest.ini_options] addopts for the default invocation).
+    # full-resolution 1080x2400 synthetic frames, and cv2.matchTemplate inside
+    # build_item_index/estimate_shift is most of that cost. Measured 2026-08-22: 60 of ~3800
+    # tests were 61% of the wall clock -- that concentration has not been re-measured since, so
+    # treat it as dated, not current. Re-measured 2026-09-02: 4549 tests collected (4544 passed
+    # / 5 skipped), 259s wall clock under the default `-n auto`. There is nothing to delete --
+    # the expensive tests are the high-fidelity ones -- so the suite is parallelised across
+    # processes instead (see tests/conftest.py for why OpenCV is pinned to one thread per
+    # worker, and [tool.pytest.ini_options] addopts for the default invocation).
     "pytest-xdist>=3.6",
     "ruff>=0.15,<0.16",
 ]

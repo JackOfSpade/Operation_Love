@@ -214,6 +214,56 @@ def test_chain_items_reports_a_large_jump_as_a_tracking_failure_not_a_phantom():
     assert result.orphaned_tracks == 1        # the frame-1 track's fate is left unresolved
 
 
+def test_chain_items_does_not_promote_a_heart_born_behind_an_unreliable_pair():
+    """Found 2026-09-02: the old `active = {}` reset after an unreliable pair dropped the new
+    frame's hearts out of the tracking dict entirely, and `active.get(ai, True)` defaults a
+    MISSING key to True (confirmed) -- so a heart that first appeared behind an unreliable pair
+    (honestly `ambiguous_new`, never `distinct_confirmed`) got silently promoted to "confirmed"
+    the moment the NEXT reliable pair matched it forward. If that promoted track then missed
+    (pair 3), the miss was wrongly folded into `orphaned_tracks`, a statistic ChainResult's own
+    docstring defines as counting only PREVIOUSLY-CONFIRMED tracks.
+
+    Four frames, three pairs, deliberately isolating the two sources of orphaning so a
+    regression shows up as a count, not just a crash:
+      pair0 (0->1) UNRELIABLE: frame-0's one confirmed heart X is orphaned for real (its fate
+        genuinely is unknown across an unreliable pair) -- that is 1 legitimate orphan no fix
+        should remove. Frame 1's heart Y is `ambiguous_new`, not confirmed.
+      pair1 (1->2) reliable: Y tracks forward to Z. Never re-added to distinct_confirmed either
+        way -- matches never are -- but under the bug Z's active-entry becomes True (wrongly
+        "confirmed") instead of staying False (still ambiguous).
+      pair2 (2->3) reliable: Z genuinely misses (still predicted in-band, nothing matches).
+        Buggy code: Z's wrongly-True entry counts this miss as a SECOND orphaned track (2
+        total). Fixed code: Z's correctly-False entry means an already-ambiguous track that
+        also misses is simply dropped (see the loop's own comment) -- orphaned stays at 1.
+    """
+    pair0 = probe.build_pair_result(
+        0, 1, hearts_a=[(500, 1000)], hearts_b=[(500, 850)],
+        delta_px=5000.0, response=0.9, content_band_px=_BAND_PX, tolerance_px=_TOL,
+        min_response=_MIN_RESPONSE, max_delta_px=_MAX_DELTA)
+    assert pair0.reliable is False   # sanity: this IS the unreliable pair under test
+
+    pair1 = probe.build_pair_result(
+        1, 2, hearts_a=[(500, 850)], hearts_b=[(500, 700)],
+        delta_px=150.0, response=0.9, content_band_px=_BAND_PX, tolerance_px=_TOL,
+        min_response=_MIN_RESPONSE, max_delta_px=_MAX_DELTA)
+    assert pair1.reliable is True and pair1.matched == [(0, 0)]   # Y tracks forward to Z
+
+    # predicted_y = 700 - 150 = 550, still well inside the band (r0=300) -- a genuine miss,
+    # not a left-band exit -- and hearts_b is empty so nothing can match it.
+    pair2 = probe.build_pair_result(
+        2, 3, hearts_a=[(500, 700)], hearts_b=[],
+        delta_px=150.0, response=0.9, content_band_px=_BAND_PX, tolerance_px=_TOL,
+        min_response=_MIN_RESPONSE, max_delta_px=_MAX_DELTA)
+    assert pair2.reliable is True and pair2.unmatched_a == [0] and pair2.left_band_a == []
+
+    result = probe.chain_items([pair0, pair1, pair2])
+
+    assert result.tracking_failures == [(0, 1)]
+    assert result.distinct_confirmed == 1   # only frame-0's X ever confirmed
+    assert result.ambiguous_new == 1        # Y, born behind the unreliable pair
+    assert result.orphaned_tracks == 1      # X only -- NOT 2 (Z's miss must not be re-counted)
+
+
 def test_estimate_vertical_delta_sign_and_magnitude(monkeypatch):
     """Real phase correlation (cv2.phaseCorrelate), not a mock, against two synthetic PNGs
     where the true shift is known by construction: frame_b's content_band rows are frame_a's,

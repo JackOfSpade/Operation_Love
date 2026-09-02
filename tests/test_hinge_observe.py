@@ -11,11 +11,12 @@ diff thresholds are confirmed live on a finished profile (see hinge.py header).
 import hashlib
 import math
 import random
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from operation_love.drivers import hinge
+from operation_love.drivers import hinge, scroll_top
 from operation_love.drivers.base import DriverClosed
 from operation_love.drivers.hinge import HingeDriver
 from operation_love.drivers.touchwatch import Gesture
@@ -833,6 +834,9 @@ def test_dismissed_like_sheet_is_recorded_but_never_as_a_decision(monkeypatch):
     drv._identity_top_sig = np.full((16, 64), 200, dtype="int16")
     monkeypatch.setattr(hinge, "_band", lambda frame, rect: new_sig if frame == b"c" else old_sig)
     monkeypatch.setattr(drv, "_observe_deck_ready", lambda frame: True)
+    # This test's deliberately tiny deadline is about composer resolution, not cold-loading
+    # the unrelated paywall template on a fresh xdist worker.
+    monkeypatch.setattr(drv, "_deck_blocked_reason", lambda _frame: None)
     # A real, matchable Send Like glyph while the sheet is up, gone once it is dismissed --
     # this is what separates a genuine dismissal from the sibling test below. Counted rather
     # than keyed on frame bytes because FakeAdb replays one frame until a scroll advances it.
@@ -869,6 +873,7 @@ def test_bottom_delta_with_no_sheet_is_not_logged_as_a_dismissed_like(monkeypatc
     drv._identity_top_sig = np.full((16, 64), 200, dtype="int16")
     monkeypatch.setattr(hinge, "_band", lambda frame, rect: new_sig if frame == b"c" else old_sig)
     monkeypatch.setattr(drv, "_observe_deck_ready", lambda frame: True)
+    monkeypatch.setattr(drv, "_deck_blocked_reason", lambda _frame: None)
     monkeypatch.setattr(drv, "_observe_like_sheet_visible", lambda frame: False)   # never a sheet
 
     assert drv.wait_for_decision(timeout=0.2) is None
@@ -1596,10 +1601,12 @@ class _FakeDbg:
     def __init__(self):
         self.calls = []
         self.befores = []          # (name, before) -- the frame each record is evidenced by
+        self.afters = []           # (name, after) -- only rare retained pair diagnostics use it
 
     def action(self, name, *, before=None, after=None, **fields):
         self.calls.append((name, fields))
         self.befores.append((name, before))
+        self.afters.append((name, after))
 
 
 def test_reviewed_observe_pass_emits_a_verified_frame_bound_decision(monkeypatch):
@@ -2089,6 +2096,60 @@ def test_vertical_shift_match_restricted_to_content_rows_ignores_fixed_chrome():
     assert hinge._vertical_shift_match(different, seen, threshold=9.0, rows=(r0, r1))[0] is False
 
 
+def test_vertical_shift_match_requires_at_least_half_the_content_band():
+    """Regression for the completed Marina -> Sara Training Like.
+
+    The new Sara card coincidentally matched four rows of a captured Marina frame at shift
+    +14.  Four of eighteen content rows are not enough evidence to overrule a real deck
+    advance.  The weakest previously measured genuine same-profile match was exactly 9/18,
+    so preserve that boundary while rejecting the incident's 4/18 collision.
+    """
+    import numpy as np
+
+    rng = np.random.default_rng(17)
+    size = 24
+    rows = hinge._content_rows(hinge.HINGE_SPEC.content_band, size)
+    r0, r1 = rows
+    seen = rng.integers(0, 255, size=(size, size)).astype("int16")
+
+    four_row_collision = rng.integers(0, 255, size=(size, size)).astype("int16")
+    four_row_collision[r0 + 14:r1] = seen[r0:r1 - 14]
+    matched, _shift, overlap = hinge._vertical_shift_match(
+        four_row_collision, seen, threshold=0.1, rows=rows, min_overlap_rows=9)
+    assert matched is False
+    assert overlap >= 9
+
+    half_band_scroll = rng.integers(0, 255, size=(size, size)).astype("int16")
+    half_band_scroll[r0 + 9:r1] = seen[r0:r1 - 9]
+    matched, shift, overlap = hinge._vertical_shift_match(
+        half_band_scroll, seen, threshold=0.1, rows=rows, min_overlap_rows=9)
+    assert matched is True
+    assert shift == 9
+    assert overlap == 9
+
+
+def test_current_profile_check_rejects_a_four_row_collision(monkeypatch):
+    """The stricter overlap policy is wired to the consequential post-Like caller."""
+    import numpy as np
+
+    drv = _drv(FakeAdb([b"sara"]))
+    rng = np.random.default_rng(17)
+    size = 24
+    r0, r1 = hinge._content_rows(drv.content_band, size)
+    marina_sig = rng.integers(0, 255, size=(size, size)).astype("int16")
+    sara_sig = rng.integers(0, 255, size=(size, size)).astype("int16")
+    sara_sig[r0 + 14:r1] = marina_sig[r0:r1 - 14]
+    drv._current_sigs = [marina_sig]
+    monkeypatch.setattr(drv, "_identity_of", lambda _frame: ("same", 42.85))
+    monkeypatch.setattr(hinge, "_downsample", lambda _frame: sara_sig)
+    diagnostics = {}
+
+    assert drv._is_current_profile_frame(
+        b"sara", require_content=True, diagnostics=diagnostics) is False
+    assert diagnostics["current_content_shift_matched"] is False
+    assert diagnostics["current_profile_result"] is False
+
+
 def test_vertical_shift_match_reports_which_shift_matched_and_how_much_overlapped():
     """New return shape (observability fix): _vertical_shift_match used to return a bare
     bool, which is exactly why the reported incident's observe_scroll record said only
@@ -2176,6 +2237,47 @@ def test_identity_top_name_ocr_near_miss_reads_stay_same_the_false_pass_guard(mo
         state, _dist = drv._identity_of(b"frame")
 
         assert state == "same", f"OCR misread {misread!r} of the stored name must stay 'same'"
+
+
+def test_identity_top_name_ocr_distinguishes_sara_from_marina(monkeypatch):
+    """Regression: a clean repeated Sara header is not an OCR variant of Marina.
+
+    Their SequenceMatcher score is exactly 0.60, which the former inclusive 0.60 fuzzy-name
+    boundary accepted as ``same``. That swallowed a completed Training Like after Hinge had
+    already advanced to Sara. The measured Zorva/Zorba and Zorva/Zorna OCR positives remain
+    safely above the recalibrated boundary at 0.80.
+    """
+    drv = _top_state_drv(monkeypatch, stored_name="Marina")
+    monkeypatch.setattr(
+        drv, "_ocr_band",
+        lambda frame, rect, psm="7", **_kwargs: "Sara" if psm == "6" else None)
+
+    state, _dist = drv._identity_of(b"sara-after-like")
+
+    assert state == "new"
+    assert drv._identity_top_name_verdict == "new"
+    assert drv._identity_name_candidate == "Sara"
+
+
+def test_passive_identity_keeps_sofia_sophia_fuzzy_match_conservative(monkeypatch):
+    """A close spelling conflict alone cannot manufacture a passive decision.
+
+    Sofia/Sophia scores 0.727, below the measured 0.80 Zorva OCR near-misses but above the
+    shared conservative fuzzy boundary. Training may resolve this only with its additional
+    post-action content and stability proof; `_identity_of` alone must keep saying same.
+    """
+    drv = _top_state_drv(monkeypatch, stored_name="Sophia")
+    monkeypatch.setattr(
+        drv, "_ocr_band",
+        lambda frame, rect, psm="7", **_kwargs: "Sofia" if psm == "6" else None)
+
+    state, _dist = drv._identity_of(b"sofia-after-like")
+
+    assert state == "same"
+    assert drv._identity_top_name_verdict == "same"
+    assert drv._identity_name_candidate is None
+    assert drv._identity_top_name_read == "Sofia"
+    assert drv._identity_top_name_read_source == "top_card_header"
 
 
 def test_identity_top_name_ocr_all_chrome_words_stays_top_inconclusive(monkeypatch):
@@ -3166,13 +3268,32 @@ def test_touch_watcher_health_exception_requires_name_proof_and_warns_once(monke
     assert out.count("touch watcher has seen no events this run") == 1
 
 
-def _legacy_observe_open_session_raises_when_its_touch_watcher_cant_start(monkeypatch):
+def test_observe_open_session_raises_when_its_touch_watcher_cant_start(monkeypatch):
     """observe_touch_watch=True (opt-in; it ships False because the target device's
     platform withholds the stream) must fail LOUDLY -- the same "explicit
     operator decision, never a silent downgrade" contract as touch_backend -- when the
     device's touch event stream can't be attached, rather than silently narrowing observe
     mode's PASS proof back to repeated name + identity + deck readiness. The raised DriverClosed
-    must name the config key an operator can set to accept that narrower proof on purpose."""
+    must name the config key an operator can set to accept that narrower proof on purpose.
+
+    This was a dead test until 2026-09-02 (FINDING 2): the name lacked the `test_` prefix
+    (a leftover from the ea6756e8 rename to supervised training) so pytest never collected it.
+    Collecting it exposed a second bug in the fixture itself, not just its name: it called
+    `drv.set_auto_session_policy(None)`, which unconditionally sets `_auto_session = True` (see
+    that method's own docstring) -- but the watcher block this test exists to exercise is gated
+    `if self.observe_touch_watch and not self._auto_session`, OBSERVE SESSIONS ONLY, so that
+    call silently skipped the whole branch and TouchWatcher.start() was never even reached.
+    Confirmed by running the pre-rename body verbatim: it did not raise. Dropped here so
+    `_auto_session` stays at its observe-mode default of False, per fixtures-can-miss-the-
+    branch-they-name -- collecting a test is not the same as it reaching the code it names.
+
+    It now also proves FINDING 1's leak fix: by the time TouchWatcher.start() fails,
+    open_session() has already called `_make_touch()` a few lines above and registered a real
+    UHID virtual touchscreen on the device (faked here as `_FakeTouch`, so this stays a device-
+    free test). Before the fix, the guard that runs `self.close()` on any open_session()
+    failure only wrapped the debug-log setup AFTER this block, so the DriverClosed raised here
+    escaped uncaught and the registered touch transport (and the ADB link) leaked -- the same
+    failure class that already leaked 7 virtual touchscreens once from a different trigger."""
     class _OpenAdb(FakeAdb):
         def __init__(self):
             super().__init__([b"x"])
@@ -3187,17 +3308,116 @@ def _legacy_observe_open_session_raises_when_its_touch_watcher_cant_start(monkey
         def start(self):
             raise hinge.TouchWatchUnavailable("no ABS_MT_POSITION_X/Y device")
 
+    class _FakeTouch:
+        """Stands in for UhidTouch so this test can prove the registered transport gets
+        released on the open_session() failure path below, without touching a real
+        /dev/hidg node."""
+        instances = []
+
+        def __init__(self, adb):
+            self.adb = adb
+            self.closed = False
+            _FakeTouch.instances.append(self)
+
+        def open(self):
+            pass
+
+        def close(self):
+            self.closed = True
+
     monkeypatch.setattr(hinge, "Adb", lambda *a, **k: _OpenAdb())
     monkeypatch.setattr(hinge, "TouchWatcher", _DeadWatcher)
+    monkeypatch.setattr(hinge, "UhidTouch", _FakeTouch)   # touch_backend defaults to "auto"
     monkeypatch.setattr("operation_love.platforms.unavailable_reason", lambda *_a, **_k: None)
     cfg = type("C", (), {"mode": "training", "apps": {
-        "hinge": {"serial": "pixel", "touch_backend": "adb", "observe_touch_watch": True}}})
+        "hinge": {"serial": "pixel", "observe_touch_watch": True}}})
     drv = HingeDriver(cfg)
-    drv.set_auto_session_policy(None)
+    # No set_auto_session_policy() call: this simulates an OBSERVE session, and
+    # _auto_session must stay at its constructed-False default for the gate above to
+    # actually let TouchWatcher.start() run (see the docstring's fixture-bug note).
 
     with pytest.raises(DriverClosed) as exc:
         drv.open_session()
     assert "observe_touch_watch" in str(exc.value)
+
+    # FINDING 1: the virtual touchscreen _make_touch() registered above must not survive a
+    # failed open_session() -- close() must have run and released both the touch transport
+    # and the ADB link, not just left them dangling for the hub to leak until it exits.
+    assert len(_FakeTouch.instances) == 1
+    assert _FakeTouch.instances[0].closed is True
+    assert drv._touch is None
+    assert drv._adb is None
+
+
+def test_open_session_always_reads_the_targeting_binding_live(monkeypatch):
+    """`_refresh_targeting_calibration_binding` memoizes its `dumpsys package` + `screen_size`
+    read for one item-index lifetime (STAGE B2 FINDING 2). That memo is only safe under the
+    property that the FIRST read of a session is live, and `close()` does not clear the flag --
+    so a driver object that opened a second session would otherwise carry the first session's
+    build/frame binding into it and could license a targeted like against a Hinge build that
+    is no longer installed. Nothing in production reopens a driver today; this pins the
+    invariant so the memo stays safe if something ever does."""
+    launched = []
+
+    class _OpenAdb(FakeAdb):
+        def __init__(self):
+            super().__init__([b"x"])
+            self.dumpsys_package_calls = 0
+
+        def devices(self):
+            return ["pixel"]
+
+        def shell(self, command="", **_):
+            if command.startswith("dumpsys package"):
+                self.dumpsys_package_calls += 1
+                return "    versionName=10.1.0\n"
+            if command.startswith("monkey "):
+                launched.append(command)
+            return ""
+
+    adbs = []
+
+    def _make_adb(*_a, **_k):
+        adbs.append(_OpenAdb())
+        return adbs[-1]
+
+    class _FakeTouch:
+        def __init__(self, adb):
+            self.adb = adb
+
+        def open(self):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(hinge, "Adb", _make_adb)
+    monkeypatch.setattr(hinge, "UhidTouch", _FakeTouch)
+    monkeypatch.setattr(hinge.time, "sleep", lambda *_a, **_k: None)
+    monkeypatch.setattr("operation_love.platforms.unavailable_reason", lambda *_a, **_k: None)
+    calibration = {
+        "schema_version": 3, "hinge_version_name": "10.1.0", "frame_size_px": [1080, 2400],
+        "composer_layout_id": "hinge_inline_v1", "item_selection_policy_id": "hinge_photos_only_v2",
+        "identity_match_max_dist": 2.0, "inline_item_max_dist": 10.0, "device": "pixel",
+        "calibrated_at": "2026-08-12",
+        "identity_band": list(hinge.HINGE_SPEC.identity_band),
+        "content_band": list(hinge.HINGE_SPEC.content_band),
+    }
+    cfg = type("C", (), {"mode": "training", "apps": {"hinge": {
+        "serial": "pixel", "targeting_calibration": calibration}}})
+    drv = HingeDriver(cfg)
+    assert drv.targeting_calibration is not None, "fixture must reach the binding read at all"
+
+    drv.open_session()
+    assert adbs[0].dumpsys_package_calls == 1
+    # Simulate the memo being latched by the session's work, then close and reopen.
+    drv._targeting_binding_fetched = True
+    drv.close()
+    drv.open_session()
+    assert adbs[-1].dumpsys_package_calls == 1, (
+        "the second session reused the first session's memoized build/frame binding instead "
+        "of reading the device it is actually driving")
+    assert len(launched) == 2
 
 
 def test_observe_mode_never_taps_swipes_or_types_across_the_new_decision_paths(monkeypatch):
@@ -3324,6 +3544,64 @@ def test_failed_hinge_rewind_records_its_final_filter_chip_verdict(monkeypatch):
     assert "scroll_top_error" not in recovery
 
 
+def test_failed_hinge_rewind_retains_bounded_attempt_facts_and_endpoint_frames(monkeypatch):
+    """Per-attempt facts stay scalar; only the bounded rewind's endpoints retain frames."""
+    adb = FakeAdb([b"same-scrolled-card"])
+    drv = _drv(adb, scroll_captures=2, read_scroll_frac=0.55, rewind_scroll_frac=0.78)
+    drv._dbg = _FakeDbg()
+    drv._capture_scrolls = 2
+    verdict = SimpleNamespace(
+        confirmed=False, state="confirmed_not_top", distance=9.640625,
+        alignment_offset_px=12,
+    )
+    monkeypatch.setattr(hinge, "confirm_scroll_top", lambda *_a, **_k: verdict)
+    monkeypatch.setattr(drv, "_changed", lambda *_a: False)
+
+    assert drv._scroll_to_top() is False
+    recovery = next(fields for name, fields in drv._dbg.calls
+                    if name == "capture_entry_recovery_spent")
+    assert recovery["scroll_top_state"] == "confirmed_not_top"
+    assert recovery["scroll_top_initial"]["scroll_top_state"] == "confirmed_not_top"
+    attempts = recovery["scroll_top_attempts"]
+    assert len(attempts) == 2
+    assert [(row["start"], row["end"], row["duration_ms"], row["frame_changed"])
+            for row in attempts] == [
+                ([540, 540], [540, 1860], 450, False),
+                ([540, 540], [540, 1860], 450, False),
+            ]
+    assert all(row["detector"]["scroll_top_distance"] == pytest.approx(9.640625)
+               for row in attempts)
+    assert not any("before" in row or "after" in row for row in attempts)
+    assert recovery["keep_before"] is True and recovery["keep_after"] is True
+    assert ("capture_entry_recovery_spent", b"same-scrolled-card") in drv._dbg.befores
+    assert ("capture_entry_recovery_spent", b"same-scrolled-card") in drv._dbg.afters
+
+
+def test_saved_rewind_failure_frame_is_refuted_while_prior_same_card_top_confirms():
+    """Replay the real session-start failure without embedding a private profile frame in git.
+
+    The saved failure is the decisive control for the geometry change: it still has the profile
+    header in ``identity_band`` after twelve old long-flick attempts, whereas an earlier capture
+    of the same card has Hinge's filter chips at that exact crop. Both files are local debug
+    evidence and this test intentionally skips in CI when they are not present.
+    """
+    root = Path(__file__).resolve().parent.parent
+    failure = root / "data/hinge_debug/de89edfe05e1/00001_capture_entry_refused_before.png"
+    confirmed_top = root / "data/hinge_debug/4efcff0d78ca/00315_capture_before.png"
+    if not failure.is_file() or not confirmed_top.is_file():
+        pytest.skip("private local Hinge rewind evidence is unavailable")
+
+    failed = scroll_top.confirm_scroll_top(
+        failure.read_bytes(), identity_band=hinge.HINGE_SPEC.identity_band)
+    top = scroll_top.confirm_scroll_top(
+        confirmed_top.read_bytes(), identity_band=hinge.HINGE_SPEC.identity_band)
+
+    assert failed.state == scroll_top.SCROLL_TOP_REFUTED
+    assert failed.distance == pytest.approx(9.640625)
+    assert failed.alignment_offset_px == 12
+    assert top.confirmed is True
+
+
 def test_session_top_failure_prints_filter_chip_detector_fact_not_motion(monkeypatch, capsys):
     """A settled but uncalibrated top must not be reported as a screen that kept moving."""
     drv = _drv(FakeAdb([b"settled-top-with-new-chrome"]))
@@ -3428,8 +3706,8 @@ def test_scroll_to_top_returns_to_true_top_not_just_matching_swipe_count(monkeyp
     )
 
 
-def test_scroll_to_top_uses_the_long_configured_rewind_and_stops_on_confirmed_top(monkeypatch):
-    """A human-scale Hinge return flick needs no redundant settle swipe once top is proven."""
+def test_scroll_to_top_caps_configured_rewind_to_safe_central_geometry(monkeypatch):
+    """A config value cannot put a Hinge recovery release in the fixed bottom navigation."""
     adb = FakeAdb([b"before", b"after"])
     drv = _drv(adb, read_scroll_frac=0.55, rewind_scroll_frac=0.78)
     drv._capture_scroll_ledger = [(0.55, 0.5)] * 6
@@ -3442,19 +3720,18 @@ def test_scroll_to_top_uses_the_long_configured_rewind_and_stops_on_confirmed_to
         drv, "_changed", lambda *_a, **_k: pytest.fail("confirmed top must stop immediately"))
 
     assert drv._scroll_to_top() is True
-    assert gestures == [((540, 263, 540, 2136), {"duration_ms": 160})]
+    # 0.78 used to be 263 -> 2136 @160ms, ending in the fixed Hinge nav.  The cap keeps the
+    # reverse stroke on the ordinary read corridor and uses _swipe's standard 450ms timing.
+    assert gestures == [((540, 540, 540, 1860), {})]
     assert drv._capture_scroll_ledger == [] and drv._capture_scrolls == 0
 
 
-def test_auto_policy_undo_uses_ledger_but_not_a_one_for_one_reverse_replay(monkeypatch):
+def test_auto_policy_hinge_undo_stays_in_the_central_read_corridor(monkeypatch):
     class Policy:
         pass
 
-    # Six forward strokes total three screen-heights.  Pin the independent undo sampler at
-    # 1.2x the mean forward distance; screenshot settling therefore reaches the real top in
-    # five strokes, proving this is not a six-item reverse replay of the ledger.
-    monkeypatch.setattr(
-        hinge.random, "uniform", lambda low, _high: 1.20 if low >= 1.0 else 0.44)
+    # Six forward strokes total three screen-heights. Hinge deliberately does NOT replay them
+    # with a long randomized flick: every recovery stroke uses the proven central 0.55h corridor.
     adb = PositionTrackingAdb([b"x"])
     drv = _drv(adb, scroll_captures=8, read_scroll_frac=0.55)
     # This is a transport-distance test rather than a Hinge identity-band test.  Generic
@@ -3471,7 +3748,7 @@ def test_auto_policy_undo_uses_ledger_but_not_a_one_for_one_reverse_replay(monke
 
     drv._scroll_to_top()
 
-    assert adb.swipes == 5
+    assert adb.swipes == 6
     assert adb.position <= 1e-9
     assert drv._capture_scroll_ledger == [] and drv._capture_scrolls == 0
 
@@ -3492,7 +3769,7 @@ def test_auto_policy_undo_has_a_hard_ceiling_on_a_never_settling_screen(monkeypa
     assert adb.swipes == 7                 # four recorded strokes + three safety attempts
 
 
-def test_auto_policy_undo_varies_distance_and_lane_across_profiles(monkeypatch):
+def test_auto_policy_hinge_undo_cannot_vary_out_of_the_central_safe_geometry(monkeypatch):
     class Policy:
         pass
 
@@ -3507,8 +3784,7 @@ def test_auto_policy_undo_varies_distance_and_lane_across_profiles(monkeypatch):
         drv._capture_scrolls = 2
         drv._scroll_to_top()
 
-    assert len({args[0] for args in gestures}) > 15             # x lane varies
-    assert len({args[3] - args[1] for args in gestures}) > 15   # reverse distance varies
+    assert set(gestures) == {(540, 540, 540, 1860)}
 
 
 def test_current_profile_returns_to_top_after_observe_capture(monkeypatch):

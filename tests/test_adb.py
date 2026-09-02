@@ -9,6 +9,7 @@ from operation_love.drivers.adb import (
     AdbError,
     _clean_text_for_input,
     parse_devices_output,
+    parse_foreground_activity_package,
     parse_foreground_package,
     plan_path,
     quote_android_package_id,
@@ -118,6 +119,143 @@ def test_foreground_parser_accepts_fully_qualified_component_class():
     dump = "mCurrentFocus=Window{123 u0 co.hinge.app/co.hinge.app.ui.MainActivity}\n"
 
     assert parse_foreground_package(dump) == "co.hinge.app"
+
+
+def test_foreground_package_uses_authoritative_window_focus_without_activity_fallback(monkeypatch):
+    run = FakeRun(_ok(
+        b"mCurrentFocus=Window{123 u0 com.android.systemui/.NotificationShade}\n"))
+    monkeypatch.setattr(adb_mod.subprocess, "run", run)
+
+    assert Adb(serial="pixel").foreground_package() == "com.android.systemui"
+    assert run.argv == [["adb", "-s", "pixel", "shell", "dumpsys window windows"]]
+
+
+def test_foreground_package_falls_back_to_activity_when_window_has_no_focus_fields(monkeypatch):
+    # The activity dump uses ActivityManager's OWN field name/shape -- `mResumedActivity:`,
+    # colon-separated, wrapping an `ActivityRecord{...}` payload -- NOT the WindowManager
+    # `mCurrentFocus=...` shape the window dump above uses. An earlier version of this test
+    # (and of the fallback code it exercises) used the window shape here too, so it never
+    # caught that the fallback's grep looked for the wrong field names (Finding 1, 2026-09-02).
+    run = FakeRun(
+        _ok(b"WINDOW MANAGER WINDOWS\nWindow #0 unrelated.example/.Elsewhere\n"),
+        _ok(b"mResumedActivity: ActivityRecord{a1b2c3d u0 co.hinge.app/.MainActivity t42}\n"),
+    )
+    monkeypatch.setattr(adb_mod.subprocess, "run", run)
+
+    assert Adb(serial="pixel").foreground_package() == "co.hinge.app"
+    assert run.argv == [
+        ["adb", "-s", "pixel", "shell", "dumpsys window windows"],
+        ["adb", "-s", "pixel", "shell", "dumpsys activity activities"],
+    ]
+
+
+@pytest.mark.parametrize("activity_dump, expected", [
+    (b"mResumedActivity: ActivityRecord{a1b2c3d u0 NotificationShade}\n", None),
+    (b"mResumedActivity: ActivityRecord{a1b2c3d u0 com.android.systemui/.NotificationShade}\n",
+     "com.android.systemui"),
+])
+def test_foreground_package_activity_fallback_rejects_malformed_and_reports_foreign(
+        monkeypatch, activity_dump, expected):
+    run = FakeRun(_ok(b"WINDOW MANAGER WINDOWS\n"), _ok(activity_dump))
+    monkeypatch.setattr(adb_mod.subprocess, "run", run)
+
+    assert Adb(serial="pixel").foreground_package() == expected
+    assert len(run.calls) == 2
+
+
+def test_foreground_package_does_not_let_activity_override_malformed_window_focus(monkeypatch):
+    run = FakeRun(_ok(b"mCurrentFocus=Window{123 u0 NotificationShade}\n"))
+    monkeypatch.setattr(adb_mod.subprocess, "run", run)
+
+    assert Adb(serial="pixel").foreground_package() is None
+    assert run.argv == [["adb", "-s", "pixel", "shell", "dumpsys window windows"]]
+
+
+# --- parse_foreground_activity_package: dumpsys activity activities' OWN field names -----
+# (`mResumedActivity:` / `mFocusedActivity:`, colon-separated -- NOT the WindowManager
+# `mCurrentFocus=`/`mFocusedApp=` names parse_foreground_package reads above). Finding 1
+# (2026-09-02): the fallback used to grep the window dump's field names against THIS dump,
+# which never contains them, so it silently returned None on every real call.
+@pytest.mark.parametrize(("dump", "expected"), [
+    ("mResumedActivity: ActivityRecord{a1b2c3d u0 co.hinge.app/.MainActivity t42}\n",
+     "co.hinge.app"),
+    ("mFocusedActivity: ActivityRecord{a1b2c3d u0 com.android.systemui/.NotificationShade}\n",
+     "com.android.systemui"),
+    # A garbage/unlabelled dump: a real `dumpsys activity activities` prints many other
+    # ActivityRecord-shaped lines (task-stack history entries) that are NOT the labelled
+    # resumed/focused fields -- one of those must never be mistaken for the answer.
+    ("  Hist #0: ActivityRecord{a1b2c3d u0 unrelated.example/.Elsewhere t1}\n", None),
+])
+def test_parse_foreground_activity_package_accepts_only_labeled_focus_lines(dump, expected):
+    assert parse_foreground_activity_package(dump) == expected
+
+
+@pytest.mark.parametrize("resumed", [
+    "mResumedActivity: null",
+    "mResumedActivity: ActivityRecord{a1b2c3d u0 NotificationShade}",
+])
+def test_present_but_unreadable_resumed_activity_never_falls_back_to_stale_focused(resumed):
+    dump = (f"{resumed}\n"
+            f"mFocusedActivity: ActivityRecord{{a1b2c3d u0 co.hinge.app/.MainActivity t42}}\n")
+
+    assert parse_foreground_activity_package(dump) is None
+
+
+# --- foreground_package() probe ORDER is not an optimization target (2026-09-02) ---------
+# These two pin the reason foreground_package() may never cache which dump answered last.
+# A "remember the activity dump and ask it first" cache was written and reverted the same
+# day: it turns the one disagreement this probe exists to detect into a silent wrong answer.
+_SHADE_OVER_HINGE_WINDOW = (
+    b"mCurrentFocus=Window{123 u0 com.android.systemui/.NotificationShade}\n")
+_HINGE_RESUMED_ACTIVITY = (
+    b"mResumedActivity: ActivityRecord{a1b2c3d u0 co.hinge.app/.MainActivity t42}\n")
+_WINDOW_DUMP_WITHOUT_FOCUS = b"WINDOW MANAGER WINDOWS\nWindow #0 unrelated.example/.Elsewhere\n"
+
+
+def test_foreground_package_probes_the_window_dump_first_on_every_call(monkeypatch):
+    """Even after an unbroken run of activity-dump fallbacks, the NEXT call still asks the
+    window dump first. Hinge's activity stays RESUMED underneath an open notification shade,
+    so an activity-first order answers "co.hinge.app" truthfully and hides the shade from the
+    screen-ownership gate that guards touch input."""
+    run = FakeRun(
+        # Two cold-ish calls that both settle on the activity fallback...
+        _ok(_WINDOW_DUMP_WITHOUT_FOCUS), _ok(_HINGE_RESUMED_ACTIVITY),
+        _ok(_WINDOW_DUMP_WITHOUT_FOCUS), _ok(_HINGE_RESUMED_ACTIVITY),
+        # ...then the shade opens. The window dump now reports it, while the activity dump
+        # still truthfully says Hinge is the resumed activity underneath.
+        _ok(_SHADE_OVER_HINGE_WINDOW), _ok(_HINGE_RESUMED_ACTIVITY),
+    )
+    monkeypatch.setattr(adb_mod.subprocess, "run", run)
+    d = Adb(serial="pixel")
+
+    assert d.foreground_package() == "co.hinge.app"
+    assert d.foreground_package() == "co.hinge.app"
+    # The window dump wins the moment it has something to say -- and it is only consulted at
+    # all because the probe order is fixed, never reordered by what answered previously.
+    assert d.foreground_package() == "com.android.systemui"
+    assert run.argv[-1] == ["adb", "-s", "pixel", "shell", "dumpsys window windows"]
+    assert len(run.calls) == 5   # the shade call stops at the window dump, no activity probe
+
+
+def test_foreground_package_uses_activity_only_when_window_names_no_focus(monkeypatch):
+    """The fallback's own contract, unchanged: the activity dump is consulted only when the
+    window dump carries NEITHER labelled focus field, and a window dump that does name a
+    focus is never second-guessed against the resumed activity underneath it."""
+    run = FakeRun(
+        _ok(_WINDOW_DUMP_WITHOUT_FOCUS), _ok(_HINGE_RESUMED_ACTIVITY),
+        _ok(_SHADE_OVER_HINGE_WINDOW),
+    )
+    monkeypatch.setattr(adb_mod.subprocess, "run", run)
+    d = Adb(serial="pixel")
+
+    assert d.foreground_package() == "co.hinge.app"
+    assert run.argv == [
+        ["adb", "-s", "pixel", "shell", "dumpsys window windows"],
+        ["adb", "-s", "pixel", "shell", "dumpsys activity activities"],
+    ]
+
+    assert d.foreground_package() == "com.android.systemui"
+    assert len(run.calls) == 3   # window answered; the activity dump was not asked at all
 
 
 @pytest.mark.parametrize(

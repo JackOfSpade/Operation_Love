@@ -704,6 +704,9 @@ def _run_completion_assessment_md(hub_state, config_path: str) -> str:
     app_states = {str(row.get("state") or "unknown") for row in app_rows}
     app_errors = any(row.get("error") for row in app_rows)
     stopped = phase == "stopped" and not st.get("running") and not snap.get("running")
+    run_id = st.get("run_id")
+    run_note = (f" for run `{_sanitize_inline(run_id)}`"
+                if isinstance(run_id, str) and run_id else "")
 
     if phase == "save_failed":
         return ("- **Outcome: SAVE FAILED** — the shutdown reached persistence, but flush "
@@ -711,8 +714,12 @@ def _run_completion_assessment_md(hub_state, config_path: str) -> str:
     if phase == "wedged" or "wedged" in app_states:
         return ("- **Outcome: DEGRADED SHUTDOWN** — persistence was attempted, but at least one "
                 "worker did not exit; do not treat the run as fully complete.")
-    if st.get("stopping") or st.get("running") or snap.get("running") or phase != "stopped":
-        return (f"- **Outcome: IN PROGRESS / INDETERMINATE** — phase is {phase!r}; no durable "
+    if st.get("stopping"):
+        return (f"- **Outcome: STOPPING / INDETERMINATE**{run_note} — a stop was requested "
+                f"while phase was {phase!r}; no durable completion verdict is available until "
+                "shutdown and persistence finish.")
+    if st.get("running") or snap.get("running") or phase != "stopped":
+        return (f"- **Outcome: IN PROGRESS / INDETERMINATE**{run_note} — phase is {phase!r}; no durable "
                 "completion verdict is available yet.")
     if snap.get("error") or app_errors or "error" in app_states:
         return ("- **Outcome: COMPLETED WITH ERRORS** — shutdown reached stopped, but the hub "
@@ -880,6 +887,13 @@ def _status_md(hub_state) -> str:
     if not st:
         lines.append("- no active/last run")
         return "\n".join(lines)
+    run_id = st.get("run_id")
+    if isinstance(run_id, str) and run_id:
+        uptime = st.get("uptime_s")
+        uptime_note = (f" · status uptime: {format_duration(float(uptime))}"
+                       if isinstance(uptime, (int, float)) and not isinstance(uptime, bool)
+                       and math.isfinite(float(uptime)) and uptime >= 0 else "")
+        lines.append(f"- status provenance: run `{_sanitize_inline(run_id)}`{uptime_note}")
     ready = "ready" if st["ranker_ready"] else "defer"
     cap = f" / ${st['budget_cap']:.2f}" if st.get("budget_cap") is not None else ""
     # These are intentionally separate ledgers.  ``labels`` is the whole ranker's loaded
@@ -1868,6 +1882,23 @@ def _dwell_navigation_refusal_summary_md(lines: list[str]) -> str:
         status = achieved.get("status", achieved.get("measurement_status"))
         if isinstance(status, str) and status:
             achieved_bits.append(f"estimator `{_sanitize_inline(status)}`")
+        measurement_reason = achieved.get("measurement_reason")
+        if isinstance(measurement_reason, str) and measurement_reason:
+            achieved_bits.append(f"reason `{_sanitize_inline(measurement_reason)}`")
+        reverse = achieved.get("reverse")
+        if isinstance(reverse, dict):
+            reverse_status = reverse.get("status")
+            reverse_reason = reverse.get("reason")
+            reverse_delta = number(reverse.get("delta_px"))
+            reverse_bits: list[str] = []
+            if isinstance(reverse_status, str) and reverse_status:
+                reverse_bits.append(_sanitize_inline(reverse_status))
+            if reverse_delta is not None:
+                reverse_bits.append(f"{reverse_delta:+g}px")
+            if isinstance(reverse_reason, str) and reverse_reason:
+                reverse_bits.append(_sanitize_inline(reverse_reason))
+            if reverse_bits:
+                achieved_bits.append("reverse estimator `" + "; ".join(reverse_bits) + "`")
         achieved_text = "; ".join(achieved_bits) if achieved_bits else "achieved-climb telemetry unavailable"
 
         return_outcome = _sanitize_inline(str(telemetry.get("return_outcome") or "not recorded"))
@@ -1897,8 +1928,17 @@ def _dwell_navigation_refusal_summary_md(lines: list[str]) -> str:
             else:
                 walk_text = f"; walk outcome `{walk_outcome}`{budget_text}"
 
+        pair_bits: list[str] = []
+        before_name = rec.get("before")
+        after_name = rec.get("after")
+        if isinstance(before_name, str) and before_name:
+            pair_bits.append(f"before `{_sanitize_inline(before_name)}`")
+        if isinstance(after_name, str) and after_name:
+            pair_bits.append(f"after `{_sanitize_inline(after_name)}`")
+        pair_text = ("; failing pair " + " / ".join(pair_bits)) if pair_bits else ""
+
         out.append(f"- {candidate}{frame_note}: dwell-navigation refusal `{code}`; {plan_text}; "
-                   f"{achieved_text}; {anchor_text}{walk_text}")
+                   f"{achieved_text}; {anchor_text}{walk_text}{pair_text}")
     return "\n".join(out)
 
 
@@ -3481,7 +3521,7 @@ def _stale_evidence_md(lines: list[str], run: Path) -> str:
     return "\n".join(out)
 
 
-def _debug_log_md(config_path: str) -> str:
+def _debug_log_md(config_path: str, hub_state=None) -> str:
     """Surface the on-disk action/screenshot debug log (Hinge's silent auto-mode logging) so the
     report points a developer straight at a failure: the latest run folder, the tail of its
     actions.jsonl, and any error screenshots (which are kept un-rotated). Screenshots are binary,
@@ -3493,8 +3533,20 @@ def _debug_log_md(config_path: str) -> str:
         enabled_apps = set(cfg.enabled_apps)
     except Exception as exc:  # noqa: BLE001
         return f"- (could not load config to locate debug logs: {exc})"
+    current_run_id = None
+    if hub_state is not None:
+        try:
+            hub_snapshot = hub_state.snapshot()
+            status_snapshot = (hub_snapshot.get("status")
+                               if isinstance(hub_snapshot, dict) else None)
+            candidate = (status_snapshot.get("run_id")
+                         if isinstance(status_snapshot, dict) else None)
+            if isinstance(candidate, str) and candidate:
+                current_run_id = candidate
+        except Exception:  # noqa: BLE001 -- provenance is optional diagnostic context
+            pass
     apps = apps if isinstance(apps, dict) else {}
-    sections = [_one_debug_dir_md(app, (opts or {}))
+    sections = [_one_debug_dir_md(app, (opts or {}), current_run_id=current_run_id)
                 for app, opts in apps.items()
                 if app in enabled_apps and (opts or {}).get("debug_log")]
     if not sections:
@@ -3502,7 +3554,7 @@ def _debug_log_md(config_path: str) -> str:
     return "\n".join(sections)
 
 
-def _one_debug_dir_md(app: str, opts: dict) -> str:
+def _one_debug_dir_md(app: str, opts: dict, *, current_run_id: str | None = None) -> str:
     base = Path(opts.get("debug_dir", f"./data/{app}_debug"))
     if not base.is_absolute():
         base = Path.cwd() / base
@@ -3515,7 +3567,14 @@ def _one_debug_dir_md(app: str, opts: dict) -> str:
         run = runs[-1]                                       # most recent run
         pngs = sorted(run.glob("*.png"))
         errors = [p.name for p in pngs if p.name.endswith("_error.png")]
-        out = [f"- **{app}** · latest run: `{run}` · screenshots: {len(pngs)}"
+        if current_run_id is None:
+            provenance = ""
+        elif run.name == current_run_id:
+            provenance = " · provenance: current status run"
+        else:
+            provenance = (" · provenance: previous on-disk run; current status run is `"
+                          f"{_sanitize_inline(current_run_id)}`")
+        out = [f"- **{app}** · latest run: `{run}`{provenance} · screenshots: {len(pngs)}"
                + (f" · ⚠️ error shots (kept): {', '.join(errors)}" if errors else "")]
         log = run / "actions.jsonl"
         if log.exists():
@@ -3697,7 +3756,7 @@ def build_report(hub_state=None, description: str = "", config_path: str = "conf
         f"## Run status\n{_safe_section(_status_md, hub_state)}\n\n"
         f"## Recent openers\n{_safe_section(_recent_openers_md, hub_state)}\n\n"
         f"## Recent opener rejections\n{_safe_section(_recent_opener_rejections_md, hub_state)}\n\n"
-        f"## Debug log (on-disk actions + screenshots)\n{_safe_section(_debug_log_md, config_path)}\n\n"
+        f"## Debug log (on-disk actions + screenshots)\n{_safe_section(_debug_log_md, config_path, hub_state)}\n\n"
         f"## Recent logs\n"
     )
     report = head + _safe_section(_logs_md, _MAX_REPORT_LINES - _line_count(head))

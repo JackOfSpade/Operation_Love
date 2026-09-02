@@ -112,15 +112,15 @@ tolerated when nothing heart-bearing sits below it (the truncated tail of a capt
 only coverage), and is a `failures` entry when something does (the middle of a page, where it
 would corrupt the count). See `_UNCERTAIN_HEART_NOTE` at its use site.
 
-The rule has two proof-based exceptions. First, a heartless partial strictly between two complete
-neighbours is ordinal-safe when one failure-free frame's analysed band covered that WHOLE
-intervening interval: heart matching searched every possible row, so the block stays partial and
-uncroppable but has no unseen place to hide an ordinal. This is the Hinge 10.1.0 "From people
-close to Katie" heading measured on 2026-08-30. Piecing coverage together across frames is not
-enough.
+There are two proof-based ordinal-safety shapes. First, a heartless partial strictly between two
+complete neighbours is safe when one failure-free frame's analysed band covered that WHOLE
+intervening interval. Second, its own sightings may separately observe both resolved edges when
+the same complete neighbours bracket it and one failure-free frame covered its whole resolved
+extent, with a canonical gutter-sized gap on each side. Both leave it partial and uncroppable;
+piecing coverage together across frames is never enough.
 
-Second, and the reason `at_scroll_top` is a required argument: Hinge draws a filter-chips header
-and a name row ABOVE item 1, and on every scroll-top frame in the calibration corpus that chrome
+The next proof-based exception concerns `at_scroll_top`: Hinge draws a filter-chips header and a
+name row ABOVE item 1, and on every scroll-top frame in the calibration corpus that chrome
 came back as a PARTIAL block — "neither of its ends is gutter- or corner-bounded", segment.py's
 own docstring notes, adding that "a caller that has confirmed scroll-top should ignore blocks
 above the topmost card corner rather than trust that they self-exclude". This module is that
@@ -420,7 +420,7 @@ _END_TAIL_GAP_PX = max(_GUTTER_PX) + _GUTTER_TOLERANCE_PX
 # indexer decision path and splitter.  Those values distinguish "the current source replays
 # cleanly" from "the long-lived
 # worker was still executing an older indexer" without trusting the working tree alone.
-ITEM_INDEX_ALGORITHM_ID = "bounded-card-split-v14"
+ITEM_INDEX_ALGORITHM_ID = "bounded-card-split-v15"
 
 
 # =====================================================================================
@@ -2753,8 +2753,9 @@ def _assemble(observations: Sequence[BlockObservation], *, at_scroll_top: bool,
 
     `page_coverage` contains the page-space intervals scanned by failure-free segmentations.
     It does not make a partial block croppable or resolve either of its edges. It answers only
-    the narrower ordinal-safety question below: whether every possible row between two already
-    bounded neighbouring blocks was inside the heart matcher's analysed band at least once.
+    the narrower ordinal-safety question below: whether one interval covered either every row
+    between two complete neighbouring blocks, or a directly edge-observed partial's entire
+    resolved extent. It never combines coverage from different frames.
     """
     failures: list[str] = []
     notes: list[str] = []
@@ -2834,28 +2835,62 @@ def _assemble(observations: Sequence[BlockObservation], *, at_scroll_top: bool,
             #
             # Keep the block PARTIAL and uncroppable -- page coverage does not turn background
             # edges into measured card edges. It only discharges `_UNCERTAIN_HEART_NOTE` when
-            # both physical bounds come from independent complete neighbours and one real frame
-            # searched every row between them. A band-edge card, missing neighbour, failed
-            # segmentation, or merely pieced-together coverage still takes the old hard stop.
+            # only inside the same immediate complete-neighbour bracket: either one real frame
+            # searched every row between both neighbours, OR the partial's OWN sightings
+            # separately observed both resolved edges and one real frame searched its entire
+            # resolved extent, with a canonical-sized gutter between it and each neighbour. The
+            # latter is the 2026-09-01 Madeleine shape: direct observed edges plus canonical-
+            # sized adjacent gaps in different frames, while one intervening clean band covered
+            # every possible heart row. A band-edge card, a missing endpoint proof, incomplete
+            # or too-distant neighbours, failed segmentation, or merely pieced-together coverage
+            # still takes the old hard stop.
+            complete_neighbour_bracket = False
+            canonical_neighbour_gaps = False
             bracketed_and_scanned = False
             if 0 < i < len(blocks) - 1:
                 above, below = blocks[i - 1], blocks[i + 1]
-                bracketed_and_scanned = (
+                complete_neighbour_bracket = (
                     above.complete and below.complete
                     and above.page_y1 <= block.page_y0
                     and block.page_y1 <= below.page_y0
+                )
+                canonical_neighbour_gaps = (
+                    complete_neighbour_bracket
+                    and _MIN_ITEM_GAP_PX <= block.page_y0 - above.page_y1 <= _END_TAIL_GAP_PX
+                    and _MIN_ITEM_GAP_PX <= below.page_y0 - block.page_y1 <= _END_TAIL_GAP_PX
+                )
+                bracketed_and_scanned = (
+                    complete_neighbour_bracket
                     and any(covered_y0 <= above.page_y1
                             and below.page_y0 <= covered_y1
                             for covered_y0, covered_y1 in page_coverage)
-                )
-            if bracketed_and_scanned:
-                above, below = blocks[i - 1], blocks[i + 1]
+            )
+            own_edges_and_scanned = (
+                canonical_neighbour_gaps
+                and any(observation.top_observed
+                    and abs(observation.page_y0 - block.page_y0) <= extent_tolerance_px
+                    for observation in block.observations)
+                and any(observation.bottom_observed
+                        and abs(observation.page_y1 - block.page_y1) <= extent_tolerance_px
+                        for observation in block.observations)
+                and any(covered_y0 <= block.page_y0 and block.page_y1 <= covered_y1
+                        for covered_y0, covered_y1 in page_coverage)
+            )
+            if bracketed_and_scanned or own_edges_and_scanned:
+                if own_edges_and_scanned and not bracketed_and_scanned:
+                    coverage_reason = (
+                        f"its own observed edges and one failure-free frame heart-scanned every "
+                        f"page row {block.page_y0}..{block.page_y1} of its resolved extent")
+                else:
+                    above, below = blocks[i - 1], blocks[i + 1]
+                    coverage_reason = (
+                        f"one failure-free frame heart-scanned every page row "
+                        f"{above.page_y1}..{below.page_y0} between its complete neighbouring "
+                        "blocks")
                 notes.append(
                     f"the heartless partial block at page rows {block.page_y0}..{block.page_y1} "
-                    f"is retained as uncroppable but is ordinal-safe: one failure-free frame "
-                    f"heart-scanned every page row {above.page_y1}..{below.page_y0} between "
-                    "its complete neighbouring blocks, so it has no unseen rows in which a "
-                    "heart could hide")
+                    f"is retained as uncroppable but is ordinal-safe: {coverage_reason}, so it "
+                    "has no unseen rows in which a heart could hide")
                 continue
             failures.append(
                 f"the block at page rows {block.page_y0}..{block.page_y1} "

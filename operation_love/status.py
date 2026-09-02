@@ -29,6 +29,10 @@ class AppStatus:
     # a perfectly normal state, nothing is broken, nothing should be retried, and the screen
     # is left exactly as found -- see worker.py's blocked-deck check for why.
     state: str = "starting"
+    # Short, current work description for a live non-terminal state.  This is deliberately
+    # observational: it tells the Hub which bounded capture/checkpoint step is in progress;
+    # it never changes the worker's decision or device-input policy.
+    detail: str | None = None
     last_decision: str | None = None       # like | pass | dislike | defer | no_face | no_photos
     last_score: float | None = None
     swipes_run: int = 0                     # decisions recorded this run
@@ -223,7 +227,7 @@ class RunStatus:
                 "last_score", normalized["last_score"], none_ok=True)
         if "swipes_run" in normalized:
             normalized["swipes_run"] = _nonnegative_int("swipes_run", normalized["swipes_run"])
-        for name in ("targeting_licence_notice", "error", "stop_reason"):
+        for name in ("detail", "targeting_licence_notice", "error", "stop_reason"):
             if name in normalized:
                 normalized[name] = _optional_text(name, normalized[name])
         if "stop_kind" in normalized:

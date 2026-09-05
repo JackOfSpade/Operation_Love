@@ -618,6 +618,12 @@ class Station:
 
     position: int
     anchor: bytes
+    # The anchor's OWN stamp, on the same profile clock the burst below is stamped on. A card's
+    # frame list splices anchor and burst into one series, so an anchor carrying a constant
+    # instead of its measurement would put the two on different timelines and inflate the card's
+    # measured dwell span by the whole time since the profile started -- which grows with the
+    # station index and is the number `measure` derives the licensed dwell window from.
+    anchor_t: float
     rects: tuple[tuple[int, int, int, int], ...]
     burst: list[tuple[bytes, float]]
     planned_frames: int
@@ -629,6 +635,7 @@ class Station:
     # MEASURED between the two. None/empty means the probe could not complete, which costs every
     # card at this station its `photo` eligibility and nothing else.
     reattach_anchor: bytes | None = None
+    reattach_anchor_t: float | None = None
     reattach_burst: list[tuple[bytes, float]] | None = None
     reattach_span_s: float | None = None
     reattach_page_shift_px: int | None = None
@@ -670,8 +677,15 @@ def center_candidate(driver, rect, *, frame_height: int, content_band, rnd: rand
 
 
 def reattach_stimulus(driver, anchor: bytes, rect, *, frame_height: int, content_band,
-                      rnd: random.Random, sleep_fn) -> tuple[bytes, int] | None:
-    """Take `rect`'s card OUT of the autoplay band and bring it back.  Returns `(frame, shift)`.
+                      rnd: random.Random, sleep_fn, clock,
+                      origin: float) -> tuple[bytes, int, float] | None:
+    """Take `rect`'s card OUT of the autoplay band and bring it back.  `(frame, shift, frame_t)`.
+
+    `frame_t` is the returned frame's own stamp on the caller's profile clock, taken the instant
+    the read is issued, exactly as `record_spanning_burst` stamps a burst frame.  It is returned
+    from in here rather than read off the clock afterwards because the measured page shift
+    between two frames is estimator work, not a screencap, and charging that to the dwell would
+    understate the span of the second look by however long the estimator took.
 
     THE RESIDUAL IT EXISTS FOR.  A centred byte-exact burst proves Hinge was asked to play the
     card and that nothing moved; it cannot prove the media answered.  Stalled, buffering,
@@ -700,6 +714,7 @@ def reattach_stimulus(driver, anchor: bytes, rect, *, frame_height: int, content
     _dwell, _step, x_frac = driver._sample_read_step(0, None)
     driver._scroll_up_one(frac, x_frac)      # content down: the card slides off centre
     sleep_fn(human_delay(_READ_SCROLL_SETTLE_S))
+    frame_t = clock() - origin
     frame = _guarded_screencap(driver)
     total = driver._measured_page_shift(anchor, frame)
     if total is None:
@@ -721,13 +736,14 @@ def reattach_stimulus(driver, anchor: bytes, rect, *, frame_height: int, content
         if not center_candidate(driver, moved, frame_height=frame_height,
                                 content_band=content_band, rnd=rnd, sleep_fn=sleep_fn):
             break
+        following_t = clock() - origin
         following = _guarded_screencap(driver)
         step = driver._measured_page_shift(frame, following)
         if step is None:
             return None
         total += step
-        frame = following
-    return frame, int(total)
+        frame, frame_t = following, following_t
+    return frame, int(total), frame_t
 
 
 def read_stations(driver, *, rnd: random.Random, sleep_fn, clock, origin: float,
@@ -771,6 +787,11 @@ def read_stations(driver, *, rnd: random.Random, sleep_fn, clock, origin: float,
              "centering_steps": 0, "centering_gave_up": 0,
              "center_band_frac": CENTER_BAND_FRAC,
              "reattach_probes_ran": 0, "reattach_probes_refused": 0}
+    # Every frame this walk hands on carries the stamp of the read that produced it, taken the
+    # instant the read is issued -- the same convention `record_spanning_burst` uses -- because
+    # whichever frame is current when a burst starts becomes that station's anchor, and the
+    # anchor sits in the SAME series as the burst frames when a card is written.
+    frame_t = clock() - origin
     frame = _guarded_screencap(driver)
     frame_height = bound._frame_size(frame)[1]
 
@@ -807,6 +828,7 @@ def read_stations(driver, *, rnd: random.Random, sleep_fn, clock, origin: float,
                     break
                 steps += 1
                 notes["centering_steps"] += 1
+                frame_t = clock() - origin
                 frame = _guarded_screencap(driver)
                 # Re-acquire by proximity rather than identity: the campaign does not need to
                 # know WHICH card it seated, only which cards were seated when the burst ran,
@@ -832,20 +854,21 @@ def read_stations(driver, *, rnd: random.Random, sleep_fn, clock, origin: float,
             # The second look. Sized, gestured and measured exactly like the first burst, so a
             # corpus captured now stays comparable with production's own two-burst rule.
             probe_anchor = probe_burst = None
-            probe_span = probe_shift = None
+            probe_span = probe_shift = probe_anchor_t = None
             # `station_anchor` is the frame the rects were segmented from and stays the station's
             # anchor whatever the probe does; `frame` goes on to be the current screen, which is
-            # what the read-scroll to the next station has to continue from.
-            station_anchor = frame
+            # what the read-scroll to the next station has to continue from.  Its stamp travels
+            # with it: the anchor is the first frame of this station's card series.
+            station_anchor, station_anchor_t = frame, frame_t
             probe_target = min(rects, key=lambda r: abs(
                 _offset_of(r, frame_height=frame_height, content_band=content_band)))
             probe = reattach_stimulus(driver, station_anchor, probe_target,
                                       frame_height=frame_height, content_band=content_band,
-                                      rnd=rnd, sleep_fn=sleep_fn)
+                                      rnd=rnd, sleep_fn=sleep_fn, clock=clock, origin=origin)
             if probe is None:
                 notes["reattach_probes_refused"] += 1
             else:
-                probe_anchor, probe_shift = probe
+                probe_anchor, probe_shift, probe_anchor_t = probe
                 notes["reattach_probes_ran"] += 1
                 probe_plan = bound.plan_burst(rnd)
                 probe_payloads = bound.record_spanning_burst(
@@ -862,14 +885,15 @@ def read_stations(driver, *, rnd: random.Random, sleep_fn, clock, origin: float,
                         "will meet")
                 probe_burst = [(payload, stamp - origin) for payload, stamp in probe_payloads]
                 probe_span = float(probe_plan.window_s - probe_shortfall)
-                frame = probe_payloads[-1][0]
+                frame, frame_t = probe_payloads[-1][0], probe_payloads[-1][1] - origin
             stations.append(Station(
-                position=position, anchor=station_anchor, rects=rects,
+                position=position, anchor=station_anchor, anchor_t=station_anchor_t, rects=rects,
                 burst=[(payload, stamp - origin) for payload, stamp in burst_payloads],
                 planned_frames=plan.frames, planned_window_s=float(plan.window_s),
                 span_s=float(plan.window_s - shortfall), centering_steps=steps,
                 offsets_before=offsets_before,
-                reattach_anchor=probe_anchor, reattach_burst=probe_burst,
+                reattach_anchor=probe_anchor, reattach_anchor_t=probe_anchor_t,
+                reattach_burst=probe_burst,
                 reattach_span_s=probe_span, reattach_page_shift_px=probe_shift))
         else:
             notes["stations_without_a_complete_card"] += 1
@@ -880,11 +904,12 @@ def read_stations(driver, *, rnd: random.Random, sleep_fn, clock, origin: float,
             # Let Hinge finish the scroll animation before the next frame is segmented; a frame
             # caught mid-animation segments into partial blocks and would waste the station.
             sleep_fn(human_delay(_READ_SCROLL_SETTLE_S))
+            following_t = clock() - origin
             following = _guarded_screencap(driver)
             if following == frame:
                 notes["reached_bottom"] = True
                 break
-            frame = following
+            frame, frame_t = following, following_t
     return stations, notes
 
 
@@ -995,13 +1020,17 @@ def _run_one_profile(*, driver, ordinal: int, out_dir: Path, next_card_no: int, 
 
     for station in stations:
         tag = f"station_{station.position:02d}"
-        anchor_records = _write_frames(profile_dir / tag / "anchor", [(station.anchor, 0.0)],
+        anchor_records = _write_frames(profile_dir / tag / "anchor",
+                                       [(station.anchor, station.anchor_t)],
                                        relative=f"profiles/{profile_id}/{tag}/anchor")
         burst_records = _write_frames(profile_dir / tag / "burst", station.burst,
                                       relative=f"profiles/{profile_id}/{tag}/burst")
         frame_records.extend(anchor_records + burst_records)
         sequence = [station.anchor] + [payload for payload, _t in station.burst]
-        times = [0.0] + [record["t"] for record in burst_records]
+        # Read back off the records rather than re-rounded here, so the frame manifest and the
+        # card manifest cannot disagree about when a frame was read.  Both are the ONE profile
+        # clock: the anchor is measured like every burst frame, never stamped with a constant.
+        times = [anchor_records[0]["t"]] + [record["t"] for record in burst_records]
         span = (times[-1] - times[0]) if len(times) > 1 else 0.0
         # The re-attach burst is persisted exactly like the first, under its own labels, so a
         # future reader can tell which look a verdict came from without diffing timestamps.
@@ -1009,7 +1038,8 @@ def _run_one_profile(*, driver, ordinal: int, out_dir: Path, next_card_no: int, 
         reattach_times: list[float] = []
         if station.reattach_anchor is not None and station.reattach_burst:
             reattach_anchor_records = _write_frames(
-                profile_dir / tag / "reattach_anchor", [(station.reattach_anchor, 0.0)],
+                profile_dir / tag / "reattach_anchor",
+                [(station.reattach_anchor, station.reattach_anchor_t)],
                 relative=f"profiles/{profile_id}/{tag}/reattach_anchor")
             reattach_burst_records = _write_frames(
                 profile_dir / tag / "reattach_burst", station.reattach_burst,
@@ -1017,7 +1047,8 @@ def _run_one_profile(*, driver, ordinal: int, out_dir: Path, next_card_no: int, 
             frame_records.extend(reattach_anchor_records + reattach_burst_records)
             reattach_sequence = ([station.reattach_anchor]
                                  + [payload for payload, _t in station.reattach_burst])
-            reattach_times = [0.0] + [record["t"] for record in reattach_burst_records]
+            reattach_times = ([reattach_anchor_records[0]["t"]]
+                              + [record["t"] for record in reattach_burst_records])
         else:
             reattach_anchor_records = []
             reattach_burst_records = []
@@ -1490,7 +1521,12 @@ def _capture_command(args) -> int:
     real campaign it protects rather than to the argument validation that precedes it.
     """
     _refuse_unconfirmed(args)
-    return run_holding_the_device(args.config, _capture_command_unlocked, args)
+    # `None`, not `args.config`, per holding_the_device's rule: the lock reads nothing out of a
+    # config and this command loads/validates its own (`build_driver` -> `cfg_mod.load`), so
+    # passing it a path the helper does not consume only re-arms the unloadable-config escape
+    # hatch -- a config that parses as YAML but fails validation would otherwise reach
+    # `_resolve_serial`'s `adb devices` UNLOCKED before the real error surfaced.
+    return run_holding_the_device(None, _capture_command_unlocked, args)
 
 
 def _capture_command_unlocked(args) -> int:

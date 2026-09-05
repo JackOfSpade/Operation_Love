@@ -8,7 +8,8 @@ from unittest.mock import patch
 
 import pytest
 
-from operation_love.training_actions import TrainingActionBridge, _valid_png_idat
+from operation_love.training_actions import (
+    _MAX_PROTOCOL_STRING_LENGTH, TrainingActionBridge, _valid_png_idat)
 
 
 def _chunk(kind: bytes, data: bytes) -> bytes:
@@ -57,14 +58,55 @@ def test_training_checkpoint_has_only_valid_like_dislike_capability():
     assert bridge.submit(_body(card, "continue"))[2] == 400
 
 
-def test_actionable_checkpoint_query_tracks_only_a_live_unclaimed_decision():
+def test_live_checkpoint_identity_can_bind_browser_alert_telemetry():
     bridge, worker = TrainingActionBridge(), _Worker()
     bridge.register(worker)
     card = bridge.publish_checkpoint(worker, _FRAME, _Pick())
 
-    assert bridge.has_actionable_checkpoint() is True
-    assert bridge.submit(_body(card))[2] == 202
-    assert bridge.has_actionable_checkpoint() is False
+    assert bridge.has_checkpoint(
+        run_id=card["run_id"], app=card["app"], profile_token=card["profile_token"])
+    assert not bridge.has_checkpoint(
+        run_id=card["run_id"], app=card["app"], profile_token="stale-profile")
+    # Every component must be matched, not just the profile token.
+    assert not bridge.has_checkpoint(
+        run_id="another-run", app=card["app"], profile_token=card["profile_token"])
+    assert not bridge.has_checkpoint(
+        run_id=card["run_id"], app="bumble", profile_token=card["profile_token"])
+    # The browser alert body is arbitrary JSON: a non-string (and, for a list/dict, UNHASHABLE)
+    # identifier must answer False rather than raise out of the request handler.
+    for bad in (None, 123, ["run"], {"run": 1}):
+        assert bridge.has_checkpoint(
+            run_id=bad, app=card["app"], profile_token=card["profile_token"]) is False
+        assert bridge.has_checkpoint(
+            run_id=card["run_id"], app=card["app"], profile_token=bad) is False
+
+
+def test_oversized_protocol_token_is_rejected_before_the_card_lookup():
+    """The 256-character bound is only observable at ``submit``: ``has_checkpoint`` answers
+    False for an over-long token either way, so a length regression there is invisible.  Here
+    it is not -- without the bound this same body reaches the card lookup and returns the 409
+    'no matching worker waiting' of an ordinary stale request instead of a 400."""
+    bridge, worker = TrainingActionBridge(), _Worker()
+    bridge.register(worker)
+    card = bridge.publish_checkpoint(worker, _FRAME, _Pick())
+
+    # The bound is part of the wire contract, not a tunable.  Pinned literally because every
+    # other assertion here derives its inputs from the constant and so cannot notice it moving.
+    assert _MAX_PROTOCOL_STRING_LENGTH == 256
+
+    body = _body(card)
+    body["run_id"] = "x" * (_MAX_PROTOCOL_STRING_LENGTH + 1)
+    ok, result, code = bridge.submit(body)
+    assert (ok, code) == (False, 400)
+    assert result["reason"] == "protocol tokens are too long"
+
+    # Exactly at the bound is allowed through to the ordinary binding check, so the guard is
+    # pinned as ``<=`` rather than ``<``.
+    at_bound = _body(card, token="request-at-bound")
+    at_bound["approval_token"] = "y" * _MAX_PROTOCOL_STRING_LENGTH
+    ok, result, code = bridge.submit(at_bound)
+    assert (ok, code) == (False, 409)
+    assert result["reason"] == "stale run/profile/approval binding"
 
 
 def test_training_checkpoint_exposes_ordered_profile_images_only_through_bound_endpoint():
@@ -89,6 +131,44 @@ def test_training_checkpoint_exposes_ordered_profile_images_only_through_bound_e
     assert bridge.profile_review_image(
         run_id=card["run_id"], app=card["app"],
         profile_token=card["profile_token"], index=2) is None
+
+
+def test_training_checkpoint_carries_the_media_ordinal_review_hint_when_it_was_countable():
+    """The operator affordance the observe->training migration dropped: the reviewer is holding
+    the phone and can only count what Hinge drew, so the card carries the target's position over
+    photos and videos beside the model's own item number."""
+    bridge, worker = TrainingActionBridge(), _Worker()
+    bridge.register(worker)
+
+    card = bridge.publish_checkpoint(worker, _FRAME, _Pick(), item_media_ordinal=3)
+
+    assert card["item_media_ordinal"] == 3
+    # It has to survive the poll the browser actually reads, not just the publish return value.
+    assert bridge.snapshot()["checkpoints"][0]["item_media_ordinal"] == 3
+
+
+@pytest.mark.parametrize("ordinal", [
+    None,      # the driver refused to count: publish exactly today's card
+    0, -1,     # never a 1-based position
+    True,      # an int in Python, never an ordinal
+    "3", 2.0,  # the protocol carries an integer or nothing
+])
+def test_training_checkpoint_without_a_countable_ordinal_is_byte_for_byte_todays_card(ordinal):
+    """FAIL-CLOSED, NEVER BLOCKING. A hint that could not be proven must cost the reviewer the
+    hint and nothing else: the key is absent (not null, which the page would have to
+    special-case) and every other field, capability and phase is unchanged."""
+    bridge, worker = TrainingActionBridge(), _Worker()
+    bridge.register(worker)
+
+    card = bridge.publish_checkpoint(worker, _FRAME, _Pick(), item_media_ordinal=ordinal)
+
+    assert "item_media_ordinal" not in card
+    assert "item_media_ordinal" not in bridge.snapshot()["checkpoints"][0]
+    baseline = bridge.publish_checkpoint(worker, _FRAME, _Pick())
+    volatile = {"profile_token", "approval_token", "updated_at"}
+    assert ({name: value for name, value in card.items() if name not in volatile}
+            == {name: value for name, value in baseline.items() if name not in volatile})
+    assert bridge.submit(_body(baseline, "like"))[2] == 202
 
 
 def test_training_checkpoint_rejects_malformed_supplementary_profile_frame():

@@ -177,6 +177,7 @@
       <button id="stop" class="danger" disabled>■ Stop</button>
       <span class="meta" id="hint"></span>
     </div>
+    <div class="meta" id="alerthint" role="status" aria-live="polite" style="margin-top:8px"></div>
     <div class="err" id="err"></div>
   </div>
 
@@ -368,6 +369,96 @@ let _trainingImageFailedGeneration = null;
 let _trainingImageZoomed = false;
 let _trainingImageZoomRestoreFocus = null;
 const _trainingIdempotency = new Map();
+let _trainingPollRenderSignature = '';
+let _trainingImageRetryTimer = null;
+let _trainingBrowserAlertedKey = '';
+let _trainingBrowserPermissionPendingKey = '';
+
+function syncTrainingAlertHint(){
+  const hint = $('#alerthint');
+  if (!hint) return;
+  if (!('Notification' in window)) {
+    hint.textContent = 'Browser notifications are unavailable; the Mac sound and native fallback remain active.';
+    return;
+  }
+  const permission = window.Notification.permission;
+  hint.textContent = permission === 'granted'
+    ? 'Training alerts: browser banners allowed; on macOS the host sound is independent.'
+    : permission === 'denied'
+      ? 'Training alerts: browser banners blocked; on macOS the host sound remains active.'
+      : 'Training alerts: Start Training to allow browser banners; macOS sound is independent.';
+}
+
+// Notification permission must be requested synchronously from the Start click. Waiting until a
+// checkpoint arrives minutes later is outside a user gesture and modern browsers may reject it.
+function prepareTrainingBrowserNotifications(){
+  syncTrainingAlertHint();
+  if (!('Notification' in window) || window.Notification.permission !== 'default') return;
+  try {
+    Promise.resolve(window.Notification.requestPermission())
+      .then(() => syncTrainingAlertHint(), () => syncTrainingAlertHint());
+  } catch (_error) {
+    syncTrainingAlertHint();
+  }
+}
+
+function reportTrainingBrowserNotification(checkpoint, outcome){
+  postJSON('/api/training/alert', {
+    run_id: checkpoint.run_id,
+    app: checkpoint.app,
+    profile_token: checkpoint.profile_token,
+    notification: outcome,
+  }).catch(() => {});
+}
+
+// This is one-shot per immutable approval capability, not one-shot per poll/render. The native
+// host path supplies the sound independently, so this browser notification is explicitly silent
+// and cannot produce a double chime when both delivery channels work.
+function notifyTrainingCheckpoint(checkpoint){
+  const key = trainingCheckpointKey(checkpoint);
+  const ready = checkpoint && checkpoint.pending === true
+    && checkpoint.phase === 'waiting_training_decision' && checkpoint.action === 'ready';
+  if (!key || !ready || _trainingBrowserAlertedKey === key) return;
+
+  let outcome = 'unsupported';
+  if ('Notification' in window) {
+    const permission = window.Notification.permission;
+    if (permission === 'default') {
+      // A permission prompt may still be open. Keep this card eligible so the next poll can
+      // notify immediately after the operator chooses Allow, but report the pending state only
+      // once instead of posting telemetry every second.
+      if (_trainingBrowserPermissionPendingKey !== key) {
+        _trainingBrowserPermissionPendingKey = key;
+        syncTrainingAlertHint();
+        reportTrainingBrowserNotification(checkpoint, 'permission-default');
+      }
+      return;
+    }
+    outcome = permission === 'denied' ? 'denied' : 'error';
+    if (permission === 'granted') {
+      try {
+        const notification = new window.Notification('Operation Love', {
+          body: 'Training profile ready — choose Like or Dislike in the Hub.',
+          tag: 'operation-love-training-ready',
+          renotify: true,
+          requireInteraction: true,
+          silent: true,
+        });
+        notification.onclick = () => {
+          window.focus();
+          notification.close();
+        };
+        outcome = 'requested';
+      } catch (_error) {
+        outcome = 'error';
+      }
+    }
+  }
+  _trainingBrowserAlertedKey = key;
+  _trainingBrowserPermissionPendingKey = '';
+  syncTrainingAlertHint();
+  reportTrainingBrowserNotification(checkpoint, outcome);
+}
 
 // A retry token is useful only while this exact approval is the live card.  Keeping every
 // old token for an unlimited testing run would make the local Hub grow without bound, while
@@ -378,6 +469,33 @@ function trainingCheckpointKey(checkpoint){
                   checkpoint.approval_token];
   // JSON preserves field boundaries even if a future run id contains a separator character.
   return values.every(value => typeof value === 'string' && value) ? JSON.stringify(values) : '';
+}
+
+// Status polls arrive every second, but a checkpoint is immutable except for its small action
+// state machine. Rebuilding identical markup discarded and re-requested both no-store PNGs on
+// every poll, which could flood the local ThreadingHTTPServer with large image responses. Keep
+// the mounted review image stable until an actual card/action transition requires a repaint.
+function trainingPollRenderFingerprint(checkpoint){
+  if (!checkpoint || typeof checkpoint !== 'object') return '';
+  return JSON.stringify([
+    trainingCheckpointKey(checkpoint), checkpoint.phase, checkpoint.action,
+    checkpoint.pending === true, checkpoint.command || '', checkpoint.profile_image_count || 0,
+  ]);
+}
+
+function renderTrainingCheckpointFromPoll(checkpoint){
+  const signature = trainingPollRenderFingerprint(checkpoint);
+  // Notify BEFORE the short-circuit below. notifyTrainingCheckpoint deliberately keeps a card
+  // eligible while its permission prompt is still open, and none of the fingerprint's fields
+  // change when the operator finally clicks Allow -- so gating the notification on a repaint
+  // silently dropped the banner for the card that was on screen at that moment. Putting
+  // Notification.permission into the fingerprint instead would force a full repaint, i.e. a
+  // re-fetch of the no-store review PNGs, which is the exact cost the fingerprint exists to
+  // avoid. The call is one-shot per approval on its own, so running it every poll is free.
+  if (typeof notifyTrainingCheckpoint === 'function') notifyTrainingCheckpoint(checkpoint);
+  if (signature && signature === _trainingPollRenderSignature) return;
+  _trainingPollRenderSignature = signature;
+  renderTrainingCheckpoint(checkpoint);
 }
 
 function resetTrainingIdempotencyIfCardChanged(previous, next){
@@ -476,14 +594,30 @@ function reportTrainingImageLoadError(generation){
     const decision = $(selector);
     if (decision) decision.disabled = true;
   }
+  if (typeof scheduleTrainingImageRetry === 'function')
+    scheduleTrainingImageRetry(stamp, _trainingImageFailedIndex);
+}
+
+function scheduleTrainingImageRetry(generation, index){
+  if (_trainingImageRetryTimer != null) clearTimeout(_trainingImageRetryTimer);
+  const key = trainingCheckpointKey(_trainingCheckpoint);
+  _trainingImageRetryTimer = setTimeout(() => {
+    _trainingImageRetryTimer = null;
+    if (!key || key !== trainingCheckpointKey(_trainingCheckpoint)
+        || generation !== _trainingImageFailedGeneration
+        || index !== _trainingImageFailedIndex) return;
+    // Keep the failure latch set while the replacement image is loading: Like/Dislike remain
+    // fail-closed until that exact replacement fires onload and the normal gate is re-evaluated.
+    renderTrainingCheckpoint(_trainingCheckpoint);
+  }, 2000);
 }
 
 // Found 2026-09-02: reportTrainingImageLoadError had no counterpart, so a TRANSIENT failure on
 // /api/training/image (a dropped connection, a slow local disk read) permanently locked the
 // checkpoint -- Like/Dislike, navigation and zoom stayed disabled for the rest of that profile
 // even after the image became loadable again, forcing the operator to abandon a profile that
-// already cost minutes of device time. Every poll tick rebuilds #trainingimage with the same
-// src, so the browser keeps retrying on its own; this only has to notice a retry succeeded.
+// already cost minutes of device time. scheduleTrainingImageRetry performs one controlled retry
+// at a time; this notices when that exact replacement succeeds.
 // It must never flip Like/Dislike on directly -- re-running renderTrainingCheckpoint is what
 // recomputes canDecide, so the normal ready/opener/action-boundary gate still owns that call.
 function clearTrainingImageLoadError(generation, index){
@@ -492,6 +626,10 @@ function clearTrainingImageLoadError(generation, index){
   if (index !== _trainingImageFailedIndex) return;             // a different snapshot
   _trainingImageFailedIndex = null;
   _trainingImageFailedGeneration = null;
+  if (typeof _trainingImageRetryTimer !== 'undefined' && _trainingImageRetryTimer != null) {
+    clearTimeout(_trainingImageRetryTimer);
+    _trainingImageRetryTimer = null;
+  }
   // Re-render rather than re-enabling controls here: canDecide's ready/opener/action-boundary
   // gate stays the only thing that may arm Like/Dislike.
   if (_trainingCheckpoint) renderTrainingCheckpoint(_trainingCheckpoint);
@@ -640,6 +778,11 @@ function renderTrainingCheckpoint(checkpoint, message=''){
   resetTrainingBusyIfCardChanged(_trainingCheckpoint, checkpoint);
   _trainingCheckpoint = checkpoint || null;
   if (!checkpoint) {
+    if (typeof _trainingPollRenderSignature !== 'undefined') _trainingPollRenderSignature = '';
+    if (typeof _trainingImageRetryTimer !== 'undefined' && _trainingImageRetryTimer != null) {
+      clearTimeout(_trainingImageRetryTimer);
+      _trainingImageRetryTimer = null;
+    }
     if (typeof setTrainingImageZoom === 'function') setTrainingImageZoom(false);
     _trainingImageKey = '';
     _trainingImageIndex = 0;
@@ -647,6 +790,13 @@ function renderTrainingCheckpoint(checkpoint, message=''){
     _trainingImageFailedGeneration = null;
     panel.style.display = 'none'; panel.innerHTML = ''; return;
   }
+  // A message painted over a LIVE card (tickTrainingCheckpoint's fetch-failure text,
+  // submitTrainingAction's retry text) is not what the poll path last stored, yet the cached
+  // fingerprint still matches this card -- and a checkpoint waiting on the operator never
+  // changes, so the next identical poll would short-circuit and pin a stale "Could not refresh
+  // decision status" hint on a card that is fine again. Invalidate here so exactly one repaint
+  // clears it; that repaint re-stores the signature, so later identical polls still dedupe.
+  if (message && typeof _trainingPollRenderSignature !== 'undefined') _trainingPollRenderSignature = '';
   const image = safeCheckpointImageDataUrl(checkpoint.image_data_url);
   // syncTrainingImageState closes an open modal before replacing a different profile. Its
   // normal restoration target is the *old* preview button, which this render will remove, so
@@ -663,11 +813,19 @@ function renderTrainingCheckpoint(checkpoint, message=''){
   const item = Number.isInteger(checkpoint.item) ? `item ${checkpoint.item}` : 'selected item';
   const description = typeof checkpoint.item_description === 'string'
     ? checkpoint.item_description.trim() : '';
+  // Fine print on the SAME target line, never a control and never a gate. `item` is the model's
+  // own numbering, which the reviewer holding the phone cannot see; this is the position counted
+  // over photos and videos only, so they can find the card Hinge actually drew. The worker omits
+  // the field whenever the driver could not prove the count, so an absent one must render
+  // exactly as it did before this existed -- hence the guard, not a default.
+  const mediaOrdinal = Number.isInteger(checkpoint.item_media_ordinal)
+    && checkpoint.item_media_ordinal > 0 ? checkpoint.item_media_ordinal : null;
   const referenced = typeof checkpoint.referenced === 'string' ? checkpoint.referenced.trim() : '';
   const hasOpener = typeof checkpoint.opener === 'string' && checkpoint.opener.trim().length > 0;
   const opener = hasOpener ? checkpoint.opener : '';
   const ready = checkpoint.pending === true && checkpoint.phase === 'waiting_training_decision'
     && checkpoint.action === 'ready';
+  if (typeof notifyTrainingCheckpoint === 'function') notifyTrainingCheckpoint(checkpoint);
   // A malformed local response or a card that has crossed the action boundary must never
   // turn into either decision.
   const canDecide = Boolean(ready && image && hasOpener && reviewImageAvailable
@@ -679,7 +837,8 @@ function renderTrainingCheckpoint(checkpoint, message=''){
     : checkpoint.action === 'executing'
       ? `${command} is being applied and recorded. Do not make another choice.`
       : '';
-  const target = `${item}${description ? ` — ${description}` : ''}`;
+  const target = `${item}${description ? ` — ${description}` : ''}`
+    + (mediaOrdinal ? ` · photo/video ${mediaOrdinal} counting from the top` : '');
   panel.innerHTML = `<div class="card">
     <div class="row"><span class="b">training · choose this profile</span><span class="pill run">${ready ? 'decision required' : 'decision in progress'}</span></div>
     <div class="meta" style="margin-top:6px">${canDecide
@@ -765,6 +924,11 @@ function renderTrainingFeedback(result, message=''){
   resetTrainingIdempotencyIfCardChanged(_trainingCheckpoint, null);
   resetTrainingBusyIfCardChanged(_trainingCheckpoint, null);
   _trainingCheckpoint = null;
+  if (typeof _trainingPollRenderSignature !== 'undefined') _trainingPollRenderSignature = '';
+  if (typeof _trainingImageRetryTimer !== 'undefined' && _trainingImageRetryTimer != null) {
+    clearTimeout(_trainingImageRetryTimer);
+    _trainingImageRetryTimer = null;
+  }
   _trainingImageKey = '';
   _trainingImageIndex = 0;
   _trainingImageFailedIndex = null;
@@ -864,7 +1028,7 @@ async function tickTrainingCheckpoint(snap){
     if (request !== _trainingRequest) return;
     const checkpoint = activeTrainingCheckpoint(payload, runId, appStatus.app);
     const result = latestTrainingResult(payload, runId, appStatus.app);
-    if (snap.running && checkpoint) renderTrainingCheckpoint(checkpoint);
+    if (snap.running && checkpoint) renderTrainingCheckpointFromPoll(checkpoint);
     else if (result) renderTrainingFeedback(result);
     else renderTrainingCheckpoint(null);
   } catch (_error) {
@@ -928,11 +1092,29 @@ function renderRunStatus(snap){
   const trainingLive = a => {
     const state = a.state || '';
     const app = typeof a.app === 'string' && a.app.trim() ? a.app.trim() : 'app';
-    if(state === 'scoring') return box('wait', `🔴 ${app}: preparing the training checkpoint`,
-      typeof a.detail === 'string' ? a.detail : '');
+    if(state === 'scoring') {
+      const detail = typeof a.detail === 'string' ? a.detail.trim() : '';
+      // `scoring` is published twice per profile, for two different things. The first is real
+      // checkpoint preparation. The second lands AFTER the decision is durably saved, purely to
+      // stop claiming a device action is in flight for the pacing / session-break idle window --
+      // and titling that "preparing the training checkpoint" promises a review that is not
+      // coming, on a profile that is already finished. Discriminate on the detail the worker
+      // actually writes there, exactly as the `acting` branch below does for its landed case.
+      const saved = /\brecorded and saved\b/i.test(detail);
+      return box('wait', saved
+        ? `🔴 ${app}: decision saved — pacing before the next profile`
+        : `🔴 ${app}: preparing the training checkpoint`,
+      detail);
+    }
     if(state === 'waiting_approval') return box('wait', `🔴 ${app}: waiting for your Hub decision`);
-    if(state === 'acting') return box('wait', `🔴 wait — carrying out your ${app} decision…`,
-      'The completed-swipe count updates after the action is confirmed and saved.');
+    if(state === 'acting') {
+      const detail = typeof a.detail === 'string' ? a.detail.trim() : '';
+      const landed = /\blanded in\b/i.test(detail);
+      return box('wait', landed
+        ? `🔴 ${app}: decision landed — saving training data…`
+        : `🔴 wait — carrying out your ${app} decision…`,
+      detail || 'The completed-swipe count updates after the action is confirmed and saved.');
+    }
     if(state === 'starting') return box('wait', `🔴 wait — starting ${app}…`);
     return box('idle', `${app}: ${state || '…'}`, a.last_decision ? `last ${a.last_decision}` : '');
   };
@@ -950,8 +1132,46 @@ async function tick(){
   try {
     const snap = await getJSON('/api/status');
     if (request !== _statusRequest) return;
+    clearHubConnectionLost();
     renderGlobal(snap); renderRunStatus(snap); tickTrainingCheckpoint(snap);
-  } catch(_error){}
+  } catch(_error){
+    if (request === _statusRequest) renderHubConnectionLost();
+  }
+}
+
+function renderHubConnectionLost(){
+  const message = 'Local hub disconnected. The last displayed run and decision state is stale; do not repeat a physical action until storage is reconciled.';
+  const error = $('#err');
+  if (error) error.textContent = `error: ${message}`;
+  const banner = $('#runbanner');
+  if (banner) {
+    banner.innerHTML = `<div style="background:#3a1414;border:1px solid #ff6b6b;color:#ff8585;border-radius:10px;padding:12px 14px;margin-top:8px;font-weight:700;font-size:15px">Hub disconnected<div style="font-weight:400;font-size:12px;opacity:.85;margin-top:3px">${escHtml(message)}</div></div>`;
+    banner.style.display = 'block';
+  }
+  const start = $('#start'); if (start) start.disabled = true;
+  const stop = $('#stop'); if (stop) stop.disabled = true;
+  for (const selector of ['#traininglike', '#trainingdislike']) {
+    const button = $(selector); if (button) button.disabled = true;
+  }
+  const hint = $('#trainingactionhint'); if (hint) hint.textContent = message;
+  // THE DISABLE ABOVE HAS TO BE UNDONE ON THE NEXT SUCCESSFUL POLL, and only the render
+  // fingerprint can do it. This function disables #traininglike/#trainingdislike directly, but
+  // the ONLY code that rebuilds those buttons is renderTrainingCheckpoint, and its poll entry
+  // point returns early whenever the checkpoint fingerprint is unchanged -- which is exactly the
+  // case while a checkpoint sits waiting for the operator, the state the lockout happens in. So
+  // one transient /api/status failure left the decision buttons dead and the hint reading "Local
+  // hub disconnected" until the page was reloaded, with the run still live and waiting.
+  // Invalidate HERE, where the lockout is applied, not in clearHubConnectionLost(): that runs on
+  // EVERY successful poll, so clearing there rebuilt the panel once a second and re-requested
+  // both no-store review PNGs -- the flood the fingerprint exists to prevent -- and re-armed the
+  // 2000ms image retry faster than it could ever fire. #start/#stop already recover via
+  // renderGlobal; this is the case that was missed.
+  if (typeof _trainingPollRenderSignature !== 'undefined') _trainingPollRenderSignature = '';
+}
+
+function clearHubConnectionLost(){
+  const error = $('#err');
+  if (error && error.textContent.startsWith('error: Local hub disconnected.')) error.textContent = '';
 }
 
 function renderEval(e){
@@ -1197,6 +1417,8 @@ async function startRunFromControls(){
   const startButton = $('#start');
   if (startButton) startButton.disabled = true;
   const mode = $('#mode').value;
+  if (mode === 'training' && typeof prepareTrainingBrowserNotifications === 'function')
+    prepareTrainingBrowserNotifications();
   const max_per_run = computeMaxPerRun(mode, $('#unlimited').checked, $('#maxrun').value);
   const stop_after_seconds = stopAfterSeconds($('#stopafter').value);
   try {
@@ -1300,6 +1522,7 @@ $('#bugdl').onclick = async () => {
     $('#platnote').textContent = 'Could not contact the local hub configuration endpoint.';
   }
   syncModeUI();
+  syncTrainingAlertHint();
   sel = initialSelection(cfg);
   renderPlatforms();
   tick(); setInterval(tick, 1000);

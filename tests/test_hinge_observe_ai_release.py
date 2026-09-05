@@ -171,6 +171,32 @@ def test_ai_release_refuses_forged_or_incomplete_action_provenance(monkeypatch, 
         _review(tmp_path, debug, run_id, provenance_path)
 
 
+def test_ai_release_refuses_debug_frame_path_traversal(monkeypatch, tmp_path):
+    """Containment, not existence -- the same rule the manual verifier already enforced.
+
+    This chain unlocks exactly what the manual one does (Hinge AUTO), and it had drifted to a
+    bare ``(run_dir / name).is_file()``: a hand-authored ``"../escaped.png"`` then proved a
+    frame exists somewhere on this machine rather than that THIS run retained it, and every
+    later "has a retained runtime frame" proof reads a name that passed through here.
+    """
+    monkeypatch.chdir(tmp_path)
+    debug, run_id, provenance_path, _store, _provenance = _inputs(tmp_path)
+    escaped = debug.parent / "escaped.png"
+    escaped.write_bytes(b"not a debug frame for this run")
+    rows = [json.loads(line) for line in (debug / "actions.jsonl").read_text().splitlines()]
+    anchor = next(row for row in rows if row.get("action") == "observe_like_anchor")
+    anchor["before"] = "../escaped.png"
+    (debug / "actions.jsonl").write_bytes(
+        b"".join(json.dumps(row).encode() + b"\n" for row in rows))
+
+    assert escaped.is_file()      # the traversal target really is there to be followed
+    with pytest.raises(release.AIReleaseEvidenceRefused, match="missing frame"):
+        release._debug_rows(debug, run_id)
+    # ...and it is refused through the public entry point, not only at the leaf.
+    with pytest.raises(release.AIReleaseEvidenceRefused, match="missing frame"):
+        _review(tmp_path, debug, run_id, provenance_path)
+
+
 def test_ai_release_refuses_same_reviewer_executor_identity_and_process(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     debug, run_id, provenance, _store, _ = _inputs(tmp_path)

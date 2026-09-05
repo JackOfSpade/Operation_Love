@@ -24,6 +24,7 @@ Following the house pattern, every positive is paired with a negative plus a con
 WHICH mechanism did the excluding.
 """
 import math
+import dataclasses
 import subprocess
 import sys
 
@@ -744,6 +745,45 @@ def test_pins_allow_vetoes_a_rescue_that_contradicts_a_pinned_bound():
     assert 200 not in (r.delta_px, r.consensus_px)
 
 
+def test_a_pin_one_pixel_inside_its_bound_vetoes_just_as_hard():
+    """The margin, not equality, is what makes a strip pinned — so it is what must bind here.
+
+    Found 2026-09-04: every pinned fixture in this file happens to sit EXACTLY on its own bound,
+    so an `== high` test passed all of them while ignoring 8 of the 9 offsets per end that
+    `_search_strip` actually calls pinned. This is the same bank as the test above with the pin
+    moved one pixel inside its range — still `STRIP_PINNED` by `_search_strip`'s own rule
+    (`delta >= hi - _PIN_MARGIN_PX`), still saying the content went at least 499px, and the
+    rescue's +200 still contradicts it. The near-bound pin is the routine case, not the exotic
+    one: strip bounds sit one strip pitch apart, so a true shift landing a few pixels inside some
+    strip's bound produces exactly this.
+    """
+    exact = [_strip(300 + i * 200, frameshift.STRIP_MATCHED, 200) for i in range(3)]
+    spread = [_strip(1400 + i * 150, frameshift.STRIP_MATCHED, d, search=(-50, 150))
+              for i, d in enumerate((90, 94, 98, 102, 106, 110))]
+    near_bound_pin = _strip(2600, frameshift.STRIP_PINNED, 499, search=(0, 500))
+
+    # The premise: `_search_strip` would have labelled this strip pinned, so `_pins_allow` is
+    # being handed the same state the estimator really produces.
+    assert 499 >= 500 - frameshift._PIN_MARGIN_PX
+    assert not frameshift._pins_allow([near_bound_pin], 200,
+                                      pin_margin=frameshift._PIN_MARGIN_PX)
+    # ...and the pin's own offset is never what it rejects: a candidate at or past the bound,
+    # which is what the true shift looks like when a strip pins one pixel short of it, passes.
+    assert frameshift._pins_allow([near_bound_pin], 499, pin_margin=frameshift._PIN_MARGIN_PX)
+    assert frameshift._pins_allow([near_bound_pin], 700, pin_margin=frameshift._PIN_MARGIN_PX)
+
+    r = _resolve(exact + spread + [near_bound_pin])
+    assert r.status == frameshift.SHIFT_NO_CONSENSUS, r.reason
+    assert r.delta_px is None and not r.ok
+    assert 200 not in (r.delta_px, r.consensus_px)
+
+    # The low end is symmetric: a strip pinned one pixel above the bottom of its range says the
+    # content went at most -499px, so a rescue at -200 is equally ruled out.
+    low_pin = _strip(2600, frameshift.STRIP_PINNED, -499, search=(-500, 0))
+    assert not frameshift._pins_allow([low_pin], -200, pin_margin=frameshift._PIN_MARGIN_PX)
+    assert frameshift._pins_allow([low_pin], -499, pin_margin=frameshift._PIN_MARGIN_PX)
+
+
 def test_vote_clusters_splits_on_gaps_over_tolerance_and_keeps_exact_ties_together():
     """`_vote_clusters` in isolation, with no `_resolve` machinery around it. Values
     exactly `tolerance` apart must stay in ONE group — the boundary is inclusive
@@ -841,3 +881,355 @@ def test_calibration_geometry_is_shared_with_segment_and_not_re_declared():
     assert frameshift._CARD_MARGIN_PX is segment._CARD_MARGIN_PX
     assert frameshift._band_rows is segment._band_rows
     assert frameshift._band_rows(_CONTENT_BAND, _H) == (_BAND0, _BAND1)
+
+
+# =====================================================================================
+# THE CROSS-DIRECTION QUORUM RESCUE (Maja, 2026-09-04, run 1d84909bf1bb)
+# =====================================================================================
+# The strip banks below are transcribed from that run's own refused return leg -- the pair
+# retained as 00009/00010_still_photo_dwell_return_chain_{before,after}.png -- exactly as the
+# 2026-08-16 bimodal-video regressions above transcribe theirs. The frames themselves live under
+# the gitignored data/ tree, so the bank is the fixture.
+
+def _maja_forward():
+    """Strips cut from the BEFORE frame, searched in the after frame. Median +630, 2 agree."""
+    return (
+        _strip(300, frameshift.STRIP_FLAT, None, score=0.0, stddev=2.9, search=(-1704, 0)),
+        _strip(442, frameshift.STRIP_WEAK, None, score=0.447, search=(-1562, 142)),
+        _strip(584, frameshift.STRIP_WEAK, None, score=0.330, search=(-1420, 284)),
+        _strip(726, frameshift.STRIP_MATCHED, -1178, score=0.961, search=(-1278, 426)),
+        _strip(868, frameshift.STRIP_WEAK, None, score=0.290, search=(-1136, 568)),
+        _strip(1010, frameshift.STRIP_MATCHED, 630, score=0.977, search=(-994, 710)),
+        _strip(1152, frameshift.STRIP_MATCHED, 630, score=0.841, search=(-852, 852)),
+        _strip(1294, frameshift.STRIP_MATCHED, 723, score=0.861, search=(-710, 994)),
+        _strip(1436, frameshift.STRIP_WEAK, None, score=0.555, search=(-568, 1136)),
+    )
+
+
+def _maja_reverse():
+    """Strips cut from the AFTER frame, searched in the before frame. Median -630, 2 agree."""
+    return (
+        _strip(300, frameshift.STRIP_MATCHED, -630, score=0.998, search=(-1704, 0)),
+        _strip(442, frameshift.STRIP_MATCHED, -630, score=0.910, search=(-1562, 142)),
+        _strip(584, frameshift.STRIP_MATCHED, -747, score=0.881, search=(-1420, 284)),
+        _strip(726, frameshift.STRIP_WEAK, None, score=0.528, search=(-1278, 426)),
+        _strip(1152, frameshift.STRIP_MATCHED, -796, score=0.797, search=(-852, 852)),
+        _strip(1294, frameshift.STRIP_MATCHED, -9, score=0.802, search=(-710, 994)),
+        _strip(1436, frameshift.STRIP_MATCHED, 1122, score=0.782, search=(-568, 1136)),
+        _strip(2004, frameshift.STRIP_MATCHED, 1178, score=0.915, search=(0, 1704)),
+    )
+
+
+def _recovery(forward_strips, reverse_strips, **kwargs):
+    """Drive `estimate_shift_with_reverse_recovery` over two hand-built banks."""
+    banks = iter((_resolve(forward_strips), _resolve(reverse_strips)))
+    return frameshift.estimate_shift_with_reverse_recovery(
+        b"before", b"after", estimator=lambda *_a, **_kw: next(banks), **kwargs)
+
+
+def test_each_maja_direction_alone_is_still_refused():
+    """The premise. Neither bank reaches quorum on its own, and that must not have changed."""
+    forward, reverse = _resolve(_maja_forward()), _resolve(_maja_reverse())
+    assert forward.status == frameshift.SHIFT_NO_CONSENSUS
+    assert reverse.status == frameshift.SHIFT_NO_CONSENSUS
+    assert forward.delta_px is None and reverse.delta_px is None
+    assert forward.agreeing == 2 and reverse.agreeing == 2
+    assert frameshift._MIN_AGREEING_STRIPS == 3, "the quorum itself must not have been lowered"
+
+
+def test_two_directions_that_both_centre_on_one_exact_shift_measure_it():
+    """The rescue. Four strips from two banks with no strip in common, all reporting +630."""
+    result, forward, reverse = _recovery(_maja_forward(), _maja_reverse())
+    assert result.status == frameshift.SHIFT_MEASURED
+    assert result.delta_px == 630
+    assert result.consensus_px == 630
+    assert "median" in result.reason and "+630px" in result.reason
+    # The RAW per-direction estimates are handed back untouched, so a debug row still records
+    # what each bank actually said rather than the repaired answer.
+    assert forward.status == frameshift.SHIFT_NO_CONSENSUS
+    assert reverse.status == frameshift.SHIFT_NO_CONSENSUS
+
+
+def test_the_rescue_never_runs_when_either_direction_can_answer():
+    """It lives inside the both-refused branch, so it can only turn a refusal into a number."""
+    measured = [_strip(300 + i * 200, frameshift.STRIP_MATCHED, 363) for i in range(5)]
+    result, _f, reverse = _recovery(measured, _maja_reverse())
+    assert result.status == frameshift.SHIFT_MEASURED and result.delta_px == 363
+    assert reverse is None, "a forward measurement must not even look at the other direction"
+    # And an ordinary reverse measurement still wins by the pre-existing 2026-09-02 rule.
+    result, _f, _r = _recovery(_maja_forward(), measured)
+    assert result.delta_px == -363
+    assert "reverse source strips measured the same pair" in result.reason
+
+
+@pytest.mark.parametrize("status_strips", [
+    # a saturation report must never be talked round by a cross-direction cluster...
+    [_strip(300 + i * 200, frameshift.STRIP_MATCHED, 1500, search=(-2000, 2000))
+     for i in range(5)],
+    # ...nor must silence.
+    [_strip(300 + i * 200, frameshift.STRIP_WEAK, None) for i in range(5)],
+])
+def test_the_rescue_never_overrules_saturation_or_silence(status_strips):
+    forward = _resolve(status_strips)
+    assert forward.status in (frameshift.SHIFT_BEYOND_WINDOW, frameshift.SHIFT_NO_EVIDENCE)
+    result, _f, reverse = _recovery(status_strips, _maja_reverse())
+    assert result.delta_px is None
+    assert reverse is None, "only SHIFT_NO_CONSENSUS earns a second direction at all"
+
+
+def _forced_no_consensus(strips):
+    """A bank held at SHIFT_NO_CONSENSUS so ONE clause of the cross-direction rule is isolated.
+
+    The rule's clauses overlap by design -- several of them reject the same pathological bank --
+    so a fixture aimed at one of them is easily rejected by another and passes for the wrong
+    reason. Driving the helper directly, with the surrounding preconditions held fixed, is what
+    makes each mutation test mean what its name says.
+    """
+    return dataclasses.replace(_resolve(tuple(strips)),
+                               status=frameshift.SHIFT_NO_CONSENSUS, delta_px=None)
+
+
+def _cross(forward, reverse, min_agreeing=None):
+    return frameshift._cross_direction_quorum_shift(
+        forward, reverse, tolerance=frameshift._AGREEMENT_TOLERANCE_PX,
+        min_agreeing=frameshift._MIN_AGREEING_STRIPS if min_agreeing is None else min_agreeing,
+        pin_margin=frameshift._PIN_MARGIN_PX)
+
+
+def test_a_cluster_neither_direction_centred_on_is_refused():
+    """The median clause, and it is what keeps a video correspondence out.
+
+    Both banks refuse; +200 is exact, seen from BOTH directions and the only such group; the two
+    medians even mirror each other at +-450. It is still refused, because +200 is not the number
+    either bank centred on -- which is precisely the shape of the Maja video's own +-1178
+    correspondence.
+    """
+    forward = _forced_no_consensus((
+        _strip(300, frameshift.STRIP_MATCHED, 200),
+        _strip(500, frameshift.STRIP_MATCHED, 200),
+        _strip(700, frameshift.STRIP_MATCHED, 700),
+        _strip(900, frameshift.STRIP_MATCHED, 800),
+    ))
+    reverse = _forced_no_consensus((
+        _strip(300, frameshift.STRIP_MATCHED, -200),
+        _strip(500, frameshift.STRIP_MATCHED, -700),
+    ))
+    # The mirror clause is satisfied, so ONLY "the candidate is the median" can be what refuses.
+    assert frameshift._matched_median(forward) == 450
+    assert frameshift._matched_median(reverse) == -450
+    assert _cross(forward, reverse) is None
+
+
+def test_both_banks_must_centre_on_the_same_translation():
+    """The mirror clause. Here +400 IS the forward bank's median and is witnessed both ways, but
+    the reverse bank centred somewhere else, so the two are not describing one page."""
+    forward = _forced_no_consensus((
+        _strip(300, frameshift.STRIP_MATCHED, 300),
+        _strip(500, frameshift.STRIP_MATCHED, 400),
+        _strip(700, frameshift.STRIP_MATCHED, 400),
+        _strip(900, frameshift.STRIP_MATCHED, 500),
+    ))
+    reverse = _forced_no_consensus((
+        _strip(300, frameshift.STRIP_MATCHED, -400),
+        _strip(500, frameshift.STRIP_MATCHED, -100),
+        _strip(700, frameshift.STRIP_MATCHED, 0),
+    ))
+    assert frameshift._matched_median(forward) == 400, "the candidate IS the forward median"
+    assert frameshift._matched_median(reverse) == -100, "but the reverse bank centred elsewhere"
+    assert _cross(forward, reverse) is None
+    # Move the reverse bank's own centre onto it and the same evidence measures.
+    agreeing_reverse = _forced_no_consensus((
+        _strip(300, frameshift.STRIP_MATCHED, -400),
+        _strip(500, frameshift.STRIP_MATCHED, -300),
+        _strip(700, frameshift.STRIP_MATCHED, -500),
+    ))
+    assert _cross(forward, agreeing_reverse) == 400
+
+
+def test_a_shift_only_one_direction_witnesses_is_refused():
+    """Both banks must see it — a head-count inside one bank is what the quorum already governs.
+
+    Driven against the helper rather than the pipeline: a bank with three pixel-exact agreeing
+    strips is normally rescued before this rule is reached (by `_resolve`'s own bimodal repair,
+    or by the reverse-measured branch), so reaching this clause through `estimate_shift` would
+    take a bank the estimator does not produce. The clause is defence in depth and is tested as
+    such.
+    """
+    forward = dataclasses.replace(
+        _resolve((_strip(300, frameshift.STRIP_MATCHED, 400),
+                  _strip(500, frameshift.STRIP_MATCHED, 400),
+                  _strip(700, frameshift.STRIP_MATCHED, 400))),
+        status=frameshift.SHIFT_NO_CONSENSUS, delta_px=None)
+    reverse = dataclasses.replace(
+        _resolve((_strip(300, frameshift.STRIP_MATCHED, -300),
+                  _strip(500, frameshift.STRIP_MATCHED, -500))),
+        status=frameshift.SHIFT_NO_CONSENSUS, delta_px=None)
+    # Both medians line up, so ONLY the missing reverse witness can be what refuses it.
+    assert frameshift._matched_median(forward) == 400
+    assert frameshift._matched_median(reverse) == -400
+    assert frameshift._cross_direction_quorum_shift(
+        forward, reverse, tolerance=frameshift._AGREEMENT_TOLERANCE_PX,
+        min_agreeing=frameshift._MIN_AGREEING_STRIPS,
+        pin_margin=frameshift._PIN_MARGIN_PX) is None
+    # ...and with one of those three votes coming from the other bank instead, it measures.
+    shared_reverse = dataclasses.replace(
+        _resolve((_strip(300, frameshift.STRIP_MATCHED, -400),
+                  _strip(500, frameshift.STRIP_MATCHED, -300),
+                  _strip(700, frameshift.STRIP_MATCHED, -500))),
+        status=frameshift.SHIFT_NO_CONSENSUS, delta_px=None)
+    two_forward = dataclasses.replace(
+        _resolve((_strip(300, frameshift.STRIP_MATCHED, 400),
+                  _strip(500, frameshift.STRIP_MATCHED, 400),
+                  _strip(700, frameshift.STRIP_MATCHED, 300),
+                  _strip(900, frameshift.STRIP_MATCHED, 500))),
+        status=frameshift.SHIFT_NO_CONSENSUS, delta_px=None)
+    assert frameshift._cross_direction_quorum_shift(
+        two_forward, shared_reverse, tolerance=frameshift._AGREEMENT_TOLERANCE_PX,
+        min_agreeing=frameshift._MIN_AGREEING_STRIPS,
+        pin_margin=frameshift._PIN_MARGIN_PX) == 400
+
+
+def test_an_inexact_cross_direction_group_is_refused():
+    """Spread, not size, is the discriminator: +630/+631 is not one rigid translation."""
+    forward = tuple(
+        _strip(s.y0, s.state, 631 if s.delta_px == 630 and s.y0 == 1152 else s.delta_px,
+               score=s.score, search=s.search)
+        for s in _maja_forward())
+    result, _f, _r = _recovery(forward, _maja_reverse())
+    assert result.delta_px is None
+
+
+def test_a_pinned_bound_in_either_direction_vetoes_the_rescue():
+    """Every pinned strip's lower bound still constrains the answer, in BOTH banks."""
+    veto = _strip(2004, frameshift.STRIP_PINNED, 900, search=(0, 900))
+    result, _f, _r = _recovery(_maja_forward() + (veto,), _maja_reverse())
+    assert result.delta_px is None, "forward pins say the content went at least 900px"
+    result, _f, _r = _recovery(_maja_forward(), _maja_reverse() + (veto,))
+    assert result.delta_px is None, "and the reverse bank's pins bind just as hard"
+
+
+@pytest.mark.parametrize("delta", [900, 899, 892])
+def test_a_near_bound_pin_vetoes_the_cross_direction_rescue_too(delta):
+    """The pin veto is one of only two evidence clauses this rescue has beyond the median test,
+    so the 2026-09-04 exact-equality gap mattered most here. `_search_strip` calls a strip pinned
+    anywhere in `[hi - _PIN_MARGIN_PX, hi]`, so all three of these are the same statement — "the
+    content went at least this far" — and all three must refuse the +630 the rescue would
+    otherwise return. Only the first was ever tested; 899 is the case reproduced against the
+    shipped code, which returned True and imposed no bound at all."""
+    veto = _strip(2004, frameshift.STRIP_PINNED, delta, search=(0, 900))
+    # The premise: this is a state `_search_strip` really produces.
+    assert delta >= 900 - frameshift._PIN_MARGIN_PX
+    # Control: the identical run without the pin measures +630, so the pin is doing the work.
+    assert _recovery(_maja_forward(), _maja_reverse())[0].delta_px == 630
+
+    result, _f, _r = _recovery(_maja_forward() + (veto,), _maja_reverse())
+    assert result.delta_px is None, "forward pins say the content went at least this far"
+    result, _f, _r = _recovery(_maja_forward(), _maja_reverse() + (veto,))
+    assert result.delta_px is None, "and the reverse bank's pins bind just as hard"
+
+
+def test_the_rescue_cannot_answer_outside_the_trust_window():
+    """A shift the ordinary path would have reported as saturated is not measured here either.
+
+    Every other clause admits +1500: it is exact, unique, cross-witnessed and the shared median.
+    The window is the only thing that refuses it.
+    """
+    forward = _forced_no_consensus((
+        _strip(300, frameshift.STRIP_MATCHED, 1500, search=(-3000, 3000)),
+        _strip(500, frameshift.STRIP_MATCHED, 1500, search=(-3000, 3000)),
+    ))
+    reverse = _forced_no_consensus((
+        _strip(300, frameshift.STRIP_MATCHED, -1500, search=(-3000, 3000)),
+        _strip(500, frameshift.STRIP_MATCHED, -1500, search=(-3000, 3000)),
+    ))
+    assert forward.trust_window_px == 900
+    assert frameshift._matched_median(forward) == 1500
+    assert frameshift._matched_median(reverse) == -1500
+    assert _cross(forward, reverse) is None
+    # The identical bank inside the window measures, so nothing else here is doing the work.
+    near = _forced_no_consensus((
+        _strip(300, frameshift.STRIP_MATCHED, 500, search=(-3000, 3000)),
+        _strip(500, frameshift.STRIP_MATCHED, 500, search=(-3000, 3000)),
+    ))
+    near_reverse = _forced_no_consensus((
+        _strip(300, frameshift.STRIP_MATCHED, -500, search=(-3000, 3000)),
+        _strip(500, frameshift.STRIP_MATCHED, -500, search=(-3000, 3000)),
+    ))
+    assert _cross(near, near_reverse) == 500
+
+
+def test_a_reverse_bank_that_is_not_merely_short_of_quorum_is_never_pooled(monkeypatch):
+    """The precondition is a GATE on reaching the rule at all, not one more clause inside it.
+
+    Asserted by making the helper unreachable: a reverse direction that saturated or saw nothing
+    is a different statement from "two strips agreed and a third was missing", and its strips
+    must never be pooled with the forward bank's, whatever they happen to say.
+    """
+    def unreachable(*_args, **_kwargs):
+        raise AssertionError("the cross-direction rule must not be consulted for this pair")
+
+    monkeypatch.setattr(frameshift, "_cross_direction_quorum_shift", unreachable)
+    for other in ([_strip(300 + i * 200, frameshift.STRIP_MATCHED, 1500, search=(-2000, 2000))
+                   for i in range(5)],
+                  [_strip(300 + i * 200, frameshift.STRIP_WEAK, None) for i in range(5)]):
+        assert _resolve(other).status in (frameshift.SHIFT_BEYOND_WINDOW,
+                                          frameshift.SHIFT_NO_EVIDENCE)
+        result, _f, _r = _recovery(_maja_forward(), other)
+        assert result.delta_px is None
+
+
+def test_two_exact_cross_direction_clusters_are_ambiguous_and_refused():
+    """Uniqueness, for the cross-direction rule specifically.
+
+    Both +400 and -400 are pixel-exact, quorate and witnessed from both banks, and the medians
+    line up on +400. A second such cluster is a genuine ambiguity about which of two things
+    moved, and is refused rather than broken by taking the larger or the central one.
+    """
+    # -400 is the SHARED median of both banks, so every other clause admits it: taking "the"
+    # exact group instead of refusing an ambiguous bank would return it. Only uniqueness stands
+    # between this bank and a wrong answer.
+    forward = _forced_no_consensus((
+        _strip(300, frameshift.STRIP_MATCHED, -400),
+        _strip(500, frameshift.STRIP_MATCHED, -400),
+        _strip(700, frameshift.STRIP_MATCHED, -400),
+        _strip(900, frameshift.STRIP_MATCHED, 400),
+        _strip(1100, frameshift.STRIP_MATCHED, 400),
+    ))
+    reverse = _forced_no_consensus((
+        _strip(300, frameshift.STRIP_MATCHED, -400),
+        _strip(500, frameshift.STRIP_MATCHED, 400),
+        _strip(700, frameshift.STRIP_MATCHED, 400),
+    ))
+    assert frameshift._matched_median(forward) == -400
+    assert frameshift._matched_median(reverse) == 400
+    assert _cross(forward, reverse) is None
+    # ...and with the +400 cluster dropped below quorum it is no longer a competing answer.
+    unambiguous = _forced_no_consensus((
+        _strip(300, frameshift.STRIP_MATCHED, -400),
+        _strip(500, frameshift.STRIP_MATCHED, -400),
+        _strip(700, frameshift.STRIP_MATCHED, -400),
+        _strip(900, frameshift.STRIP_MATCHED, 400),
+    ))
+    one_reverse = _forced_no_consensus((
+        _strip(300, frameshift.STRIP_MATCHED, 400),
+        _strip(500, frameshift.STRIP_MATCHED, 500),
+        _strip(700, frameshift.STRIP_MATCHED, 300),
+    ))
+    assert frameshift._matched_median(unambiguous) == -400
+    assert frameshift._matched_median(one_reverse) == 400
+    assert _cross(unambiguous, one_reverse) == -400
+
+
+def test_a_reverse_direction_that_refuses_for_any_other_reason_ends_it():
+    """Only SHIFT_NO_CONSENSUS in BOTH directions opens the cross-direction branch.
+
+    A reverse bank that saturated or saw nothing is not a bank whose head-count merely fell
+    short, and its strips must not be pooled with the forward bank's.
+    """
+    saturated = [_strip(300 + i * 200, frameshift.STRIP_MATCHED, 1500, search=(-2000, 2000))
+                 for i in range(5)]
+    assert _resolve(saturated).status == frameshift.SHIFT_BEYOND_WINDOW
+    result, forward, reverse = _recovery(_maja_forward(), saturated)
+    assert forward.status == frameshift.SHIFT_NO_CONSENSUS, "the forward side did open it"
+    assert reverse.status == frameshift.SHIFT_BEYOND_WINDOW
+    assert result.delta_px is None, "a saturated reverse bank ends the pair, it never pools"

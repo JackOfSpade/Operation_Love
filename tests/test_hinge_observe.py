@@ -2651,10 +2651,35 @@ def test_identity_top_name_ocr_accepts_only_structured_single_letter_signals_nam
     assert drv._identity_name_candidate == expected_candidate
 
 
-@pytest.mark.parametrize("ocr_text", ["S", "S Active today", "X shows signals"])
-def test_identity_top_name_ocr_unstructured_single_letter_stays_inconclusive(
+@pytest.mark.parametrize(
+    "stored_name, expected_state, expected_candidate",
+    [("Francesca", "new", "Ri"), ("Ri", "same", None), ("Rina", "same", None)],
+)
+def test_identity_top_name_ocr_accepts_only_structured_two_letter_signals_name(
+        monkeypatch, stored_name, expected_state, expected_candidate):
+    """The run-24179f2e77e0 exception is equally structural for a two-letter name.
+
+    A different stored name may produce the candidate, while an exact or prefix-compatible
+    captured name must retain the conservative same-profile veto.
+    """
+    drv = _top_state_drv(monkeypatch, stored_name=stored_name)
+    monkeypatch.setattr(
+        drv, "_ocr_band",
+        lambda frame, rect, psm="7", **_kwargs: (
+            "Ri shows thoughtful signals" if psm == "6" else None))
+
+    state, _dist = drv._identity_of(b"frame")
+
+    assert state == expected_state
+    assert drv._identity_name_candidate == expected_candidate
+
+
+@pytest.mark.parametrize(
+    "ocr_text", ["S", "S Active today", "X shows signals",
+                 "Ri", "Ri Active today", "Ri shows signals"])
+def test_identity_top_name_ocr_unstructured_short_name_stays_inconclusive(
         monkeypatch, ocr_text):
-    """A lone initial has no authority unless Hinge's complete fixed banner binds it."""
+    """A short name has no authority unless Hinge's complete fixed banner binds it."""
     drv = _top_state_drv(monkeypatch, stored_name="Aisha")
     monkeypatch.setattr(
         drv, "_ocr_band",

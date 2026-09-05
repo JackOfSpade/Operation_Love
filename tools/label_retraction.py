@@ -61,6 +61,12 @@ def _debug_target(actions: Path, row_number: int, *, run_id: str, app: str) -> t
     outcomes = []
     target_ordinal = None
     for number, value in enumerate(rows, start=1):
+        # REFUSE, never skip. The sibling forensic tool only has to prove no Like exists and can
+        # step over a row it cannot parse; this one binds a correction to a DECISION ORDINAL
+        # counted across these rows, so a row it does not understand means the ordinal was
+        # derived from evidence it did not fully read.
+        if not isinstance(value, dict):
+            raise RetractionRefused("debug actions file is malformed")
         if value.get("action") != "observe_decision":
             continue
         outcome = value.get("decision")

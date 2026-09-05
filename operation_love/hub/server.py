@@ -17,6 +17,11 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
 
+from ..config import _MAX_REQUEST_TIMEOUT_S
+from ..ranker.bigquery_store import _profile_upload_deadline_s
+from ..supervisor import (_WORKER_JOIN_TIMEOUT_MARGIN_S, _archive_join_grace_s,
+                          _store_archive_in_flight, _worker_join_timeout_s)
+from ..training_actions import MAX_PROFILE_REVIEW_FRAMES
 from .page import _PAGE
 from .state import (HubState, validate_apps, validate_max_per_run,
                     validate_browser_client_id, validate_stop_after_seconds)
@@ -34,17 +39,110 @@ _POST_FIELDS = {
     "/api/training/action": {
         "command", "run_id", "app", "profile_token", "approval_token", "idempotency_token",
     },
+    "/api/training/alert": {"run_id", "app", "profile_token", "notification"},
     "/api/training/remove-latest": set(),
     "/api/hub/open": {"id"},
     "/api/hub/ping": {"id"},
     "/api/hub/closed": {"id"},
 }
-# Ctrl-C's grace period for an active run to flush/save before the process exits
-# anyway. Generous enough to cover the run's own bounded shutdown (supervisor.py
-# joins each of up to 2 app workers for up to 30s each) plus real save time, while
-# still guaranteeing Ctrl-C is never fully unresponsive if something is wedged
-# (e.g. a hung network call inside store.flush(), which has no timeout of its own).
-_SHUTDOWN_SAVE_TIMEOUT_S = 90.0
+# The grace an active run gets to flush/save before the Hub process exits anyway -- shared by
+# BOTH shutdown triggers (Ctrl-C in serve()'s finally, and the tab-close thread).
+#
+# TWO waits, not one, deliberately mirroring supervisor._join_worker_for_shutdown's own shape:
+#
+#   1. _SHUTDOWN_SAVE_TIMEOUT_S is flat and UNCONDITIONAL -- what every ordinary shutdown pays.
+#      It must cover the whole of the supervisor's OPENER-side join, because the conditional
+#      wait below protects archives and nothing else: a worker riding out one in-flight opener
+#      request registers no store write, so if this budget were under that term the Hub would
+#      abandon a perfectly healthy shutdown mid-join with the probe correctly answering "no
+#      archive". At the largest legal request timeout that term is
+#      _MAX_REQUEST_TIMEOUT_S + _WORKER_JOIN_TIMEOUT_MARGIN_S = 195s; 240.0 leaves slack for
+#      the flush that follows. (The old flat 90.0 predates the cfg-derived worker join and is
+#      below that term for any request timeout above 75s -- including the shipped 90s.)
+#      It still stays short enough that "close the tab -> hub exits -> the launcher closes the
+#      Terminal tab" reads as quitting rather than hanging, and short enough that Ctrl-C on a
+#      genuinely wedged worker returns the terminal in a few minutes. A wedged worker with
+#      nothing being written buys no extra time at all.
+#   2. Past that budget, _wait_for_run_shutdown keeps waiting ONLY while the run's store still
+#      reports a registered archive write in flight -- the one case where exiting early
+#      actually destroys data: a Like has already landed on the phone, its screenshots are
+#      mid-upload, and the store.flush()/close() that persist that action's decision, opener
+#      and label rows run AFTER the supervisor's own join, so they have not happened yet.
+#
+# INVARIANT (the reason step 2 exists): while an archive is in flight the Hub must not give up
+# before the supervisor's own worst-case worker join FOR THIS RUN. Below that, a HEALTHY
+# shutdown is truncated -- the Hub process exits while run() is still inside its bounded join
+# and never reaches the final flush.
+#
+# That bound cannot be a module constant, because it is not the same number for every run:
+# _archive_join_grace_s prices the archive off the run's CONFIGURED scroll_captures, which
+# config validation admits up to _MAX_ANDROID_SCROLL_CAPTURES -- far above the Training review
+# ceiling. So the cap is composed from the running cfg by _run_archive_ceiling_s() instead. A
+# constant frozen at MAX_PROFILE_REVIEW_FRAMES would INVERT the invariant for every legal run
+# above it (e.g. auto with scroll_captures=24), and a constant frozen at the 100-capture
+# ceiling would instead hold a small run open for ~20 minutes on an archive whose own deadline
+# expired long before -- waiting on work that has already given up.
+#
+# _SHUTDOWN_SAVE_HEADROOM_S is bounded persistence slack for the flush that follows the join;
+# a genuinely hung flush still cannot hold shutdown forever.
+_SHUTDOWN_SAVE_TIMEOUT_S = 240.0
+_SHUTDOWN_ARCHIVE_POLL_S = 3.0
+_SHUTDOWN_SAVE_HEADROOM_S = 45.0
+# Flat fallback for the one context with no cfg in reach: a shutdown that finds an archive in
+# flight but no live run config (nothing bound yet, or a config the supervisor's helpers cannot
+# price). Priced at the ceiling of what a Training review admits, which is what the whole
+# constant used to be.
+_SHUTDOWN_ARCHIVE_CEILING_FALLBACK_S = (
+    _MAX_REQUEST_TIMEOUT_S + _WORKER_JOIN_TIMEOUT_MARGIN_S
+    + _profile_upload_deadline_s(MAX_PROFILE_REVIEW_FRAMES)
+    + _WORKER_JOIN_TIMEOUT_MARGIN_S
+    + _SHUTDOWN_SAVE_HEADROOM_S
+)
+
+
+def _run_archive_ceiling_s(cfg) -> float:
+    """Cap on the CONDITIONAL archive extension, composed from this run's own config.
+
+    The same three terms supervisor.run()'s shutdown waits out, read through the supervisor's
+    own helpers rather than restated here so the two cannot drift apart when either is
+    retuned: the worker's flat join bound, the archive grace that join can earn on top of it,
+    and the margin the worker gets afterwards to write the already-landed action's rows --
+    plus bounded slack for the flush itself.
+    """
+    if cfg is None:
+        return _SHUTDOWN_ARCHIVE_CEILING_FALLBACK_S
+    try:
+        return (_worker_join_timeout_s(cfg) + _archive_join_grace_s(cfg)
+                + _WORKER_JOIN_TIMEOUT_MARGIN_S + _SHUTDOWN_SAVE_HEADROOM_S)
+    except Exception:  # noqa: BLE001 -- a shutdown bound must never raise on its way out
+        return _SHUTDOWN_ARCHIVE_CEILING_FALLBACK_S
+
+
+def _wait_for_run_shutdown(state) -> bool:
+    """Give the active run its flat exit budget, then extend only while data is at risk.
+
+    Returns True when the run finished, False when the Hub gave up on it. Shared by both
+    shutdown triggers so a closed tab and a Ctrl-C can never disagree about when an
+    already-landed decision may be abandoned.
+    """
+    if state.wait_for_run(timeout=_SHUTDOWN_SAVE_TIMEOUT_S):
+        return True
+    # Re-probed every slice, not sampled once: the point of the extension is to end the moment
+    # the write it is protecting drains, so an unrelated wedge cannot inherit the archive's
+    # budget. `live_store()` is None whenever no run holds a store, and the probe is duck-typed
+    # (SQLite and test doubles expose no such seam), so both answer False here.
+    if not _store_archive_in_flight(state.live_store()):
+        return False
+    ceiling_s = _run_archive_ceiling_s(state.live_run_cfg())
+    print("Hub: run is still archiving a decision that already landed on the phone; waiting "
+          f"up to {ceiling_s:.0f}s more before exiting so its label is not abandoned.")
+    deadline = time.monotonic() + ceiling_s
+    while time.monotonic() < deadline:
+        if state.wait_for_run(timeout=_SHUTDOWN_ARCHIVE_POLL_S):
+            return True
+        if not _store_archive_in_flight(state.live_store()):
+            break
+    return state.wait_for_run(timeout=0)
 
 
 class _HubHTTPServer(ThreadingHTTPServer):
@@ -241,11 +339,16 @@ class _Handler(BaseHTTPRequestHandler):
             if state and state.is_running():
                 print("Hub: browser hub tab closed; stopping active run before shutdown.")
                 state.stop()
-                # Bounded the same way as the Ctrl-C path (_SHUTDOWN_SAVE_TIMEOUT_S): a wedged
-                # worker must not block this thread forever, or server.shutdown() below is
-                # never reached and the process lives on invisibly after the tab is gone —
-                # defeating the "close tab -> hub exits -> launcher closes the Terminal tab" UX.
-                state.wait_for_run(timeout=_SHUTDOWN_SAVE_TIMEOUT_S)
+                # Bounded exactly like the Ctrl-C path, through the same helper: a wedged
+                # worker must not block this thread past the flat budget, or server.shutdown()
+                # below is never reached and the process lives on invisibly after the tab is
+                # gone — defeating the "close tab -> hub exits -> launcher closes the Terminal
+                # tab" UX. The conditional extension inside the helper is reserved for a store
+                # that is genuinely still writing, where exiting promptly would instead drop
+                # the rows of an action already landed on the phone; nothing archiving means
+                # this returns at the flat budget, which is what keeps the tab-close exit
+                # prompt.
+                _wait_for_run_shutdown(state)
             else:
                 print("Hub: browser hub tab closed; shutting down.")
             server.shutdown()
@@ -305,10 +408,17 @@ class _Handler(BaseHTTPRequestHandler):
             return
         supplied_token = body.pop(_CSRF_TOKEN_FIELD, None)
         expected_token = getattr(self.server, "csrf_token", "")
+        # Compare BYTES. hmac.compare_digest raises TypeError on a str operand holding any
+        # non-ASCII character, and that escapes do_POST: socketserver drops the connection with
+        # no response at all (the caller sees RemoteDisconnected instead of this 403) and prints
+        # a traceback that install_log_capture() tees straight into the operator's live log and
+        # every later bug report. 'surrogatepass' because json.loads can hand back a lone
+        # surrogate from a \ud800-style escape, which a plain .encode() would raise on in turn.
         if (
             not isinstance(supplied_token, str)
             or not expected_token
-            or not hmac.compare_digest(supplied_token, expected_token)
+            or not hmac.compare_digest(supplied_token.encode("utf-8", "surrogatepass"),
+                                       expected_token.encode("utf-8"))
         ):
             self._json({"ok": False, "msg": "invalid CSRF token"}, 403)
             return
@@ -354,6 +464,9 @@ class _Handler(BaseHTTPRequestHandler):
         elif self.path == "/api/training/action":
             ok, result, code = self.state.submit_training_action(body)
             self._json({"ok": ok, "result": result}, code)
+        elif self.path == "/api/training/alert":
+            ok, msg = self.state.record_training_browser_notification(body)
+            self._json({"ok": ok, "msg": msg}, 200 if ok else 409)
         elif self.path == "/api/training/remove-latest":
             ok, result = self.state.remove_latest_training_label()
             self._json({"ok": ok, "result": result}, 200 if ok else 409)
@@ -426,12 +539,14 @@ def serve(config_path: str = "config.yaml", host: str = "127.0.0.1",
     finally:
         if _Handler.state:
             _Handler.state.stop()
-            # Let the active run flush/save before the process exits — but bounded,
-            # so Ctrl-C can never hang forever if something in the run is wedged.
-            if not _Handler.state.wait_for_run(timeout=_SHUTDOWN_SAVE_TIMEOUT_S):
-                print(f"Hub: run did not finish saving within "
-                      f"{_SHUTDOWN_SAVE_TIMEOUT_S:.0f}s; exiting anyway "
-                      "(data may not be fully flushed).")
+            # Let the active run flush/save before the process exits — but bounded, so Ctrl-C
+            # can never hang forever if something in the run is wedged. See
+            # _wait_for_run_shutdown for the two-stage bound: a flat budget everyone pays, then
+            # an extension only while an archive for an already-landed decision is in flight.
+            if not _wait_for_run_shutdown(_Handler.state):
+                print(f"Hub: run did not finish saving within its shutdown budget "
+                      f"({_SHUTDOWN_SAVE_TIMEOUT_S:.0f}s, extended only while an archive was "
+                      "still writing); exiting anyway (data may not be fully flushed).")
         try:
             httpd.shutdown()
         finally:

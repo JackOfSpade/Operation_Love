@@ -11,6 +11,7 @@ import sys
 
 import pytest
 
+from operation_love import config as cfg_mod
 from operation_love import supervisor as sup
 from tools import _devicelock
 
@@ -85,6 +86,32 @@ def test_an_unloadable_config_still_runs_the_command_so_it_reports_the_real_prob
     assert ran == [1]
 
 
+def test_a_config_free_acquisition_contends_with_a_configured_run_on_the_same_lock(
+        tmp_path, capsys):
+    """A tool that reads no setting takes the lock with NO config -- on the SAME file.
+
+    The lock path reads nothing out of a config (``_android_lock_path`` ignores both of its
+    arguments), so requiring one that VALIDATES would gate the read-only instruments on a value
+    the lock never consults -- and those are exactly the tools the owner reaches for while the
+    config is half-repaired. That only holds if config-free lands on the same file a configured
+    run uses; a second lock next to it would be no exclusion at all, which is the failure
+    ``_android_lock_path``'s own docstring records from serial-keyed paths.
+    """
+    ran = []
+    with sup.exclusive_android_device(cfg_mod.load(_config(tmp_path)), "hinge"):
+        with pytest.raises(SystemExit) as exit_info:
+            _devicelock.run_holding_the_device(None, lambda: ran.append("during"))
+
+    assert exit_info.value.code == 1
+    assert ran == [], "the config-free path took a different lock and drove the phone anyway"
+    assert "already in use by another Operation Love run" in capsys.readouterr().err
+
+    # ...and it is a real acquire/release, not a permanent refusal: once the run lets go, the
+    # config-free command gets the phone.
+    _devicelock.run_holding_the_device(None, lambda: ran.append("after"))
+    assert ran == ["after"]
+
+
 def test_the_calibrate_tool_locks_capture_and_observe_check_but_not_the_offline_commands():
     """The offline subcommands never open ADB; locking them would block a run for no reason."""
     import tools.hinge_calibrate as cal
@@ -101,11 +128,13 @@ def test_every_phone_driving_tool_imports_the_shared_lock():
     import tools.hinge_bot_scroll_probe
     import tools.hinge_calibrate
     import tools.hinge_inspect
+    import tools.hinge_scroll_capture
     import tools.hinge_video_bound
     import tools.hinge_video_bound_auto
 
     for module in (tools.hinge_calibrate, tools.hinge_inspect, tools.hinge_bot_scroll_probe,
-                   tools.hinge_video_bound, tools.hinge_video_bound_auto):
+                   tools.hinge_scroll_capture, tools.hinge_video_bound,
+                   tools.hinge_video_bound_auto):
         assert any(hasattr(module, name)
                    for name in ("run_holding_the_device", "holding_the_device")), \
             f"{module.__name__} drives the phone but imports no device lock"

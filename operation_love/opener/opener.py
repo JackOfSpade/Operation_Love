@@ -10,6 +10,7 @@ and enforce the per-run budget (see operation_love.costing).
 from __future__ import annotations
 
 import base64
+from http.client import HTTPException
 import io
 import json
 import math
@@ -154,10 +155,14 @@ _SCHEMA = {
                            "the photo; that text defines the photo's intended context. "
                            "A guess is optional. If you use one, choose the least speculative "
                            "interpretation that fits ordinary explanations of the scene and do "
-                           "not invent a motive, purpose, cause, or unseen circumstance. If the "
-                           "opener has a second beat after a claim, state how it accepts and "
-                           "advances that claim rather than verifying it, contradicting it, or "
-                           "abandoning it for a nearby generic topic. "
+                           "not invent a motive, purpose, cause, or unseen circumstance. The "
+                           "conclusion of a guess must not itself be directly visible or stated "
+                           "in the item, its text, a sign, or elsewhere in her profile. Visible "
+                           "and stated facts may be clues, not guessed conclusions. If the opener "
+                           "uses a guess, state how it leaves the conclusion unconfirmed and gives "
+                           "her room to confirm or correct it. Any second beat must not assume the "
+                           "guess is true or ask about an experience, preference, or consequence "
+                           "that only makes sense if it is true. "
                            "For every visible detail named in the opener, state how it is used "
                            "by the conversational move. If it asks a question, name the one "
                            "underlying question; alternatives must be parallel, contrasting "
@@ -167,6 +172,11 @@ _SCHEMA = {
                            "of referent must be explicit and immediately clear. Confirm that its "
                            "most natural honest reply lets her share a preference, perspective, "
                            "inspiration, or experience rather than defend or diminish herself. "
+                           "Confirm that the opener does not audition for a role described in "
+                           "her profile, promise how the sender will perform for her, or assume "
+                           "a match, date, relationship, or shared future before she replies. A "
+                           "direct invitation may propose a get-together, but it must leave her "
+                           "acceptance open rather than speak as though the plan already exists. "
                            "Free text, not a fixed list of choices. Recorded for analysis only, "
                            "never sent to her.",
         },
@@ -197,6 +207,15 @@ _SCHEMA = {
                            "referent must be explicit and immediately clear. Its most natural "
                            "honest reply should let her share a preference, perspective, "
                            "inspiration, or experience, never require self justification. "
+                           "A guess must remain unconfirmed until she replies; no later statement "
+                           "or question may assume it is correct. Do not advertise the sender as "
+                           "the answer to a preference in her profile, promise what he will do "
+                           "for her, or assume a match, date, relationship, or shared future. A "
+                           "direct invitation may propose a get-together only while leaving her "
+                           "acceptance open. "
+                           "State the positive substance directly. Do not preface it by naming "
+                           "an insulting, judgmental, awkward, pressuring, creepy, or offensive "
+                           "interpretation and then denying that interpretation. "
                            "Maximum two sentences. No em dash, no hyphen.",
         },
     },
@@ -294,6 +313,21 @@ _SCHEMA = {
 # alternative. REPLY COMFORT tells the model to select an angle with an affirming answer space
 # while deliberately stating no worked opener or wording pattern for it to imitate.
 #
+# Addendum 2026-09-02 (guess confirmation and information gain): a live opener guessed a country
+# and immediately asked about her experience there, treating the guess as confirmed before she
+# could answer. The old PREMISE CONSISTENCY instruction explicitly caused that failure by telling
+# the second beat to accept X as its working premise. It is replaced by CONFIRMATION BOUNDARY:
+# an uncertain conclusion stays uncertain for the entire opener, and any second beat must leave
+# her room to confirm or correct it. INFORMATION GAIN separately prevents the model from dressing
+# a plainly visible or stated fact, such as readable location text, up as a guess. Visible facts
+# remain valid clues for a different inference; they are simply not themselves guess material.
+#
+# Addendum 2026-09-04 (positive social framing): a live draft began by denying judgment. That
+# wording introduces the exact negative interpretation it tries to remove, making an otherwise
+# positive observation sound self-conscious. The prompt now tells the model to state the
+# substantive thought directly, and a narrow lexical backstop regenerates unmistakable leading
+# disclaimers without treating ordinary negation as a style failure.
+#
 # Addendum 2026-08-12 (Part B, ops/OPENER-REDESIGN.md 5.1/5.7): the model now CHOOSES the item
 # rather than labelling one after the fact, so two lines changed here and nothing else did.
 # "The images are her profile in scroll order; set referenced_index to the 0-based index of the
@@ -377,7 +411,12 @@ _SYSTEM = (
     "a far-fetched premise. Never infer ownership, employment, a routine, a responsibility, or a "
     "relationship merely from proximity in one photo. TRACEABILITY TEST: for any inference, she "
     "should instantly see which visible or stated clue led there. If that path needs an "
-    "explanation, the inference is too remote. PLAYFUL HYPERBOLE: unmistakably nonliteral "
+    "explanation, the inference is too remote. INFORMATION GAIN TEST: the conclusion of a guess "
+    "must not itself be directly visible or explicitly stated in the selected item, its header, "
+    "a sign, or elsewhere in her profile. Visible and stated facts may support a different "
+    "inference, but they are clues, not guessed conclusions. If an ordinary viewer can read or "
+    "see the conclusion directly without inference, treat it as known context and choose a "
+    "different angle. PLAYFUL HYPERBOLE: unmistakably nonliteral "
     "exaggeration is allowed when its visible anchor is immediate. It adds playful framing; it "
     "does not license presenting an invented motive, circumstance, or event as literal fact. "
     "SAFETY AND DIGNITY: never infer, tease, or pose a forced choice about self harm, suicide, "
@@ -407,12 +446,25 @@ _SYSTEM = (
     "offer a forced choice whose honest answers make her defend, diminish, or embarrass herself. "
     "If a visible detail could have more than one explanation, respond to its visible effect or "
     "choose another angle rather than asking her to verify its status. "
-    "PREMISE CONSISTENCY: if the first beat asserts or guesses X, the second beat must accept X "
-    "as its working premise and move forward from it. Never ask whether X itself was true, ask "
-    "about the opposite of X, or abandon X for a generic question about the surrounding scene. "
-    "A second beat may extend the angle with clearly nonliteral hyperbole, but it may not add a "
-    "literal invented fact, motive, or backstory. If no coherent continuation exists, stop after "
-    "the first beat. Questions should invite positive, fun conversation, not form an interview. "
+    "POSITIVE SOCIAL FRAMING: state the intended positive observation, question, or invitation "
+    "directly. Never begin by naming an insulting, judgmental, awkward, pressuring, creepy, or "
+    "offensive interpretation of your own message and then denying it. That denial introduces "
+    "the negative interpretation even when the sentence says it is absent. Remove the disclaimer "
+    "and make the substantive thought stand on its own. "
+    "RECIPROCITY BEFORE FUTURE: an opener is one bid to a stranger, not an audition for a role "
+    "described in her profile. Never answer one of her preferences by advertising the sender as "
+    "the man who satisfies it, promising what he will do for her, or declaring how he will "
+    "perform. Do not assume that a match, date, relationship, or shared future already exists, "
+    "including with possessive language about a first date, place, trip, or other future together. "
+    "A direct low-pressure invitation may propose a specific get-together, but must leave her "
+    "acceptance completely open; a proposal is not an established shared plan. "
+    "CONFIRMATION BOUNDARY: a guess remains unconfirmed until she replies. Never follow a guess "
+    "with a statement, question, compliment, or invitation that assumes it is correct. Word the "
+    "guess so her natural next move is to confirm or correct it. If you add a second beat, it may "
+    "only invite that confirmation or correction without presupposing the answer. Never ask about "
+    "an experience, preference, or consequence that only makes sense if the guess is true. "
+    "Otherwise stop after the guess. Questions should invite positive, fun conversation, not form "
+    "an interview. "
     "Any teasing must be clearly good-natured and never belittling, arrogant, condescending, or "
     "mean. Mild innuendo is eligible only when her own profile clearly invites that playful tone; "
     "never force it. A brief greeting is optional but cannot substitute for profile-specific "
@@ -430,9 +482,10 @@ _SYSTEM = (
     "friend would, never a street, a neighbourhood, a hotel, a specific venue, or anywhere that "
     "could be where she lives, and never guess her employer, her school, or her age, or identify "
     "anyone else in the photo. When a place comes from recognizing the image rather than from her "
-    "profile text, clearly identify it as a visual inference before building on it. Do not state "
-    "an inferred location as shared experience, "
-    "and do not turn it into a generic compliment. NEVER INVENT THE SENDER: you may not claim he has been somewhere, "
+    "profile text, clearly identify it as a visual inference and leave it unconfirmed. Do not "
+    "build on an inferred location as though it were correct, do not state an inferred location "
+    "as shared experience, and do not turn it into a generic compliment. NEVER INVENT THE "
+    "SENDER: you may not claim he has been somewhere, "
     "done something, or likes something, because you do not know his history and he has to live "
     "with whatever you write. PICK THE ITEM YOURSELF: the numbered images are her profile photos, "
     "numbered from 1 in the order they are given, and you choose which one to write about. Choose "
@@ -907,6 +960,138 @@ def _scaffolding_markers(text: str) -> list[str]:
     return markers
 
 
+_PREEMPTIVE_DISCLAIMER_PREFIX = r"^\s*(?:(?:hey|hi)\b[!,.\s]*)?"
+_PREEMPTIVE_DISCLAIMER_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    (
+        "denied judgment",
+        re.compile(
+            _PREEMPTIVE_DISCLAIMER_PREFIX
+            + r"(?:no|zero)\s+judg(?:e?ment|ing)\b(?:\s+(?:here|from\s+me|at\s+all))?\s*[,;:.!]",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "denied offense",
+        re.compile(
+            _PREEMPTIVE_DISCLAIMER_PREFIX
+            + r"no\s+offen[cs]e\b(?:\s+(?:intended|meant|here|at\s+all))?\s*[,;:.!]",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "denied pressure",
+        re.compile(
+            _PREEMPTIVE_DISCLAIMER_PREFIX
+            + r"(?:no|zero)\s+pressure\b(?:\s+(?:here|from\s+me|at\s+all))?\s*[,;:.!]",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "requested that a negative interpretation be ignored",
+        re.compile(
+            _PREEMPTIVE_DISCLAIMER_PREFIX
+            + r"(?:don't|do\s+not)\s+(?:judge\s+me|take\s+(?:this|it)\s+the\s+wrong\s+way|"
+              r"get\s+me\s+wrong|be\s+offended)\b\s*[,;:.!]",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "denied an awkward or insulting tone",
+        re.compile(
+            _PREEMPTIVE_DISCLAIMER_PREFIX
+            + r"(?:(?:not\s+to|not\s+trying\s+to|i(?:'m|\s+am)\s+not\s+"
+              r"(?:trying|meaning)\s+to|i\s+(?:don't|do\s+not)\s+(?:want|mean)\s+to)\s+"
+              r"(?:be|sound|seem|come\s+across\s+as)\s+"
+              r"(?:weird|creepy|rude|judg(?:e?mental)|pushy|forward|awkward|offensive|nosy|"
+              r"shallow|mean|dramatic))\b\s*[,;:.!]",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "announced an awkward or insulting tone",
+        re.compile(
+            _PREEMPTIVE_DISCLAIMER_PREFIX
+            + r"(?:this|that)\s+(?:(?:may|might|will)\s+sound|is\s+going\s+to\s+sound)\s+"
+              r"(?:weird|creepy|rude|judg(?:e?mental)|pushy|forward|awkward|offensive|nosy|"
+              r"shallow|mean|dramatic)\b\s*[,;:.!]",
+            re.IGNORECASE,
+        ),
+    ),
+)
+
+
+def _preemptive_disclaimer_markers(text: str) -> list[str]:
+    """Return unmistakable negative-framing disclaimers at the start of an opener.
+
+    These phrases name an undesirable social interpretation and then deny or apologize for it,
+    making that interpretation salient before the actual message begins. The multimodal prompt
+    owns the broad semantic rule. This deterministic backstop is deliberately anchored at the
+    beginning and requires narrow wording plus punctuation, so ordinary negation in the body of
+    a message does not spend a retry.
+    """
+    return [label for label, pattern in _PREEMPTIVE_DISCLAIMER_PATTERNS
+            if pattern.search(text)]
+
+
+_PREMATURE_SHARED_FUTURE_PATTERNS = (
+    (
+        "assumed shared first date or outing",
+        re.compile(
+            r"\bour\s+(?:very\s+)?first\s+"
+            r"(?:date|spot|place|trip|vacation|getaway|adventure|destination|outing|"
+            r"dinner|drink|drinks|weekend|night)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "promise of future performance",
+        re.compile(
+            r"\b(?:i\s+will|i'll)\s+(?:personally\s+)?"
+            r"(?:make\s+sure|ensure|guarantee)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "self-advertised dating role",
+        re.compile(
+            r"\b(?:i'm|i\s+am)\s+(?:(?:clearly|definitely|exactly|obviously)\s+)?"
+            r"(?:the|your)\s+(?:kind\s+of\s+)?(?:man|guy|person)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "promise to handle date planning",
+        re.compile(
+            r"\b(?:i\s+can|i'll|i\s+will)\s+"
+            r"(?:(?:definitely|happily|gladly)\s+)?"
+            r"(?:handle|plan|take\s+care\s+of)\s+(?:the|our|your)\s+"
+            r"(?:date|dates|planning|plans?|details|itinerary)\b",
+            re.IGNORECASE,
+        ),
+    ),
+)
+
+
+def _premature_shared_future_markers(text: str) -> list[str]:
+    """Return unmistakable shared-future or role-audition wording in an opener.
+
+    The multimodal prompt owns the broad social judgment: a direct invitation is welcome,
+    while speaking as though an unaccepted date already belongs to both people is not. This
+    deterministic backstop intentionally catches only two high-precision shapes that should
+    never be sent: possessive ``our first ...`` date/outing language, a first-person future
+    performance promise, an explicit claim to be ``the man`` or ``your guy``, and an offer to
+    handle date planning. These are how an opener turns a profile preference into a job
+    application rather than a relaxed conversational bid.
+
+    Do not broaden this to every ``we``, ``our``, or future-tense construction. Natural direct
+    proposals need those words, and a false positive spends a provider request before the
+    service can recover. Broader calibration belongs in the prompt; this helper guarantees the
+    reported failure shape cannot pass unchanged again.
+    """
+    return [label for label, pattern in _PREMATURE_SHARED_FUTURE_PATTERNS
+            if pattern.search(text)]
+
+
 def _sensitive_inference_markers(text: str) -> list[str]:
     """Return the high-risk inferred-activity shapes found in an otherwise clean opener.
 
@@ -1174,6 +1359,8 @@ REASON_EMPTY_AFTER_SANITIZE = "empty_after_sanitize"
 REASON_UNDELIVERABLE_CHARS = "undeliverable_chars"
 REASON_UNDELIVERABLE_SEQUENCE = "undeliverable_sequence"
 REASON_SCAFFOLDING = "scaffolding"
+REASON_PREEMPTIVE_DISCLAIMER = "preemptive_disclaimer"
+REASON_PREMATURE_SHARED_FUTURE = "premature_shared_future"
 REASON_SENSITIVE_INFERENCE = "sensitive_inference"
 REASON_TOO_MANY_SENTENCES = "too_many_sentences"
 
@@ -1206,7 +1393,8 @@ class OpenerParseError(OpenerError):
         (not_a_string -- the value there usually isn't even a string).
       - post-sanitize (after fold_to_ascii) when the guard runs on the already-sanitized
         string (empty_after_sanitize, undeliverable_chars, undeliverable_sequence,
-        too_many_sentences, scaffolding) -- these all call their check function with
+        too_many_sentences, scaffolding, preemptive_disclaimer, premature_shared_future) --
+        these all call their check function with
         `sanitized`, so that is unambiguously the value being judged, even for
         empty_after_sanitize where the result is "" itself.
       - the raw response text (no per-field candidate exists to point at) for bad_json and
@@ -1523,13 +1711,13 @@ def _gemini_error(status_code: int, body: Any) -> GeminiAPIError:
     error = body.get("error")
     if not isinstance(error, dict):
         return GeminiAPIError(status_code, None, "malformed error response")
-    code = error.get("code", status_code)
-    try:
-        code = int(code)
-    except (TypeError, ValueError):
-        code = status_code
     quota_id, quota_metric = _first_quota_violation(error.get("details"))
-    return GeminiAPIError(code, error.get("status"), str(error.get("message") or "unknown error"),
+    # Route on the status returned by the HTTP transport, not the body's redundant
+    # ``error.code``.  A proxy or malformed upstream body can disagree with the envelope;
+    # allowing that untrusted duplicate to replace the real status could turn a retryable
+    # 429/503 into a fatal 400, or (more dangerously) make a fatal 400 look retryable.
+    return GeminiAPIError(status_code, error.get("status"),
+                          str(error.get("message") or "unknown error"),
                           quota_id=quota_id, quota_metric=quota_metric)
 
 
@@ -1579,8 +1767,9 @@ class GeminiOpener:
     tried instead -- see generate()'s 404 handling for why a 404 must not be allowed to take
     the rest of the cascade down with it. An HTTP 5xx and a TRANSPORT-level failure (a
     ``socket.timeout``, a ``urllib.error.URLError`` from a connection reset or DNS failure,
-    or any other ``OSError`` the transport raises instead of returning -- see generate()'s
-    ``OSError`` handling) both get the same non-blacklisting cascade as a per-minute 429:
+    another ``OSError``, or an ``http.client.HTTPException`` such as ``IncompleteRead`` --
+    see generate()'s transport-exception handling) both get the same non-blacklisting cascade
+    as a per-minute 429:
     neither says anything about whether the model would answer the NEXT request, only that
     it failed to answer this one, so it cascades to the next configured model for this
     profile only and is retried first on the next profile. Authentication, permission, and
@@ -1880,6 +2069,10 @@ class GeminiOpener:
                 "motive, circumstance, action, route, effort, goal, cause, or sequence merely "
                 "to create a claim. If you do make a claim, use the least speculative natural "
                 "interpretation and make its visible or stated basis immediately recognizable. "
+                "The guessed conclusion itself must not be directly visible, readable, or stated "
+                "anywhere in her profile; those facts are clues, not guesses. Keep every guess "
+                "unconfirmed for the whole opener. Do not follow it with a statement or question "
+                "that assumes it is correct; leave her room to confirm or correct it. "
                 "Clearly nonliteral playful hyperbole is allowed; an invented motive or event "
                 "presented as literal fact is not. "
                 "Every named visible detail must be necessary to the conversational move; cut "
@@ -1891,7 +2084,10 @@ class GeminiOpener:
                 "Make the most natural honest reply feel good to give: invite a preference, "
                 "perspective, inspiration, or experience rather than self justification, and "
                 "never offer a forced choice that makes her defend, diminish, or embarrass "
-                "herself. "
+                "herself. Do not advertise the sender as the answer to one of her preferences, "
+                "promise what he will do for her, or assume a match, date, relationship, or "
+                "shared future. A direct invitation may propose a get-together only while "
+                "leaving her acceptance open. "
                 "Write the "
                 "corrected opener now."
             )
@@ -2450,6 +2646,33 @@ class GeminiOpener:
                 f"opener field, with no preamble, no label, and no surrounding quotes "
                 f"(received {_truncated_repr(opener)})",
                 usage, model, reason_code=REASON_SCAFFOLDING, raw_opener=sanitized)
+        # Positive-social-framing backstop. The prompt carries the semantic rule; this guard
+        # catches only unmistakable opening disclaimers that name a negative interpretation and
+        # deny it before getting to the substance. Regeneration removes the unwanted frame rather
+        # than sending it merely because the rest of the message is usable.
+        disclaimer_markers = _preemptive_disclaimer_markers(sanitized)
+        if disclaimer_markers:
+            raise OpenerParseError(
+                "Gemini's opener introduced a negative social interpretation only to deny it "
+                f"({'; '.join(disclaimer_markers)}). State the intended positive observation, "
+                "question, or invitation directly. Remove the opening disclaimer and make the "
+                "substantive thought stand on its own.",
+                usage, model, reason_code=REASON_PREEMPTIVE_DISCLAIMER,
+                raw_opener=sanitized)
+        # High-precision backstop for the role-audition failure that produced "I will make
+        # sure our first spot ..." on a real profile. The prompt owns the broad distinction
+        # between a direct proposal and assumed reciprocity; this guard rejects only the
+        # unmistakable lexical forms so a normal invitation is not mistaken for a promise.
+        future_markers = _premature_shared_future_markers(sanitized)
+        if future_markers:
+            raise OpenerParseError(
+                "Gemini's opener promised future performance or spoke as though an unaccepted "
+                f"shared plan already exists ({'; '.join(future_markers)}). Do not audition "
+                "for a role in her profile or promise what the sender will do for her. A "
+                "direct invitation may propose a get-together, but must leave her acceptance "
+                "open and must not call it an existing shared plan.",
+                usage, model, reason_code=REASON_PREMATURE_SHARED_FUTURE,
+                raw_opener=sanitized)
         # Safety backstop for a harmful, unsupported inference such as asking someone at a
         # bridge whether she "worked up the courage to jump". The model prompt already bars
         # this class of angle; this deterministic check makes a prompt miss retryable instead
@@ -2464,7 +2687,13 @@ class GeminiOpener:
                 "courage around danger, self harm, or suicide from a scene. Use a different, "
                 "grounded angle.",
                 usage, model, reason_code=REASON_SENSITIVE_INFERENCE, raw_opener=sanitized)
-        referenced = str(data.get("referenced", "")).strip()
+        # `or ""` for the same reason as `angle` and `item_description` above: _SCHEMA's
+        # "required" list is a generation hint the API does not enforce, and Gemini does return
+        # nulls for these fields in practice. Without it a null degrades to the literal string
+        # "None", which is then persisted verbatim into the `openers.referenced` column and
+        # rendered to the operator as "about: None" -- a wrong value in an analytics column,
+        # where "" honestly says the model claimed nothing.
+        referenced = str(data.get("referenced", "") or "").strip()
         # REDUNDANCY MONITOR (ops/OPENER-REDESIGN.md 3.7), and note where it sits: AFTER every
         # guard that can reject, and it deliberately rejects nothing itself. An opener that
         # restates its own `referenced` note is the over-description bug this redesign targets,
@@ -2578,13 +2807,50 @@ class GeminiOpener:
         # formed HTTP response, just not a usable opener -- so it stays fully eligible again on
         # the very next profile (or the next fresh call with no skip set).
         #
-        # SAFETY VALVE: if every configured model is in skip_models, the set is ignored
-        # entirely rather than leaving this call with nothing to try. This can only happen if
-        # every model already failed to parse earlier in the SAME retry sequence -- at that
-        # point a stochastic re-ask of an already-failed model still beats returning with no
-        # opener at all (the owner's rule is to keep trying, not to give up early), and
-        # OpenerService's own max_attempts ceiling is what eventually stops the retries, not
-        # this method refusing to pick a model.
+        # SAFETY VALVE: if no configured model is left ELIGIBLE -- i.e. every one of them is
+        # either in skip_models or already retired into self._unavailable_models this run --
+        # the skip set is ignored entirely rather than leaving this call with nothing to try.
+        # It is deliberately eligibility and not merely skip-set membership: a model retired
+        # by a per-day 429 or a 404 is skipped by the loop below just as surely, so counting
+        # only the skip set would leave a healthy, never-tried model unused while the cascade
+        # fell through on retired ones and reported the wrong reason. At that point a
+        # stochastic re-ask of an already-failed model still beats returning with no opener at
+        # all (the owner's rule is to keep trying, not to give up early), and OpenerService's
+        # own max_attempts ceiling is what eventually stops the retries, not this method
+        # refusing to pick a model. Note the valve only ever un-skips: a retired model stays
+        # retired, since it is a separate check and this one does not touch it.
+        #
+        # The valve is asked THREE times, because eligibility is not a fact of the call -- the
+        # cascade retires models as it runs, so any answer starts expiring the moment it is
+        # given. (1) On entry, the cheap common case: the skip set was already hopeless before a
+        # single request went out. (2) At each skip decision in the loop, against the models
+        # still AHEAD of it -- which is all a forward-only check can see. (3) AFTER the cascade
+        # falls through with nothing served, as a LAST-RESORT pass over the models this call
+        # actually skip-honoured, in cascade order.
+        #
+        # Check 3 exists because checks 1 and 2 together still left one hole, and it is the one
+        # that matters most: a model skipped EARLY, while the models behind it were all still
+        # healthy, is never revisited by a check that can only look forward. models (a, b, c)
+        # with skip={a} -- at a's slot b and c are eligible, so honouring the skip is correct on
+        # the evidence available then; b and c then both 429 per-day, the loop ends, and a
+        # healthy, never-requested `a` was passed over while the call raised
+        # GeminiCapacityExhausted naming only b and c. service.py escalates that into a run stop
+        # plus "wait until midnight Pacific" -- over a model that was one re-ask away from
+        # serving. Nothing at the moment of the skip decision could have known; the fix is
+        # therefore not a smarter decision but a second look once the outcome is known.
+        #
+        # The pass is scoped to exactly the models that were SKIP-HONOURED and are still not
+        # retired, tracked as the loop makes each decision rather than recomputed from set
+        # membership afterwards. That scoping is what makes it free of both hazards: those
+        # models were never requested this call, so re-asking them re-bills nothing and cannot
+        # replay a transient failure -- a model that 5xx'd or hit a per-minute 429 this call was
+        # requested OUTSIDE the skip set and is deliberately NOT in this pass, because for it a
+        # second request in the same call is a second bill for the same known-bad condition. A
+        # model retired this run (per-day 429, 404, thinking-config 400) is excluded too: as
+        # everywhere else here, the valve only ever un-skips, it never un-retires. If the pass
+        # serves, the call returns normally; if its models fail or retire in turn, the same
+        # GeminiCapacityExhausted is raised, now naming them with the scope they really failed
+        # under.
         #
         # should_stop is the caller's cheap, non-blocking "should I keep going?" check (in
         # practice, worker.py's threading.Event.is_set for the run's stop flag). BUG 1 (an
@@ -2640,51 +2906,73 @@ class GeminiOpener:
             system_text = _SYSTEM
             image_parts = self._fit_images_to_budget(images, image_parts, text_part, system_text,
                                                       items=items)
+            def announce_safety_valve(trigger: str) -> None:
+                # ONE message for BOTH valve sites (entry-time below, point-of-use in the loop),
+                # so the log reads identically however the valve engages and `trigger` is the
+                # only part that says which. The operator reading this needs to know that a
+                # model is about to be re-asked despite the caller having asked to avoid it.
+                print("Gemini opener: the skip set would leave this call nothing to try "
+                      f"({trigger}) -- ignoring it and re-asking an already-failed model "
+                      "instead of reporting every configured model exhausted. Models retired "
+                      "earlier in this run stay retired.")
+
             # SAFETY VALVE (see this method's skip_models docstring paragraph above): if the
             # caller's skip set would leave literally nothing eligible, ignore it entirely
             # rather than raising GeminiCapacityExhausted without ever trying a single model.
-            effective_skip_models = (
-                skip_models if skip_models and any(m not in skip_models for m in self.models)
-                else frozenset()
-            )
+            # "Eligible" must subtract self._unavailable_models too, not just the skip set: the
+            # loop below skips a model retired earlier this run for exactly as long as the run
+            # lasts, so late in a free-tier day "not skipped" and "actually tryable" are
+            # different sets. Testing only skip-set membership let one skipped-but-healthy model
+            # sit unused while the cascade fell through on the retired ones and raised "every
+            # configured model has exhausted its per-day quota" -- naming models the caller never
+            # asked to avoid, and telling the operator to wait until midnight Pacific over a
+            # model that was one stochastic re-ask away from serving the call.
+            #
+            # THIS IS ONLY THE FIRST LOOK, and it is NOT the whole valve. It answers "is anything
+            # eligible RIGHT NOW", and that answer starts expiring the moment the loop begins:
+            # the cascade below RETIRES models into self._unavailable_models as it runs (per-day
+            # 429, 404 NOT_FOUND, thinking-config 400), so a set that was eligible here can be
+            # empty by the time a skipped model's slot comes up. Holding self._lock does not make
+            # this snapshot safe -- the lock excludes OTHER THREADS, not this call's own
+            # retirements, which are exactly what moves the set. The question is therefore
+            # re-asked AT THE POINT OF USE, in the loop's skip branch below, and once more in
+            # the last-resort pass after the loop (see the docstring's skip_models paragraph:
+            # the point-of-use check can only look forward, so a model skipped BEFORE the
+            # models that then retire needs the after-the-fact look to be reconsidered).
+            eligible = [m for m in self.models
+                        if m not in skip_models and m not in self._unavailable_models]
+            if skip_models and not eligible:
+                announce_safety_valve("no configured model was eligible when the call began")
+            effective_skip_models = skip_models if (skip_models and eligible) else frozenset()
             # Why each model declined to serve THIS call, so that if the whole cascade falls
             # through we can report an accurate stop reason instead of a generic one. The hub
             # shows this verbatim, and "wait until midnight Pacific" vs "retry in a minute" are
             # very different instructions to give the operator.
             scopes: dict[str, str] = {}
-            for model in self.models:
-                # An optional suggestion has a real end-to-end deadline, not merely a cap on
-                # service-level parse retries. Check even an about-to-be skipped/retired model:
-                # the next eligible request must never begin after the deadline either.
-                remaining_deadline(f"considering {model!r}")
-                # Check EVERY model immediately before it can issue a request, including model
-                # zero. The earlier pre-image check prevents useless encoding when Stop already
-                # won; this second check closes the race where it wins DURING image preparation.
-                # It remains before both skip paths so a stop does not walk a stale cascade.
-                if should_stop is not None and should_stop():
-                    # Checked before even the "already retired" skip below, so a stop signaled
-                    # right after this model's slot comes up never issues a request for it --
-                    # see this method's should_stop docstring paragraph for the full rationale.
-                    raise OpenerAborted(
-                        f"Opener cascade aborted before requesting {model!r}: the run is "
-                        "stopping (should_stop signaled), not a provider failure")
-                if model in effective_skip_models:
-                    # Already produced an unusable (but well-formed, billed) response for THIS
-                    # profile earlier in the same retry sequence -- not retired (see the
-                    # skip_models docstring paragraph above), just deprioritized for this one
-                    # call, so it is not added to `scopes` either: it was never actually tried
-                    # this call, so it has nothing to report if the cascade falls through.
-                    print(f"Gemini opener: skipping {model} for this retry -- it already "
-                          "produced an unusable response for this profile; trying the next "
-                          "configured model instead.")
-                    continue
-                if model in self._unavailable_models:
-                    # Retired earlier THIS run -- either a per-day 429 or a 404 NOT_FOUND (see
-                    # self._unavailable_models). Report the scope it actually failed under; a
-                    # later all-exhausted stop needs the right guidance for each model, not a
-                    # hardcoded "day" for one that was really 404-gone.
-                    scopes[model] = self._unavailable_models[model]
-                    continue
+
+            def attempt(model: str) -> "OpenerResult | None":
+                """ONE model's request and everything that can come back from it.
+
+                Returns the parsed OpenerResult when this model SERVED the call, and None when
+                it declined in a way the cascade is meant to survive (transport failure,
+                per-minute/unclassified 429, per-day 429, 404 NOT_FOUND, provider 5xx, a
+                thinking-config 400) -- None is the old loop body's `continue`, i.e. "move on to
+                the next model". Everything that must NOT be survived still leaves by raising:
+                any other non-2xx (`raise error`), a malformed 2xx, an expired advisory
+                deadline, and OpenerParseError from _parse.
+
+                It is a closure rather than inline code because it has TWO callers -- the main
+                cascade below and the last-resort pass after it (see this method's skip_models
+                docstring paragraph). A reconsidered model must be requested, classified,
+                retired and accounted for by exactly the same code that would have handled it in
+                its own cascade slot; a second copy of this handling would be free to drift, and
+                the branch that decides whether a 429 retires a model for the rest of the run is
+                the last place in this file that can afford a near-copy.
+
+                Writes `scopes` in place (never rebinds it), so a model that fails in the
+                last-resort pass reports the scope it really failed under in the exhaustion
+                reason, exactly as it would have from the loop.
+                """
                 payload = self._payload(profile, style, model, image_parts=image_parts,
                                         retry_hint=retry_hint, items=items)
                 url = ("https://generativelanguage.googleapis.com/v1beta/models/"
@@ -2697,7 +2985,7 @@ class GeminiOpener:
                         (self.request_timeout_s if remaining is None
                          else min(self.request_timeout_s, remaining)),
                     )
-                except OSError as exc:
+                except (OSError, HTTPException) as exc:
                     # The request itself may have consumed the last available advisory time.
                     # Give deadline expiry precedence over classifying that late exception as a
                     # provider/network failure or advancing the cascade to another model.
@@ -2707,9 +2995,10 @@ class GeminiOpener:
                     # HTTPError (a successful-at-the-socket-layer response that merely carries
                     # a non-2xx status), converting it into a (code, body) return value. A
                     # socket.timeout, a urllib.error.URLError (connection reset, DNS failure,
-                    # refused connection, ...), or any other OSError never reaches that
-                    # handling at all -- it propagates straight out of self.transport(...) to
-                    # here. EMPIRICALLY OBSERVED: a live run against the real API timed out
+                    # refused connection, ...), or an http.client protocol failure such as
+                    # IncompleteRead never reaches that handling at all -- it propagates
+                    # straight out of self.transport(...) to here. EMPIRICALLY OBSERVED: a
+                    # live run against the real API timed out
                     # mid-request on the FIRST configured model and, pre-fix, that abandoned
                     # the entire cascade -- six other healthy, configured models were never
                     # tried and the profile got no opener. Treat it exactly like a provider
@@ -2718,11 +3007,11 @@ class GeminiOpener:
                     # so cascade to the next configured model for this profile only and do
                     # NOT retire it -- it stays first in line on the next profile.
                     #
-                    # Caught as OSError specifically, NOT bare Exception. socket.timeout is a
-                    # TimeoutError alias and urllib.error.URLError is a direct subclass, so
-                    # OSError covers every real transport failure (timeout, reset, DNS, refused
-                    # connection) without needing to enumerate each one. A bare `except
-                    # Exception` here would be wrong: it would also swallow a TypeError or
+                    # Caught as OSError plus HTTPException specifically, NOT bare Exception.
+                    # OSError covers timeout, reset, DNS, and refused connections;
+                    # HTTPException covers standard-library HTTP framing failures that are not
+                    # OSErrors (notably a truncated response raising IncompleteRead). A bare
+                    # `except Exception` here would be wrong: it would also swallow a TypeError or
                     # AttributeError raised by a broken transport implementation -- a
                     # programming bug in this code or an injected transport, not a flaky
                     # network -- and silently retry that bug across all 7 configured models
@@ -2736,7 +3025,7 @@ class GeminiOpener:
                           f"({type(exc).__name__}: {exc}); NOT blacklisting -- trying the "
                           "next configured model for this profile only (this model will be "
                           "retried first on the next profile).")
-                    continue
+                    return None
                 # A provider can return a syntactically successful response just after its
                 # capped timeout budget. Do not parse or send that stale suggestion, and do not
                 # classify a late 5xx/429 as a provider failure: expiry wins uniformly. A late
@@ -2790,7 +3079,7 @@ class GeminiOpener:
                             print(f"Gemini opener: {model} hit a {kind} 429; NOT blacklisting -- "
                                   "trying the next configured model for this profile only (this "
                                   "model will be retried first on the next profile).")
-                        continue
+                        return None
                     if error.http_code == 404:
                         # NOT_FOUND: EMPIRICALLY MEASURED against the real API -- ListModels can
                         # list a model id with generateContent in its supportedGenerationMethods
@@ -2810,7 +3099,7 @@ class GeminiOpener:
                               "this model id is retired or unavailable to this account and will "
                               "not come back mid-run -- dropping it from the cascade for the "
                               "rest of this run and trying the next configured model.")
-                        continue
+                        return None
                     if error.http_code >= 500:
                         # Provider-side failure (503 UNAVAILABLE "this model is currently
                         # experiencing high demand" is by far the common one; 500/502/504 behave
@@ -2827,7 +3116,7 @@ class GeminiOpener:
                               f"{error.status or 'server error'}; NOT blacklisting -- trying the "
                               "next configured model for this profile only (this model will be "
                               "retried first on the next profile).")
-                        continue
+                        return None
                     if error.http_code == 400 and _is_thinking_config_rejection(error.message):
                         # NARROW EXCEPTION to the "every other 4xx is a property of the request,
                         # not the model" rule stated in this class's docstring. MEASURED, live,
@@ -2859,12 +3148,146 @@ class GeminiOpener:
                               "will not change mid-run -- dropping it from the cascade for the "
                               "rest of this run and trying the next configured model. Fix "
                               "opener.thinking for this model id.")
-                        continue
+                        return None
                     raise error
                 if not isinstance(response, Mapping):
                     raise GeminiAPIError(int(code), None, "malformed success response")
                 return self._parse(response, model, index_space=index_space,
                                    numbered_item_count=numbered_item_count)
+
+            # Every model this call ACTUALLY skip-honoured, in cascade order, recorded as each
+            # decision is made rather than recomputed from skip_models afterwards. The two sets
+            # are not the same: the point-of-use valve can drop the skip set mid-cascade, so a
+            # model in skip_models may well have been requested normally, and re-deriving
+            # membership after the loop would hand the last-resort pass below a model that was
+            # already tried -- a second bill for a condition this call has already seen. Only a
+            # model that reached the `else` branch below was passed over without a request.
+            skip_honored: list[str] = []
+            for position, model in enumerate(self.models):
+                # An optional suggestion has a real end-to-end deadline, not merely a cap on
+                # service-level parse retries. Check even an about-to-be skipped/retired model:
+                # the next eligible request must never begin after the deadline either.
+                remaining_deadline(f"considering {model!r}")
+                # Check EVERY model immediately before it can issue a request, including model
+                # zero. The earlier pre-image check prevents useless encoding when Stop already
+                # won; this second check closes the race where it wins DURING image preparation.
+                # It remains before both skip paths so a stop does not walk a stale cascade.
+                if should_stop is not None and should_stop():
+                    # Checked before even the "already retired" skip below, so a stop signaled
+                    # right after this model's slot comes up never issues a request for it --
+                    # see this method's should_stop docstring paragraph for the full rationale.
+                    raise OpenerAborted(
+                        f"Opener cascade aborted before requesting {model!r}: the run is "
+                        "stopping (should_stop signaled), not a provider failure")
+                if model in effective_skip_models:
+                    # POINT OF USE for the safety valve above, and the half the entry-time
+                    # snapshot cannot cover. Honouring a skip is only ever safe while something
+                    # ELSE can still serve this call, and models retire mid-cascade -- so ask
+                    # again, against what is actually left ahead: the models AFTER this one that
+                    # are neither skipped nor already retired. MEASURED by an adversarial review
+                    # against the live API: models (b, c, a) with skip={a}, b and c both 429ing
+                    # per-day within this very call, left a healthy, never-tried `a` unused and
+                    # raised "every configured model has exhausted its per-day quota" naming only
+                    # b and c -- service.py turns that into a run stop plus "wait until midnight
+                    # Pacific" (see its GeminiCapacityExhausted branch), over a model that was one
+                    # re-ask away from serving.
+                    #
+                    # This check is FORWARD-ONLY and that is not a limitation to work around
+                    # here: at this instant nothing knows whether the models ahead are about to
+                    # die, so honouring the skip while they are still eligible is the right
+                    # decision on the evidence available. The complementary case -- (a, b, c)
+                    # with skip={a}, where the models that retire come AFTER the skipped one --
+                    # is unanswerable at this point and is closed instead by the last-resort
+                    # pass below, which looks once the outcome is actually known. That is why
+                    # the `else` branch records the model rather than merely announcing it.
+                    if not any(m not in effective_skip_models
+                               and m not in self._unavailable_models
+                               for m in self.models[position + 1:]):
+                        announce_safety_valve(
+                            f"no model after {model} is still eligible")
+                        # Stop honouring the skip set from here on. ONLY the skip set is dropped:
+                        # the retired check immediately below is untouched, so a model retired
+                        # this run is still never re-tried -- the valve only ever un-skips models
+                        # that are healthy as far as anything here knows. Falls through (no
+                        # `continue`) so THIS model is the one it un-skips.
+                        effective_skip_models = frozenset()
+                    else:
+                        # Already produced an unusable (but well-formed, billed) response for
+                        # THIS profile earlier in the same retry sequence -- not retired (see the
+                        # skip_models docstring paragraph above), just deprioritized for this one
+                        # call, so it is not added to `scopes` either: it was never actually
+                        # tried this call, so it has nothing to report if the cascade falls
+                        # through. Deprioritized, not discarded: it is recorded here so the
+                        # last-resort pass can come back to it if the cascade ends up serving
+                        # nothing, which is the only situation where re-asking it beats
+                        # reporting models the caller never asked to avoid.
+                        skip_honored.append(model)
+                        print(f"Gemini opener: skipping {model} for this retry -- it already "
+                              "produced an unusable response for this profile; trying the next "
+                              "configured model instead.")
+                        continue
+                if model in self._unavailable_models:
+                    # Retired earlier THIS run -- either a per-day 429 or a 404 NOT_FOUND (see
+                    # self._unavailable_models). Report the scope it actually failed under; a
+                    # later all-exhausted stop needs the right guidance for each model, not a
+                    # hardcoded "day" for one that was really 404-gone.
+                    scopes[model] = self._unavailable_models[model]
+                    continue
+                # The request itself, plus every failure this cascade is designed to
+                # survive. None means "this model declined, try the next one".
+                served = attempt(model)
+                if served is not None:
+                    return served
+
+            # LAST-RESORT PASS -- the third and final look of the safety valve, and the one that
+            # closes the forward-only check's blind spot (see this method's skip_models
+            # docstring paragraph). The cascade is over and it served nothing, so the very next
+            # statement would raise GeminiCapacityExhausted and service.py would turn that into
+            # a run stop. Before paying that price, re-ask the models this call passed over
+            # WITHOUT EVER REQUESTING THEM.
+            #
+            # The scope of this pass is exactly `skip_honored` minus anything retired, and each
+            # half of that is load-bearing:
+            #   - skip-honoured only. A model that failed this call was requested OUTSIDE the
+            #     skip set, so it has already been billed once for a condition we have already
+            #     observed; re-asking it here would be a second bill on the same known-bad
+            #     model in the same call, and a per-minute 429 or a 5xx does not become more
+            #     likely to serve seconds later. Those models are handled by the caller
+            #     retrying, not by this pass.
+            #   - not retired. A per-day 429, a 404 or a thinking-config 400 retires a model for
+            #     the rest of the run, and the valve has only ever un-skipped, never un-retired.
+            #     A skip-honoured model that was already retired on an EARLIER call lands here,
+            #     and it contributes its retirement scope to the exhaustion reason below rather
+            #     than a request.
+            # Cascade order is preserved because skip_honored was appended in loop order, so the
+            # reconsidered models are still tried most-preferred first.
+            reconsidered = [m for m in skip_honored if m not in self._unavailable_models]
+            if reconsidered:
+                announce_safety_valve(
+                    "the cascade served nothing and never tried " + ", ".join(reconsidered))
+                for model in reconsidered:
+                    # The same two pre-request obligations the loop above owes, for the same
+                    # reasons: an advisory suggestion's deadline bounds the WHOLE call rather
+                    # than one cascade, and Stop must be honoured before any further billed
+                    # request goes out. The skip check is deliberately absent -- being
+                    # skip-honoured is this pass's entry criterion -- and the retirement check
+                    # already happened when `reconsidered` was built.
+                    remaining_deadline(f"reconsidering {model!r}")
+                    if should_stop is not None and should_stop():
+                        raise OpenerAborted(
+                            f"Opener cascade aborted before reconsidering {model!r}: the run is "
+                            "stopping (should_stop signaled), not a provider failure")
+                    served = attempt(model)
+                    if served is not None:
+                        return served
+            # A skip-honoured model that this pass could not even request is still a real reason
+            # the call has no opener, so it must appear in the stop reason under the scope it
+            # actually failed under. Without this the message could claim "every configured
+            # Gemini model has exhausted its per-day quota" while naming a strict subset of them,
+            # silently omitting the one the caller had asked to skip.
+            for model in skip_honored:
+                if model in self._unavailable_models and model not in scopes:
+                    scopes[model] = self._unavailable_models[model]
             raise GeminiCapacityExhausted(_exhaustion_reason(scopes))
 
     def preflight(self) -> None:

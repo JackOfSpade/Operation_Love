@@ -439,6 +439,7 @@ def _read_capture(session: Path, config_sha256: str) -> dict:
     skip_codes = {
         "target_unavailable_or_incomplete_index", "target_verification_blocked",
         "pre_heart_navigation_refused", "reviewer_requested_restart_before_first_heart",
+        "unsupported_entry_layout",
     }
     for sequence, skipped in enumerate(skipped_attempts, 1):
         if not isinstance(skipped, dict):
@@ -459,8 +460,11 @@ def _read_capture(session: Path, config_sha256: str) -> dict:
                 or skipped.get("action") != expected_skip_action
                 or skipped.get("transport") != expected_skip_transport):
             raise ReviewRefused(f"{session}: skipped attempt {sequence} has an unsupported trace")
-        for key in ("reason_sha256", "pre_frame_sha256", "post_frame_sha256",
-                    "post_identity_frame_sha256"):
+        unsupported_entry = skipped.get("reason_code") == "unsupported_entry_layout"
+        hash_keys = ["reason_sha256", "pre_frame_sha256", "post_frame_sha256"]
+        hash_keys.append("post_deck_frame_sha256" if unsupported_entry
+                         else "post_identity_frame_sha256")
+        for key in hash_keys:
             value = skipped.get(key)
             if not isinstance(value, str) or len(value) != 64:
                 raise ReviewRefused(f"{session}: skipped attempt {sequence} has invalid {key}")
@@ -472,11 +476,28 @@ def _read_capture(session: Path, config_sha256: str) -> dict:
             if send_like_accepted else
             (predicates.get("no_photo_heart_or_send_like_on_current_profile") is True
              and predicates.get("public_dislike_guard_used") is True))
-        if (not isinstance(predicates, dict)
-                or not public_action_proved
-                or predicates.get("new_profile_top_confirmed") is not True
-                or predicates.get("new_profile_composer_absent") is not True
-                or predicates.get("new_profile_identity_distinct") is not True):
+        if unsupported_entry:
+            if (not isinstance(predicates, dict)
+                    or not public_action_proved
+                    or skipped.get("pre_scroll_top_state") != "cannot_tell"
+                    or predicates.get("pre_action_deck_ready") is not True
+                    or predicates.get("pre_action_composer_absent") is not True
+                    or predicates.get("calibration_top_unconfirmed") is not True
+                    or predicates.get("public_action_progress_verified") is not True
+                    or predicates.get("deck_frame_changed") is not True
+                    or predicates.get("new_deck_ready") is not True
+                    or predicates.get("new_profile_composer_absent") is not True
+                    or predicates.get("new_profile_identity_distinct") is not False
+                    or predicates.get("identity_comparison_not_claimed") is not True
+                    or skipped.get("post_scroll_top_state") not in {
+                        "confirmed_top", "confirmed_not_top", "cannot_tell"}):
+                raise ReviewRefused(
+                    f"{session}: skipped attempt {sequence} lacks unsupported-layout proofs")
+        elif (not isinstance(predicates, dict)
+              or not public_action_proved
+              or predicates.get("new_profile_top_confirmed") is not True
+              or predicates.get("new_profile_composer_absent") is not True
+              or predicates.get("new_profile_identity_distinct") is not True):
             raise ReviewRefused(f"{session}: skipped attempt {sequence} lacks public-Pass proofs")
         settle = skipped.get("post_pass_settle")
         if (not isinstance(settle, dict)
@@ -488,11 +509,12 @@ def _read_capture(session: Path, config_sha256: str) -> dict:
             if not isinstance(value, str) or len(value) != 64:
                 raise ReviewRefused(
                     f"{session}: skipped attempt {sequence} has invalid settled-deck {key}")
-        distance = skipped.get("new_profile_identity_distance")
-        if (isinstance(distance, bool) or not isinstance(distance, (int, float))
-                or distance <= 2.565):
-            raise ReviewRefused(
-                f"{session}: skipped attempt {sequence} lacks a distinct new-profile identity")
+        if not unsupported_entry:
+            distance = skipped.get("new_profile_identity_distance")
+            if (isinstance(distance, bool) or not isinstance(distance, (int, float))
+                    or distance <= 2.565):
+                raise ReviewRefused(
+                    f"{session}: skipped attempt {sequence} lacks a distinct new-profile identity")
         if mode == _HYBRID_CAPTURE_MODE:
             checks = skipped.get("review_checkpoints")
             if not isinstance(checks, dict):

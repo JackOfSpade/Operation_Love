@@ -38,6 +38,31 @@ from operation_love.drivers.hinge import HINGE_SPEC
 from operation_love.drivers.touchwatch import TouchWatcher, TouchWatchUnavailable
 
 
+def _unparsed_stream_verdict_lines(watcher) -> list[str]:
+    """The "lines arrived, none parsed" verdict — printed with the evidence already in hand.
+
+    The watcher keeps a redacted, capped sample of the exact lines this parser rejected
+    (TouchWatcher.unparsed_line_samples: every numeric/hex token replaced with `<n>`, so no
+    touch coordinate can ride out in it). Printing those means an unsupported Android toolbox
+    spelling can be fixed straight from a bug report, instead of asking the operator to
+    reproduce the failure in a terminal and transcribe raw lines that DO carry coordinates.
+    """
+    head = (f"VERDICT: {watcher.raw_line_count} line(s) arrived but NONE parsed — the stream "
+            "works and this parser does not understand its format. That IS a bug here: "
+            "compare the spelling against _LT_LINE_RE in "
+            "operation_love/drivers/touchwatch.py.")
+    samples = watcher.unparsed_line_samples
+    if not samples:
+        # A line whose every token redacts to nothing is dropped rather than stored, so the
+        # deque can still be empty here. Only then is the manual round-trip worth asking for.
+        return [head, "  No sample was retained. Capture one by hand with "
+                      "`adb shell getevent -lt <device>`."]
+    return [head,
+            f"  {len(samples)} rejected line(s) below, redacted (every number replaced with "
+            "<n>) and safe to paste into an incident report as-is:"
+            ] + [f"    {sample}" for sample in samples]
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -106,10 +131,8 @@ def main() -> int:
               "extra layer. Keep apps.<app>.observe_touch_watch: false.")
         return 1
     if watcher.event_count == 0:
-        print(f"VERDICT: {watcher.raw_line_count} line(s) arrived but NONE parsed — the stream "
-              "works and this parser does not understand its format. That IS a bug here: "
-              "compare a raw sample against _LT_LINE_RE in operation_love/drivers/touchwatch.py "
-              "(`adb shell getevent -lt <device>`).")
+        for line in _unparsed_stream_verdict_lines(watcher):
+            print(line)
         return 1
     if seen == 0:
         print("VERDICT: the stream is alive (raw events arrived) but no complete DOWN..UP "

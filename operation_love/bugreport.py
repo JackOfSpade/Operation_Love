@@ -69,6 +69,10 @@ _RECENT_REJECTIONS_SHOWN = 10     # cap on _recent_opener_rejections_md rows -- 
 _STALL_STRETCHES_SHOWN = 3        # cap on _stall_summary_md rows -- see its docstring
 _ABANDONED_CARDS_SHOWN = 3        # cap on _abandoned_card_summary_md rows -- see its docstring
 _CAPTURE_SPLITS_SHOWN = 3          # most recent split/recovery pairs to show — see below
+_SHIFT_TRACE_STRIPS_SHOWN = 12     # per-direction cap on rendered strips in a shift-estimator
+                                  # trace. frameshift ships a 13-strip bank, so this shows a
+                                  # whole ordinary bank and truncates (audibly, with "+N more")
+                                  # only a bank taken at a caller-varied strip count.
 _MIN_ACTIONABLE_DESCRIPTION_CHARS = 20
 _ITEM_INDEX_REASON_INLINE_LIMIT = 360
 _COMPLETION_EVIDENCE_MAX_BYTES = 8_000_000
@@ -97,7 +101,6 @@ _LOG_LOCK = threading.Lock()
 _PROCESS_START = time.time()
 _REPO = Path(__file__).resolve().parent.parent
 _PKG = Path(__file__).resolve().parent
-_installed = False
 
 
 # ── log capture ────────────────────────────────────────────────────────────
@@ -142,8 +145,6 @@ def install_log_capture() -> None:
     Check the live streams independently on every call, avoiding nested tees when they are
     already wrapped and restoring capture when either one has been replaced.
     """
-    global _installed
-    _installed = True
     if not isinstance(sys.stdout, _Tee):
         sys.stdout = _Tee(sys.stdout)
     if not isinstance(sys.stderr, _Tee):
@@ -520,6 +521,25 @@ def _diagnostic_improvement_md() -> str:
     )
 
 
+def _training_alerts_md() -> str:
+    """Render bounded, secret-free notification and sound outcomes from this Hub process."""
+    from .notifications import recent_training_alerts
+    alerts = recent_training_alerts()
+    if not alerts:
+        return "- No Training alert attempt has been recorded in this Hub process."
+    lines = []
+    for row in alerts[-12:]:
+        at = _sanitize_inline(row.get("at") or "time unavailable")
+        channel = _sanitize_inline(row.get("channel") or "unknown")
+        outcomes = [
+            f"{name}={_sanitize_inline(value)}"
+            for name, value in row.items()
+            if name not in {"at", "channel"}
+        ]
+        lines.append(f"- `{at}` · {channel} · " + ("; ".join(outcomes) or "no outcome"))
+    return "\n".join(lines)
+
+
 def _reporter_follow_up_md(description: str) -> str:
     """Explain precisely which human-side evidence is absent from a terse report.
 
@@ -734,6 +754,15 @@ def _run_completion_assessment_md(hub_state, config_path: str) -> str:
         # "all workers exited" when the snapshot names no workers at all.
         return ("- **Outcome: INDETERMINATE** — the terminal snapshot contains no app status, "
                 "so worker completion cannot be verified.")
+    terminal_app_states = {
+        "error", "out_of_profiles", "rate_limited", "stopped", "wedged", "blocked",
+    }
+    nonterminal_app_states = sorted(app_states - terminal_app_states)
+    if nonterminal_app_states:
+        states = ", ".join(repr(state) for state in nonterminal_app_states)
+        return ("- **Outcome: INDETERMINATE** — the global phase is stopped, but app status "
+                f"still contains non-terminal state(s): {states}; the snapshot is internally "
+                "inconsistent, so durable completion will not be inferred.")
 
     limitations: list[str] = []
     stop_kinds = {str(row.get("stop_kind")) for row in app_rows if row.get("stop_kind")}
@@ -1828,6 +1857,12 @@ def _dwell_navigation_refusal_summary_md(lines: list[str]) -> str:
                 and rec.get("outcome") in {
                     "navigation_refused", "navigation_refused_returned",
                     "navigation_refused_return_unverified", "return_unverified",
+                    # A below-entry refusal that had already spent a gesture. Its harmless
+                    # sibling `unreachable_below_entry` is deliberately absent -- that one is a
+                    # card stepped over, not a failure -- but this one ends the capture and
+                    # stops the run, so leaving it out rendered nothing at all for the event
+                    # the operator is reading the report to understand (2026-09-04).
+                    "below_entry_after_gesture",
                 }):
             records.append(rec)
     if not records:
@@ -1939,7 +1974,100 @@ def _dwell_navigation_refusal_summary_md(lines: list[str]) -> str:
 
         out.append(f"- {candidate}{frame_note}: dwell-navigation refusal `{code}`; {plan_text}; "
                    f"{achieved_text}; {anchor_text}{walk_text}{pair_text}")
+        # schema_version 3 (2026-09-04) carries whole `frameshift.trace_estimate` records under
+        # achieved["forward"]/["reverse"] -- the exact shape `_shift_trace_lines_md` consumes, so
+        # the per-strip bank prints here too. That bank is what tells "the strips disagreed" apart
+        # from "the bank split into a page cluster and a video cluster over an autoplaying card";
+        # the nine projected scalars above cannot. Gated on the version rather than on key
+        # presence: a v2 row's `reverse` is the smaller scalar dict, and its line above stays
+        # byte-identical.
+        schema_version = number(telemetry.get("schema_version"))
+        if schema_version is not None and schema_version >= 3:
+            out.extend(_shift_trace_lines_md(achieved))
     return "\n".join(out)
+
+
+def _shift_trace_lines_md(measurement: object) -> list[str]:
+    """Indented sub-bullets saying what the SHIFT ESTIMATOR saw, one per direction.
+
+    Renders `frameshift.trace_estimate` records (driver key ``measurement``). It exists because
+    a return-chain refusal used to report only what the driver INTENDED -- attempts, requested
+    step, leg-by-leg terminal shifts -- so "the phone did not move" and "the phone moved exactly
+    the 630px asked for, but an autoplaying video left too few static strips to reach quorum"
+    printed identically (found 2026-09-04, run 1d84909bf1bb; diagnosing it took the retained
+    PNGs and an offline re-run of the estimator).
+
+    The strip bank is rendered as the MATCHED and PINNED strips only, with weak/flat ones
+    collapsed to counts: a weak strip's whole content is "this strip saw nothing", which the
+    tally already says, while the matched offsets are what show a bank split in two -- the page
+    at one value and a video's own internal motion at another. Bounded at
+    `_SHIFT_TRACE_STRIPS_SHOWN` rendered strips per direction with an explicit "+N more", so a
+    caller-varied strip count cannot grow this section without saying so.
+    """
+    if not isinstance(measurement, dict):
+        return []
+    out: list[str] = []
+    error = measurement.get("error")
+    if isinstance(error, str) and error:
+        out.append(f"  - estimator could not look at all: `{_sanitize_inline(error)}`")
+    for direction in ("forward", "reverse"):
+        trace = measurement.get(direction)
+        if not isinstance(trace, dict):
+            continue
+        status = trace.get("status")
+        head = f"  - {direction} estimator `{_sanitize_inline(str(status))}`" if isinstance(
+            status, str) and status else f"  - {direction} estimator"
+        counts: list[str] = []
+        for key, label in (("agreeing", "agreeing"), ("dissenting", "dissenting"),
+                           ("eligible", "eligible")):
+            value = trace.get(key)
+            if isinstance(value, int) and not isinstance(value, bool):
+                counts.append(f"{value} {label}")
+        confidence = trace.get("confidence")
+        if isinstance(confidence, (int, float)) and not isinstance(confidence, bool):
+            counts.append(f"confidence {float(confidence):.2f}")
+        window = trace.get("trust_window_px")
+        if isinstance(window, int) and not isinstance(window, bool):
+            counts.append(f"trust window {window}px")
+        band = trace.get("band")
+        if (isinstance(band, (list, tuple)) and len(band) == 2
+                and all(isinstance(v, int) and not isinstance(v, bool) for v in band)):
+            counts.append(f"band rows {band[0]}..{band[1]}")
+        if counts:
+            head += " (" + ", ".join(counts) + ")"
+        reason = trace.get("reason")
+        if isinstance(reason, str) and reason:
+            head += f": `{_sanitize_inline(reason)}`"
+        out.append(head)
+        strips = trace.get("strips")
+        if not isinstance(strips, list) or not strips:
+            continue
+        located: list[str] = []
+        other: dict[str, int] = {}
+        for strip in strips:
+            if not (isinstance(strip, (list, tuple)) and len(strip) >= 5):
+                continue
+            y0, y1, state, delta, score = strip[0], strip[1], strip[2], strip[3], strip[4]
+            state_text = state if isinstance(state, str) else "?"
+            if not (isinstance(delta, int) and not isinstance(delta, bool)):
+                other[state_text] = other.get(state_text, 0) + 1
+                continue
+            score_text = (f" ({float(score):.2f})"
+                          if isinstance(score, (int, float))
+                          and not isinstance(score, bool) else "")
+            marker = "" if state_text == "matched" else f" [{_sanitize_inline(state_text)}]"
+            located.append(f"{y0}-{y1} {delta:+d}px{score_text}{marker}")
+        if not located and not other:
+            continue
+        shown = located[:_SHIFT_TRACE_STRIPS_SHOWN]
+        strip_text = "; ".join(shown) if shown else "no strip located anything"
+        if len(located) > len(shown):
+            strip_text += f"; +{len(located) - len(shown)} more"
+        tally = ", ".join(f"{n} {state}" for state, n in sorted(other.items()))
+        if tally:
+            strip_text += f"; plus {tally}"
+        out.append(f"    located strips: {strip_text}")
+    return out
 
 
 def _dwell_return_chain_refusal_summary_md(lines: list[str]) -> str:
@@ -1998,6 +2126,9 @@ def _dwell_return_chain_refusal_summary_md(lines: list[str]) -> str:
             details.append(f"after `{_sanitize_inline(after)}`")
         detail_text = "; ".join(details) if details else "numeric return telemetry unavailable"
         out.append(f"- return chain refused (`{reason}`): {detail_text}")
+        # The estimator's own account of the leg that refused, when the driver recorded one.
+        # Historic runs carry no `measurement` key and render exactly as they did before.
+        out.extend(_shift_trace_lines_md(rec.get("measurement")))
     return "\n".join(out)
 
 
@@ -3089,7 +3220,7 @@ def _latest_auto_opener_evidence_md(lines: list[str], run: Path) -> str:
             if rec.get(outcome_evidence_key) == evidence_id
             and rec.get("action") in {
                 "like_attempt", "like_rejected", "like", "training_dislike",
-                "training_cancelled",
+                "training_dislike_unverified", "training_cancelled",
             }
         ]
         if not linked and session_mode == "training" and not resumed:
@@ -3117,6 +3248,10 @@ def _latest_auto_opener_evidence_md(lines: list[str], run: Path) -> str:
                 "like_attempt": "Send Like attempted; final result not logged",
                 "training_dislike": (
                     "DISLIKE verified as landed; typed opener was not sent or committed"
+                ),
+                "training_dislike_unverified": (
+                    "X/Dislike tap was issued but its landing could not be semantically "
+                    "verified; no training label was recorded; typed opener was not sent"
                 ),
             }
             action = result["action"]
@@ -3752,6 +3887,7 @@ def build_report(hub_state=None, description: str = "", config_path: str = "conf
         f"## Hinge targeting readiness\n{_safe_section(_targeting_readiness_md, config_path, hub_state)}\n\n"
         f"## Secrets (presence only — never raw values)\n{_safe_section(_secrets_md)}\n\n"
         f"## Diagnostic improvement\n{_safe_section(_diagnostic_improvement_md)}\n\n"
+        f"## Training alerts\n{_safe_section(_training_alerts_md)}\n\n"
         f"## Run completion assessment\n{_safe_section(_run_completion_assessment_md, hub_state, config_path)}\n\n"
         f"## Run status\n{_safe_section(_status_md, hub_state)}\n\n"
         f"## Recent openers\n{_safe_section(_recent_openers_md, hub_state)}\n\n"

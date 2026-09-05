@@ -22,6 +22,7 @@ import yaml
 from operation_love import config as cfg_mod
 from operation_love.private_files import atomic_write_private_bytes, ensure_private_dir
 from operation_love.ranker import make_store
+from tools._debug_frames import debug_frame_path
 
 _ARTIFACT_KEYS = {
     "schema_version", "kind", "completed", "calibration_calibrated_at",
@@ -44,20 +45,10 @@ def _canonical_sha256(value) -> str:
                              ensure_ascii=True).encode("utf-8"))
 
 
-def _debug_frame_path(run_dir: Path, name) -> Path | None:
-    """Return one retained debug frame only when it is a direct child of ``run_dir``."""
-    if not isinstance(name, str) or not name:
-        return None
-    relative = Path(name)
-    if relative.name != name or name in {".", ".."}:
-        return None
-    try:
-        candidate = run_dir / relative
-        if not candidate.is_file() or candidate.resolve().parent != run_dir.resolve():
-            return None
-    except OSError:
-        return None
-    return candidate
+# Shared with the AI-driven verifier, which unlocks the same gate and had drifted to a weaker
+# check; see tools/_debug_frames.py.  Re-bound at module scope so this file's own call sites and
+# the traversal test that names them are unchanged.
+_debug_frame_path = debug_frame_path
 
 
 def _direct_like_resolution(row: dict, run_dir: Path) -> bool:

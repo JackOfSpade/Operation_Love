@@ -171,6 +171,66 @@ def _legacy_hybrid_capture(tmp_path: Path, name: str) -> Path:
     return session
 
 
+def _unsupported_entry_skip_record() -> dict:
+    reason = (
+        "ordinary deck controls were proved, but schema-v3 could not positively confirm the "
+        "entry top (cannot_tell: moved chip row)")
+    return {
+        "action": "skip_profile_without_heart", "ordinal": 1,
+        "attempt_number_for_ordinal": 1, "session_skip_number": 1,
+        "reason_code": "unsupported_entry_layout", "reason_detail": reason,
+        "reason_sha256": _sha(f"unsupported_entry_layout\n{reason}".encode()),
+        "transport": "HingeDriver.dislike",
+        "pre_frame_sha256": _sha(b"unsupported"),
+        "post_frame_sha256": _sha(b"next"),
+        "post_deck_frame_sha256": _sha(b"next"),
+        "pre_scroll_top_state": "cannot_tell",
+        "post_scroll_top_state": "cannot_tell",
+        "post_scroll_top_reason": "next special deck",
+        "post_pass_settle": {
+            "modal_edge_back_used": False, "ordinary_deck_ready": True,
+            "initial_post_pass_frame_sha256": _sha(b"next"),
+            "settled_post_pass_frame_sha256": _sha(b"next"),
+        },
+        "review_checkpoints": None,
+        "predicates": {
+            "pre_action_deck_ready": True, "pre_action_composer_absent": True,
+            "calibration_top_unconfirmed": True,
+            "no_photo_heart_or_send_like_on_current_profile": True,
+            "public_dislike_guard_used": True, "public_action_progress_verified": True,
+            "deck_frame_changed": True, "new_deck_ready": True,
+            "new_profile_composer_absent": True, "new_profile_top_confirmed": False,
+            "new_profile_identity_distinct": False, "identity_comparison_not_claimed": True,
+            "modal_edge_back_used": False,
+        },
+    }
+
+
+def test_review_accepts_bounded_unsupported_entry_skip_without_identity_claim(tmp_path):
+    session = _capture(tmp_path, "unsupported-entry")
+    config = tmp_path / "config.yaml"
+    manifest_path = session / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["skipped_attempts"] = [_unsupported_entry_skip_record()]
+    manifest_path.write_text(json.dumps(manifest))
+
+    assert review.build_review([session], config)["captures"][0]["profile_count"] == 1
+
+
+def test_review_rejects_unsupported_entry_skip_that_claims_distinct_identity(tmp_path):
+    session = _capture(tmp_path, "unsupported-entry-false-identity")
+    config = tmp_path / "config.yaml"
+    manifest_path = session / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    record = _unsupported_entry_skip_record()
+    record["predicates"]["new_profile_identity_distinct"] = True
+    manifest["skipped_attempts"] = [record]
+    manifest_path.write_text(json.dumps(manifest))
+
+    with pytest.raises(review.ReviewRefused, match="unsupported-layout proofs"):
+        review.build_review([session], config)
+
+
 def test_review_is_deterministic_self_hashed_and_binds_exact_capture_and_config(tmp_path):
     session = _capture(tmp_path, "calibration")
     config = tmp_path / "config.yaml"

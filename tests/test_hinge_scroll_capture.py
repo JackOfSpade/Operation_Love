@@ -322,6 +322,13 @@ def test_main_help_exits_cleanly_without_touching_device(monkeypatch):
 
 
 def test_main_end_to_end_single_device_writes_frames_and_manifest(monkeypatch, tmp_path, capsys):
+    # Run from a directory with no config.yaml in it. This tool reads no setting from a config
+    # and its device lock is config-independent (supervisor._android_lock_path), so a capture
+    # must not depend on the repo's live config.yaml being present -- let alone VALIDATING.
+    # Without this chdir the test asserted the opposite by accident: it passed only because
+    # pytest happens to run from a repo root whose config.yaml happens to load, which is
+    # exactly the coupling that made a half-repaired config block this instrument.
+    monkeypatch.chdir(tmp_path)
     out_dir = tmp_path / "scroll_out"
     monkeypatch.setattr(
         hsc.subprocess, "run",
@@ -346,7 +353,12 @@ def test_main_end_to_end_single_device_writes_frames_and_manifest(monkeypatch, t
     assert "LOCAL-ONLY" in out or "local-only" in out.lower()
 
 
-def test_main_exits_nonzero_when_no_device_connected(monkeypatch, tmp_path):
+def test_main_exits_nonzero_when_no_device_connected(monkeypatch, tmp_path, capsys):
+    # Isolated from the repo's config.yaml for the reason spelled out in the end-to-end test
+    # above: "no device connected" must be the only thing that can fail this run. The message
+    # is asserted, not just the exit code -- a bare `code != 0` cannot tell this refusal apart
+    # from the tool tripping over something else on its way to the phone.
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(
         hsc.subprocess, "run",
         lambda argv, **kw: subprocess.CompletedProcess(argv, 0, stdout=_devices_output(), stderr=b""))
@@ -354,6 +366,109 @@ def test_main_exits_nonzero_when_no_device_connected(monkeypatch, tmp_path):
     with pytest.raises(SystemExit) as exc:
         hsc.main(["--out", str(tmp_path / "out")])
     assert exc.value.code != 0
+    assert "no ADB device connected" in capsys.readouterr().err
+
+
+# --- the device lock (tools/_devicelock.py) ------------------------------------------------
+
+def _lockable_config(tmp_path) -> str:
+    path = tmp_path / "config.yaml"
+    path.write_text("enabled_apps: [hinge]\napps: {hinge: {serial: synthetic-pixel}}\n")
+    return str(path)
+
+
+class _LockProbingAdb(FakeAdb):
+    """A FakeAdb that also records, from INSIDE the capture loop, whether the device lock is
+    held while frames are being taken. Probing from inside is the whole point: a lock acquired
+    and released around main() would satisfy a naive before/after assertion and protect
+    nothing (tests/test_tool_device_lock.py checks its own command the same way). The second
+    handle contends with the first even within one process -- flock ownership is per open file
+    description, not per process."""
+
+    def __init__(self, frames):
+        super().__init__(frames)
+        self.lock_held_during_capture: bool | None = None
+
+    def screencap(self) -> bytes:
+        if self.lock_held_during_capture is None:
+            from operation_love import supervisor as sup
+            second = sup._AndroidDeviceLock(sup._android_lock_path(None, "hinge"))
+            try:
+                second.acquire()
+            except RuntimeError:
+                self.lock_held_during_capture = True
+            else:
+                second.release()
+                self.lock_held_during_capture = False
+        return super().screencap()
+
+
+def test_a_half_repaired_explicit_config_warns_but_still_captures_under_the_lock(
+        monkeypatch, tmp_path, capsys):
+    """A config error the LOCK never consults must not disarm the calibration instrument.
+
+    main() used to load --config first and exit non-zero on any failure, which made a fully
+    validating production config a precondition for a read-only screencap loop -- and the owner
+    reaches for that loop precisely WHEN the config/calibration is mid-repair, so an unrelated
+    `opener.max_chars` error blocked the one tool that could fix what was being repaired.
+
+    What actually mattered about that refusal was that the capture never runs UNLOCKED, and
+    that is now structural rather than conditional: the lock is taken config-free (one file per
+    user, supervisor._android_lock_path ignores the config), so no config-shaped failure can
+    lose it. Hence both halves are asserted here -- the capture proceeds, AND it is locked.
+    """
+    from operation_love import supervisor as sup
+
+    monkeypatch.setattr(sup, "_ANDROID_LOCK_ROOT", tmp_path / "locks")
+    monkeypatch.chdir(tmp_path)
+    half_repaired = tmp_path / "half-repaired.yaml"
+    # Loads as YAML, fails validation on one unrelated key -- the exact shape of a config
+    # caught mid-edit, and the reproduction that showed this tool refusing to run.
+    half_repaired.write_text("enabled_apps: [hinge]\napps: {hinge: {serial: synthetic-pixel}}\n"
+                             "opener: {max_chars: 200}\n")
+    monkeypatch.setattr(
+        hsc.subprocess, "run",
+        lambda argv, **kw: subprocess.CompletedProcess(
+            argv, 0, stdout=_devices_output(("SER1", "device")), stderr=b""))
+    fake = _LockProbingAdb([b"f1", b"f2"])
+    monkeypatch.setattr(hsc, "Adb", lambda serial: fake)
+    out_dir = tmp_path / "out"
+
+    hsc.main(["--config", str(half_repaired), "--out", str(out_dir),
+              "--interval", "0", "--seconds", "1000"])
+
+    err = capsys.readouterr().err
+    # Said out loud (the operator expected that file to matter) but not fatal.
+    assert "WARNING: could not load" in err and "max_chars" in err
+    assert "ERROR: could not load" not in err
+    assert json.loads((out_dir / "manifest.json").read_text())["frame_count"] == 2
+    assert fake.lock_held_during_capture is True, \
+        "the capture ran WITHOUT the device lock a production run takes"
+
+
+def test_main_yields_the_phone_to_a_run_that_already_holds_the_device_lock(monkeypatch,
+                                                                          tmp_path, capsys):
+    """A 120s capture beside a live hub run is exactly the collision the lock exists to end
+    (run a01fbcd1e9a0's false Pass was two drivers on one phone), so contention must exit
+    without taking a single screencap.
+
+    The holder here takes the lock WITH a config, the way a production run does, while the tool
+    takes it with none -- so this also pins that the config-free path lands on the same file.
+    """
+    from operation_love import supervisor as sup
+
+    monkeypatch.setattr(sup, "_ANDROID_LOCK_ROOT", tmp_path / "locks")
+    monkeypatch.setattr(hsc, "_resolve_serial",
+                        lambda *a, **k: pytest.fail("captured while another run held the phone"))
+    config_path = _lockable_config(tmp_path)
+
+    with sup.exclusive_android_device(hsc.cfg_mod.load(config_path), "hinge"):
+        with pytest.raises(SystemExit) as exc:
+            hsc.main(["--out", str(tmp_path / "out")])
+
+    assert exc.value.code == 1
+    assert "already in use by another Operation Love run" in capsys.readouterr().err
+    assert not (tmp_path / "out").exists()
 
 
 # --- the hard constraint, enforced mechanically --------------------------------------------

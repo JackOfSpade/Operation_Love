@@ -883,6 +883,35 @@ class OpenerService:
                   "original opener.")
             return result, collision, False
 
+        # ITEM BINDING OUTRANKS THE OPENING WORDS. This guard is about the first few WORDS and
+        # nothing else, but the draw it hands back also carries the item number the worker will
+        # target. A second draw whose item_index came back ABSENT (opener.py collapses any
+        # out-of-range/odd number to ABSENT rather than raising, exactly as _parse documents),
+        # or that counts a different index_space than the draft being discarded, would trade a
+        # sendable AND targetable opener for one worker.py can only answer by setting
+        # stop_reason and stop_event -- i.e. the guard would stop the run over a stylistic
+        # near-miss through a layer below it, which is precisely what invariant 2 above forbids.
+        # Keeping the first draft keeps its TEXT and its INDEX together, so this is the opposite
+        # of substituting the liked item. Same shape as the empty-text branch above: record the
+        # discarded second draw's spend here, and leave the survivor's own recording to
+        # maybe_opener's normal post-guard site.
+        result_index = getattr(result, "item_index", ITEM_INDEX_ABSENT)
+        second_index = getattr(second, "item_index", ITEM_INDEX_ABSENT)
+        if result_index != ITEM_INDEX_ABSENT and (
+                second_index == ITEM_INDEX_ABSENT
+                or getattr(second, "index_space", "") != getattr(result, "index_space", "")):
+            self._record_billed_draw(run_id, getattr(second, "model", "") or "",
+                                     getattr(second, "usage", None),
+                                     note="entropy regeneration lost its item binding")
+            print("Opener: the entropy regeneration came back without the item binding the "
+                  "original draft had (item_index "
+                  f"{result_index} in {getattr(result, 'index_space', '') or 'an unstated space'}"
+                  f" -> {second_index} in "
+                  f"{getattr(second, 'index_space', '') or 'an unstated space'}); discarding "
+                  "the redraw and keeping the original opener, which was already good enough "
+                  "to send and still knows which item it is about.")
+            return result, collision, False
+
         # The first draft is being thrown away, but it was BILLED. Record it here so the money
         # is accounted for exactly once; maybe_opener records the surviving draw itself.
         self._record_billed_draw(run_id, getattr(result, "model", "") or "",
@@ -1645,10 +1674,6 @@ class OpenerService:
                       "Logged only for offline calibration, never a rejection.")
             pick._staged_record = None
             return True
-
-    def commit_advisory_opener(self, pick: OpenerPick, **lineage) -> bool:
-        """Compatibility alias for Observe callers; commit semantics are now generic."""
-        return self.commit_opener(pick, **lineage)
 
     def recent_openers_snapshot(self) -> list[dict]:
         """A copy of the most recent committed opener records -- see recent_openers'

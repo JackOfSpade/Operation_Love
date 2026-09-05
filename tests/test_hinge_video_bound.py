@@ -154,6 +154,27 @@ def test_module_source_contains_no_injection_primitive():
     assert source.count('"shell"') == 1
 
 
+def _dumpsys(stdout: bytes, *, returncode: int = 0):
+    return types.SimpleNamespace(
+        run=lambda *_a, **_k: types.SimpleNamespace(returncode=returncode, stdout=stdout),
+        SubprocessError=Exception)
+
+
+def test_the_build_string_is_parsed_with_the_anchored_end_of_line_match(monkeypatch):
+    """The 2026-09-02 consolidation's parse, in the third copy of it that was missed.
+
+    A bare `split("=", 1)[1].strip()` accepts anything after the value on the same dumpsys line,
+    and this string is written verbatim into `bound.json`'s `hinge_version_name`, which config
+    validation then binds the whole still-photo bound to. Refusing beats binding to a guess.
+    """
+    monkeypatch.setattr(bound, "subprocess", _dumpsys(b"    versionName=10.2.0\n"))
+    assert bound._device_version_name("PIXEL7A", "adb", "co.hinge.app") == "10.2.0"
+    monkeypatch.setattr(bound, "subprocess", _dumpsys(b"    versionName=10.2.0 (12345)\n"))
+    assert bound._device_version_name("PIXEL7A", "adb", "co.hinge.app") is None
+    monkeypatch.setattr(bound, "subprocess", _dumpsys(b"versionName=\n"))
+    assert bound._device_version_name("PIXEL7A", "adb", "co.hinge.app") is None
+
+
 def test_policy_thresholds_come_from_targeting_policy():
     for name, value in (
             ("STILL_PHOTO_BOUND_MIN_VIDEO_CARDS", bound.MIN_VIDEO_CARDS),
@@ -265,13 +286,27 @@ def test_hazard_value_spans_its_range_and_never_leaves_it():
 # =====================================================================================
 
 class _Clock:
-    def __init__(self, step: float = 0.5):
+    """A fake clock whose SLEEPS ACTUALLY PASS TIME.
+
+    `run_capture` now records on absolute deadlines and refuses a card whose burst did not span
+    its drawn window, so a double whose sleeps are free would make every burst finish short and
+    every card be refused -- a property of the double, not of the tool.  `step` is the small cost
+    of reading the clock itself, which keeps stamps strictly increasing like a real monotonic one.
+    """
+
+    def __init__(self, step: float = 0.001):
         self.now, self.step = 0.0, step
+        self.slept: list[float] = []
 
     def __call__(self) -> float:
         value = self.now
         self.now += self.step
         return value
+
+    def sleep(self, seconds: float) -> None:
+        assert seconds >= 0, "a scheduler must never ask to sleep backwards"
+        self.slept.append(float(seconds))
+        self.now += float(seconds)
 
 
 def test_record_burst_stamps_monotonic_times_for_every_planned_frame():
@@ -311,17 +346,26 @@ def test_prompt_label_treats_eof_as_done():
 # capture: the burst closes before the prompt, and the matcher never labels
 # =====================================================================================
 
-def _run_capture(repo, monkeypatch, *, answers, frames, profiles=2):
+def _run_capture(repo, monkeypatch, *, answers, frames, profiles=2, clock=None,
+                 capture_cost=0.0, print_fn=None):
     monkeypatch.setattr(bound, "_ignored_by_git", lambda path: True)
     monkeypatch.setattr(bound, "_device_version_name", lambda *a, **k: "10.0.1")
     out = bound._private_out_dir(str(repo / "ops" / "calibration" / "cap"), prefix="videobound")
     supply = iter(frames)
     typed = iter(answers)
+    clock = clock or _Clock()
+
+    def _capture():
+        # What a screencap over `adb exec-out` really costs, charged to the same clock the
+        # recorder schedules against. Free reads would hide every scheduling defect there is.
+        clock.now += capture_cost
+        return next(supply)
+
     return out, bound.run_capture(
         out_dir=out, profiles=profiles, serial="PIXEL7A", adb_path="adb", band=_BAND,
-        package="co.hinge.app", config_sha256="cfg", capture_fn=lambda: next(supply),
-        input_fn=lambda _p: next(typed), print_fn=lambda *_a: None,
-        sleep_fn=lambda _s: None, clock=_Clock(), rnd=_Rnd())
+        package="co.hinge.app", config_sha256="cfg", capture_fn=_capture,
+        input_fn=lambda _p: next(typed), print_fn=print_fn or (lambda *_a: None),
+        sleep_fn=clock.sleep, clock=clock, rnd=_Rnd())
 
 
 def test_capture_labels_strictly_after_the_burst_and_persists_every_frame(repo, monkeypatch):
@@ -369,11 +413,12 @@ def test_capture_eof_at_the_ready_prompt_writes_an_incomplete_manifest(repo, mon
     monkeypatch.setattr(bound, "_ignored_by_git", lambda path: True)
     monkeypatch.setattr(bound, "_device_version_name", lambda *a, **k: "10.0.1")
     out = bound._private_out_dir(str(repo / "ops" / "calibration" / "cap"), prefix="videobound")
+    clock = _Clock()
     manifest = bound.run_capture(
         out_dir=out, profiles=2, serial="PIXEL7A", adb_path="adb", band=_BAND,
         package="co.hinge.app", config_sha256=None, capture_fn=lambda: _png(40),
-        input_fn=_eof, print_fn=lambda *_a: None, sleep_fn=lambda _s: None,
-        clock=_Clock(), rnd=_Rnd())
+        input_fn=_eof, print_fn=lambda *_a: None, sleep_fn=clock.sleep,
+        clock=clock, rnd=_Rnd())
     assert manifest["completed"] is False and manifest["cards"] == []
     with pytest.raises(bound.VideoBoundRefused, match="not completed"):
         bound.measure(out)
@@ -393,16 +438,72 @@ def test_capture_keeps_what_it_recorded_when_the_device_drops(repo, monkeypatch)
             raise bound.VideoBoundRefused("screencap did not return a PNG frame") from None
 
     typed = iter(["", "video", "", "photo"])
+    clock = _Clock()
     with pytest.raises(bound.VideoBoundRefused, match="screencap"):
         bound.run_capture(
             out_dir=out, profiles=4, serial="PIXEL7A", adb_path="adb", band=_BAND,
             package="co.hinge.app", config_sha256=None, capture_fn=_capture,
             input_fn=lambda _p: next(typed), print_fn=lambda *_a: None,
-            sleep_fn=lambda _s: None, clock=_Clock(), rnd=_Rnd())
+            sleep_fn=clock.sleep, clock=clock, rnd=_Rnd())
     manifest = json.loads((out / "manifest.json").read_text())
     assert manifest["completed"] is False
     assert manifest["ended"] == "aborted_VideoBoundRefused"
     assert [card["label"] for card in manifest["cards"]] == ["video"]
+
+
+def test_capture_schedules_the_burst_on_absolute_deadlines_like_the_automated_sibling(
+        repo, monkeypatch):
+    """The owner-labeled harness records with `record_spanning_burst`, not `record_burst`.
+
+    `record_burst` sizes each sleep from the PREVIOUS frame's stamp, so a screencap that outruns
+    its own gap pushes every later frame back by the excess and never gets the time back: here
+    the first gap is 0.5s, a read costs 3.0s, and that recorder closes the burst 2.5s past the
+    window it drew.  Absolute deadlines spend the following long gap catching up instead, so the
+    recorded span is the window that was drawn rather than a measurement of this phone's speed.
+    """
+    plan = bound.BurstPlan(frames=4, window_s=12.0, gaps_s=(0.5, 8.0, 3.5))
+    monkeypatch.setattr(bound, "plan_burst", lambda _rnd: plan)
+    _out, manifest = _run_capture(
+        repo, monkeypatch, answers=["", "video", "done"], capture_cost=3.0,
+        frames=[_png(40), _png(40)] + _moving_frames(20), profiles=3)
+    card = manifest["cards"][0]
+    span = card["frames"][-1]["t"] - card["frames"][0]["t"]
+    assert span == pytest.approx(plan.window_s, abs=bound.BURST_SPAN_TOLERANCE_S)
+    assert manifest["refused_short_bursts"] == 0
+
+
+def test_capture_refuses_a_card_whose_burst_did_not_span_its_window_and_keeps_the_sitting(
+        repo, monkeypatch):
+    """A compressed burst is dropped at the card, and the owner's sitting carries on.
+
+    The automated sibling halts the whole campaign here, because nobody is standing at the phone
+    and every profile it spends is a real Pass.  This harness has the owner in front of it and an
+    hour of hand labeling behind it, so the price of a halt is the wrong one: refuse the card,
+    count it in the manifest, and prompt for the next one.  What must NEVER happen is the third
+    option -- recording it -- because `measure` reads the span as "how long this was watched for".
+    """
+    real = bound.record_spanning_burst
+    recorded = {"bursts": 0}
+
+    def _first_burst_compresses(capture_fn, plan, *, sleep_fn, clock):
+        recorded["bursts"] += 1
+        if recorded["bursts"] == 1:
+            return [(capture_fn(), 0.1 * index) for index in range(plan.frames)]
+        return real(capture_fn, plan, sleep_fn=sleep_fn, clock=clock)
+
+    monkeypatch.setattr(bound, "record_spanning_burst", _first_burst_compresses)
+    lines: list[str] = []
+    # Spare answers: a refused card asks for no label at all, so a run that wrongly RECORDS the
+    # compressed burst must fail on what the manifest holds rather than by running out of input.
+    _out, manifest = _run_capture(repo, monkeypatch,
+                                  answers=["", "", "photo", "", "photo", "", "photo"],
+                                  frames=[_png(40)] * 64, profiles=2,
+                                  print_fn=lines.append)
+    assert recorded["bursts"] == 2, "the sitting must have gone on to a second card"
+    assert [card["card_id"] for card in manifest["cards"]] == ["card_0002"]
+    assert manifest["refused_short_bursts"] == 1
+    assert manifest["completed"] is True
+    assert any("REFUSED card_0001" in line for line in lines)
 
 
 # =====================================================================================
@@ -497,6 +598,41 @@ def test_measure_refuses_a_window_the_campaign_never_observed(repo):
     cards = _passing_cards(videos=bound.MIN_VIDEO_CARDS - 1)
     cards.append(_card("video", _partly_still_frames(), times=long_times))
     with pytest.raises(bound.VideoBoundRefused, match="exceeds the"):
+        bound.measure(_write_campaign(repo, cards))
+
+
+def test_measure_refuses_a_card_whose_burst_fell_short_of_the_window_it_was_drawn_for(repo):
+    """The 2026-08-21 shape, refused wherever it came from: a 1s look at a 12s window.
+
+    Both harnesses now check this at capture time, but a corpus already on disk was captured
+    before they did, and `measure` is the only thing that reads it. `burst_span_s` is what
+    `observed_window_s` and `accepted()` are computed from, so a compressed burst reaching them
+    licenses a dwell window nothing was ever watched for.
+    """
+    cards = _passing_cards(videos=bound.MIN_VIDEO_CARDS - 1)
+    cards.append(_card("video", _partly_still_frames(), times=(0.0, 0.3, 0.6, 1.0)))
+    with pytest.raises(bound.VideoBoundRefused, match="did not span its window"):
+        bound.measure(_write_campaign(repo, cards))
+
+
+def test_measure_refuses_a_card_whose_frames_were_stamped_on_two_clocks(repo):
+    """The other side of the same window: a span far past what the card was ever scheduled for.
+
+    This is what an anchor stamped on one clock and a burst stamped on another produces, and it
+    is indistinguishable from a genuinely long dwell unless the card's own drawn window is
+    consulted -- which is why the check lives beside `burst_span_s` rather than at a recorder.
+    """
+    cards = _passing_cards(videos=bound.MIN_VIDEO_CARDS - 1)
+    cards.append(_card("video", _partly_still_frames(), times=(0.0, 40.0, 44.0, 48.0)))
+    with pytest.raises(bound.VideoBoundRefused, match="not one clock's measurement"):
+        bound.measure(_write_campaign(repo, cards))
+
+
+def test_measure_refuses_a_card_that_does_not_say_what_window_it_was_drawn_for(repo):
+    """Without the drawn window there is nothing to check the measured span against."""
+    cards = _passing_cards(videos=bound.MIN_VIDEO_CARDS - 1)
+    cards.append(_card("video", _moving_frames(), planned_window_s=None))
+    with pytest.raises(bound.VideoBoundRefused, match="no usable planned_window_s"):
         bound.measure(_write_campaign(repo, cards))
 
 
@@ -701,10 +837,13 @@ def _hold(repo, monkeypatch, frames, *, seconds=4.0):
                                  prefix="videobound_hold")
     supply = iter(frames)
     lines: list[str] = []
+    # A COARSE clock and free sleeps, deliberately: the hold test paces itself off the clock it
+    # is given rather than off a schedule, so a 0.5s-per-read double spends the 4s window in
+    # exactly three reads and the frame counts below are arithmetic rather than wall-clock luck.
     report = bound.run_hold_test(
         out_dir=out, seconds=seconds, interval=0.5, band=_BAND, serial="PIXEL7A",
         adb_path="adb", capture_fn=lambda: next(supply), print_fn=lines.append,
-        sleep_fn=lambda _s: None, clock=_Clock())
+        sleep_fn=lambda _s: None, clock=_Clock(step=0.5))
     return out, report, lines
 
 
@@ -796,3 +935,66 @@ def test_resolve_serial_refuses_a_serial_that_is_not_ready(monkeypatch):
 def test_device_version_name_refuses_a_bogus_package():
     with pytest.raises(bound.VideoBoundRefused, match="Android package id"):
         bound._device_version_name("A", "adb", "co.hinge.app; rm -rf /")
+
+
+# =====================================================================================
+# the device lock (tools/_devicelock.py) survives a config this tool never loads
+# =====================================================================================
+
+def _half_repaired_config(root: Path) -> Path:
+    """Valid YAML, rejected by ``operation_love.config.load``: a config caught mid-edit.
+
+    ``opener.max_chars`` is the shape the sibling instrument's regression uses too (see
+    tests/test_hinge_scroll_capture.py) -- a key this tool never reads, in a section the device
+    lock never consults. The rejection is ASSERTED rather than assumed, because the whole hazard
+    below only exists for configs that parse but do not validate; if this file ever started
+    loading cleanly the test would pass vacuously.
+    """
+    from operation_love import config as config_mod
+
+    path = root / "half-repaired.yaml"
+    path.write_text("enabled_apps: [hinge]\napps: {hinge: {serial: PIXEL7A}}\n"
+                    "opener: {max_chars: -5}\n")
+    with pytest.raises(Exception):
+        config_mod.load(str(path))
+    return path
+
+
+@pytest.mark.parametrize("argv", [
+    ["capture", "--profiles", "1"],
+    ["hold-test", "--seconds", "1", "--interval", "0.5"],
+])
+def test_a_config_that_will_not_validate_never_buys_an_unlocked_campaign(
+        argv, repo, monkeypatch):
+    """Both device subcommands must yield the phone to a run holding the lock -- config or not.
+
+    ``holding_the_device`` has a documented escape hatch: a config path that will not load
+    yields an UN-HELD context, on the assumption the caller is about to load the same file and
+    report the problem in its own words. This tool never calls ``config.load`` at all --
+    ``_load_config_mapping`` reads plain YAML on purpose, so the campaign can run BEFORE the key
+    it exists to produce is present -- so passing it ``args.config`` armed that hatch for no
+    benefit: an unrelated ``opener.max_chars`` error would have run the ENTIRE multi-minute
+    campaign UNLOCKED and silently, which is exactly the two-drivers-on-one-phone collision
+    (run ``a01fbcd1e9a0``'s false Pass) the lock was added to end.
+
+    The holder here takes the lock WITH a config, the way a production run does, while the tool
+    takes it with none -- so this also pins that the config-free path lands on the same file.
+    """
+    from operation_love import config as config_mod
+    from operation_love import supervisor as sup
+
+    monkeypatch.setattr(sup, "_ANDROID_LOCK_ROOT", repo / "locks")
+    # The first thing either subcommand does inside the lock: if the campaign runs at all, it
+    # reaches here, so failing loudly distinguishes "refused" from "ran unlocked".
+    monkeypatch.setattr(bound, "_resolve_serial",
+                        lambda *a, **k: pytest.fail("the campaign ran while another run held "
+                                                    "the phone"))
+    half_repaired = _half_repaired_config(repo)
+    good = _config(repo, {"enabled_apps": ["hinge"], "apps": {"hinge": {"serial": "PIXEL7A"}}})
+
+    with sup.exclusive_android_device(config_mod.load(str(good)), "hinge"):
+        with pytest.raises(RuntimeError, match="already in use by another Operation Love run"):
+            bound.main(argv + ["--config", str(half_repaired),
+                               "--out", str(repo / "ops" / "calibration" / "vb")])
+
+    assert not (repo / "ops" / "calibration" / "vb").exists()

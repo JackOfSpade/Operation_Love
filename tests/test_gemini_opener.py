@@ -4,6 +4,7 @@ Every request uses an injected transport: these tests never need an API key, SDK
 network connection.
 """
 import base64
+import http.client
 import io
 import json
 import random
@@ -332,16 +333,21 @@ def test_response_schema_orders_referenced_and_angle_before_the_opener():
     assert "never infer friend, partner, or family from proximity" in item_description
     assert "may name a visible detail as setup" in opener_description
     assert "final point must do something conversational beyond describing" in opener_description
-    # With minimal thinking, angle is the only place to plan the relationship between beats
-    # before emitting the opener. Keep the premise-consistency check in that scratch field.
+    # With minimal thinking, angle is the only place to check that a guess adds information and
+    # remains unconfirmed before emitting the opener.
     assert "a guess is optional" in angle_description
     assert "least speculative interpretation" in angle_description
     assert "do not invent a motive, purpose, cause, or unseen circumstance" in angle_description
     assert "must respect any header, caption, or prompt attached to the photo" in angle_description
     assert "defines the photo's intended context" in angle_description
-    assert "accepts and advances that claim" in angle_description
-    assert "verifying it, contradicting it" in angle_description
-    assert "abandoning it for a nearby generic topic" in angle_description
+    assert "conclusion of a guess must not itself be directly visible or stated" in angle_description
+    assert "visible and stated facts may be clues, not guessed conclusions" in angle_description
+    assert "leaves the conclusion unconfirmed" in angle_description
+    assert "gives her room to confirm or correct it" in angle_description
+    assert "must not assume the guess is true" in angle_description
+    assert "only makes sense if it is true" in angle_description
+    assert "a guess must remain unconfirmed until she replies" in opener_description
+    assert "no later statement or question may assume it is correct" in opener_description
     assert "every visible detail named in the opener" in angle_description
     assert "parallel, contrasting answers" in angle_description
     assert "never unrelated dimensions joined by 'or'" in angle_description
@@ -440,6 +446,35 @@ def test_item_description_is_mapped_from_the_response_and_degrades_to_empty_when
     assert result.item_description == ""
     assert result.opener == "That mug has a story"     # the opener itself is unaffected
     assert result.item_index == 2                       # and the pick still survives
+
+
+@pytest.mark.parametrize("raw", [None, "", ["a", "b"], 42])
+def test_referenced_is_read_as_defensively_as_angle_and_never_becomes_the_string_None(raw):
+    """`referenced` must degrade exactly the way `angle` and `item_description` do, for the
+    reason this file documents at _SCHEMA: "required" is a generation HINT the API does not
+    enforce on the response, and Gemini does return nulls for these fields in practice.
+
+    Without the `or ""` guard, a null made this field the literal three-character string
+    "None" -- persisted verbatim into the `openers.referenced` analytics column and rendered
+    to the operator as "about: None", a confident and wrong claim about what the opener is
+    grounded in, where "" honestly says the model claimed nothing. The same raw value is put
+    in BOTH fields and the two are compared, so this pins the "read as defensively as angle"
+    contract itself rather than one hardcoded repr per odd type."""
+    body = {"item_index": 1, "referenced": raw, "angle": raw,
+            "opener": "That mug has a story"}
+    transport = _Transport([(200, {
+        "candidates": [{"content": {"parts": [{"text": json.dumps(body)}]}}],
+        "usageMetadata": {"promptTokenCount": 11, "candidatesTokenCount": 7},
+    })])
+
+    result = _opener(transport).generate(Profile(photos=[b"a"]), style="s")
+
+    assert result.referenced == result.angle
+    assert result.referenced != "None"
+    if not raw:                                         # null and empty both mean "no claim"
+        assert result.referenced == ""
+    assert result.opener == "That mug has a story"     # the opener itself is unaffected
+    assert result.item_index == 1                       # and the pick still survives
 
 
 def test_api_key_comes_from_injected_environment():
@@ -746,6 +781,40 @@ def test_whole_cascade_5xx_reports_a_transient_stop_reason_not_a_quota_one():
     assert "midnight Pacific" not in reason and "per-day" not in reason
 
 
+@pytest.mark.parametrize("http_code", [429, 503])
+def test_http_envelope_status_controls_retry_when_body_code_disagrees(http_code):
+    """The transport's HTTP status is authoritative; a proxy-generated or malformed JSON
+    body must not turn a retryable capacity/server response into a fatal request error."""
+    mismatched = (http_code, {"error": {
+        "code": 400, "status": "INVALID_ARGUMENT", "message": "stale inner code",
+    }})
+    transport = _Transport([mismatched, (200, _success())])
+
+    result = _opener(transport, models=("gemini-first", "gemini-second")).generate(
+        Profile(), style="s")
+
+    assert result.model == "gemini-second"
+    assert _model_calls(transport) == ["gemini-first", "gemini-second"]
+
+
+def test_fatal_http_envelope_status_is_not_made_retryable_by_body_code():
+    """The inverse mismatch is safety-relevant: a real 400 must still surface rather than
+    being hidden by a body's erroneous 503 and retried across the model cascade."""
+    transport = _Transport([
+        (400, {"error": {
+            "code": 503, "status": "UNAVAILABLE", "message": "bad request",
+        }}),
+        (200, _success()),
+    ])
+
+    with pytest.raises(GeminiAPIError) as exc_info:
+        _opener(transport, models=("gemini-first", "gemini-second")).generate(
+            Profile(), style="s")
+
+    assert exc_info.value.http_code == 400
+    assert _model_calls(transport) == ["gemini-first"]
+
+
 # ---------------------------------------------------------------------------------------
 # Transport-level failures (socket.timeout, urllib.error.URLError, or any other OSError the
 # transport raises instead of returning) -- these never reach _stdlib_gemini_transport's own
@@ -811,6 +880,22 @@ def test_transport_url_error_cascades_to_the_next_model(capsys):
     assert "URLError" in output
 
 
+def test_truncated_http_response_cascades_to_the_next_model(capsys):
+    """http.client.IncompleteRead is a transport/protocol failure but not an OSError. A
+    truncated first response must not abandon the healthy remainder of the cascade."""
+    transport = _MixedTransport([
+        http.client.IncompleteRead(b'{"candidates":', 100),
+        (200, _success()),
+    ])
+
+    result = _opener(transport, models=("gemini-first", "gemini-second")).generate(
+        Profile(), style="s")
+
+    assert result.model == "gemini-second"
+    assert _model_calls(transport) == ["gemini-first", "gemini-second"]
+    assert "IncompleteRead" in capsys.readouterr().out
+
+
 def test_transport_failure_does_not_blacklist_model_retried_first_next_profile():
     """A transport failure is transient (the same connection could well succeed a second
     later), so unlike a per-day 429 or a 404 it must NOT permanently retire the model: the
@@ -844,9 +929,9 @@ def test_all_models_transport_failure_raises_transient_capacity_exhausted():
 
 def test_transport_type_error_propagates_unchanged():
     """A TypeError from a broken transport implementation is a programming bug, not a flaky
-    network -- generate() catches OSError specifically, not bare Exception, so a TypeError
-    must propagate straight out of generate() unchanged rather than being silently retried
-    across every configured model, which would hide the bug instead of surfacing it."""
+    network -- generate() catches the narrow OSError/HTTPException transport families, not
+    bare Exception, so a TypeError must propagate straight out of generate() unchanged rather
+    than being silently retried across every configured model, which would hide the bug."""
     def broken_transport(url, payload, headers, timeout, *, method="POST"):
         raise TypeError("transport is broken")
 
@@ -2255,6 +2340,80 @@ def test_skip_models_safety_valve_ignores_the_set_when_every_model_is_skipped():
     assert _model_calls(transport) == ["gemini-first"]
 
 
+def test_skip_models_safety_valve_counts_models_retired_on_an_EARLIER_call(capsys):
+    """The valve asks "is anything ELIGIBLE", not "is anything unskipped", and the difference
+    only shows up across calls. gemini-b and gemini-c are retired by per-day 429s on call 1
+    (which gemini-a then serves). Call 2 skips gemini-a because it produced an unusable
+    response for this profile -- so the skip set leaves nothing eligible even though two of
+    the three models are not in it.
+
+    Pre-fix the valve tested only skip-set membership, so it did not engage: the cascade
+    stepped over both retired models, never issued a single request, and raised
+    GeminiCapacityExhausted naming gemini-b and gemini-c -- models the caller never asked to
+    avoid -- which service.py turns into a stop plus "wait until midnight Pacific", while
+    gemini-a sat healthy and untried. The valve's own docstring says its whole job is to not
+    leave the call with nothing to try."""
+    day_exhausted = _quota_exhausted(quota_id=_PER_DAY_QUOTA_ID)
+    transport = _Transport([day_exhausted, day_exhausted, (200, _success()),
+                            (200, _success())])
+    opener = _opener(transport, models=("gemini-b", "gemini-c", "gemini-a"))
+
+    first = opener.generate(Profile(bio="p1"), style="s")
+    assert first.model == "gemini-a"
+    assert set(opener._unavailable_models) == {"gemini-b", "gemini-c"}
+    capsys.readouterr()
+
+    second = opener.generate(Profile(bio="p1"), style="s",
+                             skip_models=frozenset({"gemini-a"}))
+
+    # The valve engaged: gemini-a is re-asked rather than the call raising over two models it
+    # was never told to skip. The retired pair stays retired -- the valve only ever un-skips.
+    assert second.model == "gemini-a"
+    assert _model_calls(transport) == ["gemini-b", "gemini-c", "gemini-a", "gemini-a"]
+    assert set(opener._unavailable_models) == {"gemini-b", "gemini-c"}
+    assert "skipping gemini-a" not in capsys.readouterr().out
+
+
+def test_skip_models_safety_valve_engages_when_the_cascade_retires_MID_CALL(capsys):
+    """The valve's eligibility question expires WHILE the cascade runs, so asking it only at
+    method entry does not close the valve's own failure case.
+
+    Same three models as the test above, but nothing is retired before this call starts:
+    gemini-b and gemini-c are healthy at entry, so the entry-time snapshot sees them as
+    eligible and the skip set is honoured. They then both 429 per-day inside this very call.
+    By the time gemini-a's slot comes up, the entry-time answer is stale and the skip set is
+    once again leaving the call with nothing to try.
+
+    Pre-fix (adversarial review, verified against the live API) the loop honoured the stale
+    snapshot: gemini-a was skipped, never requested, and the call raised
+    GeminiCapacityExhausted naming only gemini-b and gemini-c -- models the caller never asked
+    to avoid -- which service.py escalates into a run stop plus "wait until midnight Pacific",
+    while gemini-a sat healthy and untried."""
+    day_exhausted = _quota_exhausted(quota_id=_PER_DAY_QUOTA_ID)
+    transport = _Transport([day_exhausted, day_exhausted, (200, _success()),
+                            (200, _success())])
+    opener = _opener(transport, models=("gemini-b", "gemini-c", "gemini-a"))
+
+    result = opener.generate(Profile(bio="p1"), style="s",
+                             skip_models=frozenset({"gemini-a"}))
+
+    # The valve engaged at the point of use: gemini-a is re-asked and SERVES the call.
+    assert result.model == "gemini-a"
+    assert _model_calls(transport) == ["gemini-b", "gemini-c", "gemini-a"]
+    output = capsys.readouterr().out
+    assert "skipping gemini-a" not in output      # never honoured, so never announced as skipped
+    assert "no model after gemini-a is still eligible" in output   # the valve's own message
+    assert "test-key" not in output
+
+    # The valve only ever UN-SKIPS: the pair retired mid-call stays retired for the next call,
+    # which therefore lands on gemini-a again rather than re-requesting either of them.
+    assert set(opener._unavailable_models) == {"gemini-b", "gemini-c"}
+    nxt = opener.generate(Profile(bio="p2"), style="s")
+    assert nxt.model == "gemini-a"
+    assert _model_calls(transport) == ["gemini-b", "gemini-c", "gemini-a", "gemini-a"]
+    assert set(opener._unavailable_models) == {"gemini-b", "gemini-c"}
+
+
 def test_skip_models_default_is_empty_and_does_not_change_existing_behavior():
     """Sanity pin: omitting skip_models entirely (every pre-existing call in this file) must
     behave exactly as before -- the cascade tries every configured model in order."""
@@ -2266,25 +2425,186 @@ def test_skip_models_default_is_empty_and_does_not_change_existing_behavior():
 
 
 def test_skip_models_combines_with_a_capacity_cascade():
-    """skip_models and the ordinary per-day/404/transient cascade logic must compose: a
-    skipped model contributes nothing to `scopes` (it was never tried this call), while a
-    genuinely exhausted model still does."""
+    """skip_models and the ordinary per-day/404/transient cascade logic must compose: the skip
+    genuinely DEPRIORITIZES gemini-third rather than merely deleting it from the cascade.
+
+    gemini-fourth exists so the skip is genuinely honoured rather than un-skipped at the point
+    of use: it is still eligible when gemini-third's slot comes up, so the forward-looking valve
+    (which fires only when NOTHING is left ahead -- see the mid-call valve test above) correctly
+    stays out of the way. Without it this fixture would be testing that valve instead of the
+    skip.
+
+    ORDERING IS THE ASSERTION. gemini-third is not requested in its own cascade slot (nothing
+    between gemini-second and gemini-fourth), which is the skip being honoured; it is requested
+    LAST, only once every unskipped model has fallen through and the alternative was raising
+    over a model that was never asked. Before the last-resort pass existed this call requested
+    only three models and raised naming three, leaving a healthy, never-tried gemini-third
+    unused -- see test_last_resort_pass_tries_a_model_skipped_BEFORE_the_cascade_retired."""
     day_exhausted = _quota_exhausted(quota_id=_PER_DAY_QUOTA_ID)
-    transport = _Transport([day_exhausted, day_exhausted])   # gemini-first, gemini-second
-    opener = _opener(transport, models=("gemini-first", "gemini-second", "gemini-third"))
+    # gemini-first, gemini-second, gemini-fourth, then gemini-third last (reconsidered).
+    transport = _Transport([day_exhausted, day_exhausted, day_exhausted, day_exhausted])
+    opener = _opener(transport, models=("gemini-first", "gemini-second", "gemini-third",
+                                        "gemini-fourth"))
 
     with pytest.raises(GeminiCapacityExhausted) as exc_info:
         opener.generate(Profile(bio="p"), style="s",
                         skip_models=frozenset({"gemini-third"}))
 
-    # gemini-first and gemini-second: both actually tried, both hit their per-day quota.
-    # gemini-third: skipped entirely -- no request, and (see the assertion below) nothing
-    # reported for it in the exhaustion reason either.
-    assert _model_calls(transport) == ["gemini-first", "gemini-second"]
+    # All four eventually tried, all four out of per-day quota -- but gemini-third only after
+    # the other three, never in its configured position.
+    assert _model_calls(transport) == ["gemini-first", "gemini-second", "gemini-fourth",
+                                       "gemini-third"]
     reason = str(exc_info.value)
     assert "gemini-first" in reason and "gemini-second" in reason
+    assert "gemini-fourth" in reason
     assert "per-day" in reason and "midnight Pacific" in reason
-    assert "gemini-third" not in reason             # skipped, never tried -- has nothing to report
+    # Now that it really was requested, it really did exhaust its per-day quota, so the stop
+    # reason must say so: "every configured model" has to name every configured model.
+    assert "gemini-third" in reason
+
+
+# ---------------------------------------------------------------------------------------
+# The safety valve's THIRD look: the last-resort pass. The point-of-use check in the cascade
+# can only look FORWARD, so it cannot help a model that was skipped BEFORE the models that
+# then retire -- at the moment of that skip decision, everything ahead was still healthy and
+# honouring the skip was correct. Once the cascade has fallen through, the outcome is known,
+# and the models this call passed over WITHOUT REQUESTING are re-asked in cascade order before
+# the call gives up. Scoped strictly to skip-honoured, never-tried, not-retired models.
+# ---------------------------------------------------------------------------------------
+
+def test_last_resort_pass_tries_a_model_skipped_BEFORE_the_cascade_retired(capsys):
+    """THE HOLE THE FORWARD-ONLY CHECK CANNOT SEE, and the mirror image of
+    test_skip_models_safety_valve_engages_when_the_cascade_retires_MID_CALL.
+
+    There the skipped model sat LAST (b, c, a with skip={a}), so by the time its slot came up
+    the point-of-use check could see that nothing eligible remained and un-skip it. Here it
+    sits FIRST (a, b, c with skip={a}): at a's slot both b and c are healthy and eligible, so
+    honouring the skip is the right call on the evidence available, and the forward-looking
+    check is not wrong -- it simply cannot know that b and c are about to die behind it.
+
+    Pre-fix, that ended the call: b and c both 429 per-day, the loop fell through, and
+    GeminiCapacityExhausted named only b and c -- models the caller never asked to avoid --
+    which service.py escalates into a run stop plus "wait until midnight Pacific", while a
+    healthy, never-requested gemini-a sat unused. The last-resort pass re-asks it instead.
+    """
+    day_exhausted = _quota_exhausted(quota_id=_PER_DAY_QUOTA_ID)
+    transport = _Transport([day_exhausted, day_exhausted, (200, _success()),
+                            (200, _success())])
+    opener = _opener(transport, models=("gemini-a", "gemini-b", "gemini-c"))
+
+    result = opener.generate(Profile(bio="p1"), style="s",
+                             skip_models=frozenset({"gemini-a"}))
+
+    # gemini-a is skipped in its own (first) slot and requested LAST, after the cascade served
+    # nothing -- and it serves the call rather than the call raising.
+    assert result.model == "gemini-a"
+    assert _model_calls(transport) == ["gemini-b", "gemini-c", "gemini-a"]
+    output = capsys.readouterr().out
+    assert "skipping gemini-a" in output            # the skip really was honoured first
+    assert "the cascade served nothing and never tried gemini-a" in output   # the valve message
+    assert "test-key" not in output
+
+    # The valve still only ever UN-SKIPS: the pair retired mid-call stays retired, so the next
+    # call lands on gemini-a again instead of re-requesting either of them.
+    assert set(opener._unavailable_models) == {"gemini-b", "gemini-c"}
+    nxt = opener.generate(Profile(bio="p2"), style="s")
+    assert nxt.model == "gemini-a"
+    assert _model_calls(transport) == ["gemini-b", "gemini-c", "gemini-a", "gemini-a"]
+    assert set(opener._unavailable_models) == {"gemini-b", "gemini-c"}
+
+
+def test_last_resort_pass_never_re_requests_a_model_that_failed_TRANSIENTLY_this_call():
+    """THE NEGATIVE. The pass exists because a skip-honoured model was never REQUESTED, so
+    re-asking it re-bills nothing and cannot replay a failure. That reasoning does not extend
+    to a model that was tried and failed transiently: gemini-b was requested outside the skip
+    set, has already been billed once, and a 503 seconds ago is not evidence it will serve
+    seconds later. Widening the pass to "everything that might still work" would put a second
+    request for the same known-bad condition into the same call.
+
+    gemini-b returns a provider 5xx (transient -- deliberately NOT retired, so nothing but the
+    pass's own scoping keeps it out) and gemini-c 429s per-day. gemini-a, the one skip-honoured
+    model, then 5xx's in the pass, so the pass RUNS OUT rather than returning early: that is
+    what makes this test able to see a widened scope at all. Had gemini-a served, a pass that
+    wrongly included gemini-b would still never have reached it, and the assertion would pass
+    for the wrong reason.
+    """
+    busy = (503, {"error": {"code": 503, "status": "UNAVAILABLE", "message": "busy"}})
+    transport = _Transport([
+        busy,                                            # gemini-b, in its own cascade slot
+        _quota_exhausted(quota_id=_PER_DAY_QUOTA_ID),    # gemini-c, retired
+        busy,                                            # gemini-a, reconsidered by the pass
+        # Never consumed. It exists so a pass wrongly widened past skip_honored fails on the
+        # request-count assertion below rather than on a StopIteration out of the transport.
+        busy,
+    ])
+    opener = _opener(transport, models=("gemini-a", "gemini-b", "gemini-c"))
+
+    with pytest.raises(GeminiCapacityExhausted):
+        opener.generate(Profile(bio="p"), style="s",
+                        skip_models=frozenset({"gemini-a"}))
+
+    calls = _model_calls(transport)
+    assert calls == ["gemini-b", "gemini-c", "gemini-a"]
+    assert calls.count("gemini-b") == 1     # transient failure, still eligible -- but not re-asked
+    assert calls.count("gemini-c") == 1
+    assert calls.count("gemini-a") == 1
+    assert set(opener._unavailable_models) == {"gemini-c"}   # 5xx never retires b or a
+
+
+def test_last_resort_pass_that_also_fails_raises_naming_every_model_it_tried():
+    """ALL DEAD. The pass is a last look, not a guarantee: its models can retire too. When it
+    fails, the call raises the same GeminiCapacityExhausted the loop would have raised -- but
+    the naming now reflects what actually happened, so the reconsidered model appears with the
+    scope it really failed under rather than being silently absent from a message that claims
+    to describe "every configured Gemini model"."""
+    day_exhausted = _quota_exhausted(quota_id=_PER_DAY_QUOTA_ID)
+    transport = _Transport([day_exhausted, day_exhausted, day_exhausted])
+    opener = _opener(transport, models=("gemini-a", "gemini-b", "gemini-c"))
+
+    with pytest.raises(GeminiCapacityExhausted) as exc_info:
+        opener.generate(Profile(bio="p"), style="s",
+                        skip_models=frozenset({"gemini-a"}))
+
+    assert _model_calls(transport) == ["gemini-b", "gemini-c", "gemini-a"]
+    reason = str(exc_info.value)
+    assert "gemini-a" in reason and "gemini-b" in reason and "gemini-c" in reason
+    assert "per-day" in reason and "midnight Pacific" in reason
+    # The pass retires what it kills, exactly like the cascade does: gemini-a is now unavailable
+    # for the rest of the run rather than looking healthy again on the next profile.
+    assert set(opener._unavailable_models) == {"gemini-a", "gemini-b", "gemini-c"}
+
+
+def test_last_resort_pass_never_re_asks_a_skipped_model_retired_on_an_EARLIER_call(capsys):
+    """The pass un-skips; it never un-retires. gemini-a is retired by a per-day 429 on call 1.
+    On call 2 the caller also skips it, so it is skip-honoured (gemini-b and gemini-c are still
+    eligible ahead of it) -- but a per-day quota does not reset because a later pass wants it
+    to, so the pass must not issue a request for it.
+
+    It must still be NAMED, though: it is a genuine reason this call has no opener, and a stop
+    reason saying "every configured Gemini model has exhausted its per-day quota" while listing
+    only two of the three would understate the situation for the operator reading the hub."""
+    day_exhausted = _quota_exhausted(quota_id=_PER_DAY_QUOTA_ID)
+    transport = _Transport([day_exhausted, (200, _success()),
+                            day_exhausted, day_exhausted])
+    opener = _opener(transport, models=("gemini-a", "gemini-b", "gemini-c"))
+
+    first = opener.generate(Profile(bio="p1"), style="s")
+    assert first.model == "gemini-b"
+    assert set(opener._unavailable_models) == {"gemini-a"}
+    capsys.readouterr()
+
+    with pytest.raises(GeminiCapacityExhausted) as exc_info:
+        opener.generate(Profile(bio="p2"), style="s",
+                        skip_models=frozenset({"gemini-a"}))
+
+    # Call 2 requested gemini-b and gemini-c only: gemini-a was skipped, and the pass then
+    # found it retired and left it alone.
+    assert _model_calls(transport) == ["gemini-a", "gemini-b", "gemini-b", "gemini-c"]
+    output = capsys.readouterr().out
+    assert "the cascade served nothing and never tried" not in output   # nothing to reconsider
+    reason = str(exc_info.value)
+    assert "gemini-a" in reason and "gemini-b" in reason and "gemini-c" in reason
+    assert "per-day" in reason and "midnight Pacific" in reason
 
 
 def test_legacy_profile_photo_request_is_flat_and_uses_the_shared_system_prompt():

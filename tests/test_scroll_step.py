@@ -983,6 +983,58 @@ def test_an_open_card_below_the_trust_ceiling_throttles_the_step_to_its_own_dept
         assert plan.step_px <= depth < _TRUST_CEILING_PX
 
 
+def test_a_throttled_step_never_spends_the_open_cards_whole_depth():
+    """The delivery headroom, on the branch where the cap has NO slack of its own.
+
+    Found 2026-09-04: `plan_scroll_step` reserves `_STEP_DELIVERY_JITTER_PX` under its bound and
+    `plan_coverage_step` did not, so a throttled draw could command exactly `depth` — and the
+    module's own bound-2 proof spends every pixel of that, so the +1..+3px over-delivery measured
+    on device puts the open card's top row ABOVE the new band and it can never be observed
+    complete. This asserts the reservation over the WHOLE window rather than a lucky draw: the
+    top of the draw window is `depth - 3`, and enough draws land on it that a planner without the
+    reservation fails here rather than merely getting unlucky.
+
+    Depth 500 against a 219px floor is a wide window, so the FULL headroom fits and there is no
+    shortfall note; the narrow-window case is `..._when_the_ceiling_is_tight` above.
+    """
+    seg = _stack((247, 2000), top=500).segment()
+    depth = scroll_step._open_trailing_block_depth(seg)
+    assert depth == 500
+    plans = _coverage_draws(seg, n=400)
+    assert {p.window_px[1] for p in plans} == {depth - scroll_step._STEP_DELIVERY_JITTER_PX}
+    for plan in plans:
+        assert plan.cap_px == depth, "the hard bound itself must not have been relaxed"
+        assert plan.step_px <= depth - scroll_step._STEP_DELIVERY_JITTER_PX, plan.reason
+        assert "over-deliver" not in plan.reason
+    # ...and the window is genuinely exercised up to its new top, so this is the reservation
+    # doing the work and not the draw never getting there.
+    assert max(p.step_px for p in plans) > depth - 2 * scroll_step._STEP_DELIVERY_JITTER_PX
+
+
+def test_a_coverage_window_too_narrow_to_reserve_the_headroom_says_so_rather_than_collapsing():
+    """The owner randomization rule wins over the headroom on a window that cannot afford both.
+
+    A depth only a few pixels above the gesture floor cannot give up 3px without the draw
+    collapsing onto one distance, so at most HALF the window is reserved and the shortfall is
+    reported instead of silently accepted — the same trade `plan_scroll_step` makes, in the same
+    words.
+    """
+    # depth = top + 453 - _BAND0 (the sibling fixture's arithmetic), so top=69 puts the open
+    # card's own top row 222px down: 3px above the 219px gesture floor, a window too narrow to
+    # give up the full 3px and still be a draw.
+    seg = _stack((400, 2000), top=69).segment()
+    depth = scroll_step._open_trailing_block_depth(seg)
+    assert depth == 222, "the fixture must sit just above the gesture floor"
+    plans = _coverage_draws(seg, n=100)
+    reserved = (depth - _GESTURE_FLOOR_PX) // 2
+    assert 0 < reserved < scroll_step._STEP_DELIVERY_JITTER_PX
+    for plan in plans:
+        assert plan.window_px == (_GESTURE_FLOOR_PX, depth - reserved)
+        assert plan.step_px <= depth - reserved
+        assert f"only {reserved}px of the" in plan.reason and "over-deliver" in plan.reason
+    assert len({p.step_px for p in plans}) > 1, "the window must keep some jitter"
+
+
 def test_an_open_card_beyond_the_trust_ceiling_is_capped_at_bound_one_not_its_own_depth():
     """The mirror of the previous test: `_tall_frame`'s second card sits 1227px below the band's
     own top row — past the trust ceiling — so bound 1 binds instead, exactly as the module
@@ -1228,7 +1280,11 @@ def test_the_jitter_window_narrows_from_the_gesture_floor_when_the_ceiling_is_ti
     assert depth == 250
     plan = scroll_step.plan_coverage_step(seg, rng=random.Random(2))
     assert plan.window_px[0] == _GESTURE_FLOOR_PX
-    assert plan.window_px[1] == depth
+    # The window's high end is the cap MINUS the delivery headroom, not the cap: `cap_px` is the
+    # hard bound and `window_px` is what was actually drawn from, so the entropy of the draw
+    # stays legible from the result (`CoverageStep.window_px`).
+    assert plan.cap_px == depth
+    assert plan.window_px[1] == depth - scroll_step._STEP_DELIVERY_JITTER_PX
 
 
 def test_importing_the_coverage_rule_does_not_pull_in_the_driver():

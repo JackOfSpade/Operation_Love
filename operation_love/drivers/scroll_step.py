@@ -991,8 +991,14 @@ def _frac_window() -> tuple[float, float]:
 #
 # This step is capped at `min(trust_ceiling_px, D)` when `D` is not None. Two cases, and both are
 # safe by construction:
-#   * `D <= trust_ceiling_px`: the step can be exactly `D`, landing the new band's top row EXACTLY
-#     on the card's own top row. Slack against the new band's bottom is then the FULL band height,
+#   * `D <= trust_ceiling_px`: the step is at most `D`, landing the new band's top row at or below
+#     the card's own top row. (At most, not exactly: since 2026-09-04 the draw reserves
+#     `_STEP_DELIVERY_JITTER_PX` of delivery headroom under the cap, because the equality case has
+#     no slack for the transport's measured +1..+3px over-delivery and going over it puts the
+#     card's top row ABOVE the new band -- the card then never completes and demotes to
+#     ITEM_PARTIAL, which is the one thing this bound exists to prevent. The proof below is
+#     unchanged and gets strictly more room; only the worst case moved off the boundary.)
+#     Slack against the new band's bottom is then the FULL band height,
 #     1800 on the calibrated device -- and every block this repo has ever observed end to end,
 #     215 to 1609px, is shorter than that, so the card is complete on the very next frame. (The
 #     bound here is the band height, not any card-height figure; the throttle is sound for any
@@ -1383,14 +1389,33 @@ def plan_coverage_step(segmentation: FrameSegmentation, *,
     low_px = max(floor_px, int(round(float(window_low_frac) * cap_px)))
     if low_px >= cap_px:
         low_px = floor_px
-    target_px = (rng.randint if rng is not None else random.randint)(low_px, cap_px)
+    # THE SAME DELIVERY HEADROOM `plan_scroll_step` RESERVES, and this planner needs it more
+    # (2026-09-04). `randint` is inclusive, so without this the commanded step could be exactly
+    # `cap_px` -- and on the THROTTLED basis `cap_px` IS the open trailing card's depth `D`, whose
+    # own proof above spends every pixel of it ("the step can be exactly `D`, landing the new
+    # band's top row EXACTLY on the card's own top row"). There is no slack there at all: the
+    # +1px and +3px on-device over-deliveries `_STEP_DELIVERY_JITTER_PX` records would put the
+    # card's own top row ABOVE the new band, so no single frame ever bounds both its edges and it
+    # demotes from ITEM_SELECTABLE to ITEM_PARTIAL -- silently, because unlike `plan_scroll_step`
+    # there is no `step_overshoot` equivalent here to turn it into a refusal. Under-delivery
+    # remains the safe direction (module docstring), so the reservation costs coverage-per-stroke
+    # and nothing else; it is taken on every basis rather than only THROTTLED because the OPEN
+    # and FALLBACK caps are the two halves of one 900px trust-window budget that also sums to
+    # exactly its ceiling. The "at most half the window" rule and the reported shortfall are the
+    # sibling's, for the sibling's reason: a window too narrow to reserve from must keep its
+    # jitter rather than collapse onto a single distance (owner randomization rule).
+    jitter_margin_px = min(_STEP_DELIVERY_JITTER_PX, (cap_px - low_px) // 2)
+    draw_cap_px = cap_px - jitter_margin_px
+    target_px = (rng.randint if rng is not None else random.randint)(low_px, draw_cap_px)
 
     frac = frac_for_step_px(target_px, height)
     frac = min(max(frac, frac_lo), frac_hi)
     step_px = step_px_for_frac(frac, height)
 
-    # Mirrors `plan_scroll_step`'s own correction for the transport's double truncation.
-    while step_px > cap_px and frac > frac_lo:
+    # Mirrors `plan_scroll_step`'s own correction for the transport's double truncation, and
+    # against `draw_cap_px` for its reason too: walking down to the hard cap would hand the
+    # reservation straight back one pixel at a time.
+    while step_px > draw_cap_px and frac > frac_lo:
         frac = max(frac_lo, frac - 1.0 / height)
         step_px = step_px_for_frac(frac, height)
     if step_px > cap_px:  # pragma: no cover — unreachable: floor_px <= cap_px was checked above
@@ -1415,10 +1440,18 @@ def plan_coverage_step(segmentation: FrameSegmentation, *,
                       "direct-bridge budget — what frameshift's trust window has left after the "
                       f"enumeration ceiling, so a frame-omission recovery can still bridge across "
                       f"this step (band {band_height}px)")
-    if low_px >= cap_px:
+    if low_px >= draw_cap_px:
         reason += (f"; the {low_px}px gesture floor meets the {cap_px}px ceiling here, so this "
                   "step has no jitter left to draw")
+    elif jitter_margin_px < _STEP_DELIVERY_JITTER_PX:
+        # Same reason the sibling reports its own shortfall: the window was too narrow to reserve
+        # the full delivery headroom, so a top-of-window draw can still over-deliver past the
+        # cap, and the telemetry would otherwise show a step under the bound and no hint of why
+        # the card it was protecting still went partial.
+        reason += (f"; only {jitter_margin_px}px of the {_STEP_DELIVERY_JITTER_PX}px delivery "
+                   f"headroom fits under the {cap_px}px ceiling, so a top-of-window draw can "
+                   "still over-deliver past it")
 
     return CoverageStep(frac=frac, x_frac=float(x_frac), step_px=step_px, cap_px=cap_px,
                         trust_ceiling_px=trust_ceiling_px, depth_px=depth,
-                        window_px=(low_px, cap_px), basis=basis, reason=reason)
+                        window_px=(low_px, draw_cap_px), basis=basis, reason=reason)

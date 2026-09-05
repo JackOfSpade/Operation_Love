@@ -1,5 +1,4 @@
 """SQLiteStore source-tagging and daily-limit behavior."""
-import json
 import math
 import os
 import sqlite3
@@ -217,11 +216,117 @@ def test_sqlite_retraction_excludes_only_bound_label_and_decision_from_loads_and
                            "fingerprint", "false controller action", "debug#225", 30.0))
         store.con.commit()
         assert store.load_labels() == [(True, [0.2])]
-        assert store.load_labels_ordered() == [(True, [0.2])]
         assert store.observe_release_persistence_summary("r", "hinge") == {
             "manual_pass_labels": 0, "manual_like_labels": 1,
             "manual_pass_decisions": 0, "manual_like_decisions": 1,
             "successful_hinge_openers": 0}
+    finally:
+        store.close()
+
+
+def _seed_identity_less_labels(store):
+    """Two labels carrying NO profile identity, in both spellings, plus one that has one.
+
+    NULL is how a row written before `labels.profile_id` was ALTERed in reads back (see
+    _initialize_schema); '' is what add_label's own default writes. Both mean "no profile
+    identity", and a tombstone has to be able to reach either one.
+    """
+    for created_at, liked, embedding, profile_id in (
+            (10.0, 0, "[0.1]", None),
+            (20.0, 0, "[0.2]", ""),
+            (30.0, 1, "[0.3]", "modern-profile"),
+    ):
+        store.con.execute("INSERT INTO labels VALUES (NULL,?,?,?,?,?,?,?,?)",
+                          ("r", "hinge", created_at, liked, "manual", embedding, 0, profile_id))
+    for created_at, decision in ((9.0, "dislike"), (19.0, "dislike"), (29.0, "like")):
+        store.con.execute("INSERT INTO decisions (run_id,app,created_at,decision,score,source) "
+                          "VALUES (?,?,?,?,?,?)",
+                          ("r", "hinge", created_at, decision, 0.0, "manual"))
+    store.con.commit()
+
+
+def _seed_tombstone(store, *, correction_id, profile_id, label_created_at, decision_created_at):
+    store.con.execute("INSERT INTO label_retractions VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                      (correction_id, "r", "hinge", "manual", profile_id, label_created_at,
+                       decision_created_at, "fingerprint", "false pass", "debug#225", 99.0))
+    store.con.commit()
+
+
+def test_sqlite_tombstone_retracts_a_label_that_carries_no_profile_id(tmp_path):
+    """A legacy NULL-profile_id label must be retractable, not merely removable.
+
+    `r.profile_id=l.profile_id` is NULL (never TRUE) for such a label, so no tombstone could
+    ever reach it: it stayed in the training set permanently, and the only way to get rid of it
+    was remove_latest_training_label, which destroys the row instead of correcting it.
+    """
+    store = SQLiteStore(tmp_path / "store.db")
+    try:
+        _seed_identity_less_labels(store)
+        assert store.load_labels() == [(False, [0.1]), (False, [0.2]), (True, [0.3])]
+
+        _seed_tombstone(store, correction_id="c-null", profile_id="",
+                        label_created_at=10.0, decision_created_at=9.0)
+        assert store.load_labels() == [(False, [0.2]), (True, [0.3])]
+
+        # The '' spelling of the same absent identity has to be reachable by its own tombstone
+        # too, and only by its own: the join still carries label_created_at.
+        _seed_tombstone(store, correction_id="c-empty", profile_id="",
+                        label_created_at=20.0, decision_created_at=19.0)
+        assert store.load_labels() == [(True, [0.3])]
+    finally:
+        store.close()
+
+
+def test_sqlite_tombstone_for_another_label_never_hides_an_identity_less_one(tmp_path):
+    """Folding NULL and '' together must not turn a tombstone into a wildcard."""
+    store = SQLiteStore(tmp_path / "store.db")
+    try:
+        _seed_identity_less_labels(store)
+        # Same timestamp as the NULL-profile label but a different profile identity.
+        _seed_tombstone(store, correction_id="c-other-identity", profile_id="modern-profile",
+                        label_created_at=10.0, decision_created_at=9.0)
+        # No profile identity, but another label's timestamp.
+        _seed_tombstone(store, correction_id="c-other-time", profile_id="",
+                        label_created_at=99.0, decision_created_at=9.0)
+        # Right label, wrong run.
+        store.con.execute("INSERT INTO label_retractions VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                          ("c-other-run", "other-run", "hinge", "manual", "", 10.0, 9.0,
+                           "fingerprint", "false pass", "debug#225", 99.0))
+        store.con.commit()
+
+        assert store.load_labels() == [(False, [0.1]), (False, [0.2]), (True, [0.3])]
+    finally:
+        store.close()
+
+
+def test_sqlite_every_read_path_agrees_about_a_retracted_identity_less_label(tmp_path):
+    """load_labels, both release summaries and the cleanup advisory share one predicate.
+
+    They are separate SQL statements, so a fix applied to only some of them lets a release
+    summary count a label the ranker has already stopped training on.
+    """
+    store = SQLiteStore(tmp_path / "store.db")
+    try:
+        _seed_identity_less_labels(store)
+        _seed_tombstone(store, correction_id="c-null", profile_id="",
+                        label_created_at=10.0, decision_created_at=9.0)
+
+        assert store.load_labels() == [(False, [0.2]), (True, [0.3])]
+        assert store.observe_release_persistence_summary("r", "hinge") == {
+            "manual_pass_labels": 1, "manual_like_labels": 1,
+            "manual_pass_decisions": 1, "manual_like_decisions": 1,
+            "successful_hinge_openers": 0}
+        assert store.ai_observe_release_persistence_summary(
+            "r", "hinge", "external_ai_review") == {
+            "ai_pass_labels": 0, "ai_like_labels": 0,
+            "ai_pass_decisions": 0, "ai_like_decisions": 0,
+            "successful_hinge_openers": 0}
+        assert store.advisory_opener_run_rows("r", "hinge")["effective_counts"] == {
+            "like_labels": 1, "like_decisions": 1,
+            "pass_labels": 1, "pass_decisions": 2}
+        # remove_latest_training_label reads the same predicate, so it must not offer the
+        # operator a label the correction has already retracted.
+        assert store.remove_latest_training_label() == {"profile_name": "", "profile_id": "modern-profile"}
     finally:
         store.close()
 
@@ -247,28 +352,6 @@ def test_sqlite_migrates_legacy_labels_profile_id_column(tmp_path):
         assert row == ("profile-legacy",)
     finally:
         store.close()
-
-
-def test_sqlite_load_labels_ordered_sorts_by_created_at(tmp_path):
-    store = SQLiteStore(tmp_path / "store.db")
-    try:
-        # Insert the later created_at row first so insertion order != chronological order.
-        store.con.execute(
-            "INSERT INTO labels (run_id, app, created_at, liked, source, embedding,"
-            " photo_count, profile_id) VALUES (?,?,?,?,?,?,?,?)",
-            ("r", "bumble", 200.0, 1, "manual", json.dumps([0.2]), 0, "later"),
-        )
-        store.con.execute(
-            "INSERT INTO labels (run_id, app, created_at, liked, source, embedding,"
-            " photo_count, profile_id) VALUES (?,?,?,?,?,?,?,?)",
-            ("r", "bumble", 100.0, 0, "manual", json.dumps([0.1]), 0, "earlier"),
-        )
-        store.con.commit()
-
-        assert store.load_labels_ordered() == [(False, [0.1]), (True, [0.2])]
-    finally:
-        store.close()
-
 
 
 def test_sqlite_add_label_rejects_nan_embedding(tmp_path):
@@ -672,15 +755,51 @@ def test_sqlite_remove_latest_training_label_reports_its_profile_name(tmp_path):
         store.close()
 
 
-def test_sqlite_clear_training_data_removes_labels_and_their_names(tmp_path):
+class _LockWatchingConnection:
+    """Forwards to the real connection, counting executes issued without the store lock."""
+
+    def __init__(self, con, lock):
+        self._con = con
+        self._store_lock = lock
+        self.unlocked_executes = []
+
+    def execute(self, sql, *args, **kwargs):
+        if not self._store_lock.locked():
+            self.unlocked_executes.append(" ".join(str(sql).split()))
+        return self._con.execute(sql, *args, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._con, name)
+
+
+def test_sqlite_advisory_opener_run_rows_reads_entirely_under_the_store_lock(tmp_path):
+    """Every read of the shared connection must happen while self._lock is held.
+
+    This class shares ONE sqlite3 connection across worker threads on
+    check_same_thread=False, and the lock is the whole of that safety argument (see
+    __init__). A count issued after the with-block released it is therefore not a
+    style detail: it is the unsynchronized use that combination forbids.
+    """
     store = SQLiteStore(tmp_path / "store.db")
     try:
-        store.add_label("r", "hinge", True, [1.0], profile_id="one", profile_name="Ada")
-        store.add_label("r", "hinge", False, [2.0], profile_id="two", profile_name="Bea")
+        store.add_label("r", "hinge", True, [0.1], profile_id="one", profile_name="Ada")
+        store.add_label("r", "hinge", False, [0.2], profile_id="two", profile_name="Bea")
+        store.record_decision("r", "hinge", "like", 0.9, source="manual", profile_id="one")
+        store.record_opener("r", "hinge", "m", "hello there", "a book")
 
-        assert store.clear_training_data() == 2
-        assert store.load_labels() == []
-        assert store.con.execute("SELECT COUNT(*) FROM training_label_names").fetchone()[0] == 0
+        watched = _LockWatchingConnection(store.con, store._lock)
+        store.con = watched
+        rows = store.advisory_opener_run_rows("r", "hinge")
+        store.con = watched._con
+
+        assert watched.unlocked_executes == []
+        # The counts still have to be the real ones, so the assertion above cannot be
+        # satisfied by simply not reading anything.
+        assert rows["preference_counts"] == {"profiles": 0, "profile_photos": 0,
+                                             "labels": 2, "decisions": 1}
+        assert rows["effective_counts"] == {"like_labels": 1, "like_decisions": 1,
+                                            "pass_labels": 1, "pass_decisions": 0}
+        assert len(rows["openers"]) == 1
     finally:
         store.close()
 

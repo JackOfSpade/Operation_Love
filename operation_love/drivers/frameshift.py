@@ -728,7 +728,204 @@ def estimate_shift_with_reverse_recovery(before: bytes, after: bytes, *,
                               else -int(reverse.consensus_px)),
                 reason=("forward source strips did not reach consensus; reverse source strips "
                         f"measured the same pair: {reverse.reason}"))
+        elif reverse.status == SHIFT_NO_CONSENSUS:
+            rescued = _cross_direction_quorum_shift(
+                forward, reverse,
+                tolerance=kwargs.get("agreement_tolerance_px", _AGREEMENT_TOLERANCE_PX),
+                min_agreeing=kwargs.get("min_agreeing_strips", _MIN_AGREEING_STRIPS),
+                pin_margin=kwargs.get("pin_margin_px", _PIN_MARGIN_PX))
+            if rescued is not None:
+                result = replace(
+                    forward, delta_px=rescued, status=SHIFT_MEASURED, consensus_px=rescued,
+                    reason=(f"content moved {rescued:+d}px — neither direction's strips reached "
+                            f"quorum alone, but both independently made {rescued:+d}px their own "
+                            f"median and together {_MIN_AGREEING_STRIPS} or more located it to "
+                            f"the pixel: {forward.reason}"))
     return result, forward, reverse
+
+
+def _cross_direction_quorum_shift(forward: ShiftEstimate, reverse: ShiftEstimate, *,
+                                  tolerance: int, min_agreeing: int,
+                                  pin_margin: int) -> int | None:
+    """The one translation BOTH directions centred on and together located to the pixel.
+
+    THE FAILURE THIS EXISTS FOR (Maja, 2026-09-04, run 1d84909bf1bb, still-photo return leg 5 of
+    9). The card being scrolled away from was an autoplaying video filling 53% of the analysed
+    band, so of thirteen strips only the handful over the page above it had anything to match.
+    Forward reported `median +630px, but 2 of 3 eligible strips agree`; reverse reported
+    `median -630px, but 2 of 5`. The page had moved +630px, exactly as asked, and the estimator
+    said so TWICE -- in opposite directions, to the pixel, from two strip banks with no strip in
+    common -- and refused both times for want of a third witness in one bank. The return chain
+    treats an unmeasurable leg as terminal, so a 247-second capture produced no items, no label
+    and no decision, and the run stopped.
+
+    THE EVIDENCE THIS ADDS IS A HEAD-COUNT, NOT A LOWER BAR. `_MIN_AGREEING_STRIPS` is untouched
+    and every clause below is a constraint the ordinary path never has to satisfy:
+
+      * BOTH directions must already be `SHIFT_NO_CONSENSUS`. A pair either direction can resolve
+        never reaches here, so this can only turn a refusal into a measurement -- never one
+        measurement into a different one.
+      * The value must be EACH DIRECTION'S OWN MEDIAN (negated for the reverse). This is what
+        makes it a quorum repair rather than a cluster hunt: both banks had already chosen this
+        number as their central answer, and all that was missing was the count. A cluster neither
+        direction centred on is refused however many votes it has.
+      * The union must locate it TO THE PIXEL, `_exact_cluster_shift`'s own discriminator and for
+        its own measured reason: a rigid page translation is reported identically by every strip
+        that sees it (spread exactly 0 across all 23 bot-scrolled pairs), while a strip that has
+        re-correlated against a video's internal motion is not reporting a translation at all.
+      * BOTH directions must witness it. The two banks share no strip -- forward cuts from
+        `before` and searches `after`, reverse does the reverse -- so this is agreement between
+        independent samples, which is a stronger thing than the same count within one bank.
+      * It must be UNIQUE. A second cross-direction exact group at quorum is a genuine ambiguity
+        and is refused rather than broken by taking the larger one -- `_exact_cluster_shift`'s
+        unanimity-or-nothing bar, for the same reason: a wrong number here costs a wrongly
+        indexed item and a like on the wrong photo.
+      * Every PINNED strip's bound, in BOTH directions, must still admit it.
+      * It must be inside the trust window, so this can never quietly answer a pair the ordinary
+        path would have reported as saturated.
+
+    [corpus, 2026-09-04: 2964 distinct frame pairs drawn from 47 local debug runs, 528 of which
+    the shipped code refuses in BOTH directions. This rescues 51 of those 528 and fires on none
+    of the pairs the shipped code already measured -- which is structural, not luck, since it
+    runs only inside the both-refused branch. Of 1093 pairs whose two frames are BYTE-IDENTICAL
+    (true shift 0, the one ground truth this corpus has) it fires on zero, because those measure
+    cleanly at ordinary quorum and never reach here.
+    Each of the 51 was then re-measured with the SHIPPED estimator at four other strip
+    geometries -- same decision rule, differently placed strips, so an independent sample of the
+    same two frames: 18 produced an independent answer and every one of them agreed with the
+    rescued value; 32 produced none (all four geometries refused too); 1 disagreed. That one is a
+    pair whose frames are four minutes, 87 logged rows and 41 gestures apart, which no caller can
+    produce -- `_measured_page_shift` and `_navigation_step_shift` are only ever handed a pair
+    separated by a single settled gesture -- and on it the shipped estimator at `strip_count=31`
+    returns this rule's own value forward while contradicting itself in reverse.
+    The incident pair itself measures +630 here and +630 under the shipped rule at
+    `strip_count=21`.]
+
+    [adversarial, same day, and it is what the MEDIAN clause is for. The Maja video's own
+    repeated pavement texture produces a `+-1178` correspondence that is pixel-exact AND
+    symmetric across the two directions, so "witnessed both ways" alone does not exclude it: over
+    90 band/strip samplings of that one physical pair it reached the union quorum as a second
+    exact cluster in 38% of them, and an alignment where it is the ONLY exact quorate cluster
+    would return -1178 -- wrong by 1808px, about two card heights, silently rebasing the item
+    index. It is never either direction's median, which is why that clause is a gate and not a
+    tiebreak. Re-measured over 2560 (content_band, strip_count) alignments of the same pair --
+    `content_band[0]` 0.090..0.166, `content_band[1]` 0.820..0.910, `strip_count` 9..31 -- this
+    rule fires on 334 and returns +630 on every one of them. The only wrong answer anywhere in
+    that sweep is a 628px result from the ORDINARY path at a band this driver does not ship.]
+    """
+    forward_median = _matched_median(forward)
+    reverse_median = _matched_median(reverse)
+    if forward_median is None or reverse_median is None:
+        return None
+    if forward_median != -reverse_median:
+        return None
+    votes = [(int(s.delta_px), False) for s in forward.strips
+             if s.state == STRIP_MATCHED and s.delta_px is not None]
+    votes += [(-int(s.delta_px), True) for s in reverse.strips
+              if s.state == STRIP_MATCHED and s.delta_px is not None]
+    votes.sort()
+    groups: list[list[tuple[int, bool]]] = [[votes[0]]] if votes else []
+    for vote in votes[1:]:
+        if vote[0] - groups[-1][-1][0] > tolerance:
+            groups.append([vote])
+        else:
+            groups[-1].append(vote)
+    exact = [group for group in groups
+             if len(group) >= min_agreeing
+             and group[0][0] == group[-1][0]
+             and any(reversed_ for _v, reversed_ in group)
+             and not all(reversed_ for _v, reversed_ in group)]
+    if len(exact) != 1:
+        return None
+    candidate = exact[0][0][0]
+    if candidate != forward_median:
+        return None
+    if not _pins_allow(forward.strips, candidate, pin_margin=pin_margin):
+        return None
+    if not _pins_allow(reverse.strips, -candidate, pin_margin=pin_margin):
+        return None
+    if abs(candidate) > forward.trust_window_px:
+        return None
+    return candidate
+
+
+def _matched_median(est: ShiftEstimate) -> int | None:
+    """The median offset over an estimate's MATCHED strips, or None when it has none.
+
+    `ShiftEstimate.consensus_px` deliberately carries None on a refusal -- no consensus formed --
+    so the median a `SHIFT_NO_CONSENSUS` reason string quotes is not available as a field. This
+    recomputes it by exactly `_resolve`'s own arithmetic, over exactly `_resolve`'s own voters,
+    rather than parsing it back out of the prose.
+    """
+    voters = [int(s.delta_px) for s in est.strips
+              if s.state == STRIP_MATCHED and s.delta_px is not None]
+    if not voters:
+        return None
+    voters.sort()
+    middle = len(voters) // 2
+    if len(voters) % 2:
+        return voters[middle]
+    return int(round((voters[middle - 1] + voters[middle]) / 2))
+
+
+def trace_estimate(est: ShiftEstimate | None, *, include_strips: bool = True,
+                   max_strips: int = 32) -> dict | None:
+    """A JSON-safe record of what one estimate SAW, for a debug row read long after the run.
+
+    WHY THIS EXISTS (found 2026-09-04, run 1d84909bf1bb). `ShiftEstimate` carries the entire
+    case for its own verdict -- the status, the human `reason`, the counts, and the per-strip
+    bank -- and every caller in this repo threw all of it away and kept `delta_px`. When leg 5
+    of a still-photo return chain came back `None`, the debug row recorded what the driver had
+    INTENDED (5 attempts, a 630px request, the leg-by-leg terminal shifts) and not one field
+    about what the estimator had OBSERVED, so "the phone did not move" and "the phone moved
+    exactly 630px but an autoplaying video ate the band" were indistinguishable from the report.
+    Diagnosing it needed the two retained PNGs and an offline re-run of the estimator.
+
+    Diagnostic only, and deliberately so: nothing here is an input to any decision, and no
+    caller may read a shift out of this dict -- `ShiftEstimate.delta_px` remains the only
+    authority, exactly as `item_nav._navigation_step_shift`'s own trace already says.
+
+    TOTAL BY CONSTRUCTION. Both call sites reach this from inside a failure path, and a
+    diagnostic that raises would convert a clean refusal into a crash, so every field is read
+    with `getattr` and a missing one is simply absent from the dict rather than an error. That
+    also covers the test doubles both callers' modules deliberately allow to be monkeypatched in
+    (see `estimate_shift_with_reverse_recovery`'s `estimator` parameter).
+
+    `include_strips=False` keeps a row to its aggregates. The bank is bounded either way:
+    `_STRIP_COUNT` is a module constant, not a screen-derived count, so `max_strips` is a
+    backstop against a caller-varied `strip_count`, not the ordinary case. `runner_up`,
+    `stddev` and `search` are omitted on purpose -- `separation` was measured NOT to
+    discriminate correct strips from incorrect ones on this corpus (see `StripMatch.separation`),
+    so printing it in a report would be noise a reader could mistake for evidence.
+    """
+    if est is None:
+        return None
+    trace: dict = {}
+    for key in ("status", "reason", "delta_px", "consensus_px", "agreeing", "dissenting",
+                "eligible", "saturated", "trust_window_px"):
+        value = getattr(est, key, None)
+        if value is not None:
+            trace[key] = value
+    confidence = getattr(est, "confidence", None)
+    if isinstance(confidence, (int, float)) and not isinstance(confidence, bool):
+        trace["confidence"] = round(float(confidence), 3)
+    band = getattr(est, "band", None)
+    if isinstance(band, (tuple, list)) and len(band) == 2:
+        trace["band"] = [int(band[0]), int(band[1])]
+    if not include_strips:
+        return trace
+    strips = getattr(est, "strips", None) or ()
+    bank = []
+    for strip in tuple(strips)[:max_strips]:
+        score = getattr(strip, "score", None)
+        bank.append([
+            getattr(strip, "y0", None), getattr(strip, "y1", None),
+            getattr(strip, "state", None), getattr(strip, "delta_px", None),
+            (round(float(score), 3)
+             if isinstance(score, (int, float)) and not isinstance(score, bool) else None),
+        ])
+    trace["strips"] = bank
+    return trace
 
 
 def _vote_clusters(voters: Sequence[StripMatch], *, tolerance: int) -> list[list[int]]:
@@ -751,7 +948,7 @@ def _vote_clusters(voters: Sequence[StripMatch], *, tolerance: int) -> list[list
     return groups
 
 
-def _pins_allow(strips: Sequence[StripMatch], candidate: int) -> bool:
+def _pins_allow(strips: Sequence[StripMatch], candidate: int, *, pin_margin: int) -> bool:
     """Whether every pinned strip's LOWER BOUND is consistent with `candidate`.
 
     A pinned strip's peak sits on the edge of its own search range, so it says "the content went
@@ -759,20 +956,42 @@ def _pins_allow(strips: Sequence[StripMatch], candidate: int) -> bool:
     Pinned at the top of the range means the truth is at or beyond it; pinned at the bottom means
     at or below. That is a real independent constraint and it is free, so a split-bank rescue is
     held to it even though the ordinary median path has never needed it.
+
+    THE END TEST IS THE MARGIN, NOT EQUALITY (fixed 2026-09-04). `_search_strip` calls a strip
+    pinned anywhere within `pin_margin` of either bound, so an `== high` / `== low` test here read
+    only 1 of the 9 offsets per end that actually make a strip pinned — 8 of every 9 pinned strips
+    imposed no bound at all, which is not a weaker version of this constraint but its absence. The
+    near-bound pin is the ROUTINE case, not an exotic one: strip search bounds sit one strip pitch
+    apart, so any true shift landing a few pixels inside some strip's own bound produces exactly
+    it. Note what that case makes safe: there the pin's own offset IS the true shift, so a
+    margin-aware veto can only reject candidates strictly on the far side of it — never the truth.
+    `_resolve`'s eligibility test already does this same margin-aware arithmetic on the same
+    bounds; this is the one place in the module that had drifted off it.
+
+    [corpus, 2026-09-04, and read its scope carefully. This change can only ADD refusals — both
+    callers run inside a branch whose alternative is already a refusal — and a refusal here costs
+    a whole capture, so it was re-measured before shipping: 601 frame pairs from the local debug
+    archive (consecutive frames within a run, run-directory order, each measured BOTH directions
+    at the shipped band and defaults, then re-resolved under the old and the new rule) change no
+    pair's answer. That is evidence the tightening costs nothing on captures of this shape; it is
+    NOT a bound on what it would refuse on a hostile one, and the full 6182-pair enumeration was
+    not completed. The argument for the direction is structural rather than statistical, and it is
+    the paragraph above: on the near-bound pin this newly reaches, the pin's own offset IS the
+    true shift.]
     """
     for strip in strips:
         if strip.state != STRIP_PINNED or strip.delta_px is None:
             continue
         low, high = strip.search
-        if strip.delta_px == high and candidate < strip.delta_px:
+        if strip.delta_px >= high - pin_margin and candidate < strip.delta_px:
             return False
-        if strip.delta_px == low and candidate > strip.delta_px:
+        if strip.delta_px <= low + pin_margin and candidate > strip.delta_px:
             return False
     return True
 
 
 def _exact_cluster_shift(strips: Sequence[StripMatch], voters: Sequence[StripMatch], *,
-                         tolerance: int, min_agreeing: int) -> int | None:
+                         tolerance: int, min_agreeing: int, pin_margin: int) -> int | None:
     """The one pixel-exact group in a SPLIT strip bank, or None if that is not unambiguous.
 
     THE FAILURE THIS EXISTS FOR (Grace, 2026-08-16, frames 36/37 and 26 more pairs). A profile
@@ -806,7 +1025,7 @@ def _exact_cluster_shift(strips: Sequence[StripMatch], voters: Sequence[StripMat
         return None                       # unimodal: the ordinary median path owns this bank
     exact = [group[0] for group in groups
              if len(group) >= min_agreeing and group[0] == group[-1]]
-    if len(exact) != 1 or not _pins_allow(strips, exact[0]):
+    if len(exact) != 1 or not _pins_allow(strips, exact[0], pin_margin=pin_margin):
         return None
     return exact[0]
 
@@ -872,7 +1091,7 @@ def _resolve(strips: tuple[StripMatch, ...], *, frame_size, band, window: int, t
     if (len(ordinary_agreeing) < min_agreeing
             or ordinary_confidence < min_confidence):
         rescued = _exact_cluster_shift(strips, voters, tolerance=tolerance,
-                                       min_agreeing=min_agreeing)
+                                       min_agreeing=min_agreeing, pin_margin=pin_margin)
         if rescued is not None:
             groups = _vote_clusters(voters, tolerance=tolerance)
             split_note = (

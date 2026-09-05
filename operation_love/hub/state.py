@@ -125,6 +125,7 @@ class HubState:
         self._eval_refreshing = False
         self._eval_cold_event: threading.Event | None = None  # cold-start single-flight
         self._live_store = None             # the running supervisor's store (live in-memory labels)
+        self._live_cfg = None               # the active run's EFFECTIVE Config (shutdown prices its own waits off it)
         self._opener_service = None         # the running supervisor's OpenerService (recent_openers_snapshot for the bug report)
         # Plain, detached copies from the most recently completed run.  The live service owns
         # locks and references to a store which supervisor.run() closes during shutdown, so the
@@ -205,14 +206,14 @@ class HubState:
             # the replacement run thread start successfully.
             previous_run = (
                 self._run_generation, self._thread, self._stop, self._status, self._error,
-                self._live_store, self._opener_service,
+                self._live_store, self._live_cfg, self._opener_service,
             )
 
             def _restore_failed_start() -> None:
                 self._cancel_timed_stop_locked(clear=True)
                 (
                     self._run_generation, self._thread, self._stop, self._status, self._error,
-                    self._live_store, self._opener_service,
+                    self._live_store, self._live_cfg, self._opener_service,
                 ) = previous_run
 
             # No prior timer should survive into a replacement run.  The generation check in
@@ -225,6 +226,11 @@ class HubState:
             self._status = None
             self._error = None
             self._live_store = None
+            # Same call supervisor.run() makes on its own thread a moment later, so this IS the
+            # config that run's shutdown will price its worker join and archive grace from.
+            # Kept (not just validated and dropped) because the Hub's own shutdown wait has to
+            # be composed from those same per-run terms -- see server._run_archive_ceiling_s.
+            self._live_cfg = effective_cfg
             self._opener_service = None
             stop = self._stop
 
@@ -279,6 +285,7 @@ class HubState:
                             # inactive, and so it cannot later wake up a new run.
                             self._cancel_timed_stop_locked(clear=True)
                         self._live_store = None   # supervisor closed it on exit; don't read a dead store
+                        self._live_cfg = None     # no run left to price a shutdown wait for
                         self._opener_service = None   # same reason: don't read a torn-down object after the supervisor tore the run down
 
             self._thread = threading.Thread(target=_target, name="hub-run", daemon=True)
@@ -376,6 +383,28 @@ class HubState:
             return not thread.is_alive()
         return True
 
+    def live_store(self):
+        """The running supervisor's store, or None when no run holds one.
+
+        Exposed for the shutdown path (server._wait_for_run_shutdown), which must decide
+        whether the run is still inside a registered archive write before it abandons a
+        decision that already landed on the phone. Read under the lock because the run thread
+        both installs and clears this reference; the caller only probes it, never closes it --
+        the supervisor owns its lifecycle.
+        """
+        with self._lock:
+            return self._live_store
+
+    def live_run_cfg(self):
+        """The EFFECTIVE config of the run currently in flight, or None when idle.
+
+        The shutdown wait is priced per-run rather than from a module constant: the archive
+        deadline the supervisor grants scales with THIS run's scroll_captures, and config
+        validation admits values far above the Training review ceiling.
+        """
+        with self._lock:
+            return self._live_cfg
+
     def browser_client_opened(self, client_id: str | None) -> bool:
         """Mark a hub page as alive. Return True when a stale-client watch should start."""
         valid, client_id, _error = validate_browser_client_id(client_id)
@@ -446,10 +475,12 @@ class HubState:
                 ):
                     return "preserve_training_approval"
 
-            # publish_checkpoint() precedes the worker's waiting_approval status update.  The
-            # bridge query covers that tiny but safety-critical hand-off window without using a
-            # JSON snapshot as a synchronization primitive.
-            if self._training_actions.has_actionable_checkpoint():
+            # The bridge is authoritative over the exact-card lifecycle: it covers the small
+            # publish-before-status hand-off, and keeps the Hub/run alive after a browser has
+            # queued a choice while the worker is claiming or durably recording it.  In all of
+            # those phases the reviewed profile is still live and must not be abandoned because
+            # the submitting tab disappeared.
+            if self._training_actions.has_live_checkpoint():
                 return "preserve_training_approval"
             return "shutdown"
 
@@ -542,6 +573,20 @@ class HubState:
     def submit_training_action(self, body: dict) -> tuple[bool, dict, int]:
         return self._training_actions.submit(body)
 
+    def record_training_browser_notification(self, body: dict) -> tuple[bool, str]:
+        """Accept bounded delivery telemetry only for the currently published checkpoint."""
+        run_id = body.get("run_id")
+        app = body.get("app")
+        profile_token = body.get("profile_token")
+        outcome = body.get("notification")
+        if not self._training_actions.has_checkpoint(
+                run_id=run_id, app=app, profile_token=profile_token):
+            return False, "no matching live training checkpoint"
+        from ..notifications import record_training_browser_notification
+        if not isinstance(outcome, str) or not record_training_browser_notification(outcome):
+            return False, "invalid browser notification outcome"
+        return True, "recorded"
+
     def _training_store_mutation(self, method_name: str) -> tuple[bool, dict | str]:
         """Run an explicit training-set mutation only while no model is live.
 
@@ -588,10 +633,12 @@ class HubState:
         # Called by supervisor before Thread.start(), so no hub request can observe a half-bound
         # worker.  The worker subsequently registers itself at run entry as a harmless idempotent
         # backstop for direct/test construction.
+        # Do NOT recompute training_action_supported here. Worker.__init__ already derived it
+        # from the same mode/app/driver, and a second copy of that predicate running LAST means a
+        # future change to the worker's version is silently clobbered back -- every checkpoint
+        # would then be refused by publish_checkpoint's authorization guard with nothing in this
+        # file to explain it.
         worker.training_action_bridge = self._training_actions
-        worker.training_action_supported = bool(
-            worker.mode == "training" and worker.app == "hinge"
-            and getattr(worker.driver, "supports_training_decision", False))
         self._training_actions.register(worker)
 
     @staticmethod

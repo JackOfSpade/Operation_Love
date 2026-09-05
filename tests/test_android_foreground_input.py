@@ -225,7 +225,15 @@ def test_android_driver_has_no_transport_input_bypass_outside_guarded_choke_poin
             if (isinstance(owner, ast.Attribute)
                     and isinstance(owner.value, ast.Name) and owner.value.id == "self"
                     and owner.attr in {"adb", "touch", "_adb", "_touch"}
-                    and function.attr in {"tap", "swipe", "scroll_up", "text"}):
+                    # `keyevent` is in the verb set even though no CURRENT call site matches
+                    # this shape: `_hide_keyboard_for_training` resolves it through
+                    # `getattr(self.adb, "keyevent", None)` and calls a local name, which this
+                    # walk cannot see. Pinning the verb means a future direct
+                    # `self.adb.keyevent(...)` has to come here and be accounted for -- it is a
+                    # device input, and `HingeDriver._device_inputs_delivered` (the count the
+                    # still-photo walk uses to decide whether a measured page anchor survives a
+                    # navigation refusal) is only sound while every input is audited.
+                    and function.attr in {"tap", "swipe", "scroll_up", "text", "keyevent"}):
                 direct_calls.add((self.functions[-1], owner.attr, function.attr))
             self.generic_visit(node)
 
@@ -237,6 +245,58 @@ def test_android_driver_has_no_transport_input_bypass_outside_guarded_choke_poin
         ("_scroll", "touch", "scroll_up"),
         ("_text", "adb", "text"),
     }
+
+
+def test_every_transport_input_call_site_also_audits_the_input():
+    """A delivered input that is not audited is an input nothing downstream can count.
+
+    `HingeDriver._audit_device_input` is both the action log's device-input record AND the
+    increment of `_device_inputs_delivered`, which `_still_photo_dwell_candidate_walk` uses to
+    decide whether a navigation refusal leaves the capture's measured page anchor still valid
+    (2026-09-04). A transport call whose function forgets to audit therefore breaks two things
+    at once, silently. The test above pins WHICH functions may call a transport; this one pins
+    that each of them accounts for what it sent.
+    """
+    tree = ast.parse(Path(hinge_module.__file__).read_text(encoding="utf-8"))
+    input_verbs = {"tap", "swipe", "scroll_up", "text", "keyevent"}
+    sends: set[str] = set()
+    audits: set[str] = set()
+
+    class Visitor(ast.NodeVisitor):
+        def __init__(self):
+            self.functions: list[str] = []
+
+        def visit_FunctionDef(self, node):
+            self.functions.append(node.name)
+            self.generic_visit(node)
+            self.functions.pop()
+
+        def visit_Call(self, node):
+            function = node.func
+            if not isinstance(function, ast.Attribute) or not self.functions:
+                self.generic_visit(node)
+                return
+            owner = function.value
+            if (isinstance(owner, ast.Attribute) and isinstance(owner.value, ast.Name)
+                    and owner.value.id == "self"
+                    and owner.attr in {"adb", "touch", "_adb", "_touch"}
+                    and function.attr in input_verbs):
+                sends.add(self.functions[-1])
+            if (isinstance(owner, ast.Name) and owner.id == "self"
+                    and function.attr == "_audit_device_input"):
+                audits.add(self.functions[-1])
+            self.generic_visit(node)
+
+    Visitor().visit(tree)
+
+    assert sends, "the AST walk found no transport call sites at all -- it has stopped working"
+    unaudited = sends - audits
+    assert not unaudited, (
+        f"these functions send a device input without auditing it: {sorted(unaudited)}")
+    # `_hide_keyboard_for_training` sends through `getattr(self.adb, "keyevent", None)`, which no
+    # `self.adb.<verb>` walk can see, so it cannot appear in `sends` -- but it must still audit,
+    # and that is asserted directly rather than left to a walk that structurally cannot check it.
+    assert "_hide_keyboard_for_training" in audits
 
 
 @pytest.mark.parametrize("current_first", [True, False])

@@ -222,7 +222,7 @@ class TrainingActionBridge:
             self._lock.notify_all()
 
     def publish_checkpoint(self, worker, pre_send_frame: bytes, pick, evidence=None,
-                           profile_frames=()) -> dict:
+                           profile_frames=(), item_media_ordinal=None) -> dict:
         """Publish the immutable verified target and ordered profile review frames.
 
         The driver must have hidden the keyboard and then re-located/re-verified
@@ -230,6 +230,17 @@ class TrainingActionBridge:
         This bridge deliberately does not infer that condition from a crop or
         coordinate; it only accepts the resulting complete screenshot. Supplementary profile
         frames are the worker's existing capture sequence and never authorize either action.
+
+        ``item_media_ordinal`` is the OPTIONAL operator affordance: the target's position
+        counted over photos and videos only, so the reviewer holding the phone can find the card
+        without counting page hearts across written prompts. It is a review HINT and never a
+        capability -- nothing here or in the Hub gates a decision on it. The worker supplies it
+        only when its driver could prove the count; every other case must publish exactly the
+        card it publishes today, so an absent or unusable value drops the key rather than
+        carrying a null the page would have to special-case. Anything that is not a positive
+        integer (including ``True``, which is an ``int`` in Python but never an ordinal) is
+        treated as absent rather than raised on: a checkpoint must not fail to publish over a
+        hint.
         """
         opener = getattr(pick, "text", None) if pick is not None else None
         if not isinstance(pre_send_frame, bytes) or not pre_send_frame:
@@ -277,6 +288,9 @@ class TrainingActionBridge:
             "pending": None,
             "updated_at": time.time(),
         }
+        if (not isinstance(item_media_ordinal, bool) and isinstance(item_media_ordinal, int)
+                and item_media_ordinal > 0):
+            card["item_media_ordinal"] = item_media_ordinal
         with self._lock:
             if self._workers.get(key) is not worker:
                 raise ValueError("training worker is not registered with the action bridge")
@@ -375,13 +389,14 @@ class TrainingActionBridge:
                 self._cards.pop(key, None)
             self._lock.notify_all()
 
-    def has_actionable_checkpoint(self) -> bool:
-        """Whether a live Training worker has a decision ready for Hub review.
+    def has_live_checkpoint(self) -> bool:
+        """Whether a registered Training worker still owns a review checkpoint.
 
         This is deliberately a small locked query instead of making lifecycle code inspect
-        ``snapshot()`` output.  A checkpoint is actionable only while its owner is still
-        registered and it is waiting for the owner's first Like/Dislike choice; a queued or
-        executing action is no longer a browser decision boundary.
+        ``snapshot()`` output.  It stays true for a ready checkpoint AND for one whose choice is
+        already queued or executing: a submitted choice is still tied to the exact reviewed
+        profile and must not be abandoned merely because the browser tab that submitted it goes
+        away.
         """
         with self._lock:
             for key, card in self._cards.items():
@@ -390,11 +405,20 @@ class TrainingActionBridge:
                     continue
                 if (getattr(worker, "mode", None) == "training"
                         and getattr(worker, "training_action_supported", False)
-                        and card.get("phase") == "waiting_training_decision"
-                        and card.get("action") == "ready"
-                        and not card.get("pending")):
+                        and card.get("phase") in {
+                            "waiting_training_decision", "executing_training_decision"}
+                        and card.get("action") in {"ready", "queued", "executing"}):
                     return True
             return False
+
+    def has_checkpoint(self, *, run_id: str, app: str, profile_token: str) -> bool:
+        """Whether these bounded identifiers name the current live review card."""
+        if not all(isinstance(value, str) and 0 < len(value) <= _MAX_PROTOCOL_STRING_LENGTH
+                   for value in (run_id, app, profile_token)):
+            return False
+        with self._lock:
+            card = self._cards.get((run_id, app))
+            return card is not None and card.get("profile_token") == profile_token
 
     def snapshot(self, *, run_id: str | None = None, app: str | None = None) -> dict:
         with self._lock:

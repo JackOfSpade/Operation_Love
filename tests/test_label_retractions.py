@@ -281,3 +281,25 @@ def test_debug_target_requires_local_non_symlinked_exact_worker_run_binding(tmp_
     with pytest.raises(RetractionRefused, match="symlinked"):
         label_retraction._debug_target(tmp_path / "data" / "run-2" / "actions.jsonl", 2,
                                         run_id="run-2", app="hinge")
+
+
+@pytest.mark.parametrize("intruder", ["[]", "3", '"x"', "null"])
+def test_debug_target_refuses_a_non_dict_row_rather_than_crashing(tmp_path, monkeypatch, intruder):
+    """A correction is bound to a DECISION ORDINAL counted across every row in this file.
+
+    `[]`, `3`, `"x"` and `null` are all valid JSON that `json.loads` accepts, and only the
+    binding row and the target row were isinstance-checked, so `.get` on any other one raised a
+    bare AttributeError that `main`'s handler does not catch: a traceback instead of the tool's
+    REFUSED contract, from a tool whose whole job is auditable evidence.
+    """
+    monkeypatch.chdir(tmp_path)
+    actions = tmp_path / "data" / "run-1" / "actions.jsonl"
+    actions.parent.mkdir(parents=True)
+    actions.write_text("\n".join([
+        json.dumps({"ts": "now", "action": "observe_release_run_binding",
+                    "run_id": "run-1", "app": "hinge"}),
+        intruder,
+        json.dumps({"ts": "now", "action": "observe_decision", "decision": "pass"}),
+    ]) + "\n")
+    with pytest.raises(RetractionRefused, match="malformed"):
+        label_retraction._debug_target(actions, 3, run_id="run-1", app="hinge")

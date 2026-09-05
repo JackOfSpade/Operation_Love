@@ -859,6 +859,34 @@ def test_frames_that_cannot_be_put_in_one_coordinate_space_stop_the_count():
     assert exc.value.measurement["achieved"]["reverse"] is None
 
 
+def test_a_chain_refusal_records_the_forward_strip_bank_and_not_only_its_aggregates():
+    """The v3 record's whole point, and the direction that actually refused.
+
+    The refusing direction is the FORWARD one, so a row that keeps only its nine aggregate
+    scalars cannot answer the question a chain refusal over an autoplaying card raises: did the
+    strips DISAGREE, or did the bank split into a page cluster and a video cluster? Those look
+    identical in `agreeing`/`dissenting` and different in the bank. The nine `measurement_*` keys
+    stay beside it, because v2 readers and `hinge`'s differently shaped overshoot `achieved`
+    depend on them.
+
+    `achieved` is asserted to be in the `{"forward": ..., "reverse": ...}` shape
+    `hinge._shift_refusal_trace` emits, which is what lets one bug-report renderer print both.
+    """
+    driver = FakeDriver(fixed_step_px=1400)
+    with pytest.raises(item_nav.ItemNavigationError) as exc:
+        _navigate(driver, 1)
+
+    achieved = exc.value.measurement["achieved"]
+    assert exc.value.measurement["schema_version"] == 3
+    forward = achieved["forward"]
+    assert forward["status"] == achieved["measurement_status"] == "beyond_window"
+    # The three fields the projection to nine scalars was dropping.
+    assert forward["strips"] and all(len(strip) == 5 for strip in forward["strips"])
+    assert forward["trust_window_px"] > 0
+    assert len(forward["band"]) == 2
+    assert set(achieved) >= {"forward", "reverse"}
+
+
 def test_navigation_step_uses_reverse_quorum_when_forward_animation_bank_refuses(
         monkeypatch):
     """Regression for the reported still-photo dwell walk's ``chain_broken``.
@@ -1216,14 +1244,56 @@ def test_the_ascending_anchor_is_the_bottom_most_heart_and_its_ordinal_is_measur
     assert reason is not None and "no ordinal 0 for" in reason
 
 
-def test_the_entry_anchor_residual_cannot_reach_a_neighbouring_heart():
+def test_the_entry_anchor_residual_cannot_reach_a_neighbouring_heart(monkeypatch):
     """The bound's safety argument, as an assertion rather than a comment. A mis-assignment needs
     the WRONG index heart to be nearer the anchor than the right one, which takes half a card
     pitch; the smallest heart-bearing spacing measured anywhere in the corpus is 738px, so the
     bound has 23x of room. The module asserts this at import; this is the same fact where a
-    reader will look for it."""
-    bound = item_nav._ENTRY_ANCHOR_RESIDUAL_PX + item_nav._CROSSCHECK_TOLERANCE_PX
+    reader will look for it.
+
+    The bound `_count_disagrees` is actually HANDED is the one that has to be safe, and it is not
+    the constant: the ascending pass widens the residual by its own measured entry drift, and the
+    entry drift gate admits a drift an order of magnitude past what the nearest-index-heart match
+    can survive. So the widening is capped, and the capped value is asserted here — both that it
+    still clears half a pitch, and that it is what a real navigation over an admitted drift ends
+    up using."""
+    tol = item_nav._CROSSCHECK_TOLERANCE_PX
+    bound = item_nav._ENTRY_ANCHOR_RESIDUAL_PX + tol
     assert bound * 2 < scroll_step._FALLBACK_SPACING_PX // 2
+
+    # The same claim for the widest residual the module can produce at runtime, in the shape the
+    # module's import-time invariant states it — on the residual itself, before the crosscheck
+    # tolerance is added, because the cap IS the largest residual that invariant admits.
+    assert item_nav._MAX_ENTRY_ANCHOR_RESIDUAL_PX * 2 < scroll_step._FALLBACK_SPACING_PX // 2
+
+    # What the cap buys, said as the thing that would have to go wrong: even at the widest bound
+    # the anchor cannot prefer a NEIGHBOUR until the true origin error passes `pitch - bound`,
+    # which is more than twice the largest drift the entry gate will admit at all.
+    floor_px = scroll_step.step_px_for_frac(hinge._READ_SCROLL_FRAC_MIN, _H)
+    widest = item_nav._MAX_ENTRY_ANCHOR_RESIDUAL_PX + tol
+    assert scroll_step._FALLBACK_SPACING_PX - widest > 2 * (floor_px - 1)
+
+    # ...and the cap is load-bearing rather than decorative: the entry gate admits a drift that,
+    # handed through uncapped as it used to be, is past the invariant itself.
+    assert (floor_px - 1) * 2 >= scroll_step._FALLBACK_SPACING_PX // 2
+    assert floor_px - 1 > item_nav._MAX_ENTRY_ANCHOR_RESIDUAL_PX
+
+    seen: list[int | None] = []
+    real = item_nav._count_disagrees
+
+    def capture(*args, **kwargs):
+        seen.append(kwargs.get("anchor_residual_px"))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(item_nav, "_count_disagrees", capture)
+
+    # One pixel inside the drift gate — the largest drift a navigation can carry — driven through
+    # the real ascending loop rather than asserted about the constants alone.
+    nudged = FakeDriver(start_scroll=_ENTRY_SCROLL - (floor_px - 1))
+    target = _navigate(nudged, 3)
+    assert target.anchor.delta_px == -(floor_px - 1)
+    assert target.heart_ordinal == 3
+    assert seen and set(seen) == {item_nav._MAX_ENTRY_ANCHOR_RESIDUAL_PX}
 
 
 def test_the_descending_anchor_is_still_checked_against_the_top_gates_residual():

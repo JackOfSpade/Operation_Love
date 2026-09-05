@@ -675,6 +675,82 @@ def test_persistent_gesture_flush_delay_matches_uhid_touchs_jittered_range(monke
     assert all(drv.flush_ms <= v <= drv.flush_ms + 90 for v in seen)   # never below the safe baseline
 
 
+# --- the gesture surface is ONE surface, and the shipped transport is the tested one -----
+#
+# Until 2026-09-04 tap/swipe/scroll_up were a character-identical SECOND copy on
+# PersistentUhidTouch, and not one test in this file ever called that copy's scroll_up or
+# exercised its duration scaling -- so the transport config.yaml actually ships was the untested
+# one, and a humanization edit made to either class alone would have been silent in both
+# directions. The identity test below is what makes the drift impossible; the two after it are
+# the coverage that would have caught it anyway.
+
+def test_both_uhid_transports_are_literally_the_same_gesture_surface():
+    """`touch_backend: uhid` is documented as the instant revert to the proven per-gesture
+    transport, which is only true while the two emit the same touch signature. The humanization
+    (Fitts-law duration scaling, HINGE-04 x-column jitter, the plan_swipe parameters) is
+    therefore ONE function each, shared by inheritance, not two that happen to match today."""
+    for method in ("tap", "swipe", "scroll_up"):
+        assert getattr(UhidTouch, method) is getattr(PersistentUhidTouch, method), method
+        assert method not in UhidTouch.__dict__, f"{method} was re-overridden on UhidTouch"
+        assert method not in PersistentUhidTouch.__dict__, \
+            f"{method} was re-overridden on PersistentUhidTouch"
+    # ...and delivery, the one thing they genuinely differ on, IS overridden by each of them.
+    assert "_run_gesture" in UhidTouch.__dict__
+    assert "_run_gesture" in PersistentUhidTouch.__dict__
+    assert UhidTouch._run_gesture is not PersistentUhidTouch._run_gesture
+
+
+def test_persistent_scroll_up_jitters_x_column(monkeypatch):
+    """HINGE-04 on the SHIPPED transport, mirroring `test_scroll_up_jitters_x_column` above:
+    the genuine-to-the-kernel transport must not be the one emitting a pixel-identical swipe
+    column every scroll."""
+    _quiet_sleep(monkeypatch)
+    monkeypatch.setattr(uhid.subprocess, "Popen", _FakePersistentPopen)
+    drv = PersistentUhidTouch(FakeAdb())
+    drv.open()
+    proc = _FakePersistentPopen.instances[0]
+
+    xs = set()
+    for _ in range(30):
+        mark = len(proc.stdin.written)
+        drv.scroll_up()
+        cmds = _cmds_from_strings(proc.stdin.written[mark:])
+        reports = [c["report"] for c in cmds if c["command"] == "report"]
+        # first sample's x is exact (no path jitter at k=0), same as the UhidTouch test
+        xs.add(reports[0][3] | (reports[0][4] << 8))
+
+    assert len(xs) > 1
+
+
+def test_persistent_swipe_scales_its_duration_and_clamps_at_both_ends(monkeypatch):
+    """`duration_scale = max(0.20, min(2.0, duration_ms / 450.0))` on the shipped transport.
+
+    Asserted through what actually reaches the kernel -- the number of HID reports in the
+    stream, which at a fixed report rate IS the gesture's duration -- rather than by reading the
+    scale back off the object, so a planner wired up with the wrong scale fails here. Both
+    clamps are checked, since an unclamped version would pass a monotonicity test alone.
+    """
+    _quiet_sleep(monkeypatch)
+    monkeypatch.setattr(uhid.subprocess, "Popen", _FakePersistentPopen)
+
+    def reports_for(duration_ms):
+        drv = PersistentUhidTouch(FakeAdb(), rng=random.Random(7))
+        drv.open()
+        proc = _FakePersistentPopen.instances[-1]
+        mark = len(proc.stdin.written)
+        drv.swipe(540, 1700, 540, 700, duration_ms=duration_ms)
+        cmds = _cmds_from_strings(proc.stdin.written[mark:])
+        return sum(1 for c in cmds if c["command"] == "report")
+
+    default, short = reports_for(450), reports_for(150)
+    assert short < default, "a shorter requested duration must deliver a shorter gesture"
+    # The LOW clamp: 0.20 * 450 = 90ms is the floor, so anything under it plans identically
+    # and a 1ms request can never collapse the gesture to a teleport (humanized-input rule).
+    assert reports_for(90) == reports_for(45) == reports_for(1) < short
+    # The HIGH clamp: 2.0 * 450 = 900ms, so a 5000ms request plans exactly the 900ms gesture.
+    assert reports_for(900) == reports_for(1800) == reports_for(5000) > default
+
+
 # --- close(): idempotent, best-effort, never raises -------------------------------------
 def test_persistent_close_is_idempotent_and_never_raises_even_when_never_opened():
     drv = PersistentUhidTouch(FakeAdb())

@@ -452,12 +452,21 @@ class Embedder:
             face_vecs: list[list[float]] = []
             clip_vecs: list[list[float]] = []
             first_error: Exception | None = None
+            # Whether ANY photo failed provider-shaped, judged as each exception arrives.
+            # Separate from first_error, which is pinned to the first exception of any KIND for
+            # the reporting lines below: a truncated `adb screencap` PNG (PIL
+            # UnidentifiedImageError, the "corrupt/undecodable images unrelated to the
+            # provider" case called out further down) landing on photo 1 must not decide the
+            # provider question for photos 2..N -- see the fallback comment below for why the
+            # test is ANY photo, not the first one and not every one.
+            provider_error_seen = False
             errors = 0
             for img in profile.photos:
                 try:
                     fv, cv = self._embed_image(img)
                 except Exception as exc:  # noqa: BLE001
                     errors += 1
+                    provider_error_seen = provider_error_seen or _is_onnx_provider_failure(exc)
                     if first_error is None:
                         first_error = exc
                         # Surface the first failure; don't spam one line per photo.
@@ -483,12 +492,11 @@ class Embedder:
             # errors == len(photos) let a 7-of-8 CoreML failure stay on the broken
             # provider and silently pool a "full strength" profile embedding out of the
             # ONE surviving photo -- fail loud instead: retry the WHOLE profile on CPU.
-            provider_failed = (
-                bool(profile.photos)
-                and errors > 0
-                and first_error is not None
-                and _is_onnx_provider_failure(first_error)
-            )
+            # "ANY photo" is why this reads provider_error_seen and not first_error: gating on
+            # the FIRST exception made the same masking happen by photo ORDER instead of by
+            # count, since one unrelated decode error arriving before the provider's makes
+            # _is_onnx_provider_failure answer about the wrong exception.
+            provider_failed = bool(profile.photos) and provider_error_seen
             if provider_failed and not self._arc_on_cpu and not retried_on_cpu:
                 # Capture what this pass actually ran on and how many photos it lost,
                 # BEFORE the swap below overwrites _arc_providers, so the summary line

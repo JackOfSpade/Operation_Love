@@ -280,7 +280,18 @@ def test_api_stop_rejects_duplicate_content_length_before_parsing(secured_stop_h
     assert state.stop_calls == 0
 
 
-@pytest.mark.parametrize("token", [None, "not-the-server-token"])
+@pytest.mark.parametrize("token", [
+    None,
+    "not-the-server-token",
+    # hmac.compare_digest raises TypeError on a str operand holding any non-ASCII character.
+    # Nothing in do_POST catches it, so the refusal below used to be no response at all (the
+    # caller saw RemoteDisconnected) plus a traceback teed into the operator's live log and every
+    # bug report taken afterwards.
+    "é" * 43,
+    # json.loads hands back a lone surrogate for a "\\ud800" escape, which a plain .encode()
+    # would then raise UnicodeEncodeError on -- the same failure one layer down.
+    "\ud800",
+])
 def test_api_stop_rejects_missing_or_wrong_csrf_token(secured_stop_hub, token):
     base, _httpd, state = secured_stop_hub
     payload = {} if token is None else {"_csrf_token": token}
@@ -290,6 +301,7 @@ def test_api_stop_rejects_missing_or_wrong_csrf_token(secured_stop_hub, token):
             "Origin": base,
         })
     assert exc_info.value.code == 403
+    assert json.loads(exc_info.value.read()) == {"ok": False, "msg": "invalid CSRF token"}
     assert state.stop_calls == 0
 
 
@@ -632,16 +644,14 @@ def _tiny_review_png() -> bytes:
             + chunk(b"IDAT", zlib.compress(b"\x00\x00")) + chunk(b"IEND", b""))
 
 
-def test_browser_close_preserves_checkpoint_before_worker_reports_waiting_approval():
-    """Covers the has_actionable_checkpoint() fallback in browser_close_shutdown_disposition.
+@pytest.mark.parametrize("phase", ["ready", "queued", "executing"])
+def test_browser_close_preserves_live_checkpoint_before_worker_reports_waiting_approval(phase):
+    """A bridge checkpoint keeps the hub alive through every decision phase.
 
     publish_checkpoint() runs on the training worker's own thread and precedes its status
     update to waiting_approval by however long that thread takes to report back -- see the
-    comment on browser_close_shutdown_disposition. The only existing end-to-end coverage
-    (test_hub_tab_close_keeps_waiting_training_approval_alive_until_reopened, above) drives
-    the EARLIER status-snapshot branch and never actually opens this hand-off window, so this
-    exercises the bridge fallback directly: a checkpoint is published while self._status is
-    still None, and the disposition must still refuse to let the tab close stop the run.
+    comment on browser_close_shutdown_disposition.  The bridge, rather than that later status
+    snapshot, must also protect a choice that is queued or being applied/recorded.
     """
     class _Worker:
         run_id = "training-run"
@@ -665,12 +675,24 @@ def test_browser_close_preserves_checkpoint_before_worker_reports_waiting_approv
     try:
         worker = _Worker()
         st._training_actions.register(worker)
-        st._training_actions.publish_checkpoint(worker, _tiny_review_png(), _Pick())
+        card = st._training_actions.publish_checkpoint(worker, _tiny_review_png(), _Pick())
+        if phase != "ready":
+            ok, result, code = st._training_actions.submit({
+                "command": "like", "run_id": card["run_id"], "app": card["app"],
+                "profile_token": card["profile_token"],
+                "approval_token": card["approval_token"], "idempotency_token": "test-action",
+            })
+            assert (ok, result["status"], code) == (True, "queued", 202)
+        if phase == "executing":
+            action = st._training_actions.wait_for_action(
+                worker, card["profile_token"], worker.stop_event)
+            assert action is not None and action["status"] == "executing"
 
-        # The worker has not yet reported waiting_approval: the status snapshot branch above
-        # this one in browser_close_shutdown_disposition cannot be what protects this card.
+        # The worker has not yet reported waiting_approval, so the status-snapshot branch cannot
+        # protect this card.  Every live card -- untouched, queued, or being applied -- must keep
+        # the server and run alive.
         assert st._status is None
-        assert st._training_actions.has_actionable_checkpoint() is True
+        assert st._training_actions.has_live_checkpoint() is True
         assert st.browser_close_shutdown_disposition() == "preserve_training_approval"
     finally:
         st._stop.set()
@@ -901,6 +923,196 @@ def test_serve_shutdown_warns_and_exits_when_run_does_not_finish_in_time(monkeyp
 
     assert any("did not finish saving" in line for line in printed)
     assert httpd.closed is True
+
+
+def _shutdown_cfg(scroll_captures: int):
+    """Minimal stand-in carrying only the fields the two shutdown bounds actually read.
+
+    Opener enabled at the LARGEST legal request timeout so the worker-join term is at its
+    ceiling too: the invariant has to hold for the worst legal run, not the shipped one.
+    """
+    import operation_love.config as config_module
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        enabled_apps=["hinge"],
+        apps={"hinge": {"scroll_captures": scroll_captures}},
+        opener=SimpleNamespace(enabled=True,
+                               request_timeout_s=config_module._MAX_REQUEST_TIMEOUT_S))
+
+
+def test_hub_archive_ceiling_covers_the_supervisors_join_for_every_legal_capture_budget():
+    """The Hub's archive extension is composed per-run, and must never invert the invariant.
+
+    The join a healthy worker can legitimately use is three terms, not one: an in-flight opener
+    request, the profile archive that store.close() then blocks on anyway, and the margin the
+    worker gets afterwards to write that already-landed action's rows.
+
+    The trap this pins is that the archive term is NOT a fixed number: _archive_join_grace_s
+    reads it off the run's own scroll_captures, which config validation admits all the way to
+    _MAX_ANDROID_SCROLL_CAPTURES -- while the Training review ceiling is only
+    MAX_PROFILE_REVIEW_FRAMES. A Hub bound frozen at the review ceiling INVERTS for every legal
+    run above it (auto with scroll_captures=24 already qualifies): the Hub abandons the process
+    while the supervisor's join is still legitimately running, so flush()/close() never happen
+    and the buffered rows of an irreversible landed action are lost. Comparing the grace alone
+    against the outer bound -- as this test previously did, at a single 12-capture config --
+    cannot see that class at all, because both sides move.
+    """
+    import operation_love.config as config_module
+    import operation_love.hub.server as hub_server
+    import operation_love.supervisor as supervisor_module
+    from operation_love.training_actions import MAX_PROFILE_REVIEW_FRAMES
+
+    # The FLAT budget carries the opener-side join on its own: a worker riding out one
+    # in-flight opener request registers no store write, so the conditional extension below
+    # cannot rescue it -- the probe would (correctly) answer "no archive" and the Hub would
+    # abandon a healthy join.
+    assert hub_server._SHUTDOWN_SAVE_TIMEOUT_S >= (
+        config_module._MAX_REQUEST_TIMEOUT_S
+        + supervisor_module._WORKER_JOIN_TIMEOUT_MARGIN_S)
+
+    budgets = (1, MAX_PROFILE_REVIEW_FRAMES, 24, config_module._MAX_ANDROID_SCROLL_CAPTURES)
+    assert config_module._MAX_ANDROID_SCROLL_CAPTURES > MAX_PROFILE_REVIEW_FRAMES  # the gap
+    for captures in budgets:
+        cfg = _shutdown_cfg(captures)
+        supervisor_join = (supervisor_module._worker_join_timeout_s(cfg)
+                           + supervisor_module._archive_join_grace_s(cfg)
+                           + supervisor_module._WORKER_JOIN_TIMEOUT_MARGIN_S)
+        assert hub_server._run_archive_ceiling_s(cfg) >= supervisor_join, captures
+    # The archive term is load-bearing: a ceiling that silently dropped back to the opener-only
+    # derivation would be far below the 100-capture run's own grace.
+    biggest = _shutdown_cfg(config_module._MAX_ANDROID_SCROLL_CAPTURES)
+    assert hub_server._run_archive_ceiling_s(biggest) > (
+        config_module._MAX_REQUEST_TIMEOUT_S
+        + 2 * supervisor_module._WORKER_JOIN_TIMEOUT_MARGIN_S
+        + hub_server._SHUTDOWN_SAVE_HEADROOM_S)
+    # ...and the ceiling is genuinely per-run, not a constant wearing a function's clothes.
+    assert (hub_server._run_archive_ceiling_s(biggest)
+            > hub_server._run_archive_ceiling_s(_shutdown_cfg(1)))
+    # No cfg in reach (nothing bound yet) still yields a usable flat bound, never a crash.
+    assert hub_server._run_archive_ceiling_s(None) == (
+        hub_server._SHUTDOWN_ARCHIVE_CEILING_FALLBACK_S)
+    assert hub_server._run_archive_ceiling_s(object()) == (
+        hub_server._SHUTDOWN_ARCHIVE_CEILING_FALLBACK_S)
+
+
+def test_hub_shutdown_stops_at_the_flat_budget_when_nothing_is_archiving(monkeypatch):
+    """Finding B/C: the conditional extension must cost an idle shutdown nothing.
+
+    A wedged worker with no registered write in flight has no data to protect, so the Hub owes
+    it only the flat prompt-exit budget -- that is what keeps "close the tab -> hub exits ->
+    launcher closes the Terminal tab" feeling like quitting.
+    """
+    import operation_love.hub.server as hub_server
+
+    monkeypatch.setattr(hub_server, "_SHUTDOWN_SAVE_TIMEOUT_S", 0.05)
+    monkeypatch.setattr(hub_server, "_SHUTDOWN_ARCHIVE_POLL_S", 0.02)
+    # Deliberately enormous next to the flat budget: if the extension were unconditional, this
+    # test would visibly hang rather than fail by a hair.
+    monkeypatch.setattr(hub_server, "_run_archive_ceiling_s", lambda cfg: 30.0)
+
+    stuck = threading.Event()
+    st = HubState("config.yaml")
+    st._thread = threading.Thread(target=stuck.wait, daemon=True)
+    st._thread.start()
+    assert st.live_store() is None          # nothing archiving: the probe's False answer
+
+    printed = []
+    monkeypatch.setattr("builtins.print", lambda *a, **k: printed.append(" ".join(map(str, a))))
+    try:
+        t0 = time.monotonic()
+        assert hub_server._wait_for_run_shutdown(st) is False
+        elapsed = time.monotonic() - t0
+    finally:
+        stuck.set()
+        st._thread.join(timeout=_LIVENESS_TIMEOUT_S)
+    # Not a liveness bound: this IS the assertion. It has to stay well under the 30.0s ceiling
+    # above, since falling through to that ceiling is exactly the regression being excluded.
+    assert elapsed < 5.0
+    # And the operator is never told an archive is holding shutdown open when none is: that
+    # notice announces a wait this path did not take.
+    assert not any("still archiving" in line for line in printed)
+
+
+class _ArchiveProbe:
+    """The duck-typed seam supervisor._store_archive_in_flight reads (bigquery_store's).
+
+    Reports an archive in flight for the first ``in_flight_for`` probes, then drained.
+    """
+
+    def __init__(self, in_flight_for: int):
+        self._in_flight_for = in_flight_for
+        self.probes = 0
+
+    def archive_writes_in_flight(self) -> bool:
+        self.probes += 1
+        return self.probes <= self._in_flight_for
+
+
+def test_hub_shutdown_extends_past_the_flat_budget_while_an_archive_is_writing(monkeypatch):
+    """Finding A: an already-landed decision's archive outlives the flat prompt-exit budget.
+
+    Without the extension the Hub returns False here and serve()'s finally exits the process
+    while the supervisor's own join is still legitimately running, so store.flush()/close()
+    never write that action's decision/opener/label rows.
+    """
+    import operation_love.hub.server as hub_server
+
+    monkeypatch.setattr(hub_server, "_SHUTDOWN_SAVE_TIMEOUT_S", 0.05)
+    monkeypatch.setattr(hub_server, "_SHUTDOWN_ARCHIVE_POLL_S", 0.02)
+    monkeypatch.setattr(hub_server, "_run_archive_ceiling_s", lambda cfg: _LIVENESS_TIMEOUT_S)
+
+    saving = threading.Event()
+    st = HubState("config.yaml")
+    # Still saving when the flat budget expires, then finishes -- the healthy shutdown the flat
+    # bound alone would have truncated.
+    st._thread = threading.Thread(target=lambda: saving.wait(_LIVENESS_TIMEOUT_S), daemon=True)
+    st._thread.start()
+    st._live_store = _ArchiveProbe(in_flight_for=10**6)   # never drains on its own
+    releaser = threading.Timer(0.3, saving.set)
+    releaser.daemon = True          # a test helper must never outlive the test run
+    releaser.start()
+
+    try:
+        assert hub_server._wait_for_run_shutdown(st) is True
+    finally:
+        saving.set()
+        st._thread.join(timeout=_LIVENESS_TIMEOUT_S)
+    # More than the single pre-loop probe: it kept slicing rather than sampling once.
+    assert st._live_store.probes >= 2
+
+
+def test_hub_shutdown_ends_the_archive_extension_as_soon_as_the_write_drains(monkeypatch):
+    """The extension is the archive's budget, and no other wedge may inherit it.
+
+    Re-probing every slice (not sampling once before the loop) is what keeps a worker that is
+    genuinely stuck from spending the whole per-run ceiling after the write it was protecting
+    has already finished.
+    """
+    import operation_love.hub.server as hub_server
+
+    monkeypatch.setattr(hub_server, "_SHUTDOWN_SAVE_TIMEOUT_S", 0.05)
+    monkeypatch.setattr(hub_server, "_SHUTDOWN_ARCHIVE_POLL_S", 0.02)
+    monkeypatch.setattr(hub_server, "_run_archive_ceiling_s", lambda cfg: _LIVENESS_TIMEOUT_S)
+
+    stuck = threading.Event()
+    st = HubState("config.yaml")
+    st._thread = threading.Thread(target=stuck.wait, daemon=True)   # never finishes
+    st._thread.start()
+    st._live_store = _ArchiveProbe(in_flight_for=2)
+
+    try:
+        t0 = time.monotonic()
+        assert hub_server._wait_for_run_shutdown(st) is False
+        elapsed = time.monotonic() - t0
+    finally:
+        stuck.set()
+        st._thread.join(timeout=_LIVENESS_TIMEOUT_S)
+    assert st._live_store.probes >= 2          # it did extend past the flat budget…
+    # …and then stopped at the drain. Not a liveness bound: this IS the assertion, and it must
+    # stay far below the _LIVENESS_TIMEOUT_S ceiling above, which is what burning the whole
+    # extension on a drained archive would cost.
+    assert elapsed < 5.0
 
 
 def test_eval_refresh_start_failure_clears_its_inflight_guard(monkeypatch):
@@ -1392,7 +1604,7 @@ def test_api_start_rejects_non_object_json_before_launching_run(monkeypatch, pay
 
 @pytest.mark.parametrize("path", [
     "/api/training/action", "/api/hub/open", "/api/hub/ping",
-    "/api/hub/closed",
+    "/api/hub/closed", "/api/training/alert",
 ])
 @pytest.mark.parametrize("payload", [b"not-json", b"[]", b"null"])
 def test_api_post_endpoints_reject_non_object_json_without_crashing(path, payload):
@@ -1412,6 +1624,128 @@ def test_api_post_endpoints_reject_non_object_json_without_crashing(path, payloa
         response = json.loads(exc_info.value.read())
         assert response["ok"] is False
         assert "JSON object" in response["msg"]
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        _join_hub_watch_threads()
+
+
+def test_training_alert_endpoint_records_only_bounded_browser_telemetry():
+    class AlertSpy:
+        def __init__(self):
+            self.rows = []
+
+        def record_training_browser_notification(self, body):
+            self.rows.append(body)
+            return True, "recorded"
+
+    state = AlertSpy()
+    _Handler.state = state
+    httpd = _bind("127.0.0.1", 8799)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base = f"http://127.0.0.1:{httpd.server_address[1]}"
+        body = json.dumps({
+            "run_id": "run-1", "app": "hinge", "profile_token": "profile-1",
+            "notification": "requested",
+        }).encode()
+        code, result = _post(base, "/api/training/alert", body)
+        assert code == 200 and result == {"ok": True, "msg": "recorded"}
+        assert state.rows == [{
+            "run_id": "run-1", "app": "hinge", "profile_token": "profile-1",
+            "notification": "requested",
+        }]
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def _alert_telemetry_worker():
+    class _Worker:
+        run_id = "alert-run"
+        app = "hinge"
+        mode = "training"
+        training_action_supported = True
+
+        def __init__(self):
+            self.stop_event = threading.Event()
+
+    class _Pick:
+        text = "The typed opener"
+        referenced = "mountain photo"
+        index = 2
+        item_description = "mountain photo"
+
+    return _Worker(), _Pick()
+
+
+def test_hub_state_binds_browser_alert_telemetry_to_the_live_checkpoint():
+    """The endpoint test above swaps HubState out, so it can see none of this validation.
+
+    HubState.record_training_browser_notification is the only writer of this telemetry, and it
+    must accept a row ONLY for the checkpoint that is live right now and ONLY from the fixed
+    outcome vocabulary -- otherwise any local POST could write rows naming a run/profile that is
+    not on screen. Both refusal branches were previously unreachable from any test: replacing the
+    whole method with ``return True, "recorded"`` left the suite green.
+    """
+    from operation_love import notifications
+
+    worker, pick = _alert_telemetry_worker()
+    st = HubState("config.yaml")
+    st._training_actions.register(worker)
+    card = st._training_actions.publish_checkpoint(worker, _tiny_review_png(), pick)
+    live = {"run_id": card["run_id"], "app": card["app"],
+            "profile_token": card["profile_token"]}
+
+    before = len(notifications.recent_training_alerts())
+    assert st.record_training_browser_notification(
+        {**live, "notification": "requested"}) == (True, "recorded")
+    rows = notifications.recent_training_alerts()
+    assert len(rows) == before + 1
+    assert rows[-1]["channel"] == "hub-browser"
+    assert rows[-1]["notification"] == "requested"
+
+    for wrong in ({"profile_token": "a-retired-profile"}, {"run_id": "some-other-run"},
+                  {"app": "bumble"}, {"profile_token": None}, {"run_id": {"nested": "object"}},
+                  {"app": None}):
+        assert st.record_training_browser_notification(
+            {**live, **wrong, "notification": "requested"}) == (
+                False, "no matching live training checkpoint")
+
+    for outcome in ("sent", "", None, {"notification": "requested"}, "REQUESTED"):
+        assert st.record_training_browser_notification(
+            {**live, "notification": outcome}) == (
+                False, "invalid browser notification outcome")
+
+    # A refused row must not reach the diagnostic ring at all.
+    assert len(notifications.recent_training_alerts()) == before + 1
+
+
+def test_training_alert_endpoint_refuses_a_retired_checkpoint_with_409():
+    """Pins hub/server.py's ``200 if ok else 409`` on the real state object."""
+    worker, pick = _alert_telemetry_worker()
+    st = HubState("config.yaml")
+    st._training_actions.register(worker)
+    card = st._training_actions.publish_checkpoint(worker, _tiny_review_png(), pick)
+
+    _Handler.state = st
+    httpd = _bind("127.0.0.1", 8799)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base = f"http://127.0.0.1:{httpd.server_address[1]}"
+        live = {"run_id": card["run_id"], "app": card["app"],
+                "profile_token": card["profile_token"], "notification": "requested"}
+        code, result = _post(base, "/api/training/alert", json.dumps(live).encode())
+        assert (code, result) == (200, {"ok": True, "msg": "recorded"})
+
+        stale = {**live, "profile_token": "a-retired-profile"}
+        with pytest.raises(urllib.error.HTTPError) as exc_info:
+            _post(base, "/api/training/alert", json.dumps(stale).encode())
+        assert exc_info.value.code == 409
+        assert json.loads(exc_info.value.read()) == {
+            "ok": False, "msg": "no matching live training checkpoint"}
     finally:
         httpd.shutdown()
         httpd.server_close()
@@ -1754,8 +2088,6 @@ def test_eval_snapshot_reads_live_store_while_running(monkeypatch):
     class Fresh:
         def load_labels(self):
             return [object()] * 5            # committed-only (would lag) — must NOT be used here
-        def load_labels_ordered(self):
-            return [object()] * 5
         def close(self):
             pass
 
@@ -1798,8 +2130,6 @@ def test_eval_snapshot_falls_back_when_live_store_read_fails(monkeypatch):
         def load_labels(self):
             fresh_used.append(1)
             return [object()] * 12
-        def load_labels_ordered(self):
-            return []
         def close(self):
             pass
 
@@ -2544,6 +2874,41 @@ def test_run_status_maps_live_training_producer_states_to_one_clear_cue(state, e
     assert html.count("hinge") == 1
 
 
+def test_run_status_tells_the_two_scoring_publishes_apart():
+    """`scoring` is published for two different things and must not be titled as one.
+
+    The worker republishes state="scoring" AFTER a decision is durably saved, purely to stop
+    claiming a device action is in flight during the pacing / session-break idle window. Titling
+    that "preparing the training checkpoint" promises the operator a review that is not coming,
+    on a profile that is already finished.
+    """
+    if NODE_BIN is None:
+        pytest.skip("node is not available on this machine")
+    prep = {"running": True, "status": {"apps": {
+        "hinge": {"app": "hinge", "mode": "training", "state": "scoring",
+                  "detail": "verifying photo item 2 of 3"},
+    }}}
+    prep_html = _run_node(_runstatus_script(prep))["html"]
+    assert "preparing the training checkpoint" in prep_html
+    assert "decision saved" not in prep_html
+
+    saved = {"running": True, "status": {"apps": {
+        "hinge": {"app": "hinge", "mode": "training", "state": "scoring",
+                  "detail": "Like recorded and saved; pacing before the next profile"},
+    }}}
+    saved_html = _run_node(_runstatus_script(saved))["html"]
+    # The title is the discriminator: the worker's detail already contains the word "pacing",
+    # so asserting on that alone could not tell the title apart from its own fine print.
+    assert "decision saved — pacing before the next profile" in saved_html
+    assert "preparing the training checkpoint" not in saved_html
+    # Detail survives as fine print, and this stays a red-circle WAIT box -- a finished profile
+    # in its pacing window is still not a moment to act, so it must not restyle toward the GO cue.
+    assert "Like recorded and saved; pacing before the next profile" in saved_html
+    assert "🔴" in saved_html
+    assert "background:#3a2f12" in saved_html          # css.wait
+    assert "background:#123a23" not in saved_html      # never css.go
+
+
 def test_run_status_explains_when_an_in_flight_training_decision_is_counted():
     """The phone may advance before confirmation/persistence completes.
 
@@ -2562,6 +2927,22 @@ def test_run_status_explains_when_an_in_flight_training_decision_is_counted():
     assert "completed-swipe count updates after the action is confirmed and saved" in html
     assert "2 swipes this run" in html
     assert "recording your hinge decision" not in html
+
+
+def test_run_status_shows_landed_training_persistence_detail_in_the_acting_banner():
+    if NODE_BIN is None:
+        pytest.skip("node is not available on this machine")
+    snap = {"running": True, "status": {"apps": {
+        "hinge": {"app": "hinge", "mode": "training", "state": "acting",
+                  "detail": ("Like landed in Hinge; archive complete—flushing the label "
+                             "and evidence to storage")},
+    }}}
+
+    html = _run_node(_runstatus_script(snap))["html"]
+    assert "decision landed — saving training data" in html
+    assert "carrying out your hinge decision" not in html
+    assert "Like landed in Hinge; archive complete—flushing the label and evidence to storage" in html
+    assert "completed-swipe count updates after the action is confirmed and saved" not in html
 
 
 def test_run_status_escapes_live_training_app():
@@ -2930,6 +3311,8 @@ def test_tick_drives_one_real_run_status_banner_and_the_separate_training_checkp
         "function renderGlobal(){ calls.push('global'); }\n"
         "function renderRunStatus(){ calls.push('run-status'); }\n"
         "function tickTrainingCheckpoint(){ calls.push('training'); }\n"
+        "function clearHubConnectionLost(){}\n"
+        "function renderHubConnectionLost(){}\n"
         + tick_fn + "\n"
         "tick().then(() => console.log(JSON.stringify(calls)));\n"
     )
@@ -2946,6 +3329,8 @@ def test_tick_discards_an_out_of_order_status_response():
         "function renderGlobal(s){renders.push(['global',s.version]);}\n"
         "function renderRunStatus(s){renders.push(['run',s.version]);}\n"
         "function tickTrainingCheckpoint(s){renders.push(['training',s.version]);}\n"
+        "function clearHubConnectionLost(){}\n"
+        "function renderHubConnectionLost(){}\n"
         + tick_fn + "\n"
         "(async()=>{const first=tick(), second=tick(); resolvers[1]({version:'new'}); await second; "
         "resolvers[0]({version:'old'}); await first; console.log(JSON.stringify(renders));})();\n"
@@ -3013,6 +3398,58 @@ def test_training_panel_shows_full_opener_target_image_and_escapes_text():
     assert "already written on this target" in result["html"]
     assert '>Like</button>' in result["html"]
     assert '>Dislike</button>' in result["html"]
+
+
+def _training_checkpoint_with(**extra):
+    return {
+        "run_id": "run-1", "app": "hinge", "profile_token": "profile-1",
+        "approval_token": "approval-1", "phase": "waiting_training_decision", "pending": True,
+        "action": "ready", "item": 3, "item_description": "the surfing photo",
+        "opener": "Complete opener", "image_data_url": "data:image/png;base64,AA==",
+        **extra,
+    }
+
+
+def test_training_panel_prints_the_media_ordinal_beside_the_item_description():
+    """The reviewer is holding the phone and can only count what Hinge drew, so the target line
+    also names the target's position over photos and videos. Fine print on the existing line:
+    it is not a control, not a decision gate, and adds no chrome of its own."""
+    if NODE_BIN is None:
+        pytest.skip("node is not available on this machine")
+
+    result = _run_node(_training_panel_script(
+        _training_checkpoint_with(item_media_ordinal=2)))
+
+    html = result["html"]
+    assert "item 3 — the surfing photo · photo/video 2 counting from the top" in html
+    # It rides the existing target `.meta` line -- no new element, no new class, no styling.
+    assert 'target · item 3 — the surfing photo · photo/video 2' in html
+    assert html.count('class="meta"') == _run_node(_training_panel_script(
+        _training_checkpoint_with()))["html"].count('class="meta"')
+
+
+@pytest.mark.parametrize("extra", [
+    {},                              # the field the worker omits when nothing could be counted
+    {"item_media_ordinal": None},
+    {"item_media_ordinal": 0},
+    {"item_media_ordinal": -1},
+    {"item_media_ordinal": "2"},     # a string is never rendered as a count
+    # A float is deliberately NOT in this list: JSON and JavaScript cannot tell 2.0 from 2, so
+    # `Number.isInteger` is not the layer that can reject one. `publish_checkpoint` is, and
+    # tests/test_training_actions.py holds it to that -- a non-`int` never reaches the wire.
+])
+def test_training_panel_without_a_media_ordinal_renders_exactly_as_it_did_before(extra):
+    """An absent or unusable hint must leave the card byte-identical to today's, including the
+    GO/WAIT wording and the decision controls: it is an affordance, never a capability."""
+    if NODE_BIN is None:
+        pytest.skip("node is not available on this machine")
+
+    result = _run_node(_training_panel_script(_training_checkpoint_with(**extra)))
+
+    assert "photo/video" not in result["html"]
+    assert "target · item 3 — the surfing photo</div>" in result["html"]
+    assert result["html"] == _run_node(
+        _training_panel_script(_training_checkpoint_with()))["html"]
 
 
 def test_training_panel_embeds_vertical_navigation_in_order_and_starts_on_target():
@@ -3493,6 +3930,94 @@ def test_training_panel_hides_and_restores_the_original_single_column_layout():
     assert result == {"display": "none", "html": "", "active": False}
 
 
+def test_actionable_training_checkpoint_requests_one_silent_browser_notification():
+    if NODE_BIN is None:
+        pytest.skip("node is not available on this machine")
+    functions = "\n".join((
+        _extract_js_function(_PAGE, "trainingCheckpointKey"),
+        _extract_js_function(_PAGE, "syncTrainingAlertHint"),
+        _extract_js_function(_PAGE, "reportTrainingBrowserNotification"),
+        _extract_js_function(_PAGE, "notifyTrainingCheckpoint"),
+    ))
+    script = (
+        "const hint={textContent:''},posts=[],notices=[]; let focused=0;\n"
+        "class BrowserNotification { constructor(title,options){this.title=title;this.options=options;"
+        "this.closed=0;notices.push(this);} close(){this.closed+=1;} }\n"
+        "BrowserNotification.permission='granted'; const window={Notification:BrowserNotification,"
+        "focus(){focused+=1;}}; function $(selector){return selector==='#alerthint'?hint:null;}\n"
+        "function postJSON(path,body){posts.push({path,body});return Promise.resolve({ok:true});}\n"
+        "let _trainingBrowserAlertedKey='',_trainingBrowserPermissionPendingKey='';\n"
+        + functions + "\n"
+        "const card={run_id:'run-1',app:'hinge',profile_token:'profile-1',"
+        "approval_token:'approval-1',pending:true,phase:'waiting_training_decision',action:'ready'};\n"
+        "notifyTrainingCheckpoint(card);notifyTrainingCheckpoint(card);notices[0].onclick();\n"
+        "setImmediate(()=>console.log(JSON.stringify({count:notices.length,options:notices[0].options,"
+        "post:posts[0],focused,closed:notices[0].closed,hint:hint.textContent})));\n"
+    )
+    result = _run_node(script)
+    assert result["count"] == 1
+    assert result["options"]["silent"] is True
+    assert result["options"]["requireInteraction"] is True
+    assert result["post"] == {
+        "path": "/api/training/alert",
+        "body": {"run_id": "run-1", "app": "hinge", "profile_token": "profile-1",
+                 "notification": "requested"},
+    }
+    assert result["focused"] == result["closed"] == 1
+    assert "browser banners allowed" in result["hint"]
+
+
+def test_training_start_requests_browser_permission_inside_click_handler():
+    assert "prepareTrainingBrowserNotifications()" in _extract_js_function(
+        _PAGE, "startRunFromControls")
+    assert re.search(r'id="alerthint"[^>]*role="status"', _PAGE)
+
+
+def test_checkpoint_retries_after_an_open_notification_permission_prompt_resolves():
+    """Driven through the POLL entry point, which is the only thing that runs in production.
+
+    notifyTrainingCheckpoint keeps a card eligible while its permission prompt is still open, but
+    nothing in the render fingerprint changes when the operator finally clicks Allow. Calling
+    notifyTrainingCheckpoint directly here (the earlier shape of this test) proved nothing about
+    that retry: the poll path short-circuits on an unchanged card, so the banner was never
+    delivered for the card that was on screen at the moment of the grant. The renders counter
+    below pins the other half -- the retry must NOT cost a repaint of the no-store review PNGs.
+    """
+    if NODE_BIN is None:
+        pytest.skip("node is not available on this machine")
+    functions = "\n".join((
+        _extract_js_function(_PAGE, "trainingCheckpointKey"),
+        _extract_js_function(_PAGE, "trainingPollRenderFingerprint"),
+        _extract_js_function(_PAGE, "renderTrainingCheckpointFromPoll"),
+        _extract_js_function(_PAGE, "syncTrainingAlertHint"),
+        _extract_js_function(_PAGE, "reportTrainingBrowserNotification"),
+        _extract_js_function(_PAGE, "notifyTrainingCheckpoint"),
+    ))
+    script = (
+        "const hint={textContent:''},posts=[],notices=[]; class BrowserNotification {"
+        "constructor(){notices.push(this);} } BrowserNotification.permission='default';"
+        "const window={Notification:BrowserNotification,focus(){}}; function $(selector){"
+        "return selector==='#alerthint'?hint:null;} function postJSON(path,body){posts.push({path,body});"
+        "return Promise.resolve({ok:true});} let _trainingBrowserAlertedKey='',"
+        "_trainingBrowserPermissionPendingKey='',_trainingPollRenderSignature='',renders=0;"
+        "function renderTrainingCheckpoint(){renders+=1;}\n" + functions + "\n"
+        "const card={run_id:'run-1',app:'hinge',profile_token:'profile-1',approval_token:'approval-1',"
+        "pending:true,phase:'waiting_training_decision',action:'ready'};"
+        "renderTrainingCheckpointFromPoll(card);renderTrainingCheckpointFromPoll({...card});"
+        "const pending={notices:notices.length,posts:posts.map(x=>x.body.notification),renders};"
+        "BrowserNotification.permission='granted';renderTrainingCheckpointFromPoll({...card});"
+        "setImmediate(()=>console.log(JSON.stringify({pending,notices:notices.length,"
+        "posts:posts.map(x=>x.body.notification),renders})));"
+    )
+    result = _run_node(script)
+    assert result == {
+        "pending": {"notices": 0, "posts": ["permission-default"], "renders": 1},
+        "notices": 1,
+        "posts": ["permission-default", "requested"],
+        "renders": 1,
+    }
+
+
 def test_training_panel_disables_both_decisions_when_review_data_is_incomplete():
     if NODE_BIN is None:
         pytest.skip("node is not available on this machine")
@@ -3884,6 +4409,224 @@ def test_bug_report_generation_reports_failure_instead_of_an_unhandled_rejection
     result = _run_node(script)
     assert result["md"] is None
     assert "could not contact the local hub" in result["hint"]
+
+
+def test_unchanged_checkpoint_poll_does_not_rebuild_no_store_review_images():
+    """Only a real card/action transition may replace the mounted review image.
+
+    Driven through the FULL per-poll prologue on purpose: tick() calls clearHubConnectionLost()
+    on every successful /api/status before tickTrainingCheckpoint, so a version of this test that
+    calls renderTrainingCheckpointFromPoll alone passes vacuously against a build that wipes the
+    fingerprint once a second from there (found 2026-09-04).
+    """
+    if NODE_BIN is None:
+        pytest.skip("node is not available on this machine")
+    functions = "\n".join((
+        _extract_js_function(_PAGE, "trainingCheckpointKey"),
+        _extract_js_function(_PAGE, "trainingPollRenderFingerprint"),
+        _extract_js_function(_PAGE, "renderTrainingCheckpointFromPoll"),
+        _extract_js_function(_PAGE, "clearHubConnectionLost"),
+    ))
+    script = (
+        "let _trainingPollRenderSignature='',renders=[];"
+        "const err={textContent:''};function $(selector){return selector==='#err'?err:null;}"
+        "function renderTrainingCheckpoint(card){renders.push(card.action);}\n"
+        + functions + "\n"
+        "const card={run_id:'run',app:'hinge',profile_token:'profile',approval_token:'approval',"
+        "phase:'waiting_training_decision',action:'ready',pending:true,profile_image_count:12};"
+        "const poll=next=>{clearHubConnectionLost();renderTrainingCheckpointFromPoll(next);};"
+        "poll(card);poll({...card});poll({...card});"
+        "poll({...card,phase:'executing_training_decision',"
+        "action:'executing',pending:false,command:'like'});"
+        "poll({...card,phase:'executing_training_decision',"
+        "action:'executing',pending:false,command:'like'});"
+        "console.log(JSON.stringify(renders));"
+    )
+    assert _run_node(script) == ["ready", "executing"]
+
+
+def test_unchanged_polls_let_the_image_retry_timer_actually_fire():
+    """The 2000ms image retry must survive a 1s poll cadence (found 2026-09-04).
+
+    renderTrainingCheckpoint re-applies a latched image failure onto the frame it just rebuilt,
+    and that re-application clears and re-arms scheduleTrainingImageRetry's timer. While the poll
+    path repainted every second the 2000ms retry was therefore rescheduled before it could ever
+    run, so a transient /api/training/image failure still locked Like/Dislike for the rest of the
+    profile -- the exact failure the retry was added to end.
+    """
+    if NODE_BIN is None:
+        pytest.skip("node is not available on this machine")
+    functions = "\n".join((
+        _extract_js_function(_PAGE, "trainingCheckpointKey"),
+        _extract_js_function(_PAGE, "trainingPollRenderFingerprint"),
+        _extract_js_function(_PAGE, "renderTrainingCheckpointFromPoll"),
+        _extract_js_function(_PAGE, "clearHubConnectionLost"),
+        _extract_js_function(_PAGE, "scheduleTrainingImageRetry"),
+    ))
+    script = (
+        # virtual clock: the real 2000ms retry against a real 900ms poll cadence, no sleeping
+        "let now=0,seq=0,timers=[];"
+        "globalThis.setTimeout=(fn,ms)=>{const id=++seq;timers.push({id,at:now+ms,fn});return id;};"
+        "globalThis.clearTimeout=id=>{timers=timers.filter(t=>t.id!==id);};"
+        "function advance(ms){const target=now+ms;for(;;){"
+        "const due=timers.filter(t=>t.at<=target).sort((a,b)=>a.at-b.at)[0];if(!due)break;"
+        "timers=timers.filter(t=>t!==due);now=due.at;due.fn();}now=target;}\n"
+        "let _trainingPollRenderSignature='',_trainingImageRetryTimer=null,_trainingCheckpoint=null,"
+        "_trainingImageFailedIndex=0,_trainingImageFailedGeneration=7;const renderedAt=[];"
+        "const err={textContent:''};function $(selector){return selector==='#err'?err:null;}"
+        # stand-in for the real renderer's tail: it re-applies the latched failure, which re-arms
+        "function renderTrainingCheckpoint(card){renderedAt.push(now);_trainingCheckpoint=card;"
+        "if(_trainingImageFailedIndex!=null)"
+        "scheduleTrainingImageRetry(_trainingImageFailedGeneration,_trainingImageFailedIndex);}\n"
+        + functions + "\n"
+        "const card={run_id:'run',app:'hinge',profile_token:'profile',approval_token:'approval',"
+        "phase:'waiting_training_decision',action:'ready',pending:true,profile_image_count:2};"
+        "const poll=next=>{clearHubConnectionLost();renderTrainingCheckpointFromPoll(next);};"
+        "poll(card);"
+        "advance(900);poll({...card});"
+        "advance(900);poll({...card});"
+        "advance(900);poll({...card});"
+        "console.log(JSON.stringify(renderedAt));"
+    )
+    # t=0 the first paint arms the retry for t=2000; the 900/1800/2700 polls dedupe, so the
+    # retry runs on time.  A repaint-per-poll build renders at 0/900/1800/2700 and never at 2000.
+    assert _run_node(script) == [0, 2000]
+
+
+def test_hub_disconnect_replaces_stale_in_progress_state_and_disables_actions():
+    if NODE_BIN is None:
+        pytest.skip("node is not available on this machine")
+    functions = "\n".join((
+        _extract_js_function(_PAGE, "escHtml"),
+        _extract_js_function(_PAGE, "renderHubConnectionLost"),
+        _extract_js_function(_PAGE, "clearHubConnectionLost"),
+    ))
+    script = (
+        "function element(){return {textContent:'',innerHTML:'',style:{},disabled:false};}"
+        "const elements={};for(const id of ['#err','#runbanner','#start','#stop','#traininglike',"
+        "'#trainingdislike','#trainingactionhint'])elements[id]=element();"
+        "function $(selector){return elements[selector]||null;}\n" + functions + "\n"
+        "renderHubConnectionLost();const lost={error:elements['#err'].textContent,"
+        "banner:elements['#runbanner'].innerHTML,start:elements['#start'].disabled,"
+        "stop:elements['#stop'].disabled,like:elements['#traininglike'].disabled,"
+        "dislike:elements['#trainingdislike'].disabled,hint:elements['#trainingactionhint'].textContent};"
+        "clearHubConnectionLost();console.log(JSON.stringify({lost,cleared:elements['#err'].textContent}));"
+    )
+    result = _run_node(script)
+    assert "Local hub disconnected" in result["lost"]["error"]
+    assert "last displayed run and decision state is stale" in result["lost"]["banner"]
+    assert result["lost"]["start"] is result["lost"]["stop"] is True
+    assert result["lost"]["like"] is result["lost"]["dislike"] is True
+    assert "do not repeat a physical action" in result["lost"]["hint"]
+    assert result["cleared"] == ""
+
+
+def test_a_failed_checkpoint_refresh_does_not_pin_its_error_on_a_live_card():
+    """The sibling of the /api/status lockout, on /api/training/checkpoint (found 2026-09-04).
+
+    tickTrainingCheckpoint's catch and submitTrainingAction's retry both paint a message straight
+    through renderTrainingCheckpoint, bypassing the poll fingerprint that still matches the card
+    underneath. A checkpoint waiting on the operator never changes, so the next identical poll
+    short-circuits and "Could not refresh decision status" stays on a card whose endpoint has
+    already recovered. The message repaint has to invalidate the signature -- once, so the
+    following identical polls still dedupe and the review PNGs stay mounted.
+    """
+    if NODE_BIN is None:
+        pytest.skip("node is not available on this machine")
+    functions = "\n".join((
+        _extract_js_function(_PAGE, "escHtml"),
+        _extract_js_function(_PAGE, "safeCheckpointImageDataUrl"),
+        _extract_js_function(_PAGE, "trainingCheckpointKey"),
+        _extract_js_function(_PAGE, "trainingPollRenderFingerprint"),
+        _extract_js_function(_PAGE, "resetTrainingIdempotencyIfCardChanged"),
+        _extract_js_function(_PAGE, "resetTrainingBusyIfCardChanged"),
+        _extract_js_function(_PAGE, "trainingActionBusyFor"),
+        _extract_js_function(_PAGE, "checkpointReviewImages"),
+        _extract_js_function(_PAGE, "syncTrainingImageState"),
+        _extract_js_function(_PAGE, "renderTrainingCheckpoint"),
+        _extract_js_function(_PAGE, "renderTrainingCheckpointFromPoll"),
+        _extract_js_function(_PAGE, "clearHubConnectionLost"),
+    ))
+    script = (
+        "const panel={style:{display:''},innerHTML:''};"
+        "const layout={classList:{toggle(){}}};"
+        "const document={querySelector:()=>layout};"
+        "function $(selector){return selector==='#trainingpanel'?panel:null;}"
+        "function setTrainingImageZoom(){}"
+        "let _trainingCheckpoint=null,_trainingActionBusy=false,_trainingBusyKey='',"
+        "_trainingBusyRequest=0,_trainingImageKey='',_trainingImageIndex=0,"
+        "_trainingImageFailedIndex=null,_trainingImageRenderGeneration=0,"
+        "_trainingImageFailedGeneration=null,_trainingPollRenderSignature='';"
+        "const _trainingIdempotency=new Map();\n" + functions + "\n"
+        "const hint=()=>{const m=/id=\"trainingactionhint\"[^>]*>([^<]*)</.exec(panel.innerHTML);"
+        "return m?m[1]:null;};"
+        "const card={run_id:'run',app:'hinge',profile_token:'profile',approval_token:'approval',"
+        "phase:'waiting_training_decision',action:'ready',pending:true,profile_image_count:2,"
+        "item:3,opener:'a written opener',image_data_url:'data:image/png;base64,AAAA'};"
+        "const poll=next=>{clearHubConnectionLost();renderTrainingCheckpointFromPoll(next);};"
+        "poll(card);const healthy=hint();"
+        # the /api/training/checkpoint fetch fails: the catch paints directly, not via the poll
+        "renderTrainingCheckpoint(_trainingCheckpoint,"
+        "'Could not refresh decision status. Retry your choice or Stop the run.');"
+        "const failed=hint();"
+        "poll({...card});const recovered=hint();"       # endpoint recovered; card never changed
+        "panel.innerHTML='SENTINEL';poll({...card});"    # and the dedupe must resume immediately
+        "console.log(JSON.stringify({healthy,failed,recovered,"
+        "deduped:panel.innerHTML==='SENTINEL'}));"
+    )
+    result = _run_node(script)
+    assert result["healthy"] == ""
+    assert "Could not refresh decision status" in result["failed"]
+    assert result["recovered"] == "", "the recovered poll must repaint and clear the stale error"
+    assert result["deduped"] is True, "one repaint, not a repaint on every later poll"
+
+
+def test_a_transient_disconnect_does_not_leave_the_decision_buttons_dead():
+    """Reconnecting must give the operator their Like/Dislike back (found 2026-09-04).
+
+    `renderHubConnectionLost()` disables the two Training buttons directly, and the ONLY code
+    that rebuilds them is `renderTrainingCheckpoint` -- which the poll entry point skips whenever
+    the checkpoint fingerprint is unchanged. A checkpoint waiting on the operator does not change,
+    so one failed `/api/status` fetch used to leave the controls dead, and the hint reading "Local
+    hub disconnected", with the run still live. Only a page reload recovered it.
+    """
+    if NODE_BIN is None:
+        pytest.skip("node is not available on this machine")
+    functions = "\n".join((
+        _extract_js_function(_PAGE, "escHtml"),
+        _extract_js_function(_PAGE, "trainingCheckpointKey"),
+        _extract_js_function(_PAGE, "trainingPollRenderFingerprint"),
+        _extract_js_function(_PAGE, "renderTrainingCheckpointFromPoll"),
+        _extract_js_function(_PAGE, "renderHubConnectionLost"),
+        _extract_js_function(_PAGE, "clearHubConnectionLost"),
+    ))
+    script = (
+        "let _trainingPollRenderSignature='',renders=0;"
+        "function element(){return {textContent:'',innerHTML:'',style:{},disabled:false};}"
+        "const elements={};for(const id of ['#err','#runbanner','#start','#stop','#traininglike',"
+        "'#trainingdislike','#trainingactionhint'])elements[id]=element();"
+        "function $(selector){return elements[selector]||null;}"
+        # stand-in for the real renderer: it is what re-enables the buttons
+        "function renderTrainingCheckpoint(card){renders++;"
+        "elements['#traininglike'].disabled=false;elements['#trainingdislike'].disabled=false;"
+        "elements['#trainingactionhint'].textContent='ready';}\n" + functions + "\n"
+        "const card={run_id:'run',app:'hinge',profile_token:'profile',approval_token:'approval',"
+        "phase:'waiting_training_decision',action:'ready',pending:true,profile_image_count:12};"
+        # a normal poll paints the card, then one fetch fails, then the SAME card comes back
+        "renderTrainingCheckpointFromPoll(card);"
+        "renderHubConnectionLost();"
+        "const lost={like:elements['#traininglike'].disabled};"
+        "clearHubConnectionLost();"
+        "renderTrainingCheckpointFromPoll({...card});"
+        "console.log(JSON.stringify({lost,renders,"
+        "like:elements['#traininglike'].disabled,dislike:elements['#trainingdislike'].disabled,"
+        "hint:elements['#trainingactionhint'].textContent}));"
+    )
+    result = _run_node(script)
+    assert result["lost"]["like"] is True, "the disconnect must still disable the decision"
+    assert result["renders"] == 2, "the reconnecting poll has to repaint, not short-circuit"
+    assert result["like"] is False and result["dislike"] is False
+    assert result["hint"] == "ready"
 
 
 def test_bug_report_buttons_never_write_or_download_a_failed_report():

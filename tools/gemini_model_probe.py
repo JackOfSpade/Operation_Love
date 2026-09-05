@@ -61,6 +61,7 @@ import zlib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping
+from urllib.parse import quote
 
 import yaml
 
@@ -72,6 +73,7 @@ from operation_love.opener.opener import (
     ItemRequest,
     OpenerError,
     _GEMINI_MODELS_LIST_URL,
+    _MAX_PREFLIGHT_PAGES,
     _gemini_error,
     _stdlib_gemini_transport,
 )
@@ -207,8 +209,16 @@ def enumerate_models(*, api_key: str, transport: GeminiTransport, timeout: float
     keeping the full per-id methods list instead of collapsing straight to a pass/fail check.
     """
     seen: dict[str, list[str]] = {}
-    url: str | None = _GEMINI_MODELS_LIST_URL
-    while url:
+    page_token: str | None = None
+    seen_page_tokens: set[str] = set()
+    for _page_number in range(1, _MAX_PREFLIGHT_PAGES + 1):
+        # Percent-encoded, bounded and repeat-refusing, exactly as preflight is. A page token is
+        # an opaque server string: a raw '+' in one is decoded back as a space and a raw '&' or
+        # '#' truncates the query, so an unencoded token turns page 2 onward into a 400 that
+        # aborts the whole audit -- in a tool whose entire job is to see the FULL catalog before
+        # any billed probe is spent.
+        url = (_GEMINI_MODELS_LIST_URL if page_token is None else
+               f"{_GEMINI_MODELS_LIST_URL}?pageToken={quote(page_token, safe='')}")
         code, response = transport(url, None, {"X-goog-api-key": api_key}, timeout, method="GET")
         code = int(code)
         if not 200 <= code < 300:
@@ -227,7 +237,16 @@ def enumerate_models(*, api_key: str, transport: GeminiTransport, timeout: float
             methods = entry.get("supportedGenerationMethods")
             seen[model_id] = [str(m) for m in methods] if isinstance(methods, list) else []
         next_token = response.get("nextPageToken")
-        url = (f"{_GEMINI_MODELS_LIST_URL}?pageToken={next_token}" if next_token else None)
+        if next_token in (None, ""):
+            break
+        if not isinstance(next_token, str) or not next_token.strip():
+            raise RuntimeError("ListModels returned a malformed nextPageToken")
+        if next_token in seen_page_tokens:
+            raise RuntimeError("ListModels repeated a pagination token")
+        seen_page_tokens.add(next_token)
+        page_token = next_token
+    else:
+        raise RuntimeError(f"ListModels exceeded {_MAX_PREFLIGHT_PAGES} pages")
     return seen
 
 

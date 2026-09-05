@@ -434,6 +434,54 @@ def test_capture_refuses_an_advance_action_that_is_not_pass_or_like(no_device, c
     assert "--advance" in capsys.readouterr().err
 
 
+def test_a_config_that_will_not_validate_never_buys_an_unlocked_capture(repo, monkeypatch,
+                                                                       capsys):
+    """A confirmed capture must yield the phone to a run holding the lock -- config or not.
+
+    ``holding_the_device`` has a documented escape hatch: a config path that will not load
+    yields an UN-HELD context, on the assumption the caller is about to load the same file and
+    report the problem in its own words. Passing ``args.config`` armed that hatch here for no
+    benefit -- this command revalidates the config itself either way (``build_driver`` ->
+    ``cfg_mod.load``), and everything before that point, including ``_resolve_serial``'s
+    ``adb devices``, would have run UNLOCKED for a config that parses as YAML but fails
+    validation. An unlocked device-enumeration window beside a live hub run is not what the
+    lock was added for (run ``a01fbcd1e9a0``'s false Pass was two drivers on one phone).
+
+    The holder takes the lock WITH a config, the way a production run does, while the tool takes
+    it with none -- so this also pins that the config-free path lands on the same file.
+    """
+    from operation_love import config as config_mod
+    from operation_love import supervisor as sup
+
+    monkeypatch.setattr(sup, "_ANDROID_LOCK_ROOT", repo / "locks")
+    # Valid YAML, rejected by config.load: a config caught mid-edit, on a key neither this tool
+    # nor the lock reads. Asserted rather than assumed -- the hazard only exists for configs
+    # that parse but do not validate, so a file that started loading cleanly would make this
+    # test pass vacuously.
+    half_repaired = repo / "half-repaired.yaml"
+    half_repaired.write_text("enabled_apps: [hinge]\napps: {hinge: {serial: PIXEL7A}}\n"
+                             "opener: {max_chars: -5}\n")
+    with pytest.raises(Exception):
+        config_mod.load(str(half_repaired))
+    good = repo / "config.yaml"
+    good.write_text("enabled_apps: [hinge]\napps: {hinge: {serial: PIXEL7A}}\n")
+    # The first device reach inside the lock, and the one the old escape hatch left exposed.
+    monkeypatch.setattr(bound, "_resolve_serial",
+                        lambda *a, **k: pytest.fail("the capture enumerated devices while "
+                                                    "another run held the phone"))
+    monkeypatch.setattr(auto, "build_driver",
+                        lambda *a, **k: pytest.fail("a driver session was opened while another "
+                                                    "run held the phone"))
+
+    with sup.exclusive_android_device(config_mod.load(str(good)), "hinge"):
+        with pytest.raises(SystemExit) as exit_info:
+            auto.main(_BASE + ["--advance", "pass", "--confirmation", auto.CIRCULAR_ACCEPTANCE,
+                               "--config", str(half_repaired)])
+
+    assert exit_info.value.code == 1
+    assert "already in use by another Operation Love run" in capsys.readouterr().err
+
+
 def test_both_phrases_together_pass_the_gate_for_a_real_like_run():
     args = types.SimpleNamespace(
         confirmation=auto.CIRCULAR_ACCEPTANCE, advance="like",
@@ -1123,14 +1171,19 @@ def test_a_burst_that_does_not_span_its_window_halts_the_campaign(repo, small, m
 
 
 def test_measure_refuses_a_campaign_whose_bursts_only_spanned_a_second(repo):
-    """Pins exactly what campaign 2 would have produced: a window nothing was watched for."""
+    """Pins exactly what campaign 2 would have produced: a window nothing was watched for.
+
+    Refused per CARD now, against the window that card was drawn for, rather than downstream at
+    the safety-factor margin: the margin guard only caught this shape when a video's last frame
+    happened to differ, and a corpus of compressed bursts whose frames all differ used to pass.
+    """
     one_second = (0.0, 0.33, 0.66, 1.0)
     held = _tiny(40, marks=[(12, 7, 3)])
     videos = [_card("video", [held, held, held, _tiny(40, marks=[(12, 7, 200)])])
               for _ in range(bound.MIN_VIDEO_CARDS)]
     photos = [_still_card() for _ in range(bound.MIN_PHOTO_CARDS)]
     campaign = _write_campaign(repo, videos + photos, _times=one_second)
-    with pytest.raises(bound.VideoBoundRefused, match="exceeds the"):
+    with pytest.raises(bound.VideoBoundRefused, match="did not span its window"):
         auto.measure(campaign)
 
 
@@ -1141,6 +1194,45 @@ def test_the_manifest_records_how_the_burst_was_scheduled(repo, small):
     station = manifest["profiles"][0]["stations"][0]
     assert station["burst_span_s"] == pytest.approx(station["planned_window_s"],
                                                     abs=bound.BURST_SPAN_TOLERANCE_S)
+
+
+def test_every_station_card_reports_its_own_dwell_span_and_not_the_profile_clock(repo,
+                                                                                monkeypatch):
+    """EVERY station, not just the first: the anchor is measured on the burst's own clock.
+
+    A card's frame list opens with its station's anchor crop and continues with the burst crops,
+    and `measure` reads that one list as the dwell.  Stamping the anchor with a constant while
+    the burst carries profile-relative stamps splices two timelines into it, so every station
+    after the first reports a dwell inflated by the whole time since the profile started -- and
+    that number is what `observed_window_s`, `max_video_exact_run_s` and `accepted()` are all
+    computed from.  The station at position 0 is the ONE station where the two agree, which is
+    why checking only `stations[0]` let this survive.
+    """
+    monkeypatch.setattr(auto, "_STATIONS_SPAN", (4, 4))
+    monkeypatch.setattr(bound, "_BURST_FRAMES_SPAN", (3, 3))
+    out = _out(repo)
+    driver = _FakeDriver(profiles=[[_still_page(40), _still_page(80),
+                                    _still_page(120), _still_page(160)]])
+    manifest = _run(repo, driver, max_profiles=1, out=out)
+
+    stations = manifest["profiles"][0]["stations"]
+    assert len(stations) == 4, "the walk must reach every station for this to prove anything"
+    cards = {card["card_id"]: card for card in manifest["cards"]}
+    band = (manifest["content_band"][0], manifest["content_band"][1])
+    anchors = [station["anchor_frame"]["t"] for station in stations]
+    # A measured anchor moves down the profile clock with its station; a constant does not.
+    assert anchors == sorted(anchors) and anchors[0] < anchors[-1]
+    for station in stations:
+        assert station["cards"], f"station {station['station']} produced no card"
+        for card_id in station["cards"]:
+            card = cards[card_id]
+            # The frame manifest and the card manifest must say the same thing about the anchor.
+            assert card["frames"][0]["t"] == station["anchor_frame"]["t"]
+            stat = bound._card_stat(out, card, band)
+            assert stat.burst_span_s == pytest.approx(station["burst_span_s"], abs=0.05), (
+                f"station {station['station']} card {card_id} reports "
+                f"{stat.burst_span_s}s for a {station['burst_span_s']}s dwell")
+            assert stat.longest_exact_run_s == pytest.approx(stat.burst_span_s, abs=0.05)
 
 
 # =====================================================================================

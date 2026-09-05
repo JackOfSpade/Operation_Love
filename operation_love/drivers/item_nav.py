@@ -331,7 +331,7 @@ from dataclasses import dataclass
 
 from .base import ActionCancelled
 from .frameshift import (
-    ShiftEstimate, estimate_shift, estimate_shift_with_reverse_recovery)
+    ShiftEstimate, estimate_shift, estimate_shift_with_reverse_recovery, trace_estimate)
 from .item_identity import IdentityError, IdentityVerdict, compare_profile_identity
 # The private helpers are imported rather than re-implemented, on `scroll_step.py`'s and
 # `item_index.py`'s own precedent for importing `segment._GUTTER_PX`: this pass must fold hearts
@@ -420,7 +420,23 @@ _CROSSCHECK_TOLERANCE_PX = 2 * _EXTENT_TOLERANCE_PX
 # (738px), so the anchor could not pick a neighbour until 369px — 23x this bound. The assertion
 # below states that rather than leaving it to be re-derived.
 _ENTRY_ANCHOR_RESIDUAL_PX = _CROSSCHECK_TOLERANCE_PX
-if _ENTRY_ANCHOR_RESIDUAL_PX * 2 >= _FALLBACK_SPACING_PX // 2:
+
+# THE CEILING ON ANY WIDENING OF THAT BOUND. The ascending pass widens the residual by its own
+# measured entry drift (see `_navigate_up`), and that drift is only bounded by the entry gate,
+# which admits `step_px_for_frac(_frac_window()[0], height) - 1` — 218px on the calibrated 2400px
+# screen. A residual of 218 makes the anchor bound 234, and the invariant below is not merely
+# tight at that value, it is FALSE: 218*2 = 436 is past `_FALLBACK_SPACING_PX // 2` (369), i.e. a
+# runtime value the module refuses to import under. So the widening is capped here instead.
+#
+# The number is read straight off the invariant. It refuses at `residual * 2 >= spacing // 2`, so
+# `spacing // 4 - 1` is admissible for every pitch — the bare `spacing // 4` is admissible only
+# when `spacing // 2` happens to be odd, and a safety ceiling must not turn on that parity. At the
+# measured 738px pitch that is 183px, and the invariant is evaluated against it below rather than
+# against the 16px constant alone, so the check governs the largest residual `_count_disagrees`
+# can actually be handed.
+_MAX_ENTRY_ANCHOR_RESIDUAL_PX = _FALLBACK_SPACING_PX // 4 - 1
+
+if max(_ENTRY_ANCHOR_RESIDUAL_PX, _MAX_ENTRY_ANCHOR_RESIDUAL_PX) * 2 >= _FALLBACK_SPACING_PX // 2:
     # Import-time safety invariant: unlike `assert`, this must remain active under `python -O`.
     raise RuntimeError(
         "the ascending anchor bound must stay far under half the smallest measured heart pitch, "
@@ -582,22 +598,15 @@ def _navigation_step_shift(before: bytes, after: bytes, *, content_band,
         before, after, content_band=content_band, trust_window_px=trust_window_px,
         estimator=estimate_shift)
 
-    def trace(est: ShiftEstimate | None) -> dict | None:
-        if est is None:
-            return None
-        return {
-            "status": est.status,
-            "reason": est.reason,
-            "delta_px": est.delta_px,
-            "consensus_px": est.consensus_px,
-            "confidence": est.confidence,
-            "agreeing": est.agreeing,
-            "dissenting": est.dissenting,
-            "eligible": est.eligible,
-            "saturated": est.saturated,
-        }
-
-    return result, {"forward": trace(forward), "reverse": trace(reverse)}
+    # `trace_estimate` is frameshift's own serialiser, shared with `hinge._measured_page_shift_
+    # traced` for the same reason the recovery policy above is shared: two hand-written copies of
+    # "what did the estimator see" are two chances for one of them to omit the field a live
+    # refusal turns out to need. Its output is a strict SUPERSET of the nine keys this function
+    # used to build by hand (it adds `trust_window_px`, `band` and the per-strip bank), and every
+    # consumer reads it with `.get()`, so no reader needs changing. The strip bank is what
+    # distinguishes "the strips disagreed" from "the bank split into a page cluster and a video
+    # cluster", which is exactly the question a chain refusal over an autoplaying card raises.
+    return result, {"forward": trace_estimate(forward), "reverse": trace_estimate(reverse)}
 
 
 @dataclass(frozen=True)
@@ -1445,7 +1454,18 @@ def navigate_to_item(driver, index: ItemIndex, model_index: int, *,
 
         measured_anchor_residual = anchor_residual_px
         if anchor.delta_px is not None:
-            measured_anchor_residual = max(measured_anchor_residual, abs(int(anchor.delta_px)))
+            # The entry shift is folded into `entry_offset` already, so a correctly measured
+            # drift leaves the anchor gap at zero and this widening does nothing. It is here for
+            # the rescue case, where the drift was real but its residual is not the constant's
+            # 0px-expected one. CAPPED at `_MAX_ENTRY_ANCHOR_RESIDUAL_PX`, because the entry gate
+            # admits drifts an order of magnitude past what the nearest-index-heart match can
+            # survive, and a confidently-wrong shift is a documented failure mode in this stack
+            # (frameshift's pixel-exact ±1178 video correspondence). Above the cap the widening
+            # simply stops: the bound stays the largest one the import-time invariant admits,
+            # rather than growing into the range where a neighbouring heart is nearer.
+            measured_anchor_residual = max(
+                measured_anchor_residual,
+                min(abs(int(anchor.delta_px)), _MAX_ENTRY_ANCHOR_RESIDUAL_PX))
 
         disagreement, worst, counted = _count_disagrees(
             clusters, hearts, heart_count=index.heart_count,
@@ -1570,7 +1590,22 @@ def navigate_to_item(driver, index: ItemIndex, model_index: int, *,
             forward_trace = measurement_trace["forward"] or {}
             reverse_trace = measurement_trace["reverse"]
             navigation_refusal = {
-                "schema_version": 2,
+                # 3 (2026-09-04): `achieved` gains a whole `forward` record beside the `reverse`
+                # one it already carried, both now `frameshift.trace_estimate` output -- which
+                # ADDS `trust_window_px`, `band` and the per-strip bank to the nine scalars v2
+                # projected out of the forward pass. The forward pass is the one whose
+                # `SHIFT_NO_CONSENSUS` caused this refusal, so projecting it to nine scalars was
+                # dropping exactly the evidence that tells "the strips disagreed" apart from "the
+                # bank split into a page cluster and a video cluster" over an autoplaying card.
+                # The nine `measurement_*` keys STAY: v2 readers depend on them, and `hinge`'s
+                # overshoot refusal builds a differently shaped `achieved` that must keep
+                # rendering. Additive only -- every reader uses `.get()`, so a v2 row from a
+                # historic run still renders exactly as it did.
+                #
+                # `achieved` is deliberately left in the `{"forward": ..., "reverse": ...}` shape
+                # `hinge._shift_refusal_trace` emits, so `bugreport._shift_trace_lines_md` renders
+                # this record with no second renderer and no third record shape.
+                "schema_version": 3,
                 "code": NAV_CHAIN_BROKEN,
                 "frame_index": i + 1,
                 "return_outcome": "unavailable_unmeasured",
@@ -1594,6 +1629,7 @@ def navigate_to_item(driver, index: ItemIndex, model_index: int, *,
                     "measurement_dissenting": forward_trace.get("dissenting"),
                     "measurement_eligible": forward_trace.get("eligible"),
                     "measurement_saturated": forward_trace.get("saturated"),
+                    "forward": forward_trace,
                     "reverse": reverse_trace,
                 },
             }

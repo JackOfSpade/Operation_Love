@@ -45,12 +45,14 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+from operation_love import config as cfg_mod
 from operation_love.drivers.adb import Adb, parse_devices_output
 from operation_love.private_files import (
     atomic_write_private_bytes,
     atomic_write_private_text,
     ensure_private_dir,
 )
+from tools._devicelock import run_holding_the_device
 
 _TOOL_VERSION = "1"
 # Matches the driver's own observe-mode sampling cadence (operation_love/drivers/hinge.py:208
@@ -221,6 +223,10 @@ def main(argv: list[str] | None = None) -> None:
                           f"cadence (default {_DEFAULT_INTERVAL_S})")
     ap.add_argument("--out", default=None,
                      help="output directory (default ops/calibration/scroll_<UTC timestamp>/)")
+    ap.add_argument("--config", default=None,
+                     help="optional config file, accepted for symmetry with the other phone "
+                          "tools; this capture reads no setting from it and takes the run's "
+                          "device lock with or without one")
     args = ap.parse_args(argv)
 
     out_dir = Path(args.out) if args.out else _default_out_dir()
@@ -230,15 +236,47 @@ def main(argv: list[str] | None = None) -> None:
     print("Frames are LOCAL-ONLY: ops/calibration/ is gitignored — these are real people's "
           "dating profiles, so do not upload, copy outside the repo, or transmit them anywhere.")
 
-    serial = _resolve_serial(args.serial)
-    adb = Adb(serial)
+    # This capture is NOT gated on a config that validates, and that is deliberate. The device
+    # lock is one file per user for "the Android phone" and reads nothing out of a config
+    # (supervisor._android_lock_path ignores both its arguments, on purpose), so the tool holds
+    # exactly the lock a run holds with no config in the picture at all. An earlier version
+    # loaded config.yaml first and exited on any error -- which let an unrelated `opener.max_chars`
+    # complaint block a read-only screencap loop, i.e. the instrument the owner reaches for
+    # precisely BECAUSE the config/calibration is mid-repair. An interlock on a value the lock
+    # never consults protects nothing and refuses the tool the job it exists for.
+    #
+    # An EXPLICIT --config that will not load is still worth saying out loud (it is usually a
+    # typo'd path, and the operator clearly expected that file to matter), but it is a WARNING:
+    # nothing below reads it, so there is no decision it could make wrong.
+    if args.config is not None:
+        try:
+            cfg_mod.load(args.config)
+        except Exception as exc:  # noqa: BLE001 -- one operator-facing warning, never fatal
+            print(f"WARNING: could not load {args.config}: {exc}", file=sys.stderr)
+            print("WARNING: continuing -- this capture reads nothing from the config, and "
+                  "still takes the run's device lock.", file=sys.stderr)
 
-    print(f"\nCapturing from {serial} for {args.seconds:.0f}s at ~{args.interval:.2f}s "
-          f"intervals -> {out_dir}")
-    print("Scroll the profile by hand now. Press Ctrl-C to stop early.\n")
+    def _capture_holding_the_device() -> None:
+        # The lock spans the WHOLE capture, not just the session open: this reads only, but a
+        # hub run walking the deck underneath the owner's hand would silently corrupt the
+        # geometry evidence rather than fail, which is the worst way for a calibration to go
+        # wrong (tools/_devicelock.py; run a01fbcd1e9a0 is what an honour system cost).
+        serial = _resolve_serial(args.serial)
+        adb = Adb(serial)
 
-    capture(adb=adb, seconds=args.seconds, interval=args.interval, out_dir=out_dir,
-            serial=serial)
+        print(f"\nCapturing from {serial} for {args.seconds:.0f}s at ~{args.interval:.2f}s "
+              f"intervals -> {out_dir}")
+        print("Scroll the profile by hand now. Press Ctrl-C to stop early.\n")
+
+        capture(adb=adb, seconds=args.seconds, interval=args.interval, out_dir=out_dir,
+                serial=serial)
+
+    # `None` for the config path is the config-FREE acquisition, not a fallback: it takes the
+    # same lock via the same class and path (see tools/_devicelock.py). Passing `args.config`
+    # here would be worse than useless -- a config that will not load makes `holding_the_device`
+    # yield an UN-HELD context, so a typo'd path would turn a 120s capture into an unlocked one,
+    # exactly the honour system the lock exists to end.
+    run_holding_the_device(None, _capture_holding_the_device)
 
 
 if __name__ == "__main__":

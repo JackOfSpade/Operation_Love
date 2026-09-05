@@ -16,6 +16,7 @@ injectable so tests run without the google-cloud-bigquery package or network.
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import re
 import threading
@@ -30,6 +31,49 @@ from .store import (local_midnight_epoch, normalize_timestamp_datetime,
 
 _UPLOAD_ATTEMPTS = 3        # bounded retry so a transient GCS blip doesn't drop a swipe
 _UPLOAD_BACKOFF_S = 0.5
+# Cloud client defaults are intentionally generous (and, depending on the transport, can be
+# effectively unbounded). A Training action has already changed the phone by the time its
+# archive starts, so an indefinitely blocked GCS/BQ call must become an explicit failed action
+# rather than leaving the Hub's exact-card checkpoint at ``executing`` forever.
+_GCS_UPLOAD_REQUEST_TIMEOUT_S = 20.0
+_BQ_INSERT_REQUEST_TIMEOUT_S = 20.0
+_CLOUD_RETRY_DEADLINE_S = 30.0
+# ``insert_rows_json`` already retries transient requests inside one SDK call.  A short
+# BigQuery incident can outlive that deadline, however, and the SDK then raises RetryError
+# even though a fresh insertAll call succeeds (the reported production failure did exactly
+# that during the supervisor's later flush).  Give the unchanged batch one fresh SDK retry
+# cycle before failing the already-landed action.  Stable insert IDs make an uncertain first
+# call safe to replay under BigQuery's best-effort streaming de-duplication contract.
+_BQ_INSERT_ATTEMPTS = 2
+_BQ_INSERT_BACKOFF_S = 1.0
+# A full Hinge review can contain a dozen PNGs. Bound the complete serial archive as well as
+# every request: per-request timeouts alone still allow a long sequence of transient failures
+# to make the operator wait without a meaningful upper bound.
+#
+# DERIVED FROM THE WORK, NOT PICKED (found 2026-09-04). It used to be a flat 180.0, which is
+# SMALLER than what the same code's own per-request budget permits for the archive it wraps:
+# twelve photos at `_GCS_UPLOAD_REQUEST_TIMEOUT_S` each is 240s. A merely slow-but-working uplink
+# -- every photo completing well inside its own 20s timeout, the serial total past 180 -- then
+# tripped the aggregate deadline, and the consequence is not a retry. `record_profile` treats a
+# short row set as a corrupt archive, DELETES every blob it already uploaded, and returns False;
+# worker.py turns that into "the training profile could not be archived; no label was saved" and
+# ends the run -- for a Hinge like or pass that has already physically landed on the phone and
+# cannot be taken back. So the aggregate bound must never be the thing that fires first on a
+# link that is merely slow, or even on one that is failing-then-succeeding within the retry
+# ladder `_upload_blob` is allowed to walk; it exists ONLY to stop an unbounded stall. Sizing it
+# as requests-times-attempts alone was still short, because that ladder also SLEEPS between
+# attempts (0.5s then 1.0s), which is why the per-photo term below adds the backoff sum: the
+# deadline can then only bind after every individual request has had its full allowance.
+_PROFILE_UPLOAD_DEADLINE_FLOOR_S = 180.0
+
+
+def _profile_upload_deadline_s(photo_count: int) -> float:
+    """The whole-archive budget for `photo_count` photos, never below the historic floor."""
+    # `_upload_blob` sleeps _UPLOAD_BACKOFF_S, then double it, between attempts, so the whole
+    # ladder's sleeps sum to B*(2**(attempts-1) - 1) on top of the per-request timeouts.
+    per_photo = (_GCS_UPLOAD_REQUEST_TIMEOUT_S * _UPLOAD_ATTEMPTS
+                 + _UPLOAD_BACKOFF_S * (2 ** (_UPLOAD_ATTEMPTS - 1) - 1))
+    return max(_PROFILE_UPLOAD_DEADLINE_FLOOR_S, max(0, int(photo_count)) * per_photo)
 # Shared with ranker/__init__.py's make_store(), so the config-parsing fallback (when
 # storage.bigquery.flush_every isn't set) can't silently drift from this constructor's
 # own default.
@@ -166,6 +210,81 @@ def _row_id(row: dict) -> str:
     random uuid) so BigQuery's best-effort streaming dedup recognizes a row resent on
     retry as the same logical row instead of inserting it again."""
     return hashlib.sha256(json.dumps(row, sort_keys=True).encode()).hexdigest()
+
+
+def _deadline_retry():
+    """Return an SDK retry policy with an absolute deadline when google-api-core is present.
+
+    The store's injected test doubles deliberately do not require Google packages. Importing
+    lazily keeps that contract while production calls still receive a real retry deadline.
+    """
+    try:
+        from google.api_core.retry import Retry
+    except ImportError:
+        return None
+    return Retry(deadline=_CLOUD_RETRY_DEADLINE_S)
+
+
+def _retryable_bq_insert_exception(exc: Exception) -> bool:
+    """Whether an insert exception (or its SDK wrapper cause) is transient.
+
+    google-api-core wraps the last retryable failure in ``RetryError`` when its deadline
+    expires.  ``if_transient_error`` does not classify that wrapper itself, nor explicit
+    502/504 and HTTP request timeouts, so include those narrow transport cases and walk
+    the wrapper's public ``cause`` as well as normal Python exception chaining.  Imports
+    stay lazy to preserve this module's injectable-client/no-Google-SDK test contract.
+    """
+    try:
+        from google.api_core import exceptions as google_exceptions
+        from google.api_core.retry import if_transient_error
+    except ImportError:
+        return False
+    try:
+        from requests import exceptions as requests_exceptions
+        request_timeout_types = (requests_exceptions.Timeout,)
+    except ImportError:
+        request_timeout_types = ()
+    additional_transient_types = (
+        google_exceptions.BadGateway,
+        google_exceptions.GatewayTimeout,
+        *request_timeout_types,
+    )
+
+    pending: list[Exception] = [exc]
+    seen: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        if if_transient_error(current) or isinstance(current, additional_transient_types):
+            return True
+        pending.extend(
+            candidate for candidate in (getattr(current, "cause", None),
+                                        getattr(current, "__cause__", None))
+            if isinstance(candidate, Exception))
+    return False
+
+
+def _call_with_supported_keywords(method, *args, **kwargs):
+    """Call an SDK method with deadline kwargs, omitting ones a small injected fake lacks.
+
+    Google SDK methods accept ``retry`` and ``timeout``. Existing tests and local integrations
+    often provide tiny functions with only their positional production payload, though. Inspect
+    before calling rather than catching ``TypeError`` afterwards: a TypeError raised *inside* a
+    real cloud call is a real failure and must never be mistaken for an old fake signature.
+    """
+    try:
+        signature = inspect.signature(method)
+    except (TypeError, ValueError):
+        # Cython/proxy methods may not expose a signature; the production Google methods support
+        # these kwargs, so retain the bounded call in that uncommon case.
+        return method(*args, **kwargs)
+    parameters = signature.parameters.values()
+    if any(param.kind is inspect.Parameter.VAR_KEYWORD for param in parameters):
+        return method(*args, **kwargs)
+    allowed = set(signature.parameters)
+    return method(*args, **{key: value for key, value in kwargs.items() if key in allowed})
 
 
 def _day_start_job_config(start_dt: datetime, *, app: str | None = None,
@@ -416,6 +535,44 @@ class BigQueryStore:
             ) from exc
 
     # --- reads ----------------------------------------------------------
+    def _label_not_retracted(self) -> str:
+        """The ONE predicate that answers "is this label retracted?" for this backend.
+
+        Every read path that must hide a tombstoned label (load_labels, both release
+        summaries, the opener cleanup advisory, remove_latest_training_label) substitutes this
+        exact text against a ``labels`` row aliased ``l``, so a release summary can never count
+        a label load_labels has already dropped from the training set.
+
+        A tombstone is keyed to a label by (run_id, app, source, profile_id, label_created_at)
+        against labels' (run_id, app, source, profile_id, created_at); correction_id identifies
+        the CORRECTION rather than its target, so it is deliberately not part of the join.
+
+        profile_id is IFNULL'd on BOTH sides because a label can legitimately carry NO profile
+        identity, spelled two different ways: `labels.profile_id` reached the live table through
+        _MIGRATIONS, so every row written before that ALTER reads back NULL, while add_label's
+        own default writes "". BigQuery's `NULL = <anything>` is NULL and never TRUE, so a
+        NULL-profile label could not be matched by ANY tombstone -- permanently in the training
+        set, removable (remove_latest_training_label) but never retractable. Folding NULL and ""
+        into one comparable value fixes that in the PREDICATE, never by rewriting stored rows.
+
+        Precision: the join still carries run_id/app/source AND label_created_at, so a tombstone
+        with no profile identity hides only the label at its own timestamp rather than every
+        legacy label in the run. Residual, stated rather than papered over: nothing in this
+        schema makes created_at unique, so two identity-less labels in one run/app/source
+        sharing an exact created_at cannot be told apart here and a single tombstone would hide
+        both. No other column could separate them, and the correction planner independently
+        refuses any run whose labels lack strict unique created_at ordering
+        (retractions._strict), so the tools path cannot reach that case.
+
+        The decisions half of a correction (see the release summaries below) keys on
+        (run_id, app, source, decision_created_at) and never on profile_id, so it carries no
+        NULL exposure and is intentionally left as plain equality.
+        """
+        return (f"NOT EXISTS (SELECT 1 FROM `{self._tid('label_retractions')}` r "
+                "WHERE r.run_id=l.run_id AND r.app=l.app AND r.source=l.source "
+                "AND IFNULL(r.profile_id,'')=IFNULL(l.profile_id,'') "
+                "AND r.label_created_at=l.created_at)")
+
     def load_labels(self) -> list[tuple[bool, list[float]]]:
         # Hold the lock across the whole fill so the cache-miss check, the SELECT,
         # and folding in buffered rows are atomic (no concurrent add_label can be
@@ -425,29 +582,12 @@ class BigQueryStore:
             if self._labels_cache is not None:
                 return _copy_labels(self._labels_cache)
             rows = self.client.query(
-                f"SELECT l.liked, l.embedding FROM `{self._tid('labels')}` l WHERE NOT EXISTS "
-                f"(SELECT 1 FROM `{self._tid('label_retractions')}` r WHERE r.run_id=l.run_id "
-                "AND r.app=l.app AND r.source=l.source AND r.profile_id=l.profile_id "
-                "AND r.label_created_at=l.created_at)").result()
+                f"SELECT l.liked, l.embedding FROM `{self._tid('labels')}` l "
+                f"WHERE {self._label_not_retracted()}").result()
             out = [(bool(r["liked"]), list(r["embedding"])) for r in rows]
             out.extend((bool(r["liked"]), list(r["embedding"])) for r in self._buf["labels"])
             self._labels_cache = _copy_labels(out)
             return _copy_labels(self._labels_cache)
-
-    def load_labels_ordered(self) -> list[tuple[bool, list[float]]]:
-        """Committed labels in swipe order (created_at asc) for the quality-trajectory
-        chart. Deliberately does NOT take self._lock or read the in-memory buffer: it's
-        called repeatedly by the hub's eval thread while workers are writing, so holding
-        the lock across this (multi-second) query would stall swipes. The unflushed tail
-        is therefore omitted here — the hub appends the live full-set point separately.
-        Streaming-buffer rows may lag, which is fine for a historical trend."""
-        rows = self.client.query(
-            f"SELECT l.liked, l.embedding FROM `{self._tid('labels')}` l WHERE NOT EXISTS "
-            f"(SELECT 1 FROM `{self._tid('label_retractions')}` r WHERE r.run_id=l.run_id "
-            "AND r.app=l.app AND r.source=l.source AND r.profile_id=l.profile_id "
-            "AND r.label_created_at=l.created_at) ORDER BY created_at"
-        ).result()
-        return [(bool(r["liked"]), list(r["embedding"])) for r in rows]
 
     def count_today(self, app: str, *, source: str = "auto") -> int:
         """One validated decision source's local-day count."""
@@ -485,17 +625,13 @@ class BigQueryStore:
         query = (
             "SELECT "
             f"(SELECT COUNT(*) FROM `{self._tid('labels')}` l WHERE run_id=@run_id AND app=@app "
-            f"AND source='manual' AND liked=FALSE AND NOT EXISTS (SELECT 1 FROM `{self._tid('label_retractions')}` r "
-            "WHERE r.run_id=l.run_id AND r.app=l.app AND r.source=l.source AND r.profile_id=l.profile_id "
-            "AND r.label_created_at=l.created_at)) AS pass_labels, "
+            f"AND source='manual' AND liked=FALSE AND {self._label_not_retracted()}) AS pass_labels, "
             f"(SELECT COUNT(*) FROM `{self._tid('decisions')}` d WHERE run_id=@run_id AND app=@app "
             f"AND source='manual' AND decision='dislike' AND NOT EXISTS (SELECT 1 FROM `{self._tid('label_retractions')}` r "
             "WHERE r.run_id=d.run_id AND r.app=d.app AND r.source=d.source "
             "AND r.decision_created_at=d.created_at)) AS pass_decisions, "
             f"(SELECT COUNT(*) FROM `{self._tid('labels')}` l WHERE run_id=@run_id AND app=@app "
-            f"AND source='manual' AND liked=TRUE AND NOT EXISTS (SELECT 1 FROM `{self._tid('label_retractions')}` r "
-            "WHERE r.run_id=l.run_id AND r.app=l.app AND r.source=l.source AND r.profile_id=l.profile_id "
-            "AND r.label_created_at=l.created_at)) AS like_labels, "
+            f"AND source='manual' AND liked=TRUE AND {self._label_not_retracted()}) AS like_labels, "
             f"(SELECT COUNT(*) FROM `{self._tid('decisions')}` d WHERE run_id=@run_id AND app=@app "
             f"AND source='manual' AND decision='like' AND NOT EXISTS (SELECT 1 FROM `{self._tid('label_retractions')}` r "
             "WHERE r.run_id=d.run_id AND r.app=d.app AND r.source=d.source "
@@ -543,17 +679,13 @@ class BigQueryStore:
         query = (
             "SELECT "
             f"(SELECT COUNT(*) FROM `{self._tid('labels')}` l WHERE run_id=@run_id AND app=@app "
-            f"AND source=@source AND liked=FALSE AND NOT EXISTS (SELECT 1 FROM `{self._tid('label_retractions')}` r "
-            "WHERE r.run_id=l.run_id AND r.app=l.app AND r.source=l.source AND r.profile_id=l.profile_id "
-            "AND r.label_created_at=l.created_at)) AS pass_labels, "
+            f"AND source=@source AND liked=FALSE AND {self._label_not_retracted()}) AS pass_labels, "
             f"(SELECT COUNT(*) FROM `{self._tid('decisions')}` d WHERE run_id=@run_id AND app=@app "
             f"AND source=@source AND decision='dislike' AND NOT EXISTS (SELECT 1 FROM `{self._tid('label_retractions')}` r "
             "WHERE r.run_id=d.run_id AND r.app=d.app AND r.source=d.source "
             "AND r.decision_created_at=d.created_at)) AS pass_decisions, "
             f"(SELECT COUNT(*) FROM `{self._tid('labels')}` l WHERE run_id=@run_id AND app=@app "
-            f"AND source=@source AND liked=TRUE AND NOT EXISTS (SELECT 1 FROM `{self._tid('label_retractions')}` r "
-            "WHERE r.run_id=l.run_id AND r.app=l.app AND r.source=l.source AND r.profile_id=l.profile_id "
-            "AND r.label_created_at=l.created_at)) AS like_labels, "
+            f"AND source=@source AND liked=TRUE AND {self._label_not_retracted()}) AS like_labels, "
             f"(SELECT COUNT(*) FROM `{self._tid('decisions')}` d WHERE run_id=@run_id AND app=@app "
             f"AND source=@source AND decision='like' AND NOT EXISTS (SELECT 1 FROM `{self._tid('label_retractions')}` r "
             "WHERE r.run_id=d.run_id AND r.app=d.app AND r.source=d.source "
@@ -629,6 +761,10 @@ class BigQueryStore:
         correction for the exact label/legacy-decision pair.  BigQuery streaming inserts do
         not expose database uniqueness constraints, so both checks are intentionally bound
         and happen under this store's lock before the deterministic insert id is submitted.
+
+        Tombstones are the one write this class never buffers: ``_insert_rows_json`` below
+        publishes them immediately, so ``self._retraction_ids`` plus these bound queries are
+        the whole of the local idempotency story -- there is no pending ``_buf`` entry to scan.
         """
         from .retractions import RetractionRefused
         from google.cloud import bigquery
@@ -658,8 +794,6 @@ class BigQueryStore:
             self._require_open_for_write()
             if correction_id in self._retraction_ids:
                 return False
-            if any(item.get("correction_id") == correction_id for item in self._buf["label_retractions"]):
-                return False
             existing = list(self.client.query(
                 f"SELECT correction_id FROM `{self._tid('label_retractions')}` "
                 "WHERE correction_id=@correction_id LIMIT 1", job_config=job).result())
@@ -678,8 +812,8 @@ class BigQueryStore:
                     payload[key] = normalize_timestamp_iso(payload[key], label=key)
             except (KeyError, ValueError) as exc:
                 raise RetractionRefused("BigQuery correction timestamps must be RFC-3339") from exc
-            errors = self.client.insert_rows_json(self._tid("label_retractions"), [payload],
-                                                  row_ids=[correction_id])
+            errors = self._insert_rows_json("label_retractions", [payload],
+                                            row_ids=[correction_id])
             if errors:
                 raise RuntimeError(f"BigQuery insert errors for label_retractions: {errors}")
             self._written["label_retractions"] += 1
@@ -717,13 +851,9 @@ class BigQueryStore:
             f"(SELECT COUNT(*) FROM `{self._tid('labels')}` WHERE run_id=@run_id AND app=@app) AS labels, "
             f"(SELECT COUNT(*) FROM `{self._tid('decisions')}` WHERE run_id=@run_id AND app=@app) AS decisions, "
             f"(SELECT COUNT(*) FROM `{self._tid('labels')}` l WHERE run_id=@run_id AND app=@app AND liked=TRUE "
-            f"AND NOT EXISTS (SELECT 1 FROM `{self._tid('label_retractions')}` r WHERE r.run_id=l.run_id "
-            "AND r.app=l.app AND r.source=l.source AND r.profile_id=l.profile_id "
-            "AND r.label_created_at=l.created_at)) AS like_labels, "
+            f"AND {self._label_not_retracted()}) AS like_labels, "
             f"(SELECT COUNT(*) FROM `{self._tid('labels')}` l WHERE run_id=@run_id AND app=@app AND liked=FALSE "
-            f"AND NOT EXISTS (SELECT 1 FROM `{self._tid('label_retractions')}` r WHERE r.run_id=l.run_id "
-            "AND r.app=l.app AND r.source=l.source AND r.profile_id=l.profile_id "
-            "AND r.label_created_at=l.created_at)) AS pass_labels, "
+            f"AND {self._label_not_retracted()}) AS pass_labels, "
             f"(SELECT COUNT(*) FROM `{self._tid('decisions')}` WHERE run_id=@run_id AND app=@app AND decision='like') AS like_decisions, "
             f"(SELECT COUNT(*) FROM `{self._tid('decisions')}` WHERE run_id=@run_id AND app=@app AND decision='dislike') AS pass_decisions")[0]
         def stamp(value) -> str:
@@ -749,7 +879,11 @@ class BigQueryStore:
                                   "evidence_ref": str(row["evidence_ref"])} for row in tombstones]}
 
     def append_opener_retraction(self, row: dict) -> bool:
-        """Append one exact opener tombstone using bound idempotency checks."""
+        """Append one exact opener tombstone using bound idempotency checks.
+
+        Published synchronously like its label counterpart, so ``_opener_retraction_ids``
+        and these bound queries carry idempotency alone; nothing queues in ``_buf``.
+        """
         from .retractions import RetractionRefused, canonical_sha
         from google.cloud import bigquery
         try:
@@ -771,10 +905,6 @@ class BigQueryStore:
         with self._lock:
             self._require_open_for_write()
             if key in self._opener_retraction_ids:
-                return False
-            if any(item.get("correction_id") == correction_id and
-                   item.get("opener_created_at") == opener_stamp
-                   for item in self._buf["opener_retractions"]):
                 return False
             source = list(self.client.query(
                 f"SELECT created_at,model,opener FROM `{self._tid('openers')}` "
@@ -810,8 +940,8 @@ class BigQueryStore:
             payload = dict(row)
             payload["opener_created_at"] = opener_stamp
             payload["created_at"] = datetime.now(timezone.utc).isoformat()
-            errors = self.client.insert_rows_json(self._tid("opener_retractions"), [payload],
-                                                  row_ids=[canonical_sha(row)])
+            errors = self._insert_rows_json("opener_retractions", [payload],
+                                            row_ids=[canonical_sha(row)])
             if errors:
                 raise RuntimeError(f"BigQuery insert errors for opener_retractions: {errors}")
             self._written["opener_retractions"] += 1
@@ -863,8 +993,53 @@ class BigQueryStore:
             if self._active_async_writes == 0:
                 self._writes_drained.notify_all()
 
+    def archive_writes_in_flight(self) -> bool:
+        """Whether a registered image-backed archive write is still running.
+
+        Public seam for the supervisor's shutdown join, which must not call a worker wedged
+        while it is mid-archive: this reports the exact counter ``close`` blocks on, so a
+        caller can never be asked to wait for work close would not itself have waited for.
+        """
+        with self._lock:
+            return self._active_async_writes > 0
+
+    def _insert_rows_json(self, table: str, rows: list[dict], *, row_ids: list[str]):
+        """Insert one buffered batch with bounded recovery beyond the SDK retry cycle."""
+        delay = _BQ_INSERT_BACKOFF_S
+        for attempt in range(1, _BQ_INSERT_ATTEMPTS + 1):
+            retry = _deadline_retry()
+            kwargs = {"row_ids": row_ids, "timeout": _BQ_INSERT_REQUEST_TIMEOUT_S}
+            if retry is not None:
+                kwargs["retry"] = retry
+            try:
+                return _call_with_supported_keywords(
+                    self.client.insert_rows_json, self._tid(table), rows, **kwargs)
+            except Exception as exc:  # noqa: BLE001 - classify optional SDK exceptions lazily
+                if (attempt == _BQ_INSERT_ATTEMPTS
+                        or not _retryable_bq_insert_exception(exc)):
+                    raise
+                print(
+                    f"BigQuery transient insert failure for table '{table}' after SDK retries "
+                    f"(batch attempt {attempt}/{_BQ_INSERT_ATTEMPTS}); retrying the unchanged "
+                    f"batch in {delay:.1f}s: {exc}"
+                )
+                time.sleep(delay)
+                delay *= 2
+        raise AssertionError("unreachable BigQuery insert retry state")
+
+    @staticmethod
+    def _report_profile_progress(progress, stage: str, completed: int, total: int) -> None:
+        """Best-effort persistence telemetry; observers must never affect durability."""
+        if not callable(progress):
+            return
+        try:
+            progress(stage, completed, total)
+        except Exception:  # noqa: BLE001 -- status plumbing must not affect an already-landed action
+            pass
+
     def record_profile(self, run_id, app, profile_id, liked, source="manual",
-                       photos=None, photo_count=0, capture_truncated: bool = False) -> bool:
+                       photos=None, photo_count=0, capture_truncated: bool = False,
+                       progress=None) -> bool:
         """Archive the profile's images + manifest row. Returns True if recorded.
 
         Image archiving is the system of record, so it is mandatory but non-fatal
@@ -894,8 +1069,9 @@ class BigQueryStore:
         self._begin_async_write()
         try:
             created_at = _now()
+            self._report_profile_progress(progress, "profile_upload", 0, len(photos))
             photo_rows = self._upload_profile_photos(
-                run_id, app, profile_id, created_at, photos)
+                run_id, app, profile_id, created_at, photos, progress=progress)
             if len(photo_rows) != len(photos):
                 if photo_rows:
                     self._delete_profile_photo_rows(photo_rows)
@@ -914,40 +1090,70 @@ class BigQueryStore:
                 self._buf["profile_photos"].extend(photo_rows)
                 self._maybe_flush("profiles")
                 self._maybe_flush("profile_photos")
+            self._report_profile_progress(progress, "profile_uploaded", len(photo_rows), len(photos))
             return True
         finally:
             self._finish_async_write()
 
-    def _upload_blob(self, blob, data: bytes, content_type: str) -> bool:
+    def _upload_blob(self, blob, data: bytes, content_type: str, *, deadline: float | None = None) -> bool:
         delay = _UPLOAD_BACKOFF_S
         for attempt in range(1, _UPLOAD_ATTEMPTS + 1):
+            remaining = None if deadline is None else deadline - time.monotonic()
+            if remaining is not None and remaining <= 0:
+                print("BigQuery store photo upload deadline expired before the next attempt "
+                      f"({getattr(blob, 'name', '?')})")
+                return False
             try:
-                blob.upload_from_string(data, content_type=content_type)
+                retry = _deadline_retry()
+                kwargs = {
+                    "content_type": content_type,
+                    "timeout": min(_GCS_UPLOAD_REQUEST_TIMEOUT_S, remaining)
+                    if remaining is not None else _GCS_UPLOAD_REQUEST_TIMEOUT_S,
+                }
+                if retry is not None:
+                    kwargs["retry"] = retry
+                _call_with_supported_keywords(blob.upload_from_string, data, **kwargs)
                 return True
             except Exception as exc:  # noqa: BLE001
                 if attempt == _UPLOAD_ATTEMPTS:
                     print(f"BigQuery store photo upload failed after {_UPLOAD_ATTEMPTS} "
                           f"attempts ({getattr(blob, 'name', '?')}): {exc}")
                     return False
+                if remaining is not None:
+                    delay = min(delay, max(0.0, deadline - time.monotonic()))
+                    if delay <= 0:
+                        continue
                 time.sleep(delay)
                 delay *= 2
         return False
 
     def _upload_profile_photos(self, run_id: str, app: str, profile_id: str,
-                               created_at: str, photos: list[bytes]) -> list[dict]:
+                               created_at: str, photos: list[bytes], *, progress=None) -> list[dict]:
         rows = []
+        deadline = time.monotonic() + _profile_upload_deadline_s(len(photos))
         for i, photo in enumerate(photos):
+            if time.monotonic() >= deadline:
+                print(f"BigQuery store profile upload deadline expired after {len(rows)}/{len(photos)} "
+                      f"photos for profile {profile_id}")
+                break
             digest = hashlib.sha256(photo).hexdigest()
             content_type, ext = _image_type(photo)
             object_name = f"profiles/{app}/{run_id}/{profile_id}/{i:02d}-{digest[:16]}.{ext}"
             blob = self._photo_bucket.blob(object_name)
-            if not self._upload_blob(blob, photo, content_type):
+            # Called directly, NOT through _call_with_supported_keywords: that shim exists for
+            # third-party SDK entry points whose injected fakes may lack `retry`/`timeout`, and
+            # routing our own method through it would silently drop `deadline` for any override
+            # instead of failing. The thing being dropped is the bound that keeps a partial
+            # photo set (and the refused label behind it) from following an already-landed
+            # Hinge action, so a replacement that cannot take it must break loudly.
+            if not self._upload_blob(blob, photo, content_type, deadline=deadline):
                 break
             rows.append({
                 "run_id": run_id, "app": app, "profile_id": profile_id, "created_at": created_at,
                 "photo_index": i, "gcs_uri": f"gs://{self.photo_bucket_name}/{object_name}",
                 "sha256": digest, "byte_size": len(photo), "content_type": content_type,
             })
+            self._report_profile_progress(progress, "profile_upload", len(rows), len(photos))
         return rows
 
     def _delete_profile_photo_rows(self, rows: list[dict]) -> None:
@@ -957,7 +1163,12 @@ class BigQueryStore:
             if not uri.startswith(prefix):
                 continue
             try:
-                self._photo_bucket.blob(uri[len(prefix):]).delete()
+                retry = _deadline_retry()
+                kwargs = {"timeout": _GCS_UPLOAD_REQUEST_TIMEOUT_S}
+                if retry is not None:
+                    kwargs["retry"] = retry
+                _call_with_supported_keywords(
+                    self._photo_bucket.blob(uri[len(prefix):]).delete, **kwargs)
             except Exception as exc:  # noqa: BLE001
                 print(f"BigQuery store warning: could not delete partial photo {uri}: {exc}")
 
@@ -966,7 +1177,10 @@ class BigQueryStore:
         liked = bool(liked)
         embedding_vec = [float(x) for x in embedding]
         with self._lock:
-            self._require_open_for_write()
+            # Same footing as record_profile: this is the follow-on row of an archive close is
+            # already waiting for, so refusing it would discard the label of a swipe that has
+            # physically landed while close is still holding the buffer open for its manifest.
+            self._require_open_for_write(allow_closing=True)
             self._buf["labels"].append({
                 "run_id": run_id, "app": app, "profile_id": profile_id, "created_at": _now(), "liked": liked,
                 "source": source, "embedding": embedding_vec, "photo_count": int(photo_count),
@@ -977,51 +1191,62 @@ class BigQueryStore:
                 self._labels_cache.append(label)
             self._maybe_flush("labels")
 
-    def clear_training_data(self) -> int:
-        """Delete all labels which train the preference model.
-
-        This is intentionally limited to the model dataset: decision and profile archives
-        remain an audit of real app actions, while the next run starts the ranker cold.
-        """
-        with self._lock:
-            self._require_open_for_write()
-            self.flush()
-            rows = self.client.query(f"SELECT COUNT(*) AS c FROM `{self._tid('labels')}`").result()
-            count = next((int(row["c"]) for row in rows), 0)
-            self.client.query(f"DELETE FROM `{self._tid('labels')}` WHERE TRUE").result()
-            self.client.query(f"DELETE FROM `{self._tid('label_retractions')}` WHERE TRUE").result()
-            self._labels_cache = []
-        return count
-
     def remove_latest_training_label(self) -> dict | None:
-        """Remove the latest visible label and return its operator-readable identity."""
+        """Remove the latest visible label and return its operator-readable identity.
+
+        Deletes by the FULL identity the visibility predicate above selects on, not by
+        profile_id alone, and binds profile_id NULL-safely: `labels.profile_id` arrived via
+        _MIGRATIONS against a table that already held rows, so a pre-migration label reads back
+        NULL, and BigQuery's `NULL = ''` is NULL rather than TRUE. That combination used to
+        delete nothing while this method still returned a success dict, which the hub prints as
+        "Training label removed for profile: X" over a label that is still there.
+
+        The affected-row count is checked for exactly that reason -- it catches every zero-row
+        cause, not just the one found. Anything other than a single row means the predicate did
+        not name the row the SELECT chose, and the operator has to see that (hub/state.py turns
+        the raise into a visible error) instead of a removal that never happened.
+        """
         from google.cloud import bigquery
         with self._lock:
             self._require_open_for_write()
             self.flush()
             rows = self.client.query(
-                f"SELECT l.profile_id, l.profile_name, l.created_at FROM `{self._tid('labels')}` l "
-                f"WHERE NOT EXISTS (SELECT 1 FROM `{self._tid('label_retractions')}` r "
-                "WHERE r.run_id=l.run_id AND r.app=l.app AND r.source=l.source "
-                "AND r.profile_id=l.profile_id AND r.label_created_at=l.created_at) "
+                f"SELECT l.run_id, l.app, l.source, l.profile_id, l.profile_name, l.created_at "
+                f"FROM `{self._tid('labels')}` l WHERE {self._label_not_retracted()} "
                 "ORDER BY l.created_at DESC LIMIT 1").result()
             row = next(iter(rows), None)
             if row is None:
                 return None
-            profile_id, created_at = str(row["profile_id"] or ""), row["created_at"]
+            created_at = row["created_at"]
             job = bigquery.QueryJobConfig(query_parameters=[
-                bigquery.ScalarQueryParameter("profile_id", "STRING", profile_id),
+                bigquery.ScalarQueryParameter("run_id", "STRING", row["run_id"]),
+                bigquery.ScalarQueryParameter("app", "STRING", row["app"]),
+                bigquery.ScalarQueryParameter("source", "STRING", row["source"]),
+                bigquery.ScalarQueryParameter("profile_id", "STRING", row["profile_id"]),
                 bigquery.ScalarQueryParameter("created_at", "TIMESTAMP", created_at),
             ])
-            self.client.query(f"DELETE FROM `{self._tid('labels')}` "
-                              "WHERE profile_id=@profile_id AND created_at=@created_at", job_config=job).result()
+            delete_job = self.client.query(
+                f"DELETE FROM `{self._tid('labels')}` WHERE run_id=@run_id AND app=@app "
+                "AND source=@source AND created_at=@created_at "
+                "AND (profile_id=@profile_id OR (profile_id IS NULL AND @profile_id IS NULL))",
+                job_config=job)
+            delete_job.result()
+            affected = getattr(delete_job, "num_dml_affected_rows", None)
+            if affected is None or int(affected) != 1:
+                raise RuntimeError(
+                    "BigQuery removed "
+                    f"{'an unknown number of' if affected is None else affected} training label "
+                    "rows for the label it selected; refusing to report a removal")
             self._labels_cache = None
-        return {"profile_name": str(row["profile_name"] or ""), "profile_id": profile_id}
+        return {"profile_name": str(row["profile_name"] or ""),
+                "profile_id": str(row["profile_id"] or "")}
 
     def record_decision(self, run_id, app, decision, score, source="auto", profile_id="",
                         created_at=None):
         with self._lock:
-            self._require_open_for_write()
+            # allow_closing: see add_label -- an already-landed decision's audit row must not be
+            # refused while close is still draining that same profile's archive.
+            self._require_open_for_write(allow_closing=True)
             self._buf["decisions"].append({
                 "run_id": run_id, "app": app, "created_at": _timestamp(created_at),
                 "decision": decision, "score": float(score), "source": source, "profile_id": profile_id,
@@ -1036,7 +1261,8 @@ class BigQueryStore:
         # than omitting the field. The live table already holds real rows, so each column got
         # to production via _MIGRATIONS, not via CREATE TABLE IF NOT EXISTS.
         with self._lock:
-            self._require_open_for_write()
+            # allow_closing: see add_label -- the opener belongs to a like that already landed.
+            self._require_open_for_write(allow_closing=True)
             self._buf["openers"].append({
                 "run_id": run_id, "app": app, "created_at": _now(),
                 "model": model, "opener": opener, "referenced": referenced, "angle": angle,
@@ -1153,7 +1379,7 @@ class BigQueryStore:
         # that means "if any invalid rows exist [...] the entire request [fails]" --
         # i.e. NOT partial acceptance. `errors` names only the offending row(s), but
         # rows absent from it were NOT written either; the whole request was rejected.
-        errors = self.client.insert_rows_json(self._tid(table), rows, row_ids=row_ids)
+        errors = self._insert_rows_json(table, rows, row_ids=row_ids)
         if errors:
             # Do NOT assume any row in this batch was accepted -- with skip_invalid_rows
             # unset, none were. Keep the whole batch buffered so it gets resent on the
@@ -1194,18 +1420,18 @@ class BigQueryStore:
         self._buf[table] = []
 
     def flush(self) -> None:
-        errors: list[Exception] = []
+        errors: list[tuple[str, Exception]] = []
         with self._lock:
             for table in self._buf:
                 try:
                     self._flush_table(table)
                 except Exception as exc:  # noqa: BLE001
-                    errors.append(exc)
+                    errors.append((table, exc))
                     print(f"BigQuery flush error for table '{table}': {exc}")
         if errors:
             raise RuntimeError(
                 f"BigQuery flush failed for {len(errors)} table(s): "
-                + "; ".join(str(e) for e in errors)
+                + "; ".join(f"{table}: {exc}" for table, exc in errors)
             )
 
     def close(self) -> None:

@@ -15,9 +15,10 @@ import pytest
 
 import operation_love.worker as worker_module
 from operation_love.drivers.base import ActionCancelled
-from operation_love.opener.opener import INDEX_SPACE_MODEL_ITEMS
+from operation_love.opener.opener import INDEX_SPACE_MODEL_ITEMS, INDEX_SPACE_PROFILE_PHOTOS
 from operation_love.opener.service import OpenerPick
 from operation_love.perception.capture import Profile
+from operation_love.status import RunStatus
 from operation_love.training_actions import TrainingActionBridge
 from operation_love.worker import Worker
 from operation_love.limits import RateLimiter
@@ -33,6 +34,12 @@ _FRAME = (b"\x89PNG\r\n\x1a\n"
           + _png_chunk(b"IDAT", zlib.compress(b"\x00\x00"))
           + _png_chunk(b"IEND", b""))
 _TIMEOUT_S = 5.0
+
+
+@pytest.fixture(autouse=True)
+def _stub_native_training_notification(monkeypatch):
+    """Worker tests must never display real host notifications."""
+    monkeypatch.setattr(worker_module, "notify_training_decision_ready", lambda: True)
 
 
 class _Pacing:
@@ -149,6 +156,9 @@ class _TrainingDriver:
     def set_training_decision(self, callback):
         self._decision = callback
 
+    def render_status(self, _snapshot):
+        pass
+
     def open_session(self):
         self.opened = True
 
@@ -209,7 +219,8 @@ class _ReplacingBridge(_RecordingBridge):
 
 
 def _new_worker(*, bridge=None, driver_after_choice="return", fail_profile=False,
-                archive_result=True, flush_error=None, fail_retrain=False, limiter=None):
+                archive_result=True, flush_error=None, fail_retrain=False, limiter=None,
+                status=None):
     events = []
     driver = _TrainingDriver(events, after_choice=driver_after_choice)
     decider = _Decider(events, fail_retrain=fail_retrain)
@@ -219,7 +230,7 @@ def _new_worker(*, bridge=None, driver_after_choice="return", fail_profile=False
     bridge = bridge or _RecordingBridge(events)
     worker = Worker("hinge", driver, decider, opener, store, "training-run", _Pacing(),
                     threading.Event(), mode="training", training_action_bridge=bridge,
-                    limiter=limiter)
+                    limiter=limiter, status=status)
     return worker, driver, decider, opener, store, bridge, events
 
 
@@ -284,6 +295,261 @@ def test_training_persists_verified_human_choice_only_after_hub_choice(command, 
     assert events.index(("flush",)) < events.index(("hub_complete", "completed"))
     result = bridge.snapshot(run_id="training-run", app="hinge")["results"][-1]
     assert (result["command"], result["status"]) == (command, "completed")
+
+
+def test_training_card_carries_the_media_ordinal_its_driver_could_count():
+    """The worker seam is the one place holding BOTH the live driver and the model's pick, so it
+    is where the reviewer's photo/video position is counted and attached to the card."""
+    worker, driver, _decider, _opener, _store, bridge, _events = _new_worker()
+    asked = []
+
+    def count(model_item_index):
+        asked.append(model_item_index)
+        return 4
+
+    driver.model_item_media_ordinal = count
+    worker.start()
+    card = _wait_until(lambda: _checkpoint(bridge))
+
+    assert card["item_media_ordinal"] == 4
+    # The MODEL ITEM number the opener was written about, never a heart ordinal or frame index.
+    assert asked == [2]
+
+    _submit(bridge, card, "like")
+    worker.join(_TIMEOUT_S)
+    assert not worker.is_alive()
+
+
+def _refuses(_model_item_index):
+    raise RuntimeError("a broken optional review hint must not reach the checkpoint")
+
+
+@pytest.mark.parametrize("hook", [
+    None,                          # a driver that never had the affordance at all
+    lambda _index: None,           # fail-closed: the capture could not prove the count
+    lambda _index: 0,              # never a 1-based position
+    lambda _index: "3",            # the protocol carries an integer or nothing
+    _refuses,                      # a broken optional implementation
+])
+def test_a_refused_media_ordinal_never_delays_alters_or_halts_the_checkpoint(hook):
+    """NEVER BLOCKING. Whatever the hint does, the checkpoint that gets published is the one that
+    would have been published without it, the operator still decides, and the run still lands and
+    records -- a missing review hint is not a stop condition."""
+    worker, driver, _decider, _opener, store, bridge, _events = _new_worker()
+    if hook is not None:
+        driver.model_item_media_ordinal = hook
+    worker.start()
+    card = _wait_until(lambda: _checkpoint(bridge))
+
+    assert "item_media_ordinal" not in card
+    assert card["phase"] == "waiting_training_decision" and card["action"] == "ready"
+    assert card["opener"] == "A precise typed opener" and card["item"] == 2
+
+    _submit(bridge, card, "like")
+    worker.join(_TIMEOUT_S)
+    assert not worker.is_alive()
+    assert not worker.stop_event.is_set()
+    assert store.decisions[0][0:3] == ("like", 1.0, "manual")
+
+
+def test_the_media_ordinal_hook_is_never_asked_about_a_legacy_profile_photo_pick():
+    """The hook counts NUMBERED ITEM crops. A legacy pick's integer indexes raw capture frames
+    instead, so handing it over would count a different card entirely -- the same reasoning
+    `_item_type_preflight_mismatch` already applies to doc 5.8's preflight."""
+    asked = []
+    driver = type("Driver", (), {
+        "model_item_media_ordinal": lambda _self, index: asked.append(index) or 1})()
+    legacy = OpenerPick(text="opener", index=2, referenced="a photo",
+                        item_description="a photo",
+                        index_space=INDEX_SPACE_PROFILE_PHOTOS)
+    model_pick = OpenerPick(text="opener", index=2, referenced="a photo",
+                            item_description="a photo",
+                            index_space=INDEX_SPACE_MODEL_ITEMS)
+
+    assert worker_module._model_item_media_ordinal(driver, legacy) is None
+    assert asked == []
+    assert worker_module._model_item_media_ordinal(driver, model_pick) == 1
+    assert asked == [2]
+
+
+def test_training_status_says_the_phone_action_landed_while_archive_and_flush_run():
+    """A slow durable write must not leave the Hub implying the phone tap is still pending."""
+    observed = []
+    status = RunStatus("training-run", ["hinge"], min_labels=1, mode="training")
+
+    class _ProgressStore(_Store):
+        def record_profile(self, run_id, app, profile_id, liked, source="auto", *, progress=None,
+                           **metadata):
+            assert callable(progress)
+            progress("profile_upload", 1, 2)
+            observed.append(("archive", status.app_view("hinge")["app"].copy()))
+            progress("profile_uploaded", 2, 2)
+            observed.append(("archive_complete", status.app_view("hinge")["app"].copy()))
+            return super().record_profile(
+                run_id, app, profile_id, liked, source=source, **metadata)
+
+        def flush(self):
+            observed.append(("flush", status.app_view("hinge")["app"].copy()))
+            super().flush()
+
+    worker, driver, decider, opener, _store, bridge, events = _new_worker(status=status)
+    store = _ProgressStore(events)
+    worker.store = store
+    # The retrain that follows a completed action is the first thing the worker does after the
+    # Hub result is durable, and nothing between it and the next capture publishes status -- so
+    # sampling here reads exactly what the operator sees for the whole retrain/pace/break window.
+    retrain = decider.retrain
+    decider.retrain = lambda store_arg: (
+        observed.append(("after_completion", status.app_view("hinge")["app"].copy()))
+        or retrain(store_arg))
+    worker.start()
+    card = _wait_until(lambda: _checkpoint(bridge))
+    _submit(bridge, card, "like")
+    worker.join(_TIMEOUT_S)
+
+    assert not worker.is_alive()
+    archive = dict(observed)["archive"]
+    archive_complete = dict(observed)["archive_complete"]
+    flushing = dict(observed)["flush"]
+    assert archive["state"] == archive_complete["state"] == flushing["state"] == "acting"
+    assert archive["detail"] == "Like landed in Hinge; archiving profile screenshots (1/2)"
+    assert archive_complete["detail"] == (
+        "Like landed in Hinge; profile archive complete—recording the training label")
+    assert flushing["detail"] == (
+        "Like landed in Hinge; archive complete—flushing the label and evidence to storage")
+    # …and the in-flight claim must not outlive the write it describes.  The Hub renders an
+    # ``acting`` state as a wait box either way, so clearing only the detail would still assert
+    # an unfinished device action while the worker is merely pacing.
+    settled = dict(observed)["after_completion"]
+    assert settled["state"] == "scoring"
+    assert settled["detail"] == "Like recorded and saved; pacing before the next profile"
+
+
+class _LegacyProtocolStore(_Store):
+    """A store carrying LocalStore's exact ``record_profile`` signature.
+
+    No ``progress`` parameter and no ``**kwargs``: the sqlite backend is written exactly this
+    way, so handing it the optional progress callback is a TypeError raised AFTER the Hinge
+    action has physically landed.
+    """
+
+    def record_profile(self, run_id, app, profile_id, liked, source="manual", photos=None,
+                       photo_count=0, capture_truncated=False):
+        self.events.append(("profile", liked, source))
+        self.profiles.append((profile_id, liked, source, {
+            "photo_count": photo_count, "capture_truncated": capture_truncated}))
+        return self.archive_result
+
+
+def test_training_archives_through_a_store_that_cannot_accept_a_progress_callback():
+    """The sqlite-shaped store must never be offered the BigQuery-only progress keyword."""
+    worker, driver, decider, opener, _store, bridge, events = _new_worker()
+    store = _LegacyProtocolStore(events)
+    worker.store = store
+    worker.start()
+    card = _wait_until(lambda: _checkpoint(bridge))
+    _submit(bridge, card, "like")
+    worker.join(_TIMEOUT_S)
+
+    assert not worker.is_alive()
+    assert store.profiles[0][1:3] == (True, "manual")
+    assert store.labels and store.decisions
+    result = bridge.snapshot(run_id="training-run", app="hinge")["results"][-1]
+    assert result["status"] == "completed"
+
+
+def test_progress_callback_is_never_leaked_through_a_legacy_metadata_seam():
+    """A store that declares only ``**metadata`` accepts anything, which is why the guard has
+    to be signature-based: an undeclared UI callback landing in a durable metadata bag is a
+    silent contract violation rather than a visible error."""
+    worker, driver, decider, opener, store, bridge, events = _new_worker()
+    worker.start()
+    card = _wait_until(lambda: _checkpoint(bridge))
+    _submit(bridge, card, "dislike")
+    worker.join(_TIMEOUT_S)
+
+    assert not worker.is_alive()
+    assert store.profiles and "progress" not in store.profiles[0][3]
+    assert store.labels and "progress" not in store.labels[0][3]
+
+
+def test_explicitly_accepts_keyword_admits_only_a_declared_parameter():
+    """The deliberate asymmetry with ``_accepts_keywords``: an observational keyword is opt-in
+    by declaration, so a ``**kwargs`` seam and an un-inspectable callable both decline it."""
+    def declares(run_id, app, *, progress=None):
+        pass
+
+    def kwargs_only(run_id, app, **metadata):
+        pass
+
+    assert worker_module._explicitly_accepts_keyword(declares, "progress") is True
+    assert worker_module._explicitly_accepts_keyword(kwargs_only, "progress") is False
+    # Un-inspectable C callable: signature() raises, and the answer must be "no", unlike
+    # _accepts_keywords which prefers the modern protocol for the same shape.
+    assert worker_module._explicitly_accepts_keyword(dict.update, "progress") is False
+    assert worker_module._accepts_keywords(dict.update, "progress") is True
+
+
+@pytest.mark.parametrize("outcome", ["like", "dislike"])
+@pytest.mark.parametrize("stage, counts, expected", [
+    ("archive", (None, None), "archiving the reviewed profile and training data"),
+    ("profile_upload", (1, 2), "archiving profile screenshots (1/2)"),
+    ("profile_upload", (None, None), "archiving profile screenshots"),
+    ("profile_uploaded", (2, 2), "profile archive complete—recording the training label"),
+    ("opener_evidence", (None, None), "archiving the typed opener and send evidence"),
+    ("label", (None, None), "recording the decision and training label"),
+    ("flush", (None, None), "archive complete—flushing the label and evidence to storage"),
+    ("some_future_stage", (None, None), "archiving the reviewed profile and training data"),
+])
+def test_persistence_detail_always_states_that_the_phone_action_already_landed(
+        outcome, stage, counts, expected):
+    status = RunStatus("training-run", ["hinge"], min_labels=1, mode="training")
+    worker, *_rest = _new_worker(status=status)
+
+    worker._training_persistence_status(outcome, stage, *counts)
+
+    app = status.app_view("hinge")["app"]
+    assert app["state"] == "acting"
+    assert app["detail"] == f"{outcome.title()} landed in Hinge; {expected}"
+
+
+@pytest.mark.parametrize("counts", [
+    (True, True), (3, 2), (1, 0), (1, -1), ("1", 2), (None, 2), (1, None), (1.0, 2),
+])
+def test_nonsensical_store_progress_counts_fall_back_to_countless_wording(counts):
+    """No shipped store can produce these, and that is the point: a store-supplied pair is
+    rendered to the operator in the window right after an irreversible action landed, so a
+    count that cannot be true must never reach the Hub as "(5/0)"."""
+    status = RunStatus("training-run", ["hinge"], min_labels=1, mode="training")
+    worker, *_rest = _new_worker(status=status)
+
+    worker._training_persistence_status("like", "profile_upload", *counts)
+
+    assert status.app_view("hinge")["app"]["detail"] == (
+        "Like landed in Hinge; archiving profile screenshots")
+
+
+def test_training_notifies_once_after_checkpoint_becomes_actionable(monkeypatch):
+    notifications = []
+    monkeypatch.setattr(
+        worker_module, "notify_training_decision_ready",
+        lambda: notifications.append(_checkpoint(bridge)),
+    )
+    worker, driver, decider, opener, store, bridge, events = _new_worker()
+    worker.start()
+    card = _wait_until(lambda: _checkpoint(bridge))
+    _wait_until(lambda: notifications)
+    _submit(bridge, card, "dislike")
+    worker.join(_TIMEOUT_S)
+    assert not worker.is_alive()
+
+    # Counted over the whole run, not at the first arrival: the driver is a deliberate one-card
+    # seam, so a second alert anywhere later in this profile's lifecycle (a re-publish retry, or
+    # an alert repeated on the executing transition) must fail here rather than land after the
+    # assertion has already run.
+    assert len(notifications) == 1
+    assert notifications[0]["profile_token"] == card["profile_token"]
+    assert notifications[0]["pending"] is True
 
 
 @pytest.mark.parametrize("after_choice, expected", [

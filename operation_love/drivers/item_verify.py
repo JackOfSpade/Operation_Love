@@ -216,6 +216,8 @@ WHAT THIS DOES NOT DO
 from __future__ import annotations
 
 import math
+import os
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 from .item_crops import (
@@ -280,6 +282,15 @@ _SCALE_TOLERANCE = 0.02
 # still prevent this from becoming an arbitrary image-patch search.
 _INLINE_REFRAME_MAX_HIDDEN_FRACTION = 0.30
 _INLINE_REFRAME_ORIGIN_SAMPLES = 49
+# How many threads score that sweep's windows. NOT a tuning knob and not a behaviour parameter:
+# the set of windows, their order and the winner are identical at any worker count (see
+# `_compare_item`'s reduction), so this only decides how long the operator waits with the
+# composer open and the keyboard up. [corpus: a 9-item payload is ~9x49 windows per item and
+# `_verify_sheet_shows` runs three times per targeted Like, ~20s of host CPU serially, of which
+# ~95% is `cv2.resize` -- which releases the GIL and which OpenCV does not thread internally.
+# Measured here: 240 windows, 743ms serial vs 93ms pooled, bit-identical cells.] Capped at the
+# machine's cores so a small runner does not oversubscribe itself for no gain.
+_INLINE_REFRAME_SWEEP_WORKERS = min(4, os.cpu_count() or 1)
 # The ordinary profile card draws its heart over the photo's lower-right corner. Hinge removes
 # that control from the selected inline preview, so comparison excludes the fixed control lane on
 # BOTH source and preview. This is verification-only; the model crop remains unchanged.
@@ -1383,7 +1394,8 @@ def _compare_item(crop, gray, preview: SheetPreview, sheet: CropSignature, *,
                   grid: tuple[int, int], scale_tolerance: float, cv2, np,
                   inline_reframe: bool = False,
                   inline_reframe_max_hidden_fraction: float =
-                  _INLINE_REFRAME_MAX_HIDDEN_FRACTION):
+                  _INLINE_REFRAME_MAX_HIDDEN_FRACTION,
+                  pool: ThreadPoolExecutor | None = None):
     """One item measured against the sheet: its swept distance, its window, and its reference.
 
     Returns `(distance_or_None, window_px, reference_signature, reason)`. The reference is the
@@ -1400,6 +1412,10 @@ def _compare_item(crop, gray, preview: SheetPreview, sheet: CropSignature, *,
     ENTIRELY verified as it, 10 times out of 540 (`verify_sheet_item`'s "WHAT THIS IS NOT" for
     what still does not follow from fixing it). The neighbour set is a property of the payload;
     it must not depend on how tall the sheet in front of us happens to be.
+
+    `pool` only ever affects HOW LONG the inline reframe sweep takes, never its answer -- see the
+    reduction there. It is optional so this function stays callable on its own; `verify_sheet_item`
+    creates ONE pool for a whole payload rather than one per item.
     """
     crop_height, crop_width = int(gray.shape[0]), int(gray.shape[1])
     source_x1 = crop_width
@@ -1471,6 +1487,7 @@ def _compare_item(crop, gray, preview: SheetPreview, sheet: CropSignature, *,
         candidates.append(window_px)
     if height_hi not in candidates:
         candidates.append(height_hi)
+    windows: list[tuple[int, int]] = []
     for candidate in candidates:
         if not 0 < candidate <= crop_height:
             continue
@@ -1481,13 +1498,36 @@ def _compare_item(crop, gray, preview: SheetPreview, sheet: CropSignature, *,
         starts = list(range(0, max_start + 1, step))
         if starts[-1] != max_start:
             starts.append(max_start)
-        for start in starts:
-            candidate_reference = _window(candidate, start=start)
-            distance = sheet.distance(candidate_reference)
-            if best_distance is None or distance < best_distance:
-                best_distance = distance
-                best_start = start
-                best_rows = candidate
+        windows.extend((candidate, start) for start in starts)
+
+    # The windows are enumerated first and SCORED second so the scoring can be handed to a pool.
+    # `_window` is ~95% one `cv2.resize` of the full-width source slice, which releases the GIL
+    # and which OpenCV does not thread internally, so this is the rare case where threads in a
+    # driver buy real wall-clock time -- and they buy it where it hurts most, inline, after the
+    # tap, with the composer open.
+    #
+    # EXACT, not approximate. The pool changes WHEN a window is computed and nothing else: the
+    # signature still comes from `item_crops._signature_from_gray`, the single definition of what
+    # a signature is, on the same pixels; `pool.map` yields in submission order; and the reduction
+    # below walks `windows` in that same order with the same strict `<`. So `best_distance`,
+    # `best_start` and `best_rows` are identical at any worker count and identical to the serial
+    # sweep. The order is not a formality: ties at the winning distance are real here (gathering
+    # the same windows out of completion order moves the reported crop rows by 4px at an
+    # unchanged distance), and `best_start`/`best_rows` are what the report shows. A second
+    # reduction path or a two-stage resize would NOT be exact: a one-grey-level cell difference
+    # moves a distance by ~0.0002, and `config.yaml`'s `inline_item_max_dist` sits 0.0001 under a
+    # measured foreign-card collision on purpose.
+    def _sweep(window: tuple[int, int]) -> CropSignature:
+        rows, start = window
+        return _window(rows, start=start)
+
+    scored = map(_sweep, windows) if pool is None else pool.map(_sweep, windows)
+    for (candidate, start), candidate_reference in zip(windows, scored, strict=True):
+        distance = sheet.distance(candidate_reference)
+        if best_distance is None or distance < best_distance:
+            best_distance = distance
+            best_start = start
+            best_rows = candidate
     if best_distance is None:
         return (None, window_px, reference,
                 "inline composer reframe offered no bounded full-width source window")
@@ -1755,15 +1795,26 @@ def verify_sheet_item(frame: bytes, payload: ItemPayload, model_index: int, *,
                 "measured through it would be between two blank regions")
 
     measured: list[tuple] = []
-    for crop in payload.items:
-        gray = _decode_crop(crop, cv2, np)
-        _check_reference_provenance(
-            crop, gray, signature_grid=payload.signature_grid, cv2=cv2, np=np)
-        distance, window_px, reference, reason = _compare_item(
-            crop, gray, comparison_preview, sheet, grid=grid, scale_tolerance=scale_tolerance, cv2=cv2,
-            np=np, inline_reframe=(composer_surface is not None),
-            inline_reframe_max_hidden_fraction=inline_reframe_max_hidden_fraction)
-        measured.append((crop, distance, window_px, reference, reason, int(gray.shape[0])))
+    # ONE pool for the whole payload, and only for the inline regime that has a sweep to spend it
+    # on -- a pool per item would pay its own startup 9 times for a sweep that is over in ~100ms.
+    # The modal branch scores ~17 windows per item and is not worth threading.
+    pool = (ThreadPoolExecutor(max_workers=_INLINE_REFRAME_SWEEP_WORKERS)
+            if composer_surface is not None else None)
+    try:
+        for crop in payload.items:
+            gray = _decode_crop(crop, cv2, np)
+            _check_reference_provenance(
+                crop, gray, signature_grid=payload.signature_grid, cv2=cv2, np=np)
+            distance, window_px, reference, reason = _compare_item(
+                crop, gray, comparison_preview, sheet, grid=grid,
+                scale_tolerance=scale_tolerance, cv2=cv2,
+                np=np, inline_reframe=(composer_surface is not None),
+                inline_reframe_max_hidden_fraction=inline_reframe_max_hidden_fraction,
+                pool=pool)
+            measured.append((crop, distance, window_px, reference, reason, int(gray.shape[0])))
+    finally:
+        if pool is not None:
+            pool.shutdown()
 
     # EVERY numbered item, without exception. An item too short to be the rendered window is still
     # a stored item this profile can be confused with, and dropping it here is what let a foreign

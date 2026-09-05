@@ -418,7 +418,16 @@ def _screencap(serial: str, adb_path: str, *, timeout: float = 30.0) -> bytes:
 
 
 def _device_version_name(serial: str, adb_path: str, package: str) -> str | None:
-    """The live Hinge build string, or None when the phone cannot be asked."""
+    """The live Hinge build string, or None when the phone cannot be asked.
+
+    The parse is the same anchored end-of-line regex `operation_love/drivers/hinge.py` and
+    `tools/hinge_operational_evidence.py` use, and for the reason the 2026-09-02 consolidation
+    recorded: a bare `.split("=", 1)[1].strip()` silently accepts trailing garbage on the same
+    dumpsys line, and this value is recorded verbatim into `bound.json`'s `hinge_version_name`,
+    which config validation then binds the whole still-photo bound to.  What is deliberately NOT
+    shared is that module's probe itself: it takes an `Adb` object, and this tool's complete
+    device vocabulary is three raw adb commands and no driver session (see the module docstring).
+    """
     if not _PACKAGE_RE.match(package):
         raise VideoBoundRefused(f"apps.hinge.package {package!r} is not an Android package id")
     try:
@@ -429,13 +438,9 @@ def _device_version_name(serial: str, adb_path: str, package: str) -> str | None
         return None
     if result.returncode != 0:
         return None
-    for line in result.stdout.decode("utf-8", errors="replace").splitlines():
-        line = line.strip()
-        if line.startswith("versionName="):
-            name = line.split("=", 1)[1].strip()
-            if name:
-                return name
-    return None
+    match = re.search(r"(?m)^\s*versionName=(\S+)\s*$",
+                      result.stdout.decode("utf-8", errors="replace"))
+    return match.group(1) if match else None
 
 
 # =====================================================================================
@@ -678,6 +683,10 @@ def record_burst(capture_fn, plan: BurstPlan, *, sleep_fn, clock) -> list[tuple[
     prompt.  That ordering IS the non-contamination property of protocol step 2: the owner's
     tap-to-play happens strictly after the last dwell frame exists, so no dwell frame can carry
     it, and frames captured after a label always belong to the next card.
+
+    NO CAMPAIGN RECORDS WITH THIS ANY MORE.  Its relative sleeps compress under a slow screencap
+    (see `record_spanning_burst`, which both harnesses now use), and it is kept only as the
+    documented counter-example that failure is measured against.
     """
     frames: list[tuple[bytes, float]] = []
     for index in range(plan.frames):
@@ -694,6 +703,15 @@ def record_burst(capture_fn, plan: BurstPlan, *, sleep_fn, clock) -> list[tuple[
 # recorded nine frames whose on-screen video countdown advanced ONE second, and a one-second
 # look cannot bound the exact-run tail a production dwell spanning the full window will meet.
 BURST_SPAN_TOLERANCE_S = 0.5
+
+# The other side of the same window.  A card's frame list may OPEN with one pre-burst anchor
+# frame -- the automated harness records its station anchor as the first crop, so the
+# anchor/first-burst pair is itself an exactness observation -- and the gap between that
+# screencap and the burst's own first frame is a segmentation pass, not a schedule, so a card's
+# measured span legitimately runs a little past the window it was drawn for.  Past THIS much it
+# is not one clock's measurement of one dwell any more: a frame list stamped on two clocks
+# carries a whole station offset, which is tens of seconds, not seconds.
+CARD_SPAN_OVERRUN_TOLERANCE_S = 5.0
 
 
 def record_spanning_burst(capture_fn, plan: BurstPlan, *, sleep_fn, clock,
@@ -764,6 +782,7 @@ def run_capture(*, out_dir: Path, profiles: int, serial: str, adb_path: str,
     version_name = _device_version_name(serial, adb_path, package)
     frame_size: list[int] | None = None
     cards: list[dict] = []
+    short_bursts = 0
     ended = "profiles_reached"
 
     print_fn(
@@ -795,7 +814,22 @@ def run_capture(*, out_dir: Path, profiles: int, serial: str, adb_path: str,
                 frame_size = list(_frame_size(frame))
             plan = plan_burst(rnd)
             print_fn(f"  recording {plan.frames} frames over ~{plan.window_s:.1f}s. Hands off.")
-            burst = record_burst(capture_fn, plan, sleep_fn=sleep_fn, clock=clock)
+            burst = record_spanning_burst(capture_fn, plan, sleep_fn=sleep_fn, clock=clock)
+            shortfall = burst_span_shortfall(burst, plan)
+            if shortfall > BURST_SPAN_TOLERANCE_S:
+                # The 2026-08-21 failure, refused at the card rather than at the campaign: this
+                # harness has the owner standing at the phone, and aborting the sitting would
+                # throw away every card they already labeled by hand.  So the card is dropped,
+                # counted, and the next one is prompted for -- but it is never recorded, because
+                # a burst that did not span its window cannot bound the exact-run tail a
+                # production dwell will meet, and a compressed one reaching `measure` licenses a
+                # dwell window nothing was ever watched for.
+                short_bursts += 1
+                print_fn(f"  REFUSED card_{ordinal:04d}: the burst spanned "
+                         f"{plan.window_s - shortfall:.2f}s of its drawn {plan.window_s:.2f}s "
+                         f"window (short by {shortfall:.2f}s, tolerance "
+                         f"{BURST_SPAN_TOLERANCE_S:.2f}s). Nothing recorded; park the next card.")
+                continue
             burst_completed_t = clock()
 
             card_id = f"card_{ordinal:04d}"
@@ -840,6 +874,10 @@ def run_capture(*, out_dir: Path, profiles: int, serial: str, adb_path: str,
         "ended": ended, "device": serial, "hinge_version_name": version_name,
         "frame_size_px": frame_size, "content_band": [band[0], band[1]],
         "config_sha256": config_sha256,
+        # Cards the sitting threw away because their burst did not span its drawn window. A
+        # dropped card leaves no other trace, and "how often did this phone fail to hold a
+        # schedule" is exactly what a reader of the corpus needs in order to trust the rest.
+        "refused_short_bursts": short_bursts,
         "captured_at": datetime.now(timezone.utc).isoformat(),
         "cards": cards,
     }
@@ -1380,6 +1418,30 @@ def _card_stat(campaign: Path, card: dict, band: tuple[float, float]) -> CardSta
             raise VideoBoundRefused(
                 f"card {card_id} was labeled before its dwell burst closed; the burst may carry "
                 "the owner's tap and cannot be used as dwell evidence")
+    # The one place BOTH harnesses' spans have to survive, and the reason it lives here rather
+    # than at either recorder: `burst_span_s` is what `observed_window_s`, `accepted()` and the
+    # margin guard are all computed from, so a span that is not a measurement of the window the
+    # card was actually scheduled for must never reach them -- and no future call site can pick
+    # a recorder that bypasses this.  Short means the burst compressed (2026-08-21: nine frames
+    # across ONE second of a playing video's own countdown); long means two clocks were spliced
+    # into one frame list, which inflates every deep card's dwell and makes the accept rule that
+    # ships not the rule that was validated.
+    planned = card.get("planned_window_s")
+    if isinstance(planned, bool) or not isinstance(planned, (int, float)) or planned <= 0:
+        raise VideoBoundRefused(
+            f"card {card_id} records no usable planned_window_s, so nothing says what window its "
+            "frames were supposed to span")
+    span = float(times[-1] - times[0])
+    if span < float(planned) - BURST_SPAN_TOLERANCE_S:
+        raise VideoBoundRefused(
+            f"card {card_id} spanned {span:.3f}s of the {float(planned):.3f}s window it was "
+            f"drawn for (tolerance {BURST_SPAN_TOLERANCE_S:.2f}s); a burst that did not span its "
+            "window cannot bound the exact-run tail a production dwell will meet")
+    if span > float(planned) + CARD_SPAN_OVERRUN_TOLERANCE_S:
+        raise VideoBoundRefused(
+            f"card {card_id} spanned {span:.3f}s, well past the {float(planned):.3f}s window it "
+            f"was drawn for (tolerance {CARD_SPAN_OVERRUN_TOLERANCE_S:.2f}s); its frame "
+            "timestamps are not one clock's measurement of one dwell")
     if len(payloads) < 2:
         return CardStat(card_id=card_id, label=label, frames=tuple(frames),
                         longest_exact_run_s=0.0, longest_exact_run_frames=1,
@@ -1833,7 +1895,14 @@ def main(argv: list[str] | None = None) -> None:
             # Device lock (tools/_devicelock.py): this reads only, but a hub run scrolling the
             # deck underneath an owner-labeled hold would silently corrupt the evidence rather
             # than fail, which is the worst way for a measurement campaign to go wrong.
-            with holding_the_device(args.config):
+            #
+            # `None`, not `args.config`, per holding_the_device's rule: this tool reads its
+            # config INDEPENDENTLY of the lock (`_load_config_mapping` parses plain YAML on
+            # purpose, so the campaign runs before the key it produces exists), so handing the
+            # helper a path it does not consume would only re-arm the unloadable-config escape
+            # hatch -- turning an unrelated validation error into a silently UNLOCKED campaign.
+            # `None` takes the identical lock; the lock path reads nothing out of a config.
+            with holding_the_device(None):
                 _app_cfg, band, serial, adb_path, _sha256 = _band_and_device(args,
                                                                             need_device=True)
                 out_dir = _private_out_dir(args.out, prefix="videobound_hold")
@@ -1842,7 +1911,10 @@ def main(argv: list[str] | None = None) -> None:
         elif args.command == "capture":
             if args.profiles < 1:
                 raise VideoBoundRefused("--profiles must be at least 1")
-            with holding_the_device(args.config):
+            # `None` for the same reason as hold-test above: this campaign never calls
+            # config.load, so passing a path through the lock helper buys nothing and arms the
+            # escape hatch that would run the whole campaign unlocked.
+            with holding_the_device(None):
                 app_cfg, band, serial, adb_path, config_sha = _band_and_device(args,
                                                                               need_device=True)
                 out_dir = _private_out_dir(args.out, prefix="videobound")

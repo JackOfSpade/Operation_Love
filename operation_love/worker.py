@@ -23,6 +23,7 @@ from .drivers.base import (ActionCancelled, DatingAppDriver, DeckBlockedError, D
 from .human import human_delay
 from .human_motion import think_time_s
 from .interaction import AutoSessionPolicy
+from .notifications import notify_training_decision_ready
 from .opener.opener import INDEX_SPACE_MODEL_ITEMS, ITEM_INDEX_ABSENT, ItemRequest
 from .ranker.decider import Decider, Decision
 from .targeting_policy import (
@@ -52,6 +53,19 @@ def _accepts_keywords(callback, *names: str) -> bool:
         return True
     return (any(p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters)
             or all(name in {p.name for p in parameters} for name in names))
+
+
+def _explicitly_accepts_keyword(callback, name: str) -> bool:
+    """Whether an optional, observational keyword is declared by this store.
+
+    Unlike action lineage, a progress callback is not part of the long-standing store protocol.
+    Do not leak it through a legacy ``**metadata`` seam: only the BigQuery store that explicitly
+    advertises it should receive progress updates.
+    """
+    try:
+        return name in inspect.signature(callback).parameters
+    except (TypeError, ValueError):
+        return False
 
 
 def _record_decision_with_lineage(store, run_id: str, app: str, decision: str, score: float,
@@ -90,6 +104,41 @@ def _item_type_preflight_mismatch(driver, pick) -> str:
     if getattr(result, "mismatch", False):
         return str(getattr(result, "reason", "the crop and description disagree on item type"))
     return ""
+
+
+def _model_item_media_ordinal(driver, pick) -> int | None:
+    """The picked item's photo/video position for the Hub review card, or ``None``.
+
+    A REVIEW HINT, NEVER A GATE.  The training card names the model's item number and its
+    description, but the reviewer is holding the phone and can only count what Hinge draws --
+    and Hinge's per-card hearts run across photos, videos and written prompts alike.  This
+    optional driver hook re-counts the same capture over media only, so the card can say which
+    photo/video to look at.  Confirming the right item IS the point of the card
+    (ops/OPENER-REDESIGN.md 5.6, "never substitute the liked item"), so the affordance is worth
+    asking for -- but a missing one costs a hint and nothing else, and must never delay, halt or
+    alter the checkpoint.  Hence every failure here answers ``None`` and the caller simply omits
+    the field.
+
+    Shaped exactly like ``_item_type_preflight_mismatch`` above and for the same reasons:
+    method-presence rather than a base-class method so every existing generic driver stays
+    valid; the same pure contract (inspect the payload already held, never capture, navigate or
+    tap); the same refusal to hand a legacy profile-photo index to a hook that counts NUMBERED
+    ITEM crops, which would number a different card entirely; and the same treatment of a broken
+    optional implementation as simply unavailable.  The driver's own answer is already
+    fail-closed, so a non-positive or non-integer return is discarded here too.
+    """
+    if getattr(pick, "index_space", None) != INDEX_SPACE_MODEL_ITEMS:
+        return None
+    count = getattr(driver, "model_item_media_ordinal", None)
+    if not callable(count):
+        return None
+    try:
+        ordinal = count(pick.index)
+    except Exception:  # noqa: BLE001 — an optional review hint may never break a checkpoint
+        return None
+    if isinstance(ordinal, bool) or not isinstance(ordinal, int) or ordinal <= 0:
+        return None
+    return ordinal
 
 class Worker(threading.Thread):
     def __init__(self, app, driver: DatingAppDriver, decider: Decider, opener_service,
@@ -249,13 +298,29 @@ class Worker(threading.Thread):
         if bridge is None:
             self.stop_event.set()
             return "stop"
+        # This is the one place that holds BOTH the live driver and the model's pick, which is
+        # what counting the target's media position needs; the bridge only ever receives the
+        # worker.  Computed before the publish call and outside its try, deliberately: the hint
+        # is read-only and phone-free, and folding it into the call would let its absence share
+        # a failure path with a checkpoint that genuinely could not be published.
+        media_ordinal = _model_item_media_ordinal(self.driver, pick)
+        # An older or substitute bridge that never learned the field must still get today's
+        # exact call.  `_explicitly_accepts_keyword`, not `_accepts_keywords`: an optional
+        # review hint must be DECLARED to be delivered -- it may not ride in through a legacy
+        # `**kwargs` seam that would swallow it, and an uninspectable bridge is treated as not
+        # having it rather than being handed a keyword whose TypeError would stop the run.
+        ordinal_kwargs = (
+            {"item_media_ordinal": media_ordinal}
+            if media_ordinal is not None
+            and _explicitly_accepts_keyword(
+                bridge.publish_checkpoint, "item_media_ordinal") else {})
         try:
             # Profile.photos is the capture's existing top-to-bottom phone-scroll sequence.
             # The verified post-type frame remains the approval image; these additional frames
             # let the reviewer inspect the rest of the same profile without touching the phone.
             card = bridge.publish_checkpoint(
                 self, pre_send_frame, pick, evidence,
-                profile_frames=getattr(profile, "photos", ()) or ())
+                profile_frames=getattr(profile, "photos", ()) or (), **ordinal_kwargs)
         except (RuntimeError, ValueError) as exc:
             self._stat(state="stopped", stop_reason=(
                 "Training checkpoint could not be published; no action was issued: "
@@ -263,6 +328,10 @@ class Worker(threading.Thread):
             self.stop_event.set()
             return "stop"
         self._stat(state="waiting_approval", detail=None)
+        # The checkpoint is now complete and actionable, and the worker is about to block for
+        # the operator.  Keep this best-effort host alert outside TrainingActionBridge: bridge
+        # publication also happens in protocol tests and carries no macOS/UI responsibility.
+        notify_training_decision_ready()
         action = bridge.wait_for_action(self, card["profile_token"], self.stop_event)
         if action is None or self.stop_event.is_set():
             bridge.cancel_checkpoint(self, card["profile_token"])
@@ -271,6 +340,36 @@ class Worker(threading.Thread):
         self._training_claimed_action = action
         self._stat(state="acting", detail=None)
         return action["command"]
+
+    def _training_persistence_status(self, outcome: str, stage: str,
+                                     completed: int | None = None,
+                                     total: int | None = None) -> None:
+        """Show durable-write progress after the phone has already accepted a choice.
+
+        The Hinge decision is irreversible before profile archival begins.  Keeping that fact in
+        every subsequent live detail prevents a slow cloud write from looking like a stuck tap or
+        an unanswered decision.  ``stage`` is intentionally a small Worker-facing protocol so
+        stores can optionally add per-photo progress without deciding Hub wording themselves.
+        """
+        landed = f"{outcome.title()} landed in {self.app.title()}"
+        if stage == "profile_upload":
+            if (type(completed) is int and type(total) is int and total > 0
+                    and 0 <= completed <= total):
+                detail = (f"{landed}; archiving profile screenshots "
+                          f"({completed}/{total})")
+            else:
+                detail = f"{landed}; archiving profile screenshots"
+        elif stage == "profile_uploaded":
+            detail = f"{landed}; profile archive complete—recording the training label"
+        elif stage == "opener_evidence":
+            detail = f"{landed}; archiving the typed opener and send evidence"
+        elif stage == "label":
+            detail = f"{landed}; recording the decision and training label"
+        elif stage == "flush":
+            detail = f"{landed}; archive complete—flushing the label and evidence to storage"
+        else:
+            detail = f"{landed}; archiving the reviewed profile and training data"
+        self._publish_status(mode="training", state="acting", detail=detail)
 
     @staticmethod
     def _targeting_stop_reason(exc: ItemTargetingError) -> str:
@@ -387,31 +486,6 @@ class Worker(threading.Thread):
                     self._session_opened = False
             finally:
                 leave()
-
-    @staticmethod
-    def _warn_if_capture_truncated(profile) -> None:
-        """Tell the operator when THIS card was only partially read, right at the moment they
-        are about to decide on it.
-
-        A truncated capture does not corrupt the label — every frame captured is genuinely this
-        person. What it degrades is the driver's ability to tell a manual SCROLL apart from a
-        PASS for the rest of this card's wait: the scroll matcher can only recognise territory
-        the bot already captured, so if you scroll below where the read stopped, the identity
-        band is the only signal left. Silence here is what made that invisible; a line at READY
-        costs nothing and tells the operator the one thing they can act on — that scrolling far
-        down THIS card is the case most likely to need a re-decision.
-        """
-        meta = getattr(profile, "meta", None) or {}
-        if not meta.get("capture_truncated"):
-            return
-        # "screencaps", not "screens": each read-scroll advances a FRACTION of a screen height
-        # (Hinge's read_scroll_frac is 0.55), so 12 screencaps is roughly 7 screen-heights of
-        # profile, not 12. Naming the unit the config and the driver already use ("max
-        # screencaps while reading one profile") keeps the operator from over-estimating how
-        # much of the card was actually covered.
-        frames = meta.get("capture_frames", len(profile.photos))
-        print(f"   ⚠️  only the first {frames} screencaps of this profile were read (it is "
-              f"longer than the configured ceiling), so scroll detection is weaker for this card.")
 
     def _retrain_after_labels(self, added: int) -> None:
         ready = self.decider.retrain(self.store)
@@ -646,6 +720,10 @@ class Worker(threading.Thread):
                         action, status="failed", reason="driver outcome disagreed with the Hub decision")
                     raise RuntimeError("training driver outcome disagreed with the Hub decision")
 
+                # The verified Hinge action has now physically landed.  All following work is
+                # durable archival, not device input; publish that boundary before a potentially
+                # slow image upload so Hub wording cannot imply that the Like/Dislike is pending.
+                self._training_persistence_status(outcome, "archive")
                 try:
                     profile_id, decided_at = uuid.uuid4().hex, time.time()
                     # Validate the local, pure parts of a training datum before writing any
@@ -657,13 +735,22 @@ class Worker(threading.Thread):
                     if vec is None:
                         raise RuntimeError(
                             "the training profile could not be embedded; no label was saved")
-                    archived = self.store.record_profile(
-                        self.run_id, self.app, profile_id, outcome == "like", source="manual",
-                        photos=profile.photos, **metadata)
+                    record_profile = self.store.record_profile
+                    profile_kwargs = dict(source="manual", photos=profile.photos, **metadata)
+                    # BigQuery can report each image upload.  Local/legacy stores deliberately
+                    # do not receive this optional UI-only callback through ``**metadata``.
+                    if _explicitly_accepts_keyword(record_profile, "progress"):
+                        profile_kwargs["progress"] = (
+                            lambda stage, completed=None, total=None, outcome=outcome:
+                            self._training_persistence_status(
+                                outcome, stage, completed, total))
+                    archived = record_profile(
+                        self.run_id, self.app, profile_id, outcome == "like", **profile_kwargs)
                     if archived is False:
                         raise RuntimeError(
                             "the training profile could not be archived; no label was saved")
                     if outcome == "like":
+                        self._training_persistence_status(outcome, "opener_evidence")
                         commit = getattr(self.opener_service, "commit_opener", None)
                         if callable(commit):
                             landed_evidence = None
@@ -692,6 +779,7 @@ class Worker(threading.Thread):
                             if committed is False:
                                 raise RuntimeError(
                                     "the landed training opener could not be persisted")
+                    self._training_persistence_status(outcome, "label")
                     _record_decision_with_lineage(
                         self.store, self.run_id, self.app, outcome,
                         1.0 if outcome == "like" else 0.0, source="manual",
@@ -707,6 +795,7 @@ class Worker(threading.Thread):
                     # not completed until its decision, opener/evidence, archive, and label have
                     # crossed that boundary; otherwise a process loss can turn a green Hub
                     # result into missing training data.
+                    self._training_persistence_status(outcome, "flush")
                     flush()
                     self.training_action_bridge.complete(action, status="completed")
                 except Exception:
@@ -720,6 +809,15 @@ class Worker(threading.Thread):
                 if self.status:
                     self.status.record_swipe(self.app, outcome)
                     self.status.inc_labels(1)
+                # Every durable write for this action has now crossed the flush boundary, so stop
+                # claiming one is in flight: retrain, pacing, and an occasional session break
+                # publish nothing, and the next status write is the following capture's. Published
+                # AFTER record_swipe on purpose -- that call re-stamps state="acting" and leaves
+                # ``detail`` alone, so a clear placed before it would leave the Hub asserting an
+                # unfinished device action for the whole pacing window instead of a finished one.
+                self._publish_status(
+                    mode="training", state="scoring",
+                    detail=f"{outcome.title()} recorded and saved; pacing before the next profile")
                 if labels_added % self.retrain_every == 0:
                     self._retrain_after_labels(labels_added)
                     last_retrained = labels_added

@@ -85,11 +85,22 @@ class _Client:
     wants two successful AUTO calls WITHOUT the guard firing must make their openings differ,
     and a test about the guard itself must make them collide on purpose. Both directions are
     exercised below.
+
+    item_indexes / index_spaces script the ITEM BINDING of each successive successful return,
+    clamped the same way opener_texts is. They exist because a redraw can differ from the draft
+    it replaces in more than its words: opener.py collapses an out-of-range or odd item number
+    to ITEM_INDEX_ABSENT rather than raising, so a perfectly parseable second draw can come
+    back with no item to target at all. That is a real production shape and the entropy guard
+    has to notice it, which is impossible to express with a fake whose every success carries
+    _Res.item_index.
     """
-    def __init__(self, exc=None, exc_sequence=None, opener_texts=None):
+    def __init__(self, exc=None, exc_sequence=None, opener_texts=None,
+                 item_indexes=None, index_spaces=None):
         self.exc = exc
         self.exc_sequence = list(exc_sequence) if exc_sequence is not None else None
         self.opener_texts = list(opener_texts) if opener_texts is not None else None
+        self.item_indexes = list(item_indexes) if item_indexes is not None else None
+        self.index_spaces = list(index_spaces) if index_spaces is not None else None
         self.successes = 0
         self.calls = 0
         self.retry_hints = []
@@ -104,6 +115,10 @@ class _Client:
             # last text) instead of silently reverting to _Res.opener and changing which
             # openers collide half way through a test.
             res.opener = self.opener_texts[min(self.successes, len(self.opener_texts) - 1)]
+        if self.item_indexes:
+            res.item_index = self.item_indexes[min(self.successes, len(self.item_indexes) - 1)]
+        if self.index_spaces:
+            res.index_space = self.index_spaces[min(self.successes, len(self.index_spaces) - 1)]
         self.successes += 1
         return res
 
@@ -1324,11 +1339,11 @@ def test_confirmed_like_commits_staged_advisory_opener_exactly_once():
     assert store.openers == []
     assert service.recent_openers_snapshot() == []
 
-    assert service.commit_advisory_opener(pick) is True
+    assert service.commit_opener(pick) is True
     assert len(store.openers) == 1
     assert len(service.recent_openers_snapshot()) == 1
     assert service.recent_openers_snapshot()[0]["advisory"] is True
-    assert service.commit_advisory_opener(pick) is False
+    assert service.commit_opener(pick) is False
     assert len(store.openers) == 1
 
 
@@ -1337,7 +1352,7 @@ def test_committed_opener_carries_exact_landed_action_lineage():
     service = OpenerService(_Client(), _Tracker([False]), store, "casual")
     pick = service.maybe_opener("run", "hinge", object(), advisory=True)
 
-    assert service.commit_advisory_opener(
+    assert service.commit_opener(
         pick, profile_id="profile-opaque", decision="like", decision_source="manual",
         decision_created_at=123.0) is True
     assert store.opener_kwargs == [{
@@ -2239,6 +2254,70 @@ def test_a_regeneration_that_comes_back_empty_still_bills_the_draw_and_keeps_the
     output = capsys.readouterr().out
     assert "entropy regeneration returned no opener text" in output
     assert "keeping the original opener" in output
+
+
+def test_a_regeneration_that_loses_its_item_binding_is_discarded_for_the_original(capsys):
+    """The guard is about the first few WORDS, but the draw it hands back also carries the item
+    number worker.py will target. A redraw whose item_index came back ITEM_INDEX_ABSENT (which
+    opener.py produces from any out-of-range or odd number, deliberately printing rather than
+    raising) turns a sendable AND targetable draft into a pick worker.py can only answer by
+    setting stop_reason and stop_event -- so the guard would stop the whole run over a
+    stylistic near-miss, one layer below itself, which is exactly what its invariant 2
+    forbids. Keep the first draft: its text and its index stay together, which is the opposite
+    of substituting the liked item."""
+    c = _Client(opener_texts=[_NGRAM_A, _NGRAM_A, _NGRAM_B],
+                item_indexes=[2, 3, ITEM_INDEX_ABSENT])
+    t, st = _Tracker(), _Store()
+    s = OpenerService(c, t, st, "casual")
+
+    s.maybe_opener("r", "hinge", object())         # profile 1: seeds the buffer with A
+    capsys.readouterr()
+    out = s.maybe_opener("r", "hinge", object())   # profile 2: collides, redraw drops the index
+
+    assert out.text == _NGRAM_A                     # the original draft, kept and sent
+    assert out.index == 3                           # ... WITH the item it was written about
+    assert out.index_space == INDEX_SPACE_MODEL_ITEMS
+    assert c.calls == 3                             # the redraw still happened, it just lost
+    # Nothing about this is a failure: the kept draft was always good enough to send.
+    assert s.disabled is False and s.stop_requested is False
+    assert s.exhausted_reason is None
+    assert s.last_skip_reason is None
+    # Billed exactly once each, same accounting as the empty-redraw branch: the discarded
+    # redraw is recorded by the guard, the survivor at maybe_opener's normal post-guard site.
+    assert len(st.spend) == 3
+    assert t.recorded == [("gemini-x", "usage")] * 3
+    assert len(st.openers) == 2
+    assert st.openers[1][3] == _NGRAM_A
+    # The paper trail still shows the collision; it just did not end in a regeneration.
+    entry = s.recent_openers_snapshot()[1]
+    assert entry["entropy_collision"] == _NGRAM_A_LEADING
+    assert entry["entropy_regenerated"] is False
+    output = capsys.readouterr().out
+    assert "without the item binding the original draft had" in output
+    assert "keeping the original opener" in output
+
+
+def test_a_regeneration_that_switches_index_space_is_discarded_for_the_original(capsys):
+    """The other half of the same binding check, and the reason it is not just an ABSENT test:
+    an index is only meaningful together with the list it counts. A redraw carrying a perfectly
+    usable-looking number in a DIFFERENT index space would have the survivor's text numbered in
+    the discarded draft's space, which is how a pick lands on the wrong item rather than on
+    none."""
+    c = _Client(opener_texts=[_NGRAM_A, _NGRAM_A, _NGRAM_B],
+                index_spaces=[INDEX_SPACE_MODEL_ITEMS, INDEX_SPACE_MODEL_ITEMS,
+                              INDEX_SPACE_PROFILE_PHOTOS])
+    st = _Store()
+    s = OpenerService(c, _Tracker(), st, "casual")
+
+    s.maybe_opener("r", "hinge", object())
+    capsys.readouterr()
+    out = s.maybe_opener("r", "hinge", object())
+
+    assert out.text == _NGRAM_A
+    assert out.index == 2 and out.index_space == INDEX_SPACE_MODEL_ITEMS
+    assert s.disabled is False and s.stop_requested is False
+    assert st.openers[1][3] == _NGRAM_A
+    assert "without the item binding the original draft had" in capsys.readouterr().out
 
 
 def test_both_draws_are_billed_but_only_the_sent_opener_is_recorded():

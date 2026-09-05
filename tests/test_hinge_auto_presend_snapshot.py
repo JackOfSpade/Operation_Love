@@ -538,6 +538,45 @@ def test_training_dislike_rejects_reflowed_same_profile_without_deck_advance(mon
     assert ("debug", "training_dislike") not in events
 
 
+def test_training_dislike_records_linked_unverified_outcome_after_tap(tmp_path, monkeypatch):
+    """A failed post-X proof is an auditable physical action, never a training label."""
+    events = []
+    driver, _adb = _driver(events)
+    driver._dbg = HingeDebugLog(str(tmp_path), run_id="training-dislike-unverified")
+    checkpoint = b"VERIFIED_COMPOSER_CHECKPOINT"
+    evidence_id = "human-reviewed-draft-evidence"
+
+    monkeypatch.setattr(driver, "_screencap", lambda: checkpoint)
+    monkeypatch.setattr(
+        driver, "_verify_training_checkpoint",
+        lambda *_a, **_kw: (checkpoint, object(), (80, 80)))
+    monkeypatch.setattr(driver, "_tap", lambda *point: events.append(("tap", point)))
+    monkeypatch.setattr(hinge.time, "sleep", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        driver, "_verify_training_dislike_landed",
+        lambda *_a, **_kw: (_ for _ in ()).throw(
+            HingeActionError("semantic deck proof was inconclusive")))
+
+    with pytest.raises(HingeActionError, match="semantic deck proof was inconclusive"):
+        driver._training_dislike_from_composer(
+            object(), 3, b"PRE_HEART", pre_send_evidence={"evidence_id": evidence_id})
+
+    assert events == [("tap", (80, 80))]
+    records = [
+        json.loads(line)
+        for line in (driver._dbg.dir / "actions.jsonl").read_text().splitlines()
+    ]
+    unverified = next(
+        record for record in records if record["action"] == "training_dislike_unverified")
+    assert unverified["model_item_index"] == 3
+    assert unverified["pre_send_evidence_id"] == evidence_id
+    assert unverified["x"] == [80, 80]
+    assert unverified["error"] == "HingeActionError: semantic deck proof was inconclusive"
+    assert unverified["kept_before"] == unverified["before"]
+    assert (driver._dbg.dir / unverified["before"]).read_bytes() == checkpoint
+    assert not any(record["action"] == "training_dislike" for record in records)
+
+
 @pytest.mark.parametrize("verifier_name", [
     "_verify_training_dislike_landed", "_verify_training_like_landed",
 ])
@@ -649,6 +688,54 @@ def test_training_like_accepts_repeated_structured_single_letter_name(tmp_path, 
     assert probe["outcome"] == "accepted"
     assert probe["first"]["name_candidate"] == "S"
     assert probe["second"]["name_candidate"] == "S"
+    assert probe["names_agree"] is True
+
+
+def test_training_dislike_accepts_repeated_structured_two_letter_name(tmp_path, monkeypatch):
+    """Regression for run 24179f2e77e0: ``Ri`` is a real Hinge name, not OCR noise.
+
+    The short candidate remains usable only when Hinge's exact Signals banner binds it to the
+    name slot, and only after the ordinary canonical-top, repeated-source, ready-deck, and
+    stable-frame gates all pass.
+    """
+    import numpy as np
+
+    driver, _adb = _driver([])
+    driver._dbg = HingeDebugLog(str(tmp_path), run_id="training-two-letter-advance")
+    driver._identity_name = "Francesca"
+    driver._identity_sig = np.zeros((16, 64), dtype="int16")
+    driver._identity_top_sig = np.full((16, 64), 200, dtype="int16")
+    frames = iter((b"RI_TOP_FIRST", b"RI_TOP_SECOND"))
+
+    monkeypatch.setattr(driver, "_screencap", lambda: next(frames))
+    monkeypatch.setattr(driver, "_deck_blocked_reason", lambda _frame: None)
+    monkeypatch.setattr(driver, "_locate_inline_composer", lambda _frame: None)
+    monkeypatch.setattr(driver, "_observe_deck_ready", lambda _frame: True)
+    monkeypatch.setattr(driver, "_changed", lambda _before, _after: False)
+    monkeypatch.setattr(driver, "_interruptible_sleep", lambda *_a, **_kw: True)
+    monkeypatch.setattr(
+        hinge, "_band", lambda _frame, _rect: np.full((16, 64), 99, dtype="int16"))
+    monkeypatch.setattr(
+        hinge, "confirm_scroll_top",
+        lambda *_a, **_kw: SimpleNamespace(
+            state="confirmed_top", confirmed=True, distance=0.0,
+            reason="canonical scroll top confirmed"))
+    monkeypatch.setattr(
+        driver, "_ocr_band",
+        lambda _frame, _rect, psm="7", **_kw: (
+            "Ri shows thoughtful signals" if psm == "6" else None))
+
+    assert driver._verify_training_dislike_landed(3) == "name"
+
+    records = [
+        json.loads(line)
+        for line in (driver._dbg.dir / "actions.jsonl").read_text().splitlines()
+    ]
+    probe = next(record for record in records if record["action"] == "training_advance_probe")
+    assert probe["outcome"] == "accepted"
+    assert probe["first"]["name_candidate"] == "Ri"
+    assert probe["second"]["name_candidate"] == "Ri"
+    assert probe["stable"] is True
     assert probe["names_agree"] is True
 
 

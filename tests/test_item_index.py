@@ -2835,6 +2835,161 @@ def test_repeated_near_gutter_with_cross_frame_boundary_proof_splits_only_partia
     assert unchanged == tuple(observations) and no_notes == ()
 
 
+def test_long_background_card_top_merge_splits_the_reported_heartless_hybrid():
+    """The refusal's exact f0/f3/f4 geometry is repairable without discarding f0.
+
+    Frame 0's 1964..2100 partial contained a 76px ``RUN_TOO_LONG`` page-background interval at
+    1970..2046.  Frames 3 and 4 independently bounded the lower card at 2046..3020.  The
+    segmenter's conservative local rule correctly declined to call 76px a generic gutter, but
+    the page fold can now prove that the lower side is this one complete card. Keep both content
+    fragments partial, remove only the known background rows, and never assign an observed edge
+    that no frame actually saw.
+
+    The upper 6px remainder deliberately stays in the record.  Dropping it would hide evidence;
+    the neighbouring complete cards plus f0's failure-free scan instead prove it cannot conceal a
+    heart, so it is ordinal-safe but still uncroppable.  The lower partial then corroborates the
+    complete card rather than overrunning it.
+    """
+    observations = [
+        _obs(0, 694, 1803, hearts=(1714,)),
+        _obs(0, 1964, 2100, complete=False),
+        _obs(3, 2046, 3020, hearts=(2931,)),
+        _obs(4, 2046, 3020, hearts=(2931,)),
+    ]
+
+    repaired, notes = item_index._split_long_background_card_top_merges(
+        observations, ((0, 1970, 2046),), tolerance=item_index._EXTENT_TOLERANCE_PX)
+
+    assert [(o.frame_index, o.page_y0, o.page_y1, o.complete, o.hearts) for o in repaired] == [
+        (0, 694, 1803, True, ((_HEART_CX, 1714),)),
+        (0, 1964, 1970, False, ()),
+        (0, 2046, 2100, False, ()),
+        (3, 2046, 3020, True, ((_HEART_CX, 2931),)),
+        (4, 2046, 3020, True, ((_HEART_CX, 2931),)),
+    ]
+    assert len(notes) == 1
+    assert "frame 0" in notes[0]
+    assert "1964..2100" in notes[0] and "1970..2046" in notes[0]
+    assert "2046..3020" in notes[0]
+
+    blocks, failures, assembly_notes = _assemble(
+        repaired, at_scroll_top=False, page_coverage=((1803, 2046),), full=True)
+
+    assert failures == ()
+    assert [(block.page_y0, block.page_y1, block.kind) for block in blocks] == [
+        (694, 1803, item_index.ITEM_SELECTABLE),
+        (1964, 1970, item_index.ITEM_PARTIAL),
+        (2046, 3020, item_index.ITEM_SELECTABLE),
+    ]
+    # No new item was invented and no existing card was renumbered by the retained fringe.
+    assert [block.heart_ordinal for block in blocks] == [1, None, 2]
+    assert [block.model_index for block in blocks] == [1, None, 2]
+    assert any("retained as uncroppable but is ordinal-safe" in note for note in assembly_notes)
+
+
+@pytest.mark.parametrize(
+    "case", ("heart", "no_complete_card", "single_complete_card", "misaligned_card",
+             "disagreeing_complete_cards", "tiny_overlap"))
+def test_long_background_card_top_merge_requires_heartless_exactly_aligned_complete_card(case):
+    """This narrow repair must not turn an arbitrary long blank span into a boundary."""
+    upper = _obs(0, 694, 1803, hearts=(1714,))
+    hybrid = _obs(0, 1964, 2100, complete=False,
+                  hearts=(1984,) if case == "heart" else ())
+    if case == "no_complete_card":
+        observations = [upper, hybrid]
+    elif case == "single_complete_card":
+        observations = [upper, hybrid, _obs(4, 2046, 3020, hearts=(2931,))]
+    elif case == "misaligned_card":
+        # More than chain slack away from the long run's lower edge; it could be another card.
+        observations = [upper, hybrid, _obs(3, 2070, 3044, hearts=(2955,)),
+                        _obs(4, 2070, 3044, hearts=(2955,))]
+    elif case == "disagreeing_complete_cards":
+        observations = [upper, hybrid, _obs(3, 2046, 3020, hearts=(2931,)),
+                        _obs(4, 2046, 3100, hearts=(3011,))]
+    elif case == "tiny_overlap":
+        hybrid = _obs(0, 1964, 2050, complete=False)
+        observations = [upper, hybrid, _obs(3, 2046, 3020, hearts=(2931,)),
+                        _obs(4, 2046, 3020, hearts=(2931,))]
+    else:
+        observations = [upper, hybrid, _obs(3, 2046, 3020, hearts=(2931,)),
+                        _obs(4, 2046, 3020, hearts=(2931,))]
+
+    repaired, notes = item_index._split_long_background_card_top_merges(
+        observations, ((0, 1970, 2046),), tolerance=item_index._EXTENT_TOLERANCE_PX)
+
+    assert repaired == tuple(observations)
+    assert notes == ()
+
+
+@pytest.mark.parametrize("splitter", ("long_background_run", "repeated_near_gutter"))
+def test_a_virtual_split_never_carries_the_original_top_edge_onto_the_lower_fragment(splitter):
+    """A split moves `page_y0` to a row no frame bounded, so it must claim no top evidence.
+
+    Both virtual splits build their fragments by copying the ORIGINAL sighting's fields.
+    `top_kind` describes the row at `page_y0` and only that row, so the fragment whose
+    `page_y0` became the invented seam must carry none — while the upper fragment, whose
+    `page_y0` is unmoved, keeps whatever segment.py really saw there.
+    """
+    hybrid = _obs(0, 1964, 2100, complete=False,
+                  top_observed=True, top_kind=segment.EDGE_CARD_CORNER)
+    if splitter == "long_background_run":
+        observations = [hybrid,
+                        *(_obs(frame, 2046, 3020, hearts=(2931,), top_kind=segment.EDGE_GUTTER)
+                          for frame in (3, 4))]
+        repaired, notes = item_index._split_long_background_card_top_merges(
+            observations, ((0, 1970, 2046),), tolerance=item_index._EXTENT_TOLERANCE_PX)
+        expected = [(1964, 1970), (2046, 2100)]
+    else:
+        # The near-gutter splitter's own licence: a repeated 59..64px run at a complete card's
+        # end, with the next fragment beginning a canonical 53px gutter below it.
+        observations = [_obs(5, 1900, 1970, top_kind=segment.EDGE_GUTTER), hybrid,
+                        *(_obs(frame, 2023, 3020, hearts=(2931,), top_kind=segment.EDGE_GUTTER)
+                          for frame in (3, 4))]
+        repaired, notes = item_index._split_repeated_near_gutter_merges(
+            observations, ((6, 1970, 2032), (7, 1970, 2032)),
+            tolerance=item_index._EXTENT_TOLERANCE_PX)
+        expected = [(1964, 1970), (2023, 2100)]
+    assert len(notes) == 1, notes
+
+    fragments = [o for o in repaired if o.frame_index == 0]
+    assert [(o.page_y0, o.page_y1) for o in fragments] == expected
+    assert fragments[0].top_kind == segment.EDGE_CARD_CORNER   # its page_y0 is unmoved
+    assert fragments[1].top_kind == ""                         # its page_y0 is invented
+    assert fragments[1].top_observed is False
+
+
+def test_a_split_lower_fragment_cannot_donate_a_card_corner_to_the_scroll_top_test():
+    """The leak the split's `top_kind` copy would open, priced through `_assemble`.
+
+    `_scroll_top_evidence` reads `top_kind` WITHOUT consulting `top_observed` — deliberately,
+    because the screen-fixed island disposition pairs a REAL edge kind with an unobserved top.
+    So a lower fragment that inherited `EDGE_CARD_CORNER` from a top row 82px above it is read
+    as "some frame saw the first item's OWN top edge", and the 2026-08-28 guard passes on
+    evidence no frame produced.
+
+    Here the heartless partial's real top is the band-clipped card corner of the scrolling
+    section heading, and the card below the seam was bounded by GUTTERS in both frames that
+    saw it whole — the Hinge 10.1.0 pinned-header shape, where a false `at_scroll_top` shifts
+    every heart ordinal while every completeness property still agrees with it.
+    """
+    repaired, notes = item_index._split_long_background_card_top_merges(
+        [_obs(0, 1964, 2100, complete=False,
+              top_observed=True, top_kind=segment.EDGE_CARD_CORNER),
+         *(_obs(frame, 2046, 3020, hearts=(2931,), top_kind=segment.EDGE_GUTTER)
+           for frame in (3, 4))],
+        ((0, 1970, 2046),), tolerance=item_index._EXTENT_TOLERANCE_PX)
+    assert len(notes) == 1
+
+    blocks, failures = _assemble(repaired, at_scroll_top=True,
+                                 page_coverage=((1803, 2046),))
+
+    # The 6px heading remnant is the leading heartless partial the guard skips, so the block it
+    # is talking about is the card below the seam.
+    assert [(block.page_y0, block.page_y1) for block in blocks] == [(1964, 1970), (2046, 3020)]
+    assert any("never a card corner" in failure for failure in failures), failures
+    assert any("['gutter']" in failure for failure in failures), failures
+
+
 def test_live_f19_to_f29_bridging_shape_is_split_on_its_bounded_cards():
     """One missed gutter must not merge two otherwise independently bounded cards.
 

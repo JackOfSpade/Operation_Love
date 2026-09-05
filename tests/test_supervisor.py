@@ -190,6 +190,84 @@ def test_clean_shutdown_reports_stopped(monkeypatch, tmp_path):
     assert all(a["state"] == "out_of_profiles" for a in snap["apps"].values())
 
 
+def test_terminal_phase_is_published_only_after_app_states_are_terminal(monkeypatch, tmp_path):
+    """A terminal global phase is the Hub/bug-report publication boundary."""
+    terminal_publications = []
+    real_status = sup.RunStatus
+
+    class _ObservedStatus(real_status):
+        def set_global(self, **fields):
+            if fields.get("phase") in {"stopped", "wedged", "save_failed"}:
+                terminal_publications.append(self.snapshot())
+            return super().set_global(**fields)
+
+    monkeypatch.setattr(sup, "RunStatus", _ObservedStatus)
+    snap = _run_with(monkeypatch, tmp_path, _FakeStore())
+
+    assert snap["phase"] == "stopped"
+    assert len(terminal_publications) == 1
+    assert all(row["state"] != "saving"
+               for row in terminal_publications[0]["apps"].values())
+
+
+def test_startup_stop_reports_save_failed_when_store_cleanup_fails(monkeypatch, tmp_path):
+    stop = threading.Event()
+
+    class _StopAfterLoadStore(_FakeStore):
+        def load_labels(self):
+            stop.set()
+            return []
+
+    store = _StopAfterLoadStore(flush_error=RuntimeError("startup drain rejected"))
+    cfg_path = _write_cfg(tmp_path)
+    monkeypatch.setattr(sup, "Capabilities", _Caps)
+    monkeypatch.setattr(sup, "make_store", lambda cfg: store)
+    monkeypatch.setattr(
+        sup, "make_driver", lambda *_args: pytest.fail("worker must not be constructed"))
+    monkeypatch.setattr(sup, "_install_signal_handlers", lambda event: None)
+    _patch_no_adb(monkeypatch)
+    captured = {}
+
+    sup.run(str(cfg_path), on_status=lambda s: captured.__setitem__("status", s),
+            stop_event=stop)
+
+    snap = captured["status"].snapshot()
+    assert store.closed is True
+    assert snap["phase"] == "save_failed"
+    assert all(row["state"] == "error" for row in snap["apps"].values())
+
+
+def test_startup_stop_reports_save_failed_when_store_close_fails(monkeypatch, tmp_path):
+    stop = threading.Event()
+
+    class _StopAfterLoadStore(_FakeStore):
+        def load_labels(self):
+            stop.set()
+            return []
+
+        def close(self):
+            self.closed = True
+            raise RuntimeError("startup close rejected")
+
+    store = _StopAfterLoadStore()
+    cfg_path = _write_cfg(tmp_path)
+    monkeypatch.setattr(sup, "Capabilities", _Caps)
+    monkeypatch.setattr(sup, "make_store", lambda cfg: store)
+    monkeypatch.setattr(
+        sup, "make_driver", lambda *_args: pytest.fail("worker must not be constructed"))
+    monkeypatch.setattr(sup, "_install_signal_handlers", lambda event: None)
+    _patch_no_adb(monkeypatch)
+    captured = {}
+
+    sup.run(str(cfg_path), on_status=lambda s: captured.__setitem__("status", s),
+            stop_event=stop)
+
+    snap = captured["status"].snapshot()
+    assert store.closed is True
+    assert snap["phase"] == "save_failed"
+    assert all(row["state"] == "error" for row in snap["apps"].values())
+
+
 def test_worker_start_failure_preserves_cause_and_still_saves_and_closes(
         monkeypatch, tmp_path, capsys):
     """An unstarted Thread must never enter the shutdown join list.
@@ -427,7 +505,8 @@ def test_close_only_failure_is_a_save_failure_not_a_green_shutdown(monkeypatch, 
     assert all(app["state"] == "error" for app in snap["apps"].values())
 
 
-def test_worker_error_state_survives_shutdown_not_overwritten_to_stopped(monkeypatch, tmp_path):
+def test_worker_error_state_survives_shutdown_not_overwritten_to_stopped(
+        monkeypatch, tmp_path, capsys):
     """Regression test for the bug this change fixes: worker.py's HALT-on-unexpected path
     (run()'s `except Exception:` branch, auto mode or halt_on_error) publishes
     state='error' on the app BEFORE it sets stop_event and returns. Pre-fix, run()'s
@@ -474,6 +553,10 @@ def test_worker_error_state_survives_shutdown_not_overwritten_to_stopped(monkeyp
     assert snap["apps"]["hinge"]["error"]                # the worker's own message survived too
     assert snap["apps"]["hinge"]["mode"] == "auto"       # even though open_session failed
     assert snap["phase"] == "stopped"                    # the save itself still succeeded
+    output = capsys.readouterr().out
+    assert "buffered rows saved" in output
+    assert "does not prove every landed action" in output
+    assert "✅ all data saved" not in output
 
 
 def test_status_callback_receives_effective_app_mode_before_workers_start(monkeypatch, tmp_path):
@@ -963,9 +1046,18 @@ def test_wedged_worker_is_not_reported_as_unqualified_success(monkeypatch, tmp_p
     store DURING or AFTER flush/close, so a clean flush is not an unqualified success. The
     join must still not block quit forever (timeout stays bounded), but the printed summary
     and the status the hub reads must both say the outcome is qualified, not a flat '✅'."""
+    release = threading.Event()
+
     class _WedgedDriver(DatingAppDriver):
         def open_session(self):
-            time.sleep(0.3)          # ignores stop_event -- simulates a worker stuck mid-capture
+            # Stop pressed mid-run: armed from the worker's own first driver call, so it
+            # cannot land on one of run()'s startup stop-checkpoints and abort before a
+            # worker was ever launched (a 0.1s wall-clock timer here lost exactly that race
+            # on a slow CI container). The wait below then IGNORES the stop it just set --
+            # simulating a worker stuck mid-capture -- held until the test releases it after
+            # run() returns, so the wedge verdict cannot depend on machine speed either.
+            stop_event.set()
+            release.wait(timeout=_LIVENESS_TIMEOUT_S)
         def next_profile(self):
             return None
         def out_of_profiles(self):
@@ -990,12 +1082,13 @@ def test_wedged_worker_is_not_reported_as_unqualified_success(monkeypatch, tmp_p
     monkeypatch.setattr(sup, "_install_signal_handlers", lambda stop: None)
     _patch_no_adb(monkeypatch)
 
-    stop_event = threading.Event()
-    threading.Timer(0.1, stop_event.set).start()   # simulate Stop pressed mid-run, after launch
+    stop_event = threading.Event()   # set by _WedgedDriver.open_session, i.e. after launch
 
     captured = {}
     sup.run(str(cfg_path), on_status=lambda s: captured.__setitem__("status", s),
             stop_event=stop_event)
+    release.set()                    # let the deliberately-wedged thread finish now
+
     snap = captured["status"].snapshot()
 
     assert store.closed is True                  # a wedged worker must not block quit forever
@@ -1928,6 +2021,103 @@ def test_join_timeout_falls_back_to_the_sane_floor_when_openers_disabled():
     assert sup._worker_join_timeout_s(cfg) == sup._WORKER_JOIN_TIMEOUT_FLOOR_S == 30.0
 
 
+# --- F: an already-landed decision's ARCHIVE is the other thing a healthy worker can be
+# inside when Stop arrives, and it outlasts the opener bound above. ------------------------
+
+def _archive_cfg(apps):
+    return SimpleNamespace(enabled_apps=list(apps), apps=apps)
+
+
+def test_archive_grace_is_read_off_the_stores_own_whole_archive_deadline():
+    """The grace must track the store's deadline for THIS run's capture budget, not restate a
+    number: the shipped 12-screencap Hinge read is priced far above the 105s opener bound, so a
+    flat bound is exactly what misreports a healthy archiving worker as wedged."""
+    grace = sup._archive_join_grace_s(_archive_cfg({"hinge": {"scroll_captures": 12}}))
+    assert grace == sup._profile_upload_deadline_s(12)
+    # Several times the 105s opener bound at the shipped capture budget -- the gap this whole
+    # branch exists to cover. Compared against that bound rather than a literal so a retune of
+    # either side keeps the relationship under test instead of pinning two numbers.
+    assert grace > sup._worker_join_timeout_s(
+        _JoinTimeoutCfg(OpenerCfg(enabled=True, request_timeout_s=90))) * 3
+    # A budget the config does not pin is priced at the Training review ceiling, which is also
+    # the largest capture config validation admits for a Training run.
+    assert sup._archive_join_grace_s(_archive_cfg({"hinge": {}})) == (
+        sup._profile_upload_deadline_s(sup.MAX_PROFILE_REVIEW_FRAMES))
+    # Never below the store's own floor, whatever the config says.
+    assert sup._archive_join_grace_s(_archive_cfg({"hinge": {"scroll_captures": 1}})) == 180.0
+
+
+def test_only_a_store_reporting_a_registered_archive_can_extend_the_join():
+    """A store with no such seam (sqlite, every test double here) keeps the flat bound, so a
+    genuinely wedged worker stays exactly as quick to give up on as before."""
+    assert sup._store_archive_in_flight(_FakeStore()) is False
+    assert sup._store_archive_in_flight(SimpleNamespace(_active_async_writes=0)) is False
+    assert sup._store_archive_in_flight(SimpleNamespace(_active_async_writes=1)) is True
+    assert sup._store_archive_in_flight(
+        SimpleNamespace(archive_writes_in_flight=lambda: 2)) is True
+    # A probe that misbehaves must never take shutdown down with it.
+    assert sup._store_archive_in_flight(SimpleNamespace(
+        archive_writes_in_flight=lambda: (_ for _ in ()).throw(RuntimeError("boom")))) is False
+
+
+def test_worker_still_archiving_a_landed_decision_is_not_reported_wedged(
+        monkeypatch, tmp_path, capsys):
+    """The consequence of the old flat bound was not a cosmetic label: the supervisor flushes
+    and CLOSES the store on the far side of this join, and the decision/opener/label rows that
+    follow an already-landed Like are then refused as late writes."""
+    stop_event = threading.Event()
+    archive_done = threading.Event()
+    driver_closed = threading.Event()
+
+    class _ArchivingStore(_FakeStore):
+        def archive_writes_in_flight(self):
+            return 0 if archive_done.is_set() else 1
+
+    class _ArchivingDriver(DatingAppDriver):
+        def open_session(self):
+            # Stands in for the post-action archive: the phone already accepted the decision
+            # and the store is uploading that profile's screenshots. Stop is requested from
+            # here so run() must join a worker that is provably mid-archive.
+            stop_event.set()
+            time.sleep(1.0)          # outlasts the 0.2s flat bound mocked below
+            archive_done.set()
+        def next_profile(self):
+            return None
+        def out_of_profiles(self):
+            return True
+        def like(self, opener=None, item_index=None, *, model_item_index=None):
+            pass
+        def dislike(self):
+            pass
+        def close(self):
+            driver_closed.set()
+
+    monkeypatch.setattr(sup, "_worker_join_timeout_s", lambda cfg: 0.2)
+    monkeypatch.setattr(sup, "_archive_join_grace_s", lambda cfg: 5.0)
+    monkeypatch.setattr(sup, "Embedder", _FastEmbedder)
+    monkeypatch.setattr(sup, "QualityFilter", _FastQuality)
+    monkeypatch.setattr(sup, "Capabilities", _Caps)
+    store = _ArchivingStore()
+    monkeypatch.setattr(sup, "make_store", lambda cfg: store)
+    monkeypatch.setattr(sup, "make_driver", lambda app, cfg: _ArchivingDriver())
+    monkeypatch.setattr(sup, "_install_signal_handlers", lambda stop: None)
+    _patch_no_adb(monkeypatch)
+    captured = {}
+
+    try:
+        sup.run(str(_write_cfg(tmp_path)),
+                on_status=lambda s: captured.__setitem__("status", s), stop_event=stop_event)
+
+        out = capsys.readouterr().out
+        assert "is still archiving a decision that already landed on the phone" in out
+        assert "did not stop within" not in out
+        snap = captured["status"].snapshot()
+        assert snap["phase"] == "stopped"
+        assert snap["apps"]["hinge"]["state"] != "wedged"
+    finally:
+        assert driver_closed.wait(_LIVENESS_TIMEOUT_S)
+
+
 # --- audit fix: an honest "stopping" tail between running and stopped ----------------------
 # supervisor.py's shutdown `finally` used to publish phase="saving data" (and nothing for
 # `stopping`) the INSTANT shutdown began -- before stop_event.set(), before any worker was
@@ -1945,11 +2135,15 @@ def test_stopping_is_true_and_phase_is_stopping_before_saving_data_begins(monkey
 
     class _BlockedUntilReleased(DatingAppDriver):
         def open_session(self):
-            # This is only a failsafe against the fake driver hanging forever if `release`
-            # somehow never fires -- the test always calls release.set() explicitly at ~0.5s
-            # (line below), well inside this bound regardless of machine load. It is
+            # Stop pressed mid-run: armed from the worker's own first driver call, so it
+            # cannot land on one of run()'s startup stop-checkpoints and abort before a
+            # worker was ever launched (a wall-clock timer here loses that race on a slow
+            # CI container). The wait below is only a failsafe against the fake driver
+            # hanging forever if `release` somehow never fires -- the test always calls
+            # release.set() explicitly once it has sampled the mid-shutdown status. It is
             # deliberately independent from the mocked `_worker_join_timeout_s=5.0` below,
             # which IS an input to the production code under test and must stay as authored.
+            stop_event.set()
             release.wait(timeout=_LIVENESS_TIMEOUT_S)
         def next_profile(self):
             return None
@@ -1974,17 +2168,23 @@ def test_stopping_is_true_and_phase_is_stopping_before_saving_data_begins(monkey
     _patch_no_adb(monkeypatch)
 
     captured = {}
-    stop_event = threading.Event()
-    threading.Timer(0.15, stop_event.set).start()   # give startup time to reach 'live' first
+    stop_event = threading.Event()   # set by _BlockedUntilReleased.open_session, after launch
 
     run_thread = threading.Thread(
         target=lambda: sup.run(str(cfg_path), on_status=lambda s: captured.__setitem__("status", s),
                                stop_event=stop_event))
     run_thread.start()
 
-    # stop_event fired at ~0.15s; the worker is still blocked in open_session() (release not
-    # set yet), so the finally block must still be stuck inside its join loop right now.
-    time.sleep(0.35)
+    # The worker set stop from open_session and is still blocked there (release not set), so
+    # once run() notices the stop and publishes 'stopping', its finally block is provably
+    # stuck inside the join loop. Poll for that state instead of sleeping a fixed interval --
+    # a wall-clock sleep is exactly what flaked on a slow CI container.
+    deadline = time.monotonic() + _LIVENESS_TIMEOUT_S
+    while time.monotonic() < deadline:
+        status = captured.get("status")
+        if status is not None and status.snapshot()["phase"] == "stopping":
+            break
+        time.sleep(0.02)
     mid = captured["status"].snapshot()
     release.set()                            # let the worker (and thus the join loop) finish
     run_thread.join(timeout=_LIVENESS_TIMEOUT_S)

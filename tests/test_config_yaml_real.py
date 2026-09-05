@@ -49,7 +49,7 @@ def test_the_shipped_targeting_calibration_is_a_complete_bound_calibration(cfg):
     cal = cfg.apps["hinge"]["targeting_calibration"]
     assert cal["schema_version"] == 3
     assert cal["device"] == cfg.apps["hinge"]["serial"], "calibration must bind the exact serial"
-    assert cal["hinge_version_name"] == "10.1.0"
+    assert cal["hinge_version_name"] == "10.2.0"
     assert list(cal["frame_size_px"]) == [1080, 2400]
     assert cal["item_selection_policy_id"] == "hinge_photos_only_v2"
     assert cal["composer_layout_id"] == "hinge_inline_v1"
@@ -201,16 +201,32 @@ def test_shipped_opener_style_requires_value_without_forcing_a_claim(cfg):
     assert "intelligence, sincerity, knowledge, effort" in style
     assert "forced choice whose honest answers make her defend, diminish, or embarrass herself" in style
     assert "rather than asking her to verify its status" in style
-    assert "premise consistency" in style
-    assert "if the first beat asserts or guesses x" in style
-    assert "must accept x as its working premise and move the conversation forward" in style
-    assert "never ask whether x itself was true" in style
-    assert "restate x as a question" in style
-    assert "ask about the opposite of x" in style
-    assert "abandon x for a generic question about the surrounding scene" in style
-    assert "may extend the angle with clearly nonliteral hyperbole" in style
-    assert "may not add a literal invented fact, motive, or backstory" in style
-    assert "if no coherent continuation exists, stop after the first beat" in style
+    assert "positive social framing" in style
+    assert "state the intended positive observation, question, or invitation directly" in style
+    assert ("naming an insulting, judgmental, awkward, pressuring, creepy, or offensive "
+            "interpretation") in style
+    assert "that denial introduces the negative interpretation" in style
+    assert "remove the disclaimer" in style
+    assert "rewrite the substantive thought so it sounds confident and stands on its own" in style
+    assert "reciprocity before future" in style
+    assert "not an audition for a role described in her profile" in style
+    assert "never answer one of her preferences by advertising the sender" in style
+    assert "promising what he will do for her" in style
+    assert "do not assume that a match, date, relationship, or shared future already exists" in style
+    assert "possessive language about a first date, place, trip, or other future together" in style
+    assert "a proposal is not an established shared plan" in style
+    assert "information gain test" in style
+    assert "conclusion of a guess must not itself be directly visible or explicitly stated" in style
+    assert "its header, a sign, or elsewhere in her profile" in style
+    assert "they are clues, not guessed conclusions" in style
+    assert "ordinary viewer can read or see the conclusion directly without inference" in style
+    assert "confirmation boundary" in style
+    assert "a guess remains unconfirmed until she replies" in style
+    assert "statement, question, compliment, or invitation that assumes it is correct" in style
+    assert "natural next move is to confirm or correct it" in style
+    assert "only invite that confirmation or correction without presupposing the answer" in style
+    assert "experience, preference, or consequence that only makes sense if the guess is true" in style
+    assert "must accept x as its working premise" not in style
     assert "your opener must contain a claim that could be wrong" not in style
     assert "test it by covering the photo" not in style
     assert "then do not say that detail back to her" not in style
@@ -290,7 +306,8 @@ def test_shipped_opener_style_ships_the_redesign_guardrails(cfg):
     assert "never a street, a neighbourhood, a hotel, a specific venue" in style
     assert "the way a well travelled friend would" in style
     assert "when a place comes from recognizing the image rather than from her profile text" in style
-    assert "clearly identify it as a visual inference before building on it" in style
+    assert "clearly identify it as a visual inference and leave it unconfirmed" in style
+    assert "do not build on an inferred location as though it were correct" in style
     assert "do not state an inferred location as shared experience" in style
     assert "do not turn it into a generic compliment" in style
     assert "never guess her employer, her school, or her age" in style

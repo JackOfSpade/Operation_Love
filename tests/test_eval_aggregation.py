@@ -103,22 +103,6 @@ def _identity_samples(n):
     return samples
 
 
-def _fake_saturating_evaluate(samples, n_splits=5, eps=0.5):
-    n = len(samples)
-    likes = sum(1 for liked, _ in samples if liked)
-    passes = n - likes
-    if n < 10 or not likes or not passes:
-        return {"status": "insufficient_data", "labels": n, "likes": likes, "passes": passes,
-                "identities": n, "folds": 0, "roc_auc": None, "pr_auc": None,
-                "brier": None, "base_rate": (likes / n) if n else 0.0,
-                "message": "too small"}
-    score = 0.72 - (3.0 / n)
-    return {"status": "ok", "labels": n, "likes": likes, "passes": passes,
-            "identities": n, "folds": min(n_splits, likes, passes),
-            "roc_auc": [score, 0.01], "pr_auc": [score, 0.01], "brier": [0.20, 0.01],
-            "base_rate": likes / n, "message": "fake grouped CV"}
-
-
 def test_format_report_shows_accuracy_brier_and_base_rate():
     r = {
         "status": "ok", "labels": 80, "likes": 20, "passes": 60,
@@ -137,39 +121,6 @@ def test_format_report_nonok_returns_message_only():
     out = format_report({"status": "error", "message": "evaluation failed"})
     assert out.startswith("Evaluation failed")
     assert "Accuracy" not in out and "Diminishing returns" not in out
-
-
-def test_quality_trajectory_walks_prefixes_every_step(monkeypatch):
-    # Reconstructs the metric history at chronological prefixes, every `step` labels.
-    monkeypatch.setattr(eval_mod, "evaluate", _fake_saturating_evaluate)
-    traj = eval_mod.quality_trajectory(_identity_samples(53), step=5)
-    assert [p["labels"] for p in traj][:3] == [10, 15, 20]   # starts at min_labels (10), every 5
-    assert traj[-1]["labels"] == 53                          # full set is always the final point
-    assert traj[0]["roc_auc"] < traj[-1]["roc_auc"]          # visible accuracy curve rises with n
-    assert all(p.get("roc_std") is not None and p.get("base_rate") is not None for p in traj)
-
-
-def test_quality_trajectory_never_raises_on_edge_inputs():
-    for samples in (None, [], ["junk"] * 8):
-        assert eval_mod.quality_trajectory(samples, step=5) == []   # too small / malformed -> empty
-
-
-@pytest.mark.parametrize("kwargs", [
-    {"step": math.nan}, {"n_splits": "many"}, {"eps": math.inf},
-    {"min_labels": None}, {"max_points": "forty"},
-])
-def test_quality_trajectory_never_raises_on_malformed_report_controls(kwargs):
-    assert eval_mod.quality_trajectory(_identity_samples(12), **kwargs) == []
-
-
-def test_quality_trajectory_caps_point_count_as_labels_grow(monkeypatch):
-    # Cost is one full grouped CV per point; the step widens so points stay bounded at scale.
-    monkeypatch.setattr(eval_mod, "evaluate", _fake_saturating_evaluate)
-    big = eval_mod.quality_trajectory(_identity_samples(1000), step=5, max_points=40)
-    assert len(big) <= 41                                  # ~max_points, not 200 (= 1000/5)
-    assert big[-1]["labels"] == 1000                       # still ends on the full set
-    # small N keeps the fine step-5 granularity (cap doesn't kick in)
-    assert [p["labels"] for p in eval_mod.quality_trajectory(_identity_samples(53), step=5)][:3] == [10, 15, 20]
 
 
 def _grouped_cv_samples(n_identities=10, per_identity=4):

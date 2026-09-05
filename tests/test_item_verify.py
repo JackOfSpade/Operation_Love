@@ -462,6 +462,70 @@ def test_malaika_style_inline_reframe_uses_a_bounded_one_item_cap_without_loosen
     assert wrong_prompt.distance > item_verify._INLINE_COMPOSER_ONE_ITEM_MAX_DIST
 
 
+def test_the_inline_reframe_sweep_is_bit_identical_pooled_and_serial(monkeypatch):
+    """Threading this sweep may only change WHEN a window is scored, never which one wins.
+
+    The sweep is ~95% `cv2.resize`, which releases the GIL, so a small pool is most of the
+    inline verification's wall clock. That is only takeable if it is exact: `inline_item_max_dist`
+    sits 0.0001 grey levels under a measured foreign-card collision that `tools/hinge_calibrate.py`
+    clamps against on purpose, and a single cell off by one grey level moves a distance by ~0.0002
+    — the same class of defect as the 2026-08-27 sRGB-chunk incident, only smaller.
+
+    So this drives the real inline geometry and runs EVERY item both ways: same signature
+    function, same pixels, same pair order, same strict `<`. Both the per-item verdict and the
+    whole bank of scored windows have to match byte for byte, not merely closely.
+    """
+    payload = _payload()
+    selected = payload.item(4)
+    frame = _paint_inline_reframe(selected.image)
+    surface = ComposerSurface(
+        "hinge_inline_v1", Rect(95, 1112, 985, 1290), Rect(390, 1305, 985, 1414), (695, 1355))
+
+    real_compare = item_verify._compare_item
+    real_signature = item_verify._signature_from_gray
+    banks: dict[str, list[bytes]] = {"pooled": [], "serial": []}
+    lane: list[str | None] = [None]
+    both: list[tuple] = []
+
+    def recording(*args, **kwargs):
+        signature = real_signature(*args, **kwargs)
+        if lane[0] is not None:
+            banks[lane[0]].append(signature.cells)
+        return signature
+
+    def compare_both_ways(*args, **kwargs):
+        assert kwargs.get("pool") is not None, (
+            "the inline regime handed `_compare_item` no pool, so this test would be comparing "
+            "the serial sweep against itself")
+        lane[0] = "pooled"
+        pooled = real_compare(*args, **kwargs)
+        lane[0] = "serial"
+        serial = real_compare(*args, **{**kwargs, "pool": None})
+        lane[0] = None
+        both.append((pooled, serial))
+        return pooled
+
+    monkeypatch.setattr(item_verify, "_signature_from_gray", recording)
+    monkeypatch.setattr(item_verify, "_compare_item", compare_both_ways)
+
+    verdict = item_verify.verify_sheet_item(
+        frame, payload, 4, composer_surface=surface, absolute_max_dist=10.0)
+    assert verdict.matched, verdict.reason
+    assert len(both) == len(payload.items)
+
+    for pooled, serial in both:
+        distance, window_px, reference, reason = pooled
+        # `reason` carries `best_start`/`best_rows` verbatim ("inline reframe rows S..S+R"), so
+        # an equal tuple pins the whole `(best_distance, best_start, best_rows)` triple.
+        assert (distance, window_px, reason) == (serial[0], serial[1], serial[3])
+        assert reference.cells == serial[2].cells
+
+    # ...and every window scored, not only the winner. The pool completes them in whatever order
+    # it likes, so the two banks are compared as multisets.
+    assert len(banks["pooled"]) > 100                    # the sweep really ran
+    assert sorted(banks["pooled"]) == sorted(banks["serial"])
+
+
 def test_alex_style_inline_reframe_allows_the_measured_28_percent_crop_but_not_more():
     """A 731px sheet preview maps to 800 source rows after the fixed control-lane crop.
 

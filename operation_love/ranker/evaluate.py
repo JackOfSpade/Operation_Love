@@ -176,63 +176,6 @@ def evaluate(samples: list[tuple[bool, list[float]]], n_splits: int = 5,
         return {**base, "status": "error", "message": f"evaluation failed: {type(exc).__name__}: {exc}"}
 
 
-def quality_trajectory(samples, step: int = 5, n_splits: int = 5, eps: float = _IDENTITY_EPS,
-                       min_labels: int = 10, max_points: int = 40) -> list[dict]:
-    """Recompute leakage-free grouped-CV accuracy at chronological prefixes (every
-    `step` labels) so the hub can chart how ranking quality evolved as labels accumulated.
-
-    `samples` MUST be in swipe (created_at) order — prefix [:k] is then "the first k
-    labels you collected". The effective step is widened so at most ~`max_points` prefixes
-    are scored, bounding cost (each prefix is a full grouped CV) as labels grow. Returns a
-    JSON-able list of points, only where grouped CV is valid (early prefixes with too few
-    identities/classes are skipped). Never raises.
-    """
-    try:
-        rows = list(samples) if samples else []
-    except Exception:  # noqa: BLE001
-        return []
-    # This is a best-effort reporting API used by the hub. Its documented no-throw
-    # contract includes malformed report controls, not only malformed stored rows.
-    # Validate those controls before arithmetic below (``int(math.nan)`` and a
-    # string ``max_points`` previously escaped the per-prefix exception guard).
-    try:
-        step = max(1, int(step))
-        n_splits = max(2, int(n_splits))
-        min_labels = max(1, int(min_labels))
-        max_points = int(max_points)
-        eps = float(eps)
-    except (TypeError, ValueError, OverflowError):
-        return []
-    if not math.isfinite(eps):
-        return []
-    n = len(rows)
-    if max_points and max_points > 0:
-        step = max(step, -(-n // max_points))        # ceil(n/max_points): coarsen so points <= ~max_points
-    sizes = list(range(step, n + 1, step))
-    if n >= min_labels and (not sizes or sizes[-1] != n):
-        sizes.append(n)                              # always include the full set as the last point
-    points: list[dict] = []
-    for size in sizes:
-        if size < min_labels:
-            continue
-        try:
-            r = evaluate(rows[:size], n_splits=n_splits, eps=eps)
-        except Exception:  # noqa: BLE001
-            continue
-        if r.get("status") != "ok":
-            continue
-        pr = r.get("pr_auc") or [None, None]
-        roc = r.get("roc_auc") or [None, None]
-        brier = r.get("brier") or [None, None]
-        points.append({
-            "labels": size, "identities": r.get("identities"),
-            "pr_auc": pr[0], "pr_std": pr[1],
-            "roc_auc": roc[0], "roc_std": roc[1], "brier": brier[0],
-            "base_rate": r.get("base_rate"),
-        })
-    return points
-
-
 def _capitalize_first_letter(s: str) -> str:
     for i, ch in enumerate(s):
         if ch.isalpha():

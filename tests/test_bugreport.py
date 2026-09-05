@@ -26,6 +26,7 @@ def test_report_has_core_sections():
               "## Reporter follow-up", "## Build", "## System", "## Dependencies", "## Capabilities", "## Config",
               "## Hinge targeting readiness",
               "## Secrets", "## Diagnostic improvement", "## Run status", "## Recent openers",
+              "## Training alerts",
               "## Run completion assessment",
               "## Recent opener rejections",
               "## Debug log (on-disk actions + screenshots)", "## Recent logs"]:
@@ -105,6 +106,19 @@ def test_completion_assessment_requires_at_least_one_app_status(monkeypatch):
     assert "Outcome: INDETERMINATE" in bugreport._run_completion_assessment_md(
         hub, "unused.yaml")
     assert "no app status" in bugreport._run_completion_assessment_md(hub, "unused.yaml")
+
+
+@pytest.mark.parametrize("app_state", ["starting", "scoring", "acting", "saving"])
+def test_completion_assessment_rejects_stopped_snapshot_with_nonterminal_app(
+        monkeypatch, app_state):
+    monkeypatch.setattr(bugreport, "_completion_capture_facts", lambda *_: {})
+
+    md = bugreport._run_completion_assessment_md(
+        _CompletionHub(app_state=app_state), "unused.yaml")
+
+    assert "Outcome: INDETERMINATE" in md
+    assert "non-terminal state" in md
+    assert repr(app_state) in md
 
 
 def test_completion_assessment_names_recovered_provider_faults_and_coverage(monkeypatch):
@@ -794,6 +808,39 @@ def test_debug_log_links_training_dislike_without_calling_it_a_missing_send(tmp_
     assert "DISLIKE verified as landed" in evidence
     assert "typed opener was not sent or committed" in evidence
     assert "legacy sequence" in evidence
+    assert "no linked send outcome was logged" not in evidence
+
+
+def test_debug_log_links_unverified_training_dislike_to_its_draft(tmp_path):
+    run = tmp_path / "run_training_dislike_unverified"
+    run.mkdir(parents=True)
+    frame = b"typed opener shown at the training checkpoint"
+    opener = "A draft the reviewer chose not to send."
+    evidence_id = hashlib.sha256(frame + b"\0" + opener.encode()).hexdigest()
+    shot = "00016_auto_opener_pre_send_before.png"
+    (run / shot).write_bytes(frame)
+    records = [
+        {
+            "ts": "2026-09-02T23:06:39", "action": "auto_opener_pre_send",
+            "before": shot, "opener": opener,
+            "opener_sha256": hashlib.sha256(opener.encode()).hexdigest(),
+            "frame_sha256": hashlib.sha256(frame).hexdigest(),
+            "evidence_id": evidence_id, "model_item_index": 3,
+            "session_mode": "training",
+        },
+        {
+            "ts": "2026-09-02T23:06:48", "action": "training_dislike_unverified",
+            "model_item_index": 3, "pre_send_evidence_id": evidence_id,
+            "error": "HingeActionError: semantic deck proof was inconclusive",
+        },
+    ]
+    (run / "actions.jsonl").write_text("\n".join(map(json.dumps, records)) + "\n")
+
+    evidence = bugreport._latest_auto_opener_evidence_md(
+        (run / "actions.jsonl").read_text().splitlines(), run)
+
+    assert ("X/Dislike tap was issued but its landing could not be semantically verified; no "
+            "training label was recorded; typed opener was not sent at `2026-09-02T23:06:48`") in evidence
     assert "no linked send outcome was logged" not in evidence
 
 
@@ -1544,6 +1591,66 @@ def test_dwell_navigation_chain_refusal_reports_pair_and_both_estimator_directio
     assert "anchor return `unavailable_unmeasured`" in row
     assert "before `00100_still_photo_dwell_walk_candidate_before.png`" in row
     assert "after `00101_still_photo_dwell_walk_candidate_after.png`" in row
+
+
+def test_dwell_navigation_chain_refusal_renders_the_v3_forward_strip_bank(tmp_path):
+    """schema_version 3 carries the estimator's own strip bank; the report must print it.
+
+    The nine projected scalars say `no_consensus` and nothing more, which is exactly the
+    ambiguity the v3 record exists to resolve: strips that genuinely disagreed look identical to
+    a bank split into a page cluster (+300px) and an autoplaying video's own motion (-1178px).
+    The v2 line above it must be unchanged -- this only appends sub-bullets.
+    """
+    run = tmp_path / "run_dwell_navigation_chain_refusal_v3"
+    run.mkdir(parents=True)
+    record = {
+        "action": "still_photo_dwell_walk_candidate", "heart_ordinal": 9,
+        "outcome": "navigation_refused", "reason": "chain_broken",
+        "before": "00100_still_photo_dwell_walk_candidate_before.png",
+        "after": "00101_still_photo_dwell_walk_candidate_after.png",
+        "navigation_refusal": {
+            "schema_version": 3, "code": "chain_broken", "frame_index": 2,
+            "return_outcome": "unavailable_unmeasured", "restored_page_shift_px": None,
+            "planned": {"step_px": 300, "bound_px": 360, "spacing_px": 1027,
+                        "sized_against_px": 1027, "window_px": [219, 360],
+                        "basis": "measured"},
+            "achieved": {
+                "measurement_status": "no_consensus",
+                "measurement_reason": "forward video strips split",
+                "measurement_delta_px": None,
+                "forward": {
+                    "status": "no_consensus", "reason": "forward video strips split",
+                    "delta_px": None, "agreeing": 2, "dissenting": 2, "eligible": 4,
+                    "confidence": 0.5, "trust_window_px": 900, "band": [420, 1980],
+                    "strips": [
+                        [500, 560, "matched", 300, 0.982],
+                        [700, 760, "matched", -1178, 0.991],
+                        [900, 960, "weak", None, None],
+                    ],
+                },
+                "reverse": {
+                    "status": "no_consensus", "reason": "reverse video strips also split",
+                    "delta_px": None, "agreeing": 2, "dissenting": 2, "eligible": 4,
+                    "trust_window_px": 900, "band": [420, 1980], "strips": [],
+                },
+            },
+        },
+    }
+    (run / "actions.jsonl").write_text(json.dumps(record) + "\n")
+
+    md = bugreport._one_debug_dir_md("hinge", {"debug_dir": str(tmp_path)})
+    lines = md.splitlines()
+
+    row_index = next(i for i, line in enumerate(lines) if "page heart 9" in line)
+    # The v2 rendering of the same row is untouched.
+    assert "reverse estimator `no_consensus; reverse video strips also split`" in lines[row_index]
+
+    trace = "\n".join(lines[row_index + 1:row_index + 4])
+    assert ("forward estimator `no_consensus` (2 agreeing, 2 dissenting, 4 eligible, "
+            "confidence 0.50, trust window 900px, band rows 420..1980): "
+            "`forward video strips split`") in trace
+    assert "located strips: 500-560 +300px (0.98); 700-760 -1178px (0.99); plus 1 weak" in trace
+    assert "reverse estimator `no_consensus`" in trace
 
 
 def test_dwell_navigation_refusal_summary_shows_walk_continue_and_abandon_outcomes(tmp_path):
@@ -3975,3 +4082,98 @@ def test_content_band_rows_agrees_with_the_driver_it_mirrors():
         for size in (2400, 1920, 2):
             assert (bugreport._content_band_rows(band, [1080, size])[:2]
                     == hinge._content_rows(tuple(band), size))
+
+
+def _maja_measurement_row():
+    """The refused return leg from run 1d84909bf1bb, as the driver now records it.
+
+    Transcribed from the estimator's own output on the two retained frames: both directions
+    refused, both put the median at +-630px, and the strips that dissent are the ones lying over
+    an autoplaying video. This is exactly the evidence the report used to drop.
+    """
+    band = [300, 2100]
+    return {
+        "action": "still_photo_dwell_return_chain", "outcome": "refused",
+        "reason": "return_leg_unmeasurable", "attempts": 5,
+        "initial_terminal_shift_px": -5458, "terminal_shift_px": -2938,
+        "drift_bound_px": 219, "requested_step_px": 630,
+        "before": "00009_still_photo_dwell_return_chain_before.png",
+        "after": "00010_still_photo_dwell_return_chain_after.png",
+        "measurement": {
+            "forward": {
+                "status": "no_consensus", "trust_window_px": 900, "band": band,
+                "agreeing": 2, "dissenting": 2, "eligible": 3, "confidence": 0.667,
+                "reason": "no trustworthy shift: median +630px, but 2 of 3 eligible strips agree",
+                "strips": [
+                    [300, 396, "flat", None, 0.0], [442, 538, "weak", None, 0.447],
+                    [726, 822, "matched", -1178, 0.961], [1010, 1106, "matched", 630, 0.977],
+                    [1152, 1248, "matched", 630, 0.841], [1294, 1390, "matched", 723, 0.861],
+                ],
+            },
+            "reverse": {
+                "status": "no_consensus", "trust_window_px": 900, "band": band,
+                "agreeing": 2, "dissenting": 5, "eligible": 5, "confidence": 0.4,
+                "reason": "no trustworthy shift: median -630px, but 2 of 5 eligible strips agree",
+                "strips": [
+                    [300, 396, "matched", -630, 0.998], [442, 538, "matched", -630, 0.91],
+                    [584, 680, "matched", -747, 0.881], [2004, 2100, "matched", 1178, 0.915],
+                ],
+            },
+        },
+    }
+
+
+def test_dwell_return_chain_refusal_reports_what_the_estimator_saw(tmp_path):
+    """The operator must be able to tell a page that did not move from a video that ate the band.
+
+    Before this the row carried only the driver's INTENT -- attempts, requested step, terminal
+    shifts -- so diagnosing run 1d84909bf1bb took the retained PNGs and an offline re-run of the
+    estimator (2026-09-04).
+    """
+    run = tmp_path / "run_estimator_trace"
+    run.mkdir(parents=True)
+    (run / "actions.jsonl").write_text(json.dumps(_maja_measurement_row()) + "\n")
+
+    md = bugreport._one_debug_dir_md("hinge", {"debug_dir": str(tmp_path)})
+
+    assert "forward estimator `no_consensus`" in md
+    assert "reverse estimator `no_consensus`" in md
+    assert "2 agreeing" in md and "3 eligible" in md and "confidence 0.67" in md
+    assert "trust window 900px" in md and "band rows 300..2100" in md
+    assert "median +630px" in md and "median -630px" in md
+    # the two clusters, which are the whole diagnosis: the page at +-630 and the video elsewhere
+    assert "1010-1106 +630px (0.98)" in md
+    assert "726-822 -1178px (0.96)" in md
+    assert "300-396 -630px (1.00)" in md
+    # weak/flat strips collapse to counts rather than printing a line of "saw nothing"
+    assert "plus 1 flat, 1 weak" in md
+    assert "442-538" not in md.split("located strips")[1].split("\n")[0]
+
+
+def test_dwell_return_chain_rendering_is_unchanged_without_a_measurement(tmp_path):
+    """Historic runs carry no `measurement` key and must render byte-identically to before."""
+    run = tmp_path / "run_no_trace"
+    run.mkdir(parents=True)
+    row = {k: v for k, v in _maja_measurement_row().items() if k != "measurement"}
+    (run / "actions.jsonl").write_text(json.dumps(row) + "\n")
+
+    md = bugreport._one_debug_dir_md("hinge", {"debug_dir": str(tmp_path)})
+
+    assert "return chain refused (`return_leg_unmeasurable`)" in md
+    assert "estimator" not in md.split("still-photo return-chain refusals")[1]
+
+
+def test_shift_trace_rendering_survives_malformed_and_oversized_banks():
+    """A partly written or caller-varied trace stays a safe hint, never a crash or a flood."""
+    assert bugreport._shift_trace_lines_md(None) == []
+    assert bugreport._shift_trace_lines_md({"forward": "not a dict"}) == []
+    assert bugreport._shift_trace_lines_md(
+        {"error": "ShiftEstimationError: frames differ in size"})[0].endswith(
+            "`ShiftEstimationError: frames differ in size`")
+    huge = {"forward": {"status": "no_consensus", "confidence": "nan",
+                        "strips": [[y, y + 96, "matched", y, 0.9] for y in range(0, 4000, 50)]
+                                  + ["malformed", [1, 2]]}}
+    lines = bugreport._shift_trace_lines_md(huge)
+    strip_line = next(line for line in lines if "located strips" in line)
+    assert f"+{80 - bugreport._SHIFT_TRACE_STRIPS_SHOWN} more" in strip_line
+    assert "confidence" not in lines[0], "a non-numeric confidence is dropped, not rendered"

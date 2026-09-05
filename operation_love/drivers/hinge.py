@@ -109,8 +109,8 @@ from .base import (ActionCancelled, DatingAppDriver, DeckBlockedError, DriverClo
                    OBSERVE_ITEM_MISMATCH, ObserveItemCheck, _time_bucket, open_debug_log,
                    snapshot_failure_frame)
 from .frameshift import (
-    SHIFT_MEASURED, SHIFT_NO_CONSENSUS, ShiftEstimationError, estimate_shift,
-    estimate_shift_with_reverse_recovery)
+    SHIFT_MEASURED, ShiftEstimationError, estimate_shift,
+    estimate_shift_with_reverse_recovery, trace_estimate)
 from .item_crops import (
     CROP_CONTEXT, CROP_EXCLUDED, CROP_ITEM, CROP_UNCROPPABLE, EXCLUSION_NEVER_DWELLED,
     EXCLUSION_NON_PHOTO, NO_NUMBERED_ITEMS_REASON, PHOTO_ONLY_POLICY_ID,
@@ -129,7 +129,8 @@ from .item_index import (
     _project_to_exact_full_layout, _structural_tail_shift, VideoMuteMarker, build_item_index,
     _video_track_deltas,
 )
-from .item_nav import NAV_ITEM_BELOW_ENTRY, ItemNavigationError, navigate_to_item
+from .item_nav import (NAV_IDENTITY_MISMATCH, NAV_IDENTITY_UNCONFIRMED, NAV_ITEM_BELOW_ENTRY,
+                       ItemNavigationError, navigate_to_item)
 from .item_verify import (VERIFY_MISMATCH, SheetVerificationError, verification_blocker,
                           verify_sheet_item)
 from .like_composer import (
@@ -1002,14 +1003,104 @@ _REATTACH_RETURN_STEPS_SPAN = (2, 4)
 # that has nothing to do with the card. 0.35 keeps the largest exit (630px on the calibrated
 # band) inside both that window and the 787px largest step in the hand-scrolled corpus.
 _REATTACH_MAX_EXIT_BAND_FRAC = 0.35
+# The multi-leg return chain DRAWS each leg's distance inside `_REATTACH_MAX_EXIT_BAND_FRAC`'s
+# cap instead of pinning it there (found 2026-09-04, run 1d84909bf1bb). Two independent reasons,
+# and the cap alone satisfied neither:
+#
+#   * ANTI-BOT. Every full leg used to request exactly `_REATTACH_MAX_EXIT_BAND_FRAC * band_px`
+#     -- 630px at frac 0.27125 on the calibrated device -- so a deep return emitted a run of
+#     identical page deltas from identical touch rows (4 of them in that run, 9 had it
+#     completed). Every OTHER gesture parameter in this driver is already drawn from a span for
+#     exactly this reason, including the probe's own exit (`_REATTACH_EXIT_BAND_MULTIPLE_SPAN`)
+#     and leg count (`_REATTACH_RETURN_STEPS_SPAN`) twenty lines above; this loop was the one
+#     that was not, and a fixed repeated distance is the signature the owner rule names.
+#   * MEASURABILITY. `estimate_shift` cuts strips from the band it is leaving, so the static
+#     content two frames still share shrinks as the step grows. On that run's refused pair the
+#     card being left was an autoplaying video filling 53% of the band, which put the shared
+#     static window at (795 - step) rows: 165px at 630, but 445px at the low end of this span.
+#     A drawn leg is therefore not merely less identifiable, it is more often measurable.
+#
+# The low end is not smaller because a return is pure cleanup: halving the leg doubles the live
+# gestures owed on every deep optional hop. 0.55 puts the span at 346..630px on the calibrated
+# band, whose MEAN (488px) lands under `scroll_step._ENUM_TRUST_CEILING_BAND_FRAC`'s 540px --
+# the ceiling the enumeration read plans against, and the only one of the two that was derived
+# against the three-strip quorum rather than against `estimate_shift`'s geometric window. The
+# ceiling here is deliberately still `_REATTACH_MAX_EXIT_BAND_FRAC`, not that 0.30: dropping the
+# cap would also shrink `_still_photo_dwell_walk_return_budget`'s envelope, which is expressed
+# as four legs at this same cap, and the measured case for 0.30 over 0.35 is a quorum MARGIN
+# improvement rather than an observed refusal (six pairs against eleven sitting at exactly three
+# agreeing strips, over 177 animated pairs). The refusals themselves are addressed where they
+# happen, by `_return_leg_backoff_remeasure`. Both ends stay well inside the 900px trust window.
+_RETURN_LEG_DRAW_SPAN = (0.55, 1.0)
+# Consecutive legs that may deliver essentially nothing before the chain calls the page stuck.
+# `_measured_page_shift` reports a page that did not move as MEASURED 0 (an answer, not a
+# refusal), so without this the loop re-issues the same stroke for its whole attempt budget and
+# then reports `terminal_drift_exceeds_bound` -- blaming the distance for what was really a
+# clamped or frozen page. One swallowed fling is ordinary (the budget below already carries
+# slack for it); two in a row is the page saying no -- but only while the chain is still owed
+# real distance, and only for legs that were not deliberately shortened by a back-off. Both
+# qualifications live at the check itself, which is where the numbers they compare against are.
+_RETURN_LEG_STALL_LIMIT = 2
+# A REFUSED LEG IS NOT A REFUSED CHAIN. When `_measured_page_shift` cannot join a leg's before
+# and after frames, the page has moved by an unknown amount -- but the frame it moved FROM is
+# still in hand and its page offset is still known, so giving part of that leg back and
+# re-measuring AGAINST THAT SAME FRAME produces a complete measured link. Nothing is ever assumed
+# about where the refused frame went; it is simply never used.
+#
+# WHY IT WORKS rather than merely retrying: the pair refused because too little of what the two
+# frames share is static. On run 1d84909bf1bb the card being left was an autoplaying video over
+# half the band, and the shared static window is (795 - displacement) rows -- 165px at the 630px
+# leg that refused, and roughly triple that once a third to two thirds of it is given back. A
+# smaller displacement also leaves more strips geometrically eligible. So the back-off attacks
+# the actual cause instead of hoping the same measurement comes out differently.
+# Drawn, like every other gesture parameter here, and bounded: if no back-off measures either,
+# the chain refuses exactly as it did before, having spent a few more cleanup strokes.
+_RETURN_LEG_BACKOFF_FRAC_SPAN = (0.35, 0.65)
+_RETURN_LEG_BACKOFF_SPAN = (2, 3)
+# Navigation refusals that are an affirmative READING of the live screen rather than a failure to
+# proceed on it. Both are `compare_profile_identity`'s verdict on the entry frame the navigator
+# just captured: MISMATCH says the card on screen belongs to someone else, UNCONFIRMED says whose
+# card it is cannot be established at all. A gesture count cannot argue with either -- see
+# `_anchor_after_navigation_refusal` for why the reading outranks it.
+#
+# `IdentityError.__name__` is in the set for the same reason and NOT because a path reaches it
+# today: the walk's uncoded handler passes `type(exc).__name__` as the reason, and it lists
+# `IdentityError` among the classes it catches. Both of `navigate_to_item`'s
+# `compare_profile_identity` calls are currently wrapped into the two coded verdicts above, so a
+# bare `IdentityError` cannot escape -- but if one ever did, it is the same statement about the
+# same screen, and it must not be rescued while its coded twin is refused.
+#
+# THIS SET IS NO LONGER THE WHOLE RULE. A code name cannot express the other reading that
+# outranks the count, because one code carries both flavours: `NAV_ANCHOR_UNMEASURED` is raised
+# both when the estimator could NOT place the screen (item_nav.py, `anchor.delta_px is None` --
+# the transient case this rescue exists for) and when it DID place it, at or beyond one gesture
+# floor away from where the read left the card. The second is an affirmative reading, so
+# `_anchor_after_navigation_refusal` keys it on the refusal's measured EVIDENCE against
+# item_nav's own entry drift bound rather than on a name -- the same discrimination
+# `tools/hinge_calibrate.py`'s `large_measured_entry_drift` already makes, whose comment states
+# the governing decision ("Do not rebase a large entry delta onto this index"). It is also the
+# modal flavour, not a corner: of the nine `entry_anchor_unmeasured` forensics under
+# ops/calibration/*/forensics/, EIGHT are measured (deltas -501..-701px, anchor_status
+# `measured`, unanimous strips) and one is the estimator refusal.
+_NAV_SCREEN_VERDICT_CODES = frozenset({NAV_IDENTITY_MISMATCH, NAV_IDENTITY_UNCONFIRMED,
+                                       IdentityError.__name__})
 
 
 def video_mute_screen_reason(frame: bytes, rect: tuple[int, int, int, int], *,
                              match=None) -> str | None:
     """Screen ONE card rect of one exact frame for Hinge's mute control.
 
-    The vocabulary here is load-bearing and deliberately unchanged: the payload exclusion strings
-    it feeds are prefix-matched elsewhere in this module. Extracted from
+    The vocabulary here is load-bearing and deliberately unchanged, for two independent
+    reasons. It is a LIVE CODE DEPENDENCY: `model_item_media_ordinal` prefix-matches
+    `video_mute_v1: upper-left` as the one affirmative "this card is a video" exclusion it may
+    count as media, and every other exclusion wording is fail-closed there -- so rewording this
+    one into or out of that prefix silently changes what an operator is asked to count. And
+    these strings are the PERSISTED record of why a card was not numbered:
+    `_items_unnumbered_summary` buckets them by EXACT text to name the most common finding in the
+    operator's sentence, the debug manifest stores each one per crop, and an offline replay of
+    persisted dwell frames is only comparable with a live run while both write the same wording.
+    Rewording a reason therefore silently splits one repeated finding into two and orphans every
+    artifact already on disk. Extracted from
     `HingeDriver._target_frame_video_screen_reason` so the C3 leg of the still-photo dwell and an
     offline replay of persisted dwell frames run the SAME screen with the SAME ROI arithmetic,
     rather than each re-deriving the bands and drifting apart from the live path.
@@ -1969,14 +2060,13 @@ _TOP_NAME_CHROME_WORDS = frozenset({
     "intent", "she", "her", "hers", "he", "him", "his", "they", "them", "their", "theirs",
 })
 # Hinge's Signals banner repeats the profile name in a fixed sentence immediately above the
-# card header.  This is the one measured shape in which a one-character displayed name is not
-# arbitrary OCR noise: the 2026-08-30 Aisha -> S Training Like produced exactly
-# ``S shows thoughtful signals`` under every configured header recipe, and the on-device
-# accessibility tree independently exposed the profile name as ``S``.  Keep this exact and
-# anchored.  A bare one-letter read (or the letter beside any other words) retains no power to
-# manufacture a different-profile verdict.
-_SINGLE_LETTER_SIGNALS_BANNER_RE = re.compile(
-    r"^([A-Za-z]) shows thoughtful signals$", re.IGNORECASE)
+# card header.  This is the one measured shape in which a one- or two-character displayed name
+# is not arbitrary OCR noise: the 2026-08-30 Aisha -> S Training Like produced exactly
+# ``S shows thoughtful signals``, and run 24179f2e77e0 reached ``Ri shows thoughtful signals``
+# after its verified pass.  Keep this exact and anchored.  A bare short read (or a short token
+# beside any other words) retains no power to manufacture a different-profile verdict.
+_SHORT_SIGNALS_BANNER_RE = re.compile(
+    r"^([A-Za-z]{1,2}) shows thoughtful signals$", re.IGNORECASE)
 # Words HINGE ITSELF renders in the card-header band, observed in the real reads that built
 # identity_top_name_band ("Zorva @ | @ Signals Active today", Qelix's "Signals ( Agev )
 # Height v" equivalent at scroll-top), plus the pronoun/activity line directly below the name:
@@ -2008,12 +2098,12 @@ def _clean_first_line_name_candidate(text: str) -> str | None:
     actually looking at a name. Requiring exactly one candidate keeps filter-chip chrome and
     photo-text garbage inconclusive; the caller still decides whether this candidate is the
     captured name or a possible next profile.  The sole short-name exception is Hinge's exact
-    ``<letter> shows thoughtful signals`` banner: its fixed copy structurally binds that letter
-    to the profile-name slot.  The caller still requires canonical scroll-top geometry and two
-    stable frames that repeat the same candidate from the same calibrated crop.
+    ``<one-or-two-letter name> shows thoughtful signals`` banner: its fixed copy structurally
+    binds that name to the profile-name slot.  The caller still requires canonical scroll-top
+    geometry and two stable frames that repeat the same candidate from the same calibrated crop.
     """
     first_line = text.splitlines()[0] if text else ""
-    banner_match = _SINGLE_LETTER_SIGNALS_BANNER_RE.fullmatch(first_line)
+    banner_match = _SHORT_SIGNALS_BANNER_RE.fullmatch(first_line)
     if banner_match is not None:
         return banner_match.group(1)
     first_line_tokens = _TOP_NAME_TOKEN_RE.findall(first_line)
@@ -2163,15 +2253,15 @@ def _match_glyph(frame: bytes, template, *, side: str, threshold: float = 0.6,
 _LIKE_MATCH_THRESHOLD = 0.75
 # The floating pass X is the ONLY proof behind an irreversible pass tap -- on the training
 # checkpoint AND on the ordinary deck Dislike -- so it must not inherit _match_glyph's 0.6
-# default. Measured over all 346 frames of run 75e832ec6ad7
-# (2026-08-28, Hinge 10.1.0, Pixel 7a): the genuine X correlates at EXACTLY 1.0000 in all 322
-# frames that show it, always at one location, and no frame ever produced a second left-side peak
-# above 0.9. The strongest NON-target left-side peak in the whole run was 0.5841 (p99 0.5378) --
-# only 0.0159 under the old 0.6 gate. That is the same margin that was already measured unsafe for
-# the "like" role (see _locate_button: unrelated chrome scores 0.653 there on every frame). At
-# 0.90 the true match keeps 0.10 of slack it has never needed and false peaks keep 0.32 of
-# distance. Tightening can only ever cost a fail-closed refusal; leaving it risks an irreversible
-# tap on a control that is not Hinge's pass X.
+# default. Hinge 10.2.0 changed the glyph from the former symmetric X to a smaller asymmetric X;
+# the old 10.1.0 template scored only 0.8154 on the new control and correctly failed this 0.90
+# action gate. `hinge_pass_x.png` was therefore renewed from the exact live 10.2.0 control on
+# 2026-09-04. It scored 1.0000 on both independently saved capture frames and a later live frame,
+# with the next-best left-side peak only 0.4600. Replaying the new template over 346 retained
+# frames from run f8bc1d2969d1 found a strongest non-target left-side peak of 0.5014. The older
+# 10.1.0 measurement over all 346 frames of run 75e832ec6ad7 likewise found no second left-side
+# peak above 0.9. Retaining 0.90 therefore keeps a wide observed false-target margin without
+# weakening the fail-closed action boundary.
 _PASS_MATCH_THRESHOLD = 0.90
 
 
@@ -2242,7 +2332,7 @@ class AndroidDriver(DatingAppDriver):
         # scroll_captures; the `max(1, ...)` here is the same defensive floor scroll_captures
         # keeps, not a second copy of that validation.
         self.still_photo_dwell_candidates = max(
-            1, int(app_cfg.get("still_photo_dwell_candidates", 3)))
+            1, int(app_cfg.get("still_photo_dwell_candidates", 6)))
         # Worker installs this only for the duration of one profile capture. It is a Hub
         # liveness cue, not a driver control channel: callback failures are ignored and it
         # cannot request, alter, or interrupt device input.
@@ -2458,6 +2548,14 @@ class AndroidDriver(DatingAppDriver):
         # was enough while all read-scrolls had one fixed distance; auto-mode can now vary both
         # distance and lane per gesture, so undo must be based on what actually happened.
         self._capture_scroll_ledger: list[tuple[float, float]] = []
+        # MONOTONIC count of device inputs this driver has actually delivered, over the whole
+        # session. Deliberately NOT `len(_capture_scroll_ledger)`, which is reset at every
+        # confirmed scroll-top and so cannot answer "did anything move between these two
+        # moments"; and deliberately not a per-call flag, which a new gesture path could forget
+        # to set. Incremented at `_audit_device_input`, the one chokepoint every delivered input
+        # already passes through -- see that method for why nothing can move the phone without
+        # being counted here.
+        self._device_inputs_delivered = 0
         # A rejected actionable-capture entry is keyed to its semantic refusal, not PNG bytes.
         # Observe may legitimately re-enter current_profile() while an animated unsafe screen
         # repaints; retrying or re-logging based on each pixel variant would still be unbounded.
@@ -2982,7 +3080,35 @@ class AndroidDriver(DatingAppDriver):
         swipe immediately beforehand.  Keep this at the device-input choke points, after the
         synchronous transport returns, so every row means input was actually delivered and a
         quiet interval really does mean the driver sent nothing.
+
+        THE COUNTER IS NOT DIAGNOSTICS AND IS RAISED BEFORE THE `_dbg` GUARD (2026-09-04).
+        `_still_photo_dwell_candidate_walk` uses it to tell a navigation refusal that spent
+        gestures from one that spent none, because only the second leaves the capture's measured
+        entry anchor still valid. That question has to have the same answer with debugging off,
+        so the count cannot sit behind the log.
+        This method is the right home for it on the same argument the docstring above already
+        makes: it sits at the device-input chokepoints, after the synchronous transport returns.
+        Two structural tests pin that set --
+        `test_android_foreground_input.test_android_driver_has_no_transport_input_bypass_outside_guarded_choke_points`
+        walks this module's AST and asserts the EXACT set of direct input calls on
+        `self.adb`/`self.touch`, and `test_android_safety.test_no_driver_gesture_reaches_the_
+        transport_ungarded` holds the three `self.touch.*` calls (tap/swipe/scroll-up) to
+        exactly three.
+
+        BE PRECISE ABOUT WHAT THAT DOES AND DOES NOT COVER. Five call sites reach this method:
+        tap, swipe, scroll-up, `_text` and `_hide_keyboard_for_training`. The last one resolves
+        its transport through `getattr(self.adb, "keyevent", None)` and then calls a LOCAL name,
+        which no AST pin over `self.adb.<verb>(...)` can see. So an input added in that shape --
+        another dynamically-looked-up transport, or a raw `adb shell input ...` -- could be
+        delivered without being counted. That is a bound on this counter's guarantee, not a
+        defect it papers over: the consumer
+        (`_still_photo_dwell_candidate_walk` via `_navigation_moved_the_phone`) only ever asks
+        about `item_nav.navigate_to_item`, which reaches the driver through exactly
+        `_scroll_down_one`/`_scroll_up_one` -- both of which funnel into `_scroll` and are
+        counted -- and it fails closed on anything it cannot read. A new input path that wants
+        the same guarantee must audit here too.
         """
+        self._device_inputs_delivered += 1
         if self._dbg is None:
             return
         try:
@@ -5126,33 +5252,25 @@ class AndroidDriver(DatingAppDriver):
         Android's top-bar mute icon and Hinge's right-side like hearts.  Matcher failure is False
         (no repair authority); the later per-card selection screen remains independently
         fail-closed before anything can be numbered.
-        """
-        markers: list[bool] = []
-        for frame in frames:
-            try:
-                import cv2
-                import numpy as np
 
-                image = cv2.imdecode(
-                    np.frombuffer(frame, dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
-                if image is None:
-                    markers.append(False)
-                    continue
-                height, width = image.shape
-                rect = (0, round(self.content_band[0] * height), round(0.30 * width),
-                        round(self.content_band[1] * height))
-                screened, score = self._match_video_mute(frame, rect)
-                markers.append(bool(screened and score is not None
-                                    and score >= _VIDEO_MUTE_MATCH_THRESHOLD))
-            except Exception:  # noqa: BLE001 — marker absence never grants repair authority
-                markers.append(False)
-        return tuple(markers)
+        A FOLD, NOT A SECOND READER (2026-09-04).  This used to run its own decode + match loop,
+        which meant the ROI above and the one `_video_mute_marker_rows` searches were two
+        implementations of the same question and only the rows one ran in production -- so the
+        suite's only assertion that the search excludes Android's top bar and Hinge's heart lane
+        was pinning a copy that could not drift the production ROI.  Deriving the booleans here
+        exactly as `_index_captured_items` does (a frame is marked iff a positioned marker names
+        it) makes the two unable to answer differently, and drops the duplicate `cv2.imdecode`.
+        """
+        marked = {marker.frame_index for marker in self._video_mute_marker_rows(frames)}
+        return tuple(frame_index in marked for frame_index in range(len(frames)))
 
     def _video_mute_marker_rows(self, frames: list[bytes]) -> tuple[VideoMuteMarker, ...]:
         """Positioned mute observations for v12's physical-card tracker.
 
-        The old boolean reader remains for manifests/tests, but production indexing receives
-        these rows: a video can carry its identity after the control itself scrolls offscreen.
+        The one production reader of the mute glyph: a video can carry its identity after the
+        control itself scrolls offscreen, which a bare per-frame boolean cannot express.
+        `_index_captured_items` folds these same rows down to the indexer's per-frame booleans,
+        and `_video_mute_frame_markers` is that identical fold for callers that only want them.
         """
         markers: list[VideoMuteMarker] = []
         for frame_index, frame in enumerate(frames):
@@ -5420,6 +5538,96 @@ class AndroidDriver(DatingAppDriver):
             self._still_photo_passive_observation_s += span_s
         return frames, span_s
 
+    def _return_leg_backoff_remeasure(self, anchor: bytes, *, forward: bool, leg_px: int,
+                                      height: int) -> tuple[int | None, bytes | None, list]:
+        """Give part of a refused return leg back and re-measure against the SAME anchor.
+
+        Returns `(shift_from_anchor, frame, attempts)`. `shift_from_anchor` is a real
+        `_measured_page_shift` result between `anchor` -- the last frame whose page offset the
+        chain actually knows -- and the frame this method leaves on screen, so a caller may chain
+        it exactly like an ordinary leg. `(None, None, attempts)` means every back-off refused
+        too, and the caller must fail closed just as it did before this existed.
+
+        NOTHING IS ASSUMED ABOUT THE REFUSED FRAME. The leg that refused moved the page by an
+        unknown amount and that unknown is never estimated, bridged or subtracted: it is simply
+        dropped, and the only number that leaves here is a fresh direct measurement from
+        `anchor`. That is the same rule `_measured_page_shift` itself holds -- say "I cannot
+        tell" rather than guess -- applied one level up.
+
+        `forward` is the direction the refused leg travelled, so the back-off is its opposite.
+        `leg_px` is that leg's own requested distance, which is what the give-back is drawn as a
+        fraction of (`_RETURN_LEG_BACKOFF_FRAC_SPAN`); see that constant for why a smaller
+        displacement is the thing that makes the pair measurable rather than a second roll of the
+        dice. `attempts` is the per-attempt record for the debug row, so a refusal can show how
+        far it backed off and what the estimator said each time.
+
+        NOT should_stop-GATED, on the enclosing method's own terms: the page has already been
+        displaced from the position the index anchors on, so recovering a measurable link to it
+        is part of the same cleanup obligation, not one more optional gesture.
+        """
+        attempts: list[dict[str, object]] = []
+        for _attempt in range(random.randint(*_RETURN_LEG_BACKOFF_SPAN)):
+            back_px = max(1, int(round(
+                random.uniform(*_RETURN_LEG_BACKOFF_FRAC_SPAN) * max(1, int(leg_px)))))
+            frac = min(_READ_SCROLL_FRAC_MAX,
+                       max(_READ_SCROLL_FRAC_MIN, frac_for_step_px(back_px, height)))
+            _dwell_s, _step_frac, x_frac = self._sample_read_step(0, None)
+            if forward:
+                self._scroll_up_one(frac, x_frac)     # give back part of a forward leg
+            else:
+                self._scroll_down_one(frac, x_frac)
+            time.sleep(human_delay(_READ_SCROLL_SETTLE_S))
+            seen = self._screencap(on_blank="none")
+            record: dict[str, object] = {
+                "attempt": len(attempts) + 1,
+                "direction": "reverse" if forward else "forward",
+                "requested_step_px": back_px,
+                "requested_frac": frac,
+            }
+            if seen is None:
+                attempts.append({**record, "outcome": "blank_return_frame"})
+                return None, None, attempts
+            moved = self._measured_page_shift(anchor, seen)
+            if moved is None:
+                attempts.append({**record, "outcome": "unmeasurable"})
+                continue
+            attempts.append({**record, "outcome": "measured", "measured_shift_px": moved})
+            return moved, seen, attempts
+        return None, None, attempts
+
+    def _shift_refusal_trace(self, before: bytes, after: bytes) -> dict:
+        """Re-derive, FOR THE LOG ONLY, what the estimator saw on a pair that just refused.
+
+        WHY THIS EXISTS (found 2026-09-04, run 1d84909bf1bb). `_measured_page_shift` answers
+        `int | None`, so when leg 5 of a still-photo return chain came back None the debug row
+        recorded what the driver had INTENDED -- five attempts, a 630px request, the leg-by-leg
+        terminal shifts -- and nothing about what the estimator had OBSERVED. "The phone did not
+        move" and "the phone moved exactly the 630px asked for, but an autoplaying video filling
+        half the band left too few static strips to reach quorum" printed identically, and
+        telling them apart took the two retained PNGs and an offline re-run of the estimator.
+
+        A SEPARATE RE-DERIVATION RATHER THAN A SECOND RETURN VALUE, deliberately. Threading the
+        trace out of `_measured_page_shift` would put diagnostic code on the path that authorises
+        page coordinates, and would move the seam every test of that path patches. `estimate_shift`
+        is pure over the frame bytes, so running it again on the same two frames reproduces
+        exactly the estimate the refusal was decided from -- this cannot disagree with the
+        decision, and cannot influence it either.
+
+        Only ever called on a branch that has ALREADY refused, so its cost is paid once per
+        terminal failure and never on a healthy chain. Never raises: a diagnostic that threw
+        would turn a clean refusal into a crash, so an estimator that cannot look at all is
+        recorded as the error it raised.
+        """
+        try:
+            _result, forward, reverse = estimate_shift_with_reverse_recovery(
+                before, after, content_band=self.content_band, estimator=estimate_shift)
+        except Exception as exc:  # noqa: BLE001 -- diagnostics never alter return safety
+            return {"error": f"{type(exc).__name__}: {exc}"}
+        try:
+            return {"forward": trace_estimate(forward), "reverse": trace_estimate(reverse)}
+        except Exception as exc:  # noqa: BLE001 -- same rule, for a non-production estimate double
+            return {"error": f"{type(exc).__name__}: {exc}"}
+
     def _measured_page_shift(self, before: bytes, after: bytes) -> int | None:
         """How far the page moved between two frames, or None when frameshift could not tell.
 
@@ -5441,24 +5649,34 @@ class AndroidDriver(DatingAppDriver):
         happened to lock onto some nearer repeated content. What stays HERE is the one piece
         unique to this call site: the debug row below, which `_navigation_step_shift`'s own
         caller does not want in this shape.
+
+        WHEN THIS RETURNS None, a caller whose refusal is terminal should record
+        `_shift_refusal_trace(before, after)` alongside its own row: this method's `int | None`
+        contract is what every caller wants and is deliberately not widened to carry evidence.
         """
         try:
-            _result, shift, reverse = estimate_shift_with_reverse_recovery(
+            result, shift, reverse = estimate_shift_with_reverse_recovery(
                 before, after, content_band=self.content_band, estimator=estimate_shift)
         except ShiftEstimationError:
             return None
-        if shift.status == SHIFT_MEASURED:
-            return shift.delta_px
-        if (shift.status != SHIFT_NO_CONSENSUS or reverse is None
-                or reverse.status != SHIFT_MEASURED):
+        # READ `result`, NEVER RE-DERIVE IT (found 2026-09-04). This used to inspect `shift` and
+        # `reverse` and rebuild the recovery decision here -- a second copy of the very policy
+        # `estimate_shift_with_reverse_recovery` exists to hold once, and the exact duplication
+        # its own docstring says it was factored out to end. It silently ignored every recovery
+        # that does not end in a MEASURED reverse estimate, so the cross-direction quorum repair
+        # added the same day was invisible from this call site: the estimator answered +630 for
+        # the leg that lost run 1d84909bf1bb and this method still returned None.
+        if result.status != SHIFT_MEASURED or result.delta_px is None:
             return None
-        measured = -int(reverse.delta_px)
-        if self._dbg is not None:
+        measured = int(result.delta_px)
+        if shift.status != SHIFT_MEASURED and self._dbg is not None:
             try:
                 self._dbg.action(
                     "page_shift_reverse_measurement", delta_px=measured,
                     forward_status=shift.status, forward_reason=shift.reason,
-                    reverse_status=reverse.status, reverse_reason=reverse.reason)
+                    reverse_status=None if reverse is None else reverse.status,
+                    reverse_reason=None if reverse is None else reverse.reason,
+                    recovered_reason=result.reason)
             except Exception:  # noqa: BLE001 -- diagnostics never alter shift authority
                 pass
         return measured
@@ -5611,6 +5829,40 @@ class AndroidDriver(DatingAppDriver):
         def inside_zone(moved: int) -> bool:
             return abs(offset - moved / band_px) <= STILL_PHOTO_AUTOPLAY_CENTER_BAND_FRAC
 
+        quantum = step_px_for_frac(_READ_SCROLL_FRAC_MIN, height)
+
+        def repay(frame: bytes, total: int) -> tuple[bytes, int] | None:
+            """Walk a MEASURED displacement back to the position the first burst was taken at.
+
+            NOT should_stop-GATED, DELIBERATELY (see the STOP paragraph in the docstring above).
+            By the time this is called an exit stroke has already displaced the page from the
+            position `_index_captured_items` anchors bottom-up navigation on, so walking it back
+            is a cleanup obligation, not one more optional gesture -- and it is short and bounded
+            (`_REATTACH_RETURN_STEPS_SPAN`, 2-4 strokes), unlike the burst that follows it.
+            """
+            for _attempt in range(random.randint(*_REATTACH_RETURN_STEPS_SPAN)):
+                remaining = -total
+                if abs(remaining) <= quantum // 2:
+                    break
+                frac = min(_READ_SCROLL_FRAC_MAX,
+                           max(_READ_SCROLL_FRAC_MIN,
+                               frac_for_step_px(int(abs(remaining)), height)))
+                _dwell_s, _step_frac, x_frac = self._sample_read_step(0, None)
+                if remaining > 0:
+                    self._scroll_down_one(frac, x_frac)   # content up: the card climbs back
+                else:
+                    self._scroll_up_one(frac, x_frac)
+                time.sleep(human_delay(_READ_SCROLL_SETTLE_S))
+                following = self._screencap(on_blank="none")
+                if following is None:
+                    return None
+                step = self._measured_page_shift(frame, following)
+                if step is None:
+                    return None
+                total += step
+                frame = following
+            return frame, total
+
         exited = exit_leg(backward=True)
         if exited is None:
             return None
@@ -5628,35 +5880,20 @@ class AndroidDriver(DatingAppDriver):
                 # Both directions delivered and the card never left. Nothing detached, so
                 # nothing can re-attach, and calling the re-entry a re-attach anyway would
                 # manufacture exactly the unearned observation this rung exists to prevent.
+                #
+                # THE DISPLACEMENT IS STILL OWED (found 2026-09-04). This branch used to return
+                # None here, abandoning a page position it had MEASURED -- the gate is
+                # `inside_zone`, a test on where the CARD sits, not on how far the page moved,
+                # and two under-delivering strokes leave a real net offset while the card is
+                # still centred. The probe refusing is correct; leaving the page somewhere the
+                # index does not know about is not, and it surfaced later as `item_nav` blaming
+                # an unaccounted drift on a human finger. Repay first, then refuse.
+                repay(frame, total)
                 return None
-        quantum = step_px_for_frac(_READ_SCROLL_FRAC_MIN, height)
-        # THE RETURN LEG IS NOT should_stop-GATED, DELIBERATELY (see the STOP paragraph in the
-        # docstring above). By the time control reaches here an exit stroke has already
-        # displaced the page from the position `_index_captured_items` anchors bottom-up
-        # navigation on, so walking it back is a cleanup obligation, not one more optional
-        # gesture -- and it is short and bounded (`_REATTACH_RETURN_STEPS_SPAN`, 2-4 strokes),
-        # unlike the burst that follows it.
-        for _attempt in range(random.randint(*_REATTACH_RETURN_STEPS_SPAN)):
-            remaining = -total
-            if abs(remaining) <= quantum // 2:
-                break
-            frac = min(_READ_SCROLL_FRAC_MAX,
-                       max(_READ_SCROLL_FRAC_MIN,
-                           frac_for_step_px(int(abs(remaining)), height)))
-            _dwell_s, _step_frac, x_frac = self._sample_read_step(0, None)
-            if remaining > 0:
-                self._scroll_down_one(frac, x_frac)   # content up: the card climbs back
-            else:
-                self._scroll_up_one(frac, x_frac)
-            time.sleep(human_delay(_READ_SCROLL_SETTLE_S))
-            following = self._screencap(on_blank="none")
-            if following is None:
-                return None
-            step = self._measured_page_shift(frame, following)
-            if step is None:
-                return None
-            total += step
-            frame = following
+        repaid = repay(frame, total)
+        if repaid is None:
+            return None
+        frame, total = repaid
         if should_stop is not None and should_stop():
             # The page is back where the read left it (or as close as the loop above could
             # measure); only the SECOND burst -- the expensive, gesture-free part this bug is
@@ -6024,18 +6261,44 @@ class AndroidDriver(DatingAppDriver):
             walk_index = self._rebase_item_index_for_anchor(
                 index, entry_anchor.page_shift_px)
             if walk_index is None:
-                return evidence, None
+                # Nothing has moved on THIS iteration -- the rebase is arithmetic over an index
+                # this loop was handed, and it runs before any gesture -- so `entry_anchor` is
+                # still exactly as measured and valid. Handing back None here discarded it and
+                # made `_index_captured_items` refuse a capture whose page position was never in
+                # doubt; the walk simply stops adding candidates instead.
+                return evidence, entry_anchor
             nav_index = walk_index.translation.index(heart_ordinal) + 1
-            # A return is an invariant after every hop. Intermediate hops retain the small,
-            # vetted return-envelope pre-check because another dwell hop follows. The final hop
-            # skips only that pre-check: its dynamic, individually measured return chain still
-            # runs below, because model-selected targeting follows the dwell walk.
+            # A return is an invariant after every hop, and the pre-check below decides whether
+            # to make the hop at all. Intermediate hops have always had it, because another
+            # dwell hop follows and a broken anchor would poison it.
             final_hop = (hops_run + 1 >= remaining
                          or attempt + 1 >= len(candidates)
                          or attempt + 1 >= max_attempts)
-            return_budget = (None if final_hop
-                             else self._still_photo_dwell_walk_return_budget(
-                                 walk_index, nav_index))
+            # THE FINAL HOP NOW HAS IT TOO, UNLESS THE WALK HAS BANKED NOTHING (found 2026-09-04,
+            # run 1d84909bf1bb). The exemption used to be unconditional, reasoning that the final
+            # hop's "dynamic, individually measured return chain still runs below". It does --
+            # but that chain is what failed, and the exemption applied to the hop least able to
+            # afford it. Candidates are ordered bottom-most-first, i.e. shortest climb first, so
+            # the final hop is by construction the LONGEST climb of the walk: this run skipped
+            # heart 4 at 3951px as beyond the 2520px envelope and then attempted heart 3 at
+            # 5167px, 31% further, seconds later. The 9-leg return that produced refused on leg
+            # 5, and a refused return is not a lost card -- it is a lost CAPTURE and a stopped
+            # run.
+            #
+            # The exception is not a hedge, it is the point where the trade reverses. Skipping a
+            # candidate costs one card's dwell evidence, which is only a marginal loss while some
+            # other card has been proved. With `evidence` still empty and no candidate after this
+            # one, skipping produces a capture with nothing dwelled, which `_index_captured_items`
+            # turns into its own `items_unnumbered` stop -- so the fallback is a stopped run
+            # either way and attempting the hop is strictly better. Once anything is banked, the
+            # fallback is a WORKING capture, and gambling it on an unvetted return shape is not.
+            # `evidence` starts as the free card's own result, so a capture that already proved
+            # a card never gambles it. A final hop is always the walk's last chance -- each of
+            # the three conditions above means no candidate follows -- so "empty here" really is
+            # "this walk will bank nothing", not "not yet".
+            budget_applies = (not final_hop) or bool(evidence)
+            return_budget = (self._still_photo_dwell_walk_return_budget(walk_index, nav_index)
+                             if budget_applies else None)
             if return_budget is not None:
                 required_climb_px, return_cap_px, leg_cap_px = return_budget
                 if required_climb_px > return_cap_px:
@@ -6063,6 +6326,10 @@ class AndroidDriver(DatingAppDriver):
                 f"verifying photo item {hops_run + 1} of {limit}: moving to the next item")
             candidate_started_at = time.monotonic() if self._dbg is not None else None
             navigation_started_at = candidate_started_at
+            # Read BEFORE the call, so the two refusal handlers below can ask the only question
+            # that decides whether this capture's measured entry anchor survives: did anything
+            # actually move the phone? See `_navigation_moved_the_phone`.
+            inputs_before_navigation = getattr(self, "_device_inputs_delivered", None)
             try:
                 target = navigate_to_item(
                     self, walk_index, nav_index, entry_reference=entry_anchor.frame,
@@ -6176,23 +6443,48 @@ class AndroidDriver(DatingAppDriver):
                     continue
                 navigation_refusal = getattr(exc, "measurement", None)
                 pair_before = getattr(exc, "pair_before", None)
+                # Decided BEFORE the rows, because it changes what this candidate's outcome IS.
+                # `unreachable_below_entry` has always meant "harmlessly stepped over", and
+                # `bugreport` does not even render it; a below-entry refusal that spent a
+                # gesture ends the capture instead, and labelling that as the harmless case
+                # would leave the operator's report empty for a run-stopping event.
+                moved = self._navigation_moved_the_phone(inputs_before_navigation)
+                outcome = ("below_entry_after_gesture" if below_entry and moved
+                           else "unreachable_below_entry" if below_entry
+                           else "navigation_refused")
                 self._dbg_still_photo_walk_candidate(
-                    heart_ordinal, "unreachable_below_entry" if below_entry
-                    else "navigation_refused",
+                    heart_ordinal, outcome,
                     frame=pair_before if pair_before is not None else exc.frame,
                     after_frame=exc.frame if pair_before is not None else None,
                     keep_pair=pair_before is not None,
                     reason=exc.code, detail=str(exc),
+                    device_inputs_before=inputs_before_navigation,
                     **({"navigation_refusal": navigation_refusal}
                        if isinstance(navigation_refusal, dict) else {}))
                 if candidate_started_at is not None:
                     self._dbg_still_photo_walk_candidate_timing(
-                        heart_ordinal, "unreachable_below_entry" if below_entry
-                        else "navigation_refused", started_at=candidate_started_at,
+                        heart_ordinal, outcome, started_at=candidate_started_at,
                         navigation_s=navigation_s, proof_s=0.0, return_s=0.0)
-                if below_entry:
+                if below_entry and not moved:
+                    # `not steps` COUNTS ONLY THE ASCENDING GESTURES (found 2026-09-04). The
+                    # paragraph above is right that NAV_ITEM_BELOW_ENTRY is raised before the
+                    # counting walk climbs, but `steps` does not include the one bounded FORWARD
+                    # read-scroll `navigate_to_item`'s entry identity-recovery branch may issue
+                    # first, so "below entry" alone never meant "nothing moved". This `continue`
+                    # keeps `entry_anchor` for the next candidate, which is exactly the case a
+                    # spent gesture must not be allowed to reach. Ask the count instead of the
+                    # code; a below-entry refusal that DID move the page falls through to the
+                    # abandon path below and correctly hands back no anchor.
                     continue
-                return evidence, None
+                # A refusal that spent NO gesture has not moved the page, so the anchor the
+                # capture measured is still exactly as measured. Abandoning the walk is right --
+                # something about this navigation is wrong and the remaining candidates are not
+                # worth chasing -- but discarding the anchor as well made
+                # `_index_captured_items` refuse a whole profile whose page position was never
+                # in doubt. See `_navigation_moved_the_phone`.
+                return evidence, self._anchor_after_navigation_refusal(
+                    entry_anchor, inputs_before_navigation, heart_ordinal, exc.code,
+                    refusal_anchor=getattr(exc, "anchor", None))
             except (ActionCancelled, ScrollStepError, SegmentationError, ShiftEstimationError,
                     IdentityError) as exc:
                 # Uncoded refusals from the vision/should_stop layers underneath navigate_to_item
@@ -6203,6 +6495,13 @@ class AndroidDriver(DatingAppDriver):
                 # it), so a later real navigation re-measures against the entry itself and refuses
                 # loudly on its own `NAV_ANCHOR_UNMEASURED` bound if the drift is unsafe, which is
                 # the same fail-closed outcome an unverified return below produces on purpose.
+                #
+                # "MAY BE LEFT PARTWAY" IS NOW A QUESTION WITH AN ANSWER (2026-09-04). The clause
+                # above is the honest reading of an exception class that carries no position, and
+                # it is why this branch hands back no anchor -- but `can` is not `did`, and the
+                # driver's own delivered-input count settles which of the two happened. A
+                # `should_stop` that fires before the first gesture, or a segmentation refusal on
+                # the entry frame, moved nothing at all.
                 self._dbg_still_photo_walk_candidate(
                     heart_ordinal, "navigation_refused", reason=type(exc).__name__)
                 if candidate_started_at is not None:
@@ -6210,7 +6509,9 @@ class AndroidDriver(DatingAppDriver):
                         heart_ordinal, "navigation_refused", started_at=candidate_started_at,
                         navigation_s=time.monotonic() - navigation_started_at,
                         proof_s=0.0, return_s=0.0)
-                return evidence, None
+                return evidence, self._anchor_after_navigation_refusal(
+                    entry_anchor, inputs_before_navigation, heart_ordinal,
+                    type(exc).__name__)
             navigation_s = (time.monotonic() - navigation_started_at
                             if navigation_started_at is not None else 0.0)
             hops_run += 1
@@ -6294,6 +6595,106 @@ class AndroidDriver(DatingAppDriver):
                     proof_s=proof_s, return_s=return_s)
             entry_anchor = returned_anchor
         return evidence, entry_anchor
+
+    def _navigation_moved_the_phone(self, inputs_before: int | None) -> bool:
+        """Whether any device input was delivered since `inputs_before` was read.
+
+        `inputs_before` is a reading of `_device_inputs_delivered` taken immediately before the
+        call being judged. True means the phone may be somewhere this method cannot account for;
+        False means nothing was delivered, so any page position measured before the call is
+        still exactly as measured.
+
+        FAIL-CLOSED IN EVERY DIRECTION THE COUNT COULD BE WRONG. A `None` snapshot (a driver
+        double without the counter), a counter that has since disappeared, a non-integer, or a
+        count that somehow went DOWN all answer True -- "assume it moved" -- which is the
+        behaviour every caller had before this existed. The only answer that unlocks anything is
+        an exact, unchanged integer.
+
+        WHAT THIS DOES NOT ANSWER, AND WHAT COVERS THAT. The count proves the DRIVER sent
+        nothing; it cannot prove the page did not move. A human finger, a heads-up notification
+        reflowing the card, or the app scrolling itself are all invisible to it. That gap is not
+        new and is not this method's to close: the anchor a walk hands back is only ever consumed
+        as `navigate_to_item`'s `entry_reference`, and that call re-measures the LIVE screen
+        against it and refuses `NAV_ANCHOR_UNMEASURED` before a finger moves whenever the drift
+        reaches the smallest gesture this driver can make. A successful hop's anchor is exposed
+        to exactly the same hazard and relies on exactly the same gate, so returning one here
+        adds no trust that path did not already extend.
+
+        WHY A COUNT AND NOT A RE-MEASUREMENT HERE. Re-comparing the live screen with the entry
+        frame and requiring ~0 would be strictly weaker at THIS point: it re-asks a question the
+        estimator can refuse (this whole incident is a pair it refused), and a refusal would
+        throw away an anchor that a construction-level fact already shows the driver did not
+        disturb -- while adding nothing, because the drift gate above re-asks it anyway, later,
+        against the frame that will actually be navigated from.
+        """
+        if not isinstance(inputs_before, int) or isinstance(inputs_before, bool):
+            return True
+        now = getattr(self, "_device_inputs_delivered", None)
+        if not isinstance(now, int) or isinstance(now, bool):
+            return True
+        return now != inputs_before
+
+    def _anchor_after_navigation_refusal(self, entry_anchor, inputs_before: int | None,
+                                         heart_ordinal: int, reason: str, refusal_anchor=None):
+        """The entry anchor a refused navigation may hand back, or None if it is not accountable.
+
+        Returning `None` makes `_index_captured_items` refuse the whole capture, which
+        worker.py turns into a stopped run -- the correct answer when a candidate's climb has
+        left the page somewhere unaccounted for, and much too strong when the refusal was raised
+        before a single gesture (found 2026-09-04: 2 of 6 logged capture deaths were
+        `entry_anchor_unmeasured` refusals that spent nothing at all). The walk stops adding
+        candidates either way; only the anchor's fate differs.
+
+        A SCREEN VERDICT OUTRANKS THE GESTURE COUNT. `_navigation_moved_the_phone` reasons from
+        what the driver SENT; the identity codes below are what `compare_profile_identity`
+        concluded from the live entry frame it actually READ. When those two disagree the
+        reading wins: "we sent nothing" cannot rehabilitate a page the navigator has just
+        established is not this profile, or is one it cannot identify at all. Those refusals are
+        also normally gesture-free (item_nav's own corpus note: 18 of 18 at
+        `NAV_IDENTITY_MISMATCH` with zero gestures issued), so without this they would be the
+        rescue's most common trigger rather than a rare one.
+
+        A MEASURED DISPLACEMENT IS THE SAME KIND OF READING, and it is why a code name cannot be
+        the whole rule. `NAV_ANCHOR_UNMEASURED` has two raise sites, both gesture-free: the
+        estimator could not place the screen at all (`anchor.delta_px is None` -- the transient
+        case this rescue was built for, 1 of the 9 recorded forensics), or it DID place it, at or
+        beyond the smallest gesture this driver can make from where the read left the card (the
+        other 8, deltas -501..-701px). The second is item_nav's ENTRY DRIFT BOUND, whose own
+        comment says what the number means: "something scrolled the profile between the read and
+        the like". Handing that anchor back ships a profile every item of which is targeted off a
+        page row nobody accounts for; the like re-measures the same drift and stops the run, after
+        worker.py has already bought a Gemini opener for it -- the cost `_index_captured_items`
+        already refuses to pay for the identity case. `tools/hinge_calibrate.py`'s
+        `large_measured_entry_drift` discriminates these same two raise sites, and its comment
+        carries the governing decision ("Do not rebase a large entry delta onto this index").
+
+        KEYED ON THE MEASUREMENT, AND ON THE SAME BOUND, not on either code name. Every other
+        coded refusal raised at frame 0 also carries this `anchor` -- an entry shift the navigator
+        MEASURED AND ACCEPTED, so `delta_px` is an int there too. For those the anchor is
+        incidental context rather than the reason, and refusing on "is an int" alone would
+        withdraw the rescue from exactly the gesture-free refusals it exists for. What separates
+        the two is magnitude, so this re-derives item_nav's own bound: `scroll_step._frac_window`
+        reads `_READ_SCROLL_FRAC_MIN` from this module, so the number below IS the one the
+        navigator compared against, not a second opinion. An unreadable screen size refuses, like
+        every other unknown here.
+        """
+        if reason in _NAV_SCREEN_VERDICT_CODES:
+            return None
+        measured_delta = getattr(refusal_anchor, "delta_px", None)
+        if isinstance(measured_delta, int) and not isinstance(measured_delta, bool):
+            try:
+                _width, height = self.adb.screen_size()
+                drift_bound = step_px_for_frac(_READ_SCROLL_FRAC_MIN, height)
+            except Exception:  # noqa: BLE001 -- an unmeasurable bound is an unaccountable page
+                return None
+            if not (drift_bound > 0) or abs(measured_delta) >= drift_bound:
+                return None
+        if self._navigation_moved_the_phone(inputs_before):
+            return None
+        self._dbg_still_photo_walk_candidate(
+            heart_ordinal, "navigation_refused_no_gesture", reason=reason,
+            device_inputs_before=inputs_before)
+        return entry_anchor
 
     def _still_photo_dwell_walk_return_budget(self, index, model_index: int) -> tuple[
             int, int, int] | None:
@@ -6584,21 +6985,38 @@ class AndroidDriver(DatingAppDriver):
         # to this leg exactly as they do to the probe's.
         band_px = (float(self.content_band[1]) - float(self.content_band[0])) * height
         max_measurable_step_px = max(1, int(_REATTACH_MAX_EXIT_BAND_FRAC * band_px))
+        # The CAP, not the distance: each leg draws inside it (`_RETURN_LEG_DRAW_SPAN`, whose own
+        # comment carries both reasons). The floor is the smallest draw this chain can make, and
+        # it is what the attempt budget below has to be sized against.
+        min_drawn_step_px = max(1, min(max_measurable_step_px,
+                                       int(_RETURN_LEG_DRAW_SPAN[0] * max_measurable_step_px)))
         # Derived from the distance actually owed, unlike the probe's own fixed
         # `_REATTACH_RETURN_STEPS_SPAN`: that span is sized for the probe's own single ~630px
         # exit, while a multi-card climb can owe several cap-sized strokes. Add two attempts for
         # ordinary transport under-delivery, floored at the probe's own span so a short climb
-        # behaves identically to it. This is deliberately not a worst-case minimum-step budget:
-        # doing that would license many extra live gestures on every deep optional hop.
+        # behaves identically to it.
+        #
+        # SIZED OFF THE DRAW FLOOR, NOT THE CAP, and that is not the "worst-case minimum-step
+        # budget" an earlier revision of this comment rejected. Once the leg is drawn rather than
+        # pinned at the cap, a budget computed from the cap is not conservative, it is WRONG: the
+        # chain would plan for 630px legs, deliver ~488px on average, and exhaust the count with
+        # a real residual still owed -- reporting `terminal_drift_exceeds_bound` for a return
+        # that was converging. The count remains a CEILING on attempts, never a plan: the loop
+        # exits the moment the remaining distance is inside `quantum`, and a page that has
+        # genuinely stopped moving is cut short by `_RETURN_LEG_STALL_LIMIT` long before this.
         max_attempts = max(_REATTACH_RETURN_STEPS_SPAN[1],
-                           math.ceil(abs(total) / max_measurable_step_px) + 2)
+                           math.ceil(abs(total) / min_drawn_step_px) + 2)
         attempts = 0
+        stalled_legs = 0
         legs: list[dict[str, object]] = []
         for _attempt in range(max_attempts):
             remaining = -total
             if abs(remaining) <= quantum // 2:
                 break
-            step_target_px = min(abs(remaining), max_measurable_step_px)
+            step_target_px = min(
+                abs(remaining),
+                max(min_drawn_step_px,
+                    int(round(random.uniform(*_RETURN_LEG_DRAW_SPAN) * max_measurable_step_px))))
             frac = min(_READ_SCROLL_FRAC_MAX,
                       max(_READ_SCROLL_FRAC_MIN, frac_for_step_px(int(step_target_px), height)))
             _dwell_s, _step_frac, x_frac = self._sample_read_step(0, None)
@@ -6626,20 +7044,79 @@ class AndroidDriver(DatingAppDriver):
                     before=frame, keep_before=True)
                 return None
             step = self._measured_page_shift(frame, following)
+            backoff: list = []
             if step is None:
+                # NOT TERMINAL ANY MORE (found 2026-09-04, run 1d84909bf1bb: leg 5 of 9 refused
+                # over an autoplaying video and took the whole capture with it). `frame` is still
+                # a frame whose page offset the chain knows, so giving part of this leg back and
+                # re-measuring against it is a complete measured link -- the distance the refused
+                # gesture actually travelled is never estimated, it is discarded.
+                step, recovered, backoff = self._return_leg_backoff_remeasure(
+                    frame, forward=remaining > 0, leg_px=step_target_px, height=height)
+                if step is not None:
+                    following = recovered
+            if step is None:
+                # THE one row that needs the estimator's own account, re-derived off the decision
+                # path (see `_shift_refusal_trace`): without it the report can say only that the
+                # leg refused, not whether the phone failed to move or moved exactly as asked
+                # behind an autoplaying video that left too few static strips to reach quorum.
+                # This branch is terminal, so the second estimator pass is paid once per lost
+                # chain and never on a healthy return.
                 self._dbg_still_photo_return_chain(
                     "refused", reason="return_leg_unmeasurable", attempts=attempts,
                     initial_terminal_shift_px=initial_total, terminal_shift_px=total,
                     drift_bound_px=quantum, requested_step_px=step_target_px,
-                    requested_frac=frac,
+                    requested_frac=frac, backoff=backoff,
+                    measurement=self._shift_refusal_trace(frame, following),
                     legs=[*legs, {**leg, "outcome": "unmeasurable"}],
                     before=frame, after=following,
                     keep_before=True, keep_after=True)
                 return None
             total += step
-            legs.append({**leg, "outcome": "measured", "measured_shift_px": step,
-                         "terminal_shift_after_px": total})
+            legs.append({**leg,
+                         "outcome": "measured" if not backoff else "measured_after_backoff",
+                         "measured_shift_px": step, "terminal_shift_after_px": total,
+                         **({"backoff": backoff} if backoff else {})})
             frame = following
+            # A page that did not move is MEASURED 0 here, not a refusal -- which is the right
+            # answer to "how far did it move" and the wrong thing to keep asking. Without this
+            # the loop spends every remaining attempt re-issuing a stroke the page is refusing
+            # (a scroll clamp at the profile's end, a frozen surface) and then blames the
+            # DISTANCE via `terminal_drift_exceeds_bound`. Consecutive, so one swallowed fling
+            # costs a retry rather than the chain.
+            #
+            # A BACKED-OFF LEG IS SMALL BY CONSTRUCTION, NOT BECAUSE THE PAGE REFUSED. When
+            # `_return_leg_backoff_remeasure` rescues a leg it deliberately gives back 0.35-0.65
+            # of it, so near the tail its NET is routinely inside this half-quantum test even
+            # though the page moved exactly as asked. Counting that as stillness would read the
+            # give-back as the page saying no -- and it is the video-heavy card the back-off
+            # exists for that would produce two of them in a row.
+            #
+            # SO IT HOLDS THE COUNTER, IT DOES NOT CLEAR IT. Only a leg that MEASURABLY moved the
+            # page is evidence the page still moves; a rescue is evidence about the GESTURE, and
+            # letting it clear made the guard unreachable in the one shape that needs it most --
+            # an alternating [measured 0, rescued leg, measured 0, ...] never accumulates two, so
+            # the chain spends its whole attempt budget flinging at a page it has already measured
+            # as clamped and then blames `terminal_drift_exceeds_bound`, which is precisely the
+            # misdiagnosis the paragraph above exists to prevent.
+            stalled_legs = (0 if abs(step) > quantum // 2
+                            else stalled_legs if backoff else stalled_legs + 1)
+            # GATED ON THE LOOP'S OWN CONVERGENCE TEST, because the break is at the TOP of the
+            # loop and this check is at the bottom: two consecutive under-delivering legs that
+            # nevertheless landed the chain inside the gate would otherwise be refused one
+            # iteration before the break they had already earned, throwing away a converged
+            # return. Expressed against the same `quantum // 2` as that break so the two cannot
+            # disagree. A page that is genuinely stuck still owes its whole debt here, so its
+            # `abs(total)` is nowhere near the gate and it refuses exactly as before.
+            if stalled_legs >= _RETURN_LEG_STALL_LIMIT and abs(total) > quantum // 2:
+                self._dbg_still_photo_return_chain(
+                    "refused", reason="return_leg_no_progress", attempts=attempts,
+                    initial_terminal_shift_px=initial_total, terminal_shift_px=total,
+                    drift_bound_px=quantum, requested_step_px=step_target_px,
+                    requested_frac=frac, stalled_legs=stalled_legs, legs=legs,
+                    before=entry_anchor.frame, after=following,
+                    keep_before=True, keep_after=True)
+                return None
         drift_bound = step_px_for_frac(_READ_SCROLL_FRAC_MIN, height)
         terminal_shift_px = total
         # Each leg in `total` is chained from a real before/after pair.  That is sufficient page
@@ -9301,6 +9778,14 @@ class AndroidDriver(DatingAppDriver):
         the driver's capture instead: count approved photos and *confirmed* videos, skip proven
         written prompts, and decline to number the target if any earlier heart-bearing block is
         unknown. This deliberately answers ``None`` rather than making a user count a fiction.
+
+        Read-only and phone-free: it inspects the payload this driver already holds and never
+        captures, navigates or taps. The one consumer is the Hub training review card, where the
+        number is fine print that helps the on-phone reviewer confirm the RIGHT item is the one
+        the opener was written about (ops/OPENER-REDESIGN.md 5.6, "never substitute the liked
+        item"). A ``None`` therefore costs the reviewer a hint and nothing else -- it must never
+        delay, halt or alter a checkpoint -- which is exactly why every branch below that cannot
+        prove what a card is answers ``None`` instead of guessing at it.
         """
         payload = self._current_item_payload
         if payload is None:
@@ -9331,6 +9816,10 @@ class AndroidDriver(DatingAppDriver):
             if crop.kind == CROP_EXCLUDED:
                 # The mute-control detector is affirmative evidence of a video. Every other
                 # exclusion is fail-closed and could conceal a photo, so it cannot be counted.
+                # Both of `_video_selection_exclusions`' routes -- the block-relative screen and
+                # the positioned-marker track that covers the compound prompt-then-media card
+                # the screen's ROI cannot reach -- deliberately share this one prefix, so both
+                # are counted here and nothing else is (see `video_mute_screen_reason`).
                 if crop.reason.startswith("video_mute_v1: upper-left"):
                     media += 1
                     continue
@@ -10520,8 +11009,27 @@ class AndroidDriver(DatingAppDriver):
         # still checked immediately before the tap above; after it, finish verification/accounting
         # and let the worker stop before the next card.
         time.sleep(human_cooldown(0.6))
-        advance_proof = self._verify_training_dislike_landed(
-            model_item_index)
+        try:
+            advance_proof = self._verify_training_dislike_landed(model_item_index)
+        except Exception as exc:
+            # The X tap has already been issued.  This is deliberately a distinct durable
+            # outcome from both a verified training_dislike and the worker's later generic
+            # unexpected-error snapshot: it binds the irreversible tap to the exact verified
+            # checkpoint and (where applicable) the human-reviewed draft it declined to send.
+            # Do not turn an inconclusive landing into a label, and do not capture a later frame
+            # here -- the checkpoint is the last screen positively attributed to this profile.
+            fields = {
+                "x": list(pass_point), "model_item_index": model_item_index,
+                "verified": payload is not None,
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+            evidence_id = (pre_send_evidence or {}).get("evidence_id")
+            if isinstance(evidence_id, str) and evidence_id:
+                fields["pre_send_evidence_id"] = evidence_id
+            if self._dbg is not None:
+                self._dbg.action(
+                    "training_dislike_unverified", before=current, keep_before=True, **fields)
+            raise
         action_fields = {
             "x": list(pass_point), "model_item_index": model_item_index,
             "verified": payload is not None, "advance_proof": advance_proof,
@@ -11628,7 +12136,7 @@ class AndroidDriver(DatingAppDriver):
                 attempt["token_count"] = len(tokens)
                 stored = self._identity_name.strip()
                 candidate = _clean_first_line_name_candidate(text)
-                # The ordinary tokenizer deliberately drops single letters.  Check the
+                # The ordinary tokenizer deliberately drops short names.  Check the
                 # structurally licensed banner candidate too, before considering it "new", so
                 # a current profile actually named S stays same (and a conservative prefix
                 # such as S/Samantha still costs only a wait rather than a false label).

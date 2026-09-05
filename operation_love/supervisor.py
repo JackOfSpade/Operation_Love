@@ -13,6 +13,7 @@ import os
 import signal
 import sys
 import threading
+import time
 import uuid
 from contextlib import contextmanager
 from numbers import Real
@@ -36,10 +37,12 @@ from .limits import RateLimiter
 from .opener.service import OpenerService
 from .private_files import ensure_private_dir, open_private_rw
 from .ranker import make_store
+from .ranker.bigquery_store import _profile_upload_deadline_s
 from .ranker.decider import RankerDecider
 from .ranker.model import PreferenceModel
 from .runtime import Capabilities
 from .status import RunStatus
+from .training_actions import MAX_PROFILE_REVIEW_FRAMES
 from .vision.embed import Embedder
 from .vision.quality import QualityFilter
 from .worker import Worker
@@ -78,6 +81,22 @@ _WORKER_JOIN_TIMEOUT_FLOOR_S = 30.0
 _WORKER_JOIN_TIMEOUT_MARGIN_S = 15.0
 _WEDGED_WORKER_STACK_MAX_FRAMES = 12
 
+# An in-flight opener call is no longer the only thing a healthy worker can legitimately be
+# inside when Stop lands. A Training worker whose Hinge Like/Dislike has ALREADY physically
+# landed then archives that profile's screenshots through the store, bounded by the store's own
+# `_profile_upload_deadline_s` -- which at the shipped apps.hinge.scroll_captures is several
+# times the opener bound above. Treating that worker as wedged is not a cosmetic mislabel: the
+# supervisor goes on to flush and CLOSE the store underneath it, and the follow-on decision,
+# opener, and label writes for an irreversible action are then refused as late writes.
+#
+# The extra time is deliberately CONDITIONAL rather than folded into the flat bound above. A
+# flat inflation would make Ctrl-C unresponsive for minutes on a genuinely wedged worker, which
+# the shutdown path is written specifically to prevent. Waiting only while the store reports a
+# registered archive in flight costs nothing that is not already owed: `close()` blocks on that
+# very same set of writes a few lines further down, so this wait replaces a wait rather than
+# adding one, and a worker that is NOT inside a registered write keeps today's bound exactly.
+_ARCHIVE_JOIN_POLL_S = 0.5
+
 
 def _worker_join_timeout_s(cfg) -> float:
     """How long run()'s shutdown gives each worker to notice stop_event before it's reported
@@ -87,6 +106,74 @@ def _worker_join_timeout_s(cfg) -> float:
     if cfg.opener.enabled:
         return cfg.opener.request_timeout_s + _WORKER_JOIN_TIMEOUT_MARGIN_S
     return _WORKER_JOIN_TIMEOUT_FLOOR_S
+
+
+def _archive_join_grace_s(cfg) -> float:
+    """Ceiling on the EXTRA join time an already-running profile archive can earn.
+
+    Read off the store's own whole-archive deadline for this run's capture budget rather than
+    restated as a second number here: the archive cannot outlive that deadline, so neither may
+    this wait, and the two cannot drift apart when either is retuned. An app that does not pin
+    `scroll_captures` is priced at the Training review ceiling, which is also the largest value
+    config validation admits for a Training capture.
+    """
+    budget = 0
+    for app in cfg.enabled_apps:
+        captures = ((cfg.apps or {}).get(app, {}) or {}).get("scroll_captures")
+        budget = max(budget, captures
+                     if isinstance(captures, int) and not isinstance(captures, bool)
+                     else MAX_PROFILE_REVIEW_FRAMES)
+    return _profile_upload_deadline_s(budget)
+
+
+def _store_archive_in_flight(store) -> bool:
+    """Whether the store is still inside a registered image-backed archive write.
+
+    Duck-typed: SQLite and test doubles expose no such seam and keep the flat join bound
+    unchanged. The private counter is the fallback because it is the exact value `close()`
+    waits on, so this probe can never claim work that the supervisor's own close() would not
+    itself have blocked for.
+    """
+    probe = getattr(store, "archive_writes_in_flight", None)
+    if callable(probe):
+        try:
+            return int(probe()) > 0
+        except Exception:  # noqa: BLE001 -- a shutdown probe must never raise
+            return False
+    try:
+        return int(getattr(store, "_active_async_writes", 0) or 0) > 0
+    except (TypeError, ValueError):
+        return False
+
+
+def _join_worker_for_shutdown(worker, store, *, timeout_s: float,
+                              archive_grace_s: float) -> float:
+    """Join one worker for shutdown and return the wait it was actually granted.
+
+    Past the flat bound the wait continues only while the store still reports a registered
+    archive, and only up to ``archive_grace_s``. Once that write drains, the worker gets one
+    ordinary shutdown-path margin to write its decision/label rows and return -- the same
+    headroom the flat bound already grants after an in-flight opener call returns.
+
+    The return value is the flat bound when nothing extended it (exact, and what the operator
+    lines have always printed) and the measured total otherwise, so a wedged-worker message can
+    never understate a long archive wait.
+    """
+    started = time.monotonic()
+    worker.join(timeout=timeout_s)
+    if (not worker.is_alive() or archive_grace_s <= 0
+            or not _store_archive_in_flight(store)):
+        return timeout_s
+    print(f"Supervisor: worker '{getattr(worker, 'app', 'unknown')}' is still archiving a "
+          f"decision that already landed on the phone; waiting up to {archive_grace_s:.0f}s "
+          "more so its label is not abandoned.")
+    deadline = time.monotonic() + archive_grace_s
+    while (worker.is_alive() and time.monotonic() < deadline
+           and _store_archive_in_flight(store)):
+        worker.join(timeout=_ARCHIVE_JOIN_POLL_S)
+    if worker.is_alive():
+        worker.join(timeout=_WORKER_JOIN_TIMEOUT_MARGIN_S)
+    return time.monotonic() - started
 
 
 def _wedged_worker_stack_lines(worker) -> list[str]:
@@ -386,22 +473,29 @@ def _stop_requested(stop_event: threading.Event | None) -> bool:
 def _abort_startup(run_id: str, status: RunStatus, cfg, store=None) -> None:
     """Stop was requested during startup, before any worker was launched. Startup (store
     setup, ranker training, embedder/quality warmup) can take many seconds with no other
-    interrupt point (H-10), so honour Stop here too: publish a clean 'stopped' status
-    (not a stuck 'starting'/'live') and close whatever store handle was already opened —
-    nothing has been swiped yet, so there's nothing worth keeping it open for."""
+    interrupt point (H-10), so honour Stop here too: close whatever store handle was already
+    opened, then publish either a clean ``stopped`` result or ``save_failed`` if that cleanup
+    boundary failed. Nothing has been swiped yet, but a failed flush/close still must not be
+    misrepresented as proven durable completion."""
     print(f"Run {run_id}: stop requested during startup; aborting before launching workers.")
+    save_err = None
     if store is not None:
         try:
             store.flush()
-        except Exception as exc:  # noqa: BLE001 — best-effort; nothing was buffered yet
+        except Exception as exc:  # noqa: BLE001 — close must still be attempted below
             print(f"Run {run_id}: warning flushing store during startup abort: {exc}")
+            save_err = exc
         try:
             store.close()
         except Exception as exc:  # noqa: BLE001 — closing must run even when flush failed
             print(f"Run {run_id}: warning closing store during startup abort: {exc}")
+            if save_err is None:
+                save_err = exc
     for app in cfg.enabled_apps:
-        status.set_app(app, state="stopped")
-    status.set_global(running=False, phase="stopped")
+        status.set_app(app, state="error" if save_err is not None else "stopped")
+    # Publish the global terminal phase last.  A snapshot that sees ``stopped`` or
+    # ``save_failed`` must never still see the transient per-app startup/saving state.
+    status.set_global(running=False, phase="save_failed" if save_err is not None else "stopped")
 
 
 def _validated_daily_spend(value: object) -> float:
@@ -806,6 +900,8 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
         # can legitimately still be riding out ONE in-flight opener request when stop_event was
         # set, bounded by cfg.opener.request_timeout_s, not by some fixed guess.
         join_timeout_s = _worker_join_timeout_s(cfg)
+        archive_grace_s = _archive_join_grace_s(cfg)
+        waited_s: dict[str, float] = {}
         if workers:
             # Named + bounded up front, before any worker has had a chance to report back,
             # so an operator watching the terminal or the hub's live-log panel (which tees
@@ -814,7 +910,8 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
             print(f"Supervisor: stopping — waiting up to {join_timeout_s:.0f}s for "
                   f"{len(workers)} worker(s) to finish what they are doing…")
         for w in workers:
-            w.join(timeout=join_timeout_s)
+            waited_s[w.app] = _join_worker_for_shutdown(
+                w, store, timeout_s=join_timeout_s, archive_grace_s=archive_grace_s)
             if w.is_alive():
                 # Proceeding anyway (below) rather than blocking forever: the worker's
                 # own stop_event is set, but it's still stuck mid-capture/embed/API-call.
@@ -822,7 +919,7 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
                 # runs — a store write racing a closed store is the tradeoff for not
                 # hanging shutdown indefinitely on one wedged app.
                 print(f"Supervisor: worker '{w.app}' did not stop within "
-                      f"{join_timeout_s:.0f}s; proceeding to save without it "
+                      f"{waited_s[w.app]:.0f}s; proceeding to save without it "
                       "(it may still be running in the background).")
                 # Capture its precise Python location while it is still known alive. These
                 # lines flow through the hub's stdout tee into bugreport's Recent logs.
@@ -884,8 +981,6 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
             phase = "wedged"
         else:
             phase = "stopped"
-        status.set_global(running=False, phase=phase, stopping=False,
-                          budget_spent=tracker.run_spend_usd, openers=tracker.calls)
         wedged_apps = {w.app for w in wedged}
         for app in cfg.enabled_apps:
             if save_err is not None:
@@ -898,6 +993,13 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
                     "error", "out_of_profiles", "rate_limited", "stopped", "blocked"
                 } else "stopped"
             status.set_app(app, state=app_state)
+        # The terminal global phase is the publication boundary consumed by the Hub and bug
+        # report.  Stamp it only after every app has its terminal state; the reverse order left
+        # a small but real window where phase='stopped' coexisted with app.state='saving', and a
+        # report generated in that window could claim all workers had completed cleanly from a
+        # self-contradictory snapshot.
+        status.set_global(running=False, phase=phase, stopping=False,
+                          budget_spent=tracker.run_spend_usd, openers=tracker.calls)
         # ``tracker.calls`` is a compatibility name for model results whose usage reached the
         # billing tracker, including a Training draft that may be passed or abandoned. It is NOT
         # an HTTP-attempt count: Gemini's internal 503/429/404/transport fallbacks do not carry
@@ -911,15 +1013,29 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
             raise save_err
         saved = getattr(store, "saved_summary", lambda: "")()
         detail = f" [{saved}]" if saved else ""
+        errored_apps = {
+            app for app, terminal_state in terminal_states.items()
+            if terminal_state == "error"
+        }
         if wedged:
             names = ", ".join(w.app for w in wedged)
-            # join_timeout_s, not a hardcoded "30s": that flat number predates
+            # The wait actually granted, not a hardcoded "30s": that flat number predates
             # _worker_join_timeout_s (see its own comment) and is wrong -- confusingly so --
-            # on every run with openers enabled, where the real bound is 105s by default.
+            # on every run with openers enabled, where the real bound is 105s by default. A
+            # worker whose archive earned the conditional extension waited longer still, so
+            # read the granted wait back per worker rather than reprinting the flat bound.
+            longest_s = max(waited_s.get(w.app, join_timeout_s) for w in wedged)
             print(f"Run {run_id}: saved to {cfg.storage.backend}{detail}, but {len(wedged)} "
-                  f"worker(s) did not stop within {join_timeout_s:.0f}s ({names}) — NOT an "
+                  f"worker(s) did not stop within {longest_s:.0f}s ({names}) — NOT an "
                   f"unqualified success, a late write from a wedged worker could still land "
                   f"after this save; {tail}")
+        elif errored_apps:
+            names = ", ".join(sorted(errored_apps))
+            print(
+                f"Run {run_id}: buffered rows saved to {cfg.storage.backend}{detail}, but "
+                f"worker(s) ended with errors ({names}) — this does not prove every landed "
+                f"action produced its complete archive, decision, and label records; {tail}"
+            )
         else:
             print(f"Run {run_id}: ✅ all data saved to {cfg.storage.backend}{detail}; {tail}")
 

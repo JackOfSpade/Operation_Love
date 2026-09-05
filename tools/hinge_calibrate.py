@@ -226,6 +226,14 @@ _MAX_AUTOMATED_TOP_REWIND_STEPS = _MAX_CARD_SCROLLS
 # "cannot tell" still never becomes "at top" -- it just stops treating one transient frame as a
 # final answer.
 _MAX_UNSETTLED_TOP_REPROBES = 3
+# A post-Pass identity proof used to spend exactly one planner-sized read scroll. Hinge 10.2.0's
+# taller first-card header can leave that first resting frame in scroll_top's deliberate 3..9
+# dead zone (measured live 2026-09-04: 7.859); one additional planner-sized scroll exposed the
+# sticky name header at 12.281. Keep this separate from the general read/rewind ceilings: it is
+# only the bounded proof that a terminal Pass reached a distinct next profile. Before the second
+# gesture the helper below re-proves the ordinary Like+Pass deck, so a modal or composer can
+# never consume the extra allowance.
+_MAX_POST_ADVANCE_STICKY_SCROLLS = 2
 # A read-scroll frame becomes the navigator's exact zero-drift anchor. The first held-out
 # Hinge 10.1.0 run still moved 556px after TWO quiet comparisons, so the app can pause before a
 # delayed card snap. Require FOUR quiet comparisons and allow a bounded eight probes: this gives
@@ -578,6 +586,20 @@ class _ProfileSkipped(RuntimeError):
     def __init__(self, record: dict):
         super().__init__(record.get("reason_code", "pre_action_profile_skipped"))
         self.record = record
+
+
+class _UnsupportedEntryDeck(_CaptureAbort):
+    """An ordinary deck is visible, but its entry layout cannot prove calibration top.
+
+    The frame is safe only as the input to a separately audited public profile advance. It is
+    never returned as a card frame and therefore can never become targeting evidence.
+    """
+
+    def __init__(self, frame: bytes, *, state: str, reason: str):
+        super().__init__(f"unsupported entry deck ({state}): {reason}")
+        self.frame = frame
+        self.state = state
+        self.reason = reason
 
 
 class _MeasureRefused(RuntimeError):
@@ -1562,9 +1584,17 @@ def _rewind_automated_profile_to_confirmed_top(driver: HingeDriver, *, ordinal: 
     narrowly bounded exception covers a known post-like failure mode: an UNKNOWN filter-chip
     band may receive one recovery stroke only when the current frame independently proves an
     ordinary Hinge swipe deck through its visible Like and Pass controls.  That proof excludes
-    compose sheets, dialogs, paywalls and arbitrary in-app surfaces; a persistent UNKNOWN still
-    stops without a second speculative gesture.  An unreadable detector, an unchanged
-    post-gesture frame, a planning refusal, or exhaustion of the explicit cap also stop the run.
+    compose sheets, dialogs, paywalls and arbitrary in-app surfaces.  The allowance is spent
+    wherever the UNKNOWN is first met -- on the entry frame or on a settled post-gesture frame --
+    because Hinge 10.2.0's taller header puts an ordinary mid-card profile one stroke below the
+    sticky-header proof position squarely in scroll_top's deliberate 3..9 dead zone (measured
+    live 2026-09-04: 7.859, confirmable one further stroke up), and every automated entry rewind
+    starts from exactly that refuted proof position.  Once spent, a further UNKNOWN on a proven
+    deck is an unresolved layout, never a reason to keep swiping: it raises
+    ``_UnsupportedEntryDeck`` so the caller can advance the profile through the separately
+    audited public action instead of banking a frame that is not a top anchor.  An UNKNOWN
+    without that deck proof, an unreadable detector, an unchanged post-gesture frame, a planning
+    refusal, or exhaustion of the explicit cap all still stop the run.
     """
     def settled_verdict(frame: bytes, *, stage: str) -> tuple[bytes, object]:
         """Re-read an unsettled scroll-top gate without touching the screen (see the constant)."""
@@ -1607,10 +1637,14 @@ def _rewind_automated_profile_to_confirmed_top(driver: HingeDriver, *, ordinal: 
         if verdict.confirmed:
             return frame
         if not verdict.refuted:
-            if unknown_deck_recovery_spent or not unknown_deck_recovery_allowed(frame):
+            if not unknown_deck_recovery_allowed(frame):
                 raise _CaptureAbort(
                     f"automated profile {ordinal}: hybrid rewind refused an unconfirmed "
                     f"scroll-top state ({verdict.state}): {verdict.reason}")
+            if unknown_deck_recovery_spent:
+                # Symmetric with the post-gesture branch: the deck is proven, so this is an
+                # advanceable but unusable layout, not a run-ending mystery.
+                raise _UnsupportedEntryDeck(frame, state=verdict.state, reason=verdict.reason)
             # An UNKNOWN band cannot establish that this is merely a scrolled profile.  Spend
             # exactly one guarded upward stroke only after the independent, current-frame deck
             # proof above; a second UNKNOWN is an unresolved layout/state change, never a reason
@@ -1620,7 +1654,9 @@ def _rewind_automated_profile_to_confirmed_top(driver: HingeDriver, *, ordinal: 
             raise _CaptureAbort(
                 f"automated profile {ordinal}: hybrid rewind exceeded its bounded "
                 f"{_MAX_AUTOMATED_TOP_REWIND_STEPS}-gesture budget while top remained "
-                f"positively refuted ({verdict.reason})")
+                # State, not a fixed phrase: the last iteration can now be the one that spends
+                # the UNKNOWN allowance, so this is no longer always a positive refutation.
+                f"unconfirmed ({verdict.state}: {verdict.reason})")
         try:
             step, min_spacing_px = _plan_card_scroll(
                 frame, content_band=content_band, like_template=like_template,
@@ -1637,6 +1673,21 @@ def _rewind_automated_profile_to_confirmed_top(driver: HingeDriver, *, ordinal: 
         if after_verdict.confirmed:
             return after
         if not after_verdict.refuted:
+            if unknown_deck_recovery_allowed(after):
+                if not unknown_deck_recovery_spent:
+                    # The ordinary case, not an exotic deck: one stroke up from the position a
+                    # terminal Pass proves its sticky header at lands in scroll_top's 3..9 dead
+                    # zone on Hinge 10.2 (see the docstring). Hand this frame to the same single
+                    # guarded allowance the entry frame gets rather than spending a real public
+                    # Pass on a profile whose confirmable top is one more stroke away.
+                    frame = after
+                    continue
+                # Hinge 10.2's "people close to ..." recommendation deck keeps both ordinary
+                # controls visible but moves the filter-chip row out of the calibrated top band.
+                # It is safe to advance through the public action guard, but this nearly blank
+                # band is not a positive top anchor and must never enter calibration evidence.
+                raise _UnsupportedEntryDeck(
+                    after, state=after_verdict.state, reason=after_verdict.reason)
             raise _CaptureAbort(
                 f"automated profile {ordinal}: hybrid rewind reached an unconfirmed "
                 f"scroll-top state ({after_verdict.state}): {after_verdict.reason}")
@@ -1649,6 +1700,227 @@ def _rewind_automated_profile_to_confirmed_top(driver: HingeDriver, *, ordinal: 
     # The range/cap branch above is exhaustive.  Keep a fail-closed guard if this loop is
     # refactored so no caller can ever mistake an unconfirmed frame for a valid entry anchor.
     raise _CaptureAbort(f"automated profile {ordinal}: hybrid rewind ended without a confirmed top")
+
+
+def _skip_automated_unsupported_entry_deck(
+        driver: HingeDriver, *, ordinal: int, entry: _UnsupportedEntryDeck,
+        identity_band, review_gate: _HybridReviewGate | None = None,
+        send_like: bool = False, skip_reason: _PreActionProfileRetry | None = None) -> dict:
+    """Advance a proven deck whose layout cannot supply a calibration top anchor.
+
+    Unlike a normal pre-action skip, this trace makes no identity or top claim. Permission to
+    act comes from fresh ordinary-deck controls plus composer absence; the public driver action
+    supplies its own vision target and progress verification. The next retry must independently
+    rewind and prove a normal top before saving any evidence.
+
+    ``skip_reason`` is set when this escalation replaced a pre-action skip whose own rewind hit
+    the unsupported layout. Carrying that original diagnosis into ``reason_detail`` keeps it in
+    ``reason_sha256`` (which binds code+detail), so the operator still learns why the profile was
+    being skipped at all instead of seeing only the layout symptom.
+    """
+    frame = entry.frame
+    try:
+        if driver._observe_deck_ready(frame) is not True:
+            raise _CaptureAbort(
+                f"automated profile {ordinal}: unsupported entry no longer proves an ordinary deck")
+    except _CaptureAbort:
+        raise
+    except Exception as exc:  # noqa: BLE001 -- failed perception cannot license input
+        raise _CaptureAbort(
+            f"automated profile {ordinal}: unsupported-entry deck proof failed: "
+            f"{type(exc).__name__}: {exc}") from exc
+    try:
+        locate_inline_composer(frame, driver._template("confirm"), threshold=0.8)
+    except ComposerDetectionError:
+        pass
+    else:
+        raise _CaptureAbort(
+            f"automated profile {ordinal}: refusing unsupported-entry advance while an inline "
+            "composer is structurally present")
+
+    action_name = ("advance_unusable_profile_with_priority_like" if send_like
+                   else "skip_profile_without_heart")
+    public_transport = ("HingeDriver.like" if send_like else "HingeDriver.dislike")
+    reason_code = "unsupported_entry_layout"
+    reason_detail = (
+        f"ordinary deck controls were proved, but schema-v3 could not positively confirm the "
+        f"entry top ({entry.state}: {entry.reason})")
+    if skip_reason is not None:
+        reason_detail += (
+            f"; escalated from a pre-action skip for {skip_reason.code}: {skip_reason.detail}")
+    review = None
+    if review_gate is not None:
+        review = review_gate.checkpoint(
+            frame, claimed_state="pre_action_unsupported_entry_deck_ready",
+            action_plan={
+                "action": action_name, "photo_model_item": None, "point": None,
+                "point_source": f"public {public_transport}",
+                "predicates": {
+                    "ordinary_deck_ready": True, "inline_composer_absent": True,
+                    "calibration_top_unconfirmed": True,
+                    "skip_reason_code": reason_code, "skip_reason_detail": reason_detail,
+                    "forbidden_zone_guarded_transport": public_transport,
+                    **({"send_like_requested_for_unusable_profile": True} if send_like else {
+                        "no_photo_heart_or_send_like_on_current_profile": True}),
+                },
+            })
+        if review["decision"] != "approved":
+            raise _CaptureAbort(
+                "hybrid reviewer did not approve the unsupported-entry profile skip; refusing "
+                "to advance this profile")
+
+    try:
+        if send_like:
+            driver.like()
+        else:
+            driver.dislike()
+    except Exception as exc:  # noqa: BLE001 -- preserve public action's fail-closed refusal
+        raise _CaptureAbort(
+            f"automated profile {ordinal}: public {public_transport} refused unsupported-entry "
+            f"advance: {type(exc).__name__}: {exc}") from exc
+    time.sleep(human_delay(driver.dwell_s))
+    post = driver.adb.screencap()
+    if post == frame:
+        raise _CaptureAbort(
+            "automated unsupported-entry skip did not produce a changed deck frame")
+
+    # A consecutive unsupported layout is valid retry input but still not evidence. Accept it
+    # only as an ordinary, composer-free deck and let the bounded outer skip budget decide
+    # whether another public advance is permitted. One Hinge+ modal recovery is retained.
+    initial_post = post
+    modal_edge_back_used = False
+    try:
+        locate_inline_composer(post, driver._template("confirm"), threshold=0.8)
+    except ComposerDetectionError:
+        pass
+    else:
+        raise _CaptureAbort("automated unsupported-entry skip left an inline composer visible")
+    if driver._observe_deck_ready(post) is not True:
+        screen_width, screen_height = driver.adb.screen_size()
+        if (not isinstance(screen_width, int) or screen_width <= 0
+                or not isinstance(screen_height, int) or screen_height <= 0):
+            raise _CaptureAbort(
+                "automated unsupported-entry skip cannot recover modal: invalid screen size")
+        driver._swipe(round(screen_width * _EDGE_BACK_START_X_FRAC),
+                      round(screen_height * _EDGE_BACK_Y_FRAC),
+                      round(screen_width * _EDGE_BACK_END_X_FRAC),
+                      round(screen_height * _EDGE_BACK_Y_FRAC))
+        modal_edge_back_used = True
+        time.sleep(human_delay(driver.dwell_s))
+        post = driver.adb.screencap()
+        try:
+            locate_inline_composer(post, driver._template("confirm"), threshold=0.8)
+        except ComposerDetectionError:
+            pass
+        else:
+            raise _CaptureAbort(
+                "automated unsupported-entry modal recovery left an inline composer visible")
+        if driver._observe_deck_ready(post) is not True:
+            raise _CaptureAbort(
+                "automated unsupported-entry modal recovery did not reach an ordinary deck")
+    try:
+        post_top = confirm_scroll_top(post, identity_band=identity_band)
+    except ScrollTopError as exc:
+        raise _CaptureAbort(
+            f"automated unsupported-entry skip cannot read the next deck top state: {exc}") from exc
+
+    reason_digest = _sha256(f"{reason_code}\n{reason_detail}".encode("utf-8"))
+    return {
+        "action": action_name,
+        "ordinal": ordinal,
+        "reason_code": reason_code,
+        "reason_detail": reason_detail,
+        "reason_sha256": reason_digest,
+        "transport": public_transport,
+        "pre_frame_sha256": _sha256(frame),
+        "post_frame_sha256": _sha256(post),
+        "post_deck_frame_sha256": _sha256(post),
+        "pre_scroll_top_state": entry.state,
+        "post_scroll_top_state": post_top.state,
+        "post_scroll_top_reason": post_top.reason,
+        "post_pass_settle": {
+            "modal_edge_back_used": modal_edge_back_used,
+            "ordinary_deck_ready": True,
+            "initial_post_pass_frame_sha256": _sha256(initial_post),
+            "settled_post_pass_frame_sha256": _sha256(post),
+        },
+        "review_checkpoints": ({"before": review} if review_gate is not None else None),
+        "predicates": {
+            "pre_action_deck_ready": True,
+            "pre_action_composer_absent": True,
+            "calibration_top_unconfirmed": True,
+            **({
+                "send_like_requested_for_unusable_profile": True,
+                "send_like_tapped": True,
+                "public_action_guard_used": True,
+            } if send_like else {
+                "no_photo_heart_or_send_like_on_current_profile": True,
+                "public_dislike_guard_used": True,
+            }),
+            "public_action_progress_verified": True,
+            "deck_frame_changed": True,
+            "new_deck_ready": True,
+            "new_profile_composer_absent": True,
+            "new_profile_top_confirmed": post_top.confirmed,
+            "new_profile_identity_distinct": False,
+            "identity_comparison_not_claimed": True,
+            "modal_edge_back_used": modal_edge_back_used,
+        },
+    }
+
+
+def _scroll_next_profile_to_sticky_header(
+        driver: HingeDriver, *, top_frame: bytes, identity_band, content_band,
+        like_template, like_threshold: float, context: str) -> bytes:
+    """Expose a post-advance sticky header with at most two guarded read scrolls.
+
+    The caller already proved ``top_frame`` is a fresh ordinary deck. Each gesture is sized by
+    the same local-card planner as the calibration read. If the first resting frame is still
+    confirmed-top or indeterminate, a second gesture is allowed only while the current frame
+    independently retains both ordinary deck controls. No identity threshold is widened and an
+    unresolved second frame remains a hard refusal.
+    """
+    frame = top_frame
+    min_spacing_px = None
+    verdict = None
+    for attempt in range(_MAX_POST_ADVANCE_STICKY_SCROLLS):
+        if attempt:
+            deck_ready = getattr(driver, "_observe_deck_ready", None)
+            if not callable(deck_ready) or deck_ready(frame) is not True:
+                raise _CaptureAbort(
+                    f"{context}: the first identity-proof scroll did not expose a sticky name "
+                    "header and the ordinary deck could not be re-proved before a second scroll")
+        try:
+            step, min_spacing_px = _plan_card_scroll(
+                frame, content_band=content_band, like_template=like_template,
+                like_threshold=like_threshold, profile_min_spacing_px=min_spacing_px)
+        except (SegmentationError, ScrollStepError) as exc:
+            raise _CaptureAbort(
+                f"{context}: cannot plan guarded post-advance identity scroll "
+                f"{attempt + 1}: {type(exc).__name__}: {exc}") from exc
+        driver._scroll_down_one(step.frac, step.x_frac)
+        # SETTLED, not the first frame back (restored 2026-09-04). `adb shell input swipe` returns
+        # when the finger path ends while Hinge is still snapping the new profile, and
+        # `_settled_read_scroll_frame`'s own docstring records the measurement: two immediate
+        # post-gesture frames moved another 554px and 559px on the 2026-08-26 held-out run. An
+        # unsettled frame here still shows the filter-chip row, so `confirm_scroll_top` does not
+        # refute it and this loop answers a mid-animation frame by spending ANOTHER real device
+        # gesture -- and the frame it finally returns is consumed directly as identity evidence
+        # by the caller. This is the read the pre-action-skip path used for exactly this reason.
+        frame = _settled_read_scroll_frame(driver)
+        try:
+            verdict = confirm_scroll_top(frame, identity_band=identity_band)
+        except ScrollTopError as exc:
+            raise _CaptureAbort(
+                f"{context}: cannot read the post-advance sticky identity after scroll "
+                f"{attempt + 1}: {exc}") from exc
+        if verdict.refuted:
+            return frame
+    assert verdict is not None
+    raise _CaptureAbort(
+        f"{context}: sticky name header was not proven after the bounded "
+        f"{_MAX_POST_ADVANCE_STICKY_SCROLLS}-scroll probe; final state "
+        f"{verdict.state}: {verdict.reason}")
 
 
 def _skip_automated_profile_before_heart(
@@ -1736,28 +2008,16 @@ def _skip_automated_profile_before_heart(
         driver, frame=raw_advanced_top, confirm_template=driver._template("confirm"),
         identity_band=identity_band)
 
-    # A top frame proves the ordinary deck returned.  One bounded planner-approved down-scroll
-    # is then required to expose the sticky identity and prove this is not merely the same card
-    # redrawn.  The next attempt starts with its own visual rewind, so this does not leak a
+    # A top frame proves the ordinary deck returned. A tightly bounded planner-approved read is
+    # then required to expose the sticky identity and prove this is not merely the same card
+    # redrawn. The next attempt starts with its own visual rewind, so this does not leak a
     # process-local scroll estimate into the retry.
+    advanced_identity = _scroll_next_profile_to_sticky_header(
+        driver, top_frame=advanced_top, identity_band=identity_band,
+        content_band=content_band, like_template=like_template,
+        like_threshold=like_threshold,
+        context=f"automated profile {ordinal} pre-action skip")
     try:
-        step, _ = _plan_card_scroll(
-            advanced_top, content_band=content_band, like_template=like_template,
-            like_threshold=like_threshold, profile_min_spacing_px=None)
-    except (SegmentationError, ScrollStepError) as exc:
-        raise _CaptureAbort(
-            f"automated profile {ordinal}: cannot plan guarded identity proof after public "
-            f"skip: {type(exc).__name__}: {exc}") from exc
-    driver._scroll_down_one(step.frac, step.x_frac)
-    # This is another read-scroll whose result feeds an identity assertion.  Reading its first
-    # post-gesture frame can still show filter chips while Hinge is snapping the new profile,
-    # which would turn a real advance into a false "no sticky identity" refusal.
-    advanced_identity = _settled_read_scroll_frame(driver)
-    try:
-        sticky = confirm_scroll_top(advanced_identity, identity_band=identity_band)
-        if not sticky.refuted:
-            raise _CaptureAbort(
-                "automated pre-action profile skip did not expose a sticky new-profile identity")
         next_fingerprint = band_fingerprint(
             advanced_identity, identity_band=identity_band, grid=_IDENTITY_GRID)
         distance = _checked_distance(
@@ -2910,7 +3170,7 @@ def _capture_one_profile_unattended(driver: HingeDriver, out_dir: Path, *, ordin
             abort_recoveries.append(recovery)
         return recovery
 
-    def skip_before_heart(reason: _PreActionProfileRetry, identity: ProfileIdentity) -> _ProfileSkipped:
+    def assert_skip_budget() -> None:
         # Check budgets *before* the public Pass.  A cap must stop a changed implementation
         # before it spends another profile, not merely decline to record the extra advance.
         attempts = skipped_attempts or []
@@ -2923,17 +3183,39 @@ def _capture_one_profile_unattended(driver: HingeDriver, out_dir: Path, *, ordin
             raise _CaptureAbort(
                 "automated capture exceeded the bounded session pre-action skip budget of "
                 f"{_MAX_PREACTION_PROFILE_SKIPS_PER_SESSION}")
-        return _ProfileSkipped(_skip_automated_profile_before_heart(
-            driver, ordinal=ordinal, reason=reason, identity=identity,
-            identity_band=identity_band, content_band=content_band, like_template=like_template,
-            like_threshold=like_threshold, review_gate=review_gate, send_like=send_like))
+
+    def skip_before_heart(reason: _PreActionProfileRetry, identity: ProfileIdentity) -> _ProfileSkipped:
+        assert_skip_budget()
+        try:
+            return _ProfileSkipped(_skip_automated_profile_before_heart(
+                driver, ordinal=ordinal, reason=reason, identity=identity,
+                identity_band=identity_band, content_band=content_band,
+                like_template=like_template, like_threshold=like_threshold,
+                review_gate=review_gate, send_like=send_like))
+        except _UnsupportedEntryDeck as exc:
+            # The pre-action skip's own rewind meets the same unsupported layout the entry
+            # rewind does, from deeper in the card, so it must escalate the same way. Letting it
+            # propagate would surface as a plain `_CaptureAbort` in `_cmd_capture`, marking the
+            # whole session interrupted and discarding every profile already banked. The rewind
+            # is the first thing that function does after its identity precondition, so no
+            # device action has happened yet; the budget was already charged once above and this
+            # escalation still emits exactly one skip record.
+            return _ProfileSkipped(_skip_automated_unsupported_entry_deck(
+                driver, ordinal=ordinal, entry=exc, identity_band=identity_band,
+                review_gate=review_gate, send_like=send_like, skip_reason=reason))
 
     # Every automated/hybrid profile begins with a visually-driven rewind, including profiles
     # reached after a reviewer-directed restart.  It is intentionally independent of the
     # driver's in-process scroll ledger, which cannot represent a handoff position.
-    top_frame = _rewind_automated_profile_to_confirmed_top(
-        driver, ordinal=ordinal, identity_band=identity_band, content_band=content_band,
-        like_template=like_template, like_threshold=like_threshold)
+    try:
+        top_frame = _rewind_automated_profile_to_confirmed_top(
+            driver, ordinal=ordinal, identity_band=identity_band, content_band=content_band,
+            like_template=like_template, like_threshold=like_threshold)
+    except _UnsupportedEntryDeck as exc:
+        assert_skip_budget()
+        raise _ProfileSkipped(_skip_automated_unsupported_entry_deck(
+            driver, ordinal=ordinal, entry=exc, identity_band=identity_band,
+            review_gate=review_gate, send_like=send_like)) from exc
 
     card_frames = [top_frame]
     staged_frames: list[tuple[bytes, str, int | None, str]] = [
@@ -3555,16 +3837,12 @@ def _capture_one_profile_unattended(driver: HingeDriver, out_dir: Path, *, ordin
                                           if review_gate is not None else None)
     action_trace.append(pass_trace)
 
-    # Make a bounded, planner-authorized scroll solely to prove the next profile's sticky
-    # identity, then use the driver's normal humanized rewind for the following profile.
-    step, _ = _plan_card_scroll(advance_frame, content_band=content_band,
-                                like_template=like_template, like_threshold=like_threshold,
-                                profile_min_spacing_px=None)
-    driver._scroll_down_one(step.frac, step.x_frac)
-    advance_identity = driver.adb.screencap()
-    sticky = confirm_scroll_top(advance_identity, identity_band=identity_band)
-    if not sticky.refuted:
-        raise _CaptureAbort(f"automated profile {ordinal}: sticky name header was not proven")
+    # Make at most two bounded, planner-authorized scrolls solely to prove the next profile's
+    # sticky identity, then use the driver's normal humanized rewind for the following profile.
+    advance_identity = _scroll_next_profile_to_sticky_header(
+        driver, top_frame=advance_frame, identity_band=identity_band,
+        content_band=content_band, like_template=like_template,
+        like_threshold=like_threshold, context=f"automated profile {ordinal}")
     try:
         new_fp = band_fingerprint(advance_identity, identity_band=identity_band, grid=_IDENTITY_GRID)
         distance = _checked_distance(fingerprint_distance(identity.fingerprint, new_fp),
@@ -4203,11 +4481,15 @@ def _cmd_capture(args: argparse.Namespace) -> None:
                         "after advancing it with a verified public Like"
                         if record.get("action") == "advance_unusable_profile_with_priority_like"
                         else "before any heart")
+                    retry_description = (
+                        "the next proven ordinary deck"
+                        if record.get("reason_code") == "unsupported_entry_layout"
+                        else "the distinct next profile")
                     print(
                         f"Skipped unsuitable calibration evidence {advance_description} for "
                         f"ordinal {ordinal} ({record['reason_code']}: "
-                        f"{record['reason_detail']}); retrying this ordinal on the distinct "
-                        "next profile.")
+                        f"{record['reason_detail']}); retrying this ordinal on "
+                        f"{retry_description}.")
                     ordinal -= 1
                     continue
                 profiles_meta.append(profile_meta)
@@ -5949,7 +6231,7 @@ def _unattended_review_reference_reason(reference: str, sessions: list[_SessionD
     captures = body.get("captures")
     if not isinstance(captures, list) or len(captures) != len(sessions):
         return "unattended review does not cover exactly the supplied capture sessions"
-    expected: dict[str, tuple[str, dict, list[int]]] = {}
+    expected: dict[str, tuple[str, dict, list[int], str]] = {}
     for session in sessions:
         manifest_path = session.dir / "manifest.json"
         try:
@@ -5957,9 +6239,13 @@ def _unattended_review_reference_reason(reference: str, sessions: list[_SessionD
         except OSError as exc:
             return f"cannot rehash supplied capture manifest {manifest_path}: {exc}"
         device = session.manifest.get("device")
+        # The evidence scope belongs to THIS session: mixed-scope invocations are supported
+        # (a legacy closed-set session may be measured alongside a target-scoped one), so it is
+        # bound per session here rather than read back from the loop variable below.
         expected[str(session.dir.resolve())] = (
             manifest_digest, device,
             session.manifest.get("frame_size_px"),
+            session.manifest.get("capture_evidence_scope", "closed_set_profile_v1"),
         )
     seen: set[str] = set()
     for record in captures:
@@ -5969,8 +6255,7 @@ def _unattended_review_reference_reason(reference: str, sessions: list[_SessionD
         if not isinstance(session_path, str) or session_path in seen or session_path not in expected:
             return "unattended review capture session does not exactly match measure input"
         seen.add(session_path)
-        manifest_digest, device, frame_size = expected[session_path]
-        expected_scope = session.manifest.get("capture_evidence_scope", "closed_set_profile_v1")
+        manifest_digest, device, frame_size, expected_scope = expected[session_path]
         if (record.get("manifest_sha256") != manifest_digest
                 or record.get("device") != device
                 or record.get("frame_size_px") != frame_size

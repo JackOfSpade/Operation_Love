@@ -66,9 +66,24 @@ frame:
 
 - **C1 — existing rejectors, unchanged.** `classify_crop` == PHOTO, signature
   drift <= 0.24 across >= 2 frames, zero mute matches (>= 0.98), zero animation
-  markers. Every current refusal string is preserved byte-for-byte
-  (`hinge.py` prefix-matches `video_mute_v1: upper-left`; the exclusion vocabulary
-  does not change).
+  markers. Every current refusal string is preserved byte-for-byte; the exclusion
+  vocabulary does not change. It is frozen for two independent reasons. It is a
+  LIVE CODE DEPENDENCY: `hinge.py`'s `model_item_media_ordinal` prefix-matches
+  `video_mute_v1: upper-left` as the one affirmative "this card is a video"
+  exclusion it may count as media — both of `_video_selection_exclusions`' routes
+  (the block-relative screen and the positioned-marker track) deliberately share
+  that prefix, while every other exclusion wording is fail-closed there — so
+  rewording a reason into or out of that prefix silently changes what the Hub
+  training card asks an operator to count. (This clause briefly said the
+  dependency was gone: the method was deleted as dead on 2026-09-04 during the
+  observe→training migration cleanup and restored the same day, once the owner
+  decided to bring the review-card affordance back end to end.) And these strings
+  are the persisted record of why a card was not numbered:
+  `_items_unnumbered_summary` buckets them by EXACT text to name the most common
+  finding in the operator's sentence, the capture debug manifest stores one per
+  crop, and an offline replay of persisted dwell frames is only comparable with a
+  live run while both write the same wording. Rewording a reason splits one
+  repeated finding into two and orphans every artifact already on disk.
 - **C2 — dwell byte-exactness (primary positive observation).** With no input,
   N screencaps over a window W; the target card rect must be byte-identical
   (full-res RGB, zero tolerance) in every capture and page-level frameshift must
@@ -971,6 +986,19 @@ configured bounded walk did not reach the card. Walked candidates also returned 
 evidence without calling `_record_still_photo_dwell`, so only the base candidate's raw proof was
 preserved. Every base and walked burst/probe action now carries its page-heart ordinal(s), and
 each walked candidate writes the same per-frame digests and summary as the base path.
+
+## 5i.1. Addendum 2026-09-03: cover Hinge's complete six-media envelope
+
+Run `88f84d9179d8` contained five confidently photographic candidates, but the shipped K=3
+budget reached only three. The other two were correctly reported as coverage gaps rather than
+still-photo refusals; no evidence about them had been collected. Hinge's profile structure gives
+this budget a finite safe ceiling: at most six media slots, while the three remaining selectable
+cards are written prompts. The existing content pre-pass removes prompts and known videos before
+they consume K. The default and shipped configuration are therefore now K=6, enough to attempt
+every confidently photographic candidate without making the walk unbounded. All existing
+per-hop centring, navigation, return, Stop, and fail-closed refusal rules remain unchanged; a card
+may still remain unnumbered because proof or navigation refused, but not merely because the
+default candidate budget ended first.
 
 ## 5j. Addendum 2026-08-27: the walk died on its FIRST hop over a 1px overshoot, and that is what left doc 5.6 on its weakest bound
 

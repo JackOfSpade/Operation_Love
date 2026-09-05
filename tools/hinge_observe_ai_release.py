@@ -19,6 +19,7 @@ import yaml
 from operation_love import config as cfg_mod
 from operation_love.private_files import atomic_write_private_bytes, atomic_write_private_text, ensure_private_dir
 from operation_love.ranker import make_store
+from tools._debug_frames import debug_frame_path
 
 ACCEPTANCE = "I_ACCEPT_AI_REVIEWED_OBSERVE_RELEASE_RISK"
 SOURCES = frozenset({"external_ai_review", "automation"})
@@ -110,10 +111,14 @@ def _debug_rows(run_dir: Path, run_id: str) -> tuple[list[dict], bytes]:
             or binding.get("action") != "observe_release_run_binding"
             or binding.get("run_id") != run_id or binding.get("app") != "hinge"):
         raise AIReleaseEvidenceRefused("debug run lacks the required first production Worker binding")
+    # Containment, not mere existence: a hand-authored ``"../<other-run>/anchor.png"`` proves a
+    # frame exists somewhere on this machine, not that THIS run retained it -- and every later
+    # "has a retained runtime frame" proof in this file reads a name that passed through here.
+    # The rule is shared with the manual verifier because both artifacts unlock the same gate.
     for row in rows:
         for key in ("before", "after", "anchor"):
             name = row.get(key)
-            if name is not None and (not isinstance(name, str) or not (run_dir / name).is_file()):
+            if name is not None and debug_frame_path(run_dir, name) is None:
                 raise AIReleaseEvidenceRefused(f"debug action references missing frame {name!r}")
     return rows, raw
 
@@ -165,8 +170,15 @@ def _verify_bridge_event_chain(rows: list[dict], indexes: dict[str, int]) -> Non
         raise AIReleaseEvidenceRefused("reviewed like landing has no retained runtime frame")
 
 
-def _verify_provenance(provenance: dict, raw: bytes, *, run_dir: Path, run_id: str,
+def _verify_provenance(provenance: dict, *, run_dir: Path, run_id: str,
                        rows: list[dict], actions_raw: bytes) -> dict[str, str]:
+    """Verify the provenance MAPPING. It binds no raw bytes of its own, deliberately.
+
+    The digest that ties this document to the artifact is taken by the caller, and the review's
+    own binding to it is ``_verify_review``'s ``_sha(provenance_raw)``. Taking bytes here as well
+    would suggest this function proves something about them, and would force
+    ``record_provenance`` to re-serialize the whole document just to fill the slot.
+    """
     if set(provenance) != PROVENANCE_KEYS:
         raise AIReleaseEvidenceRefused("AI action provenance has an invalid exact schema")
     if provenance.get("schema_version") != 1 or provenance.get("kind") != "hinge_ai_observe_action_provenance":
@@ -221,7 +233,7 @@ def review(*, run_dir: Path, run_id: str, provenance_path: Path, out_dir: Path,
     reviewer = _identity(reviewer, label="independent reviewer")
     provenance, provenance_raw = _read_json(provenance_path, "AI action provenance")
     rows, actions_raw = _debug_rows(run_dir, run_id)
-    hashes = _verify_provenance(provenance, provenance_raw, run_dir=run_dir, run_id=run_id,
+    hashes = _verify_provenance(provenance, run_dir=run_dir, run_id=run_id,
                                 rows=rows, actions_raw=actions_raw)
     executor = _identity(provenance["executor"], label="AI action executor")
     if (reviewer["id"], reviewer["process"]) == (executor["id"], executor["process"]):
@@ -245,7 +257,7 @@ def review(*, run_dir: Path, run_id: str, provenance_path: Path, out_dir: Path,
     return artifact
 
 
-def _verify_review(review_value: dict, review_raw: bytes, provenance_raw: bytes, *, run_dir: Path,
+def _verify_review(review_value: dict, provenance_raw: bytes, *, run_dir: Path,
                    run_id: str, actions_raw: bytes, executor: dict, event_hashes: dict[str, str]) -> None:
     if set(review_value) != REVIEW_KEYS or review_value.get("schema_version") != 1:
         raise AIReleaseEvidenceRefused("independent review has an invalid exact schema")
@@ -333,8 +345,8 @@ def record_provenance(*, cfg, run_dir: Path, run_id: str, out_dir: Path, source:
         raise AssertionError("AI action provenance schema drift")
     # Fail before emitting a sidecar if a selected runtime event lacks the frame/shape proof
     # the later independent reviewer would require anyway.
-    _verify_provenance(artifact, json.dumps(artifact, sort_keys=True).encode(), run_dir=run_dir,
-                       run_id=run_id, rows=rows, actions_raw=actions_raw)
+    _verify_provenance(artifact, run_dir=run_dir, run_id=run_id, rows=rows,
+                       actions_raw=actions_raw)
     _inside_repo(out_dir, label="AI action provenance output")
     ensure_private_dir(out_dir, exist_ok=False)
     atomic_write_private_text(
@@ -357,14 +369,14 @@ def verify(*, cfg, run_dir: Path, run_id: str, provenance_path: Path, review_pat
     provenance, provenance_raw = _read_json(provenance_path, "AI action provenance")
     review_value, review_raw = _read_json(review_path, "independent review")
     rows, actions_raw = _debug_rows(run_dir, run_id)
-    event_hashes = _verify_provenance(provenance, provenance_raw, run_dir=run_dir, run_id=run_id,
+    event_hashes = _verify_provenance(provenance, run_dir=run_dir, run_id=run_id,
                                       rows=rows, actions_raw=actions_raw)
     for key in ("device", "hinge_version_name", "frame_size_px"):
         if provenance.get(key) != calibration.get(key):
             raise AIReleaseEvidenceRefused(
                 f"AI action provenance {key} does not bind the calibrated device/build/framebuffer")
     executor = _identity(provenance["executor"], label="AI action executor")
-    _verify_review(review_value, review_raw, provenance_raw, run_dir=run_dir, run_id=run_id,
+    _verify_review(review_value, provenance_raw, run_dir=run_dir, run_id=run_id,
                    actions_raw=actions_raw, executor=executor, event_hashes=event_hashes)
     owned_store = store is None
     store = make_store(cfg, ensure=False) if store is None else store

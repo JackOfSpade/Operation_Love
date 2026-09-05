@@ -308,11 +308,183 @@ def test_hybrid_rewind_never_spends_a_second_unknown_deck_recovery_gesture(monke
     monkeypatch.setattr(cal, "confirm_scroll_top",
                         lambda *_args, **_kw: _top_verdict("cannot_tell", "still ambiguous"))
 
-    with pytest.raises(cal._CaptureAbort, match="reached an unconfirmed scroll-top state"):
+    with pytest.raises(cal._UnsupportedEntryDeck, match="unsupported entry deck") as caught:
         cal._rewind_automated_profile_to_confirmed_top(
             driver, ordinal=1, identity_band=_IDENTITY_BAND, content_band=_CONTENT_BAND,
             like_template=object(), like_threshold=0.8)
+    assert caught.value.frame == b"unknown-2"
     assert len(calls) == len(driver.reverse_steps) == 1
+
+
+def test_hybrid_rewind_spends_its_unknown_allowance_on_a_post_gesture_dead_zone(monkeypatch):
+    """A first post-gesture `cannot_tell` is the ORDINARY 10.2 entry, not an exotic deck.
+
+    Every automated profile's entry rewind starts from the refuted position the terminal Pass
+    proved its sticky header at, and one stroke up from there reads inside scroll_top's
+    deliberate 3..9 dead zone (measured live 2026-09-04: 7.859; the confirmable top is one more
+    stroke away at 12.281).  Escalating that reading immediately spent a real public Pass -- or a
+    permanent Send Priority Like under --send-like -- on a capturable profile, so the single
+    guarded UNKNOWN allowance must apply to a post-gesture frame exactly as it does to the entry
+    frame.  A SECOND consecutive dead-zone reading still escalates (test above).
+    """
+    driver = _HybridRewindDriver([b"mid-card", b"dead-zone", b"top"])
+    driver._observe_deck_ready = lambda frame: frame == b"dead-zone"
+    driver.dislike = lambda: pytest.fail("the bounded rewind must never advance a real profile")
+    driver.like = lambda: pytest.fail("the bounded rewind must never advance a real profile")
+    calls, planned = _rewind_driver_plan(monkeypatch)
+    monkeypatch.setattr(cal, "_MAX_UNSETTLED_TOP_REPROBES", 0)
+    monkeypatch.setattr(cal, "confirm_scroll_top", lambda frame, **_kw: _top_verdict(
+        {b"mid-card": "confirmed_not_top", b"dead-zone": "cannot_tell"}.get(frame,
+                                                                           "confirmed_top"),
+        "10.2 tall first-card header"))
+
+    assert cal._rewind_automated_profile_to_confirmed_top(
+        driver, ordinal=3, identity_band=_IDENTITY_BAND, content_band=_CONTENT_BAND,
+        like_template=object(), like_threshold=0.8) == b"top"
+
+    assert driver.reverse_steps == [(planned.frac, planned.x_frac)] * 2
+    assert len(calls) == 2
+
+
+def test_unsupported_entry_skip_uses_public_pass_and_never_claims_identity(monkeypatch):
+    class _Adb:
+        frame = b"unsupported-entry"
+
+        def screencap(self):
+            return self.frame
+
+    class _Driver:
+        dwell_s = 0.0
+
+        def __init__(self):
+            self.adb = _Adb()
+            self.dislikes = 0
+
+        def _observe_deck_ready(self, _frame):
+            return True
+
+        def _template(self, _name):
+            return object()
+
+        def dislike(self):
+            self.dislikes += 1
+            self.adb.frame = b"next-deck"
+
+    driver = _Driver()
+    monkeypatch.setattr(
+        cal, "locate_inline_composer",
+        lambda *_a, **_kw: (_ for _ in ()).throw(ComposerDetectionError("absent")))
+    monkeypatch.setattr(cal, "confirm_scroll_top",
+                        lambda *_a, **_kw: _top_verdict("cannot_tell", "next special deck"))
+    monkeypatch.setattr(cal, "human_delay", lambda _dwell: 0.0)
+    monkeypatch.setattr(cal.time, "sleep", lambda _seconds: None)
+
+    record = cal._skip_automated_unsupported_entry_deck(
+        driver, ordinal=2,
+        entry=cal._UnsupportedEntryDeck(
+            b"unsupported-entry", state="cannot_tell", reason="moved chip row"),
+        identity_band=_IDENTITY_BAND)
+
+    assert driver.dislikes == 1
+    assert record["reason_code"] == "unsupported_entry_layout"
+    assert record["transport"] == "HingeDriver.dislike"
+    assert record["pre_scroll_top_state"] == "cannot_tell"
+    assert record["post_scroll_top_state"] == "cannot_tell"
+    assert record["predicates"]["public_action_progress_verified"] is True
+    assert record["predicates"]["new_deck_ready"] is True
+    assert record["predicates"]["new_profile_identity_distinct"] is False
+    assert record["predicates"]["identity_comparison_not_claimed"] is True
+
+
+def test_hybrid_rewind_escalates_a_proven_deck_at_the_loop_top_once_the_allowance_is_spent(
+        monkeypatch):
+    """The two UNKNOWN branches must agree about what a proven deck means.
+
+    A real screen can settle differently between the post-gesture read and the next top-of-loop
+    read, so the loop top can meet an UNKNOWN with the allowance already spent. On a frame that
+    independently proves both deck controls that is the same advanceable-but-unusable layout the
+    post-gesture branch escalates, not a run-ending mystery; an UNPROVEN deck still aborts
+    (tests above).
+    """
+    driver = _HybridRewindDriver([b"unknown-entry", b"moved"])
+    driver._observe_deck_ready = lambda _frame: True
+    reads: list[bytes] = []
+
+    def flipping_confirm(frame, **_kw):
+        reads.append(frame)
+        # `moved` reads refuted right after the gesture and ambiguous on the next look.
+        return _top_verdict(
+            "confirmed_not_top" if frame == b"moved" and reads.count(b"moved") == 1
+            else "cannot_tell", "chip row drifted")
+
+    calls, _planned = _rewind_driver_plan(monkeypatch)
+    monkeypatch.setattr(cal, "_MAX_UNSETTLED_TOP_REPROBES", 0)
+    monkeypatch.setattr(cal, "confirm_scroll_top", flipping_confirm)
+
+    with pytest.raises(cal._UnsupportedEntryDeck, match="unsupported entry deck") as caught:
+        cal._rewind_automated_profile_to_confirmed_top(
+            driver, ordinal=1, identity_band=_IDENTITY_BAND, content_band=_CONTENT_BAND,
+            like_template=object(), like_threshold=0.8)
+
+    assert caught.value.frame == b"moved"
+    assert len(calls) == len(driver.reverse_steps) == 1
+
+
+def test_unsupported_entry_escalation_keeps_the_diagnosis_that_asked_for_the_skip(monkeypatch):
+    """A pre-action skip escalated by the unsupported layout must not lose WHY it was skipping.
+
+    The layout symptom alone tells the operator nothing about the target/navigation failure that
+    sent the profile down the skip path. The original code+detail go into `reason_detail`, which
+    `reason_sha256` binds, so the record stays self-verifying and the reviewer's checkpoint
+    approves the real diagnosis rather than the symptom.
+    """
+    class _Adb:
+        frame = b"unsupported-entry"
+
+        def screencap(self):
+            return self.frame
+
+    class _Driver:
+        dwell_s = 0.0
+
+        def __init__(self):
+            self.adb = _Adb()
+            self.dislikes = 0
+
+        def _observe_deck_ready(self, _frame):
+            return True
+
+        def _template(self, _name):
+            return object()
+
+        def dislike(self):
+            self.dislikes += 1
+            self.adb.frame = b"next-deck"
+
+    driver = _Driver()
+    gate = _RecordingGate()
+    monkeypatch.setattr(
+        cal, "locate_inline_composer",
+        lambda *_a, **_kw: (_ for _ in ()).throw(ComposerDetectionError("absent")))
+    monkeypatch.setattr(cal, "confirm_scroll_top",
+                        lambda *_a, **_kw: _top_verdict("cannot_tell", "next special deck"))
+    monkeypatch.setattr(cal, "human_delay", lambda _dwell: 0.0)
+    monkeypatch.setattr(cal.time, "sleep", lambda _seconds: None)
+
+    record = cal._skip_automated_unsupported_entry_deck(
+        driver, ordinal=2,
+        entry=cal._UnsupportedEntryDeck(
+            b"unsupported-entry", state="cannot_tell", reason="moved chip row"),
+        identity_band=_IDENTITY_BAND, review_gate=gate,
+        skip_reason=cal._PreActionProfileRetry(_LIVE_SKIP_CODE, _LIVE_SKIP_DETAIL))
+
+    assert _LIVE_SKIP_CODE in record["reason_detail"]
+    assert _LIVE_SKIP_DETAIL in record["reason_detail"]
+    assert "moved chip row" in record["reason_detail"]
+    assert record["reason_sha256"] == hashlib.sha256(
+        f"{record['reason_code']}\n{record['reason_detail']}".encode("utf-8")).hexdigest()
+    (_claimed_state, plan), = gate.checkpoints
+    assert plan["predicates"]["skip_reason_detail"] == record["reason_detail"]
 
 
 def test_hybrid_rewind_refuses_an_unplannable_or_stalled_refuted_frame(monkeypatch):
@@ -380,6 +552,145 @@ def test_hybrid_rewind_settled_verdict_reprobes_a_transient_cannot_tell_without_
     assert top == b"settling"
     assert calls == [b"settling", b"settling"]
     assert driver.reverse_steps == []
+
+
+def test_post_advance_identity_probe_reads_a_settled_frame_before_spending_a_second_scroll(
+        monkeypatch):
+    """A mid-snap frame is not an indeterminate profile (found 2026-09-04).
+
+    `adb shell input swipe` returns while Hinge is still snapping the new profile, so the first
+    post-gesture frame can still show the filter-chip row -- which `confirm_scroll_top` cannot
+    refute. Reading that frame raw turned a perfectly ordinary advance into a second real device
+    gesture, and handed the caller a mid-animation frame that is then consumed directly as
+    identity evidence. This fixture is that phone: one in-flight frame, then the parked one.
+    """
+    class Driver:
+        identity_band = _IDENTITY_BAND
+        content_band = _CONTENT_BAND
+        dwell_s = 0.0
+
+        def __init__(self):
+            self.adb = self
+            self.frames = iter((b"partial-header", b"sticky-header"))
+            self.last = None
+            self.scrolls = []
+
+        def screencap(self):
+            self.last = next(self.frames, self.last)
+            return self.last
+
+        def _scroll_down_one(self, frac, x_frac):
+            self.scrolls.append((frac, x_frac))
+
+        def _observe_deck_ready(self, frame):
+            return frame == b"partial-header"
+
+    driver = Driver()
+    monkeypatch.setattr(
+        cal, "_plan_card_scroll",
+        lambda *_a, **_kw: (SimpleNamespace(frac=0.13, x_frac=0.5), 900))
+    monkeypatch.setattr(
+        cal, "confirm_scroll_top",
+        lambda frame, **_kw: _top_verdict(
+            "cannot_tell" if frame == b"partial-header" else "confirmed_not_top"))
+
+    result = cal._scroll_next_profile_to_sticky_header(
+        driver, top_frame=b"top", identity_band=_IDENTITY_BAND,
+        content_band=_CONTENT_BAND, like_template=object(), like_threshold=0.8,
+        context="automated profile 1")
+
+    assert result == b"sticky-header", "the settled frame is what the caller must be handed"
+    assert driver.scrolls == [(0.13, 0.5)], "an in-flight frame must not buy a second gesture"
+
+
+def test_post_advance_identity_probe_allows_one_guarded_second_scroll_for_hinge_10_2(
+        monkeypatch):
+    """Hinge 10.2 can leave the first post-Pass read in the 3..9 top dead zone.
+
+    A second locally planned scroll is safe only while the first result still proves the
+    ordinary Like+Pass deck. It must expose a positively refuted sticky header rather than
+    promoting the indeterminate first result into an identity verdict.
+
+    Unlike the settle test above, this phone is genuinely PARKED on the indeterminate frame --
+    every read after the first gesture returns the same bytes -- so the second scroll is the
+    only thing that can resolve it.
+    """
+    class Driver:
+        identity_band = _IDENTITY_BAND
+        content_band = _CONTENT_BAND
+        dwell_s = 0.0
+
+        def __init__(self):
+            self.adb = self
+            self.scrolls = []
+
+        def screencap(self):
+            return b"partial-header" if len(self.scrolls) < 2 else b"sticky-header"
+
+        def _scroll_down_one(self, frac, x_frac):
+            self.scrolls.append((frac, x_frac))
+
+        def _observe_deck_ready(self, frame):
+            return frame == b"partial-header"
+
+    driver = Driver()
+    planned_spacing = []
+
+    def plan(_frame, **kwargs):
+        planned_spacing.append(kwargs["profile_min_spacing_px"])
+        return SimpleNamespace(frac=0.13, x_frac=0.5), 900
+
+    monkeypatch.setattr(cal, "_plan_card_scroll", plan)
+    monkeypatch.setattr(
+        cal, "confirm_scroll_top",
+        lambda frame, **_kw: _top_verdict(
+            "cannot_tell" if frame == b"partial-header" else "confirmed_not_top"))
+
+    result = cal._scroll_next_profile_to_sticky_header(
+        driver, top_frame=b"top", identity_band=_IDENTITY_BAND,
+        content_band=_CONTENT_BAND, like_template=object(), like_threshold=0.8,
+        context="automated profile 1")
+
+    assert result == b"sticky-header"
+    assert driver.scrolls == [(0.13, 0.5), (0.13, 0.5)]
+    assert planned_spacing == [None, 900]
+
+
+def test_post_advance_identity_probe_refuses_second_scroll_without_fresh_deck_proof(
+        monkeypatch):
+    class Driver:
+        identity_band = _IDENTITY_BAND
+        content_band = _CONTENT_BAND
+        dwell_s = 0.0
+
+        def __init__(self):
+            self.adb = self
+            self.scrolls = []
+
+        def screencap(self):
+            return b"partial-header"
+
+        def _scroll_down_one(self, frac, x_frac):
+            self.scrolls.append((frac, x_frac))
+
+        def _observe_deck_ready(self, _frame):
+            return False
+
+    driver = Driver()
+    monkeypatch.setattr(
+        cal, "_plan_card_scroll",
+        lambda *_a, **_kw: (SimpleNamespace(frac=0.13, x_frac=0.5), 900))
+    monkeypatch.setattr(
+        cal, "confirm_scroll_top",
+        lambda *_a, **_kw: _top_verdict("cannot_tell", "10.2 partial header"))
+
+    with pytest.raises(cal._CaptureAbort, match="ordinary deck could not be re-proved"):
+        cal._scroll_next_profile_to_sticky_header(
+            driver, top_frame=b"top", identity_band=_IDENTITY_BAND,
+            content_band=_CONTENT_BAND, like_template=object(), like_threshold=0.8,
+            context="automated profile 1")
+
+    assert driver.scrolls == [(0.13, 0.5)]
 
 
 def test_every_automated_profile_enters_through_the_visual_rewind(monkeypatch, tmp_path):
@@ -519,9 +830,15 @@ def _unattended_single_item_fixtures(monkeypatch, *, extra_screencaps: int = 0):
         def __init__(self):
             self.frames = iter([*(b"adjustment-%d" % i for i in range(extra_screencaps)),
                                 b"composer-1", b"pass-frame", b"advance-identity"])
+            self.last = None
 
         def screencap(self):
-            return next(self.frames)
+            # A settled phone returns the SAME bytes when asked again; it does not run out of
+            # screen. `_settled_read_scroll_frame` reads until four consecutive comparisons are
+            # quiet, so a fake that raised StopIteration on the second read was modelling
+            # something no device does (2026-09-04).
+            self.last = next(self.frames, self.last)
+            return self.last
 
     class _Driver:
         identity_band = _IDENTITY_BAND
@@ -700,6 +1017,67 @@ def test_an_all_exception_enumeration_names_the_exception_in_its_skip_detail(
     detail = excinfo.value.record["reason_detail"]
     assert "ItemIndexError" in detail
     assert "index not yet built" not in detail
+
+
+def test_pre_action_skip_meeting_the_unsupported_layout_escalates_instead_of_killing_the_session(
+        monkeypatch, tmp_path):
+    """The pre-action skip's own rewind can reach the same unsupported entry layout the entry
+    rewind does -- from deeper in the card, so it crosses more intermediate offsets.  Because
+    `_UnsupportedEntryDeck` subclasses `_CaptureAbort`, letting it propagate reached
+    `_cmd_capture`'s abort handler and marked the whole session `interrupted`, which both
+    `_load_session` and the offline reviewer refuse: every profile already banked in that run was
+    discarded over one advanceable deck.  It must escalate exactly like the entry rewind does,
+    carrying the diagnosis that asked for the skip."""
+    class _Adb:
+        def screencap(self):
+            return b"card-frame"
+
+    class _Driver:
+        identity_band = _IDENTITY_BAND
+        content_band = _CONTENT_BAND
+        dwell_s = 0.0
+
+        def __init__(self):
+            self.adb = _Adb()
+
+        def _template(self, _name):
+            return object()
+
+        def _scroll_down_one(self, _frac, _x_frac):
+            pass
+
+    identity = ProfileIdentity((1,), _IDENTITY_BAND, (64, 16), 0, 20.0, "known", agreeing_frames=2)
+    escalations: list[dict] = []
+
+    def unsupported_rewind(*_a, **_kw):
+        raise cal._UnsupportedEntryDeck(
+            b"skip-path-dead-zone", state="cannot_tell", reason="chip row out of the top band")
+
+    monkeypatch.setattr(cal, "time", SimpleNamespace(sleep=lambda *_a: None))
+    monkeypatch.setattr(cal, "human_delay", lambda _dwell: 0.0)
+    monkeypatch.setattr(cal, "_rewind_automated_profile_to_confirmed_top", lambda *_a, **_kw: b"top")
+    monkeypatch.setattr(cal, "capture_profile_identity", lambda *_a, **_kw: identity)
+    monkeypatch.setattr(cal, "build_item_index",
+                        lambda *_a, **_kw: (_ for _ in ()).throw(cal.ItemIndexError("no index")))
+    monkeypatch.setattr(cal, "_plan_card_scroll",
+                        lambda *_a, **_kw: (SimpleNamespace(frac=0.1, x_frac=0.5), None))
+    monkeypatch.setattr(cal, "_skip_automated_profile_before_heart", unsupported_rewind)
+    monkeypatch.setattr(
+        cal, "_skip_automated_unsupported_entry_deck",
+        lambda _driver, **kwargs: escalations.append(kwargs) or {
+            "reason_code": "unsupported_entry_layout", "ordinal": kwargs["ordinal"]})
+
+    with pytest.raises(cal._ProfileSkipped) as excinfo:
+        cal._capture_one_profile_unattended(
+            _Driver(), tmp_path, ordinal=4, frame_counter=0, frames_meta=[],
+            used_profile_ids=set(), review_gate=None, send_like=True)
+
+    assert excinfo.value.record["reason_code"] == "unsupported_entry_layout"
+    (escalated,), = (escalations,)
+    assert escalated["entry"].frame == b"skip-path-dead-zone"
+    assert escalated["ordinal"] == 4
+    assert escalated["send_like"] is True
+    assert escalated["skip_reason"].code == "target_unavailable_or_incomplete_index"
 
 
 def test_default_unattended_capture_still_terminates_with_pass(monkeypatch, tmp_path):
@@ -3495,6 +3873,76 @@ def test_measure_depth_gate_uses_resolved_automated_strategy_not_hardcoded_pair(
     output = capsys.readouterr().out
     assert "REFUSED" not in output
     assert "targeting_calibration" in output
+
+
+def _unattended_review_world(tmp_path, *, scopes, record_scopes=None):
+    """Two capture sessions with DIFFERENT evidence scopes plus a self-hashed review artifact.
+
+    Mixed-scope invocations are supported (a legacy closed-set session may be measured beside a
+    target-scoped one), so each review record is bound to the scope of ITS OWN session unless
+    `record_scopes` deliberately mis-binds them.
+    """
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("apps: {}\n")
+    config_digest = cal._sha256(config_path.read_bytes())
+    sessions = []
+    captures = []
+    for number, scope in enumerate(scopes, 1):
+        session = _session(tmp_path, f"session-{number}", "calibration", [f"p{number}"])
+        session.manifest["frame_size_px"] = [1080, 2400]
+        session.manifest["capture_evidence_scope"] = scope
+        manifest_path = session.dir / "manifest.json"
+        manifest_path.write_text(json.dumps(session.manifest, sort_keys=True))
+        sessions.append(session)
+        captures.append({
+            "session": str(session.dir.resolve()),
+            "human_ground_truth": False,
+            "manifest_sha256": cal._sha256(manifest_path.read_bytes()),
+            "device": session.manifest["device"],
+            "frame_size_px": [1080, 2400],
+            "config_sha256": config_digest,
+            "capture_evidence_scope": scope,
+        })
+    if record_scopes is not None:
+        for record, scope in zip(captures, record_scopes, strict=True):
+            record["capture_evidence_scope"] = scope
+    body = {
+        "schema_version": cal._UNATTENDED_REVIEW_SCHEMA_VERSION,
+        "kind": cal._UNATTENDED_REVIEW_KIND,
+        "human_ground_truth": False,
+        "not_independent_ground_truth": True,
+        "reviewer": {"deterministic_second_process": True,
+                     "imports_capture_or_vision_stack": False,
+                     "implementation_sha256": "c" * 64},
+        "config": {"sha256": config_digest},
+        "captures": captures,
+    }
+    artifact = dict(body)
+    artifact["evidence_sha256"] = cal._canonical_json_digest(body)
+    review_path = tmp_path / "unattended_review.json"
+    review_path.write_text(json.dumps(artifact))
+    return str(review_path), sessions, str(config_path)
+
+
+def test_unattended_review_binds_each_capture_scope_to_its_own_session(tmp_path):
+    """Every other binding on this condition (manifest sha, device, frame size, config sha) is
+    taken per record; the evidence scope was read off the leaked `for session in sessions` loop
+    variable, so it was compared against whichever session happened to be LAST.  With a legacy
+    closed-set session measured beside a target-scoped one that both rejects correct evidence and
+    accepts a review artifact carrying the wrong scope for the non-last session."""
+    scopes = ["closed_set_profile_v1", cal._TARGET_SCOPED_PREFIX_PROOF_ID]
+    reference, sessions, config_path = _unattended_review_world(tmp_path, scopes=scopes)
+
+    assert cal._unattended_review_reference_reason(
+        reference, sessions, config_path=config_path) is None
+
+    swapped, sessions, config_path = _unattended_review_world(
+        tmp_path / "swapped", scopes=scopes, record_scopes=list(reversed(scopes)))
+    reason = cal._unattended_review_reference_reason(
+        swapped, sessions, config_path=config_path)
+    assert reason is not None
+    assert "capture binding differs" in reason
 
 
 def test_operational_recorder_v2_requires_hashed_frames_and_exact_auto_focused_schema(monkeypatch,

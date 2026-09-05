@@ -221,6 +221,22 @@ def make_plan(*, rows: dict, run_id: str, app: str, source: str, profile_id: str
 
 
 def profile_id_for_label_ordinal(rows: dict, ordinal: int) -> str:
+    """Name the label an operator-supplied ordinal points at, by its own audit identity.
+
+    The empty/NULL refusal below is a deliberate rule, NOT the SQL-NULL blindness the store
+    backends' visibility predicates were fixed for (see SQLiteStore's _LABEL_NOT_RETRACTED /
+    BigQueryStore._label_not_retracted). ``profile_id`` is what BINDS a correction: make_plan
+    selects the target label with it, dedupes against existing tombstones with it, pairs the
+    causal decision with it, and cross-checks the profile archive with it. An identity-less
+    label has no such binding — and because a whole pre-migration run's labels are ALL
+    identity-less, an empty id would name every one of them rather than one, which is exactly
+    the ordinal shift _legacy_pairs and _require_exact_debug_store_sequence exist to refuse.
+    ``_decision_profile_id`` already treats ''/None as NO identity for the same reason.
+
+    So a label with no profile identity stays correctable only by a tombstone appended through
+    the store API directly; widening this would be a redesign of the correction document's key,
+    not a null-comparison fix.
+    """
     labels = _strict(_snapshot_rows(rows, "labels", "label"), "label")
     if ordinal < 0 or ordinal >= len(labels):
         raise RetractionRefused("debug decision ordinal has no matching persisted label")

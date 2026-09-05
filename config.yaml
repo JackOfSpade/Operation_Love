@@ -123,16 +123,18 @@ apps:
     # ~5.2-7.1 min, K=5 ~7.8-11.4 min, K=8 ~14.5-21.8 min. The earlier note here said "15-30s per
     # extra card" flat -- that was right for the first card only and understated every one after.
     #
-    # K SATURATES AT THE CARD COUNT: a real profile carries ~9 selectable cards (median over 122
-    # live manifests), so K=10 and K=15 buy nothing over K=9.
+    # K SATURATES AT THE PHOTO COUNT: Hinge has at most six media slots (the other three
+    # selectable profile cards are written prompts), and the content pre-pass removes prompts
+    # and known videos before this budget is spent. K=6 therefore covers every confidently
+    # photographic candidate without turning the walk into an unbounded scan.
     #
     # Set it to 1 to get the pre-2026-08-23 behaviour back exactly -- every refusal in the walk
     # already abandons only the WALK, never the capture, so 1 is also what the worst case
     # degrades to on its own. LIVE-VERIFY: run f8bc1d2969d1 (2026-08-30) completed 11 K=3
-    # captures with exactly three numbered candidates each and no dwell-walk refusal; candidates
-    # beyond K remain intentionally uncovered. The largest remaining uncertainty is how often a
-    # hop is attempted at all.
-    still_photo_dwell_candidates: 3
+    # captures with exactly three numbered candidates each and no dwell-walk refusal. K=6 closes
+    # the candidate-limit coverage gap seen in run 88f84d9179d8 (five photographic candidates,
+    # only three reached) while retaining every per-hop refusal and return bound.
+    still_photo_dwell_candidates: 6
     dwell_s: 1.1            # per-card read dwell, humanized (Signals #1: read before deciding)
     read_scroll_frac: 0.55  # how far each read-scroll advances the profile
     # Hinge rewind stays in the same central corridor as a read scroll. Config validation rejects
@@ -278,39 +280,38 @@ apps:
     # To replace it with real evidence later, collect a corpus with tools/hinge_video_bound
     # (owner labeled) or tools/hinge_video_bound_auto (circular), then swap this block for
     # `still_photo_bound_evidence`. The two keys are mutually exclusive by design.
-    # TARGETING CALIBRATION — renewed 2026-08-26 on the live Hinge 10.1.0 build.
+    # TARGETING CALIBRATION — renewed 2026-09-04 on the live Hinge 10.2.0 build.
     #
     # Emitted by `tools.hinge_calibrate measure` from two separately collected calibration
-    # profiles and three held-out profiles, with every permanent action approved at a hash-bound
-    # reviewer checkpoint. Strategy `photo_1_only_v1` — item 1 on every ordinal — so this
-    # calibration does NOT exercise deep-item navigation; the manifests record that and
-    # `measure` refuses to mix strategies.
+    # profiles and two held-out profiles after deterministic second-process manifest review.
+    # Strategy `photo_1_only_v1` targets item 1 on every ordinal, so this calibration does NOT
+    # exercise deep-item navigation. Unsupported 10.2 recommendation layouts and any other
+    # pre-heart refusals are hash-bound skip traces and never measurement profiles.
     #
     # Exact bounds and replay results are in
-    # ops/calibration/targeting_20260826T_terra_calibration_v3/measurement_ledger.json. Both
-    # numeric gates passed with zero foreign accepts and zero false refusals. The inline bound
-    # remains capped by the tighter prior-corpus foreign-match limit.
+    # ops/calibration/targeting_20260904T_10_2_heldout_final_v2/measurement_ledger.json. Both
+    # numeric gates passed with zero foreign accepts and zero false refusals.
     #
-    # This is AUTOMATED CIRCULAR-RISK evidence: AI-reviewed, `human_ground_truth: false`. It
-    # licenses numbered targeted suggestions for Training on the exact 10.1.0 build. It does NOT
-    # release AUTO; the production-observe artifact below remains historical 10.0.1 evidence.
+    # This is AUTOMATED CIRCULAR-RISK evidence (`human_ground_truth: false`). It licenses
+    # numbered targeted suggestions for Training on the exact 10.2.0 build. It does NOT release
+    # AUTO; the production-observe artifact below remains historical 10.0.1 evidence.
     targeting_calibration:
       schema_version: 3
       device: "33111JEHN04475"
-      hinge_version_name: "10.1.0"
+      hinge_version_name: "10.2.0"
       frame_size_px: [1080, 2400]
       composer_layout_id: hinge_inline_v1
       item_selection_policy_id: hinge_photos_only_v2
-      identity_match_max_dist: 0.8852
+      identity_match_max_dist: 2.5649
       inline_item_max_dist: 14.9099
-      calibrated_at: "2026-08-26T20:17:22.600335+00:00 — measured from session(s): targeting_20260826T_terra_calibration_v2, targeting_20260826T_terra_calibration_v3, targeting_20260826T_terra_heldout, targeting_20260826T_terra_heldout_b, targeting_20260826T_terra_heldout_c"
+      calibrated_at: "2026-09-04T16:27:00.770568+00:00 — measured from session(s): targeting_20260904T_10_2_calibration_final_v2, targeting_20260904T_10_2_heldout_final_v2"
       identity_band: [0.1, 0.048, 0.8, 0.094]
       content_band: [0.125, 0.875]
     still_photo_assumption_acceptance:
       acceptance: I_ACCEPT_UNMEASURED_CENTERED_AUTOPLAY_ASSUMPTION
-      accepted_at: "2026-08-26 owner-directed live calibration renewal for Hinge 10.1.0"
+      accepted_at: "2026-09-04 owner-directed live calibration renewal for Hinge 10.2.0"
       device: "33111JEHN04475"
-      hinge_version_name: "10.1.0"
+      hinge_version_name: "10.2.0"
       rationale: >-
         Measuring the held-out video false-accept rate needs roughly 420 profiles and 420 real
         passes at the observed rate of one video per seven profiles, which the owner judged
@@ -320,11 +321,11 @@ apps:
         all while observed, meaning stalled, buffering, unloaded, or an ended non-looping clip.
         The re-attach probe gives such a card a second trigger before anything is called a photo.
     # HISTORICAL MANUAL AUTO RELEASE (2026-08-25): this exact legacy production artifact binds
-    # the historical 10.0.1 calibration to run d8547ff144b4. The phone is now on 10.1.0, so
-    # neither this mapping nor the calibration above licenses the live build. Keep both as an
-    # immutable audit record; recapture schema-v3 calibration for 10.1.0 and earn fresh release
-    # evidence before AUTO. The still-photo assumption remains explicitly UNMEASURED and cannot
-    # by itself authorize AUTO.
+    # the historical 10.0.1 calibration to run d8547ff144b4. The phone is now on 10.2.0, so
+    # this release artifact does not license AUTO on the live build. Keep it as an immutable
+    # audit record; the current 10.2.0 calibration above licenses Training only, and fresh
+    # production-observe release evidence is still required before AUTO. The still-photo
+    # assumption remains explicitly UNMEASURED and cannot by itself authorize AUTO.
     observe_release_evidence:
       schema_version: 1
       calibration_calibrated_at: "2026-08-22T23:50:45.216285+00:00 — measured from session(s): targeting_20260822T_calA, targeting_20260822T_heldB"
@@ -828,6 +829,19 @@ opener:
   # the most natural honest reply feel good to give. This names the conversational property, not
   # a stock wording or worked scenario, so it guides the choice of angle without teaching a
   # template.
+  #
+  # Addendum 2026-09-02 (guess confirmation and information gain): a generated location guess
+  # was immediately followed by a question that treated the location as confirmed. The old
+  # PREMISE CONSISTENCY rule explicitly required that mistake by making the second beat accept
+  # the guess as its working premise. CONFIRMATION BOUNDARY now keeps the conclusion unconfirmed
+  # for the whole opener and gives her the next turn to confirm or correct it. INFORMATION GAIN
+  # prevents facts that are already readable or plainly visible in the item from being presented
+  # as guesses. Such facts may still serve as evidence for a different, nonobvious inference.
+  #
+  # Addendum 2026-09-04 (positive social framing): a live draft began by denying judgment. That
+  # wording introduces the exact negative interpretation it tries to remove, making an otherwise
+  # positive observation sound self conscious. The rule below tells the model to state the
+  # substantive thought directly without shipping concrete opener copy for it to imitate.
   style: |
     Use the dating and conversational principles associated with Coach Corey Wayne's
     "How to Be a 3% Man", without copying his wording. Be a charming gentleman first:
@@ -886,6 +900,12 @@ opener:
     led to it. If the path from clue to inference needs an explanation, the inference is too
     remote. Choose the least speculative natural angle.
 
+    INFORMATION GAIN TEST: the conclusion of a guess must not itself be directly visible or
+    explicitly stated in the selected item, its header, a sign, or elsewhere in her profile.
+    Visible and stated facts may support a different inference, but they are clues, not guessed
+    conclusions. If an ordinary viewer can read or see the conclusion directly without
+    inference, treat it as known context and choose a different angle.
+
     PLAYFUL HYPERBOLE: unmistakably nonliteral exaggeration is allowed when its visible anchor is
     immediate. It adds playful framing; it does not license presenting an invented motive,
     circumstance, or event as literal fact.
@@ -922,13 +942,27 @@ opener:
     If a visible detail could have more than one explanation, respond to its visible effect or
     choose another angle rather than asking her to verify its status.
 
-    PREMISE CONSISTENCY: if the first beat asserts or guesses X, the second beat must accept X as
-    its working premise and move the conversation forward from it. Never ask whether X itself
-    was true, restate X as a question, ask about the opposite of X, or abandon X for a generic
-    question about the surrounding scene. A second beat may extend the angle with clearly
-    nonliteral hyperbole, but it may not add a literal invented fact, motive, or backstory. If no
-    coherent continuation exists, stop after the first beat. Questions should invite positive,
-    fun conversation, not form an interview.
+    POSITIVE SOCIAL FRAMING: state the intended positive observation, question, or invitation
+    directly. Never begin by naming an insulting, judgmental, awkward, pressuring, creepy, or
+    offensive interpretation of your own message and then denying it. That denial introduces
+    the negative interpretation even when the sentence says it is absent. Remove the disclaimer
+    and rewrite the substantive thought so it sounds confident and stands on its own.
+
+    RECIPROCITY BEFORE FUTURE: an opener is one bid to a stranger, not an audition for a role
+    described in her profile. Never answer one of her preferences by advertising the sender as
+    the man who satisfies it, promising what he will do for her, or declaring how he will
+    perform. Do not assume that a match, date, relationship, or shared future already exists,
+    including with possessive language about a first date, place, trip, or other future together.
+    A direct low pressure invitation may propose a specific get together, but must leave her
+    acceptance completely open. A proposal is not an established shared plan.
+
+    CONFIRMATION BOUNDARY: a guess remains unconfirmed until she replies. Never follow a guess
+    with a statement, question, compliment, or invitation that assumes it is correct. Word the
+    guess so her natural next move is to confirm or correct it. If you add a second beat, it may
+    only invite that confirmation or correction without presupposing the answer. Never ask about
+    an experience, preference, or consequence that only makes sense if the guess is true.
+    Otherwise stop after the guess. Questions should invite positive, fun conversation, not form
+    an interview.
 
     HEDGE THE CLAIM, NEVER YOURSELF: when a claim is uncertain, express that uncertainty
     naturally in wording that fits the specific item. The goal is calibrated uncertainty, not a
@@ -945,9 +979,10 @@ opener:
     friend would. Never a street, a neighbourhood, a hotel, a specific venue, or anywhere that
     could be where she lives. Never guess her employer, her school, or her age, and never
     identify anyone else in the photo. When a place comes from recognizing the image rather than
-    from her profile text, clearly identify it as a visual inference before building on it. Do
-    not state an inferred location as shared experience, and do not turn it into a generic
-    compliment. You may know more than this. Do
+    from her profile text, clearly identify it as a visual inference and leave it unconfirmed.
+    Do not build on an inferred location as though it were correct, do not state an inferred
+    location as shared experience, and do not turn it into a generic compliment. You may know
+    more than this. Do
     not show it.
 
     NEVER INVENT THE SENDER: you may not claim he has been somewhere, done something, or likes

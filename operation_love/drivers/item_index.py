@@ -420,7 +420,7 @@ _END_TAIL_GAP_PX = max(_GUTTER_PX) + _GUTTER_TOLERANCE_PX
 # indexer decision path and splitter.  Those values distinguish "the current source replays
 # cleanly" from "the long-lived
 # worker was still executing an older indexer" without trusting the working tree alone.
-ITEM_INDEX_ALGORITHM_ID = "bounded-card-split-v15"
+ITEM_INDEX_ALGORITHM_ID = "bounded-card-split-v16"
 
 
 # =====================================================================================
@@ -487,6 +487,10 @@ class BlockObservation:
     # a card's own visible corner is positive evidence of a list boundary, while every other
     # unobserved kind is merely absence of evidence. Defaulted so hand-built records in the
     # tests stay source-compatible, on `BackgroundRun.median_level_delta`'s precedent.
+    # INVARIANT: this always describes the row at `page_y0` — never some other row of the same
+    # sighting. Any pass that MOVES `page_y0` (the two virtual splits below) must clear it,
+    # because `_scroll_top_evidence` reads it without consulting `top_observed` and would
+    # otherwise credit the new top row with a corner no frame ever saw there.
     top_kind: str = ""
 
     @property
@@ -2293,8 +2297,13 @@ def _split_repeated_near_gutter_merges(
             replace(obs, page_y1=upper_end, frame_y1=split_at_upper,
                     bottom_observed=False,
                     hearts=tuple((x, y) for x, y in obs.hearts if y < upper_end)),
+            # `top_kind` describes the row at `page_y0` and nothing else. The lower fragment's
+            # `page_y0` is a VIRTUAL row this pass invented, so carrying the original sighting's
+            # kind forward would fabricate evidence about it — and a leaked `EDGE_CARD_CORNER`
+            # is read by `_scroll_top_evidence` as "some frame saw the first item's own top
+            # edge", which is exactly the positive test that catches a false `at_scroll_top`.
             replace(obs, page_y0=lower_start, frame_y0=split_at_lower,
-                    top_observed=False,
+                    top_observed=False, top_kind="",
                     hearts=tuple((x, y) for x, y in obs.hearts if y >= lower_start)),
         ))
         if boundary not in used:
@@ -2308,6 +2317,96 @@ def _split_repeated_near_gutter_merges(
         "without claiming either virtual edge was observed"
         for upper_end, lower_start, frame_indices in used)
     return tuple(repaired), notes
+
+
+def _split_long_background_card_top_merges(
+        observations: Sequence[BlockObservation],
+        long_runs: Sequence[tuple[int, int, int]], *, tolerance: int,
+        ) -> tuple[tuple[BlockObservation, ...], tuple[str, ...]]:
+    """Split a heartless partial that fused a scrolling section heading to the next card.
+
+    A long page-background run is deliberately *not* a generic card boundary: pale card
+    interiors can look like page background for hundreds of rows, which is why ``segment.py``
+    labels these runs ``RUN_TOO_LONG`` and leaves the surrounding block partial. One live
+    capture supplied stronger cross-frame evidence for a narrow exception. Frame 0 saw a
+    partial at page rows 1964..2100 with a 1970..2046 long run inside it; two later frames each
+    bounded the same card at 2046..3020. The partial was therefore a six-row remnant of the
+    scrolling section heading, the proven background seam, and the first 54 rows of that card.
+
+    Split only when the run is strictly inside a heartless partial from the same frame, its
+    lower edge agrees with the top of at least two complete sightings from distinct frames,
+    those sightings agree on the whole card extent, and the post-run fragment fits inside that
+    card. Both non-background pieces remain partial observations. The heading remnant is never
+    silently called chrome or discarded; the ordinary page-coverage and hidden-heart rules
+    still decide whether it is ordinal-safe. If any condition is absent, return the original
+    observation so the normal loud fragment-overrun refusal remains in force.
+    """
+    if not observations or not long_runs:
+        return tuple(observations), ()
+
+    complete = [observation for observation in observations if observation.complete]
+    repaired: list[BlockObservation] = []
+    notes: list[str] = []
+    for observation in observations:
+        if observation.complete or observation.hearts:
+            repaired.append(observation)
+            continue
+
+        proposals: list[tuple[int, int, int, int, tuple[int, ...]]] = []
+        for frame_index, run_y0, run_y1 in long_runs:
+            if (frame_index != observation.frame_index
+                    or not observation.page_y0 < run_y0 < run_y1 < observation.page_y1):
+                continue
+            matching = [
+                bounded for bounded in complete
+                if bounded.frame_index != observation.frame_index
+                and abs(bounded.page_y0 - run_y1) <= tolerance
+                and observation.page_y1 - run_y1 > tolerance
+                and observation.page_y1 <= bounded.page_y1 + tolerance
+            ]
+            proving_frames = tuple(sorted({bounded.frame_index for bounded in matching}))
+            if len(proving_frames) < 2:
+                continue
+            # Do not hide a complete-vs-complete disagreement behind a virtual split.
+            if (max(bounded.page_y0 for bounded in matching)
+                    - min(bounded.page_y0 for bounded in matching) > tolerance
+                    or max(bounded.page_y1 for bounded in matching)
+                    - min(bounded.page_y1 for bounded in matching) > tolerance):
+                continue
+            representative = sorted(
+                matching, key=lambda bounded: (bounded.page_y0, bounded.page_y1)
+            )[len(matching) // 2]
+            proposals.append((run_y0, run_y1, representative.page_y0,
+                              representative.page_y1, proving_frames))
+
+        # More than one independently licensed seam has no unique disposition. Preserve the
+        # unsplit observation and let its existing fold checks refuse it.
+        if len(proposals) != 1:
+            repaired.append(observation)
+            continue
+
+        run_y0, run_y1, card_y0, card_y1, proving_frames = proposals[0]
+        split_at_upper = observation.frame_y0 + (run_y0 - observation.page_y0)
+        split_at_lower = observation.frame_y0 + (run_y1 - observation.page_y0)
+        repaired.extend((
+            replace(observation, page_y1=run_y0, frame_y1=split_at_upper,
+                    bottom_observed=False),
+            # As in `_split_repeated_near_gutter_merges`: the lower fragment starts on the
+            # invented seam row, so it inherits no top evidence. Clearing `top_kind` with
+            # `top_observed` keeps `_scroll_top_evidence` from reading the ORIGINAL top's
+            # card corner as proof that a frame saw this fragment's own top edge.
+            replace(observation, page_y0=run_y1, frame_y0=split_at_lower,
+                    top_observed=False, top_kind=""),
+        ))
+        notes.append(
+            f"frame {observation.frame_index}'s heartless partial at page rows "
+            f"{observation.page_y0}..{observation.page_y1} was split around its "
+            f"RUN_TOO_LONG page-background seam {run_y0}..{run_y1}: complete sightings in "
+            f"frames {list(proving_frames)} independently bound the lower card at "
+            f"{card_y0}..{card_y1}, so the heading remnant and card fragment remain partial "
+            "while the proven background rows are held out of the fold")
+
+    return tuple(repaired), tuple(notes)
 
 
 def _overlap_groups(observations: Sequence[BlockObservation]) -> list[list[BlockObservation]]:
@@ -2976,6 +3075,64 @@ def _fragment_overrun_frame_indices(failures: Sequence[str]) -> tuple[int, ...]:
     return tuple(sorted(set(bridging)))
 
 
+def _fold_page(segmentations: Sequence[FrameSegmentation], offsets: Sequence[int | None], *,
+               at_scroll_top: bool, extent_tolerance_px: int, min_item_gap_px: int,
+               scroll_top_signal_confirmed: bool,
+               ) -> tuple[tuple[IndexedBlock, ...], tuple[str, ...], tuple[str, ...],
+                          frozenset[tuple[int, int]]]:
+    """Every frame's segmentation plus a page offset each -> the folded page.
+
+    The whole pipeline lives here — screen-fixed islands, observations, the two virtual splits,
+    assembly — because `build_item_index` runs it THREE times: once to probe whether a proposed
+    shift repair can rebuild the page, once to ask whether a fold contradiction nominates frames
+    for omission recovery, and once for real. Those three must see the same page by construction.
+    They used to be hand-synchronised copies, and the cost was visible: a change touching the fold
+    had to be pasted into both probes, and a probe that drifted would accept or reject a repair on
+    evidence the final assembly never sees — the direction that ends in a wrong item index.
+
+    Returns `(blocks, failures, notes, screen_fixed)`. `notes` is the concatenation in pipeline
+    order, so a caller can prepend its own repair notes and hand the result straight to
+    `ItemIndex`. `screen_fixed` is returned because the real fold still has to check the held-out
+    strips for hearts; the probes ignore all but `failures`.
+    """
+    screen_fixed, island_notes = _screen_fixed_islands(_islands(segmentations, offsets))
+    observations = _observations(segmentations, offsets, screen_fixed)
+    # A scrolling section heading can leave a few card-width rows on both sides of an over-long
+    # background seam, fusing itself to the next card in one band-edge frame. Only two agreeing
+    # complete sightings of that lower card license splitting the seam.
+    long_runs = tuple(
+        (frame_index, run.y0 + offset, run.y1 + offset)
+        for frame_index, (segmentation, offset) in enumerate(
+            zip(segmentations, offsets, strict=True))
+        if offset is not None
+        for run in segmentation.runs if run.kind == RUN_TOO_LONG)
+    observations, long_run_notes = _split_long_background_card_top_merges(
+        observations, long_runs, tolerance=extent_tolerance_px)
+    # A 59..64px page-background run stays `RUN_TOO_LONG` in one frame unless that frame's own
+    # hearts prove a boundary.  Preserve that conservative segmenter rule, but let the page fold
+    # use the stronger cross-frame proof when it is present (see helper).
+    near_gutters = tuple(
+        (frame_index, run.y0 + offset, run.y1 + offset)
+        for frame_index, (segmentation, offset) in enumerate(
+            zip(segmentations, offsets, strict=True))
+        if offset is not None
+        for run in segmentation.runs
+        if (run.kind == RUN_TOO_LONG
+            and min(_HEART_SEPARATED_NEAR_GUTTER_PX) <= run.height
+            <= max(_HEART_SEPARATED_NEAR_GUTTER_PX)))
+    observations, near_gutter_notes = _split_repeated_near_gutter_merges(
+        observations, near_gutters, tolerance=extent_tolerance_px)
+    blocks, failures, assembly_notes = _assemble(
+        observations, at_scroll_top=at_scroll_top, card_x=segmentations[0].card_x,
+        extent_tolerance_px=extent_tolerance_px, min_item_gap_px=min_item_gap_px,
+        band_y0=segmentations[0].band[0], include_notes=True,
+        scroll_top_signal_confirmed=scroll_top_signal_confirmed,
+        page_coverage=_failure_free_page_coverage(segmentations, offsets))
+    return (blocks, failures,
+            island_notes + long_run_notes + near_gutter_notes + assembly_notes,
+            screen_fixed)
+
+
 def build_item_index(frames: Sequence[bytes], *, content_band: tuple[float, float],
                      like_template, like_threshold: float, at_scroll_top: bool,
                      identity_band: tuple[float, float, float, float] | None,
@@ -3189,32 +3346,14 @@ def build_item_index(frames: Sequence[bytes], *, content_band: tuple[float, floa
         probe_offsets, probe_chain_failures = _frame_offsets(candidate_shifts)
         probe_failures: tuple[str, ...] = ()
         if not probe_chain_failures and not any(seg.failures for seg in segmentations):
-            # Probe the same page the final fold would see. In particular, do not let a
-            # screen-pinned Hinge header or a repeatedly proven near-gutter merge reject a
-            # repair before the final assembly gets to apply those existing fail-closed rules.
-            probe_screen_fixed, _probe_island_notes = _screen_fixed_islands(
-                _islands(segmentations, probe_offsets))
-            probe_observations = _observations(
-                segmentations, probe_offsets, probe_screen_fixed)
-            probe_near_gutters = tuple(
-                (frame_index, run.y0 + offset, run.y1 + offset)
-                for frame_index, (segmentation, offset) in enumerate(
-                    zip(segmentations, probe_offsets, strict=True))
-                if offset is not None
-                for run in segmentation.runs
-                if (run.kind == RUN_TOO_LONG
-                    and min(_HEART_SEPARATED_NEAR_GUTTER_PX) <= run.height
-                    <= max(_HEART_SEPARATED_NEAR_GUTTER_PX)))
-            probe_observations, _probe_near_gutter_notes = _split_repeated_near_gutter_merges(
-                probe_observations, probe_near_gutters, tolerance=extent_tolerance_px)
-            _probe_blocks, probe_failures, _probe_notes = _assemble(
-                probe_observations, at_scroll_top=at_scroll_top,
-                card_x=segmentations[0].card_x, extent_tolerance_px=extent_tolerance_px,
-                min_item_gap_px=min_item_gap_px, band_y0=segmentations[0].band[0],
-                include_notes=True,
-                scroll_top_signal_confirmed=scroll_top_signal_confirmed,
-                page_coverage=_failure_free_page_coverage(
-                    segmentations, probe_offsets))
+            # Probe the same page the final fold would see — structurally, via `_fold_page`, not
+            # by keeping a copy of it in step. In particular, do not let a screen-pinned Hinge
+            # header or a repeatedly proven near-gutter merge reject a repair before the final
+            # assembly gets to apply those existing fail-closed rules.
+            _probe_blocks, probe_failures, _probe_notes, _probe_screen_fixed = _fold_page(
+                segmentations, probe_offsets, at_scroll_top=at_scroll_top,
+                extent_tolerance_px=extent_tolerance_px, min_item_gap_px=min_item_gap_px,
+                scroll_top_signal_confirmed=scroll_top_signal_confirmed)
         return bool(probe_chain_failures or probe_failures or any(seg.failures for seg in segmentations))
 
     if repair_notes and repair_probe_failed(shifts):
@@ -3277,30 +3416,12 @@ def build_item_index(frames: Sequence[bytes], *, content_band: tuple[float, floa
             and not failed_segmentation_frames):
         probe_offsets, probe_chain_failures = _frame_offsets(shifts)
         if not probe_chain_failures:
-            probe_screen_fixed, _probe_island_notes = _screen_fixed_islands(
-                _islands(segmentations, probe_offsets))
-            probe_observations = _observations(
-                segmentations, probe_offsets, probe_screen_fixed)
-            probe_near_gutters = tuple(
-                (frame_index, run.y0 + offset, run.y1 + offset)
-                for frame_index, (segmentation, offset) in enumerate(
-                    zip(segmentations, probe_offsets, strict=True))
-                if offset is not None
-                for run in segmentation.runs
-                if (run.kind == RUN_TOO_LONG
-                    and min(_HEART_SEPARATED_NEAR_GUTTER_PX) <= run.height
-                    <= max(_HEART_SEPARATED_NEAR_GUTTER_PX)))
-            probe_observations, _probe_notes = _split_repeated_near_gutter_merges(
-                probe_observations, probe_near_gutters, tolerance=extent_tolerance_px)
-            _probe_blocks, probe_failures, _probe_assembly_notes = _assemble(
-                probe_observations, at_scroll_top=at_scroll_top,
-                card_x=segmentations[0].card_x,
-                extent_tolerance_px=extent_tolerance_px,
-                min_item_gap_px=min_item_gap_px, band_y0=segmentations[0].band[0],
-                include_notes=True,
-                scroll_top_signal_confirmed=scroll_top_signal_confirmed,
-                page_coverage=_failure_free_page_coverage(
-                    segmentations, probe_offsets))
+            # Same `_fold_page` the real fold below runs, so the contradiction this reads is the
+            # contradiction the final assembly would report.
+            _probe_blocks, probe_failures, _probe_notes, _probe_screen_fixed = _fold_page(
+                segmentations, probe_offsets, at_scroll_top=at_scroll_top,
+                extent_tolerance_px=extent_tolerance_px, min_item_gap_px=min_item_gap_px,
+                scroll_top_signal_confirmed=scroll_top_signal_confirmed)
             fold_contradiction_frames = _fragment_overrun_frame_indices(probe_failures)
     # One short, contiguous contradictory run is also eligible for the same conservative
     # recovery.  A white-on-white Hinge card boundary can remain invisible for four adjacent
@@ -3490,7 +3611,6 @@ def build_item_index(frames: Sequence[bytes], *, content_band: tuple[float, floa
     offsets, chain_failures = _frame_offsets(shifts)
     failures.extend(chain_failures)
 
-    card_x = segmentations[0].card_x
     if chain_failures:
         # No page space spans the capture, so there is nothing to fold. Emphatically NOT a
         # best-effort prefix: a partial list looks exactly like a complete one to a caller that
@@ -3503,29 +3623,11 @@ def build_item_index(frames: Sequence[bytes], *, content_band: tuple[float, floa
         # reports such a strip as `BLOCK_UNANCHORED` without deciding what it is (one frame
         # cannot); this capture's own frames decide it, and a proven one is held out of page
         # space entirely rather than placed at a fabricated `frame_row + offset`.
-        screen_fixed, island_notes = _screen_fixed_islands(_islands(segmentations, offsets))
-        observations = _observations(segmentations, offsets, screen_fixed)
-        # A 59..64px page-background run stays `RUN_TOO_LONG` in one frame unless that frame's
-        # own hearts prove a boundary.  Preserve that conservative segmenter rule, but let the
-        # page fold use the stronger cross-frame proof when it is present (see helper).
-        near_gutters = tuple(
-            (frame_index, run.y0 + offset, run.y1 + offset)
-            for frame_index, (segmentation, offset) in enumerate(
-                zip(segmentations, offsets, strict=True))
-            if offset is not None
-            for run in segmentation.runs
-            if (run.kind == RUN_TOO_LONG
-                and min(_HEART_SEPARATED_NEAR_GUTTER_PX) <= run.height
-                <= max(_HEART_SEPARATED_NEAR_GUTTER_PX)))
-        observations, near_gutter_notes = _split_repeated_near_gutter_merges(
-            observations, near_gutters, tolerance=extent_tolerance_px)
-        blocks, assembly_failures, assembly_notes = _assemble(
-            observations, at_scroll_top=at_scroll_top, card_x=card_x,
+        blocks, assembly_failures, fold_notes, screen_fixed = _fold_page(
+            segmentations, offsets, at_scroll_top=at_scroll_top,
             extent_tolerance_px=extent_tolerance_px, min_item_gap_px=min_item_gap_px,
-            band_y0=segmentations[0].band[0], include_notes=True,
-            scroll_top_signal_confirmed=scroll_top_signal_confirmed,
-            page_coverage=_failure_free_page_coverage(segmentations, offsets))
-        notes = repair_notes + island_notes + near_gutter_notes + assembly_notes
+            scroll_top_signal_confirmed=scroll_top_signal_confirmed)
+        notes = repair_notes + fold_notes
         failures.extend(assembly_failures)
         # DEFENCE IN DEPTH. segment.py refuses to label any strip that holds a heart, so this is
         # unreachable today. It exists so that a future loosening of that clause cannot silently

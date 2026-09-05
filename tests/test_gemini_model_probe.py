@@ -119,6 +119,40 @@ def test_enumerate_models_follows_nextpagetoken_pagination():
     assert "pageToken=tok-2" in transport.calls[1]["url"]
 
 
+def test_enumerate_models_percent_encodes_an_opaque_page_token():
+    """The fixture that could not reach the branch it named: "tok-2" encodes to itself.
+
+    Google's page tokens are opaque base64-ish strings. A raw '+' is decoded back as a space and
+    a raw '&' or '#' truncates the query, so an unencoded token turns page 2 into a 400 that
+    aborts the audit and leaves candidate models invisible with no error.
+    """
+    token = "a+b/c=&d#e"
+    transport = _ScriptedTransport([_page([("gemini-a", ["generateContent"])], next_token=token),
+                                    _page([("gemini-b", ["generateContent"])])])
+
+    catalog = m.enumerate_models(api_key="k", transport=transport, timeout=5)
+
+    assert set(catalog) == {"gemini-a", "gemini-b"}
+    assert transport.calls[1]["url"].endswith("?pageToken=a%2Bb%2Fc%3D%26d%23e")
+
+
+def test_enumerate_models_refuses_a_server_that_repeats_a_page_token():
+    """Bounded like preflight: a repeated token is an infinite loop, not a catalog."""
+    transport = _ScriptedTransport(
+        [_page([("gemini-a", ["generateContent"])], next_token="tok") for _ in range(4)])
+    with pytest.raises(RuntimeError, match="repeated a pagination token"):
+        m.enumerate_models(api_key="k", transport=transport, timeout=5)
+
+
+def test_enumerate_models_refuses_a_catalog_longer_than_the_page_ceiling(monkeypatch):
+    monkeypatch.setattr(m, "_MAX_PREFLIGHT_PAGES", 3)
+    transport = _ScriptedTransport(
+        [_page([(f"gemini-{page}", ["generateContent"])], next_token=f"tok-{page}")
+         for page in range(8)])
+    with pytest.raises(RuntimeError, match="exceeded 3 pages"):
+        m.enumerate_models(api_key="k", transport=transport, timeout=5)
+
+
 def test_enumerate_models_raises_cleanly_on_http_error():
     transport = _ScriptedTransport([_http_error(500, "INTERNAL", "server error")])
     with pytest.raises(RuntimeError, match="ListModels failed"):

@@ -273,6 +273,98 @@ def test_feed_line_ignores_unmatched_and_malformed_lines_without_raising():
     assert w.gestures_since(0) == []
 
 
+def test_unparsed_lines_are_kept_as_a_redacted_capped_format_sample():
+    """The one artifact that separates "the stream is dead" from "this parser does not speak
+    this build's getevent spelling" -- the two states `raw_line_count`/`event_count` alone
+    cannot tell apart once both are non-zero and zero respectively.
+
+    Its contract is what makes it safe to print in an incident report, and it had no test at
+    all until 2026-09-04: every numeric or hex token is replaced with `<n>` (so no touch
+    coordinate can ride out in it), whitespace is collapsed, the sample is truncated, and at
+    most three are ever retained. A parsed line contributes nothing -- the sample is by
+    construction the evidence of a line this parser FAILED on.
+
+    `tools/touch_selftest.py`'s `event_count == 0` verdict is the branch this was collected
+    for -- the only place where the deque is non-empty by construction -- and it now prints
+    these samples (see the two tests below) instead of asking the operator to reproduce the
+    failure with `adb shell getevent -lt` by hand.
+    """
+    w = touchwatch.TouchWatcher("adb", "pixel", (1080, 2400))
+    # A line that DOES parse must not leave a sample behind: this is a record of failures.
+    w._feed_line("[   1.000000] /dev/input/event3: EV_ABS       ABS_MT_POSITION_X    000001f4")
+    assert w.unparsed_line_samples == ()
+
+    # A raw-numeric spelling this parser does not accept. The SHAPE survives (that is what a
+    # regex fix is made from); every value in it, including the 000001f4 = 500px x-coordinate,
+    # does not.
+    w._feed_line("/dev/input/event3: type 3 code 53   value 000001f4")
+    assert w.unparsed_line_samples == ("/dev/input/event3: type <n> code <n> value <n>",)
+    assert "000001f4" not in w.unparsed_line_samples[0], "a touch coordinate survived redaction"
+
+    # A hypothetical future spelling carrying a timestamp and a coordinate: same rule, and the
+    # runs of whitespace are collapsed so the sample stays one short line.
+    w._feed_line("EV_ABS/ABS_MT_POSITION_X=000001f4    @    1.000000")
+    assert w.unparsed_line_samples[-1] == "EV_ABS/ABS_MT_POSITION_X=<n> @ <n>"
+
+    # Capped at three, keeping the MOST RECENT: an incident report must not be dominated by
+    # whatever the stream happened to say first.
+    for i in range(5):
+        w._feed_line(f"unparsable spelling {i} zz")
+    assert len(w.unparsed_line_samples) == 3
+    assert w.unparsed_line_samples[-1] == "unparsable spelling <n> zz"
+
+    # Truncated, so one pathological line cannot be the whole report.
+    w._feed_line("x" * 500)
+    assert len(w.unparsed_line_samples[-1]) == 180
+
+    # ...and none of this was counted as an event.
+    assert w.event_count == 1
+    assert w.raw_line_count == 9
+
+
+def test_selftest_unparsed_verdict_prints_the_samples_it_already_holds():
+    """The verdict's whole job is to make the parser fixable from a bug report.
+
+    It used to send the operator back to the phone for `adb shell getevent -lt` -- a round
+    trip whose output carries REAL coordinates -- while the watcher in its own hand already
+    held the redacted equivalent. Asserted against a real TouchWatcher, not a stub, so the
+    two files cannot drift on what the samples look like.
+    """
+    from tools.touch_selftest import _unparsed_stream_verdict_lines
+
+    w = touchwatch.TouchWatcher("adb", "pixel", (1080, 2400))
+    w._feed_line("/dev/input/event3: type 3 code 53   value 000001f4")
+    w._feed_line("EV_ABS/ABS_MT_POSITION_X=000001f4    @    1.000000")
+
+    lines = _unparsed_stream_verdict_lines(w)
+    text = "\n".join(lines)
+
+    assert "2 line(s) arrived but NONE parsed" in lines[0]
+    assert "_LT_LINE_RE" in lines[0]
+    assert "/dev/input/event3: type <n> code <n> value <n>" in text
+    assert "EV_ABS/ABS_MT_POSITION_X=<n> @ <n>" in text
+    assert "safe to paste into an incident report" in text
+    # The manual round trip is gone precisely because the evidence is here...
+    assert "getevent -lt" not in text
+    # ...and what is here still carries no touch coordinate.
+    assert "000001f4" not in text
+
+
+def test_selftest_unparsed_verdict_falls_back_to_the_manual_capture_with_no_samples():
+    """A line whose every token redacts away is dropped, so an empty deque is reachable even
+    on this branch. The old instruction is the only thing left to say then."""
+    from tools.touch_selftest import _unparsed_stream_verdict_lines
+
+    w = touchwatch.TouchWatcher("adb", "pixel", (1080, 2400))
+    w._feed_line("   ")
+    assert w.raw_line_count == 1 and w.event_count == 0
+    assert w.unparsed_line_samples == ()
+
+    text = "\n".join(_unparsed_stream_verdict_lines(w))
+    assert "1 line(s) arrived but NONE parsed" in text
+    assert "adb shell getevent -lt <device>" in text
+
+
 def test_ends_gesture_via_tracking_id_reset_when_btn_touch_up_is_absent():
     # Devices that never emit BTN_TOUCH UP signal release purely via the multitouch
     # tracking ID resetting to -1 (ffffffff). BTN_TOUCH DOWN still opens the gesture

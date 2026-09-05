@@ -128,14 +128,30 @@ def _report_stream_commands(samples, w: int, h: int, flush_ms: int) -> list[dict
     return cmds
 
 
-class UhidTouch:
-    """A non-root virtual touchscreen. Mirrors Adb's tap/swipe/scroll_up surface so a
-    driver can swap transports. Each gesture is delivered as its own `hid <file>` run
-    (see module docstring). Uses the given Adb for device I/O."""
+class _UhidGestureBase:
+    """The gesture surface (tap/swipe/scroll_up) and the virtual device's identity, shared by
+    both delivery models below.
+
+    WHY THIS EXISTS (2026-09-04). `_register_command` and `_report_stream_commands` above were
+    already extracted "so the two classes cannot drift apart" on the register command and on the
+    HID report bytes -- but the PUBLIC surface, which carries the load-bearing humanization
+    (Fitts-law duration scaling, HINGE-04 scroll x-column jitter, and the exact `plan_swipe`
+    parameters), stayed duplicated character-for-character in both. That is the same drift risk
+    with a worse blast radius: `uhid_persistent` is what config.yaml ships and `uhid` is
+    documented as "the instant revert to the fully-proven per-gesture transport", so a
+    humanization change applied to one class would make the revert emit a DIFFERENT touch
+    signature -- and the revert would no longer be a revert. There is now exactly one copy, and
+    the two transports differ only where they are genuinely different: `_run_gesture`, the single
+    hook each overrides with its own delivery model.
+
+    Not an ABC and not registered as one: selection between the two is duck-typed by design (see
+    `PersistentUhidTouch`'s docstring and hinge.py's `_make_touch`), and both concrete names stay
+    exactly as they were so hinge.py's `isinstance` transport tuple and the safety tests that
+    name them are untouched.
+    """
 
     def __init__(self, adb: Adb, *, hz: float = REPORT_HZ, rng=None, jitter_px: float = 2.2,
                  width_px: float = 180.0, enumerate_ms: int = 700, flush_ms: int = 150,
-                 file_path: str = "/data/local/tmp/og_uhid_g.json",
                  name: str | None = None, vid: int = 0x18D1, pid: int = 0x0C10):
         self.adb = adb
         self.hz = float(hz)
@@ -144,11 +160,74 @@ class UhidTouch:
         self.width_px = float(width_px)
         self.enumerate_ms = int(enumerate_ms)
         self.flush_ms = int(flush_ms)
-        self.file_path = file_path
         # A run keeps one identity, but unrelated sessions do not all register the same
         # globally fixed virtual-device name. Explicit names remain exact for calibration.
         self.name = name if name is not None else f"og_touch_{secrets.token_hex(4)}"
         self.vid, self.pid = vid, pid
+
+    def _run_gesture(self, samples, *, _timing: dict[str, float] | None = None) -> None:
+        """Deliver one planned sample stream to the kernel. THE one thing the two transports
+        do differently, and the only method either is expected to override."""
+        raise NotImplementedError
+
+    # --- public surface (matches Adb) ----------------------------------
+    def tap(self, x: int, y: int) -> None:
+        self._run_gesture(plan_tap(x, y, hz=self.hz, rng=self._rng))
+
+    def swipe(self, x1: int, y1: int, x2: int, y2: int, duration_ms: int = 450, *,
+             _timing: dict[str, float] | None = None) -> None:
+        # Keep interface parity with Adb.  450ms is this transport's ordinary Fitts-law
+        # gesture class; a caller may explicitly request a shorter measured flick, which is
+        # scaled in the pure planner without compromising curved endpoints or pressure data.
+        #
+        # `_timing` (see each transport's own `_run_gesture` docstring for the device-I/O
+        # buckets): `uhid_plan_swipe_s` isolates the pure-CPU cost of synthesizing the curved
+        # path/velocity/tremor/pressure sample stream (human_motion.plan_swipe) from the device
+        # I/O `_run_gesture` goes on to do with the result -- the "is the humanized motion
+        # planner itself slow" question this ledger exists to answer, kept as its own bucket
+        # rather than folded into the device calls it has nothing to do with. Planning is the
+        # one piece of this call that really is SHARED work rather than merely parallel work,
+        # which is why both transports report it under the one bucket name.
+        duration_scale = max(0.20, min(2.0, float(duration_ms) / 450.0))
+        with _time_bucket(_timing, "uhid_plan_swipe_s"):
+            samples = plan_swipe(x1, y1, x2, y2, hz=self.hz, jitter_px=self.jitter_px,
+                                 width_px=self.width_px, duration_scale=duration_scale,
+                                 rng=self._rng)
+        self._run_gesture(samples, _timing=_timing)
+
+    def scroll_up(self, distance_frac: float = 0.55, x_frac: float = 0.5, *,
+                 _timing: dict[str, float] | None = None) -> None:
+        # x jitter shared with Adb.scroll_up via adb.scroll_x() (HINGE-04): UHID is the
+        # genuine, proven transport, so it must not be the one emitting a pixel-identical
+        # column every scroll.
+        #
+        # `_timing`'s "screen_size_s" bucket is the SAME key hinge.py's `_scroll` already
+        # writes (accumulated, not overwritten -- see _time_bucket's own docstring): a prior
+        # analysis suspected `adb.screen_size()` is called twice per gesture, once in the
+        # driver and once here in the transport. That call count is confirmed by this second
+        # site existing at all -- but `Adb.screen_size()` caches after its first-ever call for
+        # the whole session (see adb.py), so every one of these calls after session open is a
+        # dict lookup, not a device round trip. This bucket is how that gets PROVEN rather than
+        # assumed: if it ever reads meaningfully above zero, the cache assumption broke.
+        with _time_bucket(_timing, "screen_size_s"):
+            w, h = self.adb.screen_size()
+        x = scroll_x(w, x_frac)
+        self.swipe(x, int(h * (0.5 + distance_frac / 2)), x, int(h * (0.5 - distance_frac / 2)),
+                  _timing=_timing)
+
+
+class UhidTouch(_UhidGestureBase):
+    """A non-root virtual touchscreen. Mirrors Adb's tap/swipe/scroll_up surface so a
+    driver can swap transports. Each gesture is delivered as its own `hid <file>` run
+    (see module docstring). Uses the given Adb for device I/O."""
+
+    def __init__(self, adb: Adb, *, file_path: str = "/data/local/tmp/og_uhid_g.json",
+                 **kwargs):
+        # Every other keyword (hz/rng/jitter_px/width_px/enumerate_ms/flush_ms/name/vid/pid)
+        # belongs to the shared base and is forwarded unchanged, so the two transports cannot
+        # be given different humanization defaults.  `file_path` is this delivery model's own.
+        super().__init__(adb, **kwargs)
+        self.file_path = file_path
         self._lock = threading.Lock()   # serialize gestures: one `hid <file>` run at a time
 
     # --- lifecycle (no persistent device; just geometry/cleanup) --------
@@ -283,49 +362,6 @@ class UhidTouch:
                     except Exception:  # noqa: BLE001 — best-effort cleanup
                         pass
 
-    # --- public surface (matches Adb) ----------------------------------
-    def tap(self, x: int, y: int) -> None:
-        self._run_gesture(plan_tap(x, y, hz=self.hz, rng=self._rng))
-
-    def swipe(self, x1: int, y1: int, x2: int, y2: int, duration_ms: int = 450, *,
-             _timing: dict[str, float] | None = None) -> None:
-        # Keep interface parity with Adb.  450ms is this transport's ordinary Fitts-law
-        # gesture class; a caller may explicitly request a shorter measured flick, which is
-        # scaled in the pure planner without compromising curved endpoints or pressure data.
-        #
-        # `_timing` (see `_run_gesture`'s docstring): `uhid_plan_swipe_s` isolates the pure-CPU
-        # cost of synthesizing the curved path/velocity/tremor/pressure sample stream
-        # (human_motion.plan_swipe) from the device I/O `_run_gesture` goes on to do with the
-        # result -- the "is the humanized motion planner itself slow" question this ledger
-        # exists to answer, kept as its own bucket rather than folded into the device calls it
-        # has nothing to do with.
-        duration_scale = max(0.20, min(2.0, float(duration_ms) / 450.0))
-        with _time_bucket(_timing, "uhid_plan_swipe_s"):
-            samples = plan_swipe(x1, y1, x2, y2, hz=self.hz, jitter_px=self.jitter_px,
-                                 width_px=self.width_px, duration_scale=duration_scale,
-                                 rng=self._rng)
-        self._run_gesture(samples, _timing=_timing)
-
-    def scroll_up(self, distance_frac: float = 0.55, x_frac: float = 0.5, *,
-                 _timing: dict[str, float] | None = None) -> None:
-        # x jitter shared with Adb.scroll_up via adb.scroll_x() (HINGE-04): UHID is the
-        # genuine, proven transport, so it must not be the one emitting a pixel-identical
-        # column every scroll.
-        #
-        # `_timing`'s "screen_size_s" bucket is the SAME key hinge.py's `_scroll` already
-        # writes (accumulated, not overwritten -- see _time_bucket's own docstring): a prior
-        # analysis suspected `adb.screen_size()` is called twice per gesture, once in the
-        # driver and once here in the transport. That call count is confirmed by this second
-        # site existing at all -- but `Adb.screen_size()` caches after its first-ever call for
-        # the whole session (see adb.py), so every one of these calls after session open is a
-        # dict lookup, not a device round trip. This bucket is how that gets PROVEN rather than
-        # assumed: if it ever reads meaningfully above zero, the cache assumption broke.
-        with _time_bucket(_timing, "screen_size_s"):
-            w, h = self.adb.screen_size()
-        x = scroll_x(w, x_frac)
-        self.swipe(x, int(h * (0.5 + distance_frac / 2)), x, int(h * (0.5 - distance_frac / 2)),
-                  _timing=_timing)
-
 
 # The persistent process's local teardown timeout (PersistentUhidTouch.close_timeout's
 # default). This is a LOCAL `proc.kill()` + `proc.wait()`, not a remote adb round trip --
@@ -365,12 +401,14 @@ _DEFAULT_CLOSE_TIMEOUT_S = 3.0
 _PERSISTENT_POLL_INTERVAL_S = 0.03
 
 
-class PersistentUhidTouch:
+class PersistentUhidTouch(_UhidGestureBase):
     """A non-root virtual touchscreen held open for an ENTIRE SESSION instead of being
     re-registered per gesture. Same public surface as UhidTouch (open/close/tap/swipe/
     scroll_up, identical signatures) so AndroidDriver can select either transport
-    interchangeably (see hinge.py's `_make_touch`) -- this is the SECOND real touch
-    transport, opted into only by an explicit `touch_backend: uhid_persistent`, never by
+    interchangeably (see hinge.py's `_make_touch`) -- since 2026-09-04 tap/swipe/scroll_up are
+    LITERALLY the same code, inherited from `_UhidGestureBase`, rather than a second copy that
+    merely matched. This is the SECOND real touch transport, opted into only by an explicit
+    `touch_backend: uhid_persistent`, never by
     `auto`/`uhid`. It delivers the exact SAME planned motion as UhidTouch
     (human_motion.plan_tap/plan_swipe, `_build_descriptor`, `_report` -- all reused
     unchanged, imported from this same module): this class is a new DELIVERY mechanism for
@@ -442,22 +480,13 @@ class PersistentUhidTouch:
     changing a DEFAULT. `auto` and `uhid` keep selecting UhidTouch, byte-for-byte unchanged.
     """
 
-    def __init__(self, adb: Adb, *, hz: float = REPORT_HZ, rng=None, jitter_px: float = 2.2,
-                 width_px: float = 180.0, enumerate_ms: int = 700, flush_ms: int = 150,
-                 name: str | None = None, vid: int = 0x18D1, pid: int = 0x0C10,
-                 close_timeout: float = _DEFAULT_CLOSE_TIMEOUT_S):
-        self.adb = adb
-        self.hz = float(hz)
-        self._rng = rng if rng is not None else random
-        self.jitter_px = float(jitter_px)
-        self.width_px = float(width_px)
-        self.enumerate_ms = int(enumerate_ms)
-        self.flush_ms = int(flush_ms)
-        # Same "a run keeps one identity, unrelated sessions do not all collide on a single
-        # globally fixed name" reasoning as UhidTouch.name (see its own comment) -- this is
-        # the SAME kind of virtual device, just held open longer.
-        self.name = name if name is not None else f"og_touch_{secrets.token_hex(4)}"
-        self.vid, self.pid = vid, pid
+    def __init__(self, adb: Adb, *, close_timeout: float = _DEFAULT_CLOSE_TIMEOUT_S, **kwargs):
+        # Every other keyword (hz/rng/jitter_px/width_px/enumerate_ms/flush_ms/name/vid/pid)
+        # belongs to `_UhidGestureBase` and is forwarded unchanged -- including the "a run keeps
+        # one identity, unrelated sessions do not all collide on a single globally fixed name"
+        # rule behind `name`, which applies identically here: this is the SAME kind of virtual
+        # device, just held open longer. `close_timeout` is this delivery model's own.
+        super().__init__(adb, **kwargs)
         self.close_timeout = float(close_timeout)
         # RLock, not Lock: open()'s own failure paths call _kill_proc_best_effort() while
         # ALREADY holding this lock (see both methods below) -- a plain Lock would deadlock
@@ -727,30 +756,8 @@ class PersistentUhidTouch:
                     "persistent UHID gesture delivery became uncertain (the `hid` process "
                     "died during or after delivery); refusing to replay the gesture")
 
-    # --- public surface (matches UhidTouch) -------------------------------
-    def tap(self, x: int, y: int) -> None:
-        self._run_gesture(plan_tap(x, y, hz=self.hz, rng=self._rng))
-
-    def swipe(self, x1: int, y1: int, x2: int, y2: int, duration_ms: int = 450, *,
-             _timing: dict[str, float] | None = None) -> None:
-        # Identical to UhidTouch.swipe (see its own comment for the Fitts-law/duration_scale
-        # reasoning) -- planning is the one piece of this call that really is shared work,
-        # not merely parallel work, hence the shared "uhid_plan_swipe_s" bucket name (see
-        # _run_gesture's docstring).
-        duration_scale = max(0.20, min(2.0, float(duration_ms) / 450.0))
-        with _time_bucket(_timing, "uhid_plan_swipe_s"):
-            samples = plan_swipe(x1, y1, x2, y2, hz=self.hz, jitter_px=self.jitter_px,
-                                 width_px=self.width_px, duration_scale=duration_scale,
-                                 rng=self._rng)
-        self._run_gesture(samples, _timing=_timing)
-
-    def scroll_up(self, distance_frac: float = 0.55, x_frac: float = 0.5, *,
-                 _timing: dict[str, float] | None = None) -> None:
-        # Identical to UhidTouch.scroll_up, including the shared x-column jitter (HINGE-04,
-        # adb.scroll_x) -- see that method's own comment for why a genuine transport must not
-        # emit a pixel-identical swipe column every scroll.
-        with _time_bucket(_timing, "screen_size_s"):
-            w, h = self.adb.screen_size()
-        x = scroll_x(w, x_frac)
-        self.swipe(x, int(h * (0.5 + distance_frac / 2)), x, int(h * (0.5 - distance_frac / 2)),
-                  _timing=_timing)
+    # --- public surface: `_UhidGestureBase`'s, unmodified ------------------
+    # tap/swipe/scroll_up are NOT overridden here, and that is the point (2026-09-04). They used
+    # to be a character-identical second copy of UhidTouch's; the humanization they carry has to
+    # be the same on both transports or `touch_backend: uhid` stops being a true revert, so
+    # there is now one copy and this class contributes only `_run_gesture` above.

@@ -27,6 +27,8 @@ from operation_love.opener.opener import (
     ItemRequest,
     OpenerParseError,
     OpenerResult,
+    REASON_PREEMPTIVE_DISCLAIMER,
+    REASON_PREMATURE_SHARED_FUTURE,
     REASON_SCAFFOLDING,
     REASON_SENSITIVE_INFERENCE,
     REASON_TOO_MANY_SENTENCES,
@@ -36,6 +38,8 @@ from operation_love.opener.opener import (
     _SYSTEM,
     _image_media_type,
     _leading_ngram,
+    _preemptive_disclaimer_markers,
+    _premature_shared_future_markers,
     _redundant_description_markers,
     _sanitize,
     _scaffolding_markers,
@@ -219,6 +223,32 @@ _SCAFFOLDING_TRUE_POSITIVES = [
 @pytest.mark.parametrize("text", _SCAFFOLDING_TRUE_POSITIVES)
 def test_scaffolding_markers_true_positive_corpus_is_flagged(text):
     assert _scaffolding_markers(text) != []
+
+
+@pytest.mark.parametrize("text", [
+    "Zero judgment here, you wear those Mickey ears with total confidence.",
+    "No judgement from me. Which ride is nonnegotiable?",
+    "No offense, but that hat has serious main character energy.",
+    "Hey, no pressure! What is the story behind that costume?",
+    "Don't take this the wrong way, that sweater is spectacular.",
+    "Not to be weird, but your dog looks exactly like my old neighbor's.",
+    "I'm not trying to sound nosy, but where was that photo taken?",
+    "This might sound dramatic, but that cake deserves its own fan club.",
+])
+def test_preemptive_disclaimer_markers_flag_negative_framing_at_the_start(text):
+    assert _preemptive_disclaimer_markers(text) != []
+
+
+@pytest.mark.parametrize("text", [
+    "You wear those Mickey ears with total confidence. Which ride is nonnegotiable?",
+    "That sweater is not subtle, and I respect the commitment.",
+    "The no pressure approach clearly does not apply to that competition.",
+    "Tell me that dramatic cake tasted as good as it looked.",
+    "I cannot get over that dog's face.",
+    "Is judging the costume contest as difficult as entering it?",
+])
+def test_preemptive_disclaimer_markers_leave_ordinary_negation_and_words_alone(text):
+    assert _preemptive_disclaimer_markers(text) == []
 
 
 # ---------------------------------------------------------------------------------------
@@ -556,8 +586,8 @@ def test_system_prompt_keeps_faithful_corey_opener_policy_and_two_sentence_cap()
     assert "interpret the visible scene through that text before choosing an angle" in lowered
     assert "never contradict, reverse, or ignore the header's framing" in lowered
 
-    # A question may stand alone when it is more natural than a claim. Premise consistency still
-    # applies whenever a two-beat opener does begin with a claim.
+    # A question may stand alone when it is more natural than a claim. A guess stays unconfirmed
+    # across the whole opener so she, rather than the sender, gets to resolve it.
     assert "one open, easy-to-answer question" not in lowered
     assert "a natural claim she can correct can be effective, but it is not mandatory" in lowered
     assert "question may be the whole message when that is the strongest natural angle" in lowered
@@ -587,14 +617,31 @@ def test_system_prompt_keeps_faithful_corey_opener_policy_and_two_sentence_cap()
     assert "intelligence, sincerity, knowledge, effort" in lowered
     assert "forced choice whose honest answers make her defend, diminish, or embarrass herself" in lowered
     assert "rather than asking her to verify its status" in lowered
-    assert "premise consistency" in lowered
-    assert "if the first beat asserts or guesses x" in lowered
-    assert "must accept x as its working premise and move forward from it" in lowered
-    assert "never ask whether x itself was true" in lowered
-    assert "ask about the opposite of x" in lowered
-    assert "abandon x for a generic question about the surrounding scene" in lowered
-    assert "may extend the angle with clearly nonliteral hyperbole" in lowered
-    assert "may not add a literal invented fact, motive, or backstory" in lowered
+    assert "positive social framing" in lowered
+    assert "state the intended positive observation, question, or invitation directly" in lowered
+    assert ("naming an insulting, judgmental, awkward, pressuring, creepy, or offensive "
+            "interpretation") in lowered
+    assert "that denial introduces the negative interpretation" in lowered
+    assert "remove the disclaimer and make the substantive thought stand on its own" in lowered
+    assert "reciprocity before future" in lowered
+    assert "not an audition for a role described in her profile" in lowered
+    assert "never answer one of her preferences by advertising the sender" in lowered
+    assert "promising what he will do for her" in lowered
+    assert "do not assume that a match, date, relationship, or shared future already exists" in lowered
+    assert "possessive language about a first date, place, trip, or other future together" in lowered
+    assert "a proposal is not an established shared plan" in lowered
+    assert "information gain test" in lowered
+    assert "conclusion of a guess must not itself be directly visible or explicitly stated" in lowered
+    assert "its header, a sign, or elsewhere in her profile" in lowered
+    assert "they are clues, not guessed conclusions" in lowered
+    assert "ordinary viewer can read or see the conclusion directly without inference" in lowered
+    assert "confirmation boundary" in lowered
+    assert "a guess remains unconfirmed until she replies" in lowered
+    assert "statement, question, compliment, or invitation that assumes it is correct" in lowered
+    assert "natural next move is to confirm or correct it" in lowered
+    assert "only invite that confirmation or correction without presupposing the answer" in lowered
+    assert "experience, preference, or consequence that only makes sense if the guess is true" in lowered
+    assert "must accept x as its working premise" not in lowered
 
     # --- LENGTH: the ceiling stays, the one-sentence PREFERENCE is gone (doc 3.2.1).
     # Preferring brevity for its own sake fought a claim that needs room to exist ("I know
@@ -630,7 +677,8 @@ def test_system_prompt_keeps_faithful_corey_opener_policy_and_two_sentence_cap()
     assert "guess the world, not her identity" in lowered
     assert "name a country, a region, or a park" in lowered
     assert "when a place comes from recognizing the image rather than from her profile text" in lowered
-    assert "clearly identify it as a visual inference before building on it" in lowered
+    assert "clearly identify it as a visual inference and leave it unconfirmed" in lowered
+    assert "do not build on an inferred location as though it were correct" in lowered
     assert "do not state an inferred location as shared experience" in lowered
     assert "do not turn it into a generic compliment" in lowered
     assert "never guess her employer, her school, or her age" in lowered
@@ -1076,6 +1124,33 @@ def test_generate_raises_parse_error_on_scaffolded_opener():
     assert exc.value.raw_opener == "Here's the response: Great ocean, where was this taken?"
 
 
+def test_generate_rejects_a_preemptive_negative_framing_disclaimer():
+    text = "Zero judgment here, you wear the Mickey ears with total confidence."
+    payload = _gemini_response({"opener": text, "referenced": "Mickey ears", "item_index": 1})
+    with pytest.raises(OpenerParseError, match="negative social interpretation") as exc:
+        _opener(_Transport([(200, payload)])).generate(Profile(photos=[b"a"]), style="s")
+    assert exc.value.reason_code == REASON_PREEMPTIVE_DISCLAIMER
+    assert exc.value.raw_opener == text
+
+
+def test_preemptive_disclaimer_is_retried_and_direct_second_attempt_succeeds():
+    bad = _gemini_response({
+        "opener": "Zero judgment here, you wear the Mickey ears with total confidence.",
+        "referenced": "Mickey ears", "item_index": 1,
+    })
+    clean_text = "You wear the Mickey ears with total confidence. Which ride is nonnegotiable?"
+    clean = _gemini_response({
+        "opener": clean_text, "referenced": "Mickey ears", "item_index": 1,
+    })
+    client = _opener(_Transport([(200, bad), (200, clean)]))
+    service = OpenerService(client, _NeverBudgetTracker(), _DiscardingStore(), "casual")
+
+    pick = service.maybe_opener("r", "hinge", Profile(photos=[b"a"]))
+
+    assert pick is not None
+    assert pick.text == clean_text
+
+
 def test_generate_rejects_the_reported_courage_to_jump_inference_before_send():
     payload = _gemini_response({
         "opener": ("Did you work up the courage to jump or were you happy just taking in "
@@ -1087,6 +1162,64 @@ def test_generate_rejects_the_reported_courage_to_jump_inference_before_send():
     assert exc.value.reason_code == REASON_SENSITIVE_INFERENCE
     assert exc.value.raw_opener == (
         "Did you work up the courage to jump or were you happy just taking in the scenery?")
+
+
+_REPORTED_PREMATURE_FUTURE_OPENER = (
+    "That city skyline makes for a great backdrop. Since you appreciate a man who handles "
+    "the planning, I will make sure our first spot has a view just as good."
+)
+
+
+def test_premature_shared_future_guard_catches_reported_opener_but_allows_invitations():
+    assert _premature_shared_future_markers(_REPORTED_PREMATURE_FUTURE_OPENER) == [
+        "assumed shared first date or outing",
+        "promise of future performance",
+    ]
+    assert _premature_shared_future_markers(
+        "You seem fun. Let's grab a drink this week if you're free."
+    ) == []
+    assert _premature_shared_future_markers(
+        "That skyline feels like a subtle hint for whoever gets to plan the date."
+    ) == []
+    assert _premature_shared_future_markers(
+        "Good news, I'm exactly the man who handles the planning."
+    ) == ["self-advertised dating role"]
+    assert _premature_shared_future_markers(
+        "I can handle the date planning, you just show up."
+    ) == ["promise to handle date planning"]
+    assert _premature_shared_future_markers(
+        "You seem fun. I'm in if you want to grab a drink."
+    ) == []
+
+
+def test_generate_rejects_the_reported_premature_shared_future_before_send():
+    payload = _gemini_response({
+        "opener": _REPORTED_PREMATURE_FUTURE_OPENER,
+        "referenced": "a red dress against a city skyline", "item_index": 1,
+    })
+    with pytest.raises(OpenerParseError, match="unaccepted shared plan") as exc:
+        _opener(_Transport([(200, payload)])).generate(Profile(photos=[b"a"]), style="s")
+    assert exc.value.reason_code == REASON_PREMATURE_SHARED_FUTURE
+    assert exc.value.raw_opener == _REPORTED_PREMATURE_FUTURE_OPENER
+
+
+def test_premature_shared_future_is_retried_and_a_relaxed_second_attempt_succeeds():
+    bad = _gemini_response({
+        "opener": _REPORTED_PREMATURE_FUTURE_OPENER,
+        "referenced": "a red dress against a city skyline", "item_index": 1,
+    })
+    clean_text = "That skyline feels like a subtle hint for whoever gets to plan the date."
+    clean = _gemini_response({
+        "opener": clean_text,
+        "referenced": "a red dress against a city skyline", "item_index": 1,
+    })
+    client = _opener(_Transport([(200, bad), (200, clean)]))
+    service = OpenerService(client, _NeverBudgetTracker(), _DiscardingStore(), "casual")
+
+    pick = service.maybe_opener("r", "hinge", Profile(photos=[b"a"]))
+
+    assert pick is not None
+    assert pick.text == clean_text
 
 
 def test_sensitive_inference_is_retried_and_a_grounded_second_attempt_succeeds():

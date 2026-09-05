@@ -10,6 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import operation_love.ranker.bigquery_store as bigquery_store_module
 from operation_love.costing import Usage
 from operation_love.ranker import Store
 from operation_love.ranker.bigquery_store import BigQueryStore
@@ -933,6 +934,173 @@ def test_record_profile_defaults_capture_truncated_to_false():
     assert profile["capture_truncated"] is False
 
 
+def test_cloud_writes_use_deadlines_when_injected_clients_support_them(monkeypatch):
+    """Real SDK calls must receive bounded request/retry settings without breaking old fakes."""
+    retry_sentinel = object()
+    monkeypatch.setattr(bigquery_store_module, "_deadline_retry", lambda: retry_sentinel)
+
+    class DeadlineBQ(_FakeBQ):
+        def __init__(self):
+            super().__init__()
+            self.deadlines = []
+
+        def insert_rows_json(self, table_id, rows, row_ids=None, *, retry=None, timeout=None):
+            self.deadlines.append((retry, timeout))
+            return super().insert_rows_json(table_id, rows, row_ids=row_ids)
+
+    class DeadlineBlob(_FakeBlob):
+        def __init__(self, name):
+            super().__init__(name)
+            self.deadlines = []
+
+        def upload_from_string(self, data, content_type=None, *, retry=None, timeout=None):
+            self.deadlines.append((retry, timeout))
+            return super().upload_from_string(data, content_type=content_type)
+
+    client, storage = DeadlineBQ(), _FakeStorage()
+    bucket = storage.bucket("photos")
+
+    def deadline_blob(name):
+        bucket.blobs.setdefault(name, DeadlineBlob(name))
+        return bucket.blobs[name]
+
+    bucket.blob = deadline_blob
+    store = BigQueryStore("proj", "ds", photo_bucket="photos", flush_every=100,
+                          client=client, storage_client=storage, ensure=True)
+    progress = []
+    assert store.record_profile(
+        "run", "hinge", "profile", True, photos=[b"\x89PNG\r\n\x1a\nframe"],
+        progress=lambda stage, done, total: progress.append((stage, done, total)))
+    store.flush()
+
+    blob = next(iter(bucket.blobs.values()))
+    assert blob.deadlines == [(retry_sentinel, bigquery_store_module._GCS_UPLOAD_REQUEST_TIMEOUT_S)]
+    assert client.deadlines
+    assert all(item == (retry_sentinel, bigquery_store_module._BQ_INSERT_REQUEST_TIMEOUT_S)
+               for item in client.deadlines)
+    assert progress == [
+        ("profile_upload", 0, 1), ("profile_upload", 1, 1), ("profile_uploaded", 1, 1),
+    ]
+
+
+def test_transient_insert_retry_recovers_threshold_profile_flush(monkeypatch):
+    """An SDK retry timeout must not fail an action when one fresh batch call succeeds."""
+    class TransientInsertError(RuntimeError):
+        pass
+
+    class FlakyBQ(_FakeBQ):
+        def __init__(self):
+            super().__init__()
+            self.calls = []
+            self.failed_profiles_once = False
+
+        def insert_rows_json(self, table_id, rows, row_ids=None, **_kwargs):
+            self.calls.append((table_id, list(rows), list(row_ids or [])))
+            if table_id.endswith(".profiles") and not self.failed_profiles_once:
+                self.failed_profiles_once = True
+                raise TransientInsertError("SDK retries exhausted after a transient 500")
+            return super().insert_rows_json(table_id, rows, row_ids=row_ids)
+
+    monkeypatch.setattr(
+        bigquery_store_module, "_retryable_bq_insert_exception",
+        lambda exc: isinstance(exc, TransientInsertError),
+    )
+    monkeypatch.setattr(bigquery_store_module, "_BQ_INSERT_BACKOFF_S", 0.0)
+    client = FlakyBQ()
+    store = BigQueryStore(
+        "proj", "ds", photo_bucket="photos", flush_every=1,
+        client=client, storage_client=_FakeStorage(), ensure=True)
+
+    assert store.record_profile(
+        "run", "hinge", "profile", False,
+        photos=[b"\x89PNG\r\n\x1a\nframe"]) is True
+
+    profile_calls = [call for call in client.calls if call[0].endswith(".profiles")]
+    assert len(profile_calls) == 2
+    assert profile_calls[0][1:] == profile_calls[1][1:]
+    assert len(client.inserted["proj.ds.profiles"]) == 1
+    assert len(client.inserted["proj.ds.profile_photos"]) == 1
+    assert store._buf["profiles"] == []
+    assert store._buf["profile_photos"] == []
+    assert store._written["profiles"] == 1
+
+
+def test_transient_insert_retry_is_bounded_and_keeps_uncertain_batch(monkeypatch):
+    """Persistent transport failure remains loud without dropping or crediting rows."""
+    class TransientInsertError(RuntimeError):
+        pass
+
+    class OfflineBQ(_FakeBQ):
+        def __init__(self):
+            super().__init__()
+            self.label_calls = []
+
+        def insert_rows_json(self, table_id, rows, row_ids=None, **_kwargs):
+            if table_id.endswith(".labels"):
+                self.label_calls.append((list(rows), list(row_ids or [])))
+                raise TransientInsertError("BigQuery remains unavailable")
+            return super().insert_rows_json(table_id, rows, row_ids=row_ids)
+
+    monkeypatch.setattr(
+        bigquery_store_module, "_retryable_bq_insert_exception",
+        lambda exc: isinstance(exc, TransientInsertError),
+    )
+    sleeps = []
+    monkeypatch.setattr(bigquery_store_module.time, "sleep", sleeps.append)
+    client = OfflineBQ()
+    store = _store(client, flush_every=100)
+    store.add_label("run", "hinge", False, [0.1])
+    store.record_decision("run", "hinge", "dislike", 0.0)
+
+    with pytest.raises(RuntimeError, match="labels"):
+        store.flush()
+
+    assert len(client.label_calls) == bigquery_store_module._BQ_INSERT_ATTEMPTS
+    assert all(call == client.label_calls[0] for call in client.label_calls)
+    assert sleeps == [bigquery_store_module._BQ_INSERT_BACKOFF_S]
+    assert len(store._buf["labels"]) == 1
+    assert store._written["labels"] == 0
+    assert store._dropped["labels"] == 0
+    assert len(client.inserted["proj.ds.decisions"]) == 1
+
+
+def test_sdk_retry_error_is_retryable_when_its_cause_is_transient():
+    exceptions = pytest.importorskip("google.api_core.exceptions")
+    wrapped = exceptions.RetryError(
+        "Timeout of 30.0s exceeded", exceptions.InternalServerError("transient 500"))
+    wrapped_deadline = exceptions.RetryError(
+        "Timeout of 30.0s exceeded", exceptions.DeadlineExceeded("transient 504"))
+
+    assert bigquery_store_module._retryable_bq_insert_exception(wrapped) is True
+    assert bigquery_store_module._retryable_bq_insert_exception(wrapped_deadline) is True
+    assert bigquery_store_module._retryable_bq_insert_exception(
+        exceptions.BadGateway("transient 502")) is True
+    assert bigquery_store_module._retryable_bq_insert_exception(
+        exceptions.Forbidden("not transient")) is False
+
+    # The HTTP request timeout the function's docstring names. google-api-core's own
+    # if_transient_error() returns False for it, so the explicit entry is the only thing
+    # keeping a read timeout on the durable insert path from aborting the flush -- and
+    # without these two lines that entry could be deleted with the suite still green.
+    requests = pytest.importorskip("requests")
+    assert bigquery_store_module._retryable_bq_insert_exception(
+        requests.exceptions.ReadTimeout("read timed out")) is True
+    assert bigquery_store_module._retryable_bq_insert_exception(exceptions.RetryError(
+        "Timeout of 30.0s exceeded", requests.exceptions.ReadTimeout("read timed out"))) is True
+
+
+def test_profile_archive_deadline_refuses_incomplete_image_set(monkeypatch):
+    """An expired aggregate upload budget leaves no partial profile manifest behind."""
+    monkeypatch.setattr(bigquery_store_module, "_profile_upload_deadline_s", lambda _n: 0.0)
+    store = BigQueryStore("proj", "ds", photo_bucket="photos", flush_every=100,
+                          client=_FakeBQ(), storage_client=_FakeStorage(), ensure=True)
+
+    assert store.record_profile(
+        "run", "hinge", "profile", True, photos=[b"\x89PNG\r\n\x1a\nframe"]) is False
+    assert store._buf["profiles"] == []
+    assert store._buf["profile_photos"] == []
+
+
 def test_ensure_tables_runs_capture_truncated_migration():
     client = _FakeBQ(label_rows=_schema_rows_without(("profiles", "capture_truncated")))
     BigQueryStore("proj", "ds", photo_bucket="photos", client=client,
@@ -1112,8 +1280,9 @@ def test_close_waits_for_started_profile_archive_before_its_final_flush():
     """A profile archive that started before close must not leave orphaned GCS objects.
 
     The upload deliberately parks outside the store lock. ``close`` must fence a later
-    decision write immediately, wait for this registered upload to finish, then flush both
-    manifest tables before returning.
+    unrelated write immediately, wait for this registered upload to finish, then flush both
+    manifest tables before returning. (The archive's OWN follow-on rows are the exception --
+    see test_follow_on_rows_of_an_awaited_archive_are_not_refused_as_late_writes.)
     """
     client = _FakeBQ()
     storage = _FakeStorage()
@@ -1123,10 +1292,13 @@ def test_close_waits_for_started_profile_archive_before_its_final_flush():
     uploading, release_upload = threading.Event(), threading.Event()
     real_upload = store._upload_blob
 
-    def paused_upload(blob, data, content_type):
+    # Mirrors the real signature including `deadline`, and forwards it: the archive path calls
+    # _upload_blob directly, so a double that dropped the kwarg would silently disable the
+    # per-attempt deadline here (and now raises TypeError instead of hiding that).
+    def paused_upload(blob, data, content_type, *, deadline=None):
         uploading.set()
         assert release_upload.wait(timeout=2)
-        return real_upload(blob, data, content_type)
+        return real_upload(blob, data, content_type, deadline=deadline)
 
     store._upload_blob = paused_upload
     writer = threading.Thread(target=lambda: store.record_profile(
@@ -1138,7 +1310,7 @@ def test_close_waits_for_started_profile_archive_before_its_final_flush():
     _wait_for_store_closing(store)
 
     with pytest.raises(RuntimeError, match="late write"):
-        store.record_decision("run", "hinge", "dislike", 0.1)
+        store.record_spend("run", "model", Usage(input_tokens=1), 0.0)
     assert closer.is_alive()
 
     release_upload.set()
@@ -1150,6 +1322,87 @@ def test_close_waits_for_started_profile_archive_before_its_final_flush():
     assert len(client.inserted["proj.ds.profile_photos"]) == 1
 
 
+def test_archive_writes_in_flight_reports_the_same_counter_close_blocks_on():
+    """Public seam for the supervisor's shutdown join (supervisor._store_archive_in_flight
+    duck-types this name first). It must read the counter ``close`` itself waits on, so the
+    join can never be extended for work close would not have blocked for anyway."""
+    client = _FakeBQ()
+    storage = _FakeStorage()
+    store = BigQueryStore(
+        "proj", "ds", photo_bucket="photos", flush_every=100,
+        client=client, storage_client=storage, ensure=True)
+    assert store.archive_writes_in_flight() is False
+
+    uploading, release_upload = threading.Event(), threading.Event()
+    real_upload = store._upload_blob
+
+    def paused_upload(blob, data, content_type, *, deadline=None):
+        uploading.set()
+        assert release_upload.wait(timeout=2)
+        return real_upload(blob, data, content_type, deadline=deadline)
+
+    store._upload_blob = paused_upload
+    writer = threading.Thread(target=lambda: store.record_profile(
+        "run", "hinge", "profile", True, photos=[b"\x89PNG\r\n\x1a\nframe"]))
+    writer.start()
+    assert uploading.wait(timeout=2)
+
+    assert store.archive_writes_in_flight() is True
+    assert store._active_async_writes == 1          # exactly what close()'s wait loop tests
+    assert int(store.archive_writes_in_flight()) > 0  # the supervisor's probe expression
+
+    release_upload.set()
+    writer.join(timeout=2)
+    assert not writer.is_alive()
+    assert store.archive_writes_in_flight() is False
+    store.close()
+    assert store.archive_writes_in_flight() is False
+
+
+def test_follow_on_rows_of_an_awaited_archive_are_not_refused_as_late_writes():
+    """The decision/opener/label rows of an already-landed action must reach the final flush.
+
+    ``close`` deliberately waits for that action's registered archive, so these three writes
+    arrive while ``_closing`` is set and used to be rejected -- leaving the system of record
+    holding a profile's images with no label for a swipe the phone had already accepted.
+    """
+    client = _FakeBQ()
+    storage = _FakeStorage()
+    store = BigQueryStore(
+        "proj", "ds", photo_bucket="photos", flush_every=100,
+        client=client, storage_client=storage, ensure=True)
+    uploading, release_upload = threading.Event(), threading.Event()
+    real_upload = store._upload_blob
+
+    def paused_upload(blob, data, content_type, *, deadline=None):
+        uploading.set()
+        assert release_upload.wait(timeout=2)
+        return real_upload(blob, data, content_type, deadline=deadline)
+
+    store._upload_blob = paused_upload
+    writer = threading.Thread(target=lambda: store.record_profile(
+        "run", "hinge", "profile", True, photos=[b"\x89PNG\r\n\x1a\nframe"]))
+    writer.start()
+    assert uploading.wait(timeout=2)
+    closer = threading.Thread(target=store.close)
+    closer.start()
+    _wait_for_store_closing(store)
+
+    store.record_decision("run", "hinge", "like", 0.9, profile_id="profile")
+    store.record_opener("run", "hinge", "gemini", "an opener", True, profile_id="profile")
+    store.add_label("run", "hinge", True, [0.1], profile_id="profile")
+
+    release_upload.set()
+    writer.join(timeout=2)
+    closer.join(timeout=2)
+
+    assert not writer.is_alive() and not closer.is_alive()
+    assert len(client.inserted["proj.ds.decisions"]) == 1
+    assert len(client.inserted["proj.ds.openers"]) == 1
+    assert len(client.inserted["proj.ds.labels"]) == 1
+    assert client.inserted["proj.ds.labels"][0]["profile_id"] == "profile"
+
+
 def test_close_waits_for_started_opener_evidence_before_its_final_flush():
     client = _FakeBQ()
     storage = _FakeStorage()
@@ -1159,10 +1412,10 @@ def test_close_waits_for_started_opener_evidence_before_its_final_flush():
     uploading, release_upload = threading.Event(), threading.Event()
     real_upload = store._upload_blob
 
-    def paused_upload(blob, data, content_type):
+    def paused_upload(blob, data, content_type, *, deadline=None):
         uploading.set()
         assert release_upload.wait(timeout=2)
-        return real_upload(blob, data, content_type)
+        return real_upload(blob, data, content_type, deadline=deadline)
 
     store._upload_blob = paused_upload
     writer = threading.Thread(target=lambda: store.record_opener_send_evidence(
@@ -1373,14 +1626,6 @@ def test_make_store_does_not_coerce_invalid_flush_every_before_constructor(monke
     assert captured["flush_every"] == "9"
 
 
-def test_load_labels_ordered_queries_in_created_at_order():
-    client = _FakeBQ(label_rows=[{"liked": True, "embedding": [0.1]}])
-    s = _store(client)
-
-    assert s.load_labels_ordered() == [(True, [0.1])]
-    assert "ORDER BY created_at" in client.queries[-1]
-
-
 def test_count_today_parameterizes_local_midnight_matching_sqlite():
     """count_today's day boundary must be the SAME instant SQLiteStore derives from
     local_midnight_epoch() -- not a UTC-day truncation done in SQL."""
@@ -1577,3 +1822,457 @@ def test_flush_partial_failure_attempts_survive_interleaved_new_rows():
 
     assert s._dropped["labels"] == 1
     assert all(r["embedding"] != [0.1] for r in s._buf["labels"])
+
+
+class _VirtualClock:
+    """Stands in for the module's `time` so a worst-case upload costs no real seconds."""
+
+    def __init__(self):
+        self.now = 1000.0
+
+    def monotonic(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.now += max(0.0, float(seconds))
+
+
+class _AllowanceBurningBlob:
+    """A blob whose every attempt consumes its full request timeout and then fails."""
+
+    name = "profiles/hinge/run/profile/00-deadbeef.png"
+
+    def __init__(self, clock):
+        self._clock = clock
+
+    def upload_from_string(self, data, content_type=None, timeout=None, retry=None):
+        self._clock.now += float(timeout)
+        raise TimeoutError("request timed out")
+
+
+def test_profile_upload_deadline_cannot_bind_before_the_requests_it_wraps(monkeypatch):
+    """The aggregate budget must never be what fails a link that is merely slow.
+
+    A short deadline is not a retry here: `record_profile` treats a partial photo set as a
+    corrupt archive, deletes the blobs it already uploaded and refuses the label -- for a Hinge
+    action that has already physically landed. So the whole-archive bound has to sit above what
+    the same code's own per-request budget permits, and the flat 180.0 it used to be sat BELOW
+    that for any capture past nine photos (found 2026-09-04).
+
+    The per-photo worst case is MEASURED by driving the real `_upload_blob` on a virtual clock
+    rather than restated as a product, so the assertion still bites if the retry ladder changes
+    shape -- the omission that was found here was exactly the backoff sleeps between attempts.
+    """
+    clock = _VirtualClock()
+    monkeypatch.setattr(bigquery_store_module, "time", clock)
+    started = clock.now
+    assert BigQueryStore._upload_blob(
+        None, _AllowanceBurningBlob(clock), b"\x89PNG\r\n\x1a\n", "image/png") is False
+    worst_case_per_photo = clock.now - started
+    # Every attempt ran to its full timeout AND every backoff sleep was paid.
+    assert worst_case_per_photo > (bigquery_store_module._GCS_UPLOAD_REQUEST_TIMEOUT_S
+                                   * bigquery_store_module._UPLOAD_ATTEMPTS)
+
+    # 3 is the first count where the floor no longer covers the worst case, so start there.
+    for photos in (3, 12, 14, 30):
+        assert (bigquery_store_module._profile_upload_deadline_s(photos)
+                >= photos * worst_case_per_photo)
+    # ...and it never drops below the historic floor for a short capture, which is the only
+    # range where the floor is genuinely the larger of the two.
+    for photos in (0, 1, 2):
+        assert (bigquery_store_module._profile_upload_deadline_s(photos)
+                == bigquery_store_module._PROFILE_UPLOAD_DEADLINE_FLOOR_S)
+
+
+def test_profile_photo_archive_passes_its_deadline_to_the_real_upload():
+    """The archive must hand `_upload_blob` the aggregate deadline, not silently lose it.
+
+    Routing this first-party call through the SDK keyword shim made a replacement lacking
+    `deadline` degrade quietly; the per-attempt expiry check is the guard that keeps a partial
+    photo set from following an already-landed Hinge action, so it must fail loudly instead.
+    """
+    store = BigQueryStore("proj", "ds", photo_bucket="photos", flush_every=100,
+                          client=_FakeBQ(), storage_client=_FakeStorage(), ensure=True)
+    seen = []
+    real_upload = store._upload_blob
+
+    def recording_upload(blob, data, content_type, *, deadline=None):
+        seen.append(deadline)
+        return real_upload(blob, data, content_type, deadline=deadline)
+
+    store._upload_blob = recording_upload
+    assert store.record_profile("run", "hinge", "profile", True,
+                                photos=[b"\x89PNG\r\n\x1a\nframe"]) is True
+    assert len(seen) == 1 and isinstance(seen[0], float)
+
+    # A double that cannot accept the deadline now raises instead of running unbounded.
+    store._upload_blob = lambda blob, data, content_type: True
+    with pytest.raises(TypeError):
+        store.record_profile("run", "hinge", "profile2", True,
+                             photos=[b"\x89PNG\r\n\x1a\nframe"])
+
+
+class _FakeDmlJob:
+    def __init__(self, rows=None, num_dml_affected_rows=None):
+        self._rows = rows or []
+        self.num_dml_affected_rows = num_dml_affected_rows
+
+    def result(self):
+        return self._rows
+
+
+class _FakeLabelsBQ:
+    """Fake client that EVALUATES labels DML with BigQuery's own NULL comparison rules.
+
+    `NULL = ''` is NULL, not TRUE, so a bind that coerces a legacy (pre-_MIGRATIONS)
+    profile_id of NULL to an empty string matches nothing at all. That is the exact defect
+    these tests exist for, so the DELETE has to be applied here rather than merely recorded.
+    """
+
+    def __init__(self, labels, delete_matches_nothing=False):
+        self.labels = [dict(row) for row in labels]
+        self.queries = []
+        self.job_configs = []
+        self._delete_matches_nothing = delete_matches_nothing
+
+    def query(self, sql, job_config=None):
+        text = " ".join(str(sql).split())
+        self.queries.append(text)
+        self.job_configs.append(job_config)
+        params = {p.name: p.value for p in getattr(job_config, "query_parameters", [])}
+        upper = text.upper()
+        if upper.startswith("SELECT"):
+            if "FROM `PROJ.DS.LABELS`" not in upper:
+                return _FakeDmlJob()
+            # created_at DESC LIMIT 1, ties broken toward the most recently seeded row so a
+            # test can name exactly which row the SELECT handed to the DELETE.
+            newest = sorted(enumerate(self.labels),
+                            key=lambda pair: (pair[1]["created_at"], pair[0]), reverse=True)
+            return _FakeDmlJob([row for _, row in newest[:1]])
+        if upper.startswith("DELETE") and "PROJ.DS.LABELS`" in upper:
+            kept, removed = [], 0
+            for row in self.labels:
+                if self._matches(text, params, row):
+                    removed += 1
+                else:
+                    kept.append(row)
+            self.labels = kept
+            return _FakeDmlJob(num_dml_affected_rows=removed)
+        return _FakeDmlJob(num_dml_affected_rows=0)
+
+    def _matches(self, text, params, row):
+        if self._delete_matches_nothing:
+            return False
+        if "WHERE TRUE" in text:
+            return True
+        if "(profile_id=@profile_id OR (profile_id IS NULL AND @profile_id IS NULL))" in text:
+            stored, bound = row.get("profile_id"), params.get("profile_id")
+            if (stored is None) != (bound is None) or stored != bound:
+                return False
+        elif "profile_id=@profile_id" in text:
+            stored, bound = row.get("profile_id"), params.get("profile_id")
+            # SQL three-valued logic: a NULL operand makes the comparison NULL, never TRUE.
+            if stored is None or bound is None or stored != bound:
+                return False
+        for column in ("run_id", "app", "source", "created_at"):
+            if f"{column}=@{column}" in text and row.get(column) != params.get(column):
+                return False
+        return True
+
+    def insert_rows_json(self, table_id, rows, row_ids=None):
+        return []
+
+
+def _labels_store(client):
+    return BigQueryStore("proj", "ds", photo_bucket="photos", flush_every=100,
+                         client=client, storage_client=_FakeStorage(), ensure=False)
+
+
+def test_remove_latest_training_label_deletes_a_legacy_null_profile_id_row(monkeypatch):
+    """A pre-migration label reads back profile_id NULL; removing it must still delete it.
+
+    `labels.profile_id` reached the live table through _MIGRATIONS, so rows written before it
+    hold NULL. Coercing that to "" and binding `WHERE profile_id=@profile_id` deleted ZERO rows
+    while this method returned a success dict, which the hub prints as "Training label removed
+    for profile: Ada" over a label that is still in the system of record.
+    """
+    _stub_bigquery_module(monkeypatch)
+    created = datetime(2026, 9, 1, 12, 0, tzinfo=timezone.utc)
+    client = _FakeLabelsBQ([{"run_id": "r", "app": "hinge", "source": "manual",
+                             "profile_id": None, "profile_name": "Ada", "created_at": created}])
+    store = _labels_store(client)
+
+    assert store.remove_latest_training_label() == {"profile_name": "Ada", "profile_id": ""}
+    assert client.labels == []
+    assert store._labels_cache is None
+
+
+def test_remove_latest_training_label_deletes_only_the_row_the_select_chose(monkeypatch):
+    """The DELETE must carry the same identity the visibility predicate selected on.
+
+    Two labels can share a profile_id and a created_at across runs/sources; deleting on that
+    pair alone removes both, silently discarding a label the operator never asked about.
+    """
+    _stub_bigquery_module(monkeypatch)
+    created = datetime(2026, 9, 1, 12, 0, tzinfo=timezone.utc)
+    other = {"run_id": "older-run", "app": "hinge", "source": "auto",
+             "profile_id": "p", "profile_name": "Bea", "created_at": created}
+    newest = {"run_id": "run", "app": "hinge", "source": "manual",
+              "profile_id": "p", "profile_name": "Ada", "created_at": created}
+    client = _FakeLabelsBQ([other, newest])
+    store = _labels_store(client)
+
+    assert store.remove_latest_training_label() == {"profile_name": "Ada", "profile_id": "p"}
+    assert client.labels == [other]
+
+
+def test_remove_latest_training_label_refuses_to_report_a_removal_that_deleted_nothing(monkeypatch):
+    """Any zero-row DELETE must surface, whatever caused it -- never a success dict."""
+    _stub_bigquery_module(monkeypatch)
+    created = datetime(2026, 9, 1, 12, 0, tzinfo=timezone.utc)
+    client = _FakeLabelsBQ([{"run_id": "r", "app": "hinge", "source": "manual",
+                             "profile_id": "p", "profile_name": "Ada", "created_at": created}],
+                           delete_matches_nothing=True)
+    store = _labels_store(client)
+
+    with pytest.raises(RuntimeError, match="refusing to report a removal"):
+        store.remove_latest_training_label()
+    assert client.labels != []
+
+
+def test_remove_latest_training_label_returns_none_when_no_label_is_visible(monkeypatch):
+    # The method imports the SDK for its parameter binding before it can learn there is
+    # nothing to delete, so even the empty case needs the stub on an SDK-less runner (CI).
+    _stub_bigquery_module(monkeypatch)
+    client = _FakeLabelsBQ([])
+    store = _labels_store(client)
+
+    assert store.remove_latest_training_label() is None
+    assert not any(query.upper().startswith("DELETE") for query in client.queries)
+
+
+
+
+def _stub_bigquery_module(monkeypatch):
+    """Give the store the two bigquery symbols its bound queries need, without the SDK."""
+    import sys
+
+    class _Param:
+        def __init__(self, name, _kind, value):
+            self.name, self.value = name, value
+
+    class _JobConfig:
+        def __init__(self, query_parameters):
+            self.query_parameters = query_parameters
+
+    monkeypatch.setitem(sys.modules, "google.cloud", SimpleNamespace(
+        bigquery=SimpleNamespace(ScalarQueryParameter=_Param, QueryJobConfig=_JobConfig)))
+
+
+def _scalar_subqueries(text):
+    """Split a one-row `SELECT (…) AS a, (…) AS b` query into its (alias, inner SQL) parts.
+
+    The release summaries and the cleanup advisory ask for every count in a single statement,
+    and each count carries its own copy of the visibility predicate. Parentheses are matched by
+    depth so the nested `(SELECT 1 FROM …)` inside a NOT EXISTS never ends a chunk early.
+    """
+    parts, index = [], 0
+    while (start := text.find("(SELECT ", index)) != -1:
+        depth, position = 0, start
+        while position < len(text):
+            if text[position] == "(":
+                depth += 1
+            elif text[position] == ")":
+                depth -= 1
+                if depth == 0:
+                    break
+            position += 1
+        tokens = text[position:].split()
+        assert tokens[1] == "AS", f"unaliased scalar subquery in {text!r}"
+        parts.append((tokens[2].rstrip(","), text[start + 1:position]))
+        index = position + 1
+    return parts
+
+
+class _LabelVisibilityBQ:
+    """Fake client that EVALUATES the label-visibility predicate with SQL's own NULL rules.
+
+    `_FakeBQ` returns canned rows, which cannot show whether a tombstone actually reaches the
+    label it names — and that is the whole subject here. So this double reads the predicate the
+    store emitted and applies it: NULL-safe when the query IFNULLs both profile_id operands,
+    and BigQuery's real three-valued logic (`NULL = <anything>` is NULL, never TRUE) when it
+    does not. Reverting the predicate therefore leaves a legacy label training-visible here for
+    exactly the reason it does in BigQuery.
+    """
+
+    def __init__(self, labels=(), decisions=(), retractions=()):
+        self.labels = [dict(row) for row in labels]
+        self.decisions = [dict(row) for row in decisions]
+        self.retractions = [dict(row) for row in retractions]
+        self.queries = []
+        self.job_configs = []
+
+    def _tombstoned(self, sql, row, *, alias, stamp_column):
+        """Join on the keys the predicate actually names, under SQL's own NULL rules.
+
+        Reading each clause out of the emitted SQL instead of hardcoding the join is what makes
+        DROPPING one of them fail these tests: the created_at key is the only thing stopping an
+        identity-less tombstone from hiding every identity-less label in its run.
+        """
+        keys = [key for key in ("run_id", "app", "source") if f"r.{key}={alias}.{key}" in sql]
+        stamped = f"r.{stamp_column}={alias}.created_at" in sql
+        null_safe = f"IFNULL(r.profile_id,'')=IFNULL({alias}.profile_id,'')" in sql
+        plain = f"r.profile_id={alias}.profile_id" in sql
+        for tombstone in self.retractions:
+            if any(tombstone[key] != row[key] for key in keys):
+                continue
+            if stamped and tombstone[stamp_column] != row["created_at"]:
+                continue
+            if null_safe and (tombstone.get("profile_id") or "") != (row.get("profile_id") or ""):
+                continue
+            # SQL three-valued logic: a NULL operand makes `=` NULL, never TRUE.
+            if plain and (tombstone.get("profile_id") is None or row.get("profile_id") is None
+                          or tombstone["profile_id"] != row["profile_id"]):
+                continue
+            return True
+        return False
+
+    def _selected(self, sql, params, row, *, table):
+        for column in ("run_id", "app", "source"):
+            if f"{column}=@{column}" in sql and row.get(column) != params.get(column):
+                return False
+        for column, value in (("source", "manual"), ("decision", "like"), ("decision", "dislike")):
+            if f"{column}='{value}'" in sql and row.get(column) != value:
+                return False
+        for literal, value in (("liked=TRUE", True), ("liked=FALSE", False)):
+            if literal in sql and bool(row.get("liked")) is not value:
+                return False
+        alias, stamp = (("l", "label_created_at") if table == "labels"
+                        else ("d", "decision_created_at"))
+        return not ("NOT EXISTS" in sql
+                    and self._tombstoned(sql, row, alias=alias, stamp_column=stamp))
+
+    def _count(self, sql, params):
+        for table, rows in (("labels", self.labels), ("decisions", self.decisions)):
+            if f"`proj.ds.{table}`" in sql:
+                return sum(1 for row in rows if self._selected(sql, params, row, table=table))
+        return 0  # openers / profile archives: deliberately empty in these fixtures
+
+    def query(self, sql, job_config=None):
+        text = " ".join(str(sql).split())
+        self.queries.append(text)
+        self.job_configs.append(job_config)
+        params = {p.name: p.value for p in getattr(job_config, "query_parameters", [])}
+        if text.startswith("SELECT l.liked, l.embedding"):
+            return _FakeJob([{"liked": bool(row["liked"]), "embedding": list(row["embedding"])}
+                             for row in self.labels
+                             if self._selected(text, params, row, table="labels")])
+        if text.startswith("SELECT ("):
+            return _FakeJob([{alias: self._count(chunk, params)
+                              for alias, chunk in _scalar_subqueries(text)}])
+        return _FakeJob([])
+
+
+_LEGACY_LABEL_AT = datetime(2026, 1, 1, 0, 0, 1, tzinfo=timezone.utc)
+_LEGACY_DECISION_AT = datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+_EMPTY_LABEL_AT = datetime(2026, 1, 1, 0, 1, 1, tzinfo=timezone.utc)
+_EMPTY_DECISION_AT = datetime(2026, 1, 1, 0, 1, 0, tzinfo=timezone.utc)
+_MODERN_LABEL_AT = datetime(2026, 1, 1, 0, 2, 1, tzinfo=timezone.utc)
+_MODERN_DECISION_AT = datetime(2026, 1, 1, 0, 2, 0, tzinfo=timezone.utc)
+
+
+def _identity_less_rows(source="manual"):
+    """Two labels carrying NO profile identity, in both spellings, plus one that has one.
+
+    NULL is how a row written before `labels.profile_id` reached the live table through
+    _MIGRATIONS reads back; "" is what add_label's own default writes. Both mean "no profile
+    identity", and a tombstone has to be able to reach either one.
+    """
+    def label(created_at, liked, embedding, profile_id):
+        return {"run_id": "r", "app": "hinge", "source": source, "profile_id": profile_id,
+                "created_at": created_at, "liked": liked, "embedding": embedding}
+
+    def decision(created_at, outcome):
+        return {"run_id": "r", "app": "hinge", "source": source,
+                "created_at": created_at, "decision": outcome}
+
+    return (
+        [label(_LEGACY_LABEL_AT, False, [0.1], None),
+         label(_EMPTY_LABEL_AT, False, [0.2], ""),
+         label(_MODERN_LABEL_AT, True, [0.3], "modern-profile")],
+        [decision(_LEGACY_DECISION_AT, "dislike"),
+         decision(_EMPTY_DECISION_AT, "dislike"),
+         decision(_MODERN_DECISION_AT, "like")],
+    )
+
+
+def _tombstone(*, profile_id, label_created_at, decision_created_at, run_id="r",
+               source="manual"):
+    return {"run_id": run_id, "app": "hinge", "source": source, "profile_id": profile_id,
+            "label_created_at": label_created_at, "decision_created_at": decision_created_at}
+
+
+def test_bigquery_tombstone_retracts_a_label_that_carries_no_profile_id():
+    """A legacy NULL-profile_id label must be retractable, not merely removable.
+
+    `r.profile_id=l.profile_id` is NULL (never TRUE) for such a label, so no tombstone could
+    ever reach it: it stayed in the training set permanently, and the only way to be rid of it
+    was remove_latest_training_label, which destroys the row instead of correcting it.
+    """
+    labels, decisions = _identity_less_rows()
+    client = _LabelVisibilityBQ(labels, decisions)
+    assert _labels_store(client).load_labels() == [(False, [0.1]), (False, [0.2]), (True, [0.3])]
+
+    client.retractions = [_tombstone(profile_id="", label_created_at=_LEGACY_LABEL_AT,
+                                     decision_created_at=_LEGACY_DECISION_AT)]
+    assert _labels_store(client).load_labels() == [(False, [0.2]), (True, [0.3])]
+
+    # The "" spelling of the same absent identity has to be reachable by its own tombstone
+    # too, and only by its own: the join still carries label_created_at.
+    client.retractions.append(_tombstone(profile_id="", label_created_at=_EMPTY_LABEL_AT,
+                                         decision_created_at=_EMPTY_DECISION_AT))
+    assert _labels_store(client).load_labels() == [(True, [0.3])]
+
+
+def test_bigquery_tombstone_for_another_label_never_hides_an_identity_less_one():
+    """Folding NULL and "" together must not turn a tombstone into a wildcard."""
+    labels, decisions = _identity_less_rows()
+    client = _LabelVisibilityBQ(labels, decisions, [
+        # Same timestamp as the NULL-profile label but a different profile identity.
+        _tombstone(profile_id="modern-profile", label_created_at=_LEGACY_LABEL_AT,
+                   decision_created_at=_LEGACY_DECISION_AT),
+        # No profile identity, but another label's timestamp.
+        _tombstone(profile_id="", label_created_at=_MODERN_LABEL_AT,
+                   decision_created_at=_MODERN_DECISION_AT),
+        # Right label, wrong run.
+        _tombstone(profile_id="", label_created_at=_LEGACY_LABEL_AT,
+                   decision_created_at=_LEGACY_DECISION_AT, run_id="other-run"),
+    ])
+
+    assert _labels_store(client).load_labels() == [(False, [0.1]), (False, [0.2]), (True, [0.3])]
+
+
+@pytest.mark.parametrize("source", ["manual", "external_ai_review"])
+def test_bigquery_every_read_path_agrees_about_a_retracted_identity_less_label(monkeypatch, source):
+    """load_labels, both release summaries and the cleanup advisory share one predicate.
+
+    They are separate statements, each with its own copy of the visibility clause, so a fix
+    applied to only some of them lets a release summary count a label the ranker has already
+    stopped training on.
+    """
+    _stub_bigquery_module(monkeypatch)
+    labels, decisions = _identity_less_rows(source)
+    client = _LabelVisibilityBQ(labels, decisions, [
+        _tombstone(profile_id="", label_created_at=_LEGACY_LABEL_AT,
+                   decision_created_at=_LEGACY_DECISION_AT, source=source)])
+    store = _labels_store(client)
+
+    assert store.load_labels() == [(False, [0.2]), (True, [0.3])]
+    prefix, summary = (("manual", store.observe_release_persistence_summary("r", "hinge"))
+                       if source == "manual" else
+                       ("ai", store.ai_observe_release_persistence_summary("r", "hinge", source)))
+    assert summary == {f"{prefix}_pass_labels": 1, f"{prefix}_like_labels": 1,
+                       f"{prefix}_pass_decisions": 1, f"{prefix}_like_decisions": 1,
+                       "successful_hinge_openers": 0}
+    assert store.advisory_opener_run_rows("r", "hinge")["effective_counts"] == {
+        "like_labels": 1, "like_decisions": 1, "pass_labels": 1, "pass_decisions": 2}

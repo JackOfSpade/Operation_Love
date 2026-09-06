@@ -15,8 +15,8 @@
     "operation_love/opener/opener.py"
   ],
   "generated_from": {
-    "total_revisions": 46,
-    "evaluated_revisions": 22,
+    "total_revisions": 48,
+    "evaluated_revisions": 24,
     "unevaluable_revisions": 24
   },
   "eras": [
@@ -402,6 +402,58 @@
         "APPLICATION RULE",
         "HARD RULE"
       ]
+    },
+    {
+      "prompt_sha256": "9f50c50b66cc49de8b80823f1df8974e0a8e315c4e01f6eb887787ce85471be9",
+      "label": "2026-09-06 75155dc7: +SPOKEN REGISTER; +SAY IT ONCE; +MODIFIER CLARITY; +5 more change(s)",
+      "first_commit": "75155dc783ec7684d2ee44f5e8404272aa816b82",
+      "first_date": "2026-09-06T15:18:36-04:00",
+      "first_subject": "Stop the opener grading, and build the loop that can prove it worked",
+      "last_commit": "05b2dac35a99e8a2ef5485cf0732e104cc312279",
+      "last_date": "2026-09-06T18:33:30-04:00",
+      "last_subject": "Bound the replay corpus, turn capture on, and make the verdict declare its provenance",
+      "commit_count": 2,
+      "commits": [
+        "75155dc783ec7684d2ee44f5e8404272aa816b82",
+        "05b2dac35a99e8a2ef5485cf0732e104cc312279"
+      ],
+      "rules": [
+        "SHARED CONTEXT RULE",
+        "PRIMARY ITEM RULE",
+        "PHOTO HEADER RULE",
+        "PROFILE TEXT FACT CHECK",
+        "CONVERSATIONAL VALUE RULE",
+        "CLAIMS ONLY WHEN NATURAL",
+        "MINIMUM INVENTION",
+        "TRACEABILITY TEST",
+        "INFORMATION GAIN TEST",
+        "PLAYFUL HYPERBOLE",
+        "SAFETY AND DIGNITY",
+        "SETUP PAYOFF CONTINUITY",
+        "QUESTION COHERENCE",
+        "CASUAL OR PUNCTUATION",
+        "SPOKEN REGISTER",
+        "SAY IT ONCE",
+        "REFERENT CLARITY",
+        "MODIFIER CLARITY",
+        "ROLE CONSISTENCY",
+        "REPLY COMFORT",
+        "POSITIVE SOCIAL FRAMING",
+        "RECIPROCITY BEFORE FUTURE",
+        "CONFIRMATION BOUNDARY",
+        "VISUAL LOCATION TURN BOUNDARY",
+        "COMPLIMENT AS REMARK",
+        "NO GRADING",
+        "SUBSTITUTION TEST",
+        "HEDGE THE CLAIM, NEVER YOURSELF",
+        "VARY THE OPENING",
+        "VARY THE SHAPE",
+        "GUESS THE WORLD, NOT HER IDENTITY",
+        "NEVER INVENT THE SENDER",
+        "PICK THE ITEM YOURSELF",
+        "APPLICATION RULE",
+        "HARD RULE"
+      ]
     }
   ],
   "unevaluable_revisions": [
@@ -601,7 +653,7 @@
   "working_tree": {
     "provisional": true,
     "prompt_sha256": "9f50c50b66cc49de8b80823f1df8974e0a8e315c4e01f6eb887787ce85471be9",
-    "label": "UNCOMMITTED WORKING TREE -- PROVISIONAL, not a shipped era (+SPOKEN REGISTER; +SAY IT ONCE; +MODIFIER CLARITY; +5 more change(s))",
+    "label": "UNCOMMITTED WORKING TREE -- PROVISIONAL, not a shipped era (identical to already-known era: '2026-09-06 75155dc7: +SPOKEN REGISTER; +SAY IT ONCE; +MODIFIER CLARITY; +5 more change(s)')",
     "commit": null,
     "rules": [
       "SHARED CONTEXT RULE",
@@ -641,7 +693,7 @@
       "HARD RULE"
     ],
     "reasons": [],
-    "matches_known_committed_era": null,
+    "matches_known_committed_era": "9f50c50b66cc49de8b80823f1df8974e0a8e315c4e01f6eb887787ce85471be9",
     "no_metrics_recorded_here": true,
     "note": "Computed from the files on disk right now (Path.read_text), not from git history -- there is no commit behind this digest, and it can change on the very next edit or `git commit`. Regenerate this registry (python tools/backfill_prompt_eras.py) to refresh it. This registry never records measured metrics for ANY entry, committed or provisional -- see tools/opener_corpus_report.py's --rule/--eras for whatever has actually been measured against a real corpus; a rule appearing here is a fact about what was ON THE WIRE, never a claim that it was measured."
   }

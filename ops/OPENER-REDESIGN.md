@@ -4232,3 +4232,1826 @@ capture refuses), so it costs one profile and can never produce a wrong like. Se
 `item_crops._over_tall_failures` compares block height to the BAND, not to the viewport, so a
 1609px block under a 1420px viewport passes it silently and simply never completes. Both belong in
 the same re-check, not in a step gate.
+
+#### Addendum — 2026-09-05: an opener that broke no rule still read as a bot, because every rule governed content and none governed register
+
+The trigger was owner feedback on the newest opener on record (2026-09-04T19:16:01, run
+122495fa2f81, `auto_opener_pre_send` — never sent):
+
+> You have a really classic sense of style here. What is your favorite kind of spot when
+> you feel like dressing up for a night out?
+
+It passes every Part A rule — two sentences, one compliment, an easy positive question,
+profile-specific, nothing invented — and the owner correctly read it as glazing and wordy.
+Their rewrite: "That's quite a classic style you got there. What's your favorite spot for a
+night out?" Three register properties separate the two: an earnest second-person appraisal
+vs. an offhand remark about the thing; written-formal grammar vs. spoken texting register;
+restated context and deictic filler ("here") vs. trusted implicature.
+
+MEASURED (offline, read-only: BigQuery `openers` 125 rows + `opener_send_evidence` 64 rows +
+data/hinge_debug actions.jsonl 96 unique, deduped, 40 most recent analyzed, 2026-09-02 →
+2026-09-04):
+- ZERO apostrophes in all 188 unique openers ever generated. Not one contraction. The
+  register failure is not occasional; it is the entire distribution.
+- 21/40 open with a demonstrative verdict (That/This/Those/These + appraisal).
+- 22/40 end in a binary "X or Y" question; 12/40 voice the observation as "looks like";
+  7/40 stack two or more intensifiers; 30/40 fit one compound mold: [demonstrative] +
+  [appraisal or looks-like hedge] + [caption noun] . [binary or-question].
+- Median 23 words. The five openers that read naturally are the short ones that drop the
+  appraisal beat entirely.
+- A side finding: the no-hyphen HARD RULE was being satisfied by deleting hyphens from
+  compounds the model still wrote ("top secret survival gear", "a pose off"), i.e. the rule
+  changed spelling where it was meant to change phrasing.
+
+WHAT SHIPS (both prompt copies, doc 3.1 lockstep; plus the two copies no prior entry
+recorded — see below):
+- SPOKEN REGISTER — say it out loud, then type that: the contractions a relaxed speaker
+  would use, plain everyday words over formal noun phrases, natural spoken elision licensed
+  (owner decision this date: elision yes, internet slang and chat abbreviations no, borrowed
+  caption vocabulary no), one intensifier, and wording-only scope (spelling, capitalization,
+  punctuation rules unchanged).
+- SAY IT ONCE — the second sentence inherits the first's topic; no restated connections, no
+  setup repeated inside the question, questions stripped to the one clause a person would
+  text.
+- COMPLIMENT AS REMARK — the one allowed compliment (quota unchanged, its line untouched) is
+  an offhand remark about the visible thing, the thing as grammatical subject, understated
+  over emphatic; it shapes a compliment that occurs and never requires one (deliberately
+  scoped to avoid re-imposing a mandatory shape — the same trap the 2026-08-16 correction
+  removed from claims).
+- VARY THE SHAPE — the verdict-then-question mold, the looks-like frame, and the binary
+  or-question are each one available shape, never the default; a repeating shape is a
+  template even when words change. This generalizes VARY THE OPENING from first words to
+  whole-message structure, against the measured 30/40 mold.
+- SHARED CONTEXT RULE gains: never point at the medium (a word gesturing at the photo,
+  screen, or profile as an object); a bare demonstrative suffices. The rule's own "she is
+  looking at that item" framing was arguably inviting the deictic "here".
+- HARD RULE gains: when a compound would need a hyphen, rephrase; never delete the hyphen
+  and glue the words.
+
+WHY PROPERTIES AND NOT EXAMPLES OR MENUS: the 2026-08-11 "I bet" collapse (5/5) and the
+2026-08-15 "my money is on" incident are both on record above; the 2026-08-16 de-templating
+decision stands. No example copy ships in any model-facing string. The motivating opener and
+the owner's rewrite are pinned off-wire in the new tests.
+
+FOUR COPIES, NOT TWO — a correction to this doc's own §3.1 framing: the on-wire prompt
+carries the rules in FOUR places, not two: config.yaml `opener.style` (user turn), `_SYSTEM`
+(systemInstruction), the `_SCHEMA` field descriptions (responseJsonSchema), and the retry
+hint block. All four were touched this date, but NOT with the same content, and a later
+reader should not expect otherwise: the five register properties ship in `opener.style` and
+`_SYSTEM` in lockstep, the `_SCHEMA` opener description carries a compressed form of THREE of
+them (SPOKEN REGISTER, SAY IT ONCE, COMPLIMENT AS REMARK) plus the new never-point-at-the-
+medium clause — it deliberately does not restate VARY THE SHAPE or the hyphen rephrase clause,
+since a field description is read as a constraint on the value and those two are advisory —
+and the retry hint block was corrected in an unrelated way — its HARD REJECTION list. That
+list now names the scaffolding, disclaimer, shared-future, sensitive-inference and
+undeliverable-character (emoji / non-ASCII) causes the code actually enforces, and no longer
+spends its "especially" emphasis on the dash rule, which `_sanitize` launders and which
+therefore can never be the reason an attempt was rejected. The undeliverable-character clause
+is doing double duty: dropping the dash "especially" also dropped the retry turn's only ASCII
+reminder, at exactly the moment SPOKEN REGISTER started pushing the model toward informality,
+which is the direction emoji come from. One cause remains deliberately unnamed:
+`REASON_UNDELIVERABLE_SEQUENCE` (a literal `%` directly against a following lowercase `s`)
+stays out of every prompt copy, because a standing `%` warning costs more than the collision
+does — that guard's own comment makes the argument, and its own `retry_hint` explains the fix
+on the rare occasion it fires. So the list is complete except for one documented, intentional
+omission; the invariant for the next editor is recorded at the block itself: a new raising
+guard in `_parse()` needs a new clause here, or the list quietly becomes a lie again.
+
+DELIBERATELY NOT CHANGED: the compliment quota line; CONVERSATIONAL VALUE RULE and its
+claims-optional stance; POSITIVE SOCIAL FRAMING; REPLY COMFORT; CONFIRMATION BOUNDARY;
+APPLICATION RULE's two-sentence ceiling and hard rules; PROFILE TEXT FACT CHECK (still
+_SYSTEM-only); the observe/auto byte-identity contract; no new deterministic detector
+(owner decision: prompt-only first, entropy guard remains the backstop; revisit only if a
+watched batch still fails register — the 2026-08-11 scaffolding-defense decision is not
+reopened).
+
+RECORD-KEEPING CORRECTIONS FOLDED IN HERE, because this file stopped tracking Part A wording
+on 2026-08-16 while four rule sets shipped after it: REFERENT CLARITY and REPLY COMFORT
+(2026-08-17), CONFIRMATION BOUNDARY and INFORMATION GAIN (2026-09-02), POSITIVE SOCIAL
+FRAMING (2026-09-04) exist only as dated comment addenda above `style:` in config.yaml and
+in opener.py's log. This entry restores the doc as the index: the config comment log is the
+de facto Part A changelog; read it alongside §2-3. Also stale as of this date: §3.7's cited
+store line numbers; §3.1's statement that "the examples live in config.yaml opener.style"
+(superseded 2026-08-16; no examples live anywhere on-wire) and its cited line numbers
+`opener.py:49-75` / `config.yaml:280-300` (`_SYSTEM` now begins at opener.py:397, `style:` at
+config.yaml:869); and §3.6's two-clause entropy-guard rationale. §3.6's second clause,
+"few-shot examples make direct copying a live risk", died with the same 2026-08-16
+de-templating pass; its first clause (shortening compresses the output space) is still true
+and is still the structural reason collisions are likely at all — SAY IT ONCE shortens the
+message further, so that clause gets MORE true this date, not less. The live reason the guard
+exists is the measured 5/5 self-collapse of 2026-08-11 plus the fingerprint risk of an
+uncapped-volume burner account. §3.6 is the most load-bearing of these three because the code
+points AT it by name: the entropy guard comments in `opener.py` (`_leading_ngram`) and
+`service.py` both cite "ops/OPENER-REDESIGN.md 3.6", so a reader following the code's own
+pointer landed on the stale claim. Both comments now carry the corrected two-part rationale
+and warn that §3.6's own text is half stale. Per the append-only rule for dated records, §3.6
+itself is NOT edited in place.
+
+RESIDUALS, stated rather than smoothed over:
+- No row-level style version stamp exists anywhere (verified: zero hits for any
+  prompt/style hash or version constant). The comparability boundary between register eras
+  is created_at vs. config.yaml's git commit dates, now recorded in the calibration warning
+  beside _redundant_description_markers, which names BOTH boundaries (2026-08-11,
+  2026-09-05). A real stamp would need the two-step schema change bigquery_store.py:156-177
+  documents; recommended as a follow-up, not smuggled into this change.
+- Register compliance is UNMEASURED until a live batch runs. The prediction that is
+  cheapest to check: apostrophe frequency moves off zero. The or-question and looks-like
+  saturations should fall but VARY THE SHAPE is advisory; the entropy guard still only
+  polices leading n-grams within a run.
+- opener_rejections remains empty (0 rows ever) and is advisory-blind (rejections recorded
+  only when not advisory, at two guarded sites in service.py), so "the guard never fires"
+  cannot be read off it; this predates and survives this change.
+- The style text is read once at supervisor startup; a running process keeps the old
+  register rules until restarted.
+- Editing config.yaml changes its whole-file SHA-256, which strands any in-flight
+  calibration capture/review/video-bound session bound to the old bytes (five refusal sites
+  check exact bytes). Recovery if needed: check out the pre-change config, measure, return.
+- The weakest cascade models (two Gemma ids, thinkingLevel minimal, 16K TPM) now carry five
+  more property rules; if their rejection rate rises, max_attempts=5 is the run-killing
+  budget to watch.
+
+BLAST RADIUS FOUND IN REVIEW AND FIXED THIS DATE — a detector whose safety depended on the
+register we just changed. `_strip_wrapping_quotes` silently repairs an opener the model
+wrapped in its own quote pair, but it refused to strip whenever the wrapping character also
+occurred in the interior. Zero apostrophes in 188 openers meant a single-quote wrapper always
+had a clean interior and always repaired; SPOKEN REGISTER makes contractions the norm, so
+from this date it usually would NOT have. Verified before the fix: `'That's a nice mug.'`
+came back unchanged and `_scaffolding_markers` returned `[]` for it, i.e. the literal leading
+and trailing apostrophes would have been typed into her comment box with nothing downstream
+catching it. The refusal now applies only to interior occurrences that are not INTRA-WORD (a
+letter on both sides): a contraction repairs, a trailing possessive (`'Grams' pie is
+unreal.'`) and a nested quote still refuse and still ship untouched, which is the residual.
+The residual that MATTERS is a third shape, and it is the one this change itself
+manufactures: `_is_intra_word` requires a letter on both sides, so the word-final elision
+apostrophe SPOKEN REGISTER explicitly licenses is not intra-word,
+`_strip_wrapping_quotes("'Nothin' fancy about that mug.'")` still refuses (verified live,
+byte-identical before and after the fix) and those wrapping quotes ship — the possessive and
+the nested quote are shapes nothing in this change encourages, this one it invites. The
+pre-named fix, a scaffolding rule for a message still wholly wrapped in a matched pair after
+the helper declines, is deliberately deferred to the first watched batch, per the prompt-only
+owner decision recorded above. The general lesson is worth more than the fix: a measured-zero
+property of model output ("it never emits apostrophes") had silently become a precondition of
+a repair, and the change that moved that property lives in a different file from the code
+that depended on it.
+
+RESIDUALS ADDED IN REVIEW — in-prompt tensions this change created or sharpened. None is a
+contradiction; each is a place where two rules pull against each other on `thinkingLevel:
+minimal`, and each names the metric that would show it:
+- NEGATION PRIMING: VARY THE SHAPE puts the literal phrase "looks like" on the wire in both
+  copies in order to suppress a frame measured at 12/40. That is the same mechanism as the
+  2026-08-11 "I bet" 5/5 collapse and the 2026-08-15 "my money is on" incident, and the same
+  mechanism POSITIVE SOCIAL FRAMING itself states three paragraphs earlier. It does not
+  violate the 2026-08-16 de-templating rule, which bans example opener COPY rather than
+  naming a shape, and the CI negatives pass. But if the first live batch shows the looks-like
+  rate flat or UP rather than down, the three shape names are the first thing to pull, not
+  the rule.
+- DEMONSTRATIVE PULL: the SHARED CONTEXT addition endorses the bare demonstrative ("a bare
+  demonstrative carries all the shared looking the message needs") while VARY THE SHAPE, four
+  paragraphs later, deprecates the verdict-then-question mold that the measured 21/40 opened
+  with a demonstrative verdict. A bare demonstrative is not a demonstrative verdict and the
+  owner's own rewrite is demonstrative-initial, so the copy is defensible as written; watch
+  the demonstrative-opening rate as its own metric, separately from the or-question and
+  looks-like rates.
+- "HERE'S" COLLISION: `_SCAFFOLD_LEADING_PHRASES` still rejects any opener starting with
+  "here is" / "here's" as REASON_SCAFFOLDING, and SPOKEN REGISTER raises the odds a model
+  writes one — verified live, `_scaffolding_markers("Here's hoping that trail's as steep as
+  it looks. ...")` returns a leading-interjection marker, i.e. a perfectly human spoken
+  opening is a hard rejection against the same max_attempts=5 budget. The collision predates
+  this change; the change raises its probability, and the new never-point-at-the-medium
+  clause partly pulls the other way. No code change now: if REASON_SCAFFOLDING rows with a
+  leading-interjection marker on "Here's" appear in opener_rejections, the fix is to drop
+  "here's"/"here is" from that tuple (rule 1's leading-label clause already catches "Here's
+  the response:"), NOT to weaken SPOKEN REGISTER.
+- SAY IT ONCE vs CONFIRMATION BOUNDARY / REFERENT CLARITY: a confirm-or-correct second beat
+  often needs exactly the qualifier SAY IT ONCE strips ("Am I right that you bake?" ->
+  "Am I right?"), which is also where the referent goes ambiguous. Compatible for a careful
+  reader, opposed on minimal thinking. If REFERENT CLARITY-shaped failures show up in the
+  first watched batch, this is the named cause.
+- HYPHEN CLAUSE WORDING: the style text says the model must "never write the compound with
+  its hyphen silently removed, because the glued words read as a typo". The mechanism is
+  slightly different from what that sentence describes — typography.py folds every hyphen to
+  a SPACE, not to nothing, so the artifact is two space-separated words ("top secret survival
+  gear", "a pose off"), never a concatenation. Do not go looking for a gluing bug. The rule's
+  actionable half ("rephrase the sentence so no hyphen is needed") is correct and is what
+  matters; the wording stands as the owner approved it.
+
+Suite 4862 -> 4865 green. Offline only — no device, no live API call, nothing read from
+ops/calibration/. New pins: tests/test_config_yaml_real.py::
+test_shipped_opener_style_ships_the_spoken_register_rules, tests/test_opener.py::
+test_system_prompt_ships_the_spoken_register_rules, tests/test_opener.py::
+test_strip_wrapping_quotes_strips_around_a_contraction; retry-block and `_SCHEMA`
+opener-description assertions extended in tests/test_gemini_opener.py (the schema copy was
+pinned by nothing before this date, so it could have been deleted or drifted out of lockstep
+with a fully green suite).
+
+#### Addendum -- 2026-09-05 (b): the era boundary becomes a column
+
+The trigger is the first RESIDUAL of the (a) addendum above, promoted by owner decision the
+same day. That entry recorded, correctly, that no row-level style version stamp exists
+anywhere, that the comparability boundary between register eras is therefore created_at
+against config.yaml's git commit dates, and that a real stamp would need the two-step schema
+change bigquery_store.py documents -- "recommended as a follow-up, not smuggled into this
+change". This is that follow-up, shipped as its own change with its own tests.
+
+WHAT SHIPS. A nullable `prompt_sha256` on BOTH `openers` and `opener_rejections`, in BOTH
+backends (SQLite TEXT, BigQuery STRING). The value is the service's one-time
+`prompt_stamp(style)`, computed once in `OpenerService.__init__` because all of its inputs are
+fixed for the life of the process, and written on every row that service produces: the
+immediate/legacy record site, the staged-commit path, and the rejection site. Both backends
+follow their own documented two-step rule -- the `_SCHEMA` / `_TABLES` declaration reaches a
+FRESH database only, and a matching ALTER (a new tuple entry plus a new stanza in sqlite's
+`_initialize_schema`, two new `_MIGRATIONS` lines in BigQuery) is what carries the column into
+a database that already exists. `opener_rejections` had never gained a column before, in
+either backend, so this is that table's first migration in both.
+
+STAMPED AT GENERATION, NOT AT COMMIT. The digest is captured onto `_StagedOpenerRecord` when
+the draft is produced and replayed verbatim when the draft is committed. Staging is exactly
+the gap in which the two could differ, and a draft attributed to a prompt it was not generated
+under is worse than no stamp at all. `_record_staged_opener` probes the sink for the new
+parameter through a probe that is deliberately ORTHOGONAL to the existing five-name lineage
+probe: the two schema extensions shipped on different dates, so a duck-typed store may have
+either, both, or neither, and folding them together would drop the stamp for one shape and
+raise TypeError on the other -- turning a real Like into a failed worker run, which is the
+exact thing that probe exists to prevent.
+
+DIGEST COVERAGE, AND THE DELIBERATE EXCLUSIONS. The payload is SEVEN components joined in a
+fixed order by a NUL byte: `opener.style` (the user turn), `_SYSTEM` (systemInstruction), the
+canonicalized `_SCHEMA` field descriptions (responseJsonSchema) -- three of the FOUR on-wire
+prompt copies the (a) addendum's four-copies correction names -- and then the item-crop shape's
+four instruction constants, `_ITEM_PREAMBLE`, `_ITEM_PREAMBLE_CONTEXT`, `_ITEM_LABEL` and
+`_CONTEXT_LABEL`. Those last four were folded in during review, before the column reached any
+table, because they are model-facing instruction prose rather than bookkeeping -- the preamble
+is the FIRST text part of every item-crop request, and between them they carry the
+compound-item rule (a title, caption, or prompt above a photo is ONE item with it) and the
+cannot-be-picked rule that `_CONTEXT_LABEL` restates on every context image -- and because they
+satisfy the same coverage criterion as the first three: stable for a whole run and living in
+module-level constants. `_SCHEMA` is canonicalized (sort_keys, compact separators,
+ensure_ascii) so a cosmetic dict reorder cannot manufacture a false boundary, and the NUL sits
+between EVERY adjacent pair so that prose moved from the end of one constant to the start of
+the next cannot reassemble to the same bytes. It EXCLUDES: the retry-hint prose, because it is
+request-conditional -- built per attempt from whichever guard rejected the previous draft -- so
+including it would give one era as many digests as it has failure modes and would file an
+attempt and its own retry under two eras; generationConfig / thinking, which change how hard
+the model works rather than what it was told; and the model id, which is already its own
+column in both tables and would only make the stamp less joinable.
+
+DELIBERATELY NOT TOUCHED. The opener retraction fingerprint stays the closed five-field dict
+(run_id, app, created_at, model, opener) and `advisory_opener_run_rows` stays a three-key
+projection (created_at, model, opener_fingerprint). Five on-disk cleanup plans in
+ops/corrections/ carry fingerprints computed from exactly those fields; widening either side
+would re-key every stored plan against rows it already names, and `append_opener_retraction`
+would then refuse them as "fingerprint no longer matches its cleanup plan" -- a plan that can
+never be applied again. One pin per backend now asserts both halves, and the BigQuery one also
+asserts the SELECT never asks for the column. `opener_send_evidence` is NOT stamped: the owner
+scoped this change to the two named tables, and that table joins to `openers` anyway.
+
+NULL SEMANTICS. The column is nullable and nothing backfills it. NULL means "written before
+2026-09-05 (b)", not "no era" -- those rows still need the created_at vs. git-dates split, so
+an offline pass over a range spanning this date uses both methods at once. That is now stated
+in the CALIBRATION WARNING beside `_redundant_description_markers`, appended to rather than
+replacing the two-boundary text already there.
+
+MIGRATION EXECUTION TIMING. Nothing runs at edit time. SQLite applies its ALTERs the next time
+a store is constructed, BigQuery at the next `ensure=True` init -- i.e. the next live run, in
+both cases. BigQuery's grouped-ALTER behavior is unchanged: `_ensure_tables` still collects
+every needed addition per table into ONE `ALTER TABLE` statement and submits the whole script
+as a single job with the existing rate-limit retry, so adding two columns across two tables
+adds two clauses, not two round trips per column. This matters because `flush_every=1` is a
+live configuration: a row carrying a field the live table does not declare is rejected on the
+FIRST insert of the run and takes its whole batch with it (skip_invalid_rows is unset), which
+is the entire reason a `_TABLES` entry without a `_MIGRATIONS` line is a production bug that
+passes every local test. The `_MIGRATIONS` lines MOVE that failure mode rather than eliminate
+it: BigQuery's streaming insert path does not always see a freshly ALTERed table's new column
+immediately, so the very first opener or rejection insert of the run that applies the ALTER can
+still be rejected for schema propagation lag and take its batch with it. Every prior `openers`
+column shipped exactly this way without incident, and the loss is warning-level rather than a
+run failure -- `record_opener` runs inside the service's non-fatal try/except -- so this is
+recorded as a known first-run cost, not designed around.
+
+RESIDUALS.
+- The stamp cannot distinguish two eras that differ ONLY in retry-hint prose. That is the
+  priced cost of the exclusion above, not an oversight; the retry block was in fact edited on
+  2026-09-05 (a), so a pair of eras with this exact shape is not hypothetical.
+- The retry hint is NOT the only such gap, and "equal digests mean the same era" must not be
+  read as unconditional. The one remaining un-hashed body of model-facing instruction prose is
+  `_text_part`'s TRAILING text part, and only that: the closing block, its truncation and
+  CONTEXT sentences, and the STYLE GUIDE / HER NAME / HER PROFILE TEXT section labels. The
+  item-crop preamble and the per-image labels are NOT in this gap -- the first review pass left
+  them out and this addendum's DIGEST COVERAGE now hashes all four of those constants, so an
+  edit to the compound-item rule or the cannot-be-picked rule DOES move the digest. What
+  remains excluded is excluded on the same principle as the retry hint: the trailing block is
+  request-conditional as a whole (item counts, name section, and truncation sentence vary per
+  profile), so covering it would mean hashing a per-profile string, i.e. a stamp that is no
+  longer per-run -- the pricing argument is valid for this body and for no other. Unlike
+  bookkeeping it still carries FIXED sentences that are real prompt rules, notably its own
+  CONTEXT-images sentence ("Never pick one or make one the opener's main premise") and the
+  item_index instruction, and that copy has been rewritten before. Editing one of those
+  sentences is a genuine era boundary that produces an identical digest: the precise false
+  negative this column exists to prevent, narrowed twice now but not eliminated. Named here
+  and in `prompt_stamp`'s own docstring so a later reader does not conclude that any
+  prompt-rule edit outside the retry hint moves the digest.
+- `opener_rejections` remains advisory-blind -- rejections are recorded only when not advisory,
+  at the two guarded sites in service.py -- so a stamped rejection table still cannot answer
+  "how often does this guard fire" for observe sessions. Unchanged by this entry, and it
+  survives it.
+- The stamp answers WHICH era, never WHAT changed. Reading a digest back requires checking out
+  the suspected commit and calling `prompt_stamp(cfg.opener.style)`; equal digests mean the
+  same era. That recipe is in the function's own docstring so a later reader is not left with
+  an opaque hex string.
+- Legacy rows stay NULL forever. A backfill would have to guess an era from created_at, which
+  is precisely the reconstruction this column exists to replace, so it is deliberately not
+  attempted.
+
+TEST PINS BY NAME. New: tests/test_opener.py::test_prompt_stamp_is_a_64_character_hex_sha256,
+::test_prompt_stamp_is_deterministic_for_the_same_style,
+::test_prompt_stamp_changes_when_the_owner_style_text_changes,
+::test_prompt_stamp_changes_when_the_system_prompt_changes,
+::test_prompt_stamp_changes_when_a_schema_field_description_changes,
+::test_prompt_stamp_changes_when_an_item_crop_instruction_constant_changes (parametrized over
+all four of `_ITEM_PREAMBLE`, `_ITEM_PREAMBLE_CONTEXT`, `_ITEM_LABEL`, `_CONTEXT_LABEL`, one
+constant at a time, so dropping any single component from the payload fails on its own),
+::test_prompt_stamp_separates_adjacent_constants_rather_than_concatenating_them,
+::test_prompt_stamp_ignores_schema_dict_key_ordering;
+tests/test_sqlite_store.py::test_sqlite_record_opener_persists_the_prompt_era_stamp,
+::test_sqlite_record_opener_leaves_the_prompt_stamp_null_when_the_caller_omits_it,
+::test_sqlite_record_opener_rejection_persists_the_prompt_era_stamp,
+::test_sqlite_migrates_legacy_openers_prompt_sha256_column,
+::test_sqlite_migrates_legacy_opener_rejections_prompt_sha256_column,
+::test_sqlite_opener_rejections_prompt_sha256_migration_reraises_unexpected_operational_errors,
+::test_sqlite_openers_alter_loop_reraises_unexpected_operational_errors,
+::test_sqlite_advisory_opener_run_rows_keep_the_prompt_stamp_out_of_the_fingerprint;
+tests/test_bigquery_store.py::test_ensure_tables_declares_prompt_sha256_on_the_openers_create_table,
+::test_ensure_tables_runs_openers_prompt_sha256_migration,
+::test_ensure_tables_declares_prompt_sha256_on_the_opener_rejections_create_table,
+::test_ensure_tables_runs_opener_rejections_prompt_sha256_migration,
+::test_record_opener_buffers_the_prompt_era_stamp,
+::test_record_opener_buffers_a_null_prompt_stamp_when_the_caller_omits_it,
+::test_record_opener_rejection_buffers_the_prompt_era_stamp,
+::test_record_opener_rejection_signature_stays_aligned_with_the_store_protocol,
+::test_bigquery_advisory_opener_run_rows_keep_the_prompt_stamp_out_of_the_fingerprint;
+tests/test_opener_service.py::test_rejection_rows_carry_the_prompt_era_stamp_of_the_style_the_service_runs,
+::test_immediate_opener_row_carries_the_prompt_era_stamp,
+::test_staged_commit_stamps_the_era_the_draft_was_generated_under. Extended:
+tests/test_sqlite_store.py::test_sqlite_openers_table_has_the_expected_columns_in_order,
+tests/test_bigquery_store.py::test_record_opener_signature_stays_positional_compatible_with_the_store_protocol
+(which also pins Protocol/backend signature equality),
+tests/test_opener_service.py::test_committed_opener_carries_exact_landed_action_lineage,
+tests/test_worker.py::test_auto_persists_landed_decision_before_committing_its_staged_opener.
+The pre-existing
+tests/test_bigquery_store.py::test_record_opener_writes_exactly_the_columns_the_openers_table_declares
+enforces _TABLES-to-row-dict parity on its own and was left alone; it passes.
+
+MUTATION-CHECKED, since a green test is not evidence it reaches the branch it names: dropping
+`prompt_sha256` from the sqlite openers INSERT fails two tests; dropping it from the BigQuery
+buffered row dict fails three, including the exact-columns parity test; adding a dummy key to
+either backend's `advisory_opener_run_rows` emitted dict fails that backend's fingerprint
+isolation pin (and three ops/corrections tests besides). Four more were added in review, all on
+guards a pass shipped unpinned. (1) Rewriting the new `opener_rejections` ALTER's re-raise
+branch as a bare `except sqlite3.OperationalError: pass` left tests/test_sqlite_store.py
+entirely green before the fail-loud pin above existed and fails exactly that one test after.
+(2) The openers half was FIRST claimed to need no separate pin -- "it rides the existing ALTER
+loop and inherits its guard" -- and that claim was mutation-tested and found FALSE: the angle
+and item_description pins each intercept a standalone ALTER with its own try/except, while the
+loop carries a third handler that nothing reached, so rewriting the LOOP's handler as a bare
+`except sqlite3.OperationalError: pass` also left the file green. The fix was to add the
+missing pin rather than soften the sentence; with
+::test_sqlite_openers_alter_loop_reraises_unexpected_operational_errors in place that same
+mutation now fails exactly one test out of the whole suite (4895 passed, 1 failed), and the
+docstring clause points at the pin that actually covers it. (3) Replacing the digest payload's
+NUL join with a plain concatenation fails only
+::test_prompt_stamp_separates_adjacent_constants_rather_than_concatenating_them, which is the
+whole reason the separators are there. (4) Making `prompt_sha256` positional on
+`BigQueryStore.record_opener_rejection`, or dropping it from the Protocol, each fails only the
+new rejection signature pin. Every mutation was restored byte-identically (verified by hash and
+by `git diff`) and the suite re-verified green.
+
+Suite 4865 -> 4896 green (31 new tests, 5 skipped, unchanged). Offline only -- no device, no
+live API call, no BigQuery read or write from this change; the migrations execute on the next
+live store init.
+
+#### Addendum -- 2026-09-05 (c): the nouns were clear, but the modifier attached two ways
+
+The trigger was the first watched Training draft after the spoken-register rewrite. The Hub
+showed this opener on Maja's selected snow photo (run `d986f1b30059`, model item 1):
+
+> You look completely at home bundled up in all that snow. Are you genuinely a winter person
+> or strictly in it for the cozy lodge after?
+
+The owner's reading -- that she was not literally bundled up *in snow* -- is a reasonable
+reading of the word order. The intended composition is also recoverable: she is "bundled up"
+in the ordinary sense of wearing warm clothes, while "in all that snow" locates the whole
+scene. The defect is that the location phrase immediately follows the clothing phrase, so it
+can instead be parsed as what completes "bundled up in ...". An opener that makes its reader
+stop and select between those two relationships has failed even when the intended one is
+eventually understandable.
+
+THIS WAS NOT IMAGE RECOGNITION OR TARGET BINDING. The model's own `about` text correctly named
+Maja's puffer coat, beanie, snowy mountains, and frozen water. The retained phone frame shows
+those same things. The action ledger maps model item 1 to page heart 8, then verifies the open
+composer against that stored crop three times at 0.236 grey levels against a 36.229 bound
+before recording the exact draft. Stop later cancelled the Training checkpoint, so the text
+was never sent or committed. The evidence therefore isolates generation wording: the model
+saw the right item, understood its relevant objects, and assembled them into an ambiguous
+sentence.
+
+THE MISSING PROPERTY. `REFERENT CLARITY` governs what a pronoun, shorthand noun, or question
+subject denotes and whether a later beat silently changes that denotation. Every noun in this
+incident passes that rule. The ambiguity instead concerns grammatical attachment: which word
+or idea a modifying phrase describes, and therefore which semantic relationship the sentence
+asserts. Spoken register, setup/payoff continuity, and role consistency do not settle that
+either. This is a separate property rather than another exception packed into one of those
+rules.
+
+WHAT SHIPS. `MODIFIER CLARITY` is mirrored across the three stable prompt surfaces that carry
+semantic wording constraints: the owner-tunable `config.yaml` `opener.style`, `_SYSTEM`, and
+the response schema's `opener` field description. All three state the same core property:
+every modifying phrase must have only one natural attachment on first reading, and wording
+whose placement permits a plausible unintended meaning is reordered or rephrased. This avoids
+turning the correction into a blanket adjacency rule that would overconstrain harmless
+clause-level modifiers. The config version remains the long style and the other two are
+compressed copies. Because all three are inputs to `prompt_stamp`, this edit creates a new
+prompt-era digest automatically; no storage migration or stamp plumbing changes.
+
+WHY PROMPT-ONLY. There is no lexical blacklist for "bundled up", "in snow", or their
+combination. Each is harmless and natural in other sentences, while the actual class spans
+arbitrary verbs, modifiers, and relationships. A regex would catch one report rather than the
+defect, create false positives, and turn them into billed retries against the run-stopping
+`max_attempts=5` budget. No deterministic parser in this project has enough semantic context
+to judge the general class at send confidence. Consequently `_parse`, reason codes,
+`OpenerService`, and the retry hard-rejection list are unchanged. A retry already receives the
+full style guide; there is no new hard rejection for the list to name.
+
+DE-TEMPLATING STILL HOLDS. The live opener appears only in comments, this dated record, and
+test docstrings. It does not occur in `opener.style`, `_SYSTEM`, or `_SCHEMA`; the regression
+tests assert that explicitly. The model receives the abstract property, never the salient
+wording that produced it.
+
+TEST PINS BY NAME. New:
+`tests/test_config_yaml_real.py::test_shipped_opener_style_ships_modifier_clarity_without_incident_copy`
+and
+`tests/test_opener.py::test_system_prompt_ships_modifier_clarity_without_incident_copy`.
+Extended:
+`tests/test_gemini_opener.py::test_response_schema_orders_referenced_and_angle_before_the_opener`
+pins the third copy and the same off-wire boundary. Focused verification also reruns the style
+typography/ASCII contract, the main system-prompt contract, prompt-stamp determinism, and the
+no-retry request baseline. Offline only -- no device input, live provider request, or storage
+write. Focused prompt/config verification: 345 passed.
+
+#### Addendum -- 2026-09-05 (d): an inferred location gets no second premise
+
+The trigger was the next watched Training draft, again on Maja's snow photo (run
+`397c1f944d22`, model item 1):
+
+> That looks a lot like Lake Louise in deep winter. Were you out there ice skating or just
+> braving the freeze for the view?
+
+The first sentence correctly marks Lake Louise as an inference. The second sentence does not
+wait for Maja to confirm it: both offered answers put her "out there", so the question silently
+promotes the guess to fact. This is the same defect as the country-guess incident that caused
+CONFIRMATION BOUNDARY on 2026-09-02, not a new tone preference. The action ledger ends at
+`auto_opener_pre_send`; there is no approval or resumed-send event, so this draft was typed into
+the Training composer but was not sent or committed.
+
+PROMPT-ONLY FAILED. CONFIRMATION BOUNDARY was already present in `config.yaml`, `_SYSTEM`, both
+response-schema planning fields, and the retry guidance. A later 2026-09-05 draft had likewise
+guessed an Iceland tour and immediately asked whether the vehicle went onto a glacier or into
+the highlands. The existing prose therefore described the right property but was not a send
+boundary. Three nearby instructions also weakened it under minimal thinking: SAY IT ONCE said a
+second sentence inherits the first; REPLY COMFORT discouraged asking to verify an ambiguous
+visible detail; and APPLICATION RULE generically allowed a second positive question. VARY THE
+SHAPE additionally named the literal looks-like and two-choice structures it was trying to
+de-emphasize, the negation-priming risk already called out in addendum (b)'s review.
+
+WHAT NOW SHIPS. The prompt calls an image-derived place guess the entire conversational move
+until she replies. The opener may end after the guess or ask only whether the location itself is
+right. It may not append an activity, reason, preference, feeling, experience, or consequence at
+that place. SAY IT ONCE and APPLICATION RULE explicitly defer to this boundary, while REPLY
+COMFORT distinguishes direct location confirmation from interrogating her about an ambiguous
+detail. VARY THE SHAPE is now abstract: the item determines sentence count, clause pattern, and
+question form, with no concrete high-frequency structures supplied for imitation. The long
+`config.yaml` form, compressed `_SYSTEM` mirror, both `_SCHEMA` planning descriptions, and retry
+guidance all carry the same boundary. Because these are prompt inputs, `prompt_stamp` creates a
+new era digest automatically.
+
+THE SEND BACKSTOP. `_unconfirmed_location_followup_markers` runs after sanitization inside
+`GeminiOpener._parse`. It requires both (1) explicit inference language whose conclusion begins
+with a capitalized proper name and (2) a later sentence or question-like clause. A standalone
+guess passes. A later beat also passes when its whole job is to confirm or correct the place.
+Every other later beat is rejected as `REASON_UNCONFIRMED_LOCATION_FOLLOWUP`, preserving the
+sanitized candidate in `raw_opener`. `OpenerService` already catches `OpenerParseError`, records
+the rejection reason, and retries, so no service control-flow change was needed. The retry turn
+now names this hard rejection and tells the model to end after the location guess or ask only
+whether it is right.
+
+PRECISION CHECK. The detector was run read-only across all 106 unique locally retained opener
+drafts. It selected six, and all six are genuine location-guess-then-assumption failures: Italy,
+Spain/Mallorca, Switzerland, Namsan Tower, the Iceland tour, and Lake Louise. It selected none of
+the other 100. In particular, the retained Portugal opener that ends by asking whether the
+location guess is close and the British Columbia opener that asks for location correction both
+remain valid. Ordinary figurative uses such as a pet looking like a guard also remain outside
+the gate. This is intentionally not a general named-entity recognizer: prompt semantics still
+cover wordings that an outgoing-text check cannot identify at send confidence, while the narrow
+guard guarantees the recurring live form cannot pass unchanged again.
+
+TEST PINS BY NAME. New and extended cases in `tests/test_opener.py` cover all six retained live
+failures, sentence and comma continuations, a direct location question followed by an assumed
+experience, standalone guesses, confirmation tags, correction questions, stated locations,
+lowercase interpretations, and figurative pet language. The parser regression proves the exact
+Lake Louise draft raises the new reason before it can be returned, and the service regression
+proves that rejection is retried and a confirmation-only replacement succeeds. Prompt mirrors
+are pinned in `tests/test_opener.py`, `tests/test_config_yaml_real.py`, and
+`tests/test_gemini_opener.py`, including the absence of VARY THE SHAPE's two concrete structural
+phrases. Focused opener/config verification: 368 passed. Offline only -- no device input,
+provider request, or storage write.
+
+#### Addendum -- 2026-09-06: a compliment moved off her is still a score
+
+TRIGGER. Owner feedback on a watched Training draft, the New Year's sushi photo, model item 1:
+
+> Starting the new year with a massive spread of sushi is an elite move. Was that the main
+> event for the night or just the appetizer?
+
+The owner's objection, quoted in substance: calling something an elite move sounds so
+superficial with nothing interesting underneath, it is the same as saying you are so hot.
+
+ROOT CAUSE, and this is the point of the entry. COMPLIMENT AS REMARK, which shipped the
+previous day, produced this opener. It located the defect in a compliment being a verdict on
+her and being emphatic, and instructed the model to prefer the thing as the sentence's subject
+and to keep it understated rather than emphatic. The draft satisfies every clause: the thing is
+the subject, the register is casual, nothing is said about her. The rule worked and the output
+still failed, because the defect is not the verdict's target or its volume. It is the verdict.
+She chose to post the item, so a judgment of how good it is transfers no information she did
+not already have, which is exactly why it lands like a compliment on her appearance.
+
+MEASURED. 95 unique openers recovered from the 26 populated `data/hinge_debug/<run_id>/actions.jsonl`
+logs (61 run directories present locally; the store at `data/operation_love.db` is empty and on a
+stale pre-redesign schema, no `opener_events` or `actions` table exists there). "Elite move"
+appears verbatim twice: the sushi draft above and "Matcha tiramisu for a birthday cake is such an
+elite move. Did you make that yourself?" The same grade-shaped predicate appears in roughly 20 of
+the 95: is a bold move, is iconic weekend energy, is top tier apres ski energy, is unmatched, is a
+masterpiece, is unreal, is impressively professional, a great look (3), the perfect (4), an
+incredible or amazing experience (2), is pretty fantastic (2). State plainly that this is a
+PARTIAL LOCAL SAMPLE: BigQuery `operation_love.openers` and `opener_rejections` are the system of
+record and were not queried, so the true incidence is unmeasured and should be read off BigQuery
+before any escalation decision.
+
+WHY NOT A PHRASE BLOCKLIST. It would have caught 2 of about 20. The defect is a predicate shape,
+and a vocabulary ban is routed around by the next synonym. This is consistent with the
+2026-09-05 modifier-clarity reasoning that a lexical pattern for one observed sentence overfits a
+general problem.
+
+STRUCTURAL CAUSE WORTH RECORDING. CONVERSATIONAL VALUE, INFORMATION GAIN, MINIMUM INVENTION, and
+NEVER INVENT THE SENDER jointly leave the taste verdict as the only predicate that requires zero
+facts about either party, while PRIMARY ITEM RULE still demands the opener justify the Like and
+the second beat still needs a referent anchor. The grade is therefore the path of least
+resistance the rule set itself created, not a stylistic tic. Any future rule that closes an
+escape hatch without opening one should expect the same class of result.
+
+WHAT SHIPS. NO GRADING, prompt-only, in the same three stable semantic surfaces MODIFIER CLARITY
+used: `config.yaml` `opener.style` (long form), `_SYSTEM` (compressed), and the response schema
+(the `opener` description carries the compressed clause, the `angle` description carries the
+self-check because it is the model's only pre-opener scratchpad under minimal thinking). The
+rule's operational test, quoted here as it appears on wire: read the sentence again with the item
+swapped for a different woman's different photo, and if the predicate still fits unchanged it was
+a grade. NO GRADING explicitly narrows COMPLIMENT AS REMARK rather than competing with it, since
+moving praise off her and onto the thing does not by itself make it a remark.
+
+THE DESIGN CONSTRAINT THAT SHAPED IT. The 2026-08-16 minimum-invention addendum records that
+making falsifiability unconditional pressured the model to invent motives merely to produce a
+correctable claim. NO GRADING therefore routes its own failure case to a shorter message, cut the
+beat and let one specific question be the whole message, and never to a substitute claim.
+Removing that escape hatch in a future edit re-creates the 2026-08-16 bug.
+
+DELIBERATELY NOT CHANGED. No deterministic detector and no new retry reason, so the retry hint
+block (copy 4 of 4) is untouched; the 2026-08-11 scaffolding-defense decision is not reopened and
+the 2026-09-05 owner decision that prompt-only comes first is followed. No example verdict
+vocabulary ships in any model-facing string, per the 2026-08-16 de-templating addendum; the
+concrete corpus regressions above are pinned off wire in tests only.
+
+RESIDUALS, stated rather than smoothed over.
+
+- NO GRADING materially narrows what COMPLIMENT AS REMARK still permits. An OWNER DECISION is
+  open on whether the one permitted compliment should be narrowed (what shipped) or retired
+  outright. As shipped it survives only when the praise is inseparable from a specific
+  observation about that item.
+- Compliance is UNMEASURED until a live batch runs. Cheapest prediction to check: the "X is
+  <positive noun phrase>" first-beat frame falls from roughly 1 in 5 toward zero, and
+  single-sentence openers rise, since the escape hatch routes to a shorter message.
+- The SUBSTITUTION TEST is advisory prose under minimal thinking, like VARY THE SHAPE, and the
+  weakest cascade models now carry one more property rule; watch their rejection rate against
+  the `max_attempts` budget.
+- `opener_rejections` stays empty and advisory-blind, so "the guard never fires" still cannot be
+  read off it. Unchanged by this entry, but it means the escalation trigger has to come from a
+  watched batch rather than from a table.
+- This edit changes `config.yaml`'s whole-file SHA-256 and `prompt_stamp()`'s digest, so it opens
+  a new prompt era: rows before and after are not grade-comparable, and any in-flight calibration
+  session bound to the old config bytes is stranded (recovery: check out the pre-change config,
+  measure, return).
+
+TEST PINS BY NAME. New:
+`tests/test_config_yaml_real.py::test_shipped_opener_style_ships_the_no_grading_rule`,
+`tests/test_opener.py::test_system_prompt_ships_the_no_grading_rule`,
+`tests/test_opener.py::test_no_grading_rule_ships_no_example_verdict_vocabulary`,
+`tests/test_opener.py::test_angle_field_carries_the_no_grading_self_check`,
+`tests/test_opener.py::test_no_grading_motivating_openers_stay_off_every_prompt_surface`, and
+`tests/test_gemini_opener.py::test_response_schema_opener_description_ships_the_no_grading_rule`.
+All six are new, none replace an existing case. Offline only -- no device input, live provider
+request, or storage write.
+
+Full suite (`pytest -q -n auto`): 4896 -> 4953 green (5 skipped, unchanged). The six NO GRADING
+pins above account for part of that growth; the remainder belongs to other in-flight edits on
+this branch (sqlite and BigQuery store, ranker, worker, hub changes) landed concurrently and not
+itemized here. 297s wall clock. Offline only -- no device, no live API call, no BigQuery read or
+write from this change.
+
+#### Addendum -- 2026-09-06 (b): a carve-out, a subordination clause, and the "HERE'S" collision closed
+
+Three fixes, closing gaps an adversarial review and a separate audit found in the 2026-09-06 NO
+GRADING addendum above.
+
+**Fix 1, PLAYFUL HYPERBOLE carve-out (MEDIUM).** NO GRADING's SUBSTITUTION TEST asks whether a
+predicate would still fit unchanged under a different woman's different photo; PLAYFUL HYPERBOLE
+licenses an unmistakably nonliteral exaggeration whenever its visible anchor is immediate. An
+anchored nonliteral line can be exactly as portable as a grade in the swap sense without being one,
+and narrowing it would have cost a real, measured move: hyperbole is 13.7% of first beats on the
+local 95-opener corpus the 2026-09-06 addendum above names, one of the few non-degenerate moves the
+model still reaches for. A carve-out ships in all three on-wire surfaces (`config.yaml`
+opener.style, `_SYSTEM`, and the response schema's `opener` description): the swap test targets a
+literal verdict on quality, and an unmistakably nonliteral PLAYFUL HYPERBOLE survives it because
+playful framing is not an assessment of quality, even where its wording could transfer.
+
+**Fix 2, VARY THE SHAPE subordination (MEDIUM).** NO GRADING routes its failure case to "cut that
+beat and let one specific question be the whole message"; VARY THE SHAPE says no structure is the
+default. Nothing stated precedence between them, so the one-question fallback could itself become
+a standing template. A short subordinating clause now states the fallback remains governed by VARY
+THE SHAPE: the construction of that one question must still come from the item. MEASURED CONTEXT,
+deliberately kept off wire so as not to overweight a guard against a problem that has not happened:
+the local corpus is 94.7% exactly two sentences and 98.9% question final, so today routing MORE
+messages to the one-sentence fallback INCREASES shape diversity rather than collapsing it. This
+clause guards a future regression; it does not correct a present one.
+
+**Fix 3, the "HERE'S" collision (real live bug, found by audit).** The residual named in the
+2026-09-05 register-rewrite addendum above was live: `_SCAFFOLD_LEADING_PHRASES` matched a bare
+leading "here is"/"here's", and SPOKEN REGISTER raising the odds a model writes a natural spoken
+"Here's ..." opening meant a correct human line burned a retry against `max_attempts=5` -- verified,
+`_scaffolding_markers("Here's hoping that trail's as steep as it looks. ...")` returned a
+leading-interjection marker. Fixed in the GUARD, not the prompt. `"here is"`/`"here's"` are removed
+from the bare phrase tuple; a new `_SCAFFOLD_HERE_IS_OBJECT_RE` narrows the rule to the shape that
+actually distinguishes scaffolding from speech: a determiner immediately followed by a meta noun
+naming the output itself ("the response", "an option", "a version", "my take", ...), almost always
+before a colon. "Here's hoping ...", "Here's to ...", and "Here's the thing, ..." do not match --
+"hoping", "to", and "thing" are never the artifact -- so a genuine spoken opening now passes, while
+"Here's the response: ..." and "Here's an option: ..." still raise `REASON_SCAFFOLDING`. This
+touches no prompt text on any of the four on-wire copies; the fix is entirely inside the guard.
+
+TEST PINS BY NAME. New:
+`tests/test_opener.py::test_generate_still_raises_parse_error_on_narrowed_here_is_scaffolding` and
+`tests/test_opener.py::test_generate_accepts_a_natural_spoken_here_is_opening`; three new entries
+in `_SCAFFOLDING_FALSE_POSITIVES` and two in `_SCAFFOLDING_TRUE_POSITIVES` (same file); and
+extended assertions in
+`tests/test_config_yaml_real.py::test_shipped_opener_style_ships_the_no_grading_rule`,
+`tests/test_opener.py::test_system_prompt_ships_the_no_grading_rule`, and
+`tests/test_gemini_opener.py::test_response_schema_opener_description_ships_the_no_grading_rule`.
+Each new assertion and corpus entry was mutation tested: temporarily reverting the code or prompt
+text it pins made it fail, and the file was restored after.
+
+Fixes 1 and 2 change `config.yaml`'s whole-file bytes and therefore `prompt_stamp()`'s digest again,
+opening a new prompt era on top of the 2026-09-06 one; fix 3 changes no on-wire text at all.
+
+Full suite (`pytest -q -n auto`): 4953 -> 4960 green (5 skipped, unchanged), 267s wall clock.
+Offline only -- no device, no live API call, no BigQuery read or write from this change.
+
+#### Addendum -- 2026-09-06 (c): the record only kept the openers that worked
+
+TRIGGER. Owner instruction during the NO GRADING change above: make sure we have a sufficient
+logging system in place for the opener generation revisions so we don't end up going in
+circles.
+
+THE MEASURED JUSTIFICATION, which is the point of this entry. An audit of every prompt change
+recorded in this document found that of 8 prompt-only fixes, ZERO are documented as verified
+working by a post-ship re-measurement, 3 are documented as having failed, regressed, or
+required escalation to a deterministic guard, and 5 shipped with no outcome measurement
+recorded at all. Every register-era addendum above closes with some spelling of "UNMEASURED
+until a live batch runs." The one intervention in this entire document carrying a real
+quantified result is the 2026-09-05 (d) deterministic guard (6/6 true positives, 0/100 false
+positives on 106 historical drafts, from that addendum's own PRECISION CHECK). Going in circles
+was therefore the predicted outcome of the existing instrumentation, not bad luck.
+
+THE FOUR GAPS FOUND.
+1. SURVIVORSHIP BIAS BY CONSTRUCTION, the largest one. Training gated `commit_opener` strictly
+   inside `if outcome == "like":` with no else branch, and AUTO inside `if d.decision ==
+   "like":` likewise, so every draft a person disliked, stopped, or that hit a driver refusal
+   was discarded and never reached the durable record. The stored corpus could therefore never
+   answer "how often does the model write a bad opener", because the bad ones were exactly the
+   rows deleted.
+2. Rejections that were not `OpenerParseError` were never written at all in any mode: the
+   `OpenerError` branch and the HTTP 400 and transient latch points had no store call.
+3. The in-memory diagnostic ring buffers `bugreport.py` reads (`recent_openers`,
+   `recent_rejections`) carried no prompt era stamp, so the one always-on view could not be
+   grouped by era even in principle.
+4. The only real corpus was 26 populated files out of 61 run directories under
+   `data/hinge_debug/`, which is gitignored, and `data/operation_love.db` was empty and on a
+   stale pre-redesign schema.
+
+CORRECT THE RECORD, explicitly and without editing the old lines. This document's standing
+explanation that `opener_rejections` is empty because it is "advisory-blind" is STALE and was
+already stale when last restated. The two `if not advisory:` guards could not have been the
+cause: Training and AUTO are the only production callers of `maybe_opener`, and neither ever
+passes `advisory=True`, because Observe's call site was removed by commit ea6756e8 on
+2026-08-26 and `tests/test_worker.py` pins that AUTO must never pass `advisory=True`. The real
+cause was gap 2 above. This corrects, rather than repeats, the earlier addenda's reasoning.
+
+WHAT SHIPS.
+- A new `advisory` column on `opener_rejections` in both backends, with BOTH halves of the
+  two-step migration the `prompt_sha256` column already proved: the CREATE-table declaration
+  for a fresh database AND the paired ALTER for the live already-populated table. Shipping
+  only the first half is the one documented way to break production, since local tests all
+  pass while streaming inserts fail with "no such field".
+- Both `if not advisory:` guards removed so rejections always record, with the advisory value
+  preserved as data rather than by omission.
+- Rejection recording added to the three previously silent failure branches (`OpenerError`,
+  the HTTP 400 path below the latch threshold, and the generic transient-exception path), with
+  new `REASON_OPENER_ERROR` / `REASON_BAD_REQUEST` / `REASON_TRANSIENT_ERROR` reason codes.
+- `prompt_sha256` added to the `recent_openers` and `recent_rejections` ring buffers.
+- `OpenerService.discard_opener` plus `worker.py` calls in the previously missing else
+  branches, so drafts that were not sent are durably recorded with the generation-time prompt
+  era and a decision recording what actually happened. This is the single biggest lever for
+  diffing era N+1 against era N.
+- The driver now carries the run's prompt era into the `actions.jsonl` opener events via a
+  one-time `set_opener_prompt_sha256` setter following the existing `bind_debug_run` pattern,
+  chosen over threading the value through the `Driver.like` ABC, which dozens of test fakes
+  implement; justified because `OpenerService.prompt_sha256` is computed once in `__init__`
+  and fixed for the life of the process, so a run-level bind is exactly as fresh as per-draft
+  threading.
+- A new offline report, `tools/opener_corpus_report.py`, computing grade rate, sentence-count
+  and question-final distributions, opening trigram diversity, apostrophe rate, "looks like"
+  rate and length, grouped by prompt era and by decision, with a compare mode for diffing two
+  eras.
+
+THE DESIGN POINT WORTH RECORDING. The deterministic grade detector that was correctly REJECTED
+as an online guard is correct as an OFFLINE measurement. Online it would carry a
+false-rejection cost against the `max_attempts` budget and would put its own vocabulary on the
+wire; offline it has neither cost, so the lexicon lives in the tool only and is never imported
+by the prompt or by any guard. This resolves rather than reopens the 2026-08-11
+scaffolding-defense decision: measure lexically offline, do not enforce lexically online.
+
+VALIDATION. The tool independently reproduced the hand-measured figures from the 2026-09-06
+addendum above on the same 95-opener local corpus: 94.7% exactly two sentences and 98.9%
+question final. Its deterministic grade detector reports a materially LOWER rate than that
+addendum's structural classification did (12.6%, 12/95, versus roughly 45.3%), because the two
+use different definitions: the tool's is a deliberately conservative lower bound over an
+explicit lexicon, while the structural read counted any first beat whose predicate was an
+evaluative verdict. The tool's value is a fixed definition that tracks DIRECTION era over era,
+not an absolute level, and the two numbers must never be compared to each other.
+
+RESIDUALS, stated rather than smoothed over.
+- Historical rows are NOT retroactively fixed. Every `openers` row written before this change
+  exists only because its draft was sent, so all pre-change store data stays survivorship
+  biased. Only rows written after this date carry both populations.
+- The local `data/hinge_debug` corpus still carries no era stamp for runs recorded before this
+  change, so its numbers aggregate multiple prompt eras and cannot be attributed to any one.
+- There is still NO reply, match, or outcome signal anywhere in this system. Everything this
+  instrument measures is what the prompt PRODUCES, never what PERFORMS. Adding an outcome
+  signal remains the single largest missing input to any future quality claim.
+- `data/operation_love.db` on this machine remains a stale pre-redesign artifact (schema:
+  `labels`, `decisions`, `openers`, `spend` -- no `opener_rejections`, no `prompt_sha256`, no
+  `advisory`) that the current SQLiteStore has evidently never opened; the migrations will
+  apply on first real open.
+- Whether the now-orphaned `advisory` parameter should be reconnected to a real preview caller
+  or retired outright is an OPEN OWNER DECISION, deliberately not made here.
+- The first question this instrument should be pointed at, because it is currently
+  unanswerable: VARY THE SHAPE deliberately puts the literal phrase "looks like" on the wire to
+  suppress a frame the 2026-09-05 addendum above measured at 12/40. The tool measures that same
+  frame at 27.4% (26/95) on the current local corpus -- only marginally below the pre-fix 30%
+  baseline, not the clean drop the fix was meant to produce -- and with no era stamp on those
+  rows it is impossible to tell whether this is a real but diluted suppression, no effect at
+  all, or the aggregate simply mixing pre- and post-fix eras together.
+
+TEST PINS BY NAME. New in `tests/test_opener_service.py`:
+`test_opener_error_now_records_a_durable_rejection`,
+`test_http_400_records_a_durable_rejection_below_the_latch`,
+`test_http_400_records_a_rejection_on_every_call_including_the_one_that_latches`,
+`test_transient_error_records_a_durable_rejection_below_the_latch`,
+`test_transient_error_records_a_rejection_on_every_call_including_the_one_that_latches`,
+`test_advisory_opener_error_and_400_and_transient_all_thread_advisory_true`,
+`test_rejection_rows_carry_the_prompt_era_stamp_of_the_style_the_service_runs`,
+`test_immediate_opener_row_carries_the_prompt_era_stamp`,
+`test_staged_commit_stamps_the_era_the_draft_was_generated_under`,
+`test_rejection_store_failure_does_not_break_the_opener_error_branch`,
+`test_rejection_store_failure_does_not_break_the_http_400_branch`,
+`test_rejection_store_failure_does_not_break_the_transient_branch`,
+`test_advisory_draft_keeps_billing_but_writes_no_opener_row_unless_committed`,
+`test_discard_opener_persists_a_never_sent_row_with_the_generation_time_prompt_stamp`,
+`test_discard_opener_returns_false_and_touches_nothing_when_pick_was_never_staged`,
+`test_discard_opener_is_exactly_once_like_commit_opener`,
+`test_discard_opener_and_commit_opener_are_mutually_exclusive`,
+`test_discard_opener_store_failure_is_swallowed_and_returns_false`, and
+`test_recent_openers_snapshot_carries_the_prompt_era_stamp`.
+
+New in `tests/test_sqlite_store.py`: `test_sqlite_record_opener_persists_the_prompt_era_stamp`,
+`test_sqlite_record_opener_leaves_the_prompt_stamp_null_when_the_caller_omits_it`,
+`test_sqlite_record_opener_rejection_persists_the_prompt_era_stamp`,
+`test_sqlite_migrates_legacy_openers_prompt_sha256_column`,
+`test_sqlite_migrates_legacy_opener_rejections_prompt_sha256_column`,
+`test_sqlite_opener_rejections_prompt_sha256_migration_reraises_unexpected_operational_errors`,
+`test_sqlite_openers_alter_loop_reraises_unexpected_operational_errors`,
+`test_sqlite_record_opener_rejection_persists_the_advisory_flag`,
+`test_sqlite_record_opener_rejection_defaults_advisory_to_null_when_omitted`,
+`test_sqlite_migrates_legacy_opener_rejections_advisory_column`, and
+`test_sqlite_advisory_opener_run_rows_keep_the_prompt_stamp_out_of_the_fingerprint`.
+
+New in `tests/test_bigquery_store.py`: `test_record_opener_buffers_the_prompt_era_stamp`,
+`test_record_opener_buffers_a_null_prompt_stamp_when_the_caller_omits_it`,
+`test_record_opener_rejection_buffers_the_prompt_era_stamp`,
+`test_record_opener_rejection_signature_stays_aligned_with_the_store_protocol`,
+`test_ensure_tables_declares_prompt_sha256_on_the_openers_create_table`,
+`test_ensure_tables_runs_openers_prompt_sha256_migration`,
+`test_ensure_tables_declares_prompt_sha256_on_the_opener_rejections_create_table`,
+`test_ensure_tables_runs_opener_rejections_prompt_sha256_migration`,
+`test_ensure_tables_declares_advisory_on_the_opener_rejections_create_table`,
+`test_ensure_tables_runs_opener_rejections_advisory_migration`,
+`test_record_opener_rejection_buffers_the_advisory_flag`,
+`test_record_opener_rejection_buffers_a_null_advisory_when_the_caller_omits_it`, and
+`test_bigquery_advisory_opener_run_rows_keep_the_prompt_stamp_out_of_the_fingerprint`.
+
+New in `tests/test_worker.py`:
+`test_worker_binds_opt_in_driver_to_the_service_prompt_era_before_opening`,
+`test_worker_binds_none_prompt_era_when_there_is_no_opener_service`,
+`test_worker_run_binds_the_opener_prompt_era_before_any_profile_is_read`,
+`test_worker_never_calls_the_prompt_era_hook_on_a_driver_that_lacks_it`,
+`test_auto_targeting_failure_discards_the_staged_opener_as_never_sent`,
+`test_auto_post_send_paywall_discards_the_staged_opener_as_never_sent`,
+`test_auto_generic_like_failure_discards_the_staged_opener_as_never_sent`,
+`test_auto_never_sent_discard_when_the_model_names_no_item`,
+`test_auto_never_sent_discard_on_run_budget_exhaustion`,
+`test_auto_dislike_never_generates_or_discards_an_opener_draft`,
+`test_auto_committed_like_decision_and_source_are_unchanged`,
+`test_auto_never_sent_discard_store_failure_does_not_change_the_targeting_stop_outcome`, and
+`test_auto_stop_during_opener_generation_never_starts_like_but_discards_the_draft`.
+
+New in `tests/test_hinge_auto_presend_snapshot.py`:
+`test_opener_evidence_rows_carry_the_bound_prompt_era` and
+`test_opener_evidence_rows_carry_no_prompt_era_when_never_bound`.
+
+Extended, not new, in `tests/test_training_worker.py`: the existing
+`test_training_persists_verified_human_choice_only_after_hub_choice` (parametrized over
+`command` in `["like", "dislike"]`) now also asserts that the Dislike branch calls
+`discard_opener` exactly once with `decision="dislike"`, `decision_source="manual"`, the
+profile's own `profile_id`, and a float `decision_created_at`, and that the Like branch never
+calls it at all.
+
+New file `tests/test_opener_corpus_report.py` (42 cases, all new): the grade detector's lexicon
+boundary including verbatim reproductions of the sushi and matcha openers named in the
+2026-09-06 addendum above and negative cases for hyperbole, negation, and a same-shape
+question (`test_grade_detector_flags_the_sushi_opener_verbatim_from_the_addendum`,
+`test_grade_detector_requires_the_complement_to_be_in_the_lexicon`,
+`test_grade_detector_only_looks_at_the_first_beat`); the sentence/trigram/apostrophe/looks-like
+helper functions (`test_split_sentences_keeps_abbreviation_periods_intact`,
+`test_has_looks_like_is_word_bounded`); era-metrics aggregation and its unknown-bucket and
+empty-bucket handling (`test_era_metrics_grade_rate_only_counts_the_first_beat`,
+`test_build_era_metrics_groups_by_era_and_buckets_none_as_unknown`); cross-source dedupe and
+era resolution/compare (`test_dedupe_openers_prefers_a_row_carrying_a_known_era`,
+`test_resolve_era_raises_on_ambiguous_prefix`, `test_compare_eras_reports_signed_deltas`); the
+recursive opener-string walk (`test_find_opener_strings_nested_inside_list_and_dict`); reading
+each of the three sources including their missing-table and pre-redesign-schema paths
+(`test_read_jsonl_openers_missing_debug_dir_reports_zero_not_an_error`,
+`test_read_sqlite_openers_pre_redesign_schema_reports_missing_tables`,
+`test_read_bigquery_openers_missing_table_reports_a_note_not_a_crash`); and the CLI's text,
+json, and compare entry points (`test_main_text_mode_reports_sources_and_both_eras`,
+`test_main_compare_unknown_token_fails_loudly`).
+
+Full suite (`pytest -q -n auto`): 4960 -> 5035 green (5 skipped, unchanged), 236s wall clock.
+The test pins above account for part of that growth; the remainder belongs to other in-flight
+edits on this branch (drivers/hinge.py, ranker, worker, hub) landed concurrently and not
+itemized here. Offline only -- no device, no live API call, no BigQuery read or write from this
+change.
+
+#### Addendum -- 2026-09-06 (d): three owner decisions and a pre registered prediction
+
+Three owner decisions closing questions this document left open across the 2026-09-06 (a)-(c)
+addenda above, followed by a falsifiable prediction registered now, before the batch that would
+confirm or refute it exists, so neither outcome can be rationalized after the data arrives.
+Pre-registration is itself the anti-circling mechanism the 2026-09-06 (c) addendum's audit called
+for: a prediction written before the numbers exist cannot be moved once they do.
+
+DECISION 1, the one permitted compliment: NARROWED, not retired. The 2026-09-06 addendum above
+left this open as a residual. Rationale on record (`operation_love/opener/opener.py`'s own
+comment ahead of `_SYSTEM`): the rule set measured at roughly 69% prohibition and mechanical
+instruction against only 21% positive specification, with the corpus at 94.7% exactly two
+sentences, 98.9% question final, and 82% of first beats deletable. The space of legal positive
+moves is already collapsed, so retiring the one remaining permitted compliment would remove one
+more legal positive move from a rule set already starved of them; narrowing it in place is the
+correct direction instead. THE FIX ALREADY SHIPPED: the qualification that used to live only in
+NO GRADING's later "narrows COMPLIMENT AS REMARK" sentence is now folded into COMPLIMENT AS
+REMARK's own sentence, ahead of the technique it gates, in all three on-wire surfaces --
+`config.yaml` `opener.style`, the compressed `_SYSTEM` mirror, and the response schema's
+`opener` description -- by editing words inside the existing sentence rather than only appending
+a new one, so every property already on wire (thing as sentence's subject, praise landing
+sideways, understated over emphatic, shaping a compliment that occurs rather than requiring one)
+survives the fold unchanged. This resolves the LOW severity finding from the 2026-09-06
+adversarial review that COMPLIMENT AS REMARK and NO GRADING read as a rule and a later,
+separate correction of it -- a minimal-thinking read of COMPLIMENT AS REMARK alone can no
+longer satisfy it while still producing a grade. No example verdict vocabulary was added
+anywhere, per the 2026-08-16 de-templating rule. New test pins:
+`tests/test_config_yaml_real.py::test_shipped_opener_style_folds_qualification_into_compliment_as_remark`,
+`tests/test_opener.py::test_system_prompt_folds_qualification_into_compliment_as_remark`, and
+`tests/test_gemini_opener.py::test_response_schema_opener_description_folds_qualification_into_compliment_as_remark`.
+
+DECISION 2, the orphaned advisory parameter: NEUTRALIZED, neither reconnected nor deleted. Read
+against the live state of `operation_love/opener/service.py` and `operation_love/config.py`: no
+production caller has passed `advisory=True` to `OpenerService.maybe_opener` since commit
+ea6756e8 (2026-08-26) removed the last one, Hinge's Observe preview suggestion. `service.py`'s
+own `maybe_opener` docstring now states this plainly ("DEAD IN PRODUCTION as of ... Training and
+AUTO are the only production callers today and neither passes advisory=True"), and
+`config.py` marks `OpenerCfg.advisory_max_attempts` and `advisory_deadline_s` the same way in
+their field comments. What shipped is neither of the two options this document's residual framed
+the choice as: the parameter, its validation in `config.py`'s `validate()`, and the shortened
+retry budget it drives in `OpenerService` are all KEPT, not deleted, and not RECONNECTED to any
+real preview caller either -- "kept, not deleted, so a preview caller that returns has a working,
+tested budget waiting for it rather than one rebuilt from scratch" (`config.py`'s own comment).
+The `opener_rejections.advisory` column the 2026-09-06 (c) addendum above shipped is KEPT either
+way, in both the SQLite and BigQuery backends, regardless of which of the three outcomes this
+decision landed on. Separately, a test now pins that no production caller passes `advisory=True`
+for Training as well as AUTO: `tests/test_worker.py::test_training_loop_opener_call_does_not_pass_advisory`
+is NEW alongside the pre-existing `test_auto_loop_like_call_does_not_pass_advisory`, because the
+false "advisory-blind" explanation for the empty `opener_rejections` table -- already corrected
+once, in the 2026-09-06 (c) addendum above, where the real cause was identified as the three
+silent failure branches rather than either `if not advisory:` guard -- had stood on an
+AUTO-only pin and let that explanation misdirect diagnosis for months before Training's own call
+site was checked at all.
+
+DECISION 3, the structural redesign: DEFERRED pending measurement. The 2026-09-06 (c) addendum's
+own audit above found that of 8 prompt-only fixes recorded in this document, 0 are documented as
+verified working by a post-ship re-measurement, 3 are documented as having failed, regressed, or
+required escalation to a deterministic guard, and 5 shipped with no outcome measurement recorded
+at all. A ninth blind structural change has no better prior than those eight. What ships instead
+is the pre-registered prediction below, plus the era registry, so the next live batch produces the
+measurement that has been missing every other time. Naming the restructure now, so the decision
+is already made rather than re-litigated if the falsification criterion below is met: the prompt
+gains an explicit positive specification of what an opener IS, stated as a property rather than a
+template (the property to name is that the message must be evidence the sender actually looked,
+which survives the 2026-08-16 de-templating rule because a property is not a template); an
+explicit priority order between rules, so conflicts stop being patched one subordination clause at
+a time the way NO GRADING's "narrows COMPLIMENT AS REMARK" sentence and, before it today, Decision
+1's fold were each required to state by hand; and a merge of the four rules this document's
+2026-09-06 addendum above already identified as jointly policing the same inference property --
+CONVERSATIONAL VALUE RULE, INFORMATION GAIN TEST, MINIMUM INVENTION, and NEVER INVENT THE SENDER,
+which that addendum's STRUCTURAL CAUSE paragraph found jointly leave the taste verdict as the only
+predicate requiring zero facts about either party.
+
+THE PRE REGISTERED PREDICTION. Baseline measured 2026-09-06 by `tools/opener_corpus_report.py`
+on the 95 local drafts recovered from `data/hinge_debug/*/actions.jsonl` (verified by running the
+tool: `sources.jsonl.unique` reports 95). Every one of these 95 drafts predates the driver-side
+prompt era stamp the 2026-09-06 (c) addendum above shipped, so all 95 land in the tool's `unknown`
+era bucket and mix however many real prompt eras are represented locally -- say so, rather than
+presenting this as one era's number.
+
+| metric | baseline (unknown era, n=95) |
+| --- | --- |
+| grade_rate | 12.6% (12/95) |
+| two_sentence_rate | 94.7% (90/95) |
+| question_final_rate | 98.9% (94/95) |
+| single_sentence_rate | 5.3% (5/95) |
+| trigram_diversity | 87.4% (83 distinct / 95) |
+| apostrophe_rate | 2.1% (2/95) |
+| looks_like_rate | 27.4% (26/95) |
+
+Predictions for the first NO GRADING era batch of at least 40 drafts. A batch qualifies once
+every draft in it was generated under a live `prompt_sha256` computed from on-wire text that
+includes NO GRADING -- the 2026-09-06 addendum above and every prompt-changing fix stacked on top
+of it since, including today's Decision 1 fold, each open a new era on top of the last by
+changing on-wire bytes, and `prompt_stamp()` recomputes the live digest at runtime regardless of
+whether `ops/prompt-eras.json` has been regenerated to name it; the registry is backfilled from
+committed git history, and today's changes are not yet committed, so none of these newer eras
+carry a human label in the registry yet:
+
+- grade_rate FALLS below 5%. This is the primary endpoint.
+- single_sentence_rate RISES above 15%, because NO GRADING's escape hatch routes explicitly to
+  one question as the whole message. If it does not move, the escape hatch is not being taken and
+  the rule is operating as a pure prohibition.
+- two_sentence_rate falls below 85%, as the mirror of the above.
+- trigram_diversity does NOT fall below 80%. This is the guard against the fix narrowing the
+  space rather than redirecting it; a fall here means NO GRADING made the collapse worse.
+- No prediction is made for looks_like_rate or apostrophe_rate, because the baseline for both is
+  era mixed and therefore not attributable.
+
+THE FALSIFICATION CRITERION, stated up front. If after at least 40 drafts in the new era
+grade_rate is still at or above 10% AND single_sentence_rate is still below 8%, the
+prohibition-only approach is FALSIFIED and the positive specification restructure named under
+DECISION 3 above ships without further argument.
+
+THE CAVEAT. `tools/opener_corpus_report.py`'s `grade_rate` is a deliberately conservative lower
+bound over a fixed, explicit lexicon, and it measured 12.6% on this same 95-opener corpus where
+an independent structural classification (the 2026-09-06 addendum above, which counted any first
+beat whose predicate was an evaluative verdict rather than matching a lexicon) found roughly
+45.3%. The prediction above is stated ENTIRELY in the tool's own definition, so it stays checkable
+by one repeatable command (`python tools/opener_corpus_report.py --json`, or the equivalent text
+report once a live batch exists); the two numbers must never be compared to each other.
+
+THE ERA REGISTRY that shipped alongside this decision: `ops/prompt-eras.json`, generated by
+`tools/backfill_prompt_eras.py`, which walks every commit that ever touched `config.yaml` or
+`operation_love/opener/opener.py`, recomputes `prompt_stamp()`'s digest for each revision from
+the historical bytes alone (AST-parsing the seven digest components rather than importing the
+package, since historical `opener.py` revisions carry real package-relative imports that would
+fail to exec standalone), and groups same-digest commits into one era. As shipped it records 11
+known eras spanning 22 evaluated revisions plus 24 revisions in an explicit UNEVALUABLE bucket
+(each with the concrete named reason it could not be evaluated, mostly a missing per-item crop
+constant that postdates the 2026-08-12 opener redesign) out of 46 total revisions touching those
+two files. `tools/opener_corpus_report.py` now reads that registry (`--eras-file`, default
+`ops/prompt-eras.json`) to resolve every printed `prompt_sha256` to a human label, and adds two
+flags read directly from the tool's own `_build_arg_parser()`: `--eras` lists every known era,
+oldest first, with its label, date range, digest, and the rules that changed versus the previous
+era, reading ONLY the eras file and never the corpus sources; `--rule NAME` is the direct answer
+to "have we tried this before" -- it prints every known era NAME was on the wire in, when it
+first and last appeared, and any measured metrics for those eras, reading both the eras file and
+the corpus sources.
+
+Full suite (`pytest -q -n auto`): 5035 -> 5124 passed, 5 skipped (unchanged), 214s wall clock.
+Offline only -- no device, no live API call, no BigQuery read or write from this change. This
+entry is documentation only: it makes three owner decisions the code and tests already carried
+(Decision 1's fold, Decision 2's neutralization, and the new Training advisory pin all exist on
+disk as of this addendum) and registers a prediction against no code change of its own; the test
+delta above reflects the state of the tree at time of writing, not new work done by this entry.
+
+#### Addendum -- 2026-09-06 (e): compliment as remark defers to the substitution test, and the record corrected
+
+Two further adversarial-review findings against the 2026-09-06 (d) addendum above, fixed
+together. Note the lettering: this document's own (b), (c), (d) addenda cover the PLAYFUL
+HYPERBOLE/VARY THE SHAPE carve-outs, the durable-logging instrumentation, and three unrelated
+owner decisions respectively -- none of them is the entry for the COMPLIMENT AS REMARK fold
+itself, which shipped as code-comment-only history ahead of `_SYSTEM` in `opener.py` and inside
+`config.yaml`'s own comment block, and is recorded in this document for the first time here.
+
+MEDIUM. DECISION 1 in the 2026-09-06 (d) addendum above ("THE FIX ALREADY SHIPPED") folded a
+qualification into COMPLIMENT AS REMARK's own sentence so it would stop reading as a rule
+followed by a separate later correction. That fold closed one contradiction and opened another.
+It gave COMPLIMENT AS REMARK its OWN portability test ("unable to survive being detached from
+what was actually noticed" in `config.yaml` `opener.style` and the `_SYSTEM` mirror; an inline,
+unlabeled "inseparable from a specific observation about that item" clause in the `_SCHEMA`
+opener description), stated with NO exception. NO GRADING's SUBSTITUTION TEST, a few sentences
+away in every one of those same three surfaces, explicitly carves out an unmistakably nonliteral
+PLAYFUL HYPERBOLE (2026-09-06 (b) addendum above). An anchored hyperbolic compliment whose
+predicate could transfer unchanged to a different woman's photo therefore passed NO GRADING (the
+hyperbole exception) but failed COMPLIMENT AS REMARK's own restated test (no exception) --
+opposite verdicts on the same sentence under minimal thinking, which is precisely the
+rule-versus-later-correction failure shape the fold was meant to close.
+
+THE FIX: COMPLIMENT AS REMARK no longer restates a second, subtly different portability test. It
+now points at NO GRADING's SUBSTITUTION TEST directly, so the one test, and its one exception,
+lives in exactly one place per surface and cannot drift out of sync with a restated copy again.
+This removes words rather than adding a second hyperbole exception, which matters given this rule
+set already runs roughly 10,000 tokens per request and every added word costs attention on the
+weakest cascade models. Shipped in all three on-wire surfaces: `config.yaml` `opener.style` now
+gates the technique on the praise "also passes NO GRADING's SUBSTITUTION TEST below"; `_SYSTEM`
+reads "it must also pass NO GRADING's SUBSTITUTION TEST below"; the `_SCHEMA` opener description
+reads "it must also pass the SUBSTITUTION TEST below," with a matching "SUBSTITUTION TEST:" label
+now added at the schema's own grade-check sentence so the forward reference lands somewhere
+named. No example verdict vocabulary was added anywhere, per the 2026-08-16 de-templating rule.
+The three test pins DECISION 1 above named were extended in place (same three function names,
+not renamed) to assert the new deferring wording and to add a MUTATION GUARD each, asserting the
+removed exception-free portability phrasing is now absent so it cannot silently return:
+`tests/test_config_yaml_real.py::test_shipped_opener_style_folds_qualification_into_compliment_as_remark`,
+`tests/test_opener.py::test_system_prompt_folds_qualification_into_compliment_as_remark`, and
+`tests/test_gemini_opener.py::test_response_schema_opener_description_folds_qualification_into_compliment_as_remark`.
+
+LOW, CORRECTING THE RECORD. DECISION 1's paragraph above, and the code comment ahead of `_SYSTEM`
+in `operation_love/opener/opener.py` that it quotes, both claimed that "every property already
+on wire (thing as sentence's subject, praise landing sideways, understated over emphatic,
+shaping a compliment that occurs rather than requiring one) survives the fold unchanged," which
+reads as a claim of parity across all three on-wire surfaces. Checked against the actual text,
+that parity claim is true only of `config.yaml`'s long `opener.style` form, where all four
+properties were genuinely on wire both before and after the fold. It is not true of `_SYSTEM`,
+which never carried "praise landing sideways ... in passing" or a separate "shapes a compliment
+that occurs" sentence at any point in this saga -- only "thing as the sentence's subject" and
+"understated over emphatic" were ever on that wire -- and it is not true of the `_SCHEMA` opener
+description, which never carried any of the four. Nothing was LOST by the fold in either
+compressed surface: these properties were never present there to lose, which is consistent with
+the deliberate compression gap the 2026-09-05 register rewrite already documented (the schema
+copy receives a compressed subset of properties, not the full set, and the two compressed
+copies are not required to carry the same subset as each other or as the long form). The claim
+was overstated, not the code. `opener.py`'s own comment ahead of `_SYSTEM` has been corrected in
+place (permitted there, since it is not an append-only record); this paragraph is the
+corresponding append-only correction for this document, which cannot edit DECISION 1's sentence
+above in place.
+
+Full suite (`pytest -q -n auto`): 5101 passed, 5 skipped, 208s wall clock, unchanged by this
+entry. This addendum documents on-wire prompt text and code-comment corrections that were
+already on disk (the SUBSTITUTION TEST deferral and the three extended test pins) and adds no
+new test beyond the mutation guards folded into those three existing functions; it registers no
+prediction and reads no live data. Offline only -- no device, no live API call, no BigQuery read
+or write from this change.
+
+#### Addendum -- 2026-09-06 (f): the advisory preview path is gone, not merely marked dead
+
+A note on the letter before anything else: this is (f), not the (e) the brief that produced it
+asked for verbatim, because the addendum immediately above already spent (e) on the COMPLIMENT
+AS REMARK / SUBSTITUTION TEST fix. That entry's own material landed in the working tree before
+this one was written up, even though the removal recorded here happened earlier in the same
+day's work; one letter per entry, never reused, is this document's own rule, so this entry takes
+the next open slot rather than collide with it. Section 5 below is the cross-reference this
+entry owes that fix, not a second telling of it.
+
+1. THE OVERRIDE. The 2026-09-06 (d) addendum's DECISION 2 above recorded the orphaned `advisory`
+parameter as NEUTRALIZED -- kept, validated, and load-bearing in config, but reconnected to no
+real caller. The owner overrode that decision after reading it: clean it up completely. (d)'s
+account of decision 2 is superseded by this entry; (d) itself is not edited, per this document's
+append-only rule, and its reasoning stays on the record as the decision that was actually
+overridden rather than quietly abandoned.
+
+2. WHAT WAS ACTUALLY REMOVED, read against the current state of the tree rather than assumed.
+`OpenerService.maybe_opener` (`operation_love/opener/service.py`) no longer takes an `advisory`
+parameter at all -- its signature is now exactly `(self, run_id, app, profile, *, items=None,
+should_stop=None, stage=False)`, pinned by a new mutation-guard test named in full below. Every
+branch that keyed off it went with it: the shortened `advisory_max_attempts`/`advisory_deadline_s`
+retry budget, the `_register_transient_failure(..., request_stop=...)` parameter that let an
+advisory streak latch without stopping the run, the `_apply_entropy_guard(..., deadline=...,
+client_accepts_deadline=...)` plumbing that threaded a wall-clock cutoff through the entropy
+guard's extra draw, and the `_accepts_generate_deadline()` duck-typing probe that decided
+whether a client accepted that cutoff at all. `OpenerCfg.advisory_max_attempts` and
+`advisory_deadline_s` (`operation_love/config.py`) are gone as fields, along with their three
+bool-before-int/range/cross-field `validate()` checks each and the `_MAX_ADVISORY_DEADLINE_S`
+ceiling constant and its derivation comment. `supervisor.py`'s `OpenerService(...)` construction
+no longer forwards either config value. `bugreport.py`'s `_config_md` no longer prints
+`opener.advisory_max_attempts`/`opener.advisory_deadline_s`, and `_recent_openers_md` no longer
+reads an `advisory` bool off a hub entry to fall back into an `"advisory"` session-mode label.
+Measured directly off `git diff` against HEAD: 301 removed lines mention the word "advisory"
+across production and test code (107 in `service.py`, 104 in `tests/test_opener_service.py`, 44
+in `config.py`, 18 in `tests/test_config.py`, 8 each in `tests/test_worker.py` and
+`tests/test_supervisor.py`, 5 in `bugreport.py`, 4 in `tests/test_bugreport.py`, 2 in
+`supervisor.py`, 1 in `tests/test_hub.py`) against only 13 added lines, and every one of those
+13 is either the new mutation-guard test below or an untouched reference to the separate
+`advisory_opener_run_rows` feature section 3 covers next -- none of it is a live use of the
+parameter this entry removes. Wholesale, 33 test functions were deleted outright rather than
+edited (27 in `tests/test_opener_service.py`, 5 in `tests/test_config.py`, 1 in
+`tests/test_worker.py`, that last one `test_auto_loop_like_call_does_not_pass_advisory` --
+its Training-side twin from (d), `test_training_loop_opener_call_does_not_pass_advisory`, is
+not in the current tree under that name either, since there is no `advisory` keyword left for
+either one to assert the absence of).
+`tests/test_supervisor.py`, `tests/test_hub.py`, and `tests/test_bugreport.py` lost no whole
+test function; their fixtures and assertions were trimmed in place instead. On the
+`opener_rejections.advisory` column the 2026-09-06 (c) addendum shipped: it was added and
+removed the same day, still uncommitted throughout, with the table at zero rows in every
+backend for its entire existence (this machine's local `data/operation_love.db` predates even
+the redesign's `opener_rejections` table per (c)'s own RESIDUALS, and nothing ever shipped to
+BigQuery from an uncommitted branch) -- so removing it needed no drop migration and leaves no
+schema history behind. `git diff` against `operation_love/ranker/store.py` and
+`operation_love/ranker/bigquery_store.py` today shows only the unrelated `prompt_sha256`
+column; the `advisory` column appears in neither the added nor the removed lines of either
+file, which is exactly what "shipped and retracted inside one uncommitted working tree" looks
+like from the outside.
+
+3. THE SCOPE TRAP. "advisory" is not one feature in this codebase, it is two, and only one of
+them died today. `operation_love/ranker/opener_retractions.py`, `tools/advisory_opener_cleanup.py`,
+and `tests/test_advisory_opener_cleanup.py` implement advisory opener RETRACTION and cleanup
+plans -- a fail-closed, append-only tool for correcting incorrectly persisted rows after the
+fact, built around `Store.advisory_opener_run_rows()` -- and none of the three carry any diff
+today (`git diff --stat` against all three reports nothing). A reader grepping this file for
+"advisory" after this entry and finding `advisory_opener_run_rows` still very much alive should
+not conclude the word was purged or that this entry is wrong; it should conclude there were
+always two different things sharing one adjective, and this entry retired the dead one.
+
+4. WHY IT WAS WORTH DOING. The 2026-09-06 (c) addendum above already corrected the specific
+factual error: this document's own standing explanation for why `opener_rejections` sat empty
+was that the store was "advisory-blind," and that explanation was FALSE, because Training and
+AUTO are the only production callers of `maybe_opener` and neither has ever passed
+`advisory=True` -- Observe's call site, the only one that ever did, was removed by commit
+ea6756e8 on 2026-08-26. The false explanation stood, restated rather than re-checked, for close
+to two weeks after the code it blamed had no live caller left, and the actual cause (gap 2 in
+(c)'s own audit: three failure branches with no store call at all) was sitting unexamined the
+whole time. A parameter that no longer does anything in production but still reads, in its own
+docstrings and its own config comments, as though it does, is not neutral scenery -- it is a
+standing invitation to blame the wrong thing, and it took this long to cost only a diagnosis
+delay rather than something worse. That is the same failure this entire day's logging and
+era-registry work exists to close off from the other direction: dead code that still looks live
+corrupts the decision record itself, not merely the runtime.
+
+5. THE PROMPT CONTRADICTION FIXED IN THE SAME PASS. The (e) addendum immediately above this one
+already carries the full account: DECISION 1's fold in (d) gave COMPLIMENT AS REMARK its own
+portability test with no exception, while NO GRADING's SUBSTITUTION TEST a few sentences away
+carves out an unmistakably nonliteral PLAYFUL HYPERBOLE, so the two rules disagreed on an
+anchored hyperbolic compliment under minimal thinking; the fix makes COMPLIMENT AS REMARK point
+at the SUBSTITUTION TEST directly instead of restating a second, subtly different version of it,
+in all three on-wire surfaces (verified again here directly against the current text: `config.yaml`
+line 1111 reads "praise also passes NO GRADING's SUBSTITUTION TEST below", `_SYSTEM` in
+`operation_love/opener/opener.py` reads "it must also pass NO GRADING's SUBSTITUTION TEST
+below", and the `_SCHEMA` opener description at line 244 carries a matching "SUBSTITUTION TEST:"
+label). The LOW finding on which folded properties survived is also settled by (e): parity
+across all three surfaces held only for `config.yaml`'s long form; `_SYSTEM` never carried
+"praise landing sideways ... in passing" or a separate "shapes a compliment that occurs"
+sentence, and `_SCHEMA` never carried any of the four properties, at any point in this saga, so
+nothing was lost from either compressed copy by today's fold -- it was never there to lose. This
+entry does not re-litigate either finding; it records that both are already closed, by the entry
+right above it, not by this one.
+
+6. THE ERA REGISTRY NOW COVERS THE WORKING TREE. `tools/backfill_prompt_eras.py` gained a second
+mode alongside the committed-history walk (d) described: `evaluate_working_tree()` reads the
+CURRENT `config.yaml` and `operation_love/opener/opener.py` straight off disk and recomputes
+`prompt_stamp()`'s digest from them, then attaches the result to the registry as a separate
+top-level `working_tree` key -- never appended to the `eras` list, and unmistakably marked
+`"provisional": true` with `"commit": null` and a label that leads with `UNCOMMITTED WORKING
+TREE -- PROVISIONAL, not a shipped era`. The reason to keep it separate rather than folding it
+into `eras` is stated in the module's own docstring and holds up against a live run: a rule
+added only in the working tree looked, before this, indistinguishable from one that had never
+been tried, which is precisely backwards for a registry whose whole purpose is answering "have
+we tried this before." Run live just now, `python tools/opener_corpus_report.py --rule
+"SUBSTITUTION TEST"` correctly reports the rule absent from all 11 known COMMITTED eras and
+present in the provisional working tree, with its metrics line reading "no local openers
+recorded under this era digest" rather than anything that could be mistaken for a measurement --
+the exact behaviour (d) promised: `--rule` answers correctly for a rule that has not shipped
+yet, without ever reporting it as measured. Committed-history coverage is unchanged by any of
+today's work, because it depends only on git history and none of today's changes are committed:
+22 of the 46 total revisions across both files are evaluated (just under half, spanning 11
+known eras), and the other 24 are UNEVALUABLE, each for the same concrete, stated reason --
+`missing constant(s) at this revision: ['_ITEM_PREAMBLE', '_ITEM_PREAMBLE_CONTEXT',
+'_ITEM_LABEL', '_CONTEXT_LABEL']` -- because every one of those 24 revisions predates the
+2026-08-12 item-crop redesign that introduced those four constants into `prompt_stamp()`'s
+digest. That is a fact about what the prompt looked like at each of those revisions, not a
+limitation of the tool: a digest that hashes seven components cannot be computed at a revision
+where four of them did not exist yet, so those 24 revisions have no comparable digest by
+construction, and the registry says so by name rather than silently omitting them or guessing.
+
+7. RESIDUALS. The three from (d) still stand exactly as stated there: the pre-registered
+prediction is UNTESTED pending a live batch of at least 40 NO GRADING-era drafts; there is still
+no reply, match, or outcome signal anywhere in this system, so every metric measures what the
+prompt produces and never what performs; and every `openers` row written before today remains
+survivorship biased, because only sent (for AUTO, liked) drafts were ever committed to it before
+`discard_opener` existed. One more, found while verifying this entry rather than while doing the
+removal: `GeminiOpener.generate()` in `operation_love/opener/opener.py` still takes an optional
+`deadline` keyword, and `OpenerDeadlineExceeded` is still a live exception class, but neither has
+a production caller left -- `service.py` no longer passes `deadline=` to `.generate()` anywhere,
+confirmed by grepping the file (zero hits) and by the fact that every remaining `deadline=` call
+site in the whole tree is inside `tests/test_gemini_opener.py`, exercising `GeminiOpener` in
+isolation. Both the parameter's own docstring ("used by Observe's optional advisory path") and
+`OpenerDeadlineExceeded`'s ("`OpenerService.maybe_opener` therefore handles it only on its
+advisory path") still assert a caller relationship that `maybe_opener` no longer has, now that
+its `advisory` parameter and every branch keyed off it are gone. This is the identical shape of
+defect item 4 above just finished explaining the cost of: code that keeps describing itself as
+called by something that no longer calls it. It was out of scope for this pass -- the owner's
+instruction named the config knobs, the supervisor forwarding, the bugreport diagnostic, and the
+`advisory` column, not `GeminiOpener`'s own deadline plumbing -- so it is left here as a found,
+not fixed, residual rather than pulled in under this entry's own scope.
+
+TEST PINS BY NAME. New: `tests/test_opener_service.py::test_maybe_opener_has_no_advisory_parameter`,
+a mutation guard asserting `"advisory" not in inspect.signature(OpenerService.maybe_opener).parameters`
+and pinning the full remaining parameter set (`{"self", "run_id", "app", "profile", "items",
+"should_stop", "stage"}`), so a future re-add of the parameter or any of its dead plumbing fails
+this test rather than silently landing with no caller to exercise it. No other new test was
+added by this removal: `tests/test_config.py`, `tests/test_supervisor.py`, `tests/test_hub.py`,
+and `tests/test_bugreport.py` all had their existing tests' fixtures and assertions trimmed in
+place instead of gaining a dedicated absence pin, which this entry records rather than papers
+over -- their coverage of the removal is exactly "the existing test still passes with the field
+gone," nothing stronger.
+
+Full suite (`pytest -q -n auto`), run just now: 5101 passed, 5 skipped, 210.67s wall clock. This
+is the same figure the (e) addendum above already reported as "unchanged by this entry" --
+correctly, since (e) added no tests of its own -- but that figure already reflects this entry's
+removal, which is why (e)'s number and this one match despite this entry deleting 33 test
+functions. The (d) addendum above reported 5124 passed before this removal landed; the arithmetic
+this entry owes the record is that 33 deletions against 1 addition (the mutation guard above) is
+a net of -32, while the observed drop from 5124 to 5101 is only -23 -- the remaining +9 belongs
+to other concurrent edits on this branch not itemized in this entry, in keeping with this
+document's standing disclaimer (see the 2026-09-05 (b) addendum above) that same-day parallel
+work is not always itemized per entry. Offline only -- no device, no live API call, no BigQuery
+read or write from this change.
+
+#### Addendum -- 2026-09-06 (g): compliment as remark's magnitude clause was still exception-free
+
+A fourth adversarial review of the same day's COMPLIMENT AS REMARK work, this time walking a
+concrete opener through every rule by hand, found that the (d) addendum above closed only HALF
+of the contradiction it named, and the (e) correction above it verified the wrong half stayed
+closed rather than re-checking the other one.
+
+THE FINDING. COMPLIMENT AS REMARK's one permitted compliment has carried two independent
+requirements since the 2026-09-05 register rewrite introduced it, not one: a PORTABILITY
+requirement (does the predicate survive being swapped onto a different woman's different
+photo) and a separate MAGNITUDE requirement (does it stay understated rather than turning
+earnest and emphatic). (d) fixed only the portability half, by making COMPLIMENT AS REMARK
+point at NO GRADING's SUBSTITUTION TEST directly instead of restating its own copy of that
+test -- and that test already carves out an unmistakably nonliteral PLAYFUL HYPERBOLE, so
+portability is genuinely settled. The magnitude requirement was never touched by (d) and never
+carried an exception of its own: the affirmative clause read "stays understated rather than
+emphatic" and the disqualifier read "or that turns earnest and emphatic," both unconditional. An
+unmistakably nonliteral PLAYFUL HYPERBOLE is, by its own definition, emphatic -- exaggeration
+that is not emphatic is not hyperbole. So for a strong hyperbolic compliment, PLAYFUL HYPERBOLE
+and NO GRADING's SUBSTITUTION TEST said allowed (via (d)'s fix) while COMPLIMENT AS REMARK's own
+magnitude clause said disallowed, on the same sentence, under the same minimal-thinking read (d)
+diagnosed the first time. (e)'s correction above re-verified only which of the four narrated
+properties survived the (c) fold across the three surfaces; it never re-checked whether the
+magnitude clause itself was internally consistent with the exception (d) had just added
+elsewhere, which is how this half survived three review rounds (the original (c)/(d) pass, and
+(e)'s own correction pass) before a fourth review walked a concrete strong-hyperbole opener
+through the rule text by hand and hit the contradiction directly.
+
+THE FIX. Do not delete the magnitude requirement: earnest, emphatic praise reading as grading
+her or auditioning for her approval is a real, distinct property COMPLIMENT AS REMARK has
+carried since 2026-09-05, and (e)'s own correction above already flagged silent property loss as
+its own defect for this exact rule. Instead subordinate magnitude to the same exception
+portability already has, stated once rather than once per clause. `config.yaml` opener.style now
+reads (in relevant part): "...lands sideways the way a friend would mention it in passing, and,
+save for that same test's PLAYFUL HYPERBOLE exception, stays understated rather than emphatic.
+Praise that fails either requirement reads as grading her or auditioning for her approval..." --
+dropping the old disqualifier's restated "or that turns earnest and emphatic" (an unexcepted
+echo of the same requirement the affirmative clause already states, and exactly the kind of
+second copy (d) warned drifts out of sync) rather than adding a second hyperbole carve-out next
+to it. `_SYSTEM` in `operation_love/opener/opener.py` carries the same fix compressed to a single
+inserted clause: "...it must also pass NO GRADING's SUBSTITUTION TEST below, whose PLAYFUL
+HYPERBOLE exception covers tone too, phrased with the thing as the sentence's subject,
+understated over emphatic..." Both edits net FEWER words than before, not more: the fix is a
+subordinating cross-reference to an exception already defined at NO GRADING's SUBSTITUTION TEST,
+not a restated definition of PLAYFUL HYPERBOLE itself. The `_SCHEMA` opener description is
+unchanged, because (per the 2026-09-06 (e) correction above, re-verified again here directly
+against the current text) it never carried the magnitude clause at all -- there is nothing to
+except there.
+
+THE PROOF, walked end to end against the current wire text. (1) MILD hyperbolic compliment --
+"that trail view alone could make anyone fall for mountains" said as an aside under a hiking
+photo. PLAYFUL HYPERBOLE (config.yaml): unmistakably nonliteral, visible anchor immediate --
+allowed. NO GRADING's SUBSTITUTION TEST: the predicate would transfer to a different woman's
+different mountain photo unchanged, so on its own it is a grade, EXCEPT that the same test
+explicitly carves out an unmistakably nonliteral PLAYFUL HYPERBOLE -- passes. COMPLIMENT AS
+REMARK: passes NO GRADING's SUBSTITUTION TEST (above), lands sideways as an aside, and for the
+magnitude clause -- "save for that same test's PLAYFUL HYPERBOLE exception, stays understated
+rather than emphatic" -- the same exception applies, so a mildly emphatic hyperbole is not
+disqualified on magnitude either. Consistent allow across all three. (2) STRONG, clearly emphatic
+hyperbolic compliment -- "that view alone could make anyone fall in love with mountains forever,"
+the case that broke under the pre-fix text. PLAYFUL HYPERBOLE: still unmistakably nonliteral with
+an immediate visible anchor -- allowed, exactly as before. SUBSTITUTION TEST: the predicate is
+even more portable than case (1) (it would fit any dramatic vista unchanged), so without the
+exception it reads as a stronger grade -- but the exception does not scale down as the hyperbole
+gets stronger; it still applies in full, so this still passes. COMPLIMENT AS REMARK: the same
+chain as (1) -- passes the test, lands sideways, and now explicitly "save for that same test's
+PLAYFUL HYPERBOLE exception, stays understated rather than emphatic" waives the magnitude
+requirement for exactly this case, because it is emphatic only in the excepted, nonliteral-
+hyperbole sense the exception names. Consistent allow, matching (1) -- this is the case that used
+to fail before this fix, and now does not. (3) Plain literal grade, no hyperbole -- "your smile is
+a 10 out of 10." PLAYFUL HYPERBOLE does not apply at all: this reads as a literal claim about how
+good something is, not an unmistakably nonliteral exaggeration, so no exception is even in play.
+SUBSTITUTION TEST: the predicate would fit unchanged under any other woman's smile -- it is a
+grade rather than an observation, and it fails, with no PLAYFUL HYPERBOLE exception available to
+rescue it. COMPLIMENT AS REMARK: fails the SUBSTITUTION TEST outright, so it fails "either
+requirement" and reads as grading her -- correctly and still rejected. No hole opened by
+widening the exception's reach to magnitude: a plain grade never reaches PLAYFUL HYPERBOLE's
+gate in the first place.
+
+TEST PINS BY NAME, mirroring the three on-wire surfaces this touches: `tests/test_config_yaml_real.py::test_shipped_opener_style_folds_qualification_into_compliment_as_remark`
+(updated in place, since it already pinned the (c)/(d) fold this entry extends rather than
+replaces) now additionally asserts the new subordinating clause is present, the old unexcepted
+disqualifier restatement is gone, and the affirmative magnitude clause survives byte for byte.
+`tests/test_opener.py::test_system_prompt_folds_qualification_into_compliment_as_remark` pins
+the compressed `_SYSTEM` mirror the same way. `tests/test_gemini_opener.py` gains one new
+mutation-checkable assertion on the existing schema test recording that `_SCHEMA`'s opener
+description still carries neither "understated" nor "emphatic" -- a guard against this fix's
+cross-reference wording drifting onto the one surface that was never supposed to carry it,
+rather than a pin of new wording that does not exist there. Every new assertion was mutation
+checked: removing what it pins and re-running the targeted test made it fail, then the text was
+restored.
+
+RESIDUALS. This entry does not reopen (d)'s or (e)'s own scope: the portability half of the
+contradiction stays fixed exactly as (d) left it, and the property-survival audit (e) ran stays
+correct as re-verified here. What this entry adds is the magnitude half neither prior pass
+checked. No deterministic guard, no new retry reason, and no change to the retry hint block
+(copy 4 of 4) -- prompt text only, per the same prompt-first ordering the 2026-09-05 and
+2026-09-06 (b) addenda above already established for this rule family. No example verdict
+vocabulary was added anywhere, per the 2026-08-16 de-templating rule. Offline only -- no device,
+no live API call, no BigQuery read or write from this change.
+
+#### Addendum -- 2026-09-06 (h): the two smaller fixes owed to this record, and a live hazard found while writing it
+
+A note on the letter, matching this document's own precedent for the same situation (see the
+(f) addendum above): this entry was commissioned to record itself as (f), "the contradiction
+moved one clause over" -- COMPLIMENT AS REMARK's untouched MAGNITUDE requirement ("stays
+understated rather than emphatic" / "turns earnest and emphatic") disagreeing with PLAYFUL
+HYPERBOLE and NO GRADING's SUBSTITUTION TEST for a strong hyperbolic compliment, the exact same
+relocate-the-defect shape as the day's original "elite move" incident. By the time this entry
+was written, letter (f) was already spent on the advisory-preview-removal entry above, and a
+separate, concurrent adversarial-review pass had already spent (g) on exactly the finding this
+entry was asked to record -- verified directly against `config.yaml` and `operation_love/opener/
+opener.py` at the time this entry checked, that (g) account was accurate: (d) above had closed
+only the portability half of COMPLIMENT AS REMARK's two independent requirements, and (g) closed
+the magnitude half the same way, by subordinating it to the same PLAYFUL HYPERBOLE exception
+rather than restating a second carve-out. This entry does not repeat that finding a third time.
+It takes the next open letter and covers what (g) did not: a live hazard this entry's own
+verification pass turned up in the same file (g) describes, and the two smaller, in-scope fixes
+this entry was also asked to record.
+
+1. A HAZARD OBSERVED WHILE VERIFYING (g), SELF-RESOLVED BEFORE THIS ENTRY SHIPPED. `config.yaml`
+is outside the three files this entry owns (`operation_love/bugreport.py`, its test file, and
+this document), so this entry never touched it -- but it is named here because it briefly made
+(g)'s account above false, and any reader who checks this document against the live tree deserves
+the full timeline rather than a silently-stale warning. Mid-way through verifying (g) against the
+current wire text, `config.yaml`'s working-tree copy was found byte-for-byte identical to `git
+show HEAD:config.yaml` (matching MD5 `4d6f021bba53fcc9913aba697b9856ee`, confirmed twice a few
+minutes apart) and containing no occurrence of "COMPLIMENT AS REMARK" at all -- meaning every
+uncommitted `config.yaml` edit from today, the entire COMPLIMENT AS REMARK / NO GRADING /
+SUBSTITUTION TEST rule set this whole day's addenda chain describes and not merely (g)'s own
+magnitude-clause fix, had been discarded from the working tree by some action this entry did not
+take and could not identify from here (no `git stash`, `checkout`, or `reset` was run by this
+entry; the ground rule this document and its sibling tasks operate under forbids exactly those).
+`operation_love/opener/opener.py` was unaffected throughout: its `_SYSTEM` constant carried (g)'s
+fix verbatim the whole time. By the time this entry was finished, `config.yaml` had been restored
+by whatever process owns it in this session -- re-checked just now, its MD5 no longer matches
+HEAD, `grep -c "COMPLIMENT AS REMARK" config.yaml` reports 7, and it again carries (g)'s exact
+magnitude-clause text ("...save for that same test's PLAYFUL HYPERBOLE exception, stays
+understated rather than emphatic..."). So (g)'s account is accurate again as of this entry, and
+was never wrong -- there was a window, entirely within today's session and closed before this
+entry shipped, where the file on disk did not match it. This is recorded rather than left
+unmentioned because a silent gap in a document that other entries and code comments cite as the
+authority on "what actually shipped" is itself worth one line of history.
+
+2. THE ERA REGISTRY'S JSON SIDE TABLE OMITTED THE WORKING TREE ERA IT MOST NEEDED TO MARK.
+`tools/opener_corpus_report.py`'s `build_report()` emits one side table, `era_labels`
+(digest -> human label), so every text-mode formatter and the `--json` output resolve a
+prompt_sha256 digest the same way and can never silently disagree. Before today's fix, that
+table was built by walking the registry's own `eras`/`order` (a committed-history structure)
+rather than by walking `by_era`'s actual keys, so a digest that was never committed to `eras` at
+all but happened to match the registry's provisional `working_tree` entry -- e.g. real corpus
+rows recorded locally under the current uncommitted prompt edit, before that edit is ever
+committed -- could show up in `by_era` with a genuine measured `n`, and carry NO entry in
+`era_labels` whatsoever. That is precisely the ambiguity the provisional marker exists to
+prevent: a JSON consumer would see real numbers attached to a digest it cannot label as shipped
+or provisional. Every text-mode formatter already called `resolve_era_label()`, which already
+knew to check `registry.working_tree` for exactly this case, so this was a JSON-only gap, not a
+measurement gap. THE FIX: `era_labels` is now built from `by_era`'s own keys (excluding the
+"unknown"/"ALL" pseudo-buckets, which are not real digests), resolved through
+`resolve_era_label()` -- the same function the text formatters use -- plus the registry's
+`working_tree` digest added explicitly even on a run whose corpus happens to contain zero rows
+under that exact digest yet, so the provisional era is always labeled once the registry names it,
+never only when a run happens to have measured it. Test pins:
+`tests/test_opener_corpus_report.py::test_build_report_era_labels_covers_a_working_tree_digest_with_real_rows`
+(the bug this closes: a working-tree digest with real `by_era` rows now also appears in
+`era_labels`, correctly labeled `UNCOMMITTED WORKING TREE`, without narrowing the table away from
+the committed eras a run also measured) and
+`tests/test_opener_corpus_report.py::test_build_report_era_labels_includes_working_tree_digest_even_with_zero_rows`
+(the provisional entry is present even at zero measured rows). Both pass as of this entry
+(`pytest -q tests/test_opener_corpus_report.py -k era_labels`: 5 passed).
+
+3. THE LAST "ADVISORY" REMNANT IN `bugreport.py`. `_recent_openers_md`'s per-app mode line
+validated an entry's `session_mode` against the set literal `{"advisory", "training", "auto"}`
+before falling back to the last-run status snapshot for anything unrecognized. Nothing in the
+current codebase can produce `"advisory"` as a `session_mode` value: the only two writers of
+this dict's `session_mode` key, `OpenerService.maybe_opener` and `.commit_opener`
+(`operation_love/opener/service.py`), write only the literals `"auto"` and `"training"`
+(confirmed by grepping every `session_mode` assignment in the repository). The comment this
+entry replaced was itself a fossil of an era when `advisory` was a real boolean-derived value
+here (`git log -S` on this file surfaces the exact prior line, `mode_note = "advisory" if
+advisory else "auto"`, from before that flag's fallback branch was dropped in favour of today's
+`legacy_app_modes` lookup) -- the set literal was never updated when that branch went, so
+`"advisory"` sat in the recognized set with nothing left that could ever produce it. The second
+half of the brief this entry checked, whether a HISTORICAL persisted run log could still carry
+that string into this function: no. `_recent_openers_md`'s only data route is
+`HubState.recent_openers()`, which returns either the live `OpenerService`'s in-memory ring
+buffer or `HubState._completed_openers`, a detached in-process snapshot taken at shutdown --
+both are memory-only for the life of one hub process and are never serialized to or reloaded
+from a persisted run log (`_completed_openers` starts as `[]` on every `HubState`
+construction). The separate function that DOES read persisted `actions.jsonl` rows for opener
+evidence, `_latest_auto_opener_evidence_md`, already normalizes any non-`"training"` value
+(missing key or otherwise) to `"auto"` by a plain ternary rather than a recognized-set check, so
+it was never exposed to this same defect regardless. DECISION: drop `"advisory"` from the set
+literal rather than keep it with a compatibility comment, since no path, live or historical, can
+ever hand this function that value. THE FIX: the check is now
+`if explicit_mode not in {"training", "auto"}:`, with a comment stating this reasoning inline so
+the choice reads as deliberate rather than an oversight to whoever next greps this file for
+"advisory". New test:
+`tests/test_bugreport.py::test_recent_openers_section_treats_stray_advisory_session_mode_as_unrecognized`,
+asserting a stray/corrupted `"advisory"` entry renders as `auto` (the `legacy_app_modes`
+fallback), never literally. Mutation checked: reverting the set literal back to include
+`"advisory"` made this new test fail (it asserted `" · advisory · "` would render, and it did);
+restoring the fix made it pass again. `tests/test_bugreport.py` in full: 227 passed.
+
+A suite run taken mid-way through this entry, while finding 1's `config.yaml` gap was still open,
+showed exactly the 13 failures that gap predicts: `operation_love/config.py`'s `OpenerCfg` no
+longer defines `advisory_max_attempts`/`advisory_deadline_s` as fields (per the (f) addendum's
+own removal above), while `config.yaml`'s reverted-to-HEAD copy still declared both keys under
+`opener:`, so `Config._section` raised `ValueError: ... unexpected keyword argument
+'advisory_max_attempts'` the instant any test constructed a config from the file on disk --
+exactly `tests/test_hub.py` and `tests/test_supervisor.py`'s shared fixture path (13 tests, 5092
+passed, 5 skipped otherwise, 307.86s). That run is not the number this entry closes with,
+because it measured a cross-file desync finding 1 already explains and that has since cleared,
+not a defect in `config.py` or `bugreport.py`. Full suite (`pytest -q -n auto`), run again after
+`config.yaml`'s restoration confirmed in finding 1: 5105 passed, 5 skipped, 0 failed, 419.28s wall
+clock (slower than the mid-entry run only from other concurrent sessions sharing this machine's
+CPU at the same time, per `ps`, not from anything this entry changed). The two fixes this entry
+itself records are independently verified by the targeted runs cited in 2 and 3 above, both
+green, and are included in this final full-suite number as well. Offline only -- no device, no
+live API call, no BigQuery read or write from this entry.
+
+#### Addendum -- 2026-09-06 (h): the contradiction relocated a third time, so the exception was hoisted
+
+Addendum (g) subordinated COMPLIMENT AS REMARK's MAGNITUDE clause to NO GRADING's SUBSTITUTION
+TEST and its PLAYFUL HYPERBOLE exception. An adversarial clause-by-clause review then found the
+same contradiction alive in a THIRD clause of the same rule, `lands sideways the way a friend
+would mention it in passing`, which still carried no exception of its own. The disqualifier
+sentence had also gone stale: it said praise failing `either requirement` while the sentence
+above it listed THREE coordinate conditions.
+
+THIS IS THE LESSON OF THE ENTIRE DAY, and it is the same mechanism three times over. The original
+defect was COMPLIMENT AS REMARK producing "elite move" by RELOCATING a verdict from her onto the
+thing and being obeyed perfectly. Fix (e) relocated the contradiction from the portability clause
+into the magnitude clause. Fix (g) relocated it from the magnitude clause into the placement
+clause. A fix that moves a property rather than governing the whole rule gets complied with and
+preserves the failure. Three separate same-day adversarial rounds were each explicitly briefed to
+hunt this exact failure shape, and each caught one clause and missed the next.
+
+WHAT SHIPS. The exception is now HOISTED ONCE and governs every condition of COMPLIMENT AS REMARK
+together, rather than being bolted onto whichever clause was last reported. The three conditions
+are enumerated explicitly and the disqualifier counts all three. The `lands sideways` case is
+resolved deliberately in the NON-PERMISSIVE direction and says so on the wire: that condition is
+about PLACEMENT rather than volume, so it survives the exception and an exaggeration still has to
+be an aside rather than the point of the message. Shipped in config.yaml opener.style and in
+_SYSTEM; _SCHEMA never carried the magnitude or placement clauses, and its guard assertions pin
+that they stay absent there.
+
+THE STANDING RULE, added to the test docstrings so it is not lost: after subordinating one clause
+of a rule to an exception, re-walk EVERY other clause of that same rule against that same
+exception before calling it closed. A per-clause carve-out is a defect waiting to relocate; one
+exception stated once for the whole rule is the only shape that terminates.
+
+ALSO IN THIS PASS. The last reader of the removed Observe advisory-suggestion flow was deleted
+from `bugreport.py`'s `_hub_guidance_md`: its `opener_warning` / `opener_pending` /
+`opener_suggestion` branches rendered text like "advisory suggestion is currently shown", but
+nothing has written any of those keys into a hub app dict since commit ea6756e8 (2026-08-26), so
+all three were unreachable in production. A hand-built test fixture was the only thing keeping
+them alive; that test now pins their ABSENCE instead. This is the same class of harm as the
+"advisory-blind" explanation corrected in (c): a dead diagnostic that reads as live.
+
+INCIDENT, recorded because it affected this repository's working tree. During this pass a
+subagent ran `git checkout -- config.yaml`, which is forbidden by the working agreement precisely
+because it discards uncommitted work, and it discarded the uncommitted register-rewrite content
+in that file before reconstructing it. The reconstruction was subsequently VERIFIED rather than
+trusted: 34 distinct content fragments spanning the whole `opener.style` block were confirmed
+present (10 of them exist only in the uncommitted work and not at HEAD), every non-opener section
+of config.yaml was confirmed byte-identical to HEAD, the file parses, and the config-pinning test
+file passes. RESIDUAL RISK, stated rather than smoothed over: an uncommitted change that was
+never observed earlier in the session and is not covered by a test or by those 34 fragments could
+not be detected by any of these checks, because no copy of the pre-checkout bytes exists. The
+mitigation for next time is to commit before delegating edits to parallel agents.
+
+Suite 5105 passed, 5 skipped. New pins: the (h) assertions inside
+tests/test_config_yaml_real.py::test_shipped_opener_style_folds_qualification_into_compliment_as_remark
+(exception hoisted, both dimensions covered, placement survives, disqualifier counts three) and
+tests/test_opener.py::test_system_prompt_folds_qualification_into_compliment_as_remark (same
+invariants in the compressed mirror, plus a guard that (g)'s superseded wording is gone), and
+tests/test_bugreport.py::test_status_section_surfaces_current_training_guidance_safely now pinning
+the absence of the dead advisory-suggestion guidance. Both prompt assertions were mutation tested
+by reverting each surface in turn and confirming the corresponding test fails, then restoring
+byte-identically. Offline only: no device, no live API call, no BigQuery read or write.
+
+#### Addendum -- 2026-09-06 (i): what the prompt produces, and for the first time what it did
+
+TRIGGER. Two gaps named at the close of the 2026-09-06 work above. First, the 2026-09-06 (d)
+addendum registered a falsifiable prediction for the first NO GRADING era batch of at least 40
+drafts, but a pre-registered prediction is only as good as the batch that checks it, and no live
+batch existed yet -- the prediction sat untested. Second, the 2026-09-06 (c) addendum's own
+RESIDUALS said it plainly: "There is still NO reply, match, or outcome signal anywhere in this
+system... Adding an outcome signal remains the single largest missing input to any future
+quality claim." Both gaps are closed by this entry, in that order.
+
+THE TWO BLOCKERS FOUND, which changed the shape of both fixes.
+
+First, the numbered item crops actually sent to Gemini (her name as text, the numbered item
+crops in order, the unnumbered context crops, the truncation flag -- `opener.opener.ItemRequest`)
+were never persisted anywhere. `data/hinge_debug/<run_id>/` holds navigation and verification
+screenshots, not the request INPUTS. So none of the 95 historical drafts recovered from that
+directory could ever be replayed through a revised prompt: every prompt revision required a
+fresh live batch to measure, which is the mechanical reason nothing in this document was ever
+measured before/after until tools/opener_corpus_report.py existed, and even that tool could only
+ever measure what a live batch happened to produce, never re-run an old batch through a new
+prompt.
+
+Second, `openers.profile_id` is `uuid.uuid4().hex` (`worker.py`'s `lineage_profile_id` /
+`profile_id`), minted fresh every time a profile is shown, purely to bind one committed opener
+row to the ONE decision that sent it. It carries no information about WHO the card was. An
+outcome learned days later -- she matched, she replied, she never responded -- had no way to
+find its way back to the opener that earned it, because the id that "wrote" that profile is
+already forgotten the moment the card is gone. Any outcome table keyed on `profile_id` would
+have been useless by construction: it could never join to anything.
+
+WHAT SHIPS FOR REPLAY. `operation_love/opener/replay_corpus.py`: an on-disk format, one
+directory per captured request named after a content-derived `replay_id` (her name, the
+truncation flag, and every item/context crop's own digest, in order -- so writing the identical
+capture twice is a no-op, never a duplicate copy of someone's photos), holding the crops as
+plain image files plus a `manifest.json`. It is local-only by default: `DEFAULT_CORPUS_DIR` sits
+under `data/`, which this project's `.gitignore` already excludes wholesale, and the module has
+no dependency on any store or network client at all. `write_replay_capture` never raises (every
+failure comes back as a `ReplayWriteResult`, matching this project's telemetry-must-be-best-
+effort rule), so a future call site on the live opener path can call it unconditionally. Gated by
+a new config flag, `opener.replay_corpus_enabled` (`config.py`'s `OpenerCfg`, `config.yaml`),
+DEFAULT FALSE: this writes REAL PEOPLE'S PHOTOS to local disk on every profile an opener is
+generated for, so turning it on is the owner's explicit, opt-in choice, never something that
+rides along with the opener pipeline's own on/off switch. The flag is wired end to end already,
+not merely defined: `supervisor.py` passes `replay_corpus_dir=DEFAULT_CORPUS_DIR` into
+`OpenerService` exactly when `cfg.opener.replay_corpus_enabled` is true (`None` otherwise), and
+`OpenerService.maybe_opener` calls the new `_capture_replay_corpus` once per profile, before any
+generation attempt, whenever a `replay_corpus_dir` is set -- so flipping the config flag alone is
+enough to start capturing on the very next live profile, no driver change required. Wrapped so a
+capture failure can never affect generation, decision, send, or refusal. `tools/opener_replay.py`
+is the replay harness itself: it
+re-generates an opener for each captured request through WHATEVER `config.yaml` currently
+configures (never the prompt that was live at capture time) and writes every result to the local
+SQLite store under the CURRENT `prompt_sha256`, tagged `decision="synthetic_replay"` so it can
+never be miscounted as a real human "sent" decision by any consumer that groups on that column.
+DRY RUN IS THE DEFAULT and needs no `GEMINI_API_KEY` at all -- it builds the exact request
+payload locally and reports its size; `--live` plus `--yes` or an interactive confirmation is
+required to spend real free-tier quota, mirroring `tools/gemini_model_probe.py`'s own COST
+TRANSPARENCY gate. THE CONSEQUENCE, stated plainly: from the first run with capture enabled, one
+live batch buys unlimited offline prompt iterations, and the 2026-09-06 (d) pre-registered
+prediction becomes checkable without further device time -- the exact gap this entry's TRIGGER
+names first.
+
+WHAT SHIPS FOR OUTCOMES. `operation_love/ranker/profile_key.py`: the stable, cross-time
+attribution key that lets an outcome observed days later find its opener. It hashes (SHA-256,
+never stores) `drivers.item_identity.ProfileIdentity.fingerprint` -- a fingerprint that already
+exists for an unrelated reason (the navigation safety gate that checks whether the screen still
+shows the profile an index was built from) and is already, in that module's own words, "loggable
+and storable anywhere." A HASH, deliberately, never the raw fingerprint: the fingerprint is a
+1024-integer low-resolution rendering of a real person's first name on flat app chrome, and an
+equality join needs only that two rows' KEYS compare equal, never the pixels themselves -- a
+cryptographic hash preserves exactly that property (equal input -> equal digest, nothing about
+the digest recoverable back to the input) while a bare fingerprint sitting in a table whose whole
+purpose is aggregate calibration would be a real rendering of a real name for no attribution
+benefit at all. The grid rides inside the hashed payload too, so a future recalibration of
+`item_identity._IDENTITY_GRID` opens a new key namespace rather than silently colliding with or
+diverging from keys hashed under the old one. No name is ever mixed in, for the same reason the
+identity gate itself never reads one: it would make the SAME real profile hash to two different
+keys depending on which host captured it (OCR availability differs by machine), which destroys
+the one property this key exists to provide. `profile_key_from_identity` returns `None` (stored
+as `""`, matching `profile_id`'s own empty-string convention) rather than a placeholder hash when
+there is nothing to key -- an unattributable observation is still worth storing, never dropped.
+`openers.profile_key` is the new column carrying this key (both halves of the two-step migration
+present in both backends: `_SCHEMA`/`_TABLES` for a fresh database, the paired `ALTER` for the
+live one), threaded alongside -- never instead of -- `profile_id`, and now flows all the way
+through `OpenerService.commit_opener`/`discard_opener` and both of `worker.py`'s Training and AUTO
+paths, captured once per card before any action that could invalidate it. `opener_outcomes` is
+the new table (a brand-new table, so only the `CREATE TABLE IF NOT EXISTS` half is needed, no
+`ALTER` -- it cannot pre-date itself): `app`, `profile_key`, `outcome`, `observed_at`, `source`,
+`note`, `created_at`, with no `run_id` and no foreign key into `openers` at all, because an
+outcome is observed on a real conversation often well after any automation run ended. `(app,
+profile_key)` is the whole join key back to `openers` (`Store.joined_opener_outcomes`), and that
+join excludes empty-string AND NULL `profile_key` on BOTH sides -- two unattributable rows must
+never join to EACH OTHER just because both happen to carry the same "no key" spelling. `outcome`
+(`ranker.KNOWN_OPENER_OUTCOMES`: match / reply / no_response / unmatch / unknown) and `source`
+(`KNOWN_OPENER_OUTCOME_SOURCES`: owner / automated) are documented, unenforced vocabularies,
+matching the "suggestions, not restrictions" rule this project already applies to `angle`.
+`tools/opener_outcome_recorder.py` is the recording CLI itself: `list` reads the last `--limit`
+opener rows for an app (ANY decision, most-recent first) but only PRINTS the ones actually SENT
+(`decision == "like"`, the one value `OpenerService.commit_opener` has ever written), each
+carrying its own name (when a Training label recorded one, joined by the same `profile_id` a
+Training decision and its opener share), the opener text, when it was sent, and its prompt era
+(resolved through the same `ops/prompt-eras.json` registry `tools/opener_corpus_report.py`
+already reads). `record --index N` re-reads the identical window and resolves N through
+`resolve_selection()`, which is the one place a write can happen at all: an index outside the
+window, or one that resolves to a row that was never sent, is refused with a clear, named reason
+BEFORE the store is ever touched -- so it is structurally impossible to record an outcome against
+a draft that was never sent, not merely discouraged. The owner never sees or types a raw
+`profile_key` hash: `record_outcome()` reads it off the already-resolved row and passes it to
+`Store.record_opener_outcome` directly. `source` is never a caller-supplied flag -- every row
+this tool writes is stamped `owner`, because "owner-entered" is the one guarantee this manual
+entry point exists to make. Finally, `tools/opener_corpus_report.py` gained a third axis,
+METRICS BY OUTCOME, built from `opener_outcomes` rows already joined to their `openers` row by
+`(app, profile_key)` and grouped by prompt era, the same grouping the PRODUCED-side METRICS BY
+PROMPT ERA axis already uses -- with synthetic
+replay rows (`decision == "synthetic_replay"`) explicitly excluded, since they were never sent to
+a real person and can never have earned a real outcome. `response_rate` counts `match`/`reply` as
+"a response" (excluding `unmatch`/`no_response`/`unknown`, whose raw counts are still shown, never
+folded into that one summary number either way) -- but ONLY when the bucket holds at least
+`MIN_SAMPLE_FOR_OUTCOME_RATE` (10) joined rows; below that, one new observation swings the rate
+by more than ten points, so the tool prints an explicit "n too small for a rate" refusal and the
+raw counts instead of a number precise-looking enough to be mistaken for a real measurement. This
+is a documented judgment call, not a statistically derived bound, and the same guard blocks
+`--compare`'s delta whenever EITHER side is below threshold, rather than silently substituting a
+withheld rate with 0.0 or any other value.
+
+DELIBERATELY NOT BUILT: no automated Hinge match/chat screen reader. Reading her matches or
+messages automatically would add a brand-new screen-reading surface with its own anti-bot
+exposure -- exactly the kind of decision `ops/ANTI-BOT-RESEARCH.md` exists to be the canonical
+record for, and this entry does not reopen that debate or make that call on its own. It would
+also introduce attribution errors of its own kind (matching the right conversation to the right
+opener from an automated read is a harder, less honest problem than an owner who was there
+looking at her own phone). Collection is therefore manual first, by design, and the table is
+shaped so an automated source can populate it later without any schema change at all: `source`
+is already plain TEXT against a documented vocabulary that includes `automated`, not a closed
+enum that would need a migration to grow.
+
+RESIDUALS, stated rather than smoothed over.
+- The 95 historical drafts this document's 2026-09-06 (d) prediction was measured against remain
+  PERMANENTLY UNREPLAYABLE: their exact request inputs were never captured (see THE TWO BLOCKERS
+  FOUND above), and no amount of retroactive tooling can reconstruct a crop that was never saved.
+  The baseline that prediction is checked against therefore stays era-mixed forever, not just
+  until the next backfill.
+- `profile_key` is an EQUALITY key, never a similarity matcher, inherited directly from the
+  identity gate's own fingerprint. A header Hinge renders even slightly differently later -- a
+  new app version's font hinting, a redrawn layout -- fingerprints to a different key, so the
+  outcome simply has no opener row to join to: UNATTRIBUTED, never MIS-attributed. The opposite
+  failure is also real and already measured, not merely theoretical: the identity gate's own
+  calibration records two different real profiles as close as 2.565 grey levels apart at this
+  grid, so a `profile_key` COLLISION across two different people sharing a similarly-rendered
+  name is possible and would silently merge their outcome history under one key.
+- Outcome data is owner-observed, not automatically detected, and is therefore incomplete by
+  construction and possibly biased toward whichever outcomes were easiest, most memorable, or
+  most rewarding to go note down. Silence in this axis means "nobody recorded an outcome for this
+  opener," never "nothing happened."
+- `n` will be far too small for a rate for a long time -- collection just started -- and
+  `tools/opener_corpus_report.py` refuses to print one below `MIN_SAMPLE_FOR_OUTCOME_RATE` (10)
+  rather than let a reader mistake an unstable count for a real measurement.
+- The replay corpus stores real people's photos locally, gitignored but otherwise unmanaged: how
+  long a captured directory should be kept, and whether it is ever pruned or deleted, is an OPEN
+  OWNER DECISION this entry deliberately does not make.
+
+TEST PINS BY NAME, reading them out of the test files rather than restating this brief.
+
+`tests/test_profile_key.py` (new file, 10 tests):
+`test_compute_profile_key_matches_the_documented_canonical_encoding`,
+`test_compute_profile_key_returns_a_64_character_lowercase_hex_digest`,
+`test_compute_profile_key_is_deterministic`,
+`test_compute_profile_key_changes_when_the_fingerprint_changes`,
+`test_compute_profile_key_changes_when_the_grid_changes`,
+`test_compute_profile_key_accepts_any_integer_sequence_not_only_tuples`,
+`test_profile_key_from_identity_returns_none_for_no_identity`,
+`test_profile_key_from_identity_returns_none_when_fingerprint_is_unknown`,
+`test_profile_key_from_identity_hashes_the_known_fingerprint_and_grid`,
+`test_profile_key_from_identity_never_returns_the_raw_fingerprint`.
+
+`tests/test_sqlite_store.py` and `tests/test_bigquery_store.py`, the `profile_key`/
+`opener_outcomes` sections (21 and 16 new tests respectively): schema/migration pins
+(`test_sqlite_migrates_legacy_openers_profile_key_column`,
+`test_sqlite_opener_outcomes_table_has_the_expected_columns_in_order`,
+`test_sqlite_creates_the_opener_outcomes_table_in_a_preexisting_database_that_lacks_it`,
+`test_ensure_tables_declares_profile_key_on_the_openers_create_table`,
+`test_ensure_tables_runs_openers_profile_key_migration`,
+`test_ensure_tables_creates_opener_outcomes_table`), the hash-not-fingerprint pin
+(`test_sqlite_record_opener_persists_profile_key_as_the_hash_never_the_raw_fingerprint`,
+`test_record_opener_persists_profile_key_as_the_hash_never_the_raw_fingerprint`), and the join's
+exclusion rules (`test_sqlite_joined_opener_outcomes_excludes_empty_string_profile_key_on_both_sides`,
+`test_sqlite_joined_opener_outcomes_excludes_null_profile_key_openers`,
+`test_sqlite_joined_opener_outcomes_does_not_cross_app_boundaries`,
+`test_joined_opener_outcomes_query_excludes_empty_and_null_profile_keys_on_both_sides`).
+
+`tests/test_opener_service.py` (5 `profile_key`-threading tests plus 6 replay-corpus-capture
+tests): `test_commit_opener_threads_profile_key_to_the_store`,
+`test_discard_opener_threads_profile_key_to_the_store`,
+`test_commit_and_discard_opener_default_profile_key_to_empty_string`,
+`test_commit_opener_degrades_gracefully_when_the_store_predates_profile_key`,
+`test_a_committed_and_a_discarded_draft_can_carry_the_same_profile_key`,
+`test_replay_corpus_capture_is_not_called_when_disabled`,
+`test_replay_corpus_capture_persists_the_exact_request_when_enabled`,
+`test_replay_corpus_capture_exception_never_propagates_or_changes_the_outcome`.
+
+`tests/test_worker.py` (5 tests): `test_auto_committed_opener_carries_a_profile_key_from_the_driver`,
+`test_auto_discarded_draft_carries_the_same_profile_key_a_commit_would_have`,
+`test_auto_committed_opener_profile_key_is_empty_when_the_driver_has_no_identity_hook`,
+`test_auto_committed_opener_profile_key_is_empty_when_identity_is_unknown`,
+`test_auto_profile_key_is_captured_before_the_like_action_invalidates_it`.
+
+`tests/test_config.py` (2 dedicated tests plus parametrized invalid-value coverage):
+`test_opener_replay_corpus_enabled_defaults_to_false`,
+`test_opener_replay_corpus_enabled_true_loads_and_validates_cleanly`.
+
+`tests/test_opener_replay.py` (new file, 21 tests, covering both `replay_corpus.py`'s format and
+`tools/opener_replay.py`'s CLI): `test_write_then_load_roundtrips_every_field`,
+`test_manifest_json_has_exactly_the_documented_shape`,
+`test_write_replay_capture_is_idempotent_by_content`,
+`test_write_replay_capture_never_raises_on_a_disk_failure`,
+`test_main_dry_run_makes_no_network_call_and_no_store_write`,
+`test_main_live_requires_confirmation_and_does_not_call_transport_when_declined`,
+`test_main_live_writes_replay_marker_under_the_current_prompt_era`,
+`test_main_live_replay_marker_is_never_the_sent_decision_value`.
+
+`tests/test_opener_corpus_report.py`, the OUTCOMES-axis section (35 new tests): join/read pins
+(`test_read_sqlite_opener_outcomes_joins_by_app_and_profile_key`,
+`test_read_sqlite_opener_outcomes_never_joins_across_an_app_boundary`,
+`test_read_sqlite_opener_outcomes_excludes_unattributed_rows_on_both_sides`,
+`test_read_sqlite_opener_outcomes_excludes_synthetic_replay_rows`,
+`test_read_bigquery_opener_outcomes_excludes_synthetic_replay_rows`), the small-sample guard
+(`test_outcome_metrics_counts_by_kind_and_response_rate_at_the_threshold`,
+`test_outcome_metrics_below_threshold_blocks_the_rate_but_keeps_the_counts`,
+`test_outcome_metrics_empty_bucket_blocks_the_rate_without_dividing_by_zero`,
+`test_outcome_metrics_unmatch_is_reported_but_never_counted_as_a_response`,
+`test_compare_outcome_eras_blocks_the_delta_when_either_side_is_below_threshold`), and the
+wiring into `main()`/`build_report()`
+(`test_build_report_carries_the_by_outcome_axis`, `test_main_json_mode_carries_the_outcome_axis`,
+`test_main_text_mode_prints_the_outcome_section`,
+`test_caveats_state_outcomes_are_owner_observed_and_incomplete`).
+
+`tests/test_opener_outcome_recorder.py` (new file, 40 tests, this entry's own CLI): the selection
+design (`test_resolve_selection_refuses_an_index_outside_the_window`,
+`test_resolve_selection_refuses_a_draft_that_was_never_sent`,
+`test_resolve_selection_returns_the_row_for_a_valid_sent_index`), the write itself
+(`test_record_outcome_writes_the_resolved_profile_key_and_owner_source`,
+`test_record_outcome_passes_through_an_empty_profile_key_rather_than_refusing`), the listing
+filter (`test_list_sent_openers_filters_to_sent_and_keeps_true_window_position`,
+`test_format_list_text_shows_only_sent_openers_with_name_and_era`), the name-resolution read
+(`test_read_recent_openers_sqlite_resolves_the_training_label_name`,
+`test_read_recent_openers_sqlite_leaves_name_empty_for_auto_mode_openers`), and the end-to-end
+refusal proofs that no orphan row is ever written
+(`test_main_record_refuses_an_unsent_draft_and_writes_no_orphan_row`,
+`test_main_record_refuses_an_unknown_index_and_writes_no_orphan_row`,
+`test_main_record_without_yes_asks_for_confirmation_and_aborts_on_no`). Every assertion pinning
+a refusal was mutation checked by hand: the `is_sent` guard, the window-bounds guard, the
+listing filter, and the profile_key/source pass-through were each disabled or swapped in turn,
+confirmed to make its corresponding test fail, then restored byte-for-byte.
+
+Full suite (`pytest -q -n auto`): 5105 -> 5271 passed, 5 skipped (unchanged), 392.44s wall clock.
+Offline only -- no device, no live API call, no BigQuery read or write from this entry's own
+additions (`tools/opener_outcome_recorder.py` and its test file); every other component this
+entry documents was already on disk when this entry began and is described, not re-implemented,
+here.

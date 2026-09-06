@@ -504,7 +504,9 @@ _DEFAULT_TIMEOUT_S = 30.0
 _FALLBACK_STYLE = (
     "Be a charming, curious, low-pressure gentleman. Make one clear, positive, specific "
     "observation or guess about the item shown, then optionally one easy question. Two "
-    "sentences maximum. No em dash or hyphen. (Placeholder style guide -- config.yaml's real "
+    "sentences maximum. No em dash or hyphen. Write in the spoken register a person texts "
+    "in, with natural contractions, and deliver any compliment as an offhand remark about "
+    "the thing rather than a verdict on her. (Placeholder style guide -- config.yaml's real "
     "opener.style could not be loaded; this has no bearing on whether the account can serve "
     "this request shape.)"
 )

@@ -26,6 +26,7 @@ from .interaction import AutoSessionPolicy
 from .notifications import notify_training_decision_ready
 from .opener.opener import INDEX_SPACE_MODEL_ITEMS, ITEM_INDEX_ABSENT, ItemRequest
 from .ranker.decider import Decider, Decision
+from .ranker.profile_key import profile_key_from_identity
 from .targeting_policy import (
     still_photo_licence_operator_notice, still_photo_licence_provenance)
 
@@ -207,6 +208,27 @@ class Worker(threading.Thread):
         if callable(bind):
             bind(self.run_id)
 
+    def _bind_opener_prompt_stamp(self) -> None:
+        """Give an opt-in driver the prompt era this whole process's openers are generated
+        under, so its own LOCAL debug rows (Hinge's actions.jsonl) can be grouped by era
+        exactly like the durable `openers` table already can.
+
+        A one-time bind, mirroring _bind_debug_run immediately above, is exactly as fresh as
+        reading the value at generation time would be: OpenerService.prompt_sha256 is computed
+        ONCE in its own __init__ and is fixed for the life of the process (see that attribute's
+        own comment) -- a running process keeps the same style/prompt until restarted, so
+        nothing is lost by handing it to the driver once here rather than threading it through
+        every like() call. This deliberately does NOT hand the driver a reference to
+        self.opener_service itself (a much wider surface than one digest), and every non-Hinge
+        driver, every third-party/legacy opener service, and every test fake that lacks this
+        optional hook or that `prompt_sha256` attribute is unaffected -- `getattr(..., None)`
+        degrades to a local row with no era digest, exactly like a row written before this
+        stamp existed.
+        """
+        bind = getattr(self.driver, "set_opener_prompt_sha256", None)
+        if callable(bind):
+            bind(getattr(self.opener_service, "prompt_sha256", None))
+
     def _announce_targeting_licence_provenance(self) -> None:
         """Publish the Hinge numbering licence once before the active session starts."""
         if self.app != "hinge":
@@ -265,6 +287,66 @@ class Worker(threading.Thread):
         by every worker, so whichever worker reads it here always sees the SAME original
         cause -- not whichever symptom that particular worker's own opener call hit."""
         return getattr(self.opener_service, "exhausted_reason", None)
+
+    def _discard_staged_opener(self, pick, *, decision_source: str, profile_key: str = "") -> None:
+        """Best-effort telemetry for a staged AUTO/Training opener draft that will never be
+        committed: an explicit Dislike, a Stop, a targeting refusal, or a driver exception -- see
+        OpenerService.discard_opener's docstring for why this is the other half of commit_opener
+        and why every one of those outcomes used to leave no durable trace at all.
+
+        Guarded exactly like every commit_opener call site in this module (`callable(...)` on a
+        duck-typed service): `discard_opener` is a newer, optional method, and a legacy/third-party
+        opener service or test fake that predates it must degrade to a no-op here, not an
+        AttributeError. `pick is None` (no opener was ever generated for this profile) is
+        likewise a no-op, and a `pick` whose staged record is already spent (committed or
+        discarded earlier) is a no-op inside discard_opener itself, so calling this
+        defensively at more than one abandonment point is always safe.
+
+        `profile_key` (2026-09-06): the caller's already-captured attribution key for THIS
+        profile (see `_current_profile_key`) -- never re-derived here. Passed only when the
+        service declares the keyword, exactly like every other optional lineage field this
+        module threads through a duck-typed opener service.
+
+        No try/except here, deliberately, mirroring every existing commit_opener call site in
+        this module none of which wrap the call either: discard_opener carries its OWN
+        best-effort try/except around the store write (see its docstring), so a failure there
+        already cannot raise into this method's caller.
+        """
+        discard = getattr(self.opener_service, "discard_opener", None)
+        if pick is not None and callable(discard):
+            discard_kwargs = {"decision": "never_sent", "decision_source": decision_source,
+                              "decision_created_at": time.time()}
+            if _accepts_keywords(discard, "profile_key"):
+                discard_kwargs["profile_key"] = profile_key
+            discard(pick, **discard_kwargs)
+
+    def _current_profile_key(self) -> str:
+        """The STABLE, cross-time attribution key (ranker/profile_key.py) for the profile this
+        driver most recently captured, or "" when none is derivable -- an honestly
+        unattributable row, never a fabricated key.
+
+        MUST BE CALLED BEFORE `driver.like()`/`driver.dislike()` RUNS FOR THIS PROFILE.
+        HingeDriver's own item index -- the thing `current_profile_identity` reads -- is
+        invalidated in EACH of those methods' own `finally` clause the instant the physical
+        action completes (doc 5.3), so the identity for THIS profile is already gone by the
+        time either call returns. `_training_loop`/`_auto_loop` therefore call this exactly
+        once, right after the profile is captured and well before any device action, and carry
+        the resulting plain string through to whichever of commit_opener/discard_opener this
+        profile eventually reaches -- never re-derive it afterward.
+
+        Optional, duck-typed driver hook, exactly like `_model_item_media_ordinal`/
+        `_item_type_preflight_mismatch` above: a driver that does not enumerate items (every
+        non-Hinge driver today) simply has no `current_profile_identity` method, and this
+        degrades to "" rather than raising or guessing.
+        """
+        getter = getattr(self.driver, "current_profile_identity", None)
+        if not callable(getter):
+            return ""
+        try:
+            identity = getter()
+            return profile_key_from_identity(identity) or ""
+        except Exception:  # noqa: BLE001 -- optional telemetry must never break a live run
+            return ""
 
     def _live_targeting_calibration_blocker(self) -> str:
         """Ask an opener-capable driver to re-check its live targeting licence."""
@@ -454,6 +536,7 @@ class Worker(threading.Thread):
         if self.status:
             self.status.set_app(self.app, mode=self.mode)
         self._bind_debug_run()
+        self._bind_opener_prompt_stamp()
         self._announce_targeting_licence_provenance()
         if self.stop_event.is_set():
             leave()
@@ -601,6 +684,11 @@ class Worker(threading.Thread):
                         self._stat(state=terminal_state, stop_reason=stop_reason, stop_kind=stop_kind)
                         self.stop_event.set()
                     break
+                # Captured HERE, before anything else touches this profile: the driver's item
+                # index (and the identity fingerprint it carries) is invalidated the instant
+                # like()/dislike() completes (see _current_profile_key's own docstring), so this
+                # is the last point this profile's attribution key can be read at all.
+                profile_key = self._current_profile_key()
                 self._publish_status(
                     mode="training", state="scoring",
                     detail="checking the captured profile for a safe target")
@@ -769,6 +857,8 @@ class Worker(threading.Thread):
                                 if (landed_evidence is not None
                                         and _accepts_keywords(commit, "pre_send_evidence")):
                                     commit_kwargs["pre_send_evidence"] = landed_evidence
+                                if _accepts_keywords(commit, "profile_key"):
+                                    commit_kwargs["profile_key"] = profile_key
                                 committed = commit(pick, **commit_kwargs)
                             else:
                                 committed = commit(pick)
@@ -779,6 +869,26 @@ class Worker(threading.Thread):
                             if committed is False:
                                 raise RuntimeError(
                                     "the landed training opener could not be persisted")
+                    else:
+                        # The reviewer chose Dislike. Until now this staged draft was simply
+                        # dropped with the card: the durable `openers` table only ever recorded
+                        # a Like, so "how often does the model write a bad opener" could not be
+                        # answered from it -- the bad ones were exactly the ones never written
+                        # down. discard_opener is the other half of the commit_opener call
+                        # immediately above (see its docstring): same staging envelope, same
+                        # prompt_sha256 captured at generation, same best-effort persistence, and
+                        # it must never turn a completed Dislike into a failed Hub action --
+                        # which is exactly why, unlike the Like branch above, its return value is
+                        # not inspected and a discard failure never raises here.
+                        discard = getattr(self.opener_service, "discard_opener", None)
+                        if callable(discard):
+                            discard_kwargs = {
+                                "profile_id": profile_id, "decision": "dislike",
+                                "decision_source": "manual", "decision_created_at": decided_at,
+                            }
+                            if _accepts_keywords(discard, "profile_key"):
+                                discard_kwargs["profile_key"] = profile_key
+                            discard(pick, **discard_kwargs)
                     self._training_persistence_status(outcome, "label")
                     _record_decision_with_lineage(
                         self.store, self.run_id, self.app, outcome,
@@ -998,6 +1108,12 @@ class Worker(threading.Thread):
                         self.stop_event.set()
                     break
 
+                # Captured HERE, before anything else touches this profile -- see
+                # _current_profile_key's own docstring for why this is the last point this
+                # profile's attribution key can be read at all (like()/dislike() invalidate the
+                # driver's index, and the identity fingerprint it carries, the instant either
+                # completes).
+                profile_key = self._current_profile_key()
                 self._stat(state="scoring")
                 d = self.decider.decide(profile)
                 if self.stop_event.is_set():
@@ -1211,6 +1327,12 @@ class Worker(threading.Thread):
                     # which is a different service-health signal and remains false for an
                     # operator-initiated stop.
                     if self.stop_event.is_set():
+                        # This draft was generated but will never reach a device: no like was
+                        # attempted and none ever will be for this profile. See
+                        # _discard_staged_opener's docstring for why this is safe even though a
+                        # legacy/fake opener service may not implement discard_opener at all.
+                        self._discard_staged_opener(
+                            pick, decision_source="auto", profile_key=profile_key)
                         break
                     # An opener call can discover that every configured provider/model is
                     # exhausted. In AUTO mode, honour its global stop BEFORE calling
@@ -1221,6 +1343,12 @@ class Worker(threading.Thread):
                         stop_kind = "opener"
                         self._stat(state="stopped", stop_reason=stop_reason, stop_kind=stop_kind)
                         self.stop_event.set()
+                        # Exhaustion (e.g. the run budget, see maybe_opener's docstring) can fire
+                        # on the SAME call that produced this profile's staged draft -- the
+                        # generation itself succeeded, only the service now refuses to let AUTO
+                        # act on it. Same reasoning as the stop_event branch above.
+                        self._discard_staged_opener(
+                            pick, decision_source="auto", profile_key=profile_key)
                         break
                     # COMPLETED RULE: on an opener-capable app, an AUTO like is normally sent
                     # WITH its opener or not sent at all. The one narrow exception is a Gemini
@@ -1332,6 +1460,10 @@ class Worker(threading.Thread):
                         stop_kind = "opener"
                         self._stat(state="stopped", stop_reason=stop_reason, stop_kind=stop_kind)
                         self.stop_event.set()
+                        # The opener itself generated fine; only its target could not be
+                        # resolved, so no like was ever attempted for this profile.
+                        self._discard_staged_opener(
+                            pick, decision_source="auto", profile_key=profile_key)
                         break
                     # item_index lets the driver attach the comment to the numbered photo the
                     # opener is actually about, not blindly the first one.
@@ -1414,12 +1546,10 @@ class Worker(threading.Thread):
                         # also keeps a non-interruptible legacy driver from being entered when
                         # Stop was already observed before the call.
                         if self.stop_event.is_set():
+                            self._discard_staged_opener(
+                                pick, decision_source="auto", profile_key=profile_key)
                             break
                         self.driver.like(pick.text if pick else None, **like_kwargs)
-                        evidence_hook = getattr(
-                            self.driver, "landed_auto_opener_evidence", None)
-                        if pick is not None and callable(evidence_hook):
-                            pre_send_evidence = evidence_hook()
                     except ItemTargetingError as exc:
                         # DOC 5.6'S HARD STOP. The driver could not put this like on the item the
                         # opener was written about -- either it could not reach that item, or the
@@ -1449,7 +1579,29 @@ class Worker(threading.Thread):
                         stop_kind = "targeting"
                         self._stat(state="stopped", stop_reason=stop_reason, stop_kind=stop_kind)
                         self.stop_event.set()
+                        self._discard_staged_opener(
+                            pick, decision_source="auto", profile_key=profile_key)
                         break
+                    except Exception:
+                        # Anything else raised while attempting the physical action -- a paywall
+                        # DeckBlockedError, an operator Stop arriving mid-navigation as
+                        # ActionCancelled, an unsent-like RuntimeError/driver error -- means the
+                        # like was never sent for this profile either. The outer handlers below
+                        # still decide how the RUN reacts (stopped/blocked/error); this only
+                        # records that this profile's own staged draft was abandoned, and the
+                        # original exception is re-raised completely unchanged.
+                        #
+                        # Deliberately scoped to ONLY the preflight check and the driver.like()
+                        # call above (see the try block this pairs with): the evidence hook right
+                        # below runs AFTER driver.like() already returned, i.e. after a real Like
+                        # physically landed, and must never be able to make a landed action look
+                        # abandoned merely because that OPTIONAL diagnostic read raised.
+                        self._discard_staged_opener(
+                            pick, decision_source="auto", profile_key=profile_key)
+                        raise
+                    evidence_hook = getattr(self.driver, "landed_auto_opener_evidence", None)
+                    if pick is not None and callable(evidence_hook):
+                        pre_send_evidence = evidence_hook()
                     liked += 1
                 else:
                     dislike = self.driver.dislike
@@ -1496,6 +1648,8 @@ class Worker(threading.Thread):
                             if (pre_send_evidence is not None
                                     and _accepts_keywords(commit, "pre_send_evidence")):
                                 commit_kwargs["pre_send_evidence"] = pre_send_evidence
+                            if _accepts_keywords(commit, "profile_key"):
+                                commit_kwargs["profile_key"] = profile_key
                             commit(pick, **commit_kwargs)
                         else:
                             commit(pick)

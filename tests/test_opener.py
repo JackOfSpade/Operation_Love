@@ -14,6 +14,7 @@ cap) are exercised through GeminiOpener with an injected fake transport, the sam
 technique tests/test_gemini_opener.py uses for its own (much larger) REST/quota/
 thinking-config coverage. No SDK/network either way.
 """
+import copy
 import json
 
 import pytest
@@ -32,6 +33,7 @@ from operation_love.opener.opener import (
     REASON_SCAFFOLDING,
     REASON_SENSITIVE_INFERENCE,
     REASON_TOO_MANY_SENTENCES,
+    REASON_UNCONFIRMED_LOCATION_FOLLOWUP,
     REASON_UNDELIVERABLE_CHARS,
     REASON_UNDELIVERABLE_SEQUENCE,
     _ITEM_PREAMBLE,
@@ -46,7 +48,10 @@ from operation_love.opener.opener import (
     _sentence_count,
     _sensitive_inference_markers,
     _strip_wrapping_quotes,
+    _unconfirmed_location_followup_markers,
+    prompt_stamp,
 )
+import operation_love.opener.opener as opener_mod
 from operation_love.costing import Usage
 from operation_love.opener.service import OpenerService
 from operation_love.perception.capture import Profile
@@ -151,12 +156,31 @@ def test_strip_wrapping_quotes_strips_matched_single_quotes():
     assert _strip_wrapping_quotes("'Nice antlers.'") == "Nice antlers."
 
 
+def test_strip_wrapping_quotes_strips_around_a_contraction():
+    """2026-09-05 register rewrite: SPOKEN REGISTER makes contractions the NORM, and a
+    contraction's apostrophe is intra-word punctuation, not the other half of the leading
+    quote. Refusing to strip on any interior ' would therefore have disabled this repair for
+    the common case, and nothing downstream catches it -- _scaffolding_markers does not match
+    a wholly quoted message (verified), so the literal wrapping apostrophes would be typed
+    into her comment box. Before the rewrite the model produced zero apostrophes in 188
+    openers, which is why the old rule never showed the hole."""
+    assert _strip_wrapping_quotes("'That's a nice mug.'") == "That's a nice mug."
+    assert _strip_wrapping_quotes("'Nice antlers, isn't it?'") == "Nice antlers, isn't it?"
+    # A message quoted back with BOTH kinds of interior contraction still repairs.
+    assert (_strip_wrapping_quotes("'You'd never guess what that isn't.'")
+            == "You'd never guess what that isn't.")
+
+
 def test_strip_wrapping_quotes_leaves_unbalanced_inner_apostrophe_alone():
-    # The interior apostrophe in "isn't" means the leading/trailing ' are NOT a clean
-    # matched wrapping pair -- stripping them naively would leave a broken, unbalanced
-    # string, so this must be returned completely unchanged.
-    text = "'Nice antlers, isn't it?'"
+    # A trailing possessive apostrophe is NOT intra-word (a space follows it), so the
+    # leading/trailing ' are not a clean matched wrapping pair -- stripping them would leave a
+    # broken, unbalanced string, so this must be returned completely unchanged. This is the
+    # half of the rule the contraction allowance above deliberately does NOT relax.
+    text = "'Grams' pie is unreal.'"
     assert _strip_wrapping_quotes(text) == text
+    # Same for an inner quoted phrase inside a double-quoted wrapper.
+    nested = '"He said "hi" and left."'
+    assert _strip_wrapping_quotes(nested) == nested
 
 
 def test_strip_wrapping_quotes_leaves_unquoted_text_alone():
@@ -198,6 +222,14 @@ _SCAFFOLDING_FALSE_POSITIVES = [
     "I cannot get over that dog's face.",
     "I cannot help but notice the antlers.",                           # "help but" is the idiom
     "Okay, I'm unable to look away from that sunset shot.",
+    # 2026-09-06 (b) "HERE'S" collision (ops/OPENER-REDESIGN.md residuals section): a bare
+    # leading "Here's"/"Here is" used to be matched unconditionally, so this perfectly natural
+    # spoken opening was rejected as REASON_SCAFFOLDING against the same max_attempts=5 budget
+    # that stops a whole run. "hoping" is a gerund, never the meta noun naming the output, so
+    # _SCAFFOLD_HERE_IS_OBJECT_RE does not match it.
+    "Here's hoping that trail's as steep as it looks. Have you done the full loop?",
+    "Here's to a good hike, was that trail as brutal as it looks?",     # "to" is not a determiner
+    "Here's a photo I love, where was it taken?",                      # "a photo" names a thing, not the output
 ]
 
 
@@ -217,6 +249,11 @@ _SCAFFOLDING_TRUE_POSITIVES = [
     "I cannot assist with that request.",                              # refusal framing
     "# Nice antlers, where was this taken?",
     "This is my **opener** suggestion for her hiking photo.",
+    # 2026-09-06 (b): the narrowed "here's"/"here is" check must still catch genuine preamble
+    # that introduces the message as an object -- a determiner plus a meta noun naming the
+    # output -- not just the bare phrase removed above.
+    "Here's an option: Skiing or the beach, whichever you prefer?",
+    "Here is my take: that lake looks unreal, where is it?",
 ]
 
 
@@ -479,6 +516,113 @@ def test_leading_ngram_is_pure_and_deterministic():
     assert _leading_ngram(text) == _leading_ngram(text)
 
 
+# ---------------------------------------------------------------------------------------
+# prompt_stamp: the prompt-era digest every `openers` / `opener_rejections` row carries from
+# 2026-09-05 (b). Its whole value is that two rows with the same digest were generated under
+# the same prompt, so these tests pin BOTH directions: identical inputs must agree, and each
+# input the digest claims to cover must be able to change it.
+# ---------------------------------------------------------------------------------------
+
+def test_prompt_stamp_is_a_64_character_hex_sha256():
+    """Stored as a nullable STRING/TEXT column in both backends, so its shape is a contract
+    with every offline query that GROUPs BY it, not just an implementation detail."""
+    stamp = prompt_stamp("casual and warm")
+    assert len(stamp) == 64
+    assert set(stamp) <= set("0123456789abcdef")
+
+
+def test_prompt_stamp_is_deterministic_for_the_same_style():
+    """Pure and I/O-free: the service computes it ONCE at startup and replays it on every row
+    of the run, so a digest that varied per call would file one run's rows under many eras."""
+    assert prompt_stamp("casual and warm") == prompt_stamp("casual and warm")
+
+
+def test_prompt_stamp_changes_when_the_owner_style_text_changes():
+    """config.yaml's opener.style is one of the four on-wire prompt copies and the one the
+    owner actually edits, so an era boundary usually IS a style edit."""
+    assert prompt_stamp("casual and warm") != prompt_stamp("casual and warm.")
+
+
+def test_prompt_stamp_changes_when_the_system_prompt_changes(monkeypatch):
+    """_SYSTEM participates, not just the style.
+
+    The 2026-09-05 register rewrite touched `opener.style` AND `_SYSTEM` in lockstep, but
+    nothing forces that: a `_SYSTEM`-only edit is a real era boundary that a style-only digest
+    would report as no change at all, which is the exact failure this stamp exists to prevent.
+    """
+    style = "casual and warm"
+    before = prompt_stamp(style)
+    monkeypatch.setattr(opener_mod, "_SYSTEM", _SYSTEM + " One more rule.")
+    assert prompt_stamp(style) != before
+
+
+def test_prompt_stamp_changes_when_a_schema_field_description_changes(monkeypatch):
+    """The `_SCHEMA` field descriptions are the third on-wire copy (responseJsonSchema); the
+    2026-09-05 rewrite shipped a compressed form of three register rules there and nowhere
+    else in the schema, so they are prompt text and must move the digest."""
+    style = "casual and warm"
+    before = prompt_stamp(style)
+    edited = copy.deepcopy(opener_mod._SCHEMA)
+    edited["properties"]["opener"]["description"] += " Say it out loud first."
+    monkeypatch.setattr(opener_mod, "_SCHEMA", edited)
+    assert prompt_stamp(style) != before
+
+
+@pytest.mark.parametrize("constant", ["_ITEM_PREAMBLE", "_ITEM_PREAMBLE_CONTEXT",
+                                      "_ITEM_LABEL", "_CONTEXT_LABEL"])
+def test_prompt_stamp_changes_when_an_item_crop_instruction_constant_changes(
+        monkeypatch, constant):
+    """The item-crop preamble and labels are model-facing RULES, so each must move the digest.
+
+    These four are not decoration around the images: `_ITEM_PREAMBLE` is the FIRST text part of
+    every item-crop request and states the compound-item rule (a title, caption, or prompt
+    above a photo is ONE item with it), `_ITEM_PREAMBLE_CONTEXT` and `_CONTEXT_LABEL` state the
+    cannot-be-picked rule for context crops, and all four are module-level constants that are
+    fixed for a whole run -- the same coverage criterion `style`, `_SYSTEM` and `_SCHEMA` meet.
+    Pinned one constant at a time because they enter the payload as separate components: a
+    widening that dropped any single one would leave the other three green.
+    """
+    style = "casual and warm"
+    before = prompt_stamp(style)
+    monkeypatch.setattr(opener_mod, constant, getattr(opener_mod, constant) + " One more rule.")
+    assert prompt_stamp(style) != before
+
+
+def test_prompt_stamp_separates_adjacent_constants_rather_than_concatenating_them(monkeypatch):
+    """The NUL between every pair of components is what makes the boundaries unambiguous.
+
+    Without it, moving a sentence from the end of one constant to the start of the next -- a
+    real edit, and exactly the kind of copy shuffle these constants have had before -- would
+    produce a byte-identical payload and therefore an identical digest, silently merging two
+    eras. The two monkeypatched arrangements below concatenate to the same string and must
+    still stamp differently.
+    """
+    style = "casual and warm"
+    moved_sentence = " Read the label directly above each image."
+    monkeypatch.setattr(opener_mod, "_ITEM_PREAMBLE", _ITEM_PREAMBLE + moved_sentence)
+    trailing = prompt_stamp(style)
+    monkeypatch.setattr(opener_mod, "_ITEM_PREAMBLE", _ITEM_PREAMBLE)
+    monkeypatch.setattr(opener_mod, "_ITEM_PREAMBLE_CONTEXT",
+                        moved_sentence + opener_mod._ITEM_PREAMBLE_CONTEXT)
+    assert prompt_stamp(style) != trailing
+
+
+def test_prompt_stamp_ignores_schema_dict_key_ordering(monkeypatch):
+    """Canonicalized with sort_keys, so reordering the schema's dict literal -- which changes
+    no byte the model ever sees -- must not manufacture a false era boundary. Without this,
+    every cosmetic reshuffle of _SCHEMA would split one era into two in the stored rows."""
+    style = "casual and warm"
+    before = prompt_stamp(style)
+    reordered = {key: copy.deepcopy(value)
+                 for key, value in reversed(list(opener_mod._SCHEMA.items()))}
+    reordered["properties"] = {
+        key: copy.deepcopy(value)
+        for key, value in reversed(list(opener_mod._SCHEMA["properties"].items()))}
+    assert list(reordered) != list(opener_mod._SCHEMA)          # the reorder really happened
+    monkeypatch.setattr(opener_mod, "_SCHEMA", reordered)
+    assert prompt_stamp(style) == before
+
+
 def test_sentence_count_basic_cases():
     assert _sentence_count("One profile-specific thought") == 1
     assert _sentence_count("One thought. One easy question?") == 2
@@ -500,6 +644,131 @@ def test_sensitive_inference_guard_catches_the_reported_bridge_jump_angle_only()
         "asking whether she jumped", "jumping from a height"]
     assert _sensitive_inference_markers("Your paragliding story sounds unforgettable.") == []
     assert _sensitive_inference_markers("That bridge is beautiful.") == []
+
+
+_REPORTED_UNCONFIRMED_LOCATION_FOLLOWUP = (
+    "That looks a lot like Lake Louise in deep winter. Were you out there ice skating "
+    "or just braving the freeze for the view?"
+)
+
+_UNCONFIRMED_LOCATION_MARKER = "unconfirmed location used as a later premise"
+
+
+@pytest.mark.parametrize("text", [
+    _REPORTED_UNCONFIRMED_LOCATION_FOLLOWUP,
+    ("That looks like Namsan Tower in Seoul right behind you. Was visiting Korea your "
+     "favorite trip so far or is another destination at the top of your list?"),
+    ("That looks like an Iceland super jeep tour. Did you guys take that thing out onto a "
+     "glacier or into the highlands?"),
+    ("That sunny stone street looks like Spain, maybe Mallorca. Did you sneak away there for "
+     "a quick escape while you were living in London?"),
+    ("Judging by the architecture, my official guess for that backdrop is Italy. What was "
+     "your favorite spot you visited while you were there?"),
+    "Is that Banff? How long were you there?",
+    "I'm guessing Norway, did you hike while you were there?",
+    ("My guess is Switzerland, but did that fluffy cat hire himself out as your local tour "
+     "guide or just demand a petting break?"),
+    "It has to be Lake Louise. How cold was it there?",
+    "My guess is Switzerland, you must have loved hiking there.",
+    "That looks like Banff and you must have gone skiing.",
+    "Was that Lake Louise? Did you skate there?",
+    "That looks like Banff. How long were you there?",
+    "That looks like Lake Louise. Was that taken during your ski trip?",
+    "That looks like Lake Louise. Is that taken before you went skating?",
+    "That looks like Lake Louise. Was that taken in Alberta during the ski trip?",
+    "That looks like Lake Louise. Was that taken out west after the glacier hike?",
+    "That looks like Lake Louise. Is that Banff and did the group skate there?",
+    "That looks like Lake Louise. Is that Banff because the group went skiing?",
+    "That looks like Banff, must have been freezing there.",
+], ids=[
+    "reported-lake-louise",
+    "logged-namsan-tower",
+    "logged-iceland-tour",
+    "logged-spain-mallorca",
+    "logged-official-italy-guess",
+    "confirmation-question-then-assumption",
+    "single-sentence-comma-then-assumption",
+    "logged-switzerland-comma-but-followup",
+    "has-to-be-then-assumption",
+    "comma-subject-led-statement",
+    "conjunction-subject-led-statement",
+    "past-tense-location-question-then-assumption",
+    "looks-like-with-there-followup",
+    "taken-during-activity-is-not-confirmation",
+    "taken-before-activity-is-not-confirmation",
+    "place-then-temporal-activity-is-not-confirmation",
+    "direction-then-activity-is-not-confirmation",
+    "named-place-then-coordinated-activity-is-not-confirmation",
+    "named-place-then-causal-activity-is-not-confirmation",
+    "comma-bare-modal-statement",
+])
+def test_unconfirmed_location_followup_guard_flags_dependent_later_beats(text):
+    assert _unconfirmed_location_followup_markers(text) == [
+        _UNCONFIRMED_LOCATION_MARKER
+    ]
+
+
+@pytest.mark.parametrize("text", [
+    # Existing accepted corpus entries: these must not be lost to a broad guess/there rule.
+    "Based on that ridgeline I'm going to guess Norway.",
+    "I know you were smiling, but I bet you were freezing out there.",
+    "I am going to guess that was colder than it looks.",
+    # A later beat may ask only for confirmation or correction of the inferred place.
+    "That looks a lot like Lake Louise in deep winter. Am I close?",
+    "That looks like Lake Louise. Is that right?",
+    "That scenery looks like British Columbia. Was this taken out west or somewhere else?",
+    "My guess is Switzerland. Could it be Austria instead?",
+    "That looks like Lake Louise. Was that taken in Alberta?",
+    "That looks like Lake Louise. Was that taken on the Icefields Parkway?",
+    "That looks like Banff and Lake Louise.",
+    "That looks like Lake Louise. Was that Banff instead?",
+    "That looks like Croatia. Could that be Bosnia and Herzegovina?",
+    "That looks like Lake Louise. Could that be right?",
+    "That looks like Lake Louise. Is my guess right?",
+    "That looks like Lake Louise. Am I even close?",
+    "That looks like Lake Louise. Could that be St. Moritz?",
+    "That looks like Lake Louise. Am I close? :)",
+    "That looks like Mt. Fuji.",
+    "That looks like Washington D.C. in spring.",
+    "That sweeping metal bridge over the water looks like Portugal. Am I close on that location?",
+    "Is that Lake Louise in deep winter?",
+    "That has to be Lake Louise, right?",
+    # A stated place may come from profile text; outgoing text alone cannot relitigate it.
+    "Banff in January sounds intense. How long were you there?",
+    # Looks like is often a grounded interpretation rather than a place identification.
+    "That looks like serious dedication. Were you out there before sunrise?",
+    "That husky looks like he takes guard duty seriously. Which one calls the shots?",
+    "That looks like Audrey Hepburn. Where did you find the coat?",
+], ids=[
+    "existing-norway-guess",
+    "existing-freezing-guess",
+    "existing-coldness-guess",
+    "direct-confirmation-followup",
+    "direct-pronoun-confirmation",
+    "direct-location-correction",
+    "direct-named-location-correction",
+    "taken-in-proper-place-confirmation",
+    "taken-on-proper-place-confirmation",
+    "compound-place-guess-with-no-followup",
+    "past-tense-named-place-correction",
+    "place-name-with-and",
+    "could-that-be-right",
+    "is-my-guess-right",
+    "am-i-even-close",
+    "direct-place-confirmation-with-abbreviation",
+    "confirmation-with-terminal-smiley",
+    "standalone-mount-abbreviation",
+    "standalone-dotted-place-abbreviation",
+    "exact-portugal-confirmation-control",
+    "single-beat-location-question",
+    "confirmation-tag",
+    "known-location",
+    "non-location-looks-like",
+    "figurative-pet-looks-like",
+    "no-location-context-with-wh",
+])
+def test_unconfirmed_location_followup_guard_preserves_clean_corpus(text):
+    assert _unconfirmed_location_followup_markers(text) == []
 
 
 def test_system_prompt_keeps_faithful_corey_opener_policy_and_two_sentence_cap():
@@ -641,6 +910,15 @@ def test_system_prompt_keeps_faithful_corey_opener_policy_and_two_sentence_cap()
     assert "natural next move is to confirm or correct it" in lowered
     assert "only invite that confirmation or correction without presupposing the answer" in lowered
     assert "experience, preference, or consequence that only makes sense if the guess is true" in lowered
+    assert "confirmation boundary overrides this inheritance rule" in lowered
+    assert "never let a later beat inherit an unconfirmed claim as fact" in lowered
+    assert "asking only whether an inferred location itself is right" in lowered
+    assert "visual location turn boundary" in lowered
+    assert "that location guess is the only conversational move before she replies" in lowered
+    assert "end after it or ask only whether the location itself is right" in lowered
+    assert "the confirmation is the conversational payoff" in lowered
+    assert ("activity, reason, preference, feeling, experience, or consequence at that place"
+            in lowered)
     assert "must accept x as its working premise" not in lowered
 
     # --- LENGTH: the ceiling stays, the one-sentence PREFERENCE is gone (doc 3.2.1).
@@ -652,6 +930,7 @@ def test_system_prompt_keeps_faithful_corey_opener_policy_and_two_sentence_cap()
     assert "as short as the angle allows" in lowered
     assert "spend no word merely repeating what she can already see" in lowered
     assert "never cut necessary setup or the conversational payoff" in lowered
+    assert "subject to confirmation boundary, a second sentence may be" in lowered
 
     # --- THE THREE GUARDRAILS (doc 2.4). Safety rules rather than style preferences, which
     # is why they are stated in BOTH copies of the prompt rather than only in config.yaml.
@@ -677,10 +956,9 @@ def test_system_prompt_keeps_faithful_corey_opener_policy_and_two_sentence_cap()
     assert "guess the world, not her identity" in lowered
     assert "name a country, a region, or a park" in lowered
     assert "when a place comes from recognizing the image rather than from her profile text" in lowered
-    assert "clearly identify it as a visual inference and leave it unconfirmed" in lowered
+    assert "present it only as an inference and obey visual location turn boundary" in lowered
     assert "do not build on an inferred location as though it were correct" in lowered
-    assert "do not state an inferred location as shared experience" in lowered
-    assert "do not turn it into a generic compliment" in lowered
+    assert "state it as shared experience, or turn it into a generic compliment" in lowered
     assert "never guess her employer, her school, or her age" in lowered
     assert "never invent the sender" in lowered
     assert "you may not claim he has been somewhere" in lowered
@@ -758,6 +1036,220 @@ def test_system_prompt_keeps_faithful_corey_opener_policy_and_two_sentence_cap()
     # --- Owner invariant, not a wording choice: this text is itself sent to the model.
     assert all(ord(ch) < 128 for ch in _SYSTEM), "_SYSTEM must be pure ASCII"
     assert "—" not in _SYSTEM
+
+
+def test_system_prompt_ships_the_spoken_register_rules():
+    """2026-09-05 register rewrite. Every rule above governs CONTENT or STRUCTURE; none of them
+    governed REGISTER, so a live opener could pass all of them and still read as written by a
+    machine (an earnest second-person appraisal in flawless written grammar, with deictic
+    filler and a question that restated its own setup).
+
+    THE MIRRORING CONTRACT (ops/OPENER-REDESIGN.md 3.1): config.yaml's opener.style carries the
+    LONG form of each rule with its reasoning, and this constant carries the COMPRESSED
+    statement of the same property. Both are sent in the SAME request, so the two must not
+    disagree. The config-side twin of this test is
+    tests/test_config_yaml_real.py::test_shipped_opener_style_ships_the_spoken_register_rules;
+    an edit landing in one file and not the other fails a test in a file nobody would think to
+    look at.
+
+    The motivating opener and the owner's rewrite of it stay OFF the wire (2026-08-16
+    de-templating decision) and are quoted only in the config-side twin's docstring; the
+    negatives at the bottom of this test are what keep them off it.
+    """
+    lowered = _SYSTEM.lower()
+    assert "spoken register" in lowered
+    assert "the contractions a relaxed speaker would use" in lowered
+    assert "natural spoken elision" in lowered
+    assert "never internet slang, chat abbreviations, meme phrasing" in lowered
+    # The scope limiter. Its config.yaml twin carries it ("this licenses wording only:
+    # spelling, capitalization, and every punctuation rule here stand unchanged"), and this
+    # compressed copy sits next to CASUAL OR PUNCTUATION and the no-dash / ASCII HARD RULEs it
+    # could otherwise be read as licensing an exception to. Compression is the contract between
+    # the two copies; dropping a scope limiter is not compression, it is a wider rule.
+    assert "licenses wording only" in lowered
+    assert "say it once" in lowered
+    assert "never restate a connection or context the message already established" in lowered
+    assert "compliment as remark" in lowered
+    assert "not an earnest verdict on her" in lowered
+    assert "vary the shape" in lowered
+    assert "specific item determine the whole message's sentence count, clause pattern" in lowered
+    assert "no structure is the default" in lowered
+    assert "never point at the medium" in lowered
+    assert "rephrase so no hyphen is needed" in lowered
+    assert "observation announced as what something looks like" not in lowered
+    assert "question offering exactly two choices" not in lowered
+
+    # De-templating: no concrete opener copy, neither the failing draft nor its rewrite, may
+    # reach a model-facing string -- a minimal-thinking model imitates whatever wording is
+    # salient in front of it, which is how the 2026-08-15 "my money is on" incident happened.
+    assert "classic sense of style" not in lowered
+    assert "you got there" not in lowered
+
+
+def test_system_prompt_ships_modifier_clarity_without_incident_copy():
+    """The system-instruction mirror must cover modifier attachment, not merely whether nouns
+    and pronouns have referents. The concrete Maja failure stays here, off wire: “You look
+    completely at home bundled up in all that snow” can make the setting sound like what she is
+    bundled in even though the model identified the coat, beanie, and snow correctly.
+    """
+    lowered = _SYSTEM.lower()
+    assert "modifier clarity" in lowered
+    assert "every modifying phrase must have only one natural attachment" in lowered
+    assert "on first reading" in lowered
+    assert "if the phrase's placement permits a plausible unintended meaning" in lowered
+    assert "reorder or rephrase the line" in lowered
+    assert "bundled up in all that snow" not in lowered
+    assert "completely at home bundled up" not in lowered
+
+
+def test_system_prompt_ships_the_no_grading_rule():
+    """2026-09-06: COMPLIMENT AS REMARK told the model to move praise off her and onto the
+    visible thing, and the model complied perfectly -- openers kept landing on a taste verdict
+    on the thing itself ("... is an elite move"). Moving WHO gets graded does not stop the
+    grading; NO GRADING is the rule that forbids the verdict itself, whatever it lands on.
+
+    THE MIRRORING CONTRACT (ops/OPENER-REDESIGN.md 3.1): config.yaml's opener.style carries the
+    long form with its reasoning (tests/test_config_yaml_real.py::
+    test_shipped_opener_style_ships_the_no_grading_rule), and this constant carries the
+    compressed statement of the same property. The third copy, the response schema's opener
+    description, is pinned in tests/test_gemini_opener.py; the angle field's self-check twin is
+    pinned separately in this file (test_angle_field_carries_the_no_grading_self_check).
+    """
+    lowered = _SYSTEM.lower()
+    assert "no grading" in lowered
+    assert "substitution test" in lowered
+    # The escape hatch: when nothing but a grade is available, cut the beat rather than invent
+    # one. This is the same 2026-08-16 minimum-invention lesson applied to a new failure mode --
+    # see the code addendum above _SYSTEM for why this must stay a shorter message, never a
+    # substitute claim.
+    assert "cut that beat and let one specific question be the whole message" in lowered
+    # Subordination to COMPLIMENT AS REMARK, not competition with it: moving praise onto the
+    # thing was already correct and must stay; NO GRADING narrows what counts as landing there.
+    assert "narrows compliment as remark rather than competing with it" in lowered
+    # 2026-09-06 (b): PLAYFUL HYPERBOLE carve-out against the SUBSTITUTION TEST.
+    assert "except an unmistakably nonliteral playful hyperbole" in lowered
+    assert "stays playful framing rather than an assessment of quality" in lowered
+    # 2026-09-06 (b): the fallback question is still subject to VARY THE SHAPE.
+    assert "still subject to vary the shape so the same single sentence" in lowered
+    assert "never becomes its own template" in lowered
+
+
+def test_system_prompt_folds_qualification_into_compliment_as_remark():
+    """OWNER DECISION 2026-09-06: NARROW COMPLIMENT AS REMARK, do not retire it. Long-form
+    rationale (69% prohibition/mechanical vs 21% positive specification, 94.7% two sentences,
+    98.9% question final) is pinned in tests/test_config_yaml_real.py::
+    test_shipped_opener_style_folds_qualification_into_compliment_as_remark; this test pins the
+    same fix in the compressed _SYSTEM mirror.
+
+    THE ORIGINAL DEFECT: this compressed copy read the same way as the long form -- COMPLIMENT
+    AS REMARK taught "thing as the sentence's subject, understated over emphatic" with no
+    qualification of its own, and only NO GRADING's later "narrows COMPLIMENT AS REMARK"
+    sentence (still pinned above in test_system_prompt_ships_the_no_grading_rule) supplied the
+    missing limit. THE 2026-09-06 (c) FIX folded a qualification into COMPLIMENT AS REMARK's
+    own sentence ("unable to survive being detached from what was actually noticed") ahead of
+    the technique it gates.
+
+    THE (c) FIX'S OWN DEFECT, closed here (2026-09-06 (d)): that restated qualification was a
+    second, subtly different portability test with NO exception, while NO GRADING's
+    SUBSTITUTION TEST (still pinned above) explicitly carves out an unmistakably nonliteral
+    PLAYFUL HYPERBOLE. An anchored hyperbolic compliment whose predicate could transfer to a
+    different photo therefore passed NO GRADING but failed COMPLIMENT AS REMARK's own test --
+    opposite verdicts on the same sentence. THE FIX: COMPLIMENT AS REMARK no longer restates its
+    own portability test; it defers to NO GRADING's SUBSTITUTION TEST directly, so the one
+    exception lives in one place. NO GRADING's own subordination sentence stays UNCHANGED.
+
+    (d)'S OWN DEFECT, closed here (2026-09-06 (g)): (d) fixed only the portability half of
+    COMPLIMENT AS REMARK's two independent requirements. The MAGNITUDE half ("understated over
+    emphatic") carried no exception of its own, so a strong, unmistakably-nonliteral (and
+    therefore emphatic) hyperbolic compliment passed the (d)-fixed portability test while still
+    failing magnitude -- opposite verdicts again. THE FIX: this compressed copy now inserts one
+    clause right after naming the SUBSTITUTION TEST -- "whose PLAYFUL HYPERBOLE exception covers
+    tone too" -- so the same exception governs both the portability test and the magnitude
+    phrase that follows it in the same sentence, without restating PLAYFUL HYPERBOLE's own
+    definition a second time.
+    """
+    lowered = _SYSTEM.lower()
+    assert "compliment as remark" in lowered
+    assert "not an earnest verdict on her" in lowered
+    assert "moving the praise onto the thing is not enough alone" in lowered
+    assert "it must also pass no grading's substitution test below" in lowered
+    # MUTATION GUARD: the (c) fold's own restated portability test must be GONE, not merely
+    # supplemented -- its absence is what proves COMPLIMENT AS REMARK no longer carries a
+    # second, exception-free test that could contradict NO GRADING's SUBSTITUTION TEST.
+    assert "unable to survive being detached from what was actually noticed" not in lowered
+    assert "remain inseparable from a specific observation about that item" not in lowered
+    # The forward reference ("below") must be literally true: COMPLIMENT AS REMARK's pointer
+    # has to precede the SUBSTITUTION TEST sentence it names, not follow it.
+    assert lowered.index("compliment as remark") < lowered.index("substitution test")
+    # 2026-09-06 (g): the same SUBSTITUTION TEST reference now also covers the magnitude phrase
+    # ("understated over emphatic") that follows it in the same sentence, one exception stated
+    # once rather than a second carve-out bolted onto the magnitude clause.
+    # 2026-09-06 (h): the exception is hoisted ONCE to govern every condition that follows it,
+    # rather than being attached to whichever clause was last reported. (g) subordinated only
+    # the magnitude clause and the contradiction relocated a third time into "lands sideways".
+    assert "exception carries here and governs every condition that follows" in lowered
+    assert "covering both portability and volume" in lowered
+    # Resolved in the NON-permissive direction: placement survives the exception.
+    assert "landing sideways survives that exception" in lowered
+    assert "never becomes the point" in lowered
+    assert "playful hyperbole exception covers tone too" not in lowered
+    assert "understated over emphatic" in lowered
+
+
+def test_no_grading_rule_ships_no_example_verdict_vocabulary():
+    """De-templating (2026-08-16): naming the banned verdict vocabulary on the wire would hand a
+    minimal-thinking model salient wording to imitate, exactly the mechanism that produced 5/5
+    "I bet" openers from a two-hedge list on 2026-08-11. NO GRADING's rule text must therefore
+    state the general SHAPE (a predicate that would fit unchanged under a different woman's
+    different photo) without naming any of the concrete corpus phrases that motivated it; those
+    stay in code comments, the design doc, and tests only (per the ground rule enforced across
+    this file, config.yaml, and _SCHEMA).
+    """
+    lowered = _SYSTEM.lower()
+    schema_text = json.dumps(opener_mod._SCHEMA).lower()
+    for word in ("elite", "iconic", "top tier", "masterpiece", "unmatched", "power move"):
+        assert word not in lowered, f"_SYSTEM must not name banned verdict vocabulary: {word!r}"
+        assert word not in schema_text, f"_SCHEMA must not name banned verdict vocabulary: {word!r}"
+
+
+def test_angle_field_carries_the_no_grading_self_check():
+    """`angle` is the model's only pre-opener scratchpad: every model in the cascade runs with
+    thinkingLevel minimal (config.yaml opener.thinking), so there is no hidden reasoning trace
+    anywhere else for the model to catch its own grading before it commits to `opener`. The
+    schema's own comment near line 302 records that the angle field carries this instruction for
+    exactly that reason -- putting the self-check only in `opener`'s description would let the
+    model discover the grade only after it had already written the message.
+    """
+    angle_description = opener_mod._SCHEMA["properties"]["angle"]["description"].lower()
+    assert "not a grade, rank, or" in angle_description
+    assert "verdict on how good" in angle_description
+    assert "would not fit unchanged under a different woman's different photo" in angle_description
+
+
+# 2026-09-06 off-wire regression pin (de-templating rule: this vocabulary and this exact copy
+# belong only in comments, the design doc, and tests -- never in a model-facing string). These
+# are two of the roughly 20-of-95 local-corpus openers that motivated NO GRADING; see the code
+# addendum above _SYSTEM in opener.py for the fuller measurement and its caveats.
+_NO_GRADING_MOTIVATING_OPENERS = (
+    "Starting the new year with a massive spread of sushi is an elite move. Was that the main "
+    "event for the night or just the appetizer?",
+    "Matcha tiramisu for a birthday cake is such an elite move. Did you make that yourself?",
+)
+
+
+def test_no_grading_motivating_openers_stay_off_every_prompt_surface():
+    """The concrete drafts that motivated NO GRADING must never themselves become prompt copy --
+    that would hand a minimal-thinking model salient wording to imitate (2026-08-16
+    de-templating decision). Checked against all three on-wire copies this file can see
+    directly; the retry hint block (copy 4 of 4) is deliberately untouched by this rule, per the
+    code addendum above _SYSTEM.
+    """
+    schema_text = json.dumps(opener_mod._SCHEMA)
+    for opener_text in _NO_GRADING_MOTIVATING_OPENERS:
+        assert opener_text not in _SYSTEM
+        assert opener_text not in schema_text
+        assert "elite move" not in _SYSTEM.lower()
+        assert "elite move" not in schema_text.lower()
 
 
 _MOVE_LIST_MARKERS = (
@@ -1078,13 +1570,16 @@ class _NeverBudgetTracker:
 
 
 class _DiscardingStore:
+    # Both opener sinks take **kw: from 2026-09-05 (b) the service passes prompt_sha256 (the
+    # prompt-era stamp) as a keyword, and a `*a`-only fake would raise TypeError inside the
+    # service's non-fatal try/except rather than discarding the row as this double intends.
     def record_spend(self, *a):
         pass
 
-    def record_opener(self, *a):
+    def record_opener(self, *a, **kw):
         pass
 
-    def record_opener_rejection(self, *a):
+    def record_opener_rejection(self, *a, **kw):
         pass
 
 
@@ -1122,6 +1617,31 @@ def test_generate_raises_parse_error_on_scaffolded_opener():
         _opener(_Transport([(200, payload)])).generate(Profile(photos=[b"a"]), style="s")
     assert exc.value.reason_code == REASON_SCAFFOLDING
     assert exc.value.raw_opener == "Here's the response: Great ocean, where was this taken?"
+
+
+def test_generate_still_raises_parse_error_on_narrowed_here_is_scaffolding():
+    """2026-09-06 (b) "HERE'S" collision fix: narrowing rule 2 to the determiner-plus-meta-noun
+    object shape must not stop catching real preamble of that exact shape. "Here's an option:"
+    names the output as an object just as "Here's the response:" does, so it must still burn a
+    retry rather than reach her phone."""
+    payload = _gemini_response({
+        "opener": "Here's an option: Skiing or the beach, whichever you prefer?",
+        "referenced": "x", "item_index": 1,
+    })
+    with pytest.raises(OpenerParseError, match="scaffolding") as exc:
+        _opener(_Transport([(200, payload)])).generate(Profile(photos=[b"a"]), style="s")
+    assert exc.value.reason_code == REASON_SCAFFOLDING
+    assert exc.value.raw_opener == "Here's an option: Skiing or the beach, whichever you prefer?"
+
+
+def test_generate_accepts_a_natural_spoken_here_is_opening():
+    """2026-09-06 (b) "HERE'S" collision fix: the same generate() path that used to reject this
+    exact opener (ops/OPENER-REDESIGN.md's live-verified example) must now accept it, since
+    "hoping" is never the meta noun the narrowed rule requires."""
+    text = "Here's hoping that trail's as steep as it looks. Have you done the full loop?"
+    payload = _gemini_response({"opener": text, "referenced": "x", "item_index": 1})
+    result = _opener(_Transport([(200, payload)])).generate(Profile(photos=[b"a"]), style="s")
+    assert result.opener == text
 
 
 def test_generate_rejects_a_preemptive_negative_framing_disclaimer():
@@ -1162,6 +1682,51 @@ def test_generate_rejects_the_reported_courage_to_jump_inference_before_send():
     assert exc.value.reason_code == REASON_SENSITIVE_INFERENCE
     assert exc.value.raw_opener == (
         "Did you work up the courage to jump or were you happy just taking in the scenery?")
+
+
+def test_generate_rejects_the_reported_unconfirmed_location_followup_before_send():
+    payload = _gemini_response({
+        "opener": _REPORTED_UNCONFIRMED_LOCATION_FOLLOWUP,
+        "referenced": "snowy mountains and a frozen lake",
+        "angle": "guessing the location, then asking what she did there",
+        "item_description": "photo of her beside a frozen lake",
+        "item_index": 1,
+    })
+    transport = _Transport([(200, payload)])
+
+    with pytest.raises(OpenerParseError, match="unconfirmed location guess") as exc:
+        _opener(transport).generate(Profile(photos=[b"a"]), style="s")
+
+    assert transport.calls == 1
+    assert exc.value.reason_code == REASON_UNCONFIRMED_LOCATION_FOLLOWUP
+    assert exc.value.raw_opener == _REPORTED_UNCONFIRMED_LOCATION_FOLLOWUP
+
+
+def test_unconfirmed_location_followup_is_retried_and_confirmation_only_succeeds():
+    bad = _gemini_response({
+        "opener": _REPORTED_UNCONFIRMED_LOCATION_FOLLOWUP,
+        "referenced": "snowy mountains and a frozen lake",
+        "angle": "guessing the location, then asking what she did there",
+        "item_description": "photo of her beside a frozen lake",
+        "item_index": 1,
+    })
+    clean_text = "That looks a lot like Lake Louise in deep winter. Am I close?"
+    clean = _gemini_response({
+        "opener": clean_text,
+        "referenced": "snowy mountains and a frozen lake",
+        "angle": "guessing the location and leaving it for her to confirm or correct",
+        "item_description": "photo of her beside a frozen lake",
+        "item_index": 1,
+    })
+    transport = _Transport([(200, bad), (200, clean)])
+    service = OpenerService(
+        _opener(transport), _NeverBudgetTracker(), _DiscardingStore(), "casual")
+
+    pick = service.maybe_opener("r", "hinge", Profile(photos=[b"a"]))
+
+    assert transport.calls == 2
+    assert pick is not None
+    assert pick.text == clean_text
 
 
 _REPORTED_PREMATURE_FUTURE_OPENER = (

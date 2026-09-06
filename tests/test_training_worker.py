@@ -18,10 +18,18 @@ from operation_love.drivers.base import ActionCancelled
 from operation_love.opener.opener import INDEX_SPACE_MODEL_ITEMS, INDEX_SPACE_PROFILE_PHOTOS
 from operation_love.opener.service import OpenerPick
 from operation_love.perception.capture import Profile
+from operation_love.ranker.profile_key import profile_key_from_identity
 from operation_love.status import RunStatus
 from operation_love.training_actions import TrainingActionBridge
 from operation_love.worker import Worker
 from operation_love.limits import RateLimiter
+
+from types import SimpleNamespace
+
+# See tests/test_worker.py's own _FAKE_IDENTITY for why a SimpleNamespace is a valid stand-in
+# for drivers.item_identity.ProfileIdentity here (profile_key_from_identity duck-types it).
+_FAKE_IDENTITY = SimpleNamespace(known=True, fingerprint=(10, 20, 30), grid=(64, 16))
+_FAKE_PROFILE_KEY = profile_key_from_identity(_FAKE_IDENTITY)
 
 
 def _png_chunk(kind: bytes, data: bytes) -> bytes:
@@ -113,6 +121,8 @@ class _Opener:
         self.maybe_calls = []
         self.commits = []
         self.commit_result = True
+        self.discards = []
+        self.discard_result = True
         self.pick = OpenerPick(text="A precise typed opener", index=2,
                                referenced="the hiking photo", item_description="hiking photo",
                                index_space=INDEX_SPACE_MODEL_ITEMS)
@@ -126,6 +136,11 @@ class _Opener:
         self.commits.append((pick, lineage))
         self.events.append(("commit", lineage.get("decision")))
         return self.commit_result
+
+    def discard_opener(self, pick, **lineage):
+        self.discards.append((pick, lineage))
+        self.events.append(("discard", lineage.get("decision")))
+        return self.discard_result
 
 
 class _TrainingDriver:
@@ -173,6 +188,9 @@ class _TrainingDriver:
             return None
         self._profile_returned = True
         return Profile(photos=[_FRAME], name="Ari", items=(b"item one", b"item two"))
+
+    def current_profile_identity(self):
+        return _FAKE_IDENTITY
 
     def like(self, opener, item_index=None, *, model_item_index=None, should_stop=None):
         self.like_calls.append((opener, item_index, model_item_index))
@@ -290,6 +308,26 @@ def test_training_persists_verified_human_choice_only_after_hub_choice(command, 
     if command == "like":
         assert opener.commits[0][1]["pre_send_evidence"] == {
             "evidence_id": "verified-landed-composer"}
+        # profile_key (2026-09-06): read off the driver's current_profile_identity() BEFORE
+        # like() is ever called (see worker.py's _current_profile_key), so a committed Like
+        # carries the real attribution key, not "" or a stale value.
+        assert opener.commits[0][1]["profile_key"] == _FAKE_PROFILE_KEY
+    # The other half of the same lifecycle (discard_opener's own docstring): a reviewed
+    # Dislike must not just drop this staged, model-generated draft the way it always used
+    # to -- the durable table needs a `decision="dislike"` row instead of nothing, carrying
+    # the SAME manual lineage (profile_id/decision_created_at) the Like branch above would
+    # have carried had the Hub instead chosen Like.
+    assert len(opener.discards) == (0 if command == "like" else 1)
+    if command == "dislike":
+        discard_lineage = opener.discards[0][1]
+        assert discard_lineage["decision"] == "dislike"
+        # SAME profile, SAME key a committed Like would have carried (see the `if command ==
+        # "like"` branch above) -- the never_sent population is exactly as attributable as
+        # the sent one.
+        assert discard_lineage["profile_key"] == _FAKE_PROFILE_KEY
+        assert discard_lineage["decision_source"] == "manual"
+        assert discard_lineage["profile_id"] == store.profiles[0][0]
+        assert isinstance(discard_lineage["decision_created_at"], float)
     assert events.index(("label", command == "like", "manual")) < events.index(
         ("hub_complete", "completed"))
     assert events.index(("flush",)) < events.index(("hub_complete", "completed"))

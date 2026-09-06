@@ -20,9 +20,8 @@ max_attempts tries does that mean something is actually wrong, and only then doe
 whole run stop. The old budget.on_exhausted="swipe_without_opener" configuration was
 removed outright rather than left dormant -- the same reasoning that removed the
 Anthropic provider path applies here: a setting that can silently reintroduce a banned
-behavior is worse than no setting at all. Every AUTO exhaustion path below sets
-stop_requested; advisory Observe failures disable further suggestions but deliberately leave
-the human labelling session running.
+behavior is worse than no setting at all. Every exhaustion path below sets stop_requested
+and disables further opener generation for the rest of the run.
 
 Note what is NOT here: a single model id being retired (HTTP 404) is no longer a
 service-wide, permanent failure. GeminiOpener.generate() retires just that one model
@@ -77,9 +76,7 @@ streak does.
 from __future__ import annotations
 
 import inspect
-import math
 import threading
-import time
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -97,13 +94,17 @@ from .opener import (
     ItemRequest,
     OpenerAborted,
     OpenerClient,
-    OpenerDeadlineExceeded,
     OpenerError,
     OpenerParseError,
+    REASON_BAD_REQUEST,
+    REASON_OPENER_ERROR,
     REASON_PROMPT_BLOCKED,
     REASON_RESPONSE_BLOCKED,
+    REASON_TRANSIENT_ERROR,
     _leading_ngram,
+    prompt_stamp,
 )
+from .replay_corpus import write_replay_capture
 
 
 @dataclass
@@ -157,10 +158,8 @@ class OpenerPick:
     # untouched and a client that never populates the field degrades to "" rather than raising.
     angle: str = ""
     # The model's own short description of the ITEM it picked, echoed verbatim from
-    # OpenerResult.item_description. Carried in BOTH modes, always (doc 5.7): auto logs it,
-    # observe displays it, and it must never become conditional on `advisory` -- a
-    # mode-dependent schema would make auto and observe issue different requests and quietly
-    # destroy the canary property that is observe's entire reason to exist.
+    # OpenerResult.item_description. Carried always (doc 5.7), regardless of caller, so every
+    # request stays the same shape.
     #
     # Distinct from `referenced`: that is the DETAIL the opener reacts to, this is the ITEM it
     # was picked from. Doc 5.8 uses this one, coarsely (photo vs written prompt), to check our
@@ -248,6 +247,13 @@ class _StagedOpenerRecord:
     angle: str
     item_description: str
     recent_entry: dict
+    # The digest of the prompt era this draft was GENERATED under (opener.py's prompt_stamp).
+    # Carried on the staged record rather than read from the service at commit time so a draft
+    # can never be attributed to a prompt it was not generated under: staging is what separates
+    # the two moments, and a long-lived service could in principle be handed a different style
+    # between them. Last field, and passed by KEYWORD at the construction site, so a later edit
+    # to the positional prefix cannot silently bind it to `recent_entry`.
+    prompt_sha256: str
 
 
 # How many consecutive provider HTTP 400s to require before treating the failure
@@ -305,55 +311,63 @@ def _safe_repr(value: object) -> str:
         return f"<{type(value).__name__}>"
 
 
-def _accepts_generate_deadline(client: object) -> bool:
-    """Whether a duck-typed opener client accepts the advisory deadline keyword.
-
-    GeminiOpener does, and that is the production path this deadline protects. Small legacy
-    fakes and third-party client seams may predate the optional keyword; preserving their
-    existing call shape keeps them usable. An opaque signature does not opt in: passing a new
-    keyword to a legacy opaque callable is more likely to break its call than to enforce a
-    deadline it never declared. The service's first-class OpenerClient protocol declares
-    ``deadline``.
-    """
-    try:
-        parameters = inspect.signature(client.generate).parameters.values()
-    except (AttributeError, TypeError, ValueError):
-        return False
-    return any(parameter.kind is inspect.Parameter.VAR_KEYWORD
-               or parameter.name == "deadline" for parameter in parameters)
-
-
 def _record_staged_opener(store, record: "_StagedOpenerRecord", pick: OpenerPick, *,
                           profile_id: str, decision: str, decision_source: str,
                           decision_created_at: object | None,
-                          pre_send_evidence: dict[str, object] | None = None) -> None:
+                          pre_send_evidence: dict[str, object] | None = None,
+                          profile_key: str = "") -> None:
     """Persist a committed draft with modern lineage when the store declares support for it.
 
     OpenerService has long accepted small duck-typed stores.  The action-lineage columns are a
     backward-compatible schema extension, not a reason for such a store to turn a real Like into
     a failed worker run.  Signature inspection (rather than a TypeError fallback) keeps a genuine
     store implementation error observable.
+
+    That single inspection now backs THREE independent capability probes: the action-lineage
+    columns, `prompt_sha256` (2026-09-05 (b)), and `profile_key` (2026-09-06).  They are probed
+    separately, not together, because they are separate extensions that shipped on different
+    dates, so a duck-typed store may have any combination of them -- see the rationale comment
+    on `accepts_stamp` below, which applies identically to `accepts_profile_key`.
     """
     sink = store.record_opener
     try:
         parameters = inspect.signature(sink).parameters.values()
     except (TypeError, ValueError):
         accepts_lineage = True
+        accepts_stamp = True
+        accepts_profile_key = True
     else:
         names = {parameter.name for parameter in parameters}
-        accepts_lineage = (any(parameter.kind is inspect.Parameter.VAR_KEYWORD
-                               for parameter in parameters)
+        var_keyword = any(parameter.kind is inspect.Parameter.VAR_KEYWORD
+                          for parameter in parameters)
+        accepts_lineage = (var_keyword
                            or {"profile_id", "decision", "decision_source",
                                "decision_created_at", "model_item_index"}.issubset(names))
+        # ORTHOGONAL to the lineage probe above, deliberately: the action-lineage columns and
+        # the prompt-era stamp (prompt_sha256, 2026-09-05 (b)) are separate backward-compatible
+        # schema extensions that shipped on different dates, so a duck-typed store can perfectly
+        # well have one and not the other. Folding the stamp into `accepts_lineage` would drop
+        # it for a store that accepts it but predates the lineage columns, and would send it to
+        # a store that has the lineage columns but not the stamp -- a TypeError turning a real
+        # Like into a failed worker run, which is exactly what this probe exists to prevent.
+        accepts_stamp = var_keyword or "prompt_sha256" in names
+        # Same reasoning again, for `profile_key` (ranker/profile_key.py, 2026-09-06): a
+        # separate backward-compatible extension that shipped on its own date, so it gets its
+        # own probe rather than joining either of the two above.
+        accepts_profile_key = var_keyword or "profile_key" in names
+    stamp = {"prompt_sha256": record.prompt_sha256} if accepts_stamp else {}
+    if accepts_profile_key:
+        stamp["profile_key"] = profile_key
     if accepts_lineage:
         sink(record.run_id, record.app, record.model, record.opener,
              record.referenced, record.angle, record.item_description,
              profile_id=profile_id, decision=decision, decision_source=decision_source,
              decision_created_at=decision_created_at,
-             model_item_index=(pick.index if pick.index != ITEM_INDEX_ABSENT else None))
+             model_item_index=(pick.index if pick.index != ITEM_INDEX_ABSENT else None),
+             **stamp)
     else:
         sink(record.run_id, record.app, record.model, record.opener,
-             record.referenced, record.angle, record.item_description)
+             record.referenced, record.angle, record.item_description, **stamp)
 
     evidence_sink = getattr(store, "record_opener_send_evidence", None)
     if pre_send_evidence is not None and callable(evidence_sink):
@@ -454,9 +468,9 @@ class OpenerService:
     def last_skip_allows_commentless_like(self) -> bool:
         """Whether this thread's latest call permits AUTO to use its existing like decision.
 
-        True only for Gemini content-policy blocks in a non-advisory call.  This structured,
-        thread-local outcome keeps worker.py from parsing operator-facing message text and from
-        confusing every other per-profile opener failure with the one exception the owner allows.
+        True only for a Gemini content-policy block.  This structured, thread-local outcome
+        keeps worker.py from parsing operator-facing message text and from confusing every
+        other per-profile opener failure with the one exception the owner allows.
         """
         return bool(getattr(self._call_outcome, "allows_commentless_like", False))
 
@@ -465,8 +479,8 @@ class OpenerService:
         self._call_outcome.allows_commentless_like = bool(value)
 
     def __init__(self, client: OpenerClient | None, tracker: CostTracker, store,
-                 style: str, max_attempts: int = 5, advisory_max_attempts: int | None = None,
-                 advisory_deadline_s: float = 60.0):
+                 style: str, max_attempts: int = 5, *,
+                 replay_corpus_dir: str | None = None):
         # BUG 2 (adversarial audit): max_attempts=0 (or negative) made range(1, max_attempts+1)
         # empty, so maybe_opener()'s retry loop body never ran at all -- 0 API calls, disabled
         # stayed False, stop_requested stayed False, no reason was ever recorded. That is
@@ -483,32 +497,6 @@ class OpenerService:
             raise ValueError(
                 f"OpenerService max_attempts must be an int in [1, {_MAX_ATTEMPTS}], "
                 f"got {_safe_repr(max_attempts)}")
-        # Direct callers historically supplied only max_attempts. Keep that API usable for
-        # small budgets while production passes the independently validated config value.
-        if advisory_max_attempts is None:
-            advisory_max_attempts = min(3, max_attempts)
-        if type(advisory_max_attempts) is not int or advisory_max_attempts < 1:
-            raise ValueError(
-                "OpenerService advisory_max_attempts must be an int >= 1, got "
-                f"{_safe_repr(advisory_max_attempts)}")
-        if advisory_max_attempts > max_attempts:
-            raise ValueError(
-                "OpenerService advisory_max_attempts must be <= max_attempts, got "
-                f"{_safe_repr(advisory_max_attempts)} > {_safe_repr(max_attempts)}")
-        try:
-            advisory_deadline = (
-                float(advisory_deadline_s)
-                if not isinstance(advisory_deadline_s, bool)
-                and isinstance(advisory_deadline_s, (int, float))
-                else None
-            )
-        except (TypeError, ValueError, OverflowError):
-            advisory_deadline = None
-        if (advisory_deadline is None or not math.isfinite(advisory_deadline)
-                or not 0 < advisory_deadline <= 300):
-            raise ValueError(
-                "OpenerService advisory_deadline_s must be a number > 0 and <= 300, got "
-                f"{_safe_repr(advisory_deadline_s)}")
         if not isinstance(style, str):
             raise ValueError(
                 f"OpenerService style must be a string, got {_safe_repr(style)}")
@@ -516,6 +504,20 @@ class OpenerService:
         self.tracker = tracker
         self.store = store
         self.style = style
+        # ops/OPENER-REDESIGN.md 5.2/5.7's replay corpus (opener/replay_corpus.py): a local,
+        # gitignored directory every generated ItemRequest is ALSO persisted to, verbatim, so a
+        # future prompt revision can be measured against real historical requests without a
+        # fresh live batch. OFF (None) unless config.yaml's opener.replay_corpus_enabled turns
+        # it on (see supervisor.py's construction site) -- this writes real people's photos to
+        # disk, so it is the owner's explicit, opt-in choice, never a silent default. See
+        # maybe_opener's own capture call for the best-effort discipline around it.
+        self.replay_corpus_dir = replay_corpus_dir
+        # The prompt era every row this service writes is stamped with. Computed ONCE here
+        # because all three inputs (this style text, opener.py's _SYSTEM, and _SCHEMA) are
+        # fixed for the life of the process -- the style is read from config at supervisor
+        # startup and a running process keeps it until restarted -- so re-hashing per profile
+        # would buy nothing. See prompt_stamp for what the digest covers and excludes.
+        self.prompt_sha256 = prompt_stamp(style)
         # How many times maybe_opener() will re-ask for ONE profile after an unusable
         # (but billed) response before giving up on that profile and stopping the whole
         # run -- see maybe_opener's docstring for the full retry loop. THE OWNER'S RULE:
@@ -523,11 +525,8 @@ class OpenerService:
         # like; this many consecutive failures in a row is what turns "one-off bad luck"
         # into "something is actually wrong".
         self.max_attempts = max_attempts
-        self.advisory_max_attempts = advisory_max_attempts
-        self.advisory_deadline_s = advisory_deadline
         self.disabled = client is None
-        self.stop_requested = False     # set by AUTO exhaustion; advisory exhaustion disables
-                                         # suggestions without stopping human observation.
+        self.stop_requested = False     # set once exhaustion stops the whole run
         # Human-readable cause of the FIRST exhaustion (see _exhaust) -- e.g. "run budget
         # reached" or "all configured Gemini models exhausted their free-tier quota; no
         # opener capacity remains". Every worker sharing this service reads the same value,
@@ -594,9 +593,12 @@ class OpenerService:
         # bugreport.py's Recent opener rejections section) needs this data WITHOUT a BigQuery
         # round-trip, exactly like recent_openers exists so the report doesn't have to query
         # self.store.record_opener's table either. Appended in the OpenerParseError branch of
-        # maybe_opener below for every AUTO rejected attempt (including the final one that
-        # exhausts retries), regardless of whether persistence succeeds. Observe drafts
-        # deliberately keep no profile-attributable rejection trail.
+        # maybe_opener below for every rejected attempt (including the final one that exhausts
+        # retries), regardless of whether persistence succeeds.
+        # OpenerError/HTTP-400/transient failures record a durable store row (see their branches
+        # below) but deliberately do NOT append here: this buffer's shape is pinned to
+        # OpenerParseError's fields (reason_code/raw_opener from a PARSED response), and those
+        # three failure kinds have neither.
         # "Attempt" is exact: an unusable ENTROPY REGENERATION draw (see _apply_entropy_guard)
         # is deliberately absent from both this buffer and the store's ledger, because that
         # draw never gated a send, and counting it would inflate the very guard-firing rate
@@ -606,7 +608,7 @@ class OpenerService:
         self.recent_rejections: deque[dict] = deque(maxlen=_RECENT_REJECTIONS)
         self._lock = threading.RLock()
 
-    def _register_transient_failure(self, exc: Exception, *, request_stop: bool = True) -> bool:
+    def _register_transient_failure(self, exc: Exception) -> bool:
         """Count one more consecutive transient-class failure and, once
         _TRANSIENT_LATCH_THRESHOLD is reached, latch the service disabled and return True
         (so the caller can skip its own "swiping without" print -- _exhaust() already prints
@@ -619,12 +621,6 @@ class OpenerService:
         Records exc so the eventual _exhaust() reason names the LAST failure actually seen,
         not just a bare count -- an operator staring at "3 consecutive opener failures" with
         no detail has to go spelunking in old log lines for the one that matters.
-
-        request_stop is forwarded to _exhaust() unchanged -- see maybe_opener's advisory
-        parameter. An ADVISORY call (a Hinge observe-mode suggestion) still needs its own
-        streak of unusable responses to eventually stop wasting quota on a broken model/
-        prompt, but must never ask the whole run to halt over what is, for that call, purely
-        cosmetic (a human is deciding for themselves either way).
         """
         self._consecutive_transient_failures += 1
         if self._consecutive_transient_failures >= _TRANSIENT_LATCH_THRESHOLD:
@@ -636,7 +632,6 @@ class OpenerService:
                 "request building, or a corrupted capture pipeline), not one-off bad luck, so "
                 "the run is stopping rather than silently sending bare likes with no opener "
                 "for the rest of it",
-                request_stop=request_stop,
             )
             return True
         return False
@@ -647,11 +642,9 @@ class OpenerService:
         scratch buffer; it decides nothing on its own, _apply_entropy_guard below owns every
         consequence.
 
-        Deliberately NOT filtered by app, and it includes advisory n-grams: the fingerprint this
-        guard exists to avoid is "every message this account sends opens the same way", and
-        neither a woman comparing screenshots with a friend nor an anti-bot heuristic cares
-        which worker produced a line.  Advisory text remains a non-durable draft until a Like,
-        but its n-gram is sufficient for the run-local anti-repetition check.
+        Deliberately NOT filtered by app: the fingerprint this guard exists to avoid is "every
+        message this account sends opens the same way", and neither a woman comparing
+        screenshots with a friend nor an anti-bot heuristic cares which worker produced a line.
 
         The n-gram is recomputed from each entry's stored text rather than cached in the entry:
         the buffer is bounded at _RECENT_OPENERS, so this is a dozen string compares, and
@@ -670,8 +663,8 @@ class OpenerService:
         sent.
 
         Spend is billing telemetry, rather than a preference/card decision.  It remains durable
-        for every real provider call, including a discarded Observe draft, so run/day budgets
-        never under-report actual usage.
+        for every real provider call, including a discarded draft, so run/day budgets never
+        under-report actual usage.
 
         Deliberately does NOT call _exhaust on an unpriceable model, unlike every other
         tracker.record() call site in this file -- the entropy guard's contract is that it can
@@ -706,15 +699,19 @@ class OpenerService:
     def _apply_entropy_guard(self, run_id: str, profile: Profile, result, *,
                              items: ItemRequest | None,
                              should_stop: Callable[[], bool] | None,
-                             skip_models: frozenset[str],
-                             deadline: float | None = None,
-                             client_accepts_deadline: bool = False) -> tuple[object, str, bool]:
-        """THE ENTROPY GUARD (ops/OPENER-REDESIGN.md 3.6). Given a parsed, usable opener, return
-        `(result_to_send, colliding_ngram, regenerated)`: either the result handed in, or a
-        second draw taken because the first one opened with words already sent this run.
+                             skip_models: frozenset[str]) -> tuple[object, str, bool]:
+        """THE ENTROPY GUARD (ops/OPENER-REDESIGN.md 3.6, whose stated rationale is half stale
+        -- read it with the 2026-09-05 addendum at the end of that file). Given a parsed, usable
+        opener, return `(result_to_send, colliding_ngram, regenerated)`: either the result
+        handed in, or a second draw taken because the first one opened with words already sent
+        this run.
 
-        WHY IT EXISTS: shortening the openers compresses the output space, and the few-shot edit
-        pairs in the style block make direct copying a live risk. Across a burner account
+        WHY IT EXISTS: shortening the openers compresses the output space, which is what makes
+        collisions likely at all (SAY IT ONCE shortens them further), but the style block has
+        shipped no examples since the 2026-08-16 de-templating pass, so copying prompt copy is
+        NOT the risk. The guard exists because a minimal thinking model collapses onto a
+        favorite construction on its own (measured live 2026-08-11: 5 of 5 openers led with the
+        same hedge), and because across a burner account
         sending uncapped volume, a run of messages that all open "Based on that X, I'm going to
         guess ..." is simultaneously a bot fingerprint and genuinely embarrassing if two matches
         ever compare screenshots. The check is a plain string comparison of leading n-grams (see
@@ -739,48 +736,10 @@ class OpenerService:
              out explicitly: a hard rejection here "can stop a run over a stylistic near-miss,
              which is disproportionate".
 
-        THE ADVISORY ASYMMETRY -- CORRECTED 2026-08-11. Read this before "restoring" the old
-        behavior; the paragraph that used to live here argued the guard must be skipped OUTRIGHT
-        when advisory is True, and that argument was WRONG. Do not resurrect it.
-
-        The old reasoning: an advisory (Hinge observe-mode) call used a smaller attempt budget
-        because a human may be waiting on the suggestion
-        (see maybe_opener's advisory docstring paragraph), so a guard that consumed an attempt
-        could disable suggestions over a stylistic near-miss. That premise is false for this guard as
-        actually built: see THE THREE THINGS above, especially point 3. The extra draw sits on
-        the SUCCESS path, lexically inside maybe_opener's `for attempt in range(...)` loop but
-        returning unconditionally, so it structurally CANNOT produce another `attempt` iteration
-        -- in AUTO or in advisory alike. There was never an attempt for advisory to lose. The old
-        paragraph was reasoning about a cost this function's own construction already ruled out;
-        it was carried over from ops/OPENER-REDESIGN.md 3.6's open question about a
-        HARD-REJECTING guard design (one that never shipped) and never re-checked against the
-        soft, budget-exempt design that actually did.
-
-        Running the guard under advisory is not merely SAFE, it is REQUIRED, and skipping it was
-        an active bug, not a conservative default. Hinge observe mode is the canary for auto --
-        the owner's rule is that the opener shown to a human in observe must be byte-identical to
-        what auto would type for the same profile, because observe exists to preview what auto is
-        about to do at scale. A guard that runs in AUTO but is inert in observe makes the two
-        modes diverge on exactly the profiles the guard exists to change: a collision that AUTO
-        would quietly redraw around used to ship untouched to the human in observe, so observe
-        stopped predicting what auto actually sends -- defeating the canary. This is not
-        hypothetical: a live dry run with advisory=True and a shared OpenerService (so
-        recent_openers accumulates across calls, exactly like a real observe session) produced 5
-        openers where 4 opened with the identical phrase, because the guard never even looked.
-
-        So: advisory now runs through the exact same collision check, extra draw, and
-        accept-on-second-collision path as AUTO, with no branch on `advisory` anywhere in this
-        function any more. What makes that safe is not "advisory is a lesser case needing its own
-        carve-out" -- it is this guard's OWN invariants (points 1-3 above), which hold
-        identically in both modes: it never raises, never rejects, never calls _exhaust(), and
-        never touches stop_requested or either latch counter, regardless of advisory. There was
-        never a failure mode here for advisory's bounded attempt budget to be exposed to.
-
         ONE extra draw, never a loop: if the second draw collides too, it is ACCEPTED and
         logged. A near-identical opener that gets sent is a much smaller problem than a retry
         storm, a stalled profile, or the sunk cost of a third billed call, and an unbounded
-        "keep asking until it is different" loop is a spend hole with no ceiling. This part is
-        unchanged by the correction above and applies identically in advisory and AUTO.
+        "keep asking until it is different" loop is a spend hole with no ceiling.
         """
         text = str(getattr(result, "opener", "") or "")
         collision = self._leading_ngram_collision(text)
@@ -800,11 +759,6 @@ class OpenerService:
             print(f"Opener: this draft repeats an earlier opening this run "
                   f"(\"{collision}\"), but the run budget is reached -- sending it as is "
                   "rather than spending on another draw.")
-            return result, collision, False
-        if deadline is not None and time.monotonic() >= deadline:
-            print(f"Opener: this draft repeats an earlier opening this run "
-                  f"(\"{collision}\"), but the advisory deadline has passed -- sending it "
-                  "as is rather than starting a stale regeneration.")
             return result, collision, False
 
         print(f"Opener: this draft opens with words already sent this run (\"{collision}\"); "
@@ -829,21 +783,8 @@ class OpenerService:
             # WORDS and must change nothing else about the request.
             generate_kwargs = dict(items=items, should_stop=should_stop,
                                    skip_models=skip_models)
-            if client_accepts_deadline:
-                generate_kwargs["deadline"] = deadline
             second = self.client.generate(profile, self.style, retry_hint=retry_hint,
                                           **generate_kwargs)
-        except OpenerDeadlineExceeded as e:
-            # The first draw is valid and this second one is a cosmetic refinement. An expiry
-            # is therefore a normal reason to retain that first draft, never a provider failure.
-            # A late 2xx can nevertheless have consumed provider quota, so record its usage
-            # exactly once before retaining the first draft.
-            if e.usage is not None and e.model:
-                self._record_billed_draw(run_id, e.model, e.usage,
-                                         note="stale entropy regeneration response")
-            print("Opener: the entropy regeneration reached the advisory deadline; keeping the "
-                  "original opener, which was already good enough to send.")
-            return result, collision, False
         except OpenerParseError as e:
             # Billed but unusable. Record the spend (real money, see _record_billed_draw) and
             # keep the original opener. Deliberately NOT written to the opener_rejections
@@ -927,39 +868,41 @@ class OpenerService:
                   "is a smaller problem than a retry storm or an unbounded spend.")
         return second, collision, True
 
+    def _capture_replay_corpus(self, items: ItemRequest) -> None:
+        """Best-effort persistence of this profile's EXACT opener-request inputs to the local
+        replay corpus (opener/replay_corpus.py, ops/OPENER-REDESIGN.md 5.2/5.7), so a future
+        prompt revision can be replayed against real historical requests without a fresh live
+        batch. A no-op unless `self.replay_corpus_dir` is set (opener.replay_corpus_enabled in
+        config.yaml, DEFAULT DISABLED -- see OpenerService.__init__).
+
+        REAL PEOPLE'S PHOTOS: `write_replay_capture` itself already never raises (every failure
+        comes back as `ReplayWriteResult(ok=False, ...)`, see that function's own SAFE TO FAIL
+        section) -- this wraps the call in try/except anyway, matching every other best-effort
+        telemetry write in this file (record_spend, record_opener, record_opener_rejection),
+        so a caller here never has to reason about whether THIS particular best-effort write
+        follows the rule differently from the others.
+        """
+        if not self.replay_corpus_dir:
+            return
+        try:
+            result = write_replay_capture(
+                self.replay_corpus_dir, items=items.items, name=items.name,
+                context=items.context, truncated=items.truncated,
+                prompt_sha256=self.prompt_sha256)
+            if not result.ok:
+                print(f"Warning: opener replay-corpus capture failed: {result.error}")
+        except Exception as exc:  # noqa: BLE001 -- telemetry must never break opener generation
+            print(f"Warning: opener replay-corpus capture raised unexpectedly: {exc}")
+
     def maybe_opener(self, run_id: str, app: str, profile: Profile, *,
                       items: ItemRequest | None = None,
                       should_stop: Callable[[], bool] | None = None,
-                      advisory: bool = False, stage: bool = False) -> "OpenerPick | None":
+                      stage: bool = False) -> "OpenerPick | None":
         """Return an OpenerPick (text + the MODEL ITEM INDEX the opener is about and the item
         to like -- 1-based, see OpenerPick), or None (disabled / budget
         reached / out of credit / permanent provider error / every retry attempt used up /
         a per-profile OpenerError / a single sub-latch 400 or transient failure / the run
         stopping via should_stop).
-
-        advisory (default False -- unchanged AUTO-mode behavior): True for Hinge's pre-action
-        Observe suggestion (see worker.py's _ObserveSuggestion). It is a private draft until a
-        confirmed Like: manual Observe may display it for a person, while the reviewed bridge
-        may send that exact current draft only after its own sheet checks. Two consequences
-        follow directly from its advisory role:
-          1. It uses the shorter advisory_max_attempts budget and advisory_deadline_s. The
-             service still enters its first attempt for legacy-client compatibility, but a
-             deadline-aware Gemini client receives the same absolute cutoff before any request.
-             If waiting for the shared lock or preparing images has already consumed it, Gemini
-             issues no stale first request. Every later fallback model and the optional
-             entropy-regeneration draw share that cutoff; each request is capped to the
-             remaining time, and a response arriving after it is discarded as a stale advisory
-             result rather than counted as a provider failure.
-          2. Every exhaustion path below routes through _exhaust(..., request_stop=False)
-             instead of the default request_stop=True. disabled/exhausted_reason are still
-             set exactly as for an AUTO exhaustion (so a systematically broken model/prompt
-             still stops burning quota on further suggestions), but stop_requested is left
-             alone: an advisory suggestion failing is COSMETIC (the person or reviewed
-             controller can still make a preference action without this draft), and ending
-             the whole Observe session over it would sacrifice the session's entire purpose
-             (collecting real training labels) for something that was never going to force an
-             action. See worker.py's _ObserveSuggestion for the call site and this class's
-             own _exhaust() for the matching request_stop plumbing.
 
         items (default None): ops/OPENER-REDESIGN.md 5.2/5.7's item-crop request shape -- one
         cropped image per numbered profile item, the unnumbered context crops after them, her
@@ -973,8 +916,8 @@ class OpenerService:
         hold two cards, and the returned item number would be confidently meaningless. A
         TypeError out of the call is the correct failure there.
 
-        Both auto and observe use `items`; the same crops are reused verbatim on every attempt
-        for this profile, so only `retry_hint` changes after a rejected response.
+        Every caller passes `items`; the same crops are reused verbatim on every attempt for
+        this profile, so only `retry_hint` changes after a rejected response.
 
         should_stop (BUG 1, adversarial audit): a cheap, non-blocking "is the run stopping?"
         check -- in practice worker.py's threading.Event.is_set for the shared stop flag.
@@ -1016,17 +959,8 @@ class OpenerService:
         _apply_entropy_guard) may ask once more when the opener opens with the same words as
         one already produced this run. It sits deliberately OUTSIDE the attempt loop, so a
         stylistic near-miss can never push a profile toward the max_attempts exhaustion that
-        stops the run; it never raises, never rejects, and never latches anything; and -- as of
-        the 2026-08-11 correction -- it now runs IDENTICALLY on an advisory call, not skipped:
-        its exemption from the attempt budget was never conditional on advisory in the first
-        place (it lives on the success path, outside the loop, in either mode), so there was
-        never a cost for skipping it to avoid, and running it in observe is REQUIRED, not merely
-        tolerated -- observe is the canary for auto (the opener shown to a human there must be
-        byte-identical to what auto would send), and a guard that only fired in AUTO made observe
-        stop predicting auto on exactly the profiles it exists to change. Both draws' spend is
-        recorded either way. See _apply_entropy_guard for the full reasoning, especially the
-        ADVISORY ASYMMETRY paragraph, which documents the old (wrong) design explicitly so it
-        does not get "simplified" back in.
+        stops the run; it never raises, never rejects, and never latches anything. Its spend
+        is recorded either way. See _apply_entropy_guard for the full reasoning.
 
         Every OTHER kind of per-call failure is deliberately NOT retried:
           - OpenerError (not a parse error) is almost always deterministic -- e.g. a
@@ -1062,12 +996,6 @@ class OpenerService:
         service stays enabled): the run stopping says nothing about whether the opener
         pipeline itself is healthy, so it must not be reported or counted like one.
         """
-        advisory_started_at = time.monotonic() if advisory else None
-        advisory_deadline_at = (
-            advisory_started_at + self.advisory_deadline_s
-            if advisory_started_at is not None else None
-        )
-        client_accepts_deadline = advisory and _accepts_generate_deadline(self.client)
         with self._lock:
             # Per-call permission, never sticky. A successful call or any unrelated failure
             # after a safety-blocked profile must restore the ordinary no-bare-like rule.
@@ -1075,13 +1003,10 @@ class OpenerService:
             if self.disabled:
                 return None
             if self.tracker.budget_reached():
-                self._exhaust("run budget reached", request_stop=not advisory)
+                self._exhaust("run budget reached")
                 return None
 
-            # Local policy only: the service is shared by advisory and AUTO callers, so an
-            # observe suggestion must never mutate the full autonomous retry budget.
-            effective_max_attempts = (
-                self.advisory_max_attempts if advisory else self.max_attempts)
+            effective_max_attempts = self.max_attempts
             # Which models have already produced an unusable response FOR THIS PROFILE, so a
             # retry can steer GeminiOpener's cascade away from re-hitting the same (often
             # scarcest-quota) model that just failed -- see opener.py's generate() skip_models
@@ -1090,21 +1015,19 @@ class OpenerService:
             # which gets its own empty set here.
             failed_models: set[str] = set()
 
+            # ops/OPENER-REDESIGN.md 5.2/5.7's replay corpus: capture the EXACT request inputs
+            # right here, once per profile call, before any attempt is made -- not per retry
+            # (the same `items` is reused verbatim across every attempt for this profile, see
+            # this method's own docstring, so capturing again on a retry would just re-detect
+            # "already captured" via write_replay_capture's own content-derived idempotency).
+            # Placed AFTER the disabled/budget-reached checks above: a call that returns None
+            # there never builds a request at all, so capturing one would record content that
+            # was never actually about to be sent.
+            if items is not None:
+                self._capture_replay_corpus(items)
+
             retry_hint = ""   # "" means first attempt; a retry fills this in below
             for attempt in range(1, effective_max_attempts + 1):
-                if (advisory and attempt > 1 and advisory_deadline_at is not None and
-                        time.monotonic() >= advisory_deadline_at):
-                    self.last_skip_reason = (
-                        "opener advisory retry deadline reached after "
-                        f"{attempt - 1}/{effective_max_attempts} attempt(s); no further "
-                        "attempt was started for this profile"
-                    )
-                    print(
-                        "Opener: advisory retry deadline reached after "
-                        f"{attempt - 1}/{effective_max_attempts} attempt(s); showing no "
-                        "suggestion for this profile, while future profiles remain eligible."
-                    )
-                    return None
                 if should_stop is not None and should_stop():
                     # Checked BETWEEN retry attempts (including before the very first one),
                     # independent of whatever the client itself does internally -- a simple/
@@ -1129,27 +1052,8 @@ class OpenerService:
                         should_stop=should_stop,
                         skip_models=frozenset(failed_models),
                     )
-                    if client_accepts_deadline:
-                        # GeminiOpener receives the absolute deadline, not another relative
-                        # budget. It checks it between every fallback model and limits an
-                        # already-starting request to the remaining time.
-                        generate_kwargs["deadline"] = advisory_deadline_at
                     result = self.client.generate(profile, self.style, retry_hint=retry_hint,
                                                   **generate_kwargs)
-                except OpenerDeadlineExceeded as e:
-                    # A stale advisory suggestion is deliberately cosmetic. This is neither a
-                    # provider timeout nor a profile/request failure: do not retry, latch,
-                    # disable the service, or ask the observation run to stop. A late 2xx can
-                    # still be billed, however, so retain its accounting facts exactly once.
-                    if not advisory:
-                        raise
-                    if e.usage is not None and e.model:
-                        self._record_billed_draw(run_id, e.model, e.usage,
-                                                 note="stale advisory opener response")
-                    self.last_skip_reason = str(e)
-                    print("Opener: advisory deadline reached during the model cascade; showing "
-                          "no suggestion for this profile, while future profiles remain eligible.")
-                    return None
                 except OpenerAborted as e:
                     # The client itself aborted mid-call (e.g. GeminiOpener's cascade caught a
                     # stop signal BETWEEN models, after already issuing at least one request
@@ -1193,7 +1097,7 @@ class OpenerService:
                         # Same guard as the success path: the API echoed a model with no
                         # budget.pricing entry, so this (real, billed) spend can't be tracked.
                         self._exhaust(f"no budget.pricing entry for model '{e.model}'; "
-                                      "spend can no longer be tracked", request_stop=not advisory)
+                                      "spend can no longer be tracked")
                         cost = None
                     try:
                         self.store.record_spend(run_id, e.model, e.usage, cost)
@@ -1219,26 +1123,27 @@ class OpenerService:
                     # loose. Guarded exactly like record_spend just above: a store outage
                     # must never take down opener generation, the one invariant this whole
                     # file exists to protect.
-                    if not advisory:
-                        try:
-                            self.store.record_opener_rejection(
-                                run_id, app, e.model, attempt, e.reason_code, str(e), e.raw_opener)
-                        except Exception as store_exc:  # noqa: BLE001
-                            print(f"Warning: failed to persist opener rejection record: {store_exc}")
+                    try:
+                        self.store.record_opener_rejection(
+                            run_id, app, e.model, attempt, e.reason_code, str(e),
+                            e.raw_opener, prompt_sha256=self.prompt_sha256)
+                    except Exception as store_exc:  # noqa: BLE001
+                        print(f"Warning: failed to persist opener rejection record: {store_exc}")
                     # In-memory mirror of the row just above, independent of the store call's
                     # success -- see recent_rejections' docstring in __init__ for why this
                     # exists (the bug report's Recent opener rejections section reads this,
                     # not the store, exactly like recent_openers/recent_openers_snapshot).
-                    if not advisory:
-                        self.recent_rejections.append({
-                            "ts": datetime.now().isoformat(timespec="seconds"),
-                            "app": app,
-                            "model": e.model,
-                            "attempt": attempt,
-                            "reason_code": e.reason_code,
-                            "reason": str(e),
-                            "raw_opener": e.raw_opener,
-                        })
+                    # Unconditional now too, for the same reason as the store call just above.
+                    self.recent_rejections.append({
+                        "ts": datetime.now().isoformat(timespec="seconds"),
+                        "app": app,
+                        "model": e.model,
+                        "attempt": attempt,
+                        "reason_code": e.reason_code,
+                        "reason": str(e),
+                        "raw_opener": e.raw_opener,
+                        "prompt_sha256": self.prompt_sha256,
+                    })
 
                     if self.disabled:
                         # _exhaust() already ran above (the unpriceable-model guard) -- the
@@ -1248,7 +1153,7 @@ class OpenerService:
                         # Re-checked here, not just before the first attempt: the retry rule
                         # never overrides the run budget, so a cap crossed by THIS attempt's
                         # spend must stop further retries immediately.
-                        self._exhaust("run budget reached", request_stop=not advisory)
+                        self._exhaust("run budget reached")
                         return None
                     if e.reason_code in (REASON_PROMPT_BLOCKED, REASON_RESPONSE_BLOCKED):
                         # Gemini identified this as a content-policy block, not malformed JSON
@@ -1256,10 +1161,9 @@ class OpenerService:
                         # profile captures would simply resubmit the content Gemini withheld;
                         # do not evade that decision by rewriting, stripping, or isolating the
                         # profile.  The blocked attempt has already been billed and recorded
-                        # above. Keep the service healthy for the next profile. In AUTO the
-                        # ranker has already made the like decision, so this one explicit
-                        # outcome permits a commentless like; Observe displays the reason and
-                        # remains live without changing its manual controls.
+                        # above. Keep the service healthy for the next profile: the ranker has
+                        # already made the like decision, so this one explicit outcome permits
+                        # a commentless like.
                         blocked_stage = (
                             "the request" if e.reason_code == REASON_PROMPT_BLOCKED
                             else "the generated response"
@@ -1270,13 +1174,12 @@ class OpenerService:
                             "proceed with its existing like decision without a comment. Future "
                             "profiles remain eligible."
                         )
-                        self.last_skip_allows_commentless_like = not advisory
-                        action = ("AUTO will proceed with its existing like decision without a "
-                                  "comment" if not advisory else "Observe will show no suggestion")
+                        self.last_skip_allows_commentless_like = True
                         print(
                             "Opener: Gemini safety policy withheld content for this profile; "
-                            f"not retrying the same captured content. {action}; future profiles "
-                            "remain eligible."
+                            "not retrying the same captured content. AUTO will proceed with its "
+                            "existing like decision without a comment; future profiles remain "
+                            "eligible."
                         )
                         return None
                     if attempt >= effective_max_attempts:
@@ -1284,9 +1187,6 @@ class OpenerService:
                         # explicit rule, that many failures in a row is no longer one-off bad
                         # luck -- it means something is actually wrong -- so the whole run
                         # stops rather than ever falling back to a bare/commentless like.
-                        # Advisory exhaustion disables further suggestions to prevent an
-                        # unbounded per-profile spend loop, but request_stop=False keeps the
-                        # human observation session itself running.
                         self._exhaust(
                             f"{attempt} consecutive AI opener attempts for this profile were "
                             f"all rejected as unusable (most recent: {e}) -- retrying a bad "
@@ -1294,7 +1194,6 @@ class OpenerService:
                             "something is actually wrong (a broken prompt, a degenerate model, "
                             "a schema bug), so opener generation is being disabled rather than "
                             "keep spending on retries that keep failing",
-                            request_stop=not advisory,
                         )
                         return None
 
@@ -1326,7 +1225,7 @@ class OpenerService:
                     # truncated PNGs, say) would surface as a long run of exactly this error, one
                     # per profile, and that is precisely the silent-forever degradation this latch
                     # exists to catch.
-                    if self._register_transient_failure(e, request_stop=not advisory):
+                    if self._register_transient_failure(e):
                         # Latched permanent by _register_transient_failure -- exhausted_reason
                         # (a global cause) now names this, so last_skip_reason (a per-call cause)
                         # is deliberately left alone rather than shadowing it with this profile's
@@ -1335,6 +1234,20 @@ class OpenerService:
                     else:
                         self.last_skip_reason = f"opener call failed for this profile: {e}"
                         print(f"Opener: {e}; swiping without an opener for this profile.")
+                    # Durable record even though this is not an OpenerParseError -- this branch
+                    # was previously one of THREE failure kinds that left opener_rejections at
+                    # zero rows forever (2026-09-06; see ops/OPENER-REDESIGN.md's dated
+                    # addendum). No `model` is known here: as the comment above explains,
+                    # opener.py can raise this before any provider request is ever built, so ""
+                    # is recorded rather than a guess. Guarded exactly like the OpenerParseError
+                    # branch's own store call above: a store outage must never take down opener
+                    # generation.
+                    try:
+                        self.store.record_opener_rejection(
+                            run_id, app, "", attempt, REASON_OPENER_ERROR, str(e), None,
+                            prompt_sha256=self.prompt_sha256)
+                    except Exception as store_exc:  # noqa: BLE001
+                        print(f"Warning: failed to persist opener rejection record: {store_exc}")
                     return None
                 except Exception as e:  # noqa: BLE001
                     # HTTP-level / provider-level failures land here, and none of them are
@@ -1351,7 +1264,7 @@ class OpenerService:
                         # cascade fell through with a transient per-minute cap in it, so a
                         # restart shortly may just work". This string becomes the hub's stop
                         # reason, and those two situations need opposite operator responses.
-                        self._exhaust(str(e), request_stop=not advisory)
+                        self._exhaust(str(e))
                         return None
                     # Permanent classification MUST run before the bad-request streak counter
                     # below: an invalid/revoked Gemini API key surfaces as an HTTP 400 (see
@@ -1362,20 +1275,33 @@ class OpenerService:
                     if reason is not None:
                         # Permanent (bad key/model): retrying it per-profile is pure waste, so
                         # stop attempting openers for the rest of the run instead.
-                        self._exhaust(reason, request_stop=not advisory)
+                        self._exhaust(reason)
                         return None
                     if _is_bad_request(e):
                         # Only latch permanent after a STREAK of consecutive 400s -- see
                         # _BAD_REQUEST_LATCH_THRESHOLD's docstring for why a lone 400 must not
                         # kill openers for the whole run (it can be that profile's own bad
                         # capture, not a systemic request problem).
+                        # Durable record for EVERY 400, latched or not -- previously one of
+                        # three failure kinds that left opener_rejections at zero rows forever
+                        # (2026-09-06; see ops/OPENER-REDESIGN.md's dated addendum). Placed
+                        # before the latch decision below so it fires regardless of which of
+                        # that decision's two `return None`s this call takes. No `model` is
+                        # known: this is an HTTP-level rejection of the request, not a parsed
+                        # provider response. Guarded like every other new call site here: a
+                        # store outage must never take down opener generation.
+                        try:
+                            self.store.record_opener_rejection(
+                                run_id, app, "", attempt, REASON_BAD_REQUEST, str(e), None,
+                                prompt_sha256=self.prompt_sha256)
+                        except Exception as store_exc:  # noqa: BLE001
+                            print(f"Warning: failed to persist opener rejection record: {store_exc}")
                         self._consecutive_bad_requests += 1
                         if self._consecutive_bad_requests >= _BAD_REQUEST_LATCH_THRESHOLD:
                             self._exhaust(
                                 f"The opener provider rejected {self._consecutive_bad_requests} opener "
                                 "requests in a row as malformed (bad param/schema) -- this looks "
                                 "like a systemic request problem, not a one-off bad photo",
-                                request_stop=not advisory,
                             )
                             return None
                         # Below the latch: this is a per-call reason (see last_skip_reason's
@@ -1398,7 +1324,21 @@ class OpenerService:
                     # this exact branch with the service left enabled and nothing on the hub
                     # showing anything was wrong, each one a live profile that got a bare like
                     # with no opener.
-                    if self._register_transient_failure(e, request_stop=not advisory):
+                    # Durable record for EVERY transient failure, latched or not -- previously
+                    # one of three failure kinds that left opener_rejections at zero rows
+                    # forever (2026-09-06; see ops/OPENER-REDESIGN.md's dated addendum). Placed
+                    # before the latch decision below for the same reason as the HTTP-400
+                    # branch above. No `model` is known: GeminiCapacityExhausted and the
+                    # permanent-reason branch above already cover every case where the
+                    # exception itself names one.
+                    try:
+                        self.store.record_opener_rejection(
+                            run_id, app, "", attempt, REASON_TRANSIENT_ERROR,
+                            f"{type(e).__name__}: {e}", None,
+                            prompt_sha256=self.prompt_sha256)
+                    except Exception as store_exc:  # noqa: BLE001
+                        print(f"Warning: failed to persist opener rejection record: {store_exc}")
+                    if self._register_transient_failure(e):
                         # Latched -- exhausted_reason now carries the global cause; leave
                         # last_skip_reason (a per-call cause) alone, same reasoning as the
                         # OpenerError branch above.
@@ -1420,19 +1360,14 @@ class OpenerService:
                 # misread as describing this one (see last_skip_reason's docstring).
                 self.last_skip_reason = None
 
-                # ENTROPY GUARD (ops/OPENER-REDESIGN.md 3.6, and see _apply_entropy_guard for
-                # the full rationale, INCLUDING THE 2026-08-11 CORRECTION: this now runs
-                # identically whether or not the call is advisory -- it takes no `advisory`
-                # argument at all any more, deliberately, because nothing about its behavior may
-                # ever depend on that flag (see the ADVISORY ASYMMETRY paragraph in its
-                # docstring for why the OLD advisory-skips-it design was wrong, not merely
-                # conservative). It may hand back a SECOND draw taken because this one opened
+                # ENTROPY GUARD (ops/OPENER-REDESIGN.md 3.6, see _apply_entropy_guard for the
+                # full rationale). It may hand back a SECOND draw taken because this one opened
                 # with words already sent this run. That extra call must not consume the
                 # per-profile attempt budget whose exhaustion stops the whole run, and it does
                 # not: these lines are lexically inside the `for attempt in ...` loop, but they
                 # sit on the SUCCESS path, which returns unconditionally a few lines below, so no
-                # extra draw can ever cause another `attempt` iteration -- true in AUTO and in
-                # advisory alike. Keep the guard on a returning path if it ever moves.
+                # extra draw can ever cause another `attempt` iteration. Keep the guard on a
+                # returning path if it ever moves.
                 #
                 # It runs BEFORE any spend/opener recording below for one reason: exactly one
                 # `openers` row per profile must exist, and it must hold the text that actually
@@ -1442,9 +1377,7 @@ class OpenerService:
                 result, entropy_collision, entropy_regenerated = self._apply_entropy_guard(
                     run_id, profile, result,
                     items=items, should_stop=should_stop,
-                    skip_models=frozenset(failed_models),
-                    deadline=(advisory_deadline_at if client_accepts_deadline else None),
-                    client_accepts_deadline=client_accepts_deadline)
+                    skip_models=frozenset(failed_models))
 
                 try:
                     cost = self.tracker.record(result.model, result.usage)
@@ -1457,7 +1390,7 @@ class OpenerService:
                     # cost=None (not 0.0): the real cost was nonzero, just unrecoverable, and
                     # a fabricated $0.00 would misreport actual spend in the stored record.
                     self._exhaust(f"no budget.pricing entry for model '{result.model}'; "
-                                  "spend can no longer be tracked", request_stop=not advisory)
+                                  "spend can no longer be tracked")
                     cost = None
                 # getattr defaults here for the same defensive reason as the pre-existing
                 # getattr on the old referenced_index (this block used to read only that
@@ -1494,9 +1427,7 @@ class OpenerService:
                 # or returned a non-string; opener.py has already stripped it.
                 angle = str(getattr(result, "angle", "") or "")
                 # The model's own short description of the ITEM it picked (doc 5.7). Read
-                # unconditionally, with no branch on `advisory` anywhere: auto logs it, observe
-                # displays it, and the moment one mode stops asking for it the two modes stop
-                # issuing the same request, which is the canary property observe exists for.
+                # unconditionally, regardless of caller, so every request stays the same shape.
                 item_description = str(getattr(result, "item_description", "") or "")
                 # Output of opener.py's deterministic redundancy MONITOR: content words this
                 # opener restated from its own `referenced` note (doc 3.7). isinstance-checked
@@ -1510,10 +1441,10 @@ class OpenerService:
                 raw_markers = getattr(result, "redundancy_markers", None)
                 redundancy_markers = ([str(m) for m in raw_markers]
                                       if isinstance(raw_markers, (list, tuple)) else [])
-                staged_for_action = advisory or stage
+                staged_for_action = stage
                 if redundancy_markers:
                     # opener.py prints when it computes these, including parsed drafts the
-                    # entropy guard later rejects.  Staged Training/advisory/AUTO drafts must
+                    # entropy guard later rejects.  Staged Training/AUTO drafts must
                     # not get a second service-level message here: the draft monitor is already
                     # enough diagnostic evidence, and a staged draft can become a Dislike, Stop,
                     # or pre-send refusal.  Service-level redundancy output is reserved for the
@@ -1541,32 +1472,48 @@ class OpenerService:
                     # which is a misleading thing to print about an AttributeError on
                     # `referenced` (the spend row above it was already written fine).
                     #
+                    # 2026-09-05 (b): `prompt_sha256` is the ONE keyword argument here, and it
+                    # is a keyword deliberately -- it is a trailing keyword-only parameter in
+                    # both stores, so passing it positionally is not even possible, and this
+                    # call's positional prefix stays exactly the seven arguments described
+                    # above. The cost is paid by the test doubles: a fake declared `*a` alone
+                    # raises TypeError here, so the fakes in tests/test_opener_service.py and
+                    # tests/test_opener.py accept `**kw` (or name the parameter). That failure
+                    # is silent in production shape -- this whole call sits in the non-fatal
+                    # try/except below -- which is why the fakes were widened deliberately
+                    # rather than left to surface as an unrelated-looking count assertion.
+                    # Passed UNCONDITIONALLY here, unlike _record_staged_opener, which probes
+                    # the sink for the parameter first. That asymmetry is deliberate: this is
+                    # the legacy/immediate path, `self.store` on it is the configured Store
+                    # (whose Protocol declares the parameter, as do both real backends), and
+                    # the duck-typed-sink case the probe exists for is the STAGED path's. If a
+                    # sink here ever did lack it, the TypeError would be swallowed by the same
+                    # try/except and reported under the spend-record message -- so if that path
+                    # ever gains real duck-typed sinks, copy the probe rather than the call.
                     if not staged_for_action:
                         self.store.record_opener(run_id, app, result.model, result.opener,
-                                                 referenced, angle, item_description)
+                                                 referenced, angle, item_description,
+                                                 prompt_sha256=self.prompt_sha256)
                 except Exception as e:  # noqa: BLE001
                     # Spend was already tracked in-memory by CostTracker (or deliberately
                     # marked unrecoverable above); store failure is non-fatal.
                     print(f"Warning: failed to persist opener spend record "
                           f"({_display_cost(cost)}): {e}")
                 if self.tracker.budget_reached():
-                    self._exhaust("run budget reached", request_stop=not advisory)
+                    self._exhaust("run budget reached")
                 # An un-staged legacy/immediate caller records its diagnostic opener here.
-                # Staged AUTO, Training, and Observe flows instead commit only after the
-                # worker has a confirmed Like boundary.  A draft must not make an abandoned
-                # profile look acted-on in a bug report.
+                # Staged AUTO and Training flows instead commit only after the worker has a
+                # confirmed Like boundary.  A draft must not make an abandoned profile look
+                # acted-on in a bug report.
                 #
                 # The three newer fields all exist to make a redesign VISIBLE in a bug report
                 # rather than only in a console line nobody kept: `angle` is the model's own
                 # account of what it was doing, `redundancy_markers` is the over-description
                 # monitor's verdict on the text actually sent, and `entropy_collision` /
                 # `entropy_regenerated` record whether this opener repeated an earlier opening
-                # and whether a second draw was taken -- reflecting a REAL collision check on
-                # every call, advisory included as of the 2026-08-11 correction (previously
-                # hardcoded to "" / False on an advisory call because the guard was skipped
-                # outright there; see _apply_entropy_guard's ADVISORY ASYMMETRY paragraph for why
-                # that was wrong). Extra keys are safe here: bugreport.py reads this dict key by
-                # key with .get defaults, never by unpacking or exact comparison.
+                # and whether a second draw was taken -- a REAL collision check on every call.
+                # Extra keys are safe here: bugreport.py reads this dict key by key with .get
+                # defaults, never by unpacking or exact comparison.
                 #
                 # The "index" KEY KEEPS ITS NAME AND CHANGES ITS MEANING, which is worth
                 # knowing before comparing two bug reports across this commit: entries written
@@ -1585,16 +1532,10 @@ class OpenerService:
                     "ts": datetime.now().isoformat(timespec="seconds"),
                     "app": app,
                     "model": result.model,
-                    # This remains an advisory-generation record even though it is appended
-                    # only after a confirmed Like.  The flag distinguishes Observe's shorter
-                    # generation policy from AUTO/Training; session_mode below records the
-                    # eventual action provenance.
-                    "advisory": bool(advisory),
                     # Training shares AUTO's provider budget and stages its opener through the
-                    # same landed-action envelope.  ``advisory`` alone therefore cannot name
-                    # the eventual session mode; commit_opener refines this to ``training``
+                    # same landed-action envelope; commit_opener refines this to ``training``
                     # when the landed decision source is manual.
-                    "session_mode": "advisory" if advisory else "auto",
+                    "session_mode": "auto",
                     "index": item_index,
                     "index_space": index_space,
                     "referenced": referenced,
@@ -1604,6 +1545,13 @@ class OpenerService:
                     "entropy_collision": entropy_collision,
                     "entropy_regenerated": entropy_regenerated,
                     "opener": result.opener,
+                    # The prompt-era digest this opener was generated under (see
+                    # self.prompt_sha256, set from prompt_stamp() in __init__), so the always-on
+                    # diagnostic view bugreport.py reads (recent_openers_snapshot) can be grouped
+                    # by era exactly like the durable `openers` row already can -- added
+                    # 2026-09-06, previously absent here even though record_opener has carried it
+                    # since 2026-09-05 (b).
+                    "prompt_sha256": self.prompt_sha256,
                 }
                 if not staged_for_action:
                     self.recent_openers.append(recent_entry)
@@ -1616,9 +1564,14 @@ class OpenerService:
                 # positional: it is the field that makes `index` interpretable at all, and a
                 # bare trailing string in a five-argument positional call is exactly the kind
                 # of thing a later edit drops or reorders without noticing.
+                # prompt_sha256 by KEYWORD (see the dataclass field's own comment): the stamp is
+                # taken HERE, at generation time, not read off the service when the draft is
+                # later committed, so a staged draft is always attributed to the prompt it was
+                # actually generated under.
                 staged = (_StagedOpenerRecord(
                     run_id, app, result.model, result.opener, referenced, angle,
-                    item_description, recent_entry) if staged_for_action else None)
+                    item_description, recent_entry,
+                    prompt_sha256=self.prompt_sha256) if staged_for_action else None)
                 return OpenerPick(result.opener, item_index, referenced, angle, item_description,
                                   index_space=index_space, _staged_record=staged)
             # Unreachable in practice: __init__ now rejects any max_attempts that isn't an
@@ -1636,12 +1589,21 @@ class OpenerService:
 
     def commit_opener(self, pick: OpenerPick, *, profile_id: str = "", decision: str = "like",
                       decision_source: str = "", decision_created_at: object | None = None,
-                      pre_send_evidence: dict[str, object] | None = None) -> bool:
-        """Persist one staged AUTO/Training/Observe opener after a landed Like, exactly once.
+                      pre_send_evidence: dict[str, object] | None = None,
+                      profile_key: str = "") -> bool:
+        """Persist one staged AUTO/Training opener after a landed Like, exactly once.
 
         This is intentionally a separate, explicit commit from generation: neither opening a
         profile nor generating a suggestion says that the account acted.  Pass, Stop, resync,
         and every pre-tap refusal simply drop the in-memory envelope with the card.
+
+        `profile_key` (2026-09-06): the caller's own already-computed attribution key
+        (ranker/profile_key.py) for the profile this Like landed on -- passed through
+        unvalidated, including "", to the same store call `profile_id`/`decision` reach.  This
+        method never derives it: the caller captured it BEFORE the device action that
+        invalidates whatever the identity was read off of (see worker.py's
+        `_current_profile_key`), so re-deriving it here would only ever see the wrong profile
+        or nothing at all.
         """
         with self._lock:
             record = getattr(pick, "_staged_record", None)
@@ -1651,17 +1613,13 @@ class OpenerService:
                 _record_staged_opener(
                     self.store, record, pick, profile_id=profile_id, decision=decision,
                     decision_source=decision_source, decision_created_at=decision_created_at,
-                    pre_send_evidence=pre_send_evidence)
+                    pre_send_evidence=pre_send_evidence, profile_key=profile_key)
             except Exception as exc:  # noqa: BLE001 -- a store outage must not erase a real Like
                 print(f"Warning: failed to persist committed opener after landed like: {exc}")
                 return False
             recent_entry = dict(record.recent_entry)
-            if recent_entry.get("advisory"):
-                recent_entry["session_mode"] = "advisory"
-            elif decision_source == "manual":
-                recent_entry["session_mode"] = "training"
-            else:
-                recent_entry["session_mode"] = "auto"
+            recent_entry["session_mode"] = (
+                "training" if decision_source == "manual" else "auto")
             self.recent_openers.append(recent_entry)
             markers = recent_entry.get("redundancy_markers")
             if isinstance(markers, list) and markers:
@@ -1672,6 +1630,56 @@ class OpenerService:
                 print(f"Opener: committed Like opener restates {len(markers)} word(s) from its "
                       f"own `referenced` note ({'; '.join(str(marker) for marker in markers)}). "
                       "Logged only for offline calibration, never a rejection.")
+            pick._staged_record = None
+            return True
+
+    def discard_opener(self, pick: OpenerPick, *, profile_id: str = "", decision: str = "never_sent",
+                       decision_source: str = "", decision_created_at: object | None = None,
+                       profile_key: str = "") -> bool:
+        """Persist one staged AUTO/Training opener draft that will NEVER be committed, so the
+        durable ``openers`` table stops being survivorship-biased toward only landed Likes.
+
+        commit_opener's docstring already states the shape this mirrors: generation is only a
+        draft, and a landed Like is the one event that has ever made a staged envelope durable.
+        Everything else -- an explicit Dislike, a Stop, a targeting refusal, a driver exception --
+        used to just drop the in-memory envelope with the card, which is exactly why the
+        existing `openers` rows cannot answer "how often does the model write a bad opener":
+        every draft that did NOT end in a Like was discarded before it was ever written down.
+        This method is the other half of that same lifecycle -- same staging envelope, same
+        `prompt_sha256` captured at generation (never re-derived here), same lock, same
+        best-effort persistence discipline -- so a bad opener now leaves exactly as durable a
+        trace as a good one, distinguished only by `decision`.
+
+        Deliberately silent about WHAT happened beyond the caller-supplied `decision` string:
+        this is generic telemetry plumbing, not a place to encode every driver-specific refusal
+        reason. Callers (Training's explicit Dislike, AUTO's stop/refusal/exception paths) each
+        know their own outcome and pass it through.
+
+        Returns False, exactly like commit_opener, both when there was nothing staged to persist
+        (pick was never staged, or was already committed/discarded -- `_staged_record` is None
+        either way) and when the store write itself failed. Neither caller inspects the return
+        value today -- there is no decision, send, or refusal left to make once a draft is being
+        discarded -- but the boolean is kept for the same reason commit_opener keeps one: a
+        future caller should not have to guess whether persistence happened.
+
+        `profile_key` (2026-09-06): exactly the same attribution key commit_opener accepts, and
+        for the same reason -- a discarded draft is still a real, billed opener about a real
+        profile, and doc's whole point in adding this column at all is that BOTH populations
+        (sent and discarded) must be attributable, not only the survivorship-biased Likes.
+        """
+        with self._lock:
+            record = getattr(pick, "_staged_record", None)
+            if record is None:
+                return False
+            try:
+                _record_staged_opener(
+                    self.store, record, pick, profile_id=profile_id, decision=decision,
+                    decision_source=decision_source, decision_created_at=decision_created_at,
+                    pre_send_evidence=None, profile_key=profile_key)
+            except Exception as exc:  # noqa: BLE001 -- a store outage must not break a run
+                # over telemetry for a draft that was never going to be sent anyway.
+                print(f"Warning: failed to persist discarded opener draft: {exc}")
+                return False
             pick._staged_record = None
             return True
 
@@ -1698,31 +1706,19 @@ class OpenerService:
         with self._lock:
             return list(self.recent_rejections)
 
-    def _exhaust(self, reason: str, *, request_stop: bool = True) -> None:
+    def _exhaust(self, reason: str) -> None:
         """Flip the service permanently disabled and record WHY (exhausted_reason), so an
         operator staring at a stopped or degraded run sees the actual cause instead of a
-        generic line. Every AUTO-path exhaustion (the module docstring's list: budget
-        reached, a latch tripped, a permanent provider error, GeminiCapacityExhausted, every
-        retry attempt failing) reaches here with the default request_stop=True.
-
-        request_stop=False is for an ADVISORY call only (see maybe_opener's advisory
-        parameter): a Hinge Observe draft is still pre-action, so a bad response cannot
-        justify forcing the session itself to stop. Ending the whole Observe session over it
-        would sacrifice real training labels for something purely cosmetic -- the owner's rule
-        is "stop the AUTOMATION", and a draft has not made an action.
-        disabled/exhausted_reason are still set exactly as for an AUTO exhaustion (a
-        systematically broken model/prompt must still stop
-        burning further quota on suggestions no one will ever see used), and this method
-        remains first-writer-wins for exhausted_reason regardless of which kind of call gets
-        there first -- only the stop_requested side effect is conditional.
+        generic line. Every exhaustion path (the module docstring's list: budget reached, a
+        latch tripped, a permanent provider error, GeminiCapacityExhausted, every retry
+        attempt failing) reaches here and stops the whole run: there is no longer a
+        configuration that keeps AUTOMATION going once the service has given up (see this
+        class's module docstring for why the old budget.on_exhausted="swipe_without_opener"
+        mode was removed outright).
         """
         with self._lock:
             if not self.disabled:
-                print(f"Opener: {reason} -> " + (
-                    "stopping all workers" if request_stop else
-                    "disabling further opener attempts this run (advisory suggestion only "
-                    "-- the observe session continues; see maybe_opener's advisory parameter)"
-                ))
+                print(f"Opener: {reason} -> stopping all workers")
             # First-writer-wins: once exhausted, later calls into _exhaust (e.g. a second
             # worker's own opener call failing right behind the first, now that the service
             # is disabled) must not clobber the reason an operator actually needs -- the
@@ -1730,10 +1726,4 @@ class OpenerService:
             if self.exhausted_reason is None:
                 self.exhausted_reason = reason
             self.disabled = True
-            # request_stop=True (the default) is unconditional otherwise: there is no longer a
-            # configuration that keeps AUTOMATION going once the service has given up (see this
-            # class's module docstring for why the old budget.on_exhausted=
-            # "swipe_without_opener" mode was removed outright). request_stop=False (advisory)
-            # deliberately leaves stop_requested untouched -- see this method's own docstring.
-            if request_stop:
-                self.stop_requested = True
+            self.stop_requested = True

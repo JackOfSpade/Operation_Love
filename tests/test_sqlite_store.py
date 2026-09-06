@@ -1,4 +1,5 @@
 """SQLiteStore source-tagging and daily-limit behavior."""
+import inspect
 import math
 import os
 import sqlite3
@@ -417,7 +418,8 @@ def test_sqlite_openers_table_has_the_expected_columns_in_order(tmp_path):
         cols = [row[1] for row in store.con.execute("PRAGMA table_info(openers)").fetchall()]
         assert cols == ["id", "run_id", "app", "created_at", "model", "opener",
                         "referenced", "angle", "item_description", "profile_id", "decision",
-                        "decision_source", "decision_created_at", "model_item_index"]
+                        "decision_source", "decision_created_at", "model_item_index",
+                        "prompt_sha256", "profile_key"]
     finally:
         store.close()
 
@@ -481,6 +483,50 @@ def test_sqlite_persists_opener_action_lineage_with_the_landed_like(tmp_path):
         store.close()
 
 
+def test_sqlite_record_opener_persists_the_prompt_era_stamp(tmp_path):
+    """`prompt_sha256` is the digest of the prompt era the row was generated under (see
+    prompt_stamp in opener/opener.py). Without it, splitting rows by era means reading
+    created_at against config.yaml's git commit dates by hand -- a reconstruction, not a
+    record. Keyword-only with a None default, so the seven-positional call shape is unchanged
+    and a caller that predates the stamp writes NULL rather than a wrong era."""
+    store = SQLiteStore(tmp_path / "store.db")
+    try:
+        store.record_opener("r", "hinge", "gemini-x", "hello", "her ridgeline photo", "guess",
+                            "a photo", prompt_sha256="a" * 64)
+
+        assert store.con.execute("SELECT prompt_sha256 FROM openers").fetchone() == ("a" * 64,)
+    finally:
+        store.close()
+
+
+def test_sqlite_record_opener_leaves_the_prompt_stamp_null_when_the_caller_omits_it(tmp_path):
+    """NULL means "this row predates the stamp", which is exactly what an unstamped caller
+    should record. "" would claim an era whose digest is the empty string."""
+    store = SQLiteStore(tmp_path / "store.db")
+    try:
+        store.record_opener("r", "hinge", "gemini-x", "hello", "her ridgeline photo")
+
+        assert store.con.execute("SELECT prompt_sha256 FROM openers").fetchone() == (None,)
+    finally:
+        store.close()
+
+
+def test_sqlite_record_opener_rejection_persists_the_prompt_era_stamp(tmp_path):
+    """Rejections carry the same era digest the successes do, so "how often does this guard
+    fire" is attributable to the prompt that provoked it rather than to a date range."""
+    store = SQLiteStore(tmp_path / "store.db")
+    try:
+        store.record_opener_rejection("r", "hinge", "gemini-x", 2, "scaffolding",
+                                      "Gemini's opener contained scaffolding text",
+                                      "Here's: hi", prompt_sha256="b" * 64)
+
+        row = store.con.execute(
+            "SELECT attempt, reason_code, prompt_sha256 FROM opener_rejections").fetchone()
+        assert row == (2, "scaffolding", "b" * 64)
+    finally:
+        store.close()
+
+
 def test_sqlite_record_opener_defaults_item_description_for_positional_callers(tmp_path):
     """Trailing with a "" default, exactly like `angle` before it and for the same reason: a
     six-positional-arg caller (or a model response that carried no description) must still
@@ -535,6 +581,85 @@ def test_sqlite_migrates_legacy_openers_item_description_column(tmp_path):
         store.close()
 
 
+def test_sqlite_migrates_legacy_openers_prompt_sha256_column(tmp_path):
+    """The production case for the era stamp: a db file written before 2026-09-05 (b), when
+    `openers` had every column up to model_item_index but not `prompt_sha256`. CREATE TABLE IF
+    NOT EXISTS is a no-op against it, so the ALTER is the ONLY thing that carries the column
+    in -- without it record_opener's INSERT fails on every opener generated, surfacing only as
+    a per-profile "failed to persist" warning."""
+    db = tmp_path / "store.db"
+    con = sqlite3.connect(db)
+    con.execute(
+        "CREATE TABLE openers ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT, app TEXT, created_at REAL,"
+        "model TEXT, opener TEXT, referenced TEXT, angle TEXT, item_description TEXT,"
+        "profile_id TEXT, decision TEXT, decision_source TEXT, decision_created_at REAL,"
+        "model_item_index INTEGER)"
+    )
+    con.execute(
+        "INSERT INTO openers (run_id, app, created_at, model, opener, referenced, angle)"
+        " VALUES (?,?,?,?,?,?,?)",
+        ("legacy", "hinge", 1.0, "gemini-old", "an opener from before the stamp", "ref",
+         "guess"),
+    )
+    con.commit()
+    con.close()
+
+    store = SQLiteStore(db)
+    try:
+        cols = [row[1] for row in store.con.execute("PRAGMA table_info(openers)").fetchall()]
+        assert "prompt_sha256" in cols
+
+        store.record_opener("r", "hinge", "gemini-x", "a new opener", "ref", "imagine",
+                            "a prompt card", prompt_sha256="c" * 64)
+        rows = store.con.execute(
+            "SELECT opener, prompt_sha256 FROM openers ORDER BY id").fetchall()
+        # The pre-existing row keeps NULL (ALTER ... ADD COLUMN backfills nothing) and NULL is
+        # the load-bearing value: it means "predates the stamp", so an offline pass knows to
+        # date that row against git rather than to group it with any era.
+        assert rows == [("an opener from before the stamp", None),
+                        ("a new opener", "c" * 64)]
+    finally:
+        store.close()
+
+
+def test_sqlite_migrates_legacy_opener_rejections_prompt_sha256_column(tmp_path):
+    """opener_rejections' FIRST added column ever, so this is also the first test that the
+    table is migrated at all rather than only created. Same two-part rule as every openers
+    column: the _SCHEMA line reaches a fresh database, the ALTER reaches an existing one, and
+    only the ALTER is what a live db file ever sees."""
+    db = tmp_path / "store.db"
+    con = sqlite3.connect(db)
+    con.execute(
+        "CREATE TABLE opener_rejections ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT, app TEXT, created_at REAL,"
+        "model TEXT, attempt INTEGER, reason_code TEXT, reason TEXT, raw_opener TEXT)"
+    )
+    con.execute(
+        "INSERT INTO opener_rejections (run_id, app, created_at, model, attempt, reason_code,"
+        " reason, raw_opener) VALUES (?,?,?,?,?,?,?,?)",
+        ("legacy", "hinge", 1.0, "gemini-old", 1, "scaffolding", "scaffolding text",
+         "Here's: hi"),
+    )
+    con.commit()
+    con.close()
+
+    store = SQLiteStore(db)
+    try:
+        cols = [row[1] for row in
+                store.con.execute("PRAGMA table_info(opener_rejections)").fetchall()]
+        assert "prompt_sha256" in cols
+
+        store.record_opener_rejection("r", "hinge", "gemini-x", 3, "too_many_sentences",
+                                      "three sentences", "one. two. three.",
+                                      prompt_sha256="d" * 64)
+        rows = store.con.execute(
+            "SELECT reason_code, prompt_sha256 FROM opener_rejections ORDER BY id").fetchall()
+        assert rows == [("scaffolding", None), ("too_many_sentences", "d" * 64)]
+    finally:
+        store.close()
+
+
 def test_sqlite_openers_item_description_migration_reraises_unexpected_operational_errors(
         tmp_path, monkeypatch):
     """Fail loud, same contract as the angle ALTER directly below this in store.py: swallow
@@ -560,6 +685,99 @@ def test_sqlite_openers_item_description_migration_reraises_unexpected_operation
         con = real_connect(*args, **kwargs)
         opened.append(con)
         return _ItemDescriptionAlterFails(con)
+
+    monkeypatch.setattr(sqlite3, "connect", fake_connect)
+
+    try:
+        SQLiteStore(tmp_path / "store.db")
+        raise AssertionError("expected the non-duplicate-column OperationalError to propagate")
+    except sqlite3.OperationalError as e:
+        assert "disk i/o error" in str(e).lower()
+    finally:
+        for con in opened:
+            con.close()
+
+
+def test_sqlite_opener_rejections_prompt_sha256_migration_reraises_unexpected_operational_errors(
+        tmp_path, monkeypatch):
+    """Same fail-loud contract as the item_description pin directly above, pinned separately for
+    the reason that pin's own docstring gives: each ALTER carries its own try/except, so a NEW
+    stanza can be written with a bare `except sqlite3.OperationalError: pass` and no existing
+    test would notice. This one is the new stanza (2026-09-05 (b), opener_rejections' first
+    migration ever); the openers half of the same change rides the existing ALTER loop, whose
+    guard is pinned by test_sqlite_openers_alter_loop_reraises_unexpected_operational_errors
+    directly below -- the angle and item_description pins do NOT reach it, because those are
+    standalone ALTERs with try/excepts of their own and the loop's handler is a third one.
+    Swallowing a disk I/O
+    error here would start the store up against a schema it cannot write prompt_sha256 to, and
+    every subsequent insert would fail one row at a time instead of once at boot."""
+    real_connect = sqlite3.connect
+    opened = []
+
+    class _RejectionStampAlterFails:
+        def __init__(self, con):
+            self._con = con
+
+        def execute(self, sql, *args, **kwargs):
+            if "ALTER TABLE opener_rejections ADD COLUMN prompt_sha256" in sql:
+                raise sqlite3.OperationalError("disk I/O error")
+            return self._con.execute(sql, *args, **kwargs)
+
+        def __getattr__(self, name):
+            return getattr(self._con, name)
+
+    def fake_connect(*args, **kwargs):
+        con = real_connect(*args, **kwargs)
+        opened.append(con)
+        return _RejectionStampAlterFails(con)
+
+    monkeypatch.setattr(sqlite3, "connect", fake_connect)
+
+    try:
+        SQLiteStore(tmp_path / "store.db")
+        raise AssertionError("expected the non-duplicate-column OperationalError to propagate")
+    except sqlite3.OperationalError as e:
+        assert "disk i/o error" in str(e).lower()
+    finally:
+        for con in opened:
+            con.close()
+
+
+def test_sqlite_openers_alter_loop_reraises_unexpected_operational_errors(tmp_path, monkeypatch):
+    """The `openers` ALTER LOOP's own handler, which no other pin in this file reaches.
+
+    The angle and item_description pins above each intercept a STANDALONE ALTER with its own
+    try/except; the loop that adds profile_id, decision, decision_source, decision_created_at,
+    model_item_index and prompt_sha256 has a THIRD handler, and rewriting that one as a bare
+    `except sqlite3.OperationalError: pass` left this file entirely green before this test
+    existed. So the loop is pinned here through one of the columns it actually emits
+    (model_item_index), and the claim in the rejection pin above -- that the openers half of
+    the 2026-09-05 (b) stamp inherits a guard that is already covered -- is true because of
+    this test rather than in spite of the missing one.
+
+    Same contract as every sibling: swallow ONLY "duplicate column name" (the already-migrated
+    case). Swallowing a disk I/O error instead would start the store against a schema it cannot
+    write those columns to, turning one loud failure at boot into a silent failure per insert.
+    """
+    real_connect = sqlite3.connect
+    opened = []
+
+    class _LoopAlterFails:
+        def __init__(self, con):
+            self._con = con
+
+        def execute(self, sql, *args, **kwargs):
+            if "ALTER TABLE openers ADD COLUMN model_item_index" in sql:
+                raise sqlite3.OperationalError("disk I/O error")
+            return self._con.execute(sql, *args, **kwargs)
+
+        def __getattr__(self, name):
+            return getattr(self._con, name)
+
+    def fake_connect(*args, **kwargs):
+        con = real_connect(*args, **kwargs)
+        opened.append(con)
+        return _LoopAlterFails(con)
 
     monkeypatch.setattr(sqlite3, "connect", fake_connect)
 
@@ -804,6 +1022,39 @@ def test_sqlite_advisory_opener_run_rows_reads_entirely_under_the_store_lock(tmp
         store.close()
 
 
+def test_sqlite_advisory_opener_run_rows_keep_the_prompt_stamp_out_of_the_fingerprint(tmp_path):
+    """`prompt_sha256` must NEVER enter the opener fingerprint or the advisory projection.
+
+    Five on-disk cleanup plans in ops/corrections/ carry fingerprints computed from exactly
+    five fields (run_id, app, created_at, model, opener) and a three-key emitted row. Adding
+    the new column to either side would re-key every one of those plans against rows they
+    already name, and append_opener_retraction would then refuse them as "fingerprint no
+    longer matches its cleanup plan" -- a stored plan that can never be applied again.
+
+    Both halves are asserted together: the emitted keys are exactly the three, and a STAMPED
+    row fingerprints identically to the same logical row written unstamped."""
+    stamped = SQLiteStore(tmp_path / "stamped.db")
+    plain = SQLiteStore(tmp_path / "plain.db")
+    try:
+        stamped.record_opener("r", "hinge", "gemini-x", "hello there", "a book",
+                              prompt_sha256="e" * 64)
+        rows = stamped.advisory_opener_run_rows("r", "hinge")["openers"]
+        assert len(rows) == 1
+        assert set(rows[0]) == {"created_at", "model", "opener_fingerprint"}
+
+        # Same logical row, no stamp, and its created_at forced to the stamped row's so the
+        # only difference left between the two is the new column.
+        plain.record_opener("r", "hinge", "gemini-x", "hello there", "a book")
+        plain.con.execute("UPDATE openers SET created_at=?",
+                          (float(rows[0]["created_at"]),))
+        plain.con.commit()
+        unstamped = plain.advisory_opener_run_rows("r", "hinge")["openers"]
+        assert unstamped[0]["opener_fingerprint"] == rows[0]["opener_fingerprint"]
+    finally:
+        stamped.close()
+        plain.close()
+
+
 def test_stats_show_uses_read_only_store(tmp_path, monkeypatch):
     """stats.show() only reads; it must ask make_store() for ensure=False so it doesn't
     run BigQuery table DDL / bucket IAM patching just to print a readout (hub.py and
@@ -832,5 +1083,401 @@ def test_stats_show_uses_read_only_store(tmp_path, monkeypatch):
     monkeypatch.setattr(stats, "make_store", fake_make_store)
 
     stats.show("unused.yaml")
-
     assert seen["ensure"] is False
+
+
+# =====================================================================================
+# profile_key / opener_outcomes (2026-09-06): the outcome-signal data layer.
+#
+# `profile_key` is the STABLE cross-time attribution key (ranker/profile_key.py); `openers`'
+# per-card `profile_id` stays exactly what it always was and is untouched by any test below.
+# `opener_outcomes` is a brand-new table joined back to `openers` by (app, profile_key) --
+# see ranker/store.py's `joined_opener_outcomes`.
+# =====================================================================================
+
+def test_sqlite_record_opener_persists_profile_key(tmp_path):
+    store = SQLiteStore(tmp_path / "store.db")
+    try:
+        store.record_opener("r", "hinge", "gemini-x", "hi there", "her photo",
+                            profile_key="k" * 64)
+
+        assert store.con.execute("SELECT profile_key FROM openers").fetchone() == ("k" * 64,)
+    finally:
+        store.close()
+
+
+def test_sqlite_record_opener_defaults_profile_key_to_empty_string_for_callers_that_omit_it(
+        tmp_path):
+    """"" (not NULL) is "no key could be derived for this card," matching `profile_id`'s own
+    empty-string convention right next to it. NULL is reserved for rows that predate this
+    column entirely -- see test_sqlite_migrates_legacy_openers_profile_key_column."""
+    store = SQLiteStore(tmp_path / "store.db")
+    try:
+        store.record_opener("r", "hinge", "gemini-x", "hi there", "her photo")
+
+        assert store.con.execute("SELECT profile_key FROM openers").fetchone() == ("",)
+    finally:
+        store.close()
+
+
+def test_sqlite_migrates_legacy_openers_profile_key_column(tmp_path):
+    """The production case for the attribution key: a db file written before 2026-09-06, when
+    `openers` had every column up to `prompt_sha256` but not `profile_key`. CREATE TABLE IF NOT
+    EXISTS is a no-op against it, so the ALTER is the ONLY thing that carries the column in --
+    without it, record_opener's INSERT fails on every opener generated once a caller starts
+    passing profile_key, surfacing only as a per-profile "failed to persist" warning."""
+    db = tmp_path / "store.db"
+    con = sqlite3.connect(db)
+    con.execute(
+        "CREATE TABLE openers ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT, app TEXT, created_at REAL,"
+        "model TEXT, opener TEXT, referenced TEXT, angle TEXT, item_description TEXT,"
+        "profile_id TEXT, decision TEXT, decision_source TEXT, decision_created_at REAL,"
+        "model_item_index INTEGER, prompt_sha256 TEXT)"
+    )
+    con.execute(
+        "INSERT INTO openers (run_id, app, created_at, model, opener, referenced, angle)"
+        " VALUES (?,?,?,?,?,?,?)",
+        ("legacy", "hinge", 1.0, "gemini-old", "an opener from before profile_key", "ref",
+         "guess"),
+    )
+    con.commit()
+    con.close()
+
+    store = SQLiteStore(db)
+    try:
+        cols = [row[1] for row in store.con.execute("PRAGMA table_info(openers)").fetchall()]
+        assert "profile_key" in cols
+
+        store.record_opener("r", "hinge", "gemini-x", "a new opener", "ref", "imagine",
+                            "a prompt card", profile_key="k" * 64)
+        rows = store.con.execute(
+            "SELECT opener, profile_key FROM openers ORDER BY id").fetchall()
+        # The pre-existing row keeps NULL (ALTER ... ADD COLUMN backfills nothing) and NULL is
+        # the load-bearing value: it means "predates this column," distinct from a post-
+        # migration row that legitimately had no derivable key (which writes "").
+        assert rows == [("an opener from before profile_key", None),
+                        ("a new opener", "k" * 64)]
+    finally:
+        store.close()
+
+
+def test_sqlite_openers_profile_key_migration_reraises_unexpected_operational_errors(
+        tmp_path, monkeypatch):
+    """Same fail-loud contract as every other stanza in the ALTER loop (see
+    test_sqlite_openers_alter_loop_reraises_unexpected_operational_errors, which pins the
+    loop's shared handler through `model_item_index`): swallow ONLY "duplicate column name."
+    Pinned separately through `profile_key` specifically because it is the newest column added
+    to the loop and the easiest one for a future edit to accidentally exempt from the shared
+    handler by pulling it out into its own bare `except sqlite3.OperationalError: pass`."""
+    real_connect = sqlite3.connect
+    opened = []
+
+    class _ProfileKeyAlterFails:
+        def __init__(self, con):
+            self._con = con
+
+        def execute(self, sql, *args, **kwargs):
+            if "ALTER TABLE openers ADD COLUMN profile_key" in sql:
+                raise sqlite3.OperationalError("disk I/O error")
+            return self._con.execute(sql, *args, **kwargs)
+
+        def __getattr__(self, name):
+            return getattr(self._con, name)
+
+    def fake_connect(*args, **kwargs):
+        con = real_connect(*args, **kwargs)
+        opened.append(con)
+        return _ProfileKeyAlterFails(con)
+
+    monkeypatch.setattr(sqlite3, "connect", fake_connect)
+
+    try:
+        SQLiteStore(tmp_path / "store.db")
+        raise AssertionError("expected the non-duplicate-column OperationalError to propagate")
+    except sqlite3.OperationalError as e:
+        assert "disk i/o error" in str(e).lower()
+    finally:
+        for con in opened:
+            con.close()
+
+
+def test_sqlite_record_opener_persists_profile_key_as_the_hash_never_the_raw_fingerprint(
+        tmp_path):
+    """`profile_key` must be exactly the hex SHA-256 `ranker.profile_key` computes -- never the
+    raw `ProfileIdentity.fingerprint` those pixels came from. A stored fingerprint would be a
+    real, if low-resolution, rendering of a real person's name sitting in a database whose
+    whole purpose is aggregate calibration (see ranker/profile_key.py's own docstring)."""
+    from operation_love.drivers.item_identity import ProfileIdentity
+    from operation_love.ranker.profile_key import profile_key_from_identity
+
+    identity = ProfileIdentity(fingerprint=(10, 20, 30, 40), band=(0.0, 0.0, 1.0, 1.0),
+                               grid=(64, 16), frame_index=0, scroll_top_distance=0.0,
+                               reason="settled header")
+    key = profile_key_from_identity(identity)
+
+    store = SQLiteStore(tmp_path / "store.db")
+    try:
+        store.record_opener("r", "hinge", "gemini-x", "hi there", "her photo", profile_key=key)
+
+        stored = store.con.execute("SELECT profile_key FROM openers").fetchone()[0]
+        assert stored == key
+        assert len(stored) == 64 and all(c in "0123456789abcdef" for c in stored)
+        assert stored != str(identity.fingerprint)
+    finally:
+        store.close()
+
+
+def test_sqlite_opener_outcomes_table_has_the_expected_columns_in_order(tmp_path):
+    store = SQLiteStore(tmp_path / "store.db")
+    try:
+        cols = [row[1] for row in
+                store.con.execute("PRAGMA table_info(opener_outcomes)").fetchall()]
+        assert cols == ["id", "app", "profile_key", "outcome", "observed_at", "source", "note",
+                        "created_at"]
+    finally:
+        store.close()
+
+
+def test_sqlite_creates_the_opener_outcomes_table_in_a_preexisting_database_that_lacks_it(
+        tmp_path):
+    """`opener_outcomes` is a BRAND NEW table (2026-09-06): CREATE TABLE IF NOT EXISTS alone
+    must reach a database file that predates it entirely, with no ALTER needed at all -- unlike
+    a new COLUMN on a table that already exists elsewhere (contrast
+    test_sqlite_migrates_legacy_openers_profile_key_column just above). Simulates the real
+    upgrade case: an existing store.db with `openers` but no `opener_outcomes` table."""
+    db = tmp_path / "store.db"
+    con = sqlite3.connect(db)
+    con.execute(
+        "CREATE TABLE openers ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT, app TEXT, created_at REAL,"
+        "model TEXT, opener TEXT, referenced TEXT)"
+    )
+    con.commit()
+    con.close()
+
+    store = SQLiteStore(db)
+    try:
+        tables = {row[0] for row in
+                  store.con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        assert "opener_outcomes" in tables
+
+        store.record_opener_outcome("hinge", "k" * 64, "match")
+        assert store.con.execute("SELECT COUNT(*) FROM opener_outcomes").fetchone()[0] == 1
+    finally:
+        store.close()
+
+
+def test_sqlite_record_opener_outcome_round_trips_all_fields(tmp_path):
+    store = SQLiteStore(tmp_path / "store.db")
+    try:
+        store.record_opener_outcome("hinge", "k" * 64, "reply", observed_at=1000.0,
+                                    source="owner", note="she asked about the trail")
+
+        row = store.con.execute(
+            "SELECT app, profile_key, outcome, observed_at, source, note "
+            "FROM opener_outcomes").fetchone()
+        assert row == ("hinge", "k" * 64, "reply", 1000.0, "owner", "she asked about the trail")
+    finally:
+        store.close()
+
+
+def test_sqlite_record_opener_outcome_defaults_source_note_and_stamps_observed_at_now(tmp_path):
+    store = SQLiteStore(tmp_path / "store.db")
+    try:
+        before = time.time()
+        store.record_opener_outcome("hinge", "k" * 64, "match")
+        after = time.time()
+
+        row = store.con.execute(
+            "SELECT source, note, observed_at, created_at FROM opener_outcomes").fetchone()
+        assert row[0] == "owner"
+        assert row[1] == ""
+        assert before <= row[2] <= after
+        assert before <= row[3] <= after
+    finally:
+        store.close()
+
+
+def test_sqlite_record_opener_outcome_observed_at_is_independent_of_created_at(tmp_path):
+    """An owner backfilling a match noticed three days ago must be able to say WHEN it
+    happened without lying about WHEN the database learned it."""
+    store = SQLiteStore(tmp_path / "store.db")
+    try:
+        three_days_ago = time.time() - (3 * 86400)
+        before_write = time.time()
+        store.record_opener_outcome("hinge", "k" * 64, "match", observed_at=three_days_ago)
+
+        row = store.con.execute(
+            "SELECT observed_at, created_at FROM opener_outcomes").fetchone()
+        assert row[0] == three_days_ago
+        assert row[1] >= before_write
+        assert row[1] != row[0]
+    finally:
+        store.close()
+
+
+def test_sqlite_record_opener_outcome_stores_an_unattributable_observation_rather_than_dropping_it(
+        tmp_path):
+    """An owner who observed a real outcome but could not pin down which captured profile it
+    belongs to must still have the observation LAND. Silently dropping it would be worse than
+    storing it unattributed: a dropped row leaves no trace an observation was ever made at
+    all (see ranker/profile_key.py's own docstring)."""
+    store = SQLiteStore(tmp_path / "store.db")
+    try:
+        store.record_opener_outcome("hinge", "", "unknown", note="lost track of which profile")
+
+        row = store.con.execute(
+            "SELECT app, profile_key, outcome, note FROM opener_outcomes").fetchone()
+        assert row == ("hinge", "", "unknown", "lost track of which profile")
+    finally:
+        store.close()
+
+
+def test_sqlite_joined_opener_outcomes_joins_by_app_and_profile_key(tmp_path):
+    store = SQLiteStore(tmp_path / "store.db")
+    try:
+        store.record_opener("r", "hinge", "gemini-x", "hi there", "her photo",
+                            prompt_sha256="a" * 64, profile_key="k" * 64)
+        store.record_opener_outcome("hinge", "k" * 64, "match", note="mutual like")
+
+        rows = store.joined_opener_outcomes("hinge")
+        assert len(rows) == 1
+        row = rows[0]
+        assert row["run_id"] == "r"
+        assert row["model"] == "gemini-x"
+        assert row["opener"] == "hi there"
+        assert row["prompt_sha256"] == "a" * 64
+        assert row["profile_key"] == "k" * 64
+        assert row["outcome"] == "match"
+        assert row["source"] == "owner"
+        assert row["note"] == "mutual like"
+        assert set(row) == {"run_id", "app", "model", "opener", "prompt_sha256", "profile_key",
+                            "opener_created_at", "outcome", "observed_at", "source", "note",
+                            "outcome_created_at"}
+    finally:
+        store.close()
+
+
+def test_sqlite_joined_opener_outcomes_finds_nothing_when_no_outcome_was_recorded(tmp_path):
+    store = SQLiteStore(tmp_path / "store.db")
+    try:
+        store.record_opener("r", "hinge", "gemini-x", "hi there", "her photo",
+                            profile_key="k" * 64)
+
+        assert store.joined_opener_outcomes("hinge") == []
+    finally:
+        store.close()
+
+
+def test_sqlite_joined_opener_outcomes_filters_by_prompt_era(tmp_path):
+    store = SQLiteStore(tmp_path / "store.db")
+    try:
+        store.record_opener("r1", "hinge", "gemini-x", "old era opener", "ref",
+                            prompt_sha256="a" * 64, profile_key="k" * 64)
+        store.record_opener("r2", "hinge", "gemini-x", "new era opener", "ref",
+                            prompt_sha256="b" * 64, profile_key="k" * 64)
+        store.record_opener_outcome("hinge", "k" * 64, "match")
+
+        matched = store.joined_opener_outcomes("hinge", prompt_sha256="a" * 64)
+        assert [row["opener"] for row in matched] == ["old era opener"]
+
+        no_match = store.joined_opener_outcomes("hinge", prompt_sha256="c" * 64)
+        assert no_match == []
+
+        # prompt_sha256=None (the default) means "no filter, every era" -- never "match NULL."
+        unfiltered = store.joined_opener_outcomes("hinge")
+        assert {row["opener"] for row in unfiltered} == {"old era opener", "new era opener"}
+    finally:
+        store.close()
+
+
+def test_sqlite_joined_opener_outcomes_excludes_empty_string_profile_key_on_both_sides(
+        tmp_path):
+    """An unattributable opener and an unattributable outcome must never join to EACH OTHER
+    just because both happen to carry the same "no key" spelling (""). That would attribute a
+    real observation to an unrelated opener that also lacked identity -- a worse failure than
+    the outcome staying unjoined."""
+    store = SQLiteStore(tmp_path / "store.db")
+    try:
+        store.record_opener("r", "hinge", "gemini-x", "unattributed opener", "ref",
+                            profile_key="")
+        store.record_opener_outcome("hinge", "", "unknown")
+
+        assert store.joined_opener_outcomes("hinge") == []
+    finally:
+        store.close()
+
+
+def test_sqlite_joined_opener_outcomes_excludes_null_profile_key_openers(tmp_path):
+    """A NULL `openers.profile_key` means "this row predates the column" (see the ALTER
+    migration) -- it must never satisfy the join just because SQL lets a comparison against
+    NULL be worked around. Simulates a legacy row inserted before this migration ever ran."""
+    store = SQLiteStore(tmp_path / "store.db")
+    try:
+        store.con.execute(
+            "INSERT INTO openers (run_id, app, created_at, model, opener, referenced,"
+            " profile_key) VALUES (?,?,?,?,?,?,?)",
+            ("legacy", "hinge", 1.0, "gemini-old", "predates profile_key", "ref", None),
+        )
+        store.con.commit()
+        store.record_opener_outcome("hinge", "", "unknown")
+
+        assert store.joined_opener_outcomes("hinge") == []
+    finally:
+        store.close()
+
+
+def test_sqlite_joined_opener_outcomes_does_not_cross_app_boundaries(tmp_path):
+    store = SQLiteStore(tmp_path / "store.db")
+    try:
+        store.record_opener("r", "hinge", "gemini-x", "hinge opener", "ref",
+                            profile_key="k" * 64)
+        store.record_opener_outcome("bumble", "k" * 64, "match")  # same key, different app
+
+        assert store.joined_opener_outcomes("hinge") == []
+        assert store.joined_opener_outcomes("bumble") == []
+    finally:
+        store.close()
+
+
+def test_sqlite_joined_opener_outcomes_returns_every_outcome_in_created_order(tmp_path):
+    store = SQLiteStore(tmp_path / "store.db")
+    try:
+        store.record_opener("r", "hinge", "gemini-x", "hi there", "ref", profile_key="k" * 64)
+        store.record_opener_outcome("hinge", "k" * 64, "match", observed_at=100.0)
+        store.record_opener_outcome("hinge", "k" * 64, "reply", observed_at=200.0)
+
+        rows = store.joined_opener_outcomes("hinge")
+        assert [row["outcome"] for row in rows] == ["match", "reply"]
+        assert [row["observed_at"] for row in rows] == [100.0, 200.0]
+    finally:
+        store.close()
+
+
+def test_sqlite_record_opener_signature_ends_with_profile_key_as_a_trailing_keyword(tmp_path):
+    """`profile_key` is threaded exactly like `prompt_sha256` immediately before it: keyword-
+    only, trailing, defaulted, so no existing positional caller (or Protocol-conforming test
+    double) changes shape."""
+    params = inspect.signature(SQLiteStore.record_opener).parameters
+    assert list(params)[-1] == "profile_key"
+    assert params["profile_key"].kind is inspect.Parameter.KEYWORD_ONLY
+    assert params["profile_key"].default == ""
+    assert list(params) == list(inspect.signature(Store.record_opener).parameters)
+
+
+def test_sqlite_record_opener_outcome_signature_matches_the_store_protocol():
+    params = inspect.signature(SQLiteStore.record_opener_outcome).parameters
+    assert list(params) == list(inspect.signature(Store.record_opener_outcome).parameters)
+    assert params["app"].kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
+    assert params["profile_key"].kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
+    assert params["outcome"].kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
+    for name in ("observed_at", "source", "note"):
+        assert params[name].kind is inspect.Parameter.KEYWORD_ONLY
+
+
+def test_sqlite_joined_opener_outcomes_signature_matches_the_store_protocol():
+    params = inspect.signature(SQLiteStore.joined_opener_outcomes).parameters
+    assert list(params) == list(inspect.signature(Store.joined_opener_outcomes).parameters)
+    assert params["prompt_sha256"].kind is inspect.Parameter.KEYWORD_ONLY
+    assert params["prompt_sha256"].default is None

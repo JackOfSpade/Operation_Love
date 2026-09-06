@@ -1,0 +1,55 @@
+block	git checkout -- config.yaml
+block	git checkout .
+block	git checkout -- .
+block	git checkout -f main
+block	pytest -q && git checkout -- config.yaml
+block	cd /repo; git stash
+block	git stash push -m wip
+block	git stash save "x"
+block	git reset --hard HEAD
+block	git reset --hard origin/main
+block	git clean -fd
+block	git clean -fdx
+block	git restore config.yaml
+block	git restore --worktree --staged x
+block	git switch --discard-changes main
+block	cp a b || git checkout -- x
+block	if true; then git checkout -- x; fi
+block	for f in a; do git checkout -- $f; done
+block	x=1 git checkout -- y
+block	(git stash)
+block	env git reset --hard
+block	git   checkout   --   config.yaml
+block	python3 -c "import subprocess; subprocess.run(['git','checkout','--','config.yaml'])"
+block	python -c "import os; os.system('git reset --hard')"
+block	sh -c "git checkout -- config.yaml"
+block	bash -c 'git stash'
+block	eval "git clean -fd"
+block	find . -name '*.py' | xargs -I{} git checkout -- {}
+block	python3 -c "subprocess.run(['git','restore','x'])"
+allow	git show HEAD:config.yaml
+allow	git show HEAD:operation_love/opener/opener.py | grep -n advisory
+allow	git diff --numstat config.yaml
+allow	git diff HEAD -- config.yaml
+allow	git status --short
+allow	git log --oneline -20
+allow	SNAP=$(git stash create)
+allow	git stash list
+allow	git stash show -p
+allow	git checkout -b wip/opener-fix
+allow	git switch -c newbranch
+allow	git restore --staged config.yaml
+allow	git reset config.yaml
+allow	git reset --soft HEAD~1
+allow	git clean -n
+allow	git add -A && git commit -m "wip"
+allow	python -m pytest -q -n auto
+allow	git worktree list
+allow	echo "never run git checkout -- file"
+allow	grep -rn "git reset --hard" docs/
+allow	python3 -c "print('git clean -fd is banned')"
+allow	python3 -c "subprocess.run(['git','stash','create'])"
+allow	sh -c "git status --short"
+allow	bash -c 'git show HEAD:config.yaml'
+allow	python3 -c "subprocess.run(['git','diff','--numstat'])"
+allow	bash .claude/deny-destructive-git.test.sh

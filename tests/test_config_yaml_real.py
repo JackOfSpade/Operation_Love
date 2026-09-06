@@ -226,6 +226,16 @@ def test_shipped_opener_style_requires_value_without_forcing_a_claim(cfg):
     assert "natural next move is to confirm or correct it" in style
     assert "only invite that confirmation or correction without presupposing the answer" in style
     assert "experience, preference, or consequence that only makes sense if the guess is true" in style
+    assert "confirmation boundary overrides this inheritance rule" in style
+    assert "never let a later beat inherit an unconfirmed claim as fact" in style
+    assert "asking only whether an inferred location itself is right" in style
+    assert "visual location turn boundary" in style
+    assert "that location guess is the only conversational move before she replies" in style
+    assert "end after the guess, or ask only whether the location itself is right" in style
+    assert "the confirmation is the conversational payoff" in style
+    assert ("activity, reason, preference, feeling, experience, or consequence at that place"
+            in style)
+    assert "subject to confirmation boundary, a second sentence may be" in style
     assert "must accept x as its working premise" not in style
     assert "your opener must contain a claim that could be wrong" not in style
     assert "test it by covering the photo" not in style
@@ -306,7 +316,7 @@ def test_shipped_opener_style_ships_the_redesign_guardrails(cfg):
     assert "never a street, a neighbourhood, a hotel, a specific venue" in style
     assert "the way a well travelled friend would" in style
     assert "when a place comes from recognizing the image rather than from her profile text" in style
-    assert "clearly identify it as a visual inference and leave it unconfirmed" in style
+    assert "present it only as an inference and obey visual location turn boundary" in style
     assert "do not build on an inferred location as though it were correct" in style
     assert "do not state an inferred location as shared experience" in style
     assert "do not turn it into a generic compliment" in style
@@ -333,6 +343,208 @@ def test_shipped_opener_style_hedge_forms_are_wide_and_openings_are_varied(cfg):
     assert "vary the opening" in style
     assert "let the specific item and angle determine the wording" in style
     assert "do not rotate or recycle a fixed stock hedge" in style
+
+
+def test_shipped_opener_style_ships_the_spoken_register_rules(cfg):
+    """2026-09-05 register rewrite: a live opener passed every rule above and still read
+    as AI. The motivating opener (kept off wire per the 2026-08-16 de-templating rule):
+
+        You have a really classic sense of style here. What is your favorite kind of
+        spot when you feel like dressing up for a night out?
+
+    and the owner's rewrite of it:
+
+        That's quite a classic style you got there. What's your favorite spot for a
+        night out?
+
+    Measured before the rewrite (40 most recent live openers, three sources merged):
+    zero apostrophes across all 188 openers ever generated, 21/40 opening with a
+    demonstrative verdict, 22/40 ending in a binary or question, 12/40 on a looks like
+    frame, 30/40 in one compound mold. These pins hold the register rules in the shipped
+    style text; the compressed mirrors are pinned in tests/test_opener.py.
+    """
+    style = " ".join(cfg.opener.style.lower().split())
+    assert "spoken register" in style
+    assert "the contractions a relaxed speaker would use" in style
+    assert "natural spoken elision" in style
+    assert "no chat abbreviations" in style
+    assert "say it once" in style
+    assert "never restate a connection or context the message itself already established" in style
+    assert "compliment as remark" in style
+    assert "rather than a verdict pronounced on her" in style
+    assert "it never requires one" in style
+    assert "vary the shape" in style
+    assert "never because it is the easy mold" in style
+    assert "specific item determine the whole message's sentence count, clause pattern" in style
+    assert "no structure is the default" in style
+    assert "never point at the medium" in style
+    assert "rephrase the sentence so no hyphen is needed" in style
+    assert "observation announced as what something looks like" not in style
+    assert "question offering exactly two choices" not in style
+    # De-templating (2026-08-16): the motivating copy above must stay off wire.
+    assert "classic sense of style" not in style
+    assert "you got there" not in style
+
+
+def test_shipped_opener_style_ships_the_no_grading_rule(cfg):
+    """2026-09-06: COMPLIMENT AS REMARK told the model to move praise off her and onto the
+    visible thing, and the model did exactly that -- openers kept landing on a taste verdict
+    on the thing itself ("... is an elite move"). Moving the target of the grade does not
+    remove the grade; NO GRADING is the rule that forbids grading at all, with the one
+    permitted compliment required to be inseparable from a specific observation rather than a
+    score. This is the config-side long form; the compressed mirrors belong in
+    tests/test_opener.py (the _SYSTEM twin) and tests/test_gemini_opener.py (the schema
+    description twin), per the same mirroring contract as the 2026-09-05 register rewrite
+    above.
+    """
+    style = " ".join(cfg.opener.style.lower().split())
+    assert "no grading" in style
+    assert "substitution test" in style
+    # The escape hatch: when nothing but a grade is available, cut the beat rather than invent one.
+    assert "cut that beat and let one specific question be the whole message" in style
+    # Subordination to COMPLIMENT AS REMARK, not competition with it -- moving praise onto the
+    # thing was already correct and must stay; NO GRADING narrows what counts as landing there.
+    assert "narrows compliment as remark rather than competing with it" in style
+    # 2026-09-06 (b): PLAYFUL HYPERBOLE carve-out -- the SUBSTITUTION TEST targets a literal
+    # verdict on quality, so an anchored nonliteral exaggeration is not disqualified merely
+    # because its wording could transfer to a different photo.
+    assert "the test targets a literal verdict on how good something is" in style
+    assert "playful hyperbole can survive the swap without failing" in style
+    assert "stays playful framing rather than an assessment of quality" in style
+    # 2026-09-06 (b): the one-question fallback is still subject to VARY THE SHAPE, not a
+    # standing template of its own.
+    assert "that fallback remains subject to vary the shape" in style
+    assert "is itself a template, so its construction must still come from the item" in style
+    # De-templating (2026-08-16): naming the banned verdict vocabulary on the wire would hand a
+    # minimal-thinking model salient wording to imitate -- the same mechanism that produced the
+    # 2026-08-11 "I bet" incident. These words belong only in code comments, the design doc, and
+    # tests, never in a model-facing string, so the rule text itself must not name any of them.
+    assert "elite" not in style
+    assert "iconic" not in style
+    assert "top tier" not in style
+    assert "masterpiece" not in style
+    assert "unmatched" not in style
+    assert "power move" not in style
+
+
+def test_shipped_opener_style_folds_qualification_into_compliment_as_remark(cfg):
+    """OWNER DECISION 2026-09-06: NARROW COMPLIMENT AS REMARK, do not retire it. Rationale on
+    record: an audit measured this rule set at roughly 69% prohibition and mechanical guidance
+    against only 21% positive specification, with the corpus at 94.7% exactly two sentences and
+    98.9% question final -- the space of legal positive moves is already collapsed, so retiring
+    the one remaining permitted compliment would be the wrong direction.
+
+    THE DEFECT: COMPLIMENT AS REMARK and NO GRADING read as a rule and a later correction of it.
+    COMPLIMENT AS REMARK affirmatively taught the exact technique NO GRADING goes on to call
+    insufficient ("prefer the thing as the sentence's subject", "keep it understated"), and the
+    qualification that rescues it lived only in NO GRADING's later "narrows COMPLIMENT AS
+    REMARK" sentence (still pinned above in
+    test_shipped_opener_style_ships_the_no_grading_rule). Under minimal thinking, a model can
+    read and satisfy the first sentence while still producing a grade -- the exact "... is an
+    elite move" regression that motivated NO GRADING in the first place.
+
+    THE FIX (2026-09-06 (c)): fold the qualification into COMPLIMENT AS REMARK's own sentence,
+    ahead of the technique it gates, so the rule is self contained rather than repaired
+    downstream. NO GRADING's own subordination sentence is UNCHANGED (it still does useful work
+    stating the precedence explicitly), but the two are no longer readable as an affirmative
+    rule and a separate later fix.
+
+    THE (c) FIX'S OWN DEFECT, closed here (2026-09-06 (d)): the folded qualification
+    ("cannot survive being detached from what was actually noticed") was itself a second
+    portability test with NO exception, while NO GRADING's SUBSTITUTION TEST (still pinned in
+    test_shipped_opener_style_ships_the_no_grading_rule) explicitly lets an unmistakably
+    nonliteral PLAYFUL HYPERBOLE survive the same swap. An anchored hyperbolic compliment whose
+    predicate could transfer to a different photo therefore passed NO GRADING but failed
+    COMPLIMENT AS REMARK's own restated test -- opposite verdicts on one sentence under minimal
+    thinking. THE FIX: COMPLIMENT AS REMARK no longer restates its own portability test; it
+    defers to NO GRADING's SUBSTITUTION TEST directly, so the one exception lives in one place
+    per surface and cannot drift out of sync with a second copy again.
+
+    (d)'S OWN DEFECT, closed here (2026-09-06 (g)): (d) fixed only HALF the contradiction.
+    COMPLIMENT AS REMARK carries a SECOND, independent requirement beyond portability: MAGNITUDE
+    ("stays understated rather than emphatic" / "turns earnest and emphatic"), and that clause
+    carried no exception of its own. An unmistakably nonliteral PLAYFUL HYPERBOLE is by nature
+    emphatic, so a strong hyperbolic compliment passed the (d)-fixed portability test while
+    still failing the untouched magnitude clause -- opposite verdicts again, under the same
+    minimal-thinking read.
+
+    (g)'S OWN DEFECT, closed here (2026-09-06 (h)): (g) subordinated only the MAGNITUDE clause,
+    so the contradiction relocated a THIRD time, into the untouched "lands sideways ... in
+    passing" condition. That is the same mechanism as the original defect: a fix that moves a
+    property instead of governing the whole rule gets obeyed and preserves the failure. THE FIX
+    hoists the exception ONCE so it governs ALL THREE conditions together rather than being
+    bolted onto whichever clause was last reported, and resolves the "lands sideways" case in
+    the NON-permissive direction on purpose: that condition is about PLACEMENT rather than
+    volume, so it survives the exception and an exaggeration still has to be an aside rather
+    than the point. The disqualifier now counts all three conditions instead of saying "either
+    requirement", which had gone stale against a three-item list.
+
+    THE STANDING RULE this encodes: after subordinating one clause of a rule, re-walk EVERY
+    other clause of that same rule against the same exception. Three same-day adversarial
+    rounds each caught exactly one clause and missed the next.
+    """
+    style = " ".join(cfg.opener.style.lower().split())
+    assert "compliment as remark" in style
+    assert "moving the praise onto the thing is not enough by itself" in style
+    assert "praise also passes no grading's substitution test below" in style
+    # MUTATION GUARD: the (c) fold's own restated portability test must be GONE, not merely
+    # supplemented -- proving there is no longer a second, exception-free test that could
+    # contradict NO GRADING's SUBSTITUTION TEST (whose PLAYFUL HYPERBOLE exception is pinned in
+    # test_shipped_opener_style_ships_the_no_grading_rule).
+    assert "remains inseparable from a specific observation about that item" not in style
+    assert "cannot survive being detached from what was actually noticed" not in style
+    # Distinct properties already on wire must survive the fold (narrow, not retire).
+    assert "lands sideways the way a friend would mention it in passing" in style
+    assert "stays understated rather than emphatic" in style
+    assert "this shapes a compliment that occurs" in style
+    assert "it never requires one" in style
+    # The forward reference ("below") must be literally true.
+    assert style.index("compliment as remark") < style.index("substitution test")
+    # De-templating (2026-08-16): no banned verdict vocabulary reaches this rule's own text.
+    assert "elite" not in style
+    # 2026-09-06 (g): the magnitude clause ("stays understated rather than emphatic") now
+    # points at the SAME PLAYFUL HYPERBOLE exception portability already has, stated once so it
+    # governs both requirements, immediately before the clause it modifies.
+    # (h): ONE exception, hoisted to govern every condition at once. Pinning "all three
+    # conditions together" is what stops a future edit from re-attaching it to a single clause
+    # and leaving the next one exception-free for a fourth time.
+    assert "governs all three conditions together" in style
+    assert "covering both the portability and the volume" in style
+    # "lands sideways" must be resolved in the NON-permissive direction: it survives the
+    # exception, so a hyperbolic compliment is still an aside rather than the point.
+    assert "landing sideways survives that exception" in style
+    assert "never the point of the message" in style
+    # MUTATION GUARD: the old, unexcepted disqualifier restatement must be GONE -- its presence
+    # would mean a strong hyperbolic compliment could still be rejected on magnitude alone even
+    # though it passes the exception above, which is the exact (g) contradiction.
+    assert "or that turns earnest and emphatic" not in style
+    # The disqualifier must count all three conditions. "either requirement" had gone stale
+    # against a three-item list, which is how a reader loses track of which clause is excepted.
+    assert "praise that fails any of the three reads as grading her" in style
+    assert "praise that fails either requirement" not in style
+
+
+def test_shipped_opener_style_ships_modifier_clarity_without_incident_copy(cfg):
+    """A live Training draft correctly recognized Maja's coat and snowy setting, but this
+    word order gave its final location phrase a second plausible attachment:
+
+        You look completely at home bundled up in all that snow.
+
+    That is not a noun-referent failure: the reader knows what every word names, but can read
+    either the setting or the nearby clothing phrase as governing the final modifier. The prompt
+    needs the general semantic property, never a one-sentence blacklist or model-facing example.
+    opener.py's compressed twin is pinned separately so the two inputs sent in one request cannot
+    drift apart.
+    """
+    style = " ".join(cfg.opener.style.lower().split())
+    assert "modifier clarity" in style
+    assert "every modifying phrase must have only one natural attachment" in style
+    assert "on first reading" in style
+    assert "if the phrase's placement permits a plausible unintended meaning" in style
+    assert "reorder or rephrase the line" in style
+    # De-templating: the motivating output above is evidence for the rule, not prompt copy.
+    assert "bundled up in all that snow" not in style
+    assert "completely at home bundled up" not in style
 
 
 def test_shipped_opener_style_models_its_typography_rules(cfg):

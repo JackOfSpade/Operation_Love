@@ -34,6 +34,7 @@ from .costing import CostTracker
 from .drivers import make_driver
 from .opener.opener import GeminiOpener
 from .limits import RateLimiter
+from .opener.replay_corpus import DEFAULT_CORPUS_DIR
 from .opener.service import OpenerService
 from .private_files import ensure_private_dir, open_private_rw
 from .ranker import make_store
@@ -750,8 +751,10 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
         opener_service = OpenerService(
             opener_client, tracker, store, cfg.opener.style,
             max_attempts=cfg.opener.max_attempts,
-            advisory_max_attempts=cfg.opener.advisory_max_attempts,
-            advisory_deadline_s=cfg.opener.advisory_deadline_s)
+            # DEFAULT DISABLED (None): only config.yaml's opener.replay_corpus_enabled turns
+            # this on -- see OpenerCfg.replay_corpus_enabled's own comment for why it is never
+            # implied by opener.enabled alone (real people's photos to local disk).
+            replay_corpus_dir=(DEFAULT_CORPUS_DIR if cfg.opener.replay_corpus_enabled else None))
         if on_opener_service:
             # Publish the same live service workers receive, for run-scoped bug telemetry.
             on_opener_service(opener_service)

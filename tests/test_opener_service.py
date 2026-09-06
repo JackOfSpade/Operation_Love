@@ -4,7 +4,6 @@ The service is the GLOBAL, budget-aware gate for openers shared by every worker.
 It's exercised indirectly elsewhere; this pins its own decision branches with
 lightweight fakes (no provider SDK/network).
 """
-import math
 import threading
 from types import SimpleNamespace
 
@@ -19,11 +18,14 @@ from operation_love.opener.opener import (
     GeminiCapacityExhausted,
     ItemRequest,
     OpenerAborted,
-    OpenerDeadlineExceeded,
     OpenerError,
     OpenerParseError,
+    REASON_BAD_REQUEST,
+    REASON_OPENER_ERROR,
     REASON_PROMPT_BLOCKED,
     REASON_RESPONSE_BLOCKED,
+    REASON_TRANSIENT_ERROR,
+    prompt_stamp,
 )
 from operation_love.opener.service import OpenerPick, OpenerService
 
@@ -160,6 +162,7 @@ class _Store:
         self.openers = []
         self.opener_kwargs = []
         self.rejections = []
+        self.rejection_kwargs = []
 
     def record_spend(self, *a):
         self.spend.append(a)
@@ -168,8 +171,12 @@ class _Store:
         self.openers.append(a)
         self.opener_kwargs.append(kw)
 
-    def record_opener_rejection(self, *a):
+    # **kw, not `*a` alone: the service passes prompt_sha256 (the prompt-era stamp) as a
+    # keyword to BOTH record sinks from 2026-09-05 (b), and a `*a`-only fake raises TypeError
+    # inside the service's non-fatal try/except -- i.e. it would silently record nothing.
+    def record_opener_rejection(self, *a, **kw):
         self.rejections.append(a)
+        self.rejection_kwargs.append(kw)
 
 
 def test_disabled_without_client():
@@ -279,6 +286,90 @@ def test_transient_error_degrades_gracefully():
     assert result is None                                   # swipe without opener this time
     assert s.disabled is False                              # service stays enabled (not permanent)
     assert s.stop_requested is False                        # run keeps going
+
+
+# ---------------------------------------------------------------------------------------
+# 2026-09-06: OpenerError / HTTP-400 / generic-transient-exception used to be THREE silent
+# failure kinds that left opener_rejections at zero rows forever, in any mode -- only
+# OpenerParseError ever called record_opener_rejection at all (see ops/OPENER-REDESIGN.md's
+# dated addendum for the audit that found this). Each now records a durable rejection row with
+# its own REASON_* code and no `model` (none of the three ever produces one -- OpenerError can
+# fire before any provider request is built, and the HTTP-400/transient exceptions are raised
+# by the transport, not parsed from a response).
+# ---------------------------------------------------------------------------------------
+
+def test_opener_error_now_records_a_durable_rejection():
+    c, t, st = (_Client(exc=OpenerError("Gemini opener: photo index 0 could not be decoded")),
+                _Tracker([False]), _Store())
+    s = OpenerService(c, t, st, "casual")
+
+    assert s.maybe_opener("r", "bumble", object()) is None
+
+    assert len(st.rejections) == 1
+    run_id, app, model, attempt, reason_code, reason, raw_opener = st.rejections[0]
+    assert run_id == "r" and app == "bumble" and model == "" and attempt == 1
+    assert reason_code == REASON_OPENER_ERROR
+    assert "could not be decoded" in reason
+    assert raw_opener is None
+    assert st.rejection_kwargs[0]["prompt_sha256"] == s.prompt_sha256
+
+
+def test_http_400_records_a_durable_rejection_below_the_latch():
+    error = GeminiAPIError(400, "INVALID_ARGUMENT", "bad image or request")
+    c, t, st = _Client(exc=error), _Tracker(), _Store()
+    s = OpenerService(c, t, st, "casual")
+
+    assert s.maybe_opener("r", "hinge", object()) is None
+    assert s.disabled is False   # confirms this call stayed below the latch threshold
+
+    assert len(st.rejections) == 1
+    run_id, app, model, attempt, reason_code, reason, raw_opener = st.rejections[0]
+    assert run_id == "r" and app == "hinge" and model == "" and attempt == 1
+    assert reason_code == REASON_BAD_REQUEST
+    assert "bad image or request" in reason
+    assert raw_opener is None
+
+
+def test_http_400_records_a_rejection_on_every_call_including_the_one_that_latches():
+    """The durable record must not depend on whether THIS call also happens to trip the
+    latch -- every 400 is a genuinely rejected attempt, latched or not (see the 400 branch's
+    own comment in service.py for why the call sits ABOVE the latch decision)."""
+    error = GeminiAPIError(400, "INVALID_ARGUMENT", "bad image or request")
+    c, t, st = _Client(exc=error), _Tracker(), _Store()
+    s = OpenerService(c, t, st, "casual")
+
+    for _ in range(service_mod._BAD_REQUEST_LATCH_THRESHOLD):
+        s.maybe_opener("r", "hinge", object())
+
+    assert s.disabled is True   # the latch actually tripped on the last of these calls
+    assert len(st.rejections) == service_mod._BAD_REQUEST_LATCH_THRESHOLD
+    assert all(row[4] == REASON_BAD_REQUEST for row in st.rejections)
+
+
+def test_transient_error_records_a_durable_rejection_below_the_latch():
+    c, t, st = _Client(exc=RuntimeError("connection reset")), _Tracker(), _Store()
+    s = OpenerService(c, t, st, "casual")
+
+    assert s.maybe_opener("r", "hinge", object()) is None
+    assert s.disabled is False
+
+    assert len(st.rejections) == 1
+    run_id, app, model, attempt, reason_code, reason, raw_opener = st.rejections[0]
+    assert run_id == "r" and app == "hinge" and model == "" and attempt == 1
+    assert reason_code == REASON_TRANSIENT_ERROR
+    assert "connection reset" in reason
+    assert raw_opener is None
+
+
+def test_transient_error_records_a_rejection_on_every_call_including_the_one_that_latches():
+    c, t, st = _Client(exc=RuntimeError("connection reset")), _Tracker(), _Store()
+    s = OpenerService(c, t, st, "casual")
+
+    for _ in range(service_mod._TRANSIENT_LATCH_THRESHOLD):
+        s.maybe_opener("r", "hinge", object())
+
+    assert s.disabled is True
+    assert len(st.rejections) == service_mod._TRANSIENT_LATCH_THRESHOLD
 
 
 def test_all_gemini_models_exhausted_stops_automation(capsys):
@@ -597,7 +688,9 @@ class _FailingStore(_Store):
 
 
 class _FailingRejectionStore(_Store):
-    def record_opener_rejection(self, *a):
+    # **kw for the same reason as the base fake: without it this would raise TypeError on the
+    # prompt_sha256 keyword instead of the RuntimeError the test is actually about.
+    def record_opener_rejection(self, *a, **kw):
         raise RuntimeError("rejections table unavailable")
 
 
@@ -796,34 +889,6 @@ def test_gemini_safety_block_is_recorded_once_then_skips_only_this_profile(reaso
     assert s.last_skip_allows_commentless_like is False
 
 
-def test_advisory_gemini_safety_block_leaves_observation_and_future_cards_live():
-    blocked = OpenerParseError("Gemini withheld content", "usage", "gemini-x",
-                               reason_code=REASON_PROMPT_BLOCKED)
-    c = _Client(exc_sequence=[blocked, None])
-    st = _Store()
-    s = OpenerService(c, _Tracker(), st, "casual")
-
-    assert s.maybe_opener("r", "hinge", object(), advisory=True) is None
-
-    assert c.calls == 1
-    assert s.disabled is False and s.stop_requested is False
-    assert s.exhausted_reason is None
-    # Advisory drafts are still intentionally not durable opener/rejection rows, but their
-    # spend and the operator-facing per-profile reason are retained.
-    assert len(st.spend) == 1 and st.rejections == []
-    assert "safety policy withheld" in s.last_skip_reason
-    assert s.last_skip_allows_commentless_like is False
-
-    next_card = s.maybe_opener("r", "hinge", object(), advisory=True)
-
-    assert next_card is not None and next_card.text == _Res.opener
-    assert c.calls == 2
-    assert len(st.spend) == 2
-    assert s.disabled is False and s.stop_requested is False
-    assert s.last_skip_reason is None
-    assert s.last_skip_allows_commentless_like is False
-
-
 # ---------------------------------------------------------------------------------------
 # Durable rejection recording (opener_rejections): before this, a rejected attempt was
 # printed to the console and then lost forever -- BigQuery only ever recorded SUCCEEDED
@@ -866,6 +931,59 @@ def test_rejection_recorded_for_every_attempt_including_the_final_exhausting_one
     assert all(row[4] == "scaffolding" for row in st.rejections)
 
 
+def test_rejection_rows_carry_the_prompt_era_stamp_of_the_style_the_service_runs():
+    """Every rejection row is stamped with the prompt era that provoked it (2026-09-05 (b)).
+
+    Without it, "how often does this guard fire" can only be answered per date range, and
+    opener_rejections predates any style stamp entirely -- so a guard's rate across a prompt
+    rewrite was a mixture with no way to split it. The stamp is the service's own one-time
+    prompt_stamp(style), so this asserts the digest itself rather than merely "some string".
+    """
+    parse_error = OpenerParseError("still bad JSON", "usage", "gemini-x",
+                                   reason_code="scaffolding", raw_opener="Here's: hi")
+    st = _Store()
+    s = OpenerService(_Client(exc=parse_error), _Tracker(), st, "casual")
+
+    assert s.maybe_opener("r", "hinge", object()) is None
+
+    assert len(st.rejections) == 5
+    assert st.rejection_kwargs == [{"prompt_sha256": prompt_stamp("casual")}] * 5
+    assert s.prompt_sha256 == prompt_stamp("casual")
+
+
+def test_immediate_opener_row_carries_the_prompt_era_stamp():
+    """The immediate/legacy record site (no staging) stamps its row too. Pinned separately
+    from the staged path below because they are two different call sites in service.py, and
+    the immediate one passes its seven arguments positionally -- a shape that silently drops
+    a trailing keyword if it is ever added to the wrong call."""
+    st = _Store()
+    s = OpenerService(_Client(), _Tracker([False]), st, "casual")
+
+    assert s.maybe_opener("r", "hinge", object()) is not None
+
+    assert st.opener_kwargs == [{"prompt_sha256": prompt_stamp("casual")}]
+
+
+def test_staged_commit_stamps_the_era_the_draft_was_generated_under():
+    """The staged path stamps at GENERATION time, not commit time.
+
+    The stamp is captured onto _StagedOpenerRecord when the draft is produced and replayed
+    verbatim at commit, so a draft can never be attributed to a prompt it was not generated
+    under. Proven by mutating the service's own stamp between generation and commit: the
+    committed row keeps the generation-time digest, not the current one.
+    """
+    st = _Store()
+    s = OpenerService(_Client(), _Tracker([False]), st, "casual")
+    pick = s.maybe_opener("run", "hinge", object(), stage=True)
+    assert st.openers == []                       # nothing written until commit
+
+    generated_under = s.prompt_sha256
+    s.prompt_sha256 = "f" * 64                    # as if the era changed mid-session
+
+    assert s.commit_opener(pick) is True
+    assert st.opener_kwargs[0]["prompt_sha256"] == generated_under == prompt_stamp("casual")
+
+
 def test_rejection_store_failure_does_not_break_a_successful_retry():
     """A store that raises on record_opener_rejection must not prevent the retry loop from
     still returning a usable opener -- matching record_spend's own guard just above it."""
@@ -891,6 +1009,37 @@ def test_rejection_store_failure_does_not_break_exhaustion():
     assert "still bad JSON" in s.exhausted_reason
 
 
+def test_rejection_store_failure_does_not_break_the_opener_error_branch():
+    """Same non-fatal guard as OpenerParseError's, now covering the OpenerError branch's own
+    new record_opener_rejection call (2026-09-06): a broken store must not turn a per-profile
+    OpenerError into an unhandled exception that takes down the whole run."""
+    c = _Client(exc=OpenerError("Gemini opener: photo index 0 could not be decoded"))
+    s = OpenerService(c, _Tracker(), _FailingRejectionStore(), "casual")
+
+    assert s.maybe_opener("r", "bumble", object()) is None
+    assert s.disabled is False and s.stop_requested is False
+
+
+def test_rejection_store_failure_does_not_break_the_http_400_branch():
+    """Same guard for the HTTP-400 branch's new call: a broken store must not prevent the
+    ordinary below-latch skip-and-continue outcome."""
+    error = GeminiAPIError(400, "INVALID_ARGUMENT", "bad image or request")
+    s = OpenerService(_Client(exc=error), _Tracker(), _FailingRejectionStore(), "casual")
+
+    assert s.maybe_opener("r", "hinge", object()) is None
+    assert s.disabled is False and s.stop_requested is False
+    assert s.last_skip_reason and "HTTP 400" in s.last_skip_reason
+
+
+def test_rejection_store_failure_does_not_break_the_transient_branch():
+    """Same guard for the generic-transient-exception branch's new call."""
+    s = OpenerService(_Client(exc=RuntimeError("connection reset")), _Tracker(),
+                      _FailingRejectionStore(), "casual")
+
+    assert s.maybe_opener("r", "hinge", object()) is None
+    assert s.disabled is False and s.stop_requested is False
+
+
 def test_recent_rejections_snapshot_mirrors_the_stored_rows_in_memory():
     """recent_rejections_snapshot() is the in-memory ring buffer a bug report reads without a
     store round-trip (see service.py's recent_rejections docstring in __init__) -- it must be
@@ -910,6 +1059,11 @@ def test_recent_rejections_snapshot_mirrors_the_stored_rows_in_memory():
     assert entry["attempt"] == 1
     assert entry["reason_code"] == "bad_json" and entry["raw_opener"] == "{oops"
     assert "bad JSON" in entry["reason"]
+    # 2026-09-06: the prompt-era stamp rides this in-memory mirror too now, exactly like the
+    # durable store row already carried it -- previously absent here, so this diagnostic view
+    # could not be grouped by era even in principle (see ops/OPENER-REDESIGN.md's dated
+    # addendum).
+    assert entry["prompt_sha256"] == s.prompt_sha256 == prompt_stamp("casual")
 
 
 def test_five_consecutive_bad_responses_exhaust_and_name_the_attempt_count():
@@ -1092,249 +1246,19 @@ def test_max_attempts_must_be_a_positive_int(bad_max_attempts):
         OpenerService(_Client(), _Tracker(), _Store(), "casual", max_attempts=bad_max_attempts)
 
 
-@pytest.mark.parametrize("bad_attempts", [0, -1, 16, True, "3", 2.5])
-def test_advisory_max_attempts_must_be_a_bounded_positive_int(bad_attempts):
-    with pytest.raises(ValueError, match="advisory_max_attempts"):
-        OpenerService(
-            _Client(), _Tracker(), _Store(), "casual",
-            max_attempts=15, advisory_max_attempts=bad_attempts,
-        )
-
-
-@pytest.mark.parametrize("bad_deadline", [
-    0,
-    -1,
-    301,
-    True,
-    "60",
-    math.nan,
-    math.inf,
-    -math.inf,
-    pytest.param(10 ** 10_000, id="huge_int"),
-])
-def test_advisory_deadline_must_be_finite_positive_and_bounded(bad_deadline):
-    with pytest.raises(ValueError, match="advisory_deadline_s"):
-        OpenerService(
-            _Client(), _Tracker(), _Store(), "casual", advisory_deadline_s=bad_deadline,
-        )
-
-
 @pytest.mark.parametrize("bad_style", [None, 1, True, ["casual"]])
 def test_style_must_be_a_string(bad_style):
     with pytest.raises(ValueError, match="style"):
         OpenerService(_Client(), _Tracker(), _Store(), bad_style)
 
 
-# ---------------------------------------------------------------------------------------
-# A: advisory=True (Hinge's observe-mode pre-action suggestion) -- a display-only failure
-# must never end the observe session. maybe_opener(advisory=True) uses its shorter, time-bounded
-# retry policy and routes exhaustion through _exhaust(request_stop=False):
-# disabled/exhausted_reason are still set (spend stays protected), but stop_requested is left
-# alone. The default (advisory=False, every existing test in this file) must be completely
-# unaffected -- none of those tests pass advisory at all, so they pin that on their own.
-# ---------------------------------------------------------------------------------------
-
-def test_advisory_uses_its_shorter_retry_budget_not_auto_max_attempts():
-    """Observe retries transiently bad model output, but not for AUTO's full budget."""
-    parse_error = OpenerParseError("bad JSON", "usage", "gemini-x")
-    c = _Client(exc=parse_error)                # would keep failing every attempt forever
-    s = OpenerService(c, _Tracker(), _Store(), "casual")
-
-    assert s.maybe_opener("r", "hinge", object(), advisory=True) is None
-    assert c.calls == s.advisory_max_attempts == 3       # not the AUTO default of 5
-    assert s.disabled is True                    # spend still protected
-    assert s.stop_requested is False              # but the run itself was never asked to stop
-
-
-def test_advisory_bad_response_can_succeed_on_retry():
-    parse_error = OpenerParseError("bad JSON", "usage", "gemini-x")
-    c = _Client(exc_sequence=[parse_error])
-    s = OpenerService(c, _Tracker(), _Store(), "casual",
-                      max_attempts=5, advisory_max_attempts=3)
-
-    out = s.maybe_opener("r", "hinge", object(), advisory=True)
-
-    assert out.text == _Res.opener
-    assert c.calls == 2
-    assert c.retry_hints[0] == "" and "bad JSON" in c.retry_hints[1]
-    assert s.disabled is False and s.stop_requested is False
-
-
-def test_advisory_deadline_stops_retries_without_disabling_future_profiles(monkeypatch):
-    parse_error = OpenerParseError("bad JSON", "usage", "gemini-x")
-    c = _Client(exc=parse_error)
-    ticks = iter((100.0, 161.0))
-    monkeypatch.setattr(service_mod.time, "monotonic", lambda: next(ticks))
-    s = OpenerService(c, _Tracker(), _Store(), "casual",
-                      advisory_max_attempts=3, advisory_deadline_s=60)
-
-    assert s.maybe_opener("r", "hinge", object(), advisory=True) is None
-
-    assert c.calls == 1
-    assert s.disabled is False and s.stop_requested is False
-    assert "deadline" in s.last_skip_reason
-
-
-def test_advisory_deadline_still_enters_first_attempt_for_legacy_client(monkeypatch):
-    """A legacy client without ``deadline`` keeps its historical first-call behavior.
-
-    Deadline-aware GeminiOpener is intentionally stricter: after lock wait or image prep has
-    consumed the same absolute cutoff, it raises before issuing even model one. This fake cannot
-    make that guarantee because it does not declare the keyword, so the service preserves its
-    compatible call shape rather than sending an unexpected argument.
-    """
-    c = _Client()
-    ticks = iter((100.0, 10_000.0))
-    monkeypatch.setattr(service_mod.time, "monotonic", lambda: next(ticks))
-    s = OpenerService(c, _Tracker(), _Store(), "casual",
-                      advisory_max_attempts=3, advisory_deadline_s=1)
-
-    assert s.maybe_opener("r", "hinge", object(), advisory=True).text == _Res.opener
-    assert c.calls == 1
-
-
-def test_cascade_deadline_expiry_is_a_clean_advisory_only_outcome(monkeypatch):
-    class DeadlineClient:
-        def __init__(self):
-            self.deadlines = []
-
-        def generate(self, profile, style, retry_hint="", *, items=None, should_stop=None,
-                     deadline=None, skip_models=frozenset()):
-            self.deadlines.append(deadline)
-            raise OpenerDeadlineExceeded("opener advisory deadline reached before model three")
-
-    client = DeadlineClient()
-    monkeypatch.setattr(service_mod.time, "monotonic", lambda: 100.0)
-    service = OpenerService(client, _Tracker(), _Store(), "casual", advisory_deadline_s=60)
-
-    assert service.maybe_opener("r", "hinge", object(), advisory=True) is None
-
-    assert client.deadlines == [160.0]
-    assert service.disabled is False and service.stop_requested is False
-    assert service._consecutive_transient_failures == 0
-    assert "deadline" in service.last_skip_reason
-
-
-def test_late_primary_response_usage_is_recorded_once_before_advisory_expiry(monkeypatch):
-    stale_usage = object()
-
-    class LatePrimaryClient:
-        def generate(self, profile, style, retry_hint="", *, items=None, should_stop=None,
-                     deadline=None, skip_models=frozenset()):
-            raise OpenerDeadlineExceeded("late response", usage=stale_usage, model="gemini-x")
-
-    tracker, store = _Tracker(), _Store()
-    monkeypatch.setattr(service_mod.time, "monotonic", lambda: 100.0)
-    service = OpenerService(LatePrimaryClient(), tracker, store, "casual")
-
-    assert service.maybe_opener("r", "hinge", object(), advisory=True) is None
-
-    assert tracker.recorded == [("gemini-x", stale_usage)]
-    assert len(store.spend) == 1
-    assert store.spend[0][1:3] == ("gemini-x", stale_usage)
-
-
-def test_opaque_legacy_client_is_not_assumed_to_accept_the_deadline_keyword():
-    class OpaqueLegacyClient:
-        generate = object()
-
-    assert service_mod._accepts_generate_deadline(OpaqueLegacyClient()) is False
-
-
-def test_advisory_exhaustion_disables_but_never_requests_stop(capsys):
-    """The owner's rule is 'stop the AUTOMATION' -- in observe mode surfacing an advisory
-    suggestion, there is no automation for a bad response to threaten (the human decides and
-    sends for themselves either way), so exhausting the retry budget must degrade quietly
-    rather than asking every worker sharing this service to halt."""
-    parse_error = OpenerParseError("still bad JSON", "usage", "gemini-x")
-    c = _Client(exc=parse_error)
-    s = OpenerService(c, _Tracker(), _Store(), "casual")
-
-    assert s.maybe_opener("r", "hinge", object(), advisory=True) is None
-    assert s.disabled is True
-    assert s.exhausted_reason is not None and "still bad JSON" in s.exhausted_reason
-    assert s.stop_requested is False
-    output = capsys.readouterr().out
-    assert "stopping all workers" not in output
-    assert "advisory suggestion only" in output
-
-
-def test_advisory_budget_reached_before_call_disables_but_does_not_stop():
-    c, t, st = _Client(), _Tracker([True]), _Store()   # budget already reached before this call
-    s = OpenerService(c, t, st, "casual")
-
-    assert s.maybe_opener("r", "hinge", object(), advisory=True) is None
-    assert c.calls == 0
-    assert s.disabled is True and s.exhausted_reason == "run budget reached"
-    assert s.stop_requested is False
-
-
-def test_advisory_bad_request_streak_still_latches_but_does_not_stop():
-    """The 400 streak latch (item-for-item the same mechanism AUTO uses) must still trip
-    after _BAD_REQUEST_LATCH_THRESHOLD consecutive advisory calls -- spend protection is not
-    optional just because the call is advisory -- but must not ask the run to stop."""
-    error = GeminiAPIError(400, "INVALID_ARGUMENT", "bad image or request")
-    c = _Client(exc=error)
-    s = OpenerService(c, _Tracker(), _Store(), "casual")
-
-    for _ in range(service_mod._BAD_REQUEST_LATCH_THRESHOLD - 1):
-        assert s.maybe_opener("r", "hinge", object(), advisory=True) is None
-        assert s.disabled is False
-    assert s.maybe_opener("r", "hinge", object(), advisory=True) is None
-    assert s.disabled is True
-    assert s.stop_requested is False
-
-
-def test_advisory_transient_streak_still_latches_but_does_not_stop():
-    c = _Client(exc=RuntimeError("connection reset"))
-    s = OpenerService(c, _Tracker(), _Store(), "casual")
-
-    for _ in range(service_mod._TRANSIENT_LATCH_THRESHOLD - 1):
-        assert s.maybe_opener("r", "hinge", object(), advisory=True) is None
-        assert s.disabled is False
-    assert s.maybe_opener("r", "hinge", object(), advisory=True) is None
-    assert s.disabled is True
-    assert s.stop_requested is False
-
-
-def test_advisory_success_is_unaffected():
-    """The happy path must work identically under advisory -- only the FAILURE handling
-    changes."""
-    s = OpenerService(_Client(), _Tracker([False, False]), _Store(), "casual")
-    out = s.maybe_opener("r", "hinge", object(), advisory=True)
-    assert out.text == _Res.opener
-    assert s.disabled is False and s.stop_requested is False
-
-
-def test_advisory_draft_keeps_billing_but_writes_no_opener_or_rejection_rows():
-    """A generated Observe suggestion can be abandoned without either a Pass or Like.  Its
-    provider call remains durable billing telemetry, but must leave no durable or reportable
-    profile/opener accounting behind.  AUTO retains the ordinary durable path."""
-    success_store = _Store()
-    success = OpenerService(_Client(), _Tracker([False]), success_store, "casual")
-    assert success.maybe_opener("r", "hinge", object(), advisory=True) is not None
-    assert len(success_store.spend) == 1
-    assert success_store.openers == []
-    assert success.recent_openers_snapshot() == []
-
-    rejection_store = _Store()
-    rejected = OpenerService(
-        _Client(exc=OpenerParseError("bad JSON", "usage", "gemini-x")),
-        _Tracker([False]), rejection_store, "casual")
-    assert rejected.maybe_opener("r", "hinge", object(), advisory=True) is None
-    assert len(rejection_store.spend) == rejected.advisory_max_attempts == 3
-    assert rejection_store.openers == []
-    assert rejection_store.rejections == []
-    assert rejected.recent_rejections_snapshot() == []
-
-
-def test_confirmed_like_commits_staged_advisory_opener_exactly_once():
+def test_confirmed_like_commits_staged_opener_exactly_once():
     """The durable opener row is tied to the confirmed Like boundary, not generation.  A
     repeated commit is harmless and cannot duplicate an opener record."""
     store = _Store()
     service = OpenerService(_Client(), _Tracker([False]), store, "casual")
 
-    pick = service.maybe_opener("run", "hinge", object(), advisory=True)
+    pick = service.maybe_opener("run", "hinge", object(), stage=True)
     assert pick is not None
     assert store.openers == []
     assert service.recent_openers_snapshot() == []
@@ -1342,7 +1266,6 @@ def test_confirmed_like_commits_staged_advisory_opener_exactly_once():
     assert service.commit_opener(pick) is True
     assert len(store.openers) == 1
     assert len(service.recent_openers_snapshot()) == 1
-    assert service.recent_openers_snapshot()[0]["advisory"] is True
     assert service.commit_opener(pick) is False
     assert len(store.openers) == 1
 
@@ -1350,7 +1273,7 @@ def test_confirmed_like_commits_staged_advisory_opener_exactly_once():
 def test_committed_opener_carries_exact_landed_action_lineage():
     store = _Store()
     service = OpenerService(_Client(), _Tracker([False]), store, "casual")
-    pick = service.maybe_opener("run", "hinge", object(), advisory=True)
+    pick = service.maybe_opener("run", "hinge", object(), stage=True)
 
     assert service.commit_opener(
         pick, profile_id="profile-opaque", decision="like", decision_source="manual",
@@ -1358,7 +1281,301 @@ def test_committed_opener_carries_exact_landed_action_lineage():
     assert store.opener_kwargs == [{
         "profile_id": "profile-opaque", "decision": "like", "decision_source": "manual",
         "decision_created_at": 123.0, "model_item_index": 2,
+        # The prompt-era stamp (2026-09-05 (b)) rides the same keyword call. Asserted as part
+        # of the whole dict rather than separately: this equality is what pins the commit path
+        # to sending exactly these keywords and no others.
+        "prompt_sha256": service.prompt_sha256,
+        # profile_key (2026-09-06) defaults to "" when the caller (here) never passed one --
+        # an honestly unattributable row, not a missing keyword.
+        "profile_key": "",
     }]
+
+
+def test_discard_opener_persists_a_never_sent_row_with_the_generation_time_prompt_stamp():
+    """The other half of commit_opener (see discard_opener's own docstring): a staged draft
+    that will NEVER land a Like must still leave exactly as durable a trace, carrying the SAME
+    prompt_sha256 captured at generation -- not re-derived from the service at discard time --
+    so the durable `openers` table stops being survivorship-biased toward only committed Likes."""
+    store = _Store()
+    service = OpenerService(_Client(), _Tracker([False]), store, "casual")
+    pick = service.maybe_opener("run", "hinge", object(), stage=True)
+    assert store.openers == []                              # nothing durable yet, staged only
+
+    assert service.discard_opener(
+        pick, profile_id="", decision="never_sent", decision_source="auto",
+        decision_created_at=123.0) is True
+    assert len(store.openers) == 1
+    assert store.opener_kwargs == [{
+        "profile_id": "", "decision": "never_sent", "decision_source": "auto",
+        "decision_created_at": 123.0, "model_item_index": 2,
+        "prompt_sha256": service.prompt_sha256,
+        "profile_key": "",
+    }]
+    # Discarding is not committing: the live "recently committed" diagnostic buffer (reserved
+    # for landed Likes, see recent_openers' own docstring) must stay untouched.
+    assert service.recent_openers_snapshot() == []
+
+
+def test_discard_opener_returns_false_and_touches_nothing_when_pick_was_never_staged():
+    """A pick constructed directly (no maybe_opener staging -- e.g. a legacy/direct caller, or
+    one already spent) carries no `_staged_record`. discard_opener must recognise that exactly
+    like commit_opener already does, rather than persisting a meaningless empty draft."""
+    store = _Store()
+    service = OpenerService(_Client(), _Tracker([False]), store, "casual")
+    from operation_love.opener.service import OpenerPick
+    bare_pick = OpenerPick("never staged", index=1)
+
+    assert service.discard_opener(bare_pick, decision="never_sent") is False
+    assert store.openers == []
+
+
+def test_discard_opener_is_exactly_once_like_commit_opener():
+    """Mirrors test_confirmed_like_commits_staged_opener_exactly_once: a second
+    discard of the SAME draft must be a no-op, not a duplicate row."""
+    store = _Store()
+    service = OpenerService(_Client(), _Tracker([False]), store, "casual")
+    pick = service.maybe_opener("run", "hinge", object(), stage=True)
+
+    assert service.discard_opener(pick, decision="never_sent") is True
+    assert len(store.openers) == 1
+    assert service.discard_opener(pick, decision="never_sent") is False
+    assert len(store.openers) == 1
+
+
+def test_discard_opener_and_commit_opener_are_mutually_exclusive():
+    """Once a draft is committed as a landed Like, discarding it afterward (e.g. a caller
+    racing the same pick down two different outcome paths) must not also write a
+    contradicting never-sent row -- and symmetrically for a discard-then-commit ordering."""
+    store = _Store()
+    service = OpenerService(_Client(), _Tracker([False]), store, "casual")
+    pick = service.maybe_opener("run", "hinge", object(), stage=True)
+
+    assert service.commit_opener(pick, decision="like") is True
+    assert service.discard_opener(pick, decision="never_sent") is False
+    assert len(store.openers) == 1 and store.opener_kwargs[0]["decision"] == "like"
+
+    store2 = _Store()
+    service2 = OpenerService(_Client(), _Tracker([False]), store2, "casual")
+    pick2 = service2.maybe_opener("run", "hinge", object(), stage=True)
+    assert service2.discard_opener(pick2, decision="never_sent") is True
+    assert service2.commit_opener(pick2, decision="like") is False
+    assert len(store2.openers) == 1 and store2.opener_kwargs[0]["decision"] == "never_sent"
+
+
+def test_discard_opener_store_failure_is_swallowed_and_returns_false():
+    """The exact requirement this telemetry was built under: a store outage while discarding a
+    draft that was never going to be sent anyway must not raise -- there is no decision, send,
+    or refusal left to protect at this point, so the ONLY acceptable behaviour is to swallow
+    the failure and report it False, exactly like commit_opener already does for a landed Like
+    (see _record_staged_opener's docstring and commit_opener's own try/except)."""
+    class _RaisingStore(_Store):
+        def record_opener(self, *a, **kw):
+            raise RuntimeError("database unavailable")
+
+    store = _RaisingStore()
+    service = OpenerService(_Client(), _Tracker([False]), store, "casual")
+    pick = service.maybe_opener("run", "hinge", object(), stage=True)
+
+    assert service.discard_opener(pick, decision="never_sent") is False
+    assert store.openers == []
+
+
+# ---------------------------------------------------------------------------------------
+# profile_key (2026-09-06): the stable, cross-time attribution key (ranker/profile_key.py)
+# threaded onto BOTH the commit and discard halves of the staged-opener lifecycle, so a sent
+# opener and a discarded draft are equally attributable to the profile they were about.
+# ---------------------------------------------------------------------------------------
+
+def test_commit_opener_threads_profile_key_to_the_store():
+    store = _Store()
+    service = OpenerService(_Client(), _Tracker([False]), store, "casual")
+    pick = service.maybe_opener("run", "hinge", object(), stage=True)
+
+    assert service.commit_opener(pick, decision="like", profile_key="a" * 64) is True
+
+    assert store.opener_kwargs[0]["profile_key"] == "a" * 64
+
+
+def test_discard_opener_threads_profile_key_to_the_store():
+    store = _Store()
+    service = OpenerService(_Client(), _Tracker([False]), store, "casual")
+    pick = service.maybe_opener("run", "hinge", object(), stage=True)
+
+    assert service.discard_opener(pick, decision="never_sent", profile_key="b" * 64) is True
+
+    assert store.opener_kwargs[0]["profile_key"] == "b" * 64
+
+
+def test_commit_and_discard_opener_default_profile_key_to_empty_string():
+    """An unattributable card must write "" rather than force every caller to pass one."""
+    store = _Store()
+    service = OpenerService(_Client(), _Tracker([False, False]), store, "casual")
+
+    pick1 = service.maybe_opener("run", "hinge", object(), stage=True)
+    assert service.commit_opener(pick1, decision="like") is True
+    pick2 = service.maybe_opener("run", "hinge", object(), stage=True)
+    assert service.discard_opener(pick2, decision="never_sent") is True
+
+    assert store.opener_kwargs[0]["profile_key"] == ""
+    assert store.opener_kwargs[1]["profile_key"] == ""
+
+
+def test_commit_opener_degrades_gracefully_when_the_store_predates_profile_key():
+    """A duck-typed store that accepts the action-lineage columns and prompt_sha256 but has
+    not yet been migrated for profile_key must not get a TypeError-raising keyword it never
+    declared -- exactly the same orthogonal-probe discipline prompt_sha256 itself relies on."""
+    class _PredatesProfileKeyStore:
+        def __init__(self):
+            self.calls = []
+
+        def record_opener(self, run_id, app, model, opener, referenced, angle="",
+                          item_description="", *, profile_id="", decision="", decision_source="",
+                          decision_created_at=None, model_item_index=None,
+                          prompt_sha256=None):
+            self.calls.append(dict(prompt_sha256=prompt_sha256))
+
+    store = _PredatesProfileKeyStore()
+    service = OpenerService(_Client(), _Tracker([False]), store, "casual")
+    pick = service.maybe_opener("run", "hinge", object(), stage=True)
+
+    assert service.commit_opener(pick, decision="like", profile_key="c" * 64) is True
+    assert len(store.calls) == 1   # no TypeError -- the extra keyword was never sent
+
+
+def test_a_committed_and_a_discarded_draft_can_carry_the_same_profile_key():
+    """The one property profile_key exists to buy: two different profiles' cards -- one that
+    ends in a Like, one that does not -- both carry the SAME key when they are honestly about
+    the same captured profile, so an outcome learned later can join to either population."""
+    store = _Store()
+    service = OpenerService(_Client(), _Tracker([False, False]), store, "casual")
+    same_key = "d" * 64
+
+    pick1 = service.maybe_opener("run", "hinge", object(), stage=True)
+    assert service.commit_opener(pick1, decision="like", profile_key=same_key) is True
+    pick2 = service.maybe_opener("run", "hinge", object(), stage=True)
+    assert service.discard_opener(pick2, decision="never_sent", profile_key=same_key) is True
+
+    assert store.opener_kwargs[0]["profile_key"] == same_key
+    assert store.opener_kwargs[1]["profile_key"] == same_key
+
+
+# ---------------------------------------------------------------------------------------
+# ops/OPENER-REDESIGN.md 5.2/5.7's replay corpus (opener/replay_corpus.py): capture the exact
+# request inputs at generation time, OFF unless replay_corpus_dir is configured, and never able
+# to raise into (or otherwise change) opener generation.
+# ---------------------------------------------------------------------------------------
+
+def test_replay_corpus_capture_is_not_called_when_disabled(monkeypatch):
+    """OpenerService's own default (replay_corpus_dir=None) is what most tests in this file
+    already construct -- this pins that the disabled state genuinely never calls the writer,
+    not merely that it never writes a file."""
+    calls = []
+    monkeypatch.setattr(service_mod, "write_replay_capture",
+                        lambda *a, **kw: calls.append((a, kw)))
+    items = ItemRequest(name="Sarah", items=[b"crop-1"])
+    s = OpenerService(_Client(), _Tracker(), _Store(), "casual")
+
+    out = s.maybe_opener("r", "hinge", object(), items=items)
+
+    assert out is not None
+    assert calls == []
+
+
+def test_replay_corpus_capture_skips_when_there_is_no_item_request(tmp_path):
+    """Even with the flag on, a legacy/frame-shaped call (items=None) has nothing this format
+    could reconstruct a request from -- see write_replay_capture's own requirement of at least
+    one numbered item -- so this must not even attempt the call."""
+    from operation_love.opener import replay_corpus as rc
+    s = OpenerService(_Client(), _Tracker([False, False]), _Store(), "casual",
+                      replay_corpus_dir=str(tmp_path))
+
+    s.maybe_opener("r", "hinge", object())
+
+    assert rc.list_replay_ids(tmp_path) == []
+
+
+def test_replay_corpus_capture_persists_the_exact_request_when_enabled(tmp_path):
+    """End to end, no monkeypatching: enabling the flag actually writes a capture whose fields
+    round-trip to exactly what ItemRequest carried, plus the CURRENT prompt era."""
+    from operation_love.opener import replay_corpus as rc
+    items = ItemRequest(name="Sarah", items=[b"crop-1", b"crop-2"], context=[b"vitals"],
+                        truncated=True)
+    s = OpenerService(_Client(), _Tracker(), _Store(), "casual",
+                      replay_corpus_dir=str(tmp_path))
+
+    out = s.maybe_opener("r", "hinge", object(), items=items)
+
+    assert out is not None
+    ids = rc.list_replay_ids(tmp_path)
+    assert len(ids) == 1
+    capture = rc.load_replay_capture(tmp_path, ids[0])
+    assert capture.name == "Sarah"
+    assert capture.items == (b"crop-1", b"crop-2")
+    assert capture.context == (b"vitals",)
+    assert capture.truncated is True
+    assert capture.prompt_sha256 == s.prompt_sha256
+
+
+def test_replay_corpus_capture_happens_once_per_call_not_per_retry_attempt(monkeypatch):
+    """The same items is reused verbatim across every retry attempt for one profile (see
+    maybe_opener's own docstring); capturing it again on every attempt would be wasted work for
+    no new information, so this must fire exactly once per maybe_opener() call regardless of
+    how many attempts that call takes internally."""
+    calls = []
+
+    def _spy(*a, **kw):
+        calls.append(1)
+        return SimpleNamespace(ok=True, replay_id="x", path=None, error=None)
+
+    monkeypatch.setattr(service_mod, "write_replay_capture", _spy)
+    parse_error = OpenerParseError("bad JSON", "usage", "gemini-x")
+    items = ItemRequest(name="Robin", items=[b"crop-1"])
+    c = _Client(exc_sequence=[parse_error, parse_error])   # two failures, then a success
+    s = OpenerService(c, _Tracker(), _Store(), "casual", max_attempts=5,
+                      replay_corpus_dir="/unused/because/spied")
+
+    out = s.maybe_opener("r", "hinge", object(), items=items)
+
+    assert out is not None and c.calls == 3
+    assert len(calls) == 1
+
+
+def test_replay_corpus_capture_exception_never_propagates_or_changes_the_outcome(monkeypatch, capsys):
+    """The exact requirement this telemetry was built under: even an unexpected exception from
+    the write path (write_replay_capture's own contract already never raises, see its SAFE TO
+    FAIL docstring -- this proves the SERVICE's own wrapping is what a caller can rely on
+    regardless) must not raise into, or change the result of, opener generation."""
+    def _boom(*a, **kw):
+        raise OSError("disk full (simulated)")
+
+    monkeypatch.setattr(service_mod, "write_replay_capture", _boom)
+    items = ItemRequest(name="Sarah", items=[b"crop-1"])
+    s = OpenerService(_Client(), _Tracker(), _Store(), "casual",
+                      replay_corpus_dir="/unused/because/it/raises")
+
+    out = s.maybe_opener("r", "hinge", object(), items=items)
+
+    assert out is not None and out.text == _Res.opener
+    assert "disk full" in capsys.readouterr().out
+
+
+def test_replay_corpus_capture_ok_false_result_is_logged_not_raised(monkeypatch, capsys):
+    """write_replay_capture's OWN ordinary failure signal (ReplayWriteResult(ok=False, ...),
+    never a raised exception) must be reported, not silently dropped -- and must not affect the
+    opener that was actually generated."""
+    class _FailedResult:
+        ok = False
+        error = "a real, specific write failure"
+
+    monkeypatch.setattr(service_mod, "write_replay_capture", lambda *a, **kw: _FailedResult())
+    items = ItemRequest(name="Sarah", items=[b"crop-1"])
+    s = OpenerService(_Client(), _Tracker(), _Store(), "casual",
+                      replay_corpus_dir="/unused/because/it/fails")
+
+    out = s.maybe_opener("r", "hinge", object(), items=items)
+
+    assert out is not None and out.text == _Res.opener
+    assert "a real, specific write failure" in capsys.readouterr().out
 
 
 def test_committed_auto_opener_passes_presend_evidence_to_a_capable_store():
@@ -1410,17 +1627,19 @@ def test_staged_manual_training_opener_records_training_session_mode():
     assert service.recent_openers_snapshot()[0]["session_mode"] == "training"
 
 
-def test_advisory_default_is_false_so_every_existing_call_site_is_unaffected():
-    """Sanity pin: advisory defaults to False, so every pre-existing call in this file (and
-    every AUTO-mode call site in worker.py) keeps today's max_attempts-retries-then-stops
-    behavior exactly as it was before advisory existed."""
-    parse_error = OpenerParseError("still bad JSON", "usage", "gemini-x")
-    c = _Client(exc=parse_error)
-    s = OpenerService(c, _Tracker(), _Store(), "casual")
-
-    assert s.maybe_opener("r", "hinge", object()) is None
-    assert c.calls == s.max_attempts == 5
-    assert s.disabled is True and s.stop_requested is True
+def test_maybe_opener_has_no_advisory_parameter():
+    """The `advisory` preview-mode flag (Observe's pre-action suggestion, dead in production
+    since commit ea6756e8 removed its last caller) was removed outright rather than left
+    unused, per the owner's explicit "clean it up completely" instruction: no shorter retry
+    budget, no deadline, no request_stop=False exhaustion path -- every exhaustion now stops
+    the whole run (see test_five_consecutive_bad_responses_exhaust_and_name_the_attempt_count
+    just above for that unconditional behavior). This pins the removal directly against the
+    signature so a future re-add fails loudly here rather than silently reintroducing the
+    parameter and its dead plumbing with no caller to exercise any of it."""
+    import inspect
+    params = inspect.signature(OpenerService.maybe_opener).parameters
+    assert "advisory" not in params
+    assert set(params) == {"self", "run_id", "app", "profile", "items", "should_stop", "stage"}
 
 
 # ---------------------------------------------------------------------------------------
@@ -1486,15 +1705,6 @@ def test_skip_models_never_leaks_across_profiles():
     c.skip_models_seen = []                                   # isolate profile 2's own calls
     s.maybe_opener("r", "hinge", object())                    # profile 2 -- fresh call, no exc queued
     assert c.skip_models_seen == [frozenset()]                 # NOT frozenset({"gemini-x"})
-
-
-def test_advisory_first_attempt_passes_an_empty_skip_models():
-    """Advisory attempt 1 starts with no failed model -- skip_models must be
-    empty (nothing has failed yet within THIS call) exactly like a first AUTO attempt."""
-    c, t, st = _Client(), _Tracker([False, False]), _Store()
-    s = OpenerService(c, t, st, "casual")
-    s.maybe_opener("r", "hinge", object(), advisory=True)
-    assert c.skip_models_seen == [frozenset()]
 
 
 # ---------------------------------------------------------------------------------------
@@ -1658,19 +1868,35 @@ def test_item_description_is_populated_from_the_client_result_and_persisted():
     assert s.recent_openers_snapshot()[0]["item_description"] == _Res.item_description
 
 
-def test_advisory_item_description_is_transient_until_a_real_decision():
-    """Observe must generate the same item-aware request as AUTO, but a suggestion by itself
-    is not a dating decision.  It therefore returns the complete pick for the live UI while
-    leaving no durable opener or diagnostic profile trail behind; billing remains separate."""
+def test_recent_openers_snapshot_carries_the_prompt_era_stamp():
+    """2026-09-06: the always-on diagnostic view read by bugreport.py
+    (recent_openers_snapshot) could not be grouped by prompt era even in principle before
+    this -- the durable `openers` row has carried `prompt_sha256` since 2026-09-05 (b), but
+    this in-memory mirror did not. The staged path shares the exact same `recent_entry` dict
+    built inside maybe_opener, so it is not re-tested separately here."""
+    c, t, st = _Client(), _Tracker([False, False]), _Store()
+    s = OpenerService(c, t, st, "casual")
+
+    s.maybe_opener("r", "hinge", object())
+
+    assert (s.recent_openers_snapshot()[0]["prompt_sha256"]
+            == s.prompt_sha256 == prompt_stamp("casual"))
+
+
+def test_staged_item_description_is_transient_until_a_real_decision():
+    """A staged pick (AUTO/Training via stage=True) must generate the same item-aware request
+    as an immediate call, but staging alone is not a landed decision.  It therefore returns
+    the complete pick for the caller to use while leaving no durable opener or diagnostic
+    profile trail behind until commit_opener(); billing remains separate."""
     c, t, st = _Client(), _Tracker([False, False, False, False]), _Store()
     s = OpenerService(c, t, st, "casual")
 
     auto = s.maybe_opener("r", "hinge", object())
-    advisory = s.maybe_opener("r", "hinge", object(), advisory=True)
+    staged = s.maybe_opener("r", "hinge", object(), stage=True)
 
-    assert advisory.item_description == auto.item_description == _Res.item_description
+    assert staged.item_description == auto.item_description == _Res.item_description
     assert [row[6] for row in st.openers] == [_Res.item_description]
-    # The advisory draft collides with AUTO's leading n-gram, so its one entropy redraw is
+    # The staged draft collides with AUTO's leading n-gram, so its one entropy redraw is
     # a second real provider call; billing records all three calls without recording the draft.
     assert len(st.spend) == 3
     assert [e["item_description"] for e in s.recent_openers_snapshot()] == [_Res.item_description]
@@ -1792,26 +2018,24 @@ def test_a_result_that_states_no_index_space_yields_an_unusable_pick_not_a_guess
 # ---------------------------------------------------------------------------------------
 # recent_openers_snapshot(): the ring buffer of the most recent SUCCESSFUL opener
 # generations, independent of self.store.record_opener's permanent per-run record -- see
-# __init__'s recent_openers docstring. Records advisory mode alongside the model's own
-# referenced/index/opener fields.
+# __init__'s recent_openers docstring.
 # ---------------------------------------------------------------------------------------
 
-def test_recent_openers_snapshot_excludes_unacted_advisory_suggestions():
-    """The diagnostic trail follows real decisions, not drafts.  Advisory suggestions retain
-    just a process-local n-gram for duplicate-opening protection and never expose the profile
-    detail or message through the bug-report snapshot."""
+def test_recent_openers_snapshot_excludes_unacted_staged_drafts():
+    """The diagnostic trail follows real decisions, not drafts.  A staged draft retains just
+    a process-local n-gram for duplicate-opening protection and never exposes the profile
+    detail or message through the bug-report snapshot until committed."""
     c = _Client(opener_texts=["hey, that hiking photo is great",
                               "so that lake looked freezing today"])
     t, st = _Tracker([False, False, False, False]), _Store()
     s = OpenerService(c, t, st, "casual")
 
     s.maybe_opener("r", "hinge", object())
-    s.maybe_opener("r", "bumble", object(), advisory=True)
+    s.maybe_opener("r", "bumble", object(), stage=True)
 
     snap = s.recent_openers_snapshot()
     assert len(snap) == 1
     auto_entry = snap[0]
-    assert auto_entry["advisory"] is False
     assert auto_entry["opener"] == "hey, that hiking photo is great"
     assert auto_entry["referenced"] == _Res.referenced
     # The ring buffer's "index" key kept its NAME and changed its MEANING: it is the
@@ -1899,25 +2123,13 @@ def test_a_failed_call_records_nothing_in_the_ring_buffer():
 # recent_openers ring buffer (opener.py's _leading_ngram) -- no semantics, no classifier, no
 # second judge, and no constraint on WHAT the model may write. It only ever asks once more.
 #
-# The three properties below are the whole design, and every one of them is the kind of thing
-# a later "simplification" would quietly invert:
-#   1. It runs IDENTICALLY under advisory=True and advisory=False -- no branch on advisory
-#      anywhere in _apply_entropy_guard. CORRECTED 2026-08-11: this file used to pin the
-#      opposite ("skipped OUTRIGHT under advisory, not merely made budget-exempt"), on the
-#      theory that a guard consuming an attempt there would consume observe's only allowed
-#      attempt. That theory was wrong for THIS guard: point 2 below (the extra draw never
-#      consumes the attempt budget) holds in every mode, so there was never an attempt for
-#      advisory to lose, and skipping it broke the observe-is-auto-canary property instead
-#      (see the advisory tests below) -- a live dry run with a shared OpenerService produced
-#      5 advisory openers, 4 with an identical leading phrase, because the guard never looked.
-#      Do not restore the old "skip under advisory" behavior; that is the regression this
-#      section's advisory tests exist to catch.
-#   2. A collision buys exactly ONE extra draw, and that draw does NOT consume the per-profile
-#      attempt budget whose exhaustion stops the whole run -- true in AUTO and advisory alike,
-#      since advisory forces effective_max_attempts == 1 but the guard's draw was never wired
+# The two properties below are the whole design, and each is the kind of thing a later
+# "simplification" would quietly invert:
+#   1. A collision buys exactly ONE extra draw, and that draw does NOT consume the per-profile
+#      attempt budget whose exhaustion stops the whole run -- the guard's draw is never wired
 #      to the attempt loop at all.
-#   3. If the second draw collides too it is ACCEPTED and logged. Never a loop, never a
-#      rejection, never a stop. Also true in either mode.
+#   2. If the second draw collides too it is ACCEPTED and logged. Never a loop, never a
+#      rejection, never a stop.
 # ---------------------------------------------------------------------------------------
 
 # Two openers that deliberately share NO leading words, so switching between them is what
@@ -1926,145 +2138,6 @@ def test_a_failed_call_records_nothing_in_the_ring_buffer():
 _NGRAM_A = "based on that ridgeline i would guess norway"
 _NGRAM_A_LEADING = "based on that ridgeline"
 _NGRAM_B = "you look like you were freezing out there"
-
-
-def test_advisory_entropy_regeneration_uses_the_same_deadline_and_keeps_first_draft(monkeypatch):
-    class EntropyDeadlineClient:
-        def __init__(self):
-            self.deadlines = []
-
-        def generate(self, profile, style, retry_hint="", *, items=None, should_stop=None,
-                     deadline=None, skip_models=frozenset()):
-            self.deadlines.append(deadline)
-            raise OpenerDeadlineExceeded("opener advisory deadline reached before regeneration")
-
-    client = EntropyDeadlineClient()
-    service = OpenerService(client, _Tracker(), _Store(), "casual")
-    service._recent_opening_ngrams.append(_NGRAM_A_LEADING)
-    first = _Res()
-    first.opener = _NGRAM_A
-    monkeypatch.setattr(service_mod.time, "monotonic", lambda: 100.0)
-
-    result, collision, regenerated = service._apply_entropy_guard(
-        "run", object(), first, items=None, should_stop=None, skip_models=frozenset(),
-        deadline=101.0, client_accepts_deadline=True)
-
-    assert result is first
-    assert collision == _NGRAM_A_LEADING and regenerated is False
-    assert client.deadlines == [101.0]
-    assert service.disabled is False and service.stop_requested is False
-    assert service._consecutive_transient_failures == 0
-
-
-def test_late_entropy_response_usage_is_recorded_once_while_first_draft_is_sent(monkeypatch):
-    stale_usage = object()
-
-    class LateEntropyClient:
-        def __init__(self):
-            self.calls = 0
-
-        def generate(self, profile, style, retry_hint="", *, items=None, should_stop=None,
-                     deadline=None, skip_models=frozenset()):
-            self.calls += 1
-            if self.calls == 1:
-                first = _Res()
-                first.opener = _NGRAM_A
-                return first
-            raise OpenerDeadlineExceeded("late entropy response", usage=stale_usage,
-                                         model="gemini-x")
-
-    client = LateEntropyClient()
-    tracker, store = _Tracker(), _Store()
-    service = OpenerService(client, tracker, store, "casual")
-    service._recent_opening_ngrams.append(_NGRAM_A_LEADING)
-    monkeypatch.setattr(service_mod.time, "monotonic", lambda: 100.0)
-
-    pick = service.maybe_opener("run", "hinge", object(), advisory=True)
-
-    assert pick.text == _NGRAM_A
-    assert client.calls == 2
-    assert tracker.recorded == [("gemini-x", stale_usage), ("gemini-x", "usage")]
-    assert [row[1:3] for row in store.spend] == [
-        ("gemini-x", stale_usage), ("gemini-x", "usage")]
-
-
-def test_advisory_collision_regenerates_exactly_once_and_sends_the_new_opener(capsys):
-    """THE CANARY-PRESERVING CASE -- if this ever regresses, it does so silently, so guard it
-    directly. An advisory (observe-mode) opener that opens with words already sent this run
-    buys exactly ONE more budget-exempt draw, and the NEW text is what gets shown to the
-    operator -- item-for-item the same as the AUTO happy path
-    (test_auto_collision_regenerates_exactly_once_and_sends_the_new_opener above), because the
-    guard no longer branches on advisory at all.
-
-    This is the whole point of the 2026-08-11 correction: observe mode is supposed to be the
-    canary for auto (the owner's rule is that the opener shown to a human in observe must be
-    byte-identical to what auto would send), so a collision that AUTO would quietly redraw
-    around must be redrawn around here too -- not shipped to the human untouched, which is
-    exactly what the old "skip under advisory" behavior did, and exactly what a live dry run
-    caught (5 advisory openers, 4 sharing a leading phrase, because the guard never looked)."""
-    c = _Client(opener_texts=[_NGRAM_A, _NGRAM_A, _NGRAM_B])
-    st = _Store()
-    s = OpenerService(c, _Tracker(), st, "casual")
-
-    first = s.maybe_opener("r", "hinge", object(), advisory=True)   # seeds the buffer with A
-    assert first.text == _NGRAM_A
-    capsys.readouterr()
-    out = s.maybe_opener("r", "hinge", object(), advisory=True)     # draft A collides -> redraw
-
-    assert out.text == _NGRAM_B                                     # the SECOND draw is shown
-    assert c.calls == 3                                             # 1 + 1 attempt + 1 redraw
-    assert s.disabled is False and s.stop_requested is False
-    assert s.exhausted_reason is None
-    output = capsys.readouterr().out
-    assert f'opens with words already sent this run ("{_NGRAM_A_LEADING}")' in output
-    assert "EXEMPT from the per-profile attempt budget" in output
-
-
-def test_advisory_regeneration_does_not_consume_the_retry_budget(capsys):
-    """Property 2, stated as the accounting rule it actually is, under advisory specifically:
-    if the guard's redraw were ever mistakenly wired into maybe_opener's retry loop, a
-    colliding advisory opener could consume the deliberately small failure budget and disable
-    suggestions over a stylistic near-miss. It must not: the service stays enabled,
-    stop_requested stays False, exhausted_reason stays None, and a third call is still served."""
-    c = _Client(opener_texts=[_NGRAM_A, _NGRAM_A, _NGRAM_B, _NGRAM_B])
-    s = OpenerService(c, _Tracker(), _Store(), "casual")
-
-    s.maybe_opener("r", "hinge", object(), advisory=True)           # seeds the buffer with A
-    out = s.maybe_opener("r", "hinge", object(), advisory=True)     # collides -> redraw to B
-
-    assert out.text == _NGRAM_B
-    assert s.disabled is False
-    assert s.stop_requested is False
-    assert s.exhausted_reason is None
-    # The single attempt was not consumed by the guard's redraw, so a further advisory call
-    # still gets a real suggestion instead of None -- the exact failure the old "skip under
-    # advisory" design was trying (wrongly) to prevent, and the exact failure this correction
-    # must not reintroduce from the other direction.
-    third = s.maybe_opener("r", "hinge", object(), advisory=True)
-    assert third is not None
-
-
-def test_advisory_second_colliding_draw_is_accepted_not_rejected(capsys):
-    """Property 3 holds under advisory too: if the redraw ALSO collides, it is sent to the
-    operator anyway, loudly, rather than looping for a third draw or being withheld -- a
-    near-repeat surfaced to the human (who can see it and retype) is a much smaller problem
-    than an unbounded spend hole or a suggestion silently disappearing."""
-    c = _Client(opener_texts=[_NGRAM_A])       # every success repeats the SAME opener
-    st = _Store()
-    s = OpenerService(c, _Tracker(), st, "casual")
-
-    s.maybe_opener("r", "hinge", object(), advisory=True)          # seeds the buffer with A
-    capsys.readouterr()
-    out = s.maybe_opener("r", "hinge", object(), advisory=True)    # A collides, redraw is A too
-
-    assert out.text == _NGRAM_A                                    # accepted, not withheld
-    assert c.calls == 3                                             # ONE redraw only, never a loop
-    assert s.stop_requested is False
-    assert s.disabled is False
-    assert s.exhausted_reason is None
-    output = capsys.readouterr().out
-    assert f'still opens with "{_NGRAM_A_LEADING}"' in output
-    assert "SENDING it anyway" in output
 
 
 def test_auto_collision_regenerates_exactly_once_and_sends_the_new_opener(capsys):
@@ -2466,13 +2539,8 @@ def test_redundancy_markers_reach_the_ring_buffer_and_never_reject_the_opener(ca
     assert "never a rejection." in output
 
 
-@pytest.mark.parametrize("generation_kwargs", [
-    pytest.param({"stage": True}, id="training_or_auto_stage"),
-    pytest.param({"advisory": True}, id="advisory_stage"),
-])
-def test_staged_redundancy_log_leaves_draft_lifecycle_to_the_lower_level_monitor(
-        capsys, generation_kwargs):
-    """Training/Observe drafts can become a Dislike, Stop, or pre-send refusal.
+def test_staged_redundancy_log_leaves_draft_lifecycle_to_the_lower_level_monitor(capsys):
+    """Training/AUTO drafts can become a Dislike, Stop, or pre-send refusal.
 
     The lower-level parser monitor retains the draft diagnostic.  The service must add no
     lifecycle claim until a Like actually lands, so an uncommitted pick exercises the exact
@@ -2481,7 +2549,7 @@ def test_staged_redundancy_log_leaves_draft_lifecycle_to_the_lower_level_monitor
     store = _Store()
     service = OpenerService(_RedundantClient(), _Tracker(), store, "casual")
 
-    pick = service.maybe_opener("run", "hinge", object(), **generation_kwargs)
+    pick = service.maybe_opener("run", "hinge", object(), stage=True)
 
     assert pick is not None
     assert store.openers == []

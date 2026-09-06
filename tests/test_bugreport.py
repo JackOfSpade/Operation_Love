@@ -382,8 +382,15 @@ def test_status_section_surfaces_current_training_guidance_safely():
 
     assert "Current hub guidance (snapshot, not a new phone read)" in md
     assert "typed target opener is ready; choose Like to send it or Dislike to pass" in md
-    assert "no suggestion to type" in md
-    assert "item index refused | no trustworthy shift 'do not offer text'" in md
+    # 2026-09-06: the opener_warning / opener_pending / opener_suggestion guidance branches were
+    # REMOVED. They were the last readers of the Observe advisory-suggestion flow, whose call
+    # site went away in commit ea6756e8 (2026-08-26); nothing has written any of those keys into
+    # a hub app dict since, so the branches were unreachable in production and this test was the
+    # only thing keeping them alive -- it hand-built a dict no running system produces.
+    # Pinning their ABSENCE is what stops the dead diagnostic from being reintroduced.
+    assert "no suggestion to type" not in md
+    assert "advisory suggestion" not in md
+    # The raw warning value must still never leak, which was this test's real safety purpose.
     assert _TrainingWarningHub.WARNING not in md
     assert not any(line.strip() == "`do not offer text`" for line in md.splitlines())
 
@@ -2969,9 +2976,9 @@ def test_status_section_handles_missing_stopping_key_gracefully():
 # takes on_opener_service and hub/state.py captures it, so hub_state.recent_openers() is the
 # real thing: a snapshot of OpenerService.recent_openers_snapshot(), newest entry LAST.
 def _opener_entry(ts="2026-08-10T12:00:00", app="hinge", model="gemini-2.5-flash",
-                   advisory=False, index=0, referenced="the beach photo",
+                   index=0, referenced="the beach photo",
                    opener="hey, love the beach shot"):
-    return {"ts": ts, "app": app, "model": model, "advisory": advisory,
+    return {"ts": ts, "app": app, "model": model,
             "index": index, "referenced": referenced, "opener": opener}
 
 
@@ -3010,7 +3017,7 @@ def test_recent_openers_section_handles_empty_list_gracefully():
 
 
 def test_recent_openers_section_reports_explicit_training_mode():
-    entry = _opener_entry(advisory=False)
+    entry = _opener_entry()
     entry["session_mode"] = "training"
 
     md = bugreport._recent_openers_md(_FakeHubOpeners([entry]))
@@ -3021,10 +3028,24 @@ def test_recent_openers_section_reports_explicit_training_mode():
 
 def test_recent_openers_section_uses_last_run_mode_for_legacy_training_entry():
     md = bugreport._recent_openers_md(
-        _FakeHubOpenersWithStatus([_opener_entry(advisory=False)], "training"))
+        _FakeHubOpenersWithStatus([_opener_entry()], "training"))
 
     assert " · training · " in md
     assert " · auto · " not in md
+
+
+def test_recent_openers_section_treats_stray_advisory_session_mode_as_unrecognized():
+    """"advisory" is not a session_mode value any current code path can write (see the
+    comment above the `explicit_mode not in {"training", "auto"}` check) and is deliberately
+    NOT in that recognized set. A stray/corrupted "advisory" string must fall through to the
+    same legacy_app_modes fallback as a missing session_mode key -- never render literally."""
+    entry = _opener_entry()
+    entry["session_mode"] = "advisory"
+
+    md = bugreport._recent_openers_md(_FakeHubOpeners([entry]))
+
+    assert " · auto · " in md
+    assert " · advisory · " not in md
 
 
 def test_recent_openers_section_renders_newest_first_and_caps_at_the_shown_limit():

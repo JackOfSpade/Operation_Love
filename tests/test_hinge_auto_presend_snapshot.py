@@ -1475,6 +1475,70 @@ def test_opener_evidence_rows_use_the_run_scoped_session_mode(tmp_path):
     assert row["session_mode"] == "training"
 
 
+def test_opener_evidence_rows_carry_the_bound_prompt_era(tmp_path):
+    """Worker._bind_opener_prompt_stamp binds this once per session (see
+    set_opener_prompt_sha256's own docstring); every one of the three local debug rows this
+    module writes for an opener event must carry it, so the local corpus becomes
+    era-attributable exactly like the durable `openers` table already is."""
+    driver, _adb = _driver([])
+    driver.set_auto_session_policy(None)
+    driver._dbg = HingeDebugLog(str(tmp_path), run_id="evidence-prompt-era")
+    driver.set_opener_prompt_sha256("era-abc123")
+
+    pre_send = driver._record_auto_opener_pre_send(
+        b"FRAME", opener="An opener", item_index=None, model_item_index=1)
+    resumed = driver._record_auto_opener_resumed_send(
+        b"FRAME2", opener="An opener", item_index=None, model_item_index=1,
+        approval_evidence=pre_send)
+    driver._record_training_cancelled(pre_send, model_item_index=1, reason="stop_requested")
+
+    assert pre_send["prompt_sha256"] == "era-abc123"
+    assert resumed["prompt_sha256"] == "era-abc123"
+
+    records = [json.loads(line) for line
+               in (driver._dbg.dir / "actions.jsonl").read_text().splitlines()]
+    by_action = {r["action"]: r for r in records
+                if r["action"] in {"auto_opener_pre_send", "auto_opener_resumed_send",
+                                   "training_cancelled"}}
+    assert by_action["auto_opener_pre_send"]["prompt_sha256"] == "era-abc123"
+    assert by_action["auto_opener_resumed_send"]["prompt_sha256"] == "era-abc123"
+    assert by_action["training_cancelled"]["prompt_sha256"] == "era-abc123"
+
+
+def test_opener_evidence_rows_carry_no_prompt_era_when_never_bound(tmp_path):
+    """A driver Worker never called set_opener_prompt_sha256 on (a legacy caller, or an opener
+    service unavailable this run) must degrade to no era digest, not raise."""
+    driver, _adb = _driver([])
+    driver.set_auto_session_policy(None)
+    driver._dbg = HingeDebugLog(str(tmp_path), run_id="evidence-no-prompt-era")
+
+    evidence = driver._record_auto_opener_pre_send(
+        b"FRAME", opener="An opener", item_index=None, model_item_index=1)
+
+    assert evidence["prompt_sha256"] is None
+    records = [json.loads(line) for line
+               in (driver._dbg.dir / "actions.jsonl").read_text().splitlines()]
+    row = next(r for r in records if r["action"] == "auto_opener_pre_send")
+    assert row["prompt_sha256"] is None
+
+
+def test_current_profile_identity_reads_the_held_index(tmp_path):
+    """ranker/profile_key.py's one sanctioned consumer (worker.py's _current_profile_key) reads
+    this off whatever `_current_item_index` the driver is currently holding -- a pure state
+    read, never a capture. None before anything is captured, the held index's own `.identity`
+    once one exists, and None again once the index is invalidated (like()/dislike()'s own
+    `finally`, doc 5.3) -- exactly the ONE-PROFILE lifetime this method's docstring promises."""
+    driver, _adb = _driver([])
+    assert driver.current_profile_identity() is None   # nothing captured yet this session
+
+    fake_identity = object()
+    driver._current_item_index = SimpleNamespace(identity=fake_identity)
+    assert driver.current_profile_identity() is fake_identity
+
+    driver._invalidate_item_index("simulating like()/dislike()'s own post-action invalidation")
+    assert driver.current_profile_identity() is None
+
+
 def test_training_advance_probe_retains_the_frames_that_license_the_label(tmp_path, monkeypatch):
     """The accepted probe is the SOLE proof that a training label describes a real advance.
 

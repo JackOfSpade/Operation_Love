@@ -22,7 +22,6 @@ from operation_love.opener.opener import (
     GeminiOpener,
     ItemRequest,
     OpenerAborted,
-    OpenerDeadlineExceeded,
     OpenerError,
     OpenerParseError,
     _CONTEXT_LABEL,
@@ -333,6 +332,25 @@ def test_response_schema_orders_referenced_and_angle_before_the_opener():
     assert "never infer friend, partner, or family from proximity" in item_description
     assert "may name a visible detail as setup" in opener_description
     assert "final point must do something conversational beyond describing" in opener_description
+    # 2026-09-05 register rewrite. This description is the THIRD of four on-wire copies of the
+    # prompt rules (config.yaml opener.style, _SYSTEM, this, and the retry hint block), and
+    # until these pins existed it was the only one nothing held: it could be deleted or drifted
+    # with a fully green suite, which is exactly the lockstep failure opener.py's own comment
+    # log warns about. The long form lives in tests/test_config_yaml_real.py and the _SYSTEM
+    # twin in tests/test_opener.py.
+    assert "spoken register a person texts in" in opener_description
+    assert "offhand remark about the thing" in opener_description
+    assert "never restate context the message itself already established" in opener_description
+    assert "never point at the photo or profile as an object" in opener_description
+    # 2026-09-05 modifier-attachment follow-up: noun referents can all be clear while a nearby
+    # phrase still has two plausible grammatical relationships. The schema is the third stable
+    # prompt surface and must carry the same general property without the live incident's copy.
+    assert "modifier clarity" in opener_description
+    assert "every modifying phrase must have only one natural attachment" in opener_description
+    assert "on first reading" in opener_description
+    assert "if the phrase's placement permits a plausible unintended meaning" in opener_description
+    assert "reorder or rephrase the line" in opener_description
+    assert "bundled up in all that snow" not in opener_description
     # With minimal thinking, angle is the only place to check that a guess adds information and
     # remains unconfirmed before emitting the opener.
     assert "a guess is optional" in angle_description
@@ -346,8 +364,15 @@ def test_response_schema_orders_referenced_and_angle_before_the_opener():
     assert "gives her room to confirm or correct it" in angle_description
     assert "must not assume the guess is true" in angle_description
     assert "only makes sense if it is true" in angle_description
+    assert "if a location is inferred from an image rather than stated" in angle_description
+    assert "location guess must be the whole conversational move" in angle_description
+    assert "end after it or ask only whether that location itself is right" in angle_description
     assert "a guess must remain unconfirmed until she replies" in opener_description
     assert "no later statement or question may assume it is correct" in opener_description
+    assert "image-derived location guess is the only conversational move" in opener_description
+    assert "ask only whether the location itself is right" in opener_description
+    assert "its confirmation is the payoff" in opener_description
+    assert "activity, reason, preference, feeling, experience, or consequence" in opener_description
     assert "every visible detail named in the opener" in angle_description
     assert "parallel, contrasting answers" in angle_description
     assert "never unrelated dimensions joined by 'or'" in angle_description
@@ -398,6 +423,90 @@ def test_response_schema_orders_referenced_and_angle_before_the_opener():
     assert "enum" not in schema["properties"]["item_description"]
     assert "include any header, caption, or prompt printed with it" in (
         schema["properties"]["item_description"]["description"].lower())
+
+
+def test_response_schema_opener_description_ships_the_no_grading_rule():
+    """2026-09-06: COMPLIMENT AS REMARK moved praise off her and onto the visible thing, and the
+    model complied perfectly -- openers kept landing on a taste verdict on the thing itself
+    ("... is an elite move"). Moving WHO gets graded does not stop the grading, so NO GRADING
+    forbids the verdict itself. This description is the THIRD of four on-wire copies of the
+    prompt rules (config.yaml opener.style, _SYSTEM, this, and the retry hint block, which is
+    deliberately untouched by this rule). The long form lives in
+    tests/test_config_yaml_real.py::test_shipped_opener_style_ships_the_no_grading_rule and the
+    _SYSTEM twin in tests/test_opener.py::test_system_prompt_ships_the_no_grading_rule.
+    """
+    opener_description = _SCHEMA["properties"]["opener"]["description"].lower()
+    assert "never assign the thing a grade, rank, or verdict on how good it is" in opener_description
+    assert "if the predicate would fit unchanged under a different woman's" in opener_description
+    assert "photo it is a grade rather than an observation" in opener_description
+    # The escape hatch: when nothing but a grade is available, cut the beat rather than invent a
+    # claim to fill it (the same 2026-08-16 minimum-invention lesson applied to this failure mode).
+    assert "cut that beat and let one" in opener_description
+    assert "specific question be the whole message" in opener_description
+    # 2026-09-06 (b): PLAYFUL HYPERBOLE carve-out against the substitution check.
+    assert ("except that an unmistakably nonliteral playful hyperbole stays playful framing "
+            "rather") in opener_description
+    assert "than an assessment of quality even where its wording could transfer" in opener_description
+    # 2026-09-06 (b): the fallback question is still subject to VARY THE SHAPE.
+    assert ("itself still subject to vary the shape so it does not become its own repeated "
+            "template") in opener_description
+    # De-templating (2026-08-16): no banned verdict vocabulary may reach this on-wire string.
+    for word in ("elite", "iconic", "top tier", "masterpiece", "unmatched", "power move"):
+        assert word not in opener_description
+
+
+def test_response_schema_opener_description_folds_qualification_into_compliment_as_remark():
+    """OWNER DECISION 2026-09-06: NARROW COMPLIMENT AS REMARK, do not retire it. Long-form
+    rationale (69% prohibition/mechanical vs 21% positive specification, 94.7% two sentences,
+    98.9% question final) is pinned in tests/test_config_yaml_real.py::
+    test_shipped_opener_style_folds_qualification_into_compliment_as_remark; the _SYSTEM twin is
+    pinned in tests/test_opener.py::test_system_prompt_folds_qualification_into_compliment_as_remark.
+
+    THE ORIGINAL DEFECT: this schema copy taught "deliver any compliment as an offhand remark
+    about the thing rather than an earnest verdict on her" with NO qualification at all -- this
+    compressed copy never named NO GRADING or carried its "narrows COMPLIMENT AS REMARK"
+    subordination sentence, so nothing on this wire stopped the model from moving praise onto
+    the thing and stopping there. THE 2026-09-06 (c) FIX stated a qualification inline
+    ("inseparable from a specific observation about that item since moving the praise onto the
+    thing alone is not enough").
+
+    THE (c) FIX'S OWN DEFECT, closed here (2026-09-06 (d)): the grade check a few sentences
+    later in this same description already carries an explicit PLAYFUL HYPERBOLE exception
+    (still pinned in test_response_schema_opener_description_ships_the_no_grading_rule above),
+    but (c)'s inline qualification stated no such exception, so an anchored hyperbolic
+    compliment could read as satisfying one clause of this description while failing the
+    other. THE FIX: the compliment clause now defers to the SUBSTITUTION TEST (labeled at its
+    own definition site, a few sentences below) instead of restating a second, unlabeled
+    portability requirement, so the one exception is stated once and applies to both.
+
+    2026-09-06 (g): config.yaml's opener.style and _SYSTEM both also carry a SECOND, independent
+    COMPLIMENT AS REMARK requirement about MAGNITUDE ("stays understated rather than emphatic")
+    that (d) left unexcepted and (g) fixed by pointing it at the same PLAYFUL HYPERBOLE
+    exception. This schema copy never carried that magnitude clause in the first place (the
+    2026-09-06 (e) correction above already established this precisely, and the (c)/(d) history
+    right above this docstring names only "offhand remark" and the SUBSTITUTION TEST defer, never
+    a magnitude phrase), so (g) touched neither this description nor this test. The assertion
+    below is a mutation-checkable guard, not a new pin of resolved wording: it fails the moment
+    "understated"/"emphatic" wording is copied onto this compressed surface without also copying
+    (g)'s exception, which is exactly the contradiction (g) closed on the other two surfaces.
+    """
+    opener_description = _SCHEMA["properties"]["opener"]["description"].lower()
+    assert "offhand remark about the thing" in opener_description
+    assert "rather than an earnest verdict on her" in opener_description
+    assert "it must also pass the substitution test below" in opener_description
+    # MUTATION GUARD: the (c) fix's own unlabeled, exception-free qualification must be GONE --
+    # its absence is what proves this clause no longer duplicates a portability test that could
+    # disagree with the labeled SUBSTITUTION TEST's PLAYFUL HYPERBOLE exception.
+    assert "inseparable from a specific observation about that item" not in opener_description
+    # The forward reference ("below") must be literally true, and the SUBSTITUTION TEST label
+    # must actually be defined at the sentence it points to.
+    assert "substitution test:" in opener_description
+    assert (opener_description.index("must also pass the substitution test below")
+            < opener_description.index("substitution test:"))
+    # 2026-09-06 (g) MUTATION GUARD: this compressed surface still carries no magnitude clause
+    # at all, so (g)'s exception-subordination fix had nothing to touch here.
+    assert "understated" not in opener_description
+    assert "emphatic" not in opener_description
 
 
 def test_angle_is_mapped_from_the_response_and_degrades_to_empty_when_omitted():
@@ -1234,7 +1343,18 @@ def test_empty_string_retry_hint_matches_omitted_retry_hint():
 
 def test_nonempty_retry_hint_appears_in_user_text_after_profile_content():
     """The corrective instruction must be appended AFTER the profile text (so it's the most
-    recent thing the model reads) and must contain the caller's specific reason verbatim."""
+    recent thing the model reads) and must contain the caller's specific reason verbatim.
+
+    2026-09-05: the HARD REJECTION list gained the rejection causes it had omitted --
+    bare message, leading disclaimer, assumed shared future, sensitive inference, and
+    undeliverable (emoji / non-ASCII) characters -- and now also tracks the later
+    unconfirmed-location guard. All are raised by _parse() and consume an attempt against
+    max_attempts=5. The list now names every
+    opener-content cause _parse() enforces EXCEPT REASON_UNDELIVERABLE_SEQUENCE (a literal '%'
+    against a following lowercase 's'), which is deliberately excluded from all prompt copy for
+    the reason given at that guard. The list also no longer spends its emphasis on the dash
+    rule, which _sanitize launders and which therefore can never be why an attempt was
+    rejected."""
     transport = _Transport([(200, _success())])
     _opener(transport).generate(
         Profile(bio="Weekend potter"), style="be curious",
@@ -1254,8 +1374,22 @@ def test_nonempty_retry_hint_appears_in_user_text_after_profile_content():
     lower = text.lower()
     assert "non-empty" in lower and "string" in lower
     assert "two sentences" in lower
-    assert "dash" in lower and "hyphen" in lower
     assert "concrete detail" in lower
+    # The five rejection causes the list omitted until 2026-09-05, all enforced by _parse()
+    # and all of which burn an attempt against max_attempts=5 when they fire.
+    assert "bare message itself with no preamble, label, or surrounding quotes" in lower
+    assert "must not open by naming and denying a negative reading of itself" in lower
+    assert "must not assume a match, date, or other shared future" in lower
+    assert ("must not use an unconfirmed inferred location as the premise of a later "
+            "statement or question") in lower
+    assert "must not infer or tease about self harm, death, injury, an accident, or danger" in lower
+    # REASON_UNDELIVERABLE_CHARS. This one also restores a standing ASCII reminder to the retry
+    # turn, which the same rewrite otherwise removed along with the dash "especially" clause --
+    # and SPOKEN REGISTER pushes the model toward informality, the direction emoji come from.
+    assert "plain ascii letters and punctuation with no emoji" in lower
+    # ...and the inversion the block's own comment warns against: emphasising the dash rule,
+    # which _sanitize launders silently, as though it could be why an attempt was rejected.
+    assert "especially the hard rule against em dashes and hyphens" not in lower
     # A retry must not revive the old forced-claim rule. It keeps visible setup legal, requires
     # a conversational payoff, and carries the minimum-invention/hyperbole distinction.
     assert "you may name that detail when it is useful setup" in lower
@@ -1265,6 +1399,10 @@ def test_nonempty_retry_hint_appears_in_user_text_after_profile_content():
     assert "hidden purpose, motive, circumstance, action, route, effort, goal, cause" in lower
     assert "least speculative natural interpretation" in lower
     assert "visible or stated basis immediately recognizable" in lower
+    assert "for a location inferred from an image" in lower
+    assert "only conversational move before she replies" in lower
+    assert "end after it or ask only whether the location itself is right" in lower
+    assert "activity, reason, preference, feeling, experience, or consequence there" in lower
     assert "clearly nonliteral playful hyperbole is allowed" in lower
     assert "invented motive or event presented as literal fact is not" in lower
     assert "every named visible detail must be necessary to the conversational move" in lower
@@ -1492,10 +1630,11 @@ def test_item_crop_request_passes_her_name_back_as_text():
 def test_item_crop_request_forwards_the_part_a_style_guide_byte_for_byte():
     """Part B is a PAYLOAD change, not a voice change (doc sections 2 and 3 are shipped and
     working). The owner-tunable style guide must arrive unchanged and in the same leading
-    position as on every other shape -- combined with the plain-_SYSTEM assertion above, that
-    is every Part A property reaching the model exactly as it did: the one rule, the five
-    non-binding moves, the three guardrails, the hedge variety, the two-sentence cap and the
-    economy rule, and the ASCII/no-dash hard rules."""
+    position as on every other shape: whatever config.yaml's opener.style currently says
+    reaches the model byte for byte. This test is deliberately content-agnostic -- it forwards
+    an arbitrary style string and pins the forwarding, not the wording, so it stays true across
+    every owner edit to the style text. What the shipped text must SAY is pinned in
+    tests/test_config_yaml_real.py, and its _SYSTEM twin in tests/test_opener.py."""
     style = (
         "THE ONE RULE: your opener must contain a claim that could be wrong.\n"
         "HEDGE THE CLAIM, NEVER YOURSELF: I'm going to guess, I bet, I heard, I'm assuming.\n"
@@ -1650,7 +1789,12 @@ def test_oversized_item_crops_are_all_compressed_and_none_is_dropped(monkeypatch
     this asserts the whole shape rather than just the count."""
     crops = [_noise_png(seed) for seed in range(3)]
     context = [_noise_png(seed=9)]
-    monkeypatch.setattr(opener_module, "_MAX_INLINE_REQUEST_BYTES", 30_000)
+    # 2026-09-06: bumped from 30_000. _MAX_INLINE_REQUEST_BYTES counts the real _SYSTEM text
+    # (see _request_size_bytes), so the NO GRADING addition to _SYSTEM ate this budget's margin;
+    # 30_000 left only ~40 bytes of headroom even before that rule shipped. Still far below the
+    # ~37KB raw-PNG size these crops assemble to, so the compress-and-retry path this test
+    # exercises still fires.
+    monkeypatch.setattr(opener_module, "_MAX_INLINE_REQUEST_BYTES", 35_000)
     transport = _Transport([(200, _success())])
     _opener(transport).generate(
         Profile(), style="s",
@@ -2090,97 +2234,6 @@ def test_should_stop_is_checked_for_every_model_including_an_already_retired_one
 
     assert len(transport.calls) == 0
     assert "gemini-live" in str(exc_info.value)
-
-
-# ---------------------------------------------------------------------------------------
-# advisory deadline -- Observe suggestions are optional but time-sensitive. The absolute
-# deadline belongs to the whole Gemini fallback cascade, rather than merely the service retry
-# loop around it, so a pair of slow/503 models cannot make the person wait through model three.
-# ---------------------------------------------------------------------------------------
-
-def test_advisory_deadline_stops_a_503_cascade_before_model_three(monkeypatch):
-    clock = {"now": 100.0}
-
-    class BusyTransport:
-        def __init__(self):
-            self.calls = []
-
-        def __call__(self, url, payload, headers, timeout, *, method="POST"):
-            self.calls.append((url, timeout))
-            # Each failed request consumes exactly half the ten-second advisory budget.
-            clock["now"] += 5.0
-            return 503, {"error": {"code": 503, "status": "UNAVAILABLE", "message": "busy"}}
-
-    transport = BusyTransport()
-    opener = _opener(transport, models=("gemini-first", "gemini-second", "gemini-third"),
-                     request_timeout_s=90)
-    monkeypatch.setattr(opener_module.time, "monotonic", lambda: clock["now"])
-
-    with pytest.raises(OpenerDeadlineExceeded, match="deadline") as exc_info:
-        opener.generate(Profile(), style="s", deadline=110.0)
-
-    assert _model_calls(transport) == ["gemini-first", "gemini-second"]
-    assert [timeout for _url, timeout in transport.calls] == [10.0, 5.0]
-    assert exc_info.value.usage is None and exc_info.value.model is None
-
-
-def test_advisory_deadline_caps_the_first_provider_request_timeout(monkeypatch):
-    clock = {"now": 50.0}
-    transport = _Transport([(200, _success())])
-    opener = _opener(transport, request_timeout_s=90)
-    monkeypatch.setattr(opener_module.time, "monotonic", lambda: clock["now"])
-
-    opener.generate(Profile(), style="s", deadline=57.25)
-
-    assert transport.calls[0][3] == 7.25
-
-
-def test_advisory_deadline_rejects_a_late_successful_provider_response(monkeypatch):
-    clock = {"now": 20.0}
-
-    class LateSuccessTransport:
-        def __init__(self):
-            self.calls = []
-
-        def __call__(self, url, payload, headers, timeout, *, method="POST"):
-            self.calls.append((url, timeout))
-            clock["now"] = 25.01
-            return 200, _success()
-
-    transport = LateSuccessTransport()
-    opener = _opener(transport, request_timeout_s=90)
-    monkeypatch.setattr(opener_module.time, "monotonic", lambda: clock["now"])
-
-    with pytest.raises(OpenerDeadlineExceeded, match="deadline") as exc_info:
-        opener.generate(Profile(), style="s", deadline=25.0)
-
-    assert len(transport.calls) == 1
-    assert transport.calls[0][1] == 5.0
-    assert exc_info.value.model == "gemini-primary"
-    assert exc_info.value.usage is not None
-    assert exc_info.value.usage.input_tokens == 8  # raw prompt 11 minus 3 cached input tokens
-
-
-def test_advisory_deadline_rejects_a_late_transport_error_before_cascading(monkeypatch):
-    clock = {"now": 10.0}
-
-    class LateTransportError:
-        def __init__(self):
-            self.calls = []
-
-        def __call__(self, url, payload, headers, timeout, *, method="POST"):
-            self.calls.append((url, timeout))
-            clock["now"] = 15.01
-            raise OSError("timed out")
-
-    transport = LateTransportError()
-    opener = _opener(transport, models=("gemini-first", "gemini-second"), request_timeout_s=90)
-    monkeypatch.setattr(opener_module.time, "monotonic", lambda: clock["now"])
-
-    with pytest.raises(OpenerDeadlineExceeded, match="deadline"):
-        opener.generate(Profile(), style="s", deadline=15.0)
-
-    assert _model_calls(transport) == ["gemini-first"]
 
 
 # ---------------------------------------------------------------------------------------

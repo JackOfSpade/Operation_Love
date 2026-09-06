@@ -638,45 +638,7 @@ def test_max_attempts_way_above_ceiling_rejected_same_as_just_above():
     _expect_error(d, "max_attempts")
 
 
-# --- observe-mode opener retry policy -------------------------------------------------
-
-def test_advisory_retry_defaults_are_bounded():
-    cfg = _load(BASE)
-    assert cfg.opener.advisory_max_attempts == 3
-    assert cfg.opener.advisory_deadline_s == 60.0
-    c.validate(cfg)
-
-
-def test_advisory_retry_settings_accept_valid_values():
-    d = {**BASE, "opener": {**BASE["opener"], "advisory_max_attempts": 2,
-                             "advisory_deadline_s": 12.5}}
-    cfg = _load(d)
-    assert cfg.opener.advisory_max_attempts == 2
-    assert cfg.opener.advisory_deadline_s == 12.5
-    c.validate(cfg)
-
-
-@pytest.mark.parametrize("value", [0, -1, True, "3", 2.5])
-def test_advisory_max_attempts_rejects_invalid_values(value):
-    d = {**BASE, "opener": {**BASE["opener"], "advisory_max_attempts": value}}
-    _expect_error(d, "advisory_max_attempts")
-
-
-def test_advisory_max_attempts_cannot_exceed_auto_budget():
-    d = {**BASE, "opener": {**BASE["opener"], "max_attempts": 2,
-                             "advisory_max_attempts": 3}}
-    _expect_error(d, "advisory_max_attempts")
-
-
-@pytest.mark.parametrize("value", [0, -1, True, "60", 301])
-def test_advisory_deadline_rejects_invalid_values(value):
-    d = {**BASE, "opener": {**BASE["opener"], "advisory_deadline_s": value}}
-    _expect_error(d, "advisory_deadline_s")
-
-
-@pytest.mark.parametrize(
-    "field", ["max_attempts", "advisory_max_attempts", "advisory_deadline_s",
-              "request_timeout_s"])
+@pytest.mark.parametrize("field", ["max_attempts", "request_timeout_s"])
 def test_bounded_opener_numbers_report_huge_integers_as_config_errors(field):
     cfg = _load(BASE)
     setattr(cfg.opener, field, 1 << 20_000)
@@ -804,6 +766,8 @@ def test_numeric_validation_rejects_enormous_integer_with_clean_value_error():
 @pytest.mark.parametrize(("field", "value"), [
     ("enabled", "false"),
     ("preflight", 1),
+    ("replay_corpus_enabled", 1),
+    ("replay_corpus_enabled", "false"),
     ("provider", "   "),
     ("model", ""),
     ("model", " gemini-3.6-flash "),
@@ -817,6 +781,21 @@ def test_numeric_validation_rejects_enormous_integer_with_clean_value_error():
 def test_opener_scalar_shapes_fail_before_provider_calls(field, value):
     opener = {**BASE["opener"], field: value}
     _expect_error({**BASE, "opener": opener}, f"opener.{field}")
+
+
+def test_opener_replay_corpus_enabled_defaults_to_false():
+    """This writes REAL PEOPLE'S PHOTOS to local disk (opener/replay_corpus.py), so a config
+    that never mentions it must load with it OFF -- never implied on merely because
+    opener.enabled is true."""
+    cfg = _load(BASE)
+    assert cfg.opener.replay_corpus_enabled is False
+
+
+def test_opener_replay_corpus_enabled_true_loads_and_validates_cleanly():
+    opener = {**BASE["opener"], "replay_corpus_enabled": True}
+    cfg = _load({**BASE, "opener": opener})
+    c.validate(cfg)
+    assert cfg.opener.replay_corpus_enabled is True
 
 
 @pytest.mark.parametrize(

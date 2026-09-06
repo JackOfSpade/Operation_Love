@@ -1453,18 +1453,18 @@ def test_gemini_constructor_args_wired_correctly_and_distinguishably(monkeypatch
 class _SpyOpenerService:
     """Stand-in for OpenerService that records constructor args, without ever running a
     worker against it -- used to pin cfg.opener.max_attempts reaching the constructed
-    service (contract: OpenerService(client, tracker, store, style, max_attempts=5))."""
+    service (contract: OpenerService(client, tracker, store, style, max_attempts=5,
+    replay_corpus_dir=None))."""
     instances: list = []
 
-    def __init__(self, client, tracker, store, style, max_attempts=5,
-                 advisory_max_attempts=3, advisory_deadline_s=60.0):
+    def __init__(self, client, tracker, store, style, max_attempts=5, *,
+                 replay_corpus_dir=None):
         self.client = client
         self.tracker = tracker
         self.store = store
         self.style = style
         self.max_attempts = max_attempts
-        self.advisory_max_attempts = advisory_max_attempts
-        self.advisory_deadline_s = advisory_deadline_s
+        self.replay_corpus_dir = replay_corpus_dir
         _SpyOpenerService.instances.append(self)
 
 
@@ -1477,8 +1477,7 @@ def test_opener_max_attempts_reaches_the_constructed_opener_service(monkeypatch,
     unnoticed."""
     cfg_text = _CONFIG.replace(
         "opener:\n  enabled: false",
-        "opener:\n  enabled: false\n  max_attempts: 7\n"
-        "  advisory_max_attempts: 2\n  advisory_deadline_s: 17.5")
+        "opener:\n  enabled: false\n  max_attempts: 7")
     cfg_path = _write_cfg(tmp_path, cfg_text)
     monkeypatch.setattr(sup, "Capabilities", _Caps)
     monkeypatch.setattr(sup, "Embedder", _FastEmbedder)
@@ -1494,8 +1493,6 @@ def test_opener_max_attempts_reaches_the_constructed_opener_service(monkeypatch,
 
     assert len(_SpyOpenerService.instances) == 1
     assert _SpyOpenerService.instances[0].max_attempts == 7
-    assert _SpyOpenerService.instances[0].advisory_max_attempts == 2
-    assert _SpyOpenerService.instances[0].advisory_deadline_s == 17.5
 
 
 def test_opener_max_attempts_default_reaches_the_constructed_opener_service(monkeypatch, tmp_path):
@@ -1516,8 +1513,52 @@ def test_opener_max_attempts_default_reaches_the_constructed_opener_service(monk
 
     assert len(_SpyOpenerService.instances) == 1
     assert _SpyOpenerService.instances[0].max_attempts == 5
-    assert _SpyOpenerService.instances[0].advisory_max_attempts == 3
-    assert _SpyOpenerService.instances[0].advisory_deadline_s == 60.0
+
+
+def test_opener_replay_corpus_disabled_by_default_reaches_the_constructed_opener_service(
+        monkeypatch, tmp_path):
+    """The shipped default (opener.replay_corpus_enabled: false) must reach OpenerService's
+    constructor as replay_corpus_dir=None -- this writes REAL PEOPLE'S PHOTOS to local disk, so
+    the off-by-default contract must hold even when config.yaml never mentions the flag."""
+    cfg_path = _write_cfg(tmp_path)   # base _CONFIG sets no opener.replay_corpus_enabled
+    monkeypatch.setattr(sup, "Capabilities", _Caps)
+    monkeypatch.setattr(sup, "Embedder", _FastEmbedder)
+    monkeypatch.setattr(sup, "QualityFilter", _FastQuality)
+    monkeypatch.setattr(sup, "make_store", lambda cfg: _FakeStore())
+    monkeypatch.setattr(sup, "make_driver", lambda app, cfg: _FakeDriver())
+    monkeypatch.setattr(sup, "_install_signal_handlers", lambda stop: None)
+    _patch_no_adb(monkeypatch)
+    _SpyOpenerService.instances = []
+    monkeypatch.setattr(sup, "OpenerService", _SpyOpenerService)
+
+    sup.run(str(cfg_path), stop_event=threading.Event())
+
+    assert len(_SpyOpenerService.instances) == 1
+    assert _SpyOpenerService.instances[0].replay_corpus_dir is None
+
+
+def test_opener_replay_corpus_enabled_reaches_the_constructed_opener_service(monkeypatch, tmp_path):
+    """Turning the owner's flag on must reach OpenerService as a real directory (the module's
+    own DEFAULT_CORPUS_DIR), not merely a truthy placeholder."""
+    from operation_love.opener.replay_corpus import DEFAULT_CORPUS_DIR
+    cfg_text = _CONFIG.replace(
+        "opener:\n  enabled: false",
+        "opener:\n  enabled: false\n  replay_corpus_enabled: true")
+    cfg_path = _write_cfg(tmp_path, cfg_text)
+    monkeypatch.setattr(sup, "Capabilities", _Caps)
+    monkeypatch.setattr(sup, "Embedder", _FastEmbedder)
+    monkeypatch.setattr(sup, "QualityFilter", _FastQuality)
+    monkeypatch.setattr(sup, "make_store", lambda cfg: _FakeStore())
+    monkeypatch.setattr(sup, "make_driver", lambda app, cfg: _FakeDriver())
+    monkeypatch.setattr(sup, "_install_signal_handlers", lambda stop: None)
+    _patch_no_adb(monkeypatch)
+    _SpyOpenerService.instances = []
+    monkeypatch.setattr(sup, "OpenerService", _SpyOpenerService)
+
+    sup.run(str(cfg_path), stop_event=threading.Event())
+
+    assert len(_SpyOpenerService.instances) == 1
+    assert _SpyOpenerService.instances[0].replay_corpus_dir == DEFAULT_CORPUS_DIR
 
 
 def test_on_opener_service_callback_receives_the_live_opener_service(monkeypatch, tmp_path):

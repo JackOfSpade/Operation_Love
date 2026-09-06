@@ -1,0 +1,648 @@
+{
+  "schema_version": 1,
+  "digest_components": [
+    "opener.style (config.yaml, the owner's user-turn style guide)",
+    "_SYSTEM (operation_love/opener/opener.py systemInstruction)",
+    "canonical json.dumps(_SCHEMA, sort_keys=True, separators=(',',':'), ensure_ascii=True) (operation_love/opener/opener.py responseJsonSchema)",
+    "_ITEM_PREAMBLE (operation_love/opener/opener.py)",
+    "_ITEM_PREAMBLE_CONTEXT (operation_love/opener/opener.py)",
+    "_ITEM_LABEL (operation_love/opener/opener.py)",
+    "_CONTEXT_LABEL (operation_love/opener/opener.py)"
+  ],
+  "digest_algorithm": "sha256(NUL.join(digest_components), utf-8); must match operation_love.opener.opener.prompt_stamp() exactly -- see tests/test_backfill_prompt_eras.py",
+  "source_paths": [
+    "config.yaml",
+    "operation_love/opener/opener.py"
+  ],
+  "generated_from": {
+    "total_revisions": 46,
+    "evaluated_revisions": 22,
+    "unevaluable_revisions": 24
+  },
+  "eras": [
+    {
+      "prompt_sha256": "69f78cfd8a9883d4d9eb57f626442c2242b9f3043bd12973f298b31405cba56c",
+      "label": "2026-08-12 e63266f0: baseline: 9 rule(s) on wire",
+      "first_commit": "e63266f0cd3a980a6a0997959707f217051acd0f",
+      "first_date": "2026-08-12T20:06:51-04:00",
+      "first_subject": "Opener redesign: model picks the item, driver fails loud on a miss",
+      "last_commit": "6fd68ac7a2a75042251553454975c2a1de9bf5d7",
+      "last_date": "2026-08-12T23:14:19-04:00",
+      "last_subject": "Harden targeted opener safety flow",
+      "commit_count": 2,
+      "commits": [
+        "e63266f0cd3a980a6a0997959707f217051acd0f",
+        "6fd68ac7a2a75042251553454975c2a1de9bf5d7"
+      ],
+      "rules": [
+        "SHARED CONTEXT RULE",
+        "THE ONE RULE",
+        "HEDGE THE CLAIM, NEVER YOURSELF",
+        "VARY THE OPENING",
+        "GUESS THE WORLD, NOT HER IDENTITY",
+        "NEVER INVENT THE SENDER",
+        "PICK THE ITEM YOURSELF",
+        "APPLICATION RULE",
+        "HARD RULE"
+      ]
+    },
+    {
+      "prompt_sha256": "ee617e7cfeb7653668739993439176bdb8a0fda0150ac3b2b9048f49e032572a",
+      "label": "2026-08-14 05e8cce7: prose only (no rule added or removed)",
+      "first_commit": "05e8cce76d718d82742dcf1c106a9da45e75baed",
+      "first_date": "2026-08-14T18:06:48-04:00",
+      "first_subject": "Implement Hinge calibration tools, like composer, opener retractions, and observation release workflows",
+      "last_commit": "59dabcd81f5f1b39a3d97c5da21a8b44a237fdba",
+      "last_date": "2026-08-14T20:03:36-04:00",
+      "last_subject": "Fix Hinge scroll decisions and item numbering",
+      "commit_count": 2,
+      "commits": [
+        "05e8cce76d718d82742dcf1c106a9da45e75baed",
+        "59dabcd81f5f1b39a3d97c5da21a8b44a237fdba"
+      ],
+      "rules": [
+        "SHARED CONTEXT RULE",
+        "THE ONE RULE",
+        "HEDGE THE CLAIM, NEVER YOURSELF",
+        "VARY THE OPENING",
+        "GUESS THE WORLD, NOT HER IDENTITY",
+        "NEVER INVENT THE SENDER",
+        "PICK THE ITEM YOURSELF",
+        "APPLICATION RULE",
+        "HARD RULE"
+      ]
+    },
+    {
+      "prompt_sha256": "a96eb3f7ed0ee76589ccee900605b10fab4964cfc69715f23a22e23febd82dce",
+      "label": "2026-08-14 9b47e268: +EVIDENCE BOUNDARY, ONE HOP ONLY; +CALIBRATE THE GUESS; +TRACEABILITY TEST",
+      "first_commit": "9b47e2683a859969502b44d57ddfa365aac8edf0",
+      "first_date": "2026-08-14T23:34:22-04:00",
+      "first_subject": "Fix observe confirmation and opener grounding",
+      "last_commit": "4dcbcc97f29f062fb82da1275bbf276e89181b27",
+      "last_date": "2026-08-15T04:56:09-04:00",
+      "last_subject": "Harden Hinge observation and opener recovery",
+      "commit_count": 2,
+      "commits": [
+        "9b47e2683a859969502b44d57ddfa365aac8edf0",
+        "4dcbcc97f29f062fb82da1275bbf276e89181b27"
+      ],
+      "rules": [
+        "SHARED CONTEXT RULE",
+        "THE ONE RULE",
+        "EVIDENCE BOUNDARY, ONE HOP ONLY",
+        "CALIBRATE THE GUESS",
+        "TRACEABILITY TEST",
+        "HEDGE THE CLAIM, NEVER YOURSELF",
+        "VARY THE OPENING",
+        "GUESS THE WORLD, NOT HER IDENTITY",
+        "NEVER INVENT THE SENDER",
+        "PICK THE ITEM YOURSELF",
+        "APPLICATION RULE",
+        "HARD RULE"
+      ]
+    },
+    {
+      "prompt_sha256": "d66a93be1dd4ff6e5fc816bf8f32393fc1654c784c78828e50c751c463d8c393",
+      "label": "2026-08-16 8213967c: +SELF CONTAINED CLAIM; +PREMISE CONSISTENCY",
+      "first_commit": "8213967cc600abb18058b42d956f2114e997c38d",
+      "first_date": "2026-08-16T07:56:21-04:00",
+      "first_subject": "Harden Hinge item repair and observation safety",
+      "last_commit": "8213967cc600abb18058b42d956f2114e997c38d",
+      "last_date": "2026-08-16T07:56:21-04:00",
+      "last_subject": "Harden Hinge item repair and observation safety",
+      "commit_count": 1,
+      "commits": [
+        "8213967cc600abb18058b42d956f2114e997c38d"
+      ],
+      "rules": [
+        "SHARED CONTEXT RULE",
+        "THE ONE RULE",
+        "SELF CONTAINED CLAIM",
+        "EVIDENCE BOUNDARY, ONE HOP ONLY",
+        "CALIBRATE THE GUESS",
+        "TRACEABILITY TEST",
+        "PREMISE CONSISTENCY",
+        "HEDGE THE CLAIM, NEVER YOURSELF",
+        "VARY THE OPENING",
+        "GUESS THE WORLD, NOT HER IDENTITY",
+        "NEVER INVENT THE SENDER",
+        "PICK THE ITEM YOURSELF",
+        "APPLICATION RULE",
+        "HARD RULE"
+      ]
+    },
+    {
+      "prompt_sha256": "725815f65b55e5d3749b6510e796c1d907047b425140c6ab72f14d5caedb9f4c",
+      "label": "2026-08-16 2deeba3d: +PHOTO HEADER RULE; +CONVERSATIONAL VALUE RULE; +CLAIMS ONLY WHEN NATURAL; +8 more change(s)",
+      "first_commit": "2deeba3d3ea6581a400b4c3e3686b35b19d618c1",
+      "first_date": "2026-08-16T23:32:20-04:00",
+      "first_subject": "Harden Hinge item enumeration recovery",
+      "last_commit": "2deeba3d3ea6581a400b4c3e3686b35b19d618c1",
+      "last_date": "2026-08-16T23:32:20-04:00",
+      "last_subject": "Harden Hinge item enumeration recovery",
+      "commit_count": 1,
+      "commits": [
+        "2deeba3d3ea6581a400b4c3e3686b35b19d618c1"
+      ],
+      "rules": [
+        "SHARED CONTEXT RULE",
+        "PHOTO HEADER RULE",
+        "CONVERSATIONAL VALUE RULE",
+        "CLAIMS ONLY WHEN NATURAL",
+        "MINIMUM INVENTION",
+        "TRACEABILITY TEST",
+        "PLAYFUL HYPERBOLE",
+        "SETUP PAYOFF CONTINUITY",
+        "QUESTION COHERENCE",
+        "PREMISE CONSISTENCY",
+        "HEDGE THE CLAIM, NEVER YOURSELF",
+        "VARY THE OPENING",
+        "GUESS THE WORLD, NOT HER IDENTITY",
+        "NEVER INVENT THE SENDER",
+        "PICK THE ITEM YOURSELF",
+        "APPLICATION RULE",
+        "HARD RULE"
+      ]
+    },
+    {
+      "prompt_sha256": "58daf7f53beb4634abea6eedd10d37ef6ce33fd03e5a064c46e6eba250dc9160",
+      "label": "2026-08-19 4a43562e: +REFERENT CLARITY; +ROLE CONSISTENCY; +REPLY COMFORT",
+      "first_commit": "4a43562e8cc664019c8d84608c09e86f1165848c",
+      "first_date": "2026-08-19T00:23:34-04:00",
+      "first_subject": "Refine platform drivers and safety coverage",
+      "last_commit": "4a43562e8cc664019c8d84608c09e86f1165848c",
+      "last_date": "2026-08-19T00:23:34-04:00",
+      "last_subject": "Refine platform drivers and safety coverage",
+      "commit_count": 1,
+      "commits": [
+        "4a43562e8cc664019c8d84608c09e86f1165848c"
+      ],
+      "rules": [
+        "SHARED CONTEXT RULE",
+        "PHOTO HEADER RULE",
+        "CONVERSATIONAL VALUE RULE",
+        "CLAIMS ONLY WHEN NATURAL",
+        "MINIMUM INVENTION",
+        "TRACEABILITY TEST",
+        "PLAYFUL HYPERBOLE",
+        "SETUP PAYOFF CONTINUITY",
+        "QUESTION COHERENCE",
+        "REFERENT CLARITY",
+        "ROLE CONSISTENCY",
+        "REPLY COMFORT",
+        "PREMISE CONSISTENCY",
+        "HEDGE THE CLAIM, NEVER YOURSELF",
+        "VARY THE OPENING",
+        "GUESS THE WORLD, NOT HER IDENTITY",
+        "NEVER INVENT THE SENDER",
+        "PICK THE ITEM YOURSELF",
+        "APPLICATION RULE",
+        "HARD RULE"
+      ]
+    },
+    {
+      "prompt_sha256": "6ad6154ff72b913652afae4ed272bd6afa32d241417c8d541ac13bf32e385118",
+      "label": "2026-08-19 88e106b2: +PROFILE TEXT FACT CHECK",
+      "first_commit": "88e106b2592bad5fd410f4e9c6e30d18246d60bb",
+      "first_date": "2026-08-19T03:04:58-04:00",
+      "first_subject": "Keep hub training counts live and avoid repeated prompt questions",
+      "last_commit": "88e106b2592bad5fd410f4e9c6e30d18246d60bb",
+      "last_date": "2026-08-19T03:04:58-04:00",
+      "last_subject": "Keep hub training counts live and avoid repeated prompt questions",
+      "commit_count": 1,
+      "commits": [
+        "88e106b2592bad5fd410f4e9c6e30d18246d60bb"
+      ],
+      "rules": [
+        "SHARED CONTEXT RULE",
+        "PHOTO HEADER RULE",
+        "PROFILE TEXT FACT CHECK",
+        "CONVERSATIONAL VALUE RULE",
+        "CLAIMS ONLY WHEN NATURAL",
+        "MINIMUM INVENTION",
+        "TRACEABILITY TEST",
+        "PLAYFUL HYPERBOLE",
+        "SETUP PAYOFF CONTINUITY",
+        "QUESTION COHERENCE",
+        "REFERENT CLARITY",
+        "ROLE CONSISTENCY",
+        "REPLY COMFORT",
+        "PREMISE CONSISTENCY",
+        "HEDGE THE CLAIM, NEVER YOURSELF",
+        "VARY THE OPENING",
+        "GUESS THE WORLD, NOT HER IDENTITY",
+        "NEVER INVENT THE SENDER",
+        "PICK THE ITEM YOURSELF",
+        "APPLICATION RULE",
+        "HARD RULE"
+      ]
+    },
+    {
+      "prompt_sha256": "2e28efe71c56ac0598030c63197b3ee58cbf60aceb669e5a2566a41ca0527cf8",
+      "label": "2026-08-21 e5054f7f: prose only (no rule added or removed)",
+      "first_commit": "e5054f7ff8ba01d6915771d53679c9cc99d3e626",
+      "first_date": "2026-08-21T04:54:44-04:00",
+      "first_subject": "Harden automation safety and runtime boundaries",
+      "last_commit": "f889598ba8c52999ddbf7f69a5400606aa33ef84",
+      "last_date": "2026-08-24T12:23:36-04:00",
+      "last_subject": "Default Hinge to the persistent UHID transport",
+      "commit_count": 7,
+      "commits": [
+        "e5054f7ff8ba01d6915771d53679c9cc99d3e626",
+        "5169037449b1e2dc98268d884009d92ef8552aa8",
+        "0c41bb1ae1d88a72e9ccd2b310bdeae87a945e47",
+        "890365859000a536c77c38cc08b791e6189d68f7",
+        "f0c0fac6f52fbe7fe33ae14534115cae8010306c",
+        "5562a0d54eee6ba1e9b9fda2968ab7bb3825eacf",
+        "f889598ba8c52999ddbf7f69a5400606aa33ef84"
+      ],
+      "rules": [
+        "SHARED CONTEXT RULE",
+        "PHOTO HEADER RULE",
+        "PROFILE TEXT FACT CHECK",
+        "CONVERSATIONAL VALUE RULE",
+        "CLAIMS ONLY WHEN NATURAL",
+        "MINIMUM INVENTION",
+        "TRACEABILITY TEST",
+        "PLAYFUL HYPERBOLE",
+        "SETUP PAYOFF CONTINUITY",
+        "QUESTION COHERENCE",
+        "REFERENT CLARITY",
+        "ROLE CONSISTENCY",
+        "REPLY COMFORT",
+        "PREMISE CONSISTENCY",
+        "HEDGE THE CLAIM, NEVER YOURSELF",
+        "VARY THE OPENING",
+        "GUESS THE WORLD, NOT HER IDENTITY",
+        "NEVER INVENT THE SENDER",
+        "PICK THE ITEM YOURSELF",
+        "APPLICATION RULE",
+        "HARD RULE"
+      ]
+    },
+    {
+      "prompt_sha256": "baa69e858d7bbbdcf5671cd09dfebc87e8ea821056f60a6c0794d16faa3e608e",
+      "label": "2026-08-26 ea6756e8: +CASUAL OR PUNCTUATION",
+      "first_commit": "ea6756e8d31fee585c79f3087fb0d2fbf4b36ef7",
+      "first_date": "2026-08-26T00:52:29-04:00",
+      "first_subject": "Replace observe flow with supervised training",
+      "last_commit": "6360684d40400d4fbe2bf9f77db84af41cea3e9a",
+      "last_date": "2026-08-27T04:28:26-04:00",
+      "last_subject": "Harden Hinge targeting and training review flow",
+      "commit_count": 2,
+      "commits": [
+        "ea6756e8d31fee585c79f3087fb0d2fbf4b36ef7",
+        "6360684d40400d4fbe2bf9f77db84af41cea3e9a"
+      ],
+      "rules": [
+        "SHARED CONTEXT RULE",
+        "PHOTO HEADER RULE",
+        "PROFILE TEXT FACT CHECK",
+        "CONVERSATIONAL VALUE RULE",
+        "CLAIMS ONLY WHEN NATURAL",
+        "MINIMUM INVENTION",
+        "TRACEABILITY TEST",
+        "PLAYFUL HYPERBOLE",
+        "SETUP PAYOFF CONTINUITY",
+        "QUESTION COHERENCE",
+        "CASUAL OR PUNCTUATION",
+        "REFERENT CLARITY",
+        "ROLE CONSISTENCY",
+        "REPLY COMFORT",
+        "PREMISE CONSISTENCY",
+        "HEDGE THE CLAIM, NEVER YOURSELF",
+        "VARY THE OPENING",
+        "GUESS THE WORLD, NOT HER IDENTITY",
+        "NEVER INVENT THE SENDER",
+        "PICK THE ITEM YOURSELF",
+        "APPLICATION RULE",
+        "HARD RULE"
+      ]
+    },
+    {
+      "prompt_sha256": "e45c5411cfc0e5d98aae8a7e9443ebe8b90a41461605b4641abbd52c986b2095",
+      "label": "2026-08-31 ff1989fb: +PRIMARY ITEM RULE; +SAFETY AND DIGNITY",
+      "first_commit": "ff1989fbd5fff04f51b3f337f957448b172a55aa",
+      "first_date": "2026-08-31T05:09:58-04:00",
+      "first_subject": "Harden Hinge targeting, training, and diagnostics",
+      "last_commit": "51c8c8654051ae9a1da8bf93431f6d7904170ed6",
+      "last_date": "2026-09-02T03:38:21-04:00",
+      "last_subject": "Audit the codebase and fix what it found",
+      "commit_count": 2,
+      "commits": [
+        "ff1989fbd5fff04f51b3f337f957448b172a55aa",
+        "51c8c8654051ae9a1da8bf93431f6d7904170ed6"
+      ],
+      "rules": [
+        "SHARED CONTEXT RULE",
+        "PRIMARY ITEM RULE",
+        "PHOTO HEADER RULE",
+        "PROFILE TEXT FACT CHECK",
+        "CONVERSATIONAL VALUE RULE",
+        "CLAIMS ONLY WHEN NATURAL",
+        "MINIMUM INVENTION",
+        "TRACEABILITY TEST",
+        "PLAYFUL HYPERBOLE",
+        "SAFETY AND DIGNITY",
+        "SETUP PAYOFF CONTINUITY",
+        "QUESTION COHERENCE",
+        "CASUAL OR PUNCTUATION",
+        "REFERENT CLARITY",
+        "ROLE CONSISTENCY",
+        "REPLY COMFORT",
+        "PREMISE CONSISTENCY",
+        "HEDGE THE CLAIM, NEVER YOURSELF",
+        "VARY THE OPENING",
+        "GUESS THE WORLD, NOT HER IDENTITY",
+        "NEVER INVENT THE SENDER",
+        "PICK THE ITEM YOURSELF",
+        "APPLICATION RULE",
+        "HARD RULE"
+      ]
+    },
+    {
+      "prompt_sha256": "5c27d4d246f2cc6866d56fd90f85d5615e1ad4d15534bd35c5e8b11c8b61c7d1",
+      "label": "2026-09-05 cc1b2911: +INFORMATION GAIN TEST; +POSITIVE SOCIAL FRAMING; +RECIPROCITY BEFORE FUTURE; +2 more change(s)",
+      "first_commit": "cc1b2911c5fc9d9af6bebd54ddef8983aca0c394",
+      "first_date": "2026-09-05T00:24:20-04:00",
+      "first_subject": "Audit, harden, and de-debt the codebase; fix 59 verified findings",
+      "last_commit": "cc1b2911c5fc9d9af6bebd54ddef8983aca0c394",
+      "last_date": "2026-09-05T00:24:20-04:00",
+      "last_subject": "Audit, harden, and de-debt the codebase; fix 59 verified findings",
+      "commit_count": 1,
+      "commits": [
+        "cc1b2911c5fc9d9af6bebd54ddef8983aca0c394"
+      ],
+      "rules": [
+        "SHARED CONTEXT RULE",
+        "PRIMARY ITEM RULE",
+        "PHOTO HEADER RULE",
+        "PROFILE TEXT FACT CHECK",
+        "CONVERSATIONAL VALUE RULE",
+        "CLAIMS ONLY WHEN NATURAL",
+        "MINIMUM INVENTION",
+        "TRACEABILITY TEST",
+        "INFORMATION GAIN TEST",
+        "PLAYFUL HYPERBOLE",
+        "SAFETY AND DIGNITY",
+        "SETUP PAYOFF CONTINUITY",
+        "QUESTION COHERENCE",
+        "CASUAL OR PUNCTUATION",
+        "REFERENT CLARITY",
+        "ROLE CONSISTENCY",
+        "REPLY COMFORT",
+        "POSITIVE SOCIAL FRAMING",
+        "RECIPROCITY BEFORE FUTURE",
+        "CONFIRMATION BOUNDARY",
+        "HEDGE THE CLAIM, NEVER YOURSELF",
+        "VARY THE OPENING",
+        "GUESS THE WORLD, NOT HER IDENTITY",
+        "NEVER INVENT THE SENDER",
+        "PICK THE ITEM YOURSELF",
+        "APPLICATION RULE",
+        "HARD RULE"
+      ]
+    }
+  ],
+  "unevaluable_revisions": [
+    {
+      "commit": "c4c1c3d9d2048b290c846f071c852f8e3af6e2f6",
+      "date": "2026-06-20T05:33:51Z",
+      "subject": "Phase 0: archive legacy AHK project, scaffold v2 Python app",
+      "reasons": [
+        "missing constant(s) at this revision: ['_ITEM_PREAMBLE', '_ITEM_PREAMBLE_CONTEXT', '_ITEM_LABEL', '_CONTEXT_LABEL']"
+      ]
+    },
+    {
+      "commit": "efb3295081d044985591a510954af2fb7457021e",
+      "date": "2026-06-20T05:47:46Z",
+      "subject": "Storage backend: BigQuery system-of-record + in-memory hot cache",
+      "reasons": [
+        "missing constant(s) at this revision: ['_ITEM_PREAMBLE', '_ITEM_PREAMBLE_CONTEXT', '_ITEM_LABEL', '_CONTEXT_LABEL']"
+      ]
+    },
+    {
+      "commit": "eeda718ef52af76e3bbe074e66ab9aba56cb11e3",
+      "date": "2026-06-20T06:45:28Z",
+      "subject": "Supervisor + per-app workers: run all apps in one process, global budget",
+      "reasons": [
+        "missing constant(s) at this revision: ['_ITEM_PREAMBLE', '_ITEM_PREAMBLE_CONTEXT', '_ITEM_LABEL', '_CONTEXT_LABEL']"
+      ]
+    },
+    {
+      "commit": "9d04f33a5d6da1d76413a801281193e676bb4441",
+      "date": "2026-06-20T07:07:07Z",
+      "subject": "Observe mode: learn your taste from real manual swipes (live, in-app)",
+      "reasons": [
+        "missing constant(s) at this revision: ['_ITEM_PREAMBLE', '_ITEM_PREAMBLE_CONTEXT', '_ITEM_LABEL', '_CONTEXT_LABEL']"
+      ]
+    },
+    {
+      "commit": "c142b5423f29552e39b7b3462f0d66ab812370d7",
+      "date": "2026-06-20T07:30:31Z",
+      "subject": "Code-complete both apps: Hinge driver, rate limits, stats CLI, RUNBOOK",
+      "reasons": [
+        "missing constant(s) at this revision: ['_ITEM_PREAMBLE', '_ITEM_PREAMBLE_CONTEXT', '_ITEM_LABEL', '_CONTEXT_LABEL']"
+      ]
+    },
+    {
+      "commit": "9a7ff039a3427452bef3f96e6be1e1dda3134932",
+      "date": "2026-06-20T07:44:27Z",
+      "subject": "Add human-like log-normal pacing (humanDelay port)",
+      "reasons": [
+        "missing constant(s) at this revision: ['_ITEM_PREAMBLE', '_ITEM_PREAMBLE_CONTEXT', '_ITEM_LABEL', '_CONTEXT_LABEL']"
+      ]
+    },
+    {
+      "commit": "d9895d42952b5fd331e94fc95a725b65968667fc",
+      "date": "2026-06-20T10:12:20-06:00",
+      "subject": "Add live in-page status overlay + status bus; finish Hinge observe; live-verify Bumble",
+      "reasons": [
+        "missing constant(s) at this revision: ['_ITEM_PREAMBLE', '_ITEM_PREAMBLE_CONTEXT', '_ITEM_LABEL', '_CONTEXT_LABEL']"
+      ]
+    },
+    {
+      "commit": "ba35f3e3d47f0e98ddc0514c00565ef0d34ce79d",
+      "date": "2026-06-20T15:05:24-06:00",
+      "subject": "Fix observe capture, upgrade ranker aggregation, single rebuild-if-changed launcher",
+      "reasons": [
+        "missing constant(s) at this revision: ['_ITEM_PREAMBLE', '_ITEM_PREAMBLE_CONTEXT', '_ITEM_LABEL', '_CONTEXT_LABEL']"
+      ]
+    },
+    {
+      "commit": "d15be94bd4703aba0fc030150a9d1e5f8f36475d",
+      "date": "2026-06-21T12:11:22-06:00",
+      "subject": "Harden Bumble automation and data handling",
+      "reasons": [
+        "missing constant(s) at this revision: ['_ITEM_PREAMBLE', '_ITEM_PREAMBLE_CONTEXT', '_ITEM_LABEL', '_CONTEXT_LABEL']"
+      ]
+    },
+    {
+      "commit": "72b94a0b22fd59ee7e8e8966d9d8a2d50a2cf489",
+      "date": "2026-06-21T17:09:05-06:00",
+      "subject": "Improve shutdown handling and live logs",
+      "reasons": [
+        "missing constant(s) at this revision: ['_ITEM_PREAMBLE', '_ITEM_PREAMBLE_CONTEXT', '_ITEM_LABEL', '_CONTEXT_LABEL']"
+      ]
+    },
+    {
+      "commit": "ad01354fa032afe4a777a163256f47ddcd62692d",
+      "date": "2026-06-21T18:48:33-06:00",
+      "subject": "Harden auto run limits and Bumble startup",
+      "reasons": [
+        "missing constant(s) at this revision: ['_ITEM_PREAMBLE', '_ITEM_PREAMBLE_CONTEXT', '_ITEM_LABEL', '_CONTEXT_LABEL']"
+      ]
+    },
+    {
+      "commit": "69f32b1d6c78e7969f1c24b3cda58e9495683bf8",
+      "date": "2026-06-27T21:50:02-06:00",
+      "subject": "Hinge genuine-touch automation + smarter auto pipeline",
+      "reasons": [
+        "missing constant(s) at this revision: ['_ITEM_PREAMBLE', '_ITEM_PREAMBLE_CONTEXT', '_ITEM_LABEL', '_CONTEXT_LABEL']"
+      ]
+    },
+    {
+      "commit": "90d7d2f1edc8c8708ab7449e068ec2d39a663fc5",
+      "date": "2026-06-27T23:12:09-06:00",
+      "subject": "Bumble debug-log parity + bug-report debug section + auto-mode halt",
+      "reasons": [
+        "missing constant(s) at this revision: ['_ITEM_PREAMBLE', '_ITEM_PREAMBLE_CONTEXT', '_ITEM_LABEL', '_CONTEXT_LABEL']"
+      ]
+    },
+    {
+      "commit": "9140f8fe1d1b5708b7df7f7217080fbd5cb66a95",
+      "date": "2026-07-03T11:28:21-06:00",
+      "subject": "Daily budget + like-ratio + ADB preflight + opener resilience + thread-safe embedder",
+      "reasons": [
+        "missing constant(s) at this revision: ['_ITEM_PREAMBLE', '_ITEM_PREAMBLE_CONTEXT', '_ITEM_LABEL', '_CONTEXT_LABEL']"
+      ]
+    },
+    {
+      "commit": "e8614aba90a175f294d8247b1aa4d437dc149ff3",
+      "date": "2026-07-03T21:55:10Z",
+      "subject": "Fix bugs and reduce tech debt from the code audit",
+      "reasons": [
+        "missing constant(s) at this revision: ['_ITEM_PREAMBLE', '_ITEM_PREAMBLE_CONTEXT', '_ITEM_LABEL', '_CONTEXT_LABEL']"
+      ]
+    },
+    {
+      "commit": "8b827617631bcab21a4aab9493db09b35cb8328b",
+      "date": "2026-07-09T10:53:57-06:00",
+      "subject": "Merge origin/main into audit-fixes-2026-06, reconciling both audit passes",
+      "reasons": [
+        "missing constant(s) at this revision: ['_ITEM_PREAMBLE', '_ITEM_PREAMBLE_CONTEXT', '_ITEM_LABEL', '_CONTEXT_LABEL']"
+      ]
+    },
+    {
+      "commit": "640406b15afcee76d7e5399cc57121b8f06655d2",
+      "date": "2026-08-08T10:59:10-04:00",
+      "subject": "Audit pass 2026-08: fix 2 dead features, unify day/dash/flush semantics, extract hub page",
+      "reasons": [
+        "missing constant(s) at this revision: ['_ITEM_PREAMBLE', '_ITEM_PREAMBLE_CONTEXT', '_ITEM_LABEL', '_CONTEXT_LABEL']"
+      ]
+    },
+    {
+      "commit": "ad273880725f540aa333ac7bed3304625bfd8f76",
+      "date": "2026-08-08T11:44:58-04:00",
+      "subject": "Merge origin/main: reconcile two parallel audit passes",
+      "reasons": [
+        "missing constant(s) at this revision: ['_ITEM_PREAMBLE', '_ITEM_PREAMBLE_CONTEXT', '_ITEM_LABEL', '_CONTEXT_LABEL']"
+      ]
+    },
+    {
+      "commit": "ea039a5a1faee4c3e221954f48eed3ea0da10489",
+      "date": "2026-08-08T15:36:23-04:00",
+      "subject": "Hinge: fail loudly on blank captures; enable the hinge app",
+      "reasons": [
+        "missing constant(s) at this revision: ['_ITEM_PREAMBLE', '_ITEM_PREAMBLE_CONTEXT', '_ITEM_LABEL', '_CONTEXT_LABEL']"
+      ]
+    },
+    {
+      "commit": "b1309005a8cacb5d1974fa590ac6b6b9ece5ed7d",
+      "date": "2026-08-09T00:56:43-04:00",
+      "subject": "Bumble moves to Android: platform registry, one-app-at-a-time, fail-loud interactions",
+      "reasons": [
+        "missing constant(s) at this revision: ['_ITEM_PREAMBLE', '_ITEM_PREAMBLE_CONTEXT', '_ITEM_LABEL', '_CONTEXT_LABEL']"
+      ]
+    },
+    {
+      "commit": "e74c643a31c24e835c4688cc5114710897426b2d",
+      "date": "2026-08-09T14:22:21-04:00",
+      "subject": "Harden auto mode and interaction behavior",
+      "reasons": [
+        "missing constant(s) at this revision: ['_ITEM_PREAMBLE', '_ITEM_PREAMBLE_CONTEXT', '_ITEM_LABEL', '_CONTEXT_LABEL']"
+      ]
+    },
+    {
+      "commit": "b714636e7eab8f0fcfa86312826277ca664c9b94",
+      "date": "2026-08-10T10:09:55-04:00",
+      "subject": "Openers move to Gemini free tier; never send a commentless like",
+      "reasons": [
+        "missing constant(s) at this revision: ['_ITEM_PREAMBLE', '_ITEM_PREAMBLE_CONTEXT', '_ITEM_LABEL', '_CONTEXT_LABEL']"
+      ]
+    },
+    {
+      "commit": "a0e244dd09f1c0aaeb3931ea776cbdc93804fed2",
+      "date": "2026-08-10T12:42:44-04:00",
+      "subject": "Bumble SuperSwipe: correct the confirmation-modal claim, gate decide gestures on the deck",
+      "reasons": [
+        "missing constant(s) at this revision: ['_ITEM_PREAMBLE', '_ITEM_PREAMBLE_CONTEXT', '_ITEM_LABEL', '_CONTEXT_LABEL']"
+      ]
+    },
+    {
+      "commit": "f1e3b49342658d47bab5c13861ea3f83b756951a",
+      "date": "2026-08-10T22:37:11-04:00",
+      "subject": "Stop interrupts the profile read; observe-mode decision redesign",
+      "reasons": [
+        "missing constant(s) at this revision: ['_ITEM_PREAMBLE', '_ITEM_PREAMBLE_CONTEXT', '_ITEM_LABEL', '_CONTEXT_LABEL']"
+      ]
+    }
+  ],
+  "working_tree": {
+    "provisional": true,
+    "prompt_sha256": "9f50c50b66cc49de8b80823f1df8974e0a8e315c4e01f6eb887787ce85471be9",
+    "label": "UNCOMMITTED WORKING TREE -- PROVISIONAL, not a shipped era (+SPOKEN REGISTER; +SAY IT ONCE; +MODIFIER CLARITY; +5 more change(s))",
+    "commit": null,
+    "rules": [
+      "SHARED CONTEXT RULE",
+      "PRIMARY ITEM RULE",
+      "PHOTO HEADER RULE",
+      "PROFILE TEXT FACT CHECK",
+      "CONVERSATIONAL VALUE RULE",
+      "CLAIMS ONLY WHEN NATURAL",
+      "MINIMUM INVENTION",
+      "TRACEABILITY TEST",
+      "INFORMATION GAIN TEST",
+      "PLAYFUL HYPERBOLE",
+      "SAFETY AND DIGNITY",
+      "SETUP PAYOFF CONTINUITY",
+      "QUESTION COHERENCE",
+      "CASUAL OR PUNCTUATION",
+      "SPOKEN REGISTER",
+      "SAY IT ONCE",
+      "REFERENT CLARITY",
+      "MODIFIER CLARITY",
+      "ROLE CONSISTENCY",
+      "REPLY COMFORT",
+      "POSITIVE SOCIAL FRAMING",
+      "RECIPROCITY BEFORE FUTURE",
+      "CONFIRMATION BOUNDARY",
+      "VISUAL LOCATION TURN BOUNDARY",
+      "COMPLIMENT AS REMARK",
+      "NO GRADING",
+      "SUBSTITUTION TEST",
+      "HEDGE THE CLAIM, NEVER YOURSELF",
+      "VARY THE OPENING",
+      "VARY THE SHAPE",
+      "GUESS THE WORLD, NOT HER IDENTITY",
+      "NEVER INVENT THE SENDER",
+      "PICK THE ITEM YOURSELF",
+      "APPLICATION RULE",
+      "HARD RULE"
+    ],
+    "reasons": [],
+    "matches_known_committed_era": null,
+    "no_metrics_recorded_here": true,
+    "note": "Computed from the files on disk right now (Path.read_text), not from git history -- there is no commit behind this digest, and it can change on the very next edit or `git commit`. Regenerate this registry (python tools/backfill_prompt_eras.py) to refresh it. This registry never records measured metrics for ANY entry, committed or provisional -- see tools/opener_corpus_report.py's --rule/--eras for whatever has actually been measured against a real corpus; a rule appearing here is a fact about what was ON THE WIRE, never a claim that it was measured."
+  }
+}

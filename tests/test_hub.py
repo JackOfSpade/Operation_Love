@@ -2725,7 +2725,7 @@ def test_hubstate_recent_openers_forwards_to_the_captured_opener_service():
     class FakeOpenerService:
         def recent_openers_snapshot(self):
             return [{"ts": "t0", "app": "hinge", "model": "gemini-2.5-flash",
-                     "advisory": False, "index": 0, "referenced": "the beach photo",
+                     "index": 0, "referenced": "the beach photo",
                      "opener": "love the beach shot"}]
 
     st = HubState("config.yaml")
@@ -3469,6 +3469,17 @@ def test_training_panel_embeds_vertical_navigation_in_order_and_starts_on_target
     assert "target view · 4/4" in html
     assert re.search(r'id="trainingimagedown"[^>]* disabled', html)
     assert not re.search(r'id="trainingimageup"[^>]* disabled', html)
+
+
+def test_hidden_training_image_error_overrides_its_normal_flow_display_rule():
+    """An empty, hidden error must not expand the image wrap and displace its controls."""
+    normal_flow = re.search(
+        r"\.training-image-wrap\s+\.training-image-error\s*\{([^}]*)\}", _PAGE)
+    hidden = re.search(r"\.training-image-error\[hidden\]\s*\{([^}]*)\}", _PAGE)
+
+    assert normal_flow and re.search(r"\bdisplay\s*:\s*block\b", normal_flow.group(1))
+    assert hidden and re.search(r"\bdisplay\s*:\s*none\s*!important\b", hidden.group(1))
+    assert _PAGE.count('class="training-image-error" hidden') == 2
 
 
 def test_training_image_navigation_uses_top_to_bottom_profile_snapshot_order():

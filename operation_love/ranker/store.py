@@ -130,11 +130,24 @@ CREATE TABLE IF NOT EXISTS openers (
     id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT, app TEXT, created_at REAL,
     model TEXT, opener TEXT, referenced TEXT, angle TEXT, item_description TEXT,
     profile_id TEXT, decision TEXT, decision_source TEXT, decision_created_at REAL,
-    model_item_index INTEGER
+    model_item_index INTEGER, prompt_sha256 TEXT, profile_key TEXT
 );
 CREATE TABLE IF NOT EXISTS opener_rejections (
     id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT, app TEXT, created_at REAL,
-    model TEXT, attempt INTEGER, reason_code TEXT, reason TEXT, raw_opener TEXT
+    model TEXT, attempt INTEGER, reason_code TEXT, reason TEXT, raw_opener TEXT,
+    prompt_sha256 TEXT
+);
+-- The OUTCOME half of the measurement gap `openers.profile_key` exists to close: what a sent
+-- opener actually PERFORMED (a match, a reply, silence), as opposed to everything else this
+-- schema records about what the prompt PRODUCED. No run_id/foreign key to `openers` at all --
+-- an outcome is observed on a real conversation, often well after any automation run ended, and
+-- (app, profile_key) is the whole join key back to `openers` (see SQLiteStore.joined_opener_outcomes).
+-- Brand-new table: CREATE TABLE IF NOT EXISTS alone reaches an existing db file with no ALTER
+-- needed (unlike a new COLUMN on a table that already exists elsewhere -- see the two-part rule
+-- documented above the ALTER loop in _initialize_schema, which is what a new column DOES need).
+CREATE TABLE IF NOT EXISTS opener_outcomes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, app TEXT, profile_key TEXT, outcome TEXT,
+    observed_at REAL, source TEXT, note TEXT, created_at REAL
 );
 CREATE TABLE IF NOT EXISTS opener_retractions (
     correction_id TEXT NOT NULL, run_id TEXT NOT NULL, app TEXT NOT NULL,
@@ -263,14 +276,38 @@ class SQLiteStore:
         except sqlite3.OperationalError as exc:
             if "duplicate column name" not in str(exc).lower():
                 raise
+        # prompt_sha256 rides in this loop for openers (see prompt_stamp in opener/opener.py):
+        # the digest of the prompt era that produced the row, so calibration groups by era
+        # instead of reconstructing boundaries from created_at against git dates. Nullable and
+        # never backfilled -- a NULL here means "written before 2026-09-05 (b)".
+        #
+        # profile_key (2026-09-06) rides in the same loop for the same structural reason: the
+        # STABLE cross-time attribution key (ranker/profile_key.py) that lets an outcome
+        # observed days later join back to the opener that earned it (see `openers.profile_id`,
+        # unrelated and unchanged, for the per-card lineage id this is NOT). Nullable and never
+        # backfilled -- a NULL here means "written before this column existed" (distinct from a
+        # post-migration row that legitimately had no derivable key, which writes "").
         for column, decl in (("profile_id", "TEXT"), ("decision", "TEXT"),
                              ("decision_source", "TEXT"), ("decision_created_at", "REAL"),
-                             ("model_item_index", "INTEGER")):
+                             ("model_item_index", "INTEGER"), ("prompt_sha256", "TEXT"),
+                             ("profile_key", "TEXT")):
             try:
                 self.con.execute(f"ALTER TABLE openers ADD COLUMN {column} {decl}")
             except sqlite3.OperationalError as exc:
                 if "duplicate column name" not in str(exc).lower():
                     raise
+        # opener_rejections.prompt_sha256: the FIRST column this table has ever gained, so it
+        # gets its own stanza rather than joining a loop. Both statements are needed for the
+        # same reason spelled out for openers.angle above -- CREATE TABLE IF NOT EXISTS is a
+        # no-op against a db file that already has the table, so the _SCHEMA entry only ever
+        # reaches a FRESH database and this ALTER is what carries the column into an existing
+        # one. Swallow only "duplicate column name" (the already-migrated case) and re-raise
+        # anything else rather than starting up with a schema we can't write to.
+        try:
+            self.con.execute("ALTER TABLE opener_rejections ADD COLUMN prompt_sha256 TEXT")
+        except sqlite3.OperationalError as exc:
+            if "duplicate column name" not in str(exc).lower():
+                raise
         self._commit()
 
     def _private_paths(self) -> tuple[Path, ...]:
@@ -589,7 +626,8 @@ class SQLiteStore:
 
     def record_opener(self, run_id, app, model, opener, referenced, angle="",
                       item_description="", *, profile_id="", decision="", decision_source="",
-                      decision_created_at=None, model_item_index=None):
+                      decision_created_at=None, model_item_index=None,
+                      prompt_sha256: str | None = None, profile_key: str = ""):
         # `angle` is the model's own free-text label for what this opener is doing. Telemetry
         # only — nothing reads it back at runtime; it's here so the question "which opener
         # shapes correlate with matches" becomes answerable offline later. Defaulted so
@@ -600,24 +638,89 @@ class SQLiteStore:
         # from `referenced`: that column holds the DETAIL the opener reacts to, this one holds
         # what the item IS. Persisted in both modes so a wrong-item report can later be checked
         # against what the model believed it picked. Same trailing-default rule as `angle`.
+        #
+        # `prompt_sha256` is the digest of the prompt era this row was generated under (see
+        # prompt_stamp in opener/opener.py). Telemetry too, and keyword-only with a None
+        # default: a caller that predates it writes NULL, which reads as "predates the stamp",
+        # not as "no era".
+        #
+        # `profile_key` is the STABLE cross-time attribution key (ranker/profile_key.py) --
+        # unrelated to `profile_id`'s per-card lineage above. Keyword-only with a "" default,
+        # matching `profile_id`'s own convention: "" means "no key could be derived for this
+        # card," NULL (a caller that predates the column entirely) means "this row predates
+        # profile_key," and only the paired ALTER in _initialize_schema produces the latter.
         timestamp = (None if decision_created_at is None else normalize_timestamp_epoch(
             decision_created_at, label="decision_created_at"))
         with self._lock:
             self.con.execute(
                 "INSERT INTO openers (run_id, app, created_at, model, opener, referenced, angle,"
                 " item_description, profile_id, decision, decision_source, decision_created_at,"
-                " model_item_index) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                " model_item_index, prompt_sha256, profile_key) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (run_id, app, time.time(), model, opener, referenced, angle, item_description,
-                 profile_id, decision, decision_source, timestamp, model_item_index),
+                 profile_id, decision, decision_source, timestamp, model_item_index,
+                 prompt_sha256, profile_key),
             )
             self._commit()
 
-    def record_opener_rejection(self, run_id, app, model, attempt, reason_code, reason, raw_opener):
+    def record_opener_outcome(self, app: str, profile_key: str, outcome: str, *,
+                              observed_at: object | None = None,
+                              source: str = "owner", note: str = "") -> None:
+        # See ranker/__init__.py's Store.record_opener_outcome for the full design rationale
+        # (why there is no run_id, why profile_key is accepted unvalidated including "",
+        # why observed_at is distinct from this row's own created_at). `outcome`/`source` are
+        # stored exactly as given -- free text against a documented, unenforced vocabulary
+        # (see ranker/__init__.py's KNOWN_OPENER_OUTCOMES / KNOWN_OPENER_OUTCOME_SOURCES).
+        timestamp = (time.time() if observed_at is None else normalize_timestamp_epoch(
+            observed_at, label="observed_at"))
+        with self._lock:
+            self.con.execute(
+                "INSERT INTO opener_outcomes (app, profile_key, outcome, observed_at, source,"
+                " note, created_at) VALUES (?,?,?,?,?,?,?)",
+                (app, profile_key, outcome, timestamp, source, note, time.time()),
+            )
+            self._commit()
+
+    def joined_opener_outcomes(self, app: str, *,
+                              prompt_sha256: str | None = None) -> list[dict]:
+        # The join predicate excludes '' and NULL profile_key on BOTH sides -- see
+        # ranker/__init__.py's Store.joined_opener_outcomes for why two unattributable rows
+        # must never join to EACH OTHER just because both happen to carry the same "no key"
+        # spelling. prompt_sha256=None means "no filter" (every era), never "match NULL" --
+        # same convention as every other prompt_sha256 consumer in this store.
+        query = (
+            "SELECT o.run_id, o.model, o.opener, o.prompt_sha256, o.profile_key, o.created_at,"
+            " oc.outcome, oc.observed_at, oc.source, oc.note, oc.created_at"
+            " FROM openers o JOIN opener_outcomes oc"
+            " ON oc.app = o.app AND oc.profile_key = o.profile_key"
+            " WHERE o.app = ? AND o.profile_key IS NOT NULL AND o.profile_key != ''"
+            " AND oc.profile_key IS NOT NULL AND oc.profile_key != ''"
+        )
+        params: list = [app]
+        if prompt_sha256 is not None:
+            query += " AND o.prompt_sha256 = ?"
+            params.append(prompt_sha256)
+        query += " ORDER BY oc.created_at, oc.id"
+        with self._lock:
+            rows = self.con.execute(query, params).fetchall()
+        return [
+            {"run_id": r[0], "app": app, "model": r[1], "opener": r[2], "prompt_sha256": r[3],
+             "profile_key": r[4], "opener_created_at": r[5], "outcome": r[6],
+             "observed_at": r[7], "source": r[8], "note": r[9], "outcome_created_at": r[10]}
+            for r in rows
+        ]
+
+    def record_opener_rejection(self, run_id, app, model, attempt, reason_code, reason, raw_opener,
+                                *, prompt_sha256: str | None = None):
+        # `prompt_sha256`: same era digest the successes carry (see record_opener above), so a
+        # guard's firing rate is attributable to the prompt that provoked it. Keyword-only, so
+        # the seven existing parameters stay positional for every caller and test double.
         with self._lock:
             self.con.execute(
                 "INSERT INTO opener_rejections (run_id, app, created_at, model, attempt,"
-                " reason_code, reason, raw_opener) VALUES (?,?,?,?,?,?,?,?)",
-                (run_id, app, time.time(), model, attempt, reason_code, reason, raw_opener),
+                " reason_code, reason, raw_opener, prompt_sha256)"
+                " VALUES (?,?,?,?,?,?,?,?,?)",
+                (run_id, app, time.time(), model, attempt, reason_code, reason, raw_opener,
+                 prompt_sha256),
             )
             self._commit()
 

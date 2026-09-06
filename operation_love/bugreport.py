@@ -581,10 +581,7 @@ def _config_md(config_path: str) -> str:
                 f"models={c.opener.effective_models}, "
                 f"max_tokens={c.opener.max_tokens}\n"
                 f"- budget: run_budget_usd={c.budget.run_budget_usd}, "
-                f"opener.max_attempts={c.opener.max_attempts}, "
-                f"opener.advisory_max_attempts={c.opener.advisory_max_attempts} "
-                f"(Observe-only), opener.advisory_deadline_s="
-                f"{c.opener.advisory_deadline_s} (Observe-only)")
+                f"opener.max_attempts={c.opener.max_attempts}")
     except Exception as exc:  # noqa: BLE001
         return f"- ⚠️ could not load `{config_path}`: {exc}"
 
@@ -885,23 +882,16 @@ def _hub_guidance_md(apps: dict) -> str:
                          "send it or Dislike to pass this profile. No decision has been "
                          "recorded yet.")
 
-        warning = app.get("opener_warning")
-        if warning:
-            lines.append(f"{prefix}: ⚠️ no suggestion to type — "
-                         f"`{_compact_item_index_refusal_text(warning)}`")
-        elif app.get("opener_pending"):
-            lines.append(f"{prefix}: advisory suggestion generation is still pending; this does "
-                         "not block the current training decision.")
-        elif app.get("opener_suggestion"):
-            item = app.get("opener_item")
-            item_note = f" for item {item}" if item is not None else ""
-            desc = app.get("opener_item_description")
-            desc_note = (f" ({_sanitize_inline(str(desc))})" if desc else "")
-            reference = app.get("opener_referenced")
-            reference_note = (f" about `{_sanitize_inline(str(reference))}`"
-                              if reference else "")
-            lines.append(f"{prefix}: advisory suggestion is currently shown{item_note}"
-                         f"{desc_note}{reference_note}.")
+        # 2026-09-06: the opener_warning / opener_pending / opener_suggestion branches that used
+        # to live here were the last reader of the Observe ADVISORY SUGGESTION flow, whose call
+        # site was removed by commit ea6756e8 (2026-08-26) and whose service parameter and config
+        # knobs were removed outright this date. Nothing has written any of opener_warning,
+        # opener_pending, opener_suggestion, opener_item, opener_item_description or
+        # opener_referenced into a hub app dict since that commit, so all three branches were
+        # unreachable and their "advisory suggestion is currently shown" text could only ever
+        # have described a feature that no longer exists. Dead diagnostics that read as live are
+        # exactly what made this file's own "advisory-blind" explanation for the empty
+        # opener_rejections table survive, and misdirect, for months.
     return "\n".join(lines)
 
 
@@ -1044,7 +1034,6 @@ def _recent_openers_md(hub_state) -> str:
         app_name = str(e.get("app") or "?")
         app = _sanitize_inline(app_name)
         model = _sanitize_inline(str(e.get("model") or "?"))
-        advisory = bool(e.get("advisory"))
         index = e.get("index")
         # WHICH LIST that number counts (opener.INDEX_SPACE_*). A bare small int is
         # uninterpretable on its own -- "3" means a different thing depending on whether the
@@ -1059,8 +1048,19 @@ def _recent_openers_md(hub_state) -> str:
         if len(opener) > _RECENT_OPENER_TEXT_CHARS:
             opener = opener[:_RECENT_OPENER_TEXT_CHARS] + "…"
         explicit_mode = e.get("session_mode")
-        if explicit_mode not in {"advisory", "training", "auto"}:
-            explicit_mode = "advisory" if advisory else legacy_app_modes.get(app_name, "auto")
+        # Only "training"/"auto" are recognized here. "advisory" was a real value back when
+        # this line read `mode_note = "advisory" if advisory else "auto"`; once that flag was
+        # dropped in favour of the legacy_app_modes fallback above, "advisory" stopped being
+        # something session_mode could ever hold. Confirmed by grep: OpenerService.maybe_opener
+        # and .commit_opener (opener/service.py) are the only two writers of this dict's
+        # session_mode key and both write only "auto"/"training" literals, and this whole
+        # ring buffer (HubState.recent_openers / _completed_openers) is in-memory only for the
+        # life of one hub process -- never serialized to or reloaded from a persisted run log
+        # -- so no historical log can hand this function an "advisory" value either. An
+        # unrecognized explicit_mode (missing key, or any other stray string) falls back to the
+        # last-run status snapshot exactly like a pre-session_mode legacy entry would.
+        if explicit_mode not in {"training", "auto"}:
+            explicit_mode = legacy_app_modes.get(app_name, "auto")
         mode_note = explicit_mode
         # WHAT THE MODEL WAS LOOKING AT: request shape, not a retired live-sheet flag.
         if index_space == "model_items":

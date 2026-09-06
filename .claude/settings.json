@@ -1,1 +1,39 @@
-{"$schema": "https://json.schemastore.org/claude-code-settings.json", "hooks": {"SessionStart": [{ "matcher": "", "hooks": [{ "type": "command", "command": "bash $CLAUDE_PROJECT_DIR/.claude/session-start.sh" }] }]}, "permissions": {"allow": ["mcp__Google_Cloud_BigQuery__execute_sql","mcp__Google_Cloud_BigQuery__execute_sql_readonly","mcp__Google_Cloud_BigQuery__list_dataset_ids","mcp__Google_Cloud_BigQuery__list_table_ids","mcp__Google_Cloud_BigQuery__get_dataset_info","mcp__Google_Cloud_BigQuery__get_table_info"]}}
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash $CLAUDE_PROJECT_DIR/.claude/session-start.sh"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/deny-destructive-git.sh\"",
+            "timeout": 10,
+            "statusMessage": "Checking for destructive git"
+          }
+        ]
+      }
+    ]
+  },
+  "permissions": {
+    "allow": [
+      "mcp__Google_Cloud_BigQuery__execute_sql",
+      "mcp__Google_Cloud_BigQuery__execute_sql_readonly",
+      "mcp__Google_Cloud_BigQuery__list_dataset_ids",
+      "mcp__Google_Cloud_BigQuery__list_table_ids",
+      "mcp__Google_Cloud_BigQuery__get_dataset_info",
+      "mcp__Google_Cloud_BigQuery__get_table_info"
+    ]
+  }
+}

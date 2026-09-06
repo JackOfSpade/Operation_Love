@@ -10,6 +10,7 @@ and enforce the per-run budget (see operation_love.costing).
 from __future__ import annotations
 
 import base64
+import hashlib
 from http.client import HTTPException
 import io
 import json
@@ -17,7 +18,6 @@ import math
 import os
 import re
 import threading
-import time
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Any, Callable, Mapping, Protocol
@@ -162,14 +162,21 @@ _SCHEMA = {
                            "uses a guess, state how it leaves the conclusion unconfirmed and gives "
                            "her room to confirm or correct it. Any second beat must not assume the "
                            "guess is true or ask about an experience, preference, or consequence "
-                           "that only makes sense if it is true. "
+                           "that only makes sense if it is true. If a location is inferred from "
+                           "an image rather than stated in her profile text, the location guess "
+                           "must be the whole conversational move: end after it or ask only "
+                           "whether that location itself is right. "
                            "For every visible detail named in the opener, state how it is used "
                            "by the conversational move. If it asks a question, name the one "
                            "underlying question; alternatives must be parallel, contrasting "
                            "answers to it, never unrelated dimensions joined by 'or'. Identify "
                            "the question's subject and confirm that every pronoun or shorthand "
                            "noun has one immediately obvious referent. Across beats, any change "
-                           "of referent must be explicit and immediately clear. Confirm that its "
+                           "of referent must be explicit and immediately clear. "
+                           "Confirm the opener's conversational point is not a grade, rank, or "
+                           "verdict on how good the item is, and that its predicate would not fit "
+                           "unchanged under a different woman's different photo. "
+                           "Confirm that its "
                            "most natural honest reply lets her share a preference, perspective, "
                            "inspiration, or experience rather than defend or diminish herself. "
                            "Confirm that the opener does not audition for a role described in "
@@ -204,11 +211,20 @@ _SCHEMA = {
                            "thing; use 'or' only for parallel, contrasting answers to it. Every "
                            "pronoun, shorthand noun, and question subject must have one "
                            "immediately obvious referent. Across two beats, any change of "
-                           "referent must be explicit and immediately clear. Its most natural "
-                           "honest reply should let her share a preference, perspective, "
-                           "inspiration, or experience, never require self justification. "
+                           "referent must be explicit and immediately clear. "
+                           "MODIFIER CLARITY: every modifying phrase must have only one natural "
+                           "attachment on first reading. If the phrase's placement permits a "
+                           "plausible unintended meaning, reorder or rephrase the line. "
+                           "Its most natural honest reply should let her share a preference, "
+                           "perspective, inspiration, or experience, never require self "
+                           "justification. "
                            "A guess must remain unconfirmed until she replies; no later statement "
-                           "or question may assume it is correct. Do not advertise the sender as "
+                           "or question may assume it is correct. An image-derived location guess "
+                           "is the only conversational move before she replies: end after it or "
+                           "ask only whether the location itself is right. Its confirmation is "
+                           "the payoff; do not ask about an activity, reason, preference, feeling, "
+                           "experience, or consequence there before she confirms it. "
+                           "Do not advertise the sender as "
                            "the answer to a preference in her profile, promise what he will do "
                            "for her, or assume a match, date, relationship, or shared future. A "
                            "direct invitation may propose a get-together only while leaving her "
@@ -216,6 +232,23 @@ _SCHEMA = {
                            "State the positive substance directly. Do not preface it by naming "
                            "an insulting, judgmental, awkward, pressuring, creepy, or offensive "
                            "interpretation and then denying that interpretation. "
+                           "Write it in the spoken register a person texts in, with natural "
+                           "contractions; deliver any compliment as an offhand remark about the "
+                           "thing rather than an earnest verdict on her; moving the praise onto "
+                           "the thing alone is not enough, it must also pass the SUBSTITUTION "
+                           "TEST below; never restate context "
+                           "the message itself already established, and never point at the photo "
+                           "or profile as an object. "
+                           "never assign the thing a grade, rank, or verdict on how good it is; "
+                           "SUBSTITUTION TEST: if the predicate would fit unchanged under a "
+                           "different woman's photo it is a grade rather than an observation, "
+                           "except that an unmistakably nonliteral PLAYFUL HYPERBOLE stays "
+                           "playful framing rather than an assessment of quality even where its "
+                           "wording could transfer; "
+                           "when the best thing to say about an item is how good it is, cut that "
+                           "beat and let one specific question be the whole message rather than "
+                           "inventing a claim to fill it, itself still subject to VARY THE SHAPE so "
+                           "it does not become its own repeated template. "
                            "Maximum two sentences. No em dash, no hyphen.",
         },
     },
@@ -367,6 +400,184 @@ _SCHEMA = {
 # regardless of shape (it is the user turn's STYLE GUIDE -- see _text_part), so its unconditional
 # copy of PICK THE ITEM YOURSELF is intentionally kept only in this system instruction. Both
 # auto and observe now send the same numbered item crops, so one selection rule is sufficient.
+#
+# Addendum 2026-09-05 (spoken register): a live opener passed every rule above and still
+# read as AI: an earnest second person appraisal, uncontracted written grammar (measured:
+# zero apostrophes across all 188 openers ever generated), a formal nominal where a person
+# would use the plain noun, deictic filler pointing at the photo, and a question that
+# restated the setup its first sentence had already established. Every prior rule governs
+# content and structure; none governed register. Five property additions ship in both
+# copies, lockstep with config.yaml (doc 3.1): SPOKEN REGISTER, SAY IT ONCE, COMPLIMENT AS
+# REMARK, VARY THE SHAPE, and a rephrase clause on the hyphen HARD RULE (live data showed
+# the model deleting hyphens and gluing compounds to satisfy it). SHARED CONTEXT RULE now
+# also forbids pointing at the medium. Per the 2026-08-16 de-templating addendum no example
+# copy ships in any model facing string; the motivating openers are pinned off wire in the
+# tests. There are FOUR on wire copies of prompt rules, not two, a fact no earlier addendum
+# recorded: config.yaml opener.style, this constant, the _SCHEMA field descriptions, and the
+# retry hint block. Those last two were both touched this date but NOT with the same content:
+# the _SCHEMA opener description received a compressed form of THREE of the five register
+# properties (SPOKEN REGISTER, SAY IT ONCE, COMPLIMENT AS REMARK) plus the new never point at
+# the medium clause, and deliberately not VARY THE SHAPE or the hyphen rephrase clause, while
+# the retry hint block was corrected in an unrelated way, by completing its HARD REJECTION
+# list. Do not go looking for SPOKEN REGISTER in the retry block and conclude the lockstep is
+# broken. Rows written before this rewrite are not register comparable to rows written after
+# it (the calibration warning near _redundant_description_markers now names both boundaries).
+#
+# Addendum 2026-09-05 (modifier attachment): the first watched Training draft after the
+# spoken-register rewrite described the correct target and every item/identity verifier agreed,
+# but one location phrase sat beside a clothing phrase closely enough to support a second,
+# unintended grammatical relationship. REFERENT CLARITY did not cover the miss: every noun and
+# question subject had an obvious referent, while the ambiguity lived in what the modifier
+# attached to. MODIFIER CLARITY therefore ships in the same three stable prompt surfaces as the
+# other semantic wording rules: config.yaml's long style, this system instruction, and the
+# response schema's opener description. This remains prompt-only. A lexical pattern for the one
+# observed sentence would overfit a general word-order problem and reject harmless uses, so no
+# deterministic guard or new retry reason is added. The concrete incident stays in comments,
+# documentation, and tests only; no model-facing string receives example copy.
+#
+# Addendum 2026-09-05 (visual-location turn boundary): CONFIRMATION BOUNDARY's prompt-only fix
+# failed twice more in live Training. Both drafts hedged an image-derived proper-name location,
+# then immediately asked about an activity or experience there as though the guess had already
+# been confirmed. A narrow post-sanitize guard now rejects that exact semantic shape before the
+# composer and lets OpenerService retry it. Direct confirmation/correction and a standalone guess
+# remain legal. The prompt mirrors now make the location guess the whole conversational move,
+# explicitly subordinate SAY IT ONCE, REPLY COMFORT, and APPLICATION RULE to that boundary, and
+# remove the literal high-frequency structures VARY THE SHAPE had been putting on wire.
+#
+# Addendum 2026-09-06 (no grading): owner feedback on a watched Training draft, the New Year's
+# sushi opener "Starting the new year with a massive spread of sushi is an elite move. Was that
+# the main event for the night or just the appetizer?" COMPLIMENT AS REMARK produced this. That
+# rule located the defect in the verdict being ON HER and being EMPHATIC, so the model moved the
+# verdict onto the thing and lowered the volume, satisfying every clause. The real defect is the
+# verdict itself: she chose to post the item, so a judgment of how good it is transfers no
+# information, which is why it reads the same as a compliment on her appearance. Measurement: 95
+# unique openers recovered from data/hinge_debug/*/actions.jsonl; "elite move" verbatim twice;
+# roughly 20 of 95 carry the same grade-shaped predicate (bold move, iconic weekend energy, top
+# tier, is unmatched, is a masterpiece, is unreal, a great look x3, the perfect x4, an
+# incredible/amazing experience x2, is pretty fantastic x2 -- named here, off wire, per the
+# de-templating rule below). This is a partial LOCAL sample only: BigQuery openers/
+# opener_rejections is the system of record and was not queried. A phrase blocklist was rejected:
+# it would have caught 2 of about 20, because the defect is a predicate shape, not a vocabulary.
+# The structural cause worth recording: CONVERSATIONAL VALUE, INFORMATION GAIN, MINIMUM
+# INVENTION, and NEVER INVENT THE SENDER together leave the taste verdict as the only predicate
+# requiring zero facts about either person, so it is the path of least resistance rather than a
+# stylistic tic. WHAT SHIPS: NO GRADING in the same three stable semantic surfaces as MODIFIER
+# CLARITY (config.yaml's opener.style, this constant, and the response schema, whose angle field
+# carries the self-check). Prompt-only, per the 2026-09-05 owner decision that prompt-only comes
+# first and the 2026-08-11 scaffolding-defense decision is not reopened. DELIBERATELY NOT
+# CHANGED: no deterministic guard and no new retry reason, so the retry hint block (copy 4 of 4)
+# is untouched -- do not go looking for NO GRADING there and conclude the lockstep is broken.
+# Escalate to a guard only if a watched batch still grades. THE CRITICAL DESIGN CONSTRAINT: the
+# 2026-08-16 minimum-invention addendum records that making falsifiability unconditional
+# pressured the model to invent motives merely to produce a claim. NO GRADING therefore routes
+# its failure case to a SHORTER message (cut the beat, let one specific question be the whole
+# message) and never to a substitute claim. If a future edit removes that escape hatch, it
+# re-creates the 2026-08-16 bug. No example verdict vocabulary ships in any model-facing string,
+# per the 2026-08-16 de-templating addendum; the concrete regressions are pinned off wire in the
+# tests.
+#
+# Addendum 2026-09-06 (b) (no grading refinements): an adversarial review of the addendum above
+# found two real conflicts, and a separate audit found a live guard collision, all three fixed
+# together. (1) PLAYFUL HYPERBOLE carve-out: SUBSTITUTION TEST's swap check is meant to catch a
+# literal verdict on quality, but an anchored nonliteral exaggeration can be just as portable in
+# that sense without being a grade, and PLAYFUL HYPERBOLE is measured at 13.7% of first beats on
+# the local 95-opener corpus, one of the few non-degenerate moves the model still reaches for --
+# narrowing it was never the intent. NO GRADING now states the swap targets a literal quality
+# verdict and that an unmistakably nonliteral PLAYFUL HYPERBOLE survives it. (2) VARY THE SHAPE
+# subordination: nothing said the one-question fallback NO GRADING routes its failure case to
+# was itself subject to VARY THE SHAPE, so reaching for that same single-sentence construction
+# message after message could become its own template. A short subordinating clause fixes this.
+# MEASURED CONTEXT, deliberately NOT put on the wire so as not to overweight a guard against a
+# problem that has not happened yet: the local corpus is 94.7% exactly two sentences and 98.9%
+# question-final, so today routing MORE messages to the one-sentence fallback INCREASES shape
+# diversity rather than collapsing it. (3) The "HERE'S" scaffolding collision this same addendum
+# recorded a residual for (2026-09-05 entry, ops/OPENER-REDESIGN.md) is fixed in the guard, not
+# the prompt -- see the addendum above _SCAFFOLD_LEADING_PHRASES below for that change. Full
+# record: ops/OPENER-REDESIGN.md, Addendum -- 2026-09-06 (b).
+#
+# Addendum 2026-09-06 (c) (compliment as remark, fold the qualification in): an adversarial
+# review of the two addenda above found a THIRD real defect, this time in how COMPLIMENT AS
+# REMARK and NO GRADING sit next to each other rather than in either rule alone: COMPLIMENT AS
+# REMARK still affirmatively taught the exact technique NO GRADING goes on to call
+# insufficient (move the praise onto the thing, keep it understated), and the qualification
+# that rescues it lived only in NO GRADING's later "narrows COMPLIMENT AS REMARK" sentence.
+# Under minimal thinking a model reads and can satisfy the first, affirmative sentence before
+# it ever reaches the second, which is precisely how the motivating "... is an elite move"
+# regression got past a rule that was supposed to forbid it. OWNER DECISION: NARROW COMPLIMENT
+# AS REMARK, do not retire it. Rationale on record: the same audit measured this rule set at
+# roughly 69% prohibition and mechanical instruction against only 21% positive specification,
+# with the corpus at 94.7% exactly two sentences, 98.9% question final, and 82% of first beats
+# deletable -- the space of legal positive moves is already collapsed, so retiring the one
+# remaining compliment would be the wrong direction; narrowing it in place is correct. WHAT
+# SHIPPED (2026-09-06 (c), corrected 2026-09-06 (d) below): COMPLIMENT AS REMARK originally
+# stated, in its own sentence and ahead of the technique it gates, that moving the praise off
+# her and onto the thing is not by itself enough -- the one permitted compliment must stay
+# inseparable from a specific observation about that item, unable to survive being detached
+# from what was actually noticed. This shipped in all three on-wire copies (config.yaml
+# opener.style, this constant, and the _SCHEMA opener description below) by replacing words
+# inside COMPLIMENT AS REMARK's existing sentence rather than only appending a new one. NO
+# GRADING's own subordination sentence was deliberately left UNCHANGED: it still does real
+# work stating the precedence explicitly (NO GRADING narrows COMPLIMENT AS REMARK rather than
+# competing with it), and keeping it is what the owner decision called for. What changed is
+# that the two rules no longer read as an affirmative technique and a later, separate fix for
+# it: the technique's own sentence carried its own limit, so a minimal-thinking read of
+# COMPLIMENT AS REMARK alone could no longer satisfy it while still producing a grade. No
+# example verdict vocabulary was added anywhere, per the 2026-08-16 de-templating rule. This
+# resolved the LOW severity finding from the 2026-09-06 adversarial review of the NO GRADING
+# addenda above; see ops/OPENER-REDESIGN.md for the design's fuller context.
+#
+# CORRECTION (this comment previously overclaimed, fixed in place 2026-09-06 (d)): the
+# sentence above used to read "...so every distinct property already on wire (thing as
+# sentence's subject, praise landing sideways the way a friend would mention it in passing,
+# understated over emphatic, shaping a compliment that occurs rather than requiring one)
+# survives the fold unchanged", implying parity across all three surfaces. Checked against the
+# actual text, that is true only of config.yaml's long form, where all four properties were
+# genuinely on wire before and after. This constant never carried "praise landing sideways ...
+# in passing" or a separate "shapes a compliment that occurs" sentence at any point -- only
+# "thing as the sentence's subject" and "understated over emphatic" ever were -- and the
+# _SCHEMA opener description never carried any of the four. Nothing was lost by the fold in
+# either compressed surface: these properties were never present there to lose, consistent
+# with the deliberate compression gap the 2026-09-05 register rewrite already documented (the
+# schema copy receives a compressed subset of properties, not the full set). See
+# ops/OPENER-REDESIGN.md, Addendum -- 2026-09-06 (e) for the full record of this correction.
+#
+# Addendum 2026-09-06 (d) (compliment as remark defers to the substitution test): a further
+# adversarial review found the (c) fold above had created a NEW contradiction rather than only
+# closing one. (c) gave COMPLIMENT AS REMARK its own portability test ("unable to survive
+# being detached from what was actually noticed") with no exception, while NO GRADING's
+# SUBSTITUTION TEST explicitly carves out an unmistakably nonliteral PLAYFUL HYPERBOLE. An
+# anchored hyperbolic compliment whose predicate could transfer to a different woman's photo
+# therefore passed NO GRADING (hyperbole exception) but failed COMPLIMENT AS REMARK's own
+# restated test (no exception) -- opposite verdicts on the same sentence under minimal
+# thinking. THE FIX: COMPLIMENT AS REMARK no longer restates a second, subtly different
+# portability test; it now points at NO GRADING's SUBSTITUTION TEST directly (this constant:
+# "it must also pass NO GRADING's SUBSTITUTION TEST below"; _SCHEMA opener description below:
+# "it must also pass the SUBSTITUTION TEST below", with a matching SUBSTITUTION TEST label
+# added at the schema's own grade-check sentence so the forward reference lands somewhere
+# named). One shared test, with its one exception, now lives in exactly one place per surface
+# and cannot drift out of sync with a restated copy again. This also removes words rather than
+# adding a second hyperbole exception, which matters because this rule set already runs
+# roughly 10,000 tokens per request. Shipped in all three on-wire surfaces (config.yaml
+# opener.style, this constant, and the _SCHEMA opener description). No example verdict
+# vocabulary was added anywhere, per the 2026-08-16 de-templating rule. Full record:
+# ops/OPENER-REDESIGN.md, Addendum -- 2026-09-06 (e).
+#
+# Addendum 2026-09-06 (g) (compliment as remark's magnitude clause joins the same exception): a
+# fourth adversarial review found (d) above closed only HALF the contradiction it named.
+# COMPLIMENT AS REMARK carries two independent requirements, not one: a PORTABILITY test ((d)
+# pointed this at NO GRADING's SUBSTITUTION TEST, whose PLAYFUL HYPERBOLE exception already
+# covers it) and a separate MAGNITUDE requirement ("understated over emphatic"), which (d) left
+# untouched and which carried no exception of its own. An unmistakably nonliteral PLAYFUL
+# HYPERBOLE is by nature emphatic, so a strong hyperbolic compliment passed the portability test
+# via (d)'s fix while still failing the magnitude clause -- opposite verdicts on the same
+# sentence again, under the same minimal-thinking read. THE FIX: the magnitude clause now points
+# at that same test's PLAYFUL HYPERBOLE exception ("whose PLAYFUL HYPERBOLE exception covers
+# tone too") instead of gaining its own separate carve-out, so ONE portability test and ONE
+# nonliteral exception stay stated in one place, per (d)'s original goal. Shipped in both
+# surfaces that carried the magnitude clause (config.yaml opener.style and this constant); the
+# _SCHEMA opener description never carried it (established by the 2026-09-06 (e) correction
+# above), so it is unchanged. No example verdict vocabulary was added anywhere, per the
+# 2026-08-16 de-templating rule. Full record: ops/OPENER-REDESIGN.md, Addendum -- 2026-09-06 (g).
 _SYSTEM = (
     "You write the opening message a man sends a woman on a dating app. Use the dating and "
     "conversational principles associated with Coach Corey Wayne's 'How to Be a 3% Man', without "
@@ -376,6 +587,8 @@ _SYSTEM = (
     "cheeky humor for the occasional profile where it arises naturally. Do not force teasing into "
     "every opener. SHARED CONTEXT RULE: your message is displayed directly under the exact photo "
     "or prompt it attaches to, and she is looking at that item while she reads your words. "
+    "Never point at the medium itself: a word gesturing at the photo, the screen, or the "
+    "profile as an object adds nothing she cannot see; a bare demonstrative does that work. "
     "PRIMARY ITEM RULE: after choosing a numbered item, it is the clear main subject of "
     "referenced, angle, and opener, including its header. The message must feel natural directly "
     "under that item, never like a reason to discuss another image. Your opener must justify why "
@@ -433,10 +646,24 @@ _SYSTEM = (
     "is allowed only for parallel, genuinely contrasting answers to that same underlying "
     "question, never to join unrelated dimensions. CASUAL OR PUNCTUATION: never put a comma "
     "immediately before 'or', even where formal grammar would allow one. Write it the way a "
-    "person would text casually. REFERENT CLARITY: every pronoun, shorthand "
+    "person would text casually. SPOKEN REGISTER: write it the way the sender would say it "
+    "out loud: use the contractions a relaxed speaker would use, prefer plain everyday words "
+    "over formal noun phrases, and allow natural spoken elision, but never internet slang, "
+    "chat abbreviations, meme phrasing, or borrowed caption labels. This licenses wording "
+    "only; spelling, capitalization and every punctuation rule here stand unchanged. "
+    "One intensifier is plenty. "
+    "Flawless written grammar reads as an essay, not a text. SAY IT ONCE: the second beat "
+    "inherits the first beat's topic; never restate a connection or context the message "
+    "already established, and strip each question to the one clause a person would text. "
+    "CONFIRMATION BOUNDARY overrides this inheritance rule: never let a later beat inherit an "
+    "unconfirmed claim as fact. "
+    "REFERENT CLARITY: every pronoun, shorthand "
     "noun, and question subject must have one immediately obvious referent. Across two beats, "
     "keep the same referent unless the transition to a new one is explicit and immediately "
     "clear. Do not make the reader choose between different ordinary meanings of the same word. "
+    "MODIFIER CLARITY: every modifying phrase must have only one natural attachment on first "
+    "reading. If the phrase's placement permits a plausible unintended meaning, reorder or "
+    "rephrase the line. "
     "ROLE CONSISTENCY: if you give a visible subject a playful role or rank, preserve that role "
     "across every beat. Do not give the same subject an incompatible role later. If you mean a "
     "different subject, name it explicitly. "
@@ -445,7 +672,9 @@ _SYSTEM = (
     "intelligence, sincerity, knowledge, effort, or whether a visible detail is genuine. Do not "
     "offer a forced choice whose honest answers make her defend, diminish, or embarrass herself. "
     "If a visible detail could have more than one explanation, respond to its visible effect or "
-    "choose another angle rather than asking her to verify its status. "
+    "choose another angle rather than asking her to verify its status. Asking only whether an "
+    "inferred location itself is right is the narrow confirmation required by CONFIRMATION "
+    "BOUNDARY, not permission to build on the location before she answers. "
     "POSITIVE SOCIAL FRAMING: state the intended positive observation, question, or invitation "
     "directly. Never begin by naming an insulting, judgmental, awkward, pressuring, creepy, or "
     "offensive interpretation of your own message and then denying it. That denial introduces "
@@ -464,27 +693,60 @@ _SYSTEM = (
     "only invite that confirmation or correction without presupposing the answer. Never ask about "
     "an experience, preference, or consequence that only makes sense if the guess is true. "
     "Otherwise stop after the guess. Questions should invite positive, fun conversation, not form "
-    "an interview. "
+    "an interview. VISUAL LOCATION TURN BOUNDARY: when a place is inferred from an image rather "
+    "than stated in her profile text, that location guess is the only conversational move before "
+    "she replies. End after it or ask only whether the location itself is right; the confirmation "
+    "is the conversational payoff. Do not add a statement or question about an activity, reason, "
+    "preference, feeling, experience, or consequence at that place before she confirms it. "
     "Any teasing must be clearly good-natured and never belittling, arrogant, condescending, or "
     "mean. Mild innuendo is eligible only when her own profile clearly invites that playful tone; "
     "never force it. A brief greeting is optional but cannot substitute for profile-specific "
     "substance. At most one authentic, specific compliment is allowed; never pile on flattery or "
-    "seek approval. Do not act as if intimacy or romantic interest already exists. Keep the tone "
+    "seek approval. COMPLIMENT AS REMARK: shape that one compliment, when it occurs, as an "
+    "offhand remark about the visible thing, not an earnest verdict on her. Moving the praise "
+    "onto the thing is not enough alone: it must also pass NO GRADING's SUBSTITUTION TEST "
+    "below, whose PLAYFUL HYPERBOLE exception carries here and governs every condition that "
+    "follows, covering both portability and volume: phrased with the thing as the sentence's "
+    "subject, landing sideways in passing, and understated over emphatic, keeping peer footing "
+    "instead of grading her or seeking her approval. Landing sideways survives that exception "
+    "because it is placement rather than volume, so even an exaggeration stays an aside and "
+    "never becomes the point. "
+    "NO GRADING: a score is not an observation. Never assign the visible thing a grade, "
+    "rank, level, or verdict on how good it is, however casually worded, and whether the subject "
+    "is her or what she did. She chose to post it, so she already knows it is good and a sentence "
+    "whose whole point is that judgment gives her nothing; rating her choices also puts the sender "
+    "above her as a judge. This narrows COMPLIMENT AS REMARK rather than competing with it: moving "
+    "praise off her and onto the thing does not by itself make it a remark, so the one permitted "
+    "compliment must be inseparable from a specific observation about that item. SUBSTITUTION "
+    "TEST: if the predicate would still fit unchanged under a different woman's different photo, "
+    "it is a grade and it fails, except an unmistakably nonliteral PLAYFUL HYPERBOLE, which stays "
+    "playful framing rather than an assessment of quality even where its wording could transfer. "
+    "When the best thing you can say about an item is how good it is, "
+    "do not manufacture a claim to fill the sentence: cut that beat and let one specific question "
+    "be the whole message, still subject to VARY THE SHAPE so the same single sentence "
+    "construction never becomes its own template. MINIMUM INVENTION outranks the wish for a first "
+    "sentence. "
+    "Do not act as if intimacy or romantic interest already exists. Keep the tone "
     "non-needy and do not demand that she chase. HEDGE THE CLAIM, NEVER YOURSELF: when a claim "
     "is uncertain, express that uncertainty naturally in wording that fits the specific item. "
     "The goal is calibrated uncertainty, not a particular lead in. This is not a phrase menu: "
     "choose the construction from context, and never use a hedge as a substitute for the complete "
     "self contained claim. VARY THE OPENING: let the specific item and angle determine the wording "
     "and sentence shape; do not rotate or recycle a fixed stock hedge, and never open every "
-    "message the same way. Never apologise for writing, never ask permission, and "
+    "message the same way. VARY THE SHAPE: let the specific item determine the whole message's "
+    "sentence count, clause pattern, and question form. Choose a structure only because the item "
+    "calls for it, never because it is the easy mold. No structure is the default; a shape that "
+    "repeats message after message is a template even when the words change. "
+    "Never apologise for writing, never ask permission, and "
     "never call your own question dumb. GUESS "
     "THE WORLD, NOT HER IDENTITY: name a country, a region, or a park the way a well travelled "
     "friend would, never a street, a neighbourhood, a hotel, a specific venue, or anywhere that "
     "could be where she lives, and never guess her employer, her school, or her age, or identify "
     "anyone else in the photo. When a place comes from recognizing the image rather than from her "
-    "profile text, clearly identify it as a visual inference and leave it unconfirmed. Do not "
-    "build on an inferred location as though it were correct, do not state an inferred location "
-    "as shared experience, and do not turn it into a generic compliment. NEVER INVENT THE "
+    "profile text, present it only as an inference and obey VISUAL LOCATION TURN BOUNDARY: end "
+    "after the guess or ask only whether the location itself is right. Do not build on an inferred "
+    "location as though it were correct, state it as shared experience, or turn it into a generic "
+    "compliment. NEVER INVENT THE "
     "SENDER: you may not claim he has been somewhere, "
     "done something, or likes something, because you do not know his history and he has to live "
     "with whatever you write. PICK THE ITEM YOURSELF: the numbered images are her profile photos, "
@@ -509,11 +771,13 @@ _SYSTEM = (
     "APPLICATION RULE: TWO sentences is the absolute maximum, and within "
     "that ceiling be as short as the angle allows: spend no word merely repeating what she can "
     "already see and none on padding, but never cut necessary setup or the conversational payoff. "
-    "A second sentence may be "
+    "Subject to CONFIRMATION BOUNDARY, a second sentence may be "
     "one easy positive question "
     "or a direct low-pressure invitation. Do not try to build a text relationship in the opener. "
     "HARD RULE: never use an em dash or any hyphen; use commas or periods instead and spell out "
-    "hyphenated abbreviations. HARD RULE: write the opener in plain ASCII letters and punctuation "
+    "hyphenated abbreviations. When a compound would need a hyphen, rephrase so no hyphen is "
+    "needed; never just delete the hyphen and glue the words together. "
+    "HARD RULE: write the opener in plain ASCII letters and punctuation "
     "only; use no emoji and transliterate accented or non-English letters to plain ASCII. A "
     "terminal plain text smiley, :) is allowed only when it meaningfully makes an otherwise "
     "potentially misread playful or teasing line clearly good natured; never add it by default. "
@@ -747,7 +1011,12 @@ class ItemRequest:
 
 
 _COMMON_ABBREVIATION_RE = re.compile(
-    r"\b(?:Mr|Mrs|Ms|Dr|St|Jr|Sr|vs|etc)\.", re.IGNORECASE)
+    r"\b(?:Mr|Mrs|Ms|Dr|Jr|Sr|vs|etc)\.", re.IGNORECASE)
+_PLACE_PREFIX_ABBREVIATION_RE = re.compile(
+    r"\b(?:St|Mt)\.(?=\s+(?!(?:Am|Is|Are|Was|Were|Do|Does|Did|Have|Has|Had|"
+    r"Can|Could|Would|Will|What|Where|When|Why|How|Which|Who)\b)[A-Z][A-Za-z'])"
+)
+_DOTTED_ABBREVIATION_BEFORE_LOWER_RE = re.compile(r"\b(?:[A-Z]\.){2,}(?=\s+[a-z])")
 _SENTENCE_END_RE = re.compile(r"(?:[!?]+|\.+)(?=(?:[\"'”’)]*)?(?:\s+|$))")
 _COMMA_BEFORE_OR_RE = re.compile(r",(?=\s+or\b)", re.IGNORECASE)
 
@@ -770,6 +1039,113 @@ _SENSITIVE_INFERENCE_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
         r"(?:bridge|cliff|ledge|balcony|roof|height)\b", re.IGNORECASE)),
     ("self harm or suicide", re.compile(
         r"\b(?:self[\s-]?harm|suicid(?:e|al))\b", re.IGNORECASE)),
+)
+
+# A location inferred from pixels is not established context. These deliberately case-aware
+# cues cover an explicit visual guess whose conclusion begins with a proper name (Lake Louise,
+# Norway, an Iceland tour, and so on) without treating every ordinary or figurative "looks
+# like" as a location inference. The model-facing prompt owns the general semantic rule; this
+# is the high-precision backstop for the recurring shape found in live Training drafts.
+#
+# Only the cue words are case-insensitive. The final lookahead is intentionally case-sensitive:
+# a lower-case complement such as "looks like serious dedication" is an interpretation, not a
+# proper-place identification, and must not burn a retry.
+_UNCONFIRMED_LOCATION_CUE_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(
+        r"(?i:\b(?:look(?:s|ed)?|seem(?:s|ed)?)(?:\s+(?:a\s+(?:whole\s+)?lot|"
+        r"quite|very|really|almost|exactly|unmistakably))?\s+like\s+"
+        r"(?:an?\s+|the\s+)?)"
+        r"(?=(?!I\b)[A-Z][A-Za-z'])"
+    ),
+    re.compile(
+        r"(?i:\bmy\s+(?:official\s+|best\s+)?guess"
+        r"(?:\s+(?:for|about|on)\s+[^,.?!]{1,80}?)?\s+(?:is|would\s+be)\s+"
+        r"(?:an?\s+|the\s+)?)"
+        r"(?=(?!I\b)[A-Z][A-Za-z'])"
+    ),
+    re.compile(
+        r"(?i:\bi(?:'m|\s+am|'d|\s+would)\s+(?:going\s+to\s+)?guess(?:ing)?"
+        r"(?:\s+(?:that|this|it)(?:'s|\s+is|\s+was))?\s+(?:an?\s+|the\s+)?)"
+        r"(?=(?!I\b)[A-Z][A-Za-z'])"
+    ),
+    re.compile(
+        r"(?i:\b(?:that|this|it)\s+(?:(?:has|had)\s+to|must|might|could)\s+be\s+"
+        r"(?:an?\s+|the\s+)?)"
+        r"(?=(?!I\b)[A-Z][A-Za-z'])"
+    ),
+    re.compile(
+        r"(?i:\b(?:is|was|could|might|can|would)\s+(?:that|this|it)\s+"
+        r"(?:(?:be|in|at|near)\s+)?(?:an?\s+|the\s+)?)"
+        r"(?=(?!I\b)[A-Z][A-Za-z'])"
+    ),
+)
+
+_LOCATION_FOLLOWUP_COMMA_RE = re.compile(
+    r"[,;:]\s*(?=(?:(?:but|and|or|so)\s+)?"
+    r"(?:am|is|are|was|were|do|does|did|have|has|had|can|could|would|will|"
+    r"what|where|when|why|how|which|who|right|correct|you|she|he|they|we|i|"
+    r"that|this|it|must|might|probably|definitely|surely|clearly)\b)",
+    re.IGNORECASE,
+)
+_LOCATION_FOLLOWUP_CONJUNCTION_RE = re.compile(
+    r"\s+(?=(?:but|and|or|so|then)\s+"
+    r"(?:am|is|are|was|were|do|does|did|have|has|had|can|could|would|will|"
+    r"what|where|when|why|how|which|who|you|she|he|they|we|i|that|this|it|"
+    r"must|might|probably|definitely|surely|clearly)\b)",
+    re.IGNORECASE,
+)
+_LOCATION_CONTEXT_NOUN_RE = re.compile(
+    r"\b(?:scenery|backdrop|street|architecture|landscape|lake|mountain|tower|country|"
+    r"region|park|city|village|coast|beach|bridge|glacier|tour|skyline|ridge|island)\b",
+    re.IGNORECASE,
+)
+_LOCATION_CONTEXT_TRAVEL_RE = re.compile(
+    r"\b(?:visit(?:ing)?|trip|trips?|destination|travel|"
+    r"stay|stayed|living in|hike(?:ing)?|ski(?:ing)?|skate(?:ing|d)?|"
+    r"glacier|highlands|vacation|journey)\b",
+    re.IGNORECASE,
+)
+
+# A later beat is safe only when it still asks about the identification itself. These are
+# grammatical confirmation/correction shapes, not place-name lists, so the detector remains
+# useful for locations it has never seen. Anything else after a proper-name inference is the
+# unsafe direction: the system cannot prove from outgoing text alone that an activity or
+# experience question did not take the guessed place as fact.
+_DIRECT_LOCATION_CONFIRMATION_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"^(?:am|was)\s+i\s+(?:even\s+)?"
+               r"(?:close|right|correct|(?:way\s+)?off)"
+               r"(?:\s+(?:about|on)\s+(?:that|this|the|my)\s+"
+               r"(?:guess|place|location|country|region|park|area))?\?+$",
+               re.IGNORECASE),
+    re.compile(r"^how\s+(?:close|far\s+off)\s+(?:am|was)\s+i\?+$", re.IGNORECASE),
+    re.compile(r"^did\s+i\s+(?:get|guess|call)\s+"
+               r"(?:it|that|this|the\s+(?:place|location))\s+"
+               r"(?:right|correctly)\?+$",
+               re.IGNORECASE),
+    re.compile(r"^(?:is|was|could)\s+(?:that|this|it)\s+(?:be\s+)?"
+               r"(?:right|correct|close|(?:way\s+)?off)\?+$", re.IGNORECASE),
+    re.compile(r"^(?:is|was)\s+my\s+(?:guess|call)\s+"
+               r"(?:right|correct|close|(?:way\s+)?off)\?+$", re.IGNORECASE),
+    re.compile(r"^where\s+(?:is|was)\s+(?:that|this|it)"
+               r"(?:\s+(?:taken|shot|filmed))?\?+$", re.IGNORECASE),
+    re.compile(r"^(?:right|correct)\?+$", re.IGNORECASE),
+)
+_DIRECT_LOCATION_QUERY_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(
+        r"(?i)^(?:is|was|could|might|can|would)\s+(?:that|this|it)\s+"
+        r"(?:be\s+)?(?P<location>.+?)\?+$"
+    ),
+    re.compile(
+        r"(?i)^(?:is|was)\s+(?:that|this|it)\s+(?:taken|shot|filmed)\s+"
+        r"(?P<location>.+?)\?+$"
+    ),
+)
+_PROPER_PLACE_WORD = r"(?:[A-Z][A-Za-z']*\.?|(?:d|l)'[A-Z][A-Za-z']*)"
+_PROPER_PLACE_RE = re.compile(
+    rf"^(?:the\s+)?{_PROPER_PLACE_WORD}"
+    rf"(?:(?:\s+|,\s*){_PROPER_PLACE_WORD}|"
+    rf"\s+(?:and|of|the|de|del|la|las|los|le|du|des|van|von|in|on|upon|at)"
+    rf"\s+{_PROPER_PLACE_WORD})*$"
 )
 
 # Cap on how much of a malformed model-output value gets echoed into an error message --
@@ -832,12 +1208,32 @@ def _strip_wrapping_quotes(text: str) -> str:
     QUOTE_FOLD table) and this only ever has to consider a straight " or ' pair.
 
     Only strips when the wrapping is unambiguous: the first and last characters are the same
-    quote character, and that same character does not also occur anywhere in the interior.
-    That second condition is what keeps 'Nice antlers, isn't it?' untouched -- its interior
-    apostrophe means the leading/trailing ' are not a clean matched wrapping pair (just an
-    opening quote and an unrelated apostrophe that happen to match), so stripping them would
-    leave a broken, unbalanced string. Anything else -- unquoted text, mismatched quote
-    characters, an empty/1-char string -- is returned unchanged.
+    quote character, and every interior occurrence of that character is INTRA-WORD, i.e. has a
+    letter on both sides. An intra-word apostrophe is an apostrophe, not a quote: it cannot be
+    the other half of the leading ' , so removing the outer pair around 'That's a nice mug.'
+    leaves a correct, balanced string. Any interior occurrence that is NOT intra-word (a
+    trailing possessive as in 'Grams' pie', an inner quoted phrase, a stray ") means the
+    leading/trailing characters are not a clean matched wrapping pair, and stripping them
+    would leave a broken, unbalanced string, so the text is returned untouched. Anything else
+    -- unquoted text, mismatched quote characters, an empty/1-char string -- is likewise
+    returned unchanged.
+
+    2026-09-05: the intra-word allowance is what keeps this repair alive under the SPOKEN
+    REGISTER rules. Those rules make contractions the norm (before them the model produced
+    ZERO apostrophes across 188 openers, so a wrapped single-quote opener always had a clean
+    interior and always repaired). Rejecting on any interior ' would have made the common case
+    -- a contraction inside a model-quoted message -- unrepairable, and nothing downstream
+    catches it: _scaffolding_markers does not match a wholly quoted message, so the literal
+    leading and trailing apostrophes would have been typed into her comment box.
+
+    The open residual this same change MANUFACTURES is the word-final elision apostrophe:
+    _is_intra_word demands a letter on BOTH sides, so the elision SPOKEN REGISTER explicitly
+    licenses is not intra-word, _strip_wrapping_quotes("'Nothin' fancy about that mug.'")
+    still refuses, and those wrapping quotes ship -- unlike the trailing possessive and the
+    nested quote above, this is a shape the register rules actively invite. The pre-named fix
+    (a scaffolding rule for a message still wholly wrapped in a matched pair after this helper
+    declines) is deliberately deferred to the first watched batch, per the prompt-only owner
+    decision recorded in the 2026-09-05 addendum of ops/OPENER-REDESIGN.md.
     """
     if len(text) < 2:
         return text
@@ -845,9 +1241,18 @@ def _strip_wrapping_quotes(text: str) -> str:
     if first != last or first not in ("\"", "'"):
         return text
     inner = text[1:-1]
-    if first in inner:
+    if any(ch == first and not _is_intra_word(inner, i) for i, ch in enumerate(inner)):
         return text
     return inner
+
+
+def _is_intra_word(text: str, index: int) -> bool:
+    """True when ``text[index]`` sits between two letters, i.e. it is punctuation inside a
+    word (the apostrophe of a contraction) rather than a delimiter around one. Pure and
+    deterministic; a position at either end of the string is never intra-word."""
+    return (0 < index < len(text) - 1
+            and text[index - 1].isalpha()
+            and text[index + 1].isalpha())
 
 
 # Keywords that make a leading "<clause>:" read as a self-describing label rather than
@@ -858,10 +1263,32 @@ _SCAFFOLD_LABEL_KEYWORDS_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Addendum 2026-09-06 (b) ("HERE'S" collision, ops/OPENER-REDESIGN.md residuals section): "here
+# is"/"here's" used to sit in this tuple as bare leading phrases, so ANY opener starting with
+# either one was rejected -- including a perfectly natural spoken opening like "Here's hoping
+# that trail's as steep as it looks." SPOKEN REGISTER (2026-09-05) raises the odds a model
+# writes exactly that, so the collision was live, burning the same max_attempts=5 retry budget
+# a run cannot spare. Genuine scaffolding "here's"/"here is" introduces the message AS AN
+# OBJECT -- a determiner plus a meta noun naming the output ("the response", "an option", "a
+# version", "my take", almost always followed by a colon) -- while a natural spoken "here's" is
+# followed by a gerund or an ordinary concrete noun and never names the artifact. Both bare
+# phrases are removed below; _SCAFFOLD_HERE_IS_OBJECT_RE narrows rule 2 to that object shape.
 # Leading interjections a model uses to preface its answer instead of just answering (rule 2).
 _SCAFFOLD_LEADING_PHRASES = (
     "sure!", "sure,", "certainly", "of course,", "absolutely!", "got it",
-    "here you go", "here is", "here's",
+    "here you go",
+)
+
+# "here's"/"here is" scaffolding, narrowed (rule 2, continued): matches only when the meta noun
+# evidence is present, i.e. a determiner immediately followed by a word naming the output
+# itself. "Here's hoping ...", "Here's to ...", and "Here's the thing, ..." do NOT match --
+# "hoping", "to", and "thing" are never the artifact -- so a real spoken opening is never
+# rejected on this rule alone.
+_SCAFFOLD_HERE_IS_OBJECT_RE = re.compile(
+    r"^here(?:'s|\s+is)\s+(?:the|an?|my)\s+"
+    r"(?:response|reply|suggestion|draft|output|result|answer|example|opener|message|version|"
+    r"option|options|attempt|take)\b",
+    re.IGNORECASE,
 )
 
 # Meta self-reference phrases beyond the bare word "opener" (rule 3). These are assistant
@@ -909,7 +1336,11 @@ def _scaffolding_markers(text: str) -> list[str]:
          the label words above, e.g. "Here's the response: ..." or "Opener: ...". Excludes
          option/options/version so "Two options: skiing or the beach?" is not rejected.
       2. Leading interjection: text starts with one of the interjection phrases above
-         ("Sure!", "Certainly", "Here's", ...).
+         ("Sure!", "Certainly", "Here you go", ...), or with "here's"/"here is" followed by a
+         determiner and a meta noun naming the output ("Here's the response: ...", "Here's an
+         option: ..."). A bare "Here's"/"Here is" with no such object following (a natural
+         spoken opening, e.g. "Here's hoping ...") is NOT matched -- see
+         _SCAFFOLD_HERE_IS_OBJECT_RE's own comment for why.
       3. Meta self-reference anywhere: the word "opener" (a genuine opener about her ski
          photo will never contain the word "opener"), "as an AI"/"as a language model", or
          refusal framing ("I cannot" and friends followed by a refusal verb -- see
@@ -936,6 +1367,9 @@ def _scaffolding_markers(text: str) -> list[str]:
         if lowered.startswith(phrase):
             markers.append(f'leading interjection "{stripped[:len(phrase)]}"')
             break
+    here_is_match = _SCAFFOLD_HERE_IS_OBJECT_RE.match(stripped)
+    if here_is_match:
+        markers.append(f'leading interjection "{here_is_match.group(0)}"')
 
     # Rule 3: meta self-reference anywhere.
     if _SCAFFOLD_OPENER_WORD_RE.search(text):
@@ -1104,6 +1538,160 @@ def _sensitive_inference_markers(text: str) -> list[str]:
     return [label for label, pattern in _SENSITIVE_INFERENCE_PATTERNS if pattern.search(text)]
 
 
+def _is_location_confirmation_phrase(text: str) -> bool:
+    """Return whether *text* contains only a place identification or correction.
+
+    The confirmation allowlist must be stricter than "starts with a place": arbitrary text
+    after the place can reintroduce the exact activity premise this guard exists to reject.
+    This small grammar accepts capitalized place names, ordinary alternatives, and directional
+    corrections. If a valid place spelling falls outside it, one retry is safer than allowing
+    an experience clause hidden inside a nominally location-only question.
+    """
+    phrase = " ".join(str(text).split()).strip()
+    phrase = re.sub(
+        r"(?i)\s+(?:instead|maybe|perhaps|by\s+any\s+chance)$", "", phrase
+    ).strip()
+    if not phrase:
+        return False
+
+    directional = re.fullmatch(
+        r"(?i)out\s+(?:west|east|north|south)"
+        r"(?:\s+or\s+somewhere(?:\s+else)?\s+"
+        r"(?:in|at|near|around|outside|on)\s+(.+))?",
+        phrase,
+    )
+    if directional:
+        other_place = directional.group(1)
+        return other_place is None or _PROPER_PLACE_RE.fullmatch(other_place) is not None
+
+    if re.fullmatch(r"(?i)somewhere(?:\s+else)?", phrase):
+        return True
+
+    alternatives = re.split(r"(?i)\s+or\s+", phrase)
+    if len(alternatives) > 1:
+        return all(_is_location_confirmation_phrase(part) for part in alternatives)
+
+    phrase = re.sub(
+        r"(?i)^(?:somewhere(?:\s+else)?\s+)?"
+        r"(?:in|at|near|around|outside|on|up\s+around)\s+",
+        "",
+        phrase,
+        count=1,
+    ).strip()
+    return _PROPER_PLACE_RE.fullmatch(phrase) is not None
+
+
+def _has_non_out_there_context(text: str) -> bool:
+    """Return whether ``text`` carries a standalone ``there`` context hint.
+
+    A bare ``there`` is useful for travel-anchored followups, but we intentionally ignore
+    ``out there`` and similar figurative phrases unless another location cue is present.
+    """
+    tokens = re.findall(r"[A-Za-z']+", str(text).lower())
+    for idx, token in enumerate(tokens):
+        if token != "there":
+            continue
+        if idx == 0 or tokens[idx - 1] != "out":
+            return True
+    return False
+
+
+def _has_location_context(text: str) -> bool:
+    cleaned = " ".join(str(text).split())
+    return (_LOCATION_CONTEXT_NOUN_RE.search(cleaned) is not None
+            or _LOCATION_CONTEXT_TRAVEL_RE.search(cleaned) is not None
+            or _has_non_out_there_context(cleaned))
+
+
+def _unconfirmed_location_followup_markers(text: str) -> list[str]:
+    """Find a later beat that treats an inferred proper-name location as established.
+
+    This is intentionally a narrow outgoing-text check, not geographical named-entity
+    recognition. A cue must explicitly frame a capitalized conclusion as a visual guess. That
+    keeps ordinary figurative lines such as ``looks like serious dedication`` out of the gate,
+    while covering the recurring live shape regardless of the particular place name.
+
+    Once such a cue appears, the first sentence boundary or question-like comma/conjunction
+    after it starts the possible followup. A direct confirmation or correction of the location
+    remains valid. Any other later statement or question is rejected because it may ask about
+    an activity, preference, feeling, or experience that is coherent only if the location guess
+    was right. Precision wins over recall here: a false positive spends a billed retry, while
+    the model-facing confirmation rule handles inference wordings this helper cannot prove.
+    """
+    cleaned = " ".join(str(text).split())
+    if not cleaned:
+        return []
+    cue_matches = [(idx, match)
+                   for idx, pattern in enumerate(_UNCONFIRMED_LOCATION_CUE_PATTERNS)
+                   if (match := pattern.search(cleaned)) is not None]
+    if not cue_matches:
+        return []
+    cue_idx, cue = min(cue_matches, key=lambda item: item[1].start())
+
+    # Protect abbreviations without changing string length, so a place such as St. Moritz does
+    # not manufacture a sentence boundary and all match offsets still index ``cleaned``.
+    protected = _COMMON_ABBREVIATION_RE.sub(
+        lambda match: match.group(0).replace(".", "\u2024"), cleaned)
+    protected = _PLACE_PREFIX_ABBREVIATION_RE.sub(
+        lambda match: match.group(0).replace(".", "\u2024"), protected)
+    protected = _DOTTED_ABBREVIATION_BEFORE_LOWER_RE.sub(
+        lambda match: match.group(0).replace(".", "\u2024"), protected)
+    protected = re.sub(
+        r"\b(?:e\.g|i\.e)\.",
+        lambda match: match.group(0).replace(".", "\u2024"),
+        protected,
+        flags=re.IGNORECASE,
+    )
+    boundaries = [
+        match
+        for pattern in (
+            _SENTENCE_END_RE,
+            _LOCATION_FOLLOWUP_COMMA_RE,
+            _LOCATION_FOLLOWUP_CONJUNCTION_RE,
+        )
+        if (match := pattern.search(protected, cue.end())) is not None
+    ]
+    if not boundaries:
+        return []
+    boundary = min(boundaries, key=lambda match: match.start())
+    followup = cleaned[boundary.end():].strip()
+    followup = re.sub(
+        r"^[\"')\]]*\s*(?:(?:but|and|or|so|then)\s+)?",
+        "",
+        followup,
+        count=1,
+        flags=re.IGNORECASE,
+    )
+    if not followup:
+        return []
+    confirmation = re.sub(r"\s*:\)$", "", followup).rstrip()
+    mentions_recipient = re.search(
+        r"\byou(?:r|rs|rself)?\b", confirmation, re.IGNORECASE) is not None
+    if (not mentions_recipient
+            and any(pattern.fullmatch(confirmation)
+                    for pattern in _DIRECT_LOCATION_CONFIRMATION_PATTERNS)):
+        return []
+    location_query_matches = [
+        match
+        for pattern in _DIRECT_LOCATION_QUERY_PATTERNS
+        if (match := pattern.fullmatch(confirmation)) is not None
+    ]
+    if (not mentions_recipient
+            and any(_is_location_confirmation_phrase(match.group("location"))
+                    for match in location_query_matches)):
+        return []
+    if cue_idx == 0:
+        sentence_start_candidates = [
+            cleaned.rfind(ch, 0, cue.start()) for ch in [".", "!", "?", ";", ":"]
+        ]
+        sentence_start = max(sentence_start_candidates) + 1
+        context_window = cleaned[sentence_start:boundary.end()]
+        context_window = " ".join((context_window + " " + followup).split())
+        if not _has_location_context(context_window):
+            return []
+    return ["unconfirmed location used as a later premise"]
+
+
 # Function words plus the handful of "structural" nouns that name the CONTAINER rather than
 # the detail inside it. Both groups are dropped before _redundant_description_markers compares
 # the two strings, for the same reason: they carry no information about WHICH profile this is.
@@ -1186,10 +1774,21 @@ def _redundant_description_markers(opener: str, referenced: str) -> list[str]:
     on owner-approved openers. This stays within the existing scaffolding-defense decision:
     deterministic only, no LLM judge, no classifier.
 
-    CALIBRATION WARNING for whoever does that offline pass: rows written BEFORE the 2026-08-11
-    prompt rewrite are not comparable to rows written after it. The new style text explicitly
-    tells the model to keep the grounding detail out of the message, so overlap counts should
-    drop on their own; a threshold fitted on pre-change rows would be fitted to the bug.
+    CALIBRATION WARNING for whoever does that offline pass: prompt rewrites created
+    comparability boundaries at 2026-08-11 (the Part A substance rewrite) and 2026-09-05 (the
+    spoken register rewrite). Rows from different eras are not comparable: each rewrite
+    changes what the model was told, so overlap counts shift on their own, and a threshold
+    fitted across a boundary is fitted to a mixture. No row carries a style version stamp;
+    split rows by created_at against config.yaml's git commit dates.
+
+    AS OF 2026-09-05 (b) THAT IS ONLY HALF TRUE. Every new row in `openers` and
+    `opener_rejections` now carries `prompt_sha256`, the digest of the prompt era that
+    produced it (see prompt_stamp above for exactly what the digest covers and what it
+    deliberately excludes), so those rows split by GROUP BY prompt_sha256 rather than by
+    reconstruction. Rows written BEFORE that date read back NULL -- the column is nullable
+    and nothing backfills it -- and NULL means "predates the stamp", not "no era": those rows
+    still need the created_at vs. git-dates split described above, so an offline pass over a
+    range spanning 2026-09-05 (b) has to use both methods at once.
     """
     referenced_words = _redundancy_content_words(referenced)
     opener_words = set(_redundancy_content_words(opener))
@@ -1214,10 +1813,14 @@ def _leading_ngram(text: str, n: int = 4) -> str:
     punctuation dropped and whitespace collapsed to single spaces. Pure and deterministic; a
     text with fewer than ``n`` words returns all of them, and ``n <= 0`` returns "".
 
-    Exists for the entropy guard in ops/OPENER-REDESIGN.md 3.6, whose whole point is that
-    shortening the openers compresses the output space and few-shot examples make direct
-    copying a live risk -- across a burner account sending uncapped volume, near-identical
-    openers are both a fingerprint and embarrassing if two matches compare screenshots. The
+    Exists for the entropy guard in ops/OPENER-REDESIGN.md 3.6, whose stated rationale is half
+    stale -- read it with the 2026-09-05 addendum at the end of that file. Shortening the
+    openers compresses the output space, which is what makes collisions likely at all (SAY IT
+    ONCE shortens them further), but the style block has shipped no examples since the
+    2026-08-16 de-templating pass, so copying prompt copy is NOT the risk. The guard exists
+    because a minimal thinking model collapses onto a favorite construction on its own
+    (measured live 2026-08-11: 5 of 5 openers led with the same hedge), and because near
+    identical openers across an uncapped volume burner account are a fingerprint. The
     guard is a plain string comparison of this value against the last N successful openers
     (OpenerService.recent_openers), which catches "Based on the X, I'm going to guess"
     recurring without needing any taxonomy of moves, any semantics, or any second model call.
@@ -1225,9 +1828,10 @@ def _leading_ngram(text: str, n: int = 4) -> str:
     Deliberately dumb, and deliberately free of policy: it decides nothing. What counts as a
     collision, what happens on one, and how a collision interacts with the attempt budget are
     all the service's business (that budget accounting is the entire reason the guard cannot
-    simply reject -- an advisory/observe call gets a deliberately short attempt budget, so a
-    hard rejection there could disable suggestions for the rest of the session over a
-    stylistic near-miss).
+    simply reject -- a hard rejection here would burn one of OpenerService.max_attempts over a
+    stylistic near-miss. Observe's advisory-preview path used to run this guard against its own
+    separately-shortened attempt budget, making a hard rejection there riskier still; that path
+    and its budget were removed on 2026-09-06, leaving one uniform max_attempts for every call).
     Keeping the string normalization here, alone, is what lets that policy change without
     touching the definition of the thing being compared.
     """
@@ -1235,6 +1839,77 @@ def _leading_ngram(text: str, n: int = 4) -> str:
         return ""
     words = (word.strip("'") for word in _NGRAM_WORD_RE.findall(str(text).lower()))
     return " ".join([word for word in words if word][:n])
+
+
+def prompt_stamp(style: str) -> str:
+    """The SHA-256 of the prompt era `style` belongs to, so an offline calibration pass can
+    GROUP BY era instead of reconstructing the boundaries by hand.
+
+    WHY IT EXISTS. Two prompt rewrites created comparability boundaries -- 2026-08-11 (the
+    Part A substance rewrite) and 2026-09-05 (the spoken register rewrite) -- and until this
+    date no row carried any style version at all, so splitting rows by era meant reading
+    created_at against config.yaml's git commit dates by hand and hoping no untracked edit
+    happened in between. That method is a reconstruction; this is a stamp, written by the
+    process that actually sent the prompt.
+
+    WHAT THE DIGEST COVERS. SEVEN components, joined in this fixed order by a NUL byte:
+    (i) the owner's `style` text from config.yaml (the user turn), (ii) `_SYSTEM`
+    (systemInstruction), (iii) the canonicalized `_SCHEMA` field descriptions
+    (responseJsonSchema) -- three of the FOUR on-wire prompt copies, see the 2026-09-05
+    addendum in ops/OPENER-REDESIGN.md for the four-copies correction -- and then the
+    item-crop shape's four instruction constants: (iv) `_ITEM_PREAMBLE`,
+    (v) `_ITEM_PREAMBLE_CONTEXT`, (vi) `_ITEM_LABEL` and (vii) `_CONTEXT_LABEL`. The last
+    four are model-facing instruction PROSE, not bookkeeping: the preamble is the first text
+    part of every item-crop request, and between them these constants carry the compound-item
+    rule (a title, caption, or prompt above a photo is ONE item with it) and the
+    cannot-be-picked rule for context crops, which `_CONTEXT_LABEL` then restates on every
+    context image. All seven are the prompt-shaped bytes that are STABLE for a whole run AND
+    live in module-level constants, which is what makes a per-run stamp meaningful at all --
+    but they are not every byte of instruction the model sees; see exclusion (4). A NUL sits
+    between EVERY adjacent pair, so no boundary between two constants is ambiguous: prose
+    moved from the end of one to the start of the next changes the digest instead of
+    reassembling to the same bytes. `_SCHEMA` is canonicalized (sort_keys, compact
+    separators, ensure_ascii) so a dict-literal reordering that changes no text changes no
+    digest.
+
+    WHAT IT DELIBERATELY EXCLUDES, and why. (1) The retry-hint prose: it is
+    REQUEST-conditional, built per attempt from whichever guard rejected the previous draft
+    (see _text_part), so folding it in would give the same era as many digests as it has
+    failure modes and would make the first attempt and its own retry look like two eras.
+    (2) generationConfig / thinking settings: they change how hard the model works, not what
+    it was told. (3) The model id: already its own column in both tables, so hashing it in
+    would only make the stamp less joinable. (4) _text_part's OWN instruction prose -- the
+    closing block, the truncation and CONTEXT sentences, and the STYLE GUIDE / HER NAME / HER
+    PROFILE TEXT section labels. This exclusion is the TRAILING text part and nothing else:
+    the item-crop preamble and the per-image labels are a separate body of prose and ARE
+    hashed, above. That block is excluded as a block because it is request-conditional (its
+    item counts, its name section, and its truncation sentence all vary per profile), but it
+    is not merely bookkeeping: it carries fixed sentences that are genuine prompt RULES,
+    including its own CONTEXT-images sentence ("Never pick one or make one the opener's main
+    premise") and the item_index instruction, and that copy has been rewritten before. So an
+    edit confined to those sentences is a real era boundary that this digest does NOT move.
+
+    THE COST, stated rather than smoothed over: equal digests mean the same era only up to
+    the exclusions. Two eras differing ONLY in retry-hint prose, or ONLY in _text_part's fixed
+    instruction sentences, are indistinguishable here; changing either one and expecting the
+    stamp to record it is the false negative to watch for.
+
+    OFFLINE REPRODUCTION. To learn which era a stamp names: check out the commit you suspect,
+    load the config, and call ``prompt_stamp(cfg.opener.style)``; equal digests mean the same
+    era in the covered sense above. Pure and deterministic, no I/O -- deliberately a local
+    hashlib call rather than ranker.retractions.canonical_sha, which would add an
+    opener->ranker package edge for one line of hashing.
+    """
+    payload = "\x00".join((
+        str(style),
+        _SYSTEM,
+        json.dumps(_SCHEMA, sort_keys=True, separators=(",", ":"), ensure_ascii=True),
+        _ITEM_PREAMBLE,
+        _ITEM_PREAMBLE_CONTEXT,
+        _ITEM_LABEL,
+        _CONTEXT_LABEL,
+    ))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def _sentence_count(text: str) -> int:
@@ -1362,7 +2037,23 @@ REASON_SCAFFOLDING = "scaffolding"
 REASON_PREEMPTIVE_DISCLAIMER = "preemptive_disclaimer"
 REASON_PREMATURE_SHARED_FUTURE = "premature_shared_future"
 REASON_SENSITIVE_INFERENCE = "sensitive_inference"
+REASON_UNCONFIRMED_LOCATION_FOLLOWUP = "unconfirmed_location_followup"
 REASON_TOO_MANY_SENTENCES = "too_many_sentences"
+
+# The three codes below are NOT OpenerParseError.reason_code values -- nothing in _parse below
+# ever raises with one of these. OpenerParseError's guards only run on a response that DID come
+# back from the provider; these three name failure kinds that service.py's maybe_opener catches
+# from earlier or later in the same call (a request that never reached the provider at all, an
+# HTTP-level rejection of the request itself, or a transport/timeout failure) and passes to
+# self.store.record_opener_rejection directly, not through an OpenerParseError. They live here,
+# following the same REASON_* naming and bare-string-literal rationale as the block above, so
+# that method's reason_code column can classify EVERY rejection kind -- not just parse
+# failures -- without service.py inventing free text ranker/bigquery_store.py's opener_rejections
+# table would have to be queried with a LIKE instead of a GROUP BY. See maybe_opener's
+# OpenerError / HTTP-400 / generic-transient-exception branches for exactly where each fires.
+REASON_OPENER_ERROR = "opener_error"
+REASON_BAD_REQUEST = "bad_request"
+REASON_TRANSIENT_ERROR = "transient_error"
 
 _BLOCK_FINISH_REASONS = frozenset({
     "SAFETY",
@@ -1393,9 +2084,9 @@ class OpenerParseError(OpenerError):
         (not_a_string -- the value there usually isn't even a string).
       - post-sanitize (after fold_to_ascii) when the guard runs on the already-sanitized
         string (empty_after_sanitize, undeliverable_chars, undeliverable_sequence,
-        too_many_sentences, scaffolding, preemptive_disclaimer, premature_shared_future) --
-        these all call their check function with
-        `sanitized`, so that is unambiguously the value being judged, even for
+        too_many_sentences, scaffolding, preemptive_disclaimer, premature_shared_future,
+        sensitive_inference, unconfirmed_location_followup) -- these all call their check
+        function with `sanitized`, so that is unambiguously the value being judged, even for
         empty_after_sanitize where the result is "" itself.
       - the raw response text (no per-field candidate exists to point at) for bad_json and
         missing_field: neither ever produced a usable "opener" value, so the whole raw text
@@ -1432,29 +2123,6 @@ class OpenerAborted(OpenerError):
     """
 
 
-class OpenerDeadlineExceeded(OpenerError):
-    """An advisory opener's absolute monotonic deadline elapsed.
-
-    Unlike :class:`OpenerAborted`, this is not a request to stop the run. Unlike an ordinary
-    :class:`OpenerError`, it is not evidence that the profile, provider, or request pipeline is
-    unhealthy. It is the normal outcome for an optional suggestion which is no longer useful to
-    the person holding the phone. ``OpenerService.maybe_opener`` therefore handles it only on
-    its advisory path, without consuming a failure latch or disabling future suggestions.
-
-    GeminiOpener checks the deadline before every model in a cascade and limits every provider
-    request to the time left. This is deliberately distinct from a transport timeout: expiry can
-    happen between requests, while a transport timeout is a genuine transient provider failure.
-    """
-
-    def __init__(self, message: str, *, usage: Usage | None = None, model: str | None = None):
-        super().__init__(message)
-        # A 2xx response which arrives after the advisory cutoff may still have been billed.
-        # Carry its provider-raw accounting facts to OpenerService, which records the stale draw
-        # without parsing or sending its text. Pre-request expiry and transport errors have none.
-        self.usage = usage
-        self.model = model
-
-
 class OpenerClient(Protocol):
     """What OpenerService requires of an opener client -- i.e. every argument the service
     actually passes, and nothing more.
@@ -1470,7 +2138,6 @@ class OpenerClient(Protocol):
     def generate(self, profile: Profile, style: str, retry_hint: str = "", *,
                  items: "ItemRequest | None" = None,
                  should_stop: Callable[[], bool] | None = None,
-                 deadline: float | None = None,
                  skip_models: frozenset[str] = frozenset()) -> OpenerResult: ...
 
 
@@ -2055,13 +2722,28 @@ class GeminiOpener:
                 # _sanitize rather than rejected). Presenting the two as one undifferentiated
                 # "mandatory" checklist -- as this block first did -- spends the model's
                 # attention on cosmetics when the reason it failed was structural.
+                #
+                # 2026-09-05: the HARD REJECTION list now names every opener-content cause
+                # _parse() raises on EXCEPT ONE. The exception is REASON_UNDELIVERABLE_SEQUENCE
+                # (a literal '%' against a following lowercase 's'), deliberately kept out of
+                # all prompt copy -- see the comment at that guard for why a standing '%'
+                # warning costs more than the collision does. Its own retry_hint explains it on
+                # the rare occasion it fires. If you add a new raising guard to _parse(), add
+                # its cause here too, or this list silently becomes a lie again.
                 "\n\n=== RETRY: YOUR PREVIOUS ATTEMPT WAS REJECTED AND NOT SENT ===\n"
                 f"Reason: {retry_hint}\n"
                 "Fix exactly that. HARD REJECTION RULES, checked in code, which will reject "
                 "you again if broken: the 'opener' field must be a non-empty STRING (never "
-                "null, a number, or an empty/whitespace value), and the opener must be at "
-                "most TWO sentences. Also keep following the style guide above, especially "
-                "the hard rule against em dashes and hyphens, and ground the opener in one "
+                "null, a number, or an empty/whitespace value); the opener must be at most "
+                "TWO sentences; it must be the bare message itself with no preamble, label, or "
+                "surrounding quotes; it must not open by naming and denying a negative reading "
+                "of itself; it must not assume a match, date, or other shared future; it "
+                "must not use an unconfirmed inferred location as the premise of a later "
+                "statement or question; it "
+                "must not infer or tease about self harm, death, injury, an accident, or danger "
+                "unless her profile explicitly states the activity; and it must be plain ASCII "
+                "letters and punctuation with no emoji. Also keep following the "
+                "style guide above, and ground the opener in one "
                 "concrete detail from her profile text or photos. You may name that detail when "
                 "it is useful setup, but the final conversational point must add something "
                 "beyond description. A guess is optional. Prefer a grounded observation or "
@@ -2073,6 +2755,10 @@ class GeminiOpener:
                 "anywhere in her profile; those facts are clues, not guesses. Keep every guess "
                 "unconfirmed for the whole opener. Do not follow it with a statement or question "
                 "that assumes it is correct; leave her room to confirm or correct it. "
+                "For a location inferred from an image, that location guess is the only "
+                "conversational move before she replies: end after it or ask only whether the "
+                "location itself is right. Do not ask about an activity, reason, preference, "
+                "feeling, experience, or consequence there. "
                 "Clearly nonliteral playful hyperbole is allowed; an invented motive or event "
                 "presented as literal fact is not. "
                 "Every named visible detail must be necessary to the conversational move; cut "
@@ -2673,6 +3359,21 @@ class GeminiOpener:
                 "open and must not call it an existing shared plan.",
                 usage, model, reason_code=REASON_PREMATURE_SHARED_FUTURE,
                 raw_opener=sanitized)
+        # The general confirmation boundary is semantic and remains in the multimodal prompt.
+        # This narrow case-aware backstop covers the location shape that has now recurred in
+        # live Training: an explicit proper-name visual guess followed by a new conversational
+        # beat which treats being at that place as established. A direct "am I close" style
+        # confirmation remains legal; an activity or experience question is regenerated.
+        location_followup_markers = _unconfirmed_location_followup_markers(sanitized)
+        if location_followup_markers:
+            raise OpenerParseError(
+                "Gemini's opener used an unconfirmed location guess as the premise of a later "
+                f"statement or question ({'; '.join(location_followup_markers)}). Keep the "
+                "place unconfirmed until she replies. End after the guess, or ask only whether "
+                "the location itself is right; do not ask what she did, felt, preferred, or "
+                "experienced there.",
+                usage, model, reason_code=REASON_UNCONFIRMED_LOCATION_FOLLOWUP,
+                raw_opener=sanitized)
         # Safety backstop for a harmful, unsupported inference such as asking someone at a
         # bridge whether she "worked up the courage to jump". The model prompt already bars
         # this class of angle; this deterministic check makes a prompt miss retryable instead
@@ -2737,35 +3438,15 @@ class GeminiOpener:
     def generate(self, profile: Profile, style: str, retry_hint: str = "", *,
                  items: ItemRequest | None = None,
                  should_stop: Callable[[], bool] | None = None,
-                 deadline: float | None = None,
                  skip_models: frozenset[str] = frozenset()) -> OpenerResult:
-        """Generate one opener, optionally bounded by an absolute monotonic deadline.
+        """Generate one opener for a profile, cascading across configured models on transient
+        failures (see the cascade's comments below for what each failure mode does).
 
-        ``deadline`` is an absolute ``time.monotonic()`` timestamp, used by Observe's optional
-        advisory path. It is checked before image work and before every model in the fallback
-        cascade; each HTTP request receives at most the remaining time. Expiry raises
-        ``OpenerDeadlineExceeded`` rather than resembling a provider timeout, so the caller can
-        omit this stale suggestion without poisoning provider-health latches.
+        The client-side absolute deadline this method used to enforce (an ``OpenerDeadlineExceeded``
+        raised when Observe's advisory-preview path ran out of time) was removed on 2026-09-06
+        along with that path: the service never passes a deadline into this call any more, so
+        every request now runs for the full ``request_timeout_s`` regardless of caller.
         """
-        if deadline is not None:
-            try:
-                normalized_deadline = float(deadline)
-            except (TypeError, ValueError, OverflowError) as exc:
-                raise ValueError("deadline must be a finite monotonic timestamp") from exc
-            if isinstance(deadline, bool) or not math.isfinite(normalized_deadline):
-                raise ValueError("deadline must be a finite monotonic timestamp")
-        else:
-            normalized_deadline = None
-
-        def remaining_deadline(stage: str) -> float | None:
-            if normalized_deadline is None:
-                return None
-            remaining = normalized_deadline - time.monotonic()
-            if remaining <= 0:
-                raise OpenerDeadlineExceeded(
-                    f"opener advisory deadline reached before {stage}")
-            return remaining
-
         # items is doc 5.2/5.7's item-crop request shape and is THE shape Part B is migrating
         # to: one cropped image per profile item, numbered by position and labelled adjacent to
         # its own image, then the unnumbered context crops, plus her name as text and the
@@ -2870,7 +3551,6 @@ class GeminiOpener:
         # rather than able to interleave and both hit the same about-to-be-retired model with
         # a real, billed request (see the class docstring's THREAD SAFETY note).
         with self._lock:
-            remaining_deadline("preparing images")
             if should_stop is not None and should_stop():
                 # Image base64/recompression is the expensive part of request construction.
                 # A run already known to be stopping must not spend that CPU/memory before the
@@ -2958,8 +3638,7 @@ class GeminiOpener:
                 per-minute/unclassified 429, per-day 429, 404 NOT_FOUND, provider 5xx, a
                 thinking-config 400) -- None is the old loop body's `continue`, i.e. "move on to
                 the next model". Everything that must NOT be survived still leaves by raising:
-                any other non-2xx (`raise error`), a malformed 2xx, an expired advisory
-                deadline, and OpenerParseError from _parse.
+                any other non-2xx (`raise error`) and OpenerParseError from _parse.
 
                 It is a closure rather than inline code because it has TWO callers -- the main
                 cascade below and the last-resort pass after it (see this method's skip_models
@@ -2978,18 +3657,12 @@ class GeminiOpener:
                 url = ("https://generativelanguage.googleapis.com/v1beta/models/"
                        f"{quote(model, safe='-_.')}:generateContent")
                 try:
-                    remaining = remaining_deadline(f"requesting {model!r}")
                     code, response = self.transport(
                         url, payload,
                         {"Content-Type": "application/json", "X-goog-api-key": self.api_key},
-                        (self.request_timeout_s if remaining is None
-                         else min(self.request_timeout_s, remaining)),
+                        self.request_timeout_s,
                     )
                 except (OSError, HTTPException) as exc:
-                    # The request itself may have consumed the last available advisory time.
-                    # Give deadline expiry precedence over classifying that late exception as a
-                    # provider/network failure or advancing the cascade to another model.
-                    remaining_deadline(f"handling transport failure from {model!r}")
                     # TRANSPORT-level failure -- this is a layer BELOW the HTTP status-code
                     # cascade above: _stdlib_gemini_transport only catches urllib.error.
                     # HTTPError (a successful-at-the-socket-layer response that merely carries
@@ -3026,19 +3699,6 @@ class GeminiOpener:
                           "next configured model for this profile only (this model will be "
                           "retried first on the next profile).")
                     return None
-                # A provider can return a syntactically successful response just after its
-                # capped timeout budget. Do not parse or send that stale suggestion, and do not
-                # classify a late 5xx/429 as a provider failure: expiry wins uniformly. A late
-                # 2xx Mapping can still have been billed, so retain just its usage/model facts
-                # for OpenerService's accounting path.
-                if (normalized_deadline is not None
-                        and time.monotonic() >= normalized_deadline):
-                    late_success = 200 <= int(code) < 300
-                    late_usage = (self._usage(response)
-                                  if late_success and isinstance(response, Mapping) else None)
-                    raise OpenerDeadlineExceeded(
-                        f"opener advisory deadline reached while handling response from {model!r}",
-                        usage=late_usage, model=model if late_usage is not None else None)
                 if not 200 <= int(code) < 300:
                     error = _gemini_error(int(code), response)
                     # The HTTP 429 status CODE is the reliable capacity signal -- Gemini's own
@@ -3164,10 +3824,6 @@ class GeminiOpener:
             # model that reached the `else` branch below was passed over without a request.
             skip_honored: list[str] = []
             for position, model in enumerate(self.models):
-                # An optional suggestion has a real end-to-end deadline, not merely a cap on
-                # service-level parse retries. Check even an about-to-be skipped/retired model:
-                # the next eligible request must never begin after the deadline either.
-                remaining_deadline(f"considering {model!r}")
                 # Check EVERY model immediately before it can issue a request, including model
                 # zero. The earlier pre-image check prevents useless encoding when Stop already
                 # won; this second check closes the race where it wins DURING image preparation.
@@ -3266,13 +3922,11 @@ class GeminiOpener:
                 announce_safety_valve(
                     "the cascade served nothing and never tried " + ", ".join(reconsidered))
                 for model in reconsidered:
-                    # The same two pre-request obligations the loop above owes, for the same
-                    # reasons: an advisory suggestion's deadline bounds the WHOLE call rather
-                    # than one cascade, and Stop must be honoured before any further billed
-                    # request goes out. The skip check is deliberately absent -- being
-                    # skip-honoured is this pass's entry criterion -- and the retirement check
-                    # already happened when `reconsidered` was built.
-                    remaining_deadline(f"reconsidering {model!r}")
+                    # The same pre-request obligation the loop above owes, for the same reason:
+                    # Stop must be honoured before any further billed request goes out. The skip
+                    # check is deliberately absent -- being skip-honoured is this pass's entry
+                    # criterion -- and the retirement check already happened when `reconsidered`
+                    # was built.
                     if should_stop is not None and should_stop():
                         raise OpenerAborted(
                             f"Opener cascade aborted before reconsidering {model!r}: the run is "

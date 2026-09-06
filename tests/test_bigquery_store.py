@@ -610,6 +610,93 @@ def test_record_opener_writes_item_description_alongside_referenced_and_angle():
     assert len({row["item_description"], row["referenced"], row["angle"]}) == 3
 
 
+def test_record_opener_buffers_the_prompt_era_stamp():
+    """`prompt_sha256` is the digest of the prompt era the row was generated under (see
+    prompt_stamp in opener/opener.py). It is what turns "which era is this row from" from a
+    reconstruction (created_at against config.yaml's git commit dates) into a GROUP BY, so it
+    has to reach the buffered row, not just the table declaration."""
+    client = _FakeBQ()
+    s = _store(client, flush_every=1)
+
+    s.record_opener("r", "hinge", "gemini-x", "hi", "her ridgeline photo", "guess",
+                    "a photo", prompt_sha256="a" * 64)
+
+    assert client.inserted["proj.ds.openers"][0]["prompt_sha256"] == "a" * 64
+
+
+def test_record_opener_buffers_a_null_prompt_stamp_when_the_caller_omits_it():
+    """NULL means "this row predates the stamp". A caller that does not stamp must write that,
+    never "" -- an empty string is a claim about an era whose digest is the empty string."""
+    client = _FakeBQ()
+    s = _store(client, flush_every=1)
+
+    s.record_opener("r", "hinge", "gemini-x", "hi", "her ridgeline photo")
+
+    assert client.inserted["proj.ds.openers"][0]["prompt_sha256"] is None
+
+
+def test_record_opener_buffers_the_profile_key():
+    """`profile_key` (ranker/profile_key.py) is the STABLE cross-time attribution key --
+    unrelated to `profile_id`'s per-card lineage. It has to reach the buffered row, not just
+    the table declaration, or every opener silently loses its attribution key in production
+    while every local test that doesn't check the buffered dict keeps passing."""
+    client = _FakeBQ()
+    s = _store(client, flush_every=1)
+
+    s.record_opener("r", "hinge", "gemini-x", "hi", "her ridgeline photo", "guess",
+                    "a photo", profile_key="k" * 64)
+
+    assert client.inserted["proj.ds.openers"][0]["profile_key"] == "k" * 64
+
+
+def test_record_opener_buffers_an_empty_profile_key_when_the_caller_omits_it():
+    """"" (not NULL) is "no key could be derived for this card" -- matching `profile_id`'s
+    own empty-string convention right next to it in the same row."""
+    client = _FakeBQ()
+    s = _store(client, flush_every=1)
+
+    s.record_opener("r", "hinge", "gemini-x", "hi", "her ridgeline photo")
+
+    assert client.inserted["proj.ds.openers"][0]["profile_key"] == ""
+
+
+def test_record_opener_persists_profile_key_as_the_hash_never_the_raw_fingerprint():
+    """`profile_key` must be exactly the hex SHA-256 `ranker.profile_key` computes -- never the
+    raw `ProfileIdentity.fingerprint` those pixels came from (see that module's own docstring
+    for why a stored fingerprint would be a real rendering of a real person's name)."""
+    from operation_love.drivers.item_identity import ProfileIdentity
+    from operation_love.ranker.profile_key import profile_key_from_identity
+
+    identity = ProfileIdentity(fingerprint=(10, 20, 30, 40), band=(0.0, 0.0, 1.0, 1.0),
+                               grid=(64, 16), frame_index=0, scroll_top_distance=0.0,
+                               reason="settled header")
+    key = profile_key_from_identity(identity)
+
+    client = _FakeBQ()
+    s = _store(client, flush_every=1)
+    s.record_opener("r", "hinge", "gemini-x", "hi", "her ridgeline photo", profile_key=key)
+
+    stored = client.inserted["proj.ds.openers"][0]["profile_key"]
+    assert stored == key
+    assert len(stored) == 64 and all(c in "0123456789abcdef" for c in stored)
+    assert stored != str(identity.fingerprint)
+
+
+def test_record_opener_rejection_buffers_the_prompt_era_stamp():
+    """Rejections carry the same era digest the successes do, so "how often does this guard
+    fire" is answerable per prompt era rather than only per date range."""
+    client = _FakeBQ()
+    s = _store(client, flush_every=1)
+
+    s.record_opener_rejection("r", "hinge", "gemini-x", 2, "scaffolding",
+                              "Gemini's opener contained scaffolding text", "Here's: hi",
+                              prompt_sha256="b" * 64)
+
+    row = client.inserted["proj.ds.opener_rejections"][0]
+    assert row["prompt_sha256"] == "b" * 64
+    assert set(row) == set(_declared_columns("opener_rejections"))
+
+
 def test_record_opener_writes_exactly_the_columns_the_openers_table_declares():
     """Structural guard against the two ways this table silently drifts: writing a field the
     table does not declare (BigQuery rejects the insert as "no such field" and, with
@@ -682,13 +769,32 @@ def test_record_opener_signature_stays_positional_compatible_with_the_store_prot
     params = inspect.signature(BigQueryStore.record_opener).parameters
     assert list(params) == ["self", "run_id", "app", "model", "opener", "referenced", "angle",
                             "item_description", "profile_id", "decision", "decision_source",
-                            "decision_created_at", "model_item_index"]
+                            "decision_created_at", "model_item_index", "prompt_sha256",
+                            "profile_key"]
     assert params["angle"].default == ""
     assert params["item_description"].default == ""
     for name in ("profile_id", "decision", "decision_source", "decision_created_at",
-                 "model_item_index"):
+                 "model_item_index", "prompt_sha256", "profile_key"):
         assert params[name].kind is inspect.Parameter.KEYWORD_ONLY
+    assert params["profile_key"].default == ""
     assert list(params) == list(inspect.signature(Store.record_opener).parameters)
+
+
+def test_record_opener_rejection_signature_stays_aligned_with_the_store_protocol():
+    """The rejection sink's sibling pin, added with prompt_sha256 (2026-09-05 (b)) because the
+    same keyword-only parameter now exists on the Protocol and BOTH backends with nothing else
+    asserting the three agree. Protocols are not runtime-checked, so a later Protocol/backend
+    divergence here would be silent -- and doubly so on THIS sink: the service persists
+    rejections inside a non-fatal try/except, so a signature mismatch surfaces as a printed
+    warning and a lost row rather than as a failing test. The seven leading parameters stay
+    POSITIONAL because service.py calls them that way; prompt_sha256 stays KEYWORD_ONLY so it
+    can never bind to raw_opener."""
+    params = inspect.signature(BigQueryStore.record_opener_rejection).parameters
+    assert list(params) == ["self", "run_id", "app", "model", "attempt", "reason_code",
+                            "reason", "raw_opener", "prompt_sha256"]
+    assert params["prompt_sha256"].kind is inspect.Parameter.KEYWORD_ONLY
+    assert params["prompt_sha256"].default is None
+    assert list(params) == list(inspect.signature(Store.record_opener_rejection).parameters)
 
 
 def test_ensure_tables_declares_angle_on_the_openers_create_table():
@@ -751,6 +857,120 @@ def test_ensure_tables_runs_openers_item_description_migration():
     assert ("ALTER TABLE `proj.ds.openers`\nADD COLUMN IF NOT EXISTS item_description STRING;"
             in ddl)
     assert "CREATE TABLE IF NOT EXISTS `proj.ds.openers`" not in ddl
+
+
+def test_ensure_tables_declares_prompt_sha256_on_the_openers_create_table():
+    """CREATE half of the era stamp's two-part rollout for `openers`: what a NEW/empty project
+    gets, where the table does not exist yet. It is NOT what fixes the live project -- see
+    test_ensure_tables_runs_openers_prompt_sha256_migration for that half. Both are required."""
+    client = _FakeBQ()
+    BigQueryStore("proj", "ds", photo_bucket="photos", client=client,
+                  storage_client=_FakeStorage(), ensure=True)
+
+    ddl = "\n".join(client.queries)
+    create = next(line for line in ddl.splitlines()
+                  if line.startswith("CREATE TABLE IF NOT EXISTS `proj.ds.openers`"))
+    assert "prompt_sha256 STRING" in create
+
+
+def test_ensure_tables_runs_openers_prompt_sha256_migration():
+    """The production-critical half. The live `openers` table already holds real rows, so
+    CREATE TABLE IF NOT EXISTS is a silent no-op against it and this ALTER is the ONLY thing
+    that puts `prompt_sha256` there. Without it the first stamped insert is rejected as "no
+    such field: prompt_sha256" in production -- taking the whole batch with it, since
+    skip_invalid_rows is unset, and at flush_every=1 that is the very first opener of the run
+    -- while every local test, which always creates the table fresh, keeps passing."""
+    from operation_love.ranker.bigquery_store import _MIGRATIONS
+
+    assert "ALTER TABLE `{openers}` ADD COLUMN IF NOT EXISTS prompt_sha256 STRING;" in _MIGRATIONS
+
+    client = _FakeBQ(label_rows=_schema_rows_without(("openers", "prompt_sha256")))
+    BigQueryStore("proj", "ds", photo_bucket="photos", client=client,
+                  storage_client=_FakeStorage(), ensure=True)
+    ddl = "\n".join(client.queries)
+    assert "ALTER TABLE `proj.ds.openers`\nADD COLUMN IF NOT EXISTS prompt_sha256 STRING;" in ddl
+    assert "CREATE TABLE IF NOT EXISTS `proj.ds.openers`" not in ddl
+
+
+def test_ensure_tables_declares_profile_key_on_the_openers_create_table():
+    """CREATE half of `profile_key`'s two-part rollout (2026-09-06): what a NEW/empty project
+    gets, where the table does not exist yet. Not what fixes the live project -- see
+    test_ensure_tables_runs_openers_profile_key_migration for that half."""
+    client = _FakeBQ()
+    BigQueryStore("proj", "ds", photo_bucket="photos", client=client,
+                  storage_client=_FakeStorage(), ensure=True)
+
+    ddl = "\n".join(client.queries)
+    create = next(line for line in ddl.splitlines()
+                  if line.startswith("CREATE TABLE IF NOT EXISTS `proj.ds.openers`"))
+    assert "profile_key STRING" in create
+
+
+def test_ensure_tables_runs_openers_profile_key_migration():
+    """The production-critical half. The live `openers` table already holds real rows, so
+    CREATE TABLE IF NOT EXISTS is a silent no-op against it and this ALTER is the ONLY thing
+    that puts `profile_key` there. Without it the first attributed insert is rejected as "no
+    such field: profile_key" in production -- taking the whole batch with it, since
+    skip_invalid_rows is unset -- while every local test, which always creates the table
+    fresh, keeps passing."""
+    from operation_love.ranker.bigquery_store import _MIGRATIONS
+
+    assert "ALTER TABLE `{openers}` ADD COLUMN IF NOT EXISTS profile_key STRING;" in _MIGRATIONS
+
+    client = _FakeBQ(label_rows=_schema_rows_without(("openers", "profile_key")))
+    BigQueryStore("proj", "ds", photo_bucket="photos", client=client,
+                  storage_client=_FakeStorage(), ensure=True)
+    ddl = "\n".join(client.queries)
+    assert "ALTER TABLE `proj.ds.openers`\nADD COLUMN IF NOT EXISTS profile_key STRING;" in ddl
+    assert "CREATE TABLE IF NOT EXISTS `proj.ds.openers`" not in ddl
+
+
+def test_ensure_tables_creates_opener_outcomes_table():
+    """`opener_outcomes` is a BRAND NEW table (2026-09-06): it needs only its CREATE entry in
+    _TABLES, reaching an existing project through `_ensure_tables`' `missing_tables` branch --
+    never a `_MIGRATIONS` line, which is for a COLUMN added to a table that already exists
+    elsewhere (see the comment above `_MIGRATIONS`). Mirrors
+    test_ensure_tables_creates_opener_rejections_table for the same kind of table."""
+    client = _FakeBQ()
+    BigQueryStore("proj", "ds", photo_bucket="photos", client=client,
+                  storage_client=_FakeStorage(), ensure=True)
+    ddl = "\n".join(client.queries)
+    assert "CREATE TABLE IF NOT EXISTS `proj.ds.opener_outcomes`" in ddl
+    for col in ("app STRING", "profile_key STRING", "outcome STRING",
+                "observed_at TIMESTAMP", "source STRING", "note STRING",
+                "created_at TIMESTAMP"):
+        assert col in ddl
+
+
+def test_ensure_tables_declares_prompt_sha256_on_the_opener_rejections_create_table():
+    """CREATE half for `opener_rejections` -- the first column this table has ever gained, so
+    it is also the first time this table has needed the two-part rollout at all."""
+    client = _FakeBQ()
+    BigQueryStore("proj", "ds", photo_bucket="photos", client=client,
+                  storage_client=_FakeStorage(), ensure=True)
+
+    ddl = "\n".join(client.queries)
+    create = next(line for line in ddl.splitlines()
+                  if line.startswith("CREATE TABLE IF NOT EXISTS `proj.ds.opener_rejections`"))
+    assert "prompt_sha256 STRING" in create
+
+
+def test_ensure_tables_runs_opener_rejections_prompt_sha256_migration():
+    """ALTER half for `opener_rejections`, pinned separately from the openers one because the
+    two reach different live tables and a rollout that migrates only the table someone
+    happened to be thinking about is exactly how the other one starts rejecting inserts."""
+    from operation_love.ranker.bigquery_store import _MIGRATIONS
+
+    assert ("ALTER TABLE `{opener_rejections}` ADD COLUMN IF NOT EXISTS prompt_sha256 STRING;"
+            in _MIGRATIONS)
+
+    client = _FakeBQ(label_rows=_schema_rows_without(("opener_rejections", "prompt_sha256")))
+    BigQueryStore("proj", "ds", photo_bucket="photos", client=client,
+                  storage_client=_FakeStorage(), ensure=True)
+    ddl = "\n".join(client.queries)
+    assert ("ALTER TABLE `proj.ds.opener_rejections`\n"
+            "ADD COLUMN IF NOT EXISTS prompt_sha256 STRING;" in ddl)
+    assert "CREATE TABLE IF NOT EXISTS `proj.ds.opener_rejections`" not in ddl
 
 
 def test_ensure_tables_creates_opener_rejections_table():
@@ -2276,3 +2496,220 @@ def test_bigquery_every_read_path_agrees_about_a_retracted_identity_less_label(m
                        "successful_hinge_openers": 0}
     assert store.advisory_opener_run_rows("r", "hinge")["effective_counts"] == {
         "like_labels": 1, "like_decisions": 1, "pass_labels": 1, "pass_decisions": 2}
+
+
+class _AdvisoryOpenerBQ:
+    """Fake client answering exactly the three reads advisory_opener_run_rows issues."""
+
+    def __init__(self, opener_rows):
+        self._opener_rows = [dict(row) for row in opener_rows]
+        self.queries = []
+
+    def query(self, sql, job_config=None):
+        self.queries.append(sql)
+        if "FROM `proj.ds.openers`" in sql:
+            return _FakeJob(self._opener_rows)
+        if "FROM `proj.ds.opener_retractions`" in sql:
+            return _FakeJob([])
+        return _FakeJob([{"profiles": 0, "profile_photos": 0, "labels": 0, "decisions": 0,
+                          "like_labels": 0, "pass_labels": 0, "like_decisions": 0,
+                          "pass_decisions": 0}])
+
+
+def test_bigquery_advisory_opener_run_rows_keep_the_prompt_stamp_out_of_the_fingerprint(
+        monkeypatch):
+    """`prompt_sha256` must NEVER enter the opener fingerprint or the advisory projection.
+
+    Five on-disk cleanup plans in ops/corrections/ carry fingerprints computed from exactly
+    five fields (run_id, app, created_at, model, opener) and a three-key emitted row. Widening
+    either side would re-key every stored plan against rows it already names, and
+    append_opener_retraction would then refuse them as "fingerprint no longer matches its
+    cleanup plan" -- a plan that can never be applied again.
+
+    All three halves are pinned: the SELECT does not ask for the column, the emitted row has
+    exactly the three keys, and the fingerprint of a STAMPED source row is byte-identical to
+    the digest computed from the five fields alone.
+    """
+    from operation_love.ranker.retractions import canonical_sha
+
+    _stub_bigquery_module(monkeypatch)
+    created = datetime(2026, 9, 5, 12, 0, 0, tzinfo=timezone.utc)
+    client = _AdvisoryOpenerBQ([{"created_at": created, "model": "gemini-x",
+                                 "opener": "hello there", "prompt_sha256": "e" * 64}])
+    store = BigQueryStore("proj", "ds", photo_bucket="photos", client=client,
+                          storage_client=_FakeStorage(), ensure=False)
+
+    rows = store.advisory_opener_run_rows("r", "hinge")["openers"]
+
+    projection = next(sql for sql in client.queries if "FROM `proj.ds.openers`" in sql)
+    assert "prompt_sha256" not in projection
+    assert len(rows) == 1
+    assert set(rows[0]) == {"created_at", "model", "opener_fingerprint"}
+    assert rows[0]["opener_fingerprint"] == canonical_sha({
+        "run_id": "r", "app": "hinge", "created_at": created.isoformat(),
+        "model": "gemini-x", "opener": "hello there"})
+
+
+# =====================================================================================
+# record_opener_outcome / joined_opener_outcomes (2026-09-06): the outcome-signal data layer.
+#
+# `profile_key` (buffered by record_opener above) is the STABLE cross-time attribution key;
+# `opener_outcomes` is a brand-new table joined back to `openers` by (app, profile_key) -- see
+# BigQueryStore.joined_opener_outcomes.
+# =====================================================================================
+
+def test_record_opener_outcome_buffers_all_fields():
+    client = _FakeBQ()
+    s = _store(client, flush_every=1)
+
+    s.record_opener_outcome("hinge", "k" * 64, "reply", observed_at=123.0, source="owner",
+                            note="she asked about the trail")
+
+    row = client.inserted["proj.ds.opener_outcomes"][0]
+    assert row["app"] == "hinge"
+    assert row["profile_key"] == "k" * 64
+    assert row["outcome"] == "reply"
+    assert row["observed_at"] == "1970-01-01T00:02:03+00:00"
+    assert row["source"] == "owner"
+    assert row["note"] == "she asked about the trail"
+    assert "created_at" in row
+    assert set(row) == set(_declared_columns("opener_outcomes"))
+
+
+def test_record_opener_outcome_defaults_source_note_and_stamps_observed_at_now():
+    client = _FakeBQ()
+    s = _store(client, flush_every=1)
+
+    s.record_opener_outcome("hinge", "k" * 64, "match")
+
+    row = client.inserted["proj.ds.opener_outcomes"][0]
+    assert row["source"] == "owner"
+    assert row["note"] == ""
+    assert row["observed_at"] is not None
+
+
+def test_record_opener_outcome_stores_an_unattributable_observation_rather_than_dropping_it():
+    """An owner who observed a real outcome but could not pin down which captured profile it
+    belongs to must still have the observation LAND -- silently dropping it would be worse
+    than storing it unattributed (see ranker/profile_key.py's own docstring)."""
+    client = _FakeBQ()
+    s = _store(client, flush_every=1)
+
+    s.record_opener_outcome("hinge", "", "unknown", note="lost track of which profile")
+
+    row = client.inserted["proj.ds.opener_outcomes"][0]
+    assert row["profile_key"] == ""
+    assert row["outcome"] == "unknown"
+    assert row["note"] == "lost track of which profile"
+
+
+def test_record_opener_outcome_signature_matches_the_store_protocol():
+    params = inspect.signature(BigQueryStore.record_opener_outcome).parameters
+    assert list(params) == list(inspect.signature(Store.record_opener_outcome).parameters)
+    assert params["app"].kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
+    assert params["profile_key"].kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
+    assert params["outcome"].kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
+    for name in ("observed_at", "source", "note"):
+        assert params[name].kind is inspect.Parameter.KEYWORD_ONLY
+
+
+def test_joined_opener_outcomes_signature_matches_the_store_protocol():
+    params = inspect.signature(BigQueryStore.joined_opener_outcomes).parameters
+    assert list(params) == list(inspect.signature(Store.joined_opener_outcomes).parameters)
+    assert params["prompt_sha256"].kind is inspect.Parameter.KEYWORD_ONLY
+    assert params["prompt_sha256"].default is None
+
+
+def test_joined_opener_outcomes_query_excludes_empty_and_null_profile_keys_on_both_sides(
+        monkeypatch):
+    """An unattributable opener and an unattributable outcome must never join to EACH OTHER
+    just because both happen to carry the same "no key" spelling ("") -- see
+    ranker/profile_key.py's own docstring."""
+    _stub_bigquery_module(monkeypatch)
+    client = _FakeBQ(label_rows=[])
+    store = _store(client)
+
+    store.joined_opener_outcomes("hinge")
+
+    sql = client.queries[-1]
+    assert "ON oc.app = o.app AND oc.profile_key = o.profile_key" in sql
+    assert "o.profile_key IS NOT NULL AND o.profile_key != ''" in sql
+    assert "oc.profile_key IS NOT NULL AND oc.profile_key != ''" in sql
+    assert {p.name: p.value for p in client.job_configs[-1].query_parameters} == {"app": "hinge"}
+
+
+def test_joined_opener_outcomes_filters_by_prompt_era_when_given_one(monkeypatch):
+    _stub_bigquery_module(monkeypatch)
+    client = _FakeBQ(label_rows=[])
+    store = _store(client)
+
+    store.joined_opener_outcomes("hinge", prompt_sha256="a" * 64)
+
+    sql = client.queries[-1]
+    assert "AND o.prompt_sha256 = @prompt_sha256" in sql
+    assert {p.name: p.value for p in client.job_configs[-1].query_parameters} == {
+        "app": "hinge", "prompt_sha256": "a" * 64}
+
+
+def test_joined_opener_outcomes_omits_the_era_filter_when_none_is_given(monkeypatch):
+    """`prompt_sha256=None` (the default) means "no filter, every era" -- never "match NULL,"
+    the same convention every other prompt_sha256 consumer in this store already follows."""
+    _stub_bigquery_module(monkeypatch)
+    client = _FakeBQ(label_rows=[])
+    store = _store(client)
+
+    store.joined_opener_outcomes("hinge")
+
+    sql = client.queries[-1]
+    assert "AND o.prompt_sha256 = @prompt_sha256" not in sql
+    assert {p.name: p.value for p in client.job_configs[-1].query_parameters} == {"app": "hinge"}
+
+
+def test_joined_opener_outcomes_converts_timestamps_and_shapes_the_row(monkeypatch):
+    _stub_bigquery_module(monkeypatch)
+    created_opener = datetime(2026, 9, 6, 12, 0, 0, tzinfo=timezone.utc)
+    observed = datetime(2026, 9, 6, 13, 0, 0, tzinfo=timezone.utc)
+    created_outcome = datetime(2026, 9, 6, 13, 0, 1, tzinfo=timezone.utc)
+    client = _FakeBQ(label_rows=[{
+        "run_id": "r", "model": "gemini-x", "opener": "hi there", "prompt_sha256": "a" * 64,
+        "profile_key": "k" * 64, "opener_created_at": created_opener,
+        "outcome": "match", "observed_at": observed, "source": "owner", "note": "n",
+        "outcome_created_at": created_outcome,
+    }])
+    store = _store(client)
+
+    rows = store.joined_opener_outcomes("hinge")
+
+    assert rows == [{
+        "run_id": "r", "model": "gemini-x", "opener": "hi there", "prompt_sha256": "a" * 64,
+        "profile_key": "k" * 64, "opener_created_at": created_opener.isoformat(),
+        "outcome": "match", "observed_at": observed.isoformat(), "source": "owner", "note": "n",
+        "outcome_created_at": created_outcome.isoformat(),
+    }]
+
+
+def test_joined_opener_outcomes_treats_missing_optional_table_as_empty(monkeypatch):
+    """`opener_outcomes` is added by this change; an `ensure=False` reader can run against a
+    live project before any `ensure=True` store has ever created it. Only a NotFound naming
+    THIS table reads as "no outcomes recorded yet" -- mirrors
+    test_read_only_summary_treats_only_missing_opener_retractions_as_empty for the older
+    optional table."""
+    _stub_bigquery_module(monkeypatch)
+
+    class NotFound(Exception):
+        pass
+
+    class _MissingOutcomesBQ(_FakeBQ):
+        def query(self, sql, job_config=None):
+            self.queries.append(sql)
+            self.job_configs.append(job_config)
+            raise NotFound("Not found: proj.ds.opener_outcomes")
+
+    assert _store(_MissingOutcomesBQ()).joined_opener_outcomes("hinge") == []
+
+    class _MissingOtherBQ(_FakeBQ):
+        def query(self, sql, job_config=None):
+            raise NotFound("Not found: proj.ds.openers")
+
+    with pytest.raises(NotFound):
+        _store(_MissingOtherBQ()).joined_opener_outcomes("hinge")

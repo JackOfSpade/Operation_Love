@@ -119,10 +119,47 @@ _TABLES = {
     # monitor compares the opener against), this one says what the item IS -- a photo, a
     # written prompt -- which is the coarse class doc 5.8's pre-flight cross-check works on.
     # Written in both auto and observe, always. Same _MIGRATIONS caveat as `angle`.
+    #
+    # `prompt_sha256` is the digest of the PROMPT ERA this row was generated under (see
+    # prompt_stamp in opener/opener.py for what the digest covers and what it deliberately
+    # excludes). It exists so an offline calibration pass can GROUP BY era instead of
+    # reconstructing the 2026-08-11 / 2026-09-05 boundaries from created_at against
+    # config.yaml's git commit dates. Nullable and never backfilled: rows written before
+    # 2026-09-05 (b) read back NULL, meaning "predates the stamp". Same _MIGRATIONS caveat as
+    # every column above -- this line alone does NOT add it to the live table.
+    #
+    # `profile_key` (2026-09-06) is the STABLE, cross-time attribution key -- see
+    # ranker/profile_key.py's `profile_key_from_identity` for exactly what it hashes and why.
+    # Unrelated to `profile_id` above, which stays a per-CARD lineage id regenerated every
+    # swipe: `profile_key` is what an `opener_outcomes` row observed days later joins against
+    # (see the `opener_outcomes` table below and `BigQueryStore.joined_opener_outcomes`).
+    # Nullable and never backfilled, same _MIGRATIONS caveat as every column above.
     "openers": ("run_id STRING, app STRING, created_at TIMESTAMP, model STRING, opener STRING, "
                 "referenced STRING, angle STRING, item_description STRING, profile_id STRING, "
                 "decision STRING, decision_source STRING, decision_created_at TIMESTAMP, "
-                "model_item_index INT64"),
+                "model_item_index INT64, prompt_sha256 STRING, profile_key STRING"),
+    # The OUTCOME half of the measurement gap `openers.profile_key` exists to close: what a
+    # sent opener actually PERFORMED (a match, a reply, silence), as opposed to everything
+    # else this schema records about what the prompt PRODUCED. Deliberately carries no
+    # `run_id`/foreign key into `openers` at all -- an outcome is observed on a real
+    # conversation, often well after any automation run ended and often by the owner looking
+    # at the phone rather than by anything this codebase ran, so (`app`, `profile_key`) is the
+    # WHOLE join key back to `openers` (see `BigQueryStore.joined_opener_outcomes`, which owns
+    # that join so no caller has to reimplement it). `outcome` and `source` are free text
+    # against the documented, unenforced vocabularies in ranker/__init__.py
+    # (`KNOWN_OPENER_OUTCOMES` / `KNOWN_OPENER_OUTCOME_SOURCES`); `source` is what lets the
+    # SAME table later be populated by an automated reader without any schema change, since it
+    # is already a plain STRING rather than a closed type. `observed_at` is WHEN the outcome
+    # happened/was noticed (analogous to `openers.decision_created_at`); `created_at` is when
+    # this row was WRITTEN, stamped by this store like every other table here. Brand-new
+    # table: it needs only this CREATE entry, never a `_MIGRATIONS` line for itself -- that
+    # rule is for a COLUMN added to a table that already exists elsewhere (see the comment
+    # above `_MIGRATIONS`), and a whole new table reaches an existing project exactly the way
+    # `opener_rejections` once did, through `_ensure_tables`' `missing_tables` branch.
+    "opener_outcomes": (
+        "app STRING, profile_key STRING, outcome STRING, observed_at TIMESTAMP, "
+        "source STRING, note STRING, created_at TIMESTAMP"
+    ),
     # One queryable row per verified-landed AUTO opener. The PNG itself belongs in the same
     # private Cloud Storage bucket as profile images; BigQuery holds its URI, exact opener,
     # target, hashes, and outcome. Keeping this separate from ``openers`` preserves that table's
@@ -133,15 +170,25 @@ _TABLES = {
         "model_item_index INT64, opener STRING, evidence_id STRING, opener_sha256 STRING, "
         "frame_sha256 STRING, gcs_uri STRING, byte_size INT64, content_type STRING"
     ),
-    # Every REJECTED opener attempt (OpenerParseError), not just the successes `openers`
-    # above holds -- see opener/service.py's OpenerParseError handling and opener.py's
-    # OpenerParseError docstring for reason_code/raw_opener semantics. `attempt` is the
-    # 1-based retry count within maybe_opener()'s per-profile retry loop, so a run of
-    # consecutive rejections that exhausted the loop (service.py's max_attempts) is
-    # queryable as clearly as one that succeeded on the first retry.
+    # Every REJECTED opener attempt -- not just OpenerParseError (the majority, and the only
+    # kind that carries a `model`/billed usage), but also (as of 2026-09-06) maybe_opener's
+    # OpenerError / HTTP-400 / generic-transient-exception branches, none of which have a model
+    # to report (see opener/service.py's OpenerError/bad-request/transient branches and
+    # opener.py's REASON_OPENER_ERROR/REASON_BAD_REQUEST/REASON_TRANSIENT_ERROR). Not just the
+    # successes `openers` above holds, either -- see opener.py's OpenerParseError docstring for
+    # reason_code/raw_opener semantics. `attempt` is the 1-based retry count within
+    # maybe_opener()'s per-profile retry loop, so a run of consecutive rejections that exhausted
+    # the loop (service.py's max_attempts) is queryable as clearly as one that succeeded on the
+    # first retry.
+    #
+    # `prompt_sha256` is the same prompt-era digest the `openers` entry above describes,
+    # carried here so a guard's firing rate is attributable to the prompt that provoked it
+    # rather than only to a date range. It was this table's FIRST added column, so it was also
+    # this table's first _MIGRATIONS line -- that line, not this one, is what reached the live
+    # table.
     "opener_rejections": (
         "run_id STRING, app STRING, created_at TIMESTAMP, model STRING, attempt INT64, "
-        "reason_code STRING, reason STRING, raw_opener STRING"
+        "reason_code STRING, reason STRING, raw_opener STRING, prompt_sha256 STRING"
     ),
     "opener_retractions": (
         "correction_id STRING, run_id STRING, app STRING, opener_created_at TIMESTAMP, model STRING, "
@@ -174,6 +221,9 @@ _MIGRATIONS = (
     "ALTER TABLE `{openers}` ADD COLUMN IF NOT EXISTS decision_source STRING;",
     "ALTER TABLE `{openers}` ADD COLUMN IF NOT EXISTS decision_created_at TIMESTAMP;",
     "ALTER TABLE `{openers}` ADD COLUMN IF NOT EXISTS model_item_index INT64;",
+    "ALTER TABLE `{openers}` ADD COLUMN IF NOT EXISTS prompt_sha256 STRING;",
+    "ALTER TABLE `{opener_rejections}` ADD COLUMN IF NOT EXISTS prompt_sha256 STRING;",
+    "ALTER TABLE `{openers}` ADD COLUMN IF NOT EXISTS profile_key STRING;",
 )
 
 _MIGRATION_RE = re.compile(
@@ -316,6 +366,18 @@ def _missing_optional_opener_retractions(exc: Exception, *, ensure: bool) -> boo
     """Only the known optional-table NotFound is empty; every other read error is real."""
     return (not ensure and type(exc).__name__ == "NotFound"
             and "opener_retractions" in str(exc))
+
+
+def _missing_optional_opener_outcomes(exc: Exception, *, ensure: bool) -> bool:
+    """Same accommodation as `_missing_optional_opener_retractions`, for the newer table.
+
+    `opener_outcomes` is added by this change; an `ensure=False` reader (e.g. an offline
+    calibration pass) can run against a live project before any `ensure=True` store has ever
+    created it. A NotFound naming this specific table is "no outcomes recorded yet," not a
+    real failure; anything else still propagates.
+    """
+    return (not ensure and type(exc).__name__ == "NotFound"
+            and "opener_outcomes" in str(exc))
 
 
 def _missing_dataset(exc: Exception) -> bool:
@@ -1255,11 +1317,24 @@ class BigQueryStore:
 
     def record_opener(self, run_id, app, model, opener, referenced, angle="",
                       item_description="", *, profile_id="", decision="", decision_source="",
-                      decision_created_at=None, model_item_index=None):
+                      decision_created_at=None, model_item_index=None,
+                      prompt_sha256: str | None = None, profile_key: str = ""):
         # `angle` and `item_description`: telemetry only (see the openers entry in _TABLES).
         # Both defaulted to "" so a caller that predates either still writes a valid row rather
         # than omitting the field. The live table already holds real rows, so each column got
         # to production via _MIGRATIONS, not via CREATE TABLE IF NOT EXISTS.
+        #
+        # `prompt_sha256` is the prompt-era digest (see _TABLES and opener/opener.py's
+        # prompt_stamp), defaulted to None so an unstamped caller writes NULL -- "predates the
+        # stamp" -- rather than a wrong era. flush_every=1 is a live configuration, so a row
+        # carrying a field the live table does not declare is rejected on the FIRST insert and
+        # takes its whole batch with it (skip_invalid_rows is unset); that is precisely why
+        # this column needs its _MIGRATIONS line and not just its _TABLES entry.
+        #
+        # `profile_key` is the STABLE cross-time attribution key (ranker/profile_key.py),
+        # unrelated to `profile_id`'s per-card lineage. Defaulted to "" -- matching
+        # `profile_id`'s own convention -- so a caller that predates it, or one whose identity
+        # capture was unknown for this card, still writes a complete row.
         with self._lock:
             # allow_closing: see add_label -- the opener belongs to a like that already landed.
             self._require_open_for_write(allow_closing=True)
@@ -1271,8 +1346,74 @@ class BigQueryStore:
                 "decision_created_at": (None if decision_created_at is None
                                         else _timestamp(decision_created_at)),
                 "model_item_index": model_item_index,
+                "prompt_sha256": prompt_sha256,
+                "profile_key": profile_key,
             })
             self._maybe_flush("openers")
+
+    def record_opener_outcome(self, app: str, profile_key: str, outcome: str, *,
+                              observed_at=None, source: str = "owner", note: str = "") -> None:
+        # See ranker/__init__.py's Store.record_opener_outcome for the full design rationale
+        # (no run_id by design, profile_key accepted unvalidated including "", observed_at
+        # distinct from this row's own created_at). Buffered like every other write here --
+        # flushed on the normal batch/close cadence, not published synchronously.
+        with self._lock:
+            self._require_open_for_write(allow_closing=True)
+            self._buf["opener_outcomes"].append({
+                "app": app, "profile_key": profile_key, "outcome": outcome,
+                "observed_at": _timestamp(observed_at), "source": source, "note": note,
+                "created_at": _now(),
+            })
+            self._maybe_flush("opener_outcomes")
+
+    def joined_opener_outcomes(self, app: str, *,
+                              prompt_sha256: str | None = None) -> list[dict]:
+        """Every `opener_outcomes` row for `app` joined to its `openers` row by profile_key.
+
+        See ranker/__init__.py's Store.joined_opener_outcomes for the full contract (why the
+        join excludes '' and NULL profile_key on both sides, why `prompt_sha256=None` means
+        "no filter" rather than "match NULL"). `opener_outcomes` is a table this change adds;
+        a project whose live BigQuery dataset has not yet been touched by an `ensure=True`
+        store (this method's own class does that in `_ensure_tables`) may not have it yet, so
+        a NotFound naming this specific optional table reads as "no outcomes exist" rather
+        than a real failure -- the same accommodation `opener_retractions` already has.
+        """
+        from google.cloud import bigquery
+        parameters = [bigquery.ScalarQueryParameter("app", "STRING", app)]
+        query = (
+            "SELECT o.run_id AS run_id, o.model AS model, o.opener AS opener, "
+            "o.prompt_sha256 AS prompt_sha256, o.profile_key AS profile_key, "
+            "o.created_at AS opener_created_at, oc.outcome AS outcome, "
+            "oc.observed_at AS observed_at, oc.source AS source, oc.note AS note, "
+            "oc.created_at AS outcome_created_at "
+            f"FROM `{self._tid('openers')}` o "
+            f"JOIN `{self._tid('opener_outcomes')}` oc "
+            "ON oc.app = o.app AND oc.profile_key = o.profile_key "
+            "WHERE o.app = @app "
+            "AND o.profile_key IS NOT NULL AND o.profile_key != '' "
+            "AND oc.profile_key IS NOT NULL AND oc.profile_key != '' "
+        )
+        if prompt_sha256 is not None:
+            query += "AND o.prompt_sha256 = @prompt_sha256 "
+            parameters.append(
+                bigquery.ScalarQueryParameter("prompt_sha256", "STRING", prompt_sha256))
+        query += "ORDER BY oc.created_at"
+        job = bigquery.QueryJobConfig(query_parameters=parameters)
+        try:
+            rows = self.client.query(query, job_config=job).result()
+        except Exception as exc:
+            if not _missing_optional_opener_outcomes(exc, ensure=self._ensure):
+                raise
+            return []
+        out = []
+        for row in rows:
+            entry = dict(row)
+            for key in ("opener_created_at", "observed_at", "outcome_created_at"):
+                value = entry.get(key)
+                if isinstance(value, datetime):
+                    entry[key] = value.astimezone(timezone.utc).isoformat()
+            out.append(entry)
+        return out
 
     def record_opener_send_evidence(self, run_id, app, opener, *, profile_id="",
                                     decision_source="auto", decision_created_at=None,
@@ -1339,13 +1480,17 @@ class BigQueryStore:
         finally:
             self._finish_async_write()
 
-    def record_opener_rejection(self, run_id, app, model, attempt, reason_code, reason, raw_opener):
+    def record_opener_rejection(self, run_id, app, model, attempt, reason_code, reason, raw_opener,
+                                *, prompt_sha256: str | None = None):
+        # `prompt_sha256`: the same prompt-era digest record_opener writes, keyword-only so the
+        # seven existing parameters stay positional. This table's first added column, so its
+        # _MIGRATIONS line is what puts it on the live table -- see the comment there.
         with self._lock:
             self._require_open_for_write()
             self._buf["opener_rejections"].append({
                 "run_id": run_id, "app": app, "created_at": _now(), "model": model,
                 "attempt": int(attempt), "reason_code": reason_code, "reason": reason,
-                "raw_opener": raw_opener,
+                "raw_opener": raw_opener, "prompt_sha256": prompt_sha256,
             })
             self._maybe_flush("opener_rejections")
 

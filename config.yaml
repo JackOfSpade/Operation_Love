@@ -661,28 +661,19 @@ opener:
   # opener.max_attempts' own ceiling above by letting a single stalled call hang a profile
   # indefinitely. 180s is 2x this measured 90s worst case.
   request_timeout_s: 90
-  # The advisory (Observe-only) retry budget: the SAME budget as max_attempts above, only
-  # shortened. In Observe the opener is an optional suggestion shown to a human, so the two
-  # things that force Auto and Training to spend the full budget do not apply: nothing
-  # irreversible depends on the suggestion, and a person is waiting for it, so every extra
-  # attempt is dead time rather than background work. Training is deliberately NOT advisory:
-  # it requires a complete typed opener before publishing its Like/Dislike checkpoint and uses
-  # max_attempts above. Three advisory attempts give an unlucky Observe draw a second and third
-  # chance without turning one profile into a long wait. Accepted range is 1-15 and it may never
-  # exceed max_attempts above (config.py's validate(), _MAX_ATTEMPTS_CEILING); an advisory
-  # attempt is billed exactly like an Auto/Training one, hence the identical ceiling.
-  advisory_max_attempts: 3
-  # Observe-only wall clock ceiling on those advisory retries, in seconds.
-  # advisory_max_attempts bounds how MANY service attempts run, not how long their model
-  # fallbacks take. The service passes this absolute monotonic deadline into Gemini: it is
-  # checked before attempts and between fallback models, and each HTTP request timeout is capped
-  # to the remaining time. A response arriving after the deadline is treated as a stale advisory
-  # (its usage is still accounted) and no further model/attempt starts. In practice this means a
-  # slow advisory ends with a graceful "no suggestion" while future profiles remain eligible.
-  # Accepted range is (0, 300] seconds (config.py's validate(), _MAX_ADVISORY_DEADLINE_S); 300
-  # is deliberately far past the point where waiting beats typing, so it is an outer bound on
-  # typos rather than a value anyone should choose.
-  advisory_deadline_s: 60.0
+  # ops/OPENER-REDESIGN.md 5.2/5.7's replay corpus (operation_love/opener/replay_corpus.py):
+  # when true, every generated opener request's EXACT inputs (her name as text, the numbered
+  # item crops in order, the unnumbered context crops, the truncation flag) are ALSO persisted,
+  # verbatim, to a local gitignored directory (that module's DEFAULT_CORPUS_DIR,
+  # data/opener_replay_corpus) -- so a future prompt revision can be measured against real
+  # historical requests without a fresh live batch (see tools/opener_replay.py). It never
+  # uploads anywhere and never touches the network on its own.
+  # DEFAULT FALSE, DELIBERATELY: this writes REAL PEOPLE'S PHOTOS to local disk on every
+  # profile an opener is generated for, so turning it on is the owner's explicit choice, not
+  # something that rides along with opener.enabled. A disk failure here can never affect
+  # opener generation, decision, send, or refusal (OpenerService._capture_replay_corpus is
+  # best-effort, matching every other telemetry write in this project).
+  replay_corpus_enabled: false
   # The owner-tunable voice and substance rules for the opener itself. opener.py's _SYSTEM
   # carries a near-duplicate copy of this same text, and the two are pinned by two SEPARATE
   # tests (tests/test_config_yaml_real.py against this file, tests/test_opener.py against
@@ -842,6 +833,126 @@ opener:
   # wording introduces the exact negative interpretation it tries to remove, making an otherwise
   # positive observation sound self conscious. The rule below tells the model to state the
   # substantive thought directly without shipping concrete opener copy for it to imitate.
+  #
+  # Addendum 2026-09-05 (spoken register): live data measured a uniform essay register: zero
+  # apostrophes across all 188 openers ever generated (not one contraction, ever), 21 of the
+  # latest 40 opening with a demonstrative verdict, 22 of 40 ending in a binary or question, 12
+  # of 40 built on a looks like frame, and the newest opener on record was an earnest second
+  # person appraisal with an uncontracted question that restated its own setup. Five property
+  # additions ship in BOTH copies (doc 3.1 lockstep): SPOKEN REGISTER (contractions and natural
+  # spoken elision licensed by the owner; internet slang, chat abbreviations, and borrowed
+  # caption vocabulary excluded; one intensifier), SAY IT ONCE (the message trusts its own
+  # established context; no restated connections or setups), COMPLIMENT AS REMARK (the one
+  # allowed compliment is an offhand remark about the thing, never an earnest verdict on her;
+  # shapes a compliment that occurs, never requires one), VARY THE SHAPE (the two beat verdict
+  # plus question mold, the looks like frame, and the binary or question are each one shape,
+  # never the default), and a rephrase clause on the hyphen HARD RULE (the model had been
+  # satisfying it by deleting hyphens and gluing compounds together). SHARED CONTEXT RULE
+  # additionally forbids pointing at the medium, which its own framing was arguably inviting. Per
+  # the 2026-08-16 de-templating rule no example copy ships; the motivating openers are pinned
+  # off wire in tests/test_config_yaml_real.py. Owner decisions this date: prompt only, no new
+  # register detector (the entropy guard stays the deterministic backstop); revisit only if a
+  # watched batch still fails register. NOTE for the next editor: there are FOUR on wire copies
+  # of prompt rules, not two: this block, _SYSTEM, the _SCHEMA field descriptions, and the retry
+  # hint block (all in opener.py). This change touched all four. Rows created before this date
+  # are not register comparable to rows after it (see the calibration warning in opener.py near
+  # _redundant_description_markers).
+  #
+  # Addendum 2026-09-05 (modifier attachment): the first watched Training draft after that
+  # rewrite targeted and described the right snow photo, but "You look completely at home bundled
+  # up in all that snow" placed its location phrase beside "bundled up" closely enough to admit
+  # the unintended reading that snow was what she was bundled in. This is a wording error, not an
+  # image-recognition or item-binding error. REFERENT CLARITY does not reach it: every noun has a
+  # clear referent, but the modifier has two plausible attachments. MODIFIER CLARITY adds the
+  # missing property in this long style, opener.py's compressed _SYSTEM mirror, and the _SCHEMA
+  # opener description. The incident wording remains in comments/tests only, never inside style.
+  # No lexical blacklist or deterministic rejection was added: the defect is general word order,
+  # and matching one phrase would overfit while consuming the five-attempt run-stopping budget.
+  #
+  # Addendum 2026-09-05 (visual-location turn boundary): the country-guess failure documented on
+  # 2026-09-02 recurred twice after CONFIRMATION BOUNDARY was already on wire. In each case the
+  # first beat marked a visually inferred place as uncertain, then the next question immediately
+  # treated being there as established. Prompt-only guidance is therefore no longer the safety
+  # boundary. A narrow outgoing-text validator now rejects an explicit proper-name location
+  # inference followed by any conversational move other than confirming or correcting that
+  # location, and OpenerService's existing retry loop regenerates it before the composer. The
+  # prompt now gives that rule explicit precedence over SAY IT ONCE, REPLY COMFORT, and the
+  # generic second-sentence permission in APPLICATION RULE. VARY THE SHAPE no longer names the
+  # exact looks-like / binary-question structures whose frequency it was meant to reduce; the
+  # prior addendum had already identified that negation-priming risk before this recurrence.
+  #
+  # Addendum 2026-09-06 (b) (no grading refinements): adversarial review of the NO GRADING rule
+  # found two real conflicts, and a separate audit found a live guard collision, all fixed the
+  # same day. PLAYFUL HYPERBOLE carve-out: SUBSTITUTION TEST's swap check targets a literal
+  # verdict on quality, so an anchored nonliteral exaggeration is not disqualified merely
+  # because its wording could transfer to another woman's photo; it survives the swap because
+  # it is playful framing, never an assessment of how good something is. VARY THE SHAPE
+  # subordination: the one-question fallback NO GRADING routes its failure case to is now
+  # explicitly still governed by VARY THE SHAPE, so reaching for that same construction message
+  # after message cannot itself become a standing template. Measured corpus context (94.7% of
+  # local openers run exactly two sentences, 98.9% end on a question) shows routing MORE
+  # messages to the one-sentence fallback currently INCREASES shape diversity rather than
+  # narrowing it, so this clause guards against a future collapse, not a present one, and stays
+  # a short subordinating clause rather than a warning. The third fix, the "HERE'S" scaffolding
+  # guard collision recorded in ops/OPENER-REDESIGN.md's residuals section, is a deterministic
+  # guard change in opener.py only and touches no prompt text on this wire. Full record:
+  # ops/OPENER-REDESIGN.md, Addendum -- 2026-09-06 (b).
+  #
+  # Addendum 2026-09-06 (d) (compliment as remark defers to the substitution test): an
+  # adversarial review of the 2026-09-06 (c) fold found it created a NEW contradiction rather
+  # than closing one. That fold gave COMPLIMENT AS REMARK its own portability test ("cannot
+  # survive being detached from what was actually noticed") with no exception, while NO
+  # GRADING's SUBSTITUTION TEST explicitly carves out an unmistakably nonliteral PLAYFUL
+  # HYPERBOLE. An anchored hyperbolic compliment whose predicate could transfer to another
+  # photo therefore passed NO GRADING but failed COMPLIMENT AS REMARK's own restated test --
+  # opposite verdicts on the same sentence under minimal thinking. THE FIX: COMPLIMENT AS
+  # REMARK no longer restates a second, subtly different portability test; it now points at NO
+  # GRADING's SUBSTITUTION TEST directly, so the one test (and its one exception) lives in one
+  # place and cannot drift out of sync with a second copy again. This also removes words rather
+  # than adding a second hyperbole exception, since the rule set already runs long. Shipped in
+  # all three on-wire surfaces (this style block, opener.py's _SYSTEM, and the response
+  # schema's opener description).
+  #
+  # CORRECTING THE RECORD (LOW severity, adversarial review of the same date): the 2026-09-06
+  # (c) comment above _SYSTEM in opener.py, and ops/OPENER-REDESIGN.md's 2026-09-06 (d)
+  # addendum, both claimed that "every distinct property already on wire (thing as sentence's
+  # subject, praise landing sideways the way a friend would mention it in passing, understated
+  # over emphatic, shaping a compliment that occurs rather than requiring one) survives the
+  # fold unchanged" across all three surfaces. Checked against the actual text: this is true of
+  # THIS style block, where all four properties are on wire before and after. It is not true of
+  # opener.py's _SYSTEM, which never carried "praise landing sideways ... in passing" or a
+  # separate "shapes a compliment that occurs" sentence at any point (only "thing as the
+  # sentence's subject" and "understated over emphatic" were ever on that wire), and it is not
+  # true of the _SCHEMA opener description, which never carried any of the four -- consistent
+  # with the established, deliberate compression gap between these three surfaces (the
+  # 2026-09-05 register rewrite already documented the schema copy as receiving a compressed
+  # subset of properties, not the full set). Nothing was LOST by the (c) fold in either
+  # compressed surface: these properties were never present there to lose. The claim was
+  # overstated, not the code; opener.py's own comment above _SYSTEM is corrected in place
+  # (permitted, since it is not an append-only record) rather than restated here.
+  #
+  # Addendum 2026-09-06 (g) (compliment as remark's magnitude clause joins the same exception):
+  # a fourth adversarial review found the (d) fix above closed only HALF the contradiction it
+  # named. COMPLIMENT AS REMARK carries two independent requirements on the one permitted
+  # compliment, not one: a PORTABILITY test ((d) pointed this at NO GRADING's SUBSTITUTION TEST,
+  # which already carves out an unmistakably nonliteral PLAYFUL HYPERBOLE) and a separate
+  # MAGNITUDE requirement ("stays understated rather than emphatic" / "turns earnest and
+  # emphatic"), which (d) left untouched and which carried no exception of its own. An
+  # unmistakably nonliteral PLAYFUL HYPERBOLE is by nature emphatic, so a strong hyperbolic
+  # compliment passed the portability test (via (d)'s fix) while still failing the magnitude
+  # clause -- opposite verdicts on the same sentence again, under the same minimal-thinking read.
+  # THE FIX: the magnitude clause is now subordinated to that same test's PLAYFUL HYPERBOLE
+  # exception ("save for that same test's PLAYFUL HYPERBOLE exception, stays understated rather
+  # than emphatic") instead of gaining its own separate carve-out, and the disqualifier sentence
+  # no longer restates "turns earnest and emphatic" as a second, unexcepted echo of the same
+  # requirement (that restatement is exactly the kind of second copy (d) already warned drifts
+  # out of sync); it now just says praise that fails either requirement reads as grading her.
+  # This removes words rather than adding a second hyperbole exception, keeping ONE portability
+  # test and ONE nonliteral exception stated in one place, per (d)'s original goal. Shipped in
+  # both surfaces that carried the magnitude clause (this style block and opener.py's _SYSTEM);
+  # the _SCHEMA opener description never carried it (see the CORRECTING THE RECORD note above),
+  # so it is unchanged. No example verdict vocabulary was added, per the 2026-08-16 de-templating
+  # rule. Full record: ops/OPENER-REDESIGN.md, Addendum -- 2026-09-06 (g).
   style: |
     Use the dating and conversational principles associated with Coach Corey Wayne's
     "How to Be a 3% Man", without copying his wording. Be a charming gentleman first:
@@ -852,7 +963,10 @@ opener:
 
     SHARED CONTEXT RULE: your message is displayed directly under the exact photo or prompt it
     attaches to. She is looking at that item while she reads your words. Write like two people
-    looking at the same thing.
+    looking at the same thing. Because she is already looking at it, never point at the medium
+    itself: a word that gestures at the photo, the screen, or the profile as an object tells her
+    nothing she cannot see. A bare demonstrative carries all the shared looking the message
+    needs.
 
     PRIMARY ITEM RULE: when you choose a numbered item, it is the clear main subject of the
     referenced note, angle, and opener, including its header. The message must feel natural
@@ -926,10 +1040,32 @@ opener:
     join unrelated dimensions. CASUAL OR PUNCTUATION: never put a comma immediately before 'or',
     even where formal grammar would allow one. Write it the way a person would text casually.
 
+    SPOKEN REGISTER: write the message the way the sender would say it out loud, then type that.
+    Use the contractions a relaxed speaker would use; an uncontracted form is right only where a
+    speaker would genuinely stress it. Prefer the plain everyday word over the formal noun phrase
+    for the same thing. Natural spoken elision and casual grammar are welcome whenever that is
+    how the line would really be said, and this licenses wording only: spelling, capitalization,
+    and every punctuation rule here stand unchanged. Spoken ease is not internet voice: no chat
+    abbreviations, no meme phrasing, and no caption vocabulary that labels the moment with a
+    borrowed noun instead of saying the thing itself. One intensifier is plenty; enthusiasm comes
+    from the observation, not from an adverb stack. Flawless written grammar in a dating message
+    reads as an essay, not a person.
+
+    SAY IT ONCE: the message trusts its own context. The second sentence inherits the first
+    sentence's topic across the period; never restate a connection or context the message itself
+    already established, whether as an explanatory bridge or as a qualifier inside the question.
+    Strip each question to the one clause a person would actually text, and trust her to carry
+    one sentence of context across a period. CONFIRMATION BOUNDARY overrides this inheritance
+    rule: never let a later beat inherit an unconfirmed claim as fact.
+
     REFERENT CLARITY: every pronoun, shorthand noun, and question subject must have one
     immediately obvious referent. Across two beats, keep the same referent unless the transition
     to a new one is explicit and immediately clear. Do not make the reader choose between
     different ordinary meanings of the same word.
+
+    MODIFIER CLARITY: every modifying phrase must have only one natural attachment on first
+    reading. If the phrase's placement permits a plausible unintended meaning, reorder or rephrase
+    the line.
 
     ROLE CONSISTENCY: if you give a visible subject a playful role or rank, preserve that role
     across every beat. Do not give the same subject an incompatible role later. If you mean a
@@ -940,7 +1076,9 @@ opener:
     intelligence, sincerity, knowledge, effort, or whether a visible detail is genuine. Do not
     offer a forced choice whose honest answers make her defend, diminish, or embarrass herself.
     If a visible detail could have more than one explanation, respond to its visible effect or
-    choose another angle rather than asking her to verify its status.
+    choose another angle rather than asking her to verify its status. Asking only whether an
+    inferred location itself is right is the narrow confirmation required by CONFIRMATION
+    BOUNDARY, not an invitation to build a conversation on that location before she answers.
 
     POSITIVE SOCIAL FRAMING: state the intended positive observation, question, or invitation
     directly. Never begin by naming an insulting, judgmental, awkward, pressuring, creepy, or
@@ -962,7 +1100,12 @@ opener:
     only invite that confirmation or correction without presupposing the answer. Never ask about
     an experience, preference, or consequence that only makes sense if the guess is true.
     Otherwise stop after the guess. Questions should invite positive, fun conversation, not form
-    an interview.
+    an interview. VISUAL LOCATION TURN BOUNDARY: when a place is inferred from an image rather
+    than stated in her profile text, that location guess is the only conversational move before
+    she replies. End after the guess, or ask only whether the location itself is right. The
+    confirmation is the conversational payoff. Do not add a statement or question about an
+    activity, reason, preference, feeling, experience, or consequence at that place before she
+    confirms it.
 
     HEDGE THE CLAIM, NEVER YOURSELF: when a claim is uncertain, express that uncertainty
     naturally in wording that fits the specific item. The goal is calibrated uncertainty, not a
@@ -975,14 +1118,20 @@ opener:
     Do not rotate or recycle a fixed stock hedge. The same opening construction message after
     message reads as a template, not a person.
 
+    VARY THE SHAPE: the same applies to the whole message, not just its first words. Let the
+    specific item determine the whole message's sentence count, clause pattern, and question
+    form. Choose a structure only because the item calls for it, never because it is the easy
+    mold. No structure is the default. A shape that repeats message after message reads as a
+    template even when the words change.
+
     GUESS THE WORLD, NOT HER IDENTITY: name a country, a region, a park, the way a well travelled
     friend would. Never a street, a neighbourhood, a hotel, a specific venue, or anywhere that
     could be where she lives. Never guess her employer, her school, or her age, and never
     identify anyone else in the photo. When a place comes from recognizing the image rather than
-    from her profile text, clearly identify it as a visual inference and leave it unconfirmed.
-    Do not build on an inferred location as though it were correct, do not state an inferred
-    location as shared experience, and do not turn it into a generic compliment. You may know
-    more than this. Do
+    from her profile text, present it only as an inference and obey VISUAL LOCATION TURN BOUNDARY:
+    end after the guess or ask only whether the location itself is right. Do not build on an
+    inferred location as though it were correct, do not state an inferred location as shared
+    experience, and do not turn it into a generic compliment. You may know more than this. Do
     not show it.
 
     NEVER INVENT THE SENDER: you may not claim he has been somewhere, done something, or likes
@@ -992,15 +1141,52 @@ opener:
     mean. Mild innuendo is eligible only when her own profile clearly invites that playful tone;
     never force it. A brief greeting is optional but cannot substitute for profile specific
     substance. At most one authentic, specific compliment is allowed; never pile on flattery or
-    seek approval. Do not act as if intimacy or romantic interest already exists. Keep the tone
+    seek approval. COMPLIMENT AS REMARK: when that one compliment appears, shape it as an offhand
+    remark about the visible thing rather than a verdict pronounced on her. Moving the praise onto
+    the thing is not enough by itself: prefer the thing as the sentence's subject only when the
+    praise also passes NO GRADING's SUBSTITUTION TEST below, lands sideways the way a friend would
+    mention it in passing, and stays understated rather than emphatic. That same test's PLAYFUL
+    HYPERBOLE exception carries here and governs all three conditions together, covering both the
+    portability and the volume, because an unmistakably nonliteral line is playful framing rather
+    than an assessment of quality. Landing sideways survives that exception because it is about
+    placement rather than volume: even an exaggeration stays an aside, never the point of the
+    message. Praise that fails any of the three reads as grading her or
+    auditioning for her approval, and either one hands away the relaxed peer footing the rest of
+    these rules protect. This shapes a compliment that occurs; it never requires one.
+
+    NO GRADING: a score is not an observation. Never assign the visible thing a grade, a rank, a
+    level, or a verdict on how good it is, however casually it is worded, and whether the subject
+    is her or the thing she did. She chose to post it, so she already knows it is good; a sentence
+    whose whole point is that judgment hands her nothing she did not have before it arrived. It
+    also breaks the shared looking the SHARED CONTEXT RULE sets up: two people looking at the same
+    thing say something about it, they do not rate it for each other, and rating it puts the
+    sender above her as a judge, which is the same approval seeking COMPLIMENT AS REMARK exists to
+    prevent. NO GRADING narrows COMPLIMENT AS REMARK rather than competing with it: moving praise
+    off her and onto the thing does not by itself make it a remark, so the one permitted
+    compliment must be inseparable from a specific observation about that item. SUBSTITUTION TEST:
+    read your sentence again with the item swapped for a different woman's different photo. If the
+    predicate still fits unchanged, it was a grade rather than an observation, and it fails. The
+    test targets a literal verdict on how good something is, so an unmistakably nonliteral
+    PLAYFUL HYPERBOLE can survive the swap without failing: it stays playful framing rather than
+    an assessment of quality even where its wording could transfer. When the best thing you can
+    find to say about an item is how good it is, do not manufacture a claim to fill the sentence:
+    cut that beat and let one specific question be the whole message. That fallback remains
+    subject to VARY THE SHAPE: reaching for the same single sentence construction message after
+    message is itself a template, so its construction must still come from the item. A shorter
+    message is always available, and MINIMUM INVENTION outranks the wish for a first sentence.
+
+    Do not act as if intimacy or romantic interest already exists. Keep the tone
     non needy and do not demand that she chase.
 
     APPLICATION RULE: TWO sentences is the absolute maximum. Within that ceiling, be as short as
     the angle allows: spend no word merely repeating what she can already see, and no word on
-    padding, but never cut necessary setup or the conversational payoff. A second sentence may be one easy positive question
-    or a direct low pressure invitation. Do not try to build a text relationship in the opener.
+    padding, but never cut necessary setup or the conversational payoff. Subject to CONFIRMATION
+    BOUNDARY, a second sentence may be one easy positive question or a direct low pressure
+    invitation. Do not try to build a text relationship in the opener.
     HARD RULE: never use an em dash or any hyphen; use commas or periods instead and spell out
-    hyphenated abbreviations.
+    hyphenated abbreviations. When a compound would normally need a hyphen, rephrase the sentence
+    so no hyphen is needed; never write the compound with its hyphen silently removed, because
+    the glued words read as a typo she has to decode.
     A terminal plain text smiley, :) is allowed only when it meaningfully makes an otherwise
     potentially misread playful or teasing line clearly good natured. Never add it by default.
 

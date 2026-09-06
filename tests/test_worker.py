@@ -24,6 +24,7 @@ from operation_love.opener.service import OpenerPick, OpenerService
 from operation_love.limits import RateLimiter
 from operation_love.perception.capture import Profile
 from operation_love.ranker.decider import Decision
+from operation_love.ranker.profile_key import profile_key_from_identity
 from operation_love.worker import Worker
 
 PRICING = {"gemini-test-model": ModelPricing(input=5.0, output=25.0)}
@@ -160,6 +161,50 @@ class RaisingLikeDriver(FakeDriver):
         return not self.closed          # snapshot must run while the transport is still open
 
 
+# A minimal duck-typed stand-in for drivers.item_identity.ProfileIdentity -- profile_key.
+# profile_key_from_identity reads only `.known`/`.fingerprint`/`.grid` off whatever it is given
+# (deliberately, see that module's own docstring), so a SimpleNamespace is exactly as valid an
+# input as the real dataclass and keeps this file free of a cv2/numpy-carrying import.
+_FAKE_IDENTITY = SimpleNamespace(known=True, fingerprint=(10, 20, 30), grid=(64, 16))
+_FAKE_PROFILE_KEY = profile_key_from_identity(_FAKE_IDENTITY)
+_UNKNOWN_IDENTITY = SimpleNamespace(known=False, fingerprint=None, grid=(64, 16))
+
+
+class _IdentityDriver(FakeDriver):
+    """A FakeDriver that also exposes current_profile_identity() (drivers/hinge.py's own
+    optional hook), so worker.py's `_current_profile_key` has something to read.
+
+    `identity_after_action`, when given, is what this driver answers AFTER like()/dislike() is
+    called -- mirroring the real HingeDriver, whose own item index (and the identity it
+    carries) is invalidated in EACH of those methods' `finally` clause the instant the action
+    completes (doc 5.3). Defaulting it to a SENTINEL distinct from None lets a test assert the
+    worker read the identity BEFORE the action, not after: if the worker read it late, the
+    profile_key recorded would reflect this post-action value instead.
+    """
+    _POST_ACTION_UNSET = object()
+
+    def __init__(self, n, identity, *, identity_after_action=_POST_ACTION_UNSET):
+        super().__init__(n)
+        self._identity = identity
+        self._identity_after_action = (
+            identity if identity_after_action is self._POST_ACTION_UNSET
+            else identity_after_action)
+        self._action_taken = False
+
+    def current_profile_identity(self):
+        return self._identity_after_action if self._action_taken else self._identity
+
+    def like(self, opener=None, item_index=None, *, model_item_index=None):
+        result = super().like(opener, item_index, model_item_index=model_item_index)
+        self._action_taken = True
+        return result
+
+    def dislike(self, *, should_stop=None):
+        result = super().dislike(should_stop=should_stop)
+        self._action_taken = True
+        return result
+
+
 class FakeDecider:
     def __init__(self, decision="dislike"):
         self.decision = decision
@@ -201,23 +246,6 @@ class FakeOpenerClient:
         return OpenerResult(opener=f"hi {self.calls}", referenced="r",
                             usage=Usage(input_tokens=self.cost_tokens), model="gemini-test-model",
                             item_index=FIRST_ITEM_INDEX, index_space=INDEX_SPACE_PROFILE_PHOTOS)
-
-
-class _RecordingOpenerService:
-    """Minimal AUTO-only service double that records the advisory call contract."""
-    stop_requested = False
-    disabled = False
-    last_skip_reason = None
-
-    def __init__(self):
-        self.calls = []
-
-    def maybe_opener(self, run_id, app, profile, *, items=None, should_stop=None,
-                     advisory=False):
-        self.calls.append({"run_id": run_id, "app": app, "items": items,
-                           "should_stop": should_stop, "advisory": advisory})
-        return OpenerPick("hi", index=FIRST_ITEM_INDEX,
-                          index_space=INDEX_SPACE_PROFILE_PHOTOS)
 
 
 class SlowOpenerClient(FakeOpenerClient):
@@ -307,6 +335,13 @@ class FakeStore:
     def __init__(self):
         self.decisions, self.labels, self.profiles, self.spend, self.openers = [], [], [], [], []
         self.rejections = []
+        self.opener_stamps, self.rejection_stamps = [], []
+        # Full per-call keyword lineage (profile_id/decision/decision_source/
+        # decision_created_at/model_item_index), captured separately from `openers` (text-only)
+        # for the same reason `opener_stamps` is separate: a discard_opener test needs to read
+        # back the `decision` a committed-vs-abandoned row was written with, without changing
+        # what every pre-existing opener-count assertion reads off `openers`/`opener_stamps`.
+        self.opener_rows = []
     def load_labels(self): return []
     def record_profile(self, run_id, app, profile_id, liked, source="manual", **k):
         self.profiles.append((app, profile_id, liked, k))
@@ -325,10 +360,23 @@ class FakeStore:
     # count assertion failing further down. Keeping the parameters explicit means the
     # mismatch is at least visible in the traceback when it happens again.
     def record_opener(self, run_id, app, model, opener, referenced, angle="",
-                      item_description="", **_):
+                      item_description="", *, prompt_sha256=None, **kw):
         self.openers.append(opener)
-    def record_opener_rejection(self, run_id, app, model, attempt, reason_code, reason, raw_opener):
+        # Captured separately from `openers` so a test can assert the prompt-era stamp reached
+        # the sink without changing what every existing opener-count assertion reads.
+        self.opener_stamps.append(prompt_sha256)
+        self.opener_rows.append({"model": model, "opener": opener, "referenced": referenced,
+                                 "angle": angle, "item_description": item_description,
+                                 "prompt_sha256": prompt_sha256, **kw})
+    # Signature mirrors ranker/store.py's real record_opener_rejection EXACTLY, the trailing
+    # keyword-only prompt_sha256 included (2026-09-05 (b): the digest of the prompt era that
+    # produced the rejected attempt). Spelled out rather than **kw for the same reason as
+    # record_opener above: the service persists inside a non-fatal try/except, so a fake that
+    # drifts from the real signature prints a warning and records nothing rather than raising.
+    def record_opener_rejection(self, run_id, app, model, attempt, reason_code, reason, raw_opener,
+                                *, prompt_sha256=None):
         self.rejections.append((app, model, attempt, reason_code, reason, raw_opener))
+        self.rejection_stamps.append(prompt_sha256)
     def record_spend(self, run_id, model, usage, cost): self.spend.append(cost)
     def count_today(self, app):
         return sum(1 for row in self.decisions if row[0] == app and row[2] == "auto")
@@ -450,6 +498,70 @@ def test_worker_binds_opt_in_driver_debug_to_its_exact_run_id_before_opening():
     driver = BindingDriver()
     _worker(driver, FakeDecider(), None, FakeStore())._bind_debug_run()
     assert driver.bound_run_id == "run1"
+
+
+def test_worker_binds_opt_in_driver_to_the_service_prompt_era_before_opening():
+    """The other half of the hinge.py actions.jsonl threading this discard path also fixes: a
+    driver's LOCAL debug rows should be era-attributable exactly like the durable `openers`
+    table already is (see Worker._bind_opener_prompt_stamp and
+    HingeDriver.set_opener_prompt_sha256's docstrings for why a one-time, run-level bind is
+    exactly as fresh as threading the value through every like() call would have been)."""
+    class BindingDriver(FakeDriver):
+        def __init__(self):
+            super().__init__(0)
+            self.bound_prompt_sha256 = "unset"
+
+        def set_opener_prompt_sha256(self, prompt_sha256):
+            self.bound_prompt_sha256 = prompt_sha256
+
+    driver = BindingDriver()
+    store = FakeStore()
+    svc = OpenerService(FakeOpenerClient(), CostTracker(PRICING, None), store, "s")
+    _worker(driver, FakeDecider(), svc, store)._bind_opener_prompt_stamp()
+    assert driver.bound_prompt_sha256 == svc.prompt_sha256
+    assert driver.bound_prompt_sha256 is not None
+
+
+def test_worker_binds_none_prompt_era_when_there_is_no_opener_service():
+    class BindingDriver(FakeDriver):
+        def __init__(self):
+            super().__init__(0)
+            self.bound_prompt_sha256 = "unset"
+
+        def set_opener_prompt_sha256(self, prompt_sha256):
+            self.bound_prompt_sha256 = prompt_sha256
+
+    driver = BindingDriver()
+    _worker(driver, FakeDecider(), None, FakeStore())._bind_opener_prompt_stamp()
+    assert driver.bound_prompt_sha256 is None
+
+
+def test_worker_run_binds_the_opener_prompt_era_before_any_profile_is_read(monkeypatch):
+    """Integration pin: run() itself calls the bind (mirroring bind_debug_run/set_opener_enabled
+    right beside it), not just some inner loop -- so a driver lacking a captured profile still
+    gets bound before the session closes."""
+    class BindingDriver(FakeDriver):
+        def __init__(self):
+            super().__init__(0)
+            self.bound_prompt_sha256 = "unset"
+
+        def set_opener_prompt_sha256(self, prompt_sha256):
+            self.bound_prompt_sha256 = prompt_sha256
+
+    driver = BindingDriver()
+    store = FakeStore()
+    svc = OpenerService(FakeOpenerClient(), CostTracker(PRICING, None), store, "s")
+    _worker(driver, FakeDecider("dislike"), svc, store).run()
+    assert driver.bound_prompt_sha256 == svc.prompt_sha256
+
+
+def test_worker_never_calls_the_prompt_era_hook_on_a_driver_that_lacks_it():
+    """A driver (or legacy/third-party opener service) without this optional hook must be
+    completely unaffected -- exactly like bind_debug_run/set_opener_enabled above it."""
+    driver = FakeDriver(1)   # no set_opener_prompt_sha256 method at all
+    store = FakeStore()
+    svc = OpenerService(FakeOpenerClient(), CostTracker(PRICING, None), store, "s")
+    _worker(driver, FakeDecider("dislike"), svc, store).run()   # must not raise
 
 
 # --- OpenerService (global budget) --------------------------------------
@@ -861,6 +973,11 @@ def test_auto_persists_landed_decision_before_committing_its_staged_opener():
     assert events == ["decision", "opener"]
     assert store.decisions == [("bumble", "like", "auto")]
     assert store.openers == ["hi 1"]
+    # OrderedStore strips only the action-lineage keywords, so the prompt-era stamp added on
+    # 2026-09-05 (b) still reaches the sink through this wrapper: an intermediate store that
+    # forwards **kwargs must not need editing every time a column is added, and the staged
+    # commit path is the one that writes every AUTO opener row.
+    assert store.opener_stamps == [svc.prompt_sha256]
 
 
 def test_auto_keeps_legacy_opener_service_without_stage_keyword_compatible():
@@ -885,30 +1002,229 @@ def test_auto_keeps_legacy_opener_service_without_stage_keyword_compatible():
     assert store.decisions == [("bumble", "like", "auto")]
 
 
-def test_auto_targeting_failure_leaves_staged_opener_uncommitted():
+def test_auto_targeting_failure_discards_the_staged_opener_as_never_sent():
+    """A targeting refusal must not leave the survivorship-biased gap this discard path fixes:
+    the draft is still not COMMITTED as a Like (recent_openers_snapshot, the live diagnostic
+    view, stays empty -- unchanged from before this discard path existed), but the durable
+    `openers` table now gets a `decision="never_sent"` row instead of nothing at all."""
     driver = _TargetingMissDriver(1)
     store = FakeStore()
     svc = OpenerService(FakeOpenerClient(), CostTracker(PRICING, None), store, "s")
     _worker(driver, FakeDecider("like"), svc, store).run()
-    assert store.openers == [] and svc.recent_openers_snapshot() == []
+    assert svc.recent_openers_snapshot() == []
+    assert store.openers == ["hi 1"]
+    assert len(store.opener_rows) == 1
+    row = store.opener_rows[0]
+    assert row["decision"] == "never_sent"
+    assert row["decision_source"] == "auto"
+    assert row["prompt_sha256"] == svc.prompt_sha256
 
 
-def test_auto_post_send_paywall_leaves_staged_opener_uncommitted():
+def test_auto_post_send_paywall_discards_the_staged_opener_as_never_sent():
     class _PaywallWithOpener(_BlockedAfterLikeDriver):
         accepts_opener = True
     driver = _PaywallWithOpener()
     store = FakeStore()
     svc = OpenerService(FakeOpenerClient(), CostTracker(PRICING, None), store, "s")
     _worker(driver, FakeDecider("like"), svc, store).run()
-    assert store.openers == [] and svc.recent_openers_snapshot() == []
+    assert svc.recent_openers_snapshot() == []
+    assert store.openers == ["hi 1"]
+    assert store.opener_rows[0]["decision"] == "never_sent"
+    assert store.opener_rows[0]["decision_source"] == "auto"
 
 
-def test_auto_generic_like_failure_leaves_staged_opener_uncommitted():
+def test_auto_generic_like_failure_discards_the_staged_opener_as_never_sent():
     driver = RaisingLikeDriver(1)
     store = FakeStore()
     svc = OpenerService(FakeOpenerClient(), CostTracker(PRICING, None), store, "s")
     _worker(driver, FakeDecider("like"), svc, store).run()
-    assert store.openers == [] and svc.recent_openers_snapshot() == []
+    assert svc.recent_openers_snapshot() == []
+    assert store.openers == ["hi 1"]
+    assert store.opener_rows[0]["decision"] == "never_sent"
+    assert store.opener_rows[0]["decision_source"] == "auto"
+
+
+def test_auto_never_sent_discard_when_the_model_names_no_item():
+    """The "not targeted" refusal (opener generated no item number to target) is a clean stop,
+    not a device action -- and, exactly like the targeting/exception abandonment paths above,
+    must not leave this profile's real, billed draft silently missing from the durable table."""
+    class _NoItemClient:
+        def __init__(self):
+            self.calls = 0
+
+        def generate(self, profile, style, retry_hint="", *, items=None, should_stop=None,
+                     skip_models=frozenset()):
+            self.calls += 1
+            return OpenerResult(opener=f"hi {self.calls}", referenced="r",
+                                usage=Usage(input_tokens=400), model="gemini-test-model",
+                                item_index=ITEM_INDEX_ABSENT, index_space=INDEX_SPACE_MODEL_ITEMS)
+
+    driver = FakeDriver(1)
+    store = FakeStore()
+    svc = OpenerService(_NoItemClient(), CostTracker(PRICING, None), store, "s")
+    _worker(driver, FakeDecider("like"), svc, store).run()
+    assert driver.likes == []
+    assert svc.recent_openers_snapshot() == []
+    assert store.openers == ["hi 1"]
+    assert store.opener_rows[0]["decision"] == "never_sent"
+    assert store.opener_rows[0]["decision_source"] == "auto"
+    assert store.opener_rows[0]["prompt_sha256"] == svc.prompt_sha256
+
+
+def test_auto_never_sent_discard_on_run_budget_exhaustion():
+    """Same profile as test_worker_stops_before_bare_like_when_opener_budget_exhausts: the call
+    that pushes the run over budget can still return a fully-formed staged draft for THIS
+    profile (see maybe_opener's docstring -- exhaustion is checked after persisting spend, not
+    before returning). AUTO correctly refuses to act on it (stop_requested wins before like()
+    is ever called), but the draft itself was real, billed model output and must not vanish."""
+    driver = FakeDriver(5)
+    store = FakeStore()
+    client = FakeOpenerClient(cost_tokens=400)  # $0.002/call
+    svc = OpenerService(client, CostTracker(PRICING, run_budget_usd=0.001), store, "s")
+    _worker(driver, FakeDecider("like"), svc, store).run()
+    assert client.calls == 1
+    assert driver.likes == []
+    assert store.opener_rows[0]["decision"] == "never_sent"
+    assert store.opener_rows[0]["decision_source"] == "auto"
+    assert store.opener_rows[0]["prompt_sha256"] == svc.prompt_sha256
+
+
+def test_auto_dislike_never_generates_or_discards_an_opener_draft():
+    """AUTO only ever asks the provider for an opener inside the `if d.decision == "like":`
+    gate (see the module's opener-generation block) -- so a plain Dislike never has a staged
+    draft to write down at all. discard_opener/commit_opener are both simply never called, and
+    this is not a survivorship gap: unlike the never-sent cases above (a Like decision whose
+    draft could not be sent), there is no draft here for this profile to have discarded."""
+    driver = FakeDriver(1)
+    store = FakeStore()
+    client = FakeOpenerClient()
+    svc = OpenerService(client, CostTracker(PRICING, None), store, "s")
+    _worker(driver, FakeDecider("dislike"), svc, store).run()
+    assert client.calls == 0
+    assert store.openers == []
+    assert store.decisions == [("bumble", "dislike", "auto")]
+
+
+def test_auto_committed_like_decision_and_source_are_unchanged():
+    """Pin: this discard path is purely additive. A landed Like's durable row still carries
+    exactly decision="like"/decision_source="auto" -- byte-identical to before discard_opener
+    existed -- with a real profile_id/decision_created_at lineage and the generation-time
+    prompt_sha256, none of which this change touches."""
+    driver = FakeDriver(1)
+    store = FakeStore()
+    svc = OpenerService(FakeOpenerClient(), CostTracker(PRICING, None), store, "s")
+    _worker(driver, FakeDecider("like"), svc, store).run()
+    assert driver.likes == ["hi 1"]
+    assert len(store.opener_rows) == 1
+    row = store.opener_rows[0]
+    assert row["decision"] == "like"
+    assert row["decision_source"] == "auto"
+    assert isinstance(row["profile_id"], str) and row["profile_id"]
+    assert isinstance(row["decision_created_at"], float)
+    assert row["prompt_sha256"] == svc.prompt_sha256
+
+
+# ---------------------------------------------------------------------------------------
+# profile_key (2026-09-06): the stable, cross-time attribution key (ranker/profile_key.py),
+# read off the driver's optional current_profile_identity() hook and carried through to
+# whichever of commit_opener/discard_opener this profile's outcome reaches. Exercised through
+# the REAL OpenerService + FakeStore, exactly like the lineage test just above.
+# ---------------------------------------------------------------------------------------
+
+def test_auto_committed_opener_carries_a_profile_key_from_the_driver():
+    driver = _IdentityDriver(1, _FAKE_IDENTITY)
+    store = FakeStore()
+    svc = OpenerService(FakeOpenerClient(), CostTracker(PRICING, None), store, "s")
+    _worker(driver, FakeDecider("like"), svc, store).run()
+
+    assert driver.likes == ["hi 1"]
+    assert store.opener_rows[0]["profile_key"] == _FAKE_PROFILE_KEY
+    assert _FAKE_PROFILE_KEY  # sanity: a known identity really does hash to something
+
+
+def test_auto_discarded_draft_carries_the_same_profile_key_a_commit_would_have():
+    """A never_sent discard (here: a targeting refusal) must be attributable to exactly the
+    same profile a landed Like would have been -- the whole point of threading profile_key
+    onto BOTH halves of the staged-opener lifecycle (see OpenerService.discard_opener's own
+    docstring)."""
+    driver = _TargetingMissDriver(1, identity=_FAKE_IDENTITY)
+    store = FakeStore()
+    svc = OpenerService(FakeOpenerClient(), CostTracker(PRICING, None), store, "s")
+    _worker(driver, FakeDecider("like"), svc, store).run()
+
+    assert store.opener_rows[0]["decision"] == "never_sent"
+    assert store.opener_rows[0]["profile_key"] == _FAKE_PROFILE_KEY
+
+
+def test_auto_committed_opener_profile_key_is_empty_when_the_driver_has_no_identity_hook():
+    """Every non-Hinge driver today (and any driver predating this hook): current_profile_identity
+    is simply absent, and the row must honestly say "no key could be derived" ("") rather than
+    fabricate one."""
+    driver = FakeDriver(1)
+    assert not hasattr(driver, "current_profile_identity")
+    store = FakeStore()
+    svc = OpenerService(FakeOpenerClient(), CostTracker(PRICING, None), store, "s")
+    _worker(driver, FakeDecider("like"), svc, store).run()
+
+    assert driver.likes == ["hi 1"]
+    assert store.opener_rows[0]["profile_key"] == ""
+
+
+def test_auto_committed_opener_profile_key_is_empty_when_identity_is_unknown():
+    """A driver that DOES enumerate but could not fingerprint this particular profile (no
+    identity band, an unreadable header, ...) reports `known=False` -- also "", never a
+    placeholder hash of nothing."""
+    driver = _IdentityDriver(1, _UNKNOWN_IDENTITY)
+    store = FakeStore()
+    svc = OpenerService(FakeOpenerClient(), CostTracker(PRICING, None), store, "s")
+    _worker(driver, FakeDecider("like"), svc, store).run()
+
+    assert driver.likes == ["hi 1"]
+    assert store.opener_rows[0]["profile_key"] == ""
+
+
+def test_auto_profile_key_is_captured_before_the_like_action_invalidates_it():
+    """THE CRITICAL TIMING PROPERTY: HingeDriver's own item index (and the identity fingerprint
+    it carries) is invalidated in like()'s own `finally` clause the instant the physical action
+    completes (doc 5.3) -- so a worker that read identity AFTER driver.like() returns would
+    always see None/"" instead of the real key. This driver answers _FAKE_IDENTITY before the
+    action and None after; a passing test proves the worker captured the key on the correct
+    side of that boundary."""
+    driver = _IdentityDriver(1, _FAKE_IDENTITY, identity_after_action=None)
+    store = FakeStore()
+    svc = OpenerService(FakeOpenerClient(), CostTracker(PRICING, None), store, "s")
+    _worker(driver, FakeDecider("like"), svc, store).run()
+
+    assert driver.likes == ["hi 1"]
+    assert store.opener_rows[0]["profile_key"] == _FAKE_PROFILE_KEY
+
+
+def test_auto_never_sent_discard_store_failure_does_not_change_the_targeting_stop_outcome():
+    """The exact requirement this telemetry was built under, exercised through the REAL
+    Worker + OpenerService (not a fake service that might not replicate the real swallow): a
+    store outage while discarding an abandoned draft must not turn a clean, correctly-diagnosed
+    targeting refusal into a crash/error state, and must not stop the durable row from simply
+    being absent (the write genuinely failed) rather than corrupting anything else."""
+    from operation_love.status import RunStatus
+
+    class _RaisingOnDiscardStore(FakeStore):
+        def record_opener(self, *args, **kwargs):
+            if kwargs.get("decision") == "never_sent":
+                raise RuntimeError("simulated store outage")
+            return super().record_opener(*args, **kwargs)
+
+    driver = _TargetingMissDriver(1)
+    store = _RaisingOnDiscardStore()
+    svc = OpenerService(FakeOpenerClient(), CostTracker(PRICING, None), store, "s")
+    status = RunStatus("run1", ["bumble"], min_labels=1, mode="auto")
+    Worker("bumble", driver, FakeDecider("like"), svc, store, "run1", _Pacing(),
+           threading.Event(), mode="auto", status=status).run()
+
+    app = status.app_view("bumble")["app"]
+    assert app["state"] == "stopped"
+    assert app["stop_kind"] == "targeting"
+    assert app["error"] is None
+    assert store.openers == []          # the write itself failed -- nothing durable landed
 
 
 def test_auto_commits_staged_opener_when_stop_arrives_after_like_lands():
@@ -926,12 +1242,15 @@ def test_auto_commits_staged_opener_when_stop_arrives_after_like_lands():
     assert len(store.openers) == 1 and len(svc.recent_openers_snapshot()) == 1
 
 
-def test_auto_stop_during_opener_generation_never_starts_like_or_commits_draft():
+def test_auto_stop_during_opener_generation_never_starts_like_but_discards_the_draft():
     """A provider result that returns after Stop is billed but cannot start a device action.
 
     The service deliberately lets an already-on-the-wire request finish.  This pins the Worker
     boundary that distinguishes that unavoidable provider completion from a Like: the staged
-    draft must remain absent from both the durable opener table and the diagnostics buffer.
+    draft must remain absent from the COMMITTED diagnostics buffer (recent_openers_snapshot,
+    which is reserved for landed Likes), but the durable opener table now gets a
+    `decision="never_sent"` discard row rather than nothing at all -- this profile's draft did
+    real, billed work and would otherwise vanish from every measurement of opener quality.
     """
     stop = threading.Event()
 
@@ -949,8 +1268,10 @@ def test_auto_stop_during_opener_generation_never_starts_like_or_commits_draft()
 
     assert driver.likes == []
     assert store.decisions == []
-    assert store.openers == []
     assert service.recent_openers_snapshot() == []
+    assert store.openers == ["hi 1"]
+    assert store.opener_rows[0]["decision"] == "never_sent"
+    assert store.opener_rows[0]["decision_source"] == "auto"
     # The request had already reached the provider, so its spend remains accountable.
     assert len(store.spend) == 1
 
@@ -2056,19 +2377,6 @@ def test_auto_loop_passes_stop_event_is_set_as_should_stop_to_maybe_opener():
     assert client.should_stops == [w.stop_event.is_set]
 
 
-def test_auto_loop_like_call_does_not_pass_advisory():
-    """Companion to the pin above: the AUTO-loop like path must be completely unchanged --
-    it must NOT pass advisory=True (the default, False, keeps today's max_attempts-retries-
-    then-halt behavior)."""
-    driver = FakeDriver(1)
-    store = FakeStore()
-    svc = _RecordingOpenerService()
-    Worker("bumble", driver, FakeDecider("like"), svc, store, "run1", _Pacing(),
-           threading.Event(), mode="auto").run()
-
-    assert svc.calls and svc.calls[0]["advisory"] is False
-
-
 def test_auto_like_with_opener_service_none_does_not_crash():
     from operation_love.status import RunStatus
 
@@ -2127,9 +2435,9 @@ class _SequencedOpenerService:
         self.calls = []
 
     def maybe_opener(self, run_id, app, profile, *, anchor=None, items=None,
-                     should_stop=None, advisory=False):
+                     should_stop=None):
         self.calls.append({"run_id": run_id, "app": app, "anchor": anchor, "items": items,
-                           "should_stop": should_stop, "advisory": advisory})
+                           "should_stop": should_stop})
         return self.picks[len(self.calls) - 1]
 
 
@@ -2589,11 +2897,18 @@ class _TargetingMissDriver(FakeDriver):
     halt_on_error = True
 
     def __init__(self, n, *, stage="navigate", intended=4, actual=None,
-                 index_space="model_items", message="could not reach it"):
+                 index_space="model_items", message="could not reach it", identity=None):
         super().__init__(n)
         self.snapshotted = []
         self._exc = ItemTargetingError(message, stage=stage, intended=intended, actual=actual,
                                        index_space=index_space)
+        # Optional (defaults None, exactly like every pre-existing construction of this class):
+        # lets a test prove that a NEVER-SENT discard is attributed exactly like a committed
+        # Like would have been, for the same captured profile.
+        self._identity = identity
+
+    def current_profile_identity(self):
+        return self._identity
 
     def like(self, opener=None, item_index=None, *, model_item_index=None):
         self.likes.append(opener)          # recorded so a test can prove it was CALLED and failed

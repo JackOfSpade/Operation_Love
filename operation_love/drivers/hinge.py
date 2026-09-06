@@ -2699,6 +2699,14 @@ class AndroidDriver(DatingAppDriver):
         # Assigned by Worker before open_session. A release verifier only accepts a debug
         # folder whose first production record binds it to this same Worker run id.
         self._debug_run_id: str | None = None
+        # Assigned by Worker (see its _bind_opener_prompt_stamp) once per session, mirroring
+        # _debug_run_id immediately above. The prompt-era digest (opener.py's prompt_stamp)
+        # every durable `openers` row this PROCESS writes is already stamped with
+        # (OpenerService.prompt_sha256) -- fixed for the life of the process, so one bind here
+        # is exactly as fresh as reading it at generation time would be. None (the default)
+        # means no opener service was available to read it from, or Worker predates this hook;
+        # either way the local rows below simply carry no era digest.
+        self._opener_prompt_sha256: str | None = None
         # Process-local ownership for the per-device OBSERVE input lease. The same driver may
         # re-enter through current_profile() -> _scroll_to_top(), but a second thread or driver
         # instance must be refused before it can move the card underneath wait_for_decision().
@@ -2740,6 +2748,46 @@ class AndroidDriver(DatingAppDriver):
         if self._debug_run_id is not None and self._debug_run_id != run_id:
             raise ValueError("a Hinge driver cannot be rebound to a different Worker run id")
         self._debug_run_id = run_id
+
+    def set_opener_prompt_sha256(self, prompt_sha256: str | None) -> None:
+        """Bind this driver's local debug rows to the prompt era every durable opener row this
+        process writes is already stamped with (OpenerService.prompt_sha256).
+
+        Optional hook, exactly like bind_debug_run immediately above: Worker calls it once per
+        session (see Worker._bind_opener_prompt_stamp) whenever its opener service exposes the
+        attribute; a non-Hinge driver simply never gets it. `None` is a legitimate value (no
+        opener service this run, or one still under construction) and just means the rows
+        below carry no era digest -- never raises, unlike bind_debug_run's run-id contract,
+        because there is no cross-run identity claim here to protect.
+        """
+        self._opener_prompt_sha256 = prompt_sha256 if isinstance(prompt_sha256, str) else None
+
+    def current_profile_identity(self):
+        """The `ProfileIdentity` fingerprint this driver holds for the CURRENTLY captured
+        profile, or `None` when there is nothing to name (nothing captured yet, or the last
+        capture never built a usable index -- see `_index_captured_items`).
+
+        Optional capability, read-only and phone-free, exactly like `model_item_media_ordinal`
+        just below the point this file wires opener generation: it inspects state this driver
+        already holds (`self._current_item_index`) and never captures, navigates or taps.
+
+        ITS LIFETIME IS EXACTLY ONE PROFILE -- doc 5.3's rule, the same one
+        `_invalidate_item_index` already enforces for the index this reads off of. A caller
+        MUST read this BEFORE `like()`/`dislike()` runs: each of those invalidates the index in
+        its OWN `finally` clause the instant the physical action completes (see their own
+        comments), so the identity for THIS profile is already gone by the time either call
+        returns. `worker.py`'s own call site (`_current_profile_key`) captures this once, right
+        after the profile is captured and well before any device action, and carries the
+        resulting plain string forward -- never re-derives it at commit/discard time.
+
+        The one sanctioned consumer is `ranker.profile_key.profile_key_from_identity`, which
+        duck-types `.known`/`.fingerprint`/`.grid` off whatever this returns rather than
+        `isinstance`-checking it -- so this method is free to return the real
+        `item_identity.ProfileIdentity` without either module needing to agree on more than
+        that shape.
+        """
+        index = self._current_item_index
+        return index.identity if index is not None else None
 
     def set_capture_progress_callback(self, callback) -> None:
         """Install/clear Worker-owned, informational profile-capture progress reporting."""
@@ -10714,6 +10762,10 @@ class AndroidDriver(DatingAppDriver):
             "opener_sha256": opener_sha256, "item_index": item_index,
             "model_item_index": model_item_index, "session_mode": session_mode,
             "draft": draft,
+            # The prompt era this opener was generated under (Worker._bind_opener_prompt_stamp
+            # -> set_opener_prompt_sha256), so this local record is era-attributable exactly
+            # like the durable `openers` row already is. None on a driver never bound to one.
+            "prompt_sha256": self._opener_prompt_sha256,
         }
         if self._dbg is not None:
             self._dbg.action(
@@ -10723,6 +10775,7 @@ class AndroidDriver(DatingAppDriver):
                 model_item_index=model_item_index, session_mode=session_mode,
                 draft_sha256=(draft or {}).get("sha256"),
                 draft_rect=(draft or {}).get("rect"),
+                prompt_sha256=self._opener_prompt_sha256,
             )
         return evidence
 
@@ -10753,6 +10806,8 @@ class AndroidDriver(DatingAppDriver):
             "session_mode": session_mode,
             "approval_evidence_id": (approval_evidence_id
                                      if isinstance(approval_evidence_id, str) else None),
+            # Same era digest as _record_auto_opener_pre_send's evidence -- see its comment.
+            "prompt_sha256": self._opener_prompt_sha256,
         }
         if self._dbg is not None:
             self._dbg.action(
@@ -10761,6 +10816,7 @@ class AndroidDriver(DatingAppDriver):
                 frame_sha256=frame_sha256, evidence_id=evidence_id,
                 approval_evidence_id=evidence["approval_evidence_id"], item_index=item_index,
                 model_item_index=model_item_index, session_mode=session_mode,
+                prompt_sha256=self._opener_prompt_sha256,
             )
         return evidence
 
@@ -10777,7 +10833,8 @@ class AndroidDriver(DatingAppDriver):
         if self._dbg is None or not isinstance(evidence_id, str) or not evidence_id:
             return
         self._dbg.action("training_cancelled", pre_send_evidence_id=evidence_id,
-                         model_item_index=model_item_index, reason=reason)
+                         model_item_index=model_item_index, reason=reason,
+                         prompt_sha256=self._opener_prompt_sha256)
 
     def landed_auto_opener_evidence(self) -> dict[str, object] | None:
         """Return the latest verified-landed AUTO or Training opener frame for storage."""

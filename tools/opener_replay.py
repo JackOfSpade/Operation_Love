@@ -39,15 +39,28 @@ TESTABILITY, exactly tools/gemini_model_probe.py's pattern: every network call g
 injected GeminiTransport, and main() accepts transport/env/confirm/store injection seams so
 tests never touch the real network, the real .env, or a real database file. NEVER make a real
 API call from a test -- use a fake transport exactly as tests/test_gemini_opener.py does.
+
+--PURGE: a wholly separate action (see main()'s early dispatch to _run_purge()) for bounding or
+clearing the on-disk corpus by hand, independent of OpenerService's own automatic retention bound
+(operation_love.opener.replay_corpus's config-driven prune-after-every-capture). Removes the
+WHOLE corpus by default, or only captures older than --purge-older-than-days when that flag is
+given. DRY RUN IS THE DEFAULT here too (mirrors the replay side's own default): --purge alone only
+reports what it would remove; --delete is required to actually touch disk. See _run_purge()'s own
+docstring for exactly how each mode is implemented and why age-based purges reuse
+operation_love.opener.replay_corpus.prune_replay_corpus directly rather than a second,
+independently-written deletion path.
 """
 from __future__ import annotations
 
 import argparse
 import json
 import os
+import shutil
 import sys
+import tempfile
 import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
@@ -64,10 +77,20 @@ from operation_love.opener.opener import (
     _stdlib_gemini_transport,
     prompt_stamp,
 )
+# `prune_replay_corpus`: the SAME safety-audited, oldest-first, symlink-safe deletion helper
+# OpenerService's own automatic retention bound uses (see replay_corpus.py's module docstring's
+# PRIVACY section) -- reused here, never re-implemented, for --purge's age-based mode (see
+# _run_age_based_purge() below). `list_replay_ids`/`load_replay_capture` are that same module's
+# read-only discovery API, reused for --purge's whole-corpus mode and for the dry-run preview's
+# read side (see _run_purge()'s own docstring for why the two --purge modes are handled
+# differently).
 from operation_love.opener.replay_corpus import (
     DECISION_REPLAY as _DECISION_REPLAY,
     DEFAULT_CORPUS_DIR,
+    list_replay_ids,
+    load_replay_capture,
     load_replay_corpus,
+    prune_replay_corpus,
 )
 from operation_love.perception.capture import Profile
 from operation_love.private_files import load_private_dotenv
@@ -173,7 +196,169 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--json", action="store_true",
                         help="emit a single JSON report on stdout instead of narrative text "
                              "(narrative still goes to stderr)")
+    parser.add_argument("--purge", action="store_true",
+                        help="remove captures from --corpus-dir instead of replaying anything: "
+                             "the WHOLE corpus by default, or only captures older than "
+                             "--purge-older-than-days when that flag is also given. DRY RUN BY "
+                             "DEFAULT (reports exactly what would be removed; deletes nothing); "
+                             "pass --delete to actually remove them. Every other flag above is "
+                             "ignored in this mode.")
+    parser.add_argument("--purge-older-than-days", type=float, default=None,
+                        help="with --purge, remove only captures whose captured_at is older "
+                             "than this many days (age-based purge, via "
+                             "operation_love.opener.replay_corpus.prune_replay_corpus); omit to "
+                             "purge the WHOLE corpus instead")
+    parser.add_argument("--delete", action="store_true",
+                        help="with --purge, ACTUALLY remove the selected captures. Without "
+                             "this flag, --purge only reports what it would remove -- nothing "
+                             "on disk is touched.")
     return parser
+
+
+# ---------------------------------------------------------------------------------------
+# --purge: remove captures from the on-disk replay corpus. A completely separate action from
+# replaying (see main()'s early dispatch) -- it never touches config.yaml, the Gemini transport,
+# or the SQLite store.
+# ---------------------------------------------------------------------------------------
+
+PURGE_REASON_WHOLE_CORPUS = "whole_corpus"
+
+
+def _format_epoch(ts: float | None) -> str:
+    if ts is None:
+        return "(unknown captured_at)"
+    return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+
+
+def _mirror_manifests_for_dry_run_preview(corpus_dir: Path, replay_ids: list[str],
+                                          shadow_root: Path) -> None:
+    """Populate ``shadow_root`` with one bare-bones manifest.json per real capture in
+    ``replay_ids`` -- ONLY the ``captured_at`` field ``prune_replay_corpus`` actually reads to
+    decide what is too old, never the real crop images or her name. Used exclusively so an
+    age-based --purge dry run can preview prune_replay_corpus's REAL decision without that
+    function ever touching the real corpus (see _run_age_based_purge()'s own docstring for why
+    this exists instead of a second, hand-written "which ones are older than N days" check)."""
+    for replay_id in replay_ids:
+        try:
+            capture = load_replay_capture(corpus_dir, replay_id)
+        except Exception:  # noqa: BLE001 -- a real capture that fails to load is simply not
+            # mirrored/previewed; prune_replay_corpus would also be unable to read its manifest.
+            continue
+        capture_dir = shadow_root / replay_id
+        capture_dir.mkdir(parents=True, exist_ok=True)
+        (capture_dir / "manifest.json").write_text(
+            json.dumps({"captured_at": capture.captured_at}), encoding="utf-8")
+
+
+def _run_age_based_purge(corpus_dir: Path, older_than_days: float, *, delete: bool
+                         ) -> tuple[bool, list[tuple[str, float | None, str]], str | None]:
+    """Age-based purge: (ok, removed[(replay_id, captured_at, reason)], error). ALWAYS goes
+    through ``prune_replay_corpus`` -- the exact same call, for real, against ``corpus_dir``
+    when ``delete`` is True. When ``delete`` is False (the default), that same function is
+    instead run against a THROWAWAY mirror directory holding only a minimal manifest.json per
+    real capture (see _mirror_manifests_for_dry_run_preview) so the dry run learns prune_
+    replay_corpus's own real answer without ever calling it against -- or deleting anything
+    from -- the actual corpus. Never a second, independently-written "is this older than N
+    days" check: whichever branch runs, the removal decision is made by that one function.
+    """
+    if delete:
+        result = prune_replay_corpus(corpus_dir, max_age_days=older_than_days)
+        if not result.ok:
+            return False, [], result.error
+        return True, [(r.replay_id, r.captured_at, r.reason) for r in result.removed], None
+
+    try:
+        replay_ids = list_replay_ids(corpus_dir)
+    except Exception as exc:  # noqa: BLE001 -- a corrupt corpus root must not crash the preview
+        return False, [], f"{type(exc).__name__}: {exc}"
+    with tempfile.TemporaryDirectory(prefix="opener_replay_purge_preview_") as tmp:
+        shadow_root = Path(tmp)
+        _mirror_manifests_for_dry_run_preview(corpus_dir, replay_ids, shadow_root)
+        result = prune_replay_corpus(shadow_root, max_age_days=older_than_days)
+    if not result.ok:
+        return False, [], result.error
+    return True, [(r.replay_id, r.captured_at, r.reason) for r in result.removed], None
+
+
+def _run_whole_corpus_purge(corpus_dir: Path, *, delete: bool
+                            ) -> tuple[bool, list[tuple[str, float | None, str]], str | None]:
+    """Whole-corpus purge: every capture ``list_replay_ids`` finds under ``corpus_dir``,
+    unconditionally. Deliberately NOT routed through ``prune_replay_corpus``:
+    ``max_captures``/``max_age_days`` are both documented as "0 means unlimited" (see that
+    function's own docstring) with no way to express "keep zero" -- forcing "everything" through
+    an age cutoff could only reliably catch captures at least an instant older than "now", which
+    cannot honestly promise to remove a capture written moments before this command runs. "The
+    whole corpus" means exactly what it says instead: every capture this read-only listing finds,
+    removed with ONE plain ``shutil.rmtree`` of the corpus directory itself -- not a second,
+    per-capture deletion loop re-implementing prune_replay_corpus's own safety checks, since there
+    is no partial-removal decision left to make once every capture is in scope.
+    """
+    try:
+        replay_ids = list_replay_ids(corpus_dir)
+    except Exception as exc:  # noqa: BLE001 -- a corrupt corpus root must not crash the purge
+        return False, [], f"{type(exc).__name__}: {exc}"
+    removed: list[tuple[str, float | None, str]] = []
+    for replay_id in replay_ids:
+        captured_at: float | None = None
+        try:
+            captured_at = load_replay_capture(corpus_dir, replay_id).captured_at
+        except Exception:  # noqa: BLE001 -- still reported by id even if its manifest is corrupt
+            pass
+        removed.append((replay_id, captured_at, PURGE_REASON_WHOLE_CORPUS))
+    if delete and corpus_dir.is_dir():
+        try:
+            shutil.rmtree(corpus_dir)
+        except Exception as exc:  # noqa: BLE001 -- report, don't traceback, on a delete failure
+            return False, removed, f"{type(exc).__name__}: {exc}"
+    return True, removed, None
+
+
+def _run_purge(args: argparse.Namespace) -> int:
+    """--purge's own CLI handler: remove the whole replay corpus, or only captures older than
+    --purge-older-than-days, from --corpus-dir. DRY RUN BY DEFAULT -- with no --delete, this only
+    REPORTS what it would remove; --delete is required to actually touch disk. Either way, what
+    was (or would be) removed is printed explicitly, one capture per line -- never just a count.
+    See _run_age_based_purge()/_run_whole_corpus_purge() for why the two modes are implemented
+    differently, and this module's docstring for why --purge is a wholly separate action from
+    replaying (no config.yaml, no transport, no store).
+    """
+    corpus_dir = Path(args.corpus_dir)
+    older_than_days = args.purge_older_than_days
+    log: Callable[..., None] = (
+        (lambda *a, **k: print(*a, file=sys.stderr, **k)) if args.json else print)
+
+    if older_than_days is not None:
+        ok, removed, error = _run_age_based_purge(corpus_dir, older_than_days, delete=args.delete)
+        scope_desc = f"captures older than {older_than_days} day(s)"
+    else:
+        ok, removed, error = _run_whole_corpus_purge(corpus_dir, delete=args.delete)
+        scope_desc = "the ENTIRE replay corpus"
+
+    if not ok:
+        print(f"ERROR: purge of {str(corpus_dir)!r} failed: {error}", file=sys.stderr)
+        return 1
+
+    mode = "DELETE" if args.delete else "DRY RUN"
+    verb = "removed" if args.delete else "would remove"
+    log(f"=== PURGE ({mode}) -- {scope_desc} under {str(corpus_dir)!r} ===")
+    if not removed:
+        log("  nothing matched -- 0 capture(s) affected.")
+    else:
+        log(f"  {verb} {len(removed)} capture(s):")
+        for replay_id, captured_at, reason in removed:
+            log(f"    {replay_id}  captured_at={_format_epoch(captured_at)}  reason={reason}")
+    if not args.delete:
+        log("\nDRY RUN -- nothing was deleted. Pass --delete to actually remove these.")
+
+    if args.json:
+        print(json.dumps({
+            "mode": "delete" if args.delete else "dry_run",
+            "corpus_dir": str(corpus_dir),
+            "purge_older_than_days": older_than_days,
+            "removed": [{"replay_id": rid, "captured_at": cat, "reason": reason}
+                       for rid, cat, reason in removed],
+        }, indent=2))
+    return 0
 
 
 def _parse_replay_ids(raw: str | None) -> list[str] | None:
@@ -192,6 +377,13 @@ def main(argv: list[str] | None = None, *, transport: GeminiTransport | None = N
     __main__ block below) passes none of them.
     """
     args = _build_arg_parser().parse_args(argv)
+
+    if args.purge:
+        # A wholly separate action from replaying -- see _run_purge()'s own docstring. Dispatched
+        # before any of the replay-specific setup below (config.yaml, transport, store) so --purge
+        # never needs any of it.
+        return _run_purge(args)
+
     log: Callable[..., None] = (
         (lambda *a, **k: print(*a, file=sys.stderr, **k)) if args.json else print)
 

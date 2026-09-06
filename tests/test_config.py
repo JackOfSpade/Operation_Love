@@ -798,6 +798,54 @@ def test_opener_replay_corpus_enabled_true_loads_and_validates_cleanly():
     assert cfg.opener.replay_corpus_enabled is True
 
 
+# --- opener.replay_corpus_max_captures / opener.replay_corpus_max_age_days: retention bounds
+# for the replay corpus (operation_love/opener/replay_corpus.py's prune_replay_corpus). Both
+# are "0 means unlimited" sentinels, so validation must accept 0 as a legitimate value while
+# still rejecting every other non-negative-integer violation the sibling opener knobs above
+# already guard against (bool, float, string, negative). -------------------------------------
+
+@pytest.mark.parametrize("field", ["replay_corpus_max_captures", "replay_corpus_max_age_days"])
+def test_replay_corpus_retention_defaults(field):
+    cfg = _load(BASE)
+    assert getattr(cfg.opener, field) == {
+        "replay_corpus_max_captures": 400,
+        "replay_corpus_max_age_days": 180,
+    }[field]
+
+
+@pytest.mark.parametrize("field", ["replay_corpus_max_captures", "replay_corpus_max_age_days"])
+def test_replay_corpus_retention_accepts_a_valid_override(field):
+    d = {**BASE, "opener": {**BASE["opener"], field: 7}}
+    cfg = _load(d)
+    assert getattr(cfg.opener, field) == 7
+    c.validate(cfg)   # no raise
+
+
+@pytest.mark.parametrize("field", ["replay_corpus_max_captures", "replay_corpus_max_age_days"])
+def test_replay_corpus_retention_accepts_zero_as_unlimited(field):
+    """0 is a deliberate sentinel ("unlimited"), never a degenerate value to reject -- unlike
+    every positive-int-only opener knob (max_attempts, max_tokens, ...), 0 must load and
+    validate cleanly here."""
+    d = {**BASE, "opener": {**BASE["opener"], field: 0}}
+    cfg = _load(d)
+    assert getattr(cfg.opener, field) == 0
+    c.validate(cfg)   # no raise
+
+
+@pytest.mark.parametrize(("field", "value"), [
+    ("replay_corpus_max_captures", -1),
+    ("replay_corpus_max_captures", True),
+    ("replay_corpus_max_captures", 1.5),
+    ("replay_corpus_max_captures", "400"),
+    ("replay_corpus_max_age_days", -1),
+    ("replay_corpus_max_age_days", True),
+    ("replay_corpus_max_age_days", 180.5),
+    ("replay_corpus_max_age_days", "180"),
+])
+def test_replay_corpus_retention_scalar_shapes_fail(field, value):
+    _expect_error({**BASE, "opener": {**BASE["opener"], field: value}}, f"opener.{field}")
+
+
 @pytest.mark.parametrize(
     "models", [["gemini-ok", "gemini-ok"], [""], ["   "], [" gemini-ok"], [1]])
 def test_opener_model_fallback_ids_are_unique_nonempty_strings(models):

@@ -754,7 +754,12 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
             # DEFAULT DISABLED (None): only config.yaml's opener.replay_corpus_enabled turns
             # this on -- see OpenerCfg.replay_corpus_enabled's own comment for why it is never
             # implied by opener.enabled alone (real people's photos to local disk).
-            replay_corpus_dir=(DEFAULT_CORPUS_DIR if cfg.opener.replay_corpus_enabled else None))
+            replay_corpus_dir=(DEFAULT_CORPUS_DIR if cfg.opener.replay_corpus_enabled else None),
+            # Retention bounds threaded through unconditionally -- inert when replay_corpus_dir
+            # is None above (OpenerService._capture_replay_corpus returns before ever pruning),
+            # so there is no need to gate these on replay_corpus_enabled too.
+            replay_corpus_max_captures=cfg.opener.replay_corpus_max_captures,
+            replay_corpus_max_age_days=cfg.opener.replay_corpus_max_age_days)
         if on_opener_service:
             # Publish the same live service workers receive, for run-scoped bug telemetry.
             on_opener_service(opener_service)

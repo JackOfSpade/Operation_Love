@@ -1454,17 +1454,20 @@ class _SpyOpenerService:
     """Stand-in for OpenerService that records constructor args, without ever running a
     worker against it -- used to pin cfg.opener.max_attempts reaching the constructed
     service (contract: OpenerService(client, tracker, store, style, max_attempts=5,
-    replay_corpus_dir=None))."""
+    replay_corpus_dir=None, replay_corpus_max_captures=0, replay_corpus_max_age_days=0))."""
     instances: list = []
 
     def __init__(self, client, tracker, store, style, max_attempts=5, *,
-                 replay_corpus_dir=None):
+                 replay_corpus_dir=None, replay_corpus_max_captures=0,
+                 replay_corpus_max_age_days=0):
         self.client = client
         self.tracker = tracker
         self.store = store
         self.style = style
         self.max_attempts = max_attempts
         self.replay_corpus_dir = replay_corpus_dir
+        self.replay_corpus_max_captures = replay_corpus_max_captures
+        self.replay_corpus_max_age_days = replay_corpus_max_age_days
         _SpyOpenerService.instances.append(self)
 
 
@@ -1559,6 +1562,62 @@ def test_opener_replay_corpus_enabled_reaches_the_constructed_opener_service(mon
 
     assert len(_SpyOpenerService.instances) == 1
     assert _SpyOpenerService.instances[0].replay_corpus_dir == DEFAULT_CORPUS_DIR
+
+
+# --- opener.replay_corpus_max_captures / opener.replay_corpus_max_age_days: the retention
+# bounds must reach the constructed OpenerService, threaded unconditionally (they are inert
+# whenever replay_corpus_dir above is None -- see OpenerService._capture_replay_corpus's own
+# early return) -- so both defaults and explicit overrides must be pinned, exactly like
+# max_attempts above. ------------------------------------------------------------------------
+
+def test_opener_replay_corpus_retention_defaults_reach_the_constructed_opener_service(
+        monkeypatch, tmp_path):
+    """The shipped OpenerCfg defaults (400 captures / 180 days) must reach the constructor when
+    config.yaml never mentions either knob -- not just when they are set explicitly."""
+    cfg_path = _write_cfg(tmp_path)   # base _CONFIG sets neither retention knob
+    monkeypatch.setattr(sup, "Capabilities", _Caps)
+    monkeypatch.setattr(sup, "Embedder", _FastEmbedder)
+    monkeypatch.setattr(sup, "QualityFilter", _FastQuality)
+    monkeypatch.setattr(sup, "make_store", lambda cfg: _FakeStore())
+    monkeypatch.setattr(sup, "make_driver", lambda app, cfg: _FakeDriver())
+    monkeypatch.setattr(sup, "_install_signal_handlers", lambda stop: None)
+    _patch_no_adb(monkeypatch)
+    _SpyOpenerService.instances = []
+    monkeypatch.setattr(sup, "OpenerService", _SpyOpenerService)
+
+    sup.run(str(cfg_path), stop_event=threading.Event())
+
+    assert len(_SpyOpenerService.instances) == 1
+    assert _SpyOpenerService.instances[0].replay_corpus_max_captures == 400
+    assert _SpyOpenerService.instances[0].replay_corpus_max_age_days == 180
+
+
+def test_opener_replay_corpus_retention_overrides_reach_the_constructed_opener_service(
+        monkeypatch, tmp_path):
+    """Explicit config.yaml overrides for both retention knobs must reach the constructor --
+    distinctive values (11 / 22), neither of which is either knob's own class default, so a
+    mutation that drops a kwarg (silently falling back to OpenerCfg's default) cannot pass
+    unnoticed."""
+    cfg_text = _CONFIG.replace(
+        "opener:\n  enabled: false",
+        "opener:\n  enabled: false\n  replay_corpus_max_captures: 11"
+        "\n  replay_corpus_max_age_days: 22")
+    cfg_path = _write_cfg(tmp_path, cfg_text)
+    monkeypatch.setattr(sup, "Capabilities", _Caps)
+    monkeypatch.setattr(sup, "Embedder", _FastEmbedder)
+    monkeypatch.setattr(sup, "QualityFilter", _FastQuality)
+    monkeypatch.setattr(sup, "make_store", lambda cfg: _FakeStore())
+    monkeypatch.setattr(sup, "make_driver", lambda app, cfg: _FakeDriver())
+    monkeypatch.setattr(sup, "_install_signal_handlers", lambda stop: None)
+    _patch_no_adb(monkeypatch)
+    _SpyOpenerService.instances = []
+    monkeypatch.setattr(sup, "OpenerService", _SpyOpenerService)
+
+    sup.run(str(cfg_path), stop_event=threading.Event())
+
+    assert len(_SpyOpenerService.instances) == 1
+    assert _SpyOpenerService.instances[0].replay_corpus_max_captures == 11
+    assert _SpyOpenerService.instances[0].replay_corpus_max_age_days == 22
 
 
 def test_on_opener_service_callback_receives_the_live_opener_service(monkeypatch, tmp_path):

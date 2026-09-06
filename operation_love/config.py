@@ -84,6 +84,33 @@ class OpenerCfg:
     # it on is the owner's explicit, opt-in choice, never a silent default just because openers
     # themselves are enabled.
     replay_corpus_enabled: bool = False
+    # RETENTION for the replay corpus above: the maximum number of captures kept (oldest-first
+    # eviction beyond this) and the maximum age in days any capture may reach before it is
+    # pruned -- see operation_love/opener/replay_corpus.py's `prune_replay_corpus` for the full
+    # contract (delete-path safety, oldest-first ordering, corrupt-manifest handling). 0 MEANS
+    # UNLIMITED for either -- see that function's own docstring; this is not a typo/oversight,
+    # it is how an owner opts back into the old unbounded behavior if ever wanted.
+    #
+    # DEFAULTS JUSTIFIED, not arbitrary. ops/OPENER-REDESIGN.md's pre-registered prediction
+    # needs "at least 40 drafts" in ONE prompt era to even be checkable, and prompt eras in this
+    # project have historically turned over every few days to weeks (see that doc's own
+    # addendum history) -- so a cap must comfortably exceed 40 AND leave room for SEVERAL eras to
+    # sit on disk at once (so two eras' batches can still be compared against each other, not
+    # just the newest one against nothing). 400 is 10x the 40-draft floor, i.e. room for ~10
+    # such eras before the oldest is evicted to make room for a new one.
+    # DISK COST: opener/opener.py's own measured real-profile example put one profile's crops at
+    # 8.53MB (ops/OPENER-REDESIGN.md's own "8.53MB of PNG against 37.15MB for the 24 frames they
+    # came from" measurement) -- so 400 captures is roughly 400 * 8.53MB =~ 3.4GB worst case.
+    # That's a real, non-trivial amount of local disk, but it is a bounded, known, and
+    # owner-visible number rather than the unbounded growth this corpus previously had no
+    # defense against at all.
+    replay_corpus_max_captures: int = 400
+    # 180 days (~6 months) independently bounds age even for a LOW-capture-rate deployment that
+    # would never hit the count cap above on its own -- no single profile's photos sit on local
+    # disk indefinitely just because captures happen slowly. Combined with the count cap, the
+    # corpus is bounded on both a "captures too fast" axis and a "captures too rarely, but for
+    # too long" axis.
+    replay_corpus_max_age_days: int = 180
 
     @property
     def effective_models(self) -> list[str]:
@@ -1200,6 +1227,17 @@ def _require_positive_int(value, label: str) -> None:
             f"Config: {label} must be a positive integer (got {_safe_value_repr(value)})")
 
 
+def _require_nonnegative_int(value, label: str, *, zero_meaning: str) -> None:
+    """Like ``_require_positive_int``, but 0 is accepted -- for a setting where 0 is a
+    deliberate sentinel (typically "unlimited") rather than a degenerate/meaningless value.
+    ``zero_meaning`` is folded into the error message so a rejected value still tells the
+    operator what 0 would have meant, even though this particular value wasn't it."""
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(
+            f"Config: {label} must be a non-negative integer (0 = {zero_meaning}), "
+            f"got {_safe_value_repr(value)}")
+
+
 def _require_finite_real(value, label: str, *, minimum: float | None = None,
                          maximum: float | None = None) -> None:
     rendered = _safe_value_repr(value)
@@ -1275,6 +1313,10 @@ def _validate_opener_scalars(opener: OpenerCfg) -> None:
     _require_bool(opener.enabled, "opener.enabled")
     _require_bool(opener.preflight, "opener.preflight")
     _require_bool(opener.replay_corpus_enabled, "opener.replay_corpus_enabled")
+    _require_nonnegative_int(opener.replay_corpus_max_captures,
+                             "opener.replay_corpus_max_captures", zero_meaning="unlimited")
+    _require_nonnegative_int(opener.replay_corpus_max_age_days,
+                             "opener.replay_corpus_max_age_days", zero_meaning="unlimited")
     _require_nonempty_text(opener.provider, "opener.provider")
     _require_nonempty_text(opener.model, "opener.model")
     if opener.model != opener.model.strip():

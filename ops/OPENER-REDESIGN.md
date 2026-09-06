@@ -6055,3 +6055,62 @@ Offline only -- no device, no live API call, no BigQuery read or write from this
 additions (`tools/opener_outcome_recorder.py` and its test file); every other component this
 entry documents was already on disk when this entry began and is described, not re-implemented,
 here.
+
+
+#### Addendum -- 2026-09-06 (j): capture is on, bounded, and the verdict says where it came from
+
+Three owner decisions, taken together because enabling capture without retention would have been
+the wrong order: photos must be bounded from the FIRST capture, never retroactively.
+
+RETENTION, decided. The replay corpus stores real people's photos on disk, so it is now bounded
+by BOTH a maximum capture count and a maximum age, pruned oldest first after every successful
+capture, with 0 documented as unlimited for either bound. The defaults are 400 captures and 180
+days. The count had to comfortably exceed the pre-registered minimum of 40 drafts so retention
+can never silently delete the very evidence the prediction needs, while still leaving several
+eras comparable; 180 days spans several prompt revisions without anything lingering indefinitely.
+An automatic bound was chosen over a documented manual habit on purpose: a retention policy that
+depends on someone remembering is not a policy.
+
+THE DELETE PATH was treated as the highest-risk part of the change, because it removes
+directories of real people's photos under config control. It resolves the root, validates every
+candidate against the id format the module itself produces, refuses separators and traversal,
+refuses to follow a symlink out of the root, and confirms the resolved candidate really is inside
+the resolved root before removing anything. A capture whose manifest is missing or corrupt is
+KEPT, never deleted, and never counted. Like every write on this path it can never raise into the
+opener, decision, send or refusal path. Each escape was attempted in a test and refused.
+
+CAPTURE ENABLED. config.yaml now sets opener.replay_corpus_enabled: true, while the CODE default
+in config.py stays False: the shipped config opts in, the library does not. Capture happens in
+OpenerService.maybe_opener, which is the path Training and AUTO share, so a Training run captures.
+It takes effect the next time the supervisor loads config.yaml, not in any process already running.
+
+PROGRESS AND VERDICT REPORTING. tools/opener_corpus_report.py now prints a REPLAY CORPUS section
+and a PRE-REGISTERED CHECK: how many drafts exist under the current era, how many more are needed
+to reach the minimum, and, once the threshold is met, each pre-registered metric beside its
+predicted value with the agreed falsification verdict. Below threshold it prints the shortfall and
+refuses a verdict. The threshold lives in one named constant pointing at the (d) addendum that set
+it. tools/opener_replay.py gained a purge path that defaults to a dry run.
+
+THE REVIEW FINDING WORTH RECORDING. The first version of that verdict rendered THRESHOLD MET,
+PASS/FAIL and FALSIFIED without ever disclosing whether the drafts behind it were live sends or
+offline replays. That is the same class of defect as the era axis pooling replay rows silently,
+found earlier the same day, and it matters more here because this verdict is the agreed trigger
+for shipping the positive-specification restructure. The fix DISCLOSES rather than suppresses:
+replayed drafts are genuine model output under the current prompt, so they are valid PRODUCED-side
+evidence and are still counted, since making the prediction checkable without further device time
+is exactly why replay exists. What is now impossible is mistaking one for the other. The check
+carries the synthetic count, a basis of live, mixed or replay, an explicit PROVENANCE paragraph
+whenever any draft is synthetic, and the basis is stamped on the VERDICT line itself so a reader
+who skims to the verdict alone still sees it.
+
+RESIDUALS. The prediction remains UNTESTED until a live batch actually runs; nothing here changes
+that, it only makes the moment it becomes checkable visible. Retention bounds the corpus but the
+photos are still real and still local, so deletion remains the owner's call at any time via the
+purge path. And the outcome axis stays empty until outcomes are recorded by hand: everything the
+report shows about this era is still what the prompt PRODUCED, never what performed.
+
+Suite 5397 -> 5403 passed, 5 skipped, lint clean. New pins include
+tests/test_replay_corpus_prune.py (the prune helper and every attempted path escape) and the
+provenance pins in tests/test_opener_corpus_report.py (verdict_basis live/mixed/replay, the
+synthetic count and PROVENANCE paragraph, the basis stamped on the VERDICT line, a live verdict
+left unlabelled, and to_dict carrying both). All were mutation tested.

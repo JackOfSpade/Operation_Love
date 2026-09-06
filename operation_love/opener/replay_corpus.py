@@ -57,19 +57,25 @@ third-party model. It is LOCAL ONLY BY DEFAULT: this module never uploads, never
 BigQuery or any network endpoint, and never imports anything that could (no
 ``operation_love.ranker.bigquery_store``, no HTTP client). ``DEFAULT_CORPUS_DIR`` sits under
 ``data/``, which project-wide ``.gitignore`` already excludes wholesale (see
-``data/hinge_debug`` for the existing precedent this format follows). RETENTION -- how long a
-captured directory is kept, and whether it is ever deleted -- is the owner's call; this module
-provides no automatic expiry or pruning of its own.
+``data/hinge_debug`` for the existing precedent this format follows). RETENTION is BOUNDED, from
+the very first capture, by ``prune_replay_corpus`` (below): it removes captures oldest-first once
+their count exceeds a configured ``max_captures`` and/or their age exceeds a configured
+``max_age_days`` (0 means unlimited for either -- see that function's own docstring for the full
+contract, including its delete-path safety guarantees and its documented handling of a manifest
+that fails to parse). The two bounds are owner-tunable via ``opener.replay_corpus_max_captures``
+/ ``opener.replay_corpus_max_age_days`` in ``config.yaml``; ``OpenerService`` calls the prune
+after every successful capture (see ``OpenerService._capture_replay_corpus``), so the corpus can
+never grow unbounded even for a fully-enabled, long-running deployment.
 
 WHAT THIS MODULE DELIBERATELY DOES NOT DO. It has NO dependency on ``operation_love.opener.
 opener`` or ``operation_love.opener.service`` -- not even to import ``ItemRequest`` -- and no
 dependency on any store or provider client. It is pure, generic I/O over plain values (bytes,
-str, bool, float), by design: a future caller in the live opener path (NOT wired up by this
-module -- see ``write_replay_capture``'s docstring for why) can call the writer with the exact
-four fields ``opener.opener.ItemRequest`` already carries (``items``, ``name``, ``context``,
-``truncated``) plus its own already-computed ``prompt_sha256``, without this module ever needing
-to know what an ``ItemRequest`` is. ``tools/opener_replay.py`` is the one place that bridges
-this format back to ``ItemRequest`` for an actual replay.
+str, bool, float), by design: the live opener path (wired up from
+``OpenerService._capture_replay_corpus``, see that method's own docstring) calls the writer with
+the exact four fields ``opener.opener.ItemRequest`` already carries (``items``, ``name``,
+``context``, ``truncated``) plus its own already-computed ``prompt_sha256``, without this module
+ever needing to know what an ``ItemRequest`` is. ``tools/opener_replay.py`` is the one place that
+bridges this format back to ``ItemRequest`` for an actual replay.
 
 SAFE TO FAIL. ``write_replay_capture`` never raises -- every exception (a full disk, a
 permissions error, a malformed argument) is caught and reported through its return value
@@ -84,6 +90,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
+import shutil
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -99,6 +107,26 @@ _MANIFEST_NAME = "manifest.json"
 # or reinterpreted, not merely a field added -- an added optional field is forward-compatible
 # and does not need a bump, since every reader here uses .get() with a default).
 _FORMAT_VERSION = 1
+
+# Every ``replay_id`` this module has ever produced is a SHA-256 hex digest (see
+# ``compute_replay_id``): exactly 64 lowercase hex characters, nothing else. ``prune_replay_corpus``
+# uses this as its FIRST delete-path safety gate -- a directory name is never even considered as
+# a removal candidate unless it matches this shape, which by construction can never contain a
+# path separator (``/`` or, on a platform where ``os.sep``/``os.altsep`` differ, either of those),
+# a ``.``/``..`` traversal segment, or anything else that could steer a filesystem join outside
+# ``root``. See ``_is_safe_capture_id`` for the (redundant, deliberately so) second check applied
+# again immediately before any actual deletion.
+_REPLAY_ID_RE = re.compile(r"[0-9a-f]{64}")
+
+
+def _is_safe_capture_id(name: object) -> bool:
+    """Whether ``name`` is safe to treat as a ``replay_id`` path component under the corpus
+    root -- i.e. it is EXACTLY the shape ``compute_replay_id`` produces and nothing more. Used
+    both when discovering prune candidates and, redundantly, a second time immediately before
+    ``prune_replay_corpus`` actually deletes anything, so a bug in one call site can never be the
+    only thing standing between a bad value and a real ``shutil.rmtree``.
+    """
+    return isinstance(name, str) and bool(_REPLAY_ID_RE.fullmatch(name))
 
 
 def _guess_extension(data: bytes) -> str:
@@ -172,9 +200,11 @@ def write_replay_capture(root: str | Path, *, items: Sequence[bytes], name: str 
     ``truncated``) as plain bytes/str/bool, plus the caller's own already-computed
     ``prompt_sha256`` (this module never computes one itself -- see the module docstring).
 
-    NOT WIRED INTO THE OPENER PATH BY THIS MODULE. Some later change will call this from
-    wherever an ``ItemRequest`` is actually built; until then this is a standalone API a test or
-    a manual script can call directly.
+    WIRED INTO THE OPENER PATH from ``operation_love.opener.service.OpenerService.
+    _capture_replay_corpus``, which calls this once per profile with the exact ``ItemRequest``
+    fields it just built, right before making the actual provider call (see that method's own
+    docstring). It remains a plain, standalone API otherwise -- a test or a manual script can
+    still call it directly with no service involved.
 
     NEVER RAISES (see this module's docstring's SAFE TO FAIL section) -- every failure, from a
     bad argument to a full disk, comes back as ``ReplayWriteResult(ok=False, error=...)``, so a
@@ -368,6 +398,226 @@ def load_replay_corpus(root: str | Path, *, replay_ids: Sequence[str] | None = N
     if limit is not None:
         ids = ids[:limit]
     return [load_replay_capture(root, replay_id) for replay_id in ids]
+
+
+@dataclass(frozen=True)
+class PruneRemoval:
+    """One capture ``prune_replay_corpus`` actually removed -- enough to log without a second
+    filesystem read (the directory is already gone by the time a caller sees this)."""
+    replay_id: str
+    captured_at: float | None
+    reason: str   # PRUNE_REASON_MAX_CAPTURES or PRUNE_REASON_MAX_AGE_DAYS
+
+
+PRUNE_REASON_MAX_CAPTURES = "max_captures"
+PRUNE_REASON_MAX_AGE_DAYS = "max_age_days"
+
+
+@dataclass(frozen=True)
+class PruneResult:
+    """The outcome of one ``prune_replay_corpus`` call. Always returned, never raised (see that
+    function's own SAFE TO FAIL section) -- a caller checks ``ok`` and moves on either way,
+    exactly like ``ReplayWriteResult``."""
+    ok: bool
+    removed: tuple[PruneRemoval, ...] = ()
+    kept: int = 0
+    skipped_unparseable: int = 0
+    error: str | None = None
+
+
+def prune_replay_corpus(root: str | Path, *, max_captures: int = 0,
+                        max_age_days: float = 0) -> PruneResult:
+    """Bound the corpus under ``root`` by deleting whole capture directories, OLDEST-FIRST by
+    the manifest's own ``captured_at``, until it satisfies both ``max_captures`` (an absolute
+    cap on how many captures may exist) and ``max_age_days`` (no surviving capture is older than
+    this many days). **0 MEANS UNLIMITED for either bound** -- ``max_captures=0`` never removes
+    anything for being over-count, ``max_age_days=0`` never removes anything for being too old,
+    and ``prune_replay_corpus(root)`` with both left at their defaults is a documented no-op.
+
+    ORDER OF OPERATIONS: age-based removal is applied FIRST, then count-based removal is applied
+    to whatever survives it. This is deliberate, not incidental -- it means the two bounds
+    compose the way an operator would expect ("nothing older than N days, and no more than M
+    captures even within that window") rather than either bound alone deciding survivors
+    independently of the other. A capture matches at most one reason in the returned
+    ``PruneResult.removed`` (age-removed captures are excluded from the count-removal pool by
+    construction, so the two groups can never overlap).
+
+    A CORRUPT OR UNREADABLE MANIFEST IS A DELIBERATE, DOCUMENTED "KEEP", NEVER A DELETE. A
+    directory under ``root`` whose ``manifest.json`` is missing, unreadable, not valid JSON, or
+    not a JSON object is treated EXACTLY the way ``list_replay_ids`` already treats it: not a
+    (complete) capture at all. This function therefore never counts it toward ``max_captures``,
+    never compares it against ``max_age_days``, and never deletes it -- it is silently excluded
+    from every decision this function makes, the same way it is silently excluded from every
+    listing ``list_replay_ids`` produces. Three reasons this is the right default, not merely the
+    easy one: (1) this function's own delete-path safety mandate is to make it impossible to
+    remove the wrong thing, and a directory whose manifest cannot even be parsed is one this
+    function cannot verify is genuinely a spent, replaceable capture rather than, say, a
+    mid-external-copy directory or hand-edited evidence -- guessing wrong in the "prunable"
+    direction is irreversible, guessing wrong in the "keep" direction only costs disk; (2) reader
+    and pruner sharing the exact same definition of "what counts as a capture" means a tool built
+    against ``list_replay_ids`` can never see a directory that ``prune_replay_corpus`` silently
+    disagreed with it about; (3) ``write_replay_capture``'s own atomicity guarantee (the manifest
+    is written LAST, via an atomic replace, only after every crop file already landed) means a
+    present-but-corrupt ``manifest.json`` can only happen from something OUTSIDE this module
+    entirely -- external disk corruption or manual tampering -- which is rare enough that an
+    unbounded-but-rare residual is an acceptable, explicitly accepted risk (the same shape of
+    trade-off ``write_replay_capture`` itself already documents for orphaned crop files after a
+    crash). ``PruneResult.skipped_unparseable`` counts these so the residual is at least visible
+    to a caller who logs it, even though it is never acted on.
+
+    A capture whose manifest DOES parse but omits/mistypes ``captured_at`` (unusual -- every
+    manifest this module itself writes always sets it via ``time.time()``) is handled
+    differently, on purpose: it is still a candidate (a parseable, well-formed capture), but with
+    an unknown age. It sorts as `+inf` for ordering, MATCHING ``list_replay_ids``'s own
+    ``captured_at`` tie-break convention exactly, which has two effects: it is NEVER removed for
+    age (an unknown age can never be compared against a cutoff), and it is the LAST candidate
+    ever removed for count (oldest-first ordering means "sorts newest" removes last), so this
+    function never preferentially punishes a capture merely because its age cannot be determined.
+
+    DELETE-PATH SAFETY, the highest-risk part of this function's contract: it must be impossible
+    for this function to delete anything outside ``root``, or anything a caller did not mean for
+    it to manage. Every one of these must hold before a single ``shutil.rmtree`` call is made for
+    a given candidate:
+
+      * ``root`` itself is resolved once, up front (``Path(root).resolve()``), and every later
+        comparison is against that resolved path, never the original possibly-relative one;
+      * the candidate is an IMMEDIATE child of ``root`` discovered via ``root.iterdir()`` --
+        never a name built from string concatenation or user input;
+      * the candidate's directory NAME must independently match ``_is_safe_capture_id`` (exactly
+        64 lowercase hex characters -- the shape ``compute_replay_id`` produces and the ONLY
+        shape this module has ever written to disk), checked once at discovery and AGAIN,
+        redundantly, immediately before deletion;
+      * the candidate must not be a symlink (``Path.is_symlink()``) -- checked at discovery, so a
+        symlink is never even parsed as a capture, let alone considered for removal; this module
+        never follows a symlink to decide what to delete;
+      * immediately before deletion, the candidate is resolved again and its resolved path must
+        (a) be a direct child of resolved ``root`` (``resolved.parent == root`` and
+        ``resolved.name`` equal to the id being removed) AND (b) satisfy
+        ``resolved.is_relative_to(root)`` -- belt-and-suspenders confirmation that nothing in
+        between discovery and deletion (nor any symlink component this function did not
+        anticipate) could have moved the real target outside ``root``.
+
+    Every one of the checks above is a `continue`, never a raise: a candidate that fails ANY of
+    them is simply left alone (kept), and the loop moves on to the next one. See
+    tests/test_replay_corpus_prune.py for a test that attempts each escape explicitly and proves
+    it is refused rather than merely "not currently exploited".
+
+    NEVER RAISES (same SAFE TO FAIL contract as ``write_replay_capture``): the ENTIRE body,
+    including argument validation and the directory walk itself, runs inside one try/except, so
+    a bad argument, a permissions error on ``root``, a full disk, or any other unexpected failure
+    comes back as ``PruneResult(ok=False, error=...)`` rather than propagating -- a caller on the
+    opener/decision/send/refusal path (this project's own hard rule: telemetry must be
+    best-effort and must never raise into that path) can call this unconditionally with no
+    try/except of its own, exactly like ``write_replay_capture``. A per-directory deletion
+    failure (e.g. one directory becomes unwritable mid-run) is handled the same way one level
+    down: that single candidate is skipped (left in place, NOT counted as removed) and every
+    other candidate is still attempted -- one bad directory can never abort the whole prune.
+    """
+    try:
+        if isinstance(max_captures, bool) or not isinstance(max_captures, int) or max_captures < 0:
+            raise ValueError(
+                "prune_replay_corpus max_captures must be a non-negative integer "
+                f"(0 = unlimited), got {max_captures!r}")
+        if (isinstance(max_age_days, bool) or not isinstance(max_age_days, (int, float))
+                or max_age_days < 0 or max_age_days != max_age_days  # NaN check, no math import
+                or max_age_days in (float("inf"), float("-inf"))):
+            raise ValueError(
+                "prune_replay_corpus max_age_days must be a non-negative, finite number of days "
+                f"(0 = unlimited), got {max_age_days!r}")
+
+        root_path = Path(root).resolve()
+        if not root_path.is_dir():
+            # An empty/nonexistent corpus is nothing to prune, not an error -- matches
+            # list_replay_ids's own "[] for a root that does not exist yet" contract.
+            return PruneResult(ok=True)
+
+        candidates: list[tuple[str, float | None]] = []
+        skipped_unparseable = 0
+        for child in root_path.iterdir():
+            if child.is_symlink():
+                # Never follow a symlink to decide what is (or is deleted as) a capture.
+                continue
+            if not child.is_dir():
+                continue
+            name = child.name
+            if not _is_safe_capture_id(name):
+                # Not shaped like anything this module has ever written; not ours to manage.
+                continue
+            manifest_path = child / _MANIFEST_NAME
+            if not manifest_path.is_file():
+                # No manifest -- matches list_replay_ids: not a (complete) capture, never touched.
+                continue
+            try:
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                if not isinstance(manifest, dict):
+                    raise ValueError("replay corpus manifest is not a JSON object")
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError):
+                # DECISION: corrupt/unreadable manifest -> KEEP, never delete. See this
+                # function's own docstring for the full three-part justification.
+                skipped_unparseable += 1
+                continue
+            captured_at = manifest.get("captured_at")
+            captured_at_f = (float(captured_at)
+                             if isinstance(captured_at, (int, float)) else None)
+            candidates.append((name, captured_at_f))
+
+        # Oldest-first: ascending captured_at, missing treated as +inf (sorts last / "newest"),
+        # tie-broken by id -- the exact same convention list_replay_ids uses, so this function's
+        # notion of "capture order" never diverges from what a reader sees.
+        candidates.sort(key=lambda pair: (pair[1] if pair[1] is not None else float("inf"),
+                                          pair[0]))
+
+        age_ids: set[str] = set()
+        if max_age_days > 0:
+            cutoff = time.time() - (max_age_days * 86400.0)
+            for cid, cat in candidates:
+                if cat is not None and cat < cutoff:
+                    age_ids.add(cid)
+
+        remaining = [pair for pair in candidates if pair[0] not in age_ids]
+        count_ids: set[str] = set()
+        if max_captures > 0 and len(remaining) > max_captures:
+            excess = len(remaining) - max_captures
+            for cid, _cat in remaining[:excess]:
+                count_ids.add(cid)
+
+        # A single ascending pass over `candidates` keeps the removal list itself oldest-first,
+        # tagging each with whichever bound actually removed it (the two id sets are disjoint by
+        # construction: count_ids is only ever drawn from `remaining`, which already excludes
+        # every id in age_ids).
+        removal_plan = []
+        for cid, cat in candidates:
+            if cid in age_ids:
+                removal_plan.append((cid, cat, PRUNE_REASON_MAX_AGE_DAYS))
+            elif cid in count_ids:
+                removal_plan.append((cid, cat, PRUNE_REASON_MAX_CAPTURES))
+
+        removed: list[PruneRemoval] = []
+        for cid, cat, reason in removal_plan:
+            # Redundant re-check immediately before deletion (see docstring) -- cheap insurance
+            # against a bug anywhere upstream of this point.
+            if not _is_safe_capture_id(cid):
+                continue
+            candidate_dir = root_path / cid
+            try:
+                if candidate_dir.is_symlink():
+                    continue
+                resolved = candidate_dir.resolve()
+                if (resolved.parent != root_path or resolved.name != cid
+                        or not resolved.is_relative_to(root_path)):
+                    continue
+                if not resolved.is_dir():
+                    continue
+                shutil.rmtree(candidate_dir)
+            except Exception:  # noqa: BLE001 -- one bad directory must never abort the prune
+                continue
+            removed.append(PruneRemoval(replay_id=cid, captured_at=cat, reason=reason))
+
+        kept = len(candidates) - len(removed)
+        return PruneResult(ok=True, removed=tuple(removed), kept=kept,
+                           skipped_unparseable=skipped_unparseable)
+    except Exception as exc:  # noqa: BLE001 -- see docstring: this function must never raise
+        return PruneResult(ok=False, error=f"{type(exc).__name__}: {exc}")
 
 
 # The `decision` column marker stamped on every openers row written by an OFFLINE REPLAY

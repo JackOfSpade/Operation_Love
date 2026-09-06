@@ -138,6 +138,26 @@ corpus sources, so it works with no debug-dir or database at all. --rule NAME is
 appeared, and -- since it also reads the corpus sources -- whatever measured metrics exist for
 those eras, so a stale "we tried that already" can be checked against what the prompt actually
 produced rather than just when it shipped.
+
+REPLAY CORPUS + THE PRE-REGISTERED CHECK (--replay-corpus-dir, default
+operation_love.opener.replay_corpus.DEFAULT_CORPUS_DIR) are two more unconditional sections,
+printed in both output modes exactly like METRICS BY DECISION above -- never gated behind a
+flag. REPLAY CORPUS reports how many requests (operation_love.opener.replay_corpus captures,
+read via that module's own list_replay_ids/load_replay_capture, never a re-implemented directory
+walk) exist on disk, their captured_at date range, and how many distinct prompt eras they span --
+see read_replay_corpus_stats(). THE PRE-REGISTERED CHECK reports progress toward, and (once
+reached) the result of, ops/OPENER-REDESIGN.md's 2026-09-06 (d) pre-registered NO GRADING
+prediction: PRE_REGISTERED_MIN_DRAFTS drafts (openers rows -- explicitly NOT the same count as a
+replay CAPTURE above; see build_pre_registered_check()'s own docstring for why the two can
+differ and which one the threshold applies to) generated under the CURRENT prompt era
+(compute_current_prompt_era(), the same digest tools/opener_replay.py would write its next rows
+under). Below threshold, this prints only the shortfall -- no verdict is ever rendered. At or
+above it, it prints the four pre-registered metrics next to their predicted direction, whether
+each passed, and the falsification verdict, with the exact thresholds pinned to named
+module-level constants (PRE_REGISTERED_GRADE_RATE_MAX and siblings, PRE_REGISTERED_FALSIFY_*)
+that comment-reference the addendum that set them, so the numbers can never quietly drift from
+the pre-registered record. Both sections are carried through --json under the `replay_corpus`
+and `pre_registered_check` top-level keys.
 """
 from __future__ import annotations
 
@@ -149,6 +169,7 @@ import statistics
 import sys
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
@@ -176,7 +197,16 @@ from operation_love.ranker import OPENER_OUTCOME_MATCH, OPENER_OUTCOME_REPLY
 # Importing tools.opener_replay adds no new dependency: it imports operation_love.opener.opener,
 # which this module already imports (immediately above, for _leading_ngram) -- and it does not
 # import this module back, so there is no import cycle.
-from operation_love.opener.replay_corpus import DECISION_REPLAY
+# `DEFAULT_CORPUS_DIR`/`list_replay_ids`/`load_replay_capture`: the on-disk replay corpus's OWN
+# read API (operation_love.opener.replay_corpus), reused here for the REPLAY CORPUS section
+# (see read_replay_corpus_stats() below) so this tool never re-implements a second directory
+# walk over the same on-disk format tools/opener_replay.py already reads.
+from operation_love.opener.replay_corpus import (
+    DECISION_REPLAY,
+    DEFAULT_CORPUS_DIR,
+    list_replay_ids,
+    load_replay_capture,
+)
 
 DEFAULT_DEBUG_DIR = "data/hinge_debug"
 # Matches config.py's own db_file default (data_dir/"operation_love.db") so running this tool
@@ -764,6 +794,120 @@ def read_all_sources(*, debug_dir: Path, db_path: Path, use_bigquery: bool,
         sqlite_outcome_stats=sqlite_outcome_stats,
         bigquery_outcome_stats=bigquery_outcome_stats)
     return combined, rejections, outcomes, report
+
+
+# ---------------------------------------------------------------------------------------
+# REPLAY CORPUS (operation_love/opener/replay_corpus.py) -- how many captured requests exist ON
+# DISK, independent of whether any of them has ever been replayed into the `openers` table (see
+# tools/opener_replay.py). Read entirely through that module's OWN read API
+# (list_replay_ids/load_replay_capture) rather than a second directory walk, mirroring this
+# module's existing SOURCES convention above.
+#
+# A CAPTURE IS NOT A DRAFT. A capture is a request INPUT (the numbered item crops a live Hinge
+# session once sent to Gemini, saved so it can be replayed later); a draft is an actual generated
+# opener, one `openers` table row. The two counts can differ in either direction -- the same
+# capture replayed twice under the same prompt era yields two drafts from one capture, and a live
+# send needs no capture at all -- so the PRE-REGISTERED CHECK section immediately below keeps
+# them separate rather than conflating "how many requests are on disk" with "how many drafts have
+# been generated", which is the exact count ops/OPENER-REDESIGN.md's 2026-09-06 (d) pre-registered
+# threshold applies to.
+# ---------------------------------------------------------------------------------------
+
+@dataclass
+class ReplayCorpusStats:
+    corpus_dir: Path
+    capture_count: int = 0
+    earliest_captured_at: float | None = None
+    latest_captured_at: float | None = None
+    distinct_prompt_eras: int = 0        # distinct non-null captured-at prompt_sha256 values
+    unknown_era_count: int = 0           # captures whose manifest carries no prompt_sha256 at all
+    notes: list[str] = field(default_factory=list)
+    load_errors: list[str] = field(default_factory=list)  # "<replay_id>: <error>" per bad capture
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "corpus_dir": str(self.corpus_dir),
+            "capture_count": self.capture_count,
+            "earliest_captured_at": self.earliest_captured_at,
+            "latest_captured_at": self.latest_captured_at,
+            "distinct_prompt_eras": self.distinct_prompt_eras,
+            "unknown_era_count": self.unknown_era_count,
+            "notes": list(self.notes),
+            "load_errors": list(self.load_errors),
+        }
+
+
+def read_replay_corpus_stats(corpus_dir: Path) -> ReplayCorpusStats:
+    """How many captures exist on disk under ``corpus_dir``, their ``captured_at`` date range,
+    and how many distinct prompt eras (captured-at ``prompt_sha256`` values) they span -- read
+    entirely via ``replay_corpus.list_replay_ids``/``load_replay_capture`` (never a re-implemented
+    walk; see this section's own header comment). A missing or empty ``corpus_dir`` is reported
+    via ``notes`` with ``capture_count == 0``, never raised -- matching every other read_* function
+    in this module's honesty convention. A capture whose manifest fails to load (corrupt/partial
+    write) is counted in ``load_errors``, not ``capture_count``, and does not stop the rest of the
+    corpus from being read.
+    """
+    stats = ReplayCorpusStats(corpus_dir=corpus_dir)
+    try:
+        replay_ids = list_replay_ids(corpus_dir)
+    except Exception as exc:  # noqa: BLE001 -- a corrupt corpus root must not crash the report
+        stats.notes.append(
+            f"could not list the replay corpus at {corpus_dir}: {type(exc).__name__}: {exc}")
+        return stats
+    if not replay_ids:
+        stats.notes.append(f"no captures found under {corpus_dir} (empty or nonexistent)")
+        return stats
+    eras: set[str] = set()
+    captured_ats: list[float] = []
+    for replay_id in replay_ids:
+        try:
+            capture = load_replay_capture(corpus_dir, replay_id)
+        except Exception as exc:  # noqa: BLE001 -- one corrupt capture must not sink the report
+            stats.load_errors.append(f"{replay_id}: {type(exc).__name__}: {exc}")
+            continue
+        stats.capture_count += 1
+        if capture.captured_at is not None:
+            captured_ats.append(capture.captured_at)
+        if capture.prompt_sha256:
+            eras.add(capture.prompt_sha256)
+        else:
+            stats.unknown_era_count += 1
+    stats.distinct_prompt_eras = len(eras)
+    if captured_ats:
+        stats.earliest_captured_at = min(captured_ats)
+        stats.latest_captured_at = max(captured_ats)
+    return stats
+
+
+def _format_epoch(ts: float) -> str:
+    return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+
+
+def format_replay_corpus_report(stats: ReplayCorpusStats) -> str:
+    """The REPLAY CORPUS section: how many captures exist on disk, their date range, and how many
+    distinct prompt eras they span. See this module's docstring and ops/OPENER-REDESIGN.md's
+    2026-09-06 (i) addendum for what this corpus is; see this section's own header comment above
+    for why ``capture_count`` here is deliberately never read as the same number as METRICS BY
+    PROMPT ERA's ``n`` for any given era.
+    """
+    lines = [f"=== REPLAY CORPUS ({stats.corpus_dir}) ==="]
+    lines.append(f"  captures on disk: {stats.capture_count}")
+    if stats.capture_count == 0:
+        lines.extend(f"  NOTE: {note}" for note in stats.notes)
+        return "\n".join(lines)
+    if stats.earliest_captured_at is not None:
+        lines.append(f"  date range       : {_format_epoch(stats.earliest_captured_at)} -> "
+                     f"{_format_epoch(stats.latest_captured_at)}")
+    else:
+        lines.append("  date range       : unknown (no capture recorded a captured_at)")
+    era_note = (f", {stats.unknown_era_count} with no era stamp"
+               if stats.unknown_era_count else "")
+    lines.append(f"  distinct prompt eras spanned: {stats.distinct_prompt_eras}{era_note}")
+    if stats.load_errors:
+        lines.append(f"  {len(stats.load_errors)} capture(s) failed to load:")
+        lines.extend(f"    {err}" for err in stats.load_errors)
+    lines.extend(f"  NOTE: {note}" for note in stats.notes)
+    return "\n".join(lines)
 
 
 # =========================================================================================
@@ -1465,6 +1609,265 @@ def resolve_compare_token(available: Sequence[str], token: str,
 
 
 # =========================================================================================
+# THE PRE-REGISTERED CHECK -- ops/OPENER-REDESIGN.md's 2026-09-06 (d) addendum ("three owner
+# decisions and a pre registered prediction"). Read that addendum before touching any constant
+# below: these are the exact, already-committed thresholds, not this tool's own invention, and
+# pre-registration's whole point is that a number written before the data exists cannot be moved
+# once it does.
+# =========================================================================================
+
+# "Predictions for the first NO GRADING era batch of at least 40 drafts." -- the minimum count of
+# DRAFTS (openers rows -- see PreRegisteredCheck.drafts_recorded, and this module's REPLAY CORPUS
+# section above for why a draft is NOT the same count as a replay capture) generated under the
+# CURRENT prompt era before the prediction below is checkable at all.
+PRE_REGISTERED_MIN_DRAFTS = 40
+
+# The four directional predictions from that same addendum, each compared against the CURRENT
+# era's pooled METRICS BY PROMPT ERA bucket:
+#   - grade_rate FALLS below 5% -- the primary endpoint.
+#   - single_sentence_rate RISES above 15% -- NO GRADING's escape hatch (one question as the
+#     whole message) is actually being taken.
+#   - two_sentence_rate falls below 85% -- the mirror of the above.
+#   - trigram_diversity does NOT fall below 80% -- guards against the fix narrowing the space
+#     rather than redirecting it.
+# No prediction is registered for looks_like_rate or apostrophe_rate (the addendum's own baseline
+# for both is era-mixed and therefore not attributable), so this tool makes none either.
+PRE_REGISTERED_GRADE_RATE_MAX = 0.05
+PRE_REGISTERED_SINGLE_SENTENCE_RATE_MIN = 0.15
+PRE_REGISTERED_TWO_SENTENCE_RATE_MAX = 0.85
+PRE_REGISTERED_TRIGRAM_DIVERSITY_MIN = 0.80
+
+# "THE FALSIFICATION CRITERION, stated up front. If after at least 40 drafts in the new era
+# grade_rate is still at or above 10% AND single_sentence_rate is still below 8%, the
+# prohibition-only approach is FALSIFIED and the positive specification restructure named under
+# DECISION 3 above ships without further argument." -- a SEPARATE pair of thresholds from the four
+# directional predictions above (see build_pre_registered_check()'s own docstring: a metric can
+# fail its own directional prediction without the falsification criterion being met -- these are
+# two different bars, not one restated).
+PRE_REGISTERED_FALSIFY_GRADE_RATE_MIN = 0.10
+PRE_REGISTERED_FALSIFY_SINGLE_SENTENCE_RATE_MAX = 0.08
+
+
+def single_sentence_count(m: EraMetrics) -> int:
+    return m.sentence_counts.get(1, 0)
+
+
+def single_sentence_rate(m: EraMetrics) -> float:
+    """single_sentence_rate is not itself a field on EraMetrics (its sibling two_sentence_rate
+    is), because the corpus's own historical baseline table names it as a metric in its own right
+    (ops/OPENER-REDESIGN.md 2026-09-06 (d): 5.3% baseline, n=95) -- derived here from
+    ``sentence_counts`` rather than duplicated as a field computed twice."""
+    return (single_sentence_count(m) / m.n) if m.n else 0.0
+
+
+def compute_current_prompt_era(config_path: str) -> tuple[str | None, str | None]:
+    """The prompt_sha256 tools/opener_replay.py's own ``current_prompt_sha256`` would compute
+    from ``config_path``'s LIVE ``opener.style`` right now -- the era the PRE-REGISTERED CHECK
+    tracks progress against, always the era a fresh replay run would write its rows under, never
+    a stale one. Returns ``(era, None)`` on success, or ``(None, error)`` when the config could
+    not be read/parsed -- never raises, matching this module's honesty convention (a bad
+    ``--config`` is reported, never silently treated as zero progress)."""
+    try:
+        from operation_love import config as cfg_mod
+        from operation_love.opener.opener import prompt_stamp
+        cfg = cfg_mod.load(config_path)
+        return prompt_stamp(cfg.opener.style), None
+    except Exception as exc:  # noqa: BLE001 -- a bad/missing config must not crash the report
+        return None, f"{type(exc).__name__}: {exc}"
+
+
+@dataclass
+class PreRegisteredMetricCheck:
+    """One of the four directional predictions (see the module-level constants above), evaluated
+    against the CURRENT era's measured value."""
+    metric: str
+    predicted: str
+    value: float
+    passed: bool
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"metric": self.metric, "predicted": self.predicted, "value": self.value,
+                "passed": self.passed}
+
+
+@dataclass
+class PreRegisteredCheck:
+    """Progress toward, and (once PRE_REGISTERED_MIN_DRAFTS is reached) the result of,
+    ops/OPENER-REDESIGN.md's 2026-09-06 (d) pre-registered NO GRADING prediction.
+
+    ``current_era``/``current_era_error`` come from compute_current_prompt_era() -- ``current_era``
+    is None (with ``current_era_error`` explaining why) when it could not be computed at all, e.g.
+    an unreadable --config; this is reported honestly, never silently treated as zero progress.
+
+    ``drafts_recorded`` is METRICS BY PROMPT ERA's own ``n`` for ``current_era`` -- the count
+    PRE_REGISTERED_MIN_DRAFTS actually applies to: a DRAFT is a generated opener row, never a
+    replay CAPTURE (a request input still waiting to be replayed -- see this module's REPLAY
+    CORPUS section). ``replay_captures_on_disk`` is that section's own capture count, carried here
+    purely so a reader sees both numbers side by side and never conflates them; the two can differ
+    in either direction (see that section's header comment for why).
+    """
+    current_era: str | None
+    current_era_error: str | None
+    drafts_recorded: int
+    # How many of `drafts_recorded` are SYNTHETIC (decision == DECISION_REPLAY), i.e. generated
+    # by tools/opener_replay.py rather than captured from a live Training/AUTO run. Carried here
+    # so the verdict can DISCLOSE ITS PROVENANCE. A replayed draft is genuine model output under
+    # the current prompt, so it is legitimate produced-side evidence and is deliberately NOT
+    # excluded -- making the prediction checkable offline is exactly why replay exists. What
+    # would be misleading is presenting a replay-derived verdict as a LIVE batch, which
+    # verdict_basis() below prevents.
+    replay_drafts: int
+    replay_captures_on_disk: int
+    min_drafts_required: int
+    checkable: bool
+    shortfall: int
+    predictions: list[PreRegisteredMetricCheck] = field(default_factory=list)
+    falsified: bool | None = None  # None until checkable -- see build_pre_registered_check()
+
+    def verdict_basis(self) -> str:
+        """Where this era's drafts came from: "live", "replay", or "mixed".
+
+        The pre-registration in ops/OPENER-REDESIGN.md 2026-09-06 (d) was written expecting a
+        live Training batch. Replayed drafts are real model output under the current prompt and
+        so are valid produced-side evidence, but a reader deciding whether to ship the
+        positive-specification restructure must be able to see which they are looking at.
+        """
+        if self.drafts_recorded <= 0 or self.replay_drafts <= 0:
+            return "live"
+        if self.replay_drafts >= self.drafts_recorded:
+            return "replay"
+        return "mixed"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "current_era": self.current_era,
+            "current_era_error": self.current_era_error,
+            "drafts_recorded": self.drafts_recorded,
+            "replay_drafts": self.replay_drafts,
+            "verdict_basis": self.verdict_basis(),
+            "replay_captures_on_disk": self.replay_captures_on_disk,
+            "min_drafts_required": self.min_drafts_required,
+            "checkable": self.checkable,
+            "shortfall": self.shortfall,
+            "predictions": [p.to_dict() for p in self.predictions],
+            "falsified": self.falsified,
+        }
+
+
+def build_pre_registered_check(era_metrics_map: dict[str, EraMetrics], *,
+                               current_era: str | None, current_era_error: str | None,
+                               replay_captures_on_disk: int) -> PreRegisteredCheck:
+    """Assemble the PreRegisteredCheck for ``current_era`` against ``era_metrics_map``
+    (build_era_metrics()'s own output). Below PRE_REGISTERED_MIN_DRAFTS, ``predictions`` stays
+    empty and ``falsified`` stays None -- a caller renders a verdict exactly when ``checkable`` is
+    True and refuses one otherwise, per this task's own "do not soften it" / "refuse to render a
+    verdict" requirement."""
+    if current_era is None and current_era_error is None:
+        current_era_error = "not computed for this report (no --config was read)"
+    _era_present = current_era is not None and current_era in era_metrics_map
+    drafts_recorded = era_metrics_map[current_era].n if _era_present else 0
+    # EraMetrics already tallies this for the synthetic-era marker; reuse it rather than
+    # recounting, so the verdict's provenance and the era axis can never disagree.
+    replay_drafts = era_metrics_map[current_era].replay_count if _era_present else 0
+    shortfall = max(0, PRE_REGISTERED_MIN_DRAFTS - drafts_recorded)
+    checkable = current_era is not None and drafts_recorded >= PRE_REGISTERED_MIN_DRAFTS
+    check = PreRegisteredCheck(
+        current_era=current_era, current_era_error=current_era_error,
+        drafts_recorded=drafts_recorded, replay_drafts=replay_drafts,
+        replay_captures_on_disk=replay_captures_on_disk,
+        min_drafts_required=PRE_REGISTERED_MIN_DRAFTS, checkable=checkable, shortfall=shortfall)
+    if not checkable:
+        return check
+
+    m = era_metrics_map[current_era]
+    ssr = single_sentence_rate(m)
+    check.predictions = [
+        PreRegisteredMetricCheck(
+            "grade_rate", f"falls below {_pct(PRE_REGISTERED_GRADE_RATE_MAX)}",
+            m.grade_rate, m.grade_rate < PRE_REGISTERED_GRADE_RATE_MAX),
+        PreRegisteredMetricCheck(
+            "single_sentence_rate",
+            f"rises above {_pct(PRE_REGISTERED_SINGLE_SENTENCE_RATE_MIN)}",
+            ssr, ssr > PRE_REGISTERED_SINGLE_SENTENCE_RATE_MIN),
+        PreRegisteredMetricCheck(
+            "two_sentence_rate", f"falls below {_pct(PRE_REGISTERED_TWO_SENTENCE_RATE_MAX)}",
+            m.two_sentence_rate, m.two_sentence_rate < PRE_REGISTERED_TWO_SENTENCE_RATE_MAX),
+        PreRegisteredMetricCheck(
+            "trigram_diversity",
+            f"does not fall below {_pct(PRE_REGISTERED_TRIGRAM_DIVERSITY_MIN)}",
+            m.trigram_diversity, m.trigram_diversity >= PRE_REGISTERED_TRIGRAM_DIVERSITY_MIN),
+    ]
+    # THE FALSIFICATION CRITERION is its own pair of thresholds, never derived from the four
+    # PASS/FAIL predictions above (see the module-level constants' own comment).
+    check.falsified = (m.grade_rate >= PRE_REGISTERED_FALSIFY_GRADE_RATE_MIN
+                      and ssr < PRE_REGISTERED_FALSIFY_SINGLE_SENTENCE_RATE_MAX)
+    return check
+
+
+def format_pre_registered_check(check: PreRegisteredCheck, *,
+                                registry: EraRegistry | None = None) -> str:
+    """The PRE-REGISTERED CHECK section: progress toward PRE_REGISTERED_MIN_DRAFTS for the
+    current era, and -- ONLY once that threshold is met -- the pre-registered metrics next to
+    their predicted values, whether each passed, and the falsification verdict. Below threshold,
+    this prints the shortfall and NOTHING else: no PASS/FAIL, no verdict, per this task's own
+    "refuse to render a verdict" requirement."""
+    lines = [f"=== PRE-REGISTERED CHECK (ops/OPENER-REDESIGN.md 2026-09-06 (d): first NO GRADING "
+             f"era batch of at least {check.min_drafts_required} drafts) ==="]
+    if check.current_era is None:
+        lines.append(f"  could not determine the current prompt era: {check.current_era_error}")
+        return "\n".join(lines)
+    lines.append(f"  current prompt era (prompt_sha256): {check.current_era} "
+                f"[{resolve_era_label(check.current_era, registry)}]")
+    lines.append(f"  drafts recorded under this era (openers rows -- the threshold applies "
+                f"HERE): {check.drafts_recorded}")
+    _basis = check.verdict_basis()
+    lines.append(f"    of which SYNTHETIC (tools/opener_replay.py offline replay): "
+                f"{check.replay_drafts}  -> basis: {_basis.upper()}")
+    if _basis != "live":
+        lines.append(
+            "    PROVENANCE: this era's drafts are wholly or partly GENERATED by offline replay, "
+            "not captured from a live Training or AUTO run. They are real model output under the "
+            "current prompt, so they are valid PRODUCED-side evidence and are counted -- making "
+            "this prediction checkable without further device time is precisely why replay "
+            "exists. They are NOT evidence about live behaviour, and they carry no outcomes.")
+    lines.append(f"  replay captures on disk (request inputs, NOT drafts): "
+                f"{check.replay_captures_on_disk}")
+    if check.drafts_recorded != check.replay_captures_on_disk:
+        lines.append(
+            f"  NOTE: drafts recorded ({check.drafts_recorded}) and replay captures on disk "
+            f"({check.replay_captures_on_disk}) differ -- a single capture can be replayed more "
+            "than once under the same era, and a live send needs no capture at all, so these two "
+            "counts are not interchangeable; PRE_REGISTERED_MIN_DRAFTS applies to DRAFTS only.")
+    if not check.checkable:
+        lines.append(
+            f"  progress: {check.drafts_recorded}/{check.min_drafts_required} drafts -- "
+            f"NOT YET CHECKABLE ({check.shortfall} more draft(s) needed before the pre-registered "
+            "prediction can be checked)")
+        return "\n".join(lines)
+    lines.append(f"  progress: {check.drafts_recorded}/{check.min_drafts_required} drafts -- "
+                "THRESHOLD MET; the pre-registered prediction is checkable")
+    lines.append("  --- pre-registered metrics vs. predicted direction ---")
+    lines.extend(f"    {p.metric:<22}: {_pct(p.value)}  (predicted: {p.predicted})  "
+                f"{'PASS' if p.passed else 'FAIL'}"
+                for p in check.predictions)
+    lines.append(
+        f"  falsification criterion (grade_rate >= "
+        f"{_pct(PRE_REGISTERED_FALSIFY_GRADE_RATE_MIN)} AND single_sentence_rate < "
+        f"{_pct(PRE_REGISTERED_FALSIFY_SINGLE_SENTENCE_RATE_MAX)}): "
+        f"{'MET' if check.falsified else 'NOT MET'}")
+    _suffix = ("" if _basis == "live"
+               else f" [{_basis.upper()}-BASED: {check.replay_drafts}/{check.drafts_recorded} "
+                    "draft(s) generated by offline replay, not live capture]")
+    if check.falsified:
+        lines.append(
+            f"  VERDICT: FALSIFIED{_suffix} -- the prohibition-only approach did not hold; the "
+            "positive-specification restructure (DECISION 3) ships without further argument.")
+    else:
+        lines.append(f"  VERDICT: NOT FALSIFIED{_suffix}")
+    return "\n".join(lines)
+
+
+# =========================================================================================
 # Output
 # =========================================================================================
 
@@ -1731,12 +2134,22 @@ def build_report(rows: Sequence[OpenerRow], rejections: Sequence[RejectionRow],
                  source_report: SourceReport, *,
                  outcome_rows: Sequence[OutcomeRow] = (),
                  compare: tuple[str, str] | None = None,
-                 registry: EraRegistry | None = None) -> dict[str, Any]:
+                 registry: EraRegistry | None = None,
+                 replay_corpus_stats: ReplayCorpusStats | None = None,
+                 current_era: str | None = None,
+                 current_era_error: str | None = None) -> dict[str, Any]:
     """Assemble the full JSON-serializable report document shared by text and --json output.
 
     ``outcome_rows``, the OUTCOMES axis (see build_outcome_metrics()), is keyword-only with an
     empty-tuple default so every existing positional/keyword build_report(...) call -- tests
     included -- keeps working unchanged and simply reports zero outcomes everywhere.
+
+    ``replay_corpus_stats``/``current_era``/``current_era_error`` are the REPLAY CORPUS and
+    PRE-REGISTERED CHECK sections' own inputs (see read_replay_corpus_stats()/
+    compute_current_prompt_era()), all keyword-only with defaults so every existing
+    build_report(...) call keeps working unchanged: an omitted ``replay_corpus_stats`` reports an
+    empty corpus at DEFAULT_CORPUS_DIR, and an omitted ``current_era`` reports the era as
+    uncomputed rather than guessing at zero progress.
 
     ``registry``, when loaded, resolves every prompt_sha256 this report prints to its human
     label -- rather than duplicating a resolved label onto every by_era/rejections_by_era row,
@@ -1769,8 +2182,17 @@ def build_report(rows: Sequence[OpenerRow], rejections: Sequence[RejectionRow],
         if working_tree_digest is not None:
             digests.add(working_tree_digest)
         era_labels = {digest: resolve_era_label(digest, registry) for digest in digests}
+    replay_stats = replay_corpus_stats or ReplayCorpusStats(corpus_dir=Path(DEFAULT_CORPUS_DIR))
+    pre_registered_check = build_pre_registered_check(
+        metrics, current_era=current_era, current_era_error=current_era_error,
+        replay_captures_on_disk=replay_stats.capture_count)
     doc: dict[str, Any] = {
         "caveats": list(_CAVEATS),
+        # The corpus-on-disk and progress-toward-the-pre-registered-check sections, carried
+        # through --json unconditionally exactly like every other axis in this document -- see
+        # ReplayCorpusStats/PreRegisteredCheck's own docstrings for what each key means.
+        "replay_corpus": replay_stats.to_dict(),
+        "pre_registered_check": pre_registered_check.to_dict(),
         "sources": {
             "jsonl": vars(source_report.jsonl_stats) | {"unique": source_report.jsonl_unique},
             "sqlite": vars(source_report.sqlite_stats) | {"unique": source_report.sqlite_unique},
@@ -1837,10 +2259,17 @@ def format_text_report(rows: Sequence[OpenerRow], rejections: Sequence[Rejection
                        source_report: SourceReport, *,
                        outcome_rows: Sequence[OutcomeRow] = (),
                        compare: tuple[str, str] | None = None,
-                       registry: EraRegistry | None = None) -> str:
+                       registry: EraRegistry | None = None,
+                       replay_corpus_stats: ReplayCorpusStats | None = None,
+                       current_era: str | None = None,
+                       current_era_error: str | None = None) -> str:
     metrics = build_era_metrics(rows)
     decision_metrics = build_decision_metrics(rows)
     outcome_metrics_map = build_outcome_metrics(outcome_rows)
+    replay_stats = replay_corpus_stats or ReplayCorpusStats(corpus_dir=Path(DEFAULT_CORPUS_DIR))
+    pre_registered_check = build_pre_registered_check(
+        metrics, current_era=current_era, current_era_error=current_era_error,
+        replay_captures_on_disk=replay_stats.capture_count)
     parts = ["=== CAVEATS (read before trusting any number below) ==="]
     parts.extend(f"  - {caveat}" for caveat in _CAVEATS)
     parts.append("")
@@ -1848,6 +2277,10 @@ def format_text_report(rows: Sequence[OpenerRow], rejections: Sequence[Rejection
     if registry is None or not registry.loaded:
         parts.append(f"  NOTE: {registry.note if registry is not None else 'no era registry loaded'} "
                      "-- era labels below fall back to the bare digest")
+    parts.append("")
+    parts.append(format_replay_corpus_report(replay_stats))
+    parts.append("")
+    parts.append(format_pre_registered_check(pre_registered_check, registry=registry))
     parts.append("")
     # First class per this module's docstring's METRICS section and caveat 4 -- printed before
     # the by-era breakdown, not after it, and never gated behind --json or --compare.
@@ -2109,6 +2542,10 @@ def _build_arg_parser() -> argparse.ArgumentParser:
                         help="'have we tried this before': print every known era NAME was on "
                              "the wire in, when it first/last appeared, and any measured "
                              "metrics for those eras (reads --eras-file and the corpus sources)")
+    parser.add_argument("--replay-corpus-dir", default=DEFAULT_CORPUS_DIR,
+                        help="operation_love.opener.replay_corpus on-disk corpus directory to "
+                             f"report on (default {DEFAULT_CORPUS_DIR}); read for the REPLAY "
+                             "CORPUS section and the PRE-REGISTERED CHECK's capture count")
     return parser
 
 
@@ -2144,6 +2581,11 @@ def main(argv: list[str] | None = None, *, bigquery_client=None) -> int:
         bigquery_project=bigquery_project, bigquery_dataset=bigquery_dataset,
         bigquery_client=bigquery_client)
 
+    # REPLAY CORPUS + PRE-REGISTERED CHECK -- read unconditionally (never gated behind --bigquery
+    # or any other flag), matching every other axis in this report.
+    replay_stats = read_replay_corpus_stats(Path(args.replay_corpus_dir))
+    current_era, current_era_error = compute_current_prompt_era(args.config)
+
     if args.rule is not None:
         if not registry.loaded:
             print(f"ERROR: --rule: {registry.note}", file=sys.stderr)
@@ -2164,12 +2606,14 @@ def main(argv: list[str] | None = None, *, bigquery_client=None) -> int:
 
     if args.json:
         doc = build_report(rows, rejections, source_report, outcome_rows=outcome_rows,
-                          compare=compare, registry=registry)
+                          compare=compare, registry=registry, replay_corpus_stats=replay_stats,
+                          current_era=current_era, current_era_error=current_era_error)
         print(json.dumps(doc, indent=2, sort_keys=False))
         return 0
 
     print(format_text_report(rows, rejections, source_report, outcome_rows=outcome_rows,
-                             compare=compare, registry=registry))
+                             compare=compare, registry=registry, replay_corpus_stats=replay_stats,
+                             current_era=current_era, current_era_error=current_era_error))
     return 0
 
 

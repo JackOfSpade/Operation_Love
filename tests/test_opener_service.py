@@ -1578,6 +1578,147 @@ def test_replay_corpus_capture_ok_false_result_is_logged_not_raised(monkeypatch,
     assert "a real, specific write failure" in capsys.readouterr().out
 
 
+# ---------------------------------------------------------------------------------------
+# Retention: prune_replay_corpus runs after a SUCCESSFUL capture only, with this service's own
+# configured bounds, and is wrapped exactly like the capture write itself -- never able to
+# raise into (or otherwise change) opener generation.
+# ---------------------------------------------------------------------------------------
+
+def test_replay_corpus_prune_runs_after_a_successful_capture_with_the_configured_bounds(
+        monkeypatch):
+    """The exact retention bounds THIS service was constructed with (distinctive values, so a
+    mutation that drops a kwarg or swaps the two cannot pass unnoticed) must reach
+    prune_replay_corpus, against the same directory the capture was just written to."""
+    calls = []
+    monkeypatch.setattr(service_mod, "write_replay_capture",
+                        lambda *a, **kw: SimpleNamespace(ok=True, replay_id="x", path=None,
+                                                          error=None))
+    monkeypatch.setattr(service_mod, "prune_replay_corpus",
+                        lambda *a, **kw: calls.append((a, kw)) or
+                        SimpleNamespace(ok=True, removed=(), kept=1, skipped_unparseable=0,
+                                       error=None))
+    items = ItemRequest(name="Sarah", items=[b"crop-1"])
+    s = OpenerService(_Client(), _Tracker(), _Store(), "casual",
+                      replay_corpus_dir="/some/configured/dir",
+                      replay_corpus_max_captures=13, replay_corpus_max_age_days=29)
+
+    out = s.maybe_opener("r", "hinge", object(), items=items)
+
+    assert out is not None
+    assert len(calls) == 1
+    args, kwargs = calls[0]
+    assert args[0] == "/some/configured/dir"
+    assert kwargs["max_captures"] == 13
+    assert kwargs["max_age_days"] == 29
+
+
+def test_replay_corpus_prune_is_not_called_when_the_write_itself_fails(monkeypatch):
+    """A failed write (ReplayWriteResult(ok=False, ...)) leaves nothing new on disk to bound --
+    pruning anyway would just be wasted directory-walk work, so it must not be attempted."""
+    prune_calls = []
+    monkeypatch.setattr(service_mod, "write_replay_capture",
+                        lambda *a, **kw: SimpleNamespace(ok=False, replay_id=None, path=None,
+                                                          error="disk full (simulated)"))
+    monkeypatch.setattr(service_mod, "prune_replay_corpus",
+                        lambda *a, **kw: prune_calls.append(1))
+    items = ItemRequest(name="Sarah", items=[b"crop-1"])
+    s = OpenerService(_Client(), _Tracker(), _Store(), "casual",
+                      replay_corpus_dir="/unused")
+
+    out = s.maybe_opener("r", "hinge", object(), items=items)
+
+    assert out is not None
+    assert prune_calls == []
+
+
+def test_replay_corpus_prune_is_not_called_when_the_write_itself_raises(monkeypatch):
+    """Same as above, for the write raising outright rather than returning ok=False."""
+    prune_calls = []
+
+    def _boom(*a, **kw):
+        raise OSError("disk full (simulated)")
+
+    monkeypatch.setattr(service_mod, "write_replay_capture", _boom)
+    monkeypatch.setattr(service_mod, "prune_replay_corpus",
+                        lambda *a, **kw: prune_calls.append(1))
+    items = ItemRequest(name="Sarah", items=[b"crop-1"])
+    s = OpenerService(_Client(), _Tracker(), _Store(), "casual",
+                      replay_corpus_dir="/unused")
+
+    out = s.maybe_opener("r", "hinge", object(), items=items)
+
+    assert out is not None
+    assert prune_calls == []
+
+
+def test_replay_corpus_prune_ok_false_result_is_logged_not_raised(monkeypatch, capsys):
+    """prune_replay_corpus's OWN ordinary failure signal (PruneResult(ok=False, ...), never a
+    raised exception) must be reported, not silently dropped -- and must not affect the opener
+    that was actually generated."""
+    monkeypatch.setattr(service_mod, "write_replay_capture",
+                        lambda *a, **kw: SimpleNamespace(ok=True, replay_id="x", path=None,
+                                                          error=None))
+    monkeypatch.setattr(service_mod, "prune_replay_corpus",
+                        lambda *a, **kw: SimpleNamespace(
+                            ok=False, removed=(), kept=0, skipped_unparseable=0,
+                            error="a real, specific prune failure"))
+    items = ItemRequest(name="Sarah", items=[b"crop-1"])
+    s = OpenerService(_Client(), _Tracker(), _Store(), "casual",
+                      replay_corpus_dir="/unused")
+
+    out = s.maybe_opener("r", "hinge", object(), items=items)
+
+    assert out is not None and out.text == _Res.opener
+    assert "a real, specific prune failure" in capsys.readouterr().out
+
+
+def test_replay_corpus_prune_exception_never_propagates_or_changes_the_outcome(
+        monkeypatch, capsys):
+    """The exact requirement this retention logic was built under: even an unexpected exception
+    from the prune path (prune_replay_corpus's own contract already never raises, see its SAFE
+    TO FAIL docstring -- this proves the SERVICE's own wrapping is what a caller can rely on
+    regardless) must not raise into, or change the result of, opener generation."""
+    monkeypatch.setattr(service_mod, "write_replay_capture",
+                        lambda *a, **kw: SimpleNamespace(ok=True, replay_id="x", path=None,
+                                                          error=None))
+
+    def _boom(*a, **kw):
+        raise RuntimeError("simulated prune failure")
+
+    monkeypatch.setattr(service_mod, "prune_replay_corpus", _boom)
+    items = ItemRequest(name="Sarah", items=[b"crop-1"])
+    s = OpenerService(_Client(), _Tracker(), _Store(), "casual",
+                      replay_corpus_dir="/unused")
+
+    out = s.maybe_opener("r", "hinge", object(), items=items)
+
+    assert out is not None and out.text == _Res.opener
+    assert "simulated prune failure" in capsys.readouterr().out
+
+
+def test_replay_corpus_prune_actually_removes_a_capture_end_to_end(tmp_path):
+    """No monkeypatching: enabling the corpus with a real max_captures=1 across two separate
+    profile calls must leave exactly the newer capture on disk, proving OpenerService actually
+    wires the real prune_replay_corpus (not merely a call it never uses the result of)."""
+    from operation_love.opener import replay_corpus as rc
+    s = OpenerService(_Client(), _Tracker(), _Store(), "casual",
+                      replay_corpus_dir=str(tmp_path), replay_corpus_max_captures=1)
+
+    first = ItemRequest(name="Robin", items=[b"crop-robin"])
+    out1 = s.maybe_opener("r", "hinge", object(), items=first)
+    assert out1 is not None
+    assert len(rc.list_replay_ids(tmp_path)) == 1
+
+    second = ItemRequest(name="Alex", items=[b"crop-alex"])
+    out2 = s.maybe_opener("r", "hinge", object(), items=second)
+    assert out2 is not None
+
+    ids = rc.list_replay_ids(tmp_path)
+    assert len(ids) == 1
+    survivor = rc.load_replay_capture(tmp_path, ids[0])
+    assert survivor.name == "Alex"   # the SECOND (newer) capture, not the first
+
+
 def test_committed_auto_opener_passes_presend_evidence_to_a_capable_store():
     class EvidenceStore(_Store):
         def __init__(self):

@@ -8,6 +8,7 @@ from a test.
 from __future__ import annotations
 
 import json
+import time
 
 import pytest
 import yaml
@@ -371,6 +372,159 @@ def test_main_live_replay_marker_is_never_the_sent_decision_value(tmp_path):
     landed send; the whole point of DECISION_REPLAY is that it can never collide with that."""
     assert m.DECISION_REPLAY != "like"
     assert m.DECISION_REPLAY not in ("like", "dislike", "never_sent", "")
+
+
+# ---------------------------------------------------------------------------------------
+# tools/opener_replay.py -- --purge: remove captures from the corpus, a wholly separate action
+# from replaying. Dry run is the default (deletes nothing); --delete performs the removal.
+# ---------------------------------------------------------------------------------------
+
+def test_purge_dry_run_whole_corpus_deletes_nothing(tmp_path, capsys):
+    corpus_dir = tmp_path / "corpus"
+    a = _write_capture(corpus_dir, name="A", items=(b"a-bytes",), captured_at=100.0)
+    b = _write_capture(corpus_dir, name="B", items=(b"b-bytes",), captured_at=200.0)
+
+    rc_code = m.main(["--corpus-dir", str(corpus_dir), "--purge"],
+                     transport=_forbidden_transport, store=_ForbiddenStore())
+
+    assert rc_code == 0
+    out = capsys.readouterr().out
+    assert "DRY RUN" in out
+    assert "would remove 2 capture(s)" in out
+    assert "nothing was deleted" in out
+    # THE CORE GUARANTEE: nothing on disk was touched.
+    assert (corpus_dir / a.replay_id).is_dir()
+    assert (corpus_dir / b.replay_id).is_dir()
+
+
+def test_purge_delete_whole_corpus_removes_everything_and_prints_what_it_removed(
+        tmp_path, capsys):
+    corpus_dir = tmp_path / "corpus"
+    a = _write_capture(corpus_dir, name="A", items=(b"a-bytes",), captured_at=100.0)
+    b = _write_capture(corpus_dir, name="B", items=(b"b-bytes",), captured_at=200.0)
+
+    rc_code = m.main(["--corpus-dir", str(corpus_dir), "--purge", "--delete"],
+                     transport=_forbidden_transport, store=_ForbiddenStore())
+
+    assert rc_code == 0
+    out = capsys.readouterr().out
+    assert "removed 2 capture(s)" in out
+    assert a.replay_id in out
+    assert b.replay_id in out
+    assert not corpus_dir.exists()
+
+
+def test_purge_dry_run_older_than_days_reports_only_the_old_one(tmp_path, capsys):
+    corpus_dir = tmp_path / "corpus"
+    now = time.time()
+    old = _write_capture(corpus_dir, name="Old", items=(b"old-bytes",),
+                         captured_at=now - 30 * 86400)
+    new = _write_capture(corpus_dir, name="New", items=(b"new-bytes",),
+                         captured_at=now - 1 * 86400)
+
+    rc_code = m.main(
+        ["--corpus-dir", str(corpus_dir), "--purge", "--purge-older-than-days", "10"],
+        transport=_forbidden_transport, store=_ForbiddenStore())
+
+    assert rc_code == 0
+    out = capsys.readouterr().out
+    assert "would remove 1 capture(s)" in out
+    assert old.replay_id in out
+    assert new.replay_id not in out
+    # THE CORE GUARANTEE: even the capture that WOULD be removed is left alone in dry-run mode.
+    assert (corpus_dir / old.replay_id).is_dir()
+    assert (corpus_dir / new.replay_id).is_dir()
+
+
+def test_purge_delete_older_than_days_removes_only_the_old_one(tmp_path, capsys):
+    corpus_dir = tmp_path / "corpus"
+    now = time.time()
+    old = _write_capture(corpus_dir, name="Old", items=(b"old-bytes",),
+                         captured_at=now - 30 * 86400)
+    new = _write_capture(corpus_dir, name="New", items=(b"new-bytes",),
+                         captured_at=now - 1 * 86400)
+
+    rc_code = m.main(
+        ["--corpus-dir", str(corpus_dir), "--purge", "--purge-older-than-days", "10", "--delete"],
+        transport=_forbidden_transport, store=_ForbiddenStore())
+
+    assert rc_code == 0
+    out = capsys.readouterr().out
+    assert "removed 1 capture(s)" in out
+    assert old.replay_id in out
+    assert not (corpus_dir / old.replay_id).exists()
+    assert (corpus_dir / new.replay_id).is_dir()
+
+
+def test_purge_on_empty_corpus_reports_nothing_matched_and_succeeds(tmp_path, capsys):
+    rc_code = m.main(["--corpus-dir", str(tmp_path / "empty"), "--purge"],
+                     transport=_forbidden_transport, store=_ForbiddenStore())
+    assert rc_code == 0
+    out = capsys.readouterr().out
+    assert "nothing matched" in out
+
+
+def test_purge_json_mode_reports_structured_removed_list_and_stays_a_dry_run(tmp_path, capsys):
+    corpus_dir = tmp_path / "corpus"
+    a = _write_capture(corpus_dir, name="A", items=(b"a-bytes",), captured_at=100.0)
+
+    rc_code = m.main(["--corpus-dir", str(corpus_dir), "--purge", "--json"],
+                     transport=_forbidden_transport, store=_ForbiddenStore())
+
+    assert rc_code == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["mode"] == "dry_run"
+    assert report["purge_older_than_days"] is None
+    assert len(report["removed"]) == 1
+    assert report["removed"][0]["replay_id"] == a.replay_id
+    assert (corpus_dir / a.replay_id).is_dir()   # still a dry run -- nothing deleted
+
+
+def test_purge_json_delete_mode_reports_delete_and_the_age_bound(tmp_path, capsys):
+    corpus_dir = tmp_path / "corpus"
+    now = time.time()
+    old = _write_capture(corpus_dir, name="Old", items=(b"old-bytes",),
+                         captured_at=now - 30 * 86400)
+
+    rc_code = m.main(
+        ["--corpus-dir", str(corpus_dir), "--purge", "--purge-older-than-days", "10",
+         "--delete", "--json"],
+        transport=_forbidden_transport, store=_ForbiddenStore())
+
+    assert rc_code == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["mode"] == "delete"
+    assert report["purge_older_than_days"] == 10.0
+    assert report["removed"][0]["replay_id"] == old.replay_id
+    assert report["removed"][0]["reason"] == "max_age_days"
+    assert not (corpus_dir / old.replay_id).exists()
+
+
+def test_purge_never_reads_config_or_touches_the_transport_or_store(tmp_path):
+    # --purge is dispatched before any of the replay-specific setup (config.yaml, transport,
+    # store) -- prove it by pointing --config at a file that does not exist at all: a replay run
+    # would fail loudly on that, --purge must not even look at it.
+    corpus_dir = tmp_path / "corpus"
+    _write_capture(corpus_dir, items=(b"item-bytes",))
+
+    rc_code = m.main(
+        ["--corpus-dir", str(corpus_dir), "--config", str(tmp_path / "nope.yaml"), "--purge"],
+        transport=_forbidden_transport, store=_ForbiddenStore())
+
+    assert rc_code == 0
+
+
+def test_purge_age_based_reports_an_error_for_a_negative_age(tmp_path, capsys):
+    corpus_dir = tmp_path / "corpus"
+    _write_capture(corpus_dir, items=(b"item-bytes",))
+
+    rc_code = m.main(
+        ["--corpus-dir", str(corpus_dir), "--purge", "--purge-older-than-days", "-1"],
+        transport=_forbidden_transport, store=_ForbiddenStore())
+
+    assert rc_code != 0
+    err = capsys.readouterr().err
+    assert "ERROR" in err
 
 
 def test_main_replay_ids_flag_gives_a_deterministic_subset_and_order(tmp_path, capsys):

@@ -104,7 +104,7 @@ from .opener import (
     _leading_ngram,
     prompt_stamp,
 )
-from .replay_corpus import write_replay_capture
+from .replay_corpus import prune_replay_corpus, write_replay_capture
 
 
 @dataclass
@@ -480,7 +480,9 @@ class OpenerService:
 
     def __init__(self, client: OpenerClient | None, tracker: CostTracker, store,
                  style: str, max_attempts: int = 5, *,
-                 replay_corpus_dir: str | None = None):
+                 replay_corpus_dir: str | None = None,
+                 replay_corpus_max_captures: int = 0,
+                 replay_corpus_max_age_days: int = 0):
         # BUG 2 (adversarial audit): max_attempts=0 (or negative) made range(1, max_attempts+1)
         # empty, so maybe_opener()'s retry loop body never ran at all -- 0 API calls, disabled
         # stayed False, stop_requested stayed False, no reason was ever recorded. That is
@@ -512,6 +514,16 @@ class OpenerService:
         # disk, so it is the owner's explicit, opt-in choice, never a silent default. See
         # maybe_opener's own capture call for the best-effort discipline around it.
         self.replay_corpus_dir = replay_corpus_dir
+        # Retention bounds for the replay corpus above -- passed straight through to
+        # `prune_replay_corpus` after every successful capture (see
+        # `_capture_replay_corpus`). 0/0 here (the class default, matching `replay_corpus_dir`'s
+        # own None-by-default) means "unlimited unless a caller says otherwise" -- config.yaml's
+        # opener.replay_corpus_max_captures / opener.replay_corpus_max_age_days are what actually
+        # supply bounded values in a real run (see supervisor.py's construction site); a test or
+        # script constructing OpenerService directly is never surprised by pruning it didn't ask
+        # for, exactly like replay_corpus_dir itself defaulting to disabled.
+        self.replay_corpus_max_captures = replay_corpus_max_captures
+        self.replay_corpus_max_age_days = replay_corpus_max_age_days
         # The prompt era every row this service writes is stamped with. Computed ONCE here
         # because all three inputs (this style text, opener.py's _SYSTEM, and _SCHEMA) are
         # fixed for the life of the process -- the style is read from config at supervisor
@@ -881,18 +893,43 @@ class OpenerService:
         telemetry write in this file (record_spend, record_opener, record_opener_rejection),
         so a caller here never has to reason about whether THIS particular best-effort write
         follows the rule differently from the others.
+
+        RETENTION runs right here too, AFTER a successful capture only: a failed write means
+        there is nothing new on disk to bound, and re-pruning on every failed attempt would just
+        be wasted directory-walk work for no benefit. `prune_replay_corpus` never raises on its
+        own (same SAFE TO FAIL contract as `write_replay_capture`, see that function's
+        docstring) but gets the exact same defensive try/except wrapping as the write above
+        anyway, for the same reason: this call site must never be the one place that assumes a
+        best-effort helper's own contract instead of enforcing it locally too.
         """
         if not self.replay_corpus_dir:
             return
+        captured_ok = False
         try:
             result = write_replay_capture(
                 self.replay_corpus_dir, items=items.items, name=items.name,
                 context=items.context, truncated=items.truncated,
                 prompt_sha256=self.prompt_sha256)
+            captured_ok = result.ok
             if not result.ok:
                 print(f"Warning: opener replay-corpus capture failed: {result.error}")
         except Exception as exc:  # noqa: BLE001 -- telemetry must never break opener generation
             print(f"Warning: opener replay-corpus capture raised unexpectedly: {exc}")
+
+        if not captured_ok:
+            return
+        try:
+            prune_result = prune_replay_corpus(
+                self.replay_corpus_dir,
+                max_captures=self.replay_corpus_max_captures,
+                max_age_days=self.replay_corpus_max_age_days)
+            if not prune_result.ok:
+                print(f"Warning: opener replay-corpus prune failed: {prune_result.error}")
+            elif prune_result.removed:
+                print(f"Opener: replay-corpus prune removed {len(prune_result.removed)} "
+                      f"capture(s), kept {prune_result.kept}, from {self.replay_corpus_dir}")
+        except Exception as exc:  # noqa: BLE001 -- telemetry must never break opener generation
+            print(f"Warning: opener replay-corpus prune raised unexpectedly: {exc}")
 
     def maybe_opener(self, run_id: str, app: str, profile: Profile, *,
                       items: ItemRequest | None = None,

@@ -15,6 +15,8 @@ from pathlib import Path
 
 import pytest
 
+from operation_love.opener import replay_corpus as rc
+from operation_love.opener.opener import prompt_stamp
 from operation_love.ranker.store import SQLiteStore
 from tools import opener_corpus_report as m
 
@@ -2223,3 +2225,498 @@ def test_main_outcomes_axis_still_excludes_replay_rows_alongside_the_new_decisio
     assert doc["by_decision"]["synthetic_replay"]["n"] == 1   # produced-side: visible
     assert doc["by_outcome"]["era-a"]["n"] == 1                # outcomes-side: still excludes it
     assert doc["sources"]["outcomes"]["sqlite"]["replay_excluded_count"] == 1
+
+
+# ---------------------------------------------------------------------------------------
+# REPLAY CORPUS section -- read_replay_corpus_stats() / format_replay_corpus_report(), reading
+# the on-disk corpus entirely through operation_love.opener.replay_corpus's own API.
+# ---------------------------------------------------------------------------------------
+
+def test_read_replay_corpus_stats_missing_dir_reports_zero_not_an_error(tmp_path):
+    stats = m.read_replay_corpus_stats(tmp_path / "does-not-exist")
+    assert stats.capture_count == 0
+    assert stats.distinct_prompt_eras == 0
+    assert any("no captures found" in note for note in stats.notes)
+
+
+def test_read_replay_corpus_stats_counts_captures_date_range_and_eras(tmp_path):
+    corpus_dir = tmp_path / "corpus"
+    rc.write_replay_capture(corpus_dir, items=(b"item-a",), name="A",
+                            prompt_sha256="era-1", captured_at=100.0)
+    rc.write_replay_capture(corpus_dir, items=(b"item-b",), name="B",
+                            prompt_sha256="era-2", captured_at=200.0)
+    rc.write_replay_capture(corpus_dir, items=(b"item-c",), name="C",
+                            prompt_sha256="era-1", captured_at=300.0)
+
+    stats = m.read_replay_corpus_stats(corpus_dir)
+
+    assert stats.capture_count == 3
+    assert stats.earliest_captured_at == 100.0
+    assert stats.latest_captured_at == 300.0
+    # THE COUNT THIS TEST PINS: two distinct captured-at prompt_sha256 VALUES ("era-1", "era-2"),
+    # never three -- a naive "count every capture" implementation would report 3 here instead.
+    assert stats.distinct_prompt_eras == 2
+    assert stats.unknown_era_count == 0
+
+
+def test_read_replay_corpus_stats_counts_captures_with_no_era_stamp_separately(tmp_path):
+    corpus_dir = tmp_path / "corpus"
+    rc.write_replay_capture(corpus_dir, items=(b"item-a",), name="A",
+                            prompt_sha256=None, captured_at=100.0)
+    rc.write_replay_capture(corpus_dir, items=(b"item-b",), name="B",
+                            prompt_sha256="era-1", captured_at=200.0)
+
+    stats = m.read_replay_corpus_stats(corpus_dir)
+
+    assert stats.capture_count == 2
+    # THE BUG THIS PINS: a None prompt_sha256 must never be folded into distinct_prompt_eras (as
+    # if "no era" were itself one more distinct era) -- it lands in unknown_era_count instead.
+    assert stats.distinct_prompt_eras == 1
+    assert stats.unknown_era_count == 1
+
+
+def test_format_replay_corpus_report_empty_corpus_reports_the_note(tmp_path):
+    stats = m.read_replay_corpus_stats(tmp_path / "empty")
+    text = m.format_replay_corpus_report(stats)
+    assert "REPLAY CORPUS" in text
+    assert "captures on disk: 0" in text
+    assert "no captures found" in text
+
+
+def test_format_replay_corpus_report_nonempty_corpus_reports_range_and_eras(tmp_path):
+    corpus_dir = tmp_path / "corpus"
+    rc.write_replay_capture(corpus_dir, items=(b"item-a",), name="A",
+                            prompt_sha256="era-1", captured_at=100.0)
+    rc.write_replay_capture(corpus_dir, items=(b"item-b",), name="B",
+                            prompt_sha256="era-1", captured_at=9_999_999.0)
+
+    stats = m.read_replay_corpus_stats(corpus_dir)
+    text = m.format_replay_corpus_report(stats)
+
+    assert "captures on disk: 2" in text
+    assert "distinct prompt eras spanned: 1" in text
+    assert "date range" in text
+
+
+def test_replay_corpus_stats_to_dict_carries_every_field(tmp_path):
+    corpus_dir = tmp_path / "corpus"
+    rc.write_replay_capture(corpus_dir, items=(b"item-a",), name="A",
+                            prompt_sha256="era-1", captured_at=100.0)
+    stats = m.read_replay_corpus_stats(corpus_dir)
+    d = stats.to_dict()
+    assert d["capture_count"] == 1
+    assert d["earliest_captured_at"] == 100.0
+    assert d["latest_captured_at"] == 100.0
+    assert d["distinct_prompt_eras"] == 1
+    assert d["unknown_era_count"] == 0
+    assert d["notes"] == []
+    assert d["load_errors"] == []
+
+
+# ---------------------------------------------------------------------------------------
+# PRE-REGISTERED CHECK -- single_sentence_rate / compute_current_prompt_era /
+# build_pre_registered_check / format_pre_registered_check
+# (ops/OPENER-REDESIGN.md's 2026-09-06 (d) addendum's pre-registered NO GRADING prediction).
+# ---------------------------------------------------------------------------------------
+
+def test_single_sentence_rate_derives_from_sentence_counts():
+    metrics = m.era_metrics("era", ["One sentence only.", "Two sentences. Right here."])
+    assert metrics.sentence_counts == {1: 1, 2: 1}
+    assert m.single_sentence_rate(metrics) == pytest.approx(0.5)
+
+
+def test_single_sentence_rate_empty_bucket_is_zero_not_a_crash():
+    metrics = m.era_metrics("era", [])
+    assert m.single_sentence_rate(metrics) == 0.0
+
+
+def test_compute_current_prompt_era_matches_prompt_stamp(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text('opener:\n  models: ["gemini-x"]\n  style: "Be warm."\n')
+
+    era, error = m.compute_current_prompt_era(str(config_path))
+
+    assert error is None
+    assert era == prompt_stamp("Be warm.")
+
+
+def test_compute_current_prompt_era_reports_an_error_for_a_missing_config(tmp_path):
+    era, error = m.compute_current_prompt_era(str(tmp_path / "nope.yaml"))
+    assert era is None
+    assert error is not None
+
+
+# The exact number of drafts needed to satisfy PRE_REGISTERED_MIN_DRAFTS's own predicate --
+# every "at threshold" fixture below builds exactly this many texts so the test still pins the
+# real constant rather than a hand-copied "40".
+_AT_THRESHOLD = m.PRE_REGISTERED_MIN_DRAFTS
+
+
+def test_build_pre_registered_check_below_threshold_reports_shortfall_and_no_verdict():
+    metrics_map = {"era-a": m.era_metrics("era-a", ["Nice opener."] * 10)}
+
+    check = m.build_pre_registered_check(
+        metrics_map, current_era="era-a", current_era_error=None, replay_captures_on_disk=3)
+
+    assert check.drafts_recorded == 10
+    assert check.min_drafts_required == _AT_THRESHOLD
+    assert check.shortfall == _AT_THRESHOLD - 10
+    assert check.checkable is False
+    assert check.predictions == []
+    assert check.falsified is None
+
+
+def test_build_pre_registered_check_unknown_current_era_reports_the_error_and_zero_progress():
+    check = m.build_pre_registered_check(
+        {}, current_era=None, current_era_error="boom", replay_captures_on_disk=0)
+
+    assert check.current_era is None
+    assert check.current_era_error == "boom"
+    assert check.checkable is False
+    assert check.drafts_recorded == 0
+    assert check.shortfall == _AT_THRESHOLD
+
+
+def test_build_pre_registered_check_current_era_absent_from_metrics_map_is_zero_drafts():
+    # The era exists (no error), but nothing has been recorded under it yet -- must read as 0
+    # drafts, never a KeyError.
+    check = m.build_pre_registered_check(
+        {"some-other-era": m.era_metrics("some-other-era", ["x."] * 50)},
+        current_era="era-a", current_era_error=None, replay_captures_on_disk=0)
+    assert check.drafts_recorded == 0
+    assert check.checkable is False
+
+
+def test_build_pre_registered_check_one_short_of_threshold_is_not_checkable():
+    texts = [f"Item number {i} looks calm today." for i in range(_AT_THRESHOLD - 1)]
+    metrics_map = {"era-a": m.era_metrics("era-a", texts)}
+
+    check = m.build_pre_registered_check(
+        metrics_map, current_era="era-a", current_era_error=None, replay_captures_on_disk=0)
+
+    assert check.checkable is False
+    assert check.shortfall == 1
+    assert check.predictions == []
+
+
+def test_build_pre_registered_check_at_threshold_is_checkable_with_four_predictions():
+    texts = [f"Item number {i} looks calm today." for i in range(_AT_THRESHOLD)]
+    metrics_map = {"era-a": m.era_metrics("era-a", texts)}
+
+    check = m.build_pre_registered_check(
+        metrics_map, current_era="era-a", current_era_error=None, replay_captures_on_disk=0)
+
+    assert check.checkable is True
+    assert check.shortfall == 0
+    assert {p.metric for p in check.predictions} == {
+        "grade_rate", "single_sentence_rate", "two_sentence_rate", "trigram_diversity"}
+    assert check.falsified is not None
+
+
+def test_build_pre_registered_check_evaluates_all_four_predictions_as_passing():
+    # Every text: single sentence, a unique opening trigram, and no grade-shaped copula clause.
+    texts = [f"Item number {i} looks calm today." for i in range(_AT_THRESHOLD)]
+    metrics_map = {"era-a": m.era_metrics("era-a", texts)}
+
+    check = m.build_pre_registered_check(
+        metrics_map, current_era="era-a", current_era_error=None, replay_captures_on_disk=0)
+
+    by_metric = {p.metric: p for p in check.predictions}
+    assert by_metric["grade_rate"].value == 0.0
+    assert by_metric["grade_rate"].passed is True
+    assert by_metric["single_sentence_rate"].value == 1.0
+    assert by_metric["single_sentence_rate"].passed is True
+    assert by_metric["two_sentence_rate"].value == 0.0
+    assert by_metric["two_sentence_rate"].passed is True
+    assert by_metric["trigram_diversity"].value == 1.0
+    assert by_metric["trigram_diversity"].passed is True
+    assert check.falsified is False
+
+
+def test_build_pre_registered_check_falsified_when_grade_high_and_single_sentence_low():
+    # THE FALSIFICATION CRITERION verbatim from ops/OPENER-REDESIGN.md 2026-09-06 (d): grade_rate
+    # >= 10% AND single_sentence_rate < 8%. 5/40 grade-shaped first beats is 12.5% (>= 10%); zero
+    # single-sentence openers is 0% (< 8%).
+    texts = (["That spread is an elite move. Where was it from?"] * 5
+            + ["That trail looks calm today. Where was it taken?"] * 35)
+    assert len(texts) == _AT_THRESHOLD
+    metrics_map = {"era-a": m.era_metrics("era-a", texts)}
+
+    check = m.build_pre_registered_check(
+        metrics_map, current_era="era-a", current_era_error=None, replay_captures_on_disk=0)
+
+    by_metric = {p.metric: p for p in check.predictions}
+    assert by_metric["grade_rate"].value == pytest.approx(5 / 40)
+    assert by_metric["single_sentence_rate"].value == 0.0
+    assert check.falsified is True
+
+
+def test_build_pre_registered_check_not_falsified_when_only_one_criterion_leg_is_met():
+    # grade_rate is high (12.5%, >= 10%) but single_sentence_rate is ALSO high (not < 8%) --
+    # the falsification criterion is an AND, so this must NOT be falsified even though one leg
+    # alone would meet its own bar.
+    texts = (["That spread is an elite move."] * 5
+            + [f"What's the story behind hike number {i}?" for i in range(35)])
+    assert len(texts) == _AT_THRESHOLD
+    metrics_map = {"era-a": m.era_metrics("era-a", texts)}
+
+    check = m.build_pre_registered_check(
+        metrics_map, current_era="era-a", current_era_error=None, replay_captures_on_disk=0)
+
+    by_metric = {p.metric: p for p in check.predictions}
+    assert by_metric["grade_rate"].value >= m.PRE_REGISTERED_FALSIFY_GRADE_RATE_MIN
+    assert by_metric["single_sentence_rate"].value >= m.PRE_REGISTERED_FALSIFY_SINGLE_SENTENCE_RATE_MAX
+    assert check.falsified is False
+
+
+def test_format_pre_registered_check_reports_shortfall_and_suppresses_the_verdict():
+    metrics_map = {"era-a": m.era_metrics("era-a", ["Nice opener."] * 5)}
+    check = m.build_pre_registered_check(
+        metrics_map, current_era="era-a", current_era_error=None, replay_captures_on_disk=2)
+
+    text = m.format_pre_registered_check(check)
+
+    assert "NOT YET CHECKABLE" in text
+    assert f"{_AT_THRESHOLD - 5} more draft(s) needed" in text
+    assert "PASS" not in text
+    assert "FAIL" not in text
+    assert "VERDICT" not in text
+
+
+def test_format_pre_registered_check_renders_pass_fail_and_verdict_at_threshold():
+    texts = [f"Item number {i} looks calm today." for i in range(_AT_THRESHOLD)]
+    metrics_map = {"era-a": m.era_metrics("era-a", texts)}
+    check = m.build_pre_registered_check(
+        metrics_map, current_era="era-a", current_era_error=None, replay_captures_on_disk=0)
+
+    text = m.format_pre_registered_check(check)
+
+    assert "THRESHOLD MET" in text
+    assert "PASS" in text
+    assert "VERDICT: NOT FALSIFIED" in text
+
+
+def test_format_pre_registered_check_renders_falsified_verdict():
+    texts = (["That spread is an elite move. Where was it from?"] * 5
+            + ["That trail looks calm today. Where was it taken?"] * 35)
+    metrics_map = {"era-a": m.era_metrics("era-a", texts)}
+    check = m.build_pre_registered_check(
+        metrics_map, current_era="era-a", current_era_error=None, replay_captures_on_disk=0)
+
+    text = m.format_pre_registered_check(check)
+
+    assert "VERDICT: FALSIFIED" in text
+    assert "falsification criterion" in text
+
+
+def test_format_pre_registered_check_no_current_era_reports_the_error():
+    check = m.build_pre_registered_check(
+        {}, current_era=None, current_era_error="boom", replay_captures_on_disk=0)
+    text = m.format_pre_registered_check(check)
+    assert "could not determine the current prompt era" in text
+    assert "boom" in text
+
+
+def test_format_pre_registered_check_notes_when_drafts_and_captures_differ():
+    metrics_map = {"era-a": m.era_metrics("era-a", ["Nice opener."] * 5)}
+    check = m.build_pre_registered_check(
+        metrics_map, current_era="era-a", current_era_error=None, replay_captures_on_disk=2)
+
+    text = m.format_pre_registered_check(check)
+
+    assert "differ" in text
+    assert "5" in text and "2" in text
+
+
+def test_format_pre_registered_check_no_note_when_drafts_and_captures_are_equal():
+    metrics_map = {"era-a": m.era_metrics("era-a", ["Nice opener."] * 5)}
+    check = m.build_pre_registered_check(
+        metrics_map, current_era="era-a", current_era_error=None, replay_captures_on_disk=5)
+
+    text = m.format_pre_registered_check(check)
+
+    assert "differ" not in text
+
+
+# ---------------------------------------------------------------------------------------
+# Wiring into build_report() / format_text_report() / main() -- including --json
+# ---------------------------------------------------------------------------------------
+
+def test_build_report_carries_replay_corpus_and_pre_registered_check(tmp_path):
+    source_report = m.SourceReport(m.JsonlStats(), 0, m.SqliteStats(), 0, m.BigQueryStats(), 0, 0)
+    replay_stats = m.ReplayCorpusStats(corpus_dir=tmp_path, capture_count=2)
+
+    doc = m.build_report([], [], source_report, replay_corpus_stats=replay_stats,
+                         current_era="era-a", current_era_error=None)
+
+    assert doc["replay_corpus"]["capture_count"] == 2
+    assert doc["pre_registered_check"]["current_era"] == "era-a"
+    assert doc["pre_registered_check"]["checkable"] is False
+    assert doc["pre_registered_check"]["replay_captures_on_disk"] == 2
+
+
+def test_build_report_defaults_replay_corpus_and_pre_registered_check_when_omitted():
+    # Every pre-existing build_report(...) call across this test file omits these new
+    # keyword-only params entirely -- this pins that the default degrades to an empty,
+    # present axis, never a KeyError/crash.
+    source_report = m.SourceReport(m.JsonlStats(), 0, m.SqliteStats(), 0, m.BigQueryStats(), 0, 0)
+    doc = m.build_report([], [], source_report)
+    assert doc["replay_corpus"]["capture_count"] == 0
+    assert doc["pre_registered_check"]["current_era"] is None
+    assert doc["pre_registered_check"]["checkable"] is False
+
+
+def _write_config(tmp_path, style="Be warm, specific, and brief."):
+    path = tmp_path / "config.yaml"
+    path.write_text(f'opener:\n  models: ["gemini-x"]\n  style: "{style}"\n')
+    return path
+
+
+def test_main_text_mode_reports_replay_corpus_and_progress_below_threshold(tmp_path, capsys):
+    config_path = _write_config(tmp_path)
+    era = prompt_stamp("Be warm, specific, and brief.")
+
+    db_path = tmp_path / "store.db"
+    store = SQLiteStore(db_path)
+    try:
+        for i in range(5):
+            store.record_opener(f"run{i}", "hinge", "gemini-x", f"Nice opener number {i}.",
+                                "the view", prompt_sha256=era, decision="like")
+    finally:
+        store.close()
+
+    corpus_dir = tmp_path / "replay"
+    rc.write_replay_capture(corpus_dir, items=(b"item-a",), name="A", prompt_sha256=era)
+
+    code = m.main(["--debug-dir", str(tmp_path / "debug"), "--db", str(db_path),
+                  "--config", str(config_path), "--replay-corpus-dir", str(corpus_dir)])
+
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "=== REPLAY CORPUS" in out
+    assert "captures on disk: 1" in out
+    assert "=== PRE-REGISTERED CHECK" in out
+    assert "drafts recorded under this era" in out
+    assert "NOT YET CHECKABLE" in out
+    assert "VERDICT" not in out
+
+
+def test_main_text_mode_renders_verdict_once_threshold_is_met(tmp_path, capsys):
+    config_path = _write_config(tmp_path)
+    era = prompt_stamp("Be warm, specific, and brief.")
+
+    db_path = tmp_path / "store.db"
+    store = SQLiteStore(db_path)
+    try:
+        for i in range(_AT_THRESHOLD):
+            store.record_opener(f"run{i}", "hinge", "gemini-x",
+                                f"Item number {i} looks calm today.", "the view",
+                                prompt_sha256=era, decision="like")
+    finally:
+        store.close()
+
+    code = m.main(["--debug-dir", str(tmp_path / "debug"), "--db", str(db_path),
+                  "--config", str(config_path)])
+
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "THRESHOLD MET" in out
+    assert "VERDICT" in out
+
+
+def test_main_json_mode_carries_replay_corpus_and_pre_registered_check(tmp_path, capsys):
+    config_path = _write_config(tmp_path)
+    era = prompt_stamp("Be warm, specific, and brief.")
+    corpus_dir = tmp_path / "replay"
+    rc.write_replay_capture(corpus_dir, items=(b"item-a",), name="A", prompt_sha256=era)
+
+    code = m.main(["--debug-dir", str(tmp_path / "debug"), "--db", str(tmp_path / "store.db"),
+                  "--config", str(config_path), "--replay-corpus-dir", str(corpus_dir), "--json"])
+
+    assert code == 0
+    doc = json.loads(capsys.readouterr().out)
+    assert doc["replay_corpus"]["capture_count"] == 1
+    assert doc["pre_registered_check"]["current_era"] == era
+    assert doc["pre_registered_check"]["replay_captures_on_disk"] == 1
+
+
+def test_main_reports_current_era_error_when_config_is_unreadable(tmp_path, capsys):
+    code = m.main(["--debug-dir", str(tmp_path / "debug"), "--db", str(tmp_path / "store.db"),
+                  "--config", str(tmp_path / "nope.yaml")])
+
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "could not determine the current prompt era" in out
+
+
+# =========================================================================================
+# PRE-REGISTERED CHECK: verdict PROVENANCE
+#
+# An adversarial review found format_pre_registered_check() rendering a full THRESHOLD MET /
+# PASS-FAIL / FALSIFIED verdict without ever disclosing whether the drafts behind it were
+# tools/opener_replay.py synthetic replays or live Training/AUTO sends -- the "a replayed era
+# reads as a live one" failure mode. Replayed drafts are genuine model output under the current
+# prompt, so they ARE valid produced-side evidence and are deliberately still counted (making
+# the prediction checkable offline is why replay exists); what must never happen is a
+# replay-derived verdict presented as a live batch. These pin the disclosure.
+# =========================================================================================
+
+
+def test_verdict_basis_is_live_when_no_draft_is_synthetic():
+    check = m.build_pre_registered_check(
+        {"era-a": m.era_metrics("era-a", ["Nice opener."] * _AT_THRESHOLD, replay_count=0)},
+        current_era="era-a", current_era_error=None, replay_captures_on_disk=0)
+    assert check.replay_drafts == 0
+    assert check.verdict_basis() == "live"
+
+
+def test_verdict_basis_is_replay_when_every_draft_is_synthetic():
+    check = m.build_pre_registered_check(
+        {"era-a": m.era_metrics("era-a", ["Nice opener."] * _AT_THRESHOLD,
+                                replay_count=_AT_THRESHOLD)},
+        current_era="era-a", current_era_error=None, replay_captures_on_disk=0)
+    assert check.replay_drafts == _AT_THRESHOLD
+    assert check.verdict_basis() == "replay"
+
+
+def test_verdict_basis_is_mixed_when_only_some_drafts_are_synthetic():
+    check = m.build_pre_registered_check(
+        {"era-a": m.era_metrics("era-a", ["Nice opener."] * _AT_THRESHOLD, replay_count=5)},
+        current_era="era-a", current_era_error=None, replay_captures_on_disk=0)
+    assert check.verdict_basis() == "mixed"
+
+
+def test_pre_registered_check_reports_synthetic_count_and_labels_a_mixed_verdict():
+    check = m.build_pre_registered_check(
+        {"era-a": m.era_metrics("era-a", ["Nice opener."] * _AT_THRESHOLD, replay_count=5)},
+        current_era="era-a", current_era_error=None, replay_captures_on_disk=0)
+    out = m.format_pre_registered_check(check)
+    assert "of which SYNTHETIC" in out
+    assert "basis: MIXED" in out
+    assert "PROVENANCE:" in out
+    # The verdict line itself must carry the basis -- a reader who skims to VERDICT alone must
+    # still see that it is not a live result.
+    verdict_line = [ln for ln in out.splitlines() if "VERDICT:" in ln]
+    assert verdict_line and "MIXED-BASED" in verdict_line[0]
+    assert f"5/{_AT_THRESHOLD}" in verdict_line[0]
+
+
+def test_pre_registered_check_leaves_a_live_verdict_unlabelled():
+    check = m.build_pre_registered_check(
+        {"era-a": m.era_metrics("era-a", ["Nice opener."] * _AT_THRESHOLD, replay_count=0)},
+        current_era="era-a", current_era_error=None, replay_captures_on_disk=0)
+    out = m.format_pre_registered_check(check)
+    assert "basis: LIVE" in out
+    assert "PROVENANCE:" not in out
+    verdict_line = [ln for ln in out.splitlines() if "VERDICT:" in ln]
+    assert verdict_line
+    assert "-BASED" not in verdict_line[0]
+
+
+def test_pre_registered_check_to_dict_carries_provenance():
+    check = m.build_pre_registered_check(
+        {"era-a": m.era_metrics("era-a", ["Nice opener."] * _AT_THRESHOLD, replay_count=5)},
+        current_era="era-a", current_era_error=None, replay_captures_on_disk=0)
+    doc = check.to_dict()
+    assert doc["replay_drafts"] == 5
+    assert doc["verdict_basis"] == "mixed"

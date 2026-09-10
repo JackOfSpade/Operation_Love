@@ -881,11 +881,14 @@ class OpenerService:
         return second, collision, True
 
     def _capture_replay_corpus(self, items: ItemRequest) -> None:
-        """Best-effort persistence of this profile's EXACT opener-request inputs to the local
-        replay corpus (opener/replay_corpus.py, ops/OPENER-REDESIGN.md 5.2/5.7), so a future
-        prompt revision can be replayed against real historical requests without a fresh live
-        batch. A no-op unless `self.replay_corpus_dir` is set (opener.replay_corpus_enabled in
-        config.yaml, DEFAULT DISABLED -- see OpenerService.__init__).
+        """Best-effort persistence of this profile's opener evidence to the local replay
+        corpus (opener/replay_corpus.py, ops/OPENER-REDESIGN.md 5.2/5.7). The corpus keeps the
+        exact model-visible request inputs (name, numbered items, truncation) and retains
+        withheld unnumbered context crops as a forensic superset; current Gemini generation
+        and replay deliberately omit that context. Thus a future prompt revision can replay
+        real historical requests without a fresh live batch. A no-op unless
+        `self.replay_corpus_dir` is set (opener.replay_corpus_enabled in config.yaml, DEFAULT
+        DISABLED -- see OpenerService.__init__).
 
         REAL PEOPLE'S PHOTOS: `write_replay_capture` itself already never raises (every failure
         comes back as `ReplayWriteResult(ok=False, ...)`, see that function's own SAFE TO FAIL
@@ -942,9 +945,10 @@ class OpenerService:
         stopping via should_stop).
 
         items (default None): ops/OPENER-REDESIGN.md 5.2/5.7's item-crop request shape -- one
-        cropped image per numbered profile item, the unnumbered context crops after them, her
-        name as text and the capture's truncation flag, built by
-        opener.ItemRequest.from_profile() from what the driver enumerated. When present it
+        cropped image per numbered profile item, her name as text, and the capture's truncation
+        flag, built by opener.ItemRequest.from_profile() from what the driver enumerated.
+        Unnumbered context crops remain attached to the value only for replay and forensic
+        diagnostics; they are deliberately withheld from Gemini generation. When present it
         REPLACES profile.photos as the model's view of her, which is the whole point: image k
         IS item k, so the number the model answers with means something. Forwarded to
         self.client.generate(...) unconditionally below: a client that silently dropped this

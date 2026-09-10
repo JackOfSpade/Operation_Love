@@ -52,6 +52,11 @@ _DEVICE_LOST_PHRASES = (
     "unauthorized",
 )
 
+# A screenshot cannot deliver input or otherwise change device state.  A single retry is
+# therefore safe after a host-side transport timeout, unlike retrying any action command.
+# Keep this a fixed bound: an unavailable or wedged device must still stop the run.
+_SCREENCAP_ATTEMPTS = 2
+
 _TEXT_SHELL_SPECIALS = frozenset("\\'\"`$&|;<>(){}[]*?!#~")
 _ANDROID_PACKAGE_RE = re.compile(
     r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+")
@@ -285,7 +290,45 @@ class Adb:
 
     # --- screen --------------------------------------------------------
     def screencap(self) -> bytes:
-        return self._run_device(["exec-out", "screencap", "-p"])
+        """Return one PNG frame, retrying one host-side timeout of this read-only command.
+
+        ``exec-out screencap -p`` is the sole command eligible for this recovery path: it
+        observes the screen and cannot replay a tap, swipe, typed text, or shell write.  A
+        nonzero ADB response is not assumed transient, and neither are device-loss errors;
+        both fail closed without a second command.  On an exhausted retry, retain the final
+        ADB error and add the initial timeout as traceback context for diagnosis.
+        """
+        args = ["exec-out", "screencap", "-p"]
+        first_error: AdbError | None = None
+        for attempt in range(_SCREENCAP_ATTEMPTS):
+            try:
+                return self._run_device(args)
+            except DriverClosed:
+                raise
+            except AdbError as error:
+                # _run chains the original TimeoutExpired, so do not classify arbitrary ADB
+                # failures from their text.  This is intentionally narrower than a generic
+                # "retry on AdbError" policy.
+                if (attempt + 1 < _SCREENCAP_ATTEMPTS
+                        and isinstance(error.__cause__, subprocess.TimeoutExpired)):
+                    if first_error is None:
+                        first_error = error
+                    continue
+                if first_error is not None:
+                    terminal_error = AdbError(
+                        error.argv,
+                        "ADB screencap recovery exhausted after "
+                        f"{_SCREENCAP_ATTEMPTS} read-only attempts; final failure: "
+                        f"{str(error).split(':', 1)[0]}",
+                        error.stderr,
+                    )
+                    terminal_error.add_note(
+                        "Read-only screencap retry after initial timeout: "
+                        f"{first_error}")
+                    raise terminal_error from error
+                raise
+
+        raise AssertionError("screencap retry loop exhausted without returning or raising")
 
     def screen_size(self) -> tuple[int, int]:
         if self._size is None:
@@ -411,6 +454,18 @@ class Adb:
             )
         except subprocess.TimeoutExpired as exc:
             stderr = _decode(exc.stderr)
+            # ADB can report an already-disconnected device while its client is still being
+            # waited on.  Preserve the same terminal semantic used for a completed nonzero
+            # command, rather than treating that report as a recoverable timeout.  Do not
+            # inspect timed-out screencap stdout: it can be an arbitrarily large partial PNG,
+            # not a textual ADB diagnostic, so decoding it is both wasteful and could
+            # accidentally match an ordinary pixel sequence.
+            reported = stderr
+            if tuple(args) != ("exec-out", "screencap", "-p"):
+                stdout_text = _decode(exc.stdout)
+                reported = "\n".join(part for part in (stderr, stdout_text) if part)
+            if _is_device_lost_message(reported):
+                raise DriverClosed("ADB device was disconnected") from None
             raise AdbError(
                 argv,
                 f"ADB command timed out after {self.default_timeout:g}s",

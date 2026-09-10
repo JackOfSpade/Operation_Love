@@ -404,8 +404,8 @@ def capture_profile_identity(frames: Sequence[bytes], *,
     reason it exists. When every frame of a capture reads as the filter-chips row there are two
     completely different causes with opposite fixes, and this function used to name only one of
     them: either the capture genuinely never scrolled far enough to reveal the header (re-run it),
-    or the app pins the chips row to the screen so that NO capture on this build will ever reveal
-    one (Hinge 10.1.0's expanded header state, measured 2026-08-28 — see
+    or this capture's current toolbar state pins the chips row to the screen (Hinge 10.1.0's
+    expanded header state, measured 2026-08-28 — see
     `scroll_top.band_pinned_evidence`, which is what these offsets are handed to). Blaming the
     capture in the second case sends an operator to re-run it forever, and this repo's standing
     rule is that guidance derives from its precondition. Pass the same per-frame offsets the index
@@ -475,16 +475,16 @@ def capture_profile_identity(frames: Sequence[bytes], *,
                   if page_offsets is not None else None)
         if pinned is not None and pinned.pinned:
             return _unknown(
-                f"the identity band {band} is PINNED to the screen on this app version, so the "
-                f"identity check is structurally unavailable here rather than merely unlucky: "
+                f"the identity band {band} is PINNED to the screen in this capture's current "
+                f"toolbar state, so the identity check is structurally unavailable for this "
+                f"capture rather than merely unlucky: "
                 f"{pinned.reason}. Every frame therefore reads as the filter-chips row no matter "
                 f"how far it scrolled, the sticky per-profile header never occupies this rect, "
-                f"and NO capture on this build can be fingerprinted from it — re-running the "
-                f"capture cannot fix that and scrolling further cannot either. What needs "
-                f"recalibrating is the rect and the signals over it: apps.hinge.identity_band, "
-                f"scroll_top's chips-row fingerprints (which now confirm 'top' on scrolled "
-                f"frames) and apps.hinge.identity_top_name_band, re-measured against the app's "
-                f"current per-profile header states with the owner and a device{trailer}",
+                f"and the observed frames cannot be fingerprinted from it. Do not target or "
+                f"label from it. A fresh capture "
+                f"may be considered only if it independently proves a usable scroll-top and "
+                f"profile-identity signal; otherwise the rect and its signals need "
+                f"recalibration with the owner and a device{trailer}",
                 band=band, grid=grid)
         return _unknown(
             f"every frame of this capture reads as the filter-chips row in {band}, so the sticky "

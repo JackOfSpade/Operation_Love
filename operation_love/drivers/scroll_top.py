@@ -123,16 +123,17 @@ THE FOUR OUTCOMES, AND WHY "CANNOT TELL" IS A STATE AND NOT A FALSY BOOL
                                 showing and we are scrolled. Scroll up and ask again.
   * `SCROLL_TOP_UNKNOWN`     -- neither. No `identity_band` declared, or the distance landed in
                                 the dead zone between the two bounds. NEVER "at top".
-  * `SCROLL_TOP_UNAVAILABLE` -- the caller supplied `band_pinned_evidence` proving this app
-                                version pins the chips row to the screen, so the signal carries
-                                no information about scroll position and this CHECK cannot answer
-                                on this app version at all. Deliberately NOT folded into REFUTED:
-                                "not at top" tells a scroll-up loop to scroll again, and no amount
-                                of scrolling fixes a pinned band. It is a recalibration stop and
-                                its reason says so. Deliberately not folded into UNKNOWN either:
-                                UNKNOWN is "this frame's band is between the bounds", a per-frame
-                                measurement that another frame may resolve; this is "the signal
-                                itself is dead", which no frame will.
+  * `SCROLL_TOP_UNAVAILABLE` -- the caller supplied `band_pinned_evidence` proving this
+                                capture's current toolbar state pins the chips row to the screen.
+                                The signal carries no scroll information in that capture, so this
+                                CHECK cannot answer from those frames. Deliberately NOT folded
+                                into REFUTED: "not at top" tells a scroll-up loop to scroll again,
+                                whereas the existing evidence cannot establish top. It is a
+                                recalibration stop and its reason says so. Deliberately not folded
+                                into UNKNOWN either: UNKNOWN is "this frame's band is between the
+                                bounds", a per-frame measurement that another frame may resolve;
+                                this is a capture-level failure of the signal. A fresh capture
+                                still needs independent proof before it can count.
 
 A two-valued answer would collapse the third case into one of the other two, and both collapses
 are bugs: fold it into CONFIRMED and a systematic off-by-N ships silently; fold it into REFUTED
@@ -560,11 +561,12 @@ _REFUTE_MIN_DIST = 9.0
 SCROLL_TOP_CONFIRMED = "confirmed_top"       # the band IS the filter-chips row
 SCROLL_TOP_REFUTED = "confirmed_not_top"     # the band is positively something else
 SCROLL_TOP_UNKNOWN = "cannot_tell"           # neither — and never to be read as "at top"
-# The chips row is pinned to the SCREEN on this app version, so it appears at every scroll offset
-# and this check has nothing left to read. Reachable ONLY when a caller supplies
+# The chips row is pinned to the SCREEN in this capture's current toolbar state, across the
+# observed scroll offsets, so this check has nothing left to read from this capture. Reachable
+# ONLY when a caller supplies
 # `band_pinned_evidence` that proves it — see the module docstring's "WHEN THE PREMISE ITSELF
-# FAILS" section. It is not "not at top" (scrolling cannot fix it) and not "cannot tell" (no other
-# frame can resolve it); it is a recalibration stop.
+# FAILS" section. It is not "not at top" (the evidence does not prove that) and not "cannot tell"
+# (the current capture has disproved the signal's premise); it is a recalibration stop.
 SCROLL_TOP_UNAVAILABLE = "check_unavailable"
 
 
@@ -638,8 +640,8 @@ class ScrollTopVerdict:
 
     @property
     def unavailable(self) -> bool:
-        """True ONLY for `SCROLL_TOP_UNAVAILABLE`: the chips-row signal is pinned to the screen on
-        this app version, so this gate cannot answer at all. A caller that branches on
+        """True ONLY for `SCROLL_TOP_UNAVAILABLE`: the chips-row signal is pinned to the screen in
+        this capture's current toolbar state, so this gate cannot answer from its frames. A caller that branches on
         `.refuted` to scroll again must not treat this as one — see the module docstring."""
         return self.state == SCROLL_TOP_UNAVAILABLE
 
@@ -953,12 +955,14 @@ def confirm_scroll_top(frame: bytes, *,
                     f"is pinned to the SCREEN rather than drawn only at the top: "
                     f"{pinned_evidence.reason}. A strip that shows the chips at every scroll "
                     "offset cannot mean 'at top', so doc 5.5's affirmative confirmation is "
-                    "structurally UNAVAILABLE on this app version — not refuted, and not a frame "
-                    "another scroll or another look could resolve. What needs recalibrating is "
-                    "the scroll-top signal itself: apps.hinge.identity_band and this module's "
-                    "chips-row fingerprints, re-measured against the app's current per-profile "
-                    "header states with the owner and a device. Widening or narrowing a threshold "
-                    "cannot help; the strip carries no scroll information at all"))
+                    "structurally UNAVAILABLE for this capture's current toolbar state — not "
+                    "refuted, but insufficient to count from. A fresh capture may be considered "
+                    "only if it independently proves that its own scroll-top signal is usable; "
+                    "otherwise recalibrate the scroll-top signal itself: apps.hinge.identity_band "
+                    "and this module's chips-row fingerprints, re-measured against the app's "
+                    "current per-profile header states with the owner and a device. Widening or "
+                    "narrowing a threshold cannot recover scroll information from this capture's "
+                    "pinned strip"))
 
     if dist <= confirm_max:
         return ScrollTopVerdict(
@@ -996,7 +1000,7 @@ def band_pinned_evidence(frames: Sequence[bytes], *,
                          grid: tuple[int, int] = _FINGERPRINT_GRID,
                          confirm_max: float = _CONFIRM_MAX_DIST,
                          refute_min: float = _REFUTE_MIN_DIST) -> PinnedBandEvidence:
-    """Do these frames PROVE that the filter-chips row is pinned to the screen on this app build?
+    """Do these frames prove that this capture's toolbar pins the chips row to the screen?
 
     `frames` are one capture's frames and `page_offsets` the page offset each was taken at, in the
     same order and the same length, `None` for a frame whose offset is not known (the shape
@@ -1166,8 +1170,8 @@ def band_pinned_evidence(frames: Sequence[bytes], *,
                 f"than its own {band_height_px}px height, so the page rows those sightings would "
                 f"otherwise have had to display are disjoint. Page content cannot do that and "
                 f"chrome cannot do anything else, and two frames that far apart cannot both be at "
-                f"the scroll top: this app version draws the chips row at every scroll offset, "
-                f"pinned to the screen{trailer}"),
+                f"the scroll top: this capture's current toolbar state draws the chips row at "
+                f"every observed scroll offset, pinned to the screen{trailer}"),
         **common)
 
 
@@ -1189,8 +1193,8 @@ def require_scroll_top(frame: bytes, *,
     A caller that genuinely wants to branch — a scroll-up loop deciding whether to swipe again —
     should call `confirm_scroll_top` and read `.confirmed` / `.refuted` / `.unknown` /
     `.unavailable`, where REFUTED means "scroll further", UNKNOWN means "stop and show the frame"
-    and UNAVAILABLE means "stop and recalibrate — no further gesture on this app version can make
-    this signal answer", which are three different actions.
+    and UNAVAILABLE means "stop this capture; only a fresh capture independently proven usable may
+    count", which are three different actions.
     """
     verdict = confirm_scroll_top(
         frame, identity_band=identity_band, fingerprint=fingerprint, grid=grid,

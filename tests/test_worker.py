@@ -9,6 +9,7 @@ import pytest
 from operation_love.costing import CostTracker, ModelPricing, Usage
 from operation_love.drivers.base import (DatingAppDriver, DeckBlockedError, DriverClosed,
                                         ItemTargetingError)
+from operation_love.drivers.adb import AdbError
 from operation_love.opener.opener import (
     FIRST_ITEM_INDEX,
     INDEX_SPACE_MODEL_ITEMS,
@@ -37,6 +38,75 @@ PRICING = {"gemini-test-model": ModelPricing(input=5.0, output=25.0)}
 # thread reach the expected state / finish?) depends on the exact number, so widening it loses
 # nothing.
 _LIVENESS_TIMEOUT_S = 15.0
+
+
+def test_terminal_error_summary_keeps_multiline_adb_cause_and_retry_notes():
+    """RunStatus must not reduce an AdbError to its trailing ``stderr:`` line."""
+    from operation_love.worker import _terminal_error_summary
+
+    exc = AdbError(
+        ["adb", "-s", "pixel", "exec-out", "screencap", "-p"],
+        "ADB command timed out after 10s",
+        "error: device offline",
+    )
+    exc.add_note("screencap retry also timed out")
+
+    summary = _terminal_error_summary(exc)
+
+    assert summary.startswith("AdbError: ADB command timed out after 10s")
+    assert "adb -s pixel exec-out screencap -p" in summary
+    assert "stderr: error: device offline" in summary
+    assert "notes: screencap retry also timed out" in summary
+    assert "\n" not in summary
+
+
+def test_terminal_error_summary_caps_untrusted_device_output():
+    from operation_love.worker import _STATUS_ERROR_MAX_CHARS, _terminal_error_summary
+
+    summary = _terminal_error_summary(RuntimeError("device replied " + "x" * 2_000))
+
+    assert len(summary) == _STATUS_ERROR_MAX_CHARS
+    assert summary.endswith("…")
+
+
+def test_staged_opener_generation_context_uses_only_the_existing_pick_and_stage():
+    from operation_love.worker import _staged_opener_generation_context
+
+    pick = SimpleNamespace(
+        _staged_record=SimpleNamespace(model="gemini-test-model"),
+        index_space="model_items", referenced="two puppies", angle="a playful question",
+        item_description="photo of two puppies")
+
+    assert _staged_opener_generation_context(pick) == {
+        "model": "gemini-test-model", "index_space": "model_items",
+        "referenced": "two puppies", "angle": "a playful question",
+        "item_description": "photo of two puppies",
+    }
+    assert _staged_opener_generation_context(None) is None
+
+
+def test_worker_run_publishes_the_complete_adb_timeout_summary():
+    """The generic terminal handler must use the helper, not revive traceback's last line."""
+    from operation_love.status import RunStatus
+
+    class TimeoutDriver(FakeDriver):
+        def next_profile(self):
+            exc = AdbError(
+                ["adb", "-s", "pixel", "exec-out", "screencap", "-p"],
+                "ADB command timed out after 10s", "transport stalled")
+            exc.add_note("read-only screencap retry was exhausted")
+            raise exc
+
+    status = RunStatus("run1", ["bumble"], min_labels=1, mode="auto")
+    Worker("bumble", TimeoutDriver(1), FakeDecider("dislike"), None, FakeStore(), "run1",
+           _Pacing(), threading.Event(), mode="auto", status=status).run()
+
+    error = status.app_view("bumble")["app"]["error"]
+    assert error.startswith("AdbError: ADB command timed out after 10s")
+    assert "adb -s pixel exec-out screencap -p" in error
+    assert "stderr: transport stalled" in error
+    assert "notes: read-only screencap retry was exhausted" in error
+    assert "\n" not in error
 
 
 # --- fakes ---------------------------------------------------------------
@@ -1606,6 +1676,57 @@ def test_training_refuses_a_noop_decision_setter_before_any_like():
     assert driver.likes == []
     assert store.decisions == []
     assert driver.closed
+
+
+def test_training_generation_context_clears_when_decision_hook_installation_fails():
+    """A failed checkpoint callback installation cannot leak one draft into the next card."""
+    from operation_love.training_actions import TrainingActionBridge
+
+    class _FailingDecisionDriver(FakeDriver):
+        accepts_opener = True
+        supports_training_decision = True
+        supports_capture_order_training_target = True
+
+        def __init__(self):
+            super().__init__(1)
+            self.context_calls = []
+            self.decision_calls = []
+
+        def set_staged_opener_generation_context(self, context):
+            self.context_calls.append(context)
+
+        def set_training_decision(self, decision):
+            self.decision_calls.append(decision)
+            if decision is not None:
+                raise RuntimeError("checkpoint callback installation failed")
+
+    class _Service:
+        disabled = False
+        stop_requested = False
+        last_skip_reason = None
+        last_skip_allows_commentless_like = False
+
+        def maybe_opener(self, *_args, **_kwargs):
+            return SimpleNamespace(
+                text="A complete opener", index=1,
+                index_space=INDEX_SPACE_PROFILE_PHOTOS, capture_order_index=0,
+                referenced="a visible detail", angle="a question",
+                item_description="a photo",
+                _staged_record=SimpleNamespace(model="gemini-test-model"))
+
+    driver, store, stop = _FailingDecisionDriver(), FakeStore(), threading.Event()
+    Worker("hinge", driver, FakeDecider("like"), _Service(), store, "run1", _Pacing(), stop,
+           mode="training", training_action_bridge=TrainingActionBridge()).run()
+
+    assert driver.context_calls == [{
+        "model": "gemini-test-model", "index_space": INDEX_SPACE_PROFILE_PHOTOS,
+        "referenced": "a visible detail", "angle": "a question",
+        "item_description": "a photo",
+    }, None]
+    # Preserve the old decision-cleanup semantics: a setter that raises while installing is not
+    # called again with None, because the driver's callback state is unknowable.
+    assert len(driver.decision_calls) == 1 and driver.decision_calls[0] is not None
+    assert driver.likes == [] and stop.is_set() and driver.closed
 
 
 def test_worker_stops_before_bare_like_on_single_bad_request():

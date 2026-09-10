@@ -6114,3 +6114,119 @@ tests/test_replay_corpus_prune.py (the prune helper and every attempted path esc
 provenance pins in tests/test_opener_corpus_report.py (verdict_basis live/mixed/replay, the
 synthetic count and PROVENANCE paragraph, the basis stamped on the VERDICT line, a live verdict
 left unlabelled, and to_dict carrying both). All were mutation tested.
+
+
+#### Addendum -- 2026-09-07 (a): idioms must sound current, clear, and spoken
+
+TRAINING exposed a register miss that the existing SPOKEN REGISTER rule did not capture: an
+opener can be grammatical, profile-specific, and free of internet voice, yet still lean on an
+idiom that feels dated, literary, formally written, or makes the recipient decode the intended
+point. That is friction in an opener, not charm.
+
+THE RULE. IDIOM FIT now permits an idiom only when it is contemporary and ordinary, immediately
+clear on first reading in normal conversation, semantically apt to the specific item and
+conversational point, and natural if spoken aloud. It rejects dated, literary, formal, obscure,
+forced, and short-lived trend-driven idioms. This is deliberately not a ban on current everyday
+language: ordinary contemporary phrasing remains available. Nor does spoken ease license
+internet slang, memes, or borrowed-caption phrasing.
+
+PROMPT-ONLY BY DESIGN. The rule ships in the three stable model-facing surfaces: the long
+`config.yaml` style guide, the compressed `_SYSTEM` instruction, and the `_SCHEMA` opener-field
+description. Tests pin every required property independently on each surface and keep the
+motivating language off wire. The retry hint is intentionally unchanged: it explains a concrete
+post-generation rejection, while this is a general drafting constraint.
+
+NO LEXICAL GUARD. A word list cannot decide whether an idiom is current, comprehensible, or apt
+in context. It would both miss novel failures and falsely reject ordinary speech, consuming the
+five-attempt retry budget for a weak proxy. The owner decision is prompt-first, with watched
+output as the threshold for reconsidering a deterministic guard.
+
+MEASUREMENT. This changes the prompt digest and therefore starts a new prompt era. Results from
+this wording are not directly comparable with earlier rows unless analyses split them by
+`prompt_sha256`; `ops/prompt-eras.json` records the provisional working-tree era until the change
+is committed. No performance claim is made before a labeled batch is reviewed.
+
+
+#### Addendum -- 2026-09-08 (a): use the minimum sufficient visual reference
+
+TRAINING exposed a narrower version of the original caption-leak failure. The opener correctly
+added a conversational question, so description was not its final payoff, but its setup still
+spelled out an obvious place and held object from the attached photo: "Perching right up on the
+tiled bench with a glass of wine is definitely the way to do it. Is this your regular spot for a
+quiet evening out?" The question survives with the place referenced implicitly. Since the photo
+remains visible under the message, the literal noun phrase spends words telling her what both
+people can already see.
+
+THE LOOPHOLE. SHARED CONTEXT banned pointing at the photo as a medium, not naming obvious content
+inside it. CONVERSATIONAL VALUE expressly allowed a visible detail as setup, while SETUP PAYOFF
+CONTINUITY tested whether a descriptive clause could be deleted. A model could therefore keep a
+literal noun phrase by treating it as the grammatical anchor for an otherwise worthwhile question.
+The rules never required the stronger comparison against an implicit reference, and PRIMARY ITEM
+plus REFERENT CLARITY could be read as pressure to make the text identify its target even though
+attachment had already done so.
+
+THE RULE. MINIMUM SUFFICIENT REFERENCE makes omission or the least explicit natural reference the
+default whenever the attached item makes the referent immediately clear. Before finalizing, the
+model replaces each literal visual description with an implicit reference while mentally keeping
+the item visible. If meaning and the conversational move survive, it must use that version. Exact
+naming remains available when the identity of the detail changes the observation, joke, inference,
+connection, or question, or when several plausible referents would otherwise create ambiguity.
+Naming is not necessary merely to prove grounding, identify the selected item, or manufacture
+textual specificity. The attachment itself can supply both the referent and the item anchor.
+
+PRIVATE DESCRIPTION, PUBLIC REACTION. `referenced` and `item_description` still require full
+literal grounding because the redundancy monitor, telemetry, and item preflight use it. Their
+schema descriptions now say explicitly that this wording belongs in the private fields. `angle`
+performs the replacement test before `opener`; the opener field repeats the resulting constraint.
+The same semantic property is mirrored in the long `config.yaml` style, compressed `_SYSTEM`, and
+the retry tail so a malformed-output retry cannot re-prime "one concrete detail" as an instruction
+to name it. The motivating copy remains here and in tests, never in a model-facing string.
+
+NO STRING REWRITE OR SEND GATE. Deterministically changing scene nouns into pronouns would require
+semantic and grammatical knowledge the local code does not have. The existing
+`_redundant_description_markers` monitor correctly finds `tiled`, `bench`, `glass`, and `wine` in
+this incident, but it is still only a token-overlap lower bound: it misses paraphrases and can flag
+good connections whose visible noun supplies the actual point. It therefore remains logged for
+calibration and never rejects a send. Tests retain explicit-detail counterexamples and add the
+implicit rewrite as a clean control, so this rule cannot quietly become a blanket noun ban or a
+mandatory deictic template.
+
+MEASUREMENT. This changes the prompt digest and begins another prompt era. The exact source capture
+is already in the replay corpus as
+`a67a17b2cc10d81996fade5728119a8c369a08390da5950088f0df8cb092f2ba`; it is the first manual replay
+case for the new era. Prompt-contract tests prove what is sent to the model, not model compliance,
+so no quality claim is made until replay or live drafts are reviewed. `ops/prompt-eras.json` records
+the current working-tree digest separately from committed eras.
+
+
+#### Addendum -- 2026-09-09 (a): selected-item-only opener concepts
+
+TRAINING produced a draft asking whether the two dachshund puppies in the selected photo had their
+own tabs in a spreadsheet. The attachment itself was correct: model item 2 translated to page heart
+8, the pre-send preview matched that numbered crop, and the comment was typed beneath it. The
+spreadsheet idea instead came from a separate, unnumbered written card. This was therefore not an
+item-index or sheet-targeting failure. It was a semantic contamination failure: the selected image
+only supplied the deictic "those two", while another card supplied the joke and payoff.
+
+THE RULE. A numbered item is the only image that may supply the chosen opener's premise, predicate,
+joke, question, connection, or payoff. The other numbered images remain available while selecting
+which item has the best conversational angle, but become selection-only once that choice is made.
+They cannot donate concepts to an opener that will attach elsewhere. Explicit profile text may still
+support a complete, natural thought about the selected item; it cannot turn that item into a pronoun
+or placeholder for a thought sourced from another card. This narrows the earlier broad
+"whole-profile connection" wording: two profile facts are not a reason to bridge two separate image
+cards.
+
+THE ENFORCEMENT BOUNDARY. Unnumbered context crops are still captured, indexed, included in debug
+manifests, and retained in replay evidence. They are no longer sent to Gemini. That is a structural
+guarantee rather than a lexical guess about whether a noun in the model's text came from the selected
+photo or a context card. The crop remains useful to diagnose capture coverage and reproduce the
+incident without giving an opener model an unselectable visual premise. The payload's item labels and
+driver targeting behavior are otherwise unchanged.
+
+PROMPT CONTRACT. The long `config.yaml` style guide and the compressed request instructions state
+the selected-item-only rule. Tests pin the positive boundary (other numbered candidates may help
+selection, not drafting) and the retained diagnostics/replay boundary. This starts a new
+`prompt_sha256` era. The design does not claim that a prompt alone can semantically verify every
+profile-text connection; removing unnumbered visual context closes the demonstrated cross-card source
+class, while the existing item-index and preview checks continue to prove physical attachment.

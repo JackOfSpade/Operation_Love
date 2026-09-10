@@ -276,6 +276,42 @@ class WorldAdb:
         self.texts.append(s)
 
 
+class ColdRestartWorldAdb(WorldAdb):
+    """WorldAdb with the exact package lifecycle the pinned-toolbar recovery may use.
+
+    The launcher command can deliberately change the simulated toolbar state, just as the live
+    Anastasiia -> Rachel cold relaunch did.  It records shell calls separately from touch input:
+    a recovery may restart the package and read-scroll, but must never tap or type.
+    """
+
+    PACKAGE = "co.hinge.app"
+
+    def __init__(self, *args, collapse_on_relaunch=True, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.collapse_on_relaunch = collapse_on_relaunch
+        self.foreground = self.PACKAGE
+        self.shell_calls: list[str] = []
+        self.relaunched = False
+
+    def foreground_package(self):
+        return self.foreground
+
+    def shell(self, command="", **kwargs):
+        self.shell_calls.append(command)
+        if command == f"am force-stop {self.PACKAGE}":
+            self.foreground = None
+            return ""
+        if command == (f"monkey -p {self.PACKAGE} "
+                       "-c android.intent.category.LAUNCHER 1"):
+            self.foreground = self.PACKAGE
+            self.relaunched = True
+            if self.collapse_on_relaunch:
+                self.scroll = 0
+                self._at_top = None
+            return "Events injected: 1\n"
+        return super().shell(command, **kwargs)
+
+
 def _drv(adb, *, auto=True, openers=True, targeting_calibration=True, **cfg):
     """A HingeDriver over the fake world, with the two session hooks a Worker installs.
 
@@ -5965,7 +6001,7 @@ def test_gesture_timing_ledger_is_silent_with_no_debug_log():
 # =====================================================================================
 
 def _pinned_driver(**cfg):
-    """A driver that has READ one profile on a chips-row-pinned build, so its evidence is latched.
+    """A driver that read one profile in a chips-row-pinned state, with evidence latched.
 
     The latch comes from a real `_capture_current()` over the pinned world rather than from a
     hand-set attribute: the whole question this section exists to answer is whether the driver
@@ -5978,7 +6014,7 @@ def _pinned_driver(**cfg):
     return drv, adb
 
 
-def test_an_enumeration_read_latches_this_builds_pinned_chips_row_from_its_own_frames():
+def test_an_enumeration_read_latches_its_pinned_toolbar_state_from_its_own_frames():
     """The read already holds both halves the proof needs, and neither is measured twice.
 
     `band_pinned_evidence` requires frames at two or more DIFFERENT, MEASURED page offsets -- a
@@ -6028,7 +6064,7 @@ def test_the_latched_evidence_turns_the_gates_affirmative_yes_into_check_unavail
     assert drv._confirm_enumeration_top() != ""
 
 
-def test_the_next_read_on_a_pinned_build_refuses_enumeration_and_the_stop_line_carries_why():
+def test_the_next_read_with_a_pinned_latch_refuses_enumeration_and_carries_why():
     """END TO END, which is the whole point: the operator-visible outcome of the wiring.
 
     Capture one is the read that MEASURES the build (its own gate ran before anything was
@@ -6046,7 +6082,7 @@ def test_the_next_read_on_a_pinned_build_refuses_enumeration_and_the_stop_line_c
     assert profile is not None
     assert profile.items == () and profile.item_context == ()
     assert scroll_top.SCROLL_TOP_UNAVAILABLE in profile.items_unavailable
-    assert "recalibrated" in profile.items_unavailable
+    assert "recalibrat" in profile.items_unavailable
     assert "not confirmed to be at its scroll top" not in profile.items_unavailable
     # The read stays at the ordinary cadence: the expensive enumeration ceiling is not spent on
     # a profile whose numbering could never be trusted.
@@ -6074,8 +6110,10 @@ def test_a_dead_signal_stop_line_names_recalibration_where_a_refused_one_names_a
 
     assert scroll_top.SCROLL_TOP_UNAVAILABLE in unavailable
     assert "cannot answer" in unavailable
-    assert "recalibrated" in unavailable
-    assert "Scrolling the card will not change this answer" in unavailable
+    assert "this capture's current toolbar state" in unavailable
+    assert "Do not number, target, or act from this capture" in unavailable
+    assert "fresh capture must independently prove a usable signal" in unavailable
+    assert "on this Hinge build" not in unavailable
     assert "not confirmed to be at its scroll top" not in unavailable
 
     assert scroll_top.SCROLL_TOP_REFUTED in refuted
@@ -6196,7 +6234,7 @@ def test_a_package_update_drops_a_pinning_finding_measured_on_the_previous_build
 def test_the_bounded_rewind_stops_reporting_a_settled_top_it_cannot_see():
     """Site 2 of the wiring, and the one whose old answer was the most expensive.
 
-    `WorldAdb.swipe` is a no-op, so nothing this loop does can move the card. On a pinned build
+    `WorldAdb.swipe` is a no-op, so nothing this loop does can move the card. In a pinned state
     the rewind nevertheless used to break out on its first look with `settled=True`, hand back
     "the card is at its filter-chip top", and re-license capture entry. With the evidence it
     cannot confirm, so it spends its bounded budget, returns False, and its recovery-spent
@@ -6280,6 +6318,312 @@ def test_the_pinning_measurement_is_stamped_on_the_folds_own_timing_ledger():
 
     _name, fold = next(c for c in drv._dbg.calls if c[0] == "capture_fold_timing")
     assert "scroll_top_pinning_s" in fold
+
+
+# =====================================================================================
+# One-shot transient pinning recovery.  A positive pinning finding normally remains latched for
+# the session.  These tests cover the exceptional, evidence-backed case: the same binding
+# completed one measured non-pinned capture immediately before a transient pinned-toolbar read.
+# The retry has to re-measure the normal state; raw chips alone never publish it.
+# =====================================================================================
+
+def test_transient_pinned_toolbar_gets_one_cold_relaunch_only_after_a_healthy_binding():
+    adb = ColdRestartWorldAdb()
+    drv = _drv(adb)
+
+    healthy = drv._capture_current()
+    assert healthy is not None and healthy.items_unavailable == ""
+    assert drv._scroll_top_signal_healthy_binding == drv._scroll_top_signal_binding()
+
+    # Recreate ee3566a3bcb0's state for this one read: chips remain at every page offset.
+    # The capture itself has already supplied enough forward-ledger entries for the recovery
+    # below; set the next physical starting position back to a deck top first.
+    adb.scroll = 0
+    adb._at_top = True
+    refused = drv._capture_current()
+    assert refused is not None and refused.items_unavailable
+    assert drv._capture_scroll_top_pinning_evidence.pinned
+    forward_steps = len(drv._capture_scroll_ledger)
+    assert forward_steps > 1
+
+    recovered = drv._recapture_after_transient_pinned_signal(refused)
+
+    assert recovered is not refused
+    assert recovered is not None and recovered.items_unavailable == "" and recovered.items
+    restart_at = adb.shell_calls.index("am force-stop co.hinge.app")
+    assert adb.shell_calls[restart_at:restart_at + 2] == [
+        "am force-stop co.hinge.app",
+        "monkey -p co.hinge.app -c android.intent.category.LAUNCHER 1",
+    ]
+    assert "dumpsys package co.hinge.app" in adb.shell_calls[restart_at + 2:]
+    assert len(adb.gestures) > forward_steps
+    assert drv._pinned_signal_recovery_spent_binding == drv._scroll_top_signal_binding()
+    assert drv._scroll_top_pinned is None
+    assert (drv._capture_scroll_top_pinning_evidence is not None
+            and not drv._capture_scroll_top_pinning_evidence.pinned)
+    assert adb.taps == [] and adb.texts == []
+
+
+def test_transient_pinned_recovery_never_runs_without_a_prior_healthy_same_binding():
+    drv, adb = _pinned_driver()
+    adb.scroll = 0
+    refused = drv._capture_current()  # the latch makes this ordinary-cadence and unavailable
+    assert refused is not None and refused.items_unavailable
+    before = list(adb.gestures)
+
+    assert drv._recapture_after_transient_pinned_signal(refused) is refused
+    assert adb.gestures == before
+    assert drv._pinned_signal_recovery_spent_binding is None
+    assert adb.taps == [] and adb.texts == []
+
+
+def test_transient_pinned_recovery_restores_original_refusal_after_second_pinned_capture():
+    adb = ColdRestartWorldAdb(collapse_on_relaunch=False)
+    drv = _drv(adb)
+    assert drv._capture_current().items_unavailable == ""
+    adb.scroll = 0
+    adb._at_top = True
+    refused = drv._capture_current()
+    old_latch = drv._scroll_top_pinned
+    assert refused is not None and old_latch is not None
+
+    assert drv._recapture_after_transient_pinned_signal(refused) is refused
+    assert adb.shell_calls.count("am force-stop co.hinge.app") == 1
+    assert drv._scroll_top_pinned == old_latch
+    assert drv._pinned_signal_recovery_spent_binding == drv._scroll_top_signal_binding()
+    assert drv._recapture_after_transient_pinned_signal(refused) is refused
+    assert adb.shell_calls.count("am force-stop co.hinge.app") == 1, "the spent recovery never loops"
+    assert adb.taps == [] and adb.texts == []
+
+
+def test_cold_relaunch_refuses_without_positive_foreground_or_deck_evidence():
+    adb = ColdRestartWorldAdb()
+    drv = _drv(adb)
+    assert drv._capture_current().items_unavailable == ""
+    adb.scroll = 0
+    adb._at_top = True
+    refused = drv._capture_current()
+    assert refused is not None and refused.items_unavailable
+    adb.foreground = "com.android.systemui"
+
+    assert drv._recapture_after_transient_pinned_signal(refused) is refused
+    assert not any(call.startswith("am force-stop") for call in adb.shell_calls)
+    assert drv._current_item_index is None
+    assert adb.taps == [] and adb.texts == []
+
+
+def test_manual_observe_never_cold_relaunches_a_pinned_visible_card():
+    adb = ColdRestartWorldAdb()
+    drv = _drv(adb, auto=False)
+    assert drv._capture_current().items_unavailable == ""
+    adb.scroll = 0
+    adb._at_top = True
+    refused = drv._capture_current()
+    assert refused is not None and refused.items_unavailable
+
+    assert drv._recapture_after_transient_pinned_signal(refused) is refused
+    assert not any(call.startswith("am force-stop") for call in adb.shell_calls)
+    assert drv._pinned_signal_recovery_spent_binding is None
+    assert adb.taps == [] and adb.texts == []
+
+
+def test_cold_relaunch_skips_the_original_card_and_indexes_only_the_fresh_card(monkeypatch):
+    adb = ColdRestartWorldAdb()
+    drv = _drv(adb)
+    monkeypatch.setattr(
+        HingeDriver, "_ocr_band",
+        lambda _self, *_args, **_kwargs: "Rachel" if adb.relaunched else "Anastasiia")
+    assert drv._capture_current().items_unavailable == ""
+    adb.scroll = 0
+    adb._at_top = True
+    refused = drv._capture_current()
+    assert refused is not None and refused.items_unavailable
+    # A pinned primary band cannot itself name the original.  The caller's already-captured
+    # profile metadata is the only optional transition annotation; it never licenses reuse.
+    refused.name = "Anastasiia"
+
+    recovered = drv._recapture_after_transient_pinned_signal(refused)
+
+    # The relaunch's new card is independently indexed; the original pinned card was explicitly
+    # retired before package state changed, not returned as though it survived the cold launch.
+    assert recovered is not None and recovered is not refused and recovered.name == "Rachel"
+    assert drv._current_item_index is not None and drv._current_item_index.identity.known
+    assert adb.taps == [] and adb.texts == []
+
+
+def test_cold_relaunch_finishes_the_launch_if_stop_arrives_after_force_stop():
+    adb = ColdRestartWorldAdb()
+    drv = _drv(adb)
+    assert drv._capture_current().items_unavailable == ""
+    adb.scroll = 0
+    adb._at_top = True
+    refused = drv._capture_current()
+    assert refused is not None and refused.items_unavailable
+    stop = {"now": False}
+    original_shell = adb.shell
+
+    def shell(command="", **kwargs):
+        result = original_shell(command, **kwargs)
+        if command == "am force-stop co.hinge.app":
+            stop["now"] = True
+        return result
+
+    adb.shell = shell
+    assert drv._recapture_after_transient_pinned_signal(
+        refused, should_stop=lambda: stop["now"]) is None
+    restart_at = adb.shell_calls.index("am force-stop co.hinge.app")
+    assert adb.shell_calls[restart_at:restart_at + 2] == [
+        "am force-stop co.hinge.app",
+        "monkey -p co.hinge.app -c android.intent.category.LAUNCHER 1",
+    ]
+    assert adb.foreground == adb.PACKAGE
+    assert adb.taps == [] and adb.texts == []
+
+
+def test_cold_relaunch_compensates_once_but_never_recaptures_after_a_launcher_failure():
+    adb = ColdRestartWorldAdb()
+    drv = _drv(adb)
+    assert drv._capture_current().items_unavailable == ""
+    adb.scroll = 0
+    adb._at_top = True
+    refused = drv._capture_current()
+    old_latch = drv._scroll_top_pinned
+    assert refused is not None and old_latch is not None
+    original_shell = adb.shell
+    launcher = "monkey -p co.hinge.app -c android.intent.category.LAUNCHER 1"
+    failed_once = {"value": False}
+
+    def shell(command="", **kwargs):
+        if command == launcher and not failed_once["value"]:
+            failed_once["value"] = True
+            adb.shell_calls.append(command)
+            raise RuntimeError("launcher transport lost its first response")
+        return original_shell(command, **kwargs)
+
+    adb.shell = shell
+    before_gestures = list(adb.gestures)
+
+    assert drv._recapture_after_transient_pinned_signal(refused) is refused
+    assert failed_once["value"]
+    assert adb.shell_calls.count("am force-stop co.hinge.app") == 1
+    assert adb.shell_calls.count(launcher) == 2
+    assert adb.foreground == adb.PACKAGE
+    assert adb.gestures == before_gestures
+    assert drv._scroll_top_pinned == old_latch
+    assert drv._pinned_signal_recovery_spent_binding == drv._scroll_top_signal_binding()
+    assert adb.taps == [] and adb.texts == []
+
+
+def test_cold_relaunch_compensates_an_ambiguous_force_stop_but_never_recaptures():
+    adb = ColdRestartWorldAdb()
+    drv = _drv(adb)
+    assert drv._capture_current().items_unavailable == ""
+    adb.scroll = 0
+    adb._at_top = True
+    refused = drv._capture_current()
+    old_latch = drv._scroll_top_pinned
+    assert refused is not None and old_latch is not None
+    original_shell = adb.shell
+    force_stop = "am force-stop co.hinge.app"
+    launcher = "monkey -p co.hinge.app -c android.intent.category.LAUNCHER 1"
+
+    def shell(command="", **kwargs):
+        if command == force_stop:
+            original_shell(command, **kwargs)  # command reached Android before response failed
+            raise RuntimeError("force-stop response timed out after delivery")
+        return original_shell(command, **kwargs)
+
+    adb.shell = shell
+    before_gestures = list(adb.gestures)
+
+    assert drv._recapture_after_transient_pinned_signal(refused) is refused
+    assert adb.shell_calls.count(force_stop) == 1
+    assert adb.shell_calls.count(launcher) == 1
+    assert adb.foreground == adb.PACKAGE
+    assert adb.gestures == before_gestures
+    assert drv._scroll_top_pinned == old_latch
+    assert drv._pinned_signal_recovery_spent_binding == drv._scroll_top_signal_binding()
+    assert adb.taps == [] and adb.texts == []
+
+
+def test_cold_relaunch_does_not_retry_a_closed_driver_after_force_stop():
+    """A closed transport cannot safely receive the compensating launcher command.
+
+    The explicit `DriverClosed` exception is preferable to silently returning a profile while
+    Hinge may remain stopped: it makes the lifecycle failure visible to the caller, and the
+    recovery never performs a second command against a driver whose invariant has already
+    failed.
+    """
+    from operation_love.drivers.base import DriverClosed
+
+    adb = ColdRestartWorldAdb()
+    drv = _drv(adb)
+    assert drv._capture_current().items_unavailable == ""
+    adb.scroll = 0
+    adb._at_top = True
+    refused = drv._capture_current()
+    old_latch = drv._scroll_top_pinned
+    assert refused is not None and old_latch is not None
+    original_shell = adb.shell
+    launcher = "monkey -p co.hinge.app -c android.intent.category.LAUNCHER 1"
+
+    def shell(command="", **kwargs):
+        if command == launcher:
+            adb.shell_calls.append(command)
+            raise DriverClosed("test launcher transport closed")
+        return original_shell(command, **kwargs)
+
+    adb.shell = shell
+    before_gestures = list(adb.gestures)
+
+    with pytest.raises(DriverClosed, match="transport closed"):
+        drv._recapture_after_transient_pinned_signal(refused)
+
+    assert adb.shell_calls.count("am force-stop co.hinge.app") == 1
+    assert adb.shell_calls.count(launcher) == 1
+    assert adb.foreground is None
+    assert adb.gestures == before_gestures
+    assert drv._scroll_top_pinned == old_latch
+    assert drv._pinned_signal_recovery_spent_binding == drv._scroll_top_signal_binding()
+    assert adb.taps == [] and adb.texts == []
+
+
+def test_cold_relaunch_propagates_a_closed_compensating_launcher_transport():
+    from operation_love.drivers.base import DriverClosed
+
+    adb = ColdRestartWorldAdb()
+    drv = _drv(adb)
+    assert drv._capture_current().items_unavailable == ""
+    adb.scroll = 0
+    adb._at_top = True
+    refused = drv._capture_current()
+    old_latch = drv._scroll_top_pinned
+    assert refused is not None and old_latch is not None
+    original_shell = adb.shell
+    launcher = "monkey -p co.hinge.app -c android.intent.category.LAUNCHER 1"
+    launcher_attempts = {"value": 0}
+
+    def shell(command="", **kwargs):
+        if command == launcher:
+            launcher_attempts["value"] += 1
+            adb.shell_calls.append(command)
+            if launcher_attempts["value"] == 1:
+                raise RuntimeError("first launcher response timed out")
+            raise DriverClosed("compensating launcher transport closed")
+        return original_shell(command, **kwargs)
+
+    adb.shell = shell
+    before_gestures = list(adb.gestures)
+
+    with pytest.raises(DriverClosed, match="compensating launcher transport closed"):
+        drv._recapture_after_transient_pinned_signal(refused)
+
+    assert adb.shell_calls.count("am force-stop co.hinge.app") == 1
+    assert adb.shell_calls.count(launcher) == 2
+    assert adb.gestures == before_gestures
+    assert drv._scroll_top_pinned == old_latch
+    assert drv._pinned_signal_recovery_spent_binding == drv._scroll_top_signal_binding()
+    assert adb.taps == [] and adb.texts == []
 
 
 def test_return_chain_recovers_an_unmeasurable_leg_by_giving_part_of_it_back(

@@ -134,11 +134,12 @@ def test_shipped_opener_style_requires_value_without_forcing_a_claim(cfg):
     assert "write like two people looking at the same thing" in style
     assert "primary item rule" in style
     assert "clear main subject of the referenced note, angle, and opener" in style
-    assert "unnumbered context image as supporting context" in style
-    assert "connection back to the selected item" in style
+    assert "other numbered images are selection only" in style
+    assert "do not borrow one for the selected opener's premise, predicate, joke, question" in style
+    assert "explicit profile text may support a complete natural connection back to the selected item" in style
     assert "justify why the selected item was liked" in style
     assert "reason, subject, or payoff" in style
-    assert "not let another image replace the selected item" in style
+    assert "unnumbered context image as supporting context" not in style
     assert "photo header rule" in style
     assert "title, caption, or prompt printed with a photo is part of that same item" in style
     assert "defines how the photo is meant to be read" in style
@@ -178,7 +179,10 @@ def test_shipped_opener_style_requires_value_without_forcing_a_claim(cfg):
     assert "never as the whole message" not in style
     assert "setup payoff continuity" in style
     assert "every visible detail you name must be necessary to, and used by" in style
-    assert "if removing a descriptive clause leaves the later point or question unchanged, cut it" in style
+    assert "necessary means its exact identity changes how that move is understood" in style
+    assert "not merely that it anchors the reaction" in style
+    assert "removing a descriptive clause or replacing it" in style
+    assert "use the shorter implicit version" in style
     assert "question coherence" in style
     assert "ask one coherent thing at a time" in style
     assert "parallel, genuinely contrasting answers to that same underlying question" in style
@@ -242,12 +246,36 @@ def test_shipped_opener_style_requires_value_without_forcing_a_claim(cfg):
     assert "then do not say that detail back to her" not in style
 
 
-def test_shipped_opener_style_derives_the_move_without_an_example_menu(cfg):
-    """The profile should determine the move without a model-facing taxonomy to imitate."""
+def test_shipped_opener_style_defaults_to_minimum_sufficient_visual_reference(cfg):
+    """2026-09-08: the attached item can resolve an implicit reference by itself.
+
+    The watched draft and its rewrite stay in tests and the design record, never in the style
+    text. This pins the positive transformation rather than a blacklist of scene vocabulary.
+    """
     style = " ".join(cfg.opener.style.lower().split())
-    assert "derive the conversational move from the specific profile" in style
+    assert "minimum sufficient reference" in style
+    assert "default to omission or the least explicit natural reference" in style
+    assert "replace each literal description of visible content with an implicit reference" in style
+    assert "if the meaning, rhythm, and conversational move survive, use the implicit version" in style
+    assert "exact identity changes the point or is needed to distinguish possible referents" in style
+    assert "never merely to prove grounding, identify the selected item" in style
+    assert "attachment itself can make a referent immediately obvious" in style
+    assert "counts as the selected item anchor" in style
+    assert "full literal inventory in the private referenced and item_description fields" in style
+    assert "do not force implicit wording when it would create real ambiguity" in style
+    assert "specificity may come from how the message fits the attached item" in style
+    assert "subject to minimum sufficient reference" in style
+    assert "tiled bench" not in style
+    assert "glass of wine" not in style
+
+
+def test_shipped_opener_style_derives_the_move_without_an_example_menu(cfg):
+    """The selected item and profile text determine the move without a stock taxonomy."""
+    style = " ".join(cfg.opener.style.lower().split())
+    assert "derive the conversational move from the selected item and explicit profile text" in style
     assert "rather than choosing from a fixed taxonomy" in style
-    assert "two separate parts of her profile create one natural angle" in style
+    assert "profile text connection is specific only when the selected item supplies an essential part of the thought" in style
+    assert "different image supplies its concept, predicate, joke, or payoff" in style
     assert "ways this tends to look" not in style
     assert "examples, not a checklist" not in style
 
@@ -272,10 +300,11 @@ def test_shipped_opener_style_does_not_ship_the_item_selection_rule(cfg):
     (PICK THE ITEM YOURSELF / THE FAILURE TO AVOID / THE UNNUMBERED IMAGES ARE CONTEXT) and no
     longer does, on purpose.
 
-    opener.py's _SYSTEM keeps the selection criterion -- the tradeoff, the failure mode named as
-    a failure, and why to use (never pick) the unnumbered context tier -- in full, compressed but
-    not abridged, pinned by tests/test_opener.py. The instruction lives in exactly one place, and
-    this test pins its absence here rather than its presence.
+    opener.py's _SYSTEM keeps the selection criterion -- the tradeoff and the failure mode named
+    as a failure -- in full, compressed but not abridged, pinned by tests/test_opener.py.
+    Unnumbered context is now retained only for replay/forensics and withheld from generation.
+    The selection instruction lives in exactly one place, and this test pins its absence here
+    rather than its presence.
     """
     style = " ".join(cfg.opener.style.lower().split())
 
@@ -292,8 +321,12 @@ def test_shipped_opener_style_does_not_ship_the_item_selection_rule(cfg):
             "opener.py's _SYSTEM -- see test_opener.py's item-selection assertions."
         )
 
-    # The whole-profile connection principle remains, without the former move menu.
-    assert "two separate parts of her profile create one natural angle" in style
+    # The item rule remains one instruction in the payload, but context candidates cannot
+    # provide a selected opener's thought after the choice has been made.
+    assert "other numbered images are selection only" in style
+    assert "do not borrow one for the selected opener's premise, predicate, joke, question" in style
+    assert "explicit profile text may support a complete natural connection back to the selected item" in style
+    assert "unnumbered context image as supporting context" not in style
     assert "a natural claim she can correct can be effective, but it is not mandatory" in style
 
 
@@ -368,6 +401,14 @@ def test_shipped_opener_style_ships_the_spoken_register_rules(cfg):
     assert "the contractions a relaxed speaker would use" in style
     assert "natural spoken elision" in style
     assert "no chat abbreviations" in style
+    assert "idiom fit" in style
+    assert "idiom only when it is contemporary" in style
+    assert "everyday, immediately understandable on first reading in ordinary conversation" in style
+    assert "semantically apt to the item and point" in style
+    assert "natural when spoken" in style
+    assert "idioms that are dated, literary, formal, obscure, forced, or tied to a passing trend" in style
+    assert "does not license internet slang, memes, or borrowed caption wording" in style
+    assert "makes her stop to decode the point" in style
     assert "say it once" in style
     assert "never restate a connection or context the message itself already established" in style
     assert "compliment as remark" in style
@@ -384,6 +425,7 @@ def test_shipped_opener_style_ships_the_spoken_register_rules(cfg):
     # De-templating (2026-08-16): the motivating copy above must stay off wire.
     assert "classic sense of style" not in style
     assert "you got there" not in style
+    assert "hold court" not in style
 
 
 def test_shipped_opener_style_ships_the_no_grading_rule(cfg):
@@ -572,6 +614,11 @@ def test_hinge_identity_top_name_band_matches_the_measured_ocr_band(cfg):
     fallback = cfg.apps["hinge"].get("identity_top_name_fallback_band")
     assert fallback is not None, "apps.hinge.identity_top_name_fallback_band is missing"
     assert tuple(fallback) == (0.03, 0.130, 0.75, 0.235)
+    take_another_look = cfg.apps["hinge"].get(
+        "identity_top_name_take_another_look_band")
+    assert take_another_look is not None, (
+        "apps.hinge.identity_top_name_take_another_look_band is missing")
+    assert tuple(take_another_look) == (0.03, 0.215, 0.75, 0.285)
 
 
 def test_normal_auto_is_uncapped_by_default(cfg):

@@ -662,6 +662,42 @@ def test_debug_log_section_tails_actions_and_flags_error_shots(tmp_path):
     assert "like did not land" in md                              # actions.jsonl tail inlined
 
 
+def test_debug_log_names_recovered_adb_screencap_timeout(tmp_path):
+    """A retained driver failure shot means its post-timeout screencap recovered.
+
+    The evidence is contemporaneous: the handler requests this frame only after catching the
+    original timeout.
+    """
+    run = tmp_path / "run-timeout"
+    run.mkdir()
+    (run / "00001_unexpected_error.png").write_bytes(b"post-timeout-frame")
+    (run / "actions.jsonl").write_text(
+        '{"ts":"2026-09-08T05:34:33","action":"unexpected",'
+        '"error":"AdbError: ADB command timed out after 10s: adb -s pixel '
+        'exec-out screencap -p","screenshot":"00001_unexpected_error.png"}\n')
+
+    md = bugreport._one_debug_dir_md("hinge", {"debug_dir": str(tmp_path)})
+
+    assert "transient screencap/ADB stall rather than a persistent disconnect" in md
+
+
+def test_debug_log_keeps_an_exhausted_adb_timeout_indeterminate_without_a_snapshot(tmp_path):
+    """An exhausted retry remains a timeout incident even when its failure snapshot is absent."""
+    run = tmp_path / "run-timeout"
+    run.mkdir()
+    (run / "actions.jsonl").write_text(
+        '{"ts":"2026-09-08T05:34:33","action":"unexpected",'
+        '"error":"AdbError: ADB screencap recovery exhausted after 2 read-only attempts; '
+        'final failure: ADB command failed with exit code 1: adb -s pixel '
+        'exec-out screencap -p","screenshot":"missing.png"}\n')
+
+    md = bugreport._one_debug_dir_md("hinge", {"debug_dir": str(tmp_path)})
+
+    assert "ADB screencap timeout at `2026-09-08T05:34:33`" in md
+    assert "`missing.png` was named but is missing or unsafe to read" in md
+    assert "recovery versus disconnect is indeterminate" in md
+
+
 def test_debug_log_section_marks_previous_run_separately_from_live_status(tmp_path):
     previous = tmp_path / "previous-run"
     previous.mkdir(parents=True)
@@ -721,6 +757,37 @@ def test_debug_log_links_full_auto_opener_snapshot_and_landed_outcome(tmp_path):
     assert f"full opener: `{opener}` (verified)" in md
     assert "linked outcome: LIKE verified as landed at `2026-08-25T04:06:37`" in md
     assert "human-reviewed approval evidence ID" not in md
+
+
+def test_debug_log_renders_training_generation_context_for_an_unacted_draft(tmp_path):
+    run = tmp_path / "run_training_generation_context"
+    run.mkdir(parents=True)
+    frame = b"typed opener awaiting review"
+    opener = "Do those two have their own tabs in the spreadsheet?"
+    shot = "00023_auto_opener_pre_send_before.png"
+    (run / shot).write_bytes(frame)
+    record = {
+        "action": "auto_opener_pre_send", "session_mode": "training", "before": shot,
+        "opener": opener, "opener_sha256": hashlib.sha256(opener.encode()).hexdigest(),
+        "frame_sha256": hashlib.sha256(frame).hexdigest(), "evidence_id": "evidence",
+        "model_item_index": 2, "model": "gemini-3.5-flash",
+        "index_space": "model_items",
+        "referenced": "two brown dachshund puppies on a yoga mat",
+        "angle": "asking whether the puppies have spreadsheet tabs",
+        "item_description": "photo of Mariana holding two dachshund puppies",
+    }
+    (run / "actions.jsonl").write_text(json.dumps(record) + "\n")
+
+    evidence = bugreport._latest_auto_opener_evidence_md(
+        (run / "actions.jsonl").read_text().splitlines(), run)
+
+    assert "generation context (model-private fields, not a sent/committed opener):" in evidence
+    assert "model: `gemini-3.5-flash`" in evidence
+    assert "index space: `model_items`" in evidence
+    assert "referenced: `two brown dachshund puppies on a yoga mat`" in evidence
+    assert "angle: `asking whether the puppies have spreadsheet tabs`" in evidence
+    assert "item description: `photo of Mariana holding two dachshund puppies`" in evidence
+    assert "linked outcome: no linked send outcome was logged" in evidence
 
 
 def test_debug_log_renders_training_resumed_send_snapshot_and_preserves_approval_link(tmp_path):
@@ -822,10 +889,13 @@ def test_debug_log_links_unverified_training_dislike_to_its_draft(tmp_path):
     run = tmp_path / "run_training_dislike_unverified"
     run.mkdir(parents=True)
     frame = b"typed opener shown at the training checkpoint"
+    landing_frame = b"a new card shown after the irreversible X tap"
     opener = "A draft the reviewer chose not to send."
     evidence_id = hashlib.sha256(frame + b"\0" + opener.encode()).hexdigest()
     shot = "00016_auto_opener_pre_send_before.png"
+    landing_shot = "00017_training_advance_probe_before.png"
     (run / shot).write_bytes(frame)
+    (run / landing_shot).write_bytes(landing_frame)
     records = [
         {
             "ts": "2026-09-02T23:06:39", "action": "auto_opener_pre_send",
@@ -834,6 +904,25 @@ def test_debug_log_links_unverified_training_dislike_to_its_draft(tmp_path):
             "frame_sha256": hashlib.sha256(frame).hexdigest(),
             "evidence_id": evidence_id, "model_item_index": 3,
             "session_mode": "training",
+        },
+        {
+            "ts": "2026-09-02T23:06:47", "action": "training_advance_probe",
+            "attempt": 3, "outcome": "retry", "before": landing_shot,
+            "kept_before": landing_shot,
+            "first": {
+                "composer_open": False, "deck_ready": True, "current_profile": False,
+                "current_content_exact_matched": False,
+                "current_content_shift_matched": False,
+                "identity_verdict": "identity_unknown",
+                "name_verdict": None,
+                "name_candidate": "A Private Profile Name",
+                "ocr_attempts": [
+                    {"recipe": "identity_band_psm7_3x", "verdict": None,
+                     "candidate_sha256": None},
+                    {"recipe": "top_card_header_psm6_3x", "verdict": "new",
+                     "candidate_sha256": "redacted-candidate-digest"},
+                ],
+            },
         },
         {
             "ts": "2026-09-02T23:06:48", "action": "training_dislike_unverified",
@@ -849,6 +938,119 @@ def test_debug_log_links_unverified_training_dislike_to_its_draft(tmp_path):
     assert ("X/Dislike tap was issued but its landing could not be semantically verified; no "
             "training label was recorded; typed opener was not sent at `2026-09-02T23:06:48`") in evidence
     assert "no linked send outcome was logged" not in evidence
+    assert f"pre-action checkpoint snapshot: `{shot}` (verified)" in evidence
+    assert ("post-X landing verification (final refused Training advance probe; attempt `3`, "
+            "outcome `retry`).") in evidence
+    assert (f"first post-X observation: frame `{landing_shot}` (retained on disk; field "
+            "`kept_before`); composer_open=no; deck_ready=yes; current_profile=no; "
+            "content(exact=no; shifted=no); identity=identity_unknown; name_verdict=not "
+            "recorded; OCR attempts: identity_band_psm7_3x: verdict=not recorded, no candidate; "
+            "top_card_header_psm6_3x: verdict=new, candidate redacted.") in evidence
+    assert "A Private Profile Name" not in evidence
+    assert "redacted-candidate-digest" not in evidence
+    assert "The action remains unverified and no training label was recorded." in evidence
+
+
+def test_training_unverified_landing_binds_first_and_second_diagnostics_to_their_frames(
+        tmp_path):
+    """A retained second frame must never be described with first-frame state."""
+    run = tmp_path / "run"
+    run.mkdir()
+    first_shot = "00017_training_advance_probe_before.png"
+    second_shot = "00018_training_advance_probe_after.png"
+    (run / first_shot).write_bytes(b"first")
+    (run / second_shot).write_bytes(b"second")
+    outcome = {"action": "training_dislike_unverified"}
+    records = [
+        {"action": "auto_opener_pre_send"},
+        {
+            "action": "training_advance_probe", "attempt": 3, "outcome": "retry",
+            "before": first_shot, "kept_before": first_shot,
+            "after": second_shot, "kept_after": second_shot,
+            "first": {"composer_open": False, "deck_ready": True,
+                      "current_profile": False},
+            "second": {"composer_open": True, "deck_ready": False,
+                       "current_profile": True},
+            "stable": False, "names_agree": False,
+        },
+        outcome,
+    ]
+
+    evidence = "\n".join(bugreport._training_dislike_unverified_landing_md(
+        records, 0, outcome, run))
+
+    assert (f"first post-X observation: frame `{first_shot}`" in evidence
+            and "composer_open=no; deck_ready=yes; current_profile=no" in evidence)
+    assert (f"second post-X observation: frame `{second_shot}`" in evidence
+            and "composer_open=yes; deck_ready=no; current_profile=yes" in evidence)
+    assert "pair verdict: stable=no; names_agree=no." in evidence
+    assert f"first post-X observation: frame `{second_shot}`" not in evidence
+
+
+def test_training_unverified_landing_redacts_unrecognised_state_and_malicious_filename(tmp_path):
+    """Untrusted OCR/state text and a real-but-hostile filename cannot enter the report."""
+    run = tmp_path / "run"
+    run.mkdir()
+    hostile = "00019_bad`\nprofile-secret.png"
+    (run / hostile).write_bytes(b"not a report-safe debug filename")
+    outcome = {"action": "training_dislike_unverified"}
+    records = [
+        {"action": "auto_opener_pre_send"},
+        {
+            "action": "training_advance_probe", "attempt": 3, "outcome": "retry",
+            "before": hostile, "kept_before": hostile,
+            "first": {
+                "identity_verdict": "Private Name / bearer leaked-token",
+                "name_verdict": "Private Name",
+                "ocr_attempts": [
+                    {"recipe": "Private Name", "verdict": "bearer leaked-token",
+                     "candidate_sha256": "candidate-digest"},
+                ],
+            },
+        },
+        outcome,
+    ]
+
+    evidence = "\n".join(bugreport._training_dislike_unverified_landing_md(
+        records, 0, outcome, run))
+
+    assert "frame not retained or unsafe" in evidence
+    assert "identity=unrecognised; name_verdict=unrecognised" in evidence
+    assert "OCR attempts: unrecognised: verdict=unrecognised, candidate redacted." in evidence
+    for secret in ("Private Name", "leaked-token", "candidate-digest", hostile):
+        assert secret not in evidence
+
+
+def test_opener_checkpoint_snapshot_rejects_hostile_symlinked_and_oversized_files(
+        tmp_path, monkeypatch):
+    """Checkpoint evidence uses the same bounded safe-PNG rules as landing evidence."""
+    run = tmp_path / "run"
+    run.mkdir()
+    hostile = "00020_bad`\nprofile-secret.png"
+    symlinked = "00021_auto_opener_pre_send_before.png"
+    oversized = "00022_auto_opener_pre_send_before.png"
+    (run / hostile).write_bytes(b"hostile filename")
+    outside = tmp_path / "outside.png"
+    outside.write_bytes(b"outside")
+    (run / symlinked).symlink_to(outside)
+    (run / oversized).write_bytes(b"four")
+
+    def render(shot):
+        return bugreport._latest_auto_opener_evidence_md([json.dumps({
+            "action": "auto_opener_pre_send", "session_mode": "training",
+            "before": shot, "opener": "A private draft", "evidence_id": "evidence",
+        })], run)
+
+    hostile_report = render(hostile)
+    symlink_report = render(symlinked)
+    monkeypatch.setattr(bugreport, "_DEBUG_SCREENSHOT_MAX_BYTES", 3)
+    oversized_report = render(oversized)
+
+    for report in (hostile_report, symlink_report, oversized_report):
+        assert "snapshot: `not recorded or unsafe` (⚠️ screenshot missing or unsafe)" in report
+    assert "profile-secret" not in hostile_report
+    assert symlinked not in symlink_report
+    assert oversized not in oversized_report
 
 
 def test_debug_log_classifies_stop_cancelled_training_draft_as_unsent_and_uncommitted(tmp_path):
@@ -2549,6 +2751,35 @@ def test_screenshot_digest_rejects_paths_outside_the_flat_run_directory(tmp_path
     assert bugreport._shot_digest(run, "../outside.png", {}) is None
     assert bugreport._shot_digest(run, "nested/shot.png", {}) is None
     assert bugreport._shot_digest(run, "actions.jsonl", {}) is None
+
+
+def test_screenshot_digest_rejects_a_symlink_even_with_a_flat_png_name(tmp_path):
+    """JSONL must not use a symlink to make the report hash pixels outside its run."""
+    outside = tmp_path / "outside.png"
+    outside.write_bytes(b"private pixels")
+    run = tmp_path / "run"
+    run.mkdir()
+    (run / "00001_capture_before.png").symlink_to(outside)
+
+    assert bugreport._shot_digest(run, "00001_capture_before.png", {}) is None
+
+
+def test_screenshot_digest_will_not_read_an_oversized_png(tmp_path, monkeypatch):
+    """The size guard must prevent the read, not merely reject an invalid filename."""
+    run = tmp_path / "run"
+    run.mkdir()
+    shot = run / "00001_capture_before.png"
+    shot.write_bytes(b"four")
+
+    monkeypatch.setattr(bugreport, "_DEBUG_SCREENSHOT_MAX_BYTES", 3)
+    assert bugreport._shot_digest(run, shot.name, {}) is None
+
+    monkeypatch.setattr(bugreport, "_DEBUG_SCREENSHOT_MAX_BYTES", 4)
+    assert bugreport._shot_digest(run, shot.name, {}) == hashlib.sha256(b"four").hexdigest()
+
+    empty = run / "00002_capture_after.png"
+    empty.write_bytes(b"")
+    assert bugreport._shot_digest(run, empty.name, {}) is None
 
 
 def test_a_pass_reusing_the_previous_still_frame_is_not_flagged(tmp_path):

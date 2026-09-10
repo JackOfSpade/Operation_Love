@@ -782,6 +782,34 @@ def test_a_card_that_moved_between_the_read_and_the_like_is_a_hard_stop():
 # Refusal: the scroll
 # =====================================================================================
 
+def test_a_capture_transport_failure_after_a_gesture_propagates_without_replaying_navigation(
+        monkeypatch):
+    """A capture retry belongs below navigation, never around its whole walk.
+
+    Once an upward gesture returns, the card may already have moved.  Retrying the complete
+    navigation here would issue another gesture from an unmeasured page position and could land
+    on a different heart.  The read-only ADB screencap operation may safely retry its *own*
+    request; if that bounded retry is exhausted, this layer must propagate the transport error
+    with the one completed gesture as the terminal state.
+    """
+    from operation_love.drivers.adb import AdbError
+
+    driver = FakeDriver()
+    real_screencap = driver._screencap
+
+    def fail_after_first_navigation_gesture():
+        if driver.gestures:
+            raise AdbError(["adb", "exec-out", "screencap", "-p"], "transient timeout")
+        return real_screencap()
+
+    monkeypatch.setattr(driver, "_screencap", fail_after_first_navigation_gesture)
+
+    with pytest.raises(AdbError, match="transient timeout"):
+        _navigate(driver, 1)
+
+    assert len(driver.gestures) == 1
+
+
 def test_a_scroll_that_moves_nothing_is_a_stalled_loop_and_stops():
     """`step_overshoot`'s other half, through the sign flip. Ascending, the magnitude handed to
     it is `-delta`, so "the profile did not move" now also covers "it moved the WRONG WAY" — both

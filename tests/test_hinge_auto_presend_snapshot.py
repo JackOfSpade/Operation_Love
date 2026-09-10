@@ -476,7 +476,7 @@ def test_training_freshly_locates_pass_from_keyboard_hidden_composer(tmp_path, m
     monkeypatch.setattr(driver, "_interruptible_sleep", lambda *_a, **_kw: True)
     monkeypatch.setattr(
         driver, "_verify_training_dislike_landed",
-        lambda item, **_kw: events.append(("training_advance", item)) or "identity")
+        lambda item, **kw: events.append(("training_advance", item, kw)) or "identity")
     monkeypatch.setattr(hinge, "_match_glyph", lambda frame, template, **_kw: [(80, 80)])
     driver.set_training_decision(lambda _frame, _evidence: "dislike")
 
@@ -485,7 +485,7 @@ def test_training_freshly_locates_pass_from_keyboard_hidden_composer(tmp_path, m
     assert ("tap", (80, 80)) in events
     assert ("tap", composer.confirm_point) not in events
     assert verified[-1] == b"FRESH_FOR_PASS"
-    assert ("training_advance", 1) in events
+    assert ("training_advance", 1, {"allow_same_name_successor": True}) in events
     records = [
         json.loads(line)
         for line in (driver._dbg.dir / "actions.jsonl").read_text().splitlines()
@@ -739,6 +739,114 @@ def test_training_dislike_accepts_repeated_structured_two_letter_name(tmp_path, 
     assert probe["names_agree"] is True
 
 
+def test_training_dislike_accepts_repeated_name_below_take_another_look_panel(
+        tmp_path, monkeypatch):
+    """Holly -> Lauren: the panel is structural evidence for a shifted OCR crop only.
+
+    The semantic Training gate remains unchanged: Hinge must be at canonical top with a closed,
+    ready deck, and Lauren must be read twice from the same lower calibrated crop on stable
+    frames.  Content mismatch alone still has no authority to create this label.
+    """
+    import numpy as np
+
+    driver, _adb = _driver([])
+    driver._dbg = HingeDebugLog(str(tmp_path), run_id="training-take-another-look")
+    driver._identity_name = "Holly"
+    driver._identity_sig = np.zeros((16, 64), dtype="int16")
+    driver._identity_top_sig = np.full((16, 64), 99, dtype="int16")
+    frames = iter((b"LAUREN_PANEL_FIRST", b"LAUREN_PANEL_SECOND"))
+
+    monkeypatch.setattr(driver, "_screencap", lambda: next(frames))
+    monkeypatch.setattr(driver, "_deck_blocked_reason", lambda _frame: None)
+    monkeypatch.setattr(driver, "_locate_inline_composer", lambda _frame: None)
+    monkeypatch.setattr(driver, "_observe_deck_ready", lambda _frame: True)
+    monkeypatch.setattr(driver, "_changed", lambda _before, _after: False)
+    monkeypatch.setattr(driver, "_interruptible_sleep", lambda *_a, **_kw: True)
+    monkeypatch.setattr(
+        hinge, "_band", lambda _frame, _rect: driver._identity_top_sig)
+    monkeypatch.setattr(
+        hinge, "confirm_scroll_top",
+        lambda *_a, **_kw: SimpleNamespace(
+            state="confirmed_top", confirmed=True, distance=0.0,
+            reason="canonical scroll top confirmed"))
+
+    def ocr(_frame, rect, psm="7", **_kwargs):
+        if psm != "6":
+            return None
+        if tuple(rect) == driver.identity_top_name_band:
+            return "Take another look"
+        if tuple(rect) == driver.identity_top_name_take_another_look_band:
+            return "Lauren"
+        return None
+
+    monkeypatch.setattr(driver, "_ocr_band", ocr)
+
+    assert driver._verify_training_dislike_landed(1) == "name"
+    records = [
+        json.loads(line)
+        for line in (driver._dbg.dir / "actions.jsonl").read_text().splitlines()
+    ]
+    probe = next(record for record in records if record["action"] == "training_advance_probe")
+    assert probe["outcome"] == "accepted"
+    assert probe["first"]["name_candidate"] == "Lauren"
+    assert probe["second"]["name_candidate"] == "Lauren"
+    assert (probe["first"]["name_source"]
+            == "top_card_header_take_another_look")
+    assert probe["names_agree"] is True
+    assert probe["stable"] is True
+
+
+def test_training_panel_fuzzy_stored_name_recipe_disagreement_cannot_prove_advance(
+        monkeypatch):
+    """Two distinct fuzzy reads must not leak the panel source into Training's exact-name path.
+
+    `current_profile=False` plus a content mismatch is deliberately the strongest adversarial
+    caller shape: before the paired-candidate rule, ``Holli`` / ``Hollyx`` both fuzzy-matched
+    stored Holly, published the lower OCR source, and could be promoted by the exact-name
+    conflict helper.  The disagreement now remains a top/inconclusive frame and returns no
+    semantic proof.
+    """
+    import numpy as np
+
+    driver, _adb = _driver([])
+    driver._identity_name = "Holly"
+    driver._identity_sig = np.zeros((16, 64), dtype="int16")
+    driver._identity_top_sig = np.full((16, 64), 99, dtype="int16")
+    monkeypatch.setattr(
+        hinge, "_band", lambda _frame, _rect: driver._identity_top_sig)
+
+    def ocr(_frame, rect, psm="7", *, upscale=3, **_kwargs):
+        if psm != "6":
+            return None
+        if tuple(rect) == driver.identity_top_name_band:
+            return "Take another look"
+        if tuple(rect) == driver.identity_top_name_take_another_look_band:
+            return "Holli" if upscale == 3 else "Hollyx"
+        return None
+
+    monkeypatch.setattr(driver, "_ocr_band", ocr)
+
+    def content_mismatched_noncurrent(frame, *, require_content=False, diagnostics=None):
+        assert require_content is True
+        assert driver._identity_of(frame)[0] == "top"
+        if diagnostics is not None:
+            diagnostics.update(
+                current_profile=False, current_profile_branch="content_only",
+                current_content_exact_matched=False, current_content_shift_matched=False)
+        return False
+
+    monkeypatch.setattr(driver, "_is_current_profile_frame", content_mismatched_noncurrent)
+
+    diagnostics = {}
+    assert driver._training_profile_advance_proof(
+        b"FUZZY_PANEL_DISAGREEMENT", None, diagnostics=diagnostics) is None
+    assert diagnostics["current_profile"] is False
+    assert diagnostics["current_content_exact_matched"] is False
+    assert diagnostics["name_candidate"] is None
+    assert driver._identity_name_candidate_source is None
+    assert driver._identity_top_name_read_source == "top_card_header"
+
+
 def test_training_advance_accepts_repeated_new_name_despite_photo_collision(
         tmp_path, monkeypatch):
     """The Ery -> Roisin incident: a new first photo matched Ery's coarse content signature.
@@ -927,6 +1035,232 @@ def test_training_exact_name_conflict_still_rejects_matching_profile_content(mon
     assert diagnostics["current_profile"] is True
     assert diagnostics["current_content_exact_matched"] is True
     assert diagnostics["name_verdict"] == "same"
+
+
+def test_training_dislike_accepts_two_stable_content_disjoint_same_name_successors(
+        tmp_path, monkeypatch):
+    """Lauren -> Lauren is labelable only on the opt-in post-X Dislike verifier.
+
+    The profile's first-name strip collides, but both captured candidates are content-disjoint,
+    use the normal exact card-header name read, and are canonically at top.  The outer verifier
+    must still observe the same proof twice on stable, ready deck frames.
+    """
+    driver, _adb = _driver([])
+    driver._dbg = HingeDebugLog(str(tmp_path), run_id="training-same-name-successor")
+    driver._identity_name = "Lauren"
+    frames = iter((b"LAUREN_SUCCESSOR_FIRST", b"LAUREN_SUCCESSOR_SECOND"))
+
+    monkeypatch.setattr(driver, "_screencap", lambda: next(frames))
+    monkeypatch.setattr(driver, "_deck_blocked_reason", lambda _frame: None)
+    monkeypatch.setattr(driver, "_locate_inline_composer", lambda _frame: None)
+    monkeypatch.setattr(driver, "_observe_deck_ready", lambda _frame: True)
+    monkeypatch.setattr(driver, "_changed", lambda _before, _after: False)
+    monkeypatch.setattr(driver, "_interruptible_sleep", lambda *_a, **_kw: True)
+    monkeypatch.setattr(
+        hinge, "confirm_scroll_top",
+        lambda *_a, **_kw: SimpleNamespace(
+            state="confirmed_top", confirmed=True, distance=0.0,
+            reason="canonical scroll top confirmed"))
+
+    def different_same_name(_frame, *, require_content=False, diagnostics=None):
+        assert require_content is True
+        driver._identity_top_name_verdict = "same"
+        driver._identity_top_name_read = "Lauren"
+        driver._identity_top_name_read_source = "top_card_header"
+        if diagnostics is not None:
+            diagnostics.update(
+                current_profile=False,
+                current_identity_state="same",
+                current_profile_branch="identity_same_with_content",
+                current_content_exact_matched=False,
+                current_content_shift_matched=False,
+            )
+        return False
+
+    monkeypatch.setattr(driver, "_is_current_profile_frame", different_same_name)
+
+    assert driver._verify_training_dislike_landed(
+        3, allow_same_name_successor=True) == "same_name_successor"
+    records = [json.loads(line) for line
+               in (driver._dbg.dir / "actions.jsonl").read_text().splitlines()]
+    probe = next(record for record in records if record["action"] == "training_advance_probe")
+    assert probe["outcome"] == "accepted"
+    assert probe["same_name_successor_enabled"] is True
+    assert probe["first"]["proof"] == "same_name_successor"
+    assert probe["first"]["same_name_successor_content_disjoint"] is True
+    assert probe["first"]["same_name_successor_same_name_verdict"] is True
+    assert probe["first"]["same_name_successor_exact_stored_name"] is True
+    assert probe["first"]["same_name_successor_source"] == "top_card_header"
+    assert probe["first"]["same_name_successor_top_confirmed"] is True
+    assert probe["names_agree"] is True
+    assert probe["stable"] is True
+
+
+@pytest.mark.parametrize("exact, shifted, source, text, top_confirmed, verdict, identity_state", [
+    (True, False, "top_card_header", "Lauren", True, "same", "same"),
+    (False, True, "top_card_header", "Lauren", True, "same", "same"),
+    (False, False, "identity_band", "Lauren", True, "same", "same"),
+    (False, False, "top_card_header_take_another_look", "Lauren", True, "same", "same"),
+    (False, False, "top_card_header", None, True, "same", "same"),
+    (False, False, "top_card_header", "Lauren", False, "same", "same"),
+    (False, False, "top_card_header", "Lauren", True, "new", "same"),
+    (False, False, "top_card_header", "Lauren", True, "same", None),
+    (False, False, "top_card_header", "Lauren", True, "same", "new"),
+])
+def test_training_same_name_successor_rejects_any_missing_conjunction(
+        exact, shifted, source, text, top_confirmed, verdict, identity_state, monkeypatch):
+    """Content overlap, unsafe OCR, unreadable OCR, or non-top geometry cannot label it."""
+    driver, _adb = _driver([])
+    driver._identity_name = "Lauren"
+    monkeypatch.setattr(
+        hinge, "confirm_scroll_top",
+        lambda *_a, **_kw: SimpleNamespace(
+            state="confirmed_top" if top_confirmed else "not_top",
+            confirmed=top_confirmed, distance=0.0,
+            reason="test scroll-top result"))
+
+    diagnostics = {
+        "current_profile_branch": "identity_same_with_content",
+        "current_content_exact_matched": exact,
+        "current_content_shift_matched": shifted,
+    }
+    if identity_state is not None:
+        diagnostics["current_identity_state"] = identity_state
+    driver._identity_top_name_verdict = verdict
+    driver._identity_top_name_read = text
+    driver._identity_top_name_read_source = source
+
+    assert driver._training_same_name_content_disjoint_successor_proof(
+        b"SAME_NAME_CANDIDATE", current_profile=False, diagnostics=diagnostics) is None
+    assert diagnostics["same_name_successor_considered"] is True
+    assert (diagnostics["same_name_successor_content_disjoint"]
+            is (not exact and not shifted))
+    if not top_confirmed and not exact and not shifted and text is not None and source in {
+            "top_card_header", "top_card_header_fallback"}:
+        assert diagnostics["same_name_successor_top_confirmed"] is False
+    if verdict != "same":
+        assert diagnostics["same_name_successor_same_name_verdict"] is False
+    if identity_state != "same":
+        assert diagnostics["same_name_successor_identity_state_same"] is False
+
+
+def test_training_like_cannot_use_same_name_content_disjoint_successor(monkeypatch):
+    """The same-name exception is unavailable to Training Like and all shared callers."""
+    driver, _adb = _driver([])
+    driver._identity_name = "Lauren"
+    frames = iter((b"LIKE_SAME_NAME_0", b"LIKE_SAME_NAME_1", b"LIKE_SAME_NAME_2"))
+
+    monkeypatch.setattr(driver, "_screencap", lambda: next(frames))
+    monkeypatch.setattr(driver, "_deck_blocked_reason", lambda _frame: None)
+    monkeypatch.setattr(driver, "_locate_inline_composer", lambda _frame: None)
+    monkeypatch.setattr(driver, "_observe_deck_ready", lambda _frame: True)
+    monkeypatch.setattr(driver, "_interruptible_sleep", lambda *_a, **_kw: True)
+
+    def different_same_name(_frame, *, require_content=False, diagnostics=None):
+        assert require_content is True
+        driver._identity_top_name_verdict = "same"
+        driver._identity_top_name_read = "Lauren"
+        driver._identity_top_name_read_source = "top_card_header"
+        if diagnostics is not None:
+            diagnostics.update(
+                current_profile=False,
+                current_profile_branch="identity_same_with_content",
+                current_content_exact_matched=False,
+                current_content_shift_matched=False,
+            )
+        return False
+
+    monkeypatch.setattr(driver, "_is_current_profile_frame", different_same_name)
+
+    with pytest.raises(HingeActionError, match="semantically different ready deck"):
+        driver._verify_training_like_landed(3)
+
+
+def test_training_same_name_successor_requires_stable_pair(monkeypatch):
+    """Two individually valid successor observations still fail while the deck is moving."""
+    driver, _adb = _driver([])
+    driver._identity_name = "Lauren"
+    frames = iter(f"MOVING_LAUREN_{index}".encode() for index in range(6))
+
+    monkeypatch.setattr(driver, "_screencap", lambda: next(frames))
+    monkeypatch.setattr(driver, "_interruptible_sleep", lambda *_a, **_kw: True)
+    monkeypatch.setattr(driver, "_changed", lambda _before, _after: True)
+
+    def proof(_frame, _item, *, diagnostics, **_kwargs):
+        diagnostics["same_name_successor_source"] = "top_card_header"
+        return "same_name_successor", "lauren"
+
+    monkeypatch.setattr(driver, "_training_dislike_surface_proof", proof)
+
+    with pytest.raises(HingeActionError, match="semantically different ready deck"):
+        driver._verify_training_dislike_landed(3, allow_same_name_successor=True)
+
+
+def test_training_same_name_successor_rejects_mixed_header_sources(monkeypatch):
+    """A repeated same-name proof must come from the same calibrated header crop."""
+    driver, _adb = _driver([])
+    frames = iter(f"MIXED_LAUREN_{index}".encode() for index in range(6))
+    sources = iter(("top_card_header", "top_card_header_fallback") * 3)
+
+    monkeypatch.setattr(driver, "_screencap", lambda: next(frames))
+    monkeypatch.setattr(driver, "_interruptible_sleep", lambda *_a, **_kw: True)
+    monkeypatch.setattr(driver, "_changed", lambda _before, _after: False)
+
+    def proof(_frame, _item, *, diagnostics, **_kwargs):
+        diagnostics["same_name_successor_source"] = next(sources)
+        return "same_name_successor", "lauren"
+
+    monkeypatch.setattr(driver, "_training_dislike_surface_proof", proof)
+
+    with pytest.raises(HingeActionError, match="semantically different ready deck"):
+        driver._verify_training_dislike_landed(3, allow_same_name_successor=True)
+
+
+def test_training_same_name_successor_real_current_matcher_accepts_stable_lauren(
+        tmp_path, monkeypatch):
+    """Two real same-name/content-disjoint observations prove the next Lauren card."""
+    import numpy as np
+
+    driver, _adb = _driver([])
+    driver._dbg = HingeDebugLog(str(tmp_path), run_id="same-name-successor", keep_shots=8)
+    driver._identity_name = "Lauren"
+    driver._identity_sig = np.zeros((16, 64), dtype=np.int16)
+    driver._identity_top_sig = np.full((16, 64), 99, dtype=np.int16)
+    driver._current_sigs = [np.zeros((24, 24), dtype=np.int16)]
+    frames = iter((b"LAUREN_SUCCESSOR_ONE", b"LAUREN_SUCCESSOR_TWO"))
+
+    monkeypatch.setattr(driver, "_screencap", lambda: next(frames))
+    monkeypatch.setattr(driver, "_deck_blocked_reason", lambda _frame: None)
+    monkeypatch.setattr(driver, "_locate_inline_composer", lambda _frame: None)
+    monkeypatch.setattr(driver, "_observe_deck_ready", lambda _frame: True)
+    monkeypatch.setattr(driver, "_interruptible_sleep", lambda *_a, **_kw: True)
+    monkeypatch.setattr(driver, "_changed", lambda _before, _after: False)
+    monkeypatch.setattr(hinge, "_downsample", lambda _frame: np.full(
+        (24, 24), 200, dtype=np.int16))
+    monkeypatch.setattr(
+        hinge, "_band", lambda _frame, _rect: driver._identity_top_sig.copy())
+    monkeypatch.setattr(
+        hinge, "confirm_scroll_top", lambda *_a, **_kw: SimpleNamespace(
+            confirmed=True, state="top", distance=0.0, reason="synthetic"))
+
+    def ocr(_frame, _rect, psm="7", **_kwargs):
+        return "Lauren" if psm == "6" else None
+
+    monkeypatch.setattr(driver, "_ocr_band", ocr)
+
+    assert driver._verify_training_dislike_landed(
+        3, allow_same_name_successor=True) == "same_name_successor"
+    records = [json.loads(line) for line
+               in (driver._dbg.dir / "actions.jsonl").read_text().splitlines()]
+    probe = next(record for record in records if record["action"] == "training_advance_probe")
+    assert probe["same_name_successor_enabled"] is True
+    assert probe["first"]["current_profile_branch"] == "identity_same_with_content"
+    assert probe["first"]["current_identity_state"] == "same"
+    assert probe["first"]["current_content_exact_matched"] is False
+    assert probe["first"]["current_content_shift_matched"] is False
+    assert probe["first"]["same_name_successor_source"] == "top_card_header"
+    assert probe["first"]["same_name_successor_top_confirmed"] is True
+    assert probe["second"]["same_name_successor_source"] == "top_card_header"
 
 
 def test_training_advance_rejects_non_top_name_candidate_on_current_profile(monkeypatch):
@@ -1282,7 +1616,7 @@ def test_training_dislike_recovers_a_reviewer_raised_keyboard(tmp_path, monkeypa
     monkeypatch.setattr(driver, "_locate_inline_composer", lambda _frame: composer)
     monkeypatch.setattr(driver, "_verify_sheet_shows", lambda *_a, **_kw: None)
     monkeypatch.setattr(driver, "_interruptible_sleep", lambda *_a, **_kw: True)
-    monkeypatch.setattr(driver, "_verify_training_dislike_landed", lambda _item: "identity")
+    monkeypatch.setattr(driver, "_verify_training_dislike_landed", lambda _item, **_kw: "identity")
     monkeypatch.setattr(
         hinge, "_match_glyph",
         lambda frame, *_a, **_kw: [] if frame == b"RESUMED_KEYBOARD_UP" else [(80, 80)])
@@ -1520,6 +1854,33 @@ def test_opener_evidence_rows_carry_no_prompt_era_when_never_bound(tmp_path):
                in (driver._dbg.dir / "actions.jsonl").read_text().splitlines()]
     row = next(r for r in records if r["action"] == "auto_opener_pre_send")
     assert row["prompt_sha256"] is None
+
+
+def test_training_presend_evidence_carries_the_bound_generation_context(tmp_path):
+    driver, _adb = _driver([])
+    driver.begin_training_session()
+    driver._dbg = HingeDebugLog(str(tmp_path), run_id="generation-context")
+    context = {
+        "model": "gemini-test-model",
+        "index_space": "model_items",
+        "referenced": "two brown dachshunds on a yoga mat",
+        "angle": "playfully asking whether the dogs are spreadsheet tabs",
+        "item_description": "photo of two dachshunds",
+    }
+    driver.set_staged_opener_generation_context(context)
+
+    evidence = driver._record_auto_opener_pre_send(
+        b"FRAME", opener="Do those two have their own tabs?", item_index=None,
+        model_item_index=2)
+
+    assert evidence["generation_context"] == context
+    records = [json.loads(line) for line
+               in (driver._dbg.dir / "actions.jsonl").read_text().splitlines()]
+    row = next(record for record in records if record["action"] == "auto_opener_pre_send")
+    for key, value in context.items():
+        assert row[key] == value
+    driver.set_staged_opener_generation_context(None)
+    assert driver._staged_opener_generation_context is None
 
 
 def test_current_profile_identity_reads_the_held_index(tmp_path):

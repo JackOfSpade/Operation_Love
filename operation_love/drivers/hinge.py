@@ -89,6 +89,7 @@ import sys
 import tempfile
 import threading
 import time
+import unicodedata
 from pathlib import Path
 
 from ..private_files import atomic_write_private_bytes, atomic_write_private_text
@@ -1278,6 +1279,13 @@ HINGE_SPEC = AndroidAppSpec(
     # a replacement for the broad crop; _identity_of tries it only after both broad recipes are
     # inconclusive, still under the canonical scroll-top and repeated-name gates.
     identity_top_name_fallback_band=(0.03, 0.130, 0.75, 0.235),
+    # Hinge's ``Take another look`` panel is a third measured scroll-top layout.  Both normal
+    # card-header OCR recipes must read that exact panel before this lower crop is considered,
+    # and both lower-name recipes must agree; otherwise it stays inconclusive. The panel moves
+    # the name below row 600, so shrinking/expanding the normal crop cannot cover both layouts
+    # without reaching photo content. Measured on Pixel 7a 1080x2400 from the 2026-09-08 Holly
+    # -> Lauren Training pass: rows 516..684 read ``Lauren`` cleanly in both recipes.
+    identity_top_name_take_another_look_band=(0.03, 0.215, 0.75, 0.285),
     # The headline of the out-of-free-likes paywall above: "You're out of free likes for today"
     # (plain ASCII apostrophe), a white TextView over the hero photo at bounds [116,505][964,692]
     # in the 2026-08-11 reference dump. The band is padded out to px (60,470)-(1030,720) =
@@ -2067,6 +2075,20 @@ _TOP_NAME_CHROME_WORDS = frozenset({
 # beside any other words) retains no power to manufacture a different-profile verdict.
 _SHORT_SIGNALS_BANNER_RE = re.compile(
     r"^([A-Za-z]{1,2}) shows thoughtful signals$", re.IGNORECASE)
+# The lower card-header crop below is NOT a general shifted OCR detector.  Hinge 10.2.0's
+# ``Take another look`` panel is a distinct, measured layout which moves the name beneath the
+# usual card-header band.  Only TWO exact, cleaned OCR outputs from that normal band permit the
+# separately calibrated lower crop to run; a partial phrase, an extra OCR word, or a one-recipe
+# result remains inconclusive.  The lower name also needs two matching OCR recipes, then the
+# ordinary canonical-top + two stable ready frames from the same source before Training can write
+# a label.
+_TAKE_ANOTHER_LOOK_BANNER = "take another look"
+
+
+def _is_take_another_look_banner(text: str | None) -> bool:
+    return isinstance(text, str) and text.casefold() == _TAKE_ANOTHER_LOOK_BANNER
+
+
 # Words HINGE ITSELF renders in the card-header band, observed in the real reads that built
 # identity_top_name_band ("Zorva @ | @ Signals Active today", Qelix's "Signals ( Agev )
 # Height v" equivalent at scroll-top), plus the pronoun/activity line directly below the name:
@@ -2091,6 +2113,11 @@ def _ocr_tokens_match_stored_name(tokens: list[str], stored: str) -> bool:
     )
 
 
+def _first_nonempty_ocr_line(text: str) -> str:
+    """Return OCR's first non-blank line without flattening its layout."""
+    return next((line for line in text.splitlines() if line.strip()), "")
+
+
 def _clean_first_line_name_candidate(text: str) -> str | None:
     """Return one clean, non-chrome name candidate from OCR's first line, or ``None``.
 
@@ -2102,7 +2129,7 @@ def _clean_first_line_name_candidate(text: str) -> str | None:
     binds that name to the profile-name slot.  The caller still requires canonical scroll-top
     geometry and two stable frames that repeat the same candidate from the same calibrated crop.
     """
-    first_line = text.splitlines()[0] if text else ""
+    first_line = _first_nonempty_ocr_line(text)
     banner_match = _SHORT_SIGNALS_BANNER_RE.fullmatch(first_line)
     if banner_match is not None:
         return banner_match.group(1)
@@ -2363,11 +2390,17 @@ class AndroidDriver(DatingAppDriver):
         self.identity_top_name_fallback_band = (
             tuple(identity_top_name_fallback_band)
             if identity_top_name_fallback_band is not None else None)
+        identity_top_name_take_another_look_band = app_cfg.get(
+            "identity_top_name_take_another_look_band",
+            spec.identity_top_name_take_another_look_band)
+        self.identity_top_name_take_another_look_band = (
+            tuple(identity_top_name_take_another_look_band)
+            if identity_top_name_take_another_look_band is not None else None)
         self.content_band = tuple(app_cfg.get("content_band", spec.content_band))
         self.observe_ignore_zones = tuple(
             tuple(zone) for zone in app_cfg.get("observe_ignore_zones", spec.observe_ignore_zones))
         self.observe_touch_watch = bool(app_cfg.get("observe_touch_watch", spec.observe_touch_watch))
-        # Re-run AndroidAppSpec.__post_init__'s rect/arity/pairing checks against these five
+        # Re-run AndroidAppSpec.__post_init__'s rect/arity/pairing checks against these seven
         # fields' MERGED (config.yaml-overridden) values, not just spec's own hardcoded
         # literals. __post_init__ already validates identity_band/identity_top_name_band/
         # content_band/observe_ignore_zones's shape and 0..1 range, and refuses
@@ -2391,14 +2424,14 @@ class AndroidDriver(DatingAppDriver):
         # identity_band=None (or gives it a malformed rect) must fail loudly here, not leave
         # _identity_of silently unable to ever resolve a "top" verdict by name.
         #
-        # dataclasses.replace() rebuilds a frozen AndroidAppSpec from `spec` with these five
+        # dataclasses.replace() rebuilds a frozen AndroidAppSpec from `spec` with these seven
         # fields swapped in, which reruns __init__ -- and therefore __post_init__ -- against
         # the MERGED values, purely for the side effect of __post_init__'s validation raising
         # the same ValueError it already raises for a bad literal. This is the only way to get
         # that validation without a second, independently-drifting copy of the rect/arity/
         # pairing logic living here too (see AndroidAppSpec.__post_init__ for what actually
         # gets checked). The resulting spec is discarded -- self.spec keeps pointing at the
-        # pre-merge instance, since only these five fields are ever config-overridden this
+        # pre-merge instance, since only these seven fields are ever config-overridden this
         # way; self.coords/self.read_scroll_frac have their own equivalent check in config.py's
         # _validate_android_fractions, deliberately not duplicated here.
         try:
@@ -2407,6 +2440,8 @@ class AndroidDriver(DatingAppDriver):
                 identity_band=self.identity_band,
                 identity_top_name_band=self.identity_top_name_band,
                 identity_top_name_fallback_band=self.identity_top_name_fallback_band,
+                identity_top_name_take_another_look_band=(
+                    self.identity_top_name_take_another_look_band),
                 content_band=self.content_band,
                 observe_ignore_zones=self.observe_ignore_zones,
                 observe_touch_watch=self.observe_touch_watch,
@@ -2414,7 +2449,8 @@ class AndroidDriver(DatingAppDriver):
         except ValueError as exc:
             raise DriverClosed(
                 f"{spec.app}: apps.{spec.app} config.yaml overrides of identity_band / "
-                f"identity_top_name_band / identity_top_name_fallback_band / content_band / "
+                f"identity_top_name_band / identity_top_name_fallback_band / "
+                "identity_top_name_take_another_look_band / content_band / "
                 "observe_ignore_zones / "
                 f"observe_touch_watch produced an invalid combination once merged with "
                 f"{spec.app}'s spec defaults ({exc}). Fix the offending apps.{spec.app}.<key> "
@@ -2578,7 +2614,7 @@ class AndroidDriver(DatingAppDriver):
         # action with DebugLog's existing keep_before/keep_after pool. They are evidence of why
         # a real device input was refused, not an unbounded per-attempt screenshot stream.
         self._last_scroll_top_failure_frames: tuple[bytes, bytes] | None = None
-        # Is doc 5.5's affirmative scroll-top signal ALIVE on the build this session is driving?
+        # Is doc 5.5's affirmative scroll-top signal usable in the toolbar state just captured?
         # `scroll_top.band_pinned_evidence`'s answer, latched here as `(binding, evidence)` and
         # only ever when it proves `pinned=True` -- see `_latch_scroll_top_pinning` for where the
         # frames and the measured page offsets come from, and `_pinned_band_evidence` for the
@@ -2586,6 +2622,18 @@ class AndroidDriver(DatingAppDriver):
         # confirm_scroll_top call site behaved as before this existed.
         self._scroll_top_pinned: tuple[tuple, PinnedBandEvidence] | None = None
         self._scroll_top_pinned_announced = False
+        # The latest ordinary enumeration's direct pinning measurement.  Unlike the latch
+        # above this is deliberately capture-scoped, so a measured ``pinned=False`` can prove
+        # a transient toolbar state recovered without pretending it disproves an earlier bad
+        # state by itself.
+        self._capture_scroll_top_pinning_evidence: PinnedBandEvidence | None = None
+        # A one-shot escape from a transient pinned toolbar is permitted only after this exact
+        # build/geometry/band tuple has already completed a usable, explicitly non-pinned
+        # capture.  The binding prevents a healthy prior app version from licensing a retry on
+        # a newly updated build.
+        self._scroll_top_signal_healthy_binding: tuple | None = None
+        self._previous_capture_scroll_top_signal_healthy_binding: tuple | None = None
+        self._pinned_signal_recovery_spent_binding: tuple | None = None
         self._profile_capture_limit = self.scroll_captures
         # --- doc 5.3's driver-owned index space, per profile ------------------------------
         # "Index space belongs to the driver. Selectability is policy." These three are the
@@ -2707,6 +2755,12 @@ class AndroidDriver(DatingAppDriver):
         # means no opener service was available to read it from, or Worker predates this hook;
         # either way the local rows below simply carry no era digest.
         self._opener_prompt_sha256: str | None = None
+        # Per-draft generation notes supplied by Worker immediately before a Training like()
+        # call.  They are deliberately not inferred from the composed text: these are the
+        # model's private structured fields, useful when a human holds an unacted checkpoint.
+        # Cleared by the caller after the one physical-action attempt so a later profile cannot
+        # inherit stale diagnostic context.
+        self._staged_opener_generation_context: dict[str, object] | None = None
         # Process-local ownership for the per-device OBSERVE input lease. The same driver may
         # re-enter through current_profile() -> _scroll_to_top(), but a second thread or driver
         # instance must be refused before it can move the card underneath wait_for_decision().
@@ -2761,6 +2815,30 @@ class AndroidDriver(DatingAppDriver):
         because there is no cross-run identity claim here to protect.
         """
         self._opener_prompt_sha256 = prompt_sha256 if isinstance(prompt_sha256, str) else None
+
+    def set_staged_opener_generation_context(self, context: dict[str, object] | None) -> None:
+        """Bind one generated draft's safe scalar metadata to its pre-send evidence row.
+
+        This optional Worker-to-driver hook exists only for the short interval between a
+        generated Training pick and the pre-send checkpoint.  The driver cannot recover these
+        private model fields from the typed message, and must never guess them.  A narrow
+        allowlist prevents a future caller from placing arbitrary request payloads or secrets in
+        the debug log; report rendering applies its own Markdown/credential redaction too.
+        """
+        if context is None:
+            self._staged_opener_generation_context = None
+            return
+        if not isinstance(context, dict):
+            raise TypeError("staged opener generation context must be a dict or None")
+        safe: dict[str, object] = {}
+        for key in ("model", "index_space", "referenced", "angle", "item_description"):
+            value = context.get(key)
+            if isinstance(value, str) and value:
+                # The model-output fields are diagnostic prose, never an unbounded transport
+                # for arbitrary data.  This is far above their schema's intended one-line use
+                # while keeping a malformed response from making actions.jsonl enormous.
+                safe[key] = value[:2_000]
+        self._staged_opener_generation_context = safe or None
 
     def current_profile_identity(self):
         """The `ProfileIdentity` fingerprint this driver holds for the CURRENTLY captured
@@ -4863,7 +4941,7 @@ class AndroidDriver(DatingAppDriver):
                     "cannot be located and every card would segment as unselectable context")
         return ""
 
-    # --- is doc 5.5's scroll-top signal alive on this build? ------------------------------
+    # --- is doc 5.5's scroll-top signal usable in this captured toolbar state? ------------
     def _scroll_top_signal_binding(self) -> tuple:
         """What a pinning finding is ABOUT, so a session cannot carry it past its subject.
 
@@ -4884,19 +4962,15 @@ class AndroidDriver(DatingAppDriver):
         object: absence of proof is not proof of absence, and handing a negative finding to a
         gate would state a fact this driver has not measured.
 
-        THE LIFETIME, AND WHY IT IS THE SESSION RATHER THAN THE PROFILE
-        ----------------------------------------------------------------
-        The measurement itself is narrow: THESE frames, of THIS profile, at THESE offsets. The
-        conclusion drawn from it is wider, and the widening is a deduction rather than an
-        extrapolation. `confirm_scroll_top` reads ONE frame. Once this build has been proven to
-        draw the filter-chips row at a non-top offset, a single frame showing that row is
-        consistent with two different screen states -- a genuine scroll top, and the 10.1.0
-        expanded per-profile header thousands of px down -- and nothing IN that frame separates
-        them. So the gate is not merely wrong on the profile that was measured; it is unable to
-        answer anywhere on the build, which is exactly what `SCROLL_TOP_UNAVAILABLE` says and why
-        its own reason text names re-measuring `apps.hinge.identity_band` and the module's
-        fingerprints "against the app's current per-profile header states" rather than skipping a
-        card.
+        THE LIFETIME, AND WHY THE SESSION LATCH IS THE NORMAL RULE
+        -----------------------------------------------------------
+        The measurement itself is narrow: THESE frames, of THIS profile, at THESE offsets.
+        `confirm_scroll_top` reads ONE frame, so while that toolbar state remains active a
+        single chips-row frame is consistent with both a genuine top and a deep profile offset.
+        Nothing IN that frame separates them. The session latch therefore remains the normal
+        safe answer: it turns confirmation into `SCROLL_TOP_UNAVAILABLE` rather than inventing
+        absolute item ordinals. A first-ever or repeated positive finding still names
+        recalibration, because it does not itself prove the state is transient.
 
         Three things keep that from being a licence to over-claim:
 
@@ -4909,7 +4983,10 @@ class AndroidDriver(DatingAppDriver):
             to prove pinning. A collapsed-header profile cannot prove pinning (its band is a
             person, not chrome), so allowing a not-proven capture to clear the latch would let
             the dead gate come back to life on the very next card and resume issuing exactly the
-            affirmative "we are at the top" this exists to stop.
+            affirmative "we are at the top" this exists to stop. The sole exception is the
+            one-shot `_recapture_after_transient_pinned_signal`: it needs a prior usable measured
+            non-pinned capture on this exact binding, then its provisional recapture must itself
+            measure non-pinning, known identity, and top before it can replace the latch.
           * the error direction is a loud stop, never a false top. A wrong latch can only turn a
             CONFIRMED into `SCROLL_TOP_UNAVAILABLE`, which refuses enumeration and names
             recalibration. The cost of being wrong is a run that stops on a build where the gate
@@ -4929,7 +5006,7 @@ class AndroidDriver(DatingAppDriver):
         return evidence
 
     def _latch_scroll_top_pinning(self, photos, index) -> None:
-        """Measure -- once per session -- whether this build pins the chips row to the screen.
+        """Measure whether this capture's toolbar pins the chips row to the screen.
 
         WHERE THE FRAMES AND THE OFFSETS COME FROM, AND WHY NOTHING NEW IS MEASURED
         ----------------------------------------------------------------------------
@@ -4990,14 +5067,16 @@ class AndroidDriver(DatingAppDriver):
             # fault must therefore be indistinguishable from no measurement, not a new capture
             # failure path.
             return
+        self._capture_scroll_top_pinning_evidence = evidence
         if not evidence.pinned:
             return
         self._scroll_top_pinned = (self._scroll_top_signal_binding(), evidence)
         if not self._scroll_top_pinned_announced:
             self._scroll_top_pinned_announced = True
-            print(f"{self.spec.app}: doc 5.5's affirmative scroll-top check is UNAVAILABLE on "
-                  f"this build -- {evidence.reason}. Item enumeration will refuse until the "
-                  f"scroll-top signal is recalibrated against it.")
+            print(f"{self.spec.app}: doc 5.5's affirmative scroll-top check is UNAVAILABLE in "
+                  f"this observed toolbar state -- {evidence.reason}. Item enumeration will "
+                  f"refuse unless one bounded same-binding recapture independently proves the "
+                  f"normal non-pinned state, or the signal is recalibrated.")
             if self._dbg is not None:
                 try:
                     self._dbg.action(
@@ -5009,6 +5088,21 @@ class AndroidDriver(DatingAppDriver):
                         max_chips_distance=evidence.max_chips_distance)
                 except Exception:  # noqa: BLE001 -- diagnostics must not change gate safety
                     pass
+
+    def _note_healthy_scroll_top_signal_capture(self, index) -> None:
+        """Remember one fully usable, measured non-pinned capture for this binding.
+
+        A negative pinning measurement is normally only observational: it must not clear a
+        positive latch.  It does have one narrowly useful meaning, though.  If the *same*
+        binding later produces a positive pinning measurement, it proves this is not a blanket
+        build property and licenses the one provisional retry below.  Requiring a usable index
+        with known identity keeps a merely partial/read-only observation from buying input.
+        """
+        evidence = self._capture_scroll_top_pinning_evidence
+        identity = getattr(index, "identity", None)
+        if (evidence is not None and not evidence.pinned
+                and bool(getattr(identity, "known", False))):
+            self._scroll_top_signal_healthy_binding = self._scroll_top_signal_binding()
 
     def _confirm_enumeration_top(self) -> str:
         """Affirmatively confirm the card is at scroll top. "" when confirmed, else the reason.
@@ -5033,9 +5127,9 @@ class AndroidDriver(DatingAppDriver):
         different situations for whoever reads the stop line.
 
         `pinned_evidence` is this session's `_pinned_band_evidence()`, which is what stops this
-        gate answering YES unconditionally on a build that pins the filter-chips row to the
-        screen (Hinge 10.1.0's expanded per-profile header; measured `confirmed_top` at distance
-        0.000 thousands of px down a profile). Its fourth outcome gets its own sentence below,
+        gate answering YES unconditionally in a toolbar state that pins the filter-chips row to
+        the screen (Hinge 10.1.0's expanded per-profile header; measured `confirmed_top` at
+        distance 0.000 thousands of px down a profile). Its fourth outcome gets its own sentence below,
         because "not at top" and "this check cannot answer" ask an operator for two different
         things and only one of them is a gesture.
         """
@@ -5051,18 +5145,18 @@ class AndroidDriver(DatingAppDriver):
                     "could not be confirmed")
         if verdict.unavailable:
             # DIFFERENT PROSE, not a wording nicety. "not at top" is an instruction: it sends
-            # whoever reads the hub's stop line to scroll the phone up, and on a build that pins
-            # the chips row to the screen no amount of scrolling can ever make this gate answer
-            # -- they would scroll to a real top and be refused again, identically. This repo's
-            # standing rule is that guidance must derive from its precondition (2026-08-22), and
-            # the precondition here is "the signal is dead on this build", whose only remedy is
-            # recalibration. The verdict's own reason already names what has to be re-measured,
-            # so it is quoted rather than paraphrased.
-            return (f"doc 5.5's affirmative filter-chips scroll-top check cannot answer at all on "
-                    f"this Hinge build ({verdict.state}), so the card's position is unknown rather "
-                    f"than wrong: {verdict.reason}. Scrolling the card will not change this "
-                    f"answer; the scroll-top signal itself has to be recalibrated against this "
-                    f"build before any item can be numbered")
+            # whoever reads the hub's stop line to scroll the phone up. The evidence instead says
+            # THIS capture's toolbar state makes the chips row ambiguous. This repo's standing
+            # rule is that guidance derives from its precondition (2026-08-22): do not number or
+            # act from the current capture, and do not promise that the build or a fresh capture
+            # is permanently unusable. The verdict's own reason carries the narrowly permitted
+            # fresh-capture/recalibration conditions, so quote it rather than paraphrasing them.
+            return (f"doc 5.5's affirmative filter-chips scroll-top check cannot answer from this "
+                    f"capture's current toolbar state ({verdict.state}), so the card's position is "
+                    f"unknown rather than wrong: {verdict.reason}. Do not number, target, or act "
+                    f"from this capture. Scrolling further within it cannot establish a safe top; "
+                    f"a fresh capture must independently prove a usable signal before any item is "
+                    f"numbered")
         if not verdict.confirmed:
             return (f"the card is not confirmed to be at its scroll top ({verdict.state}): "
                     f"{verdict.reason}")
@@ -7305,7 +7399,7 @@ class AndroidDriver(DatingAppDriver):
                         video_mute_markers=video_mute_markers)
                 # BEFORE the first refusal return, and for a usable index alike: these frames
                 # and the offsets just chained for them are the only pair in this driver that
-                # can answer whether doc 5.5's scroll-top signal is still readable on this build
+                # can answer whether doc 5.5's scroll-top signal was readable in this capture
                 # (`_latch_scroll_top_pinning`), and the refusal path below is the one the 10.1.0
                 # incident took. Observational -- it never changes THIS capture's outcome, only
                 # what later scroll-top gates are allowed to affirm.
@@ -7506,6 +7600,7 @@ class AndroidDriver(DatingAppDriver):
             # origin, so navigation begins with a real zero-shift anchor instead of attempting to
             # bridge an unrelated pre-walk screenshot.
             self._current_item_anchor = dwell_anchor.frame
+            self._note_healthy_scroll_top_signal_capture(index)
             outcome = "usable"
             return ""
         finally:
@@ -8451,6 +8546,16 @@ class AndroidDriver(DatingAppDriver):
         for the reader that turns a run's actions.jsonl into a per-bucket attribution.
         """
         photos: list[bytes] = []
+        # This is evidence about exactly the enumeration about to start.  The session latch
+        # remains separate: a later ordinary capture being unable to measure pinning must never
+        # silently erase a prior positive finding.
+        self._capture_scroll_top_pinning_evidence = None
+        # Recovery is intentionally licensed by the immediately preceding capture, not any
+        # healthy profile from arbitrary earlier in a session.  A failed/intervening capture
+        # consumes the predecessor fact rather than letting old evidence buy a new experiment.
+        self._previous_capture_scroll_top_signal_healthy_binding = (
+            self._scroll_top_signal_healthy_binding)
+        self._scroll_top_signal_healthy_binding = None
         self._current_sigs = []
         self._current_capture_truncated = False   # reset: see the for/else below
         self._capture_scrolls = 0     # reset: _scroll_to_top must undo THIS capture, not a stale one
@@ -9161,6 +9266,250 @@ class AndroidDriver(DatingAppDriver):
             items_unavailable_kind=self._current_items_unavailable_kind,
         )
 
+    def _recapture_after_transient_pinned_signal(
+            self, original: Profile | None, should_stop=None) -> Profile | None:
+        """Try one fail-closed recapture after a *known transient* pinned-toolbar reading.
+
+        The normal session latch is intentionally conservative: a chips row observed at deep
+        page offsets makes one frame unable to say "top".  The incident in ee3566a3bcb0 adds
+        one material fact the ordinary latch did not retain: the immediately preceding profile
+        on the exact same app/version/geometry/band completed with a measured non-pinned signal.
+        That makes a transient toolbar state plausible, but it does NOT make the first bad
+        capture usable.
+
+        This is consequently a single experimental pass, never a retry loop.  The live
+        Anastasiia investigation established that replaying the complete scroll ledger (and a
+        fresh ordinary scroll) can leave the expanded toolbar intact, whereas one cold launch
+        returned Hinge to its normal collapsed-toolbar state.  We therefore do ONE package
+        force-stop plus the same launcher command `open_session` uses, then capture again.  The
+        original item table is invalidated before the lifecycle transition: a cold launch is
+        allowed to resume a different card, which is an explicitly skipped original rather than
+        a deck advance or a label.
+
+        The provisional result is published only if that new pass independently measures
+        non-pinning, keeps a known item identity, and reconfirms its own frame-zero chips row.
+        A second pinning finding, an incomplete measurement, a foreground/profile failure, any
+        capture refusal, or Stop returns the original refusal (or None for Stop) and restores the
+        old latch.  No action, label, text, or tap path is reachable here: the only new device
+        operations are package lifecycle commands and `_capture_current`'s ordinary read-scrolls.
+        """
+        binding = self._scroll_top_signal_binding()
+        pinned = self._capture_scroll_top_pinning_evidence
+        if not (
+                original is not None
+                # A cold launch can legitimately resume a different card.  Training/AUTO have
+                # not yet exposed a decision for this refused capture, so that card can be
+                # explicitly skipped; manual Observe belongs to the person holding the phone
+                # and must never replace their visible card under them.
+                and self._auto_session
+                and pinned is not None and pinned.pinned
+                and self._pinned_band_evidence() is not None
+                and self._previous_capture_scroll_top_signal_healthy_binding == binding
+                and self._pinned_signal_recovery_spent_binding != binding
+                and self._capture_scroll_ledger):
+            return original
+        if should_stop is not None and should_stop():
+            return None
+
+        old_latch = self._scroll_top_pinned
+        old_latch_announced = self._scroll_top_pinned_announced
+
+        # A package lifecycle command is more consequential than a read-scroll.  It is licensed
+        # only while Android positively reports that Hinge owns the foreground AND the pixels are
+        # independently recognised as its swipe deck.  `None` from the optional foreground probe
+        # is adequate for ordinary passive capture compatibility, but not for this recovery:
+        # without a positive owner there is no safe subject to restart.
+        before = self._screencap(on_blank="none")
+        if (self._foreground_package() != self.package or before is None
+                or self._capture_entry_profile_evidence(before) is None):
+            self._invalidate_item_index(
+                "the pinned-toolbar recovery could not positively establish Hinge's foreground "
+                "swipe profile before a cold relaunch")
+            return original
+        if should_stop is not None and should_stop():
+            return None
+
+        # The preflight above is read-only and may be retried after an operator returns to the
+        # deck.  From here onward package state will change, so spend before the first command:
+        # a launch fault, foreground loss, or second pinned capture cannot reopen this same card
+        # to another autonomous attempt.
+        self._pinned_signal_recovery_spent_binding = binding
+
+        # A cold launch can drop Hinge on the next card (the live relaunch moved Anastasiia to
+        # Rachel).  Retire every original-card artifact before issuing it; the recovered card is
+        # accepted only from its own fresh index below, never as a continuation of this capture.
+        original_name = (getattr(original, "name", "") or "").strip()
+        self._invalidate_item_index(
+            "Hinge is being cold-relaunched after a pinned toolbar, so the original profile is "
+            "skipped and its item index cannot describe the post-relaunch screen")
+        if self._dbg is not None:
+            try:
+                self._dbg.action(
+                    "scroll_top_signal_cold_relaunch",
+                    reason=("a prior usable capture on this exact binding measured the chips "
+                            "signal non-pinned; one cold relaunch and provisional recapture is "
+                            "being tried"),
+                    offsets=list(pinned.offsets), offset_span=pinned.offset_span,
+                    frames_compared=pinned.frames_compared)
+            except Exception:  # noqa: BLE001 -- diagnostics cannot alter the recovery
+                pass
+
+        # These two commands are one lifecycle transaction.  In particular do not honour a
+        # Stop between force-stop and launcher: that would strand the user's app stopped.
+        # Keep the command value single-sourced because the one bounded compensation below must
+        # issue precisely the same launcher request, not a fallback intent that changes the
+        # recovery's scope.
+        launcher_command = (
+            f"monkey -p {quote_android_package_id(self.package)} "
+            "-c android.intent.category.LAUNCHER 1")
+        try:
+            self.adb.shell(f"am force-stop {quote_android_package_id(self.package)}")
+        except DriverClosed:
+            # A closed driver is not a transport on which it is safe to attempt compensation.
+            # Propagate its established terminal meaning rather than disguising a failed input
+            # as a successful relaunch.
+            self._scroll_top_pinned = old_latch
+            self._scroll_top_pinned_announced = old_latch_announced
+            raise
+        except Exception:  # noqa: BLE001 -- it may have stopped before its response was lost
+            try:
+                # A transport error is not evidence that Android rejected the command: adb can
+                # time out after delivery. Launch once to compensate for that ambiguous state,
+                # then fail closed regardless of whether the launch itself succeeds.
+                self.adb.shell(launcher_command)
+            except DriverClosed:
+                self._scroll_top_pinned = old_latch
+                self._scroll_top_pinned_announced = old_latch_announced
+                raise
+            except Exception:
+                pass
+            self._scroll_top_pinned = old_latch
+            self._scroll_top_pinned_announced = old_latch_announced
+            return original
+        try:
+            self.adb.shell(launcher_command)
+        except DriverClosed:
+            # The stop definitely completed, but `DriverClosed` means the transport itself is
+            # no longer safe to call.  A compensating command would violate that invariant; the
+            # explicit exception lets the caller surface the stranded-app state instead of
+            # silently treating it as an ordinary recoverable capture refusal.
+            self._scroll_top_pinned = old_latch
+            self._scroll_top_pinned_announced = old_latch_announced
+            raise
+        except Exception:  # noqa: BLE001 -- compensate once, then always fail closed
+            try:
+                # This retry exists solely to undo the completed force-stop. It never reaches a
+                # screencap, foreground probe, or provisional capture, even when it succeeds.
+                self.adb.shell(launcher_command)
+            except DriverClosed:
+                self._scroll_top_pinned = old_latch
+                self._scroll_top_pinned_announced = old_latch_announced
+                raise
+            except Exception:
+                pass
+            self._scroll_top_pinned = old_latch
+            self._scroll_top_pinned_announced = old_latch_announced
+            return original
+        if not self._interruptible_sleep(human_cooldown(1.5), should_stop):
+            return None
+
+        # Re-read the build/geometry after restart; the old healthy finding cannot authorize a
+        # recovery across a package update/display change.  Then prove that the launch actually
+        # foregrounded a recognisable deck before permitting the provisional read-scrolls.
+        self._targeting_binding_fetched = False
+        try:
+            self._refresh_targeting_calibration_binding()
+        except DriverClosed:
+            self._scroll_top_pinned = old_latch
+            self._scroll_top_pinned_announced = old_latch_announced
+            raise
+        except Exception:  # noqa: BLE001 -- binding probe cannot license a recovery on failure
+            self._scroll_top_pinned = old_latch
+            self._scroll_top_pinned_announced = old_latch_announced
+            return original
+        launch_frame = self._screencap(on_blank="none")
+        if (self._scroll_top_signal_binding() != binding
+                or self._foreground_package() != self.package
+                or launch_frame is None
+                or self._capture_entry_profile_evidence(launch_frame) is None):
+            self._scroll_top_pinned = old_latch
+            self._scroll_top_pinned_announced = old_latch_announced
+            return original
+
+        # The old positive remains the normal rule for every other caller.  This brief removal
+        # is only what lets the *provisional* capture ask whether the transient state has gone
+        # away.  Its result is never published on raw confirmation alone (the conjunction below
+        # includes a new measured non-pinned evidence object).
+        self._scroll_top_pinned = None
+        self._scroll_top_pinned_announced = False
+        try:
+            recovered = self._capture_current(should_stop)
+        except Exception:
+            # Preserve the original safety finding even when this read itself cannot complete.
+            # The exception keeps its established propagation semantics; restoration is the
+            # only recovery-specific work this branch does.
+            self._scroll_top_pinned = old_latch
+            self._scroll_top_pinned_announced = old_latch_announced
+            raise
+
+        if should_stop is not None and should_stop():
+            self._scroll_top_pinned = old_latch
+            self._scroll_top_pinned_announced = old_latch_announced
+            return None
+
+        evidence = self._capture_scroll_top_pinning_evidence
+        index = self._current_item_index
+        first_frame = (recovered.photos[0]
+                       if recovered is not None and recovered.photos else None)
+        recapture_top = False
+        if first_frame is not None and evidence is not None and not evidence.pinned:
+            try:
+                recapture_top = bool(confirm_scroll_top(
+                    first_frame, identity_band=self.identity_band).confirmed)
+            except ScrollTopError:
+                recapture_top = False
+        valid = bool(
+            recovered is not None
+            and not recovered.items_unavailable
+            and evidence is not None and not evidence.pinned
+            and bool(getattr(getattr(index, "identity", None), "known", False))
+            and recapture_top)
+        if valid:
+            # `_latch_scroll_top_pinning` did not set a positive latch.  The new negative is
+            # capture-local evidence rather than a claim that the old capture was mistaken;
+            # recording this usable capture permits a later, separately bounded incident.
+            self._scroll_top_pinned = None
+            self._scroll_top_pinned_announced = False
+            if self._dbg is not None:
+                try:
+                    self._dbg.action(
+                        "scroll_top_signal_cold_relaunch_accepted",
+                        offsets=list(evidence.offsets), offset_span=evidence.offset_span,
+                        frames_compared=evidence.frames_compared,
+                        original_profile_skipped=True,
+                        recovered_profile_changed=(
+                            bool(original_name and recovered.name
+                                 and original_name.casefold() != recovered.name.casefold())))
+                except Exception:  # noqa: BLE001 -- diagnostics cannot alter the recovery
+                    pass
+            return recovered
+
+        self._scroll_top_pinned = old_latch
+        self._scroll_top_pinned_announced = old_latch_announced
+        self._invalidate_item_index(
+            original.items_unavailable or
+            "the provisional pinned-signal recapture did not re-establish a safe item index")
+        if self._dbg is not None:
+            try:
+                self._dbg.action(
+                    "scroll_top_signal_provisional_recapture_refused",
+                    measured_non_pinned=(None if evidence is None else not evidence.pinned),
+                    identity_known=bool(getattr(getattr(index, "identity", None), "known", False)),
+                    recapture_top_confirmed=recapture_top)
+            except Exception:  # noqa: BLE001 -- diagnostics cannot alter the recovery
+                pass
+        return original
+
     def next_profile(self, *, should_stop=None) -> Profile | None:
         if self.out_of_profiles():
             return None
@@ -9176,6 +9525,7 @@ class AndroidDriver(DatingAppDriver):
         if not self._prepare_actionable_capture_entry(should_stop):
             return None
         profile = self._capture_current(should_stop)
+        profile = self._recapture_after_transient_pinned_signal(profile, should_stop)
         self._recover_capture_split(should_stop)
         return profile
 
@@ -9230,6 +9580,7 @@ class AndroidDriver(DatingAppDriver):
             if not self._prepare_actionable_capture_entry(should_stop):
                 return None
             profile = self._capture_current(should_stop)
+            profile = self._recapture_after_transient_pinned_signal(profile, should_stop)
             if profile is not None:
                 # Also stop-aware: this unwind is roughly half of the total per-profile dead time
                 # (11 undo-swipes, each with two settle screencaps), and it is the part the
@@ -9298,6 +9649,7 @@ class AndroidDriver(DatingAppDriver):
             if not self._prepare_actionable_capture_entry(should_stop):
                 return None
             profile = self._capture_current(should_stop)
+            profile = self._recapture_after_transient_pinned_signal(profile, should_stop)
             if profile is None:
                 self._recover_capture_split(should_stop)
             return profile
@@ -10767,7 +11119,11 @@ class AndroidDriver(DatingAppDriver):
             # like the durable `openers` row already is. None on a driver never bound to one.
             "prompt_sha256": self._opener_prompt_sha256,
         }
+        generation_context = self._staged_opener_generation_context
+        if generation_context:
+            evidence["generation_context"] = dict(generation_context)
         if self._dbg is not None:
+            generation_fields = (dict(generation_context) if generation_context else {})
             self._dbg.action(
                 "auto_opener_pre_send", before=frame, keep_before=True,
                 opener=opener, opener_chars=len(opener), opener_sha256=opener_sha256,
@@ -10776,6 +11132,7 @@ class AndroidDriver(DatingAppDriver):
                 draft_sha256=(draft or {}).get("sha256"),
                 draft_rect=(draft or {}).get("rect"),
                 prompt_sha256=self._opener_prompt_sha256,
+                **generation_fields,
             )
         return evidence
 
@@ -11067,7 +11424,11 @@ class AndroidDriver(DatingAppDriver):
         # and let the worker stop before the next card.
         time.sleep(human_cooldown(0.6))
         try:
-            advance_proof = self._verify_training_dislike_landed(model_item_index)
+            # The same-name successor proof is authorised only by this just-issued, verified
+            # post-composer X tap.  The public verifier otherwise remains conservative for
+            # direct callers, recovery tooling, and any future path lacking that provenance.
+            advance_proof = self._verify_training_dislike_landed(
+                model_item_index, allow_same_name_successor=True)
         except Exception as exc:
             # The X tap has already been issued.  This is deliberately a distinct durable
             # outcome from both a verified training_dislike and the worker's later generic
@@ -11111,7 +11472,8 @@ class AndroidDriver(DatingAppDriver):
         if (self._identity_top_name_verdict != "new"
                 or not isinstance(candidate, str) or not candidate
                 or self._identity_name_candidate_source not in {
-                    "top_card_header", "top_card_header_fallback"}):
+                    "top_card_header", "top_card_header_fallback",
+                    "top_card_header_take_another_look"}):
             return None
         try:
             top = confirm_scroll_top(
@@ -11160,6 +11522,12 @@ class AndroidDriver(DatingAppDriver):
                 or diagnostics.get("current_content_shift_matched") is not False):
             return None
         source = self._identity_top_name_read_source
+        # The Take-another-look crop can establish a direct NEW candidate through
+        # `_canonical_top_name_advance_candidate`, but it deliberately cannot enter this
+        # fuzzy-same/content-mismatch rescue route.  Its lower edge overlaps the first photo;
+        # letting even a two-recipe fuzzy stored-name reading through here would turn a photo
+        # OCR coincidence into a Training label.  A missed close spelling costs only an
+        # unlabelled action, whereas a false positive corrupts human ground truth.
         if source not in {"top_card_header", "top_card_header_fallback"}:
             return None
         text = self._identity_top_name_read
@@ -11194,6 +11562,78 @@ class AndroidDriver(DatingAppDriver):
         )
         return candidate.casefold(), source
 
+    def _training_same_name_content_disjoint_successor_proof(
+            self, frame: bytes, *, current_profile: bool,
+            diagnostics: dict[str, object] | None = None) -> tuple[str, str] | None:
+        """Prove the narrow Hinge case of a different card with the same first name.
+
+        Hinge can present consecutive profiles whose sticky identity band is visually and
+        OCR-identically the same because it contains only a first name.  That normally remains
+        a conservative ``same``: a content change can be a manual scroll or a composer reflow.
+        The *post-X Training Dislike* verifier is the sole caller allowed to use this stricter
+        conjunction, after a human has chosen Dislike on a verified composer.  It still requires
+        a content-disjoint frame, an exact stored-name read from a normal calibrated card-header
+        crop, canonical scroll-top confirmation, a second independently captured matching frame,
+        and frame stability in the outer verifier.
+
+        This is deliberately not a general same-name escape hatch.  In particular, the
+        Take-another-look crop can overlap photo content, and the tight identity band can be
+        read while scrolled, so neither may manufacture a training label here.
+        """
+        if diagnostics is None:
+            return None
+        diagnostics["same_name_successor_considered"] = True
+        required_disjoint_content = (
+            not current_profile
+            and diagnostics.get("current_profile_branch") == "identity_same_with_content"
+            and diagnostics.get("current_content_exact_matched") is False
+            and diagnostics.get("current_content_shift_matched") is False
+        )
+        identity_state_same = diagnostics.get("current_identity_state") == "same"
+        diagnostics["same_name_successor_content_disjoint"] = required_disjoint_content
+        diagnostics["same_name_successor_identity_state_same"] = identity_state_same
+        if not required_disjoint_content or not identity_state_same:
+            return None
+
+        source = self._identity_top_name_read_source
+        text = self._identity_top_name_read
+        stored = (self._identity_name or "").strip()
+        candidate = (_clean_first_line_name_candidate(text)
+                     if isinstance(text, str) else None)
+        same_name_verdict = self._identity_top_name_verdict == "same"
+        exact_stored_name = bool(
+            same_name_verdict
+            and source in {"top_card_header", "top_card_header_fallback"}
+            and candidate is not None and stored
+            and candidate.casefold() == stored.casefold())
+        diagnostics.update(
+            same_name_successor_source=source,
+            same_name_successor_same_name_verdict=same_name_verdict,
+            same_name_successor_exact_stored_name=exact_stored_name,
+        )
+        if not exact_stored_name:
+            return None
+        try:
+            top = confirm_scroll_top(
+                frame, identity_band=self.identity_band,
+                pinned_evidence=self._pinned_band_evidence())
+        except ScrollTopError as exc:
+            diagnostics.update(
+                same_name_successor_top_state="error",
+                same_name_successor_top_confirmed=False,
+                same_name_successor_top_reason=str(exc),
+            )
+            return None
+        diagnostics.update(
+            same_name_successor_top_state=top.state,
+            same_name_successor_top_confirmed=top.confirmed,
+            same_name_successor_top_distance=top.distance,
+            same_name_successor_top_reason=top.reason,
+        )
+        if not top.confirmed:
+            return None
+        return "same_name_successor", stored.casefold()
+
     @staticmethod
     def _identity_candidate_sha256(candidate: object) -> str | None:
         """A privacy-safe, case-insensitive identity-candidate join key for debug records."""
@@ -11218,6 +11658,9 @@ class AndroidDriver(DatingAppDriver):
                 "recipe": attempt.get("recipe"),
                 "digest": attempt.get("text_sha256"),
                 "verdict": attempt.get("verdict"),
+                "parser": attempt.get("parser"),
+                "upscale": attempt.get("upscale"),
+                "match_scope": attempt.get("match_scope"),
                 # A clean candidate is still OCR-derived profile text.  The full-text digest
                 # above proves the OCR input, while this separate normalised-token digest
                 # preserves enough information to tell whether two recorded attempts agreed
@@ -11237,7 +11680,8 @@ class AndroidDriver(DatingAppDriver):
 
     def _training_profile_advance_proof(
             self, frame: bytes, model_item_index: int | None, *,
-            diagnostics: dict[str, object] | None = None) -> tuple[str, str | None] | None:
+            diagnostics: dict[str, object] | None = None,
+            allow_same_name_successor: bool = False) -> tuple[str, str | None] | None:
         """Return affirmative evidence that ``frame`` is not this captured profile.
 
         The pass control can first close/reflow Hinge's inline composer rather than advance the
@@ -11249,8 +11693,11 @@ class AndroidDriver(DatingAppDriver):
         * the separately calibrated scroll-top name reader found one clean new-name candidate.
 
         ``top``/``unknown`` and a mere failure to match a historical screenshot are not evidence
-        of an advance. They fail closed; the human may have already passed on the phone, but it
-        is safer to leave that action unlabelled than to train on the wrong person.
+        of an advance.  The one third route is a same-name, content-disjoint successor, but only
+        when its caller explicitly carries post-X Training Dislike provenance and the narrower
+        helper below re-proves both same-name identity and canonical top. They otherwise fail
+        closed; the human may have already passed on the phone, but it is safer to leave that
+        action unlabelled than to train on the wrong person.
         """
         current_profile = self._is_current_profile_frame(
             frame, require_content=True, diagnostics=diagnostics)
@@ -11276,6 +11723,15 @@ class AndroidDriver(DatingAppDriver):
         if current_profile:
             return self._training_top_name_advance_proof(
                 frame, diagnostics=diagnostics)
+
+        # A same-name successor is intentionally narrower than the ordinary new-name route:
+        # only the post-X Training Dislike verifier opts in.  Training Like and passive Observe
+        # retain their fail-closed behaviour for a card whose first-name identity is unchanged.
+        if allow_same_name_successor:
+            same_name_successor = self._training_same_name_content_disjoint_successor_proof(
+                frame, current_profile=current_profile, diagnostics=diagnostics)
+            if same_name_successor is not None:
+                return same_name_successor
 
         exact_name_conflict = self._training_exact_top_name_conflict_candidate(
             frame, current_profile=current_profile, diagnostics=diagnostics)
@@ -11324,7 +11780,8 @@ class AndroidDriver(DatingAppDriver):
 
     def _training_dislike_surface_proof(
             self, frame: bytes, model_item_index: int | None, *,
-            diagnostics: dict[str, object] | None = None) -> tuple[str, str | None] | None:
+            diagnostics: dict[str, object] | None = None,
+            allow_same_name_successor: bool = False) -> tuple[str, str | None] | None:
         """Return affirmative advance evidence only for a closed, ready Hinge deck frame."""
         blocked = self._deck_blocked_reason(frame)
         if diagnostics is not None:
@@ -11343,26 +11800,38 @@ class AndroidDriver(DatingAppDriver):
         if not deck_ready:
             return None
         proof = self._training_profile_advance_proof(
-            frame, model_item_index, diagnostics=diagnostics)
+            frame, model_item_index, diagnostics=diagnostics,
+            allow_same_name_successor=allow_same_name_successor)
         if diagnostics is not None:
-            diagnostics["proof"] = None if proof is None else proof[0]
+            diagnostics.update(
+                proof=None if proof is None else proof[0],
+                same_name_successor_enabled=allow_same_name_successor,
+            )
         return proof
 
     def _verify_training_deck_advanced(self, model_item_index: int | None, *,
-                                        should_stop=None) -> str:
+                                        should_stop=None,
+                                        allow_same_name_successor: bool = False) -> str:
         """Prove a Training Like or Dislike reached a stable, semantically new deck card.
 
         This is intentionally stronger than ``_verify_progress``. The latter correctly catches
         a missed tap in ordinary AUTO, but its pixel-only predicate cannot distinguish an actual
         action from closing a composer back onto a reflowed view of the same profile. Training
         labels are human ground truth, so an ambiguous physical result is a hard failure.
+
+        ``allow_same_name_successor`` is not inferred from session mode or action type. It is
+        supplied only by `_training_dislike_from_composer` immediately after that method's
+        verified X tap, preserving the fact that direct callers and Training Likes cannot turn a
+        same-name/content-disjoint observation into a label.
         """
         for attempt in range(3):
             self._raise_if_action_cancelled(should_stop, boundary="training Dislike verification")
             first = self._screencap()
             first_diagnostics: dict[str, object] = {}
+            surface_kwargs = ({"allow_same_name_successor": True}
+                              if allow_same_name_successor else {})
             first_proof = self._training_dislike_surface_proof(
-                first, model_item_index, diagnostics=first_diagnostics)
+                first, model_item_index, diagnostics=first_diagnostics, **surface_kwargs)
             second_diagnostics: dict[str, object] | None = None
             second = None
             stable = None
@@ -11374,11 +11843,12 @@ class AndroidDriver(DatingAppDriver):
                 second = self._screencap()
                 second_diagnostics = {}
                 second_proof = self._training_dislike_surface_proof(
-                    second, model_item_index, diagnostics=second_diagnostics)
-                # Two independently calibrated identity mismatches may agree, or two
-                # scroll-top name reads may agree on the exact same candidate. Never mix the
-                # proof types: one OCR read is not a repeated-name proof, and one identity
-                # mismatch is not the required second reading of that name.
+                    second, model_item_index, diagnostics=second_diagnostics, **surface_kwargs)
+                # Two independently calibrated identity mismatches may agree, two scroll-top
+                # new-name reads may agree on the exact same candidate, or the Dislike-only
+                # same-name successor proof may repeat its exact stored-name/header source.
+                # Never mix proof types: one OCR read is not a repeated-name proof, and one
+                # identity mismatch is not the required second reading of that name.
                 names_agree = bool(
                     second_proof is not None
                     and (
@@ -11387,6 +11857,10 @@ class AndroidDriver(DatingAppDriver):
                             and first_proof[1] == second_proof[1]
                             and first_diagnostics.get("name_source")
                             == second_diagnostics.get("name_source"))
+                        or (first_proof[0] == second_proof[0] == "same_name_successor"
+                            and first_proof[1] == second_proof[1]
+                            and first_diagnostics.get("same_name_successor_source")
+                            == second_diagnostics.get("same_name_successor_source"))
                     )
                 )
                 stable = not self._changed(first, second)
@@ -11405,9 +11879,10 @@ class AndroidDriver(DatingAppDriver):
                             before=first, after=second, keep_before=True,
                             outcome="accepted", first=first_diagnostics,
                             second=second_diagnostics, stable=stable,
-                            names_agree=names_agree)
+                            names_agree=names_agree,
+                            same_name_successor_enabled=allow_same_name_successor)
                     return ("identity" if "identity" in {first_proof[0], second_proof[0]}
-                            else "name")
+                            else first_proof[0])
             if self._dbg is not None:
                 self._dbg.action(
                     "training_advance_probe", attempt=attempt + 1,
@@ -11420,7 +11895,8 @@ class AndroidDriver(DatingAppDriver):
                     keep_after=attempt == 2 and second is not None,
                     outcome="retry", first=first_diagnostics,
                     second=second_diagnostics, stable=stable,
-                    names_agree=names_agree)
+                    names_agree=names_agree,
+                    same_name_successor_enabled=allow_same_name_successor)
             if not self._interruptible_sleep(human_delay(0.4), should_stop):
                 self._raise_if_action_cancelled(
                     should_stop, boundary="training Dislike verification")
@@ -11429,10 +11905,12 @@ class AndroidDriver(DatingAppDriver):
             "no training label was recorded")
 
     def _verify_training_dislike_landed(self, model_item_index: int | None, *,
-                                         should_stop=None) -> str:
-        """Verify the post-X branch through Training's semantic deck-advance proof."""
+                                         should_stop=None,
+                                         allow_same_name_successor: bool = False) -> str:
+        """Verify post-X; same-name successors need explicit tap-path provenance."""
         return self._verify_training_deck_advanced(
-            model_item_index, should_stop=should_stop)
+            model_item_index, should_stop=should_stop,
+            allow_same_name_successor=allow_same_name_successor)
 
     def _verify_training_like_landed(self, model_item_index: int | None, *,
                                       should_stop=None) -> str:
@@ -11954,7 +12432,14 @@ class AndroidDriver(DatingAppDriver):
             # because wrapped ``free\nlikes`` no longer becomes ``freelikes``.
             raw_text = result.stdout.decode("utf-8", "replace")
             lines = [
-                " ".join(self._OCR_NAME_RE.sub(" ", line).split())
+                # Fold only combining marks before the existing ASCII punctuation filter.  In
+                # particular, preserving this line boundary lets a visible ``Zoë`` become
+                # ``Zoe`` rather than the unsafe/truncated ``Zo``; applying a general text
+                # sanitizer here could rewrite hyphenated names or flatten the OCR layout.
+                " ".join(self._OCR_NAME_RE.sub(
+                    " ", "".join(
+                        ch for ch in unicodedata.normalize("NFKD", line)
+                        if not unicodedata.combining(ch))).split())
                 for line in raw_text.splitlines()
             ]
             cleaned = "\n".join(line for line in lines if line)
@@ -12064,8 +12549,8 @@ class AndroidDriver(DatingAppDriver):
         # frames before recording a decision.
         #
         # `check_unavailable` (2026-08-28) joins unreadable and refuted, which is the safe half
-        # of a change that also costs something. What it costs: on a build that pins the chips
-        # row, a frame that really IS at top no longer gets the ``top`` upgrade. What it buys is
+        # of a change that also costs something. What it costs: in a toolbar state that pins the
+        # chips row, a frame that really IS at top no longer gets the ``top`` upgrade. What it buys is
         # larger: ``top`` is what licenses the Layer 1b CARD-HEADER OCR below, and that crop's
         # geometry is measured FROM the scroll top -- at a mid-profile offset the same rect holds
         # arbitrary photo texture, which `_clean_first_line_name_candidate` can turn into a
@@ -12108,7 +12593,8 @@ class AndroidDriver(DatingAppDriver):
                 "psm": "7", "upscale": 3,
                 "text_sha256": (None if seen_name is None else hashlib.sha256(
                     seen_name.encode()).hexdigest()),
-                "token_count": 0, "parser": "inconclusive", "verdict": None,
+                "token_count": 0, "match_scope": "all_tokens",
+                "parser": "inconclusive", "verdict": None,
             }
             self._identity_ocr_attempts.append(identity_attempt)
             if seen_name:
@@ -12167,8 +12653,8 @@ class AndroidDriver(DatingAppDriver):
         if (state in {"top", "new"} and not identity_band_named_candidate
                 and self.observe_name_ocr and self._identity_name
                 and self.identity_top_name_band is not None):
-            def read_top_name(*, band, recipe: str, source: str, upscale: int) -> None:
-                """Run one calibrated OCR recipe and retain its parser outcome for audit."""
+            def read_top_name(*, band, recipe: str, source: str, upscale: int) -> str | None:
+                """Run one calibrated OCR recipe, retain its outcome, and return its text."""
                 nonlocal state
                 # Preserve the long-standing primary call shape at 3x.  Besides avoiding a
                 # needless explicit default, test/calibration doubles commonly expose the old
@@ -12179,7 +12665,11 @@ class AndroidDriver(DatingAppDriver):
                     "recipe": recipe, "band": list(band), "psm": "6", "upscale": upscale,
                     "text_sha256": (None if text is None else hashlib.sha256(
                         text.encode()).hexdigest()),
-                    "token_count": 0, "parser": "inconclusive", "verdict": None,
+                    # Card-header crops include metadata and may reach the top of a photo.
+                    # Only the first nonempty line is the name slot; a later OCR-noise token
+                    # cannot veto a card change or become its identity.
+                    "token_count": 0, "match_scope": "first_nonempty_line",
+                    "parser": "inconclusive", "verdict": None,
                 }
                 self._identity_ocr_attempts.append(attempt)
                 # Keep the actual last header read on the existing diagnostic field, including a
@@ -12188,41 +12678,44 @@ class AndroidDriver(DatingAppDriver):
                 self._identity_top_name_read_source = source if text else None
                 if not text:
                     attempt["parser"] = "no_text"
-                    return
+                    return text
                 tokens = _TOP_NAME_TOKEN_RE.findall(text)
                 attempt["token_count"] = len(tokens)
                 stored = self._identity_name.strip()
                 candidate = _clean_first_line_name_candidate(text)
+                stored_name_tokens = _TOP_NAME_TOKEN_RE.findall(
+                    _first_nonempty_ocr_line(text))
                 # The ordinary tokenizer deliberately drops short names.  Check the
                 # structurally licensed banner candidate too, before considering it "new", so
                 # a current profile actually named S stays same (and a conservative prefix
                 # such as S/Samantha still costs only a wait rather than a false label).
-                if stored and (_ocr_tokens_match_stored_name(tokens, stored)
+                if stored and (_ocr_tokens_match_stored_name(stored_name_tokens, stored)
                                or (candidate is not None
                                    and _name_token_matches(candidate, stored))):
                     state = "same"
                     self._identity_top_name_verdict = "same"
                     attempt.update(parser="stored_name_match", verdict="same")
-                    return
+                    return text
                 if state != "top":
                     # A pixel-new nonmatch may be photo content; it can never strengthen a
                     # mismatch.  The compact fallback shares that asymmetric restriction.
                     attempt["parser"] = "nonmatch_not_licensed"
-                    return
+                    return text
                 if candidate is None:
                     attempt["parser"] = "no_clean_first_line_candidate"
-                    return
+                    return text
                 state = "new"
                 self._identity_top_name_verdict = "new"
                 self._identity_name_candidate = candidate
                 self._identity_name_candidate_source = source
                 attempt.update(parser="one_first_line_candidate", verdict="new",
                                candidate=candidate)
+                return text
 
             # Primary broad band: captures both the banner and no-banner header layouts.
-            read_top_name(band=self.identity_top_name_band,
-                          recipe="top_card_header_psm6_3x", source="top_card_header",
-                          upscale=3)
+            primary_text = read_top_name(
+                band=self.identity_top_name_band,
+                recipe="top_card_header_psm6_3x", source="top_card_header", upscale=3)
             # The 2026-08-26 Kassie -> Christina and Zoey -> Maria Training Likes exposed a
             # preprocessing-specific miss: the configured header band was still correct, but
             # its lower portion contained the new card's photo. At 3x LANCZOS, psm 6 segmented
@@ -12231,15 +12724,100 @@ class AndroidDriver(DatingAppDriver):
             # the first recipe is INCONCLUSIVE. A stored-name read remains an immediate
             # conservative veto, and a clean new-name read keeps the established two-frame,
             # deck-ready, and stability requirements in its caller.
+            primary_native_text = None
             if self._identity_top_name_verdict is None:
-                read_top_name(band=self.identity_top_name_band,
-                              recipe="top_card_header_psm6_native", source="top_card_header",
-                              upscale=1)
+                primary_native_text = read_top_name(
+                    band=self.identity_top_name_band,
+                    recipe="top_card_header_psm6_native", source="top_card_header", upscale=1)
+            # Hinge 10.2.0's ``Take another look`` panel occupies the normal card-header band
+            # and moves the actual name below it.  BOTH independently rendered OCR recipes must
+            # read exactly that panel before the separately calibrated lower crop can run.  One
+            # plausible read is not a layout detector: the retained corpus has a lower-band frame
+            # whose native recipe produced photo-noise ``tee``.  The lower crop likewise needs
+            # two matching recipe outcomes before it may set a name verdict.  This is deliberately
+            # tried before the compact no-banner retry, because the old crop cannot see the
+            # displaced name at all.
+            take_another_look = (
+                _is_take_another_look_banner(primary_text)
+                and _is_take_another_look_banner(primary_native_text))
+            if (self._identity_top_name_verdict is None and state == "top"
+                    and take_another_look
+                    and self.identity_top_name_take_another_look_band is not None):
+                def read_panel_name(*, recipe: str, upscale: int):
+                    """Read one panel-layout name recipe without committing it alone."""
+                    band = self.identity_top_name_take_another_look_band
+                    text = (self._ocr_band(frame, band, psm="6") if upscale == 3
+                            else self._ocr_band(frame, band, psm="6", upscale=upscale))
+                    attempt: dict[str, object] = {
+                        "recipe": recipe, "band": list(band), "psm": "6", "upscale": upscale,
+                        "text_sha256": (None if text is None else hashlib.sha256(
+                            text.encode()).hexdigest()),
+                        "token_count": 0, "match_scope": "first_nonempty_line",
+                        "parser": "inconclusive", "verdict": None,
+                    }
+                    self._identity_ocr_attempts.append(attempt)
+                    if not text:
+                        attempt["parser"] = "no_text"
+                        return None, None, text, attempt
+                    tokens = _TOP_NAME_TOKEN_RE.findall(text)
+                    attempt["token_count"] = len(tokens)
+                    stored = self._identity_name.strip()
+                    candidate = _clean_first_line_name_candidate(text)
+                    # This special lower crop can overlap the first photo.  Unlike the ordinary
+                    # header path, it may not accept a loose token match from either OCR recipe:
+                    # both recipes must expose ONE clean first-line candidate and those exact
+                    # candidate strings must agree before the lower source is published.  Two
+                    # different fuzzy stored-name readings (Holli / Hollyx for Holly) otherwise
+                    # leak a source that `_training_exact_top_name_conflict_candidate` can turn
+                    # into an adversarial name proof alongside a content mismatch.
+                    if candidate is None:
+                        attempt["parser"] = "no_clean_first_line_candidate"
+                        return None, None, text, attempt
+                    if stored and _name_token_matches(candidate, stored):
+                        attempt["parser"] = "stored_name_match_pending_2recipe"
+                        return "same", candidate, text, attempt
+                    attempt.update(parser="one_first_line_candidate_pending_2recipe",
+                                   candidate=candidate)
+                    return "new", candidate, text, attempt
+
+                first_kind, first_candidate, first_text, first_attempt = read_panel_name(
+                    recipe="top_card_header_take_another_look_psm6_3x", upscale=3)
+                second_kind, second_candidate, second_text, second_attempt = read_panel_name(
+                    recipe="top_card_header_take_another_look_psm6_native", upscale=1)
+                same_candidate = (
+                    first_candidate is not None and second_candidate is not None
+                    and first_candidate.casefold() == second_candidate.casefold())
+                same_stored_name = first_kind == second_kind == "same" and same_candidate
+                same_new_name = first_kind == second_kind == "new" and same_candidate
+                if same_stored_name or same_new_name:
+                    outcome = "same" if same_stored_name else "new"
+                    candidate = first_candidate
+                    parser = ("two_recipe_stored_name_agreement" if same_stored_name
+                              else "two_recipe_candidate_agreement")
+                    for attempt in (first_attempt, second_attempt):
+                        attempt.update(parser=parser, verdict=outcome)
+                        if candidate is not None:
+                            attempt["candidate"] = candidate
+                    self._identity_top_name_read = second_text or first_text
+                    self._identity_top_name_read_source = "top_card_header_take_another_look"
+                    self._identity_top_name_verdict = outcome
+                    if outcome == "same":
+                        state = "same"
+                    else:
+                        state = "new"
+                        self._identity_name_candidate = candidate
+                        self._identity_name_candidate_source = "top_card_header_take_another_look"
+                else:
+                    for attempt in (first_attempt, second_attempt):
+                        if attempt["parser"] not in {
+                                "no_text", "no_clean_first_line_candidate"}:
+                            attempt["parser"] = "no_two_recipe_agreement"
             # The broad crop can reach a prompt/title on the compact no-banner layout.  Only
             # after BOTH broad recipes are inconclusive, and only while canonical pixel state is
             # still top, retry the separately calibrated compact crop.  It does not relax the
             # stored-name veto, exact-one parser, canonical top, or repeated/stable-name gates.
             if (self._identity_top_name_verdict is None and state == "top"
+                    and not take_another_look
                     and self.identity_top_name_fallback_band is not None):
                 read_top_name(band=self.identity_top_name_fallback_band,
                               recipe="top_card_header_fallback_psm6_3x",

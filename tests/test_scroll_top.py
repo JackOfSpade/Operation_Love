@@ -1010,6 +1010,8 @@ def test_a_chips_row_that_survives_a_proven_scroll_is_screen_pinned():
     assert evidence.max_chips_distance == 0.0
     assert "pinned to the screen" in evidence.reason
     assert "cannot both be at the scroll top" in evidence.reason
+    assert "this capture's current toolbar state" in evidence.reason
+    assert "this app version draws" not in evidence.reason
 
 
 def test_frames_that_did_not_scroll_prove_nothing_about_pinning():
@@ -1105,6 +1107,9 @@ def test_the_gate_confirms_with_no_evidence_and_refuses_to_confirm_with_pinned_e
     assert informed.distance == 0.0                # the measurement is still reported...
     assert "structurally UNAVAILABLE" in informed.reason      # ...and no longer believed
     assert "identity_band" in informed.reason and "recalibrat" in informed.reason
+    assert "this capture's current toolbar state" in informed.reason
+    assert "fresh capture may be considered only if it independently proves" in informed.reason
+    assert "on this app version" not in informed.reason
 
     with pytest.raises(scroll_top.ScrollTopUnconfirmed, match="check_unavailable"):
         scroll_top.require_scroll_top(

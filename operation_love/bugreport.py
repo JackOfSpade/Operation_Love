@@ -9,7 +9,8 @@ never a value or even a derived prefix), the live run status (phase, labels,
 ranker, per-app decisions, budget, last error), a STALL SUMMARY distilled from
 each app's on-disk actions.jsonl (the most recent same-reason observe_waiting
 repeats, most recent first — see _stall_summary_md), item-index refusal pair evidence
-and realised-step ranges, and recent log lines. Output
+and realised-step ranges, contemporaneous ADB screencap-timeout recovery evidence, and recent
+log lines. Output
 is markdown the owner can paste to a developer to debug. The report includes
 an explicit reporter-follow-up section when its human description is too brief
 to provide expected/actual behaviour or a reproduction path, alongside an
@@ -76,6 +77,18 @@ _SHIFT_TRACE_STRIPS_SHOWN = 12     # per-direction cap on rendered strips in a s
 _MIN_ACTIONABLE_DESCRIPTION_CHARS = 20
 _ITEM_INDEX_REASON_INLINE_LIMIT = 360
 _COMPLETION_EVIDENCE_MAX_BYTES = 8_000_000
+# A 1080x2400 RGBA framebuffer is 10,368,000 bytes before PNG encoding.  32 MiB leaves ample
+# headroom for an incompressible capture and PNG framing while preventing a JSONL filename from
+# turning report generation into an unbounded file read.
+_DEBUG_SCREENSHOT_MAX_BYTES = 32 * 1024 * 1024
+# Keep this tied to the public AdbError wording rather than an exception import: actions.jsonl
+# is intentionally plain diagnostic data, and older runs may have been written by a process
+# whose classes are no longer importable in this one.
+_ADB_SCREENCAP_TIMEOUT_RE = re.compile(
+    r"\b(?:ADB command timed out after\s+[^:]+:|ADB screencap recovery exhausted after\s+"
+    r"\d+\s+read-only attempts;).*\bexec-out\s+screencap\s+-p\b",
+    re.IGNORECASE,
+)
 # These are recovered failures: the opener service logs them while it tries the next model,
 # rather than publishing a terminal AppStatus error. Keep this matcher narrow so an unrelated
 # diagnostic mentioning a failure cannot change the completion verdict.
@@ -3147,6 +3160,204 @@ def _record_time(rec: dict) -> str:
     return _sanitize_inline(str(rec.get("ts") or "unknown time"))
 
 
+def _training_probe_bool(value: object) -> str:
+    """Render a probe predicate without promoting a missing field to a verdict."""
+    if value is True:
+        return "yes"
+    if value is False:
+        return "no"
+    return "not recorded"
+
+
+_TRAINING_PROBE_RECIPES = frozenset({
+    "identity_band_psm7_3x",
+    "top_card_header_psm6_3x",
+    "top_card_header_psm6_native",
+    "top_card_header_fallback_psm6_3x",
+    "top_card_header_fallback_psm6_native",
+    "top_card_header_take_another_look_psm6_3x",
+    "top_card_header_take_another_look_psm6_native",
+})
+_TRAINING_PROBE_VERDICTS = frozenset({"same", "new"})
+_TRAINING_IDENTITY_STATES = frozenset({
+    "matched", "mismatched", "identity_unknown", "same", "new", "top", "unknown",
+})
+_TRAINING_NAME_VERDICTS = frozenset({"same", "new", "exact_name_conflict_after_content"})
+_DEBUG_SCREENSHOT_NAME_RE = re.compile(r"\A\d{5}_[A-Za-z0-9_]+\.png\Z")
+_GENERATION_CONTEXT_TEXT_LIMIT = 2_000
+_GENERATION_INDEX_SPACES = frozenset({"model_items", "profile_photos"})
+
+
+def _training_probe_token(value: object, allowed: frozenset[str]) -> str:
+    """Render only known machine tokens from an untrusted Training action row.
+
+    OCR text, a candidate name, and even a future free-text parser result must never appear in
+    this compact report.  A schema change should read as ``unrecognised`` until the report has
+    an explicit redaction-aware rendering for it.
+    """
+    if value is None:
+        return "not recorded"
+    if isinstance(value, str) and value in allowed:
+        return value
+    return "unrecognised"
+
+
+def _generation_context_md(record: dict) -> list[str]:
+    """Render the private structured fields retained with a staged Training draft.
+
+    ``actions.jsonl`` is untrusted report input, even though the real driver writes these
+    values.  Accept only a flat mapping and bounded strings; model prose is additionally passed
+    through the report's Markdown sanitizer and the final whole-report credential redactor.
+    Older evidence rows simply have no generation context and retain their existing layout.
+    """
+    context = record.get("generation_context")
+    # The first deployment writes flat keys in the action row.  Accept that bounded, explicit
+    # shape too so a partial evidence writer still leaves useful forensic data rather than a
+    # silently empty report.
+    if not isinstance(context, dict):
+        context = {key: record.get(key) for key in (
+            "model", "index_space", "referenced", "angle", "item_description")
+            if key in record}
+    if not context:
+        return []
+
+    def text(key: str) -> str:
+        value = context.get(key)
+        if not isinstance(value, str) or not value:
+            return "not recorded"
+        return _sanitize_inline(value)[:_GENERATION_CONTEXT_TEXT_LIMIT]
+
+    index_space = context.get("index_space")
+    index_display = (index_space if isinstance(index_space, str)
+                     and index_space in _GENERATION_INDEX_SPACES else "not recorded")
+    return [
+        "- generation context (model-private fields, not a sent/committed opener):",
+        f"  - model: `{text('model')}`",
+        f"  - index space: `{_sanitize_inline(index_display)}`",
+        f"  - referenced: `{text('referenced')}`",
+        f"  - angle: `{text('angle')}`",
+        f"  - item description: `{text('item_description')}`",
+    ]
+
+
+def _training_probe_ocr_md(diagnostics: object) -> str:
+    """Summarise OCR recipe outcomes while keeping OCR text and names out of the report."""
+    if not isinstance(diagnostics, dict):
+        return "not recorded"
+    attempts = diagnostics.get("ocr_attempts")
+    if not isinstance(attempts, list):
+        return "not recorded"
+    summary: list[str] = []
+    for attempt in attempts[:5]:
+        if not isinstance(attempt, dict):
+            continue
+        recipe = _training_probe_token(attempt.get("recipe"), _TRAINING_PROBE_RECIPES)
+        verdict = _training_probe_token(attempt.get("verdict"), _TRAINING_PROBE_VERDICTS)
+        # `candidate_sha256` proves only that a normalised candidate existed.  Deliberately do
+        # not render either that digest or the candidate itself: a report reader needs to know
+        # whether OCR found a candidate, not a stable cross-report join key for a person's name.
+        candidate = ("candidate redacted" if isinstance(attempt.get("candidate_sha256"), str)
+                     and attempt["candidate_sha256"] else "no candidate")
+        summary.append(f"{recipe}: verdict={verdict}, {candidate}")
+    return "; ".join(summary) if summary else "not recorded"
+
+
+def _training_probe_frame_md(probe: dict, run: Path, keys: tuple[str, ...],
+                             shot_cache: dict[str, str | None]) -> str:
+    """Name one observation's retained frame through the normal bounded PNG guard."""
+    for key in keys:
+        name = probe.get(key)
+        # DebugLog owns a deliberately boring filename grammar.  In addition to avoiding
+        # Markdown surprises, reject an action-row filename that tries to smuggle personal text
+        # into a report even if a same-named file exists under the run directory.
+        if not isinstance(name, str) or _DEBUG_SCREENSHOT_NAME_RE.fullmatch(name) is None:
+            continue
+        if _shot_digest(run, name, shot_cache) is None:
+            continue
+        # `_shot_digest` already established that this is a bounded, regular, non-symlink PNG
+        # under `run`; sanitize too because filenames are still untrusted Markdown text.
+        return f"`{_sanitize_inline(str(name))}` (retained on disk; field `{key}`)"
+    return "not retained or unsafe"
+
+
+def _training_probe_observation_md(label: str, diagnostics: object, frame: str) -> str:
+    """Render a frame-bound, privacy-safe Training observation."""
+    values = diagnostics if isinstance(diagnostics, dict) else {}
+    state = (
+        "composer_open=" + _training_probe_bool(values.get("composer_open"))
+        + "; deck_ready=" + _training_probe_bool(values.get("deck_ready"))
+        + "; current_profile=" + _training_probe_bool(values.get("current_profile"))
+    )
+    content = (
+        "exact=" + _training_probe_bool(values.get("current_content_exact_matched"))
+        + "; shifted=" + _training_probe_bool(values.get("current_content_shift_matched"))
+    )
+    identity_value = values.get("identity_verdict")
+    if identity_value is None:
+        identity_value = values.get("current_identity_state")
+    identity = _training_probe_token(identity_value, _TRAINING_IDENTITY_STATES)
+    name = _training_probe_token(values.get("name_verdict"), _TRAINING_NAME_VERDICTS)
+    return (
+        f"- {label} post-X observation: frame {frame}; {state}; "
+        f"content({content}); identity={identity}; name_verdict={name}; "
+        f"OCR attempts: {_training_probe_ocr_md(values)}."
+    )
+
+
+def _training_dislike_unverified_landing_md(
+        records: list[dict], opener_index: int, outcome: dict, run: Path) -> list[str]:
+    """Explain the final semantic refusal after an irreversible Training X tap.
+
+    The outcome row's ``before`` image is intentionally the pre-tap, human-reviewed checkpoint.
+    The final ``training_advance_probe`` instead records what the deck looked like after that X.
+    Keep those two facts visibly separate: neither an unverified action nor an absent OCR name is
+    evidence that a label may be recorded.
+    """
+    try:
+        outcome_index = next(index for index, record in enumerate(records) if record is outcome)
+    except StopIteration:  # defensive only; callers pass a member of `records`
+        return ["- post-X landing verification: the unverified outcome was not bound to a "
+                "readable action-log position."]
+    final_probe = next(
+        (record for record in reversed(records[opener_index + 1:outcome_index])
+         if record.get("action") == "training_advance_probe"),
+        None)
+    if final_probe is None:
+        return ["- post-X landing verification: no final Training advance probe was recorded; "
+                "the X tap remains unverified and no training label was recorded."]
+
+    outcome_name = _training_probe_token(final_probe.get("outcome"), frozenset({"retry"}))
+    attempt_value = final_probe.get("attempt")
+    attempt = (str(attempt_value) if isinstance(attempt_value, int)
+               and not isinstance(attempt_value, bool) and 1 <= attempt_value <= 3
+               else "unrecognised")
+    shot_cache: dict[str, str | None] = {}
+    first_frame = _training_probe_frame_md(
+        final_probe, run, ("kept_before", "before"), shot_cache)
+    heading = ("final refused Training advance probe"
+               if outcome_name == "retry"
+               else "final Training advance probe with an unrecognised outcome")
+    observations = [
+        f"- post-X landing verification ({heading}; "
+        f"attempt `{attempt}`, outcome `{outcome_name}`).",
+        _training_probe_observation_md("first", final_probe.get("first"), first_frame),
+    ]
+    if isinstance(final_probe.get("second"), dict):
+        second_frame = _training_probe_frame_md(
+            final_probe, run, ("kept_after", "after"), shot_cache)
+        observations.append(_training_probe_observation_md(
+            "second", final_probe["second"], second_frame))
+        observations.append(
+            "- pair verdict: stable=" + _training_probe_bool(final_probe.get("stable"))
+            + "; names_agree=" + _training_probe_bool(final_probe.get("names_agree")) + ".")
+    observations.extend([
+        "- the checkpoint snapshot above is pre-action evidence; this probe is the separate "
+        "post-X landing observation. The action remains unverified and no training label was "
+        "recorded.",
+    ])
+    return observations
+
+
 def _latest_auto_opener_evidence_md(lines: list[str], run: Path) -> str:
     """Render the latest AUTO or Training opener's private evidence and outcome.
 
@@ -3188,24 +3399,20 @@ def _latest_auto_opener_evidence_md(lines: list[str], run: Path) -> str:
         opener_integrity = "verified" if actual == expected_opener_hash else "⚠️ SHA-256 mismatch"
 
     shot_name = record.get("before")
-    shot_path = None
-    if (isinstance(shot_name, str) and Path(shot_name).name == shot_name
-            and shot_name not in {"", ".", ".."}):
-        candidate = run / shot_name
-        if not candidate.is_symlink() and candidate.is_file():
-            shot_path = candidate
-    if shot_path is None:
-        shot_display = _sanitize_inline(str(shot_name)) if isinstance(shot_name, str) else "not recorded"
+    shot_digest = (_shot_digest(run, shot_name, {})
+                   if isinstance(shot_name, str)
+                   and _DEBUG_SCREENSHOT_NAME_RE.fullmatch(shot_name) is not None else None)
+    if shot_digest is None:
+        # Do not echo an unsafe path back into the report.  Apart from misleading the reader
+        # about its availability, a flat-but-hostile filename can contain Markdown control text
+        # or personal data even though the action row itself is diagnostic input.
+        shot_display = "not recorded or unsafe"
         frame_integrity = "⚠️ screenshot missing or unsafe"
     else:
-        shot_display = shot_path.name
+        shot_display = _sanitize_inline(str(shot_name))
         if isinstance(expected_frame_hash, str):
-            try:
-                actual = hashlib.sha256(shot_path.read_bytes()).hexdigest()
-                frame_integrity = ("verified" if actual == expected_frame_hash
-                                   else "⚠️ SHA-256 mismatch")
-            except Exception:  # noqa: BLE001 -- debug reporting remains best-effort
-                frame_integrity = "⚠️ screenshot unreadable"
+            frame_integrity = ("verified" if shot_digest == expected_frame_hash
+                               else "⚠️ SHA-256 mismatch")
         else:
             frame_integrity = "not verifiable (SHA-256 was not recorded)"
 
@@ -3214,6 +3421,7 @@ def _latest_auto_opener_evidence_md(lines: list[str], run: Path) -> str:
     outcome = "no linked send outcome was logged"
     legacy_training_dislike = False
     checkpoint_tail: list[dict] = []
+    unverified_landing: list[str] = []
     if evidence_id:
         linked = [
             rec for rec in records[record_index + 1:]
@@ -3266,6 +3474,9 @@ def _latest_auto_opener_evidence_md(lines: list[str], run: Path) -> str:
             outcome = f"{label} at `{_record_time(result)}`"
             if legacy_training_dislike:
                 outcome += " (legacy sequence; the outcome row predates evidence-ID linkage)"
+            if action == "training_dislike_unverified":
+                unverified_landing = _training_dislike_unverified_landing_md(
+                    records, record_index, result, run)
         elif session_mode == "training" and not resumed:
             # Before the cancellation-classification fix, an intentional Hub Stop while the
             # reviewer held this checkpoint was retained as an ``unexpected`` error record.
@@ -3290,10 +3501,13 @@ def _latest_auto_opener_evidence_md(lines: list[str], run: Path) -> str:
     out = [
         f"- session mode: {session_mode}",
         f"- evidence ID: `{evidence_display}`",
-        f"- snapshot: `{shot_display}` ({frame_integrity})",
+        f"- {'pre-action checkpoint snapshot' if unverified_landing else 'snapshot'}: "
+        f"`{shot_display}` ({frame_integrity})",
         f"- target: model item `{target_display}`",
         f"- full opener: `{opener_display}` ({opener_integrity})",
     ]
+    if session_mode == "training":
+        out.extend(_generation_context_md(record))
     if resumed:
         approval_evidence_id = record.get("approval_evidence_id")
         approval_display = (_sanitize_inline(approval_evidence_id)
@@ -3301,6 +3515,7 @@ def _latest_auto_opener_evidence_md(lines: list[str], run: Path) -> str:
                             else "not recorded")
         out.append(f"- human-reviewed approval evidence ID: `{approval_display}`")
     out.append(f"- linked outcome: {outcome}")
+    out.extend(unverified_landing)
     return "\n".join(out)
 
 
@@ -3568,8 +3783,10 @@ def _shot_digest(run: Path, name: object, cache: dict[str, str | None]) -> str |
     """sha256 of a screenshot referenced by an actions.jsonl record, or None.
 
     Cached per filename because a run's records reference the same shot repeatedly (the debug
-    log reuses one file for consecutive identical frames). Any unreadable/missing file is None
-    -- a bug report must never raise while describing a bug."""
+    log reuses one file for consecutive identical frames).  The record is untrusted input, so a
+    symlink, non-regular file, empty file, or oversized PNG is never opened.  Any unsafe,
+    unreadable, or missing file is None -- a bug report must never raise or escape its run
+    directory while describing a bug."""
     if not isinstance(name, str) or not name:
         return None
     candidate = Path(name)
@@ -3580,10 +3797,56 @@ def _shot_digest(run: Path, name: object, cache: dict[str, str | None]) -> str |
         return None
     if name not in cache:
         try:
-            cache[name] = hashlib.sha256((run / name).read_bytes()).hexdigest()
+            path = run / name
+            # A bare name alone does not confine a symlink: a debug row can point it outside the
+            # run directory.  Match the sidecar reader's regular-file and bounded-size guard.
+            if path.is_symlink() or not path.is_file():
+                cache[name] = None
+            else:
+                size = path.stat().st_size
+                cache[name] = (hashlib.sha256(path.read_bytes()).hexdigest()
+                               if 0 < size <= _DEBUG_SCREENSHOT_MAX_BYTES else None)
         except Exception:  # noqa: BLE001
             cache[name] = None
     return cache[name]
+
+
+def _adb_screencap_timeout_md(lines: list[str], run: Path) -> str:
+    """Explain the last retained ADB screencap timeout in actionable transport terms.
+
+    The raw ``unexpected`` row records the failed request but used to leave the operator to
+    infer whether the phone disconnected or merely stalled.  The driver's failure snapshot
+    performs a screencap *after* that exception; a saved error shot is therefore direct recovery
+    evidence for this path.  A missing shot deliberately stays indeterminate rather than being
+    called a disconnect -- disk logging and the follow-up capture are both best effort.
+    """
+    matches = [rec for rec in _action_records(lines)
+               if rec.get("action") == "unexpected"
+               and isinstance(rec.get("error"), str)
+               and _ADB_SCREENCAP_TIMEOUT_RE.search(rec["error"])]
+    if not matches:
+        return ""
+    latest = matches[-1]
+    at = _sanitize_inline(str(latest.get("ts") or "time not recorded"))
+    screenshot = latest.get("screenshot")
+    digest = _shot_digest(run, screenshot, {})
+    if digest is not None:
+        return (
+            f"- ADB screencap timeout at `{at}`: a post-timeout failure snapshot was "
+            f"saved as `{_sanitize_inline(str(screenshot))}`. The follow-up raw screencap "
+            "command completed and retained non-empty screenshot bytes, so ADB was responsive "
+            "again: this was a transient screencap/ADB stall rather than a persistent "
+            "disconnect while the failure handler ran."
+        )
+    if isinstance(screenshot, str) and screenshot:
+        evidence = (f"`{_sanitize_inline(screenshot)}` was named but is missing or unsafe to "
+                    "read")
+    else:
+        evidence = "no post-timeout screenshot was saved"
+    return (
+        f"- ADB screencap timeout at `{at}`: {evidence}; recovery versus disconnect is "
+        "indeterminate because the best-effort failure snapshot did not leave usable evidence."
+    )
 
 
 # like_candidate is deliberately absent: it means only that the lower screen changed, without
@@ -3717,6 +3980,10 @@ def _one_debug_dir_md(app: str, opts: dict, *, current_run_id: str | None = None
                 raw_lines = log.read_text().splitlines()
             except Exception:  # noqa: BLE001
                 raw_lines = []
+            adb_timeout = _adb_screencap_timeout_md(raw_lines, run)
+            if adb_timeout:
+                out.append("  - ADB timeout diagnosis:")
+                out.extend(f"    {line}" for line in adb_timeout.splitlines())
             # Repeated waits go FIRST, ahead of the action-counts histogram and the tail --
             # it is the one line a developer needs before anything else if this run hung (see
             # _stall_summary_md's docstring for the incident this is filed against). Rendered

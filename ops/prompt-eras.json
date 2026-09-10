@@ -652,11 +652,12 @@
   ],
   "working_tree": {
     "provisional": true,
-    "prompt_sha256": "9f50c50b66cc49de8b80823f1df8974e0a8e315c4e01f6eb887787ce85471be9",
-    "label": "UNCOMMITTED WORKING TREE -- PROVISIONAL, not a shipped era (identical to already-known era: '2026-09-06 75155dc7: +SPOKEN REGISTER; +SAY IT ONCE; +MODIFIER CLARITY; +5 more change(s)')",
+    "prompt_sha256": "cc4c982ea7e02d2e04047969dceee1bfcecb10e0a86575256114931a6398bb4e",
+    "label": "UNCOMMITTED WORKING TREE -- PROVISIONAL, not a shipped era (+MINIMUM SUFFICIENT REFERENCE; +IDIOM FIT)",
     "commit": null,
     "rules": [
       "SHARED CONTEXT RULE",
+      "MINIMUM SUFFICIENT REFERENCE",
       "PRIMARY ITEM RULE",
       "PHOTO HEADER RULE",
       "PROFILE TEXT FACT CHECK",
@@ -671,6 +672,7 @@
       "QUESTION COHERENCE",
       "CASUAL OR PUNCTUATION",
       "SPOKEN REGISTER",
+      "IDIOM FIT",
       "SAY IT ONCE",
       "REFERENT CLARITY",
       "MODIFIER CLARITY",
@@ -693,7 +695,7 @@
       "HARD RULE"
     ],
     "reasons": [],
-    "matches_known_committed_era": "9f50c50b66cc49de8b80823f1df8974e0a8e315c4e01f6eb887787ce85471be9",
+    "matches_known_committed_era": null,
     "no_metrics_recorded_here": true,
     "note": "Computed from the files on disk right now (Path.read_text), not from git history -- there is no commit behind this digest, and it can change on the very next edit or `git commit`. Regenerate this registry (python tools/backfill_prompt_eras.py) to refresh it. This registry never records measured metrics for ANY entry, committed or provisional -- see tools/opener_corpus_report.py's --rule/--eras for whatever has actually been measured against a real corpus; a rule appearing here is a fact about what was ON THE WIRE, never a claim that it was measured."
   }

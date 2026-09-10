@@ -9,8 +9,10 @@ for each one through WHATEVER config.yaml currently configures -- never the prom
 when the request was originally captured -- and writes every result to the local store under the
 CURRENT prompt_sha256 (operation_love.opener.opener.prompt_stamp), so
 tools/opener_corpus_report.py --compare can diff this offline pass's era against a prior live
-era. The whole point: "run one live batch, then iterate on the prompt offline forever, with no
-phone and no owner time."
+era. The whole point is to run one live batch, then iterate on the prompt offline forever, with
+no phone and no owner time. Unnumbered context crops are retained in the corpus as forensic and
+research data, but this tool deliberately omits them from the current Gemini request, exactly as
+live opener generation does.
 
 DRY RUN IS THE DEFAULT (see main()'s --live flag) and never depends on GEMINI_API_KEY being set
 at all: it builds the exact request payload for each selected capture locally (the same
@@ -444,9 +446,12 @@ def main(argv: list[str] | None = None, *, transport: GeminiTransport | None = N
                           # live driver as of this writing -- see replay_corpus.py's module
                           # docstring and opener.opener.GeminiOpener.generate()'s own comment.
 
+    # Context crops remain in every ReplayCapture for forensic inspection and future research,
+    # but must never be reintroduced to the model by an offline replay after live generation
+    # stopped sending them. The numbered images are the complete model-visible image set.
     item_requests = [
         (capture, ItemRequest(items=capture.items, name=capture.name,
-                              context=capture.context, truncated=capture.truncated))
+                              truncated=capture.truncated))
         for capture in captures
     ]
 
@@ -461,7 +466,8 @@ def main(argv: list[str] | None = None, *, transport: GeminiTransport | None = N
         entry: dict[str, Any] = {
             "replay_id": capture.replay_id,
             "item_count": item_request.item_count,
-            "context_count": item_request.context_count,
+            "context_count": len(capture.context),
+            "sent_context_count": item_request.context_count,
             "truncated": item_request.truncated,
             "name_present": bool(capture.name),  # never echo her literal name in this tool's
                                                   # output (text or JSON) -- see this comment;
@@ -484,7 +490,8 @@ def main(argv: list[str] | None = None, *, transport: GeminiTransport | None = N
             size = entry["estimated_request_bytes"]
             size_text = f"~{size} byte(s)" if size is not None else f"ERROR: {entry['size_error']}"
             log(f"  {entry['replay_id']}: item_count={entry['item_count']} "
-                f"context_count={entry['context_count']} truncated={entry['truncated']} "
+                f"context_count={entry['context_count']} sent_context_count="
+                f"{entry['sent_context_count']} truncated={entry['truncated']} "
                 f"estimated_request_bytes={size_text} "
                 f"(sized against {sizing_model!r})")
         worst_case = len(captures) * len(models)

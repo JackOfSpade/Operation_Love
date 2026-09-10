@@ -256,6 +256,50 @@ def test_identity_top_name_fallback_band_requires_and_only_shrinks_primary_band_
                            identity_top_name_fallback_band=shifted)
 
 
+def test_take_another_look_name_band_requires_the_canonical_name_path():
+    """The shifted lower crop is only meaningful after the regular top-header geometry.
+
+    Its runtime banner gate lives in hinge.py; the spec still refuses a detached lower OCR
+    geometry, which would otherwise look like an independently authorised detector.
+    """
+    primary = (0.03, 0.130, 0.75, 0.250)
+    shifted = (0.03, 0.215, 0.75, 0.285)
+    spec = AndroidAppSpec(
+        app="hinge", package="x.y", calibrated=False,
+        identity_band=(0.10, 0.048, 0.80, 0.094),
+        identity_top_name_band=primary,
+        identity_top_name_take_another_look_band=shifted)
+    assert spec.identity_top_name_take_another_look_band == shifted
+    with pytest.raises(ValueError, match="identity_band and identity_top_name_band"):
+        AndroidAppSpec(
+            app="hinge", package="x.y", calibrated=False,
+            identity_top_name_take_another_look_band=shifted)
+    with pytest.raises(ValueError, match="take_another_look_band"):
+        AndroidAppSpec(
+            app="hinge", package="x.y", calibrated=False,
+            identity_band=(0.10, 0.048, 0.80, 0.094),
+            identity_top_name_band=primary,
+            identity_top_name_take_another_look_band=(0.80, 0.215, 0.20, 0.285))
+    with pytest.raises(ValueError, match="must keep the primary"):
+        AndroidAppSpec(
+            app="hinge", package="x.y", calibrated=False,
+            identity_band=(0.10, 0.048, 0.80, 0.094),
+            identity_top_name_band=primary,
+            identity_top_name_take_another_look_band=(0.03, 0.251, 0.75, 0.285))
+    with pytest.raises(ValueError, match="first-photo content"):
+        AndroidAppSpec(
+            app="hinge", package="x.y", calibrated=False,
+            identity_band=(0.10, 0.048, 0.80, 0.094),
+            identity_top_name_band=primary,
+            identity_top_name_take_another_look_band=(0.03, 0.215, 0.75, 1.0))
+    with pytest.raises(ValueError, match="Hinge-only"):
+        AndroidAppSpec(
+            app="x", package="x.y", calibrated=False,
+            identity_band=(0.10, 0.048, 0.80, 0.094),
+            identity_top_name_band=primary,
+            identity_top_name_take_another_look_band=shifted)
+
+
 # --- paywall_headline_band: OCR-only REFINEMENT of the "paywall" template's verdict --------
 # See android_spec.py's paywall_headline_band docstring for the mechanism: the screen itself is
 # detected by the "paywall" TEMPLATE (hinge.py's _paywall_visible), never by this band's OCR --

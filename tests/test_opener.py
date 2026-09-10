@@ -320,6 +320,11 @@ _REDUNDANCY_FALSE_POSITIVES = [
     # the monitor, and it is also what makes it read like two people looking at one thing.
     ("I heard they run about as warm as a space heater, so at least you had that.",
      "Photo of her with a husky in the arctic"),
+    # 2026-09-08 watched Training incident, implicit control: the attached item resolves the
+    # place reference without repeating its visible surface, furniture, drink, or pose.
+    ("You look very at home there. Is this your regular spot for a quiet evening out?",
+     "Photo of Taylor sitting on a tiled outdoor bench under string lights with her legs "
+     "folded up, holding a glass of white wine"),
     # STRUCTURAL NOUNS ONLY. Nearly every `referenced` the model writes opens with
     # "photo of..." or "prompt card...", so counting those words would fire on almost every
     # profile and swamp the real signal -- hence the second stopword group.
@@ -381,12 +386,36 @@ _REDUNDANCY_TRUE_POSITIVES = [
      "Photo of a fjord in norway"),
     ("Your rooftop sunset photo is a whole mood.",
      "Photo of a sunset from a rooftop bar"),
+    # 2026-09-08 watched Training incident: its question supplies conversational value, but the
+    # setup still copies four obvious content words that an implicit place reference can replace.
+    ("Perching right up on the tiled bench with a glass of wine is definitely the way to do it. "
+     "Is this your regular spot for a quiet evening out?",
+     "Photo of Taylor sitting on a tiled outdoor bench under string lights with her legs "
+     "folded up, holding a glass of white wine"),
 ]
 
 
 @pytest.mark.parametrize("opener, referenced", _REDUNDANCY_TRUE_POSITIVES)
 def test_redundancy_markers_true_positive_corpus_is_flagged(opener, referenced):
     assert _redundant_description_markers(opener, referenced) != []
+
+
+def test_redundancy_monitor_documents_the_2026_09_08_literal_setup_incident():
+    """The monitor is evidence for this prompt fix, not a send gate (see the corpus above)."""
+    opener = (
+        "Perching right up on the tiled bench with a glass of wine is definitely the way to do "
+        "it. Is this your regular spot for a quiet evening out?"
+    )
+    referenced = (
+        "Photo of Taylor sitting on a tiled outdoor bench under string lights with her legs "
+        "folded up, holding a glass of white wine"
+    )
+    assert _redundant_description_markers(opener, referenced) == [
+        'opener restates the referenced word "tiled"',
+        'opener restates the referenced word "bench"',
+        'opener restates the referenced word "glass"',
+        'opener restates the referenced word "wine"',
+    ]
 
 
 def test_redundancy_markers_name_each_distinct_word_once_in_referenced_order():
@@ -572,15 +601,13 @@ def test_prompt_stamp_changes_when_a_schema_field_description_changes(monkeypatc
                                       "_ITEM_LABEL", "_CONTEXT_LABEL"])
 def test_prompt_stamp_changes_when_an_item_crop_instruction_constant_changes(
         monkeypatch, constant):
-    """The item-crop preamble and labels are model-facing RULES, so each must move the digest.
+    """Every fixed prompt-era input, including legacy digest-only values, must move the digest.
 
-    These four are not decoration around the images: `_ITEM_PREAMBLE` is the FIRST text part of
-    every item-crop request and states the compound-item rule (a title, caption, or prompt
-    above a photo is ONE item with it), `_ITEM_PREAMBLE_CONTEXT` and `_CONTEXT_LABEL` state the
-    cannot-be-picked rule for context crops, and all four are module-level constants that are
-    fixed for a whole run -- the same coverage criterion `style`, `_SYSTEM` and `_SCHEMA` meet.
-    Pinned one constant at a time because they enter the payload as separate components: a
-    widening that dropped any single one would leave the other three green.
+    `_ITEM_PREAMBLE` and `_ITEM_LABEL` are current wire rules. `_ITEM_PREAMBLE_CONTEXT` and
+    `_CONTEXT_LABEL` are intentionally retained only as historical prompt-stamp inputs so
+    stored rows and backfill tooling keep their seven-component contract. Pinned one constant
+    at a time because they enter the digest as separate components: a widening that dropped any
+    single one would leave the others green.
     """
     style = "casual and warm"
     before = prompt_stamp(style)
@@ -844,11 +871,11 @@ def test_system_prompt_keeps_faithful_corey_opener_policy_and_two_sentence_cap()
     assert "she is looking at that item while she reads your words" in lowered
     assert "primary item rule" in lowered
     assert "clear main subject of referenced, angle, and opener" in lowered
-    assert "unnumbered context image as supporting context" in lowered
+    assert "profile text only when it sharpens a connection back to the selected item" in lowered
     assert "connection back to the selected item" in lowered
     assert "justify why the selected item was liked" in lowered
     assert "it supplies the reason, subject, or payoff" in lowered
-    assert "do not let another image replace the selected item" in lowered
+    assert "do not let profile text replace the selected item" in lowered
     assert "photo header rule" in lowered
     assert "title, caption, or prompt printed with a photo is part of that same item" in lowered
     assert "defines how the photo is meant to be read" in lowered
@@ -863,7 +890,10 @@ def test_system_prompt_keeps_faithful_corey_opener_policy_and_two_sentence_cap()
     assert "never as the whole message" not in lowered
     assert "setup payoff continuity" in lowered
     assert "every visible detail you name must be necessary to, and used by" in lowered
-    assert "if removing a descriptive clause leaves the later point or question unchanged, cut it" in lowered
+    assert "necessary means its exact identity changes how the move is understood" in lowered
+    assert "not merely that it anchors the reaction" in lowered
+    assert "removing a descriptive clause or replacing it" in lowered
+    assert "use the shorter implicit version" in lowered
     assert "question coherence" in lowered
     assert "ask one coherent thing at a time" in lowered
     assert "parallel, genuinely contrasting answers to that same underlying question" in lowered
@@ -971,15 +1001,15 @@ def test_system_prompt_keeps_faithful_corey_opener_policy_and_two_sentence_cap()
             "opener") in lowered
     assert "is never sent to her" in lowered
     assert "put the literal inventory there" in lowered
-    assert "message may use only the setup it needs" in lowered
-    assert "must add a conversational payoff" in lowered
+    assert "message must use the least explicit immediately clear reference" in lowered
+    assert "may name only the setup whose exact identity changes the conversational move" in lowered
     assert "angle is your own short wording for what your opener is doing" in lowered
     assert "item_description says in a few words what the item you picked is" in lowered
 
     # --- ITEM SELECTION (doc 5.1/5.7). The model CHOOSES the item now, so _SYSTEM has to state
     # the three facts the new contract rests on: the numbering is 1-based over the items in
     # this request, the chosen item is also the one that gets liked (one call, doc 5.1), and
-    # unnumbered context blocks may be read but never picked (the two tiers, doc 5.3).
+    # every other numbered candidate is selection-only after the choice.
     # Selection is by best ANGLE, not best photo -- 5.1's criterion, and the reason a good
     # opener about a mediocre photo beats a great photo with nothing to say about it.
     assert "pick the item yourself" in lowered
@@ -987,8 +1017,8 @@ def test_system_prompt_keeps_faithful_corey_opener_policy_and_two_sentence_cap()
     assert "you choose which one to write about" in lowered
     assert "not the most striking picture" in lowered
     assert "it is also the item that gets liked" in lowered
-    assert "given without a number is context" in lowered
-    assert "never pick it" in lowered
+    assert "other numbered image was only an alternative for selection" in lowered
+    assert "never take its facts, concepts, wordplay, or payoff" in lowered
 
     # --- THE SELECTION CRITERION, spelled out rather than implied (doc 5.1). "Best angle, not
     # most striking photo" is a TRADEOFF, and a model looking at a page of photographs has a
@@ -1017,15 +1047,12 @@ def test_system_prompt_keeps_faithful_corey_opener_policy_and_two_sentence_cap()
     assert "all that is left to write is what it looks like" in lowered
     assert "never enough as the final point" in lowered
 
-    # --- THE CONTEXT TIER. An unnumbered image can support a connection, but the selected
-    # numbered item must remain the clear main subject rather than a route to another target.
-    assert "usually her vitals: her age, her job, her school, her city" in lowered
-    assert "or another unnumbered profile image" in lowered
-    assert "use what it shows to support a connection" in lowered
-    assert "selected numbered item must remain the opener's clear main subject" in lowered
-    assert "every context connection must lead back to it" in lowered
-    assert "never make an unnumbered image the opener's main premise, reason for the like, subject, or payoff" in lowered
-    assert "item_index can never refer to it" in lowered
+    # --- SELECTED-ITEM-ONLY. Context crops are retained for forensics but never shown to Gemini;
+    # once it picks, every other numbered candidate stops being usable source material.
+    assert "once you choose, every other numbered image was only an alternative for selection" in lowered
+    assert "never take its facts, concepts, wordplay, or payoff" in lowered
+    assert "given without a number is context" not in lowered
+    assert "unnumbered profile image" not in lowered
     # The replaced field is gone from the copy entirely, along with the index space it named:
     # doc 5.7 calls out that both the field and "every line of prompt copy saying scroll order"
     # change meaning, and a leftover instruction to fill referenced_index would ask the model
@@ -1036,6 +1063,28 @@ def test_system_prompt_keeps_faithful_corey_opener_policy_and_two_sentence_cap()
     # --- Owner invariant, not a wording choice: this text is itself sent to the model.
     assert all(ord(ch) < 128 for ch in _SYSTEM), "_SYSTEM must be pure ASCII"
     assert "—" not in _SYSTEM
+
+
+def test_system_prompt_defaults_to_minimum_sufficient_visual_reference():
+    """2026-09-08: shared visual context should compress setup, not license a private caption.
+
+    The watched failure and its rewrite remain off wire. These assertions pin the semantic edit
+    on the compressed system surface without handing a minimal-thinking model example copy.
+    """
+    lowered = " ".join(_SYSTEM.lower().split())
+    assert "minimum sufficient reference" in lowered
+    assert "default to omission or the least explicit natural reference" in lowered
+    assert "replace each literal visual description with an implicit reference" in lowered
+    assert "if meaning and the conversational move survive, use the implicit version" in lowered
+    assert "exact identity changes the point or distinguishes possible referents" in lowered
+    assert "never merely to prove grounding, identify the selected item, or add textual specificity" in lowered
+    assert "attachment itself can supply an immediately obvious referent" in lowered
+    assert "full literal inventory in private referenced and item_description, not in the message" in lowered
+    assert "do not force implicit wording where it creates real ambiguity" in lowered
+    assert "specificity may come from how it fits the attached item" in lowered
+    assert "subject to minimum sufficient reference" in lowered
+    assert "tiled bench" not in lowered
+    assert "glass of wine" not in lowered
 
 
 def test_system_prompt_ships_the_spoken_register_rules():
@@ -1061,6 +1110,14 @@ def test_system_prompt_ships_the_spoken_register_rules():
     assert "the contractions a relaxed speaker would use" in lowered
     assert "natural spoken elision" in lowered
     assert "never internet slang, chat abbreviations, meme phrasing" in lowered
+    assert "idiom fit" in lowered
+    assert "idiom only when it is contemporary" in lowered
+    assert "everyday, immediately understandable on first reading in ordinary conversation" in lowered
+    assert "semantically apt to the item and point" in lowered
+    assert "natural when spoken" in lowered
+    assert "idioms that are dated, literary, formal, obscure, forced, or tied to a passing trend" in lowered
+    assert "does not license internet slang, memes, or borrowed caption wording" in lowered
+    assert "makes her stop to decode the point" in lowered
     # The scope limiter. Its config.yaml twin carries it ("this licenses wording only:
     # spelling, capitalization, and every punctuation rule here stand unchanged"), and this
     # compressed copy sits next to CASUAL OR PUNCTUATION and the no-dash / ASCII HARD RULEs it
@@ -1084,6 +1141,7 @@ def test_system_prompt_ships_the_spoken_register_rules():
     # salient in front of it, which is how the 2026-08-15 "my money is on" incident happened.
     assert "classic sense of style" not in lowered
     assert "you got there" not in lowered
+    assert "hold court" not in lowered
 
 
 def test_system_prompt_ships_modifier_clarity_without_incident_copy():

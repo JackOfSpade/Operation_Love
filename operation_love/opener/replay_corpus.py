@@ -1,8 +1,10 @@
 """On-disk REPLAY CORPUS format for opener item-crop requests (ops/OPENER-REDESIGN.md 5.2/5.7).
 
 THE PROBLEM THIS EXISTS TO FIX. The numbered item crops actually sent to Gemini
-(opener.opener.ItemRequest -- her name as text, the numbered item crops in order, the
-unnumbered context crops, and the truncation flag) are not persisted anywhere today.
+(opener.opener.ItemRequest -- her name as text, the numbered item crops in order, and the
+truncation flag) are not persisted anywhere today. Unnumbered context crops are retained beside
+them as forensic/research evidence, but current Gemini generation and replay deliberately omit
+them from the request.
 ``data/hinge_debug/<run_id>/`` holds navigation and verification screenshots
 (``capture_before``, ``verify_sheet_item``, ``navigate_to_item`` and so on), not the request
 INPUTS. So no historical draft can ever be re-run through a revised prompt: every prompt
@@ -23,9 +25,9 @@ crops as plain image files plus one ``manifest.json``:
         context_001.png
         ...
 
-``manifest.json`` carries exactly the fields needed to reconstruct an ``ItemRequest``-equivalent
-request, plus bookkeeping, and NOTHING else (see PRIVACY below for why "nothing else" is a
-deliberate constraint, not laziness):
+``manifest.json`` carries exactly the fields needed to reconstruct the current numbered-item
+request, plus retained unnumbered forensic context and bookkeeping, and NOTHING else (see PRIVACY
+below for why "nothing else" is a deliberate constraint, not laziness):
 
     {
       "format_version": 1,
@@ -40,7 +42,7 @@ deliberate constraint, not laziness):
                                               # prompt computes its own era stamp and does not
                                               # read this field to build a request
       "items": ["item_001.png", "item_002.jpg"],   # ordered filenames; items[k-1] is item k
-      "context": ["context_001.png"]                # ordered filenames, unnumbered tier
+      "context": ["context_001.png"]                # retained forensic tier, never replayed
     }
 
 Deliberately NOT captured: the style guide text itself (the replay tool always re-generates
@@ -72,10 +74,12 @@ opener`` or ``operation_love.opener.service`` -- not even to import ``ItemReques
 dependency on any store or provider client. It is pure, generic I/O over plain values (bytes,
 str, bool, float), by design: the live opener path (wired up from
 ``OpenerService._capture_replay_corpus``, see that method's own docstring) calls the writer with
-the exact four fields ``opener.opener.ItemRequest`` already carries (``items``, ``name``,
-``context``, ``truncated``) plus its own already-computed ``prompt_sha256``, without this module
-ever needing to know what an ``ItemRequest`` is. ``tools/opener_replay.py`` is the one place that
-bridges this format back to ``ItemRequest`` for an actual replay.
+the four fields ``opener.opener.ItemRequest`` already carries (``items``, ``name``, ``context``,
+``truncated``) plus its own already-computed ``prompt_sha256``, without this module ever needing
+to know what an ``ItemRequest`` is. Of those fields, only ``items``/``name``/``truncated`` are
+model-visible request inputs; ``context`` is the retained forensic tier. ``tools/opener_replay.py``
+is the one place that bridges the numbered tier back to ``ItemRequest`` for an actual replay; it
+preserves the context tier on disk but intentionally does not pass it to Gemini.
 
 SAFE TO FAIL. ``write_replay_capture`` never raises -- every exception (a full disk, a
 permissions error, a malformed argument) is caught and reported through its return value
@@ -196,15 +200,17 @@ def write_replay_capture(root: str | Path, *, items: Sequence[bytes], name: str 
                          captured_at: float | None = None) -> ReplayWriteResult:
     """Write one captured item-crop request to the corpus under ``root``. PURE I/O: this
     function has no dependency on ``operation_love.opener`` or any service internals -- it
-    takes the same four fields ``ItemRequest`` carries (``items``, ``name``, ``context``,
-    ``truncated``) as plain bytes/str/bool, plus the caller's own already-computed
-    ``prompt_sha256`` (this module never computes one itself -- see the module docstring).
+    takes the numbered request fields (``items``, ``name``, ``truncated``) plus the separately
+    retained forensic ``context`` crops as plain bytes/str/bool, plus the caller's own
+    already-computed ``prompt_sha256`` (this module never computes one itself -- see the module
+    docstring).
 
     WIRED INTO THE OPENER PATH from ``operation_love.opener.service.OpenerService.
-    _capture_replay_corpus``, which calls this once per profile with the exact ``ItemRequest``
-    fields it just built, right before making the actual provider call (see that method's own
-    docstring). It remains a plain, standalone API otherwise -- a test or a manual script can
-    still call it directly with no service involved.
+    _capture_replay_corpus``, which calls this once per profile with the model-visible
+    ``ItemRequest`` fields it just built plus its retained forensic context, right before making
+    the actual provider call (see that method's own docstring). It remains a plain, standalone
+    API otherwise -- a test or a manual script can still call it directly with no service
+    involved.
 
     NEVER RAISES (see this module's docstring's SAFE TO FAIL section) -- every failure, from a
     bad argument to a full disk, comes back as ``ReplayWriteResult(ok=False, error=...)``, so a
@@ -286,8 +292,8 @@ class ReplayCapture:
     ``write_replay_capture`` took in, plus the bookkeeping fields every manifest carries.
 
     ``items``/``context`` are populated (actual crop bytes, in order) rather than left as
-    filenames, so a caller (tools/opener_replay.py) can build an equivalent request directly
-    without a second pass over the filesystem.
+    filenames. A caller can reconstruct the numbered Gemini request without a second filesystem
+    pass; the context bytes remain available only for forensic inspection and research.
     """
     replay_id: str
     path: Path

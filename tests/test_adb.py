@@ -625,6 +625,119 @@ def test_screencap_uses_exec_out_and_returns_raw_bytes(monkeypatch):
     assert run.argv == [["adb", "-s", "pixel", "exec-out", "screencap", "-p"]]
 
 
+def test_screencap_retries_once_after_a_host_side_timeout(monkeypatch):
+    timeout = subprocess.TimeoutExpired(
+        ["adb", "-s", "pixel", "exec-out", "screencap", "-p"],
+        timeout=10,
+        stderr=b"transport stalled",
+    )
+    png = b"\x89PNG\r\n\x1a\nrecovered"
+    run = FakeRun(timeout, _ok(stdout=png))
+    monkeypatch.setattr(adb_mod.subprocess, "run", run)
+
+    assert Adb(serial="pixel", default_timeout=10).screencap() == png
+    assert run.argv == [
+        ["adb", "-s", "pixel", "exec-out", "screencap", "-p"],
+        ["adb", "-s", "pixel", "exec-out", "screencap", "-p"],
+    ]
+
+
+def test_screencap_timeout_retry_is_bounded_and_retains_diagnostics(monkeypatch):
+    first = subprocess.TimeoutExpired(
+        ["adb", "-s", "pixel", "exec-out", "screencap", "-p"],
+        timeout=10,
+        stderr=b"first transport stall",
+    )
+    second = subprocess.TimeoutExpired(
+        ["adb", "-s", "pixel", "exec-out", "screencap", "-p"],
+        timeout=10,
+        stderr=b"second transport stall",
+    )
+    run = FakeRun(first, second)
+    monkeypatch.setattr(adb_mod.subprocess, "run", run)
+
+    with pytest.raises(AdbError, match="timed out after 10s") as exc:
+        Adb(serial="pixel", default_timeout=10).screencap()
+
+    assert exc.value.stderr == "second transport stall"
+    assert "recovery exhausted after 2 read-only attempts" in str(exc.value)
+    assert exc.value.__notes__ == [
+        "Read-only screencap retry after initial timeout: "
+        "ADB command timed out after 10s: adb -s pixel exec-out screencap -p\n"
+        "stderr: first transport stall",
+    ]
+    assert len(run.calls) == 2
+
+
+def test_screencap_does_not_retry_an_ambiguous_adb_failure(monkeypatch):
+    run = FakeRun(_fail(stderr=b"protocol fault"))
+    monkeypatch.setattr(adb_mod.subprocess, "run", run)
+
+    with pytest.raises(AdbError, match="exit code 1"):
+        Adb(serial="pixel").screencap()
+
+    assert len(run.calls) == 1
+
+
+def test_screencap_does_not_retry_a_timeout_that_reports_device_loss_on_stderr(monkeypatch):
+    timeout = subprocess.TimeoutExpired(
+        ["adb", "-s", "pixel", "exec-out", "screencap", "-p"],
+        timeout=10,
+        stderr=b"error: device offline",
+    )
+    run = FakeRun(timeout)
+    monkeypatch.setattr(adb_mod.subprocess, "run", run)
+
+    with pytest.raises(DriverClosed, match="device was disconnected"):
+        Adb(serial="pixel", default_timeout=10).screencap()
+
+    assert len(run.calls) == 1
+
+
+def test_screencap_timeout_does_not_parse_partial_png_stdout_as_device_diagnostics(monkeypatch):
+    timeout = subprocess.TimeoutExpired(
+        ["adb", "-s", "pixel", "exec-out", "screencap", "-p"],
+        timeout=10,
+        output=b"\x89PNG\r\n\x1a\nerror: device offline\x00partial-pixels",
+    )
+    run = FakeRun(timeout, timeout)
+    monkeypatch.setattr(adb_mod.subprocess, "run", run)
+
+    with pytest.raises(AdbError, match="recovery exhausted after 2 read-only attempts"):
+        Adb(serial="pixel", default_timeout=10).screencap()
+
+    assert len(run.calls) == 2
+
+
+def test_non_screencap_timeout_still_detects_textual_device_loss_on_stdout(monkeypatch):
+    timeout = subprocess.TimeoutExpired(
+        ["adb", "-s", "pixel", "shell", "input", "text", "HOME"],
+        timeout=10,
+        output=b"error: device offline",
+    )
+    run = FakeRun(timeout)
+    monkeypatch.setattr(adb_mod.subprocess, "run", run)
+
+    with pytest.raises(DriverClosed, match="device was disconnected"):
+        Adb(serial="pixel", default_timeout=10).text("HOME")
+
+    assert len(run.calls) == 1
+
+
+@pytest.mark.parametrize("stderr", [
+    b"error: device offline",
+    b"error: device 'pixel' not found",
+])
+def test_screencap_device_loss_fails_closed_without_a_retry(monkeypatch, stderr):
+    run = FakeRun(_fail(stderr=stderr))
+    monkeypatch.setattr(adb_mod.subprocess, "run", run)
+
+    with pytest.raises(DriverClosed, match="device was disconnected"):
+        Adb(serial="pixel").screencap()
+
+    assert len(run.calls) == 1
+
+
 def test_screen_size_parses_and_caches(monkeypatch):
     run = FakeRun(_ok(stdout=b"Physical size: 1080x2400\nOverride size: 1080x2160\n"))
     monkeypatch.setattr(adb_mod.subprocess, "run", run)
@@ -740,6 +853,7 @@ def test_timeout_raises_adb_error(monkeypatch):
     assert exc.value.argv == ["adb", "shell", "input", "text", "HOME"]
     assert exc.value.stderr == "still waiting"
     assert "timed out after 10s" in str(exc.value)
+    assert len(run.calls) == 1  # input commands are never retried after an uncertain timeout
 
 
 @pytest.mark.parametrize("stderr", [

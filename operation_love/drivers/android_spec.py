@@ -225,6 +225,16 @@ class AndroidAppSpec:
     # coverage while providing a deliberately smaller retry when the broad crop reaches prompt
     # text/photo texture and Tesseract drops the plainly visible name line.
 
+    identity_top_name_take_another_look_band: tuple[float, float, float, float] | None = None
+    # Optional, separately calibrated card-header OCR crop for Hinge's ``Take another look``
+    # layout.  That banner sits inside identity_top_name_band and pushes the person's name below
+    # it, so this lower crop is consulted ONLY after BOTH primary-band OCR recipes read that
+    # exact banner at a genuine scroll top.  It is not a generic shifted detector: without the
+    # structural banner gate it could inspect arbitrary photo/prompt content and manufacture a
+    # different-profile name.  Its own two OCR recipes must agree before a name verdict is
+    # committed, and the result remains subject to canonical-top, ready-deck, repeated-source,
+    # and stable-frame gates.
+
     paywall_headline_band: tuple[float, float, float, float] | None = None
     # Normalised (x0, y0, x1, y1) crop of Hinge's "You're out of free likes for today" Hinge+
     # upgrade headline (MEASURED live on the Pixel 7a, 1080x2400, 2026-08-11 -- see
@@ -434,6 +444,45 @@ class AndroidAppSpec:
                 f"AndroidAppSpec({self.app!r}).identity_top_name_fallback_band must be "
                     "the primary band with only y1 allowed to shrink -- a retry with shifted "
                     "geometry would be a separately unlicensed detector")
+        if self.identity_top_name_take_another_look_band is not None:
+            x0, y0, x1, y1 = self.identity_top_name_take_another_look_band
+            if not (0.0 <= x0 < x1 <= 1.0 and 0.0 <= y0 < y1 <= 1.0):
+                raise ValueError(
+                    f"AndroidAppSpec({self.app!r}).identity_top_name_take_another_look_band "
+                    f"{self.identity_top_name_take_another_look_band} is not a normalised "
+                    "(x0, y0, x1, y1) rect with x0<x1 and y0<y1 inside 0..1")
+        if (self.identity_top_name_take_another_look_band is not None
+                and (self.identity_band is None or self.identity_top_name_band is None)):
+            raise ValueError(
+                f"AndroidAppSpec({self.app!r}).identity_top_name_take_another_look_band is "
+                "set but identity_band and identity_top_name_band are required -- this lower "
+                "OCR crop is only a structurally gated refinement of the canonical card-header "
+                "name path")
+        if self.identity_top_name_take_another_look_band is not None:
+            if self.app != "hinge":
+                raise ValueError(
+                    f"AndroidAppSpec({self.app!r}).identity_top_name_take_another_look_band "
+                    "is a Hinge-only calibrated layout and must not authorize OCR geometry for "
+                    "another app")
+            bx0, by0, bx1, by1 = self.identity_top_name_band
+            lx0, ly0, lx1, ly1 = self.identity_top_name_take_another_look_band
+            # The panel inserts itself ABOVE the name.  Keep the same horizontal span and make
+            # the lower crop overlap the old bottom edge before extending below it: this is the
+            # only measured relationship that can recover the displaced header without turning
+            # the option into an arbitrary OCR rectangle elsewhere on the card.
+            # The calibration's .035 bottom extension leaves a small per-device remeasurement
+            # envelope, but a crop that reaches arbitrarily far into the first photo turns the
+            # panel gate into an OCR-from-photo detector.  These normalized limits retain a
+            # 120px upward / 144px downward adjustment window on the 2400px target device while
+            # keeping the crop tightly bound to the displaced header.
+            if not (lx0 == bx0 and lx1 == bx1 and by1 - 0.05 <= ly0 < by1 < ly1
+                    <= by1 + 0.06 and ly1 - ly0 <= 0.10):
+                raise ValueError(
+                    f"AndroidAppSpec({self.app!r}).identity_top_name_take_another_look_band "
+                    "must keep the primary card-header band's horizontal span and overlap its "
+                    "bottom edge within the calibrated tight-header envelope -- the exact Take "
+                    "another look OCR gate is not a licence for arbitrary shifted geometry or "
+                    "first-photo content")
         if self.paywall_headline_band is not None:
             # Same normalised-rect shape as identity_top_name_band above -- a malformed rect
             # here would silently defeat the OCR refinement (garbage text, or a crop over the

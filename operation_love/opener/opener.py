@@ -117,31 +117,33 @@ _SCHEMA = {
                            "same item. It must be the opener's clear primary subject: the "
                            "message should feel natural directly under it, not as an excuse to "
                            "talk about a different image. Your opener must justify why this "
-                           "selected item was liked; supporting context may enrich it but cannot "
-                           "replace it as the reason, subject, or payoff. "
+                           "selected item was liked; explicit profile text may sharpen a "
+                           "connection back to it but cannot replace it as the reason, subject, "
+                           "or payoff. "
+                           "Every other numbered item is an alternative for making this choice "
+                           "only. Once you choose, do not take facts, concepts, wordplay, or the "
+                           "payoff from another numbered item. "
                            "The list it indexes is the numbered items in THIS "
                            "request and nothing else: they are numbered from 1, in the order "
                            "they are given, and you may only choose a number that was actually "
-                           "given to you. Some blocks are shown WITHOUT a number, for context "
-                           "only; you may use them to support a connection to the selected item, "
-                           "but you can never pick one or make it the opener's main premise.",
+                           "given to you.",
         },
         "referenced": {
             "type": "string",
             "description": "What you are reacting to, described in full: the selected item's "
                            "exact photo or prompt detail that is the opener's primary "
-                           "anchor. THIS FIELD IS NEVER SENT TO HER. If unnumbered context "
-                           "supports the connection, distinguish it as supporting context rather "
-                           "than replacing this selected-item anchor. Record only what is visibly "
+                           "anchor. THIS FIELD IS NEVER SENT TO HER. Record only what is visibly "
                            "shown or explicitly stated, not "
                            "an action or backstory you inferred. Put the whole description "
                            "here, including any header, caption, or prompt printed with a photo "
                            "and how it frames the photo. Describe any other visible people "
                            "neutrally unless her profile explicitly states their relationship; "
                            "never infer friend, partner, or family from proximity, so the "
-                           "opener does not have to carry it. The opener may name "
-                           "only the visible detail needed as setup, and its final conversational "
-                           "point must add something beyond that description.",
+                           "opener does not have to carry it. Keep the full literal inventory in "
+                           "this private field even when the opener uses an implicit reference. "
+                           "The opener may name only the visible detail whose exact identity is "
+                           "needed by its conversational move, and its final point must add "
+                           "something beyond that description.",
         },
         "angle": {
             "type": "string",
@@ -149,8 +151,8 @@ _SCHEMA = {
                            "observing, asking, guessing, teasing about, or connecting. State "
                            "the conversational payoff beyond merely identifying what is visible. "
                            "The selected item must remain the angle's primary anchor and reason "
-                           "for the Like; unnumbered context may support a connection but cannot "
-                           "replace the selected item as the subject or payoff. "
+                           "for the Like; explicit profile text may sharpen a connection but "
+                           "cannot replace the selected item as the subject or payoff. "
                            "The angle must respect any header, caption, or prompt attached to "
                            "the photo; that text defines the photo's intended context. "
                            "A guess is optional. If you use one, choose the least speculative "
@@ -166,6 +168,13 @@ _SCHEMA = {
                            "an image rather than stated in her profile text, the location guess "
                            "must be the whole conversational move: end after it or ask only "
                            "whether that location itself is right. "
+                           "Before drafting the opener, perform the MINIMUM SUFFICIENT REFERENCE "
+                           "check while treating the selected item as visible: replace each "
+                           "literal visual description with the least explicit natural reference. "
+                           "If the meaning and conversational move survive, the opener must use "
+                           "that implicit version. Keep an exact visible identity only when it "
+                           "changes the point or distinguishes possible referents, never merely "
+                           "to prove grounding or identify the selected item. "
                            "For every visible detail named in the opener, state how it is used "
                            "by the conversational move. If it asks a question, name the one "
                            "underlying question; alternatives must be parallel, contrasting "
@@ -196,18 +205,27 @@ _SCHEMA = {
                            "profile explicitly states their relationship; never infer friend, "
                            "partner, or family from proximity. This is how we check that the "
                            "item you numbered is the item "
-                           "we think it is. Never sent to her.",
+                           "we think it is. Never sent to her. Its literal wording belongs here; "
+                           "do not carry it into the opener unless the detail's exact identity is "
+                           "necessary to understand the conversational move.",
         },
         "opener": {
             "type": "string",
             "description": "The message to send, bare text only. She reads it while looking at "
                            "the selected item, so it must feel natural directly under it and "
-                           "justify why it was liked. Supporting context may enrich the message "
-                           "but cannot replace the selected item as its reason, subject, or "
-                           "payoff. It may name a visible detail as setup, but its final point "
-                           "must do something conversational beyond describing that detail. "
-                           "Every named setup detail must be necessary to that move; cut it if "
-                           "the later point still works without it. A question asks one coherent "
+                           "justify why it was liked. Explicit profile text may sharpen the "
+                           "message but cannot replace the selected item as its reason, subject, "
+                           "or payoff. MINIMUM SUFFICIENT REFERENCE: default to omission or the "
+                           "least explicit natural reference the attached item makes immediately "
+                           "clear. The attachment itself can supply both an obvious referent and "
+                           "the selected item anchor. Name a visible detail only when its exact "
+                           "identity changes the point or distinguishes possible referents, never "
+                           "merely to prove grounding or add textual specificity. Every named "
+                           "setup detail must be necessary to the move; if replacing it with an "
+                           "implicit reference preserves the meaning and conversational payoff, "
+                           "use the implicit version. Do not force it where real ambiguity would "
+                           "result. The final point must do something conversational beyond "
+                           "description. A question asks one coherent "
                            "thing; use 'or' only for parallel, contrasting answers to it. Every "
                            "pronoun, shorthand noun, and question subject must have one "
                            "immediately obvious referent. Across two beats, any change of "
@@ -239,6 +257,12 @@ _SCHEMA = {
                            "TEST below; never restate context "
                            "the message itself already established, and never point at the photo "
                            "or profile as an object. "
+                           "IDIOM FIT: use an idiom only when it is contemporary, everyday, "
+                           "immediately understandable on first reading in ordinary conversation, "
+                           "semantically apt to the item and point, and natural when spoken. Avoid "
+                           "idioms that are dated, literary, formal, obscure, forced, or tied to a "
+                           "passing trend. This does not license internet slang, memes, or borrowed "
+                           "caption wording that makes her stop to decode the point. "
                            "never assign the thing a grade, rank, or verdict on how good it is; "
                            "SUBSTITUTION TEST: if the predicate would fit unchanged under a "
                            "different woman's photo it is a grade rather than an observation, "
@@ -368,8 +392,8 @@ _SCHEMA = {
 # into raw SCROLL FRAMES no longer names anything (frames are not items -- one card can appear
 # in three of them, and a frame can hold two cards), and the replacement PICK THE ITEM YOURSELF
 # line states the three facts the new contract depends on: items are numbered from 1, the
-# chosen item is also the one that gets liked (5.1's single call), and unnumbered context
-# blocks may be read but never picked (5.3's two tiers). The selection criterion in that line
+# chosen item is also the one that gets liked (5.1's single call). Unnumbered capture context
+# is retained for replay and diagnostics but deliberately omitted from generation. The selection criterion in that line
 # is 5.1's, word for word in substance: best ANGLE, not most striking photo.
 #
 # Addendum 2026-08-12 (Part B, doc 5.1): the SELECTION CRITERION is now spelled out rather than
@@ -385,12 +409,8 @@ _SCHEMA = {
 #     leaves description as the only thing left to write. That is not a separate bug from
 #     over-description, it is the upstream cause of it, and it is reachable while every wording
 #     rule in Part A is obeyed, which is why naming it here is not redundant with THE ONE RULE.
-#   - What the unnumbered tier IS, not merely that it exists: her vitals (age, job, school,
-#     city), per doc 5.3's live capture. Their explicitly stated facts may contextualize the
-#     selected item, but their visual details may not be used as an opener for a different
-#     target. The distinction preserves useful profile-wide context without telling her about
-#     "another photo" the comment did not attach to. Deliberately worded without a menu of moves
-#     so the model derives its approach from the profile instead of imitating prompt copy.
+#   - The unnumbered capture tier is not model input. It remains useful for replay, debugging,
+#     and offline analysis, while generation sees only numbered, targetable items.
 # config.yaml's opener.style carries the long form of all three (doc 3.1's division of labour),
 # and both copies are pinned by their own tests.
 #
@@ -578,6 +598,29 @@ _SCHEMA = {
 # _SCHEMA opener description never carried it (established by the 2026-09-06 (e) correction
 # above), so it is unchanged. No example verdict vocabulary was added anywhere, per the
 # 2026-08-16 de-templating rule. Full record: ops/OPENER-REDESIGN.md, Addendum -- 2026-09-06 (g).
+#
+# Addendum 2026-09-07 (idiom fit): IDIOM FIT is a prompt-only semantic rule in config.yaml's
+# long style, this compressed _SYSTEM mirror, and the _SCHEMA opener description. It requires an
+# idiom to be contemporary, ordinary, first-read clear, apt to the item and point, and natural
+# aloud; it excludes dated/formal/literary/obscure or short-lived trend-driven idioms without
+# treating normal current speech as slang. No lexical or deterministic guard belongs here: idiom
+# fitness depends on context, and a blacklist would create false positives that spend the limited
+# retry budget. The retry-hint copy is deliberately unchanged. The concrete incident remains off
+# wire in tests. This changes prompt_stamp() and begins a distinct prompt era; see
+# ops/OPENER-REDESIGN.md, Addendum -- 2026-09-07 (a).
+#
+# Addendum 2026-09-08 (minimum sufficient reference): a watched Training draft copied a full
+# literal scene phrase into the opener even though an implicit location reference preserved the
+# exact point. SHARED CONTEXT only banned pointing at the medium, CONVERSATIONAL VALUE allowed
+# visible setup, and SETUP PAYOFF CONTINUITY tested deletion but not replacement; together they
+# left that wording legal. MINIMUM SUFFICIENT REFERENCE now makes implicit reference the default
+# whenever the attached item resolves it, lets exact naming survive only when it changes the move
+# or disambiguates, and routes literal inventory into private referenced/item_description fields.
+# The angle field performs the replacement check before the opener, and the retry copy preserves
+# it. No deterministic rejection was added: _redundant_description_markers remains a deliberately
+# lossy offline signal that also fires on good connections. Concrete incident wording stays off
+# wire in tests. This changes prompt_stamp() and begins a distinct prompt era; see
+# ops/OPENER-REDESIGN.md, Addendum -- 2026-09-08 (a).
 _SYSTEM = (
     "You write the opening message a man sends a woman on a dating app. Use the dating and "
     "conversational principles associated with Coach Corey Wayne's 'How to Be a 3% Man', without "
@@ -589,14 +632,24 @@ _SYSTEM = (
     "or prompt it attaches to, and she is looking at that item while she reads your words. "
     "Never point at the medium itself: a word gesturing at the photo, the screen, or the "
     "profile as an object adds nothing she cannot see; a bare demonstrative does that work. "
+    "MINIMUM SUFFICIENT REFERENCE: default to omission or the least explicit natural reference "
+    "the attached item makes immediately clear. Before finalizing, replace each literal visual "
+    "description with an implicit reference while keeping the item visible; if meaning and the "
+    "conversational move survive, use the implicit version. Name a visible detail only when its "
+    "exact identity changes the point or distinguishes possible referents, never merely to prove "
+    "grounding, identify the selected item, or add textual specificity. The attachment itself "
+    "can supply an immediately obvious referent and the selected-item anchor. Keep the full "
+    "literal inventory in private referenced and item_description, not in the message, and do "
+    "not force implicit wording where it creates real ambiguity. "
     "PRIMARY ITEM RULE: after choosing a numbered item, it is the clear main subject of "
     "referenced, angle, and opener, including its header. The message must feel natural directly "
     "under that item, never like a reason to discuss another image. Your opener must justify why "
     "the selected item was liked: it supplies the reason, subject, or payoff. You may use explicit "
-    "profile text or an unnumbered CONTEXT image as supporting context only when it sharpens a "
-    "connection back to the selected item. Do not let another image replace the selected item as "
-    "the reason for the Like, subject, or payoff, point her away from it, or use context without "
-    "an unmistakable selected-item anchor. "
+    "profile text only when it sharpens a connection back to the selected item. Do not let profile "
+    "text replace the selected item as the reason for the Like, subject, or payoff, or point her "
+    "away from it. Other numbered images are alternatives for choosing "
+    "only. After choosing, do not take facts, concepts, wordplay, or the payoff from another "
+    "numbered image. "
     "PHOTO HEADER RULE: any title, caption, or prompt printed with a photo is part of that same "
     "item and defines how the photo is meant to be read. Interpret the visible scene through "
     "that text before choosing an angle. The angle and opener must respect the combined meaning, "
@@ -606,12 +659,14 @@ _SYSTEM = (
     "a fact, preference, activity, place, or opinion that the profile text already answers. Use those "
     "facts as context for a fresh, forward-moving angle instead. For example, if she says she likes "
     "apples, do not ask whether she likes apples. "
-    "CONVERSATIONAL VALUE RULE: do more than label what she can already see. A visible detail "
-    "may be named and may be the subject, premise, or setup. The opener fails only when its "
-    "final conversational point is merely that description. Use the detail to add a perspective, "
+    "CONVERSATIONAL VALUE RULE: do more than label what she can already see. Subject to MINIMUM "
+    "SUFFICIENT REFERENCE, a visible detail may be named and may be the subject, premise, or "
+    "setup. The opener fails when its final conversational point is merely that description. "
+    "Use the detail to add a perspective, "
     "grounded interpretation, playful framing, connection, or natural question. The message "
-    "must be profile-specific, but it does not have to contain a guess or a claim that could be "
-    "wrong. CLAIMS ONLY WHEN NATURAL: a correctable inference is one available move, not a "
+    "must be profile-specific, but specificity may come from how it fits the attached item rather "
+    "than from repeating visible nouns, and it does not have to contain a guess or a claim that "
+    "could be wrong. CLAIMS ONLY WHEN NATURAL: a correctable inference is one available move, not a "
     "requirement. When no natural inference exists, prefer a grounded observation or specific "
     "question over a forced guess. If you make a claim, write the whole proposition rather than "
     "a shorthand answer to an imagined question, and choose the least speculative interpretation "
@@ -641,8 +696,10 @@ _SYSTEM = (
     "claim she can correct can be effective, but it is not mandatory. One specific, easy, "
     "positive question may be the whole message when that is the strongest natural angle. "
     "SETUP PAYOFF CONTINUITY: every visible detail you name must be necessary to, and used by, "
-    "the conversational move. If removing a descriptive clause leaves the later point or "
-    "question unchanged, cut it. QUESTION COHERENCE: ask one coherent thing at a time. An 'or' "
+    "the conversational move. Necessary means its exact identity changes how the move is "
+    "understood, not merely that it anchors the reaction. If removing a descriptive clause or "
+    "replacing it with an immediately clear implicit reference leaves the later point or question "
+    "unchanged, use the shorter implicit version. QUESTION COHERENCE: ask one coherent thing at a time. An 'or' "
     "is allowed only for parallel, genuinely contrasting answers to that same underlying "
     "question, never to join unrelated dimensions. CASUAL OR PUNCTUATION: never put a comma "
     "immediately before 'or', even where formal grammar would allow one. Write it the way a "
@@ -652,7 +709,13 @@ _SYSTEM = (
     "chat abbreviations, meme phrasing, or borrowed caption labels. This licenses wording "
     "only; spelling, capitalization and every punctuation rule here stand unchanged. "
     "One intensifier is plenty. "
-    "Flawless written grammar reads as an essay, not a text. SAY IT ONCE: the second beat "
+    "Flawless written grammar reads as an essay, not a text. IDIOM FIT: use an idiom only when "
+    "it is contemporary, everyday, immediately understandable on first reading in ordinary "
+    "conversation, semantically apt to the item and point, and natural when spoken. Avoid idioms "
+    "that are dated, literary, formal, obscure, forced, or tied to a passing trend. This does not "
+    "license internet slang, memes, or borrowed caption wording that makes her stop to decode the "
+    "point. "
+    "SAY IT ONCE: the second beat "
     "inherits the first beat's topic; never restate a connection or context the message "
     "already established, and strip each question to the one clause a person would text. "
     "CONFIRMATION BOUNDARY overrides this inheritance rule: never let a later beat inherit an "
@@ -761,13 +824,8 @@ _SYSTEM = (
     "first, find the one that hands you the most natural conversational angle, and pick that one even when "
     "another item is the better picture. Set item_index "
     "to that item's number; it is also the item that gets liked, so your message and the like "
-    "always land on the same thing. Any image given WITHOUT a number is context, usually her "
-    "vitals: her age, her job, her school, her city, or another unnumbered profile image. You may "
-    "use what it shows to support a connection, but the selected numbered item must remain the "
-    "opener's clear main subject and every context connection must lead back to it. Never make an "
-    "unnumbered image the opener's main premise, reason for the Like, subject, or payoff, or "
-    "point her away from the item receiving the Like. It simply carries no number, so you can "
-    "never pick it and item_index can never refer to it. "
+    "always land on the same thing. Once you choose, every other numbered image was only an "
+    "alternative for selection: never take its facts, concepts, wordplay, or payoff. "
     "APPLICATION RULE: TWO sentences is the absolute maximum, and within "
     "that ceiling be as short as the angle allows: spend no word merely repeating what she can "
     "already see and none on padding, but never cut necessary setup or the conversational payoff. "
@@ -784,8 +842,9 @@ _SYSTEM = (
     "Fill item_index, referenced, angle and item_description before you write the opener: "
     "referenced is the "
     "full description of what you are reacting to and is never sent to her, so put the literal "
-    "inventory there; the message may use only the setup it needs and must add a conversational "
-    "payoff. Angle is your own short wording "
+    "inventory there. The message must use the least explicit immediately clear reference and "
+    "may name only the setup whose exact identity changes the conversational move. Angle is your "
+    "own short wording "
     "for what your opener is doing, and item_description says in a few words what the item you "
     "picked is, a photo and what it shows. "
     "The opener field must contain only the bare message itself, "
@@ -797,7 +856,8 @@ _SYSTEM = (
 # THE ITEM-CROP REQUEST SHAPE (ops/OPENER-REDESIGN.md 5.2 and 5.7)
 #
 # What the model sees stops being her raw scroll frames and becomes one cropped image per
-# profile item, numbered, plus the unnumbered context crops. Doc 5.2's argument is NOT about
+# profile item, numbered. Retained unnumbered context crops never enter generation. Doc 5.2's
+# argument is NOT about
 # legibility or size -- it is about who owns the numbering:
 #
 #   "If we send overlapping full frames, the model must derive its own independent enumeration
@@ -811,9 +871,9 @@ _SYSTEM = (
 # cadence. One crop per item removes the duplicate entirely. (2) The crops are needed anyway,
 # because doc 5.6's post-tap verification is a signature match against the stored crop.
 #
-# Sent (doc 5.7): her name as text, items 1..N each as ONE cropped image in order, the context
-# blocks cropped and unnumbered, a truncation flag when the capture hit its ceiling, and the
-# Part A style guide unchanged. NOT sent: full screenshots, scroll frames, and the
+# Sent (doc 5.7): her name as text, items 1..N each as ONE cropped image in order, a truncation
+# flag when the capture hit its ceiling, and the Part A style guide unchanged. NOT sent: retained
+# context crops, full screenshots, scroll frames, and the
 # endorsement blocks (doc 2.4 -- a tease built on a friend's line is the worst possible
 # ammunition, so they are excluded upstream and never reach this module at all).
 #
@@ -838,29 +898,20 @@ _ITEM_PREAMBLE = (
     "the photo are one compound item and must be read together."
 )
 
-# Appended to _ITEM_PREAMBLE only when context crops are actually being sent. Explaining a
-# label that does not appear in the request would be describing something that is not there,
-# which would otherwise be a small lie about the request.
+# Legacy prompt-stamp inputs: retained solely so prompt_stamp() can reproduce existing seven-
+# component era digests. They are historical wire text, never current request parts. Do not use
+# them in request assembly.
 _ITEM_PREAMBLE_CONTEXT = (
-    " A label reading CONTEXT means the image directly after it has no number: read it and "
-    "use what it shows as supporting context for a numbered item. You can never pick it, and "
-    "the numbered item must remain the opener's clear main subject and reason for the Like, "
-    "not a reason to discuss this CONTEXT image."
+    "Some images below may be unnumbered CONTEXT. They cannot be picked and may only support "
+    "the numbered item you select."
 )
+_CONTEXT_LABEL = "=== CONTEXT, NOT NUMBERED, CANNOT BE PICKED ==="
 
 # Placed immediately BEFORE the image it names: Gemini reads parts as one ordered sequence, and "the
 # next image" is only unambiguous when the pointer text sits adjacent to what it points at.
 # Adjacency is what turns doc 5.2's "image k IS item k" from a fact about how we built the
 # request into a fact the model can read off the request.
 _ITEM_LABEL = "=== ITEM {number} ==="
-
-# Deliberately spells out the prohibition in the label itself rather than only in the preamble.
-# A context block is the one thing in the request that looks exactly like a selectable item
-# (it is a crop of her profile, sitting in the same list) and differs only by not having a
-# number, so the difference is stated where it cannot be missed. Doc 5.3: context blocks are
-# "sent, read as supporting context, never selectable".  A labelled context crop can support
-# a connection, but the selected numbered item must stay the message's primary anchor.
-_CONTEXT_LABEL = "=== CONTEXT, NOT NUMBERED, CANNOT BE PICKED ==="
 
 # What HER NAME renders as when the driver's OCR did not read one. An explicit "we did not read
 # it" rather than an empty line or a silently omitted section: the model is being told what it
@@ -870,21 +921,22 @@ _NAME_UNAVAILABLE = "(not read)"
 
 @dataclass(frozen=True)
 class ItemRequest:
-    """One profile's items as the MODEL sees them: the payload half of doc 5.7's request shape.
+    """One profile's captured item data; only `items` are Gemini's request view.
 
     Deliberately a plain value type over bytes and strings, holding no vision objects, no
     segmentation, and no signatures -- this module must be able to build (and a test must be
     able to pin) a request without the vision extras installed, and without importing anything
     from `operation_love.drivers`. The producer side is `drivers.item_crops.ItemPayload`, whose
     `items`/`context`/`truncated` map onto the fields here one for one, deliberately with the
-    SAME names so the adapter that will build this from a payload (a LATER workflow -- see this
-    module's `generate` docstring for the seam) is transcription rather than translation.
+    SAME names so the production adapter builds this from a payload by transcription rather than
+    translation.
 
-    `items` is the numbered list, in model order: `items[k - 1]` is item k, 1-based per
-    FIRST_ITEM_INDEX. `context` is the unnumbered tier, sent AFTER every numbered item, which
-    the schema's `item_index` description promises to the model in as many words ("Some blocks
-    are shown WITHOUT a number, for context only ... you can never pick one"). Sending a
-    context crop among the numbered ones, or numbering it, would make that description a lie.
+    `items` is the numbered list Gemini receives, in model order: `items[k - 1]` is item k,
+    1-based per FIRST_ITEM_INDEX. `context` retains the unnumbered capture tier for replay,
+    debug, and future offline analysis, but is deliberately never put on Gemini's wire request.
+    A written prompt or an incompletely verified card is rich enough to tempt a model into
+    making it the opener's premise while attaching the Like to a different numbered photo; keep
+    it available to the capture pipeline without giving it a route into generation.
 
     `name` is her first name as text (doc 5.2: cropping loses the sticky-header name, so it is
     passed back). `truncated` is True when the capture hit its ceiling, i.e. these are only the
@@ -901,9 +953,9 @@ class ItemRequest:
 
     # `items` is the one field with no default, and that ordering is the point: there is no such
     # thing as an item request without items, so it cannot be omitted by accident. Everything
-    # else degrades honestly -- a name the OCR did not read renders as "(not read)", a profile
-    # with no vitals block simply sends no context, and an untruncated capture says nothing
-    # about truncation.
+    # else degrades honestly -- a name the OCR did not read renders as "(not read)", retained
+    # context remains available to replay/debug but has no wire representation, and an
+    # untruncated capture says nothing about truncation.
     items: tuple[bytes, ...]
     name: str = ""
     context: tuple[bytes, ...] = ()
@@ -911,7 +963,8 @@ class ItemRequest:
 
     def __post_init__(self) -> None:
         # Normalize to tuples so a caller passing a list cannot mutate the request after it was
-        # built (frozen is only shallow), and so `images` below is cheap and order-stable.
+        # built (frozen is only shallow), and so the numbered wire image view below is cheap and
+        # order-stable.
         object.__setattr__(self, "name", str(self.name).strip())
         object.__setattr__(self, "items", tuple(self.items))
         object.__setattr__(self, "context", tuple(self.context))
@@ -922,14 +975,16 @@ class ItemRequest:
                 "request shape is to CHOOSE an item (ops/OPENER-REDESIGN.md 5.1), and a "
                 "request carrying none can only be answered with ITEM_INDEX_ABSENT. Hard stop "
                 "upstream instead of paying for a call that cannot succeed.")
-        for position, image in enumerate(self.images):
+        # Validate both tiers even though only `items` reaches Gemini: a malformed context crop
+        # must not become a seemingly valid ItemRequest that later corrupts replay/debug output.
+        for position, image in enumerate(self.items + self.context):
             if not isinstance(image, (bytes, bytearray)) or not image:
                 raise ValueError(
                     f"ItemRequest: {self.describe_image(position)} is not usable image bytes "
                     f"({type(image).__name__}, {len(image) if hasattr(image, '__len__') else '?'} "
-                    "bytes). Every image in this request is one item's crop and the numbering "
-                    "is positional, so a missing or empty one would silently renumber every "
-                    "item after it.")
+                    "bytes). Numbered item crops are positional, so a missing or empty item "
+                    "would silently renumber every later item; retained context must likewise "
+                    "remain usable for replay and debugging.")
 
     @classmethod
     def from_profile(cls, profile: Profile) -> "ItemRequest":
@@ -970,44 +1025,42 @@ class ItemRequest:
 
     @property
     def images(self) -> tuple[bytes, ...]:
-        """THE REQUEST'S IMAGE LIST, in wire order: numbered items first, then context.
+        """The complete Gemini wire image list: numbered items only.
 
-        Identical in construction and in order to `ItemPayload.images`, which is what a caller
-        will hand us. Position is the whole contract here -- `images[k - 1]` is item k -- so
-        every other method on this class indexes into this one list rather than re-deriving the
-        split, and _assemble_parts labels by position against it.
+        `context` intentionally has no on-wire view. Keeping this property restricted to
+        `items` makes direct `_payload()` callers, request sizing, recompression, and assembly
+        all fail closed against accidentally reintroducing an unnumbered crop.
         """
-        return self.items + self.context
+        return self.items
 
     @property
     def image_count(self) -> int:
-        return len(self.items) + len(self.context)
+        return len(self.items)
 
     def label_for(self, position: int) -> str:
         """The text part that must sit immediately before `images[position]`.
 
-        Numbered items are labelled with their 1-based number; anything past the numbered items
-        is a context crop and gets the unnumbered label. Positional by construction, so a crop
-        can never be labelled with a number that disagrees with where it actually sits in the
-        list -- which is the entire point of doc 5.2's "agreement by construction".
+        Every Gemini image is a numbered item. Positional by construction, so a crop can never
+        be labelled with a number that disagrees with where it actually sits in the list -- which
+        is the entire point of doc 5.2's "agreement by construction".
         """
         if not 0 <= position < self.image_count:
             raise ValueError(
                 f"image position {position} is outside 0..{self.image_count - 1}")
-        if position < self.item_count:
-            return _ITEM_LABEL.format(number=position + FIRST_ITEM_INDEX)
-        return _CONTEXT_LABEL
+        return _ITEM_LABEL.format(number=position + FIRST_ITEM_INDEX)
 
     def describe_image(self, position: int) -> str:
-        """Operator-facing name for `images[position]`, for error messages only.
+        """Operator-facing name for a captured crop, for error messages only.
 
         Never "photo index N": these are not her profile photos in capture order, and telling
         an operator to go look at photo 3 of a profile when the failure is in item 3's CROP
         sends them to the wrong place entirely.
         """
-        if position < self.item_count:
+        if 0 <= position < self.item_count:
             return f"item {position + FIRST_ITEM_INDEX}'s crop"
-        return f"context crop {position - self.item_count + 1} (unnumbered)"
+        if self.item_count <= position < self.item_count + self.context_count:
+            return f"context crop {position - self.item_count + 1} (not sent to Gemini)"
+        return f"crop {position}"
 
 
 _COMMON_ABBREVIATION_RE = re.compile(
@@ -1857,14 +1910,13 @@ def prompt_stamp(style: str) -> str:
     (systemInstruction), (iii) the canonicalized `_SCHEMA` field descriptions
     (responseJsonSchema) -- three of the FOUR on-wire prompt copies, see the 2026-09-05
     addendum in ops/OPENER-REDESIGN.md for the four-copies correction -- and then the
-    item-crop shape's four instruction constants: (iv) `_ITEM_PREAMBLE`,
-    (v) `_ITEM_PREAMBLE_CONTEXT`, (vi) `_ITEM_LABEL` and (vii) `_CONTEXT_LABEL`. The last
-    four are model-facing instruction PROSE, not bookkeeping: the preamble is the first text
-    part of every item-crop request, and between them these constants carry the compound-item
-    rule (a title, caption, or prompt above a photo is ONE item with it) and the
-    cannot-be-picked rule for context crops, which `_CONTEXT_LABEL` then restates on every
-    context image. All seven are the prompt-shaped bytes that are STABLE for a whole run AND
-    live in module-level constants, which is what makes a per-run stamp meaningful at all --
+    item-crop shape's four historical constants: (iv) `_ITEM_PREAMBLE`,
+    (v) `_ITEM_PREAMBLE_CONTEXT`, (vi) `_ITEM_LABEL` and (vii) `_CONTEXT_LABEL`.
+    `_ITEM_PREAMBLE` and `_ITEM_LABEL` are current model-facing instruction prose. The context
+    constants are legacy digest-only values: they remain in this fixed input solely to preserve
+    the seven-component stamp contract for historical rows and backfill tooling, and are never
+    put on a current Gemini request. All seven are stable module-level prompt-era inputs, which
+    is what makes a per-run stamp meaningful at all --
     but they are not every byte of instruction the model sees; see exclusion (4). A NUL sits
     between EVERY adjacent pair, so no boundary between two constants is ambiguous: prose
     moved from the end of one to the start of the next changes the digest instead of
@@ -1879,15 +1931,15 @@ def prompt_stamp(style: str) -> str:
     (2) generationConfig / thinking settings: they change how hard the model works, not what
     it was told. (3) The model id: already its own column in both tables, so hashing it in
     would only make the stamp less joinable. (4) _text_part's OWN instruction prose -- the
-    closing block, the truncation and CONTEXT sentences, and the STYLE GUIDE / HER NAME / HER
-    PROFILE TEXT section labels. This exclusion is the TRAILING text part and nothing else:
+    closing block, the truncation sentence, and the STYLE GUIDE / HER NAME / HER PROFILE TEXT
+    section labels. This exclusion is the TRAILING text part and nothing else:
     the item-crop preamble and the per-image labels are a separate body of prose and ARE
     hashed, above. That block is excluded as a block because it is request-conditional (its
     item counts, its name section, and its truncation sentence all vary per profile), but it
     is not merely bookkeeping: it carries fixed sentences that are genuine prompt RULES,
-    including its own CONTEXT-images sentence ("Never pick one or make one the opener's main
-    premise") and the item_index instruction, and that copy has been rewritten before. So an
-    edit confined to those sentences is a real era boundary that this digest does NOT move.
+    including the selected-item-only item_index instruction, and that copy has been rewritten
+    before. So an edit confined to those sentences is a real era boundary that this digest does
+    NOT move.
 
     THE COST, stated rather than smoothed over: equal digests mean the same era only up to
     the exclusions. Two eras differing ONLY in retry-hint prose, or ONLY in _text_part's fixed
@@ -2581,11 +2633,11 @@ class GeminiOpener:
 
         ``images`` is renamed from the old ``photos`` because it carries whichever request
         shape generate() built: her profile photos on the legacy frame shape, or -- on the
-        item-crop shape -- ItemRequest.images, the numbered item crops followed by the
-        unnumbered context crops. Both are encoded identically here; labelling and numbering
-        happen later, in _assemble_parts and _text_part, so this method stays the single place
-        that knows how to turn bytes into an inlineData part and knows nothing about what any
-        of them mean.
+        item-crop shape -- only `ItemRequest.items`, the numbered selectable crops. Retained
+        `ItemRequest.context` crops deliberately never enter this method. Labelling and
+        numbering happen later, in _assemble_parts and _text_part, so this method stays the
+        single place that knows how to turn bytes into an inlineData part and knows nothing
+        about what any of them mean.
         """
         if len(images) > _MAX_REQUEST_IMAGES:
             raise OpenerError(
@@ -2619,9 +2671,10 @@ class GeminiOpener:
         writing the corrected opener -- a corrected re-ask rather than an identical dice roll.
 
         ``items`` is the item-crop request shape (ops/OPENER-REDESIGN.md 5.2/5.7): when it is
-        present the images are one crop per profile item rather than raw scroll frames, each
-        already labelled by _assemble_parts, so the closing paragraph only states the counts
-        and points at the field to answer in.
+        present the images are the numbered selectable crops only, rather than raw scroll
+        frames; retained unnumbered context never enters the request, and each numbered crop is
+        already labelled by _assemble_parts. The closing
+        paragraph therefore only states the numbered count and points at the field to answer in.
 
         HER NAME is rendered as its own labelled section, and ONLY on the item-crop shape --
         the legacy frame shapes carry her name in the pixels (every scroll frame has the
@@ -2649,12 +2702,6 @@ class GeminiOpener:
                 f"after its own ITEM label, so the image after ITEM {FIRST_ITEM_INDEX} is item "
                 f"{FIRST_ITEM_INDEX}."
             ]
-            if items.context_count:
-                sentences.append(
-                    f"The {items.context_count} image(s) labelled CONTEXT carry no number: use "
-                    "them only as supporting context for a numbered item. Never pick one or "
-                    "make one the opener's main premise; the selected item must remain its "
-                    "clear main subject and reason for the Like.")
             if items.truncated:
                 # Doc 5.7's truncation flag. Stated as a fact about OUR capture, not as a
                 # deficiency in her profile, and immediately followed by "choose from them
@@ -2670,7 +2717,8 @@ class GeminiOpener:
             sentences.append(
                 "Set item_index to the number of the one your opener is clearly about and "
                 "would feel natural directly under, because it explains why that item was "
-                "liked. "
+                "liked. The other numbered images are alternatives for selection only: after "
+                "you choose, do not use another item's facts, concepts, wordplay, or payoff. "
                 "Write the opener now.")
             closing = " ".join(sentences)
         elif photo_count > 0:
@@ -2714,6 +2762,12 @@ class GeminiOpener:
             f"{closing}"
         )
         if retry_hint:
+            retry_grounding = (
+                "ground the conversational move in the selected numbered item. Other numbered "
+                "items were alternatives for selection only: never take their facts, concepts, "
+                "wordplay, or payoff after choosing."
+                if items is not None else
+                "ground the conversational move in her profile.")
             text += (
                 # The two lists below are deliberately kept apart. Everything under HARD
                 # REJECTION is a rule _parse() actually enforces by raising, so it is what a
@@ -2743,10 +2797,14 @@ class GeminiOpener:
                 "must not infer or tease about self harm, death, injury, an accident, or danger "
                 "unless her profile explicitly states the activity; and it must be plain ASCII "
                 "letters and punctuation with no emoji. Also keep following the "
-                "style guide above, and ground the opener in one "
-                "concrete detail from her profile text or photos. You may name that detail when "
-                "it is useful setup, but the final conversational point must add something "
-                "beyond description. A guess is optional. Prefer a grounded observation or "
+                f"style guide above, and {retry_grounding} The "
+                "attached item remains visible while she reads, so use the least explicit "
+                "natural reference it makes immediately clear. Before naming visible content, "
+                "replace its literal description with an implicit reference; if the meaning and "
+                "conversational move survive, keep the implicit version. Name a visible detail "
+                "only when its exact identity changes the point or disambiguates, never merely "
+                "to prove grounding or identify the selected item. The final conversational "
+                "point must add something beyond description. A guess is optional. Prefer a grounded observation or "
                 "specific question over a forced inference. Never invent a hidden purpose, "
                 "motive, circumstance, action, route, effort, goal, cause, or sequence merely "
                 "to create a claim. If you do make a claim, use the least speculative natural "
@@ -2761,8 +2819,9 @@ class GeminiOpener:
                 "feeling, experience, or consequence there. "
                 "Clearly nonliteral playful hyperbole is allowed; an invented motive or event "
                 "presented as literal fact is not. "
-                "Every named visible detail must be necessary to the conversational move; cut "
-                "it if the later point works without it. Ask one coherent thing at a time. Use "
+                "Every named visible detail must be necessary to the conversational move; omit "
+                "it or use an immediately clear implicit reference if the later point still "
+                "works. Ask one coherent thing at a time. Use "
                 "'or' only for parallel, genuinely contrasting answers to one underlying "
                 "question, never unrelated dimensions. Every pronoun, shorthand noun, and "
                 "question subject must have one immediately obvious referent. Across two beats, "
@@ -2786,11 +2845,11 @@ class GeminiOpener:
         the final ``contents[0].parts`` list Gemini receives, in the order the model reads them.
 
         ITEM-CROP SHAPE (``items`` given, ops/OPENER-REDESIGN.md 5.2/5.7): a preamble text part
-        stating the label convention, then, for each image in ``ItemRequest.images`` order, a
+        stating the label convention, then, for each numbered `ItemRequest.items` crop, a
         standalone label part immediately followed by that image, then the trailing text part.
-        The numbered items come first and the context crops after them, which is what
-        ``ItemRequest.images`` already guarantees -- this method only labels by position, it
-        never reorders, because position IS the numbering.
+        `ItemRequest.context` is intentionally absent: it remains capture/replay data, not
+        material Gemini may turn into an opener attached to another item. This method only
+        labels by position and never reorders, because position IS the numbering.
 
         The per-image labels are the whole mechanism doc 5.2 asks for. Crops make "image k is
         item k" true by construction, but true-by-construction is a property of how WE built
@@ -2803,16 +2862,15 @@ class GeminiOpener:
         followed by the text part.
         """
         if items is not None:
-            if len(image_parts) != items.image_count:
+            if len(image_parts) != items.item_count:
                 # A length mismatch would silently shift every label past the gap, so item 4's
                 # label would sit on item 5's crop and the model's answer would be confidently
                 # wrong with nothing to detect it downstream. Refuse instead.
                 raise ValueError(
-                    f"item-crop request has {items.image_count} image(s) but "
+                    f"item-crop request has {items.item_count} numbered item image(s) but "
                     f"{len(image_parts)} encoded image part(s); the labels are positional, so "
                     "a mismatch would number the wrong crops")
-            preamble = _ITEM_PREAMBLE + (_ITEM_PREAMBLE_CONTEXT if items.context_count else "")
-            parts: list[dict[str, Any]] = [{"text": preamble}]
+            parts: list[dict[str, Any]] = [{"text": _ITEM_PREAMBLE}]
             for position, image_part in enumerate(image_parts):
                 parts.append({"text": items.label_for(position)})
                 parts.append(image_part)
@@ -2826,9 +2884,9 @@ class GeminiOpener:
                  items: ItemRequest | None = None) -> dict[str, Any]:
         """Build one model's GenerateContent request. ``image_parts`` lets generate() pass in
         already-encoded images (the legacy frame shape's profile photos, or the item-crop
-        shape's numbered crops plus context crops) so a cascade across N models doesn't
+        shape's numbered crops only) so a cascade across N models doesn't
         re-encode the same screenshots N times; when omitted it is computed fresh instead --
-        from ``items.images`` when ``items`` is given, else from ``profile.photos``. generate()
+        from ``items.items`` when ``items`` is given, else from ``profile.photos``. generate()
         always passes ``image_parts`` explicitly, so this fallback only matters for a caller
         that doesn't (there is none in this codebase today, but the method must still build a
         request that matches ``items`` rather than silently assume the legacy shape).
@@ -2838,14 +2896,14 @@ class GeminiOpener:
 
         ``items`` (ops/OPENER-REDESIGN.md 5.2/5.7) travels with ``image_parts``: it is what
         those encoded parts ARE, so the no-``image_parts`` fallback below re-encodes from
-        ``items.images`` rather than from profile.photos when one is present. Encoding the
+        ``items.items`` rather than from profile.photos when one is present. Encoding the
         scroll frames while telling the model it is looking at labelled item crops is precisely
         the kind of silent lie that fallback exists to refuse to tell."""
         if image_parts is not None:
             resolved_image_parts = list(image_parts)
             resolved_items = items
         elif items is not None:
-            resolved_image_parts = self._image_parts(list(items.images))
+            resolved_image_parts = self._image_parts(list(items.items))
             resolved_items = items
         else:
             resolved_image_parts = self._image_parts(profile.photos)
@@ -2960,9 +3018,9 @@ class GeminiOpener:
                     # none of its images is a profile photo in capture order at all, so "photo
                     # index 4" names something that does not exist and sends the operator
                     # hunting through her profile photos for a capture bug that is actually in
-                    # the crop pipeline. ItemRequest reports "item 5's crop" or "context crop 2
-                    # (unnumbered)" instead, which is a thing the operator can actually go and
-                    # look at. The legacy frame shape has no such translation to do -- its
+                    # the crop pipeline. Only numbered item crops reach this code; retained
+                    # context is never compressed for Gemini. The legacy frame shape has no
+                    # such translation to do -- its
                     # images ARE her profile photos in capture order, so "photo index N"
                     # already names the right thing.
                     if items is not None:
@@ -3002,9 +3060,9 @@ class GeminiOpener:
         text_bytes = new_size - image_bytes
         if items is not None:
             composition_note = (
-                f" ({items.item_count} numbered item crop(s) and {items.context_count} context "
-                "crop(s), not scroll frames -- crops are already the small shape, so an "
-                "oversized request here points at the capture or the crop geometry)"
+                f" ({items.item_count} numbered item crop(s), not scroll frames or retained "
+                "context -- crops are already the small shape, so an oversized request here "
+                "points at the capture or the crop geometry)"
             )
         else:
             composition_note = ""
@@ -3012,7 +3070,7 @@ class GeminiOpener:
             f"Gemini opener: request has {len(images)} image(s){composition_note}; the request "
             f"still totals {new_size} bytes encoded even at the smallest compression step "
             f"({image_bytes} bytes of images, {text_bytes} bytes of text -- style guide, "
-            f"profile content, system instruction, and any item/context labels when present, "
+            f"profile content, system instruction, and item labels when present, "
             f"including any retry hint), over the "
             f"{_MAX_INLINE_REQUEST_BYTES} byte budget; refusing to silently drop images. "
             "Reduce image count or resolution upstream if images dominate the total, or "
@@ -3449,8 +3507,9 @@ class GeminiOpener:
         """
         # items is doc 5.2/5.7's item-crop request shape and is THE shape Part B is migrating
         # to: one cropped image per profile item, numbered by position and labelled adjacent to
-        # its own image, then the unnumbered context crops, plus her name as text and the
-        # capture's truncation flag. When present it REPLACES profile.photos as the model's view
+        # its own image, plus her name as text and the capture's truncation flag. Retained
+        # unnumbered context crops are capture/replay data and never reach Gemini. When present
+        # it REPLACES profile.photos as the model's view
         # of her -- the raw scroll frames are not sent at all, which is doc 5.7's "Not sent:
         # full screenshots, scroll frames, the anchor, endorsement blocks". profile is still
         # passed and still contributes its TEXT (profile.text_blob(), empty on Hinge but
@@ -3460,14 +3519,12 @@ class GeminiOpener:
         #
         # REACHABLE FROM PRODUCTION AS OF 2026-08-12. The chain is: hinge._capture_current
         # enumerates the profile (doc 5.5's closed loop) and builds a
-        # drivers.item_crops.ItemPayload; the crops, the context crops, her name and the
+        # drivers.item_crops.ItemPayload; the crops, retained context crops, her name and the
         # truncation flag ride on the Profile; worker._auto_loop calls
         # ItemRequest.from_profile(profile) and OpenerService.maybe_opener threads the result
-        # here. What is STILL not wired is the other direction -- the returned item_index is in
-        # INDEX_SPACE_MODEL_ITEMS, and nothing yet converts it into a tapped heart, so an AUTO
-        # like on this shape hard-stops at worker.py's capture_order_index guard rather than
-        # targeting. That is doc 5.6's workflow, and the stop is the intended behaviour until
-        # it lands (never a fallback tap on item 1).
+        # here. The returned item_index stays in INDEX_SPACE_MODEL_ITEMS until the action path
+        # maps it back to the captured card and verifies that mapping before tapping its heart;
+        # it is never treated as a page-relative coordinate or silently substituted with item 1.
         #
         # retry_hint defaults to "" (falsy): an ordinary first attempt, no correction to make.
         # When OpenerService is re-asking after a rejected attempt, it passes the specific
@@ -3569,7 +3626,7 @@ class GeminiOpener:
                 # appending the frames would re-introduce the duplication bias doc 5.2 removes
                 # -- a card straddling a scroll seam appearing three times reads as salience to
                 # a model that is now CHOOSING among items.
-                images = list(items.images)
+                images = list(items.items)
             else:
                 images = list(profile.photos)
             # WHAT `item_index` WILL MEAN IN THE ANSWER, derived from the payload actually being

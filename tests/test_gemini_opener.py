@@ -24,9 +24,7 @@ from operation_love.opener.opener import (
     OpenerAborted,
     OpenerError,
     OpenerParseError,
-    _CONTEXT_LABEL,
     _ITEM_PREAMBLE,
-    _ITEM_PREAMBLE_CONTEXT,
     _SCHEMA,
     _SYSTEM,
     _is_thinking_config_rejection,
@@ -326,12 +324,14 @@ def test_response_schema_orders_referenced_and_angle_before_the_opener():
     assert "including any header, caption, or prompt printed with a photo" in referenced_description
     assert "how it frames the photo" in referenced_description
     assert "never infer friend, partner, or family from proximity" in referenced_description
-    assert "may name only the visible detail needed as setup" in referenced_description
-    assert "final conversational point must add something beyond" in referenced_description
+    assert "full literal inventory in this private field" in referenced_description
+    assert "may name only the visible detail whose exact identity is needed" in referenced_description
+    assert "final point must add something beyond" in referenced_description
     item_description = schema["properties"]["item_description"]["description"].lower()
     assert "never infer friend, partner, or family from proximity" in item_description
-    assert "may name a visible detail as setup" in opener_description
-    assert "final point must do something conversational beyond describing" in opener_description
+    assert "literal wording belongs here" in item_description
+    assert "do not carry it into the opener unless the detail's exact identity" in item_description
+    assert "final point must do something conversational beyond description" in opener_description
     # 2026-09-05 register rewrite. This description is the THIRD of four on-wire copies of the
     # prompt rules (config.yaml opener.style, _SYSTEM, this, and the retry hint block), and
     # until these pins existed it was the only one nothing held: it could be deleted or drifted
@@ -339,6 +339,14 @@ def test_response_schema_orders_referenced_and_angle_before_the_opener():
     # log warns about. The long form lives in tests/test_config_yaml_real.py and the _SYSTEM
     # twin in tests/test_opener.py.
     assert "spoken register a person texts in" in opener_description
+    assert "idiom fit" in opener_description
+    assert "idiom only when it is contemporary" in opener_description
+    assert "everyday, immediately understandable on first reading in ordinary conversation" in opener_description
+    assert "semantically apt to the item and point" in opener_description
+    assert "natural when spoken" in opener_description
+    assert "idioms that are dated, literary, formal, obscure, forced, or tied to a passing trend" in opener_description
+    assert "does not license internet slang, memes, or borrowed caption wording" in opener_description
+    assert "makes her stop to decode the point" in opener_description
     assert "offhand remark about the thing" in opener_description
     assert "never restate context the message itself already established" in opener_description
     assert "never point at the photo or profile as an object" in opener_description
@@ -351,6 +359,7 @@ def test_response_schema_orders_referenced_and_angle_before_the_opener():
     assert "if the phrase's placement permits a plausible unintended meaning" in opener_description
     assert "reorder or rephrase the line" in opener_description
     assert "bundled up in all that snow" not in opener_description
+    assert "hold court" not in opener_description
     # With minimal thinking, angle is the only place to check that a guess adds information and
     # remains unconfirmed before emitting the opener.
     assert "a guess is optional" in angle_description
@@ -380,10 +389,11 @@ def test_response_schema_orders_referenced_and_angle_before_the_opener():
     assert "every pronoun or shorthand noun has one immediately obvious referent" in angle_description
     assert "any change of referent must be explicit and immediately clear" in angle_description
     assert "selected item must remain the angle's primary anchor and reason for the like" in angle_description
-    assert "unnumbered context may support a connection" in angle_description
+    assert "explicit profile text may sharpen a connection" in angle_description
     assert "cannot replace the selected item as the subject or payoff" in angle_description
     assert "every named setup detail must be necessary" in opener_description
-    assert "cut it if the later point still works without it" in opener_description
+    assert "replacing it with an implicit reference preserves the meaning" in opener_description
+    assert "use the implicit version" in opener_description
     assert "parallel, contrasting answers to it" in opener_description
     assert "every pronoun, shorthand noun, and question subject" in opener_description
     assert "one immediately obvious referent" in opener_description
@@ -394,23 +404,21 @@ def test_response_schema_orders_referenced_and_angle_before_the_opener():
     assert schema["properties"]["angle"]["type"] == "string"
     # item_index's description carries the three facts doc 5.7 requires of it, because the
     # schema is the only place the model is told what the number MEANS: which list it indexes,
-    # that only numbered items are choosable, and that unnumbered context blocks can support
-    # the selected item but never become the main premise (doc 5.3's two tiers). Substring-matched on substance
+    # that only numbered items are choosable, and that other numbered candidates become
+    # selection-only after the choice. Substring-matched on substance
     # rather than the full literal so wording can be tuned without a test edit.
     item_index_description = schema["properties"]["item_index"]["description"].lower()
     assert schema["properties"]["item_index"]["type"] == "integer"
     assert "numbered items in this request" in item_index_description
     assert "numbered from 1" in item_index_description
     assert "you may only choose a number that was actually given" in item_index_description
-    assert "without a number" in item_index_description
-    assert "never pick one" in item_index_description
     assert "clear primary subject" in item_index_description
-    assert "support a connection to the selected item" in item_index_description
-    assert "main premise" in item_index_description
     assert "justify why this selected item was liked" in item_index_description
+    assert "an alternative for making this choice only" in item_index_description
+    assert "do not take facts, concepts, wordplay, or the payoff" in item_index_description
     assert "reason, subject, or payoff" in item_index_description
     assert "selected item's exact photo or prompt detail" in referenced_description
-    assert "supporting context rather than replacing this selected-item anchor" in referenced_description
+    assert "record only what is visibly shown or explicitly stated" in referenced_description
     assert "must feel natural directly under it" in opener_description
     assert "justify why it was liked" in opener_description
     assert "cannot replace the selected item as its reason, subject, or payoff" in opener_description
@@ -423,6 +431,36 @@ def test_response_schema_orders_referenced_and_angle_before_the_opener():
     assert "enum" not in schema["properties"]["item_description"]
     assert "include any header, caption, or prompt printed with it" in (
         schema["properties"]["item_description"]["description"].lower())
+
+
+def test_response_schema_performs_the_minimum_sufficient_reference_check_before_opener():
+    """The private fields stay literal while angle checks the public wording before generation."""
+    referenced = _SCHEMA["properties"]["referenced"]["description"].lower()
+    item_description = _SCHEMA["properties"]["item_description"]["description"].lower()
+    angle = _SCHEMA["properties"]["angle"]["description"].lower()
+    opener = _SCHEMA["properties"]["opener"]["description"].lower()
+
+    assert "full literal inventory" in referenced
+    assert "even when the opener uses an implicit reference" in referenced
+    assert "literal wording belongs here" in item_description
+    assert "minimum sufficient reference" in angle
+    assert "while treating the selected item as visible" in angle
+    assert "replace each literal visual description with the least explicit natural reference" in angle
+    assert "if the meaning and conversational move survive" in angle
+    assert "opener must use that implicit version" in angle
+    assert "exact visible identity only when it changes the point" in angle
+    assert "distinguishes possible referents" in angle
+    assert "never merely to prove grounding or identify the selected item" in angle
+
+    assert "minimum sufficient reference" in opener
+    assert "default to omission or the least explicit natural reference" in opener
+    assert "attachment itself can supply both an obvious referent" in opener
+    assert "name a visible detail only when its exact identity changes the point" in opener
+    assert "never merely to prove grounding or add textual specificity" in opener
+    assert "if replacing it with an implicit reference preserves" in opener
+    assert "do not force it where real ambiguity would result" in opener
+    assert "tiled bench" not in angle + opener
+    assert "glass of wine" not in angle + opener
 
 
 def test_response_schema_opener_description_ships_the_no_grading_rule():
@@ -1374,7 +1412,7 @@ def test_nonempty_retry_hint_appears_in_user_text_after_profile_content():
     lower = text.lower()
     assert "non-empty" in lower and "string" in lower
     assert "two sentences" in lower
-    assert "concrete detail" in lower
+    assert "ground the conversational move in her profile" in lower
     # The five rejection causes the list omitted until 2026-09-05, all enforced by _parse()
     # and all of which burn an attempt against max_attempts=5 when they fire.
     assert "bare message itself with no preamble, label, or surrounding quotes" in lower
@@ -1390,9 +1428,15 @@ def test_nonempty_retry_hint_appears_in_user_text_after_profile_content():
     # ...and the inversion the block's own comment warns against: emphasising the dash rule,
     # which _sanitize launders silently, as though it could be why an attempt was rejected.
     assert "especially the hard rule against em dashes and hyphens" not in lower
-    # A retry must not revive the old forced-claim rule. It keeps visible setup legal, requires
-    # a conversational payoff, and carries the minimum-invention/hyperbole distinction.
-    assert "you may name that detail when it is useful setup" in lower
+    # A retry must not revive either the old forced-claim rule or literal scene-caption setup.
+    # It preserves the minimum-reference transformation as the last instruction the model sees.
+    assert "ground the conversational move in her profile" in lower
+    assert "attached item remains visible while she reads" in lower
+    assert "least explicit natural reference it makes immediately clear" in lower
+    assert "replace its literal description with an implicit reference" in lower
+    assert "if the meaning and conversational move survive, keep the implicit version" in lower
+    assert "exact identity changes the point or disambiguates" in lower
+    assert "never merely to prove grounding or identify the selected item" in lower
     assert "final conversational point must add something beyond description" in lower
     assert "a guess is optional" in lower
     assert "grounded observation or specific question over a forced inference" in lower
@@ -1406,7 +1450,7 @@ def test_nonempty_retry_hint_appears_in_user_text_after_profile_content():
     assert "clearly nonliteral playful hyperbole is allowed" in lower
     assert "invented motive or event presented as literal fact is not" in lower
     assert "every named visible detail must be necessary to the conversational move" in lower
-    assert "cut it if the later point works without it" in lower
+    assert "use an immediately clear implicit reference if the later point still works" in lower
     assert "ask one coherent thing at a time" in lower
     assert "parallel, genuinely contrasting answers to one underlying question" in lower
     assert "never unrelated dimensions" in lower
@@ -1463,8 +1507,9 @@ def test_images_are_encoded_once_not_per_model_when_a_retry_hint_is_supplied():
 # THE ITEM-CROP REQUEST SHAPE (ops/OPENER-REDESIGN.md 5.2 and 5.7)
 #
 # What the model is shown stops being her raw scroll frames and becomes one cropped image per
-# profile item, numbered, plus the unnumbered context crops, her name as text, and a truncation
-# flag. These tests pin the NEW shape the same way the tests above pin the old one -- as
+# profile item, numbered, her name as text, and a truncation flag. Unnumbered capture context
+# remains attached to ItemRequest for replay/debug only and is never put on Gemini's wire. These
+# tests pin the NEW shape the same way the tests above pin the old one -- as
 # literals -- because doc 5.2's whole argument is that "image k IS item k" has to be true by
 # construction rather than by the model counting, and the only thing standing between that and
 # a silent drift is this file.
@@ -1502,8 +1547,9 @@ def test_item_crop_request_labels_every_image_and_sends_no_scroll_frames():
 
     Doc 5.2: "With crops, image 3 in the request IS item 3. Agreement by construction." The
     construction is exactly this: a preamble stating the label convention once, then for every
-    image a standalone label part IMMEDIATELY before it, numbered items first and context after
-    them, then the trailing instruction block. There is no counting step left for the model.
+    numbered item a standalone label part IMMEDIATELY before it, then the trailing instruction
+    block. Retained context must be absent even when ItemRequest carries it. There is no counting
+    step left for the model.
 
     The profile also carries a scroll frame, which must NOT appear anywhere in the request --
     doc 5.7's "Not sent: full screenshots, scroll frames, the anchor, endorsement blocks". A
@@ -1518,28 +1564,30 @@ def test_item_crop_request_labels_every_image_and_sends_no_scroll_frames():
 
     payload = transport.calls[0][1]
     assert _part_shape(payload["contents"][0]["parts"]) == [
-        ("text", _ITEM_PREAMBLE + _ITEM_PREAMBLE_CONTEXT),
+        ("text", _ITEM_PREAMBLE),
         ("text", "=== ITEM 1 ==="),
         ("image", _ITEM_ONE),
         ("text", "=== ITEM 2 ==="),
         ("image", _ITEM_TWO),
-        ("text", _CONTEXT_LABEL),
-        ("image", _CONTEXT_ONE),
         ("text",
          "STYLE GUIDE:\nbe curious\n\n"
          "HER NAME:\nSarah\n\n"
          "HER PROFILE TEXT:\nWeekend potter\n\n"
          "The 2 numbered image(s) above are her profile photos, numbered 1 to 2, each shown "
          "immediately after its own ITEM label, so the image after ITEM 1 is item 1. "
-         "The 1 image(s) labelled CONTEXT carry no number: use them only as supporting context "
-         "for a numbered item. Never pick one or make one the opener's main premise; the "
-         "selected item must remain its clear main subject and reason for the Like. "
          "Set item_index to the number of the one your opener is clearly about and would feel "
-         "natural directly under, because it explains why that item was liked. Write the opener now."),
+         "natural directly under, because it explains why that item was liked. The other numbered "
+         "images are alternatives for selection only: after you choose, do not use another item's "
+         "facts, concepts, wordplay, or payoff. Write the opener now."),
     ]
     # The frame is not merely absent from the image list -- it is nowhere on the wire at all.
     assert _SCROLL_FRAME not in [img for kind, img in _part_shape(payload["contents"][0]["parts"])
                                  if kind == "image"]
+    wire = json.dumps(payload)
+    assert base64.standard_b64encode(_CONTEXT_ONE).decode("ascii") not in wire
+    assert "=== CONTEXT" not in wire
+    assert "labelled CONTEXT" not in wire
+    assert "image(s) labelled CONTEXT" not in wire
 
 
 def test_item_crop_request_uses_the_shared_system_prompt():
@@ -1555,19 +1603,16 @@ def test_item_crop_request_uses_the_shared_system_prompt():
             assert "like screen" not in value
 
 
-def test_item_crop_request_without_context_omits_every_mention_of_context():
-    """No context crops sent means no copy about them, in either the preamble or the closing.
-
-    Explaining a CONTEXT label that never appears would be describing something that is not in
-    the request -- the same small lie as anchored copy on an unanchored request, and the schema
-    description's promise that context blocks are "shown WITHOUT a number" only stays honest
-    while the two agree."""
+def test_item_crop_payload_fallback_never_serializes_retained_context():
+    """Direct `_payload()` callers fail closed too; context is not a conditional wire tier."""
     transport = _Transport([(200, _success())])
-    _opener(transport).generate(
-        Profile(bio="Weekend potter"), style="be curious",
-        items=ItemRequest(name="Sarah", items=[_ITEM_ONE, _ITEM_TWO, _ITEM_THREE]))
+    opener = _opener(transport)
+    payload = opener._payload(
+        Profile(bio="Weekend potter"), "be curious", "gemini-primary",
+        items=ItemRequest(name="Sarah", items=[_ITEM_ONE, _ITEM_TWO, _ITEM_THREE],
+                          context=[_CONTEXT_ONE]))
 
-    parts = transport.calls[0][1]["contents"][0]["parts"]
+    parts = payload["contents"][0]["parts"]
     assert _part_shape(parts) == [
         ("text", _ITEM_PREAMBLE),
         ("text", "=== ITEM 1 ==="),
@@ -1583,10 +1628,15 @@ def test_item_crop_request_without_context_omits_every_mention_of_context():
          "The 3 numbered image(s) above are her profile photos, numbered 1 to 3, each shown "
          "immediately after its own ITEM label, so the image after ITEM 1 is item 1. "
          "Set item_index to the number of the one your opener is clearly about and would feel "
-         "natural directly under, because it explains why that item was liked. Write the opener now."),
+         "natural directly under, because it explains why that item was liked. The other numbered "
+         "images are alternatives for selection only: after you choose, do not use another item's "
+         "facts, concepts, wordplay, or payoff. Write the opener now."),
     ]
-    assert "CONTEXT" not in parts[0]["text"]
-    assert "CONTEXT" not in parts[-1]["text"]
+    wire = json.dumps(payload)
+    assert base64.standard_b64encode(_CONTEXT_ONE).decode("ascii") not in wire
+    assert "=== CONTEXT" not in wire
+    assert "labelled CONTEXT" not in wire
+    assert "image(s) labelled CONTEXT" not in wire
 
 
 def test_truncated_capture_tells_the_model_it_is_seeing_only_part_of_her_profile():
@@ -1609,7 +1659,9 @@ def test_truncated_capture_tells_the_model_it_is_seeing_only_part_of_her_profile
     # The truncation note never displaces the instruction the model acts on.
     assert truncated_text.endswith(
         "Set item_index to the number of the one your opener is clearly about and would feel "
-        "natural directly under, because it explains why that item was liked. Write the opener now.")
+        "natural directly under, because it explains why that item was liked. The other numbered "
+        "images are alternatives for selection only: after you choose, do not use another item's "
+        "facts, concepts, wordplay, or payoff. Write the opener now.")
 
 
 def test_item_crop_request_passes_her_name_back_as_text():
@@ -1659,7 +1711,7 @@ def test_legacy_frame_request_carries_no_item_label_copy_at_all():
     for kind, value in _part_shape(transport.calls[0][1]["contents"][0]["parts"]):
         if kind == "text":
             assert "=== ITEM" not in value
-            assert _CONTEXT_LABEL not in value
+            assert "=== CONTEXT" not in value
             assert _ITEM_PREAMBLE not in value
             assert "HER NAME:" not in value
 
@@ -1690,15 +1742,13 @@ def test_item_crop_request_survives_a_retry_hint_without_anchor_copy():
 
 # --- ItemRequest itself: the value type the numbering rests on -------------------------
 
-def test_item_request_orders_images_numbered_first_then_context():
-    """`images` IS the numbering: position k - 1 is item k, and every context crop sits after
-    every numbered one. _assemble_parts labels by position against this list and never
-    reorders, so this ordering is the whole contract."""
+def test_item_request_keeps_context_for_forensics_but_exposes_only_numbered_wire_images():
+    """The numbered wire view cannot accidentally grow an unnumbered tail."""
     items = ItemRequest(name="Sarah", items=[_ITEM_ONE, _ITEM_TWO], context=[_CONTEXT_ONE])
-    assert items.images == (_ITEM_ONE, _ITEM_TWO, _CONTEXT_ONE)
-    assert items.item_count == 2 and items.context_count == 1 and items.image_count == 3
-    assert [items.label_for(i) for i in range(3)] == [
-        "=== ITEM 1 ===", "=== ITEM 2 ===", _CONTEXT_LABEL]
+    assert items.context == (_CONTEXT_ONE,)
+    assert items.images == (_ITEM_ONE, _ITEM_TWO)
+    assert items.item_count == 2 and items.context_count == 1 and items.image_count == 2
+    assert [items.label_for(i) for i in range(2)] == ["=== ITEM 1 ===", "=== ITEM 2 ==="]
 
 
 def test_item_request_labels_are_one_based():
@@ -1713,8 +1763,8 @@ def test_item_request_labels_are_one_based():
 def test_item_request_from_profile_transcribes_the_capture_payload():
     """THE ADAPTER (doc 5.7). The driver enumerates, the Profile carries plain bytes, and this
     turns them into the request -- transcription, not translation: the four fields map one for
-    one, in order, and nothing here may renumber, reorder or drop a crop. `items` stays first
-    and `context` stays after it, because that ordering IS the numbering."""
+    one, in order. Numbered `items` are the wire view; `context` remains intact only for
+    capture/replay/debugging and cannot affect model numbering."""
     profile = Profile(photos=[b"a frame nobody sends"], name="Sarah",
                       items=(_ITEM_ONE, _ITEM_TWO), item_context=(_CONTEXT_ONE,),
                       items_truncated=True)
@@ -1725,7 +1775,7 @@ def test_item_request_from_profile_transcribes_the_capture_payload():
     assert request.context == (_CONTEXT_ONE,)
     assert request.name == "Sarah"
     assert request.truncated is True
-    assert request.images == (_ITEM_ONE, _ITEM_TWO, _CONTEXT_ONE)
+    assert request.images == (_ITEM_ONE, _ITEM_TWO)
     assert b"a frame nobody sends" not in request.images
 
 
@@ -1765,7 +1815,7 @@ def test_item_request_refuses_an_unusable_context_crop_by_its_own_name():
     context crop is not a numbered item and not "photo index N" either."""
     with pytest.raises(ValueError) as exc_info:
         ItemRequest(name="Sarah", items=[_ITEM_ONE], context=[b""])
-    assert "context crop 1 (unnumbered)" in str(exc_info.value)
+    assert "context crop 1 (not sent to Gemini)" in str(exc_info.value)
 
 
 def test_item_request_is_frozen_against_post_construction_mutation():
@@ -1802,17 +1852,17 @@ def test_oversized_item_crops_are_all_compressed_and_none_is_dropped(monkeypatch
 
     parts = transport.calls[0][1]["contents"][0]["parts"]
     kinds = [kind for kind, _ in _part_shape(parts)]
-    # preamble, then (label, image) x 4, then the trailing text: nothing dropped, nothing
+    # preamble, then (label, image) x 3, then the trailing text: nothing dropped, nothing
     # reordered, every image still preceded by its own label.
-    assert kinds == ["text", "text", "image", "text", "image", "text", "image",
-                     "text", "image", "text"]
+    assert kinds == ["text", "text", "image", "text", "image", "text", "image", "text"]
     labels = [value for kind, value in _part_shape(parts) if kind == "text"]
-    assert labels[1:5] == ["=== ITEM 1 ===", "=== ITEM 2 ===", "=== ITEM 3 ===", _CONTEXT_LABEL]
+    assert labels[1:4] == ["=== ITEM 1 ===", "=== ITEM 2 ===", "=== ITEM 3 ==="]
     image_parts = [p for p in parts if "inlineData" in p]
     assert sum(len(p["inlineData"]["data"]) for p in image_parts) <= 30_000
+    assert base64.standard_b64encode(context[0]).decode("ascii") not in json.dumps(parts)
     for part in image_parts:
         assert part["inlineData"]["mimeType"] == "image/jpeg"    # recompressed from PNG
-    assert "compressed 4 image" in capsys.readouterr().out
+    assert "compressed 3 image" in capsys.readouterr().out
 
 
 def test_over_budget_item_request_error_names_crops_not_photo_indexes(monkeypatch):
@@ -1826,7 +1876,8 @@ def test_over_budget_item_request_error_names_crops_not_photo_indexes(monkeypatc
             items=ItemRequest(name="Sarah", items=[_noise_png(0), _noise_png(1)],
                               context=[_noise_png(2)]))
     message = str(exc_info.value)
-    assert "2 numbered item crop(s) and 1 context crop(s)" in message
+    assert "2 numbered item crop(s)" in message
+    assert "context crop" not in message
     assert "not scroll frames" in message
 
 

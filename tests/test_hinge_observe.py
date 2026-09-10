@@ -2749,8 +2749,12 @@ def test_name_derived_new_reproduced_on_confirm_frame_produces_a_pass(monkeypatc
     assert decision["identity_name_candidate_sha256"] == hashlib.sha256(
         b"qelix").hexdigest()
     assert decision["identity_ocr_attempts"][0]["token_count"] == 0
+    assert decision["identity_ocr_attempts"][0]["parser"] == "inconclusive"
+    assert decision["identity_ocr_attempts"][0]["upscale"] == 3
+    assert decision["identity_ocr_attempts"][0]["match_scope"] == "all_tokens"
     assert all(set(attempt) == {
-        "recipe", "digest", "verdict", "candidate_sha256", "token_count",
+        "recipe", "digest", "verdict", "parser", "upscale", "match_scope",
+        "candidate_sha256", "token_count",
     }
                for attempt in decision["identity_ocr_attempts"])
 
@@ -2905,6 +2909,63 @@ def test_scroll_top_name_retries_native_after_garbled_upscale(monkeypatch):
     assert ("6", 3) in calls and ("6", 1) in calls
 
 
+def test_scroll_top_name_ignores_secondary_fuzzy_noise_and_retries_native(monkeypatch):
+    """Vee -> Lynn: later photo noise cannot turn the broad header into a false ``same``.
+
+    The actual post-X 3x OCR began with header metadata and read ``ee`` only on a later
+    photo-noise line. ``ee`` fuzzily matches stored ``Vee`` (0.8), but card-header matching
+    is restricted to its first nonempty line, leaving native OCR free to read Lynn.
+    """
+    drv = _top_state_drv(monkeypatch, stored_name="Vee")
+    calls = []
+
+    def ocr(_frame, _rect, *, psm="7", upscale=3, **_kwargs):
+        if psm == "7":
+            return None
+        calls.append(upscale)
+        return ("she hers her Active now\nSMM a ee en" if upscale == 3 else
+                "Lynn\nshe hers her Active now")
+
+    monkeypatch.setattr(drv, "_ocr_band", ocr)
+
+    assert drv._identity_of(b"LYNN_AFTER_X")[0] == "new"
+    assert drv._identity_name_candidate == "Lynn"
+    assert calls == [3, 1]
+    primary, native = drv._identity_ocr_attempts[-2:]
+    assert primary["parser"] == "no_clean_first_line_candidate"
+    assert primary["match_scope"] == "first_nonempty_line"
+    assert native["parser"] == "one_first_line_candidate"
+    assert native["verdict"] == "new"
+
+
+def test_scroll_top_name_later_stored_name_token_cannot_veto_first_line_candidate(monkeypatch):
+    """A clean Lynn line remains new even when a later line literally says stored Vee."""
+    drv = _top_state_drv(monkeypatch, stored_name="Vee")
+    monkeypatch.setattr(
+        drv, "_ocr_band",
+        lambda _frame, _rect, *, psm="7", **_kwargs: (
+            "Lynn\nVee" if psm == "6" else None),
+    )
+
+    assert drv._identity_of(b"LYNN_WITH_LATER_VEE")[0] == "new"
+    assert drv._identity_name_candidate == "Lynn"
+    assert drv._identity_ocr_attempts[-1]["match_scope"] == "first_nonempty_line"
+
+
+def test_scroll_top_name_secondary_fuzzy_noise_cannot_veto_or_create_a_name(monkeypatch):
+    """Later-line ``ee`` is neither a stored-name veto nor a next-profile candidate."""
+    drv = _top_state_drv(monkeypatch, stored_name="Vee")
+    monkeypatch.setattr(
+        drv, "_ocr_band",
+        lambda _frame, _rect, *, psm="7", **_kwargs: (
+            "she hers her Active now\nSMM a ee en" if psm == "6" else None),
+    )
+
+    assert drv._identity_of(b"SECONDARY_NOISE")[0] == "top"
+    assert drv._identity_top_name_verdict is None
+    assert drv._identity_name_candidate is None
+
+
 def test_scroll_top_name_native_retry_keeps_noise_inconclusive(monkeypatch):
     """Two OCR recipes returning photo noise still cannot manufacture a new profile."""
     import numpy as np
@@ -2954,6 +3015,132 @@ def test_scroll_top_name_compact_fallback_recovers_lara_after_broad_prompt_read(
     assert all("text" not in attempt and "text_sha256" in attempt for attempt in attempts)
 
 
+def test_scroll_top_name_take_another_look_layout_reads_the_displaced_name(monkeypatch):
+    """A structurally identified panel may select its own measured lower name crop.
+
+    Hinge 10.2.0 inserted ``Take another look`` above the next card's name, so the old broad
+    crop saw only that panel while the lower crop read Lauren.  The panel text is a gate, not a
+    candidate; the lower crop retains distinct provenance for the outer repeated-name proof.
+    """
+    drv = _top_state_drv(monkeypatch, stored_name="Holly")
+    calls = []
+
+    def ocr(_frame, rect, *, psm="7", upscale=3, **_kwargs):
+        calls.append((tuple(rect), psm, upscale))
+        if psm == "7":
+            return None
+        if tuple(rect) == drv.identity_top_name_band:
+            return "Take another look"
+        if tuple(rect) == drv.identity_top_name_take_another_look_band:
+            return "Lauren"
+        return None
+
+    monkeypatch.setattr(drv, "_ocr_band", ocr)
+
+    assert drv._identity_of(b"LAUREN_TAKE_ANOTHER_LOOK")[0] == "new"
+    assert drv._identity_name_candidate == "Lauren"
+    assert drv._identity_name_candidate_source == "top_card_header_take_another_look"
+    assert calls[-2:] == [
+        (drv.identity_top_name_take_another_look_band, "6", 3),
+        (drv.identity_top_name_take_another_look_band, "6", 1),
+    ]
+    assert [attempt["recipe"] for attempt in drv._identity_ocr_attempts] == [
+        "identity_band_psm7_3x", "top_card_header_psm6_3x",
+        "top_card_header_psm6_native",
+        "top_card_header_take_another_look_psm6_3x",
+        "top_card_header_take_another_look_psm6_native",
+    ]
+
+
+def test_scroll_top_name_take_another_look_crop_requires_exact_banner(monkeypatch):
+    """A near banner OCR result cannot open the lower shifted-name detector."""
+    drv = _top_state_drv(monkeypatch, stored_name="Holly")
+    lower_reads = []
+
+    def ocr(_frame, rect, *, psm="7", **_kwargs):
+        if psm == "7":
+            return None
+        if tuple(rect) == drv.identity_top_name_take_another_look_band:
+            lower_reads.append(True)
+            return "Lauren"
+        if tuple(rect) == drv.identity_top_name_band:
+            return "Take another look now"
+        return None
+
+    monkeypatch.setattr(drv, "_ocr_band", ocr)
+
+    assert drv._identity_of(b"ALMOST_THE_PANEL")[0] == "top"
+    assert drv._identity_name_candidate is None
+    assert lower_reads == []
+
+
+def test_scroll_top_name_take_another_look_crop_requires_both_banner_recipes(monkeypatch):
+    """One exact panel OCR output cannot authorize the shifted lower crop."""
+    drv = _top_state_drv(monkeypatch, stored_name="Holly")
+    lower_reads = []
+
+    def ocr(_frame, rect, *, psm="7", upscale=3, **_kwargs):
+        if psm == "7":
+            return None
+        if tuple(rect) == drv.identity_top_name_take_another_look_band:
+            lower_reads.append(True)
+            return "Lauren"
+        if tuple(rect) == drv.identity_top_name_band:
+            return "Take another look" if upscale == 3 else "Take another look now"
+        return None
+
+    monkeypatch.setattr(drv, "_ocr_band", ocr)
+
+    assert drv._identity_of(b"ONE_BANNER_RECIPE")[0] == "top"
+    assert drv._identity_name_candidate is None
+    assert lower_reads == []
+
+
+def test_scroll_top_name_take_another_look_crop_requires_both_name_recipes(monkeypatch):
+    """A single plausible lower-band candidate is photo noise until independently repeated."""
+    drv = _top_state_drv(monkeypatch, stored_name="Holly")
+
+    def ocr(_frame, rect, *, psm="7", upscale=3, **_kwargs):
+        if psm == "7":
+            return None
+        if tuple(rect) == drv.identity_top_name_band:
+            return "Take another look"
+        if tuple(rect) == drv.identity_top_name_take_another_look_band:
+            return "Lauren" if upscale == 3 else "tee"
+        return None
+
+    monkeypatch.setattr(drv, "_ocr_band", ocr)
+
+    assert drv._identity_of(b"ONE_LOWER_NAME_RECIPE")[0] == "top"
+    assert drv._identity_name_candidate is None
+    lower_attempts = [
+        attempt for attempt in drv._identity_ocr_attempts
+        if attempt["recipe"].startswith("top_card_header_take_another_look")
+    ]
+    assert len(lower_attempts) == 2
+    assert all(attempt["verdict"] is None for attempt in lower_attempts)
+
+
+def test_scroll_top_name_take_another_look_paired_stored_name_keeps_same(monkeypatch):
+    """The paired lower reader retains the ordinary conservative stored-name veto."""
+    drv = _top_state_drv(monkeypatch, stored_name="Holly")
+
+    def ocr(_frame, rect, *, psm="7", **_kwargs):
+        if psm != "6":
+            return None
+        if tuple(rect) == drv.identity_top_name_band:
+            return "Take another look"
+        if tuple(rect) == drv.identity_top_name_take_another_look_band:
+            return "Holly"
+        return None
+
+    monkeypatch.setattr(drv, "_ocr_band", ocr)
+
+    assert drv._identity_of(b"SAME_HOLLY_PANEL")[0] == "same"
+    assert drv._identity_top_name_verdict == "same"
+    assert drv._identity_top_name_read_source == "top_card_header_take_another_look"
+
+
 @pytest.mark.parametrize("fallback_text, expected_state", [
     ("Emily", "same"),
     ("Lara Michelle", "top"),
@@ -2995,6 +3182,31 @@ def test_ocr_band_preserves_lines_and_separates_punctuation(monkeypatch):
     assert drv._ocr_band(_png(value=10), (0.0, 0.0, 1.0, 1.0), psm="6") == (
         "Jen\nshe her Active now"
     )
+
+
+def test_ocr_band_folds_diacritic_profile_names_instead_of_dropping_letters(monkeypatch):
+    """Regression for the Lauren -> Zoë Training Dislike on 2026-09-07.
+
+    The post-X card was visibly a stable, ready Zoë profile.  The OCR cleanup's ASCII-only
+    rejection silently removed ``ë``, yielding bare ``Zo``.  A bare two-letter token is
+    deliberately not sufficient to license a training label, so the otherwise proven advance
+    was left unlabelled and halted the run.  OCR text must retain the base letter before the
+    usual strict candidate and repeated-frame gates decide whether it is usable.
+    """
+    from types import SimpleNamespace
+
+    drv = _drv(FakeAdb([b"x"]))
+    monkeypatch.setattr(hinge.shutil, "which", lambda name: "/usr/bin/tesseract")
+    monkeypatch.setattr(
+        hinge.subprocess, "run",
+        lambda *a, **k: SimpleNamespace(
+            stdout="Zoë\nshe/her Active today\n".encode(), returncode=0),
+    )
+
+    text = drv._ocr_band(_png(value=10), (0.0, 0.0, 1.0, 1.0), psm="6")
+
+    assert text == "Zoe\nshe her Active today"
+    assert hinge._clean_first_line_name_candidate(text) == "Zoe"
 
 
 def test_ocr_band_cache_miss_on_a_different_band_still_invokes_tesseract(monkeypatch):

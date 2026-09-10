@@ -7,6 +7,7 @@ from a test.
 """
 from __future__ import annotations
 
+import base64
 import json
 import time
 
@@ -256,6 +257,7 @@ def test_main_dry_run_makes_no_network_call_and_no_store_write(tmp_path, capsys)
     assert "DRY RUN" in out
     assert "item_count=2" in out
     assert "context_count=1" in out
+    assert "sent_context_count=0" in out
 
 
 def test_main_dry_run_json_report_has_counts_and_models(tmp_path, capsys):
@@ -276,6 +278,7 @@ def test_main_dry_run_json_report_has_counts_and_models(tmp_path, capsys):
     assert entry["replay_id"] == written.replay_id
     assert entry["item_count"] == 1
     assert entry["context_count"] == 0
+    assert entry["sent_context_count"] == 0
     assert isinstance(entry["estimated_request_bytes"], int)
     assert entry["estimated_request_bytes"] > 0
     assert entry["name_present"] is True
@@ -365,6 +368,30 @@ def test_main_live_writes_replay_marker_under_the_current_prompt_era(tmp_path):
     assert prompt_sha256 != "some-stale-captured-era"
     assert opener_text == "Great trail, where was that?"
     assert item_index == 1
+
+
+def test_main_live_omits_retained_context_crops_from_the_gemini_request(tmp_path):
+    """Context stays available in replay storage, but is never an unselectable visual premise."""
+    corpus_dir = tmp_path / "corpus"
+    _write_capture(corpus_dir, items=(b"selected-item",), context=(b"forensic-context",))
+    config_path = _config_path(tmp_path)
+    transport = _ScriptedTransport([_success()])
+
+    store = SQLiteStore(tmp_path / "db.sqlite")
+    try:
+        rc_code = m.main(
+            ["--corpus-dir", str(corpus_dir), "--config", str(config_path), "--live", "--yes"],
+            transport=transport, env={"GEMINI_API_KEY": "k"}, store=store)
+    finally:
+        store.close()
+
+    assert rc_code == 0
+    parts = transport.calls[0]["payload"]["contents"][0]["parts"]
+    wire = json.dumps(parts)
+    assert base64.standard_b64encode(b"selected-item").decode("ascii") in wire
+    assert base64.standard_b64encode(b"forensic-context").decode("ascii") not in wire
+    assert not any("CONTEXT" in part.get("text", "") for part in parts)
+    assert len([part for part in parts if "inlineData" in part]) == 1
 
 
 def test_main_live_replay_marker_is_never_the_sent_decision_value(tmp_path):

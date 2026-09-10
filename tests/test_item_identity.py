@@ -223,15 +223,15 @@ def test_a_capture_that_never_scrolled_far_enough_yields_no_fingerprint():
     assert "never appeared" in identity.reason
 
 
-def test_a_pinned_band_is_diagnosed_as_pinned_rather_than_blamed_on_the_capture():
+def test_a_pinned_band_is_diagnosed_as_this_captures_toolbar_state_not_the_whole_build():
     """THE TWO CAUSES OF ONE SYMPTOM, and the reason the offsets exist. "Every frame reads as the
     filter-chips row" happens for two completely different reasons with opposite fixes: the
-    capture never scrolled far enough (re-run it), or the app PINS the chips row to the screen so
-    that no capture on this build will ever reveal a header (Hinge 10.1.0's expanded header,
-    measured 2026-08-28 -- the gate above returned `confirmed_top` at 0.000 on six frames taken
-    6180..8485px down one profile). Blaming the capture in the second case sends an operator to
-    re-run it forever, which is this repo's standing "guidance must derive from its precondition"
-    rule being violated in production.
+    capture never scrolled far enough (re-run it), or this capture's current toolbar state PINS
+    the chips row to the screen (Hinge 10.1.0's expanded header, measured 2026-08-28 -- the gate
+    above returned `confirmed_top` at 0.000 on six frames taken 6180..8485px down one profile).
+    The latter makes THIS capture unusable, but it does not prove every fresh capture on the same
+    build will have the same intermittent toolbar state. Guidance must state that distinction:
+    neither an unbounded retry nor a build-wide impossibility claim follows from these frames.
 
     The OUTCOME is identical and deliberately untouched: no fingerprint, `.known` False,
     navigation refuses. Only the diagnosis changes."""
@@ -241,10 +241,12 @@ def test_a_pinned_band_is_diagnosed_as_pinned_rather_than_blamed_on_the_capture(
         frames, identity_band=_IB, page_offsets=[0, 600, 1200])
 
     assert not pinned.known and pinned.fingerprint is None   # fail-closed, exactly as before
-    assert "is PINNED to the screen on this app version" in pinned.reason
+    assert "PINNED to the screen in this capture's current toolbar state" in pinned.reason
     assert "structurally unavailable" in pinned.reason
     assert "1200px of page scroll" in pinned.reason          # the evidence, not an assertion
-    assert "apps.hinge.identity_band" in pinned.reason       # what actually needs recalibrating
+    assert "fresh capture may be considered only if it independently proves" in pinned.reason
+    assert "Do not target or label from it" in pinned.reason
+    assert "NO capture on this build" not in pinned.reason
     assert "never scrolled far enough" not in pinned.reason
 
     # THE CONTROL, and it is the whole point of pairing them: the SAME frames, on a capture that

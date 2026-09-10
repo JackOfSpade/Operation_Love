@@ -37,9 +37,10 @@ class Profile:
     # is the whole contract -- doc 5.2's "image k IS item k" -- so nothing may reorder, filter
     # or append to this tuple after the driver built it.
     items: tuple[bytes, ...] = ()
-    # The unnumbered context tier (doc 5.3's heartless vitals block): sent, read and freely
-    # referenced, never selectable. Kept in its own field rather than mixed into `items`,
-    # because a context crop among the numbered ones would renumber every item after it.
+    # The unnumbered context tier (doc 5.3's heartless vitals block): retained for capture
+    # diagnostics and replay research, never selectable and no longer sent to Gemini for opener
+    # generation. Kept in its own field rather than mixed into `items`, because a context crop
+    # among the numbered ones would renumber every item after it.
     item_context: tuple[bytes, ...] = ()
     # Whether the enumeration covers the whole profile. False means the capture demonstrably
     # started at a confirmed scroll top AND reached the end; True means these are only the

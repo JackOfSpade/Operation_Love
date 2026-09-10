@@ -37,6 +37,33 @@ _NO_PHOTO_RETRY_S = 0.5
 # instantly) while think_time_s supplies the measured like-vs-pass asymmetry shape.
 # Derived from PacingCfg's own default so the baseline can't drift from the config.
 _THINK_TIME_BASELINE_S = PacingCfg().swipe_delay_s
+_STATUS_ERROR_MAX_CHARS = 600
+
+
+def _terminal_error_summary(exc: BaseException) -> str:
+    """Return a compact, status-safe summary without losing a multiline error's cause.
+
+    ``traceback.format_exc().splitlines()[-1]`` used to be convenient, but an ``AdbError``
+    appends its stderr on a second line.  The Hub then displayed only that trailing stderr and
+    discarded both ``AdbError`` and the timed-out command.  Status is a one-line UI/report
+    field, not a traceback: retain the exception type and complete message, collapse whitespace,
+    include PEP-678 notes (used by retry paths), and cap an unexpectedly verbose device error.
+    The full traceback is still printed by ``run()``.
+    """
+    message = " ".join(str(exc).split())
+    summary = type(exc).__name__
+    if message:
+        summary += f": {message}"
+    notes = getattr(exc, "__notes__", ())
+    if isinstance(notes, (list, tuple)):
+        rendered_notes = [" ".join(note.split()) for note in notes if isinstance(note, str)]
+        rendered_notes = [note for note in rendered_notes if note]
+        if rendered_notes:
+            summary += " [notes: " + "; ".join(rendered_notes) + "]"
+    if len(summary) > _STATUS_ERROR_MAX_CHARS:
+        summary = summary[:_STATUS_ERROR_MAX_CHARS - 1].rstrip() + "…"
+    return summary
+
 
 def _accepts_keywords(callback, *names: str) -> bool:
     """Whether a duck-typed persistence seam accepts all named keyword arguments.
@@ -105,6 +132,30 @@ def _item_type_preflight_mismatch(driver, pick) -> str:
     if getattr(result, "mismatch", False):
         return str(getattr(result, "reason", "the crop and description disagree on item type"))
     return ""
+
+
+def _staged_opener_generation_context(pick) -> dict[str, object] | None:
+    """Return the model's existing private draft fields for local pre-send diagnostics.
+
+    Training intentionally does not commit an opener row before the reviewer acts, so the
+    Hinge pre-send checkpoint is otherwise the last durable place these fields can be retained.
+    Read only the already-created ``OpenerPick`` and its staging envelope; no new provider call,
+    profile read, or reconstruction from the public opener text is permitted.  Older services
+    and test picks may lack the envelope/model, in which case the available fields still travel
+    honestly and no value is invented.
+    """
+    if pick is None:
+        return None
+    context: dict[str, object] = {}
+    staged = getattr(pick, "_staged_record", None)
+    model = getattr(staged, "model", None)
+    if isinstance(model, str) and model:
+        context["model"] = model
+    for key in ("index_space", "referenced", "angle", "item_description"):
+        value = getattr(pick, key, None)
+        if isinstance(value, str) and value:
+            context[key] = value
+    return context or None
 
 
 def _model_item_media_ordinal(driver, pick) -> int | None:
@@ -550,12 +601,12 @@ class Worker(threading.Thread):
         except DriverClosed as exc:
             print(f"{exc}; Stopping run so buffered data can be saved.")
             self.stop_event.set()
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
             print(f"{self.app.title()} unexpected error in {self.mode} mode; HALTING "
                   f"(no restart) so nothing swipes blindly and the debug logs survive:")
             traceback.print_exc()
             self._stat(state="error", detail=None,
-                       error=traceback.format_exc().strip().splitlines()[-1])
+                       error=_terminal_error_summary(exc))
             self.stop_event.set()
         finally:
             try:
@@ -768,10 +819,22 @@ class Worker(threading.Thread):
                     break
 
                 self._training_claimed_action = None
-                self.driver.set_training_decision(
-                    lambda frame, evidence, profile=profile, pick=pick: self._request_training_decision(
-                        profile, pick, frame, evidence))
+                # The staged record is intentionally not committed until a reviewed Like lands.
+                # Give an opt-in driver its private generation notes only for this checkpoint so
+                # an unacted draft remains diagnosable without pretending it is an opener row.
+                generation_context_hook = getattr(
+                    self.driver, "set_staged_opener_generation_context", None)
+                if callable(generation_context_hook):
+                    try:
+                        generation_context_hook(_staged_opener_generation_context(pick))
+                    except Exception:  # noqa: BLE001 -- optional diagnostics cannot block review
+                        generation_context_hook = None
+                training_decision_installed = False
                 try:
+                    self.driver.set_training_decision(
+                        lambda frame, evidence, profile=profile, pick=pick: self._request_training_decision(
+                            profile, pick, frame, evidence))
+                    training_decision_installed = True
                     self._publish_status(
                         mode="training", state="acting",
                         detail="preparing the review checkpoint")
@@ -792,7 +855,17 @@ class Worker(threading.Thread):
                             action, status="failed", reason="the device action did not complete")
                     raise
                 finally:
-                    self.driver.set_training_decision(None)
+                    # Keep the established callback semantics: if installation itself raised,
+                    # do not issue a second ``None`` call against a driver whose state is
+                    # unknown.  The optional generation context is different: it was already
+                    # bound before installation, so it must be cleared on every later path.
+                    if training_decision_installed:
+                        self.driver.set_training_decision(None)
+                    if callable(generation_context_hook):
+                        try:
+                            generation_context_hook(None)
+                        except Exception:  # noqa: BLE001 -- best-effort diagnostic cleanup
+                            pass
                 action = self._training_claimed_action
                 self._training_claimed_action = None
                 if outcome not in {"like", "dislike"} or action is None:

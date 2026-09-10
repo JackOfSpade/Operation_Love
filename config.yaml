@@ -248,6 +248,14 @@ apps:
     # See ops/ANTI-BOT-RESEARCH.md's 2026-08-28 addenda for the evidence and correction.
     identity_top_name_band: [0.03, 0.130, 0.75, 0.250]
     identity_top_name_fallback_band: [0.03, 0.130, 0.75, 0.235]
+    # Hinge 10.2.0 can add a ``Take another look`` panel between the filters and the card
+    # header.  On the measured 2026-09-08 Holly -> Lauren Training pass, the normal card-header
+    # band read exactly that panel while Lauren's name moved to rows 516..684.  This lower crop
+    # is NOT a generic shifted name detector: hinge.py invokes it only after BOTH normal-band OCR
+    # recipes read exactly ``Take another look`` at canonical scroll top, and BOTH lower-name OCR
+    # recipes agree. Its resulting name still must repeat on two stable ready-deck frames from
+    # this same crop before a Training label is recorded.
+    identity_top_name_take_another_look_band: [0.03, 0.215, 0.75, 0.285]
     content_band: [0.125, 0.875]                # scrolling content only, excludes fixed chrome
     observe_ignore_zones:
       - [0.75, 0.030, 1.00, 0.115]   # rewind arrow + "..." overflow, top-right
@@ -662,9 +670,10 @@ opener:
   # indefinitely. 180s is 2x this measured 90s worst case.
   request_timeout_s: 90
   # ops/OPENER-REDESIGN.md 5.2/5.7's replay corpus (operation_love/opener/replay_corpus.py):
-  # when true, every generated opener request's EXACT inputs (her name as text, the numbered
-  # item crops in order, the unnumbered context crops, the truncation flag) are ALSO persisted,
-  # verbatim, to a local gitignored directory (that module's DEFAULT_CORPUS_DIR,
+  # when true, the model-visible request inputs (her name as text, the numbered item crops in
+  # order, and the truncation flag) are persisted verbatim, with unnumbered context crops kept
+  # alongside them only as forensic/research evidence, in a local gitignored directory (that
+  # module's DEFAULT_CORPUS_DIR,
   # data/opener_replay_corpus) -- so a future prompt revision can be measured against real
   # historical requests without a fresh live batch (see tools/opener_replay.py). It never
   # uploads anywhere and never touches the network on its own.
@@ -797,10 +806,10 @@ opener:
   # independently-maintained shape-aware mechanisms doing the same job, and doc 3.1 already names
   # "the duplication trap" as the standing risk that produced this very bug -- the selection
   # criterion is deleted from here and left to live in exactly one place. _SYSTEM's version is
-  # compressed, not abridged: every property this block used to state (the tradeoff, the failure
-  # mode, the context tier and why to use it) is still there in full, pinned by
-  # tests/test_opener.py, so nothing the model needs to choose well is lost -- only the
-  # unconditional, unguarded duplicate of it is. See that test and
+  # compressed, not abridged: it retains the selection tradeoff and failure mode, pinned by
+  # tests/test_opener.py. Since the 2026-09-09 semantic-contamination incident, unnumbered
+  # context is instead retained only as forensic evidence and withheld from generation; it is
+  # not a drafting aid in either prompt copy. See that test and
   # tests/test_config_yaml_real.py's test_shipped_opener_style_does_not_ship_the_item_selection_rule
   # for the pinned shape of this decision.
   #
@@ -979,6 +988,40 @@ opener:
   # the _SCHEMA opener description never carried it (see the CORRECTING THE RECORD note above),
   # so it is unchanged. No example verdict vocabulary was added, per the 2026-08-16 de-templating
   # rule. Full record: ops/OPENER-REDESIGN.md, Addendum -- 2026-09-06 (g).
+  #
+  # Addendum 2026-09-07 (idiom fit): a natural spoken register alone did not stop an opener
+  # from using an idiom that was dated, literary, or harder to decode than the point it was meant
+  # to make. IDIOM FIT permits only contemporary, ordinary, first-read-clear idioms that fit the
+  # specific item and conversational point; it also keeps short-lived trend language from being
+  # mistaken for current everyday speech. The rule is semantic and prompt-only in all three stable
+  # on-wire surfaces (this style, opener.py's _SYSTEM, and the schema's opener description).
+  # No lexical or deterministic idiom guard was added: whether an idiom is apt depends on context,
+  # and a word list would reject ordinary language while spending the limited retry budget. The
+  # retry hint remains unchanged. Concrete incident wording stays in tests only, per the
+  # 2026-08-16 de-templating decision. This is a new prompt era; do not pool its results with
+  # earlier wording without splitting by prompt_sha256. Full record: ops/OPENER-REDESIGN.md,
+  # Addendum -- 2026-09-07 (a).
+  #
+  # Addendum 2026-09-08 (minimum sufficient reference): a watched Training draft used a full
+  # literal noun phrase for an obvious part of the attached scene even though an implicit place
+  # reference preserved its complete conversational move. The old rules caught description as
+  # payoff and removable setup, but still expressly licensed visible setup; that let a model
+  # treat literal identification as grounding even when the shared item had already resolved the
+  # referent. MINIMUM SUFFICIENT REFERENCE now makes omission or implicit reference the default,
+  # defines exact naming as necessary only when it changes the point or disambiguates, and makes
+  # clear that attachment itself supplies an anchor. The private grounding fields keep the full
+  # literal inventory. This is prompt-only: the existing overlap monitor remains deliberately
+  # non-gating because valid connections can repeat visible words. The incident wording stays
+  # off wire in tests and the design record. This changes the prompt era; see
+  # ops/OPENER-REDESIGN.md, Addendum -- 2026-09-08 (a).
+  #
+  # Addendum 2026-09-09 (selected-item-only concepts): Training correctly attached a draft to
+  # the selected puppy photo, but the draft's joke borrowed a spreadsheet idea from a different,
+  # unnumbered prompt card. The physical target was right; the thought was not natural beneath
+  # it. Unnumbered context crops remain in the capture/replay evidence but are no longer sent to
+  # Gemini. Other numbered images remain visible only while choosing an item and cannot supply
+  # the selected opener's premise, predicate, joke, question, connection, or payoff. This changes
+  # the prompt era; see ops/OPENER-REDESIGN.md, Addendum -- 2026-09-09 (a).
   style: |
     Use the dating and conversational principles associated with Coach Corey Wayne's
     "How to Be a 3% Man", without copying his wording. Be a charming gentleman first:
@@ -994,26 +1037,39 @@ opener:
     nothing she cannot see. A bare demonstrative carries all the shared looking the message
     needs.
 
+    MINIMUM SUFFICIENT REFERENCE: default to omission or the least explicit natural reference
+    that the attached item makes immediately clear. Before finalizing, mentally replace each
+    literal description of visible content with an implicit reference while keeping the item in
+    view. If the meaning, rhythm, and conversational move survive, use the implicit version.
+    Name a visible detail only when its exact identity changes the point or is needed to
+    distinguish possible referents, never merely to prove grounding, identify the selected item,
+    or manufacture textual specificity. The attachment itself can make a referent immediately
+    obvious and counts as the selected item anchor. Put the full literal inventory in the private
+    referenced and item_description fields, not in the message. Do not force implicit wording
+    when it would create real ambiguity.
+
     PRIMARY ITEM RULE: when you choose a numbered item, it is the clear main subject of the
     referenced note, angle, and opener, including its header. The message must feel natural
     directly under that item, never like a reason to discuss another image. Your opener must
-    justify why the selected item was liked: it supplies the reason, subject, or payoff. You may
-    use explicit profile text or an unnumbered context image as supporting context only when it
-    sharpens a connection back to the selected item. Do not let another image replace the
-    selected item as the reason for the Like, subject, or payoff, point her away from it, or use
-    context without an unmistakable selected item anchor.
+    justify why the selected item was liked: it supplies the reason, subject, or payoff. The
+    other numbered images are selection only: use them to choose, then do not borrow one for the
+    selected opener's premise, predicate, joke, question, connection, or payoff. Explicit profile
+    text may support a complete natural connection back to the selected item, but never turn that
+    item into a pronoun or placeholder for a thought that comes from somewhere else.
 
     PHOTO HEADER RULE: any title, caption, or prompt printed with a photo is part of that same
     item and defines how the photo is meant to be read. Interpret the visible scene through that
     text before choosing an angle. The angle and opener must respect the combined meaning, never
     contradict, reverse, or ignore the header's framing.
 
-    CONVERSATIONAL VALUE RULE: do more than label what she can already see. A visible detail may
-    be named and may be the subject, premise, or setup. The opener fails only when its final
-    conversational point is merely that description. Use the detail to add a perspective,
-    grounded interpretation, playful framing, connection, or natural question. A message that
-    could have been written without looking at her profile has failed, but the message does not
-    have to contain a guess or a claim that could be wrong.
+    CONVERSATIONAL VALUE RULE: do more than label what she can already see. Subject to MINIMUM
+    SUFFICIENT REFERENCE, a visible detail may be named and may be the subject, premise, or setup.
+    The opener fails when its final conversational point is merely that description. Use the
+    detail to add a perspective, grounded interpretation, playful framing, connection, or natural
+    question. A message that
+    could have been written without looking at her profile has failed, but specificity may come
+    from how the message fits the attached item rather than from repeating its visible nouns. The
+    message does not have to contain a guess or a claim that could be wrong.
 
     CLAIMS ONLY WHEN NATURAL: a correctable inference is one available move, not a requirement.
     When no natural inference exists, prefer a grounded observation or specific question over a
@@ -1052,18 +1108,21 @@ opener:
 
     Make one clear, positive, profile specific bid and leave room for her reply.
 
-    Derive the conversational move from the specific profile rather than choosing from a fixed
-    taxonomy. When two separate parts of her profile create one natural angle, that connection
-    is especially specific because it requires reading the whole page.
+    Derive the conversational move from the selected item and explicit profile text rather than
+    choosing from a fixed taxonomy. A profile text connection is specific only when the selected
+    item supplies an essential part of the thought, not when a different image supplies its
+    concept, predicate, joke, or payoff.
 
     A natural claim she can correct can be effective, but it is not mandatory. One specific,
     easy, positive question may be the whole message when that is the strongest natural angle.
 
     SETUP PAYOFF CONTINUITY: every visible detail you name must be necessary to, and used by, the
-    conversational move. If removing a descriptive clause leaves the later point or question
-    unchanged, cut it. QUESTION COHERENCE: ask one coherent thing at a time. An 'or' is allowed
-    only for parallel, genuinely contrasting answers to that same underlying question, never to
-    join unrelated dimensions. CASUAL OR PUNCTUATION: never put a comma immediately before 'or',
+    conversational move. Necessary means its exact identity changes how that move is understood,
+    not merely that it anchors the reaction. If removing a descriptive clause or replacing it
+    with an immediately clear implicit reference leaves the later point or question unchanged,
+    use the shorter implicit version. QUESTION COHERENCE: ask one coherent thing at a time. An
+    'or' is allowed only for parallel, genuinely contrasting answers to that same underlying
+    question, never to join unrelated dimensions. CASUAL OR PUNCTUATION: never put a comma immediately before 'or',
     even where formal grammar would allow one. Write it the way a person would text casually.
 
     SPOKEN REGISTER: write the message the way the sender would say it out loud, then type that.
@@ -1076,6 +1135,12 @@ opener:
     borrowed noun instead of saying the thing itself. One intensifier is plenty; enthusiasm comes
     from the observation, not from an adverb stack. Flawless written grammar in a dating message
     reads as an essay, not a person.
+
+    IDIOM FIT: use an idiom only when it is contemporary, everyday, immediately understandable
+    on first reading in ordinary conversation, semantically apt to the item and point, and
+    natural when spoken. Avoid idioms that are dated, literary, formal, obscure, forced, or tied
+    to a passing trend. This does not license internet slang, memes, or borrowed caption wording
+    that makes her stop to decode the point.
 
     SAY IT ONCE: the message trusts its own context. The second sentence inherits the first
     sentence's topic across the period; never restate a connection or context the message itself

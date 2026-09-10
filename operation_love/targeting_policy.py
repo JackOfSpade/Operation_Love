@@ -21,7 +21,11 @@ words, so consumers print it.
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
+from functools import wraps
+import threading
 
 
 HINGE_PHOTO_SELECTION_POLICY_ID = "hinge_photos_only_v2"
@@ -173,6 +177,75 @@ class StillPhotoLicence:
 # validation order rather than on what the owner configured.
 _installed_still_photo_licence: StillPhotoLicence | None = None
 
+# Config validation deliberately clears and then installs this process default.  Those are a
+# single state transition, and a supervisor must capture the resulting immutable record before
+# another validation can begin its own transition.  The lock is intentionally only for that
+# small config/readiness transaction; live workers use ContextVar snapshots and never take it.
+_still_photo_licence_validation_lock = threading.RLock()
+
+
+@contextmanager
+def still_photo_licence_validation_transaction():
+    """Serialize config validation with its immediately-following run snapshot."""
+    with _still_photo_licence_validation_lock:
+        yield
+
+
+def _serialise_still_photo_licence_mutation(function):
+    """Keep direct installer/reset callers out of a config snapshot transaction too."""
+    @wraps(function)
+    def locked(*args, **kwargs):
+        with _still_photo_licence_validation_lock:
+            return function(*args, **kwargs)
+    return locked
+
+# A configuration check is allowed to replace the process-default licence: that is how a new
+# run becomes licensed. It must not, however, rewrite the answer for a worker which already
+# opened a live Hinge session. The Hub evaluates config again when a page is opened (and an
+# operator can edit that file while a run is live), so consulting only the mutable process slot
+# made a harmless /api/config request capable of stopping the active worker between validation's
+# clear and reinstall steps. Workers enter this context with the immutable record present at
+# their own startup; ordinary callers continue to see the current process default.
+_NO_RUN_LICENCE = object()
+_run_still_photo_licence: ContextVar[object] = ContextVar(
+    "operation_love_run_still_photo_licence", default=_NO_RUN_LICENCE)
+
+
+def _effective_still_photo_licence() -> StillPhotoLicence | None:
+    contextual = _run_still_photo_licence.get()
+    if contextual is _NO_RUN_LICENCE:
+        return _installed_still_photo_licence
+    # Only this module installs the context value. Keep the defensive assertion local so a
+    # malformed future caller cannot turn an arbitrary truthy object into readiness.
+    return contextual if isinstance(contextual, StillPhotoLicence) else None
+
+
+def _installed_process_default_still_photo_licence() -> StillPhotoLicence | None:
+    """Return the mutable process-default slot, never a worker's ContextVar snapshot.
+
+    This is deliberately private: validation's locked clear/install/snapshot transaction is
+    the only consumer. Runtime readiness must continue to use `_effective_still_photo_licence`.
+    """
+    return _installed_still_photo_licence
+
+
+@contextmanager
+def use_run_still_photo_licence(licence: StillPhotoLicence | None):
+    """Freeze one worker's still-photo readiness for its complete live session.
+
+    ``None`` is an intentional, fail-closed snapshot: a worker created without a licence may
+    not become licensed merely because another thread later validates a different config.
+    Context variables are thread-local, so concurrent Hub/config work continues to use the
+    mutable default without affecting the active worker.
+    """
+    if licence is not None and not isinstance(licence, StillPhotoLicence):
+        raise ValueError("run still-photo licence must be a StillPhotoLicence or None")
+    token = _run_still_photo_licence.set(licence)
+    try:
+        yield
+    finally:
+        _run_still_photo_licence.reset(token)
+
 
 def _refuse_second_licence_channel(installed: StillPhotoLicence, incoming: str) -> None:
     """Refuse a licence from the OTHER channel: readiness accepts one licence at a time.
@@ -204,6 +277,7 @@ def _nonempty_text(value: object) -> bool:
     return isinstance(value, str) and bool(value.strip())
 
 
+@_serialise_still_photo_licence_mutation
 def install_verified_still_photo_bound(summary: StillPhotoBoundSummary) -> None:
     """Install the process-local numbering licence, or refuse with the exact reason it fails.
 
@@ -309,6 +383,7 @@ def install_verified_still_photo_bound(summary: StillPhotoBoundSummary) -> None:
         channel=STILL_PHOTO_LICENCE_MEASURED, record=summary)
 
 
+@_serialise_still_photo_licence_mutation
 def install_accepted_still_photo_assumption(acceptance: StillPhotoAssumptionAcceptance) -> None:
     """Install the owner's centered-autoplay assumption as the numbering licence.
 
@@ -371,7 +446,7 @@ def installed_still_photo_bound() -> StillPhotoBoundSummary | None:
     digest, the dwell window the campaign observed), and an assumption has none of those.  Ask
     ``installed_still_photo_licence()`` for "is numbering licensed at all".
     """
-    licence = _installed_still_photo_licence
+    licence = _effective_still_photo_licence()
     if licence is None or not licence.measured:
         return None
     return licence.record
@@ -382,9 +457,10 @@ def installed_still_photo_licence() -> StillPhotoLicence | None:
 
     This is the one accessor that answers "is numbering licensed", across both channels.
     """
-    return _installed_still_photo_licence
+    return _effective_still_photo_licence()
 
 
+@_serialise_still_photo_licence_mutation
 def clear_installed_still_photo_bound() -> None:
     """Drop any installed licence, returning numbering to its fail-closed default.
 
@@ -411,7 +487,7 @@ def still_photo_licence_provenance() -> str | None:
     with UNMEASURED for that reason -- a reader who reads three words must not come away
     believing a false-accept rate exists.
     """
-    licence = _installed_still_photo_licence
+    licence = _effective_still_photo_licence()
     if licence is None:
         return None
     if licence.assumed:
@@ -435,7 +511,7 @@ def still_photo_licence_operator_notice() -> str | None:
     doc assumes, so announcing it every run would be noise, and noise is what teaches people to
     stop reading notices.  An unmeasured licence is news every single run.
     """
-    licence = _installed_still_photo_licence
+    licence = _effective_still_photo_licence()
     if licence is None or not licence.assumed:
         return None
     return STILL_PHOTO_ASSUMPTION_OPERATOR_NOTICE
@@ -443,7 +519,7 @@ def still_photo_licence_operator_notice() -> str | None:
 
 def hinge_targeting_unavailable_reason() -> str | None:
     """Return the actionable policy blocker, or ``None`` while EITHER channel licenses numbering."""
-    if _installed_still_photo_licence is not None:
+    if _effective_still_photo_licence() is not None:
         return None
     return HINGE_TARGETING_UNAVAILABLE_REASON
 

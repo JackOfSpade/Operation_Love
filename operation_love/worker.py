@@ -28,7 +28,8 @@ from .opener.opener import INDEX_SPACE_MODEL_ITEMS, ITEM_INDEX_ABSENT, ItemReque
 from .ranker.decider import Decider, Decision
 from .ranker.profile_key import profile_key_from_identity
 from .targeting_policy import (
-    still_photo_licence_operator_notice, still_photo_licence_provenance)
+    installed_still_photo_licence, still_photo_licence_operator_notice,
+    still_photo_licence_provenance, use_run_still_photo_licence)
 
 _NO_PHOTO_RETRY_S = 0.5
 # think_time_s() is calibrated to real measured Hinge dwell data around this many
@@ -38,6 +39,7 @@ _NO_PHOTO_RETRY_S = 0.5
 # Derived from PacingCfg's own default so the baseline can't drift from the config.
 _THINK_TIME_BASELINE_S = PacingCfg().swipe_delay_s
 _STATUS_ERROR_MAX_CHARS = 600
+_TARGETING_LICENCE_UNSET = object()
 
 
 def _terminal_error_summary(exc: BaseException) -> str:
@@ -196,7 +198,7 @@ class Worker(threading.Thread):
     def __init__(self, app, driver: DatingAppDriver, decider: Decider, opener_service,
                  store, run_id, pacing, stop_event: threading.Event, mode: str = "training",
                  retrain_every: int = 1, limiter=None, max_restarts: int = 5, status=None,
-                 training_action_bridge=None):
+                 training_action_bridge=None, targeting_licence=_TARGETING_LICENCE_UNSET):
         super().__init__(name=f"worker-{app}", daemon=True)
         self.app = app
         self.driver = driver
@@ -226,6 +228,12 @@ class Worker(threading.Thread):
         # clear it via _finish_session(); the outer finally owns the narrow
         # post-open/pre-loop failure gap.
         self._session_opened = False
+        # Capture the licence after supervisor's validated startup gate and before this thread
+        # can touch the device. The Hub may inspect/revalidate config while we run; that must
+        # never replace (or briefly clear) this session's safety basis.
+        self._targeting_licence = (
+            installed_still_photo_licence()
+            if targeting_licence is _TARGETING_LICENCE_UNSET else targeting_licence)
 
     # --- live status (overlay + hub); no-ops when status is unset ---------
     def _stat(self, **fields) -> None:
@@ -580,6 +588,11 @@ class Worker(threading.Thread):
 
 
     def run(self) -> None:
+        """Run under the targeting licence captured before this thread started."""
+        with use_run_still_photo_licence(self._targeting_licence):
+            self._run_with_targeting_licence()
+
+    def _run_with_targeting_licence(self) -> None:
         def leave() -> None:
             if self.training_action_bridge:
                 self.training_action_bridge.unregister(self)

@@ -6377,7 +6377,7 @@ def test_transient_pinned_recovery_never_runs_without_a_prior_healthy_same_bindi
     assert adb.taps == [] and adb.texts == []
 
 
-def test_transient_pinned_recovery_restores_original_refusal_after_second_pinned_capture():
+def test_transient_pinned_recovery_abandons_old_profile_after_second_pinned_capture():
     adb = ColdRestartWorldAdb(collapse_on_relaunch=False)
     drv = _drv(adb)
     assert drv._capture_current().items_unavailable == ""
@@ -6387,10 +6387,14 @@ def test_transient_pinned_recovery_restores_original_refusal_after_second_pinned
     old_latch = drv._scroll_top_pinned
     assert refused is not None and old_latch is not None
 
-    assert drv._recapture_after_transient_pinned_signal(refused) is refused
+    # A successful cold launch has already made `refused` stale, even though its provisional
+    # capture found the toolbar pinned again. Do not publish it for AUTO to score/pass.
+    assert drv._recapture_after_transient_pinned_signal(refused) is None
     assert adb.shell_calls.count("am force-stop co.hinge.app") == 1
     assert drv._scroll_top_pinned == old_latch
     assert drv._pinned_signal_recovery_spent_binding == drv._scroll_top_signal_binding()
+    assert drv._current_item_index is None
+    assert drv._current_sigs == []
     assert drv._recapture_after_transient_pinned_signal(refused) is refused
     assert adb.shell_calls.count("am force-stop co.hinge.app") == 1, "the spent recovery never loops"
     assert adb.taps == [] and adb.texts == []
@@ -6503,7 +6507,10 @@ def test_cold_relaunch_compensates_once_but_never_recaptures_after_a_launcher_fa
     adb.shell = shell
     before_gestures = list(adb.gestures)
 
-    assert drv._recapture_after_transient_pinned_signal(refused) is refused
+    # The compensating launcher can have resumed a different card.  It is therefore not safe to
+    # hand the caller pixels from the pre-relaunch card: AUTO could score those pixels as PASS
+    # and pass whoever the launcher actually left on screen.
+    assert drv._recapture_after_transient_pinned_signal(refused) is None
     assert failed_once["value"]
     assert adb.shell_calls.count("am force-stop co.hinge.app") == 1
     assert adb.shell_calls.count(launcher) == 2
@@ -6511,6 +6518,8 @@ def test_cold_relaunch_compensates_once_but_never_recaptures_after_a_launcher_fa
     assert adb.gestures == before_gestures
     assert drv._scroll_top_pinned == old_latch
     assert drv._pinned_signal_recovery_spent_binding == drv._scroll_top_signal_binding()
+    assert drv._current_item_index is None
+    assert drv._current_sigs == []
     assert adb.taps == [] and adb.texts == []
 
 
@@ -6536,13 +6545,101 @@ def test_cold_relaunch_compensates_an_ambiguous_force_stop_but_never_recaptures(
     adb.shell = shell
     before_gestures = list(adb.gestures)
 
-    assert drv._recapture_after_transient_pinned_signal(refused) is refused
+    assert drv._recapture_after_transient_pinned_signal(refused) is None
     assert adb.shell_calls.count(force_stop) == 1
     assert adb.shell_calls.count(launcher) == 1
     assert adb.foreground == adb.PACKAGE
     assert adb.gestures == before_gestures
     assert drv._scroll_top_pinned == old_latch
     assert drv._pinned_signal_recovery_spent_binding == drv._scroll_top_signal_binding()
+    assert drv._current_item_index is None
+    assert drv._current_sigs == []
+    assert adb.taps == [] and adb.texts == []
+
+
+def test_cold_relaunch_never_returns_old_profile_when_post_launch_preflight_fails(monkeypatch):
+    adb = ColdRestartWorldAdb()
+    drv = _drv(adb)
+    assert drv._capture_current().items_unavailable == ""
+    adb.scroll = 0
+    adb._at_top = True
+    refused = drv._capture_current()
+    assert refused is not None and refused.items_unavailable
+
+    original_evidence = drv._capture_entry_profile_evidence
+    monkeypatch.setattr(
+        drv, "_capture_entry_profile_evidence",
+        lambda frame: None if adb.relaunched else original_evidence(frame))
+
+    # The launcher succeeds and changes the phone's lifecycle state, but its fresh screen cannot
+    # be positively identified. Returning `refused` here would expose stale pixels to AUTO.
+    assert drv._recapture_after_transient_pinned_signal(refused) is None
+    assert adb.relaunched
+    assert drv._current_item_index is None
+    assert drv._current_item_payload is None
+    assert drv._current_sigs == []
+    assert drv._capture_scroll_ledger == []
+    assert adb.taps == [] and adb.texts == []
+
+
+def test_cold_relaunch_stop_after_provisional_capture_abandons_replacement_state(monkeypatch):
+    adb = ColdRestartWorldAdb()
+    drv = _drv(adb)
+    assert drv._capture_current().items_unavailable == ""
+    adb.scroll = 0
+    adb._at_top = True
+    refused = drv._capture_current()
+    assert refused is not None and refused.items_unavailable
+
+    stopped = {"value": False}
+    original_capture = drv._capture_current
+
+    def provisional_capture(should_stop=None):
+        result = original_capture(should_stop)
+        stopped["value"] = True
+        return result
+
+    monkeypatch.setattr(drv, "_capture_current", provisional_capture)
+
+    assert drv._recapture_after_transient_pinned_signal(
+        refused, should_stop=lambda: stopped["value"]) is None
+    assert drv._current_item_index is None
+    assert drv._current_item_payload is None
+    assert drv._current_sigs == []
+    assert drv._capture_scroll_ledger == []
+    assert drv._identity_name is None
+    assert drv._capture_scroll_top_pinning_evidence is None
+    assert adb.taps == [] and adb.texts == []
+
+
+def test_cold_relaunch_provisional_capture_exception_abandons_replacement_state(monkeypatch):
+    adb = ColdRestartWorldAdb()
+    drv = _drv(adb)
+    assert drv._capture_current().items_unavailable == ""
+    adb.scroll = 0
+    adb._at_top = True
+    refused = drv._capture_current()
+    assert refused is not None and refused.items_unavailable
+
+    def failed_provisional_capture(should_stop=None):
+        drv._current_sigs = [b"provisional-frame"]
+        drv._capture_scroll_ledger = [object()]
+        drv._identity_name = "Replacement"
+        drv._current_item_index = object()
+        drv._current_item_payload = object()
+        raise RuntimeError("provisional capture failed")
+
+    monkeypatch.setattr(drv, "_capture_current", failed_provisional_capture)
+
+    with pytest.raises(RuntimeError, match="provisional capture failed"):
+        drv._recapture_after_transient_pinned_signal(refused)
+
+    assert drv._current_item_index is None
+    assert drv._current_item_payload is None
+    assert drv._current_sigs == []
+    assert drv._capture_scroll_ledger == []
+    assert drv._identity_name is None
+    assert drv._capture_scroll_top_pinning_evidence is None
     assert adb.taps == [] and adb.texts == []
 
 
@@ -6585,6 +6682,9 @@ def test_cold_relaunch_does_not_retry_a_closed_driver_after_force_stop():
     assert adb.gestures == before_gestures
     assert drv._scroll_top_pinned == old_latch
     assert drv._pinned_signal_recovery_spent_binding == drv._scroll_top_signal_binding()
+    assert drv._current_item_index is None
+    assert drv._current_item_payload is None
+    assert drv._current_sigs == []
     assert adb.taps == [] and adb.texts == []
 
 
@@ -6623,6 +6723,9 @@ def test_cold_relaunch_propagates_a_closed_compensating_launcher_transport():
     assert adb.gestures == before_gestures
     assert drv._scroll_top_pinned == old_latch
     assert drv._pinned_signal_recovery_spent_binding == drv._scroll_top_signal_binding()
+    assert drv._current_item_index is None
+    assert drv._current_item_payload is None
+    assert drv._current_sigs == []
     assert adb.taps == [] and adb.texts == []
 
 

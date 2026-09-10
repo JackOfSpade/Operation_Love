@@ -69,6 +69,45 @@ def test_terminal_error_summary_caps_untrusted_device_output():
     assert summary.endswith("…")
 
 
+def test_worker_keeps_its_startup_targeting_licence_when_config_state_changes():
+    """A Hub config refresh must not revoke an already-live worker's Hinge licence."""
+    from operation_love import targeting_policy as tp
+
+    accepted = tp.StillPhotoAssumptionAcceptance(
+        acceptance=tp.STILL_PHOTO_CENTERED_AUTOPLAY_ASSUMPTION,
+        accepted_at="2026-09-10T12:00:00Z", device="pixel-serial",
+        hinge_version_name="9.134.0", rationale="regression test")
+    tp.install_accepted_still_photo_assumption(accepted)
+
+    reached_open = threading.Event()
+    config_changed = threading.Event()
+
+    class SnapshotDriver(FakeDriver):
+        def open_session(self):
+            reached_open.set()
+            assert config_changed.wait(_LIVENESS_TIMEOUT_S)
+            # A concurrent invalid config validation clears the process default. The worker
+            # must still see its startup record, not the mutable process slot.
+            assert tp.hinge_targeting_unavailable_reason() is None
+            super().open_session()
+
+    driver = SnapshotDriver(0)
+    store = FakeStore()
+    service = OpenerService(None, CostTracker(PRICING, None), store, "style")
+    worker = Worker("hinge", driver, FakeDecider("dislike"), service, store, "run1",
+                    _Pacing(), threading.Event(), mode="auto")
+    worker.start()
+    assert reached_open.wait(_LIVENESS_TIMEOUT_S)
+    # This is the exact process-global mutation config.validate() performs before it can report
+    # an invalid configuration. Run it from the Hub/config thread's side of the hand-off.
+    tp.clear_installed_still_photo_bound()
+    config_changed.set()
+    worker.join(_LIVENESS_TIMEOUT_S)
+
+    assert not worker.is_alive()
+    assert driver.opened and driver.closed
+
+
 def test_staged_opener_generation_context_uses_only_the_existing_pick_and_stage():
     from operation_love.worker import _staged_opener_generation_context
 

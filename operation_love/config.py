@@ -19,7 +19,8 @@ from .targeting_policy import (
     StillPhotoAssumptionAcceptance, StillPhotoBoundSummary,
     clear_installed_still_photo_bound, hinge_targeting_unavailable_reason,
     install_accepted_still_photo_assumption, install_verified_still_photo_bound,
-    installed_still_photo_licence)
+    installed_still_photo_licence, _installed_process_default_still_photo_licence,
+    still_photo_licence_validation_transaction)
 
 from . import platforms
 from .costing import ModelPricing
@@ -1766,7 +1767,7 @@ _MAX_ATTEMPTS_CEILING = 15
 _MAX_REQUEST_TIMEOUT_S = 180.0
 
 
-def validate(cfg: Config) -> None:
+def _validate(cfg: Config) -> None:
     """Fail fast with a clear message on misconfig (called by the entry points)."""
     # Numbered-targeting readiness is process-global, and only the evidence check below can
     # turn it on.  Clear it here, before anything can raise, so a config that fails validation
@@ -1931,3 +1932,24 @@ def validate(cfg: Config) -> None:
         # max_per_run: 0 silently bypasses the safety cap entirely.
         app_limits = (app_cfg or {}).get("limits")
         _validate_limits(f"apps.{a}.limits", {} if app_limits is None else app_limits)
+
+
+def validate(cfg: Config) -> None:
+    """Fail fast with a clear message on misconfig (called by ordinary entry points)."""
+    with still_photo_licence_validation_transaction():
+        _validate(cfg)
+
+
+def validate_and_snapshot_still_photo_licence(cfg: Config):
+    """Validate one config and return precisely the licence that validation installed.
+
+    The process default is necessarily mutable so later configs can be checked.  Keeping this
+    read inside the same narrow transaction as validation prevents a concurrent Hub inspection
+    from clearing/replacing the default between this config's successful validation and its
+    worker snapshot.
+    """
+    with still_photo_licence_validation_transaction():
+        _validate(cfg)
+        # This must bypass a caller's active worker ContextVar: the object returned here is
+        # specifically the process-default licence that `_validate` just installed for `cfg`.
+        return _installed_process_default_still_photo_licence()

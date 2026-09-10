@@ -1815,7 +1815,7 @@ def test_hub_page_adds_csrf_token_to_fetch_and_close_beacon_json():
 
 
 def test_committed_mac_launcher_matches_template():
-    expected = _MAC_UPDATE_RUN.replace("__EXTRAS__", "ml,bq,hinge")
+    expected = _MAC_UPDATE_RUN.replace("__EXTRAS__", "ml,bq,hinge").replace("__CONFIG_ARG__", "")
     assert Path("Operation Love.command").read_text() == expected
 
 
@@ -1875,6 +1875,50 @@ def test_launcher_is_atomically_written_with_exact_mode(
     assert ".[hinge]" in destination.read_text()
     assert stat.S_IMODE(destination.stat().st_mode) == mode
     assert not list(tmp_path.glob(f".{name}.*"))
+
+
+@pytest.mark.parametrize(("platform", "name", "expected"), [
+    ("darwin", "Operation Love.command", '"$PY" -m operation_love hub\n'),
+    ("linux", "operation-love.sh", 'exec "$PY" -m operation_love hub\n'),
+    ("win32", "Operation Love.bat", '"%PY%" -m operation_love hub\n'),
+])
+def test_launcher_default_config_preserves_existing_hub_command(
+        tmp_path, monkeypatch, platform, name, expected):
+    from operation_love.hub.launchers import make_launchers
+
+    monkeypatch.setattr(sys, "platform", platform)
+    make_launchers(str(_launcher_project(tmp_path)), extras="hinge")
+
+    launcher = (tmp_path / name).read_text()
+    assert expected in launcher
+    assert "--config" not in launcher
+
+
+@pytest.mark.parametrize(("platform", "name", "config_name", "expected"), [
+    ("darwin", "Operation Love.command", "--evening.yaml", "hub --config=--evening.yaml"),
+    ("linux", "operation-love.sh", "--evening.yaml", "hub --config=--evening.yaml"),
+    ("win32", "Operation Love.bat", "--evening.yaml", 'hub --config="--evening.yaml"'),
+    ("darwin", "Operation Love.command", "evening plans' %!^&.yaml",
+     "hub --config='evening plans'\"'\"' %!^&.yaml'"),
+    ("linux", "operation-love.sh", "evening plans' %!^&.yaml",
+     "hub --config='evening plans'\"'\"' %!^&.yaml'"),
+    ("win32", "Operation Love.bat", "evening plans' %!^&.yaml",
+     'hub --config="evening plans\' %%!^&.yaml"'),
+])
+def test_launcher_forwards_and_quotes_custom_config_filename(
+        tmp_path, monkeypatch, platform, name, config_name, expected):
+    from operation_love.hub.launchers import make_launchers
+
+    config = _launcher_project(tmp_path).with_name(config_name)
+    config.write_text("mode: training\n")
+    monkeypatch.setattr(sys, "platform", platform)
+
+    make_launchers(str(config), extras="hinge")
+
+    launcher = (tmp_path / name).read_text()
+    assert expected in launcher
+    if platform == "win32":
+        assert "setlocal DisableDelayedExpansion\n" in launcher
 
 
 @pytest.mark.skipif(os.name == "nt", reason="requires symlink support")

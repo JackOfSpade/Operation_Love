@@ -57,7 +57,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import shutil
 import sys
 import tempfile
 import time
@@ -89,6 +88,7 @@ from operation_love.opener.opener import (
 from operation_love.opener.replay_corpus import (
     DECISION_REPLAY as _DECISION_REPLAY,
     DEFAULT_CORPUS_DIR,
+    delete_replay_captures,
     list_replay_ids,
     load_replay_capture,
     load_replay_corpus,
@@ -291,9 +291,9 @@ def _run_whole_corpus_purge(corpus_dir: Path, *, delete: bool
     an age cutoff could only reliably catch captures at least an instant older than "now", which
     cannot honestly promise to remove a capture written moments before this command runs. "The
     whole corpus" means exactly what it says instead: every capture this read-only listing finds,
-    removed with ONE plain ``shutil.rmtree`` of the corpus directory itself -- not a second,
-    per-capture deletion loop re-implementing prune_replay_corpus's own safety checks, since there
-    is no partial-removal decision left to make once every capture is in scope.
+    removed through the package's descriptor-relative capture deletion helper.  The root itself
+    is deliberately retained: recursively deleting an arbitrary command-line pathname would also
+    delete stray/non-corpus files and would reintroduce a root-path replacement race.
     """
     try:
         replay_ids = list_replay_ids(corpus_dir)
@@ -309,7 +309,9 @@ def _run_whole_corpus_purge(corpus_dir: Path, *, delete: bool
         removed.append((replay_id, captured_at, PURGE_REASON_WHOLE_CORPUS))
     if delete and corpus_dir.is_dir():
         try:
-            shutil.rmtree(corpus_dir)
+            actually_removed = set(delete_replay_captures(corpus_dir, replay_ids))
+            # Do not claim a concurrently replaced/unsafe entry was removed.
+            removed = [entry for entry in removed if entry[0] in actually_removed]
         except Exception as exc:  # noqa: BLE001 -- report, don't traceback, on a delete failure
             return False, removed, f"{type(exc).__name__}: {exc}"
     return True, removed, None

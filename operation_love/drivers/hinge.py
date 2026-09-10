@@ -9288,10 +9288,14 @@ class AndroidDriver(DatingAppDriver):
 
         The provisional result is published only if that new pass independently measures
         non-pinning, keeps a known item identity, and reconfirms its own frame-zero chips row.
-        A second pinning finding, an incomplete measurement, a foreground/profile failure, any
-        capture refusal, or Stop returns the original refusal (or None for Stop) and restores the
-        old latch.  No action, label, text, or tap path is reachable here: the only new device
-        operations are package lifecycle commands and `_capture_current`'s ordinary read-scrolls.
+        Before a lifecycle command, an ordinary capture refusal can still be returned to its
+        caller because the phone has not moved. Once force-stop may have run, though, a failure
+        must return ``None``: a cold launch can resume a different card, and returning the old
+        pixels would let AUTO score one person and pass another. A second pinning finding, an
+        incomplete measurement, a foreground/profile failure, any capture refusal, or Stop after
+        that boundary therefore restores the old latch but abandons the capture. No action,
+        label, text, or tap path is reachable here: the only new device operations are package
+        lifecycle commands and `_capture_current`'s ordinary read-scrolls.
         """
         binding = self._scroll_top_signal_binding()
         pinned = self._capture_scroll_top_pinning_evidence
@@ -9313,6 +9317,34 @@ class AndroidDriver(DatingAppDriver):
 
         old_latch = self._scroll_top_pinned
         old_latch_announced = self._scroll_top_pinned_announced
+
+        def abandon_after_lifecycle(reason: str) -> None:
+            """Discard every old-card artifact after a cold launch may have changed the deck."""
+            self._scroll_top_pinned = old_latch
+            self._scroll_top_pinned_announced = old_latch_announced
+            self._current_sigs = []
+            self._capture_scroll_ledger = []
+            self._capture_scrolls = 0
+            self._capture_scroll_top_pinning_evidence = None
+            self._scroll_top_signal_healthy_binding = None
+            self._previous_capture_scroll_top_signal_healthy_binding = None
+            self._current_capture_split = False
+            self._capture_split_frame = None
+            self._capture_split_evidence = {}
+            self._identity_top_sig = None
+            self._identity_sig = None
+            self._identity_name = None
+            self._identity_anchor_confirmed = False
+            self._identity_anchor_frame = None
+            self._identity_anchor_frame_index = None
+            self._identity_top_name_read = None
+            self._identity_top_name_read_source = None
+            self._identity_top_name_verdict = None
+            self._identity_name_candidate = None
+            self._identity_name_candidate_source = None
+            self._identity_ocr_attempts = []
+            self._ocr_band_cache = {}
+            self._invalidate_item_index(reason)
 
         # A package lifecycle command is more consequential than a read-scroll.  It is licensed
         # only while Android positively reports that Hinge owns the foreground AND the pixels are
@@ -9368,8 +9400,9 @@ class AndroidDriver(DatingAppDriver):
             # A closed driver is not a transport on which it is safe to attempt compensation.
             # Propagate its established terminal meaning rather than disguising a failed input
             # as a successful relaunch.
-            self._scroll_top_pinned = old_latch
-            self._scroll_top_pinned_announced = old_latch_announced
+            abandon_after_lifecycle(
+                "the cold-relaunch transport closed after force-stop, so the visible card can "
+                "no longer be attributed to the refused capture")
             raise
         except Exception:  # noqa: BLE001 -- it may have stopped before its response was lost
             try:
@@ -9378,14 +9411,16 @@ class AndroidDriver(DatingAppDriver):
                 # then fail closed regardless of whether the launch itself succeeds.
                 self.adb.shell(launcher_command)
             except DriverClosed:
-                self._scroll_top_pinned = old_latch
-                self._scroll_top_pinned_announced = old_latch_announced
+                abandon_after_lifecycle(
+                    "the cold-relaunch compensating transport closed, so the visible card can "
+                    "no longer be attributed to the refused capture")
                 raise
             except Exception:
                 pass
-            self._scroll_top_pinned = old_latch
-            self._scroll_top_pinned_announced = old_latch_announced
-            return original
+            abandon_after_lifecycle(
+                "the cold-relaunch force-stop response was ambiguous, so the visible card can no "
+                "longer be attributed to the refused capture")
+            return None
         try:
             self.adb.shell(launcher_command)
         except DriverClosed:
@@ -9393,8 +9428,9 @@ class AndroidDriver(DatingAppDriver):
             # no longer safe to call.  A compensating command would violate that invariant; the
             # explicit exception lets the caller surface the stranded-app state instead of
             # silently treating it as an ordinary recoverable capture refusal.
-            self._scroll_top_pinned = old_latch
-            self._scroll_top_pinned_announced = old_latch_announced
+            abandon_after_lifecycle(
+                "the cold-relaunch launcher transport closed, so the visible card can no "
+                "longer be attributed to the refused capture")
             raise
         except Exception:  # noqa: BLE001 -- compensate once, then always fail closed
             try:
@@ -9402,15 +9438,20 @@ class AndroidDriver(DatingAppDriver):
                 # screencap, foreground probe, or provisional capture, even when it succeeds.
                 self.adb.shell(launcher_command)
             except DriverClosed:
-                self._scroll_top_pinned = old_latch
-                self._scroll_top_pinned_announced = old_latch_announced
+                abandon_after_lifecycle(
+                    "the cold-relaunch compensating launcher transport closed, so the visible "
+                    "card can no longer be attributed to the refused capture")
                 raise
             except Exception:
                 pass
-            self._scroll_top_pinned = old_latch
-            self._scroll_top_pinned_announced = old_latch_announced
-            return original
+            abandon_after_lifecycle(
+                "the cold-relaunch launcher response was ambiguous, so the visible card can no "
+                "longer be attributed to the refused capture")
+            return None
         if not self._interruptible_sleep(human_cooldown(1.5), should_stop):
+            abandon_after_lifecycle(
+                "the cold-relaunch recovery was stopped before the replacement card could be "
+                "captured and attributed")
             return None
 
         # Re-read the build/geometry after restart; the old healthy finding cannot authorize a
@@ -9420,21 +9461,34 @@ class AndroidDriver(DatingAppDriver):
         try:
             self._refresh_targeting_calibration_binding()
         except DriverClosed:
-            self._scroll_top_pinned = old_latch
-            self._scroll_top_pinned_announced = old_latch_announced
+            abandon_after_lifecycle(
+                "the cold-relaunched card's calibration transport closed before it could be "
+                "safely attributed")
             raise
         except Exception:  # noqa: BLE001 -- binding probe cannot license a recovery on failure
-            self._scroll_top_pinned = old_latch
-            self._scroll_top_pinned_announced = old_latch_announced
-            return original
-        launch_frame = self._screencap(on_blank="none")
-        if (self._scroll_top_signal_binding() != binding
-                or self._foreground_package() != self.package
-                or launch_frame is None
-                or self._capture_entry_profile_evidence(launch_frame) is None):
-            self._scroll_top_pinned = old_latch
-            self._scroll_top_pinned_announced = old_latch_announced
-            return original
+            abandon_after_lifecycle(
+                "the cold-relaunched card could not be bound to the live build and geometry")
+            return None
+        try:
+            launch_frame = self._screencap(on_blank="none")
+            launch_is_safe = (
+                self._scroll_top_signal_binding() == binding
+                and self._foreground_package() == self.package
+                and launch_frame is not None
+                and self._capture_entry_profile_evidence(launch_frame) is not None)
+        except Exception:
+            # These are all passive probes, but a transport/parser fault after force-stop still
+            # leaves the old capture unpublishable.  Keep the original exception while retiring
+            # every artifact that could otherwise be mistaken for the post-launch card.
+            abandon_after_lifecycle(
+                "the cold-relaunch screen could not be safely inspected before the replacement "
+                "card was attributed")
+            raise
+        if not launch_is_safe:
+            abandon_after_lifecycle(
+                "the cold-relaunch screen could not be positively established as a safe Hinge "
+                "profile, so the old capture cannot be published")
+            return None
 
         # The old positive remains the normal rule for every other caller.  This brief removal
         # is only what lets the *provisional* capture ask whether the transient state has gone
@@ -9448,13 +9502,15 @@ class AndroidDriver(DatingAppDriver):
             # Preserve the original safety finding even when this read itself cannot complete.
             # The exception keeps its established propagation semantics; restoration is the
             # only recovery-specific work this branch does.
-            self._scroll_top_pinned = old_latch
-            self._scroll_top_pinned_announced = old_latch_announced
+            abandon_after_lifecycle(
+                "the cold-relaunch provisional capture failed before the replacement card "
+                "could be safely attributed")
             raise
 
         if should_stop is not None and should_stop():
-            self._scroll_top_pinned = old_latch
-            self._scroll_top_pinned_announced = old_latch_announced
+            abandon_after_lifecycle(
+                "the cold-relaunch recovery was stopped after its provisional replacement "
+                "capture, so that capture is abandoned")
             return None
 
         evidence = self._capture_scroll_top_pinning_evidence
@@ -9468,6 +9524,11 @@ class AndroidDriver(DatingAppDriver):
                     first_frame, identity_band=self.identity_band).confirmed)
             except ScrollTopError:
                 recapture_top = False
+            except Exception:
+                abandon_after_lifecycle(
+                    "the cold-relaunch provisional capture could not confirm its own scroll "
+                    "top before the replacement card was attributed")
+                raise
         valid = bool(
             recovered is not None
             and not recovered.items_unavailable
@@ -9494,9 +9555,7 @@ class AndroidDriver(DatingAppDriver):
                     pass
             return recovered
 
-        self._scroll_top_pinned = old_latch
-        self._scroll_top_pinned_announced = old_latch_announced
-        self._invalidate_item_index(
+        abandon_after_lifecycle(
             original.items_unavailable or
             "the provisional pinned-signal recapture did not re-establish a safe item index")
         if self._dbg is not None:
@@ -9508,7 +9567,7 @@ class AndroidDriver(DatingAppDriver):
                     recapture_top_confirmed=recapture_top)
             except Exception:  # noqa: BLE001 -- diagnostics cannot alter the recovery
                 pass
-        return original
+        return None
 
     def next_profile(self, *, should_stop=None) -> Profile | None:
         if self.out_of_profiles():

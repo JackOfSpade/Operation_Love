@@ -9,7 +9,9 @@ from __future__ import annotations
 import json
 import math
 import os
+import shutil
 import time
+from pathlib import Path
 
 import pytest
 
@@ -343,6 +345,29 @@ def test_symlink_escape_is_refused_and_the_outside_target_survives(tmp_path):
     assert real_id in rc.list_replay_ids(root)
 
 
+@pytest.mark.parametrize("link_kind", ["symlink", "hardlink"])
+def test_prune_keeps_a_capture_with_an_unsafe_manifest_link(tmp_path, link_kind):
+    root = tmp_path / "corpus"
+    root.mkdir()
+    capture_id = _capture(root, "unsafe-manifest", time.time() - 400 * 86400)
+    capture_dir = root / capture_id
+    manifest = capture_dir / "manifest.json"
+    if link_kind == "symlink":
+        outside = tmp_path / "outside-manifest.json"
+        outside.write_bytes(manifest.read_bytes())
+        manifest.unlink()
+        os.symlink(outside, manifest)
+    else:
+        os.link(manifest, tmp_path / "manifest-hardlink-proof.json")
+
+    result = rc.prune_replay_corpus(root, max_age_days=1)
+
+    assert result.ok is True
+    assert result.removed == ()
+    assert result.skipped_unparseable == 1
+    assert capture_dir.is_dir()
+
+
 def test_prune_never_deletes_anything_outside_root_even_with_many_old_captures(tmp_path):
     """End-to-end sanity: a sibling directory that merely happens to sit next to the corpus
     root is never touched by an aggressive prune, regardless of what is inside root."""
@@ -360,6 +385,128 @@ def test_prune_never_deletes_anything_outside_root_even_with_many_old_captures(t
     assert result.ok is True
     assert sibling.is_dir()
     assert (sibling / "keepme.txt").read_text(encoding="utf-8") == "do not delete"
+
+
+def test_prune_preserves_a_replacement_and_newer_destination_after_validation(tmp_path, monkeypatch):
+    root = tmp_path / "corpus"
+    root.mkdir()
+    capture_id = _capture(root, "old", time.time() - 400 * 86400)
+    capture_dir = root / capture_id
+    real_rename = rc.os.rename
+    replaced = False
+
+    def replace_before_quarantine(source, target, *args, **kwargs):
+        nonlocal replaced
+        if source == capture_id and not replaced:
+            replaced = True
+            shutil.rmtree(capture_dir)
+            capture_dir.mkdir()
+            (capture_dir / "replacement.txt").write_text("keep", encoding="utf-8")
+        return real_rename(source, target, *args, **kwargs)
+
+    monkeypatch.setattr(rc.os, "rename", replace_before_quarantine)
+    real_identity = rc._capture_identity
+    identity_calls = 0
+
+    def create_new_destination_on_mismatch(directory_fd):
+        nonlocal identity_calls
+        identity_calls += 1
+        if identity_calls == 2:
+            capture_dir.mkdir()
+            (capture_dir / "newer.txt").write_text("new", encoding="utf-8")
+        return real_identity(directory_fd)
+
+    monkeypatch.setattr(rc, "_capture_identity", create_new_destination_on_mismatch)
+    result = rc.prune_replay_corpus(root, max_age_days=1)
+
+    assert result.removed == ()
+    assert (capture_dir / "newer.txt").read_text(encoding="utf-8") == "new"
+    quarantines = [path for path in root.iterdir() if path.name.startswith(".prune-")]
+    assert len(quarantines) == 1
+    assert (quarantines[0] / "replacement.txt").read_text(encoding="utf-8") == "keep"
+
+
+def test_fd_relative_delete_stays_with_open_root_after_root_path_swap(tmp_path):
+    """The final rename/delete is bound to the root FD, not its replaceable pathname."""
+    root = tmp_path / "corpus"
+    capture_id = _capture(root, "old", time.time() - 400 * 86400)
+    replacement = tmp_path / "replacement"
+    replacement.mkdir()
+    replacement_capture = replacement / capture_id
+    replacement_capture.mkdir()
+    (replacement_capture / "keep.txt").write_text("outside replacement", encoding="utf-8")
+    root_path, root_fd = rc._open_corpus_root(root)
+    hidden = tmp_path / "hidden-original"
+    root.rename(hidden)
+    replacement.rename(root)
+    try:
+        rc._remove_capture_directory(root_fd, capture_id)
+    finally:
+        os.close(root_fd)
+
+    assert not (hidden / capture_id).exists()
+    assert (root / capture_id / "keep.txt").read_text(encoding="utf-8") == "outside replacement"
+
+
+def test_windows_adapter_prune_fails_closed_when_target_changes_after_discovery(tmp_path, monkeypatch):
+    """Exercise the injectable Windows branch without requiring a Windows CI runner.
+
+    The fake exposes only opaque handles.  Its delete operation represents the target turning
+    into a junction after the handle-relative re-check; prune must leave it alone and must never
+    turn that operation into a pathname-based retry.
+    """
+    capture_id = _HEX64_A
+
+    class WindowsRaceFilesystem:
+        def __init__(self):
+            self.root_handle = object()
+            self.deleted_with = []
+            self.manifest = json.dumps({"replay_id": capture_id, "captured_at": 1.0}).encode()
+
+        def open_root(self, root):
+            return Path(root), self.root_handle
+
+        def close(self, _handle):
+            pass
+
+        def listdir(self, handle):
+            assert handle is self.root_handle
+            return [capture_id]
+
+        def open_capture(self, root, replay_id):
+            assert root is self.root_handle
+            assert replay_id == capture_id
+            return object()
+
+        def manifest_exists(self, _capture):
+            return True
+
+        def read_regular(self, _capture, name):
+            assert name == "manifest.json"
+            return self.manifest
+
+        def remove_capture(self, root, replay_id):
+            self.deleted_with.append((root, replay_id))
+            raise OSError("target was replaced by a junction")
+
+        def capture_identity(self, _capture):
+            return 1
+
+        def remove_open_capture(self, _capture, expected_identity):
+            assert expected_identity == 1
+            self.deleted_with.append((self.root_handle, capture_id))
+            raise OSError("target was replaced by a junction")
+
+    root = tmp_path / "corpus"
+    root.mkdir()
+    windows = WindowsRaceFilesystem()
+    monkeypatch.setattr(rc, "_WINDOWS_FILESYSTEM", windows)
+
+    result = rc.prune_replay_corpus(root, max_age_days=1)
+
+    assert result.ok is True
+    assert result.removed == ()
+    assert windows.deleted_with == [(windows.root_handle, capture_id)]
 
 
 # ---------------------------------------------------------------------------------------

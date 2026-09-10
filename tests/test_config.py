@@ -5,6 +5,7 @@ import json
 import math
 import re
 import tempfile
+import threading
 from pathlib import Path
 
 import pytest
@@ -63,6 +64,67 @@ def _expect_error(d, needle):
 
 def test_valid_config_passes():
     c.validate(_load(BASE))   # no raise
+
+
+def test_validation_snapshot_stays_with_its_config_while_another_config_replaces_it(
+        monkeypatch):
+    """A Hub validation cannot replace a just-validated run's licence before its snapshot."""
+    first = _load(_assumption_config())
+    second = _load(_assumption_config(acceptance=_acceptance(accepted_at="2026-09-10")))
+    first_validated = threading.Event()
+    allow_snapshot = threading.Event()
+    replacement_started = threading.Event()
+    original_validate = c._validate
+
+    def paused_validate(cfg):
+        original_validate(cfg)
+        if cfg is first:
+            first_validated.set()
+            assert allow_snapshot.wait(5)
+
+    monkeypatch.setattr(c, "_validate", paused_validate)
+    result = {}
+
+    def snapshot_first():
+        result["licence"] = c.validate_and_snapshot_still_photo_licence(first)
+
+    def replace_with_second():
+        replacement_started.set()
+        c.validate(second)
+
+    snapshot_thread = threading.Thread(target=snapshot_first)
+    snapshot_thread.start()
+    assert first_validated.wait(5)
+    replacement_thread = threading.Thread(target=replace_with_second)
+    replacement_thread.start()
+    assert replacement_started.wait(5)
+    allow_snapshot.set()
+    snapshot_thread.join(5)
+    replacement_thread.join(5)
+
+    assert not snapshot_thread.is_alive() and not replacement_thread.is_alive()
+    assert result["licence"] is not None
+    assert result["licence"].record.accepted_at == "2026-08-21"
+    assert tp.installed_still_photo_licence().record.accepted_at == "2026-09-10"
+
+
+def test_validation_snapshot_bypasses_an_active_worker_licence_context():
+    """A nested validation snapshots its own installed default, not the caller's run view."""
+    old = _acceptance_record(accepted_at="2026-09-09")
+    new = _load(_assumption_config(acceptance=_acceptance(accepted_at="2026-09-10")))
+
+    with tp.use_run_still_photo_licence(
+            tp.StillPhotoLicence(tp.STILL_PHOTO_LICENCE_ASSUMPTION, old)):
+        snapshot = c.validate_and_snapshot_still_photo_licence(new)
+        contextual = tp.installed_still_photo_licence()
+
+    assert snapshot is not None
+    assert snapshot.record.accepted_at == "2026-09-10"
+    assert contextual is not None
+    assert contextual.record.accepted_at == "2026-09-09"
+    installed = tp.installed_still_photo_licence()
+    assert installed is not None
+    assert installed.record.accepted_at == "2026-09-10"
 
 
 def test_training_hinge_capture_budget_must_fit_the_hub_review_checkpoint():

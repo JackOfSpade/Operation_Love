@@ -1204,6 +1204,79 @@ def test_effective_config_installs_hinge_auto_readiness_before_registry_check():
     assert cfg.mode == "auto"
 
 
+@pytest.mark.parametrize("initial_is_licensed", [True, False])
+def test_effective_config_registry_check_uses_its_validation_snapshot_during_a_race(
+        monkeypatch, tmp_path, initial_is_licensed):
+    """Another validation cannot change the readiness answer after this config snapshots it."""
+    from operation_love import targeting_policy as tp
+
+    tp._reset_installed_still_photo_bound_for_tests()
+    registry_entered = threading.Event()
+    allow_registry = threading.Event()
+    original_snapshot = sup.cfg_mod.validate_and_snapshot_still_photo_licence
+    original_check = sup.platforms.check_runnable
+    fallback_reason = sup.platforms.unavailable_reason
+    result = {}
+
+    def capture_snapshot(cfg):
+        snapshot = original_snapshot(cfg)
+        result["snapshot"] = snapshot
+        return snapshot
+
+    def policy_reason(app, mode=None):
+        if app == "hinge" and mode == "auto":
+            blocker = tp.hinge_targeting_unavailable_reason()
+            return None if blocker is None else f"Hinge Auto is blocked: {blocker}."
+        return fallback_reason(app, mode)
+
+    def paused_check(*args, **kwargs):
+        registry_entered.set()
+        assert allow_registry.wait(_LIVENESS_TIMEOUT_S)
+        return original_check(*args, **kwargs)
+
+    monkeypatch.setattr(sup.cfg_mod, "validate_and_snapshot_still_photo_licence",
+                        capture_snapshot)
+    # This file's autouse fixture masks the real Hinge AUTO policy gate for unrelated lifecycle
+    # tests. Restore its exact policy dependency here so `check_runnable` is genuinely tested.
+    monkeypatch.setattr(sup.platforms, "unavailable_reason", policy_reason)
+    monkeypatch.setattr(sup.platforms, "check_runnable", paused_check)
+    initial_path = "config.yaml" if initial_is_licensed else str(_write_cfg(tmp_path))
+
+    def load_initial():
+        try:
+            result["config"] = sup.load_effective_config(
+                initial_path, mode="auto", enabled_apps=["hinge"])
+        except BaseException as exc:  # the assertion below needs the exact registry result
+            result["error"] = exc
+
+    loading = threading.Thread(target=load_initial)
+    loading.start()
+    assert registry_entered.wait(_LIVENESS_TIMEOUT_S)
+    assert (result["snapshot"] is not None) is initial_is_licensed
+
+    if initial_is_licensed:
+        # An invalid config clears the mutable default before it reports its own error.  The
+        # already-snapshotted licensed config must nevertheless pass its delayed registry check.
+        invalid = sup.cfg_mod.load("config.yaml")
+        invalid.enabled_apps = []
+        with pytest.raises(ValueError, match="enabled_apps is empty"):
+            sup.cfg_mod.validate(invalid)
+    else:
+        # Conversely, a previously unlicensed config must not borrow readiness from a different
+        # config validated while it waits to enter the registry.
+        sup.cfg_mod.validate(sup.cfg_mod.load("config.yaml"))
+    allow_registry.set()
+    loading.join(_LIVENESS_TIMEOUT_S)
+
+    assert not loading.is_alive()
+    if initial_is_licensed:
+        assert "error" not in result
+        assert result["config"].mode == "auto"
+    else:
+        assert isinstance(result.get("error"), ValueError)
+        assert "Hinge Auto is blocked" in str(result["error"])
+
+
 def test_effective_config_rejects_explicit_falsy_overrides(tmp_path):
     cfg_path = _write_cfg(tmp_path)
 

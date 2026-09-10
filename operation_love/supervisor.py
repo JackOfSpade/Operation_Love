@@ -33,6 +33,7 @@ from . import platforms
 from .costing import CostTracker
 from .drivers import make_driver
 from .opener.opener import GeminiOpener
+from .targeting_policy import use_run_still_photo_licence
 from .limits import RateLimiter
 from .opener.replay_corpus import DEFAULT_CORPUS_DIR
 from .opener.service import OpenerService
@@ -564,7 +565,11 @@ def load_effective_config(config_path: str = "config.yaml", *, mode: str | None 
     # registry first in a fresh process would see neither installed and reject a valid AUTO
     # config before its gate had a chance to prove itself. This remains before any Worker,
     # driver, touch transport, or external store is constructed.
-    cfg_mod.validate(cfg)
+    run_still_photo_licence = cfg_mod.validate_and_snapshot_still_photo_licence(cfg)
+    # Freeze the licence that THIS validated configuration earned before any subsequent Hub
+    # config inspection can replace the process default. Worker installs this snapshot in its
+    # own thread, so its driver checks retain the exact build/device evidence validated here.
+    cfg._run_still_photo_licence = run_still_photo_licence
 
     requested_modes = {
         app: (((cfg.apps or {}).get(app, {}) or {}).get("mode", cfg.mode))
@@ -572,7 +577,11 @@ def load_effective_config(config_path: str = "config.yaml", *, mode: str | None 
     }
     # Registry readiness is intentionally after full config validation but still before all
     # construction: an uncalibrated target such as Bumble is refused with no driver/touch.
-    unrunnable = platforms.check_runnable(cfg.enabled_apps, modes=requested_modes)
+    # The registry's Hinge mode gate reads targeting-policy readiness.  It must observe this
+    # config's immutable snapshot, not the mutable process default which another Hub inspection
+    # may clear or replace after the validation transaction released its lock.
+    with use_run_still_photo_licence(run_still_photo_licence):
+        unrunnable = platforms.check_runnable(cfg.enabled_apps, modes=requested_modes)
     if unrunnable:
         raise ValueError(unrunnable)
     return cfg
@@ -846,7 +855,8 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
             driver = make_driver(app, cfg)
             w = Worker(app, driver, decider, opener_service, store, run_id, cfg.pacing,
                        stop_event, mode=mode, retrain_every=cfg.ranker.retrain_every,
-                       limiter=limiter, status=status)
+                       limiter=limiter, status=status,
+                       targeting_licence=getattr(cfg, "_run_still_photo_licence", None))
             try:
                 # Hub binding is part of launching a worker, not a precondition outside its
                 # cleanup boundary.  A bridge may reject a replacement while registering; the

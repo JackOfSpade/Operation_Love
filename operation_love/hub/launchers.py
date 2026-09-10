@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
 import stat
 import tempfile
 import tomllib
@@ -53,7 +54,7 @@ fi
 
 echo "OK - launching the control hub (Ctrl-C to quit)..."
 TTY_NAME="$(tty 2>/dev/null || true)"
-"$PY" -m operation_love hub
+"$PY" -m operation_love hub__CONFIG_ARG__
 status=$?
 # `tty` reports a non-terminal invocation with a human-readable string on
 # some macOS versions. Only a real device path is safe to put in the
@@ -83,9 +84,9 @@ _LINUX_UPDATE_RUN = ('#!/bin/sh\ncd "$(dirname "$0")" || exit 1\n'
                      '  "$PY" -m pip install -e ".[__EXTRAS__]" || exit 1\n'
                      '  "$PY" -m operation_love.runtime || exit 1\n'
                      '  touch "$STAMP"\nfi\n'
-                     'exec "$PY" -m operation_love hub\n')
+                     'exec "$PY" -m operation_love hub__CONFIG_ARG__\n')
 
-_WIN_UPDATE_RUN = ('@echo off\r\ncd /d "%~dp0"\r\n'
+_WIN_UPDATE_RUN = ('@echo off\r\nsetlocal DisableDelayedExpansion\r\ncd /d "%~dp0"\r\n'
                    'set "PY=.venv\\Scripts\\python.exe"\r\n'
                    'set "STAMP=.venv\\.oplove-deps-stamp"\r\n'
                    'set NEED=0\r\n'
@@ -98,7 +99,7 @@ _WIN_UPDATE_RUN = ('@echo off\r\ncd /d "%~dp0"\r\n'
                    '  "%PY%" -m operation_love.runtime || exit /b 1\r\n'
                    '  echo ok> "%STAMP%"\r\n'
                    ')\r\n'
-                   '"%PY%" -m operation_love hub\r\n')
+                   '"%PY%" -m operation_love hub__CONFIG_ARG__\r\n')
 
 
 def make_launchers(config_path: str = "config.yaml", extras: str = "ml,bq,hinge") -> None:
@@ -113,6 +114,7 @@ def make_launchers(config_path: str = "config.yaml", extras: str = "ml,bq,hinge"
     import sys
 
     proj = Path(config_path).resolve().parent
+    config_name = Path(config_path).resolve().name
     plat = sys.platform
     extra_ids = extras.split(",")
     if (not extra_ids or any(not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", item)
@@ -124,6 +126,20 @@ def make_launchers(config_path: str = "config.yaml", extras: str = "ml,bq,hinge"
     unknown = set(extra_ids) - declared
     if unknown:
         raise ValueError(f"unknown optional-dependency extras: {', '.join(sorted(unknown))}")
+
+    # Launchers always ``cd`` to the directory holding the chosen config. Preserve the default
+    # command text for config.yaml, but forward any custom leaf exactly so a launcher made with
+    # ``hub --config evening.yaml --make-launchers`` cannot silently start config.yaml instead.
+    # Keep the value attached to --config: argparse would otherwise treat a legal filename
+    # beginning with '-' as another option. POSIX shells get shlex's single-quote form;
+    # cmd.exe needs percent doubling even inside double quotes, otherwise a literal '%' in a
+    # legal filename is treated as an environment variable expansion before argparse receives
+    # it. The batch template disables delayed expansion so literal '!' remains intact too.
+    if config_name == "config.yaml":
+        posix_config_arg = windows_config_arg = ""
+    else:
+        posix_config_arg = f" --config={shlex.quote(config_name)}"
+        windows_config_arg = f' --config="{config_name.replace("%", "%%")}"'
 
     def _atomic_write(path: Path, body: str, mode: int) -> None:
         try:
@@ -157,7 +173,9 @@ def make_launchers(config_path: str = "config.yaml", extras: str = "ml,bq,hinge"
 
     def _write(name: str, body: str, executable: bool) -> None:
         p = proj / name
-        _atomic_write(p, body.replace("__EXTRAS__", extras), 0o755 if executable else 0o644)
+        config_arg = windows_config_arg if name.endswith(".bat") else posix_config_arg
+        _atomic_write(p, body.replace("__EXTRAS__", extras).replace("__CONFIG_ARG__", config_arg),
+                      0o755 if executable else 0o644)
         print(f"Hub: wrote: {p.name}")
 
     if plat == "darwin":

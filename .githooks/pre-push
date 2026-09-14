@@ -11,6 +11,34 @@
 #   ACT_JOBS=N                 concurrent jobs (default 1)
 #   ACT_CACHE=0                disable successful-result reuse
 #   ACT_CACHE_TTL_SECONDS=N    reuse lifetime (default 24 hours)
+#
+# GIT HISTORY IS NOT AVAILABLE INSIDE act, and that is by construction rather
+# than by oversight. This hook stages each push in `git worktree add --detach`
+# below, so the workspace's .git is a pointer FILE reading
+# `gitdir: <host-abs-path>/.git/worktrees/...`. act bind-mounts only the
+# worktree directory, so that target and the object database it needs are
+# unreachable in the container and git reports "not a git repository: (null)".
+# Anything in CI that walks history is therefore skipped under act -- today
+# that is exactly one step, ci.yml's "Prompt-era registry is in sync with git
+# history", whose reasoning is written out there in full.
+#
+# To run that step for real on demand, mount the real .git at its own absolute
+# path (verified 2026-09-14; the INNER quotes are load-bearing, because act
+# splits --container-options on whitespace and this repo's path contains a
+# space), and drop the step's `if: env.ACT != 'true'` guard for the run:
+#
+#   ACT_ARGS='--container-options "-v \"'"$PWD"'/.git:'"$PWD"'/.git:ro\""' git push
+#
+# This is deliberately NOT wired in by default: the mount needs a
+# machine-specific absolute path that cannot live in a tracked file. The
+# alternative -- swapping `git worktree add` for `git clone --local` -- was also
+# verified to work and needs no act flags, but only stays cheap while $TMPDIR
+# shares a filesystem with the repo; across filesystems git silently falls back
+# to COPYING a multi-GB object store on every protected push.
+#
+# None of this leaves a hole: tests/test_backfill_prompt_eras.py carries a
+# git-free guard (test_current_prompt_digest_is_recorded_for_this_checkout)
+# that runs inside act's own pytest job and catches the regression that matters.
 
 set -u
 

@@ -143,16 +143,48 @@ jobs:
       # of the registry landing. Failing here is the whole point: a measurement
       # instrument that has quietly gone stale is worse than none.
       #
-      # SKIPPED UNDER act: the local pre-push mirror bind-mounts the workspace
-      # WITHOUT .git, so the reconstruction cannot walk history there and fails
-      # with "not a git repository" no matter what fetch-depth says. Verified:
-      # ruff passes on the same workspace in the same job, so the files are
-      # present and only .git is missing. This job already uses env.ACT to
-      # branch for act elsewhere. The consequence is honest and worth stating:
-      # this gate is real on GitHub CI but does NOT run in the pre-push act
-      # gate, so a stale registry is caught after the push rather than before
-      # it. Run `python tools/backfill_prompt_eras.py --check` locally after
-      # editing config.yaml's opener.style or opener.py's prompt constants.
+      # SKIPPED UNDER act, and the 2026-09-14 investigation corrected two things
+      # this comment used to claim.
+      #
+      # (1) WHY it fails there. Not "the workspace has no .git" -- .git IS
+      # present. The active hook is the TRACKED .githooks/pre-push
+      # (core.hooksPath=.githooks; the copy under .git/hooks is dormant), and it
+      # builds its temp checkout with
+      # `git worktree add --detach`, so .git is a 75-byte POINTER FILE reading
+      # `gitdir: <host-abs-path>/.git/worktrees/worktree`. act bind-mounts only
+      # the worktree directory, so that target (and the main object database it
+      # needs via commondir) is unreachable in the container and git reports
+      # "not a git repository: (null)". Verified in-container.
+      #
+      # (2) It CAN be made to work, two ways, both verified end to end against
+      # this job: mount the real .git at its own absolute path
+      # (ACT_ARGS='--container-options "-v \"$REPO_ROOT/.git:$REPO_ROOT/.git:ro\""'
+      # -- the inner quotes are load-bearing, act splits this option on
+      # whitespace and this repo's path contains a space), or change
+      # .githooks/pre-push to `git clone --local` instead of
+      # `git worktree add`. NEITHER IS COMMITTED, deliberately: the mount needs
+      # a machine-specific absolute path that cannot live in a tracked file, and
+      # `git clone --local` only stays cheap while $TMPDIR shares a filesystem
+      # with the repo -- across filesystems it silently degrades to copying a
+      # multi-GB object store on every protected push. The pytest guards below
+      # buy the same protection with neither risk.
+      #
+      # The step therefore stays skipped under act, and that is now SAFE rather
+      # than a hole: tests/test_backfill_prompt_eras.py carries
+      # test_current_prompt_digest_is_recorded_for_this_checkout, a git-free
+      # check that DOES run in act's pytest job and catches the real regression
+      # (a committed prompt digest left sitting in the provisional working_tree
+      # slot). Its stronger sibling,
+      # test_shipped_prompt_era_registry_is_in_sync_with_this_repos_git_history,
+      # runs the full reconstruction wherever git is available and skips where
+      # it is not. This step remains the belt-and-braces copy for GitHub, which
+      # clones with fetch-depth: 0 -- a shallow clone would silently
+      # under-report history rather than fail, which is why that matters.
+      #
+      # NOTE 2026-09-14: GitHub Actions is currently DISABLED for this
+      # repository, so nothing in this file has run remotely since 2026-08-11.
+      # Until it is re-enabled, the local act pre-push gate plus the pytest
+      # guards named above are the only enforcement that exists.
       - name: Prompt-era registry is in sync with git history
         if: ${{ env.ACT != 'true' }}
         run: python tools/backfill_prompt_eras.py --check

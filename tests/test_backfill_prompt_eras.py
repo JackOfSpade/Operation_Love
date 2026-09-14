@@ -7,17 +7,24 @@ Two kinds of test live here, deliberately kept apart:
      they must never depend on this actual repo's history, which keeps growing and would make a
      hardcoded commit count or digest go stale the moment someone else's unrelated commit lands.
 
-  2. Exactly ONE test against the real, current working tree
-     (test_reconstruction_matches_live_prompt_stamp_for_the_current_working_tree) -- the single
-     case the task names as directly verifiable: this tool's own extraction and digest functions,
-     applied to the files sitting on disk right now, must reproduce the real, imported
-     operation_love.opener.opener.prompt_stamp() exactly. This is intentionally decoupled from
-     git entirely (it reads the files directly), since the working tree can carry uncommitted
-     edits that are not yet "history" at all (see tools/backfill_prompt_eras.py's own docstring
-     on why the registry is git-history-only).
+  2. THREE tests against this real repository rather than a fixture.
+     test_reconstruction_matches_live_prompt_stamp_for_the_current_working_tree checks that this
+     tool's own extraction and digest functions, applied to the files sitting on disk right now,
+     reproduce the real, imported operation_love.opener.opener.prompt_stamp() exactly. It is
+     intentionally decoupled from git entirely (it reads the files directly), since the working
+     tree can carry uncommitted edits that are not yet "history" at all (see
+     tools/backfill_prompt_eras.py's own docstring on why the registry is git-history-only).
+     test_shipped_prompt_era_registry_is_in_sync_with_this_repos_git_history, added 2026-09-14,
+     points --check at the REAL ops/prompt-eras.json. Every other test here proves the machinery
+     works on a synthetic repo; none of them looked at the artifact this repo actually ships,
+     which is how that artifact went stale twice without a red test.
+     test_current_prompt_digest_is_recorded_for_this_checkout is its GIT-FREE companion: the
+     history walk is impossible inside act (no usable .git), so that stronger test skips exactly
+     where the pre-push gate runs. This one needs no history at all and therefore does run
+     there.
 
-No network, no BigQuery, no imported opener.py module anywhere in these tests except the one
-place above that explicitly needs the real, live prompt_stamp() to compare against.
+No network, no BigQuery, no imported opener.py module anywhere in these tests except the two
+places that explicitly need the real, live prompt_stamp() to compare against.
 """
 from __future__ import annotations
 
@@ -887,3 +894,132 @@ def test_main_check_mode_with_no_working_tree_behaves_like_before_the_feature(tm
                   "--paths", "config.yaml", "opener.py", "--no-working-tree", "--check"]) == 0
     err = capsys.readouterr().err
     assert "up to date" in err
+
+
+def test_shipped_prompt_era_registry_is_in_sync_with_this_repos_git_history(capsys):
+    """The REAL ops/prompt-eras.json must not be stale relative to THIS repo's git history.
+
+    WHY THIS EXISTS, and why it is not redundant with the many synthetic-repo tests above.
+    Those prove the reconstruction machinery is correct. None of them ever looked at the file
+    this repository actually ships, so the registry could -- and did -- go stale while the whole
+    suite stayed green. It went stale twice: once within hours of the registry landing (recorded
+    in .github/workflows/ci.yml's own comment), and again on 2026-09-14, when a digest that had
+    been committed in f173cf54 was still parked in the provisional `working_tree` slot. A reader
+    investigating a bad opener resolved that digest, was told it was an UNCOMMITTED prompt, and
+    believed it for most of an investigation. A mislabelled measurement instrument is worse than
+    no instrument, because it is trusted.
+
+    WHY THE GATE THAT WAS SUPPOSED TO CATCH THIS DID NOT. The check runs in CI
+    (.github/workflows/ci.yml, "Prompt-era registry is in sync with git history") but is skipped
+    under `act`, which is what the local pre-push hook runs, because act's workspace has no
+    usable .git. So the only enforcement lived on a gate that does not run before a push. This
+    test puts it somewhere that runs on every ordinary `pytest tests/`.
+
+    It calls tools/backfill_prompt_eras.py's own main(--check) rather than reimplementing the
+    comparison, so it inherits that path's real semantics -- including the deliberate tolerance
+    for a dirty working tree, where only the provisional `working_tree` entry differs and that is
+    NOT staleness. --check never writes, so this test cannot mutate the repository.
+
+    It SKIPS rather than fails where the reconstruction is impossible: no git (a source export,
+    or act's own workspace) and a shallow clone, which silently yields a truncated history and
+    would make this fail for a reason that is not the developer's doing. CI clones with
+    fetch-depth: 0 for exactly that reason.
+    """
+    try:
+        m.discover_revisions(REPO_ROOT, m.REPO_PATHS)
+    except (RuntimeError, OSError) as exc:
+        # RuntimeError: git ran and said this is not a checkout. OSError: no git binary at all.
+        # Both mean the reconstruction is impossible here, which is a skip, never a failure.
+        pytest.skip(f"no usable git history here, so the registry cannot be reconstructed: {exc}")
+
+    try:
+        shallow = subprocess.run(
+            ["git", "rev-parse", "--is-shallow-repository"],
+            cwd=REPO_ROOT, capture_output=True, text=True, check=False)
+    except OSError:  # unreachable if discover_revisions just succeeded, but cheap to be safe
+        pytest.skip("git binary unavailable")
+    if shallow.stdout.strip() == "true":
+        pytest.skip("shallow clone: reconstruction needs full history (CI uses fetch-depth: 0)")
+
+    registry = REPO_ROOT / "ops" / "prompt-eras.json"
+    rc = m.main(["--check", "--repo-root", str(REPO_ROOT), "--out", str(registry)])
+    captured = capsys.readouterr()
+
+    assert rc == 0, (
+        "ops/prompt-eras.json is STALE relative to git history.\n"
+        "Every consumer that resolves a prompt_sha256 -- tools/opener_corpus_report.py --rule, "
+        "and the bug report's prompt-era line -- will mislabel an era until this is regenerated.\n"
+        "Fix: python tools/backfill_prompt_eras.py\n"
+        "Note it must be its own commit: the tool stamps each era with the commit that "
+        "introduced it, so folding the regenerated registry into the prompt commit changes the "
+        "SHA and cannot converge.\n"
+        f"--check said:\n{captured.err}")
+
+
+def _prompt_surfaces_are_dirty() -> bool:
+    """Whether either tracked prompt surface has uncommitted edits.
+
+    Returns False when git cannot answer. That is the deliberate reading, not a fallback: a
+    checkout with no usable git is an EXPORT of one commit (act's workspace, a source tarball),
+    so its files are committed content by construction and the strict branch below is correct
+    there. This is the whole reason the companion test can run where the history walk cannot.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "status", "--porcelain", "--", *m.REPO_PATHS],
+            cwd=REPO_ROOT, capture_output=True, text=True, check=False)
+    except OSError:
+        # No git BINARY at all (a slim container, a source export). subprocess raises here
+        # rather than returning nonzero, so catching only a bad returncode would turn the
+        # git-free case this helper exists to serve into an ERROR.
+        return False
+    if result.returncode != 0:
+        return False
+    return bool(result.stdout.strip())
+
+
+def test_current_prompt_digest_is_recorded_for_this_checkout():
+    """The prompt on disk right now must be FINDABLE in ops/prompt-eras.json.
+
+    THE GIT-FREE COMPANION to test_shipped_prompt_era_registry_is_in_sync_with_this_repos_git_history.
+    That test is stronger but needs full history, so it skips inside act -- which is precisely
+    where the pre-push gate runs, leaving the strongest check absent from the only gate that runs
+    before a push. This one reconstructs nothing and therefore runs everywhere: it asks only
+    whether the digest of the files on disk is recorded at all.
+
+    The two branches are not the same assertion at different strengths, they are different
+    claims. In a CLEAN checkout the files on disk ARE committed content, so their digest must
+    appear in `eras[]`; finding it only under the provisional `working_tree` key means the
+    registry was never regenerated after the prompt was committed, which is exactly the 2026-09-14
+    failure -- a digest committed in f173cf54 still sitting in the provisional slot, telling
+    everyone who resolved it that it was an uncommitted prompt. In a DIRTY checkout the digest
+    legitimately belongs to no commit, so `working_tree` is the right and only home for it, and
+    demanding `eras[]` would fail every developer mid-edit.
+    """
+    from operation_love import config as cfg_mod
+    from operation_love.opener import opener as opener_mod
+
+    digest = opener_mod.prompt_stamp(cfg_mod.load(str(REPO_ROOT / "config.yaml")).opener.style)
+    registry = json.loads((REPO_ROOT / "ops" / "prompt-eras.json").read_text(encoding="utf-8"))
+    shipped = {era["prompt_sha256"] for era in registry["eras"]}
+    working_tree = registry.get("working_tree") or {}
+
+    if _prompt_surfaces_are_dirty():
+        assert working_tree.get("prompt_sha256") == digest, (
+            "config.yaml or opener.py has uncommitted prompt edits whose digest "
+            f"({digest[:12]}...) is not the registry's provisional working_tree entry "
+            f"({str(working_tree.get('prompt_sha256'))[:12]}...).\n"
+            "Fix: python tools/backfill_prompt_eras.py")
+        return
+
+    assert digest in shipped, (
+        f"the prompt on disk digests to {digest[:12]}... and this checkout is CLEAN, so that "
+        "digest is committed content and must be a shipped era in ops/prompt-eras.json.\n"
+        + ("It is currently recorded ONLY as the provisional `working_tree` entry, which is the "
+           "exact 2026-09-14 failure: every consumer that resolves it -- the bug report's "
+           "prompt-era line, tools/opener_corpus_report.py --rule -- will call a COMMITTED "
+           "prompt uncommitted.\n"
+           if working_tree.get("prompt_sha256") == digest
+           else "It is not in the registry at all.\n")
+        + "Fix: python tools/backfill_prompt_eras.py, as its own commit.")
+

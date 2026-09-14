@@ -768,7 +768,17 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
             # is None above (OpenerService._capture_replay_corpus returns before ever pruning),
             # so there is no need to gate these on replay_corpus_enabled too.
             replay_corpus_max_captures=cfg.opener.replay_corpus_max_captures,
-            replay_corpus_max_age_days=cfg.opener.replay_corpus_max_age_days)
+            replay_corpus_max_age_days=cfg.opener.replay_corpus_max_age_days,
+            # ALWAYS ON, and deliberately NOT config-gated. This is the local file that keeps
+            # the exception text when a rejection row fails to reach the store -- the one piece
+            # of evidence three separate investigations of thenever-populated `opener_rejections`
+            # table did not have. It writes ONLY after a store write has already raised, is
+            # bounded, and swallows its own failures, so "on" costs a healthy run nothing.
+            # Gating it behind a flag would reproduce the exact hazard it exists to end: a
+            # diagnostic that happens to be off on the run where the incident occurs. Path is
+            # derived from Config.data_dir, the same attribute db_file derives from, so an
+            # operator who relocates the data directory takes this with it.
+            deadletter_path=str(cfg.data_dir / "opener_rejection_deadletter.jsonl"))
         if on_opener_service:
             # Publish the same live service workers receive, for run-scoped bug telemetry.
             on_opener_service(opener_service)

@@ -707,6 +707,14 @@ _UNCONFIRMED_LOCATION_MARKER = "unconfirmed location used as a later premise"
     "That looks like Lake Louise. Is that Banff and did the group skate there?",
     "That looks like Lake Louise. Is that Banff because the group went skiing?",
     "That looks like Banff, must have been freezing there.",
+    # Addendum -- 2026-09-14 (b): the 2026-09-14 noun-set/pattern widening (see
+    # _LOCATION_CONFIRMATION_NOUN's module comment) only had to make MORE confirmation shapes
+    # legal, never fewer rejections. These three put the same newly-legal place nouns into a
+    # frame that is NOT a confirmation of the sender's own guess, to prove the widening did not
+    # open a hole alongside it.
+    "My guess is Rome. Did you get the city right?",
+    "My guess is Rome. How close is that gelato?",
+    "My guess is Rome. What was the best part of the city?",
 ], ids=[
     "reported-lake-louise",
     "logged-namsan-tower",
@@ -728,11 +736,42 @@ _UNCONFIRMED_LOCATION_MARKER = "unconfirmed location used as a later premise"
     "named-place-then-coordinated-activity-is-not-confirmation",
     "named-place-then-causal-activity-is-not-confirmation",
     "comma-bare-modal-statement",
+    "widened-noun-set-still-rejects-recipient-directed-phrasing",
+    "widened-noun-set-still-rejects-a-noun-outside-the-shared-set",
+    "widened-noun-set-still-rejects-an-experience-question-after-the-noun",
 ])
 def test_unconfirmed_location_followup_guard_flags_dependent_later_beats(text):
     assert _unconfirmed_location_followup_markers(text) == [
         _UNCONFIRMED_LOCATION_MARKER
     ]
+
+
+def test_unconfirmed_location_followup_guard_addendum_20260914b_keeps_the_historical_six_rejected():
+    """The 2026-09-14 (b) noun-set/pattern widening (ops/OPENER-REDESIGN.md, Addendum --
+    2026-09-14 (b), "THE FIX") must not have loosened the rejection side of the guard. These
+    are the exact six live drafts the 2026-09-05 (d) PRECISION CHECK named as genuine
+    location-guess-then-assumption failures -- Italy, Spain/Mallorca, Switzerland, Namsan
+    Tower, the Iceland super jeep tour, and Lake Louise -- already pinned individually above by
+    test_unconfirmed_location_followup_guard_flags_dependent_later_beats, and re-asserted here
+    word for word as one named addendum regression, so a future noun-set or pattern edit that
+    reopens any one of them fails a test that names the addendum rather than an unrelated id
+    several hundred lines away.
+    """
+    historical_failures = [
+        _REPORTED_UNCONFIRMED_LOCATION_FOLLOWUP,  # Lake Louise
+        ("That looks like Namsan Tower in Seoul right behind you. Was visiting Korea your "
+         "favorite trip so far or is another destination at the top of your list?"),
+        ("That looks like an Iceland super jeep tour. Did you guys take that thing out onto a "
+         "glacier or into the highlands?"),
+        ("That sunny stone street looks like Spain, maybe Mallorca. Did you sneak away there "
+         "for a quick escape while you were living in London?"),
+        ("Judging by the architecture, my official guess for that backdrop is Italy. What was "
+         "your favorite spot you visited while you were there?"),
+        ("My guess is Switzerland, but did that fluffy cat hire himself out as your local tour "
+         "guide or just demand a petting break?"),
+    ]
+    for text in historical_failures:
+        assert _unconfirmed_location_followup_markers(text) == [_UNCONFIRMED_LOCATION_MARKER]
 
 
 @pytest.mark.parametrize("text", [
@@ -766,6 +805,30 @@ def test_unconfirmed_location_followup_guard_flags_dependent_later_beats(text):
     "That looks like serious dedication. Were you out there before sunrise?",
     "That husky looks like he takes guard duty seriously. Which one calls the shots?",
     "That looks like Audrey Hepburn. Where did you find the coat?",
+    # Addendum -- 2026-09-14 (b): until this date _DIRECT_LOCATION_CONFIRMATION_PATTERNS'
+    # two confirmation shapes carried DIFFERENT place-noun sets ("Am I right about the
+    # country?" accepted, "Did I get the country right?" rejected; "city" and "town" in
+    # neither), so which verb the model reached for silently decided the verdict, and the
+    # "how close" shape only ever matched the literal "How close am I?". One shared
+    # _LOCATION_CONFIRMATION_NOUN alternation now backs every shape. The line below is the
+    # measured regression: replaying the reported "Looks like Rome, right?" capture through
+    # the 2026-09-14 (a) prompt produced this exact draft, and the pre-fix detector rejected
+    # it even though it violates no rule on wire (see run draw 1 in the addendum table).
+    "My guess is Rome. Did I get the city right?",
+    "That looks like Norway. Did I get the country right?",
+    "That looks like Tuscany. Did I get the region right?",
+    "My guess is Vienna. Did I guess the city right?",
+    "Is that Sedona? Did I call the town right?",
+    "That looks like Vienna. Am I right about the city?",
+    "That looks like Vienna. Was I close on the city?",
+    # The exact string from ops/OPENER-REDESIGN.md's 2026-09-05 (d) PRECISION CHECK, which
+    # claimed this retained Portugal draft "remain[ed] valid". Re-running the shipped
+    # detector on it before this fix showed that claim was never true (the "how close" shape
+    # only matched "How close am I?"); the 2026-09-14 (b) addendum corrects the record and
+    # this line pins the correction.
+    "That rock arch looks a lot like the Algarve coast in Portugal. How close is that guess?",
+    "My guess is Norway. How far off was that guess?",
+    "My guess is Norway. How close am I?",
 ], ids=[
     "existing-norway-guess",
     "existing-freezing-guess",
@@ -793,9 +856,82 @@ def test_unconfirmed_location_followup_guard_flags_dependent_later_beats(text):
     "non-location-looks-like",
     "figurative-pet-looks-like",
     "no-location-context-with-wh",
+    "measured-regression-my-guess-is-rome-did-i-get-the-city-right",
+    "did-i-get-the-country-right",
+    "did-i-get-the-region-right",
+    "did-i-guess-the-city-right",
+    "did-i-call-the-town-right",
+    "am-i-right-about-the-city",
+    "was-i-close-on-the-city",
+    "portugal-how-close-is-that-guess-precision-check-correction",
+    "how-far-off-was-that-guess",
+    "how-close-am-i-still-passes",
 ])
 def test_unconfirmed_location_followup_guard_preserves_clean_corpus(text):
     assert _unconfirmed_location_followup_markers(text) == []
+
+
+def test_location_confirmation_shapes_share_one_noun_set():
+    """Regression guard for the 2026-09-14 (b) bug itself, not just its symptoms: two
+    confirmation shapes once drew from DIFFERENT place-noun lists ("Am I right about the
+    country?" accepted, "Did I get the country right?" rejected; "city" and "town" in
+    neither), so which verb the model reached for silently decided the verdict.
+    _DIRECT_LOCATION_CONFIRMATION_PATTERNS now interpolates ONE shared alternation,
+    _LOCATION_CONFIRMATION_NOUN, into both the "am/was I right/close ... about/on/with the
+    <noun>?" shape and the "did I get/guess/call the <noun> right?" shape.
+
+    This test reads that live alternation (never a hardcoded copy of it) and asserts both
+    shapes accept a location-confirming later beat for every noun currently in it. A future
+    editor who extends one pattern's noun list without the other reproduces exactly the
+    2026-09-14 (b) bug and this test fails immediately, without anyone having to write a new
+    case naming the specific noun that regressed.
+    """
+    noun_alternation = opener_mod._LOCATION_CONFIRMATION_NOUN
+    assert noun_alternation.startswith("(?:") and noun_alternation.endswith(")"), (
+        "this test assumes the simple (?:a|b|c) alternation shape used today; update the "
+        "extraction below if _LOCATION_CONFIRMATION_NOUN's construction ever changes"
+    )
+    nouns = noun_alternation[len("(?:"):-len(")")].split("|")
+    assert len(nouns) > 1  # sanity: the alternation really does list more than one noun
+
+    for noun in nouns:
+        did_i_get = f"My guess is Rome. Did I get the {noun} right?"
+        am_i_right = f"My guess is Rome. Am I right about the {noun}?"
+        assert _unconfirmed_location_followup_markers(did_i_get) == [], (
+            f"'Did I get the {noun} right?' should be accepted as a location confirmation, "
+            f"the same as every other noun in the shared set")
+        assert _unconfirmed_location_followup_markers(am_i_right) == [], (
+            f"'Am I right about the {noun}?' should be accepted as a location confirmation, "
+            f"the same as every other noun in the shared set")
+
+
+def test_confirmation_shapes_exclude_below_world_scale_nouns():
+    """GUESS THE WORLD, NOT HER IDENTITY forbids guessing a street, a neighbourhood, a hotel,
+    or a venue at all, so _LOCATION_CONFIRMATION_NOUN deliberately excludes all four even
+    though each reads as an ordinary confirmation noun in isolation ("did I get the venue
+    right?" parses exactly like "did I get the city right?"). This pins that exclusion
+    directly against the live noun set so a future editor who unions in a below-world-scale
+    noun, to fix some unrelated complaint, is caught here rather than discovered live.
+
+    Checked by execution, not assumed: these four are rejected for the same generic reason as
+    any other non-confirming later beat (REASON_UNCONFIRMED_LOCATION_FOLLOWUP) because the
+    confirmation pattern simply fails to fullmatch when the noun is outside the shared
+    alternation -- there is no dedicated street/neighbourhood/hotel/venue-specific rejection
+    path in the code, only this table's silence on them.
+    """
+    noun_alternation = opener_mod._LOCATION_CONFIRMATION_NOUN
+    nouns = noun_alternation[len("(?:"):-len(")")].split("|")
+    excluded_nouns = ("street", "neighbourhood", "hotel", "venue")
+    for excluded in excluded_nouns:
+        assert excluded not in nouns, (
+            f"{excluded!r} must stay out of the shared confirmation noun set -- GUESS THE "
+            f"WORLD, NOT HER IDENTITY forbids guessing it at all")
+        did_i_get = f"My guess is Rome. Did I get the {excluded} right?"
+        am_i_right = f"My guess is Rome. Am I right about the {excluded}?"
+        assert _unconfirmed_location_followup_markers(did_i_get) == [
+            _UNCONFIRMED_LOCATION_MARKER]
+        assert _unconfirmed_location_followup_markers(am_i_right) == [
+            _UNCONFIRMED_LOCATION_MARKER]
 
 
 def test_system_prompt_keeps_faithful_corey_opener_policy_and_two_sentence_cap():
@@ -946,7 +1082,7 @@ def test_system_prompt_keeps_faithful_corey_opener_policy_and_two_sentence_cap()
     assert "visual location turn boundary" in lowered
     assert "that location guess is the only conversational move before she replies" in lowered
     assert "end after it or ask only whether the location itself is right" in lowered
-    assert "the confirmation is the conversational payoff" in lowered
+    assert "her settling it is the whole payoff either way" in lowered
     assert ("activity, reason, preference, feeling, experience, or consequence at that place"
             in lowered)
     assert "must accept x as its working premise" not in lowered
@@ -1061,6 +1197,65 @@ def test_system_prompt_keeps_faithful_corey_opener_policy_and_two_sentence_cap()
     assert "scroll order" not in lowered
 
     # --- Owner invariant, not a wording choice: this text is itself sent to the model.
+    assert all(ord(ch) < 128 for ch in _SYSTEM), "_SYSTEM must be pure ASCII"
+    assert "—" not in _SYSTEM
+
+
+def test_system_prompt_ships_the_she_is_the_one_who_knows_rule():
+    """2026-09-14: a live opener asked "Looks like Rome, right?" under a photo of a woman
+    standing on an Italian cobblestone street. VISUAL LOCATION TURN BOUNDARY caused it --
+    "ask only whether the location itself is right" recommended exactly that interrogative
+    shape -- and REPLY COMFORT's carve-out exempted it from the reply-quality test. Measured:
+    within the 21 proper-name location guesses in the 234-opener corpus, the
+    hedge-plus-agreement-tag shape went from 1 of 11 before 2026-09-05 to 5 of 10 after.
+
+    This is the compressed _SYSTEM twin of the long form pinned in
+    tests/test_config_yaml_real.py::test_shipped_opener_style_ships_the_she_is_the_one_who_knows_rule.
+    The two copies diverge in exact wording (this one says "co-signing" hyphenated per _SYSTEM's
+    plain-ASCII-but-hyphen-tolerant convention for compressed prose, and drops config.yaml's
+    "rather than competing with it" and "never" phrasing in a couple of places), so each is
+    pinned against its own real wording rather than shared substrings.
+    """
+    lowered = _SYSTEM.lower()
+    assert "she is the one who knows" in lowered
+    # 2026-09-06 (c): a rule whose first sentence can be satisfied while the defect survives is
+    # the shape that let "... is an elite move" past NO GRADING. All three operative clauses of
+    # this rule therefore live in its own first sentence, ahead of any rationale.
+    first_sentence = lowered.split("she is the one who knows:", 1)[1].split(". ", 1)[0]
+    assert "write any inference about it from your own not knowing" in first_sentence
+    assert "never ask her to agree about how something appears" in first_sentence
+    assert ("never close a claim about her own life with a tag whose only job is to collect "
+            "her agreement") in first_sentence
+    assert "the shared looking covers the item on the screen, never the world behind it" in lowered
+    assert "she was in the world the item shows and you were not" in lowered
+    assert "is news to you and old news to her" in lowered
+    assert "write any inference about it from your own not knowing" in lowered
+    assert ("an impression the two of you are forming together, or a tag collecting her "
+            "agreement, hands the one person who was actually there") in lowered
+    assert "never ask her to agree about how something appears" in lowered
+    assert ("never close a claim about her own life with a tag whose only job is to collect "
+            "her agreement") in lowered
+    assert "co-signing" in lowered
+    assert "and how it appears is what she can already see" in lowered
+    assert "this narrows the shared context rule and sharpens hedge the claim, never yourself" in lowered
+    assert "the uncertainty belongs in how sure you are, not in how clear the item is" in lowered
+    assert "asking her outright stays welcome" in lowered
+    assert "never invent the sender still forbids saying where he has or has not been" in lowered
+
+    # VISUAL LOCATION TURN BOUNDARY amendment: the old payoff line is SUPERSEDED, not merely
+    # supplemented -- its return would silently reinstate the wording that produced the "right?"
+    # agreement-tag shape.
+    assert "her settling it is the whole payoff either way" in lowered
+    assert "neither ending is the default" in lowered
+    assert "vary the shape still chooses between them" in lowered
+    assert "she settles the place because she was standing in it" in lowered
+    assert "the confirmation is the conversational payoff" not in lowered
+
+    # REPLY COMFORT amendment: the confirmation carve-out now says explicitly what it does NOT
+    # exempt -- SHE IS THE ONE WHO KNOWS still governs how that confirmation is worded.
+    assert "it exempts that confirmation from nothing else" in lowered
+
+    # Owner invariant: this text is itself sent to the model.
     assert all(ord(ch) < 128 for ch in _SYSTEM), "_SYSTEM must be pure ASCII"
     assert "—" not in _SYSTEM
 
@@ -1284,6 +1479,22 @@ def test_angle_field_carries_the_no_grading_self_check():
     assert "would not fit unchanged under a different woman's different photo" in angle_description
 
 
+def test_angle_field_carries_the_she_is_the_one_who_knows_self_check():
+    """Same rationale as the NO GRADING self-check directly above: `angle` is the model's only
+    pre-opener scratchpad under thinkingLevel minimal, so the location-inference self-check has
+    to land there too, not only in `opener`'s description, or the model discovers the problem
+    only after it has already written the message. See
+    tests/test_config_yaml_real.py::test_shipped_opener_style_ships_the_she_is_the_one_who_knows_rule
+    for the motivating "Looks like Rome, right?" incident.
+    """
+    angle_description = opener_mod._SCHEMA["properties"]["angle"]["description"].lower()
+    assert "she was in the world the item shows and you were not" in angle_description
+    assert ("confirm that the opener states any inference about it as your own uncertainty"
+            ) in angle_description
+    assert "never closes it with a tag whose only job is to collect her agreement" in angle_description
+    assert "never as an appearance she is asked to agree with" in angle_description
+
+
 # 2026-09-06 off-wire regression pin (de-templating rule: this vocabulary and this exact copy
 # belong only in comments, the design doc, and tests -- never in a model-facing string). These
 # are two of the roughly 20-of-95 local-corpus openers that motivated NO GRADING; see the code
@@ -1308,6 +1519,42 @@ def test_no_grading_motivating_openers_stay_off_every_prompt_surface():
         assert opener_text not in schema_text
         assert "elite move" not in _SYSTEM.lower()
         assert "elite move" not in schema_text.lower()
+
+
+# 2026-09-14 off-wire regression pin (de-templating rule): the exact live draft that motivated
+# SHE IS THE ONE WHO KNOWS -- see
+# tests/test_config_yaml_real.py::test_shipped_opener_style_ships_the_she_is_the_one_who_knows_rule
+# for the full incident. Naming this literal construction in a model-facing string would prime a
+# minimal-thinking model to imitate it, the same mechanism that produced the 2026-08-11 "I bet"
+# incident and the 2026-09-06 "elite move" incident.
+_SHE_IS_THE_ONE_WHO_KNOWS_MOTIVATING_OPENER = "Looks like Rome, right?"
+
+
+def test_looks_like_rome_right_motivating_opener_stays_off_every_prompt_surface():
+    """The concrete draft that motivated SHE IS THE ONE WHO KNOWS must never itself become
+    prompt copy. Checked against all three on-wire copies this file can see directly (config.yaml
+    opener.style, _SYSTEM, and json.dumps(_SCHEMA)). The retry hint block (copy 4 of 4) DID
+    receive this rule's wording clause -- only the HARD REJECTION list was deliberately left
+    unchanged -- but it is built per attempt inside _text_part rather than being a module
+    constant, so its own absence pin lives in tests/test_gemini_opener.py::
+    test_nonempty_retry_hint_carries_the_she_is_the_one_who_knows_amendment. No surface is exempt
+    from the de-templating rule. "rome" is checked
+    with a word-boundary regex because a bare substring match could collide with an ordinary word.
+    """
+    import re
+
+    from operation_love.config import load as load_config
+
+    style = load_config("config.yaml").opener.style
+    schema_text = json.dumps(opener_mod._SCHEMA)
+    for surface_name, surface in (("config.yaml opener.style", style),
+                                  ("_SYSTEM", _SYSTEM),
+                                  ("_SCHEMA", schema_text)):
+        lowered = surface.lower()
+        assert _SHE_IS_THE_ONE_WHO_KNOWS_MOTIVATING_OPENER.lower() not in lowered, surface_name
+        assert "looks like rome" not in lowered, surface_name
+        assert not re.search(r"\brome\b", lowered), surface_name
+        assert "right?" not in lowered, surface_name
 
 
 _MOVE_LIST_MARKERS = (

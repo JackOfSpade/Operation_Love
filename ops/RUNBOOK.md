@@ -688,10 +688,12 @@ Worker/hub/store or make a real profile request. After installing the measured c
   transported.
 - **Item 1 inline composer identity:** heart item 1 without an intervening scroll. Hinge's
   inline composer was introduced in 9.134 and was measured on the historical 10.0.1 build. The
-  live build is now 10.1.0; the 10.0.1 calibration remains immutable audit evidence, while the
-  separately measured 10.1.0 schema-v3 calibration is installed for Training. Its matching
-  still-photo assumption clears the separate numbering-policy gate. Do not relabel either
-  calibration across builds; collect a new campaign after any later app/frame drift.
+  live build is now 10.3.0 on device `33111JEHN04475` (1080x2400); the 10.0.1 calibration remains
+  immutable audit evidence, while the separately measured 10.3.0 schema-v3 hybrid AI-reviewed
+  circular-risk calibration is installed for Training. Its evidence is explicitly not human
+  ground truth; its matching still-photo assumption clears the separate numbering-policy gate.
+  Do not relabel either calibration across builds; collect a new campaign after any later
+  app/frame drift.
   The inline composer auto-focuses immediately, so collect an initial and a settled auto-focused
   reading rather than inventing an unfocused-to-focused transition. Confirm the selected card
   through the full calibration capture's item proof; the small operational recorder can prove
@@ -738,7 +740,7 @@ Worker/hub/store or make a real profile request. After installing the measured c
   opener. `python -m tools.hinge_calibrate observe-check` is only preliminary passive device +
   synthetic-quota evidence; it cannot substitute for this validation or authorize AUTO. The
   historical 10.0.1 calibration completed this procedure in manual run `d8547ff144b4`; that
-  artifact remains evidence for that build only. It does not authorize the live 10.1.0 build.
+  artifact remains evidence for that build only. It does not authorize the live 10.3.0 build.
 
 For a missing, stale, or runtime-rejected calibration, `stop_kind=targeting_calibration` is
 expected safety behaviour: the Hub renders **"targeting calibration must be renewed"**, **AUTO
@@ -781,10 +783,11 @@ from `defer` → ready mid-session. Training never calls the ranker to make the 
 
 **Current release state: AUTO is blocked pending fresh production-observe evidence.** The
 legacy-named manual `observe_release_evidence` artifact for production run `d8547ff144b4`
-remains installed beside the historical 10.0.1 calibration, but the live app is 10.1.0. The
-separately measured 10.1.0 schema-v3 calibration and matching still-photo-assumption acceptance
-already enable Training; they do not release AUTO. Perform a new production OBSERVE validation
-for the 10.1.0 calibration and install its release evidence before AUTO. The still-photo licence
+remains installed beside the historical 10.0.1 calibration, but the live app is 10.3.0 on device
+`33111JEHN04475` (1080x2400). The separately measured 10.3.0 schema-v3 hybrid AI-reviewed circular-risk
+calibration and matching still-photo-assumption acceptance already enable Training; this evidence
+is not human ground truth and does not release AUTO. Perform a new production OBSERVE validation
+for the 10.3.0 calibration and install its release evidence before AUTO. The still-photo licence
 cannot substitute for release evidence.
 It does not bypass opener generation, exact-item targeting, foreground ownership, paid-upsell
 refusal, post-action verification, `halt_on_error`, or Stop. A failed/untargetable opener stops

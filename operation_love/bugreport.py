@@ -650,6 +650,47 @@ def _redact_report_output(text: str) -> str:
     return _SECRET_ASSIGNMENT_RE.sub(r"\1[REDACTED]", text)
 
 
+def _capture_window_has_dwell_walk_stop(records: list[dict], capture_index: int) -> bool:
+    """Whether Stop interrupted the candidate walk for one completed capture window."""
+    for prior in reversed(records[:capture_index]):
+        if prior.get("action") == "capture":
+            break
+        if (prior.get("action") == "still_photo_dwell_walk_candidate"
+                and prior.get("outcome") == "stop"):
+            return True
+    return False
+
+
+def _capture_stop_interrupted_gap_count(coverage: object, records: list[dict],
+                                        capture_index: int) -> int:
+    """Count only capture-scoped gaps interrupted by Stop, with an old-log fallback."""
+    if not isinstance(coverage, dict):
+        return 0
+    gaps = coverage.get("no_dwell_coverage_page_hearts")
+    if not isinstance(gaps, list):
+        return 0
+    interruption = coverage.get("dwell_walk_interruption")
+    if isinstance(interruption, dict) and interruption.get("reason") == "stop_requested":
+        unattempted = interruption.get("unattempted_within_remaining_limit_page_hearts")
+        interrupted = interruption.get("interrupted_page_hearts")
+        if not isinstance(unattempted, list) and not isinstance(interrupted, list):
+            return 0
+        gap_ordinals = {value for value in gaps
+                        if isinstance(value, int) and not isinstance(value, bool)}
+        interrupted_ordinals = {
+            value
+            for values in (unattempted, interrupted)
+            if isinstance(values, list)
+            for value in values
+            if isinstance(value, int) and not isinstance(value, bool)
+        }
+        return len(gap_ordinals & interrupted_ordinals)
+    # Historic logs have no capture-scoped list. Within their bounded capture window, a `stop`
+    # row is the best available evidence; attribute its unobserved gaps but never spill into a
+    # preceding capture or another app.
+    return len(gaps) if _capture_window_has_dwell_walk_stop(records, capture_index) else 0
+
+
 def _completion_capture_facts(st: dict, config_path: str) -> dict[str, object]:
     """Read only the active/last run's structured capture facts, best-effort.
 
@@ -668,6 +709,8 @@ def _completion_capture_facts(st: dict, config_path: str) -> dict[str, object]:
         return {}
     apps = cfg.apps if isinstance(cfg.apps, dict) else {}
     facts: dict[str, object] = {"coverage_gaps": 0, "coverage_candidates": 0,
+                                "coverage_stop_interrupted_gaps": 0,
+                                "coverage_stop_interrupted_candidates": 0,
                                 "capture_truncated": False}
     for app in cfg.enabled_apps:
         opts = apps.get(app)
@@ -688,12 +731,10 @@ def _completion_capture_facts(st: dict, config_path: str) -> dict[str, object]:
             rows = log.read_text().splitlines()
         except Exception:  # noqa: BLE001 -- optional evidence may be absent or mid-write
             continue
-        for raw in reversed(rows):
-            try:
-                record = json.loads(raw)
-            except Exception:  # noqa: BLE001
-                continue
-            if not isinstance(record, dict) or record.get("action") != "capture":
+        records = _action_records(rows)
+        for capture_index in range(len(records) - 1, -1, -1):
+            record = records[capture_index]
+            if record.get("action") != "capture":
                 continue
             coverage = record.get("item_coverage")
             if isinstance(coverage, dict):
@@ -703,6 +744,14 @@ def _completion_capture_facts(st: dict, config_path: str) -> dict[str, object]:
                     facts["coverage_gaps"] = int(facts["coverage_gaps"]) + len(gaps)
                 if isinstance(candidates, list):
                     facts["coverage_candidates"] = int(facts["coverage_candidates"]) + len(candidates)
+                interrupted_gaps = _capture_stop_interrupted_gap_count(
+                    coverage, records, capture_index)
+                if interrupted_gaps:
+                    facts["coverage_stop_interrupted_gaps"] = (
+                        int(facts["coverage_stop_interrupted_gaps"]) + interrupted_gaps)
+                    if isinstance(candidates, list):
+                        facts["coverage_stop_interrupted_candidates"] = (
+                            int(facts["coverage_stop_interrupted_candidates"]) + len(candidates))
             facts["capture_truncated"] = bool(facts["capture_truncated"] or
                                                record.get("capture_truncated"))
             break
@@ -795,7 +844,20 @@ def _run_completion_assessment_md(hub_state, config_path: str) -> str:
     candidates = facts.get("coverage_candidates", 0)
     if isinstance(gaps, int) and gaps:
         total = f" of {candidates}" if isinstance(candidates, int) and candidates else ""
-        limitations.append(f"still-photo coverage skipped {gaps}{total} photo candidate(s)")
+        stop_gaps = facts.get("coverage_stop_interrupted_gaps", 0)
+        stop_candidates = facts.get("coverage_stop_interrupted_candidates", 0)
+        if isinstance(stop_gaps, int) and stop_gaps > 0:
+            stop_total = (f" of {stop_candidates}"
+                          if isinstance(stop_candidates, int) and stop_candidates else "")
+            limitations.append(
+                "the requested Stop interrupted the latest still-photo dwell walk, leaving "
+                f"{stop_gaps}{stop_total} photo candidate(s) uncovered")
+            remaining_gaps = gaps - stop_gaps
+            if remaining_gaps > 0:
+                limitations.append(
+                    f"still-photo coverage skipped {remaining_gaps} photo candidate(s)")
+        else:
+            limitations.append(f"still-photo coverage skipped {gaps}{total} photo candidate(s)")
     if facts.get("capture_truncated"):
         limitations.append("the latest capture was truncated")
 
@@ -1082,6 +1144,9 @@ def _recent_openers_md(hub_state) -> str:
             anchor_note = "🔴 no numbered item crops"
         about = f" · about: {_sanitize_inline(referenced)}" if referenced else ""
         space_note = f" ({_sanitize_inline(index_space)})" if index_space else ""
+        # Compact era suffix -- absent (not guessed) when the entry predates `prompt_sha256`
+        # (2026-09-06), same absent-field convention as `index_space` immediately above.
+        prompt_note = _prompt_provenance_suffix(e.get("prompt_sha256"))
         # These fields are already retained in OpenerService's committed ring. They are
         # diagnostics only: the redundancy detector is an uncalibrated lower-bound monitor and
         # the entropy guard redraws at most once. Render only non-empty outcomes, compactly, so a
@@ -1117,7 +1182,7 @@ def _recent_openers_md(hub_state) -> str:
         )
         lines.append(
             f"- `{ts}` · **{app}** · model: `{model}` · {mode_note} · {anchor_note} · "
-            f"index: {index}{space_note}{about}\n"
+            f"index: {index}{space_note}{about}{prompt_note}\n"
             f"  > {_sanitize_inline(opener)}{monitor_note}"
         )
     if not lines:
@@ -1164,9 +1229,11 @@ def _recent_opener_rejections_md(hub_state) -> str:
         raw_opener = str(raw_opener) if raw_opener is not None else "(no candidate text)"
         if len(raw_opener) > _RECENT_OPENER_TEXT_CHARS:
             raw_opener = raw_opener[:_RECENT_OPENER_TEXT_CHARS] + "…"
+        # Same compact era suffix, and same absent-field convention, as _recent_openers_md.
+        prompt_note = _prompt_provenance_suffix(e.get("prompt_sha256"))
         lines.append(
             f"- `{ts}` · **{app}** · model: `{model}` · attempt {attempt} · "
-            f"reason: `{reason_code}`\n"
+            f"reason: `{reason_code}`{prompt_note}\n"
             f"  > {_sanitize_inline(raw_opener)}"
         )
     if not lines:
@@ -2224,7 +2291,8 @@ def _item_manifest_summary_md(lines: list[str]) -> str:
     # writes no `capture` record at all.  Reading only the former is what let the 2026-08-15
     # report print a previous profile's item table directly under a card the run never finished
     # reading -- with no warning, because the abort was invisible to this scan.
-    attempts = [rec for rec in _action_records(lines)
+    records = _action_records(lines)
+    attempts = [rec for rec in records
                 if rec.get("action") in ("capture", "capture_aborted")]
     capture = _manifest_capture(lines)
     if capture is None:
@@ -2289,7 +2357,20 @@ def _item_manifest_summary_md(lines: list[str]) -> str:
     if isinstance(translation, list):
         out.append("- model item → page heart translation: `"
                    + _sanitize_inline(json.dumps(translation)) + "`")
-    out.extend(_item_coverage_lines(capture))
+    # The terminal capture row carries the coverage counts, while a preceding candidate-walk
+    # row records whether Stop interrupted that same capture.  Keep the scan bounded by the
+    # preceding capture: an older cancelled profile must not re-label a later ordinary gap.
+    capture_index = max(
+        (index for index, rec in enumerate(records)
+         if rec.get("action") == "capture" and rec == capture),
+        default=-1,
+    )
+    coverage_interrupted_by_stop = (
+        _capture_stop_interrupted_gap_count(
+            capture.get("item_coverage"), records, capture_index) > 0
+        if capture_index >= 0 else False)
+    out.extend(_item_coverage_lines(
+        capture, coverage_interrupted_by_stop=coverage_interrupted_by_stop))
     for row in manifest[:24]:
         number = row.get("model_item")
         kind = _sanitize_inline(str(row.get("kind") or "unknown"))
@@ -2808,7 +2889,7 @@ def _round_or_dash(value, places: int = 3) -> str:
     return f"{value:.{places}f}"
 
 
-def _item_coverage_lines(capture: dict) -> list[str]:
+def _item_coverage_lines(capture: dict, *, coverage_interrupted_by_stop: bool = False) -> list[str]:
     """How many photo cards the still-photo dwell actually reached, and what that cost.
 
     `item_coverage` has always been in the log and has never been interpreted, which on
@@ -2840,9 +2921,12 @@ def _item_coverage_lines(capture: dict) -> list[str]:
             f"were dwelled{limit_text}; {len(numbered)} card(s) ended up numbered")
     out = [line]
     if missed:
+        stop_cause = ("because the requested Stop interrupted this in-progress dwell walk; "
+                      "they could not be" if coverage_interrupted_by_stop
+                      else "and so they could not be")
         out.append(f"  - ⚠️ page heart(s) {_sanitize_inline(json.dumps(missed))} were photo "
-                   "candidates the dwell walk never reached, so they could not be numbered — a "
-                   "coverage gap, not a judgement about the cards")
+                   f"candidates the dwell walk never reached {stop_cause} numbered — a coverage "
+                   "gap, not a judgement about the cards")
     if len(numbered) == 1:
         out.append("  - ⚠️ exactly ONE numbered item, so a later like-sheet verification has no "
                    "neighbour to derive a separation bound from and falls back to the weakest "
@@ -3086,10 +3170,21 @@ def _latest_completed_capture_timing_md(lines: list[str]) -> str:
 
     # Optional per-candidate detail emitted by newer Hinge drivers.  Keep the established fold
     # total authoritative and accept a candidate row only when its own named pieces reconstruct
-    # its wall clock; old logs simply have no rows and render byte-for-byte as before.
+    # its wall clock; old logs simply have no rows and render byte-for-byte as before.  A deep
+    # progressive sweep defers cleanup until all of its candidates finish, so its one terminal
+    # row carries return time that intentionally belongs to no individual candidate wall clock.
     candidate_timings: list[tuple[float, float, float, float]] = []
+    sweep_return_timings: list[float] = []
     for rec in records[read_index + 1:fold_index]:
-        if rec is None or rec.get("action") != "still_photo_dwell_walk_candidate_timing":
+        if rec is None:
+            continue
+        if rec.get("action") == "still_photo_dwell_progressive_sweep":
+            if rec.get("outcome") in {"returned", "return_unverified"}:
+                sweep_return_s = _finite_nonnegative_action_seconds(rec, "return_s")
+                if sweep_return_s is not None:
+                    sweep_return_timings.append(sweep_return_s)
+            continue
+        if rec.get("action") != "still_photo_dwell_walk_candidate_timing":
             continue
         candidate_wall_s = _finite_nonnegative_action_seconds(rec, "candidate_wall_s")
         navigation_s = _finite_nonnegative_action_seconds(rec, "navigation_s")
@@ -3139,7 +3234,12 @@ def _latest_completed_capture_timing_md(lines: list[str]) -> str:
         if candidate_timings:
             navigation_s = sum(row[0] for row in candidate_timings)
             proof_s = sum(row[1] for row in candidate_timings)
-            return_s = sum(row[2] for row in candidate_timings)
+            # Exactly one terminal row is the only valid progressive-sweep shape.  Duplicate
+            # terminal rows are a torn/interleaved diagnostic sequence, so omit their optional
+            # detail instead of double-counting cleanup the authoritative fold total already has.
+            sweep_return_s = (sweep_return_timings[0]
+                              if len(sweep_return_timings) == 1 else 0.0)
+            return_s = sum(row[2] for row in candidate_timings) + sweep_return_s
             other_s = sum(row[3] for row in candidate_timings)
             candidate_detail = (
                 f"{len(candidate_timings)} candidate hop(s): navigation "
@@ -3202,8 +3302,158 @@ def _training_probe_token(value: object, allowed: frozenset[str]) -> str:
     return "unrecognised"
 
 
-def _generation_context_md(record: dict) -> list[str]:
-    """Render the private structured fields retained with a staged Training draft.
+# The prompt-era registry (tools/backfill_prompt_eras.py), resolved the same way _git() resolves
+# the repo root: relative to this module's own location, never a hardcoded absolute path, so the
+# report works from any checkout. See _prompt_era_description's docstring for WHY this exists --
+# a real bug report about a bad opener could not say which prompt RULES were on wire when it was
+# generated, even though `prompt_sha256` was sitting on the very evidence row already rendered.
+_PROMPT_ERAS_PATH = _REPO / "ops" / "prompt-eras.json"
+
+
+def _prompt_era_description(prompt_sha256: object) -> str:
+    """Resolve a `prompt_stamp()` digest (opener/opener.py) to a short, human-readable era
+    description via ops/prompt-eras.json.
+
+    Matches a shipped era first (`eras[].prompt_sha256`), then the uncommitted working-tree
+    entry -- marked provisional/uncommitted here explicitly rather than trusting that file's own
+    `label` wording to always say so, since a digest that only matches `working_tree` was never
+    released and must never read like a shipped era on a skim. Renders only the era's rule COUNT
+    plus its `label`: a full 37-rule dump belongs to the registry itself, not to one report line.
+    An unknown digest says so plainly rather than guessing.
+
+    Totally failure-tolerant, matching this file's whole contract (see _safe_section): a missing
+    ops/prompt-eras.json, an unreadable one, or malformed JSON all degrade to a plain sentence.
+    Never raises.
+    """
+    if not isinstance(prompt_sha256, str) or not prompt_sha256:
+        return "no prompt digest recorded"
+    try:
+        raw = json.loads(_PROMPT_ERAS_PATH.read_text())
+    except Exception:  # noqa: BLE001 -- missing file, permissions, malformed JSON, anything
+        return "ops/prompt-eras.json could not be read"
+    if not isinstance(raw, dict):
+        return "ops/prompt-eras.json could not be read"
+    eras = raw.get("eras")
+    if isinstance(eras, list):
+        for era in eras:
+            if not isinstance(era, dict) or era.get("prompt_sha256") != prompt_sha256:
+                continue
+            label = era.get("label")
+            label_text = (_sanitize_inline(label) if isinstance(label, str) and label
+                         else "(no label)")
+            rules = era.get("rules")
+            count = len(rules) if isinstance(rules, list) else "?"
+            return f"shipped era: {label_text} ({count} rule(s) on wire)"
+    working_tree = raw.get("working_tree")
+    if isinstance(working_tree, dict) and working_tree.get("prompt_sha256") == prompt_sha256:
+        rules = working_tree.get("rules")
+        count = len(rules) if isinstance(rules, list) else "?"
+        return (f"UNCOMMITTED WORKING TREE — provisional, not a shipped era "
+                f"({count} rule(s) on wire)")
+    return "digest not in ops/prompt-eras.json"
+
+
+def _current_prompt_stamp(config_path: str) -> str | None:
+    """The `prompt_stamp()` digest for the prompt that is CHECKED OUT right now, so a report
+    can say whether the opener under investigation was written under the exact rules a reader
+    is about to look at, or a different, no-longer-live set -- the single most valuable line
+    for a wording bug (see opener/opener.py's own "OFFLINE REPRODUCTION" note: load the config
+    and call ``prompt_stamp(cfg.opener.style)``; this is that recipe).
+
+    Lazy local imports matching this module's existing convention (e.g. `from . import config
+    as cfg_mod` in `_targeting_readiness_md`), wrapped so any failure -- an unreadable config, an
+    opener-module import error -- degrades to None ("could not determine") rather than raising.
+    Callers must treat None as "unknown", never as "no prompt digest exists".
+    """
+    try:
+        from . import config as cfg_mod
+        from .opener.opener import prompt_stamp
+        cfg = cfg_mod.load(config_path)
+        return prompt_stamp(cfg.opener.style)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _prompt_provenance_lines(record_prompt_sha256: object,
+                             current_prompt_sha256: str | None) -> list[str]:
+    """Full-form prompt provenance for the pre-send evidence block: the raw digest, its
+    resolved era (`_prompt_era_description`), and whether it is the SAME prompt checked out
+    right now (`_current_prompt_stamp`) -- so a reader knows whether the rules they are about
+    to read are the rules that actually produced this text.
+
+    Renders nothing when the record carries no `prompt_sha256` at all (older rows predate the
+    field) rather than guessing -- the same absent-field convention `_recent_openers_md` already
+    applies to `index_space`.
+    """
+    if not isinstance(record_prompt_sha256, str) or not record_prompt_sha256:
+        return []
+    digest = _sanitize_inline(record_prompt_sha256)
+    lines = [f"- prompt era: `{digest}` — {_prompt_era_description(record_prompt_sha256)}"]
+    if not isinstance(current_prompt_sha256, str) or not current_prompt_sha256:
+        lines.append("- prompt drift: could not determine the checked-out prompt "
+                     "(config or opener module unavailable)")
+    elif current_prompt_sha256 == record_prompt_sha256:
+        lines.append("- prompt drift: same as the checked-out prompt "
+                     "(these are the rules that generated this opener)")
+    else:
+        lines.append("- ⚠️ prompt drift: DIFFERENT from the checked-out prompt "
+                     "(the rules on wire now are NOT the rules that generated this opener)")
+    return lines
+
+
+def _prompt_provenance_suffix(record_prompt_sha256: object) -> str:
+    """Compact list-row suffix: an abbreviated digest plus its resolved era, or '' when the
+    record carries no `prompt_sha256` -- same absent-field convention as `_prompt_provenance_
+    lines` above. Deliberately never repeats the drift sentence: that belongs to the one full
+    pre-send evidence block, not to every row of a list.
+    """
+    if not isinstance(record_prompt_sha256, str) or not record_prompt_sha256:
+        return ""
+    digest = _sanitize_inline(record_prompt_sha256)
+    abbrev = digest[:12] + "…" if len(digest) > 12 else digest
+    return f" · prompt: `{abbrev}` ({_prompt_era_description(record_prompt_sha256)})"
+
+
+def _replay_corpus_pointer_md() -> str:
+    """Point at the opener replay corpus (operation_love/opener/replay_corpus.py) as this
+    opener's reproduction path, without pretending to correlate it to this exact record.
+
+    A capture's on-disk id (`replay_id`) is a content hash of the request crops/name/context/
+    truncation flag ALONE -- by that module's own PRIVACY section, a manifest carries no run id,
+    no profile id, and no evidence id, so nothing an actions.jsonl row carries can be joined back
+    to one specific capture directory. Rather than invent a fragile heuristic (nearest
+    `captured_at` to this record's `ts`, matching item counts, ...), this names the corpus
+    directory, how many captures are retained right now (a cheap directory listing, not a claim
+    of correlation), and the tool that replays them.
+    """
+    try:
+        from .opener import replay_corpus
+        root = Path(replay_corpus.DEFAULT_CORPUS_DIR)
+        if not root.is_absolute():
+            root = Path.cwd() / root
+        count = len(replay_corpus.list_replay_ids(root))
+    except Exception:  # noqa: BLE001 -- this is a cheap pointer, never worth failing the report
+        return ("- replay corpus: could not be listed -- reproduce a historical draft via "
+                "`tools/opener_replay.py` against `data/opener_replay_corpus/` if a capture "
+                "was retained")
+    if count == 0:
+        return (f"- replay corpus: no captures retained under `{root}` (disabled, or none have "
+                f"landed yet) -- see `tools/opener_replay.py`")
+    return (f"- replay corpus: {count} capture(s) retained under `{root}`, NOT correlated to "
+            f"this specific record (the manifest stores no run/profile/evidence id, only a "
+            f"content-derived `replay_id` -- see replay_corpus.py's PRIVACY section). Reproduce "
+            f"via `tools/opener_replay.py`")
+
+
+def _generation_context_md(record: dict, *,
+                           current_prompt_sha256: str | None = None) -> list[str]:
+    """Render the private structured fields retained with a staged Training draft, plus the
+    prompt-era provenance for this evidence row (``_prompt_provenance_lines``) -- the latter
+    renders for AUTO and Training alike, since `prompt_sha256` is stamped on every
+    ``auto_opener_pre_send``/``auto_opener_resumed_send`` row regardless of session mode, even
+    though the legacy model-private fields below remain Training-only in practice (AUTO never
+    populates ``generation_context``, so ``context`` is simply empty for it and only the
+    provenance lines render).
 
     ``actions.jsonl`` is untrusted report input, even though the real driver writes these
     values.  Accept only a flat mapping and bounded strings; model prose is additionally passed
@@ -3218,26 +3468,28 @@ def _generation_context_md(record: dict) -> list[str]:
         context = {key: record.get(key) for key in (
             "model", "index_space", "referenced", "angle", "item_description")
             if key in record}
-    if not context:
-        return []
 
-    def text(key: str) -> str:
-        value = context.get(key)
-        if not isinstance(value, str) or not value:
-            return "not recorded"
-        return _sanitize_inline(value)[:_GENERATION_CONTEXT_TEXT_LIMIT]
+    out: list[str] = []
+    if context:
+        def text(key: str) -> str:
+            value = context.get(key)
+            if not isinstance(value, str) or not value:
+                return "not recorded"
+            return _sanitize_inline(value)[:_GENERATION_CONTEXT_TEXT_LIMIT]
 
-    index_space = context.get("index_space")
-    index_display = (index_space if isinstance(index_space, str)
-                     and index_space in _GENERATION_INDEX_SPACES else "not recorded")
-    return [
-        "- generation context (model-private fields, not a sent/committed opener):",
-        f"  - model: `{text('model')}`",
-        f"  - index space: `{_sanitize_inline(index_display)}`",
-        f"  - referenced: `{text('referenced')}`",
-        f"  - angle: `{text('angle')}`",
-        f"  - item description: `{text('item_description')}`",
-    ]
+        index_space = context.get("index_space")
+        index_display = (index_space if isinstance(index_space, str)
+                         and index_space in _GENERATION_INDEX_SPACES else "not recorded")
+        out = [
+            "- generation context (model-private fields, not a sent/committed opener):",
+            f"  - model: `{text('model')}`",
+            f"  - index space: `{_sanitize_inline(index_display)}`",
+            f"  - referenced: `{text('referenced')}`",
+            f"  - angle: `{text('angle')}`",
+            f"  - item description: `{text('item_description')}`",
+        ]
+    out.extend(_prompt_provenance_lines(record.get("prompt_sha256"), current_prompt_sha256))
+    return out
 
 
 def _training_probe_ocr_md(diagnostics: object) -> str:
@@ -3358,7 +3610,8 @@ def _training_dislike_unverified_landing_md(
     return observations
 
 
-def _latest_auto_opener_evidence_md(lines: list[str], run: Path) -> str:
+def _latest_auto_opener_evidence_md(lines: list[str], run: Path, *,
+                                    current_prompt_sha256: str | None = None) -> str:
     """Render the latest AUTO or Training opener's private evidence and outcome.
 
     The screenshot proves which selected card was on screen but Hinge's composer may show only
@@ -3367,6 +3620,10 @@ def _latest_auto_opener_evidence_md(lines: list[str], run: Path) -> str:
     ``auto_opener_resumed_send`` records the freshly verified tap-time frame and links it back to
     that approval. Later like rows repeat the applicable evidence ID. Keep this parser defensive:
     actions.jsonl can be partially appended and a debug directory is still untrusted input.
+
+    ``current_prompt_sha256`` (the digest of the prompt checked out RIGHT NOW -- see
+    ``_current_prompt_stamp``) is optional and keyword-only so every existing caller/test keeps
+    working unchanged; omitting it simply renders the drift verdict as "could not determine".
     """
     records = _action_records(lines)
     # In Training, the reviewer can move the profile while the checkpoint is open.
@@ -3506,8 +3763,12 @@ def _latest_auto_opener_evidence_md(lines: list[str], run: Path) -> str:
         f"- target: model item `{target_display}`",
         f"- full opener: `{opener_display}` ({opener_integrity})",
     ]
-    if session_mode == "training":
-        out.extend(_generation_context_md(record))
+    # Unconditional, not training-only: `prompt_sha256` is stamped on every AUTO row exactly
+    # like Training's (see hinge.py's _record_auto_opener_pre_send), and the legacy
+    # model-private fields this call also renders stay quiet on their own for AUTO because
+    # production AUTO never populates `generation_context` in the first place.
+    out.extend(_generation_context_md(record, current_prompt_sha256=current_prompt_sha256))
+    out.append(_replay_corpus_pointer_md())
     if resumed:
         approval_evidence_id = record.get("approval_evidence_id")
         approval_display = (_sanitize_inline(approval_evidence_id)
@@ -3931,6 +4192,9 @@ def _debug_log_md(config_path: str, hub_state=None) -> str:
         enabled_apps = set(cfg.enabled_apps)
     except Exception as exc:  # noqa: BLE001
         return f"- (could not load config to locate debug logs: {exc})"
+    # Computed once for every app's evidence block below, rather than per-block, so a report
+    # with several enabled apps doesn't reload config.yaml and re-hash the prompt once per app.
+    current_prompt_sha256 = _current_prompt_stamp(config_path)
     current_run_id = None
     if hub_state is not None:
         try:
@@ -3944,7 +4208,8 @@ def _debug_log_md(config_path: str, hub_state=None) -> str:
         except Exception:  # noqa: BLE001 -- provenance is optional diagnostic context
             pass
     apps = apps if isinstance(apps, dict) else {}
-    sections = [_one_debug_dir_md(app, (opts or {}), current_run_id=current_run_id)
+    sections = [_one_debug_dir_md(app, (opts or {}), current_run_id=current_run_id,
+                                  current_prompt_sha256=current_prompt_sha256)
                 for app, opts in apps.items()
                 if app in enabled_apps and (opts or {}).get("debug_log")]
     if not sections:
@@ -3952,7 +4217,8 @@ def _debug_log_md(config_path: str, hub_state=None) -> str:
     return "\n".join(sections)
 
 
-def _one_debug_dir_md(app: str, opts: dict, *, current_run_id: str | None = None) -> str:
+def _one_debug_dir_md(app: str, opts: dict, *, current_run_id: str | None = None,
+                      current_prompt_sha256: str | None = None) -> str:
     base = Path(opts.get("debug_dir", f"./data/{app}_debug"))
     if not base.is_absolute():
         base = Path.cwd() / base
@@ -4024,7 +4290,8 @@ def _one_debug_dir_md(app: str, opts: dict, *, current_run_id: str | None = None
             if verification:
                 out.append("  - post-tap sheet verification (the gate the opener never passed):")
                 out.extend(f"    {line}" for line in verification.splitlines())
-            opener_evidence = _latest_auto_opener_evidence_md(raw_lines, run)
+            opener_evidence = _latest_auto_opener_evidence_md(
+                raw_lines, run, current_prompt_sha256=current_prompt_sha256)
             if opener_evidence:
                 evidence_mode = _latest_auto_opener_evidence_mode(raw_lines)
                 out.append(f"  - latest {evidence_mode} opener pre-send evidence:")
@@ -4128,6 +4395,65 @@ def _cap_report_lines(report: str) -> str:
     return "\n".join([*pinned, marker, *lines[-tail_budget:]]) + "\n"
 
 
+def _opener_rejection_deadletter_md(config_path: str = "config.yaml") -> str:
+    """Surface the local rejection dead-letter, because a diagnostic nobody reads is not one.
+
+    THE INCIDENT: production BigQuery `opener_rejections` sat at ZERO rows for the table's
+    entire history while `spend` showed at least 159 billed OpenerParseError events -- so
+    rejections were happening and the durable write was failing. The exception text that would
+    have named the cause went to a bare print() nothing captured, and two separate fixes shipped
+    against theories because nobody ever saw it. `OpenerService` now writes that exception to a
+    bounded local JSONL (see _write_opener_rejection_deadletter in opener/service.py, wired from
+    supervisor.py off cfg.data_dir).
+
+    This section is the last link in that chain. A file that only fills up during an incident is
+    worth nothing if the report filed about that incident does not mention it, so this renders
+    LOUDLY when there are entries and stays a single quiet line when there are none -- the empty
+    case is the healthy case and must not read as a finding.
+
+    Shows the newest entries' exception identity rather than whole rows: `cause_type`/`cause_str`
+    is where BigQuery client errors bury the real reason, so that is what a reader needs first.
+    Never raises; a missing or unreadable file degrades to a plain line like every other section.
+    """
+    try:
+        from . import config as cfg_mod
+        path = Path(cfg_mod.load(config_path).data_dir) / "opener_rejection_deadletter.jsonl"
+    except Exception as exc:  # noqa: BLE001
+        return f"- could not resolve the dead-letter path: {type(exc).__name__}: {exc}"
+    if not path.exists():
+        return ("- none: no opener-rejection row has failed to reach the store "
+                f"(`{path}` does not exist)")
+    try:
+        entries = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+    except Exception as exc:  # noqa: BLE001
+        return f"- ⚠️ `{path}` exists but could not be read: {type(exc).__name__}: {exc}"
+    if not entries:
+        return f"- none: `{path}` is empty"
+    out = [f"- ⚠️ **{len(entries)} opener-rejection row(s) FAILED to reach the store** and were "
+           f"written to `{path}`.",
+           "  - This is the evidence three prior investigations of the empty "
+           "`opener_rejections` table lacked. Read `cause_type`/`cause_str` first: BigQuery "
+           "client errors bury the real reason in `__cause__`.",
+           "  - newest first:"]
+    for entry in reversed(entries[-5:]):
+        if not isinstance(entry, dict):
+            continue
+        row = entry.get("row") if isinstance(entry.get("row"), dict) else {}
+        cause = entry.get("cause_type") or "no chained cause"
+        out.append(
+            f"    - `{_sanitize_inline(str(entry.get('ts', '?')))}` · branch="
+            f"`{_sanitize_inline(str(entry.get('branch', '?')))}` · store="
+            f"`{_sanitize_inline(str(entry.get('store_class', '?')))}` · reason_code="
+            f"`{_sanitize_inline(str(row.get('reason_code', '?')))}` · "
+            f"{_sanitize_inline(str(entry.get('exc_type', '?')))}: "
+            f"{_sanitize_inline(str(entry.get('exc_str', '')))[:200]} · cause: "
+            f"{_sanitize_inline(str(cause))}: "
+            f"{_sanitize_inline(str(entry.get('cause_str', '')))[:200]}")
+    if len(entries) > 5:
+        out.append(f"    - ... {len(entries) - 5} older entry(ies) in the file")
+    return "\n".join(out)
+
+
 def _safe_section(fn, *args) -> str:
     """Call a report-section builder, rendering a warning instead of crashing the whole
     report if it raises. The bug-report endpoint is the tool reached for when something's
@@ -4159,6 +4485,7 @@ def build_report(hub_state=None, description: str = "", config_path: str = "conf
         f"## Run status\n{_safe_section(_status_md, hub_state)}\n\n"
         f"## Recent openers\n{_safe_section(_recent_openers_md, hub_state)}\n\n"
         f"## Recent opener rejections\n{_safe_section(_recent_opener_rejections_md, hub_state)}\n\n"
+        f"## Opener rejections that never reached the store\n{_safe_section(_opener_rejection_deadletter_md, config_path)}\n\n"
         f"## Debug log (on-disk actions + screenshots)\n{_safe_section(_debug_log_md, config_path, hub_state)}\n\n"
         f"## Recent logs\n"
     )

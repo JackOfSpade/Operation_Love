@@ -13,6 +13,7 @@ import stat
 import sys
 import threading
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -1527,12 +1528,13 @@ class _SpyOpenerService:
     """Stand-in for OpenerService that records constructor args, without ever running a
     worker against it -- used to pin cfg.opener.max_attempts reaching the constructed
     service (contract: OpenerService(client, tracker, store, style, max_attempts=5,
-    replay_corpus_dir=None, replay_corpus_max_captures=0, replay_corpus_max_age_days=0))."""
+    replay_corpus_dir=None, replay_corpus_max_captures=0, replay_corpus_max_age_days=0,
+    deadletter_path=None))."""
     instances: list = []
 
     def __init__(self, client, tracker, store, style, max_attempts=5, *,
                  replay_corpus_dir=None, replay_corpus_max_captures=0,
-                 replay_corpus_max_age_days=0):
+                 replay_corpus_max_age_days=0, deadletter_path=None):
         self.client = client
         self.tracker = tracker
         self.store = store
@@ -1541,7 +1543,44 @@ class _SpyOpenerService:
         self.replay_corpus_dir = replay_corpus_dir
         self.replay_corpus_max_captures = replay_corpus_max_captures
         self.replay_corpus_max_age_days = replay_corpus_max_age_days
+        self.deadletter_path = deadletter_path
         _SpyOpenerService.instances.append(self)
+
+
+def test_opener_rejection_deadletter_path_reaches_the_constructed_opener_service(
+        monkeypatch, tmp_path):
+    """The rejection dead-letter must actually be WIRED, not merely available.
+
+    `OpenerService(deadletter_path=...)` defaults to None, and a None path makes
+    `_write_opener_rejection_deadletter` return immediately -- so a supervisor that forgets to
+    pass it leaves the diagnostic silently inert in production while every unit test around it
+    stays green, because those tests inject their own tmp_path. That is precisely the failure
+    this diagnostic exists to end: production BigQuery `opener_rejections` sat at zero rows for
+    the table's whole history while rejections were demonstrably happening, because the only
+    record of the failure was a print() nothing captured.
+
+    The path must also be derived from the configured data_dir rather than a hardcoded literal,
+    the same way db_file is (see config.py), so an operator who relocates data_dir takes the
+    dead-letter with it instead of leaving it writing somewhere they are not looking."""
+    cfg_path = _write_cfg(tmp_path, _CONFIG)
+    monkeypatch.setattr(sup, "Capabilities", _Caps)
+    monkeypatch.setattr(sup, "Embedder", _FastEmbedder)
+    monkeypatch.setattr(sup, "QualityFilter", _FastQuality)
+    monkeypatch.setattr(sup, "make_store", lambda cfg: _FakeStore())
+    monkeypatch.setattr(sup, "make_driver", lambda app, cfg: _FakeDriver())
+    monkeypatch.setattr(sup, "_install_signal_handlers", lambda stop: None)
+    _patch_no_adb(monkeypatch)
+    _SpyOpenerService.instances = []
+    monkeypatch.setattr(sup, "OpenerService", _SpyOpenerService)
+
+    sup.run(str(cfg_path), stop_event=threading.Event())
+
+    assert len(_SpyOpenerService.instances) == 1
+    wired = _SpyOpenerService.instances[0].deadletter_path
+    assert wired, "supervisor must pass a deadletter_path; None leaves the diagnostic inert"
+    from operation_love import config as _cfg_mod
+    expected = _cfg_mod.load(str(cfg_path)).data_dir / "opener_rejection_deadletter.jsonl"
+    assert Path(wired) == expected
 
 
 def test_opener_max_attempts_reaches_the_constructed_opener_service(monkeypatch, tmp_path):

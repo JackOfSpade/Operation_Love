@@ -1773,6 +1773,73 @@ def test_capture_coverage_diagnostics_separates_photo_policy_from_dwell_coverage
     }
 
 
+def test_capture_coverage_diagnostics_names_an_operator_stop_not_a_limit_exhaustion():
+    """A coverage shortfall from an explicit walk stop must retain that cause on the capture."""
+    payload = SimpleNamespace(crops=(
+        SimpleNamespace(kind=item_crops.CROP_CONTEXT, heart_ordinal=1,
+                        reason=item_crops.EXCLUSION_NEVER_DWELLED),
+        SimpleNamespace(kind=item_crops.CROP_CONTEXT, heart_ordinal=4,
+                        reason=item_crops.EXCLUSION_NEVER_DWELLED),
+        SimpleNamespace(kind=item_crops.CROP_ITEM, heart_ordinal=6, reason="item 1"),
+    ))
+
+    diagnostics = HingeDriver._item_coverage_diagnostics(
+        payload, 6, photo_candidate_hearts=(1, 4, 6), dwell_covered_hearts=(6,),
+        dwell_walk_interruption={
+            "reason": "stop_requested",
+            "phase": "before_candidate_navigation",
+            "next_page_heart": 4,
+            "unattempted_within_remaining_limit_page_hearts": [4, 1],
+        })
+
+    assert diagnostics["dwell_walk_interruption"] == {
+        "reason": "stop_requested",
+        "phase": "before_candidate_navigation",
+        "next_page_heart": 4,
+        "unattempted_within_remaining_limit_page_hearts": [4, 1],
+    }
+
+
+def test_capture_dwell_walk_stop_diagnostic_does_not_leak_to_the_next_profile(monkeypatch):
+    """The stop explanation is one capture's provenance, never state for the next profile."""
+    class Debug:
+        def __init__(self):
+            self.calls = []
+
+        def action(self, name, **fields):
+            self.calls.append((name, fields))
+
+    adb = WorldAdb()
+    drv = _drv(adb)
+    debug = Debug()
+    drv._dbg = debug
+    calls = {"n": 0}
+    monkeypatch.setattr(hinge.time, "sleep", lambda *_args, **_kwargs: None)
+
+    def dwell_once_with_stop(self, frames, _index, should_stop=None, *,
+                             eligible_heart_ordinals=None):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            self._current_dwell_walk_interruption = {
+                "reason": "stop_requested",
+                "phase": "before_candidate_navigation",
+                "next_page_heart": 4,
+                "unattempted_within_remaining_limit_page_hearts": [4, 1],
+            }
+        return {}, hinge._MeasuredItemAnchor(frames[-1], 0)
+
+    monkeypatch.setattr(HingeDriver, "_still_photo_dwell", dwell_once_with_stop)
+
+    assert drv._capture_current() is not None
+    adb.scroll = 0  # next profile starts at its own confirmed top, not this read's terminal frame
+    assert drv._capture_current() is not None
+    coverage_rows = [fields["item_coverage"] for name, fields in debug.calls
+                     if name == "capture"]
+
+    assert coverage_rows[0]["dwell_walk_interruption"]["next_page_heart"] == 4
+    assert "dwell_walk_interruption" not in coverage_rows[1]
+
+
 def test_model_context_preserves_every_unnumbered_crop_for_supporting_connections():
     """The wire view retains unnumbered photos/prompts as well as heartless profile context.
 
@@ -4151,9 +4218,8 @@ def test_candidate_walk_walks_a_final_hop_beyond_the_envelope_when_nothing_is_ba
     the walk. Here `base_evidence` is empty, so skipping this candidate would leave the capture
     with nothing dwelled and `_index_captured_items` would stop the run on its own
     `items_unnumbered` gate: the fallback is a stopped run either way, and attempting the hop is
-    strictly better. See
-    `test_candidate_walk_skips_a_final_hop_beyond_the_envelope_once_a_card_is_banked` for the
-    case where the trade reverses.
+    strictly better.  A banked typed-index walk now takes the separately tested progressive
+    sweep instead; this test pins the deliberately retained empty-final-hop exception.
     """
     index, frames = _full_read_capture()
     adb = ProbeWorldAdb(start=_FULL_READ_SCROLLS[-1])
@@ -4201,17 +4267,16 @@ def test_candidate_walk_walks_a_final_hop_beyond_the_envelope_when_nothing_is_ba
     assert [row["outcome"] for row in skipped] == ["parked_unproved"]
 
 
-def test_candidate_walk_skips_a_final_hop_beyond_the_envelope_once_a_card_is_banked(
+def test_candidate_walk_sweeps_a_final_hop_beyond_the_old_envelope_once_a_card_is_banked(
         monkeypatch, tmp_path, installed_still_photo_bound):
-    """A banked card is a working capture, and it is not gambled on an unvetted return shape.
+    """A banked card no longer makes every earlier photo a deterministic coverage gap.
 
     Found on run 1d84909bf1bb (Maja): the walk skipped heart 4 at 3951px as beyond the 2520px
     envelope and then, seconds later, attempted heart 3 at 5167px because that one happened to
-    be the FINAL hop. Its nine-leg return refused on leg 5, and a refused return is not a lost
-    card -- it discards the capture's entry anchor, so `_index_captured_items` refuses the whole
-    profile and the run stops. Here a card is already banked, so skipping costs one card's dwell
-    evidence and keeps everything else; the phone and the measured anchor are untouched, exactly
-    like an intermediate skip.
+    be the FINAL hop. The return chain has since gained measured reverse recovery and per-leg
+    backoff, but the old pre-skip remained and run 5d257fc1a1f8 consequently attempted only three
+    of six candidates. A typed production index now changes to one progressive sweep: the deep
+    card is still navigated/proved normally and the sweep makes one measured cleanup return.
     """
     index, frames = _full_read_capture()
     adb = ProbeWorldAdb(start=_FULL_READ_SCROLLS[-1])
@@ -4224,33 +4289,199 @@ def test_candidate_walk_skips_a_final_hop_beyond_the_envelope_once_a_card_is_ban
         if block.heart_ordinal == 3 else block
         for block in index.blocks)
     far_index = dataclasses.replace(index, blocks=far_blocks)
+    target = _stub_target(
+        frames[-1], (700, 1700), climbed_px=return_cap_px + 1,
+        page_offset=int(index.offsets[-1]) - return_cap_px - 1)
     navigation_calls = []
     monkeypatch.setattr(
         hinge, "navigate_to_item",
-        lambda *_args, **_kwargs: navigation_calls.append(1) or None)
-    returns = []
+        lambda *_args, **_kwargs: navigation_calls.append(1) or target)
+    card_evidence = SimpleNamespace(
+        dwell_frame_sha256s=("first", "second"), dwell_exact=True, dwell_span_s=1.0,
+        mute_screens_complete=True, centered=True, reattach_probe_ran=True,
+        reattach_dwell_frame_sha256s=("third", "fourth"), reattach_dwell_exact=True,
+        reattach_dwell_span_s=1.0, reattach_mute_screens_complete=True,
+        reattach_centered=True)
+    correction = hinge._CenteringCorrection(total_px=0, frame=target.frame)
     monkeypatch.setattr(
-        HingeDriver, "_still_photo_dwell_walk_return_to_entry",
-        lambda *_args, **_kwargs: returns.append(1) or None)
+        HingeDriver, "_still_photo_dwell_over_navigated_target",
+        lambda *_args, **_kwargs: (card_evidence, None, correction))
+    returns = []
+    returned = hinge._MeasuredItemAnchor(frames[-1], 0)
+    monkeypatch.setattr(
+        HingeDriver, "_return_to_entry_from_measured_position",
+        lambda *_args, **_kwargs: returns.append(_kwargs["terminal_shift_px"]) or returned)
     entry = hinge._MeasuredItemAnchor(frames[-1], 0)
 
-    banked = object()
+    banked = SimpleNamespace(dwell_exact=True, reattach_probe_ran=True)
     evidence, anchor = drv._still_photo_dwell_candidate_walk(
         {4: banked}, frames=frames, index=far_index, mute_screen=lambda _f, _r: True,
         eligible_heart_ordinals={3}, entry_anchor=entry)
 
-    assert evidence == {4: banked}, "the banked card survives"
-    assert anchor == entry, "the measured entry anchor is handed back untouched"
-    assert navigation_calls == [], "no climb is started"
-    assert returns == [], "and so nothing is owed back"
+    assert evidence == {4: banked, 3: card_evidence}, "both the banked and deep card survive"
+    assert anchor == returned
+    assert navigation_calls == [1], "the deep card is no longer pre-skipped"
+    assert returns == [-(return_cap_px + 1)], "one measured sweep return repays the deep hop"
     assert (adb.scrolls, adb.reverse_swipes) == (0, 0)
     records = [json.loads(line)
                for line in (drv._dbg.dir / "actions.jsonl").read_text().splitlines()]
     rows = [record for record in records
             if record["action"] == "still_photo_dwell_walk_candidate"]
-    assert [row["outcome"] for row in rows] == ["skipped_return_budget"]
-    assert rows[0]["return_cap_px"] == return_cap_px
-    assert rows[0]["required_climb_px"] > return_cap_px
+    assert [row["outcome"] for row in rows] == ["proved"]
+    sweeps = [record for record in records
+              if record["action"] == "still_photo_dwell_progressive_sweep"]
+    assert [row["outcome"] for row in sweeps] == ["started", "returned"]
+
+
+def test_deep_candidate_sweep_reanchors_each_photo_and_returns_only_once(
+        monkeypatch, installed_still_photo_bound):
+    """The coverage fix is a monotonic measured sweep, not three unchecked deep jumps.
+
+    Force the old envelope to end before the first uncovered card, then drive the real item
+    navigator through hearts 3 -> 2 -> 1.  Each call after the first must use the preceding
+    measured landing frame as its zero point.  All three cards are proved, and only after the
+    sweep does the generic measured return restore the enumeration entry for later model
+    targeting.
+    """
+    index, frames = _full_read_capture()
+    adb = ProbeWorldAdb(start=_FULL_READ_SCROLLS[-1])
+    drv = _drv(adb, still_photo_dwell_candidates=4)
+    monkeypatch.setattr(
+        drv, "_still_photo_dwell_walk_return_budget",
+        lambda _index, _model_index: (1, 0, 1))
+
+    entry_references = []
+    real_navigate = hinge.navigate_to_item
+
+    def progressive_navigate(*args, **kwargs):
+        entry_references.append(kwargs["entry_reference"])
+        return real_navigate(*args, **kwargs)
+
+    monkeypatch.setattr(hinge, "navigate_to_item", progressive_navigate)
+    proved = {
+        ordinal: SimpleNamespace(dwell_exact=True, reattach_probe_ran=True)
+        for ordinal in (1, 2, 3, 4)
+    }
+
+    def proof(_self, target, _block, *, heart_ordinal, **_kwargs):
+        return (proved[heart_ordinal], None,
+                hinge._CenteringCorrection(total_px=0, frame=target.frame))
+
+    monkeypatch.setattr(HingeDriver, "_still_photo_dwell_over_navigated_target", proof)
+
+    evidence, anchor = drv._still_photo_dwell_candidate_walk(
+        {4: proved[4]}, frames=frames, index=index, mute_screen=lambda _f, _r: True,
+        eligible_heart_ordinals={1, 2, 3},
+        entry_anchor=hinge._MeasuredItemAnchor(frames[-1], 0))
+
+    assert evidence == proved
+    assert len(entry_references) == 3
+    assert entry_references[0] == frames[-1]
+    assert entry_references[1] != frames[-1]
+    assert entry_references[2] not in entry_references[:2]
+    assert anchor is not None
+    assert anchor.frame == _frame(adb.scroll)
+    drift_bound = scroll_step.step_px_for_frac(hinge._READ_SCROLL_FRAC_MIN, _H)
+    assert abs(anchor.page_shift_px) < drift_bound
+    assert adb.reverse_swipes > 0 and adb.scrolls > 0
+
+
+def test_deep_candidate_sweep_composes_entry_correction_and_probe_offsets(
+        monkeypatch, installed_still_photo_bound):
+    """Every measured residual is folded once into the next anchor and final cleanup debt."""
+    index, frames = _full_read_capture()
+    drv = _drv(ProbeWorldAdb(start=_FULL_READ_SCROLLS[-1]), still_photo_dwell_candidates=3)
+    monkeypatch.setattr(
+        drv, "_still_photo_dwell_walk_return_budget",
+        lambda _index, _model_index: (1, 0, 1))
+
+    reference_offset = int(index.offsets[-1])
+    targets = {
+        3: _stub_target(_frame(1800), (700, 1700), climbed_px=400,
+                        page_offset=reference_offset - 370),
+        2: _stub_target(_frame(1200), (700, 1700), climbed_px=300,
+                        page_offset=reference_offset - 650),
+    }
+    terminal_offsets = []
+    entry_references = []
+
+    def navigate(_driver, walk_index, model_index, **kwargs):
+        terminal_offsets.append(walk_index.offsets[-1])
+        entry_references.append(kwargs["entry_reference"])
+        return targets[walk_index.translation[model_index - 1]]
+
+    monkeypatch.setattr(hinge, "navigate_to_item", navigate)
+    proved = {
+        ordinal: SimpleNamespace(dwell_exact=True, reattach_probe_ran=True)
+        for ordinal in (2, 3, 4)
+    }
+    first_terminal_frame = _frame(1775)
+    corrections = {
+        3: hinge._CenteringCorrection(total_px=25, frame=_frame(1770)),
+        2: hinge._CenteringCorrection(total_px=-20, frame=_frame(1220)),
+    }
+
+    def proof(_self, _target, _block, *, heart_ordinal, **_kwargs):
+        probe = (SimpleNamespace(frames=(first_terminal_frame,), page_shift_px=-5)
+                 if heart_ordinal == 3 else None)
+        return proved[heart_ordinal], probe, corrections[heart_ordinal]
+
+    monkeypatch.setattr(HingeDriver, "_still_photo_dwell_over_navigated_target", proof)
+    cleanup = []
+    returned = hinge._MeasuredItemAnchor(frames[-1], 30)
+    monkeypatch.setattr(
+        HingeDriver, "_return_to_entry_from_measured_position",
+        lambda *_args, **kwargs: cleanup.append(
+            (kwargs["frame"], kwargs["terminal_shift_px"])) or returned)
+
+    evidence, anchor = drv._still_photo_dwell_candidate_walk(
+        {4: proved[4]}, frames=frames, index=index, mute_screen=lambda _f, _r: True,
+        eligible_heart_ordinals={2, 3}, entry_anchor=returned)
+
+    # Start at +30.  The first landing is -370, then +25 correction and -5 probe => -350.
+    # The second landing is -650 and its -20 correction => -670.  Relative to the +30 origin,
+    # the one final return therefore owes -700px.
+    assert evidence == proved
+    assert terminal_offsets == [reference_offset + 30, reference_offset - 350]
+    assert entry_references == [frames[-1], first_terminal_frame]
+    assert cleanup == [(corrections[2].frame, -700)]
+    assert anchor == returned
+
+
+def test_deep_candidate_sweep_refuses_anchor_when_cleanup_return_is_unverified(
+        monkeypatch, installed_still_photo_bound):
+    """Deep coverage never turns an unknown cleanup position into a targeting anchor."""
+    index, frames = _full_read_capture()
+    adb = ProbeWorldAdb(start=_FULL_READ_SCROLLS[-1])
+    drv = _drv(adb, still_photo_dwell_candidates=2)
+    monkeypatch.setattr(
+        drv, "_still_photo_dwell_walk_return_budget",
+        lambda _index, _model_index: (1, 0, 1))
+
+    climb_px = 500
+    target = _stub_target(
+        frames[-1], (700, 1700), climbed_px=climb_px,
+        page_offset=int(index.offsets[-1]) - climb_px)
+    monkeypatch.setattr(hinge, "navigate_to_item", lambda *_args, **_kwargs: target)
+    proved = SimpleNamespace(dwell_exact=True, reattach_probe_ran=True)
+    correction = hinge._CenteringCorrection(total_px=0, frame=target.frame)
+    monkeypatch.setattr(
+        HingeDriver, "_still_photo_dwell_over_navigated_target",
+        lambda *_args, **_kwargs: (proved, None, correction))
+    cleanup_debts = []
+    monkeypatch.setattr(
+        HingeDriver, "_return_to_entry_from_measured_position",
+        lambda *_args, **kwargs: cleanup_debts.append(kwargs["terminal_shift_px"]) or None)
+
+    banked = SimpleNamespace(dwell_exact=True, reattach_probe_ran=True)
+    evidence, anchor = drv._still_photo_dwell_candidate_walk(
+        {4: banked}, frames=frames, index=index, mute_screen=lambda _f, _r: True,
+        eligible_heart_ordinals={3},
+        entry_anchor=hinge._MeasuredItemAnchor(frames[-1], 0))
+
+    assert evidence == {4: banked, 3: proved}
+    assert cleanup_debts == [-climb_px]
+    assert anchor is None, "model targeting must remain locked after an unverified cleanup"
 
 
 def test_candidate_walk_refuses_the_anchor_when_final_return_is_unverified(
@@ -4277,13 +4508,14 @@ def test_candidate_walk_refuses_the_anchor_when_final_return_is_unverified(
     assert anchor is None
 
 
-def test_candidate_walk_still_skips_an_intermediate_hop_beyond_the_return_envelope(
+def test_candidate_walk_honors_stop_before_starting_a_deep_sweep(
         monkeypatch, installed_still_photo_bound):
-    """An intermediate hop still observes the fixed return-envelope pre-check.
+    """A Stop at the sweep boundary spends no optional navigation gesture.
 
-    A later dwell hop needs the enumeration entry again, so the fixed, vetted return envelope
-    remains an early refusal here. The final hop instead pays the measured return needed by the
-    later model-targeting pass.
+    The outer walk polls first, discovers that this typed candidate crosses the old four-leg
+    threshold, and transfers the remaining slice to the progressive path.  That path polls again
+    immediately before its first navigation, so a Stop arriving at the boundary leaves the
+    measured entry and the phone untouched.
     """
     index, frames = _full_read_capture()
     adb = ProbeWorldAdb(start=_FULL_READ_SCROLLS[-1])
@@ -4312,17 +4544,18 @@ def test_candidate_walk_still_skips_an_intermediate_hop_beyond_the_return_envelo
 
     assert evidence.keys() == {4}
     assert anchor == hinge._MeasuredItemAnchor(frames[-1], 0)
+    assert stop_checks["count"] == 2
     assert navigation_calls == []
     assert (adb.scrolls, adb.reverse_swipes) == (0, 0)
 
 
 def test_candidate_walk_treats_the_last_attempt_budget_slot_as_final(
         monkeypatch, installed_still_photo_bound):
-    """No later hop exists after the last permitted attempt.
+    """No later hop exists after the last permitted attempt on a legacy index double.
 
-    Several return-envelope pre-skips can consume attempt slots without consuming the hop
-    budget. The final permitted candidate must therefore skip the intermediate-only envelope
-    precheck and run its dynamic measured return, just as the last candidate in the list does.
+    Several legacy return-envelope pre-skips can consume attempt slots without consuming the hop
+    budget. The final permitted candidate must therefore skip the intermediate-only threshold
+    check and run its dynamic measured return, just as the last candidate in the list does.
     """
     _index, frames = _full_read_capture()
     adb = ProbeWorldAdb(start=_FULL_READ_SCROLLS[-1])
@@ -4398,6 +4631,70 @@ def _overshot_navigation_recovery(frame: bytes, page_shift_px: int):
         measurement_status="measured", measurement_confidence=1.0,
         measurement_agreeing=9, measurement_dissenting=0, measurement_eligible=9,
         violation="moved 514px past its 363px aliasing bound")
+
+
+def test_progressive_sweep_continues_after_a_verified_navigation_recovery(
+        monkeypatch, tmp_path, installed_still_photo_bound):
+    """The deep path preserves the ordinary walk's bounded returned-refusal coverage."""
+    index, frames = _full_read_capture()
+    drv = _drv(ProbeWorldAdb(start=_FULL_READ_SCROLLS[-1]), still_photo_dwell_candidates=3)
+    drv._dbg = HingeDebugLog(str(tmp_path), run_id="progressive-returned-refusal")
+    monkeypatch.setattr(
+        drv, "_still_photo_dwell_walk_return_budget",
+        lambda _index, _model_index: (1, 0, 1))
+    reference_offset = int(index.offsets[-1])
+    recovery = _overshot_navigation_recovery(_frame(1900), -260)
+    target = _stub_target(
+        _frame(1600), (700, 1700), climbed_px=300,
+        page_offset=reference_offset - 300)
+    navigation_calls = []
+    restored_local = hinge._MeasuredItemAnchor(_frame(2160), 0)
+
+    def navigate(_driver, walk_index, model_index, **_kwargs):
+        heart_ordinal = walk_index.translation[model_index - 1]
+        navigation_calls.append(heart_ordinal)
+        if len(navigation_calls) == 1:
+            raise item_nav.ItemNavigationError(
+                item_nav.NAV_SCROLL_OVERSHOT, "synthetic measured overshoot",
+                frame=recovery.frame, frame_index=recovery.frame_index, recovery=recovery)
+        return target
+
+    monkeypatch.setattr(hinge, "navigate_to_item", navigate)
+    proved = SimpleNamespace(dwell_exact=True, reattach_probe_ran=True)
+    correction = hinge._CenteringCorrection(total_px=0, frame=target.frame)
+    monkeypatch.setattr(
+        HingeDriver, "_still_photo_dwell_over_navigated_target",
+        lambda *_args, **_kwargs: (proved, None, correction))
+    cleanup_debts = []
+    final_anchor = hinge._MeasuredItemAnchor(frames[-1], 0)
+
+    def restore(_self, _entry, *, terminal_shift_px, **_kwargs):
+        cleanup_debts.append(terminal_shift_px)
+        return restored_local if len(cleanup_debts) == 1 else final_anchor
+
+    monkeypatch.setattr(HingeDriver, "_return_to_entry_from_measured_position", restore)
+    banked = SimpleNamespace(dwell_exact=True, reattach_probe_ran=True)
+
+    evidence, anchor = drv._still_photo_dwell_candidate_walk(
+        {4: banked}, frames=frames, index=index, mute_screen=lambda _f, _r: True,
+        eligible_heart_ordinals={2, 3},
+        entry_anchor=hinge._MeasuredItemAnchor(frames[-1], 0))
+
+    assert navigation_calls == [3, 2]
+    assert evidence == {4: banked, 2: proved}, "the refused heart stays refused"
+    assert cleanup_debts == [-260, -300]
+    assert anchor == final_anchor
+    records = [json.loads(line)
+               for line in (drv._dbg.dir / "actions.jsonl").read_text().splitlines()]
+    refusal = next(row["navigation_refusal"] for row in records
+                   if row["action"] == "still_photo_dwell_walk_candidate"
+                   and row["outcome"] == "navigation_refused_returned")
+    assert refusal["code"] == item_nav.NAV_SCROLL_OVERSHOT
+    assert refusal["planned"]["step_px"] == recovery.planned_step_px
+    assert refusal["achieved"]["climb_px"] == recovery.achieved_step_px
+    assert refusal["walk"] == {
+        "outcome": "continued", "returned_refusals_spent": 1,
+        "returned_refusal_budget": hinge._STILL_PHOTO_WALK_RETURNED_REFUSAL_BUDGET}
 
 
 def test_measured_overshot_candidate_returns_to_a_nonzero_entry_residual_and_keeps_evidence(
@@ -5055,6 +5352,59 @@ def test_should_stop_between_candidates_stops_the_walk_with_no_partial_candidate
     assert set(evidence) == {4, 3}
     assert 2 not in evidence and 1 not in evidence
     assert len(navigate_calls) == 1, "no candidate after the first must ever be attempted"
+    assert drv._current_dwell_walk_interruption == {
+        "reason": "stop_requested",
+        "phase": "before_candidate_navigation",
+        "next_page_heart": 2,
+        "unattempted_within_remaining_limit_page_hearts": [2, 1],
+    }
+
+
+def test_stop_before_the_base_dwell_records_the_in_budget_coverage_shortfall(
+        installed_still_photo_bound):
+    """A Stop after the read but before its free dwell must not look like K exhaustion."""
+    index, frames = _full_read_capture()
+    drv = _drv(ProbeWorldAdb(start=_FULL_READ_SCROLLS[-1]), still_photo_dwell_candidates=3)
+
+    evidence, anchor = drv._still_photo_dwell(
+        frames, index, should_stop=lambda: True, eligible_heart_ordinals={1, 2, 3, 4})
+
+    assert evidence == {}
+    assert anchor == hinge._MeasuredItemAnchor(frames[-1], 0)
+    assert drv._current_dwell_walk_interruption == {
+        "reason": "stop_requested",
+        "phase": "before_base_dwell",
+        "next_page_heart": 4,
+        "unattempted_within_remaining_limit_page_hearts": [4, 3, 2],
+    }
+
+
+def test_stop_during_the_base_dwell_records_the_partially_observed_card(
+        monkeypatch, installed_still_photo_bound):
+    """An empty burst is only a Stop diagnostic when the stop predicate confirms it."""
+    index, frames = _full_read_capture()
+    drv = _drv(ProbeWorldAdb(start=_FULL_READ_SCROLLS[-1]), still_photo_dwell_candidates=3)
+    checks = {"n": 0}
+
+    def stop_after_initial_check():
+        checks["n"] += 1
+        return checks["n"] >= 2
+
+    monkeypatch.setattr(HingeDriver, "_still_photo_dwell_burst",
+                        lambda *_args, **_kwargs: ([], 0.0))
+
+    evidence, _anchor = drv._still_photo_dwell(
+        frames, index, should_stop=stop_after_initial_check,
+        eligible_heart_ordinals={1, 2, 3, 4})
+
+    assert evidence == {}
+    assert drv._current_dwell_walk_interruption == {
+        "reason": "stop_requested",
+        "phase": "during_base_dwell",
+        "next_page_heart": 3,
+        "unattempted_within_remaining_limit_page_hearts": [3, 2],
+        "interrupted_page_hearts": [4],
+    }
 
 
 def test_should_stop_mid_proof_yields_no_partial_candidate(
@@ -5084,6 +5434,50 @@ def test_should_stop_mid_proof_yields_no_partial_candidate(
     assert set(evidence) == {4, 3}
     assert 2 not in evidence and 1 not in evidence
     assert state["navigations"] == 2, "candidate 2's navigation DID run, just not its proof"
+    assert drv._current_dwell_walk_interruption == {
+        "reason": "stop_requested",
+        "phase": "during_candidate_proof",
+        "next_page_heart": 1,
+        "unattempted_within_remaining_limit_page_hearts": [1],
+        "interrupted_page_hearts": [2],
+    }
+
+
+def test_stop_during_the_final_candidate_proof_keeps_its_interruption_provenance(
+        monkeypatch, installed_still_photo_bound):
+    """A final candidate has no next loop turn in which to record the Stop."""
+    index, frames = _full_read_capture()
+    drv = _drv(ProbeWorldAdb(start=_FULL_READ_SCROLLS[-1]), still_photo_dwell_candidates=2)
+    state = {"navigated": False}
+    target = _stub_target(frames[-1], (700, 1700), climbed_px=300)
+
+    def navigate_after_which_stop_is_true(*_args, **_kwargs):
+        state["navigated"] = True
+        return target
+
+    monkeypatch.setattr(hinge, "navigate_to_item", navigate_after_which_stop_is_true)
+    correction = hinge._CenteringCorrection(total_px=0, frame=target.frame)
+    monkeypatch.setattr(
+        HingeDriver, "_still_photo_dwell_over_navigated_target",
+        lambda *_args, **_kwargs: (None, None, correction))
+    entry = hinge._MeasuredItemAnchor(frames[-1], 0)
+    monkeypatch.setattr(
+        HingeDriver, "_still_photo_dwell_walk_return_to_entry",
+        lambda *_args, **_kwargs: entry)
+
+    evidence, anchor = drv._still_photo_dwell_candidate_walk(
+        {4: object()}, frames=frames, index=index, mute_screen=lambda _f, _r: True,
+        should_stop=lambda: state["navigated"], eligible_heart_ordinals={3},
+        entry_anchor=entry)
+
+    assert set(evidence) == {4}
+    assert anchor == entry
+    assert drv._current_dwell_walk_interruption == {
+        "reason": "stop_requested",
+        "phase": "during_candidate_proof",
+        "unattempted_within_remaining_limit_page_hearts": [],
+        "interrupted_page_hearts": [3],
+    }
 
 
 def test_no_targeting_calibration_means_the_walk_never_runs(installed_still_photo_bound):
@@ -5134,6 +5528,50 @@ def test_the_walk_records_one_debug_row_per_candidate_it_attempted(
         assert (row["navigation_s"] + row["proof_s"] + row["return_s"]
                 + row["unattributed_s"]
                 == pytest.approx(row["candidate_wall_s"], abs=3e-6))
+
+
+def test_interrupted_reattach_observation_is_not_logged_as_proved(
+        monkeypatch, tmp_path, installed_still_photo_bound):
+    """A first dwell object without its second burst remains coverage, never proof.
+
+    This is the exact Stop shape from the reported run: a candidate's first dwell was
+    byte-exact, but the re-attach observation did not run, so the payload correctly refuses it.
+    The candidate action and its timing row must say the same thing rather than calling that
+    partial observation ``proved``.
+    """
+    index, frames = _full_read_capture()
+    drv = _drv(ProbeWorldAdb(start=_FULL_READ_SCROLLS[-1]), still_photo_dwell_candidates=2)
+    drv._dbg = HingeDebugLog(str(tmp_path), run_id="interrupted-reattach-observation")
+    target = _stub_target(frames[-1], (700, 1700), climbed_px=300)
+    partial = item_crops.StillPhotoDwell(
+        dwell_frame_sha256s=("first", "second"), dwell_exact=True, dwell_span_s=1.0,
+        mute_screens_complete=True, centered=True, center_offset_frac=0.0,
+        reattach_probe_ran=False)
+    monkeypatch.setattr(hinge, "navigate_to_item", lambda *_args, **_kwargs: target)
+    correction = hinge._CenteringCorrection(total_px=0, frame=target.frame)
+    monkeypatch.setattr(
+        HingeDriver, "_still_photo_dwell_over_navigated_target",
+        lambda *_args, **_kwargs: (partial, None, correction))
+    entry = hinge._MeasuredItemAnchor(frames[-1], 0)
+    monkeypatch.setattr(
+        HingeDriver, "_still_photo_dwell_walk_return_to_entry",
+        lambda *_args, **_kwargs: entry)
+
+    evidence, anchor = drv._still_photo_dwell_candidate_walk(
+        {4: object()}, frames=frames, index=index, mute_screen=lambda _f, _r: True,
+        eligible_heart_ordinals={3}, entry_anchor=entry)
+
+    assert evidence[3] == partial
+    assert anchor == entry
+    records = [json.loads(line)
+               for line in (drv._dbg.dir / "actions.jsonl").read_text().splitlines()]
+    actions = [row for row in records
+               if row["action"] == "still_photo_dwell_walk_candidate"]
+    timings = [row for row in records
+               if row["action"] == "still_photo_dwell_walk_candidate_timing"]
+    assert [row["outcome"] for row in actions] == ["observed_unproved"]
+    assert [row["outcome"] for row in timings] == ["observed_unproved"]
+    assert actions[0]["reattach_probe_ran"] is False
 
 
 def test_candidate_walk_can_filter_out_written_cards_without_spending_its_budget(

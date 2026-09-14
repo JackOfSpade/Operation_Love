@@ -76,10 +76,13 @@ streak does.
 from __future__ import annotations
 
 import inspect
+import json
+import os
 import threading
+import traceback
 from collections import deque
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Callable
 
 from ..costing import CostTracker
@@ -302,6 +305,161 @@ _MAX_ATTEMPTS = 15
 # (_RECENT_OPENERS) therefore also decides how far back the guard can see.
 _ENTROPY_NGRAM_WORDS = 4
 
+# --- Opener-rejection dead-letter (see _write_opener_rejection_deadletter's docstring) ---
+#
+# Bounds for the LOCAL dead-letter file below. This is a diagnostic scratch file, not the
+# durable record (that is still self.store.record_opener_rejection) -- it only exists to
+# survive the ONE piece of evidence a failed store write would otherwise lose: the exception
+# text. An unbounded append-only file would defeat that same purpose over time (a multi-day
+# BigQuery outage would turn "helpful diagnostic" into "an ever-growing file nobody wants to
+# open"), so it is capped on two independent axes, oldest entries dropped first on either:
+#   - _DEADLETTER_MAX_ENTRIES (200): generous headroom over any single bad run (max_attempts
+#     tops out at _MAX_ATTEMPTS=15 per profile, so 200 covers well over a dozen consecutive
+#     doomed profiles) while staying small enough to read by eye without paging.
+#   - _DEADLETTER_MAX_BYTES (2 MiB): the hard backstop, checked AFTER the per-field truncation
+#     below, so 200 entries that each happened to carry a pathological multi-KB provider error
+#     still cannot blow past a sane file size.
+# The newest failure is the one relevant to whatever incident someone is currently debugging,
+# which is why both bounds evict the oldest entries rather than the newest.
+_DEADLETTER_MAX_ENTRIES = 200
+_DEADLETTER_MAX_BYTES = 2 * 1024 * 1024
+
+# Cap on any SINGLE large text field written into one dead-letter entry (reason, raw_opener,
+# the formatted traceback). A single pathological value -- e.g. the multi-KB HTML error body
+# some providers put in an exception message -- must not by itself blow the whole-file byte
+# ceiling above and evict every older entry in one write. 4000 chars comfortably holds a
+# realistic provider error message and a full multi-frame traceback; anything longer is
+# truncated with an explicit marker so a reader can tell "this is all there is" from "this was
+# cut short".
+_DEADLETTER_FIELD_LIMIT = 4000
+_DEADLETTER_TRUNCATION_MARKER = "...<deadletter-truncated>"
+
+# The four maybe_opener() branches that call self.store.record_opener_rejection, in the order
+# they appear below -- passed as the `branch` argument to
+# _write_opener_rejection_deadletter so a reader can tell which failure produced a given
+# entry without re-deriving it from reason_code (REASON_OPENER_ERROR/REASON_BAD_REQUEST/
+# REASON_TRANSIENT_ERROR are shared with other telemetry; OpenerParseError has no single
+# REASON_* of its own since e.reason_code is model-supplied).
+
+
+def _deadletter_truncate(value: str | None, limit: int = _DEADLETTER_FIELD_LIMIT) -> str | None:
+    """Bound one text field for the dead-letter entry (see _DEADLETTER_FIELD_LIMIT). None
+    passes through unchanged -- raw_opener is legitimately None for three of the four
+    branches, and that is a meaningful "no raw text was ever parsed", not a value to coerce
+    into a string first."""
+    if value is None:
+        return None
+    if len(value) <= limit:
+        return value
+    return value[:limit] + _DEADLETTER_TRUNCATION_MARKER
+
+
+def _write_opener_rejection_deadletter(path: str | None, branch: str, store: object, *,
+                                       run_id: str, app: str, model: str, attempt: int,
+                                       reason_code: str, reason: str,
+                                       raw_opener: str | None, prompt_sha256: str,
+                                       exc: Exception) -> None:
+    """Best-effort, LOCAL record of one opener-rejection row that FAILED to reach
+    self.store.record_opener_rejection, kept so the next occurrence of the incident below is
+    diagnosable instead of silently lost.
+
+    THE INCIDENT THIS EXISTS FOR: production's BigQuery `opener_rejections` table sat at ZERO
+    rows across the table's entire history while `spend` showed at least 159 billed
+    OpenerParseError events (76 distinct runs with zero successful openers but non-zero
+    spend, 2026-08-14 through 2026-09-09) -- spanning BOTH sides of the 2026-09-06 (c) fix in
+    ops/OPENER-REDESIGN.md that added a record_opener_rejection call to every rejection
+    branch specifically to stop this table from being empty. The row and schema are provably
+    fine: the row serializes, `_row_id` works, the BigQuery table has a byte-exact matching
+    9-field schema, and the identical code path writes a real row against the SQLite store. So
+    the failure is on the WIRE, inside the BigQuery write itself, and the one piece of evidence
+    that would name it -- `store_exc`, the exception this write path caught -- went to a bare
+    `print()` that nothing captures in production, after which the process moved on and the
+    text was gone for good.
+
+    THIS DOES NOT FIX THE WRITE. It cannot from here: this function runs only after the store
+    call has already raised, and two prior passes at the underlying BigQuery path already
+    failed to fix it (that is why this diagnostic exists at all). All this keeps is the
+    evidence a human needs to root-cause the NEXT occurrence, in a place that does not depend
+    on someone watching the live console at the exact moment it happens.
+
+    WHAT WAS DELIBERATELY NOT DONE. No retry of the store call (a write that just failed on
+    the wire is not obviously fixed by asking again, and this is a diagnostic path, not a
+    delivery-guarantee mechanism). No queue-and-flush-later, no second network call of any
+    kind, no alerting/paging integration. This is a local file and nothing else -- the
+    smallest thing that preserves the missing evidence without adding a new way for THIS path
+    to fail.
+
+    WHAT TO DO WHEN THIS FILE HAS ENTRIES: read `exc_type` / `exc_str` first, then
+    `cause_type` / `cause_str` -- BigQuery client-library errors routinely wrap the actual
+    reason (a malformed row, an auth/quota failure, a schema mismatch the SDK detected
+    client-side) in `exc.__cause__` and leave a generic message on the outer exception, so the
+    cause fields are often where the real answer lives, not `exc_str`. `traceback` is the
+    full picture if those are not enough. `store_class` says instantly whether this was the
+    BigQuery or SQLite backend (this file should, in practice, only ever fill up with the
+    former). Once the actual wire-level cause is known, it closes out the open item in
+    ops/OPENER-REDESIGN.md: append a dated addendum stating what was actually found and what,
+    if anything, ships to fix it -- do not edit the 2026-09-06 (c) entry that (incorrectly, it
+    turns out) believed this was already fixed.
+
+    NEVER RAISES. This function is called from inside an `except Exception as store_exc:`
+    block that already gave up on persisting the real record; it must not turn a diagnostic
+    for a failed write into a second failure that changes maybe_opener's control flow. The
+    entire body below is one try/except that swallows everything, including a failure of the
+    swallowing itself doing nothing more than nothing -- no re-raise, no further I/O, no
+    second print.
+    """
+    if not path:
+        return
+    try:
+        cause = exc.__cause__
+        entry = {
+            "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "branch": branch,
+            "store_class": type(store).__name__,
+            "row": {
+                "run_id": run_id,
+                "app": app,
+                "model": model,
+                "attempt": attempt,
+                "reason_code": reason_code,
+                "reason": _deadletter_truncate(reason),
+                "raw_opener": _deadletter_truncate(raw_opener),
+                "prompt_sha256": prompt_sha256,
+            },
+            "exc_type": type(exc).__name__,
+            "exc_str": _deadletter_truncate(str(exc)),
+            "exc_repr": _deadletter_truncate(_safe_repr(exc)),
+            "cause_type": type(cause).__name__ if cause is not None else None,
+            "cause_str": _deadletter_truncate(str(cause)) if cause is not None else None,
+            "traceback": _deadletter_truncate(traceback.format_exc()),
+        }
+        line = json.dumps(entry, default=str)
+
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                lines = [stripped for stripped in (raw.strip() for raw in f) if stripped]
+        except FileNotFoundError:
+            lines = []
+        lines.append(line)
+
+        # Bound 1: entry count, oldest dropped first.
+        if len(lines) > _DEADLETTER_MAX_ENTRIES:
+            lines = lines[-_DEADLETTER_MAX_ENTRIES:]
+        # Bound 2: total bytes, oldest dropped first, stopping short of an empty file (the
+        # newest entry is kept even if it alone exceeds the ceiling -- truncation above
+        # already keeps any one entry small, so this is a last-resort backstop, not the
+        # normal case).
+        while len(lines) > 1 and sum(len(ln) + 1 for ln in lines) > _DEADLETTER_MAX_BYTES:
+            lines = lines[1:]
+
+        directory = os.path.dirname(path)
+        if directory:
+            os.makedirs(directory, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+    except Exception:  # noqa: BLE001 -- see docstring: a diagnostic for a failed write must
+        pass          # never itself raise, so this swallows unconditionally.
+
 
 def _safe_repr(value: object) -> str:
     """Represent rejected direct-call values without integer-string-limit failures."""
@@ -482,7 +640,8 @@ class OpenerService:
                  style: str, max_attempts: int = 5, *,
                  replay_corpus_dir: str | None = None,
                  replay_corpus_max_captures: int = 0,
-                 replay_corpus_max_age_days: int = 0):
+                 replay_corpus_max_age_days: int = 0,
+                 deadletter_path: str | None = None):
         # BUG 2 (adversarial audit): max_attempts=0 (or negative) made range(1, max_attempts+1)
         # empty, so maybe_opener()'s retry loop body never ran at all -- 0 API calls, disabled
         # stayed False, stop_requested stayed False, no reason was ever recorded. That is
@@ -524,6 +683,21 @@ class OpenerService:
         # for, exactly like replay_corpus_dir itself defaulting to disabled.
         self.replay_corpus_max_captures = replay_corpus_max_captures
         self.replay_corpus_max_age_days = replay_corpus_max_age_days
+        # Local dead-letter file for a record_opener_rejection call that raised -- see
+        # _write_opener_rejection_deadletter's docstring above for the incident this exists to
+        # diagnose (BigQuery opener_rejections silently stayed at zero rows). Mirrors
+        # replay_corpus_dir's own shape exactly: OFF (None) unless a caller passes a real path,
+        # rather than this class silently picking one under the caller's cwd. None is the
+        # correct default for a direct construction (tests, scripts) -- it disables the write
+        # outright, so nothing is ever touched unless someone deliberately turns it on.
+        #
+        # NOT YET WIRED at supervisor.py's construction site (this change is scoped to
+        # opener/service.py and its own test file only -- see the incident docstring). The
+        # correct value there follows db_file's own convention (config.py ~371-390): derive
+        # from cfg.data_dir, e.g. str(cfg.data_dir / "opener_rejection_deadletter.jsonl"),
+        # never a second independent "./data/..." literal. Until that one-line addition lands,
+        # this diagnostic exists and is fully tested but is inert in a real run.
+        self._deadletter_path = deadletter_path
         # The prompt era every row this service writes is stamped with. Computed ONCE here
         # because all three inputs (this style text, opener.py's _SYSTEM, and _SCHEMA) are
         # fixed for the life of the process -- the style is read from config at supervisor
@@ -1170,6 +1344,11 @@ class OpenerService:
                             e.raw_opener, prompt_sha256=self.prompt_sha256)
                     except Exception as store_exc:  # noqa: BLE001
                         print(f"Warning: failed to persist opener rejection record: {store_exc}")
+                        _write_opener_rejection_deadletter(
+                            self._deadletter_path, "parse_error", self.store,
+                            run_id=run_id, app=app, model=e.model, attempt=attempt,
+                            reason_code=e.reason_code, reason=str(e), raw_opener=e.raw_opener,
+                            prompt_sha256=self.prompt_sha256, exc=store_exc)
                     # In-memory mirror of the row just above, independent of the store call's
                     # success -- see recent_rejections' docstring in __init__ for why this
                     # exists (the bug report's Recent opener rejections section reads this,
@@ -1289,6 +1468,11 @@ class OpenerService:
                             prompt_sha256=self.prompt_sha256)
                     except Exception as store_exc:  # noqa: BLE001
                         print(f"Warning: failed to persist opener rejection record: {store_exc}")
+                        _write_opener_rejection_deadletter(
+                            self._deadletter_path, "opener_error", self.store,
+                            run_id=run_id, app=app, model="", attempt=attempt,
+                            reason_code=REASON_OPENER_ERROR, reason=str(e), raw_opener=None,
+                            prompt_sha256=self.prompt_sha256, exc=store_exc)
                     return None
                 except Exception as e:  # noqa: BLE001
                     # HTTP-level / provider-level failures land here, and none of them are
@@ -1337,6 +1521,11 @@ class OpenerService:
                                 prompt_sha256=self.prompt_sha256)
                         except Exception as store_exc:  # noqa: BLE001
                             print(f"Warning: failed to persist opener rejection record: {store_exc}")
+                            _write_opener_rejection_deadletter(
+                                self._deadletter_path, "bad_request", self.store,
+                                run_id=run_id, app=app, model="", attempt=attempt,
+                                reason_code=REASON_BAD_REQUEST, reason=str(e), raw_opener=None,
+                                prompt_sha256=self.prompt_sha256, exc=store_exc)
                         self._consecutive_bad_requests += 1
                         if self._consecutive_bad_requests >= _BAD_REQUEST_LATCH_THRESHOLD:
                             self._exhaust(
@@ -1379,6 +1568,12 @@ class OpenerService:
                             prompt_sha256=self.prompt_sha256)
                     except Exception as store_exc:  # noqa: BLE001
                         print(f"Warning: failed to persist opener rejection record: {store_exc}")
+                        _write_opener_rejection_deadletter(
+                            self._deadletter_path, "transient", self.store,
+                            run_id=run_id, app=app, model="", attempt=attempt,
+                            reason_code=REASON_TRANSIENT_ERROR,
+                            reason=f"{type(e).__name__}: {e}", raw_opener=None,
+                            prompt_sha256=self.prompt_sha256, exc=store_exc)
                     if self._register_transient_failure(e):
                         # Latched -- exhausted_reason now carries the global cause; leave
                         # last_skip_reason (a per-call cause) alone, same reasoning as the

@@ -2887,8 +2887,57 @@ def test_long_background_card_top_merge_splits_the_reported_heartless_hybrid():
     assert any("retained as uncroppable but is ordinal-safe" in note for note in assembly_notes)
 
 
+def test_long_background_card_top_merge_accepts_one_complete_card_with_two_trusted_partial_tops():
+    """Bronte's 1939..1973 heading was dragged into the 2049..3023 card group.
+
+    Frame 4 alone bounded the lower card end to end.  Frames 2 and 3 then independently saw
+    its exact card-corner top, but their bottoms were cut by the analysed band.  The old rule
+    discarded those top measurements because they were not complete, leaving f0/f1's long
+    background seam unsplit and transitive overlap joined the heading to the card.
+    """
+    observations = [
+        _obs(0, 697, 1806, hearts=(1717,)),
+        _obs(0, 1935, 2100, complete=False),
+        _obs(1, 1939, 2282, complete=False),
+        _obs(2, 1939, 1973, complete=False),
+        _obs(2, 2049, 2501, complete=False, top_observed=True,
+             top_kind=segment.EDGE_CARD_CORNER),
+        _obs(3, 1939, 1973, complete=False),
+        _obs(3, 2049, 2951, complete=False, top_observed=True,
+             top_kind=segment.EDGE_CARD_CORNER, hearts=(2934,)),
+        _obs(4, 1939, 1973, complete=False),
+        _obs(4, 2049, 3023, hearts=(2934,), top_kind=segment.EDGE_CARD_CORNER),
+    ]
+
+    repaired, notes = item_index._split_long_background_card_top_merges(
+        observations, ((0, 1973, 2049), (1, 1973, 2049)),
+        tolerance=item_index._EXTENT_TOLERANCE_PX)
+
+    assert [(o.frame_index, o.page_y0, o.page_y1) for o in repaired if o.frame_index < 2] == [
+        (0, 697, 1806), (0, 1935, 1973), (0, 2049, 2100),
+        (1, 1939, 1973), (1, 2049, 2282),
+    ]
+    assert len(notes) == 2
+    assert all("complete sighting in frame 4" in note for note in notes)
+    assert all("frames [2, 3]" in note for note in notes)
+
+    blocks, failures, assembly_notes = _assemble(
+        repaired, at_scroll_top=False, page_coverage=((300, 2100),), full=True)
+
+    assert failures == ()
+    assert [(block.page_y0, block.page_y1, block.kind) for block in blocks] == [
+        (697, 1806, item_index.ITEM_SELECTABLE),
+        (1935, 1973, item_index.ITEM_PARTIAL),
+        (2049, 3023, item_index.ITEM_SELECTABLE),
+    ]
+    assert [block.heart_ordinal for block in blocks] == [1, None, 2]
+    assert [block.model_index for block in blocks] == [1, None, 2]
+    assert any("ordinal-safe" in note for note in assembly_notes)
+
+
 @pytest.mark.parametrize(
-    "case", ("heart", "no_complete_card", "single_complete_card", "misaligned_card",
+    "case", ("heart", "no_complete_card", "single_complete_card", "one_partial_top",
+             "mismatched_partial_tops", "spread_partial_tops", "misaligned_card",
              "disagreeing_complete_cards", "tiny_overlap"))
 def test_long_background_card_top_merge_requires_heartless_exactly_aligned_complete_card(case):
     """This narrow repair must not turn an arbitrary long blank span into a boundary."""
@@ -2899,6 +2948,30 @@ def test_long_background_card_top_merge_requires_heartless_exactly_aligned_compl
         observations = [upper, hybrid]
     elif case == "single_complete_card":
         observations = [upper, hybrid, _obs(4, 2046, 3020, hearts=(2931,))]
+    elif case == "one_partial_top":
+        observations = [upper, hybrid, _obs(3, 2046, 2600, complete=False,
+                                             top_observed=True,
+                                             top_kind=segment.EDGE_CARD_CORNER),
+                        _obs(4, 2046, 3020, hearts=(2931,))]
+    elif case == "mismatched_partial_tops":
+        # Both fragments land at the measured top, but only one has the complete card's
+        # card-corner evidence.  A gutter is a different observed edge, not a second vote.
+        observations = [upper, hybrid,
+                        _obs(2, 2046, 2500, complete=False, top_observed=True,
+                             top_kind=segment.EDGE_CARD_CORNER),
+                        _obs(3, 2046, 2600, complete=False, top_observed=True,
+                             top_kind=segment.EDGE_GUTTER),
+                        _obs(4, 2046, 3020, hearts=(2931,))]
+    elif case == "spread_partial_tops":
+        # Each top is individually within the complete card's ±8px fold tolerance, but they
+        # disagree with each other by 16px.  They therefore cannot be two corroborations of
+        # one exact card top and must not license a virtual seam split.
+        observations = [upper, hybrid,
+                        _obs(2, 2038, 2500, complete=False, top_observed=True,
+                             top_kind=segment.EDGE_CARD_CORNER),
+                        _obs(3, 2054, 2600, complete=False, top_observed=True,
+                             top_kind=segment.EDGE_CARD_CORNER),
+                        _obs(4, 2046, 3020, hearts=(2931,))]
     elif case == "misaligned_card":
         # More than chain slack away from the long run's lower edge; it could be another card.
         observations = [upper, hybrid, _obs(3, 2070, 3044, hearts=(2955,)),

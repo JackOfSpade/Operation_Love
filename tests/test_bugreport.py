@@ -29,6 +29,7 @@ def test_report_has_core_sections():
               "## Training alerts",
               "## Run completion assessment",
               "## Recent opener rejections",
+              "## Opener rejections that never reached the store",
               "## Debug log (on-disk actions + screenshots)", "## Recent logs"]:
         assert h in md, f"missing section: {h}"
     assert "improve `operation_love/bugreport.py`" in md
@@ -141,6 +142,22 @@ def test_completion_assessment_names_recovered_provider_faults_and_coverage(monk
     assert "still-photo coverage skipped 3 of 5 photo candidate(s)" in md
 
 
+def test_completion_assessment_attributes_latest_coverage_gap_to_operator_stop(monkeypatch):
+    monkeypatch.setattr(
+        bugreport, "_completion_capture_facts",
+        lambda *_: {"coverage_gaps": 2, "coverage_candidates": 5,
+                    "coverage_stop_interrupted_gaps": 2,
+                    "coverage_stop_interrupted_candidates": 5,
+                    "capture_truncated": False},
+    )
+
+    md = bugreport._run_completion_assessment_md(_CompletionHub(), "unused.yaml")
+
+    assert "requested Stop interrupted the latest still-photo dwell walk" in md
+    assert "leaving 2 of 5 photo candidate(s) uncovered" in md
+    assert "still-photo coverage skipped" not in md
+
+
 def test_completion_facts_will_not_follow_a_status_named_run_symlink(tmp_path, monkeypatch):
     """Run IDs are diagnostic input, so their path must not escape the configured debug root."""
     debug_root = tmp_path / "debug"
@@ -162,8 +179,77 @@ def test_completion_facts_will_not_follow_a_status_named_run_symlink(tmp_path, m
 
     assert bugreport._completion_capture_facts(
         {"run_id": "completion-test-run"}, "unused.yaml") == {
-            "coverage_gaps": 0, "coverage_candidates": 0, "capture_truncated": False,
+            "coverage_gaps": 0, "coverage_candidates": 0,
+            "coverage_stop_interrupted_gaps": 0,
+            "coverage_stop_interrupted_candidates": 0,
+            "capture_truncated": False,
         }
+
+
+def test_completion_facts_scope_dwell_stop_to_latest_capture(tmp_path, monkeypatch):
+    debug_root = tmp_path / "debug"
+    run = debug_root / "completion-test-run"
+    run.mkdir(parents=True)
+    (run / "actions.jsonl").write_text("\n".join(map(json.dumps, [
+        {"action": "still_photo_dwell_walk_candidate", "outcome": "stop"},
+        {"action": "capture", "item_coverage": {
+            "no_dwell_coverage_page_hearts": [1],
+            "photo_candidate_page_hearts": [1],
+        }},
+        # This stop belongs to the latest capture; the earlier one above must not change which
+        # capture window is examined.
+        {"action": "still_photo_dwell_walk_candidate", "outcome": "stop"},
+        {"action": "capture", "item_coverage": {
+            "no_dwell_coverage_page_hearts": [2, 4],
+            "photo_candidate_page_hearts": [2, 4, 6],
+        }},
+    ])) + "\n")
+    cfg = types.SimpleNamespace(
+        enabled_apps=["hinge"],
+        apps={"hinge": {"debug_log": True, "debug_dir": str(debug_root)}},
+    )
+    monkeypatch.setattr(oplove_config, "load", lambda _path: cfg)
+
+    facts = bugreport._completion_capture_facts(
+        {"run_id": "completion-test-run"}, "unused.yaml")
+
+    assert facts == {
+        "coverage_gaps": 2, "coverage_candidates": 3,
+        "coverage_stop_interrupted_gaps": 2,
+        "coverage_stop_interrupted_candidates": 3,
+        "capture_truncated": False,
+    }
+
+
+def test_completion_facts_prefer_capture_scoped_stop_provenance(tmp_path, monkeypatch):
+    debug_root = tmp_path / "debug"
+    run = debug_root / "completion-test-run"
+    run.mkdir(parents=True)
+    (run / "actions.jsonl").write_text(json.dumps({
+        "action": "capture",
+        "item_coverage": {
+            "no_dwell_coverage_page_hearts": [1, 4, 7],
+            "photo_candidate_page_hearts": [1, 4, 6, 7],
+            "dwell_walk_interruption": {
+                "reason": "stop_requested",
+                "next_page_heart": 4,
+                "unattempted_within_remaining_limit_page_hearts": [1, 4],
+                "interrupted_page_hearts": [7],
+            },
+        },
+    }) + "\n")
+    cfg = types.SimpleNamespace(
+        enabled_apps=["hinge"],
+        apps={"hinge": {"debug_log": True, "debug_dir": str(debug_root)}},
+    )
+    monkeypatch.setattr(oplove_config, "load", lambda _path: cfg)
+
+    facts = bugreport._completion_capture_facts(
+        {"run_id": "completion-test-run"}, "unused.yaml")
+
+    assert facts["coverage_gaps"] == 3
+    assert facts["coverage_stop_interrupted_gaps"] == 3
+    assert facts["coverage_stop_interrupted_candidates"] == 4
 
 
 def test_reporter_follow_up_makes_a_one_word_description_actionable():
@@ -1317,6 +1403,31 @@ def test_capture_timing_summary_reports_only_arithmetic_complete_candidate_rows(
             "other 3.0s") in summary
 
 
+def test_capture_timing_summary_attributes_progressive_sweep_cleanup_to_return():
+    lines = [
+        json.dumps({"action": "capture_timing_summary", "iter_wall_s_total": 45.0}),
+        json.dumps({"action": "still_photo_dwell_progressive_sweep", "outcome": "started"}),
+        json.dumps({"action": "still_photo_dwell_walk_candidate_timing",
+                    "heart_ordinal": 5, "candidate_wall_s": 31.0,
+                    "navigation_s": 11.0, "proof_s": 19.0, "return_s": 0.0,
+                    "unattributed_s": 1.0}),
+        json.dumps({"action": "still_photo_dwell_walk_candidate_timing",
+                    "heart_ordinal": 4, "candidate_wall_s": 27.0,
+                    "navigation_s": 8.0, "proof_s": 18.0, "return_s": 0.0,
+                    "unattributed_s": 1.0}),
+        json.dumps({"action": "still_photo_dwell_progressive_sweep", "outcome": "returned",
+                    "return_s": 17.5}),
+        json.dumps({"action": "capture_fold_timing", "photos": 19,
+                    "fold_wall_s": 100.0, "still_photo_dwell_s": 90.0}),
+        json.dumps({"action": "capture", "photos": 19, "profile_name": "Jordan"}),
+    ]
+
+    summary = bugreport._latest_completed_capture_timing_md(lines)
+
+    assert ("2 candidate hop(s): navigation 19.0s; proof 37.0s; return 17.5s; "
+            "other 2.0s") in summary
+
+
 def test_capture_timing_summary_fails_closed_for_unpaired_or_optional_bad_fields():
     """Corrupt timing rows must not be paired across captures or make reports fail."""
     unpaired = [
@@ -1763,6 +1874,24 @@ def test_dwell_navigation_refusal_summary_tolerates_legacy_and_malformed_rows(tm
     assert "unknown page heart: dwell-navigation refusal `bad' # fake heading`" in md
     assert "planned step telemetry unavailable" in md
     assert not any(line.strip().startswith("# fake heading") for line in md.splitlines())
+
+
+def test_dwell_navigation_refusal_summary_renders_below_entry_after_a_real_gesture():
+    """A below-entry refusal is reportable only when a recovery gesture already moved the phone.
+
+    Its gestureless sibling is deliberately omitted as a harmless skip, so this distinct outcome
+    must remain in the renderer's accepted set or the terminal capture would have no explanation.
+    """
+    md = bugreport._dwell_navigation_refusal_summary_md([
+        json.dumps({
+            "action": "still_photo_dwell_walk_candidate",
+            "heart_ordinal": 4,
+            "outcome": "below_entry_after_gesture",
+            "reason": "below_entry",
+        }),
+    ])
+
+    assert "page heart 4: dwell-navigation below_entry_after_gesture (`below_entry`)" in md
 
 
 def test_dwell_navigation_chain_refusal_reports_pair_and_both_estimator_directions(tmp_path):
@@ -3208,9 +3337,15 @@ def test_status_section_handles_missing_stopping_key_gracefully():
 # real thing: a snapshot of OpenerService.recent_openers_snapshot(), newest entry LAST.
 def _opener_entry(ts="2026-08-10T12:00:00", app="hinge", model="gemini-2.5-flash",
                    index=0, referenced="the beach photo",
-                   opener="hey, love the beach shot"):
-    return {"ts": ts, "app": app, "model": model,
-            "index": index, "referenced": referenced, "opener": opener}
+                   opener="hey, love the beach shot", prompt_sha256=None):
+    entry = {"ts": ts, "app": app, "model": model,
+             "index": index, "referenced": referenced, "opener": opener}
+    # Omitted entirely (never a guessed/None key) when not given, matching how real entries
+    # written before 2026-09-06 simply carry no `prompt_sha256` key at all -- see
+    # OpenerService.recent_openers' own comment on when this field was added.
+    if prompt_sha256 is not None:
+        entry["prompt_sha256"] = prompt_sha256
+    return entry
 
 
 class _FakeHubOpeners:
@@ -3421,9 +3556,13 @@ def test_recent_openers_section_survives_a_raising_recent_openers_call():
 def _rejection_entry(ts="2026-08-10T12:00:00", app="hinge", model="gemini-2.5-flash",
                      attempt=2, reason_code="scaffolding",
                      reason="Gemini's opener contained scaffolding text",
-                     raw_opener="Here's the response: love the beach shot"):
-    return {"ts": ts, "app": app, "model": model, "attempt": attempt,
-            "reason_code": reason_code, "reason": reason, "raw_opener": raw_opener}
+                     raw_opener="Here's the response: love the beach shot",
+                     prompt_sha256=None):
+    entry = {"ts": ts, "app": app, "model": model, "attempt": attempt,
+             "reason_code": reason_code, "reason": reason, "raw_opener": raw_opener}
+    if prompt_sha256 is not None:   # same omit-rather-than-guess convention as _opener_entry
+        entry["prompt_sha256"] = prompt_sha256
+    return entry
 
 
 class _FakeHubRejections:
@@ -3538,6 +3677,351 @@ def test_recent_opener_rejections_section_survives_a_raising_call():
     assert "## Recent opener rejections" in md
     assert "⚠️ this section failed to generate" in md
     assert "## Debug log" in md               # the rest of the report still renders
+
+
+# ── Prompt-era provenance ────────────────────────────────────────────────────────────────────
+# The bug this whole section exists to fix: a report about a bad AI-generated opener
+# ("Looks like Rome, right?") could not say WHICH PROMPT RULES were on wire when it was
+# generated -- even though the evidence row already carried `prompt_sha256`
+# (opener/opener.py's prompt_stamp), unread, right next to evidence_id/opener_sha256. See
+# ops/prompt-eras.json for the real registry this resolves against; these tests use a synthetic
+# fixture instead so they never depend on -- or get invalidated by -- that constantly-evolving
+# file.
+_KNOWN_ERA = {
+    "prompt_sha256": "a" * 64,
+    "label": "2026-08-12 e63266f0: baseline: 9 rule(s) on wire",
+    "rules": [f"RULE_{i}" for i in range(9)],
+}
+_WORKING_TREE = {
+    "prompt_sha256": "b" * 64,
+    "label": "UNCOMMITTED WORKING TREE -- PROVISIONAL, not a shipped era",
+    "commit": None,
+    "rules": [f"RULE_{i}" for i in range(11)],
+}
+
+
+def _prompt_eras_fixture(tmp_path, *, eras=None, working_tree=None):
+    path = tmp_path / "prompt-eras.json"
+    path.write_text(json.dumps({
+        "schema_version": 1,
+        "eras": [_KNOWN_ERA] if eras is None else eras,
+        "working_tree": _WORKING_TREE if working_tree is None else working_tree,
+    }))
+    return path
+
+
+def test_prompt_era_description_resolves_a_known_shipped_era_digest(monkeypatch, tmp_path):
+    """The concrete motivating fact: a report must be able to say WHICH prompt rules were on
+    wire, not just that some digest exists."""
+    monkeypatch.setattr(bugreport, "_PROMPT_ERAS_PATH", _prompt_eras_fixture(tmp_path))
+
+    description = bugreport._prompt_era_description(_KNOWN_ERA["prompt_sha256"])
+
+    assert "shipped era" in description
+    assert _KNOWN_ERA["label"] in description
+    assert "9 rule(s) on wire" in description
+
+
+def test_prompt_era_description_marks_the_working_tree_digest_provisional(monkeypatch, tmp_path):
+    """The uncommitted working-tree entry must never read as a shipped, released era -- this
+    is the exact fact the motivating report turned on: at the time it was filed, the reported
+    digest matched only `working_tree`, not any `eras[]` entry."""
+    monkeypatch.setattr(bugreport, "_PROMPT_ERAS_PATH", _prompt_eras_fixture(tmp_path))
+
+    description = bugreport._prompt_era_description(_WORKING_TREE["prompt_sha256"])
+
+    assert "UNCOMMITTED WORKING TREE" in description
+    assert "provisional" in description
+    assert "shipped era:" not in description   # the shipped branch's own "shipped era: <label>"
+    assert "11 rule(s) on wire" in description
+
+
+def test_prompt_era_description_unknown_digest_says_so_without_raising(monkeypatch, tmp_path):
+    monkeypatch.setattr(bugreport, "_PROMPT_ERAS_PATH", _prompt_eras_fixture(tmp_path))
+
+    description = bugreport._prompt_era_description("c" * 64)
+
+    assert description == "digest not in ops/prompt-eras.json"
+
+
+def test_prompt_era_description_degrades_when_registry_file_is_missing(monkeypatch, tmp_path):
+    monkeypatch.setattr(bugreport, "_PROMPT_ERAS_PATH", tmp_path / "does-not-exist.json")
+
+    description = bugreport._prompt_era_description("a" * 64)
+
+    assert "could not be read" in description
+
+
+def test_prompt_era_description_degrades_when_registry_json_is_malformed(monkeypatch, tmp_path):
+    path = tmp_path / "prompt-eras.json"
+    path.write_text("{not valid json")
+    monkeypatch.setattr(bugreport, "_PROMPT_ERAS_PATH", path)
+
+    description = bugreport._prompt_era_description("a" * 64)
+
+    assert "could not be read" in description
+
+
+def test_prompt_era_description_handles_an_absent_digest_without_raising():
+    assert bugreport._prompt_era_description(None) == "no prompt digest recorded"
+    assert bugreport._prompt_era_description("") == "no prompt digest recorded"
+
+
+def test_current_prompt_stamp_uses_the_loaded_configs_opener_style(monkeypatch):
+    """Must derive the digest exactly the way opener/opener.py's own documented "OFFLINE
+    REPRODUCTION" recipe does (`prompt_stamp(cfg.opener.style)`) -- any other derivation would
+    silently answer a different question than "is this the prompt that's live right now"."""
+    monkeypatch.setattr(oplove_config, "load", lambda path: types.SimpleNamespace(
+        opener=types.SimpleNamespace(style="a fixed style guide")))
+    monkeypatch.setattr("operation_love.opener.opener.prompt_stamp",
+                        lambda style: f"stamp-for:{style}")
+
+    assert bugreport._current_prompt_stamp("unused.yaml") == "stamp-for:a fixed style guide"
+
+
+def test_current_prompt_stamp_degrades_to_none_on_a_broken_config(monkeypatch):
+    """A report must never crash over this -- None means "could not determine", read by every
+    caller as a graceful "unknown", never as proof no prompt digest exists."""
+    def _raise(path):
+        raise ValueError("boom")
+    monkeypatch.setattr(oplove_config, "load", _raise)
+
+    assert bugreport._current_prompt_stamp("unused.yaml") is None
+
+
+def test_prompt_drift_verdict_says_same_when_digests_match(monkeypatch, tmp_path):
+    monkeypatch.setattr(bugreport, "_PROMPT_ERAS_PATH", _prompt_eras_fixture(tmp_path))
+    digest = _KNOWN_ERA["prompt_sha256"]
+
+    lines = bugreport._prompt_provenance_lines(digest, digest)
+
+    assert any("prompt drift: same as the checked-out prompt" in ln for ln in lines)
+    assert not any("DIFFERENT" in ln for ln in lines)
+
+
+def test_prompt_drift_verdict_says_different_when_digests_diverge(monkeypatch, tmp_path):
+    monkeypatch.setattr(bugreport, "_PROMPT_ERAS_PATH", _prompt_eras_fixture(tmp_path))
+
+    lines = bugreport._prompt_provenance_lines(_KNOWN_ERA["prompt_sha256"],
+                                               _WORKING_TREE["prompt_sha256"])
+
+    assert any("DIFFERENT from the checked-out prompt" in ln for ln in lines)
+    assert not any("prompt drift: same" in ln for ln in lines)
+
+
+def test_prompt_drift_verdict_says_unknown_when_current_stamp_unavailable(monkeypatch, tmp_path):
+    monkeypatch.setattr(bugreport, "_PROMPT_ERAS_PATH", _prompt_eras_fixture(tmp_path))
+
+    lines = bugreport._prompt_provenance_lines(_KNOWN_ERA["prompt_sha256"], None)
+
+    assert any("could not determine the checked-out prompt" in ln for ln in lines)
+
+
+def test_prompt_provenance_lines_render_nothing_for_a_record_with_no_digest():
+    """Older rows predate `prompt_sha256` entirely -- must render nothing rather than a
+    guessed value, the same absent-field convention `_recent_openers_md` already applies to
+    `index_space`."""
+    assert bugreport._prompt_provenance_lines(None, "a" * 64) == []
+    assert bugreport._prompt_provenance_lines("", "a" * 64) == []
+
+
+def test_presend_evidence_renders_full_prompt_digest_era_and_drift(monkeypatch, tmp_path):
+    monkeypatch.setattr(bugreport, "_PROMPT_ERAS_PATH", _prompt_eras_fixture(tmp_path))
+    run = tmp_path / "run_prompt_provenance"
+    run.mkdir(parents=True)
+    frame = b"typed opener under a known era"
+    opener = "Did the two of you plan that trip together?"
+    shot = "00050_auto_opener_pre_send_before.png"
+    (run / shot).write_bytes(frame)
+    record = {
+        "action": "auto_opener_pre_send", "before": shot, "opener": opener,
+        "opener_sha256": hashlib.sha256(opener.encode()).hexdigest(),
+        "frame_sha256": hashlib.sha256(frame).hexdigest(), "evidence_id": "evidence",
+        "prompt_sha256": _KNOWN_ERA["prompt_sha256"],
+    }
+    (run / "actions.jsonl").write_text(json.dumps(record) + "\n")
+
+    evidence = bugreport._latest_auto_opener_evidence_md(
+        (run / "actions.jsonl").read_text().splitlines(), run,
+        current_prompt_sha256=_KNOWN_ERA["prompt_sha256"])
+
+    assert f"prompt era: `{_KNOWN_ERA['prompt_sha256']}`" in evidence
+    assert "shipped era" in evidence
+    assert _KNOWN_ERA["label"] in evidence
+    assert "prompt drift: same as the checked-out prompt" in evidence
+
+
+def test_presend_evidence_flags_prompt_drift_against_a_different_checked_out_prompt(
+        monkeypatch, tmp_path):
+    monkeypatch.setattr(bugreport, "_PROMPT_ERAS_PATH", _prompt_eras_fixture(tmp_path))
+    run = tmp_path / "run_prompt_drift"
+    run.mkdir(parents=True)
+    frame = b"typed opener under a retired era"
+    opener = "A question written under an older prompt."
+    shot = "00051_auto_opener_pre_send_before.png"
+    (run / shot).write_bytes(frame)
+    record = {
+        "action": "auto_opener_pre_send", "before": shot, "opener": opener,
+        "opener_sha256": hashlib.sha256(opener.encode()).hexdigest(),
+        "frame_sha256": hashlib.sha256(frame).hexdigest(), "evidence_id": "evidence",
+        "prompt_sha256": _KNOWN_ERA["prompt_sha256"],
+    }
+    (run / "actions.jsonl").write_text(json.dumps(record) + "\n")
+
+    evidence = bugreport._latest_auto_opener_evidence_md(
+        (run / "actions.jsonl").read_text().splitlines(), run,
+        current_prompt_sha256=_WORKING_TREE["prompt_sha256"])
+
+    assert "DIFFERENT from the checked-out prompt" in evidence
+
+
+def test_presend_evidence_renders_no_prompt_provenance_for_a_record_with_no_digest(tmp_path):
+    """Pre-2026-09-05(b) rows carry no `prompt_sha256` at all -- must not fabricate one."""
+    run = tmp_path / "run_no_prompt_digest"
+    run.mkdir(parents=True)
+    frame = b"typed opener from before the stamp existed"
+    opener = "A question from a legacy row."
+    shot = "00052_auto_opener_pre_send_before.png"
+    (run / shot).write_bytes(frame)
+    record = {
+        "action": "auto_opener_pre_send", "before": shot, "opener": opener,
+        "opener_sha256": hashlib.sha256(opener.encode()).hexdigest(),
+        "frame_sha256": hashlib.sha256(frame).hexdigest(), "evidence_id": "evidence",
+    }
+    (run / "actions.jsonl").write_text(json.dumps(record) + "\n")
+
+    evidence = bugreport._latest_auto_opener_evidence_md(
+        (run / "actions.jsonl").read_text().splitlines(), run,
+        current_prompt_sha256=_KNOWN_ERA["prompt_sha256"])
+
+    assert "prompt era:" not in evidence
+    assert "prompt drift:" not in evidence
+
+
+def test_presend_evidence_renders_prompt_provenance_for_auto_mode_too(monkeypatch, tmp_path):
+    """The motivating bug's own digest was carried on an ordinary evidence row regardless of
+    session mode -- provenance must not be Training-gated, even though the older model-private
+    generation-context fields (angle/referenced/...) remain Training-only in practice."""
+    monkeypatch.setattr(bugreport, "_PROMPT_ERAS_PATH", _prompt_eras_fixture(tmp_path))
+    run = tmp_path / "run_auto_prompt_provenance"
+    run.mkdir(parents=True)
+    frame = b"typed opener, ordinary AUTO send"
+    opener = "Looks like Rome, right?"
+    shot = "00053_auto_opener_pre_send_before.png"
+    (run / shot).write_bytes(frame)
+    record = {
+        "action": "auto_opener_pre_send", "before": shot, "opener": opener,
+        "opener_sha256": hashlib.sha256(opener.encode()).hexdigest(),
+        "frame_sha256": hashlib.sha256(frame).hexdigest(), "evidence_id": "evidence",
+        "prompt_sha256": _KNOWN_ERA["prompt_sha256"],
+    }
+    (run / "actions.jsonl").write_text(json.dumps(record) + "\n")
+
+    evidence = bugreport._latest_auto_opener_evidence_md(
+        (run / "actions.jsonl").read_text().splitlines(), run,
+        current_prompt_sha256=_KNOWN_ERA["prompt_sha256"])
+
+    assert "session mode: auto" in evidence
+    assert "prompt era:" in evidence
+    assert "generation context (model-private fields" not in evidence   # still Training-only
+
+
+def test_recent_openers_section_shows_the_prompt_era_suffix_when_the_entry_carries_a_digest(
+        monkeypatch, tmp_path):
+    monkeypatch.setattr(bugreport, "_PROMPT_ERAS_PATH", _prompt_eras_fixture(tmp_path))
+    entry = _opener_entry(prompt_sha256=_KNOWN_ERA["prompt_sha256"])
+
+    md = bugreport._recent_openers_md(_FakeHubOpeners([entry]))
+
+    assert f"prompt: `{_KNOWN_ERA['prompt_sha256'][:12]}…`" in md
+    assert "shipped era" in md
+    assert "prompt drift" not in md      # the long sentence stays in the pre-send block only
+
+
+def test_recent_openers_section_omits_prompt_suffix_when_the_entry_carries_no_digest():
+    entry = _opener_entry()   # no prompt_sha256 -- matches every entry written before 2026-09-06
+
+    md = bugreport._recent_openers_md(_FakeHubOpeners([entry]))
+
+    assert "prompt:" not in md
+
+
+def test_recent_opener_rejections_section_shows_the_prompt_era_suffix(monkeypatch, tmp_path):
+    monkeypatch.setattr(bugreport, "_PROMPT_ERAS_PATH", _prompt_eras_fixture(tmp_path))
+    entries = [_rejection_entry(prompt_sha256=_WORKING_TREE["prompt_sha256"])]
+
+    md = bugreport._recent_opener_rejections_md(_FakeHubRejections(entries))
+
+    assert f"prompt: `{_WORKING_TREE['prompt_sha256'][:12]}…`" in md
+    assert "UNCOMMITTED WORKING TREE" in md
+
+
+def test_recent_opener_rejections_section_omits_prompt_suffix_when_absent():
+    entries = [_rejection_entry()]
+
+    md = bugreport._recent_opener_rejections_md(_FakeHubRejections(entries))
+
+    assert "prompt:" not in md
+
+
+def test_replay_corpus_pointer_names_the_reproduction_tool_when_empty(monkeypatch, tmp_path):
+    from operation_love.opener import replay_corpus as replay_corpus_mod
+    corpus_dir = tmp_path / "corpus"
+    corpus_dir.mkdir()
+    monkeypatch.setattr(replay_corpus_mod, "DEFAULT_CORPUS_DIR", str(corpus_dir))
+
+    md = bugreport._replay_corpus_pointer_md()
+
+    assert "tools/opener_replay.py" in md
+    assert "no captures retained" in md
+
+
+def test_replay_corpus_pointer_counts_retained_captures_without_claiming_correlation(
+        monkeypatch, tmp_path):
+    """The manifest format stores no run/profile/evidence id (replay_corpus.py's own PRIVACY
+    section), so this can only ever be a count plus a pointer -- never a claim that a specific
+    capture belongs to a specific evidence row."""
+    from operation_love.opener import replay_corpus as replay_corpus_mod
+    corpus_dir = tmp_path / "corpus"
+    corpus_dir.mkdir()
+    capture_id = "a" * 64
+    capture_dir = corpus_dir / capture_id
+    capture_dir.mkdir()
+    (capture_dir / "manifest.json").write_text(json.dumps({
+        "format_version": 1, "replay_id": capture_id, "captured_at": 1700000000.0,
+        "name": "Alex", "truncated": False, "prompt_sha256": None,
+        "items": [], "context": [],
+    }))
+    monkeypatch.setattr(replay_corpus_mod, "DEFAULT_CORPUS_DIR", str(corpus_dir))
+
+    md = bugreport._replay_corpus_pointer_md()
+
+    assert "1 capture(s) retained" in md
+    assert "NOT correlated to this specific record" in md
+    assert "tools/opener_replay.py" in md
+
+
+def test_presend_evidence_includes_the_replay_corpus_pointer_line(monkeypatch, tmp_path):
+    from operation_love.opener import replay_corpus as replay_corpus_mod
+    monkeypatch.setattr(replay_corpus_mod, "DEFAULT_CORPUS_DIR", str(tmp_path / "empty_corpus"))
+    run = tmp_path / "run_replay_pointer"
+    run.mkdir(parents=True)
+    frame = b"typed opener for replay pointer check"
+    opener = "Does the replay pointer show up here?"
+    shot = "00054_auto_opener_pre_send_before.png"
+    (run / shot).write_bytes(frame)
+    record = {
+        "action": "auto_opener_pre_send", "before": shot, "opener": opener,
+        "opener_sha256": hashlib.sha256(opener.encode()).hexdigest(),
+        "frame_sha256": hashlib.sha256(frame).hexdigest(), "evidence_id": "evidence",
+    }
+    (run / "actions.jsonl").write_text(json.dumps(record) + "\n")
+
+    evidence = bugreport._latest_auto_opener_evidence_md(
+        (run / "actions.jsonl").read_text().splitlines(), run)
+
+    assert "replay corpus" in evidence
+    assert "tools/opener_replay.py" in evidence
 
 
 def _targeting_config(tmp_path, *, licence_key=None, calibration=False):
@@ -3965,6 +4449,17 @@ def test_item_coverage_warns_when_a_dwell_shortfall_leaves_one_numbered_item():
     assert "[1, 3, 4, 6, 8]" in md
     assert "coverage gap, not a judgement" in md
     assert "exactly ONE numbered item" in md
+
+
+def test_item_coverage_names_stop_as_the_cause_of_an_interrupted_walk():
+    lines = bugreport._item_coverage_lines({"item_coverage": {
+        "photo_candidate_page_hearts": [1, 4, 6],
+        "dwell_covered_page_hearts": [6],
+        "no_dwell_coverage_page_hearts": [1, 4],
+        "numbered_page_hearts": [6],
+    }}, coverage_interrupted_by_stop=True)
+
+    assert "requested Stop interrupted this in-progress dwell walk" in "\n".join(lines)
 
 
 def test_item_coverage_is_quiet_when_every_photo_candidate_was_observed():
@@ -4429,3 +4924,98 @@ def test_shift_trace_rendering_survives_malformed_and_oversized_banks():
     strip_line = next(line for line in lines if "located strips" in line)
     assert f"+{80 - bugreport._SHIFT_TRACE_STRIPS_SHOWN} more" in strip_line
     assert "confidence" not in lines[0], "a non-numeric confidence is dropped, not rendered"
+
+
+# ── Opener-rejection dead-letter ────────────────────────────────────────────
+# A diagnostic nobody reads is not a diagnostic. BigQuery `opener_rejections` sat at ZERO rows
+# for the table's whole history while `spend` proved at least 159 billed OpenerParseError events
+# had happened, because the store exception went to a print() nothing captured and two fixes
+# shipped against theories instead of evidence. OpenerService now writes that exception to a
+# bounded local JSONL; these tests pin that the bug report actually SURFACES it, which is the
+# last link in that chain.
+
+def _write_deadletter(tmp_path, entries):
+    """Write a dead-letter file and a config pointing data_dir at it. Returns the config path."""
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    (data_dir / "opener_rejection_deadletter.jsonl").write_text(
+        "".join(json.dumps(e) + "\n" for e in entries))
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(f"paths:\n  data_dir: {data_dir}\n")
+    return str(cfg)
+
+
+def _deadletter_entry(**over):
+    entry = {
+        "ts": "2026-09-14T20:35:57+00:00", "branch": "parse_error",
+        "store_class": "BigQueryStore",
+        "row": {"run_id": "r", "app": "hinge", "model": "gemini-3.5-flash", "attempt": 1,
+                "reason_code": "bad_json", "reason": "did not parse", "raw_opener": "{oops",
+                "prompt_sha256": "c" * 64},
+        "exc_type": "RuntimeError", "exc_str": "BigQuery insert errors for opener_rejections",
+        "exc_repr": "RuntimeError(...)", "cause_type": "BadRequest",
+        "cause_str": "Invalid value for field 'reason'", "traceback": "Traceback...",
+    }
+    entry.update(over)
+    return entry
+
+
+def test_deadletter_section_is_a_quiet_single_line_when_nothing_ever_failed(tmp_path):
+    """The empty case is the HEALTHY case and must not read as a finding. The owner's standing
+    UI rule is that run-level context stays fine print and only a real blocker gets alarm
+    styling, so an absent file gets one plain line and no warning glyph."""
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(f"paths:\n  data_dir: {tmp_path / 'data'}\n")
+
+    md = bugreport._opener_rejection_deadletter_md(str(cfg))
+
+    assert md.startswith("- none:")
+    assert "⚠️" not in md
+
+
+def test_deadletter_section_names_the_chained_cause_where_the_real_reason_lives(tmp_path):
+    """`cause_type`/`cause_str` is the whole point: BigQuery client-library errors routinely
+    put a generic message on the outer exception and the actual reason (malformed row, auth,
+    schema) in `__cause__`. A section that showed only `exc_str` would reproduce exactly the
+    blindness that let this bug survive two fixes."""
+    cfg = _write_deadletter(tmp_path, [_deadletter_entry()])
+
+    md = bugreport._opener_rejection_deadletter_md(cfg)
+
+    assert "⚠️" in md and "1 opener-rejection row(s) FAILED to reach the store" in md
+    assert "BadRequest" in md
+    assert "Invalid value for field 'reason'" in md
+    assert "branch=`parse_error`" in md
+    assert "store=`BigQueryStore`" in md
+    assert "reason_code=`bad_json`" in md
+
+
+def test_deadletter_section_shows_newest_first_and_caps_the_listing(tmp_path):
+    """Newest first because the failure being debugged right now is the last one; capped
+    because this section must stay readable inside a report that is itself line-capped."""
+    entries = [_deadletter_entry(ts=f"2026-09-14T20:0{i}:00+00:00", branch=f"b{i}")
+               for i in range(8)]
+    cfg = _write_deadletter(tmp_path, entries)
+
+    md = bugreport._opener_rejection_deadletter_md(cfg)
+
+    assert "8 opener-rejection row(s) FAILED" in md
+    assert "3 older entry(ies) in the file" in md
+    shown = [line for line in md.splitlines() if "branch=`b" in line]
+    assert len(shown) == 5
+    assert "branch=`b7`" in shown[0] and "branch=`b3`" in shown[-1]
+
+
+def test_deadletter_section_degrades_on_an_unreadable_file_without_raising(tmp_path):
+    """Same contract as every other section: the bug report is the tool reached for when
+    something is already broken, so it must never itself be a point of failure."""
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(parents=True)
+    (data_dir / "opener_rejection_deadletter.jsonl").write_text("{not json at all")
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(f"paths:\n  data_dir: {data_dir}\n")
+
+    md = bugreport._opener_rejection_deadletter_md(str(cfg))
+
+    assert "could not be read" in md
+

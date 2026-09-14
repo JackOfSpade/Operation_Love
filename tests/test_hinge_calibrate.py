@@ -693,6 +693,118 @@ def test_post_advance_identity_probe_refuses_second_scroll_without_fresh_deck_pr
     assert driver.scrolls == [(0.13, 0.5)]
 
 
+def _post_advance_reprobe_driver(frames):
+    class Driver:
+        dwell_s = 0.0
+
+        def __init__(self):
+            self.adb = self
+            self.frames = iter(frames)
+            self.reads = []
+            self.gestures = []
+
+        def screencap(self):
+            frame = next(self.frames)
+            self.reads.append(frame)
+            return frame
+
+        # The read-only identity helper must never reach any of these transports.  Keeping them
+        # as observable fakes makes an accidental future recovery gesture a test failure.
+        def _scroll_down_one(self, *_args):
+            self.gestures.append("scroll")
+
+        def _scroll_up_one(self, *_args):
+            self.gestures.append("reverse-scroll")
+
+        def _swipe(self, *_args):
+            self.gestures.append("edge-back")
+
+        def _tap(self, *_args):
+            self.gestures.append("tap")
+
+    return Driver()
+
+
+def _wire_post_advance_reprobe_measurement(monkeypatch, *, fingerprints, top_states=None,
+                                           shifts=None):
+    monkeypatch.setattr(cal, "time", SimpleNamespace(sleep=lambda *_args: None))
+    monkeypatch.setattr(cal, "human_delay", lambda _dwell: 0.0)
+    monkeypatch.setattr(cal, "band_fingerprint", lambda frame, **_kw: fingerprints[frame])
+    monkeypatch.setattr(cal, "fingerprint_distance", lambda left, right: abs(left[0] - right[0]))
+    top_states = top_states or {}
+    monkeypatch.setattr(
+        cal, "confirm_scroll_top",
+        lambda frame, **_kw: _top_verdict(top_states.get(frame, "confirmed_not_top")))
+    shifts = shifts or {}
+    monkeypatch.setattr(
+        cal, "estimate_shift",
+        lambda left, right, **_kw: SimpleNamespace(
+            ok=True, delta_px=shifts.get((left, right), 0), reason="synthetic"))
+
+
+def test_post_advance_identity_reprobe_accepts_two_late_sticky_frames_without_a_gesture(
+        monkeypatch):
+    """One late repaint may be transitional; the final adjacent pair must prove the repair."""
+    driver = _post_advance_reprobe_driver((b"transitional", b"late-1", b"late-2"))
+    _wire_post_advance_reprobe_measurement(
+        monkeypatch,
+        fingerprints={b"initial": (0,), b"transitional": (0,), b"late-1": (10,),
+                      b"late-2": (10,)})
+
+    frame, distance, trace = cal._prove_post_advance_identity_distinct(
+        driver, prior_fingerprint=(0,), initial_frame=b"initial", identity_band=_IDENTITY_BAND,
+        content_band=_CONTENT_BAND, context="automated profile 2")
+
+    assert (frame, distance) == (b"late-2", 10.0)
+    assert driver.reads == [b"transitional", b"late-1", b"late-2"]
+    assert driver.gestures == []
+    assert trace["read_only_reprobe_count"] == 3
+    assert trace["accepted_read_only_reprobe_pair"] == [2, 3]
+    assert [sample["distance_from_prior"] for sample in trace["identity_distance_samples"]] == [
+        0.0, 0.0, 10.0, 10.0]
+
+
+def test_post_advance_identity_reprobe_refuses_persistent_collision_without_a_gesture(monkeypatch):
+    driver = _post_advance_reprobe_driver((b"again-1", b"again-2", b"again-3"))
+    _wire_post_advance_reprobe_measurement(
+        monkeypatch,
+        fingerprints={b"initial": (0,), b"again-1": (0,), b"again-2": (1,),
+                      b"again-3": (2,)})
+
+    with pytest.raises(cal._CaptureAbort,
+                       match=r"no gesture was issued and identity thresholds unchanged"):
+        cal._prove_post_advance_identity_distinct(
+            driver, prior_fingerprint=(0,), initial_frame=b"initial", identity_band=_IDENTITY_BAND,
+            content_band=_CONTENT_BAND, context="automated profile 2")
+
+    assert len(driver.reads) == 3
+    assert driver.gestures == []
+
+
+@pytest.mark.parametrize(
+    ("top_states", "shifts", "fingerprints"),
+    [
+        ({}, {}, {b"initial": (0,), b"one": (10,), b"two": (14,), b"three": (20,)}),
+        ({}, {(b"one", b"two"): 4, (b"two", b"three"): 4},
+         {b"initial": (0,), b"one": (10,), b"two": (10,), b"three": (10,)}),
+        ({b"one": "confirmed_top", b"two": "confirmed_top", b"three": "confirmed_top"}, {},
+         {b"initial": (0,), b"one": (10,), b"two": (10,), b"three": (10,)}),
+    ], ids=["disagreement", "motion", "not-refuted"])
+def test_post_advance_identity_reprobe_refuses_disagreement_motion_or_nonsticky_frame(
+        monkeypatch, top_states, shifts, fingerprints):
+    driver = _post_advance_reprobe_driver((b"one", b"two", b"three"))
+    _wire_post_advance_reprobe_measurement(
+        monkeypatch, fingerprints=fingerprints, top_states=top_states, shifts=shifts)
+
+    with pytest.raises(cal._CaptureAbort, match="read-only screencaps; no gesture was issued"):
+        cal._prove_post_advance_identity_distinct(
+            driver, prior_fingerprint=(0,), initial_frame=b"initial", identity_band=_IDENTITY_BAND,
+            content_band=_CONTENT_BAND, context="automated profile 2")
+
+    assert len(driver.reads) == 3
+    assert driver.gestures == []
+
+
 def test_every_automated_profile_enters_through_the_visual_rewind(monkeypatch, tmp_path):
     class Driver:
         identity_band = _IDENTITY_BAND
@@ -1095,6 +1207,32 @@ def test_default_unattended_capture_still_terminates_with_pass(monkeypatch, tmp_
                     if a["action"] in {"automated_pass", "automated_send_priority_like"})
     assert terminal["action"] == "automated_pass"
     assert terminal["send_like_tapped"] is False
+
+
+def test_automated_capture_commits_the_final_identity_reprobe_frame(monkeypatch, tmp_path):
+    """The accepted late frame, rather than the colliding initial sticky frame, is evidence."""
+    driver, _pass_calls, _send_calls = _unattended_single_item_fixtures(monkeypatch)
+    driver.adb.frames = iter((b"composer-1", b"pass-frame", b"transitional", b"late-1", b"late-2"))
+    monkeypatch.setattr(cal, "_scroll_next_profile_to_sticky_header",
+                        lambda *_a, **_kw: b"initial-collision")
+    _wire_post_advance_reprobe_measurement(
+        monkeypatch,
+        fingerprints={b"initial-collision": (0,), b"transitional": (0,), b"late-1": (10,),
+                      b"late-2": (10,)})
+
+    frames_meta = []
+    meta, _counter = cal._capture_one_profile_unattended(
+        driver, tmp_path, ordinal=1, frame_counter=0, frames_meta=frames_meta,
+        used_profile_ids=set(), review_gate=None, send_like=False)
+
+    identity_record = next(record for record in frames_meta
+                           if record["role"] == "profile_advance_identity")
+    assert (tmp_path / identity_record["file"]).read_bytes() == b"late-2"
+    proof = next(action for action in meta["automated_actions"]
+                 if action["action"] == "automated_sticky_header_proof")
+    # The fixture's pre-heart identity is ``(1,)``; the final sampled fingerprint is ``(10,)``.
+    assert proof["new_profile_identity_distance"] == 9.0
+    assert proof["accepted_read_only_reprobe_pair"] == [2, 3]
 
 
 @pytest.mark.parametrize(
@@ -2283,6 +2421,13 @@ def test_content_band_rect_is_derived_from_the_configured_band_not_hardcoded():
 
     assert cal._content_band_rect_px(frame, (0.125, 0.875)) == (0, 300, 1080, 2100)
     assert cal._content_band_rect_px(frame, (0.1, 0.9)) == (0, 240, 1080, 2160)
+    assert cal._identity_band_rect_px(frame, _IDENTITY_BAND) == (108, 115, 864, 225)
+    assert cal._reviewed_target_protected_prefix_rect(
+        frame, (0.125, 0.875), (700, 1500)) == (0, 300, 1080, 1500)
+    # Complete, frame-bounded target cards may start slightly above the content-band boundary.
+    # The protected region grows upward to keep the entire target exact rather than refusing it.
+    assert cal._reviewed_target_protected_prefix_rect(
+        frame, (0.125, 0.875), (250, 1500)) == (0, 250, 1080, 1500)
 
 
 def test_target_frame_proof_carries_the_screen_verdict_bound_to_the_screened_frame(monkeypatch):
@@ -2316,9 +2461,9 @@ def test_target_frame_proof_carries_the_screen_verdict_bound_to_the_screened_fra
         cal._located_target_heart_visible(True, b"target-pre")
 
 
-# Real, decodable PNGs standing in for the reviewed frame and a fresh capture of it. The band
-# comparison now decodes both sides (it has to, to know the frame's own height/width), so a fake
-# placeholder like the old `b"target-pre"` no longer stands in for a screen -- these are still
+# Real, decodable PNGs standing in for the reviewed frame and a fresh capture of it. The protected
+# prefix/identity comparisons decode both sides (they have to, to know each frame's dimensions),
+# so a fake placeholder like the old `b"target-pre"` no longer stands in for a screen -- these are still
 # 1080-wide like `_ACTION_FRAME_SIZE` so the (700, 900) card rect used throughout these tests
 # sits inside the content band exactly as it did before.
 _FRESH_TARGET_FRAME = _action_frame()
@@ -2399,12 +2544,112 @@ def test_a_status_bar_clock_tick_does_not_invalidate_a_reviewed_heart(monkeypatc
     assert driver.taps == [(500, 800)]
 
 
+def test_lower_card_only_change_preserves_the_reviewed_target_and_reproves_before_tap(monkeypatch):
+    """An unrelated later card may animate; the reviewed prefix and identity cannot."""
+    # Rows 1200..1208 are below the reviewed card bottom (900), but still inside the configured
+    # content band.  This is the live lower-video shape that a full-band equality gate rejected.
+    fresh = _frame_with_patch(9, 200, rows=(1200, 1208), cols=(100, 108))
+    target = SimpleNamespace(
+        frame=_FRESH_TARGET_FRAME, point=(500, 800), block_frame_rows=(700, 900),
+        identity=SimpleNamespace(identity=SimpleNamespace(), match_max=1.0))
+    video_checks, identity_checks = [], []
+    driver = SimpleNamespace(
+        adb=SimpleNamespace(screencap=lambda: fresh), identity_band=_IDENTITY_BAND, taps=[])
+    driver._tap = lambda *point: driver.taps.append(point)
+    driver._target_frame_video_screen_reason = lambda frame, block: video_checks.append(
+        (frame, block)) or None
+    monkeypatch.setattr(cal, "confirm_scroll_top",
+                        lambda *_a, **_kw: _stub_scroll_top_verdict("confirmed_not_top", distance=12.0))
+    monkeypatch.setattr(
+        cal, "segment_frame",
+        lambda *_a, **_kw: SimpleNamespace(
+            ok=True, failures=(),
+            blocks=(SimpleNamespace(x0=53, y0=700, x1=1027, y1=900, hearts=((500, 800),)),)))
+    monkeypatch.setattr(
+        cal, "compare_profile_identity",
+        lambda *args, **_kw: identity_checks.append(args) or SimpleNamespace(matched=True, reason="matched"))
+
+    point = cal._fresh_reviewed_target_point(
+        driver, target, reviewed_point=[500, 800], content_band=_CONTENT_BAND,
+        like_template=object(), like_threshold=0.8)
+    driver._tap(*point)
+
+    assert driver.taps == [(500, 800)]
+    assert video_checks and video_checks[0][0] == fresh
+    assert identity_checks, "the sticky-header identity re-proof must remain mandatory"
+
+
+@pytest.mark.parametrize("rows", [(400, 408), (750, 758)], ids=["header-prefix", "target-card"])
+def test_any_change_in_the_protected_prefix_refuses_before_tap(monkeypatch, rows):
+    target = SimpleNamespace(
+        frame=_FRESH_TARGET_FRAME, point=(500, 800), block_frame_rows=(700, 900),
+        identity=SimpleNamespace(identity=SimpleNamespace(), match_max=1.0))
+    fresh = _frame_with_patch(9, 200, rows=rows, cols=(100, 108))
+    driver = SimpleNamespace(
+        adb=SimpleNamespace(screencap=lambda: fresh), identity_band=_IDENTITY_BAND, taps=[])
+    driver._tap = lambda *point: driver.taps.append(point)
+    driver._target_frame_video_screen_reason = lambda *_a: pytest.fail("re-proof follows only exact prefix")
+
+    with pytest.raises(cal._CaptureAbort, match="protected content prefix changed"):
+        cal._fresh_reviewed_target_point(
+            driver, target, reviewed_point=[500, 800], content_band=_CONTENT_BAND,
+            like_template=object(), like_threshold=0.8)
+
+    assert driver.taps == []
+
+
+def test_lower_card_change_plus_identity_band_mutation_refuses_before_tap(monkeypatch):
+    """Excluding later cards cannot exempt the configured header ROI from exact equality."""
+    image = np.full((_ACTION_FRAME_SIZE[1], _ACTION_FRAME_SIZE[0]), 9, np.uint8)
+    image[1200:1208, 100:108] = 200  # unrelated later card, below the protected prefix
+    image[120:128, 120:128] = 201    # inside configured identity_band (rows 96..188)
+    ok, encoded = cv2.imencode(".png", image)
+    assert ok
+    target = SimpleNamespace(
+        frame=_FRESH_TARGET_FRAME, point=(500, 800), block_frame_rows=(700, 900),
+        identity=SimpleNamespace(identity=SimpleNamespace(), match_max=1.0))
+    driver = SimpleNamespace(
+        adb=SimpleNamespace(screencap=lambda: encoded.tobytes()), identity_band=_IDENTITY_BAND,
+        taps=[])
+    driver._tap = lambda *point: driver.taps.append(point)
+    driver._target_frame_video_screen_reason = lambda *_a: pytest.fail("identity mutation must stop first")
+
+    with pytest.raises(cal._CaptureAbort, match="profile identity band changed"):
+        cal._fresh_reviewed_target_point(
+            driver, target, reviewed_point=[500, 800], content_band=_CONTENT_BAND,
+            like_template=object(), like_threshold=0.8)
+
+    assert driver.taps == []
+
+
+def test_rebound_expected_rows_set_the_protected_prefix_bottom(monkeypatch):
+    """A post-reattach residual rebind must not protect only the navigator's old rows."""
+    target = SimpleNamespace(
+        frame=_FRESH_TARGET_FRAME, point=(500, 800), block_frame_rows=(700, 900),
+        identity=SimpleNamespace(identity=SimpleNamespace(), match_max=1.0))
+    # This differs below the old bottom (900) but inside rebound rows ending at 1050.
+    fresh = _frame_with_patch(9, 200, rows=(975, 983), cols=(100, 108))
+    driver = SimpleNamespace(
+        adb=SimpleNamespace(screencap=lambda: fresh), identity_band=_IDENTITY_BAND, taps=[])
+    driver._tap = lambda *point: driver.taps.append(point)
+    driver._target_frame_video_screen_reason = lambda *_a: pytest.fail("prefix must refuse first")
+
+    with pytest.raises(cal._CaptureAbort, match="protected content prefix changed"):
+        cal._fresh_reviewed_target_point(
+            driver, target, reviewed_point=[500, 800], content_band=_CONTENT_BAND,
+            like_template=object(), like_threshold=0.8,
+            expected_frame=_FRESH_TARGET_FRAME, expected_rows=(800, 1050),
+            expected_point=(500, 800))
+
+    assert driver.taps == []
+
+
 def test_a_small_change_inside_the_reviewed_card_still_refuses_a_stale_checkpoint(monkeypatch):
-    """The band comparison must stay byte-EXACT, not merely 'close enough': a handful of pixels
+    """The protected-prefix comparison stays byte-EXACT, not merely 'close enough': a few pixels
     flipped inside the reviewed card's own rect (a stalled video waking up, a control fading in)
     is exactly the class of change the old full-frame check existed to catch, and narrowing the
-    scope to the content band must not let any of it through. Also pins the new refusal message,
-    which must name the content band rather than the old 'framebuffer changed' wording.
+    scope below the target must not let any of it through. Also pins the refusal message, which
+    must name the protected content prefix rather than the old whole-frame wording.
     """
     target = SimpleNamespace(
         frame=_FRESH_TARGET_FRAME, point=(500, 800), block_frame_rows=(700, 900),
@@ -2415,7 +2660,7 @@ def test_a_small_change_inside_the_reviewed_card_still_refuses_a_stale_checkpoin
     driver._tap = lambda *point: driver.taps.append(point)
     driver._target_frame_video_screen_reason = lambda *_a: None
 
-    with pytest.raises(cal._CaptureAbort, match="the reviewed card's content band changed"):
+    with pytest.raises(cal._CaptureAbort, match="protected content prefix changed"):
         point = cal._fresh_reviewed_target_point(
             driver, target, reviewed_point=[500, 800], content_band=_CONTENT_BAND,
             like_template=object(), like_threshold=0.8)
@@ -2487,7 +2732,7 @@ def test_fresh_reviewed_target_refuses_when_the_reviewed_frame_cannot_be_decoded
     driver._tap = lambda *point: driver.taps.append(point)
     driver._target_frame_video_screen_reason = lambda *_a: None
 
-    with pytest.raises(cal._CaptureAbort, match="could not be read to scope"):
+    with pytest.raises(cal._CaptureAbort, match="could not be read to scope the protected"):
         point = cal._fresh_reviewed_target_point(
             driver, target, reviewed_point=[500, 800], content_band=_CONTENT_BAND,
             like_template=object(), like_threshold=0.8)
@@ -2510,7 +2755,7 @@ def test_fresh_reviewed_target_wraps_an_unreadable_band_rect_as_a_refusal(monkey
     driver._tap = lambda *point: driver.taps.append(point)
     driver._target_frame_video_screen_reason = lambda *_a: None
 
-    with pytest.raises(cal._CaptureAbort, match="content band could not be compared"):
+    with pytest.raises(cal._CaptureAbort, match="protected prefix/identity comparison"):
         point = cal._fresh_reviewed_target_point(
             driver, target, reviewed_point=[500, 800], content_band=(0.9, 0.1),
             like_template=object(), like_threshold=0.8)
@@ -2570,16 +2815,11 @@ def test_the_identity_gate_compares_the_reviewed_frame_not_the_navigators_frame(
 @pytest.mark.parametrize(
     "rebind", [False, True], ids=["default-navigator-frame", "rebound-expected-frame"])
 def test_a_genuinely_different_profile_in_the_fresh_frame_still_refuses(monkeypatch, rebind):
-    """Pin the thing that must not weaken while the identity reference moves to the reviewed
-    frame: a fresh frame that actually shows a DIFFERENT profile's sticky header still refuses,
-    whether the reference is `target.frame` (the default path, `expected_frame` unset) or a
-    rebound `expected_frame` (the post-probe path). Exercises the real comparison pipeline, not a
-    mock, so a regression that made the gate ignore the identity band entirely -- e.g. always
-    reading it off `fresh` alone -- would be caught here. The uniform patch fills the WHOLE
-    identity band with one far-from-chrome value, so `confirm_scroll_top` on the reviewed frame
-    reads REFUTED (not `confirmed`/`cannot_tell`) and this exercises the fingerprint-and-compare
-    branch specifically; the spy on `compare_profile_identity` confirms that branch actually ran
-    rather than the refusal coming from some other path that happens to share the message.
+    """A changed identity strip now refuses before fuzzy semantic identity comparison.
+
+    The exact ROI is deliberately stricter than the later sticky-header comparator: a distinct
+    profile is stopped without giving any score threshold the opportunity to tolerate it.  The
+    unchanged-ROI semantic comparator remains covered by the separate identity-mismatch test.
     """
     reviewed_frame = _frame_with_patch(9, 130, rows=(96, 188), cols=(108, 864))
     foreign_profile_fresh = _frame_with_patch(9, 230, rows=(96, 188), cols=(108, 864))
@@ -2596,26 +2836,24 @@ def test_a_genuinely_different_profile_in_the_fresh_frame_still_refuses(monkeypa
         lambda *_a, **_kw: SimpleNamespace(
             ok=True, failures=(),
             blocks=(SimpleNamespace(y0=700, y1=900, hearts=((500, 800),)),)))
-    real_compare_profile_identity = cal.compare_profile_identity
     identity_calls = []
 
     def _spy_compare_profile_identity(*args, **kwargs):
         identity_calls.append((args, kwargs))
-        return real_compare_profile_identity(*args, **kwargs)
+        return SimpleNamespace(matched=False, reason="must not be reached")
 
     monkeypatch.setattr(cal, "compare_profile_identity", _spy_compare_profile_identity)
     kwargs = ({"expected_frame": reviewed_frame, "expected_rows": (700, 900),
               "expected_point": (500, 800)} if rebind else {})
 
-    with pytest.raises(cal._CaptureAbort, match="fresh structural/identity revalidation failed"):
+    with pytest.raises(cal._CaptureAbort, match="profile identity band changed"):
         point = cal._fresh_reviewed_target_point(
             driver, target, reviewed_point=[500, 800], content_band=_CONTENT_BAND,
             like_template=object(), like_threshold=0.8, **kwargs)
         driver._tap(*point)
 
     assert driver.taps == []
-    assert identity_calls, (
-        "compare_profile_identity must actually run when the reviewed frame's band refutes top")
+    assert identity_calls == []
 
 
 def _raise_scroll_top_error(*_args, **_kwargs):
@@ -2771,7 +3009,7 @@ def test_fresh_reviewed_target_still_refuses_content_band_change_when_identity_c
     driver._tap = lambda *point: driver.taps.append(point)
     driver._target_frame_video_screen_reason = lambda *_a: None
 
-    with pytest.raises(cal._CaptureAbort, match="the reviewed card's content band changed"):
+    with pytest.raises(cal._CaptureAbort, match="protected content prefix changed"):
         point = cal._fresh_reviewed_target_point(
             driver, target, reviewed_point=[500, 800], content_band=_CONTENT_BAND,
             like_template=object(), like_threshold=0.8)
@@ -3301,6 +3539,68 @@ def test_post_pass_settle_accepts_a_ready_top_without_an_extra_edge_back(monkeyp
     assert trace["modal_edge_back_used"] is False
 
 
+def test_post_pass_settle_reprobes_transient_until_an_ordinary_top_without_a_swipe(monkeypatch):
+    """A loading post-Pass frame can settle to the next deck without modal recovery."""
+    class _Adb:
+        def __init__(self): self.frames = iter((b"settled-top",))
+        def screen_size(self): return 1080, 2400
+        def screencap(self): return next(self.frames)
+
+    class _Driver:
+        dwell_s = 0.0
+        def __init__(self): self.adb, self.swipes = _Adb(), 0
+        def _observe_deck_ready(self, frame): return frame == b"settled-top"
+        def _swipe(self, *_args): self.swipes += 1
+
+    driver, composer_candidates = _Driver(), []
+    monkeypatch.setattr(cal, "time", SimpleNamespace(sleep=lambda *_args: None))
+    monkeypatch.setattr(cal, "human_delay", lambda _dwell: 0.0)
+    monkeypatch.setattr(
+        cal, "confirm_scroll_top",
+        lambda frame, **_kw: _top_verdict(
+            "cannot_tell" if frame == b"loading" else "confirmed_top", "settled"))
+    monkeypatch.setattr(
+        cal, "locate_inline_composer",
+        lambda frame, *_a, **_kw: composer_candidates.append(frame)
+        or (_ for _ in ()).throw(ComposerDetectionError("absent")))
+
+    settled, trace = cal._settle_automated_post_pass_to_top(
+        driver, frame=b"loading", confirm_template=object(), identity_band=_IDENTITY_BAND)
+
+    assert settled == b"settled-top"
+    assert driver.swipes == 0
+    assert composer_candidates == [b"loading", b"settled-top"]
+    assert trace["modal_edge_back_used"] is False
+
+
+def test_post_pass_settle_preserves_refuted_sticky_header_without_a_swipe(monkeypatch):
+    """A real scrolled/sticky state is never treated as a dismissible modal."""
+    class _Adb:
+        def screen_size(self): return 1080, 2400
+        def screencap(self): return b"sticky-header"
+
+    class _Driver:
+        dwell_s = 0.0
+        def __init__(self): self.adb, self.swipes = _Adb(), 0
+        def _observe_deck_ready(self, _frame): pytest.fail("a refuted top must not query deck readiness")
+        def _swipe(self, *_args): self.swipes += 1
+
+    driver = _Driver()
+    monkeypatch.setattr(cal, "time", SimpleNamespace(sleep=lambda *_args: None))
+    monkeypatch.setattr(cal, "human_delay", lambda _dwell: 0.0)
+    monkeypatch.setattr(cal, "confirm_scroll_top",
+                        lambda *_a, **_kw: _top_verdict("confirmed_not_top", "sticky header"))
+    monkeypatch.setattr(cal, "locate_inline_composer",
+                        lambda *_a, **_kw: (_ for _ in ()).throw(ComposerDetectionError("absent")))
+
+    with pytest.raises(cal._CaptureAbort,
+                       match="preserved state: scroll-top remained refuted/scrolled"):
+        cal._settle_automated_post_pass_to_top(
+            driver, frame=b"sticky-header", confirm_template=object(),
+            identity_band=_IDENTITY_BAND)
+    assert driver.swipes == 0
+
+
 def test_post_pass_settle_uses_one_edge_back_for_top_looking_promo_then_requires_deck(monkeypatch):
     class _Adb:
         state = b"promo"
@@ -3419,6 +3719,9 @@ def test_preaction_skip_uses_public_dislike_and_records_distinct_retry(monkeypat
     assert driver.taps == 0
     assert record["transport"] == "HingeDriver.dislike"
     assert record["predicates"]["new_profile_identity_distinct"] is True
+    assert record["automated_sticky_header_proof"]["read_only_reprobe_count"] == 0
+    assert record["automated_sticky_header_proof"]["identity_distance_samples"][0][
+        "distance_from_prior"] == 20.0
 
 
 def test_send_like_run_advances_unusable_profile_with_public_like_not_dislike(monkeypatch):

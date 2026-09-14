@@ -288,38 +288,39 @@ apps:
     # To replace it with real evidence later, collect a corpus with tools/hinge_video_bound
     # (owner labeled) or tools/hinge_video_bound_auto (circular), then swap this block for
     # `still_photo_bound_evidence`. The two keys are mutually exclusive by design.
-    # TARGETING CALIBRATION — renewed 2026-09-04 on the live Hinge 10.2.0 build.
+    # TARGETING CALIBRATION — renewed 2026-09-11 on the live Hinge 10.3.0 build.
     #
-    # Emitted by `tools.hinge_calibrate measure` from two separately collected calibration
-    # profiles and two held-out profiles after deterministic second-process manifest review.
-    # Strategy `photo_1_only_v1` targets item 1 on every ordinal, so this calibration does NOT
-    # exercise deep-item navigation. Unsupported 10.2 recommendation layouts and any other
-    # pre-heart refusals are hash-bound skip traces and never measurement profiles.
+    # Emitted by `tools.hinge_calibrate measure` from four separately collected calibration
+    # profiles and three held-out profiles after hash-bound external AI review at every action
+    # checkpoint and deterministic second-process manifest review. Strategy `photo_1_only_v1`
+    # targets item 1 on every ordinal, so this calibration does NOT exercise deep-item
+    # navigation. Unsupported layouts and pre-heart refusals are never measurement profiles.
     #
     # Exact bounds and replay results are in
-    # ops/calibration/targeting_20260904T_10_2_heldout_final_v2/measurement_ledger.json. Both
+    # ops/calibration/targeting_20260911T_10_3_heldout_final_v4/measurement_ledger.json. Both
     # numeric gates passed with zero foreign accepts and zero false refusals.
     #
-    # This is AUTOMATED CIRCULAR-RISK evidence (`human_ground_truth: false`). It licenses
-    # numbered targeted suggestions for Training on the exact 10.2.0 build. It does NOT release
-    # AUTO; the production-observe artifact below remains historical 10.0.1 evidence.
+    # This is EXTERNAL AI-REVIEWED CIRCULAR-RISK evidence (`human_ground_truth: false`). It
+    # licenses numbered targeted suggestions for Training on the exact 10.3.0 build. It does
+    # NOT release AUTO; the production-observe artifact below remains historical 10.0.1
+    # evidence.
     targeting_calibration:
       schema_version: 3
       device: "33111JEHN04475"
-      hinge_version_name: "10.2.0"
+      hinge_version_name: "10.3.0"
       frame_size_px: [1080, 2400]
       composer_layout_id: hinge_inline_v1
       item_selection_policy_id: hinge_photos_only_v2
-      identity_match_max_dist: 2.5649
+      identity_match_max_dist: 1.8256
       inline_item_max_dist: 14.9099
-      calibrated_at: "2026-09-04T16:27:00.770568+00:00 — measured from session(s): targeting_20260904T_10_2_calibration_final_v2, targeting_20260904T_10_2_heldout_final_v2"
+      calibrated_at: "2026-09-11T19:20:24.989030+00:00 — measured from session(s): targeting_20260911T_10_3_calibration_final, targeting_20260911T_10_3_heldout_final_v4"
       identity_band: [0.1, 0.048, 0.8, 0.094]
       content_band: [0.125, 0.875]
     still_photo_assumption_acceptance:
       acceptance: I_ACCEPT_UNMEASURED_CENTERED_AUTOPLAY_ASSUMPTION
-      accepted_at: "2026-09-04 owner-directed live calibration renewal for Hinge 10.2.0"
+      accepted_at: "2026-09-11 owner-directed live calibration renewal for Hinge 10.3.0"
       device: "33111JEHN04475"
-      hinge_version_name: "10.2.0"
+      hinge_version_name: "10.3.0"
       rationale: >-
         Measuring the held-out video false-accept rate needs roughly 420 profiles and 420 real
         passes at the observed rate of one video per seven profiles, which the owner judged
@@ -329,9 +330,9 @@ apps:
         all while observed, meaning stalled, buffering, unloaded, or an ended non-looping clip.
         The re-attach probe gives such a card a second trigger before anything is called a photo.
     # HISTORICAL MANUAL AUTO RELEASE (2026-08-25): this exact legacy production artifact binds
-    # the historical 10.0.1 calibration to run d8547ff144b4. The phone is now on 10.2.0, so
+    # the historical 10.0.1 calibration to run d8547ff144b4. The phone is now on 10.3.0, so
     # this release artifact does not license AUTO on the live build. Keep it as an immutable
-    # audit record; the current 10.2.0 calibration above licenses Training only, and fresh
+    # audit record; the current 10.3.0 calibration above licenses Training only, and fresh
     # production-observe release evidence is still required before AUTO. The still-photo
     # assumption remains explicitly UNMEASURED and cannot by itself authorize AUTO.
     observe_release_evidence:
@@ -1022,6 +1023,56 @@ opener:
   # Gemini. Other numbered images remain visible only while choosing an item and cannot supply
   # the selected opener's premise, predicate, joke, question, connection, or payoff. This changes
   # the prompt era; see ops/OPENER-REDESIGN.md, Addendum -- 2026-09-09 (a).
+  #
+  # Addendum 2026-09-14 (she is the one who knows): owner feedback on a watched Training draft,
+  # "Looks like Rome, right?" under a photo of her on an Italian street. The owner's objection is
+  # about the ADDRESSEE, not the target or the grounding: she was standing there, so a question
+  # that asks her to agree an image LOOKS like a place only makes sense between two people who
+  # have both never been. AN EXISTING RULE PRODUCED IT. VISUAL LOCATION TURN BOUNDARY said "ask
+  # only whether the location itself is right. The confirmation is the conversational payoff",
+  # which recommended the interrogative branch over the end-after-the-guess branch it also
+  # offered; HEDGE THE CLAIM supplied the hedge; SHARED CONTEXT RULE's "two people looking at the
+  # same thing" licensed the co-observer stance; VARY THE SHAPE had stopped naming the structures
+  # it was de-emphasizing (2026-09-05, negation-priming); and REPLY COMFORT's own carve-out
+  # exempted the bare location confirmation from its "make the honest reply feel good to give"
+  # test. Every rule was obeyed. This is the 2026-09-06 pattern again: check whether a rule on
+  # wire is producing the output before adding one on top of it.
+  #
+  # THE MISSING PROPERTY. Every rule here governs what the message SAYS. None governed WHOSE
+  # KNOWLEDGE it presumes. SHE IS THE ONE WHO KNOWS states it: the shared looking covers the item
+  # on the screen, never the world behind it, so an inference about a place she went or a thing
+  # she did is news to the sender and old news to her. It forbids asking her to agree about how
+  # something appears and closing a claim about her own life with a tag that only collects her
+  # agreement; it keeps asking her outright legal, because that is a real question from someone
+  # who genuinely does not know. It is written as a NARROWING of SHARED CONTEXT RULE and a
+  # SHARPENING of HEDGE THE CLAIM (put the uncertainty in how sure you are, never in how clear
+  # the item is), and it defers to NEVER INVENT THE SENDER so it cannot be satisfied by claiming
+  # where he has or has not been. VISUAL LOCATION TURN BOUNDARY keeps its whole SCOPE and loses
+  # only its tilt: "the confirmation is the conversational payoff" becomes "her settling it is the
+  # whole payoff either way", which still tells the model the message is complete (deleting that
+  # assurance would re-create the 2026-09-05 bug of appending a second beat) without recommending
+  # one of the two endings, and both endings are now explicitly subject to VARY THE SHAPE.
+  #
+  # MEASURED, AND IT CHANGED THE DECISION. 234 unique openers (124 local jsonl + 198 BigQuery, 88
+  # overlapping), 2026-08-10 to 2026-09-14. The literal tag "right?" appears ONCE in 234, so a
+  # lexical guard on it would have overfitted a single row, exactly the blocklist mistake the
+  # 2026-09-06 NO GRADING addendum rejected. The real shape is a hedge plus an agreement-seeking
+  # confirmation, and its vocabulary is already varied ("am I close?" x3, "how close is that
+  # guess?", "is that where you were?", "right?"). Within the 21 proper-name location guesses it
+  # went from 1 of 11 before 2026-09-05 to 5 of 10 after, and "am I close?" is 0 before and 3
+  # after: the boundary rule collapsed the shape space of its own subpopulation. Both denominators
+  # are small and a few rows move them a lot. NO DETERMINISTIC GUARD SHIPS, deliberately: the
+  # existing _unconfirmed_location_followup_markers is a SCOPE guard (do not build on the guess)
+  # and is left exactly as it is, including the bare-confirmation-tag shapes it accepts, because
+  # widening it to the appearance frame would reject roughly 8 of those 21 including drafts that
+  # read fine, at the cost of a run-stopping five-attempt budget. ESCALATION TRIGGER: if a watched
+  # batch still asks her to co-sign an appearance, revisit a guard scoped to the appearance cue.
+  # This is prompt-only in all FOUR on-wire copies (this block, _SYSTEM, the _SCHEMA opener and
+  # angle descriptions, and the retry hint). The retry block gains the wording clause but NO new
+  # HARD REJECTION entry, because no new raising guard ships; do not read that as broken lockstep.
+  # No example opener copy ships anywhere, per the 2026-08-16 de-templating rule; "Looks like
+  # Rome, right?" is pinned off wire in the tests. This changes the prompt era; see
+  # ops/OPENER-REDESIGN.md, Addendum -- 2026-09-14 (a).
   style: |
     Use the dating and conversational principles associated with Coach Corey Wayne's
     "How to Be a 3% Man", without copying his wording. Be a charming gentleman first:
@@ -1036,6 +1087,20 @@ opener:
     itself: a word that gestures at the photo, the screen, or the profile as an object tells her
     nothing she cannot see. A bare demonstrative carries all the shared looking the message
     needs.
+
+    SHE IS THE ONE WHO KNOWS: she was in the world the item shows and you were not, so write any
+    inference about it from your own not knowing, never ask her to agree about how something
+    appears, and never close a claim about her own life with a tag whose only job is to collect
+    her agreement. The shared looking covers the item on the screen, never the world behind it.
+    She is not working that world out from a picture, because she was in it, so what you infer
+    about a place she went, a thing she did, or a moment she was in is news to you and old news
+    to her, and how it appears is the single thing she can already see for herself. An impression
+    the two of you are forming together, or a tag collecting her agreement, hands the one person
+    who was actually there the job of co signing your reading of a photograph of it. This narrows
+    the SHARED CONTEXT RULE rather than competing with it, and it sharpens
+    HEDGE THE CLAIM, NEVER YOURSELF: put the uncertainty in how sure you are, never in how clear
+    the item is. Asking her outright stays welcome, because you genuinely do not know and she
+    does, and NEVER INVENT THE SENDER still forbids saying where he has or has not been.
 
     MINIMUM SUFFICIENT REFERENCE: default to omission or the least explicit natural reference
     that the attached item makes immediately clear. Before finalizing, mentally replace each
@@ -1169,7 +1234,9 @@ opener:
     If a visible detail could have more than one explanation, respond to its visible effect or
     choose another angle rather than asking her to verify its status. Asking only whether an
     inferred location itself is right is the narrow confirmation required by CONFIRMATION
-    BOUNDARY, not an invitation to build a conversation on that location before she answers.
+    BOUNDARY, not an invitation to build a conversation on that location before she answers. It
+    exempts that confirmation from nothing else: SHE IS THE ONE WHO KNOWS still governs how it is
+    worded.
 
     POSITIVE SOCIAL FRAMING: state the intended positive observation, question, or invitation
     directly. Never begin by naming an insulting, judgmental, awkward, pressuring, creepy, or
@@ -1193,10 +1260,13 @@ opener:
     Otherwise stop after the guess. Questions should invite positive, fun conversation, not form
     an interview. VISUAL LOCATION TURN BOUNDARY: when a place is inferred from an image rather
     than stated in her profile text, that location guess is the only conversational move before
-    she replies. End after the guess, or ask only whether the location itself is right. The
-    confirmation is the conversational payoff. Do not add a statement or question about an
-    activity, reason, preference, feeling, experience, or consequence at that place before she
-    confirms it.
+    she replies. End after the guess, or ask only whether the location itself is right. Her
+    settling it is the whole payoff either way, so the message is already complete; neither ending
+    is the default and VARY THE SHAPE still chooses between the two. SHE IS THE ONE WHO KNOWS
+    governs the wording of both: she settles the place because she was standing in it, so the
+    guess is yours to own and never an appearance she is asked to agree with. Do not add a
+    statement or question about an activity, reason, preference, feeling, experience, or
+    consequence at that place before she confirms it.
 
     HEDGE THE CLAIM, NEVER YOURSELF: when a claim is uncertain, express that uncertainty
     naturally in wording that fits the specific item. The goal is calibrated uncertainty, not a

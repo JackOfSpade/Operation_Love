@@ -31,7 +31,7 @@ def test_config_yaml_loads_without_error(cfg):
 
 
 def test_the_shipped_targeting_calibration_is_a_complete_bound_calibration(cfg):
-    """2026-08-22: the shipped config now CARRIES a targeting calibration.
+    """The shipped 10.3.0 config carries a complete, exact-build calibration.
 
     This assertion used to be its inverse — the file deliberately shipped WITHOUT one, and
     pinning that absence was how we proved an uncalibrated config was still a loadable,
@@ -48,8 +48,9 @@ def test_the_shipped_targeting_calibration_is_a_complete_bound_calibration(cfg):
     """
     cal = cfg.apps["hinge"]["targeting_calibration"]
     assert cal["schema_version"] == 3
+    assert cal["device"] == "33111JEHN04475"
     assert cal["device"] == cfg.apps["hinge"]["serial"], "calibration must bind the exact serial"
-    assert cal["hinge_version_name"] == "10.2.0"
+    assert cal["hinge_version_name"] == "10.3.0"
     assert list(cal["frame_size_px"]) == [1080, 2400]
     assert cal["item_selection_policy_id"] == "hinge_photos_only_v2"
     assert cal["composer_layout_id"] == "hinge_inline_v1"
@@ -58,6 +59,9 @@ def test_the_shipped_targeting_calibration_is_a_complete_bound_calibration(cfg):
     # The effective bands the calibration was measured under must still be the ones in force.
     assert list(cal["identity_band"]) == list(cfg.apps["hinge"]["identity_band"])
     assert list(cal["content_band"]) == list(cfg.apps["hinge"]["content_band"])
+    still_photo = cfg.apps["hinge"]["still_photo_assumption_acceptance"]
+    assert still_photo["device"] == cal["device"]
+    assert still_photo["hinge_version_name"] == cal["hinge_version_name"]
 
 
 def test_shipped_config_uses_training_until_live_auto_release_is_renewed(cfg):
@@ -72,6 +76,9 @@ def test_shipped_config_uses_training_until_live_auto_release_is_renewed(cfg):
     assert "auto_trial" not in cfg.apps["hinge"]
     evidence = cfg.apps["hinge"]["observe_release_evidence"]
     assert evidence["production_run_id"] == "d8547ff144b4"
+    assert evidence["hinge_version_name"] == "10.0.1"
+    assert evidence["hinge_version_name"] != cfg.apps["hinge"]["targeting_calibration"][
+        "hinge_version_name"]
     assert evidence["verification_file"] == (
         "ops/release/d8547ff144b4/manual-release/hinge_observe_release.json")
     coords = cfg.apps["bumble"].get("coords", {})
@@ -236,7 +243,7 @@ def test_shipped_opener_style_requires_value_without_forcing_a_claim(cfg):
     assert "visual location turn boundary" in style
     assert "that location guess is the only conversational move before she replies" in style
     assert "end after the guess, or ask only whether the location itself is right" in style
-    assert "the confirmation is the conversational payoff" in style
+    assert "her settling it is the whole payoff either way" in style
     assert ("activity, reason, preference, feeling, experience, or consequence at that place"
             in style)
     assert "subject to confirmation boundary, a second sentence may be" in style
@@ -244,6 +251,81 @@ def test_shipped_opener_style_requires_value_without_forcing_a_claim(cfg):
     assert "your opener must contain a claim that could be wrong" not in style
     assert "test it by covering the photo" not in style
     assert "then do not say that detail back to her" not in style
+
+
+def test_shipped_opener_style_ships_the_she_is_the_one_who_knows_rule(cfg):
+    """2026-09-14: a live opener asked "Looks like Rome, right?" under a photo of a woman
+    standing on an Italian cobblestone street. The owner's objection: she was standing there,
+    so asking her to agree that it "looks like" Rome addresses her as a fellow onlooker
+    inferring from the same picture, when she is the one who actually knows. VISUAL LOCATION
+    TURN BOUNDARY caused it -- "ask only whether the location itself is right" recommends
+    exactly that interrogative shape -- and REPLY COMFORT's carve-out exempted it from the
+    reply-quality test. Measured: within the 21 proper-name location guesses in the 234-opener
+    corpus, the hedge-plus-agreement-tag shape went from 1 of 11 before 2026-09-05 to 5 of 10
+    after.
+
+    SHE IS THE ONE WHO KNOWS is the new rule that fixes this at its root: the model is not
+    forbidden from guessing a place, only from writing that guess as an appearance the two of
+    them are jointly assessing, because she was actually there and the model was not. This is
+    the config-side long form; the compressed _SYSTEM twin lives in
+    tests/test_opener.py::test_system_prompt_ships_the_she_is_the_one_who_knows_rule and the
+    _SCHEMA opener-field twin lives in
+    tests/test_gemini_opener.py::test_response_schema_opener_description_ships_the_she_is_the_one_who_knows_rule.
+    """
+    style = " ".join(cfg.opener.style.lower().split())
+    assert "she is the one who knows" in style
+    # 2026-09-06 (c) found a rule whose first, affirmative sentence could be satisfied while
+    # still producing the defect it forbade. This rule therefore states all THREE operative
+    # clauses in its own first sentence, before any rationale; pin that, not just their
+    # presence somewhere in the paragraph.
+    first_sentence = style.split("she is the one who knows:", 1)[1].split(". ", 1)[0]
+    assert "write any inference about it from your own not knowing" in first_sentence
+    assert "never ask her to agree about how something appears" in first_sentence
+    assert ("never close a claim about her own life with a tag whose only job is to collect "
+            "her agreement") in first_sentence
+    assert "the shared looking covers the item on the screen, never the world behind it" in style
+    assert "she is not working that world out from a picture, because she was in it" in style
+    assert "is news to you and old news to her" in style
+    assert "write any inference about it from your own not knowing" in style
+    assert "never ask her to agree about how something appears" in style
+    assert ("never close a claim about her own life with a tag whose only job is to collect "
+            "her agreement") in style
+    assert "this narrows the shared context rule rather than competing with it" in style
+    assert "put the uncertainty in how sure you are, never in how clear the item is" in style
+    assert "asking her outright stays welcome" in style
+    assert "never invent the sender still forbids saying where he has or has not been" in style
+
+
+def test_shipped_opener_style_amends_visual_location_turn_boundary_and_reply_comfort(cfg):
+    """SHE IS THE ONE WHO KNOWS reaches into its two neighbour rules rather than merely sitting
+    beside them (see test_shipped_opener_style_ships_the_she_is_the_one_who_knows_rule for the
+    motivating incident). VISUAL LOCATION TURN BOUNDARY's old payoff line ("the confirmation is
+    the conversational payoff") is superseded, not merely supplemented -- its return would
+    silently reinstate the wording that produced the "right?" agreement-tag shape, so its
+    absence is pinned as a MUTATION GUARD alongside the replacement's presence. REPLY COMFORT's
+    carve-out for the location confirmation now says explicitly what it does NOT exempt: the
+    wording is still governed by SHE IS THE ONE WHO KNOWS.
+    """
+    style = " ".join(cfg.opener.style.lower().split())
+    # VISUAL LOCATION TURN BOUNDARY amendment.
+    assert "her settling it is the whole payoff either way" in style
+    assert "the confirmation is the conversational payoff" not in style
+    assert "neither ending is the default and vary the shape still chooses between the two" in style
+    assert "she settles the place because she was standing in it" in style
+    assert "never an appearance she is asked to agree with" in style
+    # REPLY COMFORT amendment.
+    assert "it exempts that confirmation from nothing else" in style
+
+    # De-templating (2026-08-16): the motivating opener and its distinctive wording must never
+    # become prompt copy -- naming a literal construction primes a minimal-thinking model to
+    # imitate it, the same mechanism the 2026-08-11 "I bet" incident and the 2026-09-06 "elite
+    # move" incident both demonstrated. Word-boundary regex on "rome" because a bare substring
+    # match could collide with an ordinary word.
+    import re
+    assert "looks like rome" not in style
+    assert not re.search(r"\brome\b", style)
+    assert "right?" not in style
+    assert '"right"' not in style
 
 
 def test_shipped_opener_style_defaults_to_minimum_sufficient_visual_reference(cfg):

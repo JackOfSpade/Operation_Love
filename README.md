@@ -151,10 +151,11 @@ extra installed.
   for stats and optional limits, but are not fed back as training labels. Hinge Auto is
   structurally fail-closed: an accepted still-photo assumption cannot license Auto, and a
   release artifact cannot bypass the targeting policy. The shipped configuration now carries a
-  schema-v3 `targeting_calibration` renewed on the exact live Hinge 10.1.0 / 1080x2400 build, so
-  Training is available. Its `observe_release_evidence` artifact for run `d8547ff144b4` remains
-  historical 10.0.1 evidence and cannot release AUTO; AUTO still requires fresh production-observe
-  validation on 10.1.0. Once released,
+  schema-v3 `targeting_calibration` renewed on the exact live Hinge 10.3.0 / 1080x2400 build on
+  device `33111JEHN04475`, so Training is available. It is hybrid AI-reviewed circular-risk evidence,
+  explicitly not human ground truth. Its `observe_release_evidence` artifact for run
+  `d8547ff144b4` remains historical 10.0.1 evidence and cannot release AUTO; AUTO still requires
+  fresh production-observe validation on 10.3.0. Once released,
   AUTO uses the learned ranker on every card,
   with per-gesture UHID, normal opener generation, exact-item targeting, Send verification, and
   all action safety gates. Configuration alone does not start a run.
@@ -179,9 +180,10 @@ remaining work needs your machine + a real account, and it's all batched in
 verify Training-mode behavior, and seed your taste.
 
 The 2026-08-22 10.0.1 calibration and its release artifact remain historical evidence, not a
-license for the live 10.1.0 build. The shipped 10.1.0 schema-v3 calibration and matching
-still-photo-assumption acceptance now license Training; AUTO additionally needs fresh
-production-observe release evidence. If a future build/frame mismatch is detected, it publishes
+license for the live 10.3.0 build. The shipped 10.3.0 schema-v3 hybrid AI-reviewed circular-risk
+calibration and matching still-photo-assumption acceptance now license Training; the calibration
+evidence is not human ground truth. AUTO additionally needs fresh production-observe release
+evidence. If a future build/frame mismatch is detected, it publishes
 `stop_kind=targeting_calibration`: no opener is requested, no action is sent, and no label is
 recorded. Recapture the schema-v3 calibration and measured still-photo evidence (or explicitly
 re-accept the assumption) for that exact build/device. Coverage remains the separate limitation

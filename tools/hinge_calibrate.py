@@ -234,6 +234,11 @@ _MAX_UNSETTLED_TOP_REPROBES = 3
 # gesture the helper below re-proves the ordinary Like+Pass deck, so a modal or composer can
 # never consume the extra allowance.
 _MAX_POST_ADVANCE_STICKY_SCROLLS = 2
+# A low-distance sticky-header proof can be a late render rather than a failed advance.  At most
+# three *read-only* looks let one transitional framebuffer fall away while still requiring two
+# adjacent, independently-safe candidates before accepting it.  This is deliberately separate
+# from the post-advance scroll budget: it never licenses a third scroll, edge-back, or tap.
+_MAX_POST_ADVANCE_IDENTITY_REPROBES = 3
 # A read-scroll frame becomes the navigator's exact zero-drift anchor. The first held-out
 # Hinge 10.1.0 run still moved 556px after TWO quiet comparisons, so the app can pause before a
 # delayed card snap. Require FOUR quiet comparisons and allow a bounded eight probes: this gives
@@ -1113,6 +1118,61 @@ def _content_band_rect_px(frame: bytes, content_band) -> tuple[int, int, int, in
     return (0, int(content_band[0] * height), width, int(content_band[1] * height))
 
 
+def _reviewed_target_protected_prefix_rect(
+        frame: bytes, content_band, reviewed_rows) -> tuple[int, int, int, int] | None:
+    """Return the exact-match prefix that protects a reviewed heart from stale pixels.
+
+    The full content band is deliberately too broad for this particular pre-tap guard: a later,
+    separate card can autoplay below an already-reviewed still-photo target.  The target's
+    coordinate cannot depend on pixels below its own bottom, but it *does* depend on every row
+    through that bottom: profile header/name, every intervening row, the selected card, its
+    heart, and any overlay or scroll that reaches them.  Keep that whole full-width prefix
+    byte-exact, excluding only later cards below the selected one. A complete target card may
+    begin a few pixels above the configured content-band start, so the prefix starts at the
+    earlier of those two rows rather than refusing a valid frame-bounded card.
+
+    ``reviewed_rows`` is the effective frame-row binding.  A reattach probe may have rebound the
+    same card to translated ``expected_rows``; using the navigator's original rows there would
+    accidentally leave part of the actual reviewed target unprotected.
+    """
+    band_rect = _content_band_rect_px(frame, content_band)
+    if band_rect is None:
+        return None
+    if (not isinstance(reviewed_rows, (tuple, list)) or len(reviewed_rows) != 2
+            or any(isinstance(value, bool) or not isinstance(value, int)
+                   for value in reviewed_rows)):
+        raise ItemCropError("reviewed target rows must be two integer frame rows")
+    target_y0, target_y1 = reviewed_rows
+    _x0, band_y0, width, band_y1 = band_rect
+    if not (0 <= target_y0 < target_y1 <= band_y1):
+        raise ItemCropError(
+            "reviewed target rows must be valid frame rows ending within the configured content band")
+    return (0, min(band_y0, target_y0), width, target_y1)
+
+
+def _identity_band_rect_px(frame: bytes, identity_band) -> tuple[int, int, int, int] | None:
+    """Return the exact configured identity-band ROI for a decodable frame.
+
+    The protected content prefix begins below this band on the current Hinge layout.  Keep the
+    identity strip separately byte-exact before the semantic sticky-header comparison: a changed
+    header must never be tolerated merely because an unrelated later card is allowed to animate.
+    """
+    height = _frame_height_px(frame)
+    width = _frame_width_px(frame)
+    if not height or not width:
+        return None
+    if (not isinstance(identity_band, (tuple, list)) or len(identity_band) != 4
+            or any(isinstance(value, bool) or not isinstance(value, (int, float))
+                   for value in identity_band)):
+        raise ItemCropError("identity band must be four numeric fractions")
+    x0_frac, y0_frac, x1_frac, y1_frac = identity_band
+    rect = (int(x0_frac * width), int(y0_frac * height),
+            int(x1_frac * width), int(y1_frac * height))
+    if not (0 <= rect[0] < rect[2] <= width and 0 <= rect[1] < rect[3] <= height):
+        raise ItemCropError("configured identity band is outside the reviewed frame")
+    return rect
+
+
 def _dwell_centering(rect, frame: bytes, content_band):
     """`(centered, offset)` for one card rect, or `(None, None)` when it cannot be measured.
 
@@ -1416,7 +1476,8 @@ def _fresh_reviewed_target_point(driver: HingeDriver, target, *, reviewed_point:
 
     A hybrid review can take long enough for animated media or auto-hiding controls to change
     the framebuffer.  Coordinates approved for the earlier PNG are therefore not authority for
-    a later screen.  Require byte identity over the CONTENT BAND, then independently re-run the
+    a later screen.  Require byte identity over the protected CONTENT-BAND PREFIX through the
+    reviewed target card, plus the exact configured identity band, then independently re-run the
     card/heart and profile identity gates on those fresh bytes.  No input is issued here; every
     refusal leaves the driver's final foreground-package guard as the only operation immediately
     before a valid tap.
@@ -1431,12 +1492,13 @@ def _fresh_reviewed_target_point(driver: HingeDriver, target, *, reviewed_point:
     construction, excludes exactly this fixed chrome -- `estimate_shift`'s docstring and
     `hinge.py`'s `_vertical_shift_match` document the same status-bar/bottom-nav exclusion for
     the same reason. The reviewed heart point always sits inside this band, so scoping the
-    comparison to it is strictly narrower, never weaker: it still catches a scroll, an
-    autoplaying video, an auto-hiding mute control (it lives inside the card) or a modal over the
-    card, because every one of those changes band pixels. Everything below the comparison is
-    UNCHANGED -- `_verified_target_frame_proof` and `compare_profile_identity` independently
-    re-prove the card, the heart and the profile identity on the fresh frame -- which is what
-    makes narrowing the byte comparison safe rather than a relaxation.
+    comparison to the prefix through the target is strictly narrower, never weaker for the
+    reviewed coordinate: it still catches a scroll, any target-card autoplay/mute/control change,
+    or a modal over the target, while excluding only a separate later card below it. The exact
+    identity-band comparison closes the layout gap above that prefix. Everything below the
+    comparisons is UNCHANGED -- `_verified_target_frame_proof` and `compare_profile_identity`
+    independently re-prove the card, the heart and the profile identity on the fresh frame --
+    which is what makes narrowing the content scope safe rather than a relaxation.
 
     `expected_point`/`expected_frame`/`expected_rows` default to the navigator's own point, frame
     and rows -- exactly today's behaviour -- and are passed explicitly by the one caller that
@@ -1468,10 +1530,10 @@ def _fresh_reviewed_target_point(driver: HingeDriver, target, *, reviewed_point:
     positively REFUTES top -- the one state where the band is showing this profile's real sticky
     header rather than Hinge's own chrome. When it does not refute (`confirmed` top, where the
     band is the profile-INDEPENDENT filter-chips row, or `cannot_tell`), this gate SKIPS the
-    sticky-band comparison instead of aborting: the content-band byte comparison above has
+    sticky-band comparison instead of aborting: the protected-prefix byte comparison above has
     already run and already passed by the time this code is reached, Hinge renders the profile's
-    name header inside that same content band, and a byte-exact match over it is a strictly
-    STRONGER same-profile proof than any chrome-band distance could be. Found live this way
+    name header inside that prefix, and the separate exact identity-band ROI prevents a changed
+    header from passing as lower-card animation. Found live this way
     (2026-08-22, attempt 9): the reviewed frame read `cannot_tell` at 8.078 grey levels -- inside
     the deliberate 3.0-9.0 dead zone, because the card parks just below top on this campaign --
     while the fresh frame was byte-identical to it across both the identity band and the content
@@ -1479,6 +1541,7 @@ def _fresh_reviewed_target_point(driver: HingeDriver, target, *, reviewed_point:
     produces.
     """
     point = target.point if expected_point is None else tuple(expected_point)
+    rows = tuple(target.block_frame_rows if expected_rows is None else expected_rows)
     if (not isinstance(reviewed_point, list) or len(reviewed_point) != 2
             or any(isinstance(value, bool) or not isinstance(value, int)
                    for value in reviewed_point)
@@ -1489,24 +1552,35 @@ def _fresh_reviewed_target_point(driver: HingeDriver, target, *, reviewed_point:
 
     frame_to_match = target.frame if expected_frame is None else expected_frame
     fresh = driver.adb.screencap()
-    band_rect = _content_band_rect_px(frame_to_match, content_band)
-    if band_rect is None:
-        raise _CaptureAbort(
-            "hybrid heart refused: the reviewed frame could not be read to scope the "
-            "content-band comparison")
     try:
-        band_unchanged = dwell_exact_over_rect([frame_to_match, fresh], band_rect)
+        protected_prefix_rect = _reviewed_target_protected_prefix_rect(
+            frame_to_match, content_band, rows)
+        identity_rect = _identity_band_rect_px(frame_to_match, driver.identity_band)
     except ItemCropError as exc:
         raise _CaptureAbort(
-            f"hybrid heart refused: the reviewed card's content band could not be compared: "
-            f"{exc}") from exc
-    if not band_unchanged:
+            f"hybrid heart refused: the reviewed target could not scope its protected "
+            f"prefix/identity comparison: {exc}") from exc
+    if protected_prefix_rect is None or identity_rect is None:
         raise _CaptureAbort(
-            "hybrid heart refused: the reviewed card's content band changed after review; "
+            "hybrid heart refused: the reviewed frame could not be read to scope the protected "
+            "prefix/identity comparison")
+    try:
+        prefix_unchanged = dwell_exact_over_rect([frame_to_match, fresh], protected_prefix_rect)
+        identity_unchanged = dwell_exact_over_rect([frame_to_match, fresh], identity_rect)
+    except ItemCropError as exc:
+        raise _CaptureAbort(f"hybrid heart refused: the reviewed target's protected "
+                            f"prefix/identity bands could not be compared: {exc}") from exc
+    if not prefix_unchanged:
+        raise _CaptureAbort(
+            "hybrid heart refused: the reviewed target's protected content prefix changed after "
+            "review; refusing to spend coordinates from a stale checkpoint")
+    if not identity_unchanged:
+        raise _CaptureAbort(
+            "hybrid heart refused: the reviewed profile identity band changed after review; "
             "refusing to spend coordinates from a stale checkpoint")
 
     # The identity gate's reference is fingerprinted directly off `frame_to_match` -- the frame
-    # the checkpoint was reviewed against, the SAME frame the content-band comparison above just
+    # the checkpoint was reviewed against, the SAME frame the protected-prefix comparison above just
     # used -- rather than off `target.identity`, which is bound to the profile's original
     # index-build capture and can legitimately sit at a different scroll position (see the
     # docstring). `confirm_scroll_top` decides whether this fingerprint is even worth taking:
@@ -1516,8 +1590,9 @@ def _fresh_reviewed_target_point(driver: HingeDriver, target, *, reviewed_point:
     # profile; `cannot_tell` means there is nothing usable to fingerprint at all. The non-refuted
     # cases are handled by SKIPPING the fingerprint below, not by aborting -- see the docstring's
     # "STICKY-BAND FINGERPRINT IS COMPLEMENTARY" paragraph for why that is safe rather than a
-    # relaxation: the content-band byte comparison above already proved same-profile, and it
-    # already covers Hinge's name header.
+    # relaxation: the protected-prefix byte comparison above already proves the reviewed target
+    # and in-content name region unchanged, while the separate exact identity-band ROI above
+    # prevents a changed sticky header from passing as lower-card animation.
     try:
         reviewed_top = confirm_scroll_top(frame_to_match, identity_band=driver.identity_band)
     except ScrollTopError as exc:
@@ -1554,7 +1629,7 @@ def _fresh_reviewed_target_point(driver: HingeDriver, target, *, reviewed_point:
         proof = _verified_target_frame_proof(
             driver, target, frame=fresh, content_band=content_band,
             like_template=like_template, like_threshold=like_threshold,
-            expected_rows=expected_rows, expected_point=expected_point)
+            expected_rows=rows, expected_point=expected_point)
         if reviewed_identity is not None:
             fresh_identity = compare_profile_identity(
                 fresh, reviewed_identity, identity_band=driver.identity_band,
@@ -1923,6 +1998,159 @@ def _scroll_next_profile_to_sticky_header(
         f"{verdict.state}: {verdict.reason}")
 
 
+def _prove_post_advance_identity_distinct(
+        driver: HingeDriver, *, prior_fingerprint, initial_frame: bytes, identity_band,
+        content_band, context: str) -> tuple[bytes, float, dict]:
+    """Return a distinct sticky-header frame, repairing only a proven late repaint.
+
+    ``_scroll_next_profile_to_sticky_header`` has already spent its bounded gesture budget and
+    returned a positively refuted (sticky) frame.  A collision at the fixed identity threshold
+    is nevertheless ambiguous: it can be a same profile, a true fingerprint collision, or a
+    late header repaint.  The latter is the only recoverable case, and it receives at most three
+    read-only screencaps.  Acceptance requires a final consecutive pair which is sticky,
+    stationary, distinct from the prior identity, and mutually agreeing.  No retry changes either
+    threshold or invokes a transport method.
+    """
+    prior_fingerprint_sha256 = _sha256(repr(prior_fingerprint).encode("utf-8", "replace"))
+
+    def fingerprint_and_distance(frame: bytes, *, stage: str) -> tuple[object | None, float | None, str | None]:
+        try:
+            fingerprint = band_fingerprint(
+                frame, identity_band=identity_band, grid=_IDENTITY_GRID)
+            distance = _checked_distance(
+                fingerprint_distance(prior_fingerprint, fingerprint),
+                context=f"{context} {stage} identity")
+        except (ScrollTopError, _MeasureRefused) as exc:
+            # The eventual refusal names only the exception class: detector prose can describe a
+            # real profile surface, while the hashes and numeric measurements remain sufficient
+            # to correlate the private local frames.
+            return None, None, type(exc).__name__
+        return fingerprint, distance, None
+
+    def stationary(left: bytes, right: bytes) -> tuple[bool, float | None, str]:
+        if left == right:
+            return True, 0.0, "byte_identical"
+        try:
+            shift = estimate_shift(left, right, content_band=content_band)
+        except ShiftEstimationError as exc:
+            return False, None, type(exc).__name__
+        delta = getattr(shift, "delta_px", None)
+        if (isinstance(delta, bool) or not isinstance(delta, (int, float))
+                or not math.isfinite(delta)):
+            return False, None, "invalid_shift"
+        return (bool(shift.ok) and abs(delta) <= _READ_SCROLL_SETTLE_MAX_SHIFT_PX,
+                float(delta), "stationary" if bool(shift.ok) else "shift_unavailable")
+
+    initial_fp, initial_distance, initial_error = fingerprint_and_distance(
+        initial_frame, stage="initial sticky")
+    initial_sample = {
+        "stage": "initial_sticky",
+        "frame_sha256": _sha256(initial_frame),
+        "fingerprint_sha256": (_sha256(repr(initial_fp).encode("utf-8", "replace"))
+                               if initial_fp is not None else None),
+        "distance_from_prior": initial_distance,
+        "measurement_error": initial_error,
+    }
+    trace = {
+        "read_only_reprobe_count": 0,
+        "prior_identity_fingerprint_sha256": prior_fingerprint_sha256,
+        "identity_distance_samples": [initial_sample],
+    }
+    if initial_error is not None:
+        raise _CaptureAbort(
+            f"{context}: cannot measure initial post-advance sticky identity "
+            f"({initial_error}); no gesture was issued and identity thresholds unchanged; "
+            f"prior_fingerprint_sha256={prior_fingerprint_sha256}; "
+            f"initial_frame_sha256={initial_sample['frame_sha256']}")
+    assert initial_distance is not None
+    if initial_distance > _IDENTITY_FALSE_MATCH_DISTANCE:
+        return initial_frame, initial_distance, trace
+
+    previous_frame = initial_frame
+    reprobe_samples: list[dict] = []
+    # Keep raw fingerprints only until this helper returns.  The trace stores hashes, never the
+    # profile-derived vectors themselves.
+    reprobe_fingerprints: list[object | None] = []
+    for probe in range(1, _MAX_POST_ADVANCE_IDENTITY_REPROBES + 1):
+        # Keep timing humanized and bounded by the fixed probe count.  This read-only wait can
+        # observe a compositor repaint but can never turn an ambiguous screen into permission
+        # for another gesture.
+        time.sleep(human_delay(getattr(driver, "dwell_s", 0.6)))
+        frame = driver.adb.screencap()
+        try:
+            top = confirm_scroll_top(frame, identity_band=identity_band)
+        except ScrollTopError as exc:
+            top_state, top_refuted, top_error = "unreadable", False, type(exc).__name__
+        else:
+            top_state, top_refuted, top_error = top.state, bool(top.refuted), None
+        fingerprint, distance, measurement_error = fingerprint_and_distance(
+            frame, stage=f"read-only reprobe {probe}")
+        is_stationary, shift_px, shift_state = stationary(previous_frame, frame)
+        sample = {
+            "stage": f"read_only_reprobe_{probe}",
+            "frame_sha256": _sha256(frame),
+            "fingerprint_sha256": (_sha256(repr(fingerprint).encode("utf-8", "replace"))
+                                   if fingerprint is not None else None),
+            "distance_from_prior": distance,
+            "measurement_error": measurement_error,
+            "scroll_top_state": top_state,
+            "scroll_top_refuted": top_refuted,
+            "scroll_top_error": top_error,
+            "content_shift_from_previous_px": shift_px,
+            "content_stationary_from_previous": is_stationary,
+            "content_shift_state": shift_state,
+        }
+        reprobe_samples.append(sample)
+        reprobe_fingerprints.append(fingerprint)
+        trace["identity_distance_samples"].append(sample)
+        trace["read_only_reprobe_count"] = probe
+
+        # A first read can be transitional.  The accepting pair is always the last two reads
+        # seen so far, not the low-distance initial sticky frame and one later repaint.
+        if len(reprobe_samples) >= 2:
+            left, right = reprobe_samples[-2:]
+            left_raw, right_raw = reprobe_fingerprints[-2:]
+            pair_distance = None
+            if left_raw is not None and right_raw is not None:
+                try:
+                    pair_distance = _checked_distance(
+                        fingerprint_distance(left_raw, right_raw),
+                        context=f"{context} consecutive read-only reprobe agreement")
+                except _MeasureRefused:
+                    pair_distance = None
+            trace["last_consecutive_reprobe_distance"] = pair_distance
+            pair_is_safe = (
+                bool(left.get("scroll_top_refuted"))
+                and bool(right.get("scroll_top_refuted"))
+                and left.get("distance_from_prior") is not None
+                and right.get("distance_from_prior") is not None
+                and left["distance_from_prior"] > _IDENTITY_FALSE_MATCH_DISTANCE
+                and right["distance_from_prior"] > _IDENTITY_FALSE_MATCH_DISTANCE
+                # `right` measured its content shift from `left`, exactly the pair whose
+                # fingerprints are being compared.  A transition into the first member is not
+                # smuggled into this condition.
+                and bool(right.get("content_stationary_from_previous"))
+                and pair_distance is not None
+                and pair_distance <= _UNATTENDED_PROVISIONAL_IDENTITY_MAX_DIST)
+            if pair_is_safe:
+                trace["accepted_read_only_reprobe_pair"] = [probe - 1, probe]
+                return frame, float(right["distance_from_prior"]), trace
+        previous_frame = frame
+
+    sample_summary = "; ".join(
+        "{stage}(sha256={frame_sha256},distance={distance_from_prior},top={scroll_top_state},"
+        "refuted={scroll_top_refuted},shift={content_shift_from_previous_px})".format(
+            **sample) for sample in reprobe_samples)
+    raise _CaptureAbort(
+        f"{context}: post-advance sticky identity reprobe refused after "
+        f"{_MAX_POST_ADVANCE_IDENTITY_REPROBES} read-only screencaps; no gesture was issued and "
+        f"identity thresholds unchanged (distinct>{_IDENTITY_FALSE_MATCH_DISTANCE:.3f}, "
+        f"consecutive_agreement<={_UNATTENDED_PROVISIONAL_IDENTITY_MAX_DIST:.3f}); "
+        f"prior_fingerprint_sha256={prior_fingerprint_sha256}; "
+        f"initial(sha256={initial_sample['frame_sha256']},distance={initial_distance:.3f}); "
+        f"reprobes=[{sample_summary}]")
+
+
 def _skip_automated_profile_before_heart(
         driver: HingeDriver, *, ordinal: int, reason: _PreActionProfileRetry,
         identity: ProfileIdentity, identity_band, content_band, like_template, like_threshold,
@@ -2017,19 +2245,10 @@ def _skip_automated_profile_before_heart(
         content_band=content_band, like_template=like_template,
         like_threshold=like_threshold,
         context=f"automated profile {ordinal} pre-action skip")
-    try:
-        next_fingerprint = band_fingerprint(
-            advanced_identity, identity_band=identity_band, grid=_IDENTITY_GRID)
-        distance = _checked_distance(
-            fingerprint_distance(identity.fingerprint, next_fingerprint),
-            context=f"automated profile {ordinal} pre-action skip identity")
-    except ScrollTopError as exc:
-        raise _CaptureAbort(
-            f"automated profile {ordinal}: cannot read sticky identity after public skip: {exc}") from exc
-    if distance <= _IDENTITY_FALSE_MATCH_DISTANCE:
-        raise _CaptureAbort(
-            f"automated profile {ordinal}: public skip did not reach a distinct profile "
-            f"identity ({distance:.3f} <= {_IDENTITY_FALSE_MATCH_DISTANCE:.3f})")
+    advanced_identity, distance, sticky_header_trace = _prove_post_advance_identity_distinct(
+        driver, prior_fingerprint=identity.fingerprint, initial_frame=advanced_identity,
+        identity_band=identity_band, content_band=content_band,
+        context=f"automated profile {ordinal} pre-action skip")
 
     # `reason_sha256` binds code+detail, so carrying the plaintext detail beside it makes this
     # record SELF-VERIFYING rather than weaker: any reader can recompute the digest.  Publishing
@@ -2048,6 +2267,7 @@ def _skip_automated_profile_before_heart(
         "post_frame_sha256": _sha256(advanced_top),
         "post_identity_frame_sha256": _sha256(advanced_identity),
         "new_profile_identity_distance": distance,
+        "automated_sticky_header_proof": sticky_header_trace,
         "post_pass_settle": settle_trace,
         "review_checkpoints": ({"before": review} if review_gate is not None else None),
         "predicates": {
@@ -2215,9 +2435,12 @@ def _settle_automated_post_pass_to_top(driver: HingeDriver, *, frame: bytes,
     """Accept a post-Pass deck only after one bounded, non-purchase modal recovery.
 
     Hinge can insert an unsolicited Hinge+ page just after a real public/calibration Pass.  It
-    is not a profile and must never be tapped.  A valid new top is accepted unchanged.  Any
-    visible inline composer is refused unchanged.  Only a frame that is neither may receive one
-    guarded Android edge-back; its next frame must then prove an ordinary composer-free top.
+    is not a profile and must never be tapped.  A valid new top is accepted unchanged.  Because
+    the first post-Pass framebuffer can also be a transient/loading state, make a few read-only
+    re-probes before considering recovery.  Any visible inline composer is refused unchanged.
+    Only the LAST re-probed frame, when positively confirmed as a top but not an ordinary deck,
+    may receive one guarded Android edge-back; its next frame must then prove an ordinary
+    composer-free top.
     """
     def composer_absent(candidate: bytes, *, context: str) -> None:
         try:
@@ -2237,22 +2460,55 @@ def _settle_automated_post_pass_to_top(driver: HingeDriver, *, frame: bytes,
                 f"automated Pass cannot prove ordinary deck readiness {context}: "
                 f"{type(exc).__name__}: {exc}") from exc
 
-    try:
-        initial_top = confirm_scroll_top(frame, identity_band=identity_band)
-    except ScrollTopError as exc:
-        raise _CaptureAbort(f"automated Pass could not read post-action state: {exc}") from exc
-    initial_ready = ordinary_deck_ready(frame, context="after action")
-    if initial_top.confirmed and initial_ready:
-        composer_absent(frame, context="result")
-        return frame, {
-            "modal_edge_back_used": False,
-            "ordinary_deck_ready": True,
-            "initial_post_pass_frame_sha256": _sha256(frame),
-            "settled_post_pass_frame_sha256": _sha256(frame),
-        }
-    # A composer is never a recoverable modal for this path.  Check before the one permitted
-    # edge-back so this helper cannot erase the very state a caller was supposed to verify.
-    composer_absent(frame, context="result before modal recovery")
+    initial_frame = frame
+    last_top = None
+    last_top_error = ""
+    last_ready = False
+    for probe in range(_MAX_UNSETTLED_TOP_REPROBES + 1):
+        # A composer is never a recoverable modal for this path.  Check every candidate, not
+        # only the one that happens to settle, so a late composer cannot be erased by recovery.
+        composer_absent(frame, context=f"post-action settlement probe {probe + 1}")
+        try:
+            last_top = confirm_scroll_top(frame, identity_band=identity_band)
+            last_top_error = ""
+        except ScrollTopError as exc:
+            # A loading frame can be temporarily unreadable.  It still gets only this bounded,
+            # read-only retry allowance and can never license a gesture.
+            last_top = None
+            last_top_error = str(exc)
+        else:
+            if last_top.confirmed:
+                last_ready = ordinary_deck_ready(
+                    frame, context=f"after action settlement probe {probe + 1}")
+                if last_ready:
+                    return frame, {
+                        "modal_edge_back_used": False,
+                        "ordinary_deck_ready": True,
+                        "initial_post_pass_frame_sha256": _sha256(initial_frame),
+                        "settled_post_pass_frame_sha256": _sha256(frame),
+                    }
+            else:
+                last_ready = False
+        if probe < _MAX_UNSETTLED_TOP_REPROBES:
+            time.sleep(human_delay(driver.dwell_s))
+            frame = driver.adb.screencap()
+
+    # A modal edge-back is a narrow recovery for the measured top-looking promo only.  A
+    # refuted/sticky header or an unknown post-action screen might be a real profile state, so
+    # preserve it untouched rather than applying a generic dismissal gesture.
+    if last_top is None:
+        raise _CaptureAbort(
+            "automated Pass post-action settlement preserved state: scroll-top remained "
+            f"unknown/unreadable after {_MAX_UNSETTLED_TOP_REPROBES} read-only reprobes "
+            f"({last_top_error or 'no verdict'}); no modal edge-back was issued")
+    if not last_top.confirmed:
+        state = "refuted/scrolled" if last_top.refuted else "unknown"
+        raise _CaptureAbort(
+            "automated Pass post-action settlement preserved state: scroll-top remained "
+            f"{state} after {_MAX_UNSETTLED_TOP_REPROBES} read-only reprobes "
+            f"({last_top.reason}); no modal edge-back was issued")
+    # ``composer_absent`` already proved the last candidate above.  `last_ready` is false here:
+    # a true value would have returned, so this is precisely the confirmed-top promo predicate.
     screen_width, screen_height = driver.adb.screen_size()
     if (not isinstance(screen_width, int) or screen_width <= 0
             or not isinstance(screen_height, int) or screen_height <= 0):
@@ -2278,7 +2534,7 @@ def _settle_automated_post_pass_to_top(driver: HingeDriver, *, frame: bytes,
     return settled, {
         "modal_edge_back_used": True,
         "ordinary_deck_ready": True,
-        "initial_post_pass_frame_sha256": _sha256(frame),
+        "initial_post_pass_frame_sha256": _sha256(initial_frame),
         "settled_post_pass_frame_sha256": _sha256(settled),
         "modal_edge_back_transport": "HingeDriver._swipe(android_edge_back)",
     }
@@ -3843,18 +4099,15 @@ def _capture_one_profile_unattended(driver: HingeDriver, out_dir: Path, *, ordin
         driver, top_frame=advance_frame, identity_band=identity_band,
         content_band=content_band, like_template=like_template,
         like_threshold=like_threshold, context=f"automated profile {ordinal}")
-    try:
-        new_fp = band_fingerprint(advance_identity, identity_band=identity_band, grid=_IDENTITY_GRID)
-        distance = _checked_distance(fingerprint_distance(identity.fingerprint, new_fp),
-                                     context=f"automated profile {ordinal} advance identity")
-    except ScrollTopError as exc:
-        raise _CaptureAbort(f"automated profile {ordinal}: cannot read next sticky identity: {exc}") from exc
-    if distance <= _IDENTITY_FALSE_MATCH_DISTANCE:
-        raise _CaptureAbort(f"automated profile {ordinal}: new sticky header is not distinct")
+    advance_identity, distance, sticky_header_trace = _prove_post_advance_identity_distinct(
+        driver, prior_fingerprint=identity.fingerprint, initial_frame=advance_identity,
+        identity_band=identity_band, content_band=content_band,
+        context=f"automated profile {ordinal}")
     staged_frames.append((advance_identity, "profile_advance_identity", None,
                           datetime.now(timezone.utc).isoformat()))
     action_trace.append({"action": "automated_sticky_header_proof", "transport": "HingeDriver._scroll_down_one",
-                         "new_profile_identity_distance": distance})
+                         "new_profile_identity_distance": distance,
+                         **sticky_header_trace})
 
     profile_meta = {
         "ordinal": ordinal, "profile_id": profile_id, "card_scroll_frames": len(card_frames),

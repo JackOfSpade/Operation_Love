@@ -328,6 +328,13 @@ class Worker(threading.Thread):
         if stop_kind:
             fields["stop_kind"] = stop_kind
         self._stat(**fields)
+        # The Hub and bug report retain this typed status snapshot, but their Recent logs are
+        # deliberately only stdout/stderr.  Emit the terminal calibration refusal once here,
+        # rather than at each preflight/capture call site, so every safe refusal is visible to
+        # the operator alongside the exact live-build mismatch that caused it.
+        if stop_kind == "targeting_calibration" and stop_reason:
+            print(f"{self.app.title()}: stopped — targeting calibration must be renewed: "
+                  f"{stop_reason}")
         try:
             self.driver.close()
         finally:

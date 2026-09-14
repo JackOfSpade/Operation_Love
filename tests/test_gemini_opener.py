@@ -8,6 +8,7 @@ import http.client
 import io
 import json
 import random
+import re
 import socket
 import threading
 import time
@@ -380,7 +381,7 @@ def test_response_schema_orders_referenced_and_angle_before_the_opener():
     assert "no later statement or question may assume it is correct" in opener_description
     assert "image-derived location guess is the only conversational move" in opener_description
     assert "ask only whether the location itself is right" in opener_description
-    assert "its confirmation is the payoff" in opener_description
+    assert "her settling it is the payoff either way" in opener_description
     assert "activity, reason, preference, feeling, experience, or consequence" in opener_description
     assert "every visible detail named in the opener" in angle_description
     assert "parallel, contrasting answers" in angle_description
@@ -545,6 +546,29 @@ def test_response_schema_opener_description_folds_qualification_into_compliment_
     # at all, so (g)'s exception-subordination fix had nothing to touch here.
     assert "understated" not in opener_description
     assert "emphatic" not in opener_description
+
+
+def test_response_schema_opener_description_ships_the_she_is_the_one_who_knows_rule():
+    """2026-09-14: a live opener asked "Looks like Rome, right?" under a photo of a woman
+    standing on an Italian cobblestone street -- see
+    tests/test_config_yaml_real.py::test_shipped_opener_style_ships_the_she_is_the_one_who_knows_rule
+    for the full incident and the measured before/after shape counts. This description is the
+    THIRD of four on-wire copies of the prompt rules (config.yaml opener.style, _SYSTEM, this,
+    and the retry hint block). The _SYSTEM twin is pinned in
+    tests/test_opener.py::test_system_prompt_ships_the_she_is_the_one_who_knows_rule.
+    """
+    opener_description = _SCHEMA["properties"]["opener"]["description"].lower()
+    assert "she was in the world the item shows and you were not" in opener_description
+    assert "write any inference about it from your own not knowing" in opener_description
+    assert "never ask her to agree about how something appears" in opener_description
+    assert ("never close a claim about her own life with a tag whose only job is to collect "
+            "her agreement") in opener_description
+    assert ("worded as your own guess rather than as an appearance she is asked to agree with"
+            in opener_description)
+    assert ("her settling it is the payoff either way and neither ending is the default"
+            in opener_description)
+    # MUTATION GUARD: the old, superseded payoff line must not come back.
+    assert "its confirmation is the payoff" not in opener_description
 
 
 def test_angle_is_mapped_from_the_response_and_degrades_to_empty_when_omitted():
@@ -1458,6 +1482,62 @@ def test_nonempty_retry_hint_appears_in_user_text_after_profile_content():
     assert "one immediately obvious referent" in lower
     assert "any change of referent must be explicit and immediately clear" in lower
     assert "must still carry a claim that could be wrong" not in lower
+
+
+def test_nonempty_retry_hint_carries_the_she_is_the_one_who_knows_amendment():
+    """Retry-hint copy 4 of 4 (see the code addendum above _SYSTEM in opener.py, and
+    tests/test_config_yaml_real.py::test_shipped_opener_style_ships_the_she_is_the_one_who_knows_rule
+    for the motivating "Looks like Rome, right?" incident). Unlike the other three on-wire
+    copies, this one is UNLABELLED prose with no "SHE IS THE ONE WHO KNOWS" heading -- it just
+    states the location-guess wording rule directly, folded into the existing
+    "for a location inferred from an image" sentence.
+
+    No new HARD REJECTION entry ships alongside this change (no new raising guard was added),
+    so the second half of this test pins that the HARD REJECTION RULES list is UNCHANGED: it
+    still names exactly the same eight causes it did before, via both an exact clause count and
+    two of its existing clauses verbatim. The code comment right above that list says a future
+    editor who adds a new raising guard to _parse() must also add its cause here or the list
+    "silently becomes a lie again" -- this test is what turns that comment into something that
+    actually breaks.
+    """
+    transport = _Transport([(200, _success())])
+    _opener(transport).generate(
+        Profile(bio="Weekend potter"), style="be curious",
+        retry_hint="the opener field was empty after sanitizing")
+
+    text = transport.calls[0][1]["contents"][0]["parts"][-1]["text"]
+    lower = text.lower()
+    assert "she was standing in that place and you were not" in lower
+    assert ("word the guess as your own rather than as an appearance she is asked to agree "
+            "with") in lower
+    assert "never close it with a tag whose only job is to collect her agreement" in lower
+
+    # DE-TEMPLATING, copy 4 of 4. tests/test_opener.py's own absence pin can only reach the three
+    # surfaces that are module constants; this block is BUILT per attempt inside _text_part, so
+    # this is the only place it can be checked. It matters most here, because this is the copy
+    # whose job is to explain a failure, which is exactly where an editor is tempted to quote the
+    # failing draft -- and per the 2026-09-05 negation-priming finding, naming a construction in
+    # order to forbid it has previously raised its frequency.
+    assert "looks like rome" not in lower
+    assert re.search(r"\brome\b", lower) is None
+    assert "right?" not in lower
+
+    marker_start = "HARD REJECTION RULES, checked in code, which will reject you again if broken:"
+    marker_end = " Also keep following the style guide above"
+    start = text.index(marker_start) + len(marker_start)
+    end = text.index(marker_end)
+    segment = text[start:end]
+    clauses = [c.strip() for c in segment.split(";") if c.strip()]
+    # MUTATION GUARD: an editor who adds a new raising guard's cause to this list without
+    # otherwise touching this test changes this count -- it is the trip wire the code comment
+    # asks for.
+    assert len(clauses) == 8, (
+        f"HARD REJECTION RULES list gained or lost a clause (expected 8, got {len(clauses)}): "
+        f"{segment!r}"
+    )
+    assert "it must be the bare message itself with no preamble, label, or surrounding quotes" in segment
+    assert ("it must not use an unconfirmed inferred location as the premise of a later "
+            "statement or question") in segment
 
 
 def test_retry_hint_reaches_the_second_model_after_a_429_cascade(capsys):

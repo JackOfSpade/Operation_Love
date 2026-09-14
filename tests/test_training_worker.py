@@ -640,6 +640,51 @@ def test_stop_before_training_decision_is_not_captured_as_an_unexpected_failure(
     assert driver.closed
 
 
+def test_training_item_index_refusal_closes_the_live_phone_session():
+    """A safe pre-opener refusal still owns and releases its opened transport.
+
+    An item-index contradiction is reported by Hinge as ``Profile.items_unavailable``;
+    Training must stop before asking Gemini or installing a review action. The phone is
+    deliberately left on the captured profile for diagnosis, but that must not be confused
+    with keeping its session alive: ``Worker._finish_session`` has to close the driver, which
+    is what unregisters the shipped persistent UHID touchscreen.
+    """
+    refusal = (
+        "the item index this capture produced contradicts itself, so its numbering cannot "
+        "be trusted")
+
+    class _RefusingIndexDriver(_TrainingDriver):
+        def next_profile(self):
+            if self._profile_returned:
+                return None
+            self._profile_returned = True
+            return Profile(photos=[_FRAME], name="Ari", items_unavailable=refusal)
+
+    events = []
+    driver = _RefusingIndexDriver(events)
+    decider = _Decider(events)
+    opener = _Opener(events)
+    store = _Store(events)
+    status = RunStatus("training-run", ["hinge"], min_labels=1, mode="training")
+    stop = threading.Event()
+    bridge = _RecordingBridge(events)
+    worker = Worker("hinge", driver, decider, opener, store, "training-run", _Pacing(), stop,
+                    mode="training", training_action_bridge=bridge, status=status)
+
+    worker.run()
+
+    app = status.app_view("hinge")["app"]
+    assert app["state"] == "stopped"
+    assert app["stop_kind"] == "opener"
+    assert refusal in app["stop_reason"]
+    assert stop.is_set()
+    assert driver.opened and driver.closed
+    assert driver._decision is None
+    assert opener.maybe_calls == []
+    assert driver.like_calls == []
+    assert bridge.snapshot(run_id="training-run", app="hinge")["checkpoints"] == []
+
+
 def test_stale_or_absent_training_action_never_creates_label():
     events = []
     stale_bridge = _ReplacingBridge(events)

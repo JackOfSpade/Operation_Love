@@ -817,14 +817,14 @@ proved, because Hinge autoplays a video near screen centre and nowhere else; byt
 an off-centre card proves nothing. One card can be centred at a time. So per-card evidence
 means per-card page manipulation. There is no batching trick and no estimator that avoids it.
 
-**Why each hop returns to the entry.** `item_nav.navigate_to_item` is ascending-only and always
+**Why each short hop returns to the entry.** `item_nav.navigate_to_item` is ascending-only and always
 anchors on `entry_reference` with a hard-coded `reference_offset = index.offsets[-1]`. It
 refuses (`NAV_ANCHOR_UNMEASURED`) once the phone has drifted more than one smallest-legal
 read-scroll from that reference, and refuses earlier still beyond `estimate_shift`'s trust
-window. **It cannot resume from wherever a previous hop parked the phone.** The alternative to
-returning between hops was to change navigation's anchoring model -- i.e. to modify the one
-module whose entire job is that we never land on the wrong card. That was not done, and should
-not be done to buy a few gestures.
+window. The ordinary path therefore returns between candidates. As of the 2026-09-13 addendum
+below, a deep candidate changes once to a progressive sweep whose reference is the preceding
+measured terminal frame and whose unchanged index is rebased by that measured displacement.
+The navigator's identity/count/extent gates are not relaxed or bypassed.
 
 **Selection is structural, not preferential, and this is a real limitation.** There is no
 ranker at dwell time: the ranker lives above the driver and only ever sees a `Profile`, which
@@ -891,7 +891,7 @@ re-attach probe's exit stroke (5c blocker 4). That card goes unmeasured, which i
 Modelled from the code's constants against 125 MEASURED enumeration reads:
 
   * base profile read 227s (36 frames) -- FIXED, and 77% of the floor
-  * the walk cannot chain, so every hop re-climbs from the entry: travel at K=9 is 61kpx on a
+  * at the time the walk could not chain, so every hop re-climbed from the entry: travel at K=9 was 61kpx on a
     ~10kpx page, i.e. the profile is re-walked about six times
   * full photo coverage today: ~21 minutes per profile
 
@@ -999,6 +999,28 @@ every confidently photographic candidate without making the walk unbounded. All 
 per-hop centring, navigation, return, Stop, and fail-closed refusal rules remain unchanged; a card
 may still remain unnumbered because proof or navigation refused, but not merely because the
 default candidate budget ended first.
+
+## 5i.2. Addendum 2026-09-13: the four-leg pre-skip still stranded half the envelope
+
+Run `5d257fc1a1f8` had six confident photo candidates and K=6, yet only hearts 7, 9, and 10
+received dwell evidence. Hearts 1, 4, and 5 were not refused by motion, identity, segmentation,
+or navigation: the walk never attempted them because their climb from the enumeration entry
+exceeded the re-attach probe's fixed four-leg return envelope. K=6 therefore no longer meant
+"attempt every confident photo" in ordinary long-profile geometry.
+
+The return implementation had already moved beyond that precheck: its attempt ceiling is derived
+from the measured debt, every leg is capped inside the estimator trust window, reverse-direction
+quorum recovery and same-anchor backoff address the exact animated-card refusal that motivated
+the old skip, and any unknown leg still refuses the capture before an opener request. The stale
+policy guard is now replaced by one bounded progressive sweep when the first deep candidate is
+reached. Each next candidate is navigated from the preceding measured frame with the same index
+rebased by its measured page displacement; identity, ordinal counting, full-card extent,
+centring, mute screening, and both dwell bursts remain unchanged. The sweep receives only the
+remaining K-bounded candidate slice and makes one measured capped-leg cleanup return to the
+original enumeration entry. A measured overshoot/stall may continue only after a verified local
+restore and remains under the walk's existing two-refusal budget. An unknown landing or return
+still yields no anchor and stops before targeting. This removes deterministic coverage gaps
+without repeating a full deep return for every earlier photo.
 
 ## 5j. Addendum 2026-08-27: the walk died on its FIRST hop over a 1px overshoot, and that is what left doc 5.6 on its weakest bound
 

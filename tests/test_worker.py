@@ -1548,7 +1548,7 @@ def test_training_stops_before_a_commentless_safety_block_like():
     assert driver.closed
 
 
-def test_training_stale_hinge_calibration_stops_with_recalibration_action():
+def test_training_stale_hinge_calibration_stops_with_recalibration_action(capsys):
     """A runtime calibration mismatch is a targeting setup problem, not opener exhaustion."""
     from operation_love.status import RunStatus
     from operation_love.training_actions import TrainingActionBridge
@@ -1586,11 +1586,14 @@ def test_training_stale_hinge_calibration_stops_with_recalibration_action():
            mode="training", status=status,
            training_action_bridge=TrainingActionBridge()).run()
 
+    terminal_log = capsys.readouterr().out
     app = status.app_view("hinge")["app"]
     assert app["state"] == "stopped"
     assert app["stop_kind"] == "targeting_calibration"
     assert "Capture and validate a fresh targeting calibration" in app["stop_reason"]
     assert mismatch in app["stop_reason"]
+    assert terminal_log.count("Hinge: stopped — targeting calibration must be renewed:") == 1
+    assert mismatch in terminal_log
     assert service.calls == 0
     assert driver.i == 0
     assert driver.likes == []
@@ -2819,7 +2822,7 @@ def test_auto_stops_when_the_capture_could_not_produce_numbered_items():
     assert driver.likes == []
 
 
-def test_auto_stale_hinge_calibration_stops_before_opener_or_like():
+def test_auto_stale_hinge_calibration_stops_before_opener_or_like(capsys):
     from operation_love.status import RunStatus
 
     mismatch = ("apps.hinge.targeting_calibration is unavailable (the live app build/frame "
@@ -2836,11 +2839,14 @@ def test_auto_stale_hinge_calibration_stops_before_opener_or_like():
     Worker("hinge", driver, FakeDecider("like"), svc, FakeStore(), "run1", _Pacing(),
            threading.Event(), mode="auto", status=status).run()
 
+    terminal_log = capsys.readouterr().out
     app = status.app_view("hinge")["app"]
     assert app["state"] == "stopped"
     assert app["stop_kind"] == "targeting_calibration"
     assert "fresh targeting calibration" in app["stop_reason"]
     assert mismatch in app["stop_reason"]
+    assert terminal_log.count("Hinge: stopped — targeting calibration must be renewed:") == 1
+    assert mismatch in terminal_log
     assert client.items == []
     assert driver.likes == []
 

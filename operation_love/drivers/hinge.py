@@ -1027,11 +1027,12 @@ _REATTACH_MAX_EXIT_BAND_FRAC = 0.35
 # the ceiling the enumeration read plans against, and the only one of the two that was derived
 # against the three-strip quorum rather than against `estimate_shift`'s geometric window. The
 # ceiling here is deliberately still `_REATTACH_MAX_EXIT_BAND_FRAC`, not that 0.30: dropping the
-# cap would also shrink `_still_photo_dwell_walk_return_budget`'s envelope, which is expressed
-# as four legs at this same cap, and the measured case for 0.30 over 0.35 is a quorum MARGIN
-# improvement rather than an observed refusal (six pairs against eleven sitting at exactly three
-# agreeing strips, over 177 animated pairs). The refusals themselves are addressed where they
-# happen, by `_return_leg_backoff_remeasure`. Both ends stay well inside the 900px trust window.
+# cap would also move `_still_photo_dwell_walk_return_budget`'s progressive-sweep crossover
+# earlier (and shrink the legacy-double skip envelope), because both are expressed as four legs
+# at this same cap. The measured case for 0.30 over 0.35 is a quorum MARGIN improvement rather
+# than an observed refusal (six pairs against eleven sitting at exactly three agreeing strips,
+# over 177 animated pairs). The refusals themselves are addressed where they happen, by
+# `_return_leg_backoff_remeasure`. Both ends stay well inside the 900px trust window.
 _RETURN_LEG_DRAW_SPAN = (0.55, 1.0)
 # Consecutive legs that may deliver essentially nothing before the chain calls the page stuck.
 # `_measured_page_shift` reports a page that did not move as MEASURED 0 (an answer, not a
@@ -2670,6 +2671,10 @@ class AndroidDriver(DatingAppDriver):
         self._current_item_anchor = None
         self._current_photo_candidate_hearts: tuple[int, ...] = ()
         self._current_dwell_covered_hearts: tuple[int, ...] = ()
+        # A Stop is allowed to cut short the optional candidate walk, but a capture row must not
+        # make that look like K was too small.  This is reset with the one-profile item state and
+        # populated only by the walk's explicit ``outcome="stop"`` branch.
+        self._current_dwell_walk_interruption: dict[str, object] | None = None
         # What the coverage-aimed step planner did over the CURRENT read (see
         # `_EnumerationCoverageLedger`). Re-created at the top of every `_capture_current`, and
         # initialised here as well so `_plan_enumeration_step` is safe to call directly -- tools
@@ -6147,10 +6152,11 @@ class AndroidDriver(DatingAppDriver):
         evidence on top of what is returned here, never remove or replace it, and any refusal
         anywhere in the walk abandons the WALK, never the capture.
         """
+        # This is called once per capture.  Clear any direct/helper-call residue before a new
+        # candidate walk has a chance to attach its own Stop diagnostic.
+        self._current_dwell_walk_interruption = None
         entry_anchor = (_MeasuredItemAnchor(frames[-1], 0) if frames else None)
         if hinge_targeting_unavailable_reason() is not None:
-            return {}, entry_anchor
-        if should_stop is not None and should_stop():
             return {}, entry_anchor
 
         def mute_screen(frame: bytes, rect: tuple[int, int, int, int]) -> bool:
@@ -6164,6 +6170,20 @@ class AndroidDriver(DatingAppDriver):
                     else set(eligible_heart_ordinals))
         parked_hearts = (set(dwell_card_rects(index, len(frames) - 1)) if frames else set())
         parked_eligible = parked_hearts if eligible is None else parked_hearts & eligible
+        candidate_ordinals = tuple(
+            ordinal for ordinal in reversed(getattr(index, "translation", ()) or ())
+            if eligible is None or ordinal in eligible)
+        if should_stop is not None and should_stop():
+            next_heart = candidate_ordinals[0] if candidate_ordinals else None
+            if next_heart is not None:
+                self._dbg_still_photo_walk_candidate(
+                    next_heart, "stop", phase="before_base_dwell")
+            self._record_still_photo_dwell_walk_stop(
+                next_heart_ordinal=next_heart,
+                remaining_heart_ordinals=candidate_ordinals,
+                remaining_candidate_slots=self.still_photo_dwell_candidates,
+                phase="before_base_dwell")
+            return {}, entry_anchor
         if self._dbg is not None:
             try:
                 self._dbg.action(
@@ -6191,6 +6211,23 @@ class AndroidDriver(DatingAppDriver):
             # walk: doing so would turn the dwell's prompt cancellation contract into several
             # new navigation swipes and could then lose the otherwise unchanged entry anchor.
             self._record_still_photo_dwell(burst, span_s, {}, None)
+            if should_stop is not None and should_stop():
+                interrupted_hearts = tuple(sorted(parked_eligible))
+                remaining_candidates = tuple(
+                    ordinal for ordinal in candidate_ordinals
+                    if ordinal not in interrupted_hearts)
+                next_heart = (remaining_candidates[0]
+                              if remaining_candidates else None)
+                if next_heart is not None:
+                    self._dbg_still_photo_walk_candidate(
+                        next_heart, "stop", phase="during_base_dwell")
+                self._record_still_photo_dwell_walk_stop(
+                    next_heart_ordinal=next_heart,
+                    remaining_heart_ordinals=remaining_candidates,
+                    remaining_candidate_slots=(self.still_photo_dwell_candidates
+                                               - len(interrupted_hearts)),
+                    phase="during_base_dwell",
+                    interrupted_heart_ordinals=interrupted_hearts)
             return {}, entry_anchor
 
         # `content_band` is what lets the shared helper measure Hinge's AUTOPLAY precondition
@@ -6225,6 +6262,16 @@ class AndroidDriver(DatingAppDriver):
             if probe.frames:
                 entry_anchor = _MeasuredItemAnchor(
                     probe.frames[-1], int(probe.page_shift_px))
+        elif target is not None and should_stop is not None and should_stop():
+            remaining_candidates = tuple(
+                ordinal for ordinal in candidate_ordinals if ordinal not in evidence)
+            next_heart = remaining_candidates[0] if remaining_candidates else None
+            self._record_still_photo_dwell_walk_stop(
+                next_heart_ordinal=next_heart,
+                remaining_heart_ordinals=remaining_candidates,
+                remaining_candidate_slots=(self.still_photo_dwell_candidates - len(evidence)),
+                phase="during_base_reattach_probe",
+                interrupted_heart_ordinals=(target,))
         self._record_still_photo_dwell(burst, span_s, evidence, probe)
         return self._still_photo_dwell_candidate_walk(
             evidence, frames=frames, index=index, mute_screen=mute_screen,
@@ -6238,10 +6285,10 @@ class AndroidDriver(DatingAppDriver):
         """One best-effort debug row per candidate the K-candidate walk attempted.
 
         Same contract as `_record_still_photo_dwell`: diagnostics only, and a failure to write
-        one must never alter what the walk itself decided. `outcome` is one of "navigation_refused"
-        / "parked_unproved" / "proved" / "return_unverified" / "skipped_return_budget" /
-        "stop", matching the walk's own vocabulary for why a candidate did or did not end up in
-        the returned evidence.
+        one must never alter what the walk itself decided. `outcome` uses the walk's established
+        vocabulary (for example "navigation_refused", "parked_unproved", "proved",
+        "return_unverified", "skipped_return_budget", or "stop") for why a candidate did or did
+        not end up in the returned evidence.
         """
         if self._dbg is None:
             return
@@ -6279,6 +6326,75 @@ class AndroidDriver(DatingAppDriver):
         except Exception:  # noqa: BLE001 -- diagnostics must never alter a live-run result
             pass
 
+    def _dbg_still_photo_progressive_sweep(self, outcome: str, **fields) -> None:
+        """Record the deep-candidate sweep without changing any targeting decision."""
+        if self._dbg is None:
+            return
+        try:
+            self._dbg.action("still_photo_dwell_progressive_sweep", outcome=outcome, **fields)
+        except Exception:  # noqa: BLE001 -- diagnostics must never alter a live-run result
+            pass
+
+    @staticmethod
+    def _still_photo_dwell_two_burst_proved(dwell) -> bool:
+        """Whether a walked observation completed the C2/C3 still-photo proof.
+
+        ``card_evidence is not None`` only says the first dwell returned an object.  In
+        particular, an operator Stop can land after that dwell but before the re-attach probe's
+        second burst, leaving a deliberately fail-closed object with ``reattach_probe_ran=False``.
+        Calling that candidate ``proved`` made the debug trace contradict the final payload's
+        refusal.  C1 crop drift is evaluated later by ``build_item_payload``; every proof rung
+        this walk itself can observe must be complete here before it uses that outcome.
+        """
+        def complete_span(value) -> bool:
+            return (isinstance(value, (int, float)) and not isinstance(value, bool)
+                    and math.isfinite(value) and value > 0)
+
+        return (
+            getattr(dwell, "dwell_exact", None) is True
+            and len(getattr(dwell, "dwell_frame_sha256s", ()) or ()) >= 2
+            and getattr(dwell, "centered", None) is True
+            and getattr(dwell, "mute_screens_complete", None) is True
+            and complete_span(getattr(dwell, "dwell_span_s", None))
+            and getattr(dwell, "reattach_probe_ran", None) is True
+            and len(getattr(dwell, "reattach_dwell_frame_sha256s", ()) or ()) >= 2
+            and getattr(dwell, "reattach_dwell_exact", None) is True
+            and getattr(dwell, "reattach_centered", None) is True
+            and getattr(dwell, "reattach_mute_screens_complete", None) is True
+            and complete_span(getattr(dwell, "reattach_dwell_span_s", None)))
+
+    def _record_still_photo_dwell_walk_stop(
+            self, *, next_heart_ordinal: int | None, remaining_heart_ordinals,
+            remaining_candidate_slots: int, phase: str,
+            interrupted_heart_ordinals=()) -> None:
+        """Attach a Stop-caused coverage shortfall to this capture's diagnostic state.
+
+        The configured candidate limit is a maximum, not permission to issue another gesture
+        after the operator asks to stop.  Preserve the exact candidates that were still inside
+        that maximum when the stop was observed, including an in-progress base/proof card when
+        applicable, so an incomplete capture does not misleadingly read as an exhausted K
+        budget.  A later top-of-loop stop never overwrites an earlier in-progress phase.
+        """
+        if self._current_dwell_walk_interruption is not None:
+            return
+        slots = max(0, int(remaining_candidate_slots))
+        remaining = [ordinal for ordinal in remaining_heart_ordinals
+                     if isinstance(ordinal, int) and not isinstance(ordinal, bool)]
+        interrupted = [ordinal for ordinal in interrupted_heart_ordinals
+                       if isinstance(ordinal, int) and not isinstance(ordinal, bool)]
+        if not remaining and not interrupted:
+            return
+        interruption = {
+            "reason": "stop_requested",
+            "phase": phase,
+            "unattempted_within_remaining_limit_page_hearts": remaining[:slots],
+        }
+        if isinstance(next_heart_ordinal, int) and not isinstance(next_heart_ordinal, bool):
+            interruption["next_page_heart"] = int(next_heart_ordinal)
+        if interrupted:
+            interruption["interrupted_page_hearts"] = interrupted
+        self._current_dwell_walk_interruption = interruption
+
     def _still_photo_dwell_candidate_walk(self, base_evidence: dict, *, frames: list[bytes],
                                           index, mute_screen, should_stop=None,
                                           eligible_heart_ordinals=None,
@@ -6303,20 +6419,21 @@ class AndroidDriver(DatingAppDriver):
         Proximity is therefore the only ordering this layer can justify, and bottom-most first is
         cheapest because `navigate_to_item` only walks UP from the entry.
 
-        EVERY HOP RETURNS TO THE ENTRY. An intermediate return establishes the next dwell hop's
-        start, while the final return establishes the later model-targeting pass's start:
-        `navigate_to_item` is ASCENDING-ONLY and always anchors on `entry_reference` with a
-        HARD-CODED `reference_offset = int(index.offsets[-1])` (item_nav.py) -- it cannot resume
-        a walk from wherever a prior dwell hop parked the phone, only from the entry the read
-        itself left it at. See `_still_photo_dwell_walk_return_to_entry` for how that return is
-        measured and verified, never assumed.
+        SHORT HOPS RETURN TO THE ENTRY. An intermediate return establishes the next dwell hop's
+        start, while the final return establishes the later model-targeting pass's start. Once a
+        candidate exceeds the probe-derived four-leg envelope, the remaining candidates instead
+        enter one progressive sweep: each next `navigate_to_item` call receives the preceding
+        measured terminal frame and a correspondingly rebased index, then one finite capped-leg
+        chain repays the sweep to the original entry. See
+        `_still_photo_dwell_progressive_sweep`; neither path assumes a gesture landed.
 
-        A REFUSAL ABANDONS THE WALK UNLESS THE PAGE IS PROVABLY BACK AT THE ENTRY; IT NEVER
-        FAILS THE CAPTURE (owner rule, restated from the design this implements). An unverified
-        return, an uncoded vision refusal, or `should_stop` firing all stop the walk in place and
-        keep whatever was already measured -- the worst case is byte-identical to
-        `still_photo_dwell_candidates == 1`, which is the whole safety argument for defaulting
-        this on.
+        A CANDIDATE REFUSAL NEVER ERASES BANKED EVIDENCE.  When the phone provably did not move,
+        the walk can stop and hand the measured entry back, making its evidence result no worse
+        than `still_photo_dwell_candidates == 1`.  Once a gesture moved the page, however, a
+        missing or unverified return yields no anchor: the fold then refuses before model
+        targeting rather than pretend the original entry still describes the live screen.  A
+        coded recovery may continue only after the same measured return gate a successful hop
+        must pass.  This is the additive evidence contract without weakening position safety.
 
         THE ONE EXCEPTION, AND WHY IT IS NOT A RELAXATION (found 2026-08-27, on a live run). A
         post-gesture refusal that carries `item_nav`'s measured `recovery` can be walked back to
@@ -6399,6 +6516,11 @@ class AndroidDriver(DatingAppDriver):
                 break
             if should_stop is not None and should_stop():
                 self._dbg_still_photo_walk_candidate(heart_ordinal, "stop")
+                self._record_still_photo_dwell_walk_stop(
+                    next_heart_ordinal=heart_ordinal,
+                    remaining_heart_ordinals=candidates[attempt:],
+                    remaining_candidate_slots=remaining - hops_run,
+                    phase="before_candidate_navigation")
                 break
             walk_index = self._rebase_item_index_for_anchor(
                 index, entry_anchor.page_shift_px)
@@ -6410,60 +6532,74 @@ class AndroidDriver(DatingAppDriver):
                 # doubt; the walk simply stops adding candidates instead.
                 return evidence, entry_anchor
             nav_index = walk_index.translation.index(heart_ordinal) + 1
-            # A return is an invariant after every hop, and the pre-check below decides whether
-            # to make the hop at all. Intermediate hops have always had it, because another
-            # dwell hop follows and a broken anchor would poison it.
+            # A measured cleanup is invariant after every hop.  The ordinary short-hop path
+            # performs it immediately because another navigation starts from this same entry;
+            # the progressive path below instead carries a measured anchor between deep cards
+            # and performs one cleanup for their whole monotonic sweep.
             final_hop = (hops_run + 1 >= remaining
                          or attempt + 1 >= len(candidates)
                          or attempt + 1 >= max_attempts)
-            # THE FINAL HOP NOW HAS IT TOO, UNLESS THE WALK HAS BANKED NOTHING (found 2026-09-04,
-            # run 1d84909bf1bb). The exemption used to be unconditional, reasoning that the final
-            # hop's "dynamic, individually measured return chain still runs below". It does --
-            # but that chain is what failed, and the exemption applied to the hop least able to
-            # afford it. Candidates are ordered bottom-most-first, i.e. shortest climb first, so
-            # the final hop is by construction the LONGEST climb of the walk: this run skipped
-            # heart 4 at 3951px as beyond the 2520px envelope and then attempted heart 3 at
-            # 5167px, 31% further, seconds later. The 9-leg return that produced refused on leg
-            # 5, and a refused return is not a lost card -- it is a lost CAPTURE and a stopped
-            # run.
+            # FINAL-HOP HISTORY (2026-09-04, run 1d84909bf1bb).  An empty walk's last chance has
+            # always bypassed the old four-leg threshold: skipping it would make
+            # `_index_captured_items` stop for zero dwell evidence anyway, while its dynamic,
+            # measured cleanup at least gives the card a chance.  A banked walk used to skip a
+            # deep last candidate instead, preserving its working capture but creating the exact
+            # deterministic coverage gap reported by run 5d257fc1a1f8.
             #
-            # The exception is not a hedge, it is the point where the trade reverses. Skipping a
-            # candidate costs one card's dwell evidence, which is only a marginal loss while some
-            # other card has been proved. With `evidence` still empty and no candidate after this
-            # one, skipping produces a capture with nothing dwelled, which `_index_captured_items`
-            # turns into its own `items_unnumbered` stop -- so the fallback is a stopped run
-            # either way and attempting the hop is strictly better. Once anything is banked, the
-            # fallback is a WORKING capture, and gambling it on an unvetted return shape is not.
-            # `evidence` starts as the free card's own result, so a capture that already proved
-            # a card never gambles it. A final hop is always the walk's last chance -- each of
-            # the three conditions above means no candidate follows -- so "empty here" really is
-            # "this walk will bank nothing", not "not yet".
+            # Typed production indexes no longer make that trade.  Exceeding the threshold
+            # switches all remaining cards into the progressive sweep, whose return uses the
+            # now distance-derived, capped, measured cleanup chain.  The `budget_applies` split
+            # remains for the truly empty final hop and for untyped legacy doubles, which cannot
+            # be safely rebased and therefore retain their historical bounded skip.
             budget_applies = (not final_hop) or bool(evidence)
             return_budget = (self._still_photo_dwell_walk_return_budget(walk_index, nav_index)
                              if budget_applies else None)
             if return_budget is not None:
                 required_climb_px, return_cap_px, leg_cap_px = return_budget
                 if required_climb_px > return_cap_px:
-                    # This is an OPTIONAL coverage hop, not a route to an action.  The return
-                    # protocol has a deliberately small, already-vetted envelope: at most the
-                    # re-attach return span's upper number of legs, and never a leg larger than
-                    # the re-attach exit cap that frameshift can safely measure.  A card whose
-                    # complete top cannot possibly enter the band inside that envelope would make
-                    # the walk spend gestures in a return shape it has not established as safe.
-                    # Leave the phone and the last measured anchor untouched; this card merely
-                    # stays uncovered, exactly like an ordinary dwell refusal.
-                    self._dbg_still_photo_walk_candidate(
-                        heart_ordinal, "skipped_return_budget",
-                        reason=(
-                            f"the minimum {required_climb_px}px climb needed to bring this card's "
-                            f"top into the analysed band exceeds the optional return budget of "
-                            f"{return_cap_px}px ({_REATTACH_RETURN_STEPS_SPAN[1]} vetted legs "
-                            f"at {leg_cap_px}px each)"),
-                        required_climb_px=required_climb_px,
-                        return_cap_px=return_cap_px,
-                        return_leg_cap_px=leg_cap_px,
-                        return_step_budget=_REATTACH_RETURN_STEPS_SPAN[1])
-                    continue
+                    # Legacy calibration/test doubles do not carry the typed page-offset
+                    # provenance the progressive sweep uses for each new anchor.  Preserve the
+                    # old bounded skip for those callers rather than inferring an offset from a
+                    # duck-typed object.  Production enumeration always supplies ItemIndex.
+                    if not isinstance(index, ItemIndex):
+                        self._dbg_still_photo_walk_candidate(
+                            heart_ordinal, "skipped_return_budget",
+                            reason=(
+                                f"the minimum {required_climb_px}px climb needed to bring this "
+                                f"card's top into the analysed band exceeds the optional return "
+                                f"budget of {return_cap_px}px, and this legacy index carries no "
+                                "typed page-offset provenance for a progressive sweep"),
+                            required_climb_px=required_climb_px,
+                            return_cap_px=return_cap_px,
+                            return_leg_cap_px=leg_cap_px,
+                            return_step_budget=_REATTACH_RETURN_STEPS_SPAN[1])
+                        continue
+                    # A deep card used to be dropped here solely because returning to the
+                    # enumeration entry after *every* candidate would need more than the probe's
+                    # four-leg envelope.  On an ordinary six-media profile that systematically
+                    # stranded the first half of the photos even though K=6 promised to attempt
+                    # all of them (run 5d257fc1a1f8: hearts 1/4/5 of six candidates).
+                    #
+                    # Do not turn that obsolete per-hop cost guard into an unbounded return.
+                    # Switch once to the progressive sweep below: every following navigation is
+                    # re-anchored on the last frame whose page offset was measured, and the phone
+                    # is repaid to THIS entry exactly once through the existing finite, capped-leg
+                    # return chain.  All identity, ordinal, centring, motion, Stop, and
+                    # never-substitute gates remain the same ones used by the short-hop path.
+                    sweep_candidates = candidates[attempt:max_attempts]
+                    self._dbg_still_photo_progressive_sweep(
+                        "started", candidate_page_hearts=sweep_candidates,
+                        candidate_slots=remaining - hops_run,
+                        triggering_page_heart=heart_ordinal,
+                        triggering_required_climb_px=required_climb_px,
+                        legacy_return_cap_px=return_cap_px,
+                        return_leg_cap_px=leg_cap_px)
+                    return self._still_photo_dwell_progressive_sweep(
+                        evidence, candidate_ordinals=sweep_candidates,
+                        candidate_slots=remaining - hops_run, index=index,
+                        mute_screen=mute_screen, should_stop=should_stop,
+                        entry_anchor=entry_anchor, calibration=calibration,
+                        returned_refusals_used=returned_refusals)
             self._note_capture_progress(
                 f"verifying photo item {hops_run + 1} of {limit}: moving to the next item")
             candidate_started_at = time.monotonic() if self._dbg is not None else None
@@ -6495,9 +6631,10 @@ class AndroidDriver(DatingAppDriver):
                     # count cannot establish an ordinal and it must never be dwelt, selected or
                     # retried.  Unlike an ordinary navigation error, though, item_nav supplies a
                     # complete measured terminal position for these two post-gesture outcomes.
-                    # Use it only to repay the optional walk's displacement, then stop the walk
-                    # with all earlier evidence intact.  This is the additive walk contract:
-                    # one rejected extra candidate must not erase the original capture.
+                    # Use it only to repay the optional walk's displacement, then decide whether
+                    # the bounded returned-refusal allowance permits another candidate.  This is
+                    # the additive walk contract: one rejected extra candidate must not erase the
+                    # original capture or automatically strand every candidate after it.
                     return_started_at = (time.monotonic()
                                          if candidate_started_at is not None else None)
                     returned_anchor = self._return_to_entry_from_measured_position(
@@ -6667,17 +6804,32 @@ class AndroidDriver(DatingAppDriver):
                        if proof_started_at is not None else 0.0)
             if card_evidence is not None:
                 evidence[heart_ordinal] = card_evidence
+                outcome = ("proved" if self._still_photo_dwell_two_burst_proved(card_evidence)
+                           else "observed_unproved")
                 self._dbg_still_photo_walk_candidate(
-                    heart_ordinal, "proved", frame=target.frame,
+                    heart_ordinal, outcome, frame=target.frame,
                     climbed_px=target.climbed_px, dwell_exact=card_evidence.dwell_exact,
-                    reattach_probe_ran=card_evidence.reattach_probe_ran)
+                    reattach_probe_ran=card_evidence.reattach_probe_ran,
+                    reattach_dwell_exact=getattr(card_evidence, "reattach_dwell_exact", None))
             else:
                 reason = ("centering or its measured displacement was unresolved"
                           if correction is None
                           else "the dwell/probe observation did not complete")
+                outcome = "parked_unproved"
                 self._dbg_still_photo_walk_candidate(
-                    heart_ordinal, "parked_unproved", frame=target.frame,
+                    heart_ordinal, outcome, frame=target.frame,
                     climbed_px=target.climbed_px, reason=reason)
+            if (should_stop is not None and should_stop()
+                    and (card_evidence is None
+                         or not self._still_photo_dwell_two_burst_proved(card_evidence))):
+                remaining_candidates = candidates[attempt + 1:]
+                self._record_still_photo_dwell_walk_stop(
+                    next_heart_ordinal=(remaining_candidates[0]
+                                        if remaining_candidates else None),
+                    remaining_heart_ordinals=remaining_candidates,
+                    remaining_candidate_slots=remaining - hops_run,
+                    phase="during_candidate_proof",
+                    interrupted_heart_ordinals=(heart_ordinal,))
             # Model-selected targeting follows the final dwell hop, even though no further dwell
             # hops do. Targeting starts bottom-up from the enumeration entry and may choose a
             # card below this upward-walked candidate, so restore that entry through the same
@@ -6698,8 +6850,7 @@ class AndroidDriver(DatingAppDriver):
                     return evidence, None
                 if candidate_started_at is not None:
                     self._dbg_still_photo_walk_candidate_timing(
-                        heart_ordinal,
-                        "proved" if card_evidence is not None else "parked_unproved",
+                        heart_ordinal, outcome,
                         started_at=candidate_started_at, navigation_s=navigation_s,
                         proof_s=proof_s, return_s=return_s)
                 entry_anchor = returned_anchor
@@ -6732,11 +6883,328 @@ class AndroidDriver(DatingAppDriver):
                 return evidence, None
             if candidate_started_at is not None:
                 self._dbg_still_photo_walk_candidate_timing(
-                    heart_ordinal, "proved" if card_evidence is not None else "parked_unproved",
+                    heart_ordinal, outcome,
                     started_at=candidate_started_at, navigation_s=navigation_s,
                     proof_s=proof_s, return_s=return_s)
             entry_anchor = returned_anchor
         return evidence, entry_anchor
+
+    def _still_photo_dwell_progressive_sweep(
+            self, base_evidence: dict, *, candidate_ordinals, candidate_slots: int, index,
+            mute_screen, should_stop, entry_anchor: _MeasuredItemAnchor,
+            calibration, returned_refusals_used: int) -> tuple[
+                dict, _MeasuredItemAnchor | None]:
+        """Visit deep photo candidates monotonically, then make one measured return.
+
+        The short-hop walk above deliberately returns to the enumeration entry after each card.
+        That is cheap and well exercised while a card fits the re-attach probe's four-leg return
+        envelope.  It becomes quadratic on the earlier half of a normal Hinge profile, however,
+        and the old response was to skip those candidates entirely.  This helper is the bounded
+        continuation for that case.
+
+        ``navigate_to_item`` still performs every identity, count, extent, and shift check.  The
+        only changed input is its zero point: after a successful hop, ``target.page_offset`` plus
+        the separately measured centring/probe residual defines a new ``_MeasuredItemAnchor``;
+        ``_rebase_item_index_for_anchor`` expresses the unchanged index from that exact frame.
+        Thus the next hop starts at a measured zero shift rather than bridging back to the old
+        terminal screenshot or assuming a gesture landed.
+
+        The sweep is finite: it receives only the remaining configured candidate slice, counts
+        successful navigation attempts against ``candidate_slots``, and retains the ordinary
+        walk's bounded gesture-free-skip and verified-returned-refusal allowances.  A refused
+        ordinal is never retried or substituted, but a measured overshoot/stall that is safely
+        restored need not strand the candidates above it.  Once any hop moves the phone, every
+        normal exit repays the net measured displacement to ``entry_anchor`` through
+        ``_return_to_entry_from_measured_position``.  An unknown correction, navigation position,
+        or cleanup leg returns no anchor and the capture refuses before an opener can be bought.
+        """
+        evidence = dict(base_evidence)
+        if candidate_slots <= 0:
+            return evidence, entry_anchor
+        try:
+            original_reference_offset = index.offsets[-1]
+        except (AttributeError, IndexError, TypeError):
+            return evidence, entry_anchor
+        if (not isinstance(original_reference_offset, int)
+                or isinstance(original_reference_offset, bool)):
+            return evidence, entry_anchor
+
+        origin_anchor = entry_anchor
+        current_anchor = entry_anchor
+        candidates = tuple(candidate_ordinals)
+        attempted: list[int] = []
+        hops_run = 0
+        returned_refusals = returned_refusals_used
+        max_attempts = (
+            candidate_slots + _STILL_PHOTO_WALK_SKIP_SLACK
+            + max(0, _STILL_PHOTO_WALK_RETURNED_REFUSAL_BUDGET - returned_refusals))
+
+        for attempt, heart_ordinal in enumerate(candidates[:max_attempts]):
+            if hops_run >= candidate_slots:
+                break
+            if should_stop is not None and should_stop():
+                self._dbg_still_photo_walk_candidate(heart_ordinal, "stop")
+                self._record_still_photo_dwell_walk_stop(
+                    next_heart_ordinal=heart_ordinal,
+                    remaining_heart_ordinals=candidates[attempt:],
+                    remaining_candidate_slots=candidate_slots - hops_run,
+                    phase="before_candidate_navigation")
+                break
+            walk_index = self._rebase_item_index_for_anchor(
+                index, current_anchor.page_shift_px)
+            if walk_index is None:
+                break
+            try:
+                nav_index = walk_index.translation.index(heart_ordinal) + 1
+            except (AttributeError, ValueError):
+                break
+
+            attempted.append(heart_ordinal)
+            self._note_capture_progress(
+                f"verifying photo item {len(base_evidence) + hops_run + 1} of "
+                f"{self.still_photo_dwell_candidates}: moving through the deep-item sweep")
+            candidate_started_at = time.monotonic() if self._dbg is not None else None
+            navigation_started_at = candidate_started_at
+            inputs_before_navigation = getattr(self, "_device_inputs_delivered", None)
+            try:
+                target = navigate_to_item(
+                    self, walk_index, nav_index, entry_reference=current_anchor.frame,
+                    identity_match_max_dist=calibration.identity_match_max_dist,
+                    should_stop=should_stop)
+            except ItemNavigationError as exc:
+                navigation_s = (time.monotonic() - navigation_started_at
+                                if navigation_started_at is not None else 0.0)
+                recovery = getattr(exc, "recovery", None)
+                if recovery is not None:
+                    return_started_at = (time.monotonic()
+                                         if candidate_started_at is not None else None)
+                    restored = self._return_to_entry_from_measured_position(
+                        current_anchor, frame=recovery.frame,
+                        terminal_shift_px=recovery.page_shift_px)
+                    return_s = (time.monotonic() - return_started_at
+                                if return_started_at is not None else 0.0)
+                    if restored is not None:
+                        returned_refusals += 1
+                    spent_budget = (
+                        restored is not None
+                        and returned_refusals > _STILL_PHOTO_WALK_RETURNED_REFUSAL_BUDGET)
+                    refusal_outcome = (
+                        "navigation_refused_returned" if restored is not None
+                        else "navigation_refused_return_unverified")
+                    navigation_refusal = {
+                        "schema_version": 1,
+                        "code": exc.code,
+                        "frame_index": recovery.frame_index,
+                        "terminal_shift_px": recovery.page_shift_px,
+                        "return_outcome": ("restored" if restored is not None
+                                           else "return_unverified"),
+                        "restored_page_shift_px": (
+                            None if restored is None else restored.page_shift_px),
+                        "planned": {
+                            "step_px": recovery.planned_step_px,
+                            "bound_px": recovery.bound_px,
+                            "frac": recovery.frac,
+                            "window_px": list(recovery.window_px),
+                            "basis": recovery.basis,
+                            "spacing_px": recovery.spacing_px,
+                            "sized_against_px": recovery.sized_against_px,
+                        },
+                        "achieved": {
+                            "climb_px": recovery.achieved_step_px,
+                            "overshoot_px": max(
+                                0, recovery.achieved_step_px - recovery.bound_px),
+                            "measurement_delta_px": recovery.measurement_delta_px,
+                            "measurement_status": recovery.measurement_status,
+                            "measurement_confidence": recovery.measurement_confidence,
+                            "measurement_agreeing": recovery.measurement_agreeing,
+                            "measurement_dissenting": recovery.measurement_dissenting,
+                            "measurement_eligible": recovery.measurement_eligible,
+                        },
+                        "walk": {
+                            "outcome": (
+                                "abandoned_return_unverified" if restored is None
+                                else "abandoned_budget_spent" if spent_budget
+                                else "continued"),
+                            "returned_refusals_spent": returned_refusals,
+                            "returned_refusal_budget":
+                                _STILL_PHOTO_WALK_RETURNED_REFUSAL_BUDGET,
+                        },
+                    }
+                    self._dbg_still_photo_walk_candidate(
+                        heart_ordinal, refusal_outcome,
+                        frame=recovery.frame, reason=exc.code,
+                        terminal_page_shift_px=recovery.page_shift_px,
+                        planned_step_px=recovery.planned_step_px,
+                        achieved_step_px=recovery.achieved_step_px,
+                        step_bound_px=recovery.bound_px,
+                        violation=recovery.violation,
+                        navigation_refusal=navigation_refusal)
+                    if candidate_started_at is not None:
+                        self._dbg_still_photo_walk_candidate_timing(
+                            heart_ordinal, refusal_outcome,
+                            started_at=candidate_started_at, navigation_s=navigation_s,
+                            proof_s=0.0, return_s=return_s)
+                    if restored is None:
+                        self._dbg_still_photo_progressive_sweep(
+                            "return_unverified", attempted_page_hearts=attempted,
+                            failed_page_heart=heart_ordinal)
+                        return evidence, None
+                    current_anchor = restored
+                    if spent_budget:
+                        break
+                    continue
+
+                below_entry = exc.code == NAV_ITEM_BELOW_ENTRY
+                moved = self._navigation_moved_the_phone(inputs_before_navigation)
+                outcome = ("below_entry_after_gesture" if below_entry and moved
+                           else "unreachable_below_entry" if below_entry
+                           else "navigation_refused")
+                self._dbg_still_photo_walk_candidate(
+                    heart_ordinal, outcome,
+                    frame=getattr(exc, "pair_before", None) or exc.frame,
+                    after_frame=(exc.frame if getattr(exc, "pair_before", None) is not None
+                                 else None),
+                    keep_pair=getattr(exc, "pair_before", None) is not None,
+                    reason=exc.code, detail=str(exc),
+                    device_inputs_before=inputs_before_navigation,
+                    **({"navigation_refusal": exc.measurement}
+                       if isinstance(getattr(exc, "measurement", None), dict) else {}))
+                if candidate_started_at is not None:
+                    self._dbg_still_photo_walk_candidate_timing(
+                        heart_ordinal, outcome, started_at=candidate_started_at,
+                        navigation_s=navigation_s, proof_s=0.0, return_s=0.0)
+                if below_entry and not moved:
+                    continue
+                rescued = self._anchor_after_navigation_refusal(
+                    current_anchor, inputs_before_navigation, heart_ordinal, exc.code,
+                    refusal_anchor=getattr(exc, "anchor", None))
+                if rescued is None:
+                    self._dbg_still_photo_progressive_sweep(
+                        "position_unmeasured", attempted_page_hearts=attempted,
+                        failed_page_heart=heart_ordinal)
+                    return evidence, None
+                current_anchor = rescued
+                break
+            except (ActionCancelled, ScrollStepError, SegmentationError, ShiftEstimationError,
+                    IdentityError) as exc:
+                navigation_s = (time.monotonic() - navigation_started_at
+                                if navigation_started_at is not None else 0.0)
+                self._dbg_still_photo_walk_candidate(
+                    heart_ordinal, "navigation_refused", reason=type(exc).__name__)
+                if candidate_started_at is not None:
+                    self._dbg_still_photo_walk_candidate_timing(
+                        heart_ordinal, "navigation_refused", started_at=candidate_started_at,
+                        navigation_s=navigation_s, proof_s=0.0, return_s=0.0)
+                rescued = self._anchor_after_navigation_refusal(
+                    current_anchor, inputs_before_navigation, heart_ordinal,
+                    type(exc).__name__)
+                if rescued is None:
+                    self._dbg_still_photo_progressive_sweep(
+                        "position_unmeasured", attempted_page_hearts=attempted,
+                        failed_page_heart=heart_ordinal)
+                    return evidence, None
+                current_anchor = rescued
+                break
+
+            navigation_s = (time.monotonic() - navigation_started_at
+                            if navigation_started_at is not None else 0.0)
+            hops_run += 1
+            proof_started_at = time.monotonic() if candidate_started_at is not None else None
+            self._note_capture_progress(
+                f"verifying photo item {len(base_evidence) + hops_run} of "
+                f"{self.still_photo_dwell_candidates} for motion")
+            card_evidence, probe, correction = self._still_photo_dwell_over_navigated_target(
+                target, walk_index.block_for(nav_index), heart_ordinal=heart_ordinal,
+                mute_screen=mute_screen, should_stop=should_stop)
+            proof_s = (time.monotonic() - proof_started_at
+                       if proof_started_at is not None else 0.0)
+            if card_evidence is not None:
+                evidence[heart_ordinal] = card_evidence
+                outcome = ("proved" if self._still_photo_dwell_two_burst_proved(card_evidence)
+                           else "observed_unproved")
+                self._dbg_still_photo_walk_candidate(
+                    heart_ordinal, outcome, frame=target.frame,
+                    climbed_px=target.climbed_px, dwell_exact=card_evidence.dwell_exact,
+                    reattach_probe_ran=card_evidence.reattach_probe_ran,
+                    reattach_dwell_exact=getattr(card_evidence, "reattach_dwell_exact", None))
+            else:
+                reason = ("centering or its measured displacement was unresolved"
+                          if correction is None
+                          else "the dwell/probe observation did not complete")
+                self._dbg_still_photo_walk_candidate(
+                    heart_ordinal, "parked_unproved", frame=target.frame,
+                    climbed_px=target.climbed_px, reason=reason)
+                outcome = "parked_unproved"
+            if (should_stop is not None and should_stop()
+                    and (card_evidence is None
+                         or not self._still_photo_dwell_two_burst_proved(card_evidence))):
+                remaining_candidates = candidates[attempt + 1:]
+                self._record_still_photo_dwell_walk_stop(
+                    next_heart_ordinal=(remaining_candidates[0]
+                                        if remaining_candidates else None),
+                    remaining_heart_ordinals=remaining_candidates,
+                    remaining_candidate_slots=candidate_slots - hops_run,
+                    phase="during_candidate_proof",
+                    interrupted_heart_ordinals=(heart_ordinal,))
+
+            # `target.page_offset` is item_nav's measured landing offset in the rebased index's
+            # page space.  The blocks themselves never move when `_rebase_item_index_for_anchor`
+            # adjusts the terminal-frame offset, so subtracting the ORIGINAL terminal offset
+            # converts it back to this capture's global displacement exactly once.
+            target_page_offset = getattr(target, "page_offset", None)
+            correction_px = getattr(correction, "total_px", None)
+            probe_px = 0 if probe is None else getattr(probe, "page_shift_px", None)
+            if (correction is None
+                    or any(isinstance(value, bool) or not isinstance(value, int)
+                           for value in (target_page_offset, correction_px, probe_px))):
+                if candidate_started_at is not None:
+                    self._dbg_still_photo_walk_candidate_timing(
+                        heart_ordinal, "return_unverified", started_at=candidate_started_at,
+                        navigation_s=navigation_s, proof_s=proof_s, return_s=0.0)
+                self._dbg_still_photo_progressive_sweep(
+                    "position_unmeasured", attempted_page_hearts=attempted,
+                    failed_page_heart=heart_ordinal)
+                return evidence, None
+            terminal_frame = (correction.frame if probe is None or not probe.frames
+                              else probe.frames[-1])
+            current_anchor = _MeasuredItemAnchor(
+                terminal_frame,
+                int(target_page_offset) - int(original_reference_offset)
+                + int(correction_px) + int(probe_px))
+            if candidate_started_at is not None:
+                # Cleanup is deferred once for the sweep, so this candidate's own row ends at its
+                # proof.  The enclosing fold still records the complete dwell wall clock, and the
+                # sweep row plus return-chain row below preserve the deferred cleanup separately.
+                self._dbg_still_photo_walk_candidate_timing(
+                    heart_ordinal, outcome, started_at=candidate_started_at,
+                    navigation_s=navigation_s, proof_s=proof_s, return_s=0.0)
+
+        return_started_at = time.monotonic() if self._dbg is not None else None
+        returned_anchor = self._return_to_entry_from_measured_position(
+            origin_anchor, frame=current_anchor.frame,
+            terminal_shift_px=current_anchor.page_shift_px - origin_anchor.page_shift_px)
+        return_s = (time.monotonic() - return_started_at
+                    if return_started_at is not None else None)
+        if returned_anchor is None:
+            self._dbg_still_photo_progressive_sweep(
+                "return_unverified", attempted_page_hearts=attempted,
+                proved_page_hearts=sorted(
+                    ordinal for ordinal, dwell in evidence.items()
+                    if ordinal not in base_evidence
+                    and self._still_photo_dwell_two_burst_proved(dwell)),
+                returned_refusals_spent=returned_refusals,
+                **({"return_s": round(return_s, 6)} if return_s is not None else {}))
+            return evidence, None
+        self._dbg_still_photo_progressive_sweep(
+            "returned", attempted_page_hearts=attempted,
+            proved_page_hearts=sorted(
+                ordinal for ordinal, dwell in evidence.items()
+                if ordinal not in base_evidence
+                and self._still_photo_dwell_two_burst_proved(dwell)),
+            terminal_page_shift_px=returned_anchor.page_shift_px,
+            returned_refusals_spent=returned_refusals,
+            **({"return_s": round(return_s, 6)} if return_s is not None else {}))
+        return evidence, returned_anchor
 
     def _navigation_moved_the_phone(self, inputs_before: int | None) -> bool:
         """Whether any device input was delivered since `inputs_before` was read.
@@ -6840,22 +7308,25 @@ class AndroidDriver(DatingAppDriver):
 
     def _still_photo_dwell_walk_return_budget(self, index, model_index: int) -> tuple[
             int, int, int] | None:
-        """The minimum climb a candidate needs, and the vetted optional-return envelope.
+        """The minimum climb and the short-hop/progressive-sweep crossover.
 
-        Candidate walking may add still-photo evidence but must never make an INTERMEDIATE hop
-        depend on an unbounded recovery.  The return envelope is intentionally not a new
+        Candidate walking may add still-photo evidence but must never make repeated deep hops
+        depend on repeated long recoveries.  This threshold is intentionally not a new
         calibration:
         `_REATTACH_RETURN_STEPS_SPAN[1]` is the existing maximum number of bounded return
         strokes, and `_REATTACH_MAX_EXIT_BAND_FRAC` is the existing per-stroke cap kept inside
-        frameshift's trust window.  Their product is therefore the furthest optional hop whose
-        return shape is already represented by the re-attach protocol.
+        frameshift's trust window.  Their product is therefore the furthest hop whose immediate
+        return shape is already represented by the re-attach protocol.  Beyond it, a typed
+        production `ItemIndex` changes once to the progressive sweep and returns only after its
+        remaining K-bounded candidates; an untyped legacy double cannot be rebased and retains
+        the old skip.
 
         The required climb is a lower bound, not a predicted gesture total.  On an ascending
         walk a card becomes complete only once its TOP is at or below the analysed band's top;
-        if that alone lies beyond the return envelope, no real navigation outcome can make this
-        optional hop eligible.  ``None`` means the index/frame geometry cannot establish the
-        bound, in which case the existing navigator remains the authority and this helper does
-        not manufacture a skip.
+        if that alone lies beyond the threshold, no real navigation outcome can make its
+        immediate short-hop cleanup cheap.  ``None`` means the index/frame geometry cannot
+        establish the bound, in which case the existing navigator remains the authority and
+        this helper does not manufacture either a skip or a sweep.
         """
         try:
             _width, height = self.adb.screen_size()
@@ -7686,7 +8157,8 @@ class AndroidDriver(DatingAppDriver):
 
     @staticmethod
     def _item_coverage_diagnostics(payload, still_photo_dwell_candidates: int, *,
-                                   photo_candidate_hearts=(), dwell_covered_hearts=()) -> dict:
+                                   photo_candidate_hearts=(), dwell_covered_hearts=(),
+                                   dwell_walk_interruption=None) -> dict:
         """Compact, non-image explanation of why a capture numbered fewer page hearts.
 
         ``photos`` counts scroll screenshots, while ``items`` counts only selectable cards that
@@ -7718,7 +8190,7 @@ class AndroidDriver(DatingAppDriver):
         classified = {crop.heart_ordinal for crop in numbered + no_dwell
                       + classified_non_photo + still_photo_refused}
         other = [crop for crop in heart_bearing if crop.heart_ordinal not in classified]
-        return {
+        diagnostics = {
             "still_photo_dwell_candidate_limit": still_photo_dwell_candidates,
             "photo_candidate_page_hearts": list(photo_candidate_hearts),
             "dwell_covered_page_hearts": list(dwell_covered_hearts),
@@ -7731,6 +8203,12 @@ class AndroidDriver(DatingAppDriver):
                                                   for crop in still_photo_refused],
             "other_unnumbered_page_hearts": [crop.heart_ordinal for crop in other],
         }
+        # Keep older successful records byte-for-byte compact.  A field only appears when the
+        # candidate walk itself emitted ``outcome=stop`` and named the in-budget cards it did not
+        # begin, so this cannot mistake a candidate limit or a per-card refusal for cancellation.
+        if isinstance(dwell_walk_interruption, dict):
+            diagnostics["dwell_walk_interruption"] = dict(dwell_walk_interruption)
+        return diagnostics
 
     @staticmethod
     def _model_item_context(payload) -> tuple[bytes, ...]:
@@ -8379,6 +8857,7 @@ class AndroidDriver(DatingAppDriver):
         self._current_item_anchor = None
         self._current_photo_candidate_hearts = ()
         self._current_dwell_covered_hearts = ()
+        self._current_dwell_walk_interruption = None
         self._current_items_unavailable = reason
         self._current_items_unnumbered = ""
         self._current_items_unavailable_kind = unavailable_kind
@@ -9203,7 +9682,9 @@ class AndroidDriver(DatingAppDriver):
                              item_coverage=(self._item_coverage_diagnostics(
                                  payload, self.still_photo_dwell_candidates,
                                  photo_candidate_hearts=self._current_photo_candidate_hearts,
-                                 dwell_covered_hearts=self._current_dwell_covered_hearts)
+                                 dwell_covered_hearts=self._current_dwell_covered_hearts,
+                                 dwell_walk_interruption=
+                                 self._current_dwell_walk_interruption)
                                             if payload is not None else None),
                              item_manifest=(self._item_payload_debug_manifest(
                                  payload, self._current_item_index)

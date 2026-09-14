@@ -420,7 +420,7 @@ _END_TAIL_GAP_PX = max(_GUTTER_PX) + _GUTTER_TOLERANCE_PX
 # indexer decision path and splitter.  Those values distinguish "the current source replays
 # cleanly" from "the long-lived
 # worker was still executing an older indexer" without trusting the working tree alone.
-ITEM_INDEX_ALGORITHM_ID = "bounded-card-split-v16"
+ITEM_INDEX_ALGORITHM_ID = "bounded-card-split-v17"
 
 
 # =====================================================================================
@@ -2335,7 +2335,10 @@ def _split_long_background_card_top_merges(
 
     Split only when the run is strictly inside a heartless partial from the same frame, its
     lower edge agrees with the top of at least two complete sightings from distinct frames,
-    those sightings agree on the whole card extent, and the post-run fragment fits inside that
+    *or* one complete sighting plus two distinct, independently observed partial tops with the
+    same edge kind as that bounded card. The complete sighting is still the sole source of the
+    card's bottom; the extra top witnesses only corroborate its exact upper boundary. In either
+    form the full-card measurements must agree and the post-run fragment must fit inside the
     card. Both non-background pieces remain partial observations. The heading remnant is never
     silently called chrome or discarded; the ordinary page-coverage and hidden-heart rules
     still decide whether it is ordinal-safe. If any condition is absent, return the original
@@ -2352,7 +2355,7 @@ def _split_long_background_card_top_merges(
             repaired.append(observation)
             continue
 
-        proposals: list[tuple[int, int, int, int, tuple[int, ...]]] = []
+        proposals: list[tuple[int, int, int, int, tuple[int, ...], tuple[int, ...]]] = []
         for frame_index, run_y0, run_y1 in long_runs:
             if (frame_index != observation.frame_index
                     or not observation.page_y0 < run_y0 < run_y1 < observation.page_y1):
@@ -2365,7 +2368,7 @@ def _split_long_background_card_top_merges(
                 and observation.page_y1 <= bounded.page_y1 + tolerance
             ]
             proving_frames = tuple(sorted({bounded.frame_index for bounded in matching}))
-            if len(proving_frames) < 2:
+            if not matching:
                 continue
             # Do not hide a complete-vs-complete disagreement behind a virtual split.
             if (max(bounded.page_y0 for bounded in matching)
@@ -2373,11 +2376,37 @@ def _split_long_background_card_top_merges(
                     or max(bounded.page_y1 for bounded in matching)
                     - min(bounded.page_y1 for bounded in matching) > tolerance):
                 continue
+            # One complete measurement can still license this *specific* repair when two other
+            # frames independently saw the lower card begin at that exact trusted edge.  This is
+            # not a second way to infer a bottom: the representative below remains a complete
+            # observation, and every partial top must fit inside its measured extent.  It covers
+            # the Bronte capture, where the card's bottom left the band before another frame
+            # could bound it, while frames 2 and 3 both retained its card-corner top at 2049.
             representative = sorted(
                 matching, key=lambda bounded: (bounded.page_y0, bounded.page_y1)
             )[len(matching) // 2]
+            top_witnesses = [
+                candidate for candidate in observations
+                if (not candidate.complete
+                    and candidate.frame_index != observation.frame_index
+                    and candidate.top_observed
+                    and abs(candidate.page_y0 - run_y1) <= tolerance
+                    and candidate.top_kind == representative.top_kind
+                    and candidate.page_y1 - run_y1 > tolerance
+                    and candidate.page_y1 <= representative.page_y1 + tolerance)
+            ]
+            top_witness_frames = tuple(sorted({candidate.frame_index for candidate in top_witnesses}))
+            # Each witness may be within tolerance of the complete top, but that alone admits
+            # a 2*tolerance spread between two partials on opposite sides.  They are a second
+            # measurement of ONE edge only when their entire cluster, including the complete
+            # observation, still fits in the ordinary fold tolerance.
+            top_cluster = [representative.page_y0, *(candidate.page_y0
+                                                       for candidate in top_witnesses)]
+            tops_agree = max(top_cluster) - min(top_cluster) <= tolerance
+            if len(proving_frames) < 2 and (len(top_witness_frames) < 2 or not tops_agree):
+                continue
             proposals.append((run_y0, run_y1, representative.page_y0,
-                              representative.page_y1, proving_frames))
+                              representative.page_y1, proving_frames, top_witness_frames))
 
         # More than one independently licensed seam has no unique disposition. Preserve the
         # unsplit observation and let its existing fold checks refuse it.
@@ -2385,7 +2414,7 @@ def _split_long_background_card_top_merges(
             repaired.append(observation)
             continue
 
-        run_y0, run_y1, card_y0, card_y1, proving_frames = proposals[0]
+        run_y0, run_y1, card_y0, card_y1, proving_frames, top_witness_frames = proposals[0]
         split_at_upper = observation.frame_y0 + (run_y0 - observation.page_y0)
         split_at_lower = observation.frame_y0 + (run_y1 - observation.page_y0)
         repaired.extend((
@@ -2398,12 +2427,19 @@ def _split_long_background_card_top_merges(
             replace(observation, page_y0=run_y1, frame_y0=split_at_lower,
                     top_observed=False, top_kind=""),
         ))
+        corroboration = (
+            f"complete sightings in frames {list(proving_frames)} independently bounded the "
+            f"lower card at {card_y0}..{card_y1}"
+            if len(proving_frames) >= 2 else
+            f"the complete sighting in frame {proving_frames[0]} bounded the lower card at "
+            f"{card_y0}..{card_y1}; trusted top-edge sightings in frames "
+            f"{list(top_witness_frames)} independently corroborated its {card_y0}px top"
+        )
         notes.append(
             f"frame {observation.frame_index}'s heartless partial at page rows "
             f"{observation.page_y0}..{observation.page_y1} was split around its "
-            f"RUN_TOO_LONG page-background seam {run_y0}..{run_y1}: complete sightings in "
-            f"frames {list(proving_frames)} independently bound the lower card at "
-            f"{card_y0}..{card_y1}, so the heading remnant and card fragment remain partial "
+            f"RUN_TOO_LONG page-background seam {run_y0}..{run_y1}: {corroboration}, so the "
+            "heading remnant and card fragment remain partial "
             "while the proven background rows are held out of the fold")
 
     return tuple(repaired), tuple(notes)

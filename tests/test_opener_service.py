@@ -4,6 +4,7 @@ The service is the GLOBAL, budget-aware gate for openers shared by every worker.
 It's exercised indirectly elsewhere; this pins its own decision branches with
 lightweight fakes (no provider SDK/network).
 """
+import json
 import threading
 from types import SimpleNamespace
 
@@ -2735,3 +2736,213 @@ def test_a_non_list_redundancy_markers_value_degrades_to_an_empty_list():
 
     assert s.maybe_opener("r", "hinge", object()).text == "hey there"
     assert s.recent_openers_snapshot()[0]["redundancy_markers"] == []
+
+
+# ---------------------------------------------------------------------------------------
+# Opener-rejection dead-letter (_write_opener_rejection_deadletter): a LOCAL, best-effort
+# record of the row a store.record_opener_rejection call FAILED to persist, written only when
+# that call itself raises. See service.py's own docstring on the helper for the incident this
+# exists to diagnose: production's BigQuery opener_rejections table sat at zero rows across
+# its whole history while spend proved billed rejections were happening, and the one piece of
+# evidence that would explain why (the exception text) went to a bare print() nothing
+# captured. This does not fix that write -- it only keeps the evidence for next time.
+#
+# deadletter_path defaults to None (disabled) on OpenerService, mirroring replay_corpus_dir's
+# own shape, so every test below passes an explicit tmp_path-derived path rather than relying
+# on (or risking) any real location.
+# ---------------------------------------------------------------------------------------
+
+def _read_deadletter_entries(path):
+    text = path.read_text(encoding="utf-8")
+    return [json.loads(line) for line in text.splitlines() if line.strip()]
+
+
+_DEADLETTER_BRANCH_CASES = [
+    pytest.param(
+        "parse_error",
+        # exc_sequence (not exc=): attempt 1 fails and is dead-lettered, attempt 2 succeeds --
+        # this doubles as proof that the retry loop is unaffected (see the dedicated parity
+        # test below, which asserts this explicitly against a non-raising store).
+        lambda: _Client(exc_sequence=[OpenerParseError(
+            "bad JSON", "usage", "gemini-x", reason_code="bad_json",
+            raw_opener="{not valid json")]),
+        lambda: _Tracker(),
+        {"model": "gemini-x", "reason_code": "bad_json", "raw_opener": "{not valid json"},
+        id="parse_error",
+    ),
+    pytest.param(
+        "opener_error",
+        lambda: _Client(exc=OpenerError("Gemini opener: photo index 0 could not be decoded")),
+        lambda: _Tracker([False]),
+        {"model": "", "reason_code": REASON_OPENER_ERROR, "raw_opener": None},
+        id="opener_error",
+    ),
+    pytest.param(
+        "bad_request",
+        lambda: _Client(exc=GeminiAPIError(400, "INVALID_ARGUMENT", "bad image or request")),
+        lambda: _Tracker(),
+        {"model": "", "reason_code": REASON_BAD_REQUEST, "raw_opener": None},
+        id="bad_request",
+    ),
+    pytest.param(
+        "transient",
+        lambda: _Client(exc=RuntimeError("connection reset")),
+        lambda: _Tracker(),
+        {"model": "", "reason_code": REASON_TRANSIENT_ERROR, "raw_opener": None},
+        id="transient",
+    ),
+]
+
+
+@pytest.mark.parametrize("branch,make_client,make_tracker,expected", _DEADLETTER_BRANCH_CASES)
+def test_deadletter_records_row_and_exception_for_every_branch(
+        tmp_path, branch, make_client, make_tracker, expected):
+    """Every one of the four record_opener_rejection call sites routes through the SAME
+    dead-letter helper -- proven independently per branch rather than trusting that fixing
+    one copy-pasted try/except fixed all four (it does not; each is its own except block)."""
+    deadletter_path = tmp_path / "deadletter.jsonl"
+    s = OpenerService(make_client(), make_tracker(), _FailingRejectionStore(), "casual",
+                      deadletter_path=str(deadletter_path))
+
+    s.maybe_opener("r", "hinge", object())
+
+    entries = _read_deadletter_entries(deadletter_path)
+    assert len(entries) == 1
+    entry = entries[0]
+    assert entry["branch"] == branch
+    assert entry["store_class"] == "_FailingRejectionStore"
+    assert entry["exc_type"] == "RuntimeError"
+    assert "rejections table unavailable" in entry["exc_str"]
+    assert entry["exc_repr"] and "RuntimeError" in entry["exc_repr"]
+    assert entry["traceback"]                        # a real formatted traceback, not empty
+    assert entry["cause_type"] is None                # this store's raise is not chained
+    row = entry["row"]
+    assert row["run_id"] == "r" and row["app"] == "hinge" and row["attempt"] == 1
+    assert row["model"] == expected["model"]
+    assert row["reason_code"] == expected["reason_code"]
+    assert row["raw_opener"] == expected["raw_opener"]
+    assert row["prompt_sha256"] == s.prompt_sha256
+
+
+def test_deadletter_records_the_causing_exception_when_the_store_error_is_chained(tmp_path):
+    """BigQuery client-library errors routinely wrap the real reason in __cause__ and leave a
+    generic message on the outer exception (see the helper's own docstring) -- this pins that
+    a chained store failure carries BOTH exceptions into the entry, not just the outer one,
+    since exc_str alone would miss exactly the evidence this file exists to keep."""
+    class _ChainedFailingStore(_Store):
+        def record_opener_rejection(self, *a, **kw):
+            try:
+                raise ValueError("malformed row: field 'reason' exceeds max length")
+            except ValueError as cause:
+                raise RuntimeError("BigQuery insert failed") from cause
+
+    deadletter_path = tmp_path / "deadletter.jsonl"
+    s = OpenerService(_Client(exc=RuntimeError("connection reset")), _Tracker(),
+                      _ChainedFailingStore(), "casual", deadletter_path=str(deadletter_path))
+
+    s.maybe_opener("r", "hinge", object())
+
+    entry = _read_deadletter_entries(deadletter_path)[0]
+    assert entry["exc_type"] == "RuntimeError" and "BigQuery insert failed" in entry["exc_str"]
+    assert entry["cause_type"] == "ValueError"
+    assert "malformed row" in entry["cause_str"]
+
+
+def test_deadletter_write_never_changes_the_retry_loops_observable_outcome(tmp_path):
+    """A store that raises on record_opener_rejection, now ALSO writing a dead-letter entry,
+    must produce the exact same observable result as the plain non-raising store baseline --
+    the dead-letter write is diagnostic-only and must never influence control flow. Companion
+    to test_rejection_store_failure_does_not_break_a_successful_retry, which pins the same
+    contract with the dead-letter path left at its default (disabled)."""
+    parse_error = OpenerParseError("bad JSON", "usage", "gemini-x")
+
+    baseline = OpenerService(_Client(exc_sequence=[parse_error]), _Tracker(), _Store(), "casual")
+    baseline_out = baseline.maybe_opener("r", "hinge", object())
+
+    deadletter_path = tmp_path / "deadletter.jsonl"
+    with_deadletter = OpenerService(
+        _Client(exc_sequence=[parse_error]), _Tracker(), _FailingRejectionStore(), "casual",
+        deadletter_path=str(deadletter_path))
+    out = with_deadletter.maybe_opener("r", "hinge", object())
+
+    assert out.text == baseline_out.text == _Res.opener
+    assert out.index == baseline_out.index
+    assert with_deadletter.disabled is False and with_deadletter.stop_requested is False
+    assert len(_read_deadletter_entries(deadletter_path)) == 1   # the write did happen
+
+
+def test_deadletter_writer_failure_does_not_raise_or_change_the_outcome(tmp_path, capsys):
+    """The dead-letter writer is itself best-effort: pointed at a path whose parent cannot be
+    created (a plain file sits where a directory is needed), the write must fail silently --
+    no exception out of maybe_opener, and the ordinary store-failure warning/outcome are
+    exactly what they would be with no deadletter_path configured at all."""
+    blocked = tmp_path / "not_a_directory"
+    blocked.write_text("i am a file, not a directory")
+    unwritable_path = str(blocked / "deadletter.jsonl")
+
+    s = OpenerService(
+        _Client(exc=OpenerError("Gemini opener: photo index 0 could not be decoded")),
+        _Tracker([False]), _FailingRejectionStore(), "casual",
+        deadletter_path=unwritable_path)
+
+    out = s.maybe_opener("r", "bumble", object())
+
+    assert out is None                              # unchanged from the ordinary OpenerError outcome
+    assert s.disabled is False and s.stop_requested is False
+    assert "rejections table unavailable" in capsys.readouterr().out   # ordinary warning still printed
+    assert blocked.read_text() == "i am a file, not a directory"       # left alone, not clobbered
+
+
+def test_deadletter_write_is_a_noop_when_no_path_is_configured(tmp_path):
+    """None -- this service's class default, mirroring replay_corpus_dir -- must not create
+    anything at all, so a construction that never opts in touches no file anywhere."""
+    marker_dir = tmp_path / "must_not_be_created"
+    service_mod._write_opener_rejection_deadletter(
+        None, "transient", _Store(),
+        run_id="r", app="hinge", model="", attempt=1,
+        reason_code=REASON_TRANSIENT_ERROR, reason="boom", raw_opener=None,
+        prompt_sha256="stamp", exc=RuntimeError("boom"))
+    assert not marker_dir.exists()
+
+
+def test_deadletter_bound_enforced_oldest_dropped(tmp_path):
+    """More than _DEADLETTER_MAX_ENTRIES writes must leave at most that many lines, with the
+    OLDEST evicted first -- the newest failure is the one relevant to whatever incident is
+    currently being debugged (see _DEADLETTER_MAX_ENTRIES's own comment in service.py)."""
+    path = str(tmp_path / "deadletter.jsonl")
+    total = service_mod._DEADLETTER_MAX_ENTRIES + 5
+    for i in range(total):
+        service_mod._write_opener_rejection_deadletter(
+            path, "transient", _Store(),
+            run_id=f"run-{i}", app="hinge", model="", attempt=1,
+            reason_code=REASON_TRANSIENT_ERROR, reason="boom", raw_opener=None,
+            prompt_sha256="stamp", exc=RuntimeError(f"failure {i}"))
+
+    entries = _read_deadletter_entries(tmp_path / "deadletter.jsonl")
+    assert len(entries) == service_mod._DEADLETTER_MAX_ENTRIES
+    run_ids = [e["row"]["run_id"] for e in entries]
+    assert run_ids[0] == "run-5"                      # the oldest 5 (run-0..run-4) were dropped
+    assert run_ids[-1] == f"run-{total - 1}"           # the newest entry always survives
+
+
+def test_deadletter_truncates_oversized_fields_with_a_marker(tmp_path):
+    """A single pathological field (e.g. a 20KB provider error body) must be bounded on its
+    own, with an explicit marker distinguishing "cut short" from "this is all there is" --
+    see _DEADLETTER_FIELD_LIMIT's own comment in service.py."""
+    path = str(tmp_path / "deadletter.jsonl")
+    huge_reason = "x" * (service_mod._DEADLETTER_FIELD_LIMIT + 500)
+    huge_raw_opener = "y" * (service_mod._DEADLETTER_FIELD_LIMIT + 500)
+
+    service_mod._write_opener_rejection_deadletter(
+        path, "parse_error", _Store(),
+        run_id="r", app="hinge", model="gemini-x", attempt=1,
+        reason_code="bad_json", reason=huge_reason, raw_opener=huge_raw_opener,
+        prompt_sha256="stamp", exc=RuntimeError("z" * 10_000))
+
+    entry = _read_deadletter_entries(tmp_path / "deadletter.jsonl")[0]
+    marker = service_mod._DEADLETTER_TRUNCATION_MARKER
+    assert entry["row"]["reason"].endswith(marker)
+    assert len(entry["row"]["reason"]) == service_mod._DEADLETTER_FIELD_LIMIT + len(marker)
+    assert entry["row"]["raw_opener"].endswith(marker)
+    assert len(entry["row"]["raw_opener"]) == service_mod._DEADLETTER_FIELD_LIMIT + len(marker)
+    assert entry["exc_str"].endswith(marker)          # the exception message itself is bounded too

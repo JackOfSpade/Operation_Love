@@ -6230,3 +6230,360 @@ selection, not drafting) and the retained diagnostics/replay boundary. This star
 `prompt_sha256` era. The design does not claim that a prompt alone can semantically verify every
 profile-text connection; removing unnumbered visual context closes the demonstrated cross-card source
 class, while the existing item-index and preview checks continue to prove physical attachment.
+
+
+#### Addendum -- 2026-09-14 (a): the shared looking covers the card, not the world
+
+TRAINING produced a draft under model item 4 of Jade's profile, a photo carrying her own
+"Take me back to" prompt header and showing her on a sunny cobblestone street beside a stone
+fountain:
+
+> Looks like Rome, right?
+
+Everything physical about this draft was correct. Model item 4 translated to page heart 6, the
+like sheet verified at 1.173 grey levels against a 18.699 bound, identity matched at 0.000
+against a 1.8256 bound, and the pre-send preview was the numbered crop. The header was read and
+respected. The opener is two words over a proper-name place guess and it obeys every wording rule
+on wire. The owner's objection is none of those things:
+
+> awkward wording. If we're asking her, well, she was there, so the question doesn't make sense.
+> It only makes sense if it's like we're both looking at a place we never been to?
+
+THE DEFECT IS THE ADDRESSEE. The sentence has two parts and they agree with each other about who
+is being spoken to. "Looks like X" reports the speaker's visual impression, framing the place as
+something being worked out from how the picture appears. A closing tag whose only job is to
+collect agreement then asks the addressee to co-sign that impression. Together they address a
+fellow onlooker. She is not an onlooker. She was standing on that street, so the one thing she
+cannot learn from the message is what her own photograph looks like, and the one thing she is
+being asked for is her agreement about exactly that.
+
+AN EXISTING RULE PRODUCED IT. This is the 2026-09-06 lesson repeating: before adding a rule,
+check whether a rule already on wire is generating the output. Five were, and all five were
+obeyed.
+
+- `VISUAL LOCATION TURN BOUNDARY` (2026-09-05 (d), above) offered two endings and then
+  recommended one of them: "End after the guess, or ask only whether the location itself is
+  right. The confirmation is the conversational payoff." Naming the confirmation as the payoff
+  makes the interrogative branch the one with a stated reward.
+- `HEDGE THE CLAIM, NEVER YOURSELF` requires the guess to be hedged, and says nothing about
+  where the uncertainty should sit.
+- `SHARED CONTEXT RULE` says "Write like two people looking at the same thing." That is true of
+  the card on the screen and false of the world the card depicts, and nothing said so.
+- `VARY THE SHAPE` had deliberately stopped naming the concrete structures it was de-emphasizing
+  (2026-09-05 (d), for the negation-priming reason addendum (b) had already identified), so
+  nothing pushed back on this particular mold.
+- `REPLY COMFORT` carves the location confirmation out of its own test by name: "Asking only
+  whether an inferred location itself is right is the narrow confirmation required by
+  CONFIRMATION BOUNDARY". The carve-out was written to settle SCOPE, but it reads as a general
+  exemption, so the question never faced "make the most natural honest reply feel good to give".
+
+THE MISSING PROPERTY. Every rule in this set governs what the message SAYS: its content,
+structure, grounding, register. None governed WHOSE KNOWLEDGE it presumes. `SHE IS THE ONE WHO
+KNOWS` states it. The shared looking covers the item on the screen, never the world behind it;
+she was in that world and the sender was not, so anything inferred about a place she went, a
+thing she did, or a moment she was in is news to him and old news to her. Write the inference
+from your own not knowing rather than as an impression the two of you are forming together. Never
+ask her to agree about how something appears, and never close a claim about her own life with a
+tag whose only job is to collect her agreement. Asking her outright stays welcome, because that
+is a real question from someone who does not know to the one person who does.
+
+It is deliberately written as a narrowing of `SHARED CONTEXT RULE` and a sharpening of `HEDGE THE
+CLAIM, NEVER YOURSELF` (put the uncertainty in how sure you are, never in how clear the item is)
+rather than as a free-standing rule, because both of those were contributing causes and a rule
+that sits beside its cause without naming it is how the compliment/grading pair drifted for four
+addenda. It also defers explicitly to `NEVER INVENT THE SENDER`: the cure for a co-observer
+stance must not become "I have never been there", which this project may not say on his behalf.
+
+WHAT THE BOUNDARY KEEPS AND WHAT IT LOSES. `VISUAL LOCATION TURN BOUNDARY` keeps its whole scope:
+an image-derived place guess is still the only conversational move before she replies, and an
+activity, reason, preference, feeling, experience or consequence at that place is still
+forbidden. It loses only the tilt. "The confirmation is the conversational payoff" becomes "her
+settling it is the whole payoff either way". That rewrite is careful on purpose: the assurance
+that the message is already COMPLETE is the clause that stops the 2026-09-05 regression of
+appending a second beat, so deleting it outright would have re-created the bug this rule exists
+to prevent. What is removed is the recommendation of one ending over the other, and both endings
+are now explicitly subject to `VARY THE SHAPE`. `REPLY COMFORT`'s carve-out now says what it
+always meant: it exempts that confirmation from nothing else.
+
+MEASUREMENT, AND IT CHANGED THE DECISION. 234 unique openers, 124 from
+`data/hinge_debug/*/actions.jsonl` and 198 from BigQuery `openers` with 88 overlapping, spanning
+2026-08-10 to 2026-09-14. `opener_rejections` is empty in both stores.
+
+- The literal tag "right?" occurs **once in 234**. A lexical guard on it would have caught exactly
+  the one row that was reported, which is the blocklist mistake the 2026-09-06 NO GRADING
+  addendum already rejected on the same grounds: the defect is a shape, not a vocabulary.
+- The shape's vocabulary is already varied. Counting agreement-seeking confirmations rather than
+  one token: "am I close?" three times, "how close is that guess?", "is that where you were?",
+  "right?".
+- 21 of the 234 openers guess a proper-name place. Within that subpopulation the hedge-plus-
+  agreement-confirmation shape went from **1 of 11** before 2026-09-05 to **5 of 10** after, and
+  "am I close?" went from 0 occurrences to 3. Both denominators are small and a handful of rows
+  moves the percentage a long way, so this is a signal worth acting on and not a measured rate.
+
+The reading that matters is not that the shape is frequent in the corpus overall; it is that
+inside the subpopulation the rule governs, the rule collapsed the shape space toward one mold and
+then recommended it.
+
+NO DETERMINISTIC GUARD SHIPS, and that is the measurement's doing rather than a default.
+`_unconfirmed_location_followup_markers` is left byte-for-byte alone, including
+`_DIRECT_LOCATION_CONFIRMATION_PATTERNS`' bare `right?` / `correct?` shapes, which do accept the
+reported draft. That is correct for what that guard is: a SCOPE backstop proving a later beat did
+not take the place as established. It was never a form check, and the draft it accepted does not
+build on the guess. Widening it to reject the appearance cue would fire on roughly 8 of those 21
+location openers, including drafts that read fine, and every false positive spends one of five
+attempts whose exhaustion stops the run. ESCALATION TRIGGER, recorded so the next reader does not
+have to re-derive it: if a watched batch still asks her to co-sign an appearance, revisit a guard
+scoped to the appearance cue (index 0 of `_UNCONFIRMED_LOCATION_CUE_PATTERNS`, already isolated)
+rather than to any tag vocabulary.
+
+PROMPT CONTRACT. Four on-wire copies carry this change: `config.yaml`'s `opener.style`,
+`_SYSTEM`, the `_SCHEMA` `opener` AND `angle` descriptions, and the retry-hint block. The retry
+block receives the wording clause but NOT a new HARD REJECTION entry, because that list is
+contracted to name every guard `_parse()` raises on and no new raising guard ships; a future
+reader must not read its absence as broken lockstep. No example opener copy ships in any
+model-facing string per the 2026-08-16 de-templating rule. The absence pin is split across two
+files because the surfaces are not reachable the same way: `tests/test_opener.py` checks the three
+that are module constants (`config.yaml`'s style, `_SYSTEM`, `json.dumps(_SCHEMA)`), while the
+retry-hint block is BUILT per attempt inside `_text_part`, so only `tests/test_gemini_opener.py`,
+which renders it, can check the fourth. An adversarial review of this very change caught that gap:
+the absence pin originally covered three of four, and the test justified the omission with a
+docstring claiming the retry hint was "deliberately untouched by this rule" -- a clause copied
+verbatim from the 2026-09-06 NO GRADING pin, where it was true. Here it was false twice over: the
+retry hint DID receive the wording clause, and the de-templating rule exempts no surface at all.
+Only the HARD REJECTION list was deliberately left alone. Nothing was wrong on wire (the rendered
+retry text was verified clean), but the copy whose whole job is to EXPLAIN a failure is precisely
+where a future editor is tempted to quote the failing draft, which under the negation-priming
+finding is how a construction's frequency goes up. This changes `prompt_stamp()` and begins a new era.
+
+DIAGNOSTIC DEBT PAID IN THE SAME CHANGE. Diagnosing this required knowing which rules were on
+wire when the draft was generated, and the bug report could not say. The digest was in the data
+the entire time: `drivers/hinge.py` writes `prompt_sha256` onto every `auto_opener_pre_send` row,
+and `opener/service.py` puts it on every `recent_openers` and `recent_rejections` entry with a
+comment naming the bug report as the intended reader. `bugreport.py` read none of it. It now
+resolves that digest against `ops/prompt-eras.json`, states whether the opener was generated
+under the prompt that is currently checked out, and points at the replay corpus as the
+reproduction path.
+
+AND A CAVEAT THE SAME DAY DEMONSTRATED, which belongs next to the feature rather than in a later
+correction. The reported draft's digest is `cc4c982e`. Read against `ops/prompt-eras.json` as it
+sat on disk on 2026-09-14, that digest resolved to the registry's `working_tree` entry, i.e. an
+uncommitted provisional prompt. That reading was WRONG, and it was believed for most of this
+investigation. `cc4c982e` is a shipped era: `2026-09-10 f173cf54: +MINIMUM SUFFICIENT REFERENCE;
++IDIOM FIT`, 37 rules on wire. The registry was simply STALE -- it had not been regenerated since
+f173cf54 landed, so the digest that commit shipped was still sitting in the provisional slot from
+before it. Running `python tools/backfill_prompt_eras.py` moved it to `eras[]` where it belonged.
+
+This is the hazard the CI gate at `.github/workflows/ci.yml` exists for, and that gate does not
+run under the local `act` pre-push mirror, which has no `.git`. So: the new bug-report era line is
+only as truthful as the registry's freshness, and a digest reported as PROVISIONAL should be
+treated as "regenerate the registry and look again", never as a finding. The drift verdict itself
+is computed live from `prompt_stamp()` and is unaffected.
+
+
+#### Addendum -- 2026-09-14 (b): the fix was replayed, and the replay found a second bug
+
+The 2026-09-14 (a) rule shipped prompt-only, which is the ninth prompt-only opener fix. The first
+eight were never verified (see the 2026-09-06 (c) addendum's count). This one was, because the
+capture that produced the reported draft is in the replay corpus as
+`0053663a03cc5694e1929e4a33bc717fda9d89596984a5187421636860d69b4a` (Jade, 6 items, captured
+2026-09-14T15:02:30-04:00, `prompt_sha256` `cc4c982e`, the uncommitted working tree). The item the
+model chose live, model item 4, is the "Take me back to" cobblestone photo; replaying sends the
+identical crops.
+
+EIGHT DRAWS, SAME CAPTURE, owner-approved live quota, across THREE prompt digests. The reason
+there are three is worth recording rather than hiding: draws 1 to 3 ran under `c940ac64`; an
+adversarial review of this change then found a dangling referent and an orphaned line wrap in the
+long `config.yaml` copy, and fixing those moved the digest to `546a829a`, because `opener.style`
+is a YAML block scalar and its newline positions are therefore part of the prompt. The same review
+raised, from three independent lenses, that the rule's operative clauses sat in its FOURTH
+sentence behind a scoping preamble, which is precisely the shape addendum 2026-09-06 (c) found a
+model can satisfy and still fail. Restructuring so all three operative clauses lead the rule's
+first sentence moved the digest again, to `1465d452`. A fourth and final move to
+`1535b126`, which is what ships, changed no word at all: committing revealed that a line
+wrap had split the name HEDGE THE CLAIM, NEVER YOURSELF across two lines, and
+`tools/backfill_prompt_eras.py` extracts rule labels from the text, so it registered a
+second bogus rule and credited this commit with ADDING a rule that has been on wire since
+2026-08-11. Rewrapping so every rule NAME stays on one line fixed the registry and moved
+the digest one last time. Draw 9 re-confirms on that shipped digest.
+
+| draw | digest | model | item | opener |
+|---|---|---|---|---|
+| 1 | c940ac64 | gemini-3.5-flash | 4 | `My guess is Rome. Did I get the city right?` |
+| 2 | c940ac64 | gemini-3.5-flash | 4 | `My guess is Rome. Did I get the city right?` |
+| 3 | c940ac64 | gemini-3.6-flash | 4 | `My guess is Italy. Is that Rome?` |
+| 4 | 546a829a | gemini-3.6-flash | 4 | `My guess is Rome. Am I right?` |
+| 5 | 546a829a | gemini-3.6-flash | 4 | `Is that somewhere in Italy?` |
+| 6 | 1465d452 | gemini-3.6-flash | 4 | `Is that somewhere in Rome?` |
+| 7 | 1465d452 | gemini-3.6-flash | 4 | `Rome, if I had to guess.` |
+| 8 | 1465d452 | gemini-3.5-flash | 4 | `You look like you're recharging on solar power. Did you ever actually open your eyes or did you just navigate by warmth?` |
+| 9 | 1535b126 | gemini-3.6-flash | 4 | `My money is on Rome.` |
+
+Against the live draft `Looks like Rome, right?` under the old prompt, on the same images. Eight
+of the nine are location guesses and every one of them moved the uncertainty into the sender's
+own guess and asked about HIS accuracy, or simply ended on the guess, instead of asking her to
+agree about how her photograph appears. None reproduced the reported shape. Draw 7 is the one
+worth noticing: `Rome, if I had to guess.` takes the END AFTER THE GUESS branch, which the
+boundary always permitted and which the corpus shows the model almost never took while the rule
+still called the confirmation "the conversational payoff". Draw 8 chose the same numbered item and
+wrote a non-location angle entirely, which is honest variance and no evidence either way about
+this rule.
+
+Nine draws on one capture is a signal, not a rate: it does not measure how the rule behaves on a
+location photo the model reads differently, and the three other captures replayed alongside draw 1
+are no evidence either way, because the model chose a non-location item on each (a Portuguese flag
+childhood photo went to `Was that for a big match day or just standard road trip gear in your
+house?`, a pottery studio photo to `Did you make that matcha set yourself?`, a cat photo to `Is he
+usually that dramatic when you hold him or was he just caught off guard?`). What the replay does
+establish is that the reported failure does not reproduce under the shipped prompt on the input
+that produced it, and that is nine draws more evidence than any of the previous eight prompt-only
+fixes carried.
+
+THE SECOND BUG, WHICH ONLY THE REPLAY COULD HAVE FOUND. Draw 1 did not come back as a success. It
+came back REJECTED, `unconfirmed_location_followup`, on a draft that violates nothing:
+
+> `My guess is Rome. Did I get the city right?`
+
+`_DIRECT_LOCATION_CONFIRMATION_PATTERNS` is the allow-list for a later beat that confirms the
+place itself, and its two confirmation shapes had been written with DIFFERENT noun sets:
+
+- `^(?:am|was) i ... (?:about|on) (?:that|this|the|my) (?:guess|place|location|country|region|park|area)?\?$`
+- `^did i (?:get|guess|call) (?:it|that|this|the (?:place|location)) (?:right|correctly)\?$`
+
+So `Am I right about the country?` was accepted and `Did I get the country right?` was rejected,
+purely on which verb the model reached for, and `city` and `town` were in neither list. Verified
+by execution rather than by reading: `Did I get the city right?`, `Did I get the country right?`,
+`Did I get the region right?`, `Am I right about the city?`, `Did I call the town right?` and
+`Was I close on the city?` were all rejected, while `Did I get the place right?`, `Did I get it
+right?` and `Am I right about the country?` were accepted.
+
+This is a false positive with teeth. `OpenerService` retries a rejection, and exhausting
+`opener.max_attempts` calls `_exhaust()`, which disables the service and stops the run. A draft
+that obeys every rule on wire was spending attempts against that ceiling, and the 2026-09-14 (a)
+prompt change makes it MORE likely to fire, because "word the guess as your own" steers the model
+straight into this family.
+
+CORRECTING THE RECORD. Addendum 2026-09-05 (d)'s PRECISION CHECK states that "the retained
+Portugal opener that ends by asking whether the location guess is close and the British Columbia
+opener that asks for location correction both remain valid". Re-running the shipped detector on
+the real string `That rock arch looks a lot like the Algarve coast in Portugal. How close is that
+guess?` on 2026-09-14 returns a rejection. The `how close` pattern only ever matched `How close am
+I?`, never `How close is that guess?`. That claim was not true when it was written. Per this
+file's convention the original line is left unedited; this paragraph is the correction.
+
+THE FIX. One shared `_LOCATION_CONFIRMATION_NOUN` alternation, used by every confirmation shape,
+covering the ordinary world-scale place nouns a person actually uses: guess, call, place,
+location, spot, area, city, town, village, region, country, state, province, park, island, coast,
+lake, mountain. `with` joins `about|on`. The `how close` shape now also accepts `how close/far off
+is/was that|this|it|my [noun]?`. DELIBERATELY EXCLUDED: street, neighbourhood, hotel, venue.
+`GUESS THE WORLD, NOT HER IDENTITY` forbids guessing those at all, so this table must not bless
+confirming one.
+
+WHY WIDENING IS SAFE HERE, which is not obvious and is the reason this is a table change rather
+than a prompt change: every pattern in this table is a FULL match anchored end to end, so no
+activity or experience question can be smuggled into the frame. Confirmed by execution that the
+six historical live failures the 2026-09-05 (d) addendum names are all still rejected, that
+`Did you get the city right?` is still rejected because it addresses her (`mentions_recipient`),
+and that a non-place noun in the same frame (`How close is that gelato?`) is still rejected. The
+existing 46-case pinned corpus in `tests/test_opener.py` passes unchanged.
+
+THE INVARIANT, pinned by a new test so this class cannot return: for every noun in the shared
+set, BOTH confirmation shapes must accept it. The bug was not a missing noun; it was two lists
+that were allowed to disagree.
+
+WHAT THE ADVERSARIAL REVIEW OF THIS CHANGE FOUND, since a record of a review that found nothing
+is worth less than one that says what it caught. Six lenses over the diff (rule collision,
+regression, de-templating and negation priming, cross-surface lockstep, owner rules, efficacy)
+raised 29 candidate findings; independent refuters killed 25. Nothing on wire was wrong. The four
+that survived, and two the refuters wrongly dismissed, all landed on the same seam: what the
+change SAID about itself.
+
+- The de-templating absence pin covered three of the four on-wire copies, and its docstring
+  justified the omission with a clause copied verbatim from the 2026-09-06 NO GRADING pin, where
+  it had been true. Here it was false twice: the retry hint DID receive the wording clause, and
+  the de-templating rule exempts no surface. Fixed by pinning the fourth copy where it is
+  actually reachable and correcting the docstring.
+- A docstring said the HARD REJECTION list names "seven causes" three lines above an assertion
+  pinning eight.
+- REFUTED BUT REAL, twice, which is the useful part. An earlier rewrap of mine had left an
+  orphaned two-word line inside the `opener.style` block scalar and had dropped the head noun
+  from "neither ending is the default", leaving "neither" and "them" without an antecedent -- in
+  the very block that ships REFERENT CLARITY. A refuter dismissed both as cosmetic. They were
+  not: `opener.style` is a block scalar, so its line breaks are part of the prompt.
+- Three separate lenses independently reported that the rule's operative clauses sat in its
+  FOURTH sentence, behind a scoping preamble, and that the `_SCHEMA` angle copy garden-pathed on
+  "confirm the opener words any inference". Refuters dismissed both as style preference. Addendum
+  2026-09-06 (c) says otherwise in this project's own words: a model reads and can satisfy the
+  first sentence before it ever reaches the second, and that is exactly how the "elite move"
+  regression got past a rule written to forbid it. Both were fixed: all three operative clauses
+  now lead the rule's first sentence in every copy, pinned by a test that splits on that sentence
+  rather than searching the paragraph, and the angle copy now reads "confirm that the opener
+  states any inference".
+
+THE LESSON FOR THE NEXT REVIEW: an adversarial refuter optimised to kill weak findings will also
+kill a correct finding whose consequence is one step away, and "style preference" is the label it
+reaches for. When three independent lenses report the same sentence, weight that over the
+refuter's verdict.
+
+
+#### Addendum -- 2026-09-14 (c): the rejection table has never had a row, and now we will find out why
+
+Found while measuring 2026-09-14 (a), not while looking for it. A corpus pass over every opener
+this project has produced pulled `openers` (198 BigQuery rows) and `opener_rejections` together,
+and the second query came back empty. Not empty for the current era, or since some migration:
+**zero rows for the table's entire history**, in BigQuery and in the local SQLite store both.
+
+That is not the benign reading it first looks like, because rejections demonstrably happened.
+`record_spend` is called from exactly three places in `OpenerService`: the entropy guard's extra
+draw, which can only fire on a profile that ALREADY succeeded; the `OpenerParseError` branch; and
+success. So a run with `openers_n = 0` and `spend_n > 0` contains billed calls that can only be
+rejections. There are **76 such runs, 159 such calls, 2026-08-14 through 2026-09-09** -- spanning
+both sides of the 2026-09-06 (c) fix in this document that added a `record_opener_rejection` call
+to every rejection branch specifically so this table would stop being empty.
+
+WHAT WAS RULED OUT, recorded so the next reader does not spend the afternoon re-ruling it out.
+Schema or field mismatch: the live table's nine fields match `_TABLES` and the call site byte for
+byte, and `tests/test_bigquery_store.py` already pins that alignment. "No guard has ever fired":
+refuted by the 159 above. IAM or a row-access policy: none exist on the table or dataset. Row
+serialization: `_row_id`'s `json.dumps` succeeds on a realistic row and `_now()` returns a string.
+The table missing from the flush loop: it is in `_TABLES`, buffered and flushed like every other.
+And the SQLite path provably WORKS -- the 2026-09-14 (b) replay wrote a real rejection row to
+`data/operation_love.db`, which is how we know the row-construction code is sound. The failure is
+specific to the BigQuery wire, on the one table whose content is unusual: `reason` is a `str(e)` of
+provider or JSON-parse text and `raw_opener` is Gemini's raw freeform output.
+
+WHY IT SURVIVED TWO FIXES, which is the part worth learning from. All four call sites wrap the
+store call in `except Exception as store_exc: print(...)`. The print goes to a stdout nothing
+captures in production. `_flush_table` keeps a failed batch buffered and only drops it loudly
+after five consecutive failures, which a run that attempts one or two rejections never reaches.
+So the exception text -- the single piece of evidence that would name the cause -- was produced
+and discarded on every occurrence for a month, and both previous fixes were therefore theories:
+the "advisory-blind" explanation (stale; that call site was removed 2026-08-26) and the three
+missing branches (real, fixed, and not the cause, since the table stayed empty afterward).
+
+WHAT SHIPS, and what it deliberately is not. A third theory-driven fix is exactly the wrong move
+with no evidence, so none is offered. Instead `_write_opener_rejection_deadletter` records the
+failing row plus `exc_type`, `exc_str`, `exc_repr`, the chained `__cause__` type and text, and the
+traceback to a bounded local JSONL beside the configured `data_dir`. It runs only after the store
+has already raised, swallows everything including its own failure, and keeps the existing print.
+Bounds: 200 entries and 2 MiB, evicting oldest first, with each text field capped at 4000
+characters and a truncation marker, so a pathological multi-kilobyte provider error cannot bloat
+the file and the newest failure is always the one retained.
+
+THREE LINKS, AND ALL THREE MATTER. The writer is useless if the service is never handed a path,
+and `deadletter_path` defaults to `None` precisely so tests cannot write into the real `data/`.
+So `supervisor.py` passes it unconditionally, derived from `cfg.data_dir` the same way `db_file`
+is, and NOT behind a config flag -- a diagnostic that can be off is a diagnostic that will be off
+on the run where the incident happens. That wiring is itself pinned by
+`test_opener_rejection_deadletter_path_reaches_the_constructed_opener_service`, because an
+unwired seam is green in every unit test that injects its own `tmp_path` and inert in production,
+which is the same class of blindness this whole addendum is about. And the file is useless if
+nobody reads it, so the bug report now carries an `## Opener rejections that never reached the
+store` section that is one quiet line when the file is absent and loud when it is not, leading
+with `cause_type`/`cause_str` because that is where BigQuery client errors bury the real reason.
+
+WHAT TO DO WHEN THAT SECTION FIRES: read the cause fields, then close this item with a dated
+addendum stating what was actually found. Do not edit the 2026-09-06 (c) entry, which believed in
+good faith that it had already fixed this. THE STANDING GAP this exposed, worth its own work
+someday: no test in this repository has ever inserted a real row into real BigQuery, so every
+store test runs against a fake that accepts anything -- which is why a wire-level failure on one
+table could persist for a month with a fully green suite.

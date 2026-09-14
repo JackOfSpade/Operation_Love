@@ -167,7 +167,11 @@ _SCHEMA = {
                            "that only makes sense if it is true. If a location is inferred from "
                            "an image rather than stated in her profile text, the location guess "
                            "must be the whole conversational move: end after it or ask only "
-                           "whether that location itself is right. "
+                           "whether that location itself is right. She was in the world the item "
+                           "shows and you were not, so confirm that the opener states any "
+                           "inference about it as your own uncertainty, never as an appearance "
+                           "she is asked to agree with, and never closes it with a tag whose "
+                           "only job is to collect her agreement. "
                            "Before drafting the opener, perform the MINIMUM SUFFICIENT REFERENCE "
                            "check while treating the selected item as visible: replace each "
                            "literal visual description with the least explicit natural reference. "
@@ -236,11 +240,19 @@ _SCHEMA = {
                            "Its most natural honest reply should let her share a preference, "
                            "perspective, inspiration, or experience, never require self "
                            "justification. "
+                           "She was in the world the item shows and you were not, so write any "
+                           "inference about it from your own not knowing: never ask her to agree "
+                           "about how something appears, and never close a claim about her own "
+                           "life with a tag whose only job is to collect her agreement. This is "
+                           "a stance, not a fact to state: never say where the sender has or has "
+                           "not been. "
                            "A guess must remain unconfirmed until she replies; no later statement "
                            "or question may assume it is correct. An image-derived location guess "
                            "is the only conversational move before she replies: end after it or "
-                           "ask only whether the location itself is right. Its confirmation is "
-                           "the payoff; do not ask about an activity, reason, preference, feeling, "
+                           "ask only whether the location itself is right, worded as your own "
+                           "guess rather than as an appearance she is asked to agree with. Her "
+                           "settling it is the payoff either way and neither ending is the "
+                           "default; do not ask about an activity, reason, preference, feeling, "
                            "experience, or consequence there before she confirms it. "
                            "Do not advertise the sender as "
                            "the answer to a preference in her profile, promise what he will do "
@@ -621,6 +633,47 @@ _SCHEMA = {
 # lossy offline signal that also fires on good connections. Concrete incident wording stays off
 # wire in tests. This changes prompt_stamp() and begins a distinct prompt era; see
 # ops/OPENER-REDESIGN.md, Addendum -- 2026-09-08 (a).
+#
+# Addendum 2026-09-14 (she is the one who knows): owner feedback on a watched Training draft,
+# "Looks like Rome, right?" under a photo of her standing on an Italian street. The item binding,
+# the grounding and the header reading were all correct; the defect is the ADDRESSEE the wording
+# presumes. She was standing there, so asking her to agree that an image LOOKS like a place puts
+# her on the sender's side of the glass, inferring from a picture of her own life. AN EXISTING
+# RULE PRODUCED IT, the 2026-09-06 pattern again: VISUAL LOCATION TURN BOUNDARY offered two
+# endings and then recommended one of them ("the confirmation is the conversational payoff"),
+# HEDGE THE CLAIM supplied the hedge, SHARED CONTEXT RULE licensed the shared-looking stance, and
+# REPLY COMFORT's carve-out exempted a bare location confirmation from its own reply-quality test.
+# Every rule was satisfied.
+#
+# SHE IS THE ONE WHO KNOWS supplies the property none of them had: the shared looking covers the
+# item on the screen, never the world behind it. It forbids asking her to agree about how
+# something appears and closing a claim about her own life with a tag that only collects her
+# agreement, while keeping a direct question legal, because the sender genuinely does not know and
+# she does. It is written as a narrowing of SHARED CONTEXT RULE and a sharpening of HEDGE THE
+# CLAIM (the uncertainty belongs in how sure you are, not in how clear the item is), and it defers
+# to NEVER INVENT THE SENDER so it cannot be satisfied by asserting where he has or has not been.
+# VISUAL LOCATION TURN BOUNDARY keeps its entire scope and loses only its tilt: "her settling it
+# is the whole payoff either way" still tells the model the message is complete, which is the
+# clause that stops the 2026-09-05 second-beat regression, without naming a preferred ending, and
+# both endings are now explicitly subject to VARY THE SHAPE.
+#
+# PROMPT-ONLY, AND MEASURED FIRST. 234 unique openers (local jsonl + BigQuery, deduped) over
+# 2026-08-10..2026-09-14: the literal tag "right?" occurs ONCE, so a lexical guard on it would
+# have overfitted one row. The shape's vocabulary is already varied ("am I close?" x3, "how close
+# is that guess?", "is that where you were?"), and within the 21 proper-name location guesses it
+# rose from 1 of 11 before 2026-09-05 to 5 of 10 after, on small denominators. _parse() therefore
+# gains NO new raising guard, and _unconfirmed_location_followup_markers below is left untouched
+# on purpose: it is a SCOPE guard (do not build on an unconfirmed place), and the bare
+# confirmation tags it accepts stay accepted, because widening it to the appearance cue would
+# reject roughly 8 of those 21 including drafts that read fine while spending a run-stopping retry
+# budget. Because no guard was added, the retry block's HARD REJECTION list is correctly unchanged
+# -- it gains only the wording clause -- so do not read that as broken lockstep. Escalate to a
+# guard scoped to the appearance cue only if a watched batch still asks her to co-sign an
+# appearance. Four on-wire copies touched: config.yaml's style, this constant, the _SCHEMA opener
+# AND angle descriptions, and the retry hint. No example opener copy ships in any model-facing
+# string per the 2026-08-16 de-templating rule; the incident is pinned off wire in the tests. This
+# changes prompt_stamp() and begins a distinct prompt era; see ops/OPENER-REDESIGN.md,
+# Addendum -- 2026-09-14 (a).
 _SYSTEM = (
     "You write the opening message a man sends a woman on a dating app. Use the dating and "
     "conversational principles associated with Coach Corey Wayne's 'How to Be a 3% Man', without "
@@ -632,6 +685,18 @@ _SYSTEM = (
     "or prompt it attaches to, and she is looking at that item while she reads your words. "
     "Never point at the medium itself: a word gesturing at the photo, the screen, or the "
     "profile as an object adds nothing she cannot see; a bare demonstrative does that work. "
+    "SHE IS THE ONE WHO KNOWS: she was in the world the item shows and you were not, so write "
+    "any inference about it from your own not knowing, never ask her to agree about how "
+    "something appears, and never close a claim about her own life with a tag whose only job is "
+    "to collect her agreement. The shared looking covers the item on the screen, never the world "
+    "behind it: she is not working that world out from a picture, so what you infer about a "
+    "place she went, a thing she did, or a moment she was in is news to you and old news to her, "
+    "and how it appears is what she can already see. An impression the two of you are forming "
+    "together, or a tag collecting her agreement, hands the one person who was actually there "
+    "the job of co-signing your reading of a photograph of it. This narrows the SHARED CONTEXT "
+    "RULE and sharpens HEDGE THE CLAIM, NEVER YOURSELF: the uncertainty belongs in how sure you "
+    "are, not in how clear the item is. Asking her outright stays welcome; NEVER INVENT THE "
+    "SENDER still forbids saying where he has or has not been. "
     "MINIMUM SUFFICIENT REFERENCE: default to omission or the least explicit natural reference "
     "the attached item makes immediately clear. Before finalizing, replace each literal visual "
     "description with an implicit reference while keeping the item visible; if meaning and the "
@@ -737,7 +802,8 @@ _SYSTEM = (
     "If a visible detail could have more than one explanation, respond to its visible effect or "
     "choose another angle rather than asking her to verify its status. Asking only whether an "
     "inferred location itself is right is the narrow confirmation required by CONFIRMATION "
-    "BOUNDARY, not permission to build on the location before she answers. "
+    "BOUNDARY, not permission to build on the location before she answers, and it exempts that "
+    "confirmation from nothing else: SHE IS THE ONE WHO KNOWS still governs how it is worded. "
     "POSITIVE SOCIAL FRAMING: state the intended positive observation, question, or invitation "
     "directly. Never begin by naming an insulting, judgmental, awkward, pressuring, creepy, or "
     "offensive interpretation of your own message and then denying it. That denial introduces "
@@ -758,8 +824,12 @@ _SYSTEM = (
     "Otherwise stop after the guess. Questions should invite positive, fun conversation, not form "
     "an interview. VISUAL LOCATION TURN BOUNDARY: when a place is inferred from an image rather "
     "than stated in her profile text, that location guess is the only conversational move before "
-    "she replies. End after it or ask only whether the location itself is right; the confirmation "
-    "is the conversational payoff. Do not add a statement or question about an activity, reason, "
+    "she replies. End after it or ask only whether the location itself is right; her settling it "
+    "is the whole payoff either way, so the message is already complete, neither ending is the "
+    "default, and VARY THE SHAPE still chooses between them. SHE IS THE ONE WHO KNOWS governs "
+    "the wording of both: she settles the place because she was standing in it, so the guess is "
+    "yours to own and never an appearance she is asked to agree with. "
+    "Do not add a statement or question about an activity, reason, "
     "preference, feeling, experience, or consequence at that place before she confirms it. "
     "Any teasing must be clearly good-natured and never belittling, arrogant, condescending, or "
     "mean. Mild innuendo is eligible only when her own profile clearly invites that playful tone; "
@@ -1164,15 +1234,38 @@ _LOCATION_CONTEXT_TRAVEL_RE = re.compile(
 # useful for locations it has never seen. Anything else after a proper-name inference is the
 # unsafe direction: the system cannot prove from outgoing text alone that an activity or
 # experience question did not take the guessed place as fact.
+# ONE noun set, shared by every confirmation shape below. Until 2026-09-14 the two shapes carried
+# DIFFERENT lists -- "am I right about the country?" was accepted while "did I get the country
+# right?" was rejected, and "city" was in neither -- so a draft that confirmed nothing but the
+# place itself was regenerated purely because of which verb it reached for. That is a false
+# positive with teeth: each one spends one of five attempts whose exhaustion stops the run
+# (OpenerService._exhaust). Found by replaying the reported Rome capture through the 2026-09-14
+# prompt, which produced "My guess is Rome. Did I get the city right?" -- a correct opener under
+# every rule on wire, rejected by this table. Deliberately world-scale nouns only: street,
+# neighbourhood, hotel and venue stay out, because GUESS THE WORLD, NOT HER IDENTITY forbids
+# guessing them at all and this table should not bless confirming one. Widening is safe in this
+# direction because every pattern here is a full match anchored end to end, so no experience or
+# activity question can be smuggled into the frame.
+_LOCATION_CONFIRMATION_NOUN = (
+    r"(?:guess|call|place|location|spot|area|city|town|village|region|country|state|province|"
+    r"park|island|coast|lake|mountain)"
+)
 _DIRECT_LOCATION_CONFIRMATION_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"^(?:am|was)\s+i\s+(?:even\s+)?"
                r"(?:close|right|correct|(?:way\s+)?off)"
-               r"(?:\s+(?:about|on)\s+(?:that|this|the|my)\s+"
-               r"(?:guess|place|location|country|region|park|area))?\?+$",
+               r"(?:\s+(?:about|on|with)\s+(?:that|this|the|my)\s+"
+               rf"{_LOCATION_CONFIRMATION_NOUN})?\?+$",
                re.IGNORECASE),
-    re.compile(r"^how\s+(?:close|far\s+off)\s+(?:am|was)\s+i\?+$", re.IGNORECASE),
+    # "how close is that guess?" belongs here for the same reason "how close am I?" does. The
+    # 2026-09-05 (d) PRECISION CHECK asserted the retained Portugal draft ending this way
+    # "remain[ed] valid"; re-running the shipped detector on that exact string on 2026-09-14
+    # showed it was rejected, so the claim was never true. See ops/OPENER-REDESIGN.md,
+    # Addendum -- 2026-09-14 (a), CORRECTING THE RECORD.
+    re.compile(r"^how\s+(?:close|far\s+off)\s+"
+               r"(?:(?:am|was)\s+i|(?:is|was)\s+(?:that|this|it|my)"
+               rf"(?:\s+{_LOCATION_CONFIRMATION_NOUN})?)\?+$", re.IGNORECASE),
     re.compile(r"^did\s+i\s+(?:get|guess|call)\s+"
-               r"(?:it|that|this|the\s+(?:place|location))\s+"
+               rf"(?:it|that|this|the\s+{_LOCATION_CONFIRMATION_NOUN})\s+"
                r"(?:right|correctly)\?+$",
                re.IGNORECASE),
     re.compile(r"^(?:is|was|could)\s+(?:that|this|it)\s+(?:be\s+)?"
@@ -2815,7 +2908,10 @@ class GeminiOpener:
                 "that assumes it is correct; leave her room to confirm or correct it. "
                 "For a location inferred from an image, that location guess is the only "
                 "conversational move before she replies: end after it or ask only whether the "
-                "location itself is right. Do not ask about an activity, reason, preference, "
+                "location itself is right. She was standing in that place and you were not, so "
+                "word the guess as your own rather than as an appearance she is asked to agree "
+                "with, and never close it with a tag whose only job is to collect her agreement. "
+                "Do not ask about an activity, reason, preference, "
                 "feeling, experience, or consequence there. "
                 "Clearly nonliteral playful hyperbole is allowed; an invented motive or event "
                 "presented as literal fact is not. "

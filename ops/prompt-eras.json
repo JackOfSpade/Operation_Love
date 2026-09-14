@@ -509,17 +509,17 @@
       ]
     },
     {
-      "prompt_sha256": "1465d45294bbc70a18c9d762bef3a725b337b28a92fd1a4cc75b3127704115f1",
-      "label": "2026-09-14 7d6acb46: +SHE IS THE ONE WHO KNOWS; +HEDGE THE CLAIM, NEVER\nYOURSELF",
-      "first_commit": "7d6acb46d0e6e8f7029326fc7f6d01f38e43a6dc",
+      "prompt_sha256": "1535b126a5a874353fbce8f6aedfa7d33a960f02c34680178e122e5af7213d49",
+      "label": "2026-09-14 9abf49bd: +SHE IS THE ONE WHO KNOWS",
+      "first_commit": "9abf49bdb5f5a6b7a4b2e597b17b6232ddb77866",
       "first_date": "2026-09-14T17:23:04-04:00",
       "first_subject": "Teach the opener who already knows, and renew Hinge targeting for 10.3.0",
-      "last_commit": "7d6acb46d0e6e8f7029326fc7f6d01f38e43a6dc",
+      "last_commit": "9abf49bdb5f5a6b7a4b2e597b17b6232ddb77866",
       "last_date": "2026-09-14T17:23:04-04:00",
       "last_subject": "Teach the opener who already knows, and renew Hinge targeting for 10.3.0",
       "commit_count": 1,
       "commits": [
-        "7d6acb46d0e6e8f7029326fc7f6d01f38e43a6dc"
+        "9abf49bdb5f5a6b7a4b2e597b17b6232ddb77866"
       ],
       "rules": [
         "SHARED CONTEXT RULE",
@@ -559,8 +559,7 @@
         "NEVER INVENT THE SENDER",
         "PICK THE ITEM YOURSELF",
         "APPLICATION RULE",
-        "HARD RULE",
-        "HEDGE THE CLAIM, NEVER\nYOURSELF"
+        "HARD RULE"
       ]
     }
   ],
@@ -761,7 +760,7 @@
   "working_tree": {
     "provisional": true,
     "prompt_sha256": "1535b126a5a874353fbce8f6aedfa7d33a960f02c34680178e122e5af7213d49",
-    "label": "UNCOMMITTED WORKING TREE -- PROVISIONAL, not a shipped era (-HEDGE THE CLAIM, NEVER\nYOURSELF)",
+    "label": "UNCOMMITTED WORKING TREE -- PROVISIONAL, not a shipped era (identical to already-known era: '2026-09-14 9abf49bd: +SHE IS THE ONE WHO KNOWS')",
     "commit": null,
     "rules": [
       "SHARED CONTEXT RULE",
@@ -804,7 +803,7 @@
       "HARD RULE"
     ],
     "reasons": [],
-    "matches_known_committed_era": null,
+    "matches_known_committed_era": "1535b126a5a874353fbce8f6aedfa7d33a960f02c34680178e122e5af7213d49",
     "no_metrics_recorded_here": true,
     "note": "Computed from the files on disk right now (Path.read_text), not from git history -- there is no commit behind this digest, and it can change on the very next edit or `git commit`. Regenerate this registry (python tools/backfill_prompt_eras.py) to refresh it. This registry never records measured metrics for ANY entry, committed or provisional -- see tools/opener_corpus_report.py's --rule/--eras for whatever has actually been measured against a real corpus; a rule appearing here is a fact about what was ON THE WIRE, never a claim that it was measured."
   }

@@ -109,6 +109,32 @@ from .opener import (
 )
 from .replay_corpus import prune_replay_corpus, write_replay_capture
 
+# The two `openers.decision` values discard_opener() below writes, spelled ONCE here because
+# they are read outside this module -- worker.py chooses between them at every abandonment site,
+# and tools/opener_corpus_report.py buckets on them -- and because this project has already been
+# bitten by one rule spelled twice in two places that then disagreed (two regexes for the same
+# permitted opener move carrying different noun sets). DECISION_REPLAY in replay_corpus.py is
+# the established shape for a marker like this: it lives in the installed package precisely so
+# both the writer and the offline reporting tool can import the one string rather than re-type
+# it. The other value in this vocabulary, "like", belongs to commit_opener and is not a discard
+# reason, so it is deliberately not spelled here.
+#
+# NEVER_SENT: generated, billed, and abandoned with nothing typed or sent -- an explicit Dislike
+# is the other non-sent case and carries its own "dislike" from Training, see discard_opener.
+DECISION_NEVER_SENT = "never_sent"
+# SEND_UNVERIFIED (2026-09-15): the draft physically WENT OUT and we cannot prove what happened
+# to it. `driver.like()` is not atomic -- HingeDriver types the opener, taps Send Like, and only
+# THEN runs its verification (_verify_like_landed, and in Training the deck-advance proof) -- so
+# a raise from that post-send window used to be recorded as NEVER_SENT, asserting in the one
+# durable table the corpus report trusts that a message a real person may have received was only
+# ever a draft. This is the third value that window needs, and it is deliberately not "like":
+# nothing verified a landed Like, and "like" is the exact literal Store.joined_opener_outcomes
+# tests for when deciding which opener may own an owner-observed outcome. A row carrying this
+# value is therefore excluded from outcome attribution automatically, by the same predicate that
+# excludes every other non-"like" decision, which is the correct answer -- an unconfirmed send
+# must not be credited with a match somebody else's opener earned.
+DECISION_SEND_UNVERIFIED = "send_unverified"
+
 
 @dataclass
 class OpenerPick:
@@ -360,27 +386,44 @@ def _write_opener_rejection_deadletter(path: str | None, branch: str, store: obj
                                        raw_opener: str | None, prompt_sha256: str,
                                        exc: Exception) -> None:
     """Best-effort, LOCAL record of one opener-rejection row that FAILED to reach
-    self.store.record_opener_rejection, kept so the next occurrence of the incident below is
-    diagnosable instead of silently lost.
+    self.store.record_opener_rejection, kept so a store write that raises is diagnosable
+    afterwards instead of silently lost.
 
-    THE INCIDENT THIS EXISTS FOR: production's BigQuery `opener_rejections` table sat at ZERO
-    rows across the table's entire history while `spend` showed at least 159 billed
-    OpenerParseError events (76 distinct runs with zero successful openers but non-zero
-    spend, 2026-08-14 through 2026-09-09) -- spanning BOTH sides of the 2026-09-06 (c) fix in
-    ops/OPENER-REDESIGN.md that added a record_opener_rejection call to every rejection
-    branch specifically to stop this table from being empty. The row and schema are provably
-    fine: the row serializes, `_row_id` works, the BigQuery table has a byte-exact matching
-    9-field schema, and the identical code path writes a real row against the SQLite store. So
-    the failure is on the WIRE, inside the BigQuery write itself, and the one piece of evidence
-    that would name it -- `store_exc`, the exception this write path caught -- went to a bare
-    `print()` that nothing captures in production, after which the process moved on and the
-    text was gone for good.
+    WHAT THIS WAS BUILT FOR, AND WHAT THAT TURNED OUT NOT TO BE. It shipped 2026-09-14 against a
+    diagnosed incident: production's BigQuery `opener_rejections` table sat at ZERO rows across
+    its entire history, read at the time as a silent failure on the BigQuery WIRE. That root
+    cause is REFUTED. See ops/OPENER-REDESIGN.md's `Addendum -- 2026-09-15 (a)`, which corrects
+    `Addendum -- 2026-09-14 (c)` (both entries stay as written; that file is append-only):
+      - The "159 billed rejections" that ruled the boring explanation out was never a rejection
+        count. It is `COUNT(DISTINCT run_id)` over the WHOLE `spend` table -- 159 distinct run
+        ids across 446 spend rows, most of them runs whose openers committed normally -- carried
+        out of one query and into a sentence about another.
+      - The signature it rested on (runs with spend rows and zero `openers` rows) is the
+        ORDINARY STAGED-COMMIT LIFECYCLE, not a lost rejection: maybe_opener's `record_spend`
+        is unconditional, its `record_opener` is gated on `if not staged_for_action:`, and a
+        staged draft reaches `openers` only through commit_opener (after a landed Like) or
+        discard_opener (on an explicit Dislike or refusal). The corrected cohort is 76 runs and
+        105 spend rows, 2026-08-14 through 2026-09-09, and 0 of those 76 ever Liked anything --
+        precisely the cohort the staging lifecycle is built to leave out of `openers`.
+      - The table is not structurally unable to accept rows. A real rejection row from live run
+        `aed1a870d740` landed in BigQuery on 2026-09-14 (`hinge`, `gemini-3.5-flash`, attempt 1,
+        `unconfirmed_location_followup`) carrying exactly the freeform `reason`/`raw_opener`
+        text the wire was suspected over, with no wire fix shipped in between.
+
+    SO THIS IS A STANDING, QUIET DIAGNOSTIC, not evidence of a diagnosed wire failure. It is
+    kept deliberately after that correction, because the HAZARD it covers is untouched by it:
+    all four rejection call sites below still swallow store exceptions into a `print()` that
+    production captures nowhere, and BigQueryStore._flush_table still keeps a failed batch
+    buffered quietly until five consecutive failures. Delete this and the next GENUINE wire
+    failure produces the same nothing the empty table did. Its silence is also a measurement in
+    its own right: no dead-letter file existing beside the configured data_dir is what let
+    2026-09-15 (a) state that rejection rows do reach the store. A diagnostic is not refuted by
+    reporting "no problem"; that is the only other answer it was ever able to give.
 
     THIS DOES NOT FIX THE WRITE. It cannot from here: this function runs only after the store
-    call has already raised, and two prior passes at the underlying BigQuery path already
-    failed to fix it (that is why this diagnostic exists at all). All this keeps is the
-    evidence a human needs to root-cause the NEXT occurrence, in a place that does not depend
-    on someone watching the live console at the exact moment it happens.
+    call has already raised. All this keeps is the evidence a human needs to root-cause an
+    occurrence, in a place that does not depend on someone watching the live console at the
+    exact moment it happens.
 
     WHAT WAS DELIBERATELY NOT DONE. No retry of the store call (a write that just failed on
     the wire is not obviously fixed by asking again, and this is a diagnostic path, not a
@@ -396,10 +439,12 @@ def _write_opener_rejection_deadletter(path: str | None, branch: str, store: obj
     cause fields are often where the real answer lives, not `exc_str`. `traceback` is the
     full picture if those are not enough. `store_class` says instantly whether this was the
     BigQuery or SQLite backend (this file should, in practice, only ever fill up with the
-    former). Once the actual wire-level cause is known, it closes out the open item in
-    ops/OPENER-REDESIGN.md: append a dated addendum stating what was actually found and what,
-    if anything, ships to fix it -- do not edit the 2026-09-06 (c) entry that (incorrectly, it
-    turns out) believed this was already fixed.
+    former). Entries here are a NEW incident, not a continuation of the empty-table one that
+    2026-09-15 (a) closed -- so once the actual wire-level cause is known, record it the way
+    this project records every other one: append a fresh dated addendum to
+    ops/OPENER-REDESIGN.md stating what was found and what, if anything, ships to fix it. Do
+    not edit the 2026-09-06 (c) or 2026-09-14 (c) entries; that file is a historical decisions
+    log and corrections go at the end.
 
     NEVER RAISES. This function is called from inside an `except Exception as store_exc:`
     block that already gave up on persisting the real record; it must not turn a diagnostic
@@ -684,19 +729,31 @@ class OpenerService:
         self.replay_corpus_max_captures = replay_corpus_max_captures
         self.replay_corpus_max_age_days = replay_corpus_max_age_days
         # Local dead-letter file for a record_opener_rejection call that raised -- see
-        # _write_opener_rejection_deadletter's docstring above for the incident this exists to
-        # diagnose (BigQuery opener_rejections silently stayed at zero rows). Mirrors
+        # _write_opener_rejection_deadletter's docstring above for what it captures, and for why
+        # it is a STANDING QUIET diagnostic rather than the fix for a diagnosed wire failure (the
+        # empty-BigQuery-table root cause it was built for is refuted: ops/OPENER-REDESIGN.md's
+        # `Addendum -- 2026-09-15 (a)`). Mirrors
         # replay_corpus_dir's own shape exactly: OFF (None) unless a caller passes a real path,
         # rather than this class silently picking one under the caller's cwd. None is the
         # correct default for a direct construction (tests, scripts) -- it disables the write
         # outright, so nothing is ever touched unless someone deliberately turns it on.
         #
-        # NOT YET WIRED at supervisor.py's construction site (this change is scoped to
-        # opener/service.py and its own test file only -- see the incident docstring). The
-        # correct value there follows db_file's own convention (config.py ~371-390): derive
-        # from cfg.data_dir, e.g. str(cfg.data_dir / "opener_rejection_deadletter.jsonl"),
-        # never a second independent "./data/..." literal. Until that one-line addition lands,
-        # this diagnostic exists and is fully tested but is inert in a real run.
+        # WIRED, UNCONDITIONALLY AND WITHOUT A CONFIG FLAG, at supervisor.py's construction site
+        # (it passes str(cfg.data_dir / "opener_rejection_deadletter.jsonl") on every startup,
+        # following db_file's own convention of deriving from cfg.data_dir rather than a second
+        # independent "./data/..." literal). So a real run DOES produce
+        # data/opener_rejection_deadletter.jsonl the moment a rejection write raises -- that file
+        # is the one place the captured exception text lives. Read it before proposing any wire
+        # theory; an ABSENT file is itself a finding, not proof the diagnostic is off, and that is
+        # not hypothetical: its absence across every run since it was wired is half of what let
+        # ops/OPENER-REDESIGN.md's `Addendum -- 2026-09-15 (a)` establish that rejection rows do
+        # reach the store (the live BigQuery row from run aed1a870d740 is the other half).
+        # The None default above therefore describes DIRECT construction only (tests,
+        # scripts); it is never what a real run gets. (An earlier version of this paragraph said
+        # the wiring had not landed yet: it landed in the same commit that added this parameter,
+        # and the claim that this diagnostic "is inert in a real run" was false the day it was
+        # written -- which is exactly the sentence that would have stopped someone from looking
+        # for the one file holding the captured exception.)
         self._deadletter_path = deadletter_path
         # The prompt era every row this service writes is stamped with. Computed ONCE here
         # because all three inputs (this style text, opener.py's _SYSTEM, and _SCHEMA) are
@@ -966,9 +1023,12 @@ class OpenerService:
             # the regeneration to the raw-frame shape -- the model would be answering about a
             # different set of images, in a different index space, and whichever draw survived
             # would carry the other one's numbering. The entropy guard is about the opening
-            # WORDS and must change nothing else about the request.
+            # WORDS and must change nothing else about the request. `run_id` rides along too,
+            # unchanged from this method's own parameter -- this extra draw belongs to the same
+            # run as the draft it is replacing, so any cascade print it triggers must carry the
+            # same `Run {run_id}: ` tag, not go unattributed.
             generate_kwargs = dict(items=items, should_stop=should_stop,
-                                   skip_models=skip_models)
+                                   skip_models=skip_models, run_id=run_id)
             second = self.client.generate(profile, self.style, retry_hint=retry_hint,
                                           **generate_kwargs)
         except OpenerParseError as e:
@@ -1134,6 +1194,15 @@ class OpenerService:
         Every caller passes `items`; the same crops are reused verbatim on every attempt for
         this profile, so only `retry_hint` changes after a rejected response.
 
+        run_id: forwarded to self.client.generate(...) on every attempt (and to the entropy
+        guard's own extra draw, which reuses this same run_id -- see _apply_entropy_guard) so
+        GeminiOpener can prefix its non-fatal cascade print()s with `Run {run_id}: `. This is
+        the ONLY thing run_id does for generate() -- it plays no role in this method's own
+        retry/latch/exhaustion logic -- but it is what lets bugreport.py's completion verdict
+        tell THIS run's recovered provider failures apart from an earlier run's, sharing the
+        same hub process's one never-cleared log ring (see bugreport._lines_for_run and
+        _run_completion_assessment_md).
+
         should_stop (BUG 1, adversarial audit): a cheap, non-blocking "is the run stopping?"
         check -- in practice worker.py's threading.Event.is_set for the shared stop flag.
         Threaded into every self.client.generate(...) call below (so GeminiOpener can abort
@@ -1266,6 +1335,7 @@ class OpenerService:
                         items=items,
                         should_stop=should_stop,
                         skip_models=frozenset(failed_models),
+                        run_id=run_id,
                     )
                     result = self.client.generate(profile, self.style, retry_hint=retry_hint,
                                                   **generate_kwargs)
@@ -1869,7 +1939,8 @@ class OpenerService:
             pick._staged_record = None
             return True
 
-    def discard_opener(self, pick: OpenerPick, *, profile_id: str = "", decision: str = "never_sent",
+    def discard_opener(self, pick: OpenerPick, *, profile_id: str = "",
+                       decision: str = DECISION_NEVER_SENT,
                        decision_source: str = "", decision_created_at: object | None = None,
                        profile_key: str = "") -> bool:
         """Persist one staged AUTO/Training opener draft that will NEVER be committed, so the
@@ -1889,7 +1960,11 @@ class OpenerService:
         Deliberately silent about WHAT happened beyond the caller-supplied `decision` string:
         this is generic telemetry plumbing, not a place to encode every driver-specific refusal
         reason. Callers (Training's explicit Dislike, AUTO's stop/refusal/exception paths) each
-        know their own outcome and pass it through.
+        know their own outcome and pass it through. The discard vocabulary those callers choose
+        from is DECISION_NEVER_SENT (the default) and DECISION_SEND_UNVERIFIED, spelled at the
+        top of this module; Training's explicit reject passes its own "dislike" instead. A
+        discard is NEVER recorded as "like", whatever went wrong: that value means a VERIFIED
+        landed Like and is what decides, downstream, which opener may own an observed outcome.
 
         Returns False, exactly like commit_opener, both when there was nothing staged to persist
         (pick was never staged, or was already committed/discarded -- `_staged_record` is None

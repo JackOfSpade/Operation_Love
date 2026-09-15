@@ -338,7 +338,7 @@ class FakeOpenerClient:
         self.items = []          # records items from every call -- doc 5.2's crop request shape
     def generate(self, profile, style, retry_hint="", *, items=None,
                  should_stop=None,
-                 skip_models=frozenset()):
+                 skip_models=frozenset(), run_id: str = ""):
         self.calls += 1
         self.should_stops.append(should_stop)
         self.items.append(items)
@@ -360,7 +360,7 @@ class FakeOpenerClient:
 class SlowOpenerClient(FakeOpenerClient):
     def generate(self, profile, style, retry_hint="", *, items=None,
                  should_stop=None,
-                 skip_models=frozenset()):
+                 skip_models=frozenset(), run_id: str = ""):
         time.sleep(0.05)
         return super().generate(profile, style, retry_hint, items=items,
                                 should_stop=should_stop)
@@ -382,7 +382,7 @@ class ParseErrorOpenerClient:
         self.retry_hints = []
     def generate(self, profile, style, retry_hint="", *, items=None,
                  should_stop=None,
-                 skip_models=frozenset()):
+                 skip_models=frozenset(), run_id: str = ""):
         self.calls += 1
         self.retry_hints.append(retry_hint)
         raise OpenerParseError("bad JSON in response body", Usage(input_tokens=10),
@@ -396,7 +396,7 @@ class OpenerErrorOpenerClient:
         self.calls = 0
     def generate(self, profile, style, retry_hint="", *, items=None,
                  should_stop=None,
-                 skip_models=frozenset()):
+                 skip_models=frozenset(), run_id: str = ""):
         self.calls += 1
         raise OpenerError("Gemini opener: photo index 0 could not be decoded")
 
@@ -407,7 +407,7 @@ class SafetyBlockedOpenerClient:
         self.calls = 0
     def generate(self, profile, style, retry_hint="", *, items=None,
                  should_stop=None,
-                 skip_models=frozenset()):
+                 skip_models=frozenset(), run_id: str = ""):
         self.calls += 1
         raise OpenerParseError(
             "Gemini blocked the opener prompt before generating content "
@@ -423,7 +423,7 @@ class BadRequestOpenerClient:
         self.calls = 0
     def generate(self, profile, style, retry_hint="", *, items=None,
                  should_stop=None,
-                 skip_models=frozenset()):
+                 skip_models=frozenset(), run_id: str = ""):
         self.calls += 1
         raise GeminiAPIError(400, "INVALID_ARGUMENT", "bad image or request")
 
@@ -435,7 +435,7 @@ class TransientOpenerClient:
         self.calls = 0
     def generate(self, profile, style, retry_hint="", *, items=None,
                  should_stop=None,
-                 skip_models=frozenset()):
+                 skip_models=frozenset(), run_id: str = ""):
         self.calls += 1
         raise RuntimeError("connection reset")
 
@@ -1153,6 +1153,150 @@ def test_auto_generic_like_failure_discards_the_staged_opener_as_never_sent():
     assert store.opener_rows[0]["decision_source"] == "auto"
 
 
+class _SendThenVerifyDriver(FakeDriver):
+    """HingeDriver's real shape: type the opener, tap Send Like, and only THEN verify.
+
+    `like()` is not atomic, and this fake exists to put a test on the half of it that matters:
+    `_like_comment_sheet` sets its send marker immediately BEFORE the Send Like tap, and the
+    Rose-upsell dismissal, `_verify_like_landed` and Training's deck-advance proof all run after
+    it -- each able to raise HingeActionError about an opener that is already out. Both phases
+    raise here, selected by `raise_before_send`, because this defect existed precisely because
+    only one of the two directions was ever tested.
+    """
+    halt_on_error = True
+
+    def __init__(self, n=1, *, raise_before_send=False):
+        super().__init__(n)
+        self.raise_before_send = raise_before_send
+        self._send_attempted = False
+
+    def like(self, opener=None, item_index=None, *, model_item_index=None):
+        # Cleared as the attempt begins, never when one ends -- the contract in
+        # base.DatingAppDriver.like_send_attempted, and what HingeDriver._like_comment_sheet does.
+        self._send_attempted = False
+        self.likes.append(opener)
+        self.like_item_indexes.append(item_index)
+        self.like_model_item_indexes.append(model_item_index)
+        if self.raise_before_send:
+            raise RuntimeError("the comment sheet never opened; nothing was typed or sent")
+        self._send_attempted = True                  # the Send Like tap: past the point of return
+        raise RuntimeError("like did not complete -- the like composer is still open")
+
+    def like_send_attempted(self):
+        return self._send_attempted
+
+
+def test_auto_post_send_verification_failure_records_the_draft_as_send_unverified():
+    """The defect this value exists for: an opener that PHYSICALLY WENT OUT, filed as a draft.
+
+    `driver.like()` is not atomic. The Send Like tap happens, and the verification that follows
+    it ("like did not complete -- the like composer is still open") is what raises. AUTO's
+    generic handler answered every one of those with `decision="never_sent"` -- a durable row, in
+    the one table tools/opener_corpus_report.py and the outcome join trust, asserting that a
+    message a real person may have received was never sent. The row must still not say "like"
+    (nothing verified one landed); "send_unverified" is the third fact.
+    """
+    driver = _SendThenVerifyDriver()
+    store = FakeStore()
+    svc = OpenerService(FakeOpenerClient(), CostTracker(PRICING, None), store, "s")
+    _worker(driver, FakeDecider("like"), svc, store).run()
+
+    assert driver.likes == ["hi 1"], "fixture guard: the driver really was asked to send"
+    # Not committed either: an unverified send is not a landed Like, and `recent_openers` is the
+    # live view that only ever describes committed ones.
+    assert svc.recent_openers_snapshot() == []
+    assert store.openers == ["hi 1"]
+    assert len(store.opener_rows) == 1
+    assert store.opener_rows[0]["decision"] == "send_unverified"
+    assert store.opener_rows[0]["decision_source"] == "auto"
+    # MUTATION CHECK, three ways, all verified by hand and restored exactly:
+    #   - drop `decision=self._post_like_discard_decision()` from AUTO's generic like() handler
+    #     in worker.py -- re-run: this row reads "never_sent" and this test fails while every
+    #     other worker test stays green (which is how the defect survived in the first place).
+    #   - collapse _post_like_discard_decision() to `return DECISION_NEVER_SENT` -- same failure.
+    #   - delete `self._like_send_attempted = True` above HingeDriver's Send Like tap -- the
+    #     driver-level tests in tests/test_hinge_item_capture.py fail instead, which is the
+    #     layer that mutation actually breaks.
+
+
+def test_auto_pre_send_failure_still_records_the_draft_as_never_sent():
+    """The other direction, and the reason this test is next to the one above.
+
+    Same driver, same handler, same exception type -- only WHEN it is raised differs. A failure
+    before anything is typed leaves the opener on this side of the wire, so "never_sent" is the
+    honest row and must not drift to "send_unverified" just because the driver now has a marker
+    to report at all.
+    """
+    driver = _SendThenVerifyDriver(raise_before_send=True)
+    store = FakeStore()
+    svc = OpenerService(FakeOpenerClient(), CostTracker(PRICING, None), store, "s")
+    _worker(driver, FakeDecider("like"), svc, store).run()
+
+    assert driver.likes == ["hi 1"]
+    assert store.opener_rows[0]["decision"] == "never_sent"
+    assert store.opener_rows[0]["decision_source"] == "auto"
+    # MUTATION CHECK: collapse _post_like_discard_decision() to `return DECISION_SEND_UNVERIFIED`
+    # -- re-run: this test fails (along with every other never_sent assertion in this file and in
+    # tests/test_training_worker.py), which is the point of pinning both directions. Verified by
+    # hand, restored exactly.
+
+
+def test_auto_discard_decision_degrades_to_never_sent_for_a_driver_with_no_send_marker():
+    """`like_send_attempted` is an OPTIONAL capability, and there are two ways not to have it.
+
+    RaisingLikeDriver tracks nothing of its own and simply inherits DatingAppDriver's default,
+    which is the point of declaring a default there at all: every driver that has never been
+    taught this boundary keeps today's meaning instead of being forced to implement a marker it
+    has no send to attach one to. The duck-typed fakes that do not subclass the base class at
+    all (tests/test_training_worker.py's _TrainingDriver) are covered by the worker's `getattr`
+    read, which is what keeps a missing capability from raising an AttributeError inside a
+    handler where another exception is already in flight.
+    """
+    driver = RaisingLikeDriver(1)
+    assert driver.like_send_attempted() is False, "fixture guard: the inherited default"
+    store = FakeStore()
+    svc = OpenerService(FakeOpenerClient(), CostTracker(PRICING, None), store, "s")
+    worker = _worker(driver, FakeDecider("like"), svc, store)
+    # The base-class default is the degraded meaning, and it is what the worker must read.
+    assert worker._post_like_discard_decision() == "never_sent"
+    worker.run()
+    assert store.opener_rows[0]["decision"] == "never_sent"
+    # MUTATION CHECK: flip DatingAppDriver.like_send_attempted's body to `return True` -- re-run:
+    # this test and the two paywall/generic never_sent tests above fail, because every driver
+    # that tracks nothing would start claiming a send. Verified by hand, restored exactly.
+
+
+def test_auto_send_marker_from_a_previous_profile_cannot_describe_a_later_refusal():
+    """The marker is scoped to ONE attempt and cleared as the next one begins, so a worker that
+    read it anywhere other than around its own `like()` call would file an untouched draft under
+    the PREVIOUS profile's send. Pinned at the helper, since the three call sites are the only
+    places that may consult it: a driver still reporting a completed send hands a later,
+    pre-action refusal `never_sent` only because that site passes the constant instead.
+    """
+    class _StillReportingLastSend(FakeDriver):
+        """A send from an earlier attempt that nothing has cleared yet -- the marker is cleared
+        as the NEXT attempt begins, so between two profiles it legitimately still reads True."""
+        def like_send_attempted(self):
+            return True
+
+    class _NoItemClient:
+        """Produces a real, billed draft that names no item, so AUTO refuses BEFORE like()."""
+        def generate(self, profile, style, retry_hint="", *, items=None, should_stop=None,
+                     skip_models=frozenset(), run_id: str = ""):
+            return OpenerResult(opener="a billed draft nothing was done with", referenced="r",
+                                usage=Usage(input_tokens=400), model="gemini-test-model",
+                                item_index=ITEM_INDEX_ABSENT, index_space=INDEX_SPACE_MODEL_ITEMS)
+
+    driver = _StillReportingLastSend(1)
+    store = FakeStore()
+    svc = OpenerService(_NoItemClient(), CostTracker(PRICING, None), store, "s")
+    _worker(driver, FakeDecider("like"), svc, store).run()
+
+    assert driver.likes == [], "fixture guard: this profile's draft never reached the device"
+    assert len(store.opener_rows) == 1
+    assert store.opener_rows[0]["decision"] == "never_sent"
+
+
 def test_auto_never_sent_discard_when_the_model_names_no_item():
     """The "not targeted" refusal (opener generated no item number to target) is a clean stop,
     not a device action -- and, exactly like the targeting/exception abandonment paths above,
@@ -1162,7 +1306,7 @@ def test_auto_never_sent_discard_when_the_model_names_no_item():
             self.calls = 0
 
         def generate(self, profile, style, retry_hint="", *, items=None, should_stop=None,
-                     skip_models=frozenset()):
+                     skip_models=frozenset(), run_id: str = ""):
             self.calls += 1
             return OpenerResult(opener=f"hi {self.calls}", referenced="r",
                                 usage=Usage(input_tokens=400), model="gemini-test-model",
@@ -1383,6 +1527,149 @@ def test_auto_stop_during_opener_generation_never_starts_like_but_discards_the_d
     assert store.opener_rows[0]["decision_source"] == "auto"
     # The request had already reached the provider, so its spend remains accountable.
     assert len(store.spend) == 1
+
+
+def test_training_stop_during_opener_generation_discards_the_staged_draft():
+    """Training's mirror of the AUTO test immediately above, and the hole it closes.
+
+    Training reached this same exit -- an operator Stop landing while one already-started
+    provider request is on the wire, so maybe_opener hands back a fully staged OpenerPick that
+    can never reach a review checkpoint -- and dropped the envelope with the card. The spend was
+    recorded, so the run was billed for the draft, but the text reached neither the durable
+    `openers` table nor recent_openers: it appeared in no bug report, and
+    tools/opener_corpus_report.py could not see it. That is exactly the survivorship bias
+    ("the store only kept LIKED drafts") discard_opener exists to end.
+
+    The lineage value is `manual`, NOT `training`: it is what the reviewed commit/discard sites
+    at the bottom of _training_loop already pass, and it is what OpenerService.commit_opener
+    maps onto session_mode="training".
+    """
+    from operation_love.training_actions import TrainingActionBridge
+
+    stop = threading.Event()
+
+    class _TrainingReviewDriver(FakeDriver):
+        accepts_opener = True
+        supports_training_decision = True
+
+        def __init__(self):
+            super().__init__(1)
+            self.decision_calls = []
+
+        def set_training_decision(self, approval):
+            self.decision_calls.append(approval)
+
+    class _StopsAfterGenerating(FakeOpenerClient):
+        def generate(self, *args, **kwargs):
+            result = super().generate(*args, **kwargs)
+            stop.set()
+            return result
+
+    driver, store = _TrainingReviewDriver(), FakeStore()
+    svc = OpenerService(_StopsAfterGenerating(), CostTracker(PRICING, None), store, "s")
+    Worker("hinge", driver, FakeDecider("like"), svc, store, "run1", _Pacing(), stop,
+           mode="training", training_action_bridge=TrainingActionBridge()).run()
+
+    # Stop is observed before the checkpoint is prepared, so no review was ever published and
+    # the phone was never touched -- no label or decision exists for this profile.
+    assert driver.decision_calls == []
+    assert driver.likes == [] and driver.dislikes == 0
+    assert store.decisions == [] and store.labels == [] and store.profiles == []
+    # recent_openers_snapshot stays reserved for COMMITTED (landed-Like) openers -- unchanged
+    # from before this discard path existed.
+    assert svc.recent_openers_snapshot() == []
+    # ...but the durable table now carries the billed draft instead of nothing at all.
+    assert store.openers == ["hi 1"]
+    assert len(store.opener_rows) == 1
+    row = store.opener_rows[0]
+    assert row["decision"] == "never_sent"
+    assert row["decision_source"] == "manual"
+    assert row["prompt_sha256"] == svc.prompt_sha256
+    # The request had already reached the provider, so its spend remains accountable.
+    assert len(store.spend) == 1
+
+
+def test_training_untargetable_opener_discards_the_staged_draft():
+    """The other half of the same hole: Training's non-Stop post-generation refusals.
+
+    This driver neither accepts a model-items index nor declares
+    supports_capture_order_training_target, so the opener names no target _training_loop can
+    verify and the run stops before any review checkpoint -- the Training twin of AUTO's
+    test_auto_never_sent_discard_when_the_model_names_no_item. The draft was still generated
+    and billed, so it belongs in the durable table with decision="never_sent".
+    """
+    from operation_love.training_actions import TrainingActionBridge
+
+    class _TrainingReviewDriver(FakeDriver):
+        accepts_opener = True
+        supports_training_decision = True
+
+        def __init__(self):
+            super().__init__(1)
+            self.decision_calls = []
+
+        def set_training_decision(self, approval):
+            self.decision_calls.append(approval)
+
+    driver, store, stop = _TrainingReviewDriver(), FakeStore(), threading.Event()
+    svc = OpenerService(FakeOpenerClient(), CostTracker(PRICING, None), store, "s")
+    Worker("hinge", driver, FakeDecider("like"), svc, store, "run1", _Pacing(), stop,
+           mode="training", training_action_bridge=TrainingActionBridge()).run()
+
+    assert stop.is_set()
+    assert driver.decision_calls == [] and driver.likes == []
+    assert store.decisions == [] and store.labels == []
+    assert svc.recent_openers_snapshot() == []
+    assert store.openers == ["hi 1"]
+    assert store.opener_rows[0]["decision"] == "never_sent"
+    assert store.opener_rows[0]["decision_source"] == "manual"
+    assert store.opener_rows[0]["prompt_sha256"] == svc.prompt_sha256
+
+
+def test_training_driver_exception_discards_the_staged_draft_before_reraising():
+    """A device action that never completed is the third shape of the same hole.
+
+    The draft reached the driver but no Like landed, so nothing was typed or sent and this
+    profile's billed opener would otherwise vanish exactly like the two exits above. The
+    original exception must still reach the run's terminal handler completely unchanged --
+    _discard_staged_opener is telemetry, not a recovery path.
+    """
+    from operation_love.status import RunStatus
+    from operation_love.training_actions import TrainingActionBridge
+
+    class _RaisingTrainingDriver(FakeDriver):
+        accepts_opener = True
+        supports_training_decision = True
+        supports_capture_order_training_target = True
+        halt_on_error = True
+
+        def __init__(self):
+            super().__init__(1)
+            self.decision_calls = []
+
+        def set_training_decision(self, approval):
+            self.decision_calls.append(approval)
+
+        def like(self, opener=None, item_index=None, *, model_item_index=None):
+            raise RuntimeError("the reviewed like did not land")
+
+    driver, store, stop = _RaisingTrainingDriver(), FakeStore(), threading.Event()
+    svc = OpenerService(FakeOpenerClient(), CostTracker(PRICING, None), store, "s")
+    status = RunStatus("run1", ["hinge"], min_labels=1, mode="training")
+    Worker("hinge", driver, FakeDecider("like"), svc, store, "run1", _Pacing(), stop,
+           mode="training", status=status,
+           training_action_bridge=TrainingActionBridge()).run()
+
+    # The checkpoint callback WAS installed and then cleared, so this exit is genuinely past
+    # the pre-device refusals the two tests above cover, not another spelling of them.
+    assert len(driver.decision_calls) == 2
+    assert callable(driver.decision_calls[0]) and driver.decision_calls[1] is None
+    assert store.decisions == [] and store.labels == []
+    assert status.app_view("hinge")["app"]["error"] is not None
+    assert svc.recent_openers_snapshot() == []
+    assert store.openers == ["hi 1"]
+    assert store.opener_rows[0]["decision"] == "never_sent"
+    assert store.opener_rows[0]["decision_source"] == "manual"
 
 
 def test_worker_passes_stop_callback_only_to_interruptible_like_navigation():
@@ -1913,7 +2200,57 @@ def test_auto_none_capture_publishes_the_driver_latched_entry_refusal_as_blocked
 
     app = status.app_view("hinge")["app"]
     assert app["state"] == "blocked"
+    # EntryRefusalDriver has no blocked_stop_kind hook at all (no non-Hinge driver does), so
+    # this also pins the fallback half of the classification below: an unclassified latched
+    # reason keeps the historical "deck_blocked".
     assert app["stop_reason"] == reason and app["stop_kind"] == "deck_blocked"
+    assert driver.likes == [] and driver.dislikes == 0
+    assert store.decisions == [] and driver.closed
+
+
+def test_auto_none_capture_publishes_a_failed_cold_relaunch_under_its_own_stop_kind(monkeypatch):
+    """blocked_reason() is the ONLY channel a capture returning None has for carrying a
+    sentence, so a failed cold-relaunch recovery latches through it too.
+
+    Publishing that as stop_kind="deck_blocked" made the Hub headline "stopped -- deck blocked"
+    for a run where nothing was blocking the deck, which is exactly the surface the owner rule
+    "the hub must clearly show why a run stopped" is about. The driver classifies its own latch;
+    the worker publishes what it classified and never guesses on its behalf.
+
+    Runs against status.py's REAL `_STOP_KINDS`. While that whitelist was still missing the
+    entry this test monkeypatched it in, and so stayed green over a path that raised ValueError
+    out of set_app on every live run -- the whitelist entry is the fix, not a test fixture. Two
+    independent reviewers found it exactly that way, so it is pinned unpatched from here on.
+    """
+    from operation_love.status import RunStatus
+
+    reason = ("Hinge was relaunched cold and the deck could not be proven re-entered; "
+              "no action or label was recorded.")
+
+    class ColdRelaunchDriver(FakeDriver):
+        def __init__(self):
+            super().__init__(1)
+            self.abandoned = False
+
+        def blocked_reason(self):
+            return reason if self.abandoned else None
+
+        def blocked_stop_kind(self):
+            return "cold_relaunch_recovery" if self.abandoned else None
+
+        def next_profile(self):
+            self.abandoned = True
+            return None
+
+    driver = ColdRelaunchDriver()
+    store = FakeStore()
+    status = RunStatus("run1", ["hinge"], min_labels=1, mode="auto")
+    Worker("hinge", driver, FakeDecider("like"), None, store, "run1", _Pacing(),
+           threading.Event(), mode="auto", status=status).run()
+
+    app = status.app_view("hinge")["app"]
+    assert app["state"] == "blocked" and app["stop_reason"] == reason
+    assert app["stop_kind"] == "cold_relaunch_recovery"
     assert driver.likes == [] and driver.dislikes == 0
     assert store.decisions == [] and driver.closed
 

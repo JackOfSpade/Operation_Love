@@ -1669,6 +1669,20 @@ def test_record_spend_stores_none_cost_as_null_not_zero():
     assert row["cost_usd"] is None
 
 
+def test_dropped_rows_reports_nothing_when_every_row_landed():
+    """Empty means "nothing was lost", so `if store.dropped_rows():` is a caller's whole test.
+
+    The supervisor prints one line per run off this: an over-eager tally here would turn every
+    clean run into a data-loss report, which is how a real loss stops being believed.
+    """
+    client = _FakeBQ()
+    s = _store(client, flush_every=1)
+
+    s.add_label("r", "hinge", True, [0.1])
+
+    assert s.dropped_rows() == {}
+
+
 def test_saved_summary_tallies_confirmed_inserts():
     client = _FakeBQ()
     s = _store(client, flush_every=100)
@@ -2006,6 +2020,10 @@ def test_flush_drops_permanently_invalid_row_after_bound_and_keeps_good_rows():
     assert s._dropped["labels"] == 1
     assert "DROPPED" in s.saved_summary()
     assert "labels=1" in s.saved_summary()
+    # ...and the same fact as DATA, which is what the supervisor branches on: prose in a
+    # shutdown line is not something a caller can test, and "flush() returned" is not the
+    # claim "every row landed" (see ranker/__init__.py's Store.dropped_rows).
+    assert s.dropped_rows() == {"labels": 1}
 
     # With the poison row gone, the surviving good rows now flush successfully -- no
     # data lost among them.
@@ -2636,6 +2654,29 @@ def test_joined_opener_outcomes_query_excludes_empty_and_null_profile_keys_on_bo
     assert "o.profile_key IS NOT NULL AND o.profile_key != ''" in sql
     assert "oc.profile_key IS NOT NULL AND oc.profile_key != ''" in sql
     assert {p.name: p.value for p in client.job_configs[-1].query_parameters} == {"app": "hinge"}
+
+
+def test_joined_opener_outcomes_query_keeps_only_openers_that_were_actually_sent(monkeypatch):
+    """An outcome is something a SENT opener earned.
+
+    Without this predicate, a profile drafted-then-DISLIKED in one run and LIKED in a later one
+    returns the owner's single recorded match TWICE -- the extra copy crediting the older prompt
+    era with a match earned by a draft that never reached the phone. 'like' is the one decision
+    value that has ever meant "sent" (tools/opener_outcome_recorder.py's DECISION_SENT), and it
+    is spelled as a literal here for the same reason it is in the SQL: this module must not
+    import a tools/ script.
+    """
+    _stub_bigquery_module(monkeypatch)
+    client = _FakeBQ(label_rows=[])
+    store = _store(client)
+
+    store.joined_opener_outcomes("hinge")
+
+    sql = client.queries[-1]
+    assert "AND o.decision = 'like'" in sql
+    # Scoped to the OPENERS side: an outcome row has no decision of its own, and aliasing this
+    # onto `oc` would silently return nothing at all.
+    assert "oc.decision" not in sql
 
 
 def test_joined_opener_outcomes_filters_by_prompt_era_when_given_one(monkeypatch):

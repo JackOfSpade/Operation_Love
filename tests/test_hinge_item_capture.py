@@ -1206,7 +1206,11 @@ def test_a_probe_clamped_in_both_directions_refuses_as_it_always_did(
     strokes, takes no second burst at all, and refuses exactly as it did before the retry
     existed. Nothing about the refusal is monkeypatched into place: the estimator really
     measures +0px across two byte-identical frames, which is the evidence a rubber-banding
-    device produces, and the one patch here only COUNTS bursts."""
+    device produces, and the one patch here only COUNTS bursts.
+
+    The refusal now REPORTS its measured position instead of returning a bare None (2026-09-15):
+    it is still no `ReattachProbe` and still proves nothing, but a probe that put two real
+    strokes on the phone owes its caller the offset it left them at -- here a rubber-banded 0."""
     index, frames = _centred_capture()
     adb = ProbeWorldAdb(start=_CENTRED_SCROLLS[-1], frozen=True)
     drv = _drv(adb)
@@ -1215,11 +1219,202 @@ def test_a_probe_clamped_in_both_directions_refuses_as_it_always_did(
     monkeypatch.setattr(HingeDriver, "_still_photo_dwell_burst",
                         lambda self: bursts.append(1) or ([], 0.0))
 
-    assert drv._still_photo_reattach_probe(frames[-1], rect) is None
+    result = drv._still_photo_reattach_probe(frames[-1], rect)
 
+    assert not isinstance(result, item_crops.ReattachProbe), "nothing was proved"
+    assert isinstance(result, hinge._AbandonedReattachProbe)
+    assert (result.measured, result.page_shift_px) == (True, 0)
     assert (adb.reverse_swipes, adb.scrolls) == (1, 1), "one stroke each way, and not one more"
     assert bursts == [], "a card that never left the zone is charged no second burst"
     assert adb.scroll == _CENTRED_SCROLLS[-1] and adb.taps == []
+
+
+def test_a_clamped_probe_whose_retry_cannot_be_measured_reports_a_lost_position(
+        monkeypatch, installed_still_photo_bound):
+    """The clamp retry has the same three outcomes the first exit does (found 2026-09-15).
+
+    The backward exit rubber-banded a MEASURED +0px -- the clamp that buys the one forward retry
+    -- and that retry then DELIVERED its stroke and could not be measured (`estimate_shift`
+    reaching quorum in neither direction). Two real strokes have gone to the phone and nothing
+    knows where the page is, so the only honest answer is the lost-position marker: the bare
+    `None` this branch used to give means "nothing moved", and `_still_photo_dwell` would have
+    gone on holding an entry anchor for a page that is no longer under it.
+    """
+    index, frames = _centred_capture()
+    adb = ProbeWorldAdb(start=_CENTRED_SCROLLS[-1])
+    drv = _drv(adb, still_photo_dwell_candidates=1)
+    rect = item_crops.dwell_card_rects(index, len(frames) - 1)[_CENTRED_ORDINAL]
+    # +0px: delivered, measured, and the card never left the trigger zone -- which is exactly the
+    # rubber-band the retry exists for. Then the retry's own settled frame refuses.
+    shifts = iter([0, None])
+    monkeypatch.setattr(drv, "_measured_page_shift", lambda *_a: next(shifts))
+
+    result = drv._still_photo_reattach_probe(frames[-1], rect)
+
+    assert (adb.reverse_swipes, adb.scrolls) == (1, 1), (
+        "fixture guard: the retry's stroke really fired -- two strokes on the phone, not one")
+    assert result is hinge._REATTACH_POSITION_LOST
+    assert result.measured is False and result.page_shift_px is None
+    assert next(shifts, "spent") == "spent", "and the probe stopped at that measurement"
+
+
+def test_a_stop_at_the_clamp_retry_repays_the_exit_it_already_measured(
+        monkeypatch, installed_still_photo_bound):
+    """The other half of the same branch, and the reason it cannot just answer "lost".
+
+    The Stop lands on the retry's own first line, BEFORE its stroke, so the only gesture that
+    ever reached the phone is the backward exit -- and that one was measured. The obligation is
+    the one the both-clamped branch below discharges: walk the measured displacement back and
+    hand the caller whatever residual the bounded return could not retire. Reporting a position
+    the driver can still name as lost would refuse a whole capture for a gesture that never
+    happened, which is the mirror image of the bug this pair exists for.
+    """
+    index, frames = _centred_capture()
+    adb = ProbeWorldAdb(start=_CENTRED_SCROLLS[-1])
+    drv = _drv(adb, still_photo_dwell_candidates=1)
+    rect = item_crops.dwell_card_rects(index, len(frames) - 1)[_CENTRED_ORDINAL]
+    polls = []
+
+    def should_stop():
+        """False for the backward exit, True for the retry: the Stop lands between the two."""
+        polls.append(1)
+        return len(polls) > 1
+
+    # -150px out of an 1800px band is 0.083 -- still inside the 0.150 trigger zone, so the clamp
+    # buys the retry. The single repayment stroke then delivers 100 of the 150 owed, and the
+    # bounded loop stops on the remaining 50 because that is under half the ~219px quantum.
+    shifts = iter([-150, 100])
+    monkeypatch.setattr(drv, "_measured_page_shift", lambda *_a: next(shifts))
+
+    result = drv._still_photo_reattach_probe(frames[-1], rect, should_stop)
+
+    assert polls == [1, 1], "fixture guard: the Stop was polled by the retry, not by the exit"
+    assert (adb.reverse_swipes, adb.scrolls) == (1, 1), (
+        "the exit stroke and the repayment -- the retry's own stroke never fired")
+    assert result is not hinge._REATTACH_POSITION_LOST, (
+        "a position the driver measured itself into is not a lost one")
+    assert isinstance(result, hinge._AbandonedReattachProbe)
+    assert (result.measured, result.frame, result.page_shift_px) == (
+        True, _frame(adb.scroll), -50)
+
+
+# =====================================================================================
+# A REFUSAL THAT DELIVERED A GESTURE IS NOT A REFUSAL THAT DELIVERED NONE (found 2026-09-15).
+# The probe used to answer `None` for both, and `_still_photo_dwell` reads `None` as "the page is
+# exactly where the read left it" -- so an exit stroke followed by an unmeasurable settled frame
+# (`estimate_shift` reaching quorum in neither direction, e.g. an autoplaying neighbour card) was
+# recorded as a displacement of ZERO for a page ~500px away, and `_index_captured_items` rebased
+# the index by that zero.  These pin the third outcome: an `_AbandonedReattachProbe` carrying the
+# measured residual when the net is still known, and the lost-position marker when it is not.
+# The sibling rule this must NOT regress lives with the navigation refusals further down: a
+# refusal that delivered NO gesture still keeps the capture's measured anchor.
+# =====================================================================================
+
+def test_a_refused_probe_reports_the_residual_its_repayment_could_not_retire(
+        monkeypatch, installed_still_photo_bound):
+    """The measured half of the fix. The exit really left the zone, the return leg walked most of
+    it back, and the second burst then came back empty -- so nothing is proved, but the page is a
+    MEASURED 100px from where the read left it. The bounded return stops at half a read-scroll
+    quantum by design (`_REATTACH_RETURN_STEPS_SPAN`), so that residual is normal, and the caller
+    is owed the number rather than a `None` it can only read as "nothing moved"."""
+    index, frames = _centred_capture()
+    adb = ProbeWorldAdb(start=_CENTRED_SCROLLS[-1])
+    drv = _drv(adb, still_photo_dwell_candidates=1)
+    rect = item_crops.dwell_card_rects(index, len(frames) - 1)[_CENTRED_ORDINAL]
+    monkeypatch.setattr(HingeDriver, "_still_photo_dwell_burst",
+                        lambda self, should_stop=None: ([], 0.0))
+    monkeypatch.setattr(drv, "_screencap", lambda **_kw: b"settled")
+    ups, downs = [], []
+    monkeypatch.setattr(drv, "_scroll_up_one", lambda frac, x: ups.append(frac))
+    monkeypatch.setattr(drv, "_scroll_down_one", lambda frac, x: downs.append(frac))
+    # 800px out (0.44 of the band: clear of the 0.15 trigger zone, so no forward retry is
+    # bought), then a single repayment stroke that delivers 700 of the 800 owed. 100px is under
+    # half the ~219px quantum, so the bounded loop stops there rather than chasing it.
+    shifts = iter([800, -700])
+    monkeypatch.setattr(drv, "_measured_page_shift", lambda *_a: next(shifts, 0))
+
+    result = drv._still_photo_reattach_probe(frames[-1], rect)
+
+    assert not isinstance(result, item_crops.ReattachProbe), "an empty burst proves nothing"
+    assert isinstance(result, hinge._AbandonedReattachProbe)
+    assert (result.measured, result.frame, result.page_shift_px) == (True, b"settled", 100)
+    assert (len(ups), len(downs)) == (2, 0), (ups, downs)   # the exit, then the repayment
+
+
+def test_a_probe_that_cannot_measure_its_own_exit_stroke_reports_a_lost_position(
+        monkeypatch, installed_still_photo_bound):
+    """The unmeasurable half. The stroke went to the phone and `estimate_shift` then refused the
+    settled frame, so there is no net to give back and NOTHING is guessed: the probe answers with
+    the lost-position marker, which is what makes its caller drop the anchor instead of recording
+    a zero the page never honoured."""
+    index, frames = _centred_capture()
+    adb = ProbeWorldAdb(start=_CENTRED_SCROLLS[-1])
+    drv = _drv(adb, still_photo_dwell_candidates=1)
+    rect = item_crops.dwell_card_rects(index, len(frames) - 1)[_CENTRED_ORDINAL]
+    monkeypatch.setattr(HingeDriver, "_measured_page_shift",
+                        lambda self, _before, _after: None)
+
+    result = drv._still_photo_reattach_probe(frames[-1], rect)
+
+    assert adb.reverse_swipes == 1, "fixture guard: the exit stroke really was delivered"
+    assert result is hinge._REATTACH_POSITION_LOST
+    assert result.measured is False and result.page_shift_px is None
+
+
+def test_a_probe_that_never_moved_the_page_still_answers_a_plain_none(
+        installed_still_photo_bound):
+    """The rule the fix must not overshoot. `None` keeps its one meaning -- "nothing was
+    delivered, so whatever you measured is still true" -- and a Stop landing before the first
+    exit stroke is exactly that case. Reporting it as an abandonment would throw away a perfectly
+    good anchor for a gesture that never happened, which is the mirror-image mistake."""
+    index, frames = _centred_capture()
+    adb = ProbeWorldAdb(start=_CENTRED_SCROLLS[-1])
+    drv = _drv(adb, still_photo_dwell_candidates=1)
+    rect = item_crops.dwell_card_rects(index, len(frames) - 1)[_CENTRED_ORDINAL]
+
+    result = drv._still_photo_reattach_probe(frames[-1], rect, should_stop=lambda: True)
+
+    assert result is None
+    assert (adb.reverse_swipes, adb.scrolls, adb.taps) == (0, 0, [])
+
+
+def test_an_unmeasurable_probe_drops_the_entry_anchor_instead_of_calling_it_zero(
+        monkeypatch, installed_still_photo_bound):
+    """The incident end to end, at the caller that held the wrong number. `_still_photo_dwell`
+    enters with `entry_anchor = (frames[-1], 0)` and must NOT still be holding it after a probe
+    that scrolled the page and lost track of it -- `_index_captured_items` would rebase the item
+    index by that zero and hand bottom-up navigation a page position that no longer exists."""
+    index, frames = _centred_capture()
+    adb = ProbeWorldAdb(start=_CENTRED_SCROLLS[-1])
+    drv = _drv(adb, still_photo_dwell_candidates=1)
+    monkeypatch.setattr(HingeDriver, "_measured_page_shift",
+                        lambda self, _before, _after: None)
+
+    evidence, anchor = drv._still_photo_dwell(frames, index)
+
+    assert adb.reverse_swipes == 1, "fixture guard: the probe really did move the page"
+    assert anchor is None, "a page nobody can locate has no anchor to hand navigation"
+    assert evidence[_CENTRED_ORDINAL].reattach_probe_ran is None, "and nothing was proved"
+
+
+def test_a_measured_probe_abandonment_hands_its_residual_to_the_entry_anchor(
+        monkeypatch, installed_still_photo_bound):
+    """The conservative branch: when the net displacement is still KNOWN the anchor is kept, not
+    dropped, and it carries the measured residual plus the last frame that residual was measured
+    to -- exactly the shape a COMPLETED probe already hands over. Refusing the whole capture over
+    a page position the driver can still name would be fail-closed in the wrong place."""
+    index, frames = _centred_capture()
+    drv = _drv(ProbeWorldAdb(start=_CENTRED_SCROLLS[-1]), still_photo_dwell_candidates=1)
+    abandoned = hinge._AbandonedReattachProbe(frame=b"where-the-probe-stopped",
+                                              page_shift_px=137)
+    monkeypatch.setattr(HingeDriver, "_still_photo_reattach_probe",
+                        lambda self, _anchor, _rect, should_stop=None: abandoned)
+
+    evidence, anchor = drv._still_photo_dwell(frames, index)
+
+    assert anchor == hinge._MeasuredItemAnchor(b"where-the-probe-stopped", 137)
+    assert evidence[_CENTRED_ORDINAL].reattach_probe_ran is None, (
+        "carrying the position forward must not carry a re-attach verdict with it")
 
 
 # =====================================================================================
@@ -1321,7 +1516,12 @@ def test_a_stop_after_the_exit_still_completes_the_return_leg_before_bailing(
     watching the screen (and for the "leaves the page where it found it" contract bottom-up
     navigation relies on) than paying for the few remaining, already-bounded
     (`_REATTACH_RETURN_STEPS_SPAN`) read-scrolls it takes to walk back. Only the expensive,
-    gesture-free second burst that would follow is skipped."""
+    gesture-free second burst that would follow is skipped.
+
+    The stop also hands back the position the completed return leg measured (2026-09-15) rather
+    than a bare None: the strokes above really happened, so the caller is told where they left
+    the page instead of inferring, from a value that also means "nothing moved", that they did
+    not."""
     index, frames = _centred_capture()
     adb = ProbeWorldAdb(start=_CENTRED_SCROLLS[-1])
     drv = _drv(adb)
@@ -1335,7 +1535,9 @@ def test_a_stop_after_the_exit_still_completes_the_return_leg_before_bailing(
 
     result = drv._still_photo_reattach_probe(frames[-1], rect, should_stop)
 
-    assert result is None
+    assert not isinstance(result, item_crops.ReattachProbe), "no burst, so no proof"
+    assert isinstance(result, hinge._AbandonedReattachProbe)
+    assert (result.measured, result.page_shift_px) == (True, 0)
     assert bursts == [], "the second burst is the expensive part and must not be spent"
     assert (adb.reverse_swipes, adb.scrolls) == (1, 1), "the return leg still ran to completion"
     assert adb.scroll == _CENTRED_SCROLLS[-1], "the page is restored despite the stop"
@@ -4333,6 +4535,119 @@ def test_candidate_walk_sweeps_a_final_hop_beyond_the_old_envelope_once_a_card_i
     assert [row["outcome"] for row in sweeps] == ["started", "returned"]
 
 
+# =====================================================================================
+# THE SWEEP IS THE OTHER CONSUMER OF AN ABANDONED PROBE (found 2026-09-15).  The short-hop
+# walk's cleanup step is pinned further down; these two pin the progressive sweep, which does
+# the same arithmetic in a different place: it folds the probe's residual into the re-anchoring
+# sum for the NEXT hop, and it is the only path that can carry a wrong zero forward more than
+# once.  A measured abandonment must move the anchor; an unmeasurable one must refuse the
+# capture rather than assume a zero the page did not honour.
+# =====================================================================================
+
+def _sweep_over_one_deep_card(drv, index, frames, *, probe, return_cap_px, monkeypatch):
+    """Drive `_still_photo_dwell_candidate_walk` into ONE progressive-sweep hop.
+
+    Same construction as the final-hop test above -- a card pushed beyond the old per-hop return
+    envelope is what switches the walk to the sweep -- with the probe slot under test and the
+    cleanup return stubbed so the sweep's own re-anchoring arithmetic is what gets asserted.
+    Returns (evidence, anchor, returns) where `returns` collects the cleanup call's kwargs.
+    """
+    far_top = int(index.offsets[-1]) + _BAND0 - return_cap_px - 1
+    far_blocks = tuple(
+        dataclasses.replace(block, page_y0=far_top)
+        if block.heart_ordinal == 3 else block
+        for block in index.blocks)
+    far_index = dataclasses.replace(index, blocks=far_blocks)
+    target = _stub_target(
+        frames[-1], (700, 1700), climbed_px=return_cap_px + 1,
+        page_offset=int(index.offsets[-1]) - return_cap_px - 1)
+    monkeypatch.setattr(hinge, "navigate_to_item", lambda *_args, **_kwargs: target)
+    card_evidence = SimpleNamespace(
+        dwell_frame_sha256s=("first", "second"), dwell_exact=True, dwell_span_s=1.0,
+        mute_screens_complete=True, centered=True, reattach_probe_ran=True,
+        reattach_dwell_frame_sha256s=("third", "fourth"), reattach_dwell_exact=True,
+        reattach_dwell_span_s=1.0, reattach_mute_screens_complete=True,
+        reattach_centered=True)
+    correction = hinge._CenteringCorrection(total_px=0, frame=target.frame)
+    monkeypatch.setattr(
+        HingeDriver, "_still_photo_dwell_over_navigated_target",
+        lambda *_args, **_kwargs: (card_evidence, probe, correction))
+    returns = []
+    monkeypatch.setattr(
+        HingeDriver, "_return_to_entry_from_measured_position",
+        lambda *_args, **kwargs: returns.append(kwargs) or hinge._MeasuredItemAnchor(
+            frames[-1], 0))
+    banked = SimpleNamespace(dwell_exact=True, reattach_probe_ran=True)
+    evidence, anchor = drv._still_photo_dwell_candidate_walk(
+        {4: banked}, frames=frames, index=far_index, mute_screen=lambda _f, _r: True,
+        eligible_heart_ordinals={3},
+        entry_anchor=hinge._MeasuredItemAnchor(frames[-1], 0))
+    assert evidence == {4: banked, 3: card_evidence}, "fixture guard: the hop really ran"
+    return evidence, anchor, returns
+
+
+def test_sweep_folds_a_measured_probe_abandonment_into_the_anchor_it_carries_forward(
+        monkeypatch, tmp_path, installed_still_photo_bound):
+    """A probe that put strokes on the phone and then refused still moved the page by a number
+    it knows, and the sweep's re-anchoring sum is where that number has to land.
+
+    The residual travels in the probe slot in the same field and the same convention a COMPLETED
+    probe uses, so no special case is needed for the arithmetic -- but the FRAME does need one:
+    an abandonment has no second burst and therefore no `frames`, only the single frame it
+    measured its residual to. Dropping either half leaves the next hop (and the cleanup return)
+    describing a page position that is 100px wrong and getting no warning about it.
+    """
+    index, frames = _full_read_capture()
+    drv = _drv(ProbeWorldAdb(start=_FULL_READ_SCROLLS[-1]), still_photo_dwell_candidates=2)
+    drv._dbg = HingeDebugLog(str(tmp_path), run_id="sweep-probe-abandoned-measured")
+    _required, return_cap_px, _leg = drv._still_photo_dwell_walk_return_budget(index, 3)
+    abandoned = hinge._AbandonedReattachProbe(frame=b"where-the-sweep-probe-stopped",
+                                              page_shift_px=100)
+
+    _evidence, anchor, returns = _sweep_over_one_deep_card(
+        drv, index, frames, probe=abandoned, return_cap_px=return_cap_px,
+        monkeypatch=monkeypatch)
+
+    assert anchor is not None, "a position the driver can still name is not a refusal"
+    assert len(returns) == 1, "the sweep still makes exactly one measured cleanup return"
+    assert returns[0]["frame"] == b"where-the-sweep-probe-stopped", (
+        "the anchor is measured to the frame the abandonment measured its residual to, "
+        "not to the centring correction's older frame")
+    assert returns[0]["terminal_shift_px"] == -(return_cap_px + 1) + 100, (
+        "and the 100px the refused probe's strokes left on the phone is owed back with the hop")
+    records = [json.loads(line)
+               for line in (drv._dbg.dir / "actions.jsonl").read_text().splitlines()]
+    sweeps = [record for record in records
+              if record["action"] == "still_photo_dwell_progressive_sweep"]
+    assert [row["outcome"] for row in sweeps] == ["started", "returned"]
+
+
+def test_sweep_refuses_the_capture_when_a_probe_abandonment_cannot_be_measured(
+        monkeypatch, tmp_path, installed_still_photo_bound):
+    """The fail-closed half. `_REATTACH_POSITION_LOST` carries `page_shift_px=None`, which is
+    not an int, so the sweep's existing type gate refuses on it exactly as it refuses an
+    unmeasurable centring correction: no anchor, `position_unmeasured`, and the capture dies
+    before an opener is bought rather than handing `navigate_to_item` a page that is not there
+    and letting it blame the operator's finger at like time."""
+    index, frames = _full_read_capture()
+    drv = _drv(ProbeWorldAdb(start=_FULL_READ_SCROLLS[-1]), still_photo_dwell_candidates=2)
+    drv._dbg = HingeDebugLog(str(tmp_path), run_id="sweep-probe-abandoned-unmeasurable")
+    _required, return_cap_px, _leg = drv._still_photo_dwell_walk_return_budget(index, 3)
+
+    _evidence, anchor, returns = _sweep_over_one_deep_card(
+        drv, index, frames, probe=hinge._REATTACH_POSITION_LOST,
+        return_cap_px=return_cap_px, monkeypatch=monkeypatch)
+
+    assert anchor is None, "a page nobody can locate has no anchor to hand navigation"
+    assert returns == [], "and no cleanup return is attempted over a distance nobody knows"
+    records = [json.loads(line)
+               for line in (drv._dbg.dir / "actions.jsonl").read_text().splitlines()]
+    sweeps = [record for record in records
+              if record["action"] == "still_photo_dwell_progressive_sweep"]
+    assert [row["outcome"] for row in sweeps] == ["started", "position_unmeasured"]
+    assert sweeps[-1]["failed_page_heart"] == 3
+
+
 def test_deep_candidate_sweep_reanchors_each_photo_and_returns_only_once(
         monkeypatch, installed_still_photo_bound):
     """The coverage fix is a monotonic measured sweep, not three unchecked deep jumps.
@@ -5791,6 +6106,38 @@ def test_an_unmeasurable_correction_refuses_the_whole_candidate(
     assert result == (None, None, None)
 
 
+def test_a_walked_candidates_abandoned_probe_reaches_the_cleanup_but_proves_nothing(
+        tmp_path, monkeypatch, installed_still_photo_bound):
+    """The walk's own side of the 2026-09-15 fix. `_still_photo_dwell_over_navigated_target`
+    hands the abandonment forward in the probe slot -- the cleanup step is the only thing that
+    consumes it, and it is the only thing that needs to know where the probe's strokes left the
+    phone. What it must NOT do is let that abandonment look like a probe that ran: no re-attach
+    legs are folded into the card's evidence, and the forensic record still says no second burst
+    was taken."""
+    adb = ProbeWorldAdb(start=1200)
+    drv = _drv(adb)
+    drv._dbg = HingeDebugLog(str(tmp_path), run_id="walked-abandoned-probe")
+    # Centred on the band (rows 700..1700 -> centre 1200), so the card earns the probe rung with
+    # no corrective stroke in front of it.
+    target = _stub_target(_frame(1200), (700, 1700), climbed_px=300)
+    abandoned = hinge._AbandonedReattachProbe(frame=b"stopped-here", page_shift_px=88)
+    monkeypatch.setattr(HingeDriver, "_still_photo_reattach_probe",
+                        lambda self, _anchor, _rect, should_stop=None: abandoned)
+
+    dwell, probe, correction = drv._still_photo_dwell_over_navigated_target(
+        target, _STUB_BLOCK, heart_ordinal=1, mute_screen=lambda _f, _r: True)
+
+    assert probe is abandoned, "the cleanup step is owed the position it left"
+    assert correction is not None and correction.total_px == 0
+    assert dwell is not None and (dwell.dwell_exact, dwell.centered) == (True, True)
+    assert dwell.reattach_probe_ran is None, "a refusal is not a re-attach"
+    records = [json.loads(line)
+               for line in (drv._dbg.dir / "actions.jsonl").read_text().splitlines()]
+    summary = next(r for r in records if r["action"] == "still_photo_dwell")
+    assert summary["reattach_probe_ran"] is False
+    assert summary["reattach_frames"] == 0
+
+
 def test_return_to_entry_accounts_for_a_corrective_scroll(
         monkeypatch, installed_still_photo_bound):
     """`_still_photo_dwell_walk_return_to_entry` now composes THREE measured displacements: the
@@ -5824,6 +6171,59 @@ def test_return_to_entry_accounts_for_a_corrective_scroll(
     assert returned.frame == _frame(adb.scroll)
     drift_bound = scroll_step.step_px_for_frac(hinge._READ_SCROLL_FRAC_MIN, _H)
     assert abs(adb.scroll - 1200) < drift_bound
+
+
+def test_return_to_entry_owes_an_abandoned_probes_measured_residual_too(
+        monkeypatch, installed_still_photo_bound):
+    """A probe that REFUSED after moving the page owes exactly what a completed one owes
+    (2026-09-15). Its residual joins the same three-term composition and the chain starts from
+    the frame it measured that residual to -- not from `correction.frame`, which the probe's own
+    strokes have already left behind. Asserted through the composition seam rather than through a
+    device round trip, because an ignored 100px residual would still land inside the one-gesture
+    drift bound and a passing return would prove nothing about the arithmetic."""
+    drv = _drv(ProbeWorldAdb(start=1200))
+    entry_anchor = hinge._MeasuredItemAnchor(_frame(1200), 0)
+    target = _stub_target(_frame(900), (400, 1200), climbed_px=300)
+    correction = hinge._CenteringCorrection(total_px=40, frame=_frame(940))
+    abandoned = hinge._AbandonedReattachProbe(frame=b"where-the-probe-stopped",
+                                              page_shift_px=100)
+    seen = {}
+    restored = hinge._MeasuredItemAnchor(_frame(1200), 0)
+    monkeypatch.setattr(
+        HingeDriver, "_return_to_entry_from_measured_position",
+        lambda _self, anchor, *, frame, terminal_shift_px: (
+            seen.update(anchor=anchor, frame=frame, shift=terminal_shift_px) or restored))
+
+    returned = drv._still_photo_dwell_walk_return_to_entry(
+        target, abandoned, entry_anchor, correction)
+
+    assert returned is restored
+    assert seen["anchor"] is entry_anchor
+    assert seen["frame"] == b"where-the-probe-stopped", (
+        "the walk back starts where the probe's own strokes ended")
+    assert seen["shift"] == -300 + 40 + 100
+
+
+def test_return_to_entry_refuses_when_an_abandoned_probe_lost_the_page(
+        monkeypatch, installed_still_photo_bound):
+    """Fail closed on exactly the grounds `correction=None` already fails closed on: the phone
+    moved by an unknown amount, so there is no distance to walk back and no anchor to hand a
+    later navigation. The walk turns this `None` into a capture refused before an opener is
+    bought, which is where a lost page position belongs."""
+    drv = _drv(ProbeWorldAdb(start=1200))
+    entry_anchor = hinge._MeasuredItemAnchor(_frame(1200), 0)
+    target = _stub_target(_frame(900), (400, 1200), climbed_px=300)
+    correction = hinge._CenteringCorrection(total_px=0, frame=_frame(900))
+    calls = []
+    monkeypatch.setattr(
+        HingeDriver, "_return_to_entry_from_measured_position",
+        lambda *_args, **kwargs: calls.append(kwargs) or entry_anchor)
+
+    returned = drv._still_photo_dwell_walk_return_to_entry(
+        target, hinge._REATTACH_POSITION_LOST, entry_anchor, correction)
+
+    assert returned is None
+    assert calls == [], "an unknown position is never walked back from, only refused"
 
 
 # =====================================================================================
@@ -6838,6 +7238,253 @@ def test_transient_pinned_recovery_abandons_old_profile_after_second_pinned_capt
     assert adb.taps == [] and adb.texts == []
 
 
+def test_a_cold_relaunch_abandon_publishes_the_reason_the_hub_has_to_show(tmp_path):
+    """Found 2026-09-15. Every abandon after the lifecycle boundary returns `None`, and
+    `_invalidate_item_index` files its sentence in `_current_items_unavailable` -- a field that
+    only ever leaves the driver ON A RETURNED PROFILE. So the reason evaporated, `blocked_reason()`
+    re-screencapped the now perfectly healthy relaunched deck and answered `None` too, and
+    worker.py broke out of its loop with `stop_reason=None`: the Hub showed a bare "stopped",
+    minutes after the driver force-stopped the owner's dating app.
+
+    The assertion that the deck itself is healthy is what makes this test about the LATCH rather
+    than about the screen: nothing on that screen can supply the reason, so if the abandon does
+    not publish one, nothing does. Owner rule: the hub must clearly show the stop reason.
+    """
+    adb = ColdRestartWorldAdb(collapse_on_relaunch=False)
+    drv = _drv(adb)
+    drv._dbg = HingeDebugLog(str(tmp_path), run_id="cold-relaunch-abandoned")
+    assert drv._capture_current().items_unavailable == ""
+    adb.scroll = 0
+    adb._at_top = True
+    refused = drv._capture_current()
+    assert refused is not None and refused.items_unavailable
+    assert drv._blocked_reason is None, "fixture guard: nothing has latched a reason yet"
+
+    assert drv._recapture_after_transient_pinned_signal(refused) is None
+
+    assert adb.relaunched, "fixture guard: the owner's app really was stopped and restarted"
+    assert drv._deck_blocked_reason(drv._screencap()) is None, (
+        "fixture guard: the post-relaunch screen is a healthy deck, so the latch is the only "
+        "thing that can explain the stop")
+    # Exactly what worker.py asks the instant a capture comes back None, in both loops.
+    assert drv.blocked_reason() == refused.items_unavailable
+    records = [json.loads(line)
+               for line in (drv._dbg.dir / "actions.jsonl").read_text().splitlines()]
+    assert any(r["action"] == "scroll_top_signal_cold_relaunch" for r in records), (
+        "fixture guard: the attempt row this outcome row sits beside")
+    row = next(r for r in records
+               if r["action"] == "scroll_top_signal_cold_relaunch_abandoned")
+    assert row["reason"] == refused.items_unavailable
+    assert (row["raising"], row["blocked_reason_published"]) == (False, True)
+    assert adb.taps == [] and adb.texts == []
+
+
+def test_a_cold_relaunch_abandon_that_reraises_leaves_the_exception_to_speak(tmp_path):
+    """The one place the latch must stay quiet. `_blocked_reason` is a run-lifetime latch that
+    nothing clears, and a closed transport is not an operator-actionable blocked deck: publishing
+    one here would replace a real `DriverClosed` story with this one on every later loop. The
+    outcome row is still written, because the point of the row is that EVERY abandon leaves a
+    record -- including the ones that propagate."""
+    from operation_love.drivers.base import DriverClosed
+
+    adb = ColdRestartWorldAdb()
+    drv = _drv(adb)
+    drv._dbg = HingeDebugLog(str(tmp_path), run_id="cold-relaunch-abandoned-raising")
+    assert drv._capture_current().items_unavailable == ""
+    adb.scroll = 0
+    adb._at_top = True
+    refused = drv._capture_current()
+    assert refused is not None and refused.items_unavailable
+    assert drv._blocked_reason is None
+    original_shell = adb.shell
+    launcher = "monkey -p co.hinge.app -c android.intent.category.LAUNCHER 1"
+
+    def shell(command="", **kwargs):
+        if command == launcher:
+            adb.shell_calls.append(command)
+            raise DriverClosed("test launcher transport closed")
+        return original_shell(command, **kwargs)
+
+    adb.shell = shell
+
+    with pytest.raises(DriverClosed, match="transport closed"):
+        drv._recapture_after_transient_pinned_signal(refused)
+
+    assert drv._blocked_reason is None, "the exception is the report, not a blocked deck"
+    records = [json.loads(line)
+               for line in (drv._dbg.dir / "actions.jsonl").read_text().splitlines()]
+    row = next(r for r in records
+               if r["action"] == "scroll_top_signal_cold_relaunch_abandoned")
+    assert (row["raising"], row["blocked_reason_published"]) == (True, False)
+    assert "launcher transport closed" in row["reason"]
+    assert adb.taps == [] and adb.texts == []
+
+
+def test_a_cold_relaunch_abandon_names_its_stop_kind_so_the_hub_can_headline_it(tmp_path):
+    """The deck is not blocked -- the RECOVERY failed, and the hub must say which (2026-09-15).
+
+    `blocked_reason` alone made worker.py publish `stop_kind="deck_blocked"`, which headlines a
+    paywall the operator would then go to the phone and fail to find. The kind travels beside the
+    sentence, set in the same statement that latches it so the two can never describe different
+    stops, and worker.py falls back to "deck_blocked" whenever it is `None` -- which is every
+    other latch in this driver.
+    """
+    adb = ColdRestartWorldAdb(collapse_on_relaunch=False)
+    drv = _drv(adb)
+    drv._dbg = HingeDebugLog(str(tmp_path), run_id="cold-relaunch-abandoned-stop-kind")
+    assert drv._capture_current().items_unavailable == ""
+    adb.scroll = 0
+    adb._at_top = True
+    refused = drv._capture_current()
+    assert refused is not None and refused.items_unavailable
+    assert drv.blocked_stop_kind() is None, "fixture guard: nothing has named a stop yet"
+
+    assert drv._recapture_after_transient_pinned_signal(refused) is None
+
+    assert adb.relaunched, "fixture guard: the owner's app really was stopped and restarted"
+    assert drv.blocked_reason() == refused.items_unavailable
+    assert drv.blocked_stop_kind() == "cold_relaunch_recovery"
+    assert adb.taps == [] and adb.texts == []
+
+
+def test_a_cold_relaunch_abandon_writes_its_diagnostics_after_the_fail_closed_work(
+        monkeypatch, tmp_path):
+    """Diagnostics last, as everywhere else in this module.
+
+    The outcome row is best-effort file I/O wrapped in a bare `except`; the state resets and
+    `_invalidate_item_index` are the fail-closed work this helper exists to do. Writing the row
+    first inverts that ordering and puts a JSONL append in front of retiring the artifacts that
+    could otherwise be mistaken for the post-launch card.
+    """
+    adb = ColdRestartWorldAdb(collapse_on_relaunch=False)
+    drv = _drv(adb)
+    drv._dbg = HingeDebugLog(str(tmp_path), run_id="cold-relaunch-abandoned-ordering")
+    assert drv._capture_current().items_unavailable == ""
+    adb.scroll = 0
+    adb._at_top = True
+    refused = drv._capture_current()
+    assert refused is not None and refused.items_unavailable
+    order = []
+    real_invalidate = drv._invalidate_item_index
+    real_action = drv._dbg.action
+
+    def invalidate(reason, **kwargs):
+        order.append("invalidated")
+        return real_invalidate(reason, **kwargs)
+
+    def action(name, **fields):
+        if name == "scroll_top_signal_cold_relaunch_abandoned":
+            order.append("row")
+        return real_action(name, **fields)
+
+    monkeypatch.setattr(drv, "_invalidate_item_index", invalidate)
+    monkeypatch.setattr(drv._dbg, "action", action)
+
+    assert drv._recapture_after_transient_pinned_signal(refused) is None
+
+    assert "row" in order, "fixture guard: the abandon really did write its outcome row"
+    # COUNT FIRST, THEN POSITION (2026-09-15). The trailing-slice assertion below is what this
+    # test is named for, but on its own it pins nothing absolutely: a build that wrote the
+    # outcome row at the TOP as well as at the end yields ["row", "invalidated", ..., "row"],
+    # whose last two entries still read ["invalidated", "row"] -- so every one of the six
+    # cold-relaunch tests passed straight over that mutation. Writing the row before the
+    # fail-closed work is exactly the inversion this test exists to forbid, so assert the row
+    # happens ONCE and that the one occurrence is the last thing that happens.
+    assert order.count("row") == 1, order
+    assert order[-2:] == ["invalidated", "row"], order
+
+
+def test_a_cold_relaunch_abandoned_by_an_operator_stop_latches_no_blocked_deck(
+        monkeypatch, tmp_path):
+    """A clean Stop is the operator getting what they asked for, not a deck to go and unblock.
+
+    `_blocked_reason` is a run-lifetime latch nothing clears, so a Stop that published one would
+    leave a "blocked deck" sentence in the driver for the rest of the session. It is inert today
+    only because both worker loops happen to test `stop_event` before they consult
+    `blocked_reason()` -- which is luck, not a guarantee, and not something this driver should be
+    relying on. Suppression is explicit (`stopped=True`), exactly like the re-raising paths', and
+    never inferred from the wording of a reason string.
+
+    The outcome row is still written: the point of the row is that EVERY abandon leaves a record.
+    """
+    adb = ColdRestartWorldAdb(collapse_on_relaunch=False)
+    drv = _drv(adb)
+    drv._dbg = HingeDebugLog(str(tmp_path), run_id="cold-relaunch-abandoned-stopped")
+    assert drv._capture_current().items_unavailable == ""
+    adb.scroll = 0
+    adb._at_top = True
+    refused = drv._capture_current()
+    assert refused is not None and refused.items_unavailable
+    assert drv._blocked_reason is None, "fixture guard: nothing has latched a reason yet"
+    stop = []
+    real_capture = drv._capture_current
+
+    def capture_then_stop(*args, **kwargs):
+        """Stop pressed while the PROVISIONAL replacement read settles.
+
+        Past the preflight poll and past the post-relaunch cooldown, so the check this lands on
+        is the one that exists to abandon a replacement capture the operator no longer wants.
+        """
+        result = real_capture(*args, **kwargs)
+        stop.append(True)
+        return result
+
+    monkeypatch.setattr(drv, "_capture_current", capture_then_stop)
+
+    assert drv._recapture_after_transient_pinned_signal(refused, lambda: bool(stop)) is None
+
+    assert stop, "fixture guard: the provisional capture ran, so the Stop landed after it"
+    assert adb.relaunched, "fixture guard: the lifecycle boundary really was crossed"
+    assert drv._blocked_reason is None, "a stopped run leaves no blocked-deck sentence behind"
+    assert drv.blocked_reason() is None, "and nothing on the screen supplies one either"
+    assert drv.blocked_stop_kind() is None
+    records = [json.loads(line)
+               for line in (drv._dbg.dir / "actions.jsonl").read_text().splitlines()]
+    row = next(r for r in records
+               if r["action"] == "scroll_top_signal_cold_relaunch_abandoned")
+    assert "stopped after its provisional replacement capture" in row["reason"]
+    assert (row["stopped"], row["raising"], row["blocked_reason_published"]) == (
+        True, False, False)
+    assert adb.taps == [] and adb.texts == []
+
+
+def test_a_cold_relaunch_stopped_during_its_cooldown_also_latches_no_blocked_deck(tmp_path):
+    """The recovery's OTHER operator Stop, on the post-relaunch cooldown.
+
+    Same rule as the one above, pinned separately because `stopped=True` is declared per call
+    site: a suppression tested at only one of the two places it is written is one the other place
+    is free to lose. This Stop lands past the lifecycle boundary too, so the capture is still
+    abandoned and the outcome row is still written -- it simply publishes no sentence.
+    """
+    adb = ColdRestartWorldAdb(collapse_on_relaunch=False)
+    drv = _drv(adb)
+    drv._dbg = HingeDebugLog(str(tmp_path), run_id="cold-relaunch-stopped-in-cooldown")
+    assert drv._capture_current().items_unavailable == ""
+    adb.scroll = 0
+    adb._at_top = True
+    refused = drv._capture_current()
+    assert refused is not None and refused.items_unavailable
+    polls = []
+
+    def should_stop():
+        """False for the two read-only pre-lifecycle polls, True from the cooldown onward."""
+        polls.append(1)
+        return len(polls) > 2
+
+    assert drv._recapture_after_transient_pinned_signal(refused, should_stop) is None
+
+    assert adb.relaunched, "fixture guard: the Stop landed after the lifecycle boundary"
+    assert drv._blocked_reason is None, "a stopped run leaves no blocked-deck sentence behind"
+    assert drv.blocked_stop_kind() is None
+    records = [json.loads(line)
+               for line in (drv._dbg.dir / "actions.jsonl").read_text().splitlines()]
+    row = next(r for r in records
+               if r["action"] == "scroll_top_signal_cold_relaunch_abandoned")
+    assert "stopped before the replacement card could be captured" in row["reason"]
+    assert (row["stopped"], row["blocked_reason_published"]) == (True, False)
+    assert adb.taps == [] and adb.texts == []
+
+
 def test_cold_relaunch_refuses_without_positive_foreground_or_deck_evidence():
     adb = ColdRestartWorldAdb()
     drv = _drv(adb)
@@ -7319,6 +7966,11 @@ def test_a_probe_that_refuses_still_repays_the_page_it_measurably_moved(
     measured couple of hundred pixels from where `_index_captured_items` anchors navigation, and
     the branch used to return None and abandon exactly that. It surfaced later as `item_nav`
     reporting an unaccounted drift, blaming a human finger for the driver's own gesture.
+
+    Extended 2026-09-15: repaying is half the debt, REPORTING what the repayment could not
+    retire is the other half. The bounded loop stops at half a read-scroll quantum, so a refusal
+    that walked the page back still hands its caller the measured residual instead of a bare
+    None the caller can only read as "nothing moved".
     """
     index, frames = _centred_capture()
     adb = ProbeWorldAdb(start=_CENTRED_SCROLLS[-1])
@@ -7339,8 +7991,11 @@ def test_a_probe_that_refuses_still_repays_the_page_it_measurably_moved(
     shifts = iter([-stuck, stuck, -stuck])  # backward exit, forward retry, then the repayment
     monkeypatch.setattr(drv, "_measured_page_shift", lambda *_a: next(shifts, 0))
 
-    assert drv._still_photo_reattach_probe(frames[-1], rect) is None, "the probe still refuses"
+    result = drv._still_photo_reattach_probe(frames[-1], rect)
 
+    assert not isinstance(result, item_crops.ReattachProbe), "the probe still refuses"
+    assert isinstance(result, hinge._AbandonedReattachProbe)
+    assert (result.measured, result.frame, result.page_shift_px) == (True, b"frame", 0)
     # One stroke each way trying to leave, then one more UP that puts the +stuck px back. The
     # repayment converges, so the bounded loop stops after it rather than spending its budget.
     assert len(downs) == 1, downs
@@ -7868,3 +8523,138 @@ def test_a_half_delivered_gesture_escapes_the_walk_instead_of_reading_as_stillne
     for failure in mid_delivery:
         assert failure.__name__ not in source, (
             f"{failure.__name__} now appears in the walk -- re-derive this test's argument")
+
+
+
+# =========================================================================================
+# THE SEND BOUNDARY MARKER (base.DatingAppDriver.like_send_attempted)
+# -----------------------------------------------------------------------------------------
+# `like()` is not atomic and the half that matters is irreversible. `_like_comment_sheet` taps
+# Send Like and only THEN dismisses a late upsell, proves the sheet closed, and (in Training)
+# proves the deck advanced -- every one of which can raise about an opener that has already
+# gone out. worker.py answered all of those with a durable `decision="never_sent"` opener row
+# until 2026-09-15; the marker asserted here is the only thing that can tell those two facts
+# apart, because only this driver knows where it got to.
+# =========================================================================================
+
+def _plain_like_drv():
+    """A driver whose config supplies the measured send_like fraction.
+
+    The vision-located composer is the production path and needs no coordinate; this fallback
+    entry only exists for a non-AUTO caller with no located surface, which is the shape these
+    tests drive. `_tap_frac` is stubbed in every one of them, so the value is never delivered --
+    it only has to be present for the same reason production requires it: a send with no located
+    control and no measured coordinate is a fail-loud, never a guess.
+    """
+    return _drv(WorldAdb(), coords={"send_like": [0.5, 0.9]})
+
+
+def _plain_like_world(drv, monkeypatch, *, on_tap_frac=None, verify=None):
+    """Stub the comment-sheet flow down to its two device inputs and its verification.
+
+    A PLAIN like (no opener, no model item, so no payload and no crop verification) is the
+    shortest real path through `_like_comment_sheet` that still contains the Send Like tap, which
+    is the only thing these tests are about. Everything stubbed here has its own coverage
+    elsewhere in the suite; what is deliberately NOT stubbed is the ordering of the marker
+    against the tap, which is the whole subject.
+    """
+    monkeypatch.setattr(drv, "_scroll_to_top", lambda *a, **k: True)
+    monkeypatch.setattr(drv, "_locate_target_heart", lambda *a, **k: (100, 200))
+    monkeypatch.setattr(drv, "_snap", lambda *a, **k: b"pre-tap-card")
+    monkeypatch.setattr(drv, "_screencap", lambda *a, **k: b"sheet")
+    monkeypatch.setattr(drv, "_await_sheet_open", lambda *a, **k: None)
+    monkeypatch.setattr(drv, "_tap", lambda *a, **k: None)          # the heart
+    monkeypatch.setattr(drv, "_handle_rose_upsell", lambda *a, **k: False)
+    monkeypatch.setattr(drv, "_tap_frac", on_tap_frac or (lambda *a, **k: None))
+    monkeypatch.setattr(
+        drv, "_verify_like_landed",
+        verify or (lambda *a, **k: (_ for _ in ()).throw(
+            hinge.HingeActionError("like did not complete — the like composer is still open"))))
+
+
+def test_a_post_send_verification_failure_still_reports_the_send_as_attempted(monkeypatch):
+    """`_verify_like_landed` runs AFTER the Send Like tap, so its refusal is not evidence that
+    nothing was sent -- it is evidence that nothing CONFIRMED what was sent. The driver is the
+    only layer that knows the difference, and this is where it says so."""
+    drv = _plain_like_drv()
+    _plain_like_world(drv, monkeypatch)
+
+    assert drv.like_send_attempted() is False, "fixture guard: nothing sent before the attempt"
+    with pytest.raises(hinge.HingeActionError):
+        drv.like()
+
+    assert drv.like_send_attempted() is True
+    # MUTATION CHECK: delete `self._like_send_attempted = True` above the Send Like tap -- re-run:
+    # all four tests in this section fail, and so does every worker-side send_unverified test.
+    # Verified by hand, restored exactly.
+
+
+def test_a_send_that_raises_in_the_tap_itself_is_still_reported_as_attempted(monkeypatch):
+    """THE MARKER GOES UP BEFORE THE TAP, NOT AFTER IT, and this is the test that forces that.
+
+    A transport fault raised BY the Send Like input is the one case where nobody can know whether
+    the touch reached the app -- which is precisely why it must not be recorded as a draft that
+    never left the machine. Setting the marker after a successful tap would read False here and
+    every post-send verification test above would still pass, so this is the direction that pins
+    the ordering rather than merely the existence of the marker.
+    """
+    def _exploding_send(*_a, **_k):
+        raise hinge.AdbError(["input", "motionevent"],
+                             "the Send Like touch could not be delivered")
+
+    drv = _plain_like_drv()
+    _plain_like_world(drv, monkeypatch, on_tap_frac=_exploding_send)
+
+    with pytest.raises(hinge.AdbError):
+        drv.like()
+
+    assert drv.like_send_attempted() is True
+    # MUTATION CHECK: move `self._like_send_attempted = True` to just AFTER the two tap branches
+    # -- re-run: ONLY this test fails; the post-send verification test above still passes, which
+    # is exactly why the ordering needs its own test. Verified by hand, restored exactly.
+
+
+def test_a_refusal_before_the_send_reports_no_attempt_and_clears_the_previous_one(monkeypatch):
+    """Both halves of the scope rule in one run, because a marker that is only ever set is a
+    marker that lies about the next profile.
+
+    A refusal raised before the tap must report False -- and it must report False even when the
+    PREVIOUS attempt on this same driver sent something, which is exactly what a run does: the
+    deck advances, the next card is read, and its like attempt begins with the last one's marker
+    still standing until this method clears it.
+    """
+    drv = _plain_like_drv()
+    _plain_like_world(drv, monkeypatch)
+    with pytest.raises(hinge.HingeActionError):
+        drv.like()
+    assert drv.like_send_attempted() is True, "fixture guard: the first attempt did send"
+
+    def _never_reached(*_a, **_k):
+        raise AssertionError("the flow must not get as far as the Send Like tap")
+
+    monkeypatch.setattr(drv, "_tap_frac", _never_reached)
+    monkeypatch.setattr(
+        drv, "_locate_target_heart",
+        lambda *a, **k: (_ for _ in ()).throw(hinge.HingeTargetingError(
+            "the chosen item could not be reached; nothing was tapped and the like is NOT sent",
+            stage="navigate", intended=1, index_space="model_items")))
+
+    with pytest.raises(hinge.HingeTargetingError):
+        drv.like()
+
+    assert drv.like_send_attempted() is False
+    # MUTATION CHECK: delete `self._like_send_attempted = False` from the top of
+    # `_like_comment_sheet` -- re-run: ONLY this test fails (the marker survives from the first
+    # attempt and describes the second), which is the stale-attempt bug the reset prevents.
+    # Verified by hand, restored exactly.
+
+
+def test_a_completed_like_reports_the_send_it_actually_made(monkeypatch):
+    """The positive control. A like that verifies cleanly has obviously crossed the boundary
+    too, so a marker that only ever reads True on failures would be describing the handler
+    rather than the phone."""
+    drv = _plain_like_drv()
+    _plain_like_world(drv, monkeypatch, verify=lambda *a, **k: None)
+
+    assert drv.like() is None
+    assert drv.like_send_attempted() is True

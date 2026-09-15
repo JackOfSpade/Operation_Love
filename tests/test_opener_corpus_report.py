@@ -504,6 +504,107 @@ def test_sort_decision_keys_orders_sent_then_not_sent_then_unknown_then_all():
         m.DECISION_SENT, m.DECISION_NOT_SENT, m.DECISION_UNKNOWN, "ALL"]
 
 
+# =========================================================================================
+# THE send_unverified BUCKET (OpenerService.DECISION_SEND_UNVERIFIED)
+# -----------------------------------------------------------------------------------------
+# A DATA-INTEGRITY FIX, not a measurement one. `driver.like()` is not atomic: HingeDriver types
+# the opener, taps Send Like, and only THEN verifies -- so a post-send verification failure used
+# to be recorded as `decision="never_sent"`, filing an opener that physically went out as a
+# draft that never reached anyone. worker.py now writes "send_unverified" for exactly that
+# window, and this tool has to learn the value or the corpus keeps under-counting real sends,
+# just under a different name. The bucket is its own, next to "sent": every OTHER non-"like"
+# decision means the draft stayed on this side of the wire, and this one means the opposite.
+# =========================================================================================
+
+def test_decision_bucket_classifies_send_unverified_as_its_own_bucket():
+    # THE BUG THIS PINS: left to decision_bucket()'s catch-all, a send_unverified row comes back
+    # DECISION_NOT_SENT -- sitting indistinguishably beside a real "dislike", which is the exact
+    # under-count of real sends the worker-side fix exists to stop.
+    assert m.decision_bucket(m.DECISION_SEND_UNVERIFIED) == m.DECISION_SEND_UNVERIFIED
+    assert m.decision_bucket(m.DECISION_SEND_UNVERIFIED) != m.DECISION_NOT_SENT
+    # ...and not "sent" either: nothing ever verified that this one landed.
+    assert m.decision_bucket(m.DECISION_SEND_UNVERIFIED) != m.DECISION_SENT
+    assert m.decision_bucket(m.DECISION_SEND_UNVERIFIED) != m.DECISION_REPLAY
+    assert m.decision_bucket(m.DECISION_SEND_UNVERIFIED) != m.DECISION_UNKNOWN
+    # MUTATION CHECK: delete the `if decision == DECISION_SEND_UNVERIFIED` branch inside
+    # decision_bucket() -- re-run: it comes back "not_sent" and both the equality and the
+    # not_sent inequality fail. Verified by hand, then restored exactly.
+
+
+def test_the_report_and_the_writer_agree_on_the_send_unverified_marker():
+    """One vocabulary, one place. The bucket name is the raw marker itself (the replay bucket's
+    own precedent), and the marker is IMPORTED from the module that writes it rather than
+    re-typed here -- this project has already been bitten by one rule spelled twice in two
+    places that then disagreed."""
+    from operation_love.opener.service import DECISION_SEND_UNVERIFIED
+
+    assert m.DECISION_SEND_UNVERIFIED is DECISION_SEND_UNVERIFIED
+    # Distinct from every other value in the vocabulary, so no bucket can swallow another.
+    assert len({DECISION_SEND_UNVERIFIED, m.DECISION_VALUE_SENT, m.DECISION_REPLAY,
+                "dislike", "never_sent", ""}) == 6
+
+
+def test_build_decision_metrics_never_pools_send_unverified_into_not_sent():
+    rows = [
+        m.OpenerRow(text="sent one.", source="sqlite", era="era-a", decision="like"),
+        m.OpenerRow(text="rejected one.", source="sqlite", era="era-a", decision="dislike"),
+        m.OpenerRow(text="abandoned one.", source="sqlite", era="era-a", decision="never_sent"),
+        m.OpenerRow(text="unconfirmed one.", source="sqlite", era="era-a",
+                    decision=m.DECISION_SEND_UNVERIFIED),
+    ]
+    grouped = m.build_decision_metrics(rows)
+    assert set(grouped) == {m.DECISION_SENT, m.DECISION_NOT_SENT, m.DECISION_SEND_UNVERIFIED,
+                            "ALL"}
+    assert grouped[m.DECISION_SENT].n == 1
+    # THE BUG THIS PINS: not_sent holds ONLY the two drafts that really never left the machine.
+    assert grouped[m.DECISION_NOT_SENT].n == 2
+    assert grouped[m.DECISION_SEND_UNVERIFIED].n == 1
+    assert grouped["ALL"].n == 4
+    # MUTATION CHECK: drop the DECISION_SEND_UNVERIFIED branch from decision_bucket() -- re-run:
+    # not_sent becomes 3, the send_unverified bucket vanishes from `grouped` entirely and the
+    # `set(grouped) ==` assertion fails. Verified by hand, then restored exactly.
+
+
+def test_sort_decision_keys_places_send_unverified_directly_after_sent():
+    """Printed next to "sent" on purpose: both buckets describe openers that reached the device,
+    and the whole point of the value is that a reader must not have to know the vocabulary to
+    see that it is not one of the drafts nobody sent."""
+    keys = {"ALL", m.DECISION_UNKNOWN, m.DECISION_NOT_SENT, m.DECISION_SENT, m.DECISION_REPLAY,
+            m.DECISION_SEND_UNVERIFIED}
+    assert m.sort_decision_keys(keys) == [
+        m.DECISION_SENT, m.DECISION_SEND_UNVERIFIED, m.DECISION_NOT_SENT, m.DECISION_REPLAY,
+        m.DECISION_UNKNOWN, "ALL"]
+    # MUTATION CHECK: remove DECISION_SEND_UNVERIFIED from _DECISION_BUCKET_ORDER -- re-run: the
+    # returned list drops it entirely (sort_decision_keys only emits buckets in its own order
+    # tuple), so the equality fails. Verified by hand, restored.
+
+
+def test_a_send_unverified_row_reaches_its_own_bucket_end_to_end_through_main(tmp_path, capsys):
+    """Through a REAL store and main(), not just the pure classifier: the row has to survive
+    read_sqlite_openers' own decision normalization to get anywhere near a bucket."""
+    db_path = tmp_path / "store.db"
+    store = SQLiteStore(db_path)
+    try:
+        store.record_opener("run1", "hinge", "gemini-x", "Sent one.", "the view",
+                            prompt_sha256="era-a", decision="like")
+        store.record_opener("run1", "hinge", "gemini-x", "Never left one.", "the dog",
+                            prompt_sha256="era-a", decision="never_sent")
+        store.record_opener("run1", "hinge", "gemini-x", "Went out unconfirmed.", "the ridge",
+                            prompt_sha256="era-a", decision="send_unverified")
+    finally:
+        store.close()
+
+    code = m.main(["--debug-dir", str(tmp_path / "no_such_debug_dir"), "--db", str(db_path),
+                   "--json"])
+    doc = json.loads(capsys.readouterr().out)
+
+    assert code == 0
+    assert set(doc["by_decision"]) == {"sent", "not_sent", "send_unverified", "ALL"}
+    assert doc["by_decision"]["send_unverified"]["n"] == 1
+    assert doc["by_decision"]["not_sent"]["n"] == 1
+    assert doc["by_decision"]["ALL"]["n"] == 3
+
+
 def _build_decision_corpus(tmp_path):
     """One sent and one never-sent row, same era, no jsonl -- the minimal fixture for
     exercising the decision breakdown end to end through main()."""
@@ -622,7 +723,8 @@ def test_read_bigquery_openers_reads_both_tables_with_a_fake_client():
     client = _FakeBQClient({
         "openers": [{"opener": "BQ draft one.", "prompt_sha256": "era-a", "decision": "like"},
                    {"opener": "BQ draft two.", "prompt_sha256": None, "decision": None}],
-        "opener_rejections": [{"reason_code": "scaffolding", "prompt_sha256": "era-a"}],
+        "opener_rejections": [{"reason_code": "scaffolding", "prompt_sha256": "era-a",
+                              "run_id": "hinge-run-1"}],
     })
 
     rows, rejections, stats = m.read_bigquery_openers("proj-1", "operation_love", client=client)
@@ -1355,8 +1457,11 @@ def test_read_sqlite_opener_outcomes_joins_by_app_and_profile_key(tmp_path):
     db_path = tmp_path / "store.db"
     store = SQLiteStore(db_path)
     try:
+        # decision='like' -- the only value that has ever meant the opener reached the device,
+        # and now a precondition for owning an outcome at all (see the sent-only filter,
+        # mirroring Store.joined_opener_outcomes).
         store.record_opener("run1", "hinge", "gemini-x", "Opener one.", "the view",
-                            prompt_sha256="era-a", profile_key="pk1")
+                            prompt_sha256="era-a", profile_key="pk1", decision="like")
         store.record_opener_outcome("hinge", "pk1", "reply")
     finally:
         store.close()
@@ -1366,6 +1471,7 @@ def test_read_sqlite_opener_outcomes_joins_by_app_and_profile_key(tmp_path):
     assert stats.available is True
     assert stats.joined_row_count == 1
     assert stats.replay_excluded_count == 0
+    assert stats.not_sent_excluded_count == 0
     assert rows == [m.OutcomeRow(era="era-a", outcome="reply", read_source="sqlite")]
 
 
@@ -1986,15 +2092,16 @@ def test_caveats_state_a_replayed_era_is_generated_not_live():
 
 def test_caveat_four_still_intact_after_the_replay_caveat_too():
     # The pre-existing caveat-4 tests re-check index 3 after caveats 5-8 were appended; this
-    # re-checks it once more now that a NINTH caveat has been appended, confirming the new one
-    # was appended (never inserted earlier) so every existing index -- caveat 4 included --
-    # stays stable.
+    # re-checks it once more now that further caveats have been appended, confirming each new
+    # one was appended (never inserted earlier) so every existing index -- caveat 4 included --
+    # stays stable. The count moved 9 -> 10 when the OPENER REJECTIONS live/synthetic split
+    # added its own caveat, which is itself the evidence that it went on the END.
     assert "PARTIAL" in m._CAVEATS[3]
-    assert len(m._CAVEATS) == 9
+    assert len(m._CAVEATS) == 10
     # MUTATION CHECK: delete the new caveat tuple entry from _CAVEATS -- re-run:
     # test_caveats_state_a_replayed_era_is_generated_not_live above fails with StopIteration
-    # (next() finds nothing containing "GENERATED"), and this test's `len(...) == 9` assertion
-    # fails too (back to 8). Verified by hand, restored exactly.
+    # (next() finds nothing containing "GENERATED"), and this test's `len(...) == 10` assertion
+    # fails too. Verified by hand, restored exactly.
 
 
 # ---------------------------------------------------------------------------------------
@@ -2720,3 +2827,538 @@ def test_pre_registered_check_to_dict_carries_provenance():
     doc = check.to_dict()
     assert doc["replay_drafts"] == 5
     assert doc["verdict_basis"] == "mixed"
+
+
+# =========================================================================================
+# MEASUREMENT-HONESTY FIX 2: the OPENER REJECTIONS live/synthetic split.
+#
+# THE BUG THESE PIN: tools/opener_replay.py --live writes a real `opener_rejections` row for
+# every draft the guards refuse during an OFFLINE replay. Unlike `openers`, that table has no
+# `decision` column for DECISION_REPLAY to live in, so those synthetic rows arrived here
+# UNTAGGED and were counted straight into the per-era OPENER REJECTIONS totals -- the exact
+# numbers a "is this guard too strict?" argument gets made from -- with no live/synthetic split
+# and no caveat, while every openers-side metric in this module already split. A nullable
+# `source` column on both store backends was considered and deliberately rejected (the
+# opener_rejections WRITE path is an open production investigation), so the split is inferred
+# from the run_id prefix opener_replay.py stamps on every row it writes.
+#
+# The cross-module half of this -- that the prefix this module spells is the prefix
+# opener_replay.py ACTUALLY writes -- is pinned in tests/test_opener_replay.py by
+# test_report_recognizes_a_run_id_this_tool_actually_writes, which drives a real --live replay
+# and reads the row back through this module. See REPLAY_RUN_ID_PREFIX for why the two copies
+# cannot be a single imported constant.
+# =========================================================================================
+
+_REPLAY_RUN = f"{m.REPLAY_RUN_ID_PREFIX}1789000000_ab12cd34"
+_LIVE_RUN = "hinge-2026-09-15-live"
+
+
+# ---------------------------------------------------------------------------------------
+# is_replay_run_id() -- the ONE predicate
+# ---------------------------------------------------------------------------------------
+
+def test_is_replay_run_id_recognizes_the_prefix_and_nothing_else():
+    assert m.is_replay_run_id(_REPLAY_RUN) is True
+    assert m.is_replay_run_id(_LIVE_RUN) is False
+    # A run_id that merely CONTAINS the prefix somewhere is not replay-produced: the marker is a
+    # prefix, and a looser containment test would be a second, wider allow-list for the same
+    # concept -- the failure mode this project has already been bitten by.
+    assert m.is_replay_run_id(f"live-{m.REPLAY_RUN_ID_PREFIX}notreally") is False
+
+
+def test_is_replay_run_id_never_guesses_on_a_missing_run_id():
+    # NULL/empty run_id is NOT replay: a row with no run_id at all must never be attributed to
+    # opener_replay.py on a guess. The printed caveat already tells the reader the live half is
+    # an upper bound, which is the honest way to carry this residual.
+    assert m.is_replay_run_id(None) is False
+    assert m.is_replay_run_id("") is False
+
+
+# ---------------------------------------------------------------------------------------
+# read_sqlite_openers / read_bigquery_openers -- tagging rejection rows at read time
+# ---------------------------------------------------------------------------------------
+
+def _store_with_rejections(db_path):
+    store = SQLiteStore(db_path)
+    try:
+        store.record_opener_rejection(_LIVE_RUN, "hinge", "gemini-x", 1, "scaffolding",
+                                      "reason text", "raw", prompt_sha256="era-a")
+        store.record_opener_rejection(_REPLAY_RUN, "hinge", "gemini-x", 1, "scaffolding",
+                                      "reason text", "raw", prompt_sha256="era-a")
+        store.record_opener_rejection(_REPLAY_RUN, "hinge", "gemini-x", 1, "too_many_sentences",
+                                      "reason text", "raw", prompt_sha256="era-a")
+    finally:
+        store.close()
+
+
+def test_read_sqlite_openers_marks_replay_produced_rejections(tmp_path):
+    db_path = tmp_path / "store.db"
+    _store_with_rejections(db_path)
+
+    _rows, rejections, stats = m.read_sqlite_openers(db_path)
+
+    assert stats.rejections_row_count == 3
+    assert stats.rejections_replay_row_count == 2
+    assert sorted(r.replay for r in rejections) == [False, True, True]
+    # MUTATION CHECK: drop `run_id` from the SELECT and hardcode `replay=False` in
+    # read_sqlite_openers()'s rejection loop -- re-run: rejections_replay_row_count comes back 0
+    # and the sorted list is [False, False, False], so both assertions fail. Verified by hand,
+    # restored exactly.
+
+
+def test_read_sqlite_openers_reports_a_note_when_run_id_is_missing_entirely(tmp_path):
+    # A hand-rolled table with no run_id column at all: the split cannot be computed, and that
+    # must be a PRINTED note rather than a silent "all live" -- the same degradation rule the
+    # prompt_sha256 branch right above it follows.
+    db_path = tmp_path / "old.db"
+    con = sqlite3.connect(db_path)
+    con.execute("CREATE TABLE openers (opener TEXT)")
+    con.execute("CREATE TABLE opener_rejections (reason_code TEXT, prompt_sha256 TEXT)")
+    con.execute("INSERT INTO opener_rejections VALUES ('scaffolding', 'era-a')")
+    con.commit()
+    con.close()
+
+    _rows, rejections, stats = m.read_sqlite_openers(db_path)
+
+    assert stats.rejections_row_count == 1
+    assert stats.rejections_replay_row_count == 0
+    assert rejections[0].replay is False
+    assert any("no run_id column" in note for note in stats.notes)
+
+
+def test_read_bigquery_openers_marks_replay_produced_rejections():
+    client = _FakeBQClient({
+        "openers": [{"opener": "BQ draft.", "prompt_sha256": "era-a", "decision": "like"}],
+        "opener_rejections": [
+            {"reason_code": "scaffolding", "prompt_sha256": "era-a", "run_id": _LIVE_RUN},
+            {"reason_code": "scaffolding", "prompt_sha256": "era-a", "run_id": _REPLAY_RUN},
+        ],
+    })
+
+    _rows, rejections, stats = m.read_bigquery_openers("proj-1", "operation_love", client=client)
+
+    assert stats.rejections_row_count == 2
+    assert stats.rejections_replay_row_count == 1
+    assert [r.replay for r in rejections] == [False, True]
+
+
+# ---------------------------------------------------------------------------------------
+# replay_rejections_by_era() -- the SUBSET, computed through the same grouping
+# ---------------------------------------------------------------------------------------
+
+def _mixed_rejection_rows():
+    return [
+        m.RejectionRow(reason_code="scaffolding", source="sqlite", era="era-a", replay=False),
+        m.RejectionRow(reason_code="scaffolding", source="sqlite", era="era-a", replay=True),
+        m.RejectionRow(reason_code="too_many_sentences", source="sqlite", era="era-a",
+                       replay=True),
+        m.RejectionRow(reason_code="scaffolding", source="sqlite", era="era-b", replay=False),
+    ]
+
+
+def test_rejections_by_era_still_counts_every_row_live_and_replay_alike():
+    # NOT an exclusion: a replay-produced rejection is a real measurement of that guard under
+    # that era, and diffing exactly that across eras is opener_replay.py's reason for existing.
+    by_era = m.rejections_by_era(_mixed_rejection_rows())
+    assert by_era["era-a"] == Counter({"scaffolding": 2, "too_many_sentences": 1})
+    assert by_era["era-b"] == Counter({"scaffolding": 1})
+
+
+def test_replay_rejections_by_era_is_the_synthetic_subset_only():
+    replay = m.replay_rejections_by_era(_mixed_rejection_rows())
+    assert replay["era-a"] == Counter({"scaffolding": 1, "too_many_sentences": 1})
+    # era-b's only rejection is live, so it has no synthetic entry at all -- live is derived by
+    # subtraction, never by a third independently-computed number.
+    assert "era-b" not in replay
+
+
+# ---------------------------------------------------------------------------------------
+# format_rejections() -- the split must be IN THE OUTPUT
+# ---------------------------------------------------------------------------------------
+
+def test_format_rejections_states_the_live_synthetic_split_on_every_line(tmp_path):
+    rows = _mixed_rejection_rows()
+    text = m.format_rejections(m.rejections_by_era(rows),
+                               replay=m.replay_rejections_by_era(rows))
+
+    # Grand total, per era, and per reason code -- a reader must not have to compute any of them.
+    assert "4 row(s) total: 2 live, 2 synthetic replay" in text
+    assert "era era-a" in text and "(3 total: 1 live, 2 synthetic replay)" in text
+    assert "scaffolding: 2 (1 live, 1 synthetic replay)" in text
+    assert "too_many_sentences: 1 (0 live, 1 synthetic replay)" in text
+    # MUTATION CHECK: revert format_rejections() to its previous
+    # f"    {reason_code}: {count}" line and bare era header -- re-run: every assertion above
+    # except "era era-a" fails, because the output states only the inflated totals. Verified by
+    # hand, restored exactly.
+
+
+def test_format_rejections_says_zero_synthetic_out_loud_for_a_fully_live_era():
+    # The split is printed even when nothing is synthetic. A reader who has to NOTICE AN ABSENT
+    # annotation to avoid a wrong conclusion will eventually fail to notice it.
+    rows = [m.RejectionRow(reason_code="scaffolding", source="sqlite", era="era-a")]
+    text = m.format_rejections(m.rejections_by_era(rows),
+                               replay=m.replay_rejections_by_era(rows))
+    assert "1 row(s) total: 1 live, 0 synthetic replay" in text
+    assert "scaffolding: 1 (1 live, 0 synthetic replay)" in text
+    assert "SYNTHETIC:" not in text  # no wholly/partial marker when nothing is synthetic
+
+
+def test_format_rejections_marks_a_wholly_synthetic_era():
+    rows = [m.RejectionRow(reason_code="scaffolding", source="sqlite", era="era-a", replay=True)]
+    text = m.format_rejections(m.rejections_by_era(rows),
+                               replay=m.replay_rejections_by_era(rows))
+    assert "WHOLLY SYNTHETIC" in text
+
+
+def test_format_rejections_marks_a_partially_synthetic_era():
+    text = m.format_rejections(m.rejections_by_era(_mixed_rejection_rows()),
+                               replay=m.replay_rejections_by_era(_mixed_rejection_rows()))
+    assert "PARTIALLY SYNTHETIC: 2/3" in text
+
+
+def test_format_rejections_without_a_replay_argument_claims_only_what_it_knows():
+    # The optional argument keeps an existing two-argument call working; with no replay map it
+    # must report everything as live rather than inventing a split.
+    text = m.format_rejections({"era-a": Counter({"scaffolding": 2})})
+    assert "2 row(s) total: 2 live, 0 synthetic replay" in text
+
+
+# (the pre-existing era-label behaviour is pinned by
+# test_format_rejections_appends_the_registry_label above, which still passes against the new
+# header shape -- the label is appended to the era line the split annotates.)
+
+
+# ---------------------------------------------------------------------------------------
+# build_report()/main() -- the split is carried through JSON and printed end to end
+# ---------------------------------------------------------------------------------------
+
+def test_build_report_carries_the_rejection_split_through_json():
+    source_report = m.SourceReport(m.JsonlStats(), 0, m.SqliteStats(), 0, m.BigQueryStats(), 0, 0)
+    doc = m.build_report([], _mixed_rejection_rows(), source_report)
+    assert doc["rejections_by_era"]["era-a"] == {"scaffolding": 2, "too_many_sentences": 1}
+    assert doc["rejections_by_era_replay"]["era-a"] == {"scaffolding": 1,
+                                                        "too_many_sentences": 1}
+    assert doc["rejections_synthetic_status"]["era-a"] == m.SYNTHETIC_PARTIAL
+    assert doc["rejections_synthetic_status"]["era-b"] == m.SYNTHETIC_NONE
+
+
+def test_main_text_mode_prints_the_rejection_split_from_a_real_store(tmp_path, capsys):
+    db_path = tmp_path / "store.db"
+    _store_with_rejections(db_path)
+
+    code = m.main(["--debug-dir", str(tmp_path / "no_such_debug_dir"), "--db", str(db_path)])
+    out = capsys.readouterr().out
+
+    assert code == 0
+    assert "3 row(s) total: 1 live, 2 synthetic replay" in out
+    # SOURCES must say it too, next to the openers-side synthetic count it already reported.
+    assert "3 opener_rejections row(s) (2 synthetic-replay row(s) included" in out
+    # And the caveat block must carry the warning, not just the numbers.
+    assert any("argued from the live half" in c for c in m._CAVEATS)
+
+
+def test_main_json_mode_carries_the_rejection_split_from_a_real_store(tmp_path, capsys):
+    db_path = tmp_path / "store.db"
+    _store_with_rejections(db_path)
+
+    code = m.main(["--debug-dir", str(tmp_path / "no_such_debug_dir"), "--db", str(db_path),
+                  "--json"])
+    doc = json.loads(capsys.readouterr().out)
+
+    assert code == 0
+    assert doc["rejections_by_era"]["era-a"] == {"scaffolding": 2, "too_many_sentences": 1}
+    assert doc["rejections_by_era_replay"]["era-a"] == {"scaffolding": 1,
+                                                        "too_many_sentences": 1}
+    assert doc["sources"]["sqlite"]["rejections_replay_row_count"] == 2
+
+
+def test_caveats_state_the_rejection_split_and_its_residual():
+    caveat = next(c for c in m._CAVEATS if "OPENER REJECTIONS counts are split" in c)
+    assert "run_id" in caveat
+    assert "NOT excluded" in caveat
+    # The honest residual: anything not carrying the prefix counts as live.
+    assert "counts as live" in caveat
+
+
+# =========================================================================================
+# OUTCOMES: the sent-only filter, mirroring Store.joined_opener_outcomes' own
+# `AND o.decision = 'like'`. An outcome observed on a profile whose opener was never sent was
+# earned by something else -- most obviously by whichever opener actually WAS sent to that
+# person, whose own row would otherwise be double-counted alongside it.
+# =========================================================================================
+
+def test_read_sqlite_opener_outcomes_excludes_a_never_sent_opener(tmp_path):
+    db_path = tmp_path / "store.db"
+    store = SQLiteStore(db_path)
+    try:
+        store.record_opener("run1", "hinge", "gemini-x", "Discarded draft.", "the view",
+                            prompt_sha256="era-a", profile_key="pk1", decision="dislike")
+        store.record_opener_outcome("hinge", "pk1", "match")
+    finally:
+        store.close()
+
+    rows, stats = m.read_sqlite_opener_outcomes(db_path)
+
+    assert rows == []
+    assert stats.joined_row_count == 0
+    assert stats.not_sent_excluded_count == 1
+    assert stats.replay_excluded_count == 0   # a 'dislike' is never-sent, not replay
+    # MUTATION CHECK: delete the `if has_decision and decision != DECISION_VALUE_SENT` branch --
+    # re-run: rows == [OutcomeRow(era="era-a", outcome="match", read_source="sqlite")] and
+    # joined_row_count == 1, so a match earned by some OTHER opener is credited to a draft that
+    # was thrown away. Verified by hand, restored exactly.
+
+
+def test_read_sqlite_opener_outcomes_excludes_a_legacy_undecided_opener(tmp_path):
+    # NULL decision predates decision tracking and is never assumed sent (BE HONEST caveat 4),
+    # so it cannot own an outcome either.
+    db_path = tmp_path / "store.db"
+    store = SQLiteStore(db_path)
+    try:
+        store.record_opener("run1", "hinge", "gemini-x", "Legacy draft.", "the view",
+                            prompt_sha256="era-a", profile_key="pk1")
+        store.record_opener_outcome("hinge", "pk1", "reply")
+    finally:
+        store.close()
+
+    rows, stats = m.read_sqlite_opener_outcomes(db_path)
+
+    assert rows == []
+    assert stats.not_sent_excluded_count == 1
+
+
+def test_read_sqlite_opener_outcomes_counts_a_replay_row_as_replay_not_never_sent(tmp_path):
+    # Ordering matters: DECISION_REPLAY is checked FIRST, so a replay row keeps reporting its own
+    # named reason instead of disappearing into the broader never-sent count.
+    db_path = tmp_path / "store.db"
+    store = SQLiteStore(db_path)
+    try:
+        store.record_opener("replay_run", "hinge", "gemini-x", "Replay draft.", "the view",
+                            prompt_sha256="era-a", profile_key="pk-replay",
+                            decision=m.DECISION_REPLAY)
+        store.record_opener_outcome("hinge", "pk-replay", "reply")
+    finally:
+        store.close()
+
+    _rows, stats = m.read_sqlite_opener_outcomes(db_path)
+
+    assert stats.replay_excluded_count == 1
+    assert stats.not_sent_excluded_count == 0
+
+
+def test_read_sqlite_opener_outcomes_keeps_counting_when_there_is_no_decision_column(tmp_path):
+    # THE LEGACY-SCHEMA BRANCH: filtering on a column that does not exist would silently zero
+    # this whole axis. The filter is skipped and the reason is PRINTED instead -- the numbers
+    # stay as honest as the schema allows and say exactly how far that is.
+    db_path = tmp_path / "old.db"
+    con = sqlite3.connect(db_path)
+    con.execute("CREATE TABLE openers (app TEXT, profile_key TEXT, prompt_sha256 TEXT)")
+    con.execute("CREATE TABLE opener_outcomes (app TEXT, profile_key TEXT, outcome TEXT)")
+    con.execute("INSERT INTO openers VALUES ('hinge', 'pk1', 'era-a')")
+    con.execute("INSERT INTO opener_outcomes VALUES ('hinge', 'pk1', 'reply')")
+    con.commit()
+    con.close()
+
+    rows, stats = m.read_sqlite_opener_outcomes(db_path)
+
+    assert rows == [m.OutcomeRow(era="era-a", outcome="reply", read_source="sqlite")]
+    assert stats.joined_row_count == 1
+    assert stats.not_sent_excluded_count == 0
+    assert any("neither the sent-only filter" in note for note in stats.notes)
+
+
+def test_read_sqlite_opener_outcomes_keeps_counting_when_there_is_no_prompt_sha256_column(
+        tmp_path):
+    # The SAME latent crash the branch above exposed, on the other optional column: the query
+    # used to build `o.` + a column name that could be the literal "NULL", so a legacy schema
+    # raised sqlite3.OperationalError out of a function whose whole contract is to report a
+    # missing column as a NOTE. Both selects now carry their own table qualifier.
+    db_path = tmp_path / "old.db"
+    con = sqlite3.connect(db_path)
+    con.execute("CREATE TABLE openers (app TEXT, profile_key TEXT, decision TEXT)")
+    con.execute("CREATE TABLE opener_outcomes (app TEXT, profile_key TEXT, outcome TEXT)")
+    con.execute("INSERT INTO openers VALUES ('hinge', 'pk1', 'like')")
+    con.execute("INSERT INTO opener_outcomes VALUES ('hinge', 'pk1', 'reply')")
+    con.commit()
+    con.close()
+
+    rows, stats = m.read_sqlite_opener_outcomes(db_path)
+
+    assert rows == [m.OutcomeRow(era=None, outcome="reply", read_source="sqlite")]
+    assert any("predates the prompt_sha256 column" in note for note in stats.notes)
+    # MUTATION CHECK: put the old `f"SELECT o.{era_expr}, ..."` spelling back (with era_expr the
+    # bare "NULL") -- re-run: this test and the no-decision-column one above both fail with
+    # sqlite3.OperationalError: near "NULL": syntax error. Verified by hand, restored exactly.
+
+
+def test_read_bigquery_opener_outcomes_excludes_a_never_sent_opener():
+    client = _FakeBQOutcomesClient(rows=[
+        {"prompt_sha256": "era-a", "outcome": "match", "decision": "never_sent"},
+        {"prompt_sha256": "era-a", "outcome": "reply", "decision": "like"},
+    ])
+
+    rows, stats = m.read_bigquery_opener_outcomes("proj-1", "operation_love", client=client)
+
+    assert rows == [m.OutcomeRow(era="era-a", outcome="reply", read_source="bigquery")]
+    assert stats.joined_row_count == 1
+    assert stats.not_sent_excluded_count == 1
+    assert stats.replay_excluded_count == 0
+
+
+def test_main_reports_the_never_sent_exclusion_in_sources(tmp_path, capsys):
+    db_path = tmp_path / "store.db"
+    store = SQLiteStore(db_path)
+    try:
+        store.record_opener("run1", "hinge", "gemini-x", "Sent one.", "the view",
+                            prompt_sha256="era-a", profile_key="pk1", decision="like")
+        store.record_opener_outcome("hinge", "pk1", "reply")
+        store.record_opener("run1", "hinge", "gemini-x", "Discarded one.", "the trail",
+                            prompt_sha256="era-a", profile_key="pk2", decision="never_sent")
+        store.record_opener_outcome("hinge", "pk2", "match")
+    finally:
+        store.close()
+
+    code = m.main(["--debug-dir", str(tmp_path / "no_such_debug_dir"), "--db", str(db_path),
+                  "--json"])
+    doc = json.loads(capsys.readouterr().out)
+
+    assert code == 0
+    assert doc["sources"]["outcomes"]["sqlite"]["joined_row_count"] == 1
+    assert doc["sources"]["outcomes"]["sqlite"]["not_sent_excluded_count"] == 1
+    # The never-sent 'match' must not appear anywhere in the outcome counts.
+    assert doc["by_outcome"]["era-a"]["counts"] == {"reply": 1}
+
+
+# =========================================================================================
+# THE CROSS-MODULE PIN for the sent-only rule. "An opener that actually reached the device
+# carries decision == 'like'" is written down in FOUR independent places today:
+# SQLiteStore.joined_opener_outcomes' `AND o.decision = 'like'`,
+# BigQueryStore.joined_opener_outcomes' own copy of that clause, this tool's
+# DECISION_VALUE_SENT, and tools/opener_outcome_recorder.py's DECISION_SENT. Both tools'
+# docstrings say they MIRROR the store's predicate -- but a docstring is a claim, not a pin,
+# and two independently-spelled copies of one rule quietly disagreeing is exactly how this
+# project has been bitten before (two regexes for one permitted opener move carried different
+# noun sets, so the VERB the model happened to pick decided whether a correct opener was
+# rejected).
+#
+# Pinned in the same shape as test_report_recognizes_a_run_id_this_tool_actually_writes in
+# tests/test_opener_replay.py: BEHAVIOUR through a real store, never literal == literal. A
+# matching pair of string constants would still pass if one side changed WHICH ROW the rule
+# selects, so this asserts the two readers agree on how many outcome rows exist and on which
+# opener each one is attributed to. That survives either side being rewritten -- SQL clause,
+# constant, or both.
+# =========================================================================================
+
+def test_report_outcome_reader_and_the_store_agree_on_which_opener_owns_an_outcome(tmp_path):
+    db_path = tmp_path / "store.db"
+    # Exactly the shape SQLiteStore.joined_opener_outcomes' own comment names as the reason its
+    # predicate exists: ONE profile drafted-then-DISLIKED in an earlier run and LIKED in a later
+    # one, with a single owner-observed outcome. Pooled, that outcome is credited twice; read
+    # correctly, it belongs to the opener that was sent.
+    store = SQLiteStore(db_path)
+    try:
+        store.record_opener("run-draft", "hinge", "gemini-x", "The draft nobody ever sent.",
+                            "the ridgeline", prompt_sha256="era-draft", profile_key="pk1",
+                            decision="dislike")
+        store.record_opener("run-sent", "hinge", "gemini-x", "The one that actually went out.",
+                            "the ridgeline", prompt_sha256="era-sent", profile_key="pk1",
+                            decision="like")
+        store.record_opener_outcome("hinge", "pk1", "match")
+        store_rows = store.joined_opener_outcomes("hinge")
+    finally:
+        store.close()
+
+    report_rows, stats = m.read_sqlite_opener_outcomes(db_path)
+
+    # Non-vacuous first: the store really does attribute the outcome, and to the SENT opener.
+    # Without this, "both sides returned nothing" would pass the agreement below happily.
+    assert len(store_rows) == 1
+    assert store_rows[0]["opener"] == "The one that actually went out."
+    # THE PIN. Same row count, and the same opener owns it -- `era` (prompt_sha256) is the only
+    # opener identity an OutcomeRow carries, and the two drafts were deliberately stamped with
+    # different eras so it identifies one of them rather than merely existing.
+    assert len(report_rows) == len(store_rows)
+    assert [row.era for row in report_rows] == [row["prompt_sha256"] for row in store_rows]
+    assert stats.joined_row_count == len(store_rows)
+    assert stats.not_sent_excluded_count == 1
+    # MUTATION CHECK, both directions, because either copy of the rule can drift:
+    #   - change THIS module's DECISION_VALUE_SENT to "liked" -- re-run: report_rows == [] and
+    #     stats.not_sent_excluded_count == 2 while the store still returns its one row, so the
+    #     `len(report_rows) == len(store_rows)` assertion fails.
+    #   - change SQLiteStore.joined_opener_outcomes' `AND o.decision = 'like'` to 'liked'
+    #     (exercised here by patching that method's query, since ranker/store.py is another
+    #     agent's file) -- re-run: store_rows == [] and `len(store_rows) == 1` fails.
+    # Verified by hand both ways, restored exactly.
+
+
+def test_a_send_unverified_opener_can_never_own_an_outcome(tmp_path):
+    """The one thing "send_unverified" must NOT buy its rows: outcome attribution.
+
+    This is why the value is not `decision="like"`. That literal is what
+    Store.joined_opener_outcomes (and this tool's mirror of it) tests to decide which opener may
+    own an owner-observed match or reply, so a new marker that reached for it would start
+    crediting unconfirmed sends with responses earned by whatever opener actually did land on
+    that person -- and double-count the real one alongside it.
+
+    Nothing special-cases the value to achieve that, which is the point being pinned: the
+    predicate is "is this the verified-landed decision", so exclusion is AUTOMATIC for every
+    value that is not. The fixture is the same shape the cross-module test above uses -- one
+    profile, one owner-observed outcome, and two openers whose eras tell them apart.
+    """
+    db_path = tmp_path / "store.db"
+    store = SQLiteStore(db_path)
+    try:
+        store.record_opener("run-unverified", "hinge", "gemini-x",
+                            "The one that went out unconfirmed.", "the ridgeline",
+                            prompt_sha256="era-unverified", profile_key="pk1",
+                            decision="send_unverified")
+        store.record_opener("run-sent", "hinge", "gemini-x", "The one that actually landed.",
+                            "the ridgeline", prompt_sha256="era-sent", profile_key="pk1",
+                            decision="like")
+        store.record_opener_outcome("hinge", "pk1", "match")
+        store_rows = store.joined_opener_outcomes("hinge")
+    finally:
+        store.close()
+
+    report_rows, stats = m.read_sqlite_opener_outcomes(db_path)
+
+    # Non-vacuous: the outcome IS attributed, and to the verified-landed opener alone.
+    assert len(store_rows) == 1
+    assert store_rows[0]["opener"] == "The one that actually landed."
+    assert store_rows[0]["prompt_sha256"] == "era-sent"
+    # The same answer from this tool's own reader, and the unverified row counted as excluded
+    # rather than silently absent.
+    assert [row.era for row in report_rows] == ["era-sent"]
+    assert stats.joined_row_count == 1
+    assert stats.not_sent_excluded_count == 1
+    # And said the other way round, so a future "make send_unverified count as sent" change
+    # fails here rather than quietly inflating the response rate.
+    assert "era-unverified" not in [row.era for row in report_rows]
+    # MUTATION CHECK: widen read_sqlite_opener_outcomes' filter to
+    # `decision not in (DECISION_VALUE_SENT, DECISION_SEND_UNVERIFIED)` -- re-run: the unverified
+    # row joins the same person's outcome, report_rows holds two eras, and both this test and
+    # test_a_send_unverified_row_alone_earns_no_outcome_at_all fail while the store still returns
+    # its single correct row. Verified by hand, restored exactly.
+
+
+def test_a_send_unverified_row_alone_earns_no_outcome_at_all(tmp_path):
+    """The isolated case, because the pairing above could hide it: with NO landed opener on the
+    profile, an observed outcome must be dropped, never handed to the unconfirmed send just
+    because it is the only candidate left."""
+    db_path = tmp_path / "store.db"
+    store = SQLiteStore(db_path)
+    try:
+        store.record_opener("run-unverified", "hinge", "gemini-x", "Went out unconfirmed.",
+                            "the ridgeline", prompt_sha256="era-unverified", profile_key="pk9",
+                            decision="send_unverified")
+        store.record_opener_outcome("hinge", "pk9", "match")
+        store_rows = store.joined_opener_outcomes("hinge")
+    finally:
+        store.close()
+
+    report_rows, stats = m.read_sqlite_opener_outcomes(db_path)
+
+    assert store_rows == []
+    assert report_rows == []
+    assert stats.joined_row_count == 0
+    assert stats.not_sent_excluded_count == 1

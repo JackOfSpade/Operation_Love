@@ -687,6 +687,15 @@ class SQLiteStore:
         # must never join to EACH OTHER just because both happen to carry the same "no key"
         # spelling. prompt_sha256=None means "no filter" (every era), never "match NULL" --
         # same convention as every other prompt_sha256 consumer in this store.
+        #
+        # `o.decision = 'like'` keeps only openers that were actually SENT: 'like' is the ONE
+        # decision value that has ever meant "this opener reached the device" (literally
+        # tools/opener_outcome_recorder.py's DECISION_SENT). Without it, a profile that was
+        # drafted-then-DISLIKED in one run and LIKED in a later one returns the owner's single
+        # recorded match TWICE -- crediting the earlier prompt era with a match earned by a
+        # draft that was never sent. 'dislike'/'never_sent', 'synthetic_replay', and NULL/''
+        # (predates decision tracking) all fail this predicate, which is the point: none of
+        # them proves a send, and a read this feeds must never guess one.
         query = (
             "SELECT o.run_id, o.model, o.opener, o.prompt_sha256, o.profile_key, o.created_at,"
             " oc.outcome, oc.observed_at, oc.source, oc.note, oc.created_at"
@@ -694,6 +703,7 @@ class SQLiteStore:
             " ON oc.app = o.app AND oc.profile_key = o.profile_key"
             " WHERE o.app = ? AND o.profile_key IS NOT NULL AND o.profile_key != ''"
             " AND oc.profile_key IS NOT NULL AND oc.profile_key != ''"
+            " AND o.decision = 'like'"
         )
         params: list = [app]
         if prompt_sha256 is not None:
@@ -754,6 +764,19 @@ class SQLiteStore:
                 (start,),
             ).fetchone()
         return float(row[0]) if row else 0.0
+
+    def dropped_rows(self) -> dict[str, int]:
+        """Always empty here — this backend has no buffer a row can be permanently lost from.
+
+        Present so both backends answer the same question with the same shape (see
+        ranker/__init__.py's Store.dropped_rows, and BigQueryStore.dropped_rows for the loss
+        this exists to make visible): every write above goes straight into SQLite inside the
+        caller's own call, and a rejected INSERT raises out of that call rather than being
+        parked, retried, and eventually given up on. There is therefore no such thing as a row
+        this store dropped silently -- a caller reading {} back from a SQLiteStore is reading a
+        fact, not a missing implementation.
+        """
+        return {}
 
     def flush(self) -> None:
         with self._lock:

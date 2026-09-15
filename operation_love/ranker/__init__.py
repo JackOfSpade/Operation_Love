@@ -171,6 +171,22 @@ class Store(Protocol):
     # attribute a real observation to an unrelated opener that also lacked identity, which is
     # a worse failure than the outcome staying unjoined. See ranker/profile_key.py's own
     # docstring for why an unattributable row is still worth storing in the first place.
+    #
+    # The join ALSO keeps only openers that were actually SENT -- `openers.decision = 'like'`,
+    # the one value that has ever meant "this opener reached the device" (the same literal
+    # tools/opener_outcome_recorder.py calls DECISION_SENT). A drafted-then-DISLIKED opener,
+    # a 'synthetic_replay' row, and a NULL/'' decision from before decision tracking are all
+    # "never sent", and an outcome is something a SENT opener earned: without this filter a
+    # profile drafted-then-disliked in one run and liked in a later one returns the owner's
+    # single recorded match TWICE, the second copy crediting a prompt era for a match earned
+    # by a draft nobody ever saw.
+    #
+    # Even WITH the filter this join can still multiply one outcome: a person written to
+    # twice, both sent, across two runs is two `openers` rows sharing one `profile_key`, and
+    # one `opener_outcomes` row for her joins to BOTH. That is a real ambiguity in the data
+    # (nothing records WHICH send a later match answered), not a defect this predicate can
+    # remove, so a caller aggregating per-era rates must decide what to do with duplicates
+    # rather than assume rows are one-per-outcome.
     def joined_opener_outcomes(self, app: str, *,
                               prompt_sha256: str | None = None) -> list[dict]: ...
     def record_spend(self, run_id: str, model: str, usage: Usage, cost: float | None) -> None: ...
@@ -192,6 +208,26 @@ class Store(Protocol):
         """
         ...
     def flush(self) -> None: ...
+    # Per-table count of rows this store PERMANENTLY GAVE UP ON during this run -- rows that
+    # were accepted by a record_* call, never reached the system of record, and never will.
+    # Only nonzero tables appear, so `{}` means "nothing was lost" and a caller's whole test is
+    # `if store.dropped_rows():`.
+    #
+    # It exists because "flush() returned without raising" is NOT the same claim as "every row
+    # landed", and the shutdown path used to conflate them. BigQueryStore drops a row that has
+    # failed _MAX_INSERT_ATTEMPTS consecutive inserts (bad UTF-8 in raw_opener, an over-length
+    # field) so one permanently invalid row cannot block every valid row queued behind it; the
+    # RuntimeError that carries that news is caught and warned about by opener/service.py so
+    # the run continues; by shutdown the buffer is empty and flush() succeeds. Every terminal
+    # signal then reads clean, and the operator was told "✅ all data saved" over real data
+    # loss. This is the DATA behind BigQueryStore.saved_summary's prose, so supervisor.py can
+    # branch on the loss instead of grepping a sentence for it.
+    #
+    # SQLiteStore returns {} unconditionally and that is a FACT, not a stub: it writes inside
+    # the caller's own call and a rejected INSERT raises out of it, so it has no buffer a row
+    # can be silently dropped from. Both backends answer, so no caller has to know which one it
+    # holds.
+    def dropped_rows(self) -> dict[str, int]: ...
     def close(self) -> None: ...
 
 

@@ -605,10 +605,203 @@ def test_cancelled_or_failed_driver_action_never_creates_training_label(after_ch
     assert not worker.is_alive()
     assert store.decisions == store.profiles == store.labels == []
     assert opener.commits == []
+    # The OTHER half of that same lifecycle, once per abandonment handler around like()
+    # (worker.py's `except ActionCancelled` and its generic `except Exception`): the provider
+    # call already finished and was already BILLED, and nothing was sent, so this draft must
+    # reach the durable table as a never_sent row instead of vanishing. Asserted here because
+    # these two handlers are otherwise the only discard sites in _training_loop with no test
+    # of their own -- both were replaced with `pass` in review and the whole suite stayed green.
+    assert len(opener.discards) == 1
+    discard_lineage = opener.discards[0][1]
+    assert discard_lineage["decision"] == "never_sent"
+    assert discard_lineage["decision_source"] == "manual"
+    assert discard_lineage["profile_key"] == _FAKE_PROFILE_KEY
     result = bridge.snapshot(run_id="training-run", app="hinge")["results"][-1]
     assert result["status"] == expected
     assert events[-1] == ("hub_complete", expected)
     assert decider.decide_calls == 0
+
+
+class _PostSendTrainingDriver(_TrainingDriver):
+    """The real Training shape, which `_TrainingDriver` above deliberately is not.
+
+    `driver.like()` is not atomic. Once the reviewer chooses Like, HingeDriver taps Send Like and
+    only THEN demands a stable, semantically different ready deck card -- raising
+    HingeActionError when it cannot get one, with the opener already sitting in front of a real
+    person. `_TrainingDriver` raises BEFORE that tap (and reports no send marker at all), which
+    is why it pins the never_sent direction and cannot pin this one.
+
+    `after_choice` keeps its parent meaning and selects WHICH of the two post-send handlers the
+    worker takes: "cancel" for a Stop landing between the tap and its verification, "fail" for
+    the verification itself refusing.
+    """
+
+    def __init__(self, events, *, after_choice="fail"):
+        super().__init__(events, after_choice=after_choice)
+        self._send_attempted = False
+
+    def like(self, opener, item_index=None, *, model_item_index=None, should_stop=None):
+        # Cleared as the attempt begins, exactly as HingeDriver._like_comment_sheet does -- see
+        # base.DatingAppDriver.like_send_attempted for why it is never cleared when one ends.
+        self._send_attempted = False
+        self.like_calls.append((opener, item_index, model_item_index))
+        self.stop_callbacks.append(should_stop)
+        self.events.append(("driver_like_called", opener, model_item_index))
+        assert self._decision is not None
+        command = self._decision(_FRAME, {"evidence_id": "verified-composer"})
+        self.events.append(("driver_choice", command))
+        self._send_attempted = True           # the Send Like tap: the opener is out
+        if self.after_choice == "cancel":
+            raise ActionCancelled("a Stop arrived between the Send Like tap and its verification")
+        raise RuntimeError(
+            "training action did not reach a stable, semantically different ready deck card")
+
+    def like_send_attempted(self):
+        return self._send_attempted
+
+
+def _run_training_like_through(driver):
+    """Drive one reviewed Like all the way to `driver.like()` and return the fake opener service.
+
+    Built by hand rather than through `_new_worker` because the point of these tests is the
+    driver, which `_new_worker` owns.
+    """
+    events = driver.events
+    opener = _Opener(events)
+    store = _Store(events)
+    bridge = _RecordingBridge(events)
+    status = RunStatus("training-run", ["hinge"], min_labels=1, mode="training")
+    worker = Worker("hinge", driver, _Decider(events), opener, store, "training-run", _Pacing(),
+                    threading.Event(), mode="training", training_action_bridge=bridge,
+                    status=status)
+    worker.start()
+    card = _wait_until(lambda: _checkpoint(bridge))
+    _submit(bridge, card, "like")
+    worker.join(_TIMEOUT_S)
+    assert not worker.is_alive()
+    return opener, store, bridge
+
+
+@pytest.mark.parametrize("after_choice, expected", [
+    ("cancel", "aborted"),
+    ("fail", "failed"),
+])
+def test_a_post_send_training_failure_records_the_draft_as_send_unverified(
+        after_choice, expected):
+    """The reviewer said Like, the phone sent it, and the verification AFTER the send failed.
+
+    Both abandonment handlers around `driver.like()` used to answer that with
+    `decision="never_sent"` -- a durable row, in the one table the corpus report and the outcome
+    join trust, saying an opener that physically went out was only ever a draft. The comment at
+    the generic handler asserted "anything raised ... means no reviewed Like landed for this
+    profile either": true, and not the same statement as the row it wrote. No label is created
+    either way (nothing verified a Like), which is exactly why the opener row is the only place
+    this fact can be recorded at all.
+    """
+    driver = _PostSendTrainingDriver([], after_choice=after_choice)
+    opener, store, bridge = _run_training_like_through(driver)
+
+    assert driver.like_calls == [("A precise typed opener", None, 2)]
+    # Unchanged from the never_sent tests above: an unverified send is not a reviewed Like.
+    assert store.decisions == store.profiles == store.labels == []
+    assert opener.commits == []
+    assert len(opener.discards) == 1
+    lineage = opener.discards[0][1]
+    assert lineage["decision"] == "send_unverified"
+    assert lineage["decision_source"] == "manual"
+    # Attributable, exactly like every other discarded draft -- both populations carry the key.
+    assert lineage["profile_key"] == _FAKE_PROFILE_KEY
+    assert bridge.snapshot(run_id="training-run", app="hinge")["results"][-1]["status"] == expected
+    # MUTATION CHECK, once per handler, because the two parametrizations exercise different ones:
+    # drop `decision=self._post_like_discard_decision()` from _training_loop's `except
+    # ActionCancelled` -- re-run: only the [cancel-aborted] case fails; drop it from the generic
+    # `except Exception` -- re-run: only [fail-failed] fails. Verified by hand, restored exactly.
+
+
+@pytest.mark.parametrize("after_choice", ["cancel", "fail"])
+def test_a_training_failure_before_the_send_still_records_never_sent(after_choice):
+    """The other direction through the SAME two handlers, and the reason it is pinned here.
+
+    `_TrainingDriver` raises before it ever taps Send, and -- being a duck-typed fake that does
+    not subclass DatingAppDriver at all -- carries no send marker whatsoever, so this also pins
+    the worker's defensive `getattr` read: an optional capability missing entirely must degrade
+    to today's meaning rather than raise an AttributeError inside a live exception handler. A
+    fix that filed every post-like failure as `send_unverified` would be just as wrong as the one
+    it replaced, in the other direction.
+    """
+    driver = _TrainingDriver([], after_choice=after_choice)
+    opener, store, bridge = _run_training_like_through(driver)
+
+    assert driver.like_calls == [("A precise typed opener", None, 2)]
+    assert len(opener.discards) == 1
+    assert opener.discards[0][1]["decision"] == "never_sent"
+    assert opener.discards[0][1]["decision_source"] == "manual"
+    # MUTATION CHECK: collapse _post_like_discard_decision() to `return DECISION_SEND_UNVERIFIED`
+    # -- re-run: both parametrizations here fail, as do every other never_sent assertion in this
+    # file. Verified by hand, restored exactly.
+
+
+def test_a_blank_generated_opener_is_still_recorded_as_a_billed_never_sent_draft():
+    """A pick whose TEXT is unusable stops the run -- and is exactly the row the corpus report
+    most needs to see.
+
+    The provider call already finished and was already billed by the time the worker looks at
+    the text, so silence here would put the WORST drafts back in the survivorship-bias hole
+    discard_opener exists to close. No checkpoint is ever published on this path, so the run is
+    driven synchronously.
+    """
+    status = RunStatus("training-run", ["hinge"], min_labels=1, mode="training")
+    worker, driver, decider, opener, store, bridge, events = _new_worker(status=status)
+    opener.pick = OpenerPick(text="   ", index=2, referenced="the hiking photo",
+                             item_description="hiking photo",
+                             index_space=INDEX_SPACE_MODEL_ITEMS)
+
+    worker.run()
+
+    app = status.app_view("hinge")["app"]
+    assert app["state"] == "stopped" and app["stop_kind"] == "opener"
+    assert driver.like_calls == [] and store.decisions == store.profiles == store.labels == []
+    assert opener.commits == []
+    assert len(opener.discards) == 1
+    pick, lineage = opener.discards[0]
+    assert pick is opener.pick
+    assert lineage["decision"] == "never_sent" and lineage["decision_source"] == "manual"
+    assert lineage["profile_key"] == _FAKE_PROFILE_KEY
+    assert bridge.snapshot(run_id="training-run", app="hinge")["checkpoints"] == []
+
+
+class _SpentLikeBudget(RateLimiter):
+    """A run whose ``max_likes_per_run`` allowance is already gone when the next draft lands.
+
+    Subclassed rather than hand-rolled so every other part of the limiter contract the worker
+    touches (``allow``/``max_per_day``) stays the real one; only the like budget is exhausted.
+    """
+    def allow_like(self, liked_this_run):
+        return False
+
+
+def test_a_rate_limited_run_still_records_the_draft_it_abandoned():
+    """The like allowance runs out AFTER this profile's draft was generated and billed.
+
+    A rate-limited run must not be a hole in the opener corpus: the refusal happens before any
+    checkpoint is published, so without the discard the draft reaches neither the durable
+    `openers` table nor recent_openers.
+    """
+    status = RunStatus("training-run", ["hinge"], min_labels=1, mode="training")
+    worker, driver, decider, opener, store, bridge, events = _new_worker(
+        limiter=_SpentLikeBudget(max_likes_per_run=1), status=status)
+
+    worker.run()
+
+    app = status.app_view("hinge")["app"]
+    assert app["state"] == "rate_limited"
+    assert driver.like_calls == [] and store.decisions == store.profiles == store.labels == []
+    assert opener.commits == []
+    assert len(opener.discards) == 1
+    lineage = opener.discards[0][1]
+    assert lineage["decision"] == "never_sent" and lineage["decision_source"] == "manual"
+    assert lineage["profile_key"] == _FAKE_PROFILE_KEY
+    assert bridge.snapshot(run_id="training-run", app="hinge")["checkpoints"] == []
 
 
 def test_stop_before_training_decision_is_not_captured_as_an_unexpected_failure():
@@ -697,6 +890,13 @@ def test_stale_or_absent_training_action_never_creates_label():
     assert store.decisions == store.profiles == store.labels == []
     assert opener.commits == []
     assert decider.decide_calls == 0
+    # A replaced registration is REFUSED by the bridge while the prior worker still holds it,
+    # so this arrives at the worker as a raise out of like() -- i.e. through the generic
+    # abandonment handler, not the unverified-outcome branch below it. Either way nothing was
+    # typed or sent, so the billed draft must reach the durable table as never_sent.
+    assert len(opener.discards) == 1
+    assert opener.discards[0][1]["decision"] == "never_sent"
+    assert opener.discards[0][1]["decision_source"] == "manual"
 
     # With no Hub mailbox at all, training fails closed before opening a session or generating.
     worker, driver, decider, opener, store, bridge, events = _new_worker()
@@ -706,6 +906,87 @@ def test_stale_or_absent_training_action_never_creates_label():
     assert not worker.is_alive()
     assert not driver.opened and opener.maybe_calls == []
     assert store.decisions == store.profiles == store.labels == []
+
+
+class _SilentBridge(_RecordingBridge):
+    """A Hub mailbox whose decision window closes with no answer (the ordinary Stop)."""
+    def wait_for_action(self, worker, profile_token, stop_event):
+        return None
+
+
+def test_an_unverified_driver_outcome_records_the_draft_nothing_was_sent_for():
+    """The outcome half of `outcome not in {"like","dislike"} or action is None`.
+
+    No answer ever arrives, so the checkpoint is cancelled and the driver hands back the stop
+    sentinel instead of a verified Like/Dislike. The driver contract leaves the phone untouched
+    on that path -- nothing was typed or sent -- so this billed draft is exactly the kind of row
+    the corpus report was blind to. Distinct from the abandonment handlers above it: this one
+    reaches the branch without any exception at all, which is why those tests cannot pin it.
+    """
+    status = RunStatus("training-run", ["hinge"], min_labels=1, mode="training")
+    events = []
+    driver = _TrainingDriver(events)
+    opener = _Opener(events)
+    store = _Store(events)
+    bridge = _SilentBridge(events)
+    worker = Worker("hinge", driver, _Decider(events), opener, store, "training-run", _Pacing(),
+                    threading.Event(), mode="training", training_action_bridge=bridge,
+                    status=status)
+
+    worker.run()
+
+    app = status.app_view("hinge")["app"]
+    # A clean Stop, never the RuntimeError: the run breaks out with the stop flag already set.
+    assert app["state"] == "stopped" and not app.get("error")
+    assert driver.like_calls == [("A precise typed opener", None, 2)]
+    assert store.decisions == store.profiles == store.labels == []
+    assert opener.commits == []
+    assert len(opener.discards) == 1
+    lineage = opener.discards[0][1]
+    assert lineage["decision"] == "never_sent" and lineage["decision_source"] == "manual"
+    assert lineage["profile_key"] == _FAKE_PROFILE_KEY
+
+
+def test_a_landed_like_with_no_hub_claim_raises_and_is_never_written_down_as_never_sent():
+    """The `action is None` half of the unverified-outcome branch means the OPPOSITE of the
+    outcome half, so it must not share its discard.
+
+    A driver that returns "like" has typed the opener and physically SENT it; what went missing
+    is the Hub's claim for it (a stale or replaced registration). The branch is a DISJUNCTION,
+    so it used to run `_discard_staged_opener` here too and write a durable
+    `decision="never_sent"` opener row for an opener that actually landed -- wrong data in the
+    one table the corpus report trusts, published moments before the RuntimeError. An
+    unattributed sent opener is recoverable; a row asserting it was never sent is not.
+    """
+    status = RunStatus("training-run", ["hinge"], min_labels=1, mode="training")
+
+    class _UnclaimedSendDriver(_TrainingDriver):
+        def like(self, opener_text, item_index=None, *, model_item_index=None, should_stop=None):
+            # The phone did the Like. The worker simply never saw a claimed Hub action for it.
+            self.like_calls.append((opener_text, item_index, model_item_index))
+            return "like"
+
+    events = []
+    driver = _UnclaimedSendDriver(events)
+    decider = _Decider(events)
+    opener = _Opener(events)
+    store = _Store(events)
+    bridge = _RecordingBridge(events)
+    worker = Worker("hinge", driver, decider, opener, store, "training-run", _Pacing(),
+                    threading.Event(), mode="training", training_action_bridge=bridge,
+                    status=status)
+
+    worker.run()
+
+    app = status.app_view("hinge")["app"]
+    # run() HALTS on the RuntimeError rather than swallowing it (see Worker.run's own comment).
+    assert app["state"] == "error"
+    assert "no verified Like/Dislike outcome" in app["error"]
+    assert driver.like_calls == [("A precise typed opener", None, 2)]
+    # The whole point: no decision row of any kind was written for a draft that went out.
+    assert opener.discards == [] and opener.commits == []
+    assert store.decisions == store.profiles == store.labels == []
+    assert ("discard", "never_sent") not in events
 
 
 def test_persistence_failure_marks_hub_failed_and_never_completes_it():
@@ -773,3 +1054,55 @@ def test_training_daily_limit_reads_manual_history_not_auto_history():
     _submit(bridge, card, "dislike")
     worker.join(_TIMEOUT_S)
     assert not worker.is_alive()
+
+
+def test_training_none_capture_publishes_a_failed_cold_relaunch_under_its_own_stop_kind(
+        monkeypatch):
+    """Training's own capture-returned-None probe classifies the latch exactly like AUTO's.
+
+    Same incident as tests/test_worker.py's AUTO counterpart: `blocked_reason()` is the only
+    channel a capture that returned None has for carrying a sentence, so a failed cold-relaunch
+    recovery came out of it too and the Hub headlined "stopped -- deck blocked" for a deck that
+    was never blocked. Training must not disagree with AUTO about that.
+
+    Runs against status.py's REAL `_STOP_KINDS`. It was briefly monkeypatched here while the
+    whitelist entry was still missing, which made this test pass over a path that raised
+    ValueError out of set_app in production -- the widening is the fix, not a test fixture.
+    """
+    reason = ("Hinge was relaunched cold and the deck could not be proven re-entered; "
+              "no action or label was recorded.")
+
+    class _ColdRelaunchDriver(_TrainingDriver):
+        def __init__(self, events):
+            super().__init__(events)
+            self.abandoned = False
+
+        def blocked_reason(self):
+            return reason if self.abandoned else None
+
+        def blocked_stop_kind(self):
+            return "cold_relaunch_recovery" if self.abandoned else None
+
+        def next_profile(self):
+            self.abandoned = True
+            return None
+
+    status = RunStatus("training-run", ["hinge"], min_labels=1, mode="training")
+    events = []
+    driver = _ColdRelaunchDriver(events)
+    opener = _Opener(events)
+    store = _Store(events)
+    bridge = _RecordingBridge(events)
+    worker = Worker("hinge", driver, _Decider(events), opener, store, "training-run", _Pacing(),
+                    threading.Event(), mode="training", training_action_bridge=bridge,
+                    status=status)
+
+    worker.run()
+
+    app = status.app_view("hinge")["app"]
+    assert app["state"] == "blocked" and app["stop_reason"] == reason
+    assert app["stop_kind"] == "cold_relaunch_recovery"
+    # Nothing was generated, typed or acted on: this is the capture probe, not an action path.
+    assert opener.maybe_calls == [] and opener.discards == [] and driver.like_calls == []
+    assert store.decisions == store.profiles == store.labels == []
+    assert driver.opened and driver.closed

@@ -978,6 +978,64 @@ class _MeasuredItemAnchor:
     page_shift_px: int
 
 
+@dataclasses.dataclass(frozen=True)
+class _AbandonedReattachProbe:
+    """What a re-attach probe that DELIVERED a stroke and then refused still owes its caller.
+
+    A probe has three outcomes, not two, and collapsing the third into the second is the bug
+    this type exists to make impossible (found 2026-09-15). ``ReattachProbe`` means the two-burst
+    proof completed; plain ``None`` means the probe moved NOTHING (an unlicensed build, an
+    invalid geometry, or a `should_stop` that landed before the first exit stroke) so the read's
+    own page position is still exactly as measured; and THIS means a real humanized stroke went
+    to the phone and the probe then refused anyway. The page is somewhere else, and the caller
+    may not keep describing it as the position the read left.
+
+    ``page_shift_px`` is the NET displacement from the probe's anchor frame in
+    ``estimate_shift``'s convention (positive: page content moved up) -- the same convention
+    ``ReattachProbe.page_shift_px`` carries, so a caller folds it in by plain addition -- and
+    ``frame`` is the last frame that displacement was measured to. Both are ``None`` together
+    when the displacement is genuinely UNMEASURABLE (`estimate_shift` reached quorum in neither
+    direction after a stroke, e.g. an autoplaying neighbour card dominating the settled frame).
+    Nothing is estimated in that case: the caller drops its anchor and `_index_captured_items`
+    refuses the capture BEFORE an opener is bought, rather than rebasing the index by a zero the
+    page did not honour and letting `navigate_to_item` blame the operator at like time.
+    """
+
+    frame: bytes | None
+    page_shift_px: int | None
+
+    @property
+    def measured(self) -> bool:
+        """Whether this abandonment still knows where on the page it left the phone."""
+        return self.frame is not None and self.page_shift_px is not None
+
+
+# The unmeasurable abandonment, which carries no position at all.  A single shared instance
+# because it holds nothing a caller could distinguish: every field it could have had is exactly
+# the unknown that makes it fail closed.
+_REATTACH_POSITION_LOST = _AbandonedReattachProbe(frame=None, page_shift_px=None)
+
+
+def _reattach_terminal_frame(probe, fallback: bytes) -> bytes:
+    """The last frame a re-attach probe really observed, completed or abandoned.
+
+    A completed `ReattachProbe` ends on the final frame of its second burst; an
+    `_AbandonedReattachProbe` that still knows where it left the page carries that frame
+    directly (an unmeasurable one never reaches here -- its caller refuses first, because there
+    is no distance to walk back). `fallback` is the position the probe would have started from,
+    used only when no probe ran at all.  Single-sourced because two callers -- the short-hop
+    return leg and the progressive sweep -- both need exactly this frame, and a second copy of
+    the rule is a second thing free to disagree with the first.
+    """
+    if probe is None:
+        return fallback
+    frames = getattr(probe, "frames", ())
+    if frames:
+        return frames[-1]
+    frame = getattr(probe, "frame", None)
+    return fallback if frame is None else frame
+
+
 # --- the re-attach probe (the C2 residual) ------------------------------------------------
 # A centred byte-exact burst proves Hinge was ASKED to play the card and that nothing moved. It
 # does NOT prove the media answered: a video that was stalled, still buffering, never attached,
@@ -2527,6 +2585,13 @@ class AndroidDriver(DatingAppDriver):
         # it to durable storage. Every new like attempt clears it first, so a failure can never
         # inherit the previous profile's evidence.
         self._landed_auto_opener_evidence: dict[str, object] | None = None
+        # Whether the CURRENT like attempt has already issued its Send Like tap -- the one
+        # irreversible boundary in _like_comment_sheet. Set immediately BEFORE that tap and
+        # cleared as each attempt begins, both in that method, so it describes the attempt in
+        # progress and never the previous profile's. Read through like_send_attempted(); see
+        # base.DatingAppDriver.like_send_attempted for why a post-send verification failure is
+        # a different fact from "nothing was sent" and what the worker does with the difference.
+        self._like_send_attempted = False
         # Training reuses AUTO's deterministic opener/targeting mechanics, but the human owns
         # the final preference decision. Its closed result is either ``like`` or ``dislike`` and
         # lets the driver execute the corresponding *freshly re-verified* device action.
@@ -2726,6 +2791,14 @@ class AndroidDriver(DatingAppDriver):
         # template match plus an OCR; a deck that is blocked stays blocked until the operator
         # deals with it, so the first non-None answer is the answer.
         self._blocked_reason: str | None = None
+        # WHICH stop the sentence above describes, when it is not the ordinary blocked deck
+        # (2026-09-15). worker.py publishes this as the run's `stop_kind`, so the hub can
+        # headline a cold-relaunch recovery failure as the recovery failure it is instead of
+        # telling the operator their deck is blocked when the deck is perfectly healthy. `None`
+        # means the default "deck_blocked" story, which is what every other latch here carries;
+        # only `abandon_after_lifecycle` publishes a kind, and it does so in the same statement
+        # that latches the reason so the two can never describe different stops.
+        self._blocked_stop_kind: str | None = None
         # Whether this session's one-shot "put the card at a confirmed scroll-top" pass has
         # been attempted yet -- see _ensure_session_top for why a session cannot assume the
         # previous one left the card where it found it.
@@ -5864,7 +5937,8 @@ class AndroidDriver(DatingAppDriver):
 
     def _still_photo_reattach_probe(self, anchor: bytes,
                                     rect: tuple[int, int, int, int],
-                                    should_stop=None) -> ReattachProbe | None:
+                                    should_stop=None) -> (
+                                        ReattachProbe | _AbandonedReattachProbe | None):
         """Scroll this card OUT of Hinge's autoplay band, bring it back, and dwell again.
 
         The residual it exists for is stated at `_REATTACH_EXIT_BAND_MULTIPLE_SPAN`: a centred
@@ -5878,7 +5952,20 @@ class AndroidDriver(DatingAppDriver):
         after each stroke, and the card rect travels with that measurement -- the page is
         tracked, the card is never re-identified from what happens to be on screen afterwards
         (owner rule 2026-08-11: we never substitute a different item). Any leg that cannot be
-        measured returns None, which leaves `reattach_probe_ran` unset and refuses.
+        measured refuses, which leaves `reattach_probe_ran` unset.
+
+        A REFUSAL STILL SAYS WHERE IT LEFT THE PHONE (found 2026-09-15; see
+        `_AbandonedReattachProbe`). Three outcomes, not two: a `ReattachProbe` when the two-burst
+        proof completed; plain `None` when the probe moved NOTHING at all, so the caller's
+        existing anchor is still exactly as measured; and an `_AbandonedReattachProbe` once a
+        real stroke has gone to the phone and the probe refuses anyway -- carrying the measured
+        net displacement when it is still known, and the lost-position marker when it is not.
+        The bug this closes was the third case reported as the second: the probe delivered an
+        exit stroke, failed to measure the settled frame (`estimate_shift` reaching quorum in
+        neither direction, e.g. an autoplaying neighbour card), returned a bare None, and the
+        caller went on recording a displacement of ZERO for a page ~500px from where the read
+        left it. Nothing is estimated on that path now: the caller drops its anchor and the
+        capture refuses before an opener is bought.
 
         ONLY GUARDED HUMANIZED PRIMITIVES. `_scroll_up_one`/`_scroll_down_one` are the same
         forbidden-zone-guarded, column-jittered, ledger-keeping read-scrolls the enumeration read
@@ -5906,8 +5993,8 @@ class AndroidDriver(DatingAppDriver):
 
         STOP (found+fixed 2026-08-23): every gesture this method issues is checked against
         `should_stop` immediately before it fires -- see `exit_leg`'s own first line -- so a
-        Stop pressed before the probe has moved anything costs one poll and returns None with
-        the screen untouched, exactly like `_measured_page_shift` returning None already does.
+        Stop pressed before the probe has moved anything costs one poll and returns the plain
+        `None` "nothing to account for" answer with the screen untouched.
         Once an exit stroke HAS displaced the page, though, the return-leg loop below runs to
         completion even if a Stop lands mid-way: the alternative is leaving the phone scrolled
         to an arbitrary, unmeasured offset for the rest of the session, which is worse for the
@@ -5916,9 +6003,9 @@ class AndroidDriver(DatingAppDriver):
         read-scrolls it takes to walk back. The one place a Stop still buys something once the
         return leg has started is the SECOND burst that follows it: that is the expensive,
         gesture-free part this bug was actually about (seconds of held dwell with no gesture of
-        its own to interrupt it), so it is the one thing skipped, and a stop there returns None
-        -- "the probe could not be completed" -- never a `ReattachProbe` built from a burst that
-        never ran.
+        its own to interrupt it), so it is the one thing skipped, and a stop there refuses
+        -- "the probe could not be completed", carrying the repaid residual -- never a
+        `ReattachProbe` built from a burst that never ran.
         """
         if hinge_targeting_unavailable_reason() is not None:
             # Re-asserted here rather than inherited from the caller: this is the only
@@ -5931,13 +6018,23 @@ class AndroidDriver(DatingAppDriver):
         offset = card_center_offset_frac(rect, frame_height=height,
                                          content_band=self.content_band)
 
+        # Whether the leg that just refused had already put a stroke on the phone. A refusal
+        # BEFORE the stroke leaves the page exactly where the caller last measured it; one AFTER
+        # it does not, and the two are not interchangeable to anybody holding an anchor.
+        leg_gestured = False
+
         def exit_leg(backward: bool) -> tuple[bytes, int] | None:
             """One exit stroke and the NET page displacement it left, or None if unmeasurable.
 
             Every draw this leg needs is made inside it, so the backward-first path issues the
             same gestures in the same order, off the same random draws, as it did before the
             forward retry existed -- a clamp is what buys a second set of draws, nothing else.
+
+            On None, read `leg_gestured` to tell the two refusals apart: False means the stroke
+            was never issued, True means it was and its displacement is unknown.
             """
+            nonlocal leg_gestured
+            leg_gestured = False
             if should_stop is not None and should_stop():
                 # Checked before the stroke, not after: this is a REAL scroll gesture on the
                 # device, and a Stop that lands here must cost nothing more than a dead poll --
@@ -5957,6 +6054,7 @@ class AndroidDriver(DatingAppDriver):
             _dwell_s, _step_frac, x_frac = self._sample_read_step(0, None)
             # Backward is content DOWN, so the card slides off centre toward the bottom of the
             # screen; forward is content UP, so it leaves through the top instead.
+            leg_gestured = True
             if backward:
                 self._scroll_up_one(exit_frac, x_frac)
             else:
@@ -6010,9 +6108,15 @@ class AndroidDriver(DatingAppDriver):
                 frame = following
             return frame, total
 
+        def abandon(repaid: tuple[bytes, int] | None) -> _AbandonedReattachProbe:
+            """Hand back the residual a refusal still owes, or the lost-position marker."""
+            return (_REATTACH_POSITION_LOST if repaid is None
+                    else _AbandonedReattachProbe(frame=repaid[0],
+                                                 page_shift_px=int(repaid[1])))
+
         exited = exit_leg(backward=True)
         if exited is None:
-            return None
+            return _REATTACH_POSITION_LOST if leg_gestured else None
         frame, total = exited
         if inside_zone(total):
             # The stroke was delivered and the card is still in the trigger zone: a clamp at the
@@ -6021,36 +6125,44 @@ class AndroidDriver(DatingAppDriver):
             # measured the same way, before giving up on it.
             exited = exit_leg(backward=False)
             if exited is None:
-                return None
+                if leg_gestured:
+                    return _REATTACH_POSITION_LOST
+                # The retry never fired (a Stop at its own first line), but the backward exit
+                # already did and its displacement IS measured. Repay that, then hand back
+                # whatever position is still known -- the same obligation the both-clamped
+                # branch below discharges, for the same reason.
+                return abandon(repay(frame, total))
             frame, total = exited
             if inside_zone(total):
                 # Both directions delivered and the card never left. Nothing detached, so
                 # nothing can re-attach, and calling the re-entry a re-attach anyway would
                 # manufacture exactly the unearned observation this rung exists to prevent.
                 #
-                # THE DISPLACEMENT IS STILL OWED (found 2026-09-04). This branch used to return
-                # None here, abandoning a page position it had MEASURED -- the gate is
-                # `inside_zone`, a test on where the CARD sits, not on how far the page moved,
-                # and two under-delivering strokes leave a real net offset while the card is
-                # still centred. The probe refusing is correct; leaving the page somewhere the
-                # index does not know about is not, and it surfaced later as `item_nav` blaming
-                # an unaccounted drift on a human finger. Repay first, then refuse.
-                repay(frame, total)
-                return None
+                # THE DISPLACEMENT IS STILL OWED (found 2026-09-04, extended 2026-09-15). This
+                # branch used to return None here, abandoning a page position it had MEASURED --
+                # the gate is `inside_zone`, a test on where the CARD sits, not on how far the
+                # page moved, and two under-delivering strokes leave a real net offset while the
+                # card is still centred. The probe refusing is correct; leaving the page
+                # somewhere the index does not know about is not, and it surfaced later as
+                # `item_nav` blaming an unaccounted drift on a human finger. Repay first, then
+                # refuse -- and REPORT the residual the repayment could not fully retire, which a
+                # bare None used to swallow just as thoroughly as the missing repayment did.
+                return abandon(repay(frame, total))
         repaid = repay(frame, total)
         if repaid is None:
-            return None
+            return _REATTACH_POSITION_LOST
         frame, total = repaid
         if should_stop is not None and should_stop():
             # The page is back where the read left it (or as close as the loop above could
             # measure); only the SECOND burst -- the expensive, gesture-free part this bug is
             # actually about -- remains, and is not worth spending once the run is stopping.
-            # None is the same "the probe could not be completed" answer a measurement failure
-            # gives above, and the ladder already refuses fail-closed on it.
-            return None
+            # The refusal is the same "the probe could not be completed" answer a measurement
+            # failure gives above, and the ladder already refuses fail-closed on it -- but it
+            # carries the measured residual, because the strokes above really did happen.
+            return abandon((frame, total))
         burst, span_s = self._still_photo_dwell_burst(should_stop)
         if not burst:
-            return None
+            return abandon((frame, total))
         return ReattachProbe(anchor=frame, frames=tuple(burst), span_s=span_s,
                              page_shift_px=int(total))
 
@@ -6246,15 +6358,21 @@ class AndroidDriver(DatingAppDriver):
         # it out of the autoplay band and back so a video that simply was not playing gets a
         # second chance to say so. Nothing is probed unless some card actually earned it, so an
         # ordinary capture spends no extra gesture, and a probe that cannot complete leaves the
-        # `reattach_*` fields unset and refuses.
+        # `reattach_*` fields unset and refuses -- handing back an `_AbandonedReattachProbe`
+        # instead of a bare None once its strokes have actually moved the page.
         probe = None
+        abandoned = None
         target = self._still_photo_reattach_candidate(evidence)
         if target is not None and frames:
             rect = dwell_card_rects(index, len(frames) - 1).get(target)
             if rect is not None:
                 self._note_capture_progress(
                     f"re-checking photo item 1 of {self.still_photo_dwell_candidates} for motion")
-                probe = self._still_photo_reattach_probe(frames[-1], rect, should_stop)
+                outcome = self._still_photo_reattach_probe(frames[-1], rect, should_stop)
+                if isinstance(outcome, _AbandonedReattachProbe):
+                    abandoned = outcome
+                else:
+                    probe = outcome
         if probe is not None:
             evidence = still_photo_reattach_evidence(
                 evidence, index, frame_count=len(frames), probe=probe,
@@ -6262,16 +6380,30 @@ class AndroidDriver(DatingAppDriver):
             if probe.frames:
                 entry_anchor = _MeasuredItemAnchor(
                     probe.frames[-1], int(probe.page_shift_px))
-        elif target is not None and should_stop is not None and should_stop():
-            remaining_candidates = tuple(
-                ordinal for ordinal in candidate_ordinals if ordinal not in evidence)
-            next_heart = remaining_candidates[0] if remaining_candidates else None
-            self._record_still_photo_dwell_walk_stop(
-                next_heart_ordinal=next_heart,
-                remaining_heart_ordinals=remaining_candidates,
-                remaining_candidate_slots=(self.still_photo_dwell_candidates - len(evidence)),
-                phase="during_base_reattach_probe",
-                interrupted_heart_ordinals=(target,))
+        else:
+            if abandoned is not None:
+                # The probe refused AFTER putting a real stroke on the phone (found 2026-09-15).
+                # `entry_anchor` here still says "the page is exactly where the read left it",
+                # which is now false, and `_index_captured_items` would rebase the item index by
+                # that zero and hand bottom-up navigation a page ~500px away. Take the refusal's
+                # own measured residual when it has one -- the same shape the completed probe
+                # above hands over -- and otherwise DROP the anchor entirely rather than invent
+                # a displacement: a None anchor is what makes the fold refuse this capture before
+                # an opener is bought, instead of letting `navigate_to_item` blame the operator
+                # for the driver's own gesture at like time.
+                entry_anchor = (
+                    _MeasuredItemAnchor(abandoned.frame, int(abandoned.page_shift_px))
+                    if abandoned.measured else None)
+            if target is not None and should_stop is not None and should_stop():
+                remaining_candidates = tuple(
+                    ordinal for ordinal in candidate_ordinals if ordinal not in evidence)
+                next_heart = remaining_candidates[0] if remaining_candidates else None
+                self._record_still_photo_dwell_walk_stop(
+                    next_heart_ordinal=next_heart,
+                    remaining_heart_ordinals=remaining_candidates,
+                    remaining_candidate_slots=(self.still_photo_dwell_candidates - len(evidence)),
+                    phase="during_base_reattach_probe",
+                    interrupted_heart_ordinals=(target,))
         self._record_still_photo_dwell(burst, span_s, evidence, probe)
         return self._still_photo_dwell_candidate_walk(
             evidence, frames=frames, index=index, mute_screen=mute_screen,
@@ -6863,7 +6995,8 @@ class AndroidDriver(DatingAppDriver):
             # through so the return leg starts from wherever the phone REALLY is -- `target.frame`
             # when no probe ran (the two-burst proof's first leg is screencaps only, no gesture),
             # or the probe's own settled position when one did (its own return leg only ever
-            # promised a MEASURED residual, never byte identity). `correction` is threaded the
+            # promised a MEASURED residual, never byte identity), including when that probe
+            # ABANDONED after moving the page, which owes the same residual back. `correction` is
             # same way for the SAME reason: a centring correction is a third real gesture that
             # can run before either burst, and the return leg owes that displacement back too
             # (see `_still_photo_dwell_over_navigated_target`'s own CENTERING CORRECTION
@@ -7153,6 +7286,11 @@ class AndroidDriver(DatingAppDriver):
             # converts it back to this capture's global displacement exactly once.
             target_page_offset = getattr(target, "page_offset", None)
             correction_px = getattr(correction, "total_px", None)
+            # `probe` may be an `_AbandonedReattachProbe` (2026-09-15): a probe whose strokes
+            # landed and whose proof then refused.  A measured one carries its residual in the
+            # same field and the same convention as a completed probe, so it needs no special
+            # case; an UNMEASURABLE one carries `None` there, which this same type gate already
+            # turns into the sweep's `position_unmeasured` refusal rather than an assumed zero.
             probe_px = 0 if probe is None else getattr(probe, "page_shift_px", None)
             if (correction is None
                     or any(isinstance(value, bool) or not isinstance(value, int)
@@ -7165,8 +7303,7 @@ class AndroidDriver(DatingAppDriver):
                     "position_unmeasured", attempted_page_hearts=attempted,
                     failed_page_heart=heart_ordinal)
                 return evidence, None
-            terminal_frame = (correction.frame if probe is None or not probe.frames
-                              else probe.frames[-1])
+            terminal_frame = _reattach_terminal_frame(probe, correction.frame)
             current_anchor = _MeasuredItemAnchor(
                 terminal_frame,
                 int(target_page_offset) - int(original_reference_offset)
@@ -7359,7 +7496,11 @@ class AndroidDriver(DatingAppDriver):
         `should_stop` firing mid-burst or a blank screencap) OR if the card could not be centred
         within budget (see CENTERING CORRECTION below), which the walk above treats as "this
         candidate goes unmeasured", never as a negative verdict; `probe` is the `ReattachProbe`
-        the second burst ran over, or `None` if the first burst never earned one; `correction` is
+        the second burst ran over, `None` if the first burst never earned one OR if the probe it
+        earned moved nothing at all, and an `_AbandonedReattachProbe` when the probe refused
+        after its strokes had already displaced the page (2026-09-15) -- which the caller's
+        return-to-entry step folds into the distance it owes, or refuses on when that displacement
+        could not be measured; `correction` is
         a `_CenteringCorrection` describing every corrective read-scroll this call issued, or
         `None` when one of those strokes could not be measured. All three are handed to the
         caller's return-to-entry step because ONLY this call knows where its own gestures
@@ -7476,8 +7617,13 @@ class AndroidDriver(DatingAppDriver):
         # Same probe-eligibility rule as the free card's: only a byte-exact, centred first burst
         # ever earns the probe, decided by the SAME static method over a one-entry stand-in dict.
         probe = None
+        abandoned = None
         if self._still_photo_reattach_candidate({heart_ordinal: dwell}) is not None:
-            probe = self._still_photo_reattach_probe(anchor, rect, should_stop)
+            outcome = self._still_photo_reattach_probe(anchor, rect, should_stop)
+            if isinstance(outcome, _AbandonedReattachProbe):
+                abandoned = outcome
+            else:
+                probe = outcome
         if probe is not None:
             probe_sequence = [probe.anchor, *probe.frames]
             probe_frame_height = decoded_frame_height(probe.anchor)
@@ -7489,10 +7635,15 @@ class AndroidDriver(DatingAppDriver):
         # The base card records this same finalized two-burst evidence in `_still_photo_dwell`.
         # Walked candidates used to return it without preserving any of their dwell/probe frames,
         # leaving a report able to prove only that navigation ran.  Keep the identical forensic
-        # record here, keyed by this physical page-heart ordinal on every action.
+        # record here, keyed by this physical page-heart ordinal on every action.  Only a
+        # COMPLETED probe is recorded: an abandonment took no second burst and has no frames of
+        # its own, so reporting it as one would claim a re-attach that never happened.
         self._record_still_photo_dwell(
             burst, span_s, {heart_ordinal: dwell}, probe)
-        return dwell, probe, correction
+        # An abandonment travels in the probe slot because it answers the caller's one question
+        # about it -- where did its gestures leave the phone -- and the cleanup step is the only
+        # consumer.  It never reaches `still_photo_reattach_legs`, so no card can be proved by it.
+        return dwell, probe if abandoned is None else abandoned, correction
 
     def _still_photo_dwell_walk_return_to_entry(
             self, target, probe, entry_anchor: _MeasuredItemAnchor,
@@ -7530,6 +7681,14 @@ class AndroidDriver(DatingAppDriver):
         exactly like an unmeasurable step in the loop below already does, rather than walk back a
         distance it cannot account for.
 
+        AN ABANDONED PROBE IS OWED EXACTLY LIKE A COMPLETED ONE (2026-09-15). `probe` may be an
+        `_AbandonedReattachProbe`: a probe that put real strokes on the phone and then refused.
+        Its `page_shift_px` carries the same convention and folds into the same sum, and
+        `_reattach_terminal_frame` finds the frame it measured that residual to. An abandonment
+        that could NOT measure its own displacement carries `page_shift_px=None` and is refused
+        here on exactly the grounds `correction=None` is: the phone moved by an unknown amount,
+        so there is no distance to walk back and no anchor to hand a later navigation.
+
         NOT should_stop-GATED, on `_still_photo_reattach_probe`'s own precedent and for its
         stated reason: `navigate_to_item` has already displaced the page from the position
         `_index_captured_items` anchors bottom-up navigation on, so walking it back is a cleanup
@@ -7543,9 +7702,11 @@ class AndroidDriver(DatingAppDriver):
         """
         if correction is None:
             return None
-        frame = correction.frame if probe is None or not probe.frames else probe.frames[-1]
-        total = (-target.climbed_px + correction.total_px
-                + (0 if probe is None else probe.page_shift_px))
+        probe_shift_px = 0 if probe is None else probe.page_shift_px
+        if probe_shift_px is None:
+            return None
+        frame = _reattach_terminal_frame(probe, correction.frame)
+        total = -target.climbed_px + correction.total_px + probe_shift_px
         return self._return_to_entry_from_measured_position(
             entry_anchor, frame=frame, terminal_shift_px=total)
 
@@ -9774,9 +9935,13 @@ class AndroidDriver(DatingAppDriver):
         must return ``None``: a cold launch can resume a different card, and returning the old
         pixels would let AUTO score one person and pass another. A second pinning finding, an
         incomplete measurement, a foreground/profile failure, any capture refusal, or Stop after
-        that boundary therefore restores the old latch but abandons the capture. No action,
-        label, text, or tap path is reachable here: the only new device operations are package
-        lifecycle commands and `_capture_current`'s ordinary read-scrolls.
+        that boundary therefore restores the old latch but abandons the capture -- and, except on
+        an operator Stop or a re-raise, publishes its reason on `_blocked_reason` (plus the
+        `cold_relaunch_recovery` stop kind beside it), because a ``None`` return has no other way
+        to carry one (see `abandon_after_lifecycle`). No action, label, text, or tap path is
+        reachable here:
+        the only new device operations are package lifecycle commands and `_capture_current`'s
+        ordinary read-scrolls.
         """
         binding = self._scroll_top_signal_binding()
         pinned = self._capture_scroll_top_pinning_evidence
@@ -9799,8 +9964,49 @@ class AndroidDriver(DatingAppDriver):
         old_latch = self._scroll_top_pinned
         old_latch_announced = self._scroll_top_pinned_announced
 
-        def abandon_after_lifecycle(reason: str) -> None:
-            """Discard every old-card artifact after a cold launch may have changed the deck."""
+        def abandon_after_lifecycle(reason: str, *, raising: bool = False,
+                                    stopped: bool = False) -> None:
+            """Discard every old-card artifact after a cold launch may have changed the deck.
+
+            AND SAY WHY, WHERE THE OPERATOR WILL SEE IT (found 2026-09-15). Every caller below
+            returns ``None``, and `_invalidate_item_index` files its reason in
+            `_current_items_unavailable` -- a field that only ever escapes the driver ON A
+            RETURNED `Profile`. A ``None`` return therefore threw the sentence away, and
+            `blocked_reason()` re-screencapped the now perfectly healthy relaunched deck and
+            answered ``None`` too, so worker.py broke out with `stop_reason=None` and the Hub
+            showed a bare "stopped" -- minutes after the driver force-stopped the owner's dating
+            app. `_blocked_reason` is the channel both worker loops actually consult when a
+            capture comes back ``None`` (worker.py's training and auto loops each re-read
+            `blocked_reason()` right there), and latching it is exactly what
+            `_refuse_actionable_capture_entry` already does for the same "return None, tell the
+            operator why" shape. Owner rule: the hub must clearly show the stop reason.
+
+            `raising=True` marks the call sites that re-raise immediately afterwards. Those
+            already carry their own terminal meaning out to the caller (a closed transport is
+            not an operator-actionable blocked deck), and `_blocked_reason` is a run-lifetime
+            latch nothing clears, so publishing one there would replace a real exception's story
+            with this one.
+
+            `stopped=True` marks the two OPERATOR-STOP call sites for the same reason, stated
+            explicitly rather than inferred from the wording of a reason string. A clean Stop is
+            the operator getting what they asked for, and because the latch is run-lifetime and
+            nothing clears it, publishing one would leave a "blocked deck" sentence sitting in
+            the driver for the rest of the session -- inert today only because both worker loops
+            happen to test `stop_event` before they consult `blocked_reason()`, which is luck and
+            not a guarantee. The debug row below is written on every one of these paths: the
+            point is that EVERY abandon leaves an outcome record beside the
+            `scroll_top_signal_cold_relaunch` attempt row, including the ones that propagate and
+            the ones the operator asked for.
+
+            DIAGNOSTICS LAST (2026-09-15). The row is written after the resets and the index
+            invalidation, not before them, on this module's ordinary ordering: the fail-closed
+            work this function exists to do must not queue behind file I/O that is best-effort by
+            construction.
+            """
+            published = not (raising or stopped)
+            if published:
+                self._blocked_reason = reason
+                self._blocked_stop_kind = "cold_relaunch_recovery"
             self._scroll_top_pinned = old_latch
             self._scroll_top_pinned_announced = old_latch_announced
             self._current_sigs = []
@@ -9826,6 +10032,14 @@ class AndroidDriver(DatingAppDriver):
             self._identity_ocr_attempts = []
             self._ocr_band_cache = {}
             self._invalidate_item_index(reason)
+            if self._dbg is not None:
+                try:
+                    self._dbg.action(
+                        "scroll_top_signal_cold_relaunch_abandoned",
+                        reason=reason, raising=raising, stopped=stopped,
+                        blocked_reason_published=published)
+                except Exception:  # noqa: BLE001 -- diagnostics cannot alter the recovery
+                    pass
 
         # A package lifecycle command is more consequential than a read-scroll.  It is licensed
         # only while Android positively reports that Hinge owns the foreground AND the pixels are
@@ -9883,7 +10097,7 @@ class AndroidDriver(DatingAppDriver):
             # as a successful relaunch.
             abandon_after_lifecycle(
                 "the cold-relaunch transport closed after force-stop, so the visible card can "
-                "no longer be attributed to the refused capture")
+                "no longer be attributed to the refused capture", raising=True)
             raise
         except Exception:  # noqa: BLE001 -- it may have stopped before its response was lost
             try:
@@ -9894,7 +10108,7 @@ class AndroidDriver(DatingAppDriver):
             except DriverClosed:
                 abandon_after_lifecycle(
                     "the cold-relaunch compensating transport closed, so the visible card can "
-                    "no longer be attributed to the refused capture")
+                    "no longer be attributed to the refused capture", raising=True)
                 raise
             except Exception:
                 pass
@@ -9911,7 +10125,7 @@ class AndroidDriver(DatingAppDriver):
             # silently treating it as an ordinary recoverable capture refusal.
             abandon_after_lifecycle(
                 "the cold-relaunch launcher transport closed, so the visible card can no "
-                "longer be attributed to the refused capture")
+                "longer be attributed to the refused capture", raising=True)
             raise
         except Exception:  # noqa: BLE001 -- compensate once, then always fail closed
             try:
@@ -9921,7 +10135,7 @@ class AndroidDriver(DatingAppDriver):
             except DriverClosed:
                 abandon_after_lifecycle(
                     "the cold-relaunch compensating launcher transport closed, so the visible "
-                    "card can no longer be attributed to the refused capture")
+                    "card can no longer be attributed to the refused capture", raising=True)
                 raise
             except Exception:
                 pass
@@ -9932,7 +10146,7 @@ class AndroidDriver(DatingAppDriver):
         if not self._interruptible_sleep(human_cooldown(1.5), should_stop):
             abandon_after_lifecycle(
                 "the cold-relaunch recovery was stopped before the replacement card could be "
-                "captured and attributed")
+                "captured and attributed", stopped=True)
             return None
 
         # Re-read the build/geometry after restart; the old healthy finding cannot authorize a
@@ -9944,7 +10158,7 @@ class AndroidDriver(DatingAppDriver):
         except DriverClosed:
             abandon_after_lifecycle(
                 "the cold-relaunched card's calibration transport closed before it could be "
-                "safely attributed")
+                "safely attributed", raising=True)
             raise
         except Exception:  # noqa: BLE001 -- binding probe cannot license a recovery on failure
             abandon_after_lifecycle(
@@ -9963,7 +10177,7 @@ class AndroidDriver(DatingAppDriver):
             # every artifact that could otherwise be mistaken for the post-launch card.
             abandon_after_lifecycle(
                 "the cold-relaunch screen could not be safely inspected before the replacement "
-                "card was attributed")
+                "card was attributed", raising=True)
             raise
         if not launch_is_safe:
             abandon_after_lifecycle(
@@ -9985,13 +10199,13 @@ class AndroidDriver(DatingAppDriver):
             # only recovery-specific work this branch does.
             abandon_after_lifecycle(
                 "the cold-relaunch provisional capture failed before the replacement card "
-                "could be safely attributed")
+                "could be safely attributed", raising=True)
             raise
 
         if should_stop is not None and should_stop():
             abandon_after_lifecycle(
                 "the cold-relaunch recovery was stopped after its provisional replacement "
-                "capture, so that capture is abandoned")
+                "capture, so that capture is abandoned", stopped=True)
             return None
 
         evidence = self._capture_scroll_top_pinning_evidence
@@ -10008,7 +10222,7 @@ class AndroidDriver(DatingAppDriver):
             except Exception:
                 abandon_after_lifecycle(
                     "the cold-relaunch provisional capture could not confirm its own scroll "
-                    "top before the replacement card was attributed")
+                    "top before the replacement card was attributed", raising=True)
                 raise
         valid = bool(
             recovered is not None
@@ -10438,6 +10652,19 @@ class AndroidDriver(DatingAppDriver):
         if reason is not None:
             self._blocked_reason = reason
         return reason
+
+    def blocked_stop_kind(self) -> str | None:
+        """Worker-facing companion to `blocked_reason`: WHICH stop that sentence describes.
+
+        Same contract as `blocked_reason` -- never raises, never touches the screen -- because
+        worker.py asks it in exactly the same place: a capture came back ``None`` and
+        `blocked_reason()` produced a sentence. ``None`` means the ordinary blocked deck, which
+        is the story every other latch in this driver carries and the one worker.py falls back
+        to. The single exception is `abandon_after_lifecycle`, where the deck is fine and the
+        cold-relaunch RECOVERY is what failed; telling the operator their deck is blocked there
+        would send them to the phone to clear a paywall that does not exist.
+        """
+        return self._blocked_stop_kind
 
     def _locate_target_heart(self, item_index: int | None, *, should_stop=None) -> tuple[int, int]:
         """comment_sheet flow only. Locate the heart of the numbered photo the opener is about --
@@ -11738,6 +11965,14 @@ class AndroidDriver(DatingAppDriver):
         evidence = self._landed_auto_opener_evidence
         return dict(evidence) if evidence is not None else None
 
+    def like_send_attempted(self) -> bool:
+        """Has the current like attempt already tapped Send Like? See base.DatingAppDriver's
+        like_send_attempted for the contract and for why this is asked at all: everything this
+        driver does after that tap (the Rose-upsell dismissal, _verify_like_landed, Training's
+        _verify_training_like_landed) can only CONFIRM a send it cannot undo, so a raise from
+        any of them leaves the opener out and the outcome unknown -- not unsent."""
+        return self._like_send_attempted
+
     def _hide_keyboard_for_training(self, *, should_stop=None) -> bytes:
         """Dismiss the IME through the guarded input boundary and return its settled frame.
 
@@ -12510,6 +12745,10 @@ class AndroidDriver(DatingAppDriver):
         plain like with no item at all, but any text requires ``model_item_index`` and therefore
         takes the calibrated counting-navigation/verify path below."""
         self._landed_auto_opener_evidence = None
+        # Cleared HERE, before the first refusal this method can raise, for the same reason the
+        # evidence above is: this attempt must never be described by the previous attempt's
+        # marker. See like_send_attempted().
+        self._like_send_attempted = False
         self._raise_if_action_cancelled(should_stop, boundary="targeting preflight")
         if opener and model_item_index is None:
             raise HingeTargetingError(
@@ -12719,6 +12958,14 @@ class AndroidDriver(DatingAppDriver):
         # A Training decision can return at the same instant a global Hub Stop lands. Re-check
         # at the actual irreversible boundary before any Send Like touch.
         self._raise_if_action_cancelled(should_stop, boundary="Send Like tap")
+        # THE IRREVERSIBLE BOUNDARY, AND THE MARKER GOES UP BEFORE IT, NOT AFTER. Everything
+        # below this line -- the upsell dismissal, _verify_like_landed, Training's deck-advance
+        # proof -- can only decide whether we can CONFIRM the send; none of it can take the
+        # opener back. Setting this after the tap would leave the tap-itself-raised window
+        # (transport error, UHID refusal) claiming nothing was sent when it may have been, and
+        # that is the exact direction of the wrong answer worker.py used to record. See
+        # like_send_attempted().
+        self._like_send_attempted = True
         if send_composer is None:
             self._tap_frac(self.coords["send_like"])
         else:

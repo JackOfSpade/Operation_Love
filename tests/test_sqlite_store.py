@@ -1338,7 +1338,7 @@ def test_sqlite_joined_opener_outcomes_joins_by_app_and_profile_key(tmp_path):
     store = SQLiteStore(tmp_path / "store.db")
     try:
         store.record_opener("r", "hinge", "gemini-x", "hi there", "her photo",
-                            prompt_sha256="a" * 64, profile_key="k" * 64)
+                            decision="like", prompt_sha256="a" * 64, profile_key="k" * 64)
         store.record_opener_outcome("hinge", "k" * 64, "match", note="mutual like")
 
         rows = store.joined_opener_outcomes("hinge")
@@ -1363,7 +1363,7 @@ def test_sqlite_joined_opener_outcomes_finds_nothing_when_no_outcome_was_recorde
     store = SQLiteStore(tmp_path / "store.db")
     try:
         store.record_opener("r", "hinge", "gemini-x", "hi there", "her photo",
-                            profile_key="k" * 64)
+                            decision="like", profile_key="k" * 64)
 
         assert store.joined_opener_outcomes("hinge") == []
     finally:
@@ -1374,9 +1374,9 @@ def test_sqlite_joined_opener_outcomes_filters_by_prompt_era(tmp_path):
     store = SQLiteStore(tmp_path / "store.db")
     try:
         store.record_opener("r1", "hinge", "gemini-x", "old era opener", "ref",
-                            prompt_sha256="a" * 64, profile_key="k" * 64)
+                            decision="like", prompt_sha256="a" * 64, profile_key="k" * 64)
         store.record_opener("r2", "hinge", "gemini-x", "new era opener", "ref",
-                            prompt_sha256="b" * 64, profile_key="k" * 64)
+                            decision="like", prompt_sha256="b" * 64, profile_key="k" * 64)
         store.record_opener_outcome("hinge", "k" * 64, "match")
 
         matched = store.joined_opener_outcomes("hinge", prompt_sha256="a" * 64)
@@ -1401,7 +1401,7 @@ def test_sqlite_joined_opener_outcomes_excludes_empty_string_profile_key_on_both
     store = SQLiteStore(tmp_path / "store.db")
     try:
         store.record_opener("r", "hinge", "gemini-x", "unattributed opener", "ref",
-                            profile_key="")
+                            decision="like", profile_key="")
         store.record_opener_outcome("hinge", "", "unknown")
 
         assert store.joined_opener_outcomes("hinge") == []
@@ -1417,8 +1417,10 @@ def test_sqlite_joined_opener_outcomes_excludes_null_profile_key_openers(tmp_pat
     try:
         store.con.execute(
             "INSERT INTO openers (run_id, app, created_at, model, opener, referenced,"
-            " profile_key) VALUES (?,?,?,?,?,?,?)",
-            ("legacy", "hinge", 1.0, "gemini-old", "predates profile_key", "ref", None),
+            " decision, profile_key) VALUES (?,?,?,?,?,?,?,?)",
+            # decision='like' so this row fails the join on its NULL profile_key ALONE -- the
+            # rule under test -- rather than on the sent-only predicate it would otherwise trip.
+            ("legacy", "hinge", 1.0, "gemini-old", "predates profile_key", "ref", "like", None),
         )
         store.con.commit()
         store.record_opener_outcome("hinge", "", "unknown")
@@ -1432,7 +1434,7 @@ def test_sqlite_joined_opener_outcomes_does_not_cross_app_boundaries(tmp_path):
     store = SQLiteStore(tmp_path / "store.db")
     try:
         store.record_opener("r", "hinge", "gemini-x", "hinge opener", "ref",
-                            profile_key="k" * 64)
+                            decision="like", profile_key="k" * 64)
         store.record_opener_outcome("bumble", "k" * 64, "match")  # same key, different app
 
         assert store.joined_opener_outcomes("hinge") == []
@@ -1444,7 +1446,8 @@ def test_sqlite_joined_opener_outcomes_does_not_cross_app_boundaries(tmp_path):
 def test_sqlite_joined_opener_outcomes_returns_every_outcome_in_created_order(tmp_path):
     store = SQLiteStore(tmp_path / "store.db")
     try:
-        store.record_opener("r", "hinge", "gemini-x", "hi there", "ref", profile_key="k" * 64)
+        store.record_opener("r", "hinge", "gemini-x", "hi there", "ref", decision="like",
+                            profile_key="k" * 64)
         store.record_opener_outcome("hinge", "k" * 64, "match", observed_at=100.0)
         store.record_opener_outcome("hinge", "k" * 64, "reply", observed_at=200.0)
 
@@ -1481,3 +1484,69 @@ def test_sqlite_joined_opener_outcomes_signature_matches_the_store_protocol():
     assert list(params) == list(inspect.signature(Store.joined_opener_outcomes).parameters)
     assert params["prompt_sha256"].kind is inspect.Parameter.KEYWORD_ONLY
     assert params["prompt_sha256"].default is None
+
+
+def test_sqlite_joined_opener_outcomes_credits_only_the_opener_that_was_actually_sent(tmp_path):
+    """One outcome, one credited opener -- the SENT one.
+
+    The incident this pins: a profile is drafted-then-DISLIKED in one run (a real `openers`
+    row, real profile_key, decision='dislike', nothing ever typed on the phone), reappears in a
+    later run under a NEWER prompt era, is LIKED, and the owner records ONE match. The join used
+    to return that match TWICE, the extra copy crediting the older era with a match earned by a
+    draft nobody ever saw -- which is exactly the measurement the era comparison exists to make.
+    'like' is the one decision value that means "this opener reached the device" (the literal
+    tools/opener_outcome_recorder.py calls DECISION_SENT).
+    """
+    store = SQLiteStore(tmp_path / "store.db")
+    try:
+        store.record_opener("run-a", "hinge", "gemini-x", "never sent draft", "ref",
+                            decision="dislike", prompt_sha256="a" * 64, profile_key="k" * 64)
+        store.record_opener("run-b", "hinge", "gemini-x", "the one she got", "ref",
+                            decision="like", prompt_sha256="b" * 64, profile_key="k" * 64)
+        store.record_opener_outcome("hinge", "k" * 64, "match")
+
+        rows = store.joined_opener_outcomes("hinge")
+        assert [row["opener"] for row in rows] == ["the one she got"]
+        assert [row["prompt_sha256"] for row in rows] == ["b" * 64]
+        # ...and the drafted era can no longer claim it even when asked for by name.
+        assert store.joined_opener_outcomes("hinge", prompt_sha256="a" * 64) == []
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("decision", ["dislike", "never_sent", "synthetic_replay", "", None],
+                         ids=["dislike", "never-sent", "synthetic-replay", "empty", "null"])
+def test_sqlite_joined_opener_outcomes_excludes_every_unsent_decision_value(tmp_path, decision):
+    """Everything that is not 'like' means "never sent," including the NULL/'' spellings that
+    predate decision tracking. A read that feeds prompt-era comparisons must never guess a send
+    out of a row that does not record one."""
+    store = SQLiteStore(tmp_path / "store.db")
+    try:
+        store.con.execute(
+            "INSERT INTO openers (run_id, app, created_at, model, opener, referenced,"
+            " decision, profile_key) VALUES (?,?,?,?,?,?,?,?)",
+            ("r", "hinge", 1.0, "gemini-x", "not sent", "ref", decision, "k" * 64),
+        )
+        store.con.commit()
+        store.record_opener_outcome("hinge", "k" * 64, "match")
+
+        assert store.joined_opener_outcomes("hinge") == []
+    finally:
+        store.close()
+
+
+def test_sqlite_dropped_rows_is_empty_because_this_backend_cannot_lose_a_row(tmp_path):
+    """`{}` here is a FACT, not an unimplemented stub: SQLite writes inside the caller's own
+    call and a rejected INSERT raises out of it, so there is no buffer for a row to be parked
+    in, retried, and eventually given up on (which is exactly what BigQueryStore does, and why
+    the supervisor has to ask). Both backends answer, so no caller needs to know which it holds.
+    """
+    store = SQLiteStore(tmp_path / "store.db")
+    try:
+        assert store.dropped_rows() == {}
+        store.record_opener("r", "hinge", "gemini-x", "hi there", "ref", decision="like",
+                            profile_key="k" * 64)
+        store.flush()
+        assert store.dropped_rows() == {}
+    finally:
+        store.close()

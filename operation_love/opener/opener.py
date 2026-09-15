@@ -1250,10 +1250,29 @@ _LOCATION_CONFIRMATION_NOUN = (
     r"(?:guess|call|place|location|spot|area|city|town|village|region|country|state|province|"
     r"park|island|coast|lake|mountain)"
 )
+# ONE determiner set too, for exactly the reason there is ONE noun set above. The 2026-09-14
+# hoist unified the NOUN and left three hand-written determiner lists standing, so the identical
+# false positive survived one level down, now keyed on the DETERMINER instead: replaying the
+# shipped detector on 2026-09-15 accepted "Am I right about that city?" and rejected "Did I get
+# that city right?", and accepted "my city" in the first two shapes while rejecting it in the
+# third. Same teeth as the noun bug -- a draft that confirms nothing but the place itself is
+# regenerated purely because of which determiner the model reached for, and each such rejection
+# spends one of five attempts whose exhaustion stops the run (OpenerService._exhaust) -- and the
+# same fix: hoist the varying part into one constant and interpolate it at every point where a
+# determiner sits in front of a place noun.
+#
+# "it" is deliberately NOT in here, and that is not an oversight carried over from the old shape
+# 2 list. "it" is a bare PRONOUN, not a determiner: "did I get it right?" and "how close is it?"
+# are complete confirmations, while "it city" is not English. So the constant stays exactly the
+# set of words that can legally precede _LOCATION_CONFIRMATION_NOUN, and the shapes that also
+# accept a standalone pronoun in that slot keep "it" as their own local alternative beside the
+# interpolated determiner. Unifying on grammatical role rather than on "whatever each list
+# happened to contain" is what stops this bug recurring a third time one level further down.
+_LOCATION_CONFIRMATION_DET = r"(?:that|this|the|my)"
 _DIRECT_LOCATION_CONFIRMATION_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"^(?:am|was)\s+i\s+(?:even\s+)?"
                r"(?:close|right|correct|(?:way\s+)?off)"
-               r"(?:\s+(?:about|on|with)\s+(?:that|this|the|my)\s+"
+               rf"(?:\s+(?:about|on|with)\s+{_LOCATION_CONFIRMATION_DET}\s+"
                rf"{_LOCATION_CONFIRMATION_NOUN})?\?+$",
                re.IGNORECASE),
     # "how close is that guess?" belongs here for the same reason "how close am I?" does. The
@@ -1262,10 +1281,11 @@ _DIRECT_LOCATION_CONFIRMATION_PATTERNS: tuple[re.Pattern[str], ...] = (
     # showed it was rejected, so the claim was never true. See ops/OPENER-REDESIGN.md,
     # Addendum -- 2026-09-14 (a), CORRECTING THE RECORD.
     re.compile(r"^how\s+(?:close|far\s+off)\s+"
-               r"(?:(?:am|was)\s+i|(?:is|was)\s+(?:that|this|it|my)"
+               rf"(?:(?:am|was)\s+i|(?:is|was)\s+(?:it|{_LOCATION_CONFIRMATION_DET})"
                rf"(?:\s+{_LOCATION_CONFIRMATION_NOUN})?)\?+$", re.IGNORECASE),
     re.compile(r"^did\s+i\s+(?:get|guess|call)\s+"
-               rf"(?:it|that|this|the\s+{_LOCATION_CONFIRMATION_NOUN})\s+"
+               rf"(?:it|that|this|{_LOCATION_CONFIRMATION_DET}\s+"
+               rf"{_LOCATION_CONFIRMATION_NOUN})\s+"
                r"(?:right|correctly)\?+$",
                re.IGNORECASE),
     re.compile(r"^(?:is|was|could)\s+(?:that|this|it)\s+(?:be\s+)?"
@@ -1274,7 +1294,63 @@ _DIRECT_LOCATION_CONFIRMATION_PATTERNS: tuple[re.Pattern[str], ...] = (
                r"(?:right|correct|close|(?:way\s+)?off)\?+$", re.IGNORECASE),
     re.compile(r"^where\s+(?:is|was)\s+(?:that|this|it)"
                r"(?:\s+(?:taken|shot|filmed))?\?+$", re.IGNORECASE),
+    # "Is that where you were?" / "Is that where this was taken?" -- the same direct place
+    # confirmation as the shape directly above with the demonstrative fronted. It was missing
+    # until 2026-09-15 even though this guard's own docstring ("A direct confirmation or
+    # correction of the location remains valid"), VISUAL LOCATION TURN BOUNDARY and the retry
+    # hint ("ask only whether the location itself is right") all declare it legal, and the
+    # 2026-09-14 (a) corpus sweep found it already in live use as one of the four confirmation
+    # phrasings across 234 openers. That combination is the most expensive shape of false
+    # positive there is: the prompt asks for the wording, the table rejects it, and the retry
+    # re-draws the same natural phrasing until all five attempts are gone.
+    #
+    # Only the PLACE is being confirmed. The "you were" branch takes no taken/shot/filmed tail,
+    # because "where you were taken" is a reading about her rather than about the frame, and the
+    # "that/this/it was" branch takes one. The optional determiner+noun ("is that the city where
+    # you were?") reuses the two shared constants rather than growing a fourth private list. As
+    # everywhere in this table the match is anchored end to end, so no experience or activity
+    # clause can ride along behind the confirmation.
+    re.compile(rf"^(?:is|was)\s+(?:that|this|it)"
+               rf"(?:\s+{_LOCATION_CONFIRMATION_DET}\s+{_LOCATION_CONFIRMATION_NOUN})?"
+               r"\s+where\s+"
+               r"(?:you\s+were|(?:that|this|it)\s+was(?:\s+(?:taken|shot|filmed))?)"
+               r"\?+$", re.IGNORECASE),
     re.compile(r"^(?:right|correct)\?+$", re.IGNORECASE),
+)
+# A confirmation has to be addressed to the right person. Every shape above asks HER to settle a
+# guess the SENDER made, and each spells the guesser as a literal "i" or "my". The mis-addressed
+# mirror puts HER in the guesser's slot -- "did you get the city right?", "was your guess right?",
+# "were you close?" -- which confirms nothing about the place and reads as though she had been
+# guessing at a photograph of her own life.
+#
+# Until 2026-09-15 this was a bare search for "you" anywhere in the later beat, which vetoed any
+# confirmation that merely NAMES her. That cost the entire "is that where you were?" family, the
+# one place in this table where the second person is the point rather than the defect: SHE IS THE
+# ONE WHO KNOWS says she settles the place precisely because she was standing in it, so the
+# wording the prompt asks for necessarily mentions her. The check now matches only the recipient
+# in the guesser's own slot -- subject of the confirming verb, or owner of the guess being
+# confirmed -- so naming her as the person who was there no longer disqualifies the beat.
+#
+# It is belt and braces on top of the anchored patterns above, not the thing that rejects a
+# mis-addressed confirmation today: none of those patterns can be reached with "you" in the
+# guesser's slot, because each hardcodes "i"/"my" there. Its job is to stop a future shape from
+# blessing the mirror by accident, which is why it is written against the guesser's slot rather
+# than against any particular one of today's patterns.
+#
+# It replaced the bare search on THIS table only. The free-form location-QUERY short circuit
+# still refuses her outright, because its patterns end in an open capture group instead of
+# literal words; narrowing that branch to this test as well is what re-admitted "Is that Your
+# Happy Place?" and its family on 2026-09-15. See _RECIPIENT_INSIDE_LOCATION_RE below.
+_MISADDRESSED_CONFIRMATION_RE = re.compile(
+    r"\b(?:"
+    r"(?:did|do|does|have|has|had|could|can|would|will)\s+you\s+"
+    r"(?:even\s+|already\s+|actually\s+)?(?:get|got|guess(?:ed)?|call(?:ed)?)"
+    r"|(?:am|are|is|was|were)\s+you\s+(?:even\s+)?"
+    r"(?:right|correct|close|(?:way\s+)?off)"
+    r"|you\s+(?:got|guessed|called)\s+(?:it|that|this)"
+    rf"|your\s+(?:own\s+)?{_LOCATION_CONFIRMATION_NOUN}"
+    r")\b",
+    re.IGNORECASE,
 )
 _DIRECT_LOCATION_QUERY_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(
@@ -1293,6 +1369,32 @@ _PROPER_PLACE_RE = re.compile(
     rf"\s+(?:and|of|the|de|del|la|las|los|le|du|des|van|von|in|on|upon|at)"
     rf"\s+{_PROPER_PLACE_WORD})*$"
 )
+
+# The recipient can never be part of a GUESSED PLACE NAME. This is the veto the free-form
+# location-QUERY branch of _unconfirmed_location_followup_markers keeps, and it is deliberately
+# the blunt "does she appear in here at all" test that the confirmation table above no longer
+# uses.
+#
+# The two branches need different tests because they are reached differently. Every pattern in
+# _DIRECT_LOCATION_CONFIRMATION_PATTERNS is anchored end to end over literal words, so naming
+# her there can only mean the one shape that has to name her, "is that where you were?" -- which
+# is why that branch narrowed to _MISADDRESSED_CONFIRMATION_RE on 2026-09-15. The query patterns
+# just above end in an open ``(?P<location>.+?)`` group whose ONLY filter is
+# _is_location_confirmation_phrase, and that grammar reads any run of Capitalized Words as a
+# place name. Applying the same narrowing here re-admitted a whole family of experience
+# questions premised on an unconfirmed guess: replaying the two detectors side by side on
+# 2026-09-15 showed "Is that Your Happy Place?", "Is that Your Kind of Town?", "Is that Your
+# Favourite Spot?", "Was that Your Best Trip?", "Is that Your Hometown?" and "Was that You?"
+# flipping from rejected to ACCEPTED, because Title Case is all _PROPER_PLACE_RE asks for and
+# "your happy place" is not one of _LOCATION_CONFIRMATION_NOUN's places, so nothing else stopped
+# them. Every one of those asks what the place MEANT TO HER, which is coherent only if the guess
+# was right -- exactly what this guard exists to stop.
+#
+# Scoped to the captured location rather than to the whole beat on purpose. The location group
+# runs to the question mark, so everything a query pattern does not spell out literally is
+# already inside it, and keeping the veto there leaves room for a future confirmation shape that
+# must name her without that shape having to opt out of this check.
+_RECIPIENT_INSIDE_LOCATION_RE = re.compile(r"\byou(?:r|rs|rself)?\b", re.IGNORECASE)
 
 # Cap on how much of a malformed model-output value gets echoed into an error message --
 # long enough to be diagnostic, short enough that a huge/garbage payload can't blow up a
@@ -1811,9 +1913,13 @@ def _unconfirmed_location_followup_markers(text: str) -> list[str]:
     if not followup:
         return []
     confirmation = re.sub(r"\s*:\)$", "", followup).rstrip()
-    mentions_recipient = re.search(
-        r"\byou(?:r|rs|rself)?\b", confirmation, re.IGNORECASE) is not None
-    if (not mentions_recipient
+    # Not "does this beat mention her" -- "is that where you were?" mentions her and is a pure
+    # place confirmation. Only a beat that puts her in the GUESSER's slot is disqualifying; see
+    # _MISADDRESSED_CONFIRMATION_RE for why the old bare "you" search was the wrong test for the
+    # ANCHORED confirmation table. It is the wrong test only there: the free-form query branch
+    # below still refuses her outright, because it has no literal words to be safe behind.
+    misaddressed = _MISADDRESSED_CONFIRMATION_RE.search(confirmation) is not None
+    if (not misaddressed
             and any(pattern.fullmatch(confirmation)
                     for pattern in _DIRECT_LOCATION_CONFIRMATION_PATTERNS)):
         return []
@@ -1822,8 +1928,14 @@ def _unconfirmed_location_followup_markers(text: str) -> list[str]:
         for pattern in _DIRECT_LOCATION_QUERY_PATTERNS
         if (match := pattern.fullmatch(confirmation)) is not None
     ]
-    if (not mentions_recipient
+    # The free-form half. _is_location_confirmation_phrase is the only thing reading what the
+    # model actually wrote here, and it accepts any Title-Cased run as a place name, so this
+    # branch additionally refuses a "place" she is standing inside -- "Is that Your Happy
+    # Place?" is an experience question wearing a proper noun's clothes. See
+    # _RECIPIENT_INSIDE_LOCATION_RE for the openers that came back the day this was dropped.
+    if (not misaddressed
             and any(_is_location_confirmation_phrase(match.group("location"))
+                    and _RECIPIENT_INSIDE_LOCATION_RE.search(match.group("location")) is None
                     for match in location_query_matches)):
         return []
     if cue_idx == 0:
@@ -2278,12 +2390,23 @@ class OpenerClient(Protocol):
     outcome doc 5.2 exists to prevent -- raw scroll frames cannot carry an item number, so a
     dropped `items` would give the model a numbering nothing downstream can act on.
 
+    `run_id`, unlike `items`, is OPTIONAL (default ""): OpenerService does pass it on every
+    call (see maybe_opener and _apply_entropy_guard in service.py), but it exists purely so
+    GeminiOpener.generate() can prefix its own non-fatal cascade print()s with `Run {run_id}: `
+    -- bugreport.py's completion verdict needs that tag to attribute a cascade line to the run
+    that produced it rather than to whatever earlier run last used this hub process's one
+    never-cleared log ring (see bugreport._run_completion_assessment_md). A client that has no
+    such logging to attribute -- direct callers like tools/opener_replay.py and
+    tools/gemini_model_probe.py, or a minimal test double -- is free to ignore it, which is
+    exactly what an optional, defaulted kwarg guarantees: nothing downstream breaks for not
+    passing or not accepting it.
     """
 
     def generate(self, profile: Profile, style: str, retry_hint: str = "", *,
                  items: "ItemRequest | None" = None,
                  should_stop: Callable[[], bool] | None = None,
-                 skip_models: frozenset[str] = frozenset()) -> OpenerResult: ...
+                 skip_models: frozenset[str] = frozenset(),
+                 run_id: str = "") -> OpenerResult: ...
 
 
 class GeminiAPIError(RuntimeError):
@@ -3592,7 +3715,8 @@ class GeminiOpener:
     def generate(self, profile: Profile, style: str, retry_hint: str = "", *,
                  items: ItemRequest | None = None,
                  should_stop: Callable[[], bool] | None = None,
-                 skip_models: frozenset[str] = frozenset()) -> OpenerResult:
+                 skip_models: frozenset[str] = frozenset(),
+                 run_id: str = "") -> OpenerResult:
         """Generate one opener for a profile, cascading across configured models on transient
         failures (see the cascade's comments below for what each failure mode does).
 
@@ -3600,6 +3724,16 @@ class GeminiOpener:
         raised when Observe's advisory-preview path ran out of time) was removed on 2026-09-06
         along with that path: the service never passes a deadline into this call any more, so
         every request now runs for the full ``request_timeout_s`` regardless of caller.
+
+        run_id (optional, default ""): attributes this call's non-fatal cascade print()s (the
+        six ``Gemini opener: ...`` branches below that end in ``return None``, not a raise) to
+        the run that made them, by prefixing each with ``Run {run_id}: `` exactly like
+        supervisor.py already prefixes its own run-level log lines. Empty means "no run id was
+        given" and prints exactly the unprefixed message this method always printed -- which is
+        what keeps a direct caller with nothing to attribute (tools/opener_replay.py,
+        tools/gemini_model_probe.py) working unchanged. See OpenerClient's own docstring for why
+        this is optional where `items` is not, and bugreport.py's
+        _run_completion_assessment_md for the run-scoping this prefix exists to make possible.
         """
         # items is doc 5.2/5.7's item-crop request shape and is THE shape Part B is migrating
         # to: one cropped image per profile item, numbered by position and labelled adjacent to
@@ -3725,6 +3859,12 @@ class GeminiOpener:
                 images = list(items.items)
             else:
                 images = list(profile.photos)
+            # THE CASCADE'S RUN ATTRIBUTION TAG. Computed once, referenced by every one of the
+            # six non-fatal cascade print()s in `attempt` below (a closure, so it sees this
+            # local without needing its own parameter). Empty `run_id` -- the default, and what
+            # every caller passed before this parameter existed -- yields "", so an unprefixed
+            # caller's output is byte-identical to before this change.
+            run_prefix = f"Run {run_id}: " if run_id else ""
             # WHAT `item_index` WILL MEAN IN THE ANSWER, derived from the payload actually being
             # built rather than assumed anywhere downstream (see the INDEX_SPACE_* constants).
             # Both travel to _parse, which needs the count for its range check and the space for
@@ -3847,7 +3987,7 @@ class GeminiOpener:
                     # and reporting a connection timeout as a "provider 5xx" would point at
                     # Google when the problem may well be the local network.
                     scopes[model] = "transport"
-                    print(f"Gemini opener: {model} failed at the transport level "
+                    print(f"{run_prefix}Gemini opener: {model} failed at the transport level "
                           f"({type(exc).__name__}: {exc}); NOT blacklisting -- trying the "
                           "next configured model for this profile only (this model will be "
                           "retried first on the next profile).")
@@ -3874,7 +4014,7 @@ class GeminiOpener:
                             # RPD (requests-per-day) resets only at midnight Pacific, so this
                             # model genuinely cannot serve the rest of THIS run.
                             self._unavailable_models[model] = "day"
-                            print(f"Gemini opener: {model} hit its per-day quota (resets at "
+                            print(f"{run_prefix}Gemini opener: {model} hit its per-day quota (resets at "
                                   "midnight Pacific); blacklisting it for the rest of this run "
                                   "and trying the next configured model.")
                         else:
@@ -3889,7 +4029,7 @@ class GeminiOpener:
                             # regardless of classification, so the "stop automation when
                             # everything is used up" guarantee holds either way.
                             kind = "per-minute" if scope == "minute" else "unclassified"
-                            print(f"Gemini opener: {model} hit a {kind} 429; NOT blacklisting -- "
+                            print(f"{run_prefix}Gemini opener: {model} hit a {kind} 429; NOT blacklisting -- "
                                   "trying the next configured model for this profile only (this "
                                   "model will be retried first on the next profile).")
                         return None
@@ -3908,7 +4048,7 @@ class GeminiOpener:
                         # model, exactly like a per-day 429.
                         scopes[model] = "gone"
                         self._unavailable_models[model] = "gone"
-                        print(f"Gemini opener: {model} returned 404 NOT_FOUND ({error.message}); "
+                        print(f"{run_prefix}Gemini opener: {model} returned 404 NOT_FOUND ({error.message}); "
                               "this model id is retired or unavailable to this account and will "
                               "not come back mid-run -- dropping it from the cascade for the "
                               "rest of this run and trying the next configured model.")
@@ -3925,7 +4065,7 @@ class GeminiOpener:
                         # NOT retire this one: high demand clears on its own, so it stays first
                         # in line for the next profile, exactly like a per-minute 429.
                         scopes[model] = "busy"
-                        print(f"Gemini opener: {model} returned HTTP {error.http_code} "
+                        print(f"{run_prefix}Gemini opener: {model} returned HTTP {error.http_code} "
                               f"{error.status or 'server error'}; NOT blacklisting -- trying the "
                               "next configured model for this profile only (this model will be "
                               "retried first on the next profile).")
@@ -3955,7 +4095,7 @@ class GeminiOpener:
                         # firing exactly as they did before this branch existed.
                         scopes[model] = "thinking"
                         self._unavailable_models[model] = "thinking"
-                        print(f"Gemini opener: {model} returned HTTP 400 rejecting its "
+                        print(f"{run_prefix}Gemini opener: {model} returned HTTP 400 rejecting its "
                               f"configured thinking level or budget ({error.message}); this is "
                               "a per-model capability limit, not a property of the request, and "
                               "will not change mid-run -- dropping it from the cascade for the "

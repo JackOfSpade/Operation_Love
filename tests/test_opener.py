@@ -715,6 +715,31 @@ _UNCONFIRMED_LOCATION_MARKER = "unconfirmed location used as a later premise"
     "My guess is Rome. Did you get the city right?",
     "My guess is Rome. How close is that gelato?",
     "My guess is Rome. What was the best part of the city?",
+    # 2026-09-15: the "is that where ...?" shape was added to
+    # _DIRECT_LOCATION_CONFIRMATION_PATTERNS and the mis-addressed short-circuit narrowed from
+    # "mentions her at all" to "puts her in the guesser's slot". Both widen what is accepted,
+    # so these pin the rejection side of exactly that frame: the moment anything but the place
+    # itself is being asked about, the end-to-end anchor must stop matching again.
+    "My guess is Rome. Is that where you were skating?",
+    "My guess is Rome. Is that where you had the best pasta?",
+    "My guess is Rome. Is that where you were, and did you love it?",
+    "My guess is Rome. Is that where your favourite trip was?",
+    # 2026-09-15, the regression the narrowing caused on the OTHER branch. Dropping the bare
+    # recipient veto from the free-form location-QUERY short circuit let these back in, because
+    # _is_location_confirmation_phrase reads any Title-Cased run as a place name and neither
+    # "your happy place" nor "your hometown" is one of _LOCATION_CONFIRMATION_NOUN's places.
+    # Each asks what the place MEANT TO HER on top of a guess she has not confirmed yet, which
+    # is the whole reason this guard exists; _RECIPIENT_INSIDE_LOCATION_RE is what stops them.
+    # They are pinned here as strings rather than left to the invariant test below because the
+    # first round was tested in one direction only, and that is how the hole opened.
+    "That looks like Lake Louise. Is that Your Happy Place?",
+    "That looks like Lake Louise. Is that Your Kind of Town?",
+    "That looks like Lake Louise. Is that Your Favourite Spot?",
+    "That looks like Lake Louise. Was that Your Best Trip?",
+    "That looks like Lake Louise. Is that Your Hometown?",
+    "That looks like Lake Louise. Was that You?",
+    "That looks like Lake Louise. Is that You in Banff?",
+    "That looks like Lake Louise. Was that shot in Your Hometown?",
 ], ids=[
     "reported-lake-louise",
     "logged-namsan-tower",
@@ -739,6 +764,18 @@ _UNCONFIRMED_LOCATION_MARKER = "unconfirmed location used as a later premise"
     "widened-noun-set-still-rejects-recipient-directed-phrasing",
     "widened-noun-set-still-rejects-a-noun-outside-the-shared-set",
     "widened-noun-set-still-rejects-an-experience-question-after-the-noun",
+    "where-shape-still-rejects-an-activity-clause",
+    "where-shape-still-rejects-an-experience-clause",
+    "where-shape-still-rejects-a-coordinated-second-question",
+    "where-shape-still-rejects-a-possessive-experience-subject",
+    "query-branch-still-rejects-your-happy-place",
+    "query-branch-still-rejects-your-kind-of-town",
+    "query-branch-still-rejects-your-favourite-spot",
+    "query-branch-still-rejects-your-best-trip",
+    "query-branch-still-rejects-your-hometown",
+    "query-branch-still-rejects-was-that-you",
+    "query-branch-still-rejects-you-inside-a-real-place-name",
+    "query-branch-still-rejects-your-place-behind-taken-shot-filmed",
 ])
 def test_unconfirmed_location_followup_guard_flags_dependent_later_beats(text):
     assert _unconfirmed_location_followup_markers(text) == [
@@ -829,6 +866,27 @@ def test_unconfirmed_location_followup_guard_addendum_20260914b_keeps_the_histor
     "That rock arch looks a lot like the Algarve coast in Portugal. How close is that guess?",
     "My guess is Norway. How far off was that guess?",
     "My guess is Norway. How close am I?",
+    # 2026-09-15: "is that where you were?" is a direct place confirmation that the guard's own
+    # docstring, VISUAL LOCATION TURN BOUNDARY and the retry hint all declare legal, and the
+    # 2026-09-14 (a) corpus sweep found it already in live use among 234 openers -- yet this
+    # table did not carry it, so the prompt asked for a wording the detector then rejected and
+    # the retry re-drew the same natural phrasing until the attempt budget was gone. The second
+    # person here is the point, not a defect: SHE IS THE ONE WHO KNOWS settles the place because
+    # she was standing in it, which is why the mis-addressed short-circuit had to narrow from
+    # "mentions her" to "puts her in the guesser's slot" for these to pass.
+    "That looks like Lake Louise. Is that where you were?",
+    "That looks like Lake Louise. Was that where you were?",
+    "That looks like Lake Louise. Is this where you were?",
+    "That looks like Lake Louise. Is that where this was taken?",
+    "That looks like Lake Louise. Is that the lake where you were?",
+    # The determiner disagreement measured on 2026-09-15: shape 1 accepted "that city" while
+    # shape 3 rejected it, and "my city" was legal in shapes 1 and 2 but not 3. One shared
+    # _LOCATION_CONFIRMATION_DET now backs all of them (the cross product is swept live by
+    # test_location_confirmation_shapes_share_one_noun_and_determiner_set; these are the
+    # measured strings, kept by name).
+    "My guess is Rome. Did I get that city right?",
+    "My guess is Rome. Did I get my city right?",
+    "My guess is Rome. How close is the guess?",
 ], ids=[
     "existing-norway-guess",
     "existing-freezing-guess",
@@ -866,43 +924,199 @@ def test_unconfirmed_location_followup_guard_addendum_20260914b_keeps_the_histor
     "portugal-how-close-is-that-guess-precision-check-correction",
     "how-far-off-was-that-guess",
     "how-close-am-i-still-passes",
+    "is-that-where-you-were",
+    "was-that-where-you-were",
+    "is-this-where-you-were",
+    "is-that-where-this-was-taken",
+    "is-that-the-lake-where-you-were",
+    "measured-regression-did-i-get-that-city-right",
+    "measured-regression-did-i-get-my-city-right",
+    "measured-regression-how-close-is-the-guess",
 ])
 def test_unconfirmed_location_followup_guard_preserves_clean_corpus(text):
     assert _unconfirmed_location_followup_markers(text) == []
 
 
-def test_location_confirmation_shapes_share_one_noun_set():
-    """Regression guard for the 2026-09-14 (b) bug itself, not just its symptoms: two
-    confirmation shapes once drew from DIFFERENT place-noun lists ("Am I right about the
-    country?" accepted, "Did I get the country right?" rejected; "city" and "town" in
-    neither), so which verb the model reached for silently decided the verdict.
-    _DIRECT_LOCATION_CONFIRMATION_PATTERNS now interpolates ONE shared alternation,
-    _LOCATION_CONFIRMATION_NOUN, into both the "am/was I right/close ... about/on/with the
-    <noun>?" shape and the "did I get/guess/call the <noun> right?" shape.
+def _live_alternation_members(alternation: str, name: str) -> list[str]:
+    """Split a live ``(?:a|b|c)`` constant from opener.py into its members.
 
-    This test reads that live alternation (never a hardcoded copy of it) and asserts both
-    shapes accept a location-confirming later beat for every noun currently in it. A future
-    editor who extends one pattern's noun list without the other reproduces exactly the
-    2026-09-14 (b) bug and this test fails immediately, without anyone having to write a new
-    case naming the specific noun that regressed.
+    Shared by the confirmation-table invariant tests below so every one of them reads the
+    SHIPPED alternation rather than a hardcoded copy: a copy would keep passing after someone
+    edits the constant, which is the precise way this table's two false-positive bugs
+    (2026-09-14 (b) noun sets, 2026-09-15 determiner sets) hid from the suite.
     """
-    noun_alternation = opener_mod._LOCATION_CONFIRMATION_NOUN
-    assert noun_alternation.startswith("(?:") and noun_alternation.endswith(")"), (
-        "this test assumes the simple (?:a|b|c) alternation shape used today; update the "
-        "extraction below if _LOCATION_CONFIRMATION_NOUN's construction ever changes"
-    )
-    nouns = noun_alternation[len("(?:"):-len(")")].split("|")
-    assert len(nouns) > 1  # sanity: the alternation really does list more than one noun
+    assert alternation.startswith("(?:") and alternation.endswith(")"), (
+        f"this test assumes the simple (?:a|b|c) alternation shape used today; update the "
+        f"extraction if {name}'s construction ever changes")
+    members = alternation[len("(?:"):-len(")")].split("|")
+    assert len(members) > 1  # sanity: the alternation really does list more than one member
+    return members
 
-    for noun in nouns:
-        did_i_get = f"My guess is Rome. Did I get the {noun} right?"
-        am_i_right = f"My guess is Rome. Am I right about the {noun}?"
-        assert _unconfirmed_location_followup_markers(did_i_get) == [], (
-            f"'Did I get the {noun} right?' should be accepted as a location confirmation, "
-            f"the same as every other noun in the shared set")
-        assert _unconfirmed_location_followup_markers(am_i_right) == [], (
-            f"'Am I right about the {noun}?' should be accepted as a location confirmation, "
-            f"the same as every other noun in the shared set")
+
+def test_location_confirmation_shapes_share_one_noun_and_determiner_set():
+    """Regression guard for the 2026-09-14 (b) and 2026-09-15 bugs themselves, not just their
+    symptoms: two confirmation shapes once drew from DIFFERENT place-noun lists ("Am I right
+    about the country?" accepted, "Did I get the country right?" rejected; "city" and "town" in
+    neither), so which verb the model reached for silently decided the verdict.
+
+    The 2026-09-14 (b) fix hoisted the NOUN into _LOCATION_CONFIRMATION_NOUN and left three
+    hand-written DETERMINER lists behind, so the identical bug survived one level down and this
+    test passed straight over it because every case it wrote used the literal "the": replaying
+    the shipped detector accepted "Am I right about that city?" while rejecting "Did I get that
+    city right?", and accepted "my city" in two shapes out of three. Both the noun and the
+    determiner are now single shared constants interpolated into all three shapes.
+
+    This test reads both live alternations (never a hardcoded copy of either) and asserts the
+    full determiner x noun cross product is accepted in EVERY shape that takes a determiner and
+    a noun. A future editor who extends one pattern's list without the others reproduces either
+    bug and fails here immediately, without anyone having to write a new case naming the
+    specific determiner or noun that regressed.
+    """
+    nouns = _live_alternation_members(
+        opener_mod._LOCATION_CONFIRMATION_NOUN, "_LOCATION_CONFIRMATION_NOUN")
+    determiners = _live_alternation_members(
+        opener_mod._LOCATION_CONFIRMATION_DET, "_LOCATION_CONFIRMATION_DET")
+
+    # Every shape in _DIRECT_LOCATION_CONFIRMATION_PATTERNS that has a determiner + noun slot,
+    # written here as the sentence the model would actually produce. Keep this list in step
+    # with that table: a shape missing from here is a shape whose determiner list can drift
+    # again unnoticed.
+    shapes = (
+        "Am I right about {det} {noun}?",
+        "How close is {det} {noun}?",
+        "Did I get {det} {noun} right?",
+        "Is that {det} {noun} where you were?",
+    )
+    for determiner in determiners:
+        for noun in nouns:
+            for shape in shapes:
+                beat = shape.format(det=determiner, noun=noun)
+                text = f"My guess is Rome. {beat}"
+                assert _unconfirmed_location_followup_markers(text) == [], (
+                    f"{beat!r} should be accepted as a location confirmation, the same as "
+                    f"every other determiner x noun combination in the shared sets")
+
+
+def test_location_confirmation_determiner_set_excludes_the_bare_pronoun_it():
+    """``it`` is a PRONOUN, not a determiner, and _LOCATION_CONFIRMATION_DET deliberately
+    leaves it out: "did I get it right?" and "how close is it?" are complete confirmations
+    while "it city" is not English. The shapes that accept a standalone pronoun in that slot
+    therefore keep "it" as a shape-local alternative beside the interpolated determiner.
+
+    Pinned because the pre-2026-09-15 shape 2 list ("that|this|it|my") is exactly the kind of
+    mixed-role list that tempts a future editor to union "it" into the shared constant to make
+    the three lists look identical, which would silently start accepting "did I get it city
+    right?" -- harmless in isolation, but it turns the constant from "words that can precede a
+    place noun" back into "whatever each list happened to contain", which is the bug.
+    """
+    determiners = _live_alternation_members(
+        opener_mod._LOCATION_CONFIRMATION_DET, "_LOCATION_CONFIRMATION_DET")
+    assert "it" not in determiners, (
+        "'it' is a bare pronoun, not a determiner -- keep it as a shape-local alternative")
+    for beat in ("Did I get it right?", "How close is it?", "Is that where it was?"):
+        assert _unconfirmed_location_followup_markers(f"My guess is Rome. {beat}") == [], (
+            f"{beat!r} uses 'it' in the bare-pronoun slot and must stay accepted")
+
+
+def test_misaddressed_confirmation_check_reads_the_guessers_slot_not_the_word_you():
+    """The short-circuit that suppresses a MIS-ADDRESSED confirmation was a bare search for
+    "you" anywhere in the later beat until 2026-09-15. That test was wrong about what makes a
+    confirmation mis-addressed: the defect is her standing in the GUESSER's slot ("did you get
+    the city right?"), not her being mentioned at all. The bare search therefore vetoed the
+    whole "is that where you were?" family, the one place in the table where naming her is the
+    point rather than the defect -- SHE IS THE ONE WHO KNOWS says she settles the place
+    precisely because she was standing in it.
+
+    Asserted directly against the live _MISADDRESSED_CONFIRMATION_RE rather than only through
+    _unconfirmed_location_followup_markers, because today the anchored patterns in
+    _DIRECT_LOCATION_CONFIRMATION_PATTERNS each hardcode "i"/"my" in the guesser's slot, so
+    nothing mis-addressed can reach the short-circuit through the public function. It is belt
+    and braces, and this is the test that keeps it honest: widen it back toward "any you" and
+    the accepted cases below fail; narrow it past the guesser's slot and the rejected ones do.
+    """
+    misaddressed = opener_mod._MISADDRESSED_CONFIRMATION_RE
+    for beat in ("Did you get the city right?",
+                 "Did you guess the country right?",
+                 "Did you call it right?",
+                 "Were you close?",
+                 "Are you right about the region?",
+                 "Was your guess right?",
+                 "Is your call right?",
+                 "You guessed it right?"):
+        assert misaddressed.search(beat) is not None, (
+            f"{beat!r} puts her in the guesser's slot and must stay suppressed")
+    for beat in ("Is that where you were?",
+                 "Was that where you were?",
+                 "Is that the city where you were?",
+                 "Am I right about that city?",
+                 "Did I get that city right?",
+                 "How close is my guess?"):
+        assert misaddressed.search(beat) is None, (
+            f"{beat!r} confirms the place with the sender as the guesser and must not be "
+            f"suppressed merely because it names her")
+
+    # And the end-to-end consequence, both directions, through the shipped function.
+    assert _unconfirmed_location_followup_markers(
+        "That looks like Lake Louise. Is that where you were?") == []
+    assert _unconfirmed_location_followup_markers(
+        "My guess is Rome. Did you get the city right?") == [_UNCONFIRMED_LOCATION_MARKER]
+
+
+def test_query_branch_keeps_the_recipient_veto_the_confirmation_table_dropped():
+    """Both directions of the 2026-09-15 narrowing, held side by side in ONE test.
+
+    The first round replaced a bare "you" search with _MISADDRESSED_CONFIRMATION_RE on BOTH
+    short circuits at once. On the anchored confirmation table that was right, and it is what
+    stopped legitimate confirmations being rejected. On the free-form location-QUERY short
+    circuit it removed the only thing holding the line: those patterns end in an open
+    ``(?P<location>.+?)`` group filtered solely by _is_location_confirmation_phrase, whose
+    grammar accepts any Title-Cased run as a place name, so "Is that Your Happy Place?" and
+    "Was that You?" -- experience questions premised on a guess she has not confirmed -- went
+    from rejected to accepted while every test stayed green.
+
+    They stayed green because the round was tested in one direction only. Hence this test:
+    accepting the confirmations and refusing the experience questions are not two properties to
+    be traded off, they are the guard, and a repair that satisfies one by giving up the other
+    must fail here. Mutating either half out (widening the query branch back to the
+    guesser-slot test, or reverting the table to the bare "you" search) fails one block below.
+    """
+    # The veto is case-insensitive, which is the specific thing Title Case slipped past.
+    assert opener_mod._RECIPIENT_INSIDE_LOCATION_RE.search("Your Happy Place") is not None
+    assert opener_mod._RECIPIENT_INSIDE_LOCATION_RE.search("You") is not None
+    assert opener_mod._RECIPIENT_INSIDE_LOCATION_RE.search("Banff") is None
+
+    # Direction (a): the measured flips. A Title-Cased noun phrase she owns is not a place.
+    for beat in ("Is that Your Happy Place?",
+                 "Is that Your Kind of Town?",
+                 "Is that Your Favourite Spot?",
+                 "Was that Your Best Trip?",
+                 "Is that Your Hometown?",
+                 "Was that You?",
+                 "Is that You in Banff?",
+                 "Was that shot in Your Hometown?"):
+        text = f"That looks like Lake Louise. {beat}"
+        assert _unconfirmed_location_followup_markers(text) == [_UNCONFIRMED_LOCATION_MARKER], (
+            f"{beat!r} asks what the place meant to her on top of an unconfirmed guess and "
+            f"must stay rejected")
+
+    # Direction (b): everything the first round legitimately fixed still passes. The full
+    # determiner x noun cross product is read off the LIVE constants, so this half cannot go
+    # stale against the shapes the narrowing exists to serve.
+    nouns = _live_alternation_members(
+        opener_mod._LOCATION_CONFIRMATION_NOUN, "_LOCATION_CONFIRMATION_NOUN")
+    determiners = _live_alternation_members(
+        opener_mod._LOCATION_CONFIRMATION_DET, "_LOCATION_CONFIRMATION_DET")
+    beats = [shape.format(det=det, noun=noun)
+             for det in determiners
+             for noun in nouns
+             for shape in ("Did I get {det} {noun} right?",
+                           "Am I right about {det} {noun}?",
+                           "How close is {det} {noun}?")]
+    beats += ["Is that where you were?", "Is that where this was?"]
+    for beat in beats:
+        text = f"My guess is Rome. {beat}"
+        assert _unconfirmed_location_followup_markers(text) == [], (
+            f"{beat!r} confirms nothing but the place itself and must stay accepted")
 
 
 def test_confirmation_shapes_exclude_below_world_scale_nouns():

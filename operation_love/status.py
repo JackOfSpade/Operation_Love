@@ -86,6 +86,15 @@ class AppStatus:
     #             because the installed calibration was absent or rejected for the live app
     #             build/frame. No opener, device action, or label was produced; the operator's
     #             next step is to capture and validate fresh calibration evidence.
+    # "cold_relaunch_recovery" -- the driver force-stopped and relaunched Hinge to clear a
+    #             transient pinned scroll-top signal, and then could not re-establish a safe
+    #             item index for the card it came back to, so it abandoned the capture rather
+    #             than publish pixels a cold launch may have replaced. Deliberately NOT
+    #             "deck_blocked": nothing is standing between us and the deck -- the deck is
+    #             healthy and the RECOVERY is what failed -- and titling it a blocked deck
+    #             sends the operator looking for a paywall that is not there. Like
+    #             "deck_blocked" it is a graceful stop, and it carries the driver's own
+    #             sentence as stop_reason.
     # "approval" -- the Hub training-decision bridge could not safely publish or complete a
     #             checkpoint, so no physical action or label was issued.
     # None for every stop that isn't one of the above (a manual Stop click,
@@ -108,6 +117,7 @@ _APP_STATES = frozenset({
 _DECISIONS = frozenset({"like", "pass", "dislike", "defer", "no_face", "no_photos"})
 _STOP_KINDS = frozenset({
     "approval", "opener", "deck_blocked", "targeting", "targeting_calibration",
+    "cold_relaunch_recovery",
 })
 
 

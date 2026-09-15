@@ -170,13 +170,19 @@ class _FakeStore:
         return ""
 
 
-def _run_with(monkeypatch, tmp_path, store):
+def _run_with(monkeypatch, tmp_path, store, driver_factory=_FakeDriver):
+    """Drive a whole real run() against `store`, with `driver_factory` built per app.
+
+    `driver_factory` exists so a test can choose the run's TERMINAL STATE (a driver that
+    raises ends its app in 'error') while still exercising the one shutdown path under test;
+    the default stays the clean out-of-profiles driver every other caller wants.
+    """
     cfg_path = _write_cfg(tmp_path)
     monkeypatch.setattr(sup, "Capabilities", _Caps)
     monkeypatch.setattr(sup, "Embedder", _FastEmbedder)
     monkeypatch.setattr(sup, "QualityFilter", _FastQuality)
     monkeypatch.setattr(sup, "make_store", lambda cfg: store)
-    monkeypatch.setattr(sup, "make_driver", lambda app, cfg: _FakeDriver())
+    monkeypatch.setattr(sup, "make_driver", lambda app, cfg: driver_factory())
     monkeypatch.setattr(sup, "_install_signal_handlers", lambda stop: None)   # don't touch process signals
     _patch_no_adb(monkeypatch)
     captured = {}
@@ -189,6 +195,198 @@ def test_clean_shutdown_reports_stopped(monkeypatch, tmp_path):
     snap = _run_with(monkeypatch, tmp_path, _FakeStore())
     assert snap["phase"] == "stopped"
     assert all(a["state"] == "out_of_profiles" for a in snap["apps"].values())
+
+
+class _DroppingStore(_FakeStore):
+    """A store whose flush SUCCEEDS while rows were permanently lost earlier in the run.
+
+    This is not a contrived shape -- it is what BigQueryStore actually does: a row BigQuery
+    rejects forever (bad UTF-8 in raw_opener, an over-length field) is dropped after
+    _MAX_INSERT_ATTEMPTS so the rest of the buffer can drain, opener/service.py catches the
+    RuntimeError and only warns so the run continues, and the shutdown flush then finds an
+    empty buffer and returns cleanly.
+    """
+
+    def saved_summary(self):
+        return "labels=2 (DROPPED, never written: openers=1)"
+
+    def dropped_rows(self):
+        return {"openers": 1}
+
+
+def test_permanently_dropped_rows_are_never_reported_as_all_data_saved(
+        monkeypatch, tmp_path, capsys):
+    """A successful flush proves the buffer is empty, not that every row landed.
+
+    Every terminal signal in this run says success -- flush returned, save_err is None, phase is
+    'stopped', no app errored -- and the operator was still told "✅ all data saved" over a row
+    that is gone for good. The shutdown line must name the loss instead, and the bug report must
+    be able to READ that line back: the tally lives on the store, which never reaches RunStatus,
+    so the wording is the only channel there is (hence the shared DROPPED_ROWS_NOTICE literal
+    both sides import, exercised end to end here so a reworded print cannot silently stop being
+    detected).
+    """
+    from operation_love import bugreport
+
+    snap = _run_with(monkeypatch, tmp_path, _DroppingStore())
+    out = capsys.readouterr().out
+
+    assert snap["phase"] == "stopped"                 # the save itself really did succeed
+    assert "✅ all data saved" not in out
+    assert "PERMANENTLY DROPPED" in out
+    assert "(openers=1)" in out                       # which table lost a row, not just "some"
+    assert "NOT an unqualified success" in out
+    assert "accounted_provider_results=" in out       # the usual run tail is still printed
+
+    line = next(ln for ln in out.splitlines() if "PERMANENTLY DROPPED" in ln)
+    assert line.startswith(f"Run {snap['run_id']}: ")   # bugreport counts no tally without it
+    assert bugreport._dropped_row_tallies([line]) == ["openers=1"]
+
+
+class _HaltingDriver(DatingAppDriver):
+    """Ends its app in the terminal 'error' state, the way an unrecognized-screen halt does."""
+
+    def open_session(self):
+        raise RuntimeError("boom: simulated UnlocatedControlError-style halt")
+    def next_profile(self):
+        return None
+    def out_of_profiles(self):
+        return True
+    def like(self, opener=None, item_index=None, *, model_item_index=None):
+        pass
+    def dislike(self):
+        pass
+    def close(self):
+        pass
+
+
+def test_dropped_rows_are_still_reported_when_a_worker_also_errored(
+        monkeypatch, tmp_path, capsys):
+    """A run that BOTH errored and permanently lost rows must report BOTH, not pick one.
+
+    The loss notice used to be the third arm of the shutdown's if/elif chain, below wedged and
+    errored, so this exact combination -- an errored run, i.e. the kind most likely to have
+    CAUSED the drop -- took the errored arm and printed no loss line at all. That printed line
+    is the tally's only channel out (the count lives on the store, which never reaches
+    RunStatus, and bugreport._dropped_row_tallies reads it back out of the log ring), so the
+    report rendered "COMPLETED WITH ERRORS" with no data-loss limitation on it whatsoever and
+    the permanent loss vanished from the record. Headline and loss are independent facts:
+    assert the errored headline SURVIVES alongside the notice, so a fix cannot trade one away.
+    """
+    from operation_love import bugreport
+
+    snap = _run_with(monkeypatch, tmp_path, _DroppingStore(), driver_factory=_HaltingDriver)
+    out = capsys.readouterr().out
+
+    assert snap["apps"]["hinge"]["state"] == "error"     # the errored headline really applies
+    assert "worker(s) ended with errors (hinge)" in out  # ... and is still the headline
+    assert "✅ all data saved" not in out
+
+    assert bugreport.DROPPED_ROWS_NOTICE in out, "the permanent loss went unreported"
+    line = next(ln for ln in out.splitlines() if bugreport.DROPPED_ROWS_NOTICE in ln)
+    # bugreport only counts a tally on a line carrying this prefix -- every terminal line in
+    # this block prints it, and it is what ties the loss to THIS run in a shared log ring.
+    assert line.startswith(f"Run {snap['run_id']}: ")
+    assert bugreport._dropped_row_tallies([line]) == ["openers=1"]
+
+
+def test_dropped_rows_are_still_reported_when_a_worker_also_wedged(
+        monkeypatch, tmp_path, capsys):
+    """Same additive rule on the other qualified headline: wedged does not hide the loss either.
+
+    A wedged worker is the one terminal state that ends with phase != 'stopped', so it reaches
+    the shutdown summary by a different route than the errored run above; pin it separately
+    rather than assuming the two arms stay in step.
+    """
+    from operation_love import bugreport
+
+    release = threading.Event()
+    stop_event = threading.Event()
+
+    class _WedgedDriver(DatingAppDriver):
+        def open_session(self):
+            # Armed from the worker's own first driver call (not a wall-clock timer) so the
+            # stop cannot land on a startup checkpoint and abort before a worker exists, then
+            # deliberately ignored until run() has returned -- see
+            # test_wedged_worker_is_not_reported_as_unqualified_success for the full rationale.
+            stop_event.set()
+            release.wait(timeout=_LIVENESS_TIMEOUT_S)
+        def next_profile(self):
+            return None
+        def out_of_profiles(self):
+            return True
+        def like(self, opener=None, item_index=None, *, model_item_index=None):
+            pass
+        def dislike(self):
+            pass
+        def close(self):
+            pass
+
+    monkeypatch.setattr(sup, "_worker_join_timeout_s", lambda cfg: 0.01)  # don't wait ~105s
+    monkeypatch.setattr(sup, "Capabilities", _Caps)
+    monkeypatch.setattr(sup, "Embedder", _FastEmbedder)
+    monkeypatch.setattr(sup, "QualityFilter", _FastQuality)
+    monkeypatch.setattr(sup, "make_store", lambda cfg: _DroppingStore())
+    monkeypatch.setattr(sup, "make_driver", lambda app, cfg: _WedgedDriver())
+    monkeypatch.setattr(sup, "_install_signal_handlers", lambda stop: None)
+    _patch_no_adb(monkeypatch)
+    cfg_path = _write_cfg(tmp_path)
+
+    captured = {}
+    sup.run(str(cfg_path), on_status=lambda s: captured.__setitem__("status", s),
+            stop_event=stop_event)
+    release.set()                    # let the deliberately-wedged thread finish now
+    snap = captured["status"].snapshot()
+    out = capsys.readouterr().out
+
+    assert any(a["state"] == "wedged" for a in snap["apps"].values())
+    assert "did not stop within" in out                  # the wedged headline is still there
+    assert "✅ all data saved" not in out
+
+    assert bugreport.DROPPED_ROWS_NOTICE in out, "the permanent loss went unreported"
+    line = next(ln for ln in out.splitlines() if bugreport.DROPPED_ROWS_NOTICE in ln)
+    assert line.startswith(f"Run {snap['run_id']}: ")
+    assert bugreport._dropped_row_tallies([line]) == ["openers=1"]
+
+
+def test_clean_shutdown_still_reports_all_data_saved_when_nothing_was_dropped(
+        monkeypatch, tmp_path, capsys):
+    """The loss branch must not swallow the one line that reports a genuinely clean run."""
+    _run_with(monkeypatch, tmp_path, _FakeStore())
+    out = capsys.readouterr().out
+
+    assert "✅ all data saved" in out
+    assert "PERMANENTLY DROPPED" not in out
+
+
+@pytest.mark.parametrize(
+    "tally",
+    [{}, {"openers": 0}, {"openers": True}, {"openers": "1"}, None, "openers=1"],
+    ids=["empty", "zero", "bool", "text-count", "none", "not-a-mapping"],
+)
+def test_dropped_row_tally_never_invents_a_loss_from_an_unusable_answer(tally):
+    """Nothing but a positive integer count is a dropped row.
+
+    `True` is an int in Python and would otherwise read as "1 row lost"; a zero entry is the
+    healthy case spelled the long way. Inventing a loss here would teach the operator to ignore
+    the one line that reports a real one.
+    """
+    store = SimpleNamespace(dropped_rows=lambda: tally)
+
+    assert sup._dropped_row_tally(store) == {}
+
+
+def test_dropped_row_tally_survives_a_store_that_cannot_answer(capsys):
+    """This runs AFTER the final flush: an exception raised over a diagnostic tally would turn a
+    successful save into a crash. Report the failure, then behave like every store that never
+    had the method at all."""
+    class _Broken:
+        def dropped_rows(self):
+            raise RuntimeError("no tally for you")
+
+    assert sup._dropped_row_tally(_Broken()) == {}
+    assert sup._dropped_row_tally(SimpleNamespace()) == {}      # a test double without it
+    assert "no tally for you" in capsys.readouterr().out
 
 
 def test_terminal_phase_is_published_only_after_app_states_are_terminal(monkeypatch, tmp_path):

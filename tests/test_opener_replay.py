@@ -1014,7 +1014,10 @@ def test_main_live_writes_replay_marker_under_the_current_prompt_era(tmp_path):
 
     assert len(rows) == 1
     run_id, decision, prompt_sha256, opener_text, item_index = rows[0]
-    assert run_id == "test-run-1"
+    # The caller-supplied id, PREFIXED: the prefix is the only provenance marker an
+    # opener_rejections row can carry (that table has no decision column), so --run-id is
+    # normalized onto it rather than trusted bare -- see REPLAY_RUN_ID_PREFIX.
+    assert run_id == f"{m.REPLAY_RUN_ID_PREFIX}test-run-1"
     assert decision == m.DECISION_REPLAY
     # The CURRENT config's era, never the stale one recorded at capture time.
     from operation_love.opener.opener import prompt_stamp
@@ -1023,6 +1026,122 @@ def test_main_live_writes_replay_marker_under_the_current_prompt_era(tmp_path):
     assert prompt_sha256 != "some-stale-captured-era"
     assert opener_text == "Great trail, where was that?"
     assert item_index == 1
+
+
+# ---------------------------------------------------------------------------------------
+# REPLAY_RUN_ID_PREFIX -- the ONLY provenance marker an `opener_rejections` row can carry.
+#
+# THE BUG THESE PIN: a --live replay writes a real opener_rejections row for every draft the
+# guards refuse, and that table has no `decision` column for DECISION_REPLAY to live in. Those
+# rows went into the same table tools/opener_corpus_report.py measures guard-firing rates from,
+# untagged and counted as live -- so "is this guard too strict?" was argued from a number
+# inflated by however many offline replays happened to run, with no caveat anywhere in the
+# output. run_id is the only marker available without a schema change (deliberately avoided: the
+# opener_rejections WRITE path is an open production investigation), so it has to be reliable.
+# ---------------------------------------------------------------------------------------
+
+
+def _rejected_opener_response():
+    """A scripted 200 carrying an opener the deterministic guards REFUSE (too many sentences),
+    so generate() raises OpenerParseError and the CLI takes its record_opener_rejection path --
+    the path that writes the untagged rows these tests are about."""
+    return _success("One thing. Two thing. Three thing. Four thing?")
+
+
+def _replay_one_rejection(tmp_path, *, run_id=None):
+    """Run one real --live replay whose single capture is rejected by the guards, into a real
+    SQLite store. Returns the db path. No network: the transport is scripted as always."""
+    corpus_dir = tmp_path / "corpus"
+    _write_capture(corpus_dir, items=(b"item-bytes",))
+    config_path = _config_path(tmp_path)
+    db_path = tmp_path / "store.db"
+    argv = ["--corpus-dir", str(corpus_dir), "--config", str(config_path), "--db", str(db_path),
+            "--live", "--yes"]
+    if run_id is not None:
+        argv += ["--run-id", run_id]
+    rc_code = m.main(argv, transport=_ScriptedTransport([_rejected_opener_response()]),
+                     env={"GEMINI_API_KEY": "k"})
+    # Every capture was rejected, so nothing this run was asked to do happened -- exit 1 by
+    # design (see main()'s own trailing comment), which is not a failure of this fixture.
+    assert rc_code == 1
+    return db_path
+
+
+def _rejection_rows(db_path):
+    store = SQLiteStore(db_path)
+    try:
+        return store.con.execute(
+            "SELECT run_id, reason_code, prompt_sha256 FROM opener_rejections").fetchall()
+    finally:
+        store.close()
+
+
+def test_main_live_rejection_row_carries_the_replay_run_id_prefix(tmp_path):
+    db_path = _replay_one_rejection(tmp_path)
+
+    rows = _rejection_rows(db_path)
+    assert len(rows) == 1
+    run_id, reason_code, prompt_sha256 = rows[0]
+    assert run_id.startswith(m.REPLAY_RUN_ID_PREFIX)
+    assert reason_code  # a real guard fired; this is a genuine rejection row, not a stub
+    assert prompt_sha256  # stamped with the CURRENT era, same as the success path
+    # MUTATION CHECK: change the generated-id branch in main() back to a bare
+    # f"{int(time.time())}_{uuid...}" (no prefix) -- re-run: this assertion fails
+    # (run_id == "1789..._ab12cd34"), and every test below it fails too. Verified by hand,
+    # restored exactly.
+
+
+def test_main_live_prefixes_a_caller_supplied_run_id(tmp_path):
+    # THE FLAG-SHAPED HOLE: --run-id used to be written through verbatim, so `--run-id
+    # my-experiment` produced rejection rows with no marker at all -- indistinguishable from live
+    # ones, which is exactly the defect the prefix exists to close. A custom id is normalized
+    # onto the prefix, never trusted bare.
+    db_path = _replay_one_rejection(tmp_path, run_id="my-experiment")
+
+    rows = _rejection_rows(db_path)
+    assert len(rows) == 1
+    assert rows[0][0] == f"{m.REPLAY_RUN_ID_PREFIX}my-experiment"
+    # MUTATION CHECK: restore `run_id = args.run_id or f"..."` in main() -- re-run: run_id comes
+    # back as the bare "my-experiment" and this assertion fails. Verified by hand, restored.
+
+
+def test_main_live_does_not_double_prefix_an_already_prefixed_run_id(tmp_path):
+    # Normalizing must be idempotent: passing back a run_id this tool printed on an earlier run
+    # (to append to it) must not grow a second copy of the prefix.
+    supplied = f"{m.REPLAY_RUN_ID_PREFIX}earlier-run"
+    db_path = _replay_one_rejection(tmp_path, run_id=supplied)
+
+    rows = _rejection_rows(db_path)
+    assert rows[0][0] == supplied
+    assert not rows[0][0].startswith(m.REPLAY_RUN_ID_PREFIX * 2)
+
+
+def test_report_recognizes_a_run_id_this_tool_actually_writes(tmp_path):
+    # THE CROSS-MODULE PIN. tools/opener_corpus_report.py SPELLS this prefix a second time rather
+    # than importing it from here, and that duplication is forced, not lazy: `tools/` is only
+    # importable when the repo ROOT is on sys.path, so a `from tools.opener_replay import ...` in
+    # that file would break `python tools/opener_corpus_report.py` outright (a direct script run
+    # puts tools/ on sys.path, not the repo root -- `python tools/opener_outcome_recorder.py
+    # --help` fails exactly that way today). This project has already been bitten by two
+    # independently-spelled allow-lists for one concept quietly disagreeing, so the invariant is
+    # pinned HERE instead of by an import -- and pinned end to end, against a row the writer
+    # really wrote rather than against a literal: a matching pair of string constants would still
+    # pass if the run_id were assembled differently.
+    from tools import opener_corpus_report as report
+
+    assert report.REPLAY_RUN_ID_PREFIX == m.REPLAY_RUN_ID_PREFIX
+
+    db_path = _replay_one_rejection(tmp_path)
+    _rows, rejections, stats = report.read_sqlite_openers(db_path)
+
+    assert len(rejections) == 1
+    assert rejections[0].replay is True
+    assert stats.rejections_row_count == 1
+    assert stats.rejections_replay_row_count == 1
+    # MUTATION CHECK: change either module's prefix literal (e.g. this module's to
+    # "opener_replay2_") -- re-run: the equality above fails AND, with it silenced, the
+    # `rejections[0].replay is True` assertion fails too, because the report no longer recognizes
+    # the run_id the writer actually wrote. Verified by hand, restored exactly.
 
 
 def test_main_live_omits_retained_context_crops_from_the_gemini_request(tmp_path):

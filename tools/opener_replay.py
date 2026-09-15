@@ -33,9 +33,26 @@ storage.backend. Deliberately never BigQuery: a replay run's rows are synthetic 
 calibration data, not production telemetry, and folding them into a shared BigQuery dataset
 other tools/dashboards read by default would need its own considered opt-in the way --bigquery
 already gates tools/opener_corpus_report.py's reads -- something this tool does not attempt to
-provide. Every row this tool writes carries decision=DECISION_REPLAY (see that constant) rather
-than a real human decision value, so it can never be counted as a landed "like" by any consumer
-that groups the openers table by decision.
+provide.
+
+PROVENANCE OF THE ROWS THIS TOOL WRITES -- stated per table, because the two tables do NOT carry
+the same marker and a universal claim here was wrong for a whole release:
+  - `openers`: every row carries decision=DECISION_REPLAY (see that constant) rather than a real
+    human decision value, so it can never be counted as a landed "like" by any consumer that
+    groups that table by decision.
+  - `opener_rejections`: that table HAS NO `decision` column at all (see ranker/store.py and
+    bigquery_store.py -- run_id, app, created_at, model, attempt, reason_code, reason,
+    raw_opener, prompt_sha256, and nothing else), so a replay-produced rejection carries NO
+    decision marker and cannot carry one without a schema change. Its ONLY provenance marker is
+    its `run_id`, which is why every run_id this tool writes is forced to start with
+    REPLAY_RUN_ID_PREFIX (see that constant -- including a caller-supplied --run-id, which is
+    normalized rather than trusted). tools/opener_corpus_report.py splits its OPENER REJECTIONS
+    counts live-vs-synthetic on exactly that prefix; without it, an offline replay would silently
+    inflate the guard-firing rate a prompt decision gets argued from. A nullable `source` column
+    on both store backends was considered for this and DELIBERATELY REJECTED: the
+    `opener_rejections` WRITE path is an open production investigation (BigQuery has held zero
+    rows against many confirmed billed rejections -- see the dead-letter work), and adding a
+    column to it now would confound that investigation.
 
 TESTABILITY, exactly tools/gemini_model_probe.py's pattern: every network call goes through an
 injected GeminiTransport, and main() accepts transport/env/confirm/store injection seams so
@@ -118,6 +135,32 @@ DEFAULT_DB_FILE = "data/operation_love.db"
 # the installed package rather than here.
 DECISION_REPLAY = _DECISION_REPLAY
 
+# The run_id prefix stamped on EVERY row this tool writes, to either table -- and the ONLY
+# provenance marker a row in `opener_rejections` can carry at all, because that table has no
+# `decision` column for DECISION_REPLAY above to live in (see this module's docstring's
+# PROVENANCE section for why adding one is deliberately off the table right now).
+#
+# tools/opener_corpus_report.py splits its OPENER REJECTIONS counts on this exact prefix, and
+# SPELLS IT A SECOND TIME rather than importing it from here. That duplication is deliberate and
+# forced: `operation_love` is an installed package importable from anywhere, but `tools/` is only
+# importable when the repo ROOT happens to be on sys.path, so a direct `python
+# tools/opener_corpus_report.py` run (which puts tools/ on sys.path, not the repo root) would die
+# with ModuleNotFoundError the moment that file imported this one. That is not hypothetical --
+# `python tools/opener_outcome_recorder.py --help` fails that way TODAY, and it is the same
+# incident recorded above DECISION_REPLAY in operation_love/opener/replay_corpus.py, which is
+# exactly why that constant lives in the installed package instead of here. This one cannot
+# follow it there (that package must not learn a CLI's run_id convention), so the invariant is
+# pinned by a test instead of by an import: tests/test_opener_replay.py's
+# test_report_recognizes_a_run_id_this_tool_actually_writes drives a real --live replay into a
+# real store and asserts the REPORT classifies the row it produced as synthetic. Change this
+# value and that test fails -- do not "fix" it by editing the report's copy to match without
+# re-reading both.
+#
+# It is applied to a caller-supplied --run-id too (see main(): a custom id is prefixed, never
+# trusted bare), so "every row this tool writes is identifiable as replay-produced" holds with
+# no flag-shaped hole in it.
+REPLAY_RUN_ID_PREFIX = "opener_replay_"
+
 DEFAULT_APP = "hinge"
 
 
@@ -179,8 +222,13 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--app", default=DEFAULT_APP,
                         help=f"app label recorded on every written row (default {DEFAULT_APP})")
     parser.add_argument("--run-id", default=None,
-                        help="run_id recorded on every written row (default: a fresh generated "
-                             "id, printed at the start of the run)")
+                        help=f"run_id recorded on every written row (default: a fresh generated "
+                             f"id, printed at the start of the run). Whatever is passed here is "
+                             f"prefixed with {REPLAY_RUN_ID_PREFIX!r} if it does not already "
+                             f"start with it -- that prefix is the only thing marking a row in "
+                             f"opener_rejections as replay-produced (see this module's "
+                             f"docstring), so it is never optional; the effective value is "
+                             f"printed at the start of the run")
     parser.add_argument("--replay-ids", default=None,
                         help="comma-separated list of specific replay_id(s) to use, IN THIS "
                              "ORDER (default: every capture in the corpus, in the corpus's own "
@@ -526,7 +574,23 @@ def main(argv: list[str] | None = None, *, transport: GeminiTransport | None = N
             log("Aborted -- no requests were issued.")
             return 1
 
-    run_id = args.run_id or f"opener_replay_{int(time.time())}_{uuid.uuid4().hex[:8]}"
+    # REPLAY_RUN_ID_PREFIX is NOT decoration: it is the only provenance marker an
+    # `opener_rejections` row this run writes will ever carry (that table has no `decision`
+    # column -- see this module's docstring's PROVENANCE section), and it is what
+    # tools/opener_corpus_report.py splits its guard-firing counts live-vs-synthetic on. So a
+    # caller-supplied --run-id is NORMALIZED onto it rather than trusted bare: without this,
+    # `--run-id my-experiment` would write rejection rows indistinguishable from live ones and
+    # inflate the very number a "is this guard too strict?" decision gets argued from. The
+    # effective value is logged (and carried in --json) immediately below, so a caller scripting
+    # on run_id sees exactly what was written rather than what it asked for.
+    if args.run_id:
+        run_id = args.run_id if args.run_id.startswith(REPLAY_RUN_ID_PREFIX) \
+            else f"{REPLAY_RUN_ID_PREFIX}{args.run_id}"
+        if run_id != args.run_id:
+            log(f"note: --run-id {args.run_id!r} prefixed with {REPLAY_RUN_ID_PREFIX!r} so the "
+                "rows it writes stay identifiable as replay-produced")
+    else:
+        run_id = f"{REPLAY_RUN_ID_PREFIX}{int(time.time())}_{uuid.uuid4().hex[:8]}"
     log(f"run_id: {run_id}")
 
     active_store = store if store is not None else SQLiteStore(args.db)

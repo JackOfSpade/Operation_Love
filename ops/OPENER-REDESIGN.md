@@ -6614,3 +6614,87 @@ AND THE WORD "mirror" WAS THE DEEPER ERROR. act was never a mirror of the real g
 and it reframes every "CI will catch it" statement in this document: a check that cannot run under
 act does not run anywhere. If you are reading an older addendum that leans on GitHub CI as a
 backstop, it is describing a backstop that was already gone.
+
+
+#### Addendum -- 2026-09-15 (a): the empty table was the wrong question, because that signature is the staged commit
+
+Addendum (c) above reads one signature -- "runs with spend rows and zero openers rows" -- as proof
+that opener rejections were failing to reach BigQuery, and builds a dead-letter to catch the
+exception. The dead-letter ships and STAYS (see below). The root cause does not: that signature is
+produced by the ORDINARY STAGED-COMMIT LIFECYCLE, with no rejection anywhere in it. Per this file's
+convention (c) is left exactly as written; this addendum is the correction.
+
+WHAT THE SIGNATURE ACTUALLY MEANS, read off the success path rather than inferred from an absence of
+rows. (Line numbers below are `operation_love/opener/service.py` at commit 2102b001, verified
+against that commit rather than the working tree; the symbol names are the durable half.)
+`service.py:1699` calls `self.store.record_spend(...)` UNCONDITIONALLY -- every successful
+generation is billed and recorded. Thirty lines later, `service.py:1729` gates the matching
+`record_opener` behind `if not staged_for_action:`. A staged AUTO or Training success therefore
+reaches the `openers` table through exactly two other doors: `commit_opener` (`service.py:1826`),
+after a landed Like, and `discard_opener` (`service.py:1872`), on an explicit Dislike or refusal. So
+a billed, successful, rule-obeying opener generated on a profile that was never Liked leaves a spend
+row and no openers row. That is not a lost rejection. It is `commit_opener`'s own docstring working
+as designed: "neither opening a profile nor generating a suggestion says that the account acted".
+
+THE NUMBER THAT RULED OUT THE RIGHT ANSWER. (c)'s "WHAT WAS RULED OUT" list dismisses "'No guard has
+ever fired': refuted by the 159 above". The 159 is not a count of rejections. It is
+`COUNT(DISTINCT run_id)` over the WHOLE `spend` table -- re-run 2026-09-15 it is still exactly 159
+distinct run ids across 446 spend rows, the great majority of them runs whose openers committed
+normally. A number carried out of one query and into the next sentence changed meaning on the way,
+and the sentence it landed in is the one that eliminated the correct explanation.
+
+THE CORRECTED COUNTS, and how to re-derive them rather than trust them. Group `spend` by `run_id`,
+group `openers` by `run_id`, left join, keep only the rows with no openers match: **76 runs, 105
+spend rows, 2026-08-14 22:29 UTC through 2026-09-09 15:26 UTC**. Not 159 runs, and 105 billed calls
+rather than 159. Then ask those same 76 runs whether any of them ever Liked anything: **0 of 76**.
+31 of the 76 do carry `decisions` rows, and every single decision across all of them is `dislike`;
+the other 45 recorded no decision at all; and no `labels` row in any of the 76 has `liked = true`. A
+cohort of 76 runs that between them produced not one Like is precisely the cohort the staged path is
+built to leave out of `openers`.
+
+WHY THE WINDOW HAS THE EDGES IT HAS, which is the confirmation rather than the claim. The window
+OPENS on 2026-08-14 because that is the day `commit_opener` landed (05e8cce7); before it the
+immediate path wrote every generated opener and this signature could not exist. It very nearly
+CLOSES on 2026-09-06, when `discard_opener` landed (75155dc7) to give non-Like outcomes a durable
+row of their own: 71 of the 76 predate that commit. The five that postdate it -- `397c1f944d22`,
+`4b9e4178474f`, `78ec8d91ad42`, `5554d6fc51aa`, `3bbcda877a92` -- carry exactly one spend row each,
+zero decisions and zero labels. Those are drafts generated on profiles the run then ended on without
+deciding anything, so neither commit nor discard was ever reached and the envelope was dropped with
+the card. Also not rejections.
+
+AND THE TABLE IS NOT STRUCTURALLY UNABLE TO ACCEPT ROWS. On 2026-09-14 20:54 local (00:54:45 UTC on
+the 15th) a real rejection row landed in BigQuery from live run `aed1a870d740`: `hinge`,
+`gemini-3.5-flash`, attempt 1, `unconfirmed_location_followup` -- the very family addendum (b) above
+had just widened -- carrying a 44-character `raw_opener` of genuine freeform provider text. (c)
+suspected the wire specifically because "`reason` is a `str(e)` of provider or JSON-parse text and
+`raw_opener` is Gemini's raw freeform output"; those exact fields crossed that exact wire without
+complaint. No wire fix was shipped in between: `ranker/bigquery_store.py` has not been modified
+since before (c) was written. The table was empty because nothing had yet been written to it by a
+code path that ran to completion, which is the boring reading (c) explicitly rejected.
+
+THE DEAD-LETTER IS KEPT, deliberately, even though the incident it was built for has dissolved. It
+is cheap: it runs only after the store call has ALREADY raised, is bounded to 200 entries and 2 MiB
+with 4000-character field caps, and costs a healthy run nothing at all. It is now provably quiet: no
+`opener_rejection_deadletter.jsonl` exists beside the configured `data_dir`, so across the runs
+since it was wired, zero rejection rows have failed to reach the store -- and that silence is itself
+the measurement that let this correction be written. Weigh it for what it is: a short window, since
+the writer only shipped on 2026-09-14, but a window that contains the one live rejection above. The
+hazard (c) identified around it is also
+entirely real and untouched by this correction: all four rejection call sites still swallow store
+exceptions into a `print` that production captures nowhere, and `_flush_table` still keeps a failed
+batch buffered quietly until five consecutive failures. Delete the dead-letter and the NEXT genuine
+wire failure produces the same nothing this one did. A diagnostic is not refuted by reporting "no
+problem"; that is the only other answer it was ever able to give.
+
+WHAT (c) STILL GETS RIGHT, so this correction does not throw the entry away wholesale. Its STANDING
+GAP is unchanged and still worth its own work: no test in this repository has ever inserted a real
+row into real BigQuery, so every store test runs against a fake that accepts anything. And its
+central choice -- ship a diagnostic instead of a third theory -- is exactly what made this
+correction possible the very next day, by its instrument's silence plus one live row, rather than by
+a fourth guess.
+
+THE LESSON: a signature is evidence of a MECHANISM only once you have enumerated the mechanisms that
+can produce it. "Spend with no openers" has two producers, and the second is not a defect at all but
+the designed behaviour of the staging lifecycle `commit_opener` opened on 2026-08-14 and
+`discard_opener` completed on 2026-09-06. The hunt began from an absence of rows, and an absence
+names no mechanism by itself -- it only tells you which table to start reading the CODE for.

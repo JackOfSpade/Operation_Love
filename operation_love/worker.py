@@ -25,6 +25,11 @@ from .human_motion import think_time_s
 from .interaction import AutoSessionPolicy
 from .notifications import notify_training_decision_ready
 from .opener.opener import INDEX_SPACE_MODEL_ITEMS, ITEM_INDEX_ABSENT, ItemRequest
+# The two `openers.decision` values a discard may carry, imported rather than spelled here so
+# this module, OpenerService.discard_opener, and tools/opener_corpus_report.py's buckets can
+# never drift into three copies of one vocabulary -- see the constants' own comments in
+# opener/service.py. Which of the two a given abandonment gets is _post_like_discard_decision().
+from .opener.service import DECISION_NEVER_SENT, DECISION_SEND_UNVERIFIED
 from .ranker.decider import Decider, Decision
 from .ranker.profile_key import profile_key_from_identity
 from .targeting_policy import (
@@ -354,11 +359,18 @@ class Worker(threading.Thread):
         cause -- not whichever symptom that particular worker's own opener call hit."""
         return getattr(self.opener_service, "exhausted_reason", None)
 
-    def _discard_staged_opener(self, pick, *, decision_source: str, profile_key: str = "") -> None:
+    def _discard_staged_opener(self, pick, *, decision_source: str, profile_key: str = "",
+                               decision: str = DECISION_NEVER_SENT) -> None:
         """Best-effort telemetry for a staged AUTO/Training opener draft that will never be
         committed: an explicit Dislike, a Stop, a targeting refusal, or a driver exception -- see
         OpenerService.discard_opener's docstring for why this is the other half of commit_opener
         and why every one of those outcomes used to leave no durable trace at all.
+
+        `decision` (2026-09-15) defaults to DECISION_NEVER_SENT because the overwhelming majority
+        of call sites here refuse BEFORE the phone is touched at all -- no opener, no target, no
+        like allowance, a Stop observed at the boundary -- and for those "never sent" is simply
+        what happened. The three sites that wrap `driver.like()` itself cannot assume it, and
+        must pass `_post_like_discard_decision()` instead: see that method.
 
         Guarded exactly like every commit_opener call site in this module (`callable(...)` on a
         duck-typed service): `discard_opener` is a newer, optional method, and a legacy/third-party
@@ -380,11 +392,55 @@ class Worker(threading.Thread):
         """
         discard = getattr(self.opener_service, "discard_opener", None)
         if pick is not None and callable(discard):
-            discard_kwargs = {"decision": "never_sent", "decision_source": decision_source,
+            discard_kwargs = {"decision": decision, "decision_source": decision_source,
                               "decision_created_at": time.time()}
             if _accepts_keywords(discard, "profile_key"):
                 discard_kwargs["profile_key"] = profile_key
             discard(pick, **discard_kwargs)
+
+    def _post_like_discard_decision(self) -> str:
+        """Which `decision` a draft abandoned by a RAISING `driver.like()` must be filed under.
+
+        `driver.like()` IS NOT ATOMIC, and this is the whole point. HingeDriver types the opener
+        into the composer, taps Send Like, and only then runs its verification -- the Rose-upsell
+        dismissal, `_verify_like_landed`, and in Training `_verify_training_like_landed`'s stable
+        next-card proof. Each of those raises HingeActionError on a POST-SEND failure ("like did
+        not complete -- the like composer is still open"; "training action did not reach a
+        stable, semantically different ready deck card"), and the handlers around like() used to
+        answer all of them with `decision="never_sent"` -- a durable row, in the one table
+        tools/opener_corpus_report.py and the outcome join trust, asserting that a message which
+        physically went out to a real person was only ever a draft. The comments at those handlers
+        claimed "anything raised ... means no reviewed Like landed for this profile either", which
+        is true, and then filed a row that says something else: NOT LANDED AND NEVER SENT ARE
+        DIFFERENT FACTS, and only the driver knows which side of its own irreversible boundary it
+        got to.
+
+        So ask it. DECISION_SEND_UNVERIFIED is the honest third value for the post-send window:
+        the send happened, the outcome could not be verified. It is deliberately NOT "like"
+        (nothing verified a landed Like, and "like" is the literal that decides which opener may
+        own an owner-observed outcome, so an unconfirmed send must not be able to claim one) and
+        deliberately not silence (a billed draft with no durable row at all is the survivorship
+        hole discard_opener exists to close).
+
+        Optional, duck-typed driver capability read with `getattr`, exactly like every other
+        one this module consults (`supports_interruptible_like_navigation`,
+        `landed_auto_opener_evidence`, `current_profile_identity`):
+        `DatingAppDriver.like_send_attempted` defaults to False, so a driver that never
+        implements it -- and a duck-typed test double that does not subclass the contract at all
+        -- degrades to today's meaning, "nothing said a send happened", i.e.
+        DECISION_NEVER_SENT, rather than raising an AttributeError inside a handler where
+        another exception is already in flight.
+
+        ONLY CALL THIS FROM A HANDLER AROUND THIS PROFILE'S OWN `like()` CALL. The driver marker
+        is scoped to one like ATTEMPT and is cleared as the next one begins, not when one ends, so
+        a successful send stays True until the following attempt clears it; reading it at an
+        unrelated later refusal (which is why the default above is a constant and not this call)
+        would describe THIS profile's untouched draft with the PREVIOUS profile's send.
+        """
+        attempted = getattr(self.driver, "like_send_attempted", None)
+        if callable(attempted) and attempted():
+            return DECISION_SEND_UNVERIFIED
+        return DECISION_NEVER_SENT
 
     def _current_profile_key(self) -> str:
         """The STABLE, cross-time attribution key (ranker/profile_key.py) for the profile this
@@ -751,7 +807,20 @@ class Worker(threading.Thread):
                 if profile is None:
                     blocked = self.driver.blocked_reason()
                     if blocked is not None:
-                        terminal_state, stop_reason, stop_kind = "blocked", blocked, "deck_blocked"
+                        # NOT ALWAYS A BLOCKED DECK (2026-09-15). `blocked_reason` is the only
+                        # channel a capture that returns None has for carrying a sentence, so a
+                        # FAILED COLD-RELAUNCH RECOVERY latches its reason here too -- and this
+                        # branch used to hardcode stop_kind="deck_blocked", making the Hub
+                        # headline "stopped -- deck blocked" when nothing was blocking the deck
+                        # at all. That is precisely the surface the owner rule "the hub must
+                        # clearly show why a run stopped" is about, so ask the driver which KIND
+                        # of stop it latched. Optional and duck-typed exactly like every other
+                        # driver hook in this module: a driver without the method (every
+                        # non-Hinge driver today) keeps the historical "deck_blocked" answer,
+                        # and so does one that latched a reason without classifying it.
+                        stop_kind = getattr(
+                            self.driver, "blocked_stop_kind", lambda: None)() or "deck_blocked"
+                        terminal_state, stop_reason = "blocked", blocked
                         self._stat(state=terminal_state, stop_reason=stop_reason, stop_kind=stop_kind)
                         self.stop_event.set()
                     break
@@ -812,6 +881,26 @@ class Worker(threading.Thread):
                     stop_reason, stop_kind = self._opener_stop_reason(), "opener"
                     self._stat(state="stopped", stop_reason=stop_reason, stop_kind=stop_kind)
                     self.stop_event.set()
+                    # EVERY post-generation exit in this loop discards the staged draft, for the
+                    # reason the Dislike branch below spells out at length: the provider call
+                    # above already finished and was already BILLED (record_spend runs inside
+                    # maybe_opener), so a draft abandoned here reached neither the durable
+                    # `openers` table nor recent_openers -- it existed in no bug report and in no
+                    # corpus report, which is precisely the survivorship bias discard_opener was
+                    # added to end. AUTO has discarded its equivalent abandonment paths since
+                    # that path shipped; Training's did not until now. This particular exit is
+                    # the common one: an operator Stop cannot abort a provider request already on
+                    # the wire, so maybe_opener hands back a complete staged OpenerPick after the
+                    # flag has already won and no review checkpoint will ever be prepared for it.
+                    #
+                    # decision_source="manual", NOT "training": that is the lineage value the
+                    # commit/discard sites at the bottom of this loop already pass, and it is
+                    # what commit_opener turns into session_mode="training" for the recent-opener
+                    # view.  Calling this blindly is safe -- see _discard_staged_opener's
+                    # docstring: `pick is None` and an already-spent staged record are both
+                    # no-ops, and it never raises into this loop.
+                    self._discard_staged_opener(
+                        pick, decision_source="manual", profile_key=profile_key)
                     break
                 text = getattr(pick, "text", None)
                 if not isinstance(text, str) or not text.strip():
@@ -819,6 +908,11 @@ class Worker(threading.Thread):
                                    "can be reviewed; no action or label was recorded")
                     self._stat(state="stopped", stop_reason=stop_reason, stop_kind="opener")
                     self.stop_event.set()
+                    # A malformed pick is still a real billed attempt, and a draft whose TEXT is
+                    # unusable is exactly the kind of row the corpus report most needs to see.
+                    # A no-pick/unstaged `pick` degrades to a no-op here (see the first exit).
+                    self._discard_staged_opener(
+                        pick, decision_source="manual", profile_key=profile_key)
                     break
                 targeted = {}
                 if (getattr(pick, "index", ITEM_INDEX_ABSENT) != ITEM_INDEX_ABSENT
@@ -832,10 +926,20 @@ class Worker(threading.Thread):
                                    "no action or label was recorded")
                     self._stat(state="stopped", stop_reason=stop_reason, stop_kind="opener")
                     self.stop_event.set()
+                    # The opener itself generated fine; only its target could not be resolved, so
+                    # no review checkpoint was ever prepared for this profile. AUTO discards its
+                    # identical "not targeted" refusal for the same reason (see _auto_loop).
+                    self._discard_staged_opener(
+                        pick, decision_source="manual", profile_key=profile_key)
                     break
                 if self.limiter and not self.limiter.allow_like(liked):
                     terminal_state = "rate_limited"
                     self._stat(state=terminal_state)
+                    # The like allowance ran out AFTER this profile's draft was generated and
+                    # billed, so the draft is abandoned with the card exactly like the refusals
+                    # above -- a rate-limited run must not be a hole in the opener corpus.
+                    self._discard_staged_opener(
+                        pick, decision_source="manual", profile_key=profile_key)
                     break
 
                 self._training_claimed_action = None
@@ -863,12 +967,51 @@ class Worker(threading.Thread):
                         like_kwargs["should_stop"] = self.stop_event.is_set
                     outcome = self.driver.like(text, **like_kwargs)
                 except ActionCancelled:
+                    # A Stop arriving while the driver waits at the review checkpoint leaves the
+                    # phone untouched by the driver contract, so the billed draft is abandoned
+                    # and must still be written down. The original exception is re-raised
+                    # completely unchanged.
+                    #
+                    # THE DECISION IS ASKED FOR, NOT ASSUMED (2026-09-15): the sentence above
+                    # describes the checkpoint Stop, which is where this handler fires almost
+                    # always -- but ActionCancelled is also raised at the driver's LAST
+                    # pre-input boundary checks, and one of those sits between the Send Like tap
+                    # and the verification that follows it. `_post_like_discard_decision` reads
+                    # the driver's own send marker rather than trusting this comment to stay
+                    # true of every path that can reach it.
+                    #
+                    # BEFORE the bridge completion below, deliberately, and the same at the two
+                    # abandonment sites that follow: this loop's shape is that every durable
+                    # write for an action happens first and ``complete`` is the last thing the
+                    # worker says about it (see the success path, which completes only after the
+                    # decision, opener, label and flush have all landed). An abandoned draft is
+                    # the same kind of record, just a different `decision`.
+                    self._discard_staged_opener(
+                        pick, decision_source="manual", profile_key=profile_key,
+                        decision=self._post_like_discard_decision())
                     action = self._training_claimed_action
                     if action is not None:
                         self.training_action_bridge.complete(
                             action, status="aborted", reason="training decision was cancelled")
                     raise
                 except Exception:
+                    # Same reasoning as AUTO's generic like() handler: anything raised while
+                    # installing the checkpoint or attempting the physical action means no
+                    # reviewed Like landed for this profile either, so its draft is abandoned.
+                    # Scoped, like AUTO's, to the try block above and nothing after it -- the
+                    # durable archival below runs only once a real action has physically landed
+                    # and must never be able to make that landed action look abandoned.
+                    #
+                    # "NO REVIEWED LIKE LANDED" IS NOT "NOTHING WAS SENT", and Training is where
+                    # the gap is widest: after the reviewer chooses Like, the driver taps Send
+                    # Like and only then demands a stable, semantically different ready deck
+                    # card, raising HingeActionError when it cannot get one. The opener is out
+                    # by then. `_post_like_discard_decision` asks the driver which side of that
+                    # boundary this exception came from instead of filing every one of them as
+                    # a draft nobody ever received.
+                    self._discard_staged_opener(
+                        pick, decision_source="manual", profile_key=profile_key,
+                        decision=self._post_like_discard_decision())
                     action = self._training_claimed_action
                     if action is not None:
                         self.training_action_bridge.complete(
@@ -890,6 +1033,28 @@ class Worker(threading.Thread):
                 self._training_claimed_action = None
                 if outcome not in {"like", "dislike"} or action is None:
                     # A stop/cancellation leaves the phone untouched by the driver contract.
+                    # No verified Like/Dislike means no reviewed decision exists for this
+                    # profile, so its billed draft is abandoned here too -- on the clean Stop
+                    # below and on the RuntimeError, and before either, because the raise would
+                    # otherwise carry this row straight past the only place it can be written
+                    # down. Ordered ahead of the bridge completion for the same reason as the
+                    # two handlers above.
+                    #
+                    # ONLY THE OUTCOME HALF OF THIS DISJUNCTION MAY DISCARD (2026-09-15): the
+                    # condition is entered by two independent failures, and they disagree about
+                    # what happened on the phone. `outcome not in {...}` means the driver never
+                    # performed a verified action, so nothing was sent. `action is None` with a
+                    # like/dislike outcome means the OPPOSITE -- the opener was typed and
+                    # physically SENT, and it is the Hub claim that went missing (a stale or
+                    # replaced bridge registration). Discarding there wrote a durable
+                    # `decision="never_sent"` opener row for an opener that actually landed:
+                    # wrong data in the one table the corpus report trusts, published moments
+                    # before the RuntimeError below. That half now writes no decision row at all
+                    # -- an unattributed sent opener is recoverable, a row asserting it was
+                    # never sent is not.
+                    if outcome not in {"like", "dislike"}:
+                        self._discard_staged_opener(
+                            pick, decision_source="manual", profile_key=profile_key)
                     if action is not None:
                         self.training_action_bridge.complete(
                             action, status="aborted", reason="training decision was cancelled")
@@ -1195,7 +1360,12 @@ class Worker(threading.Thread):
                     if blocked is not None:
                         terminal_state = "blocked"
                         stop_reason = blocked
-                        stop_kind = "deck_blocked"
+                        # Same classification as _training_loop's own capture-returned-None
+                        # branch, for the same reason spelled out there: a latched reason is not
+                        # proof of a blocked deck, and a failed cold relaunch must not be
+                        # headlined as one. Absent hook -> the historical "deck_blocked".
+                        stop_kind = getattr(
+                            self.driver, "blocked_stop_kind", lambda: None)() or "deck_blocked"
                         self._stat(state=terminal_state, stop_reason=stop_reason,
                                    stop_kind=stop_kind)
                         self.stop_event.set()
@@ -1678,11 +1848,22 @@ class Worker(threading.Thread):
                     except Exception:
                         # Anything else raised while attempting the physical action -- a paywall
                         # DeckBlockedError, an operator Stop arriving mid-navigation as
-                        # ActionCancelled, an unsent-like RuntimeError/driver error -- means the
-                        # like was never sent for this profile either. The outer handlers below
-                        # still decide how the RUN reacts (stopped/blocked/error); this only
-                        # records that this profile's own staged draft was abandoned, and the
-                        # original exception is re-raised completely unchanged.
+                        # ActionCancelled, an unsent-like RuntimeError/driver error -- means no
+                        # VERIFIED like exists for this profile. The outer handlers below still
+                        # decide how the RUN reacts (stopped/blocked/error); this only records
+                        # that this profile's own staged draft was abandoned, and the original
+                        # exception is re-raised completely unchanged.
+                        #
+                        # THIS HANDLER USED TO SAY "the like was never sent", AND FOR PART OF
+                        # ITS RANGE THAT WAS FALSE (2026-09-15). The paywall case is the clearest
+                        # example: `_verify_like_landed` runs AFTER the Send Like tap, and it is
+                        # the post-send frame that reveals the Hinge+ screen. Filing every one of
+                        # these as `never_sent` put openers that had already gone out into the
+                        # durable table as drafts nobody received.
+                        # `_post_like_discard_decision` reads the driver's own send marker and
+                        # files the post-send window as `send_unverified` instead -- still not a
+                        # Like (nothing verified one), just no longer a lie in the other
+                        # direction. A driver with no marker at all is unchanged.
                         #
                         # Deliberately scoped to ONLY the preflight check and the driver.like()
                         # call above (see the try block this pairs with): the evidence hook right
@@ -1690,7 +1871,8 @@ class Worker(threading.Thread):
                         # physically landed, and must never be able to make a landed action look
                         # abandoned merely because that OPTIONAL diagnostic read raised.
                         self._discard_staged_opener(
-                            pick, decision_source="auto", profile_key=profile_key)
+                            pick, decision_source="auto", profile_key=profile_key,
+                            decision=self._post_like_discard_decision())
                         raise
                     evidence_hook = getattr(self.driver, "landed_auto_opener_evidence", None)
                     if pick is not None and callable(evidence_hook):

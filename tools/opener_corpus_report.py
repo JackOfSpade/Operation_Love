@@ -29,7 +29,10 @@ SOURCES, each clearly labeled in the output (see read_all_sources()):
     "unknown era". Every row also carries `decision` (see DECISION GROUPING below): NULL/empty
     for a row written before decision-tracking existed at all, "like" for a landed Like via
     OpenerService.commit_opener, a non-like reason (today "dislike" / "never_sent") for a
-    drafted-but-never-sent row via OpenerService.discard_opener, or the literal marker
+    drafted-but-never-sent row via OpenerService.discard_opener, "send_unverified" for the one
+    discard reason that is NOT a never-sent row (the Send Like tap was issued and the
+    verification after it failed, so the opener went out and the outcome is unknown), or the
+    literal marker
     "synthetic_replay" (tools/opener_replay.py's DECISION_REPLAY) for an offline-generated row
     that was never shown to a human or AUTO to decide anything about at all -- see DECISION
     GROUPING below for why that marker gets its own bucket rather than folding into the
@@ -52,14 +55,17 @@ behind a flag, and never only in --json):
     era -- answers "did the prompt change what gets produced". This axis POOLS every decision
     together within each era, so it says nothing on its own about what a human chose to send.
   - by DECISION (see build_decision_metrics()/decision_bucket()): "sent" (decision == "like"),
-    "not_sent" (every other REAL not-sent decision -- today "dislike" and "never_sent"),
+    "send_unverified" (decision == OpenerService's DECISION_SEND_UNVERIFIED marker -- its own
+    bucket, printed right beside "sent" and never folded into "not_sent", because it is the
+    opposite fact: the opener was typed and the Send tapped, and only the confirmation after it
+    failed), "not_sent" (every other REAL not-sent decision -- today "dislike" and "never_sent"),
     "synthetic_replay" (decision == tools/opener_replay.py's DECISION_REPLAY marker -- its own
     bucket, never folded into "not_sent", because nobody ever decided not to send a replay row:
     it was never shown to a human or AUTO to send in the first place -- see the synthetic-replay
     BE HONEST caveat below), and "unknown" (NULL/empty -- a row written before decision-tracking
     existed). This is the axis that answers "what did the model produce that a human actually
     chose to send" -- see BE HONEST caveat 4 below for why this axis exists and the exact
-    sent/not_sent/unknown boundary it is built around.
+    sent/send_unverified/not_sent/unknown boundary it is built around.
 Both axes report the same per-bucket metric set: grade_rate (see the GRADE DETECTOR section
 below), sentence_count distribution and the exactly-two-sentences share, question_final rate,
 opening trigram diversity (distinct/total, top-5 coverage), apostrophe/contraction rate, "looks
@@ -67,11 +73,20 @@ like" rate, mean/median character length, and -- new -- how many of the bucket's
 synthetic replay rows plus the wholly/partially/none verdict that count implies (see
 synthetic_status()), so an ERA populated by offline replay can never be mistaken for one
 captured live. opener_rejections counts by reason_code remain store-only (never from jsonl) and
-grouped by era only, since a rejected attempt was never sent by construction and carries no
-`decision` column to group by.
+grouped by era only, since a rejected attempt was never sent by construction. That table has no
+`decision` column at all, so the synthetic-replay marker the openers axis groups on does not
+exist there -- a rejection's ONLY provenance marker is its `run_id`, and tools/opener_replay.py
+stamps every row it writes with a known prefix (REPLAY_RUN_ID_PREFIX) precisely so this tool can
+tell them apart. Every rejection count printed here is therefore split LIVE vs SYNTHETIC REPLAY,
+at every level (grand total, per era, per reason_code) and in --json (`rejections_by_era_replay`,
+`rejections_synthetic_status`): a `--live` replay pass writes a real rejection row for every
+draft the guards refuse, so without that split a "this guard is too strict" judgement would be
+argued from a number inflated by however many offline replays happened to run.
 
-BE HONEST. This tool prints (and main() always prints, not just on request) four caveats that
-apply to every number it produces:
+BE HONEST. This tool prints (and main() always prints, not just on request) the numbered caveats
+below, every one of which applies to every number it produces. The count is deliberately NOT
+stated in this sentence: caveats are only ever APPENDED (see _CAVEATS), so a number written here
+goes stale the first time one is added -- as it already had, silently, before this line said so.
   1. These are DRAFTS, not sent messages. Nothing here proves a single one of them reached the
      device screen, let alone that Hinge delivered it.
   2. There is no reply, match, or any other conversational-outcome signal anywhere in this
@@ -86,18 +101,25 @@ apply to every number it produces:
      commit, so every row from that era carries decision == "like" and a store-backed number
      from that era describes SENT openers only. Since discard_opener started being called, the
      store also durably records drafts nobody sent -- decision == "dislike" for an explicit
-     Training reject, decision == "never_sent" for an AUTO stop/refusal/exception discard (see
-     discard_opener's own docstring for the full lifecycle). This is NOT retroactive: a row
+     Training reject, decision == "never_sent" for an AUTO or Training stop/refusal/pre-send
+     exception discard (see discard_opener's own docstring for the full lifecycle) -- plus one
+     value that is neither sent nor not-sent: decision == "send_unverified", written when the
+     driver had already tapped Send Like and its own verification then raised, so the opener
+     left the machine but nothing proved it landed. It gets its own bucket everywhere in this
+     report rather than padding either neighbour. This is NOT retroactive: a row
      written before discard_opener existed is still sent-only, never reclassified. A row with
      no `decision` recorded at all (NULL or empty -- predates decision-tracking entirely) is
      bucketed "unknown" and is never assumed to be sent either way. Because pooling all of this
      together would repeat exactly the mistake this caveat used to make, every number in this
-     report is broken out by decision ("sent" / "not_sent" / "unknown") in addition to by era --
+     report is broken out by decision ("sent" / "send_unverified" / "not_sent" / "unknown") in
+     addition to by era --
      see METRICS BY DECISION in the output, and never read a by-era number alone as being about
      sent openers. The `opener_rejections` counts remain the (also store-only, also partial)
      record of drafts a deterministic GUARD rejected before a human ever saw them, distinct from
      `openers.decision`, which records what a human (or AUTO) chose to do with a draft the guard
-     let through.
+     let through -- and those counts are split live vs synthetic replay on run_id (see METRICS
+     above), because an offline replay pass produces real rejection rows that would otherwise be
+     indistinguishable from live ones.
 If a metric cannot be computed for a source (missing table, empty table, no era/decision
 column, no credentials), this tool prints WHY, in the output itself, rather than silently
 omitting a row.
@@ -187,6 +209,15 @@ from operation_love.opener.opener import _leading_ngram
 # documented vocabulary (ranker/__init__.py's KNOWN_OPENER_OUTCOMES) rather than re-spelling the
 # literal strings "match"/"reply" here, so the two can never quietly drift apart.
 from operation_love.ranker import OPENER_OUTCOME_MATCH, OPENER_OUTCOME_REPLY
+# `DECISION_SEND_UNVERIFIED`: OpenerService's own marker ("send_unverified") for a draft whose
+# Send Like tap was ISSUED and whose outcome could not then be verified -- a driver.like() that
+# raised from its POST-send verification. Imported from the installed package, not re-spelled,
+# for exactly the reason DECISION_REPLAY is (see below): one vocabulary, one place. This is the
+# only decision value in the corpus that is neither "it reached the device and landed" nor "it
+# never left the machine", which is why decision_bucket() gives it a bucket of its own instead
+# of letting it sit next to a "dislike" as though the model's words had stayed on this side of
+# the wire.
+from operation_love.opener.service import DECISION_SEND_UNVERIFIED
 # `DECISION_REPLAY`: the exact decision-column marker tools/opener_replay.py stamps on every
 # synthetic offline-replay row ("synthetic_replay" -- see that module's own constant docstring).
 # Imported, not re-spelled, for the same drift-proofing reason as the outcome constants above --
@@ -208,6 +239,79 @@ from operation_love.opener.replay_corpus import (
     load_replay_capture,
 )
 
+# The ONE raw `openers.decision` column value that has ever meant "this opener actually reached
+# the device": OpenerService.commit_opener's own literal for a landed Like, and historically the
+# only value that table ever held. Spelled once here, and read by BOTH consumers of the raw
+# column in this module -- decision_bucket() (which maps it to the DECISION_SENT *bucket*, a
+# different string, "sent") and the two OUTCOMES readers below (which refuse to attribute an
+# owner-observed outcome to an opener that does not carry it) -- so the two can never drift into
+# disagreeing about what "sent" means. Deliberately NOT named DECISION_SENT: that name is already
+# taken by the bucket label in the decision-grouping section, and the raw column value and the
+# bucket it lands in are different strings on purpose.
+#
+# FOUR COPIES OF ONE RULE, HELD TOGETHER BY A TEST rather than by an import. The same rule is
+# also written in SQLiteStore.joined_opener_outcomes' `AND o.decision = 'like'`, in
+# BigQueryStore.joined_opener_outcomes' own copy of that clause, and in
+# tools/opener_outcome_recorder.py's DECISION_SENT (worker.py additionally passes the literal
+# "like" into commit_opener at every call site). The two tools cannot import the stores' SQL
+# and the stores must not import `tools/` (see REPLAY_RUN_ID_PREFIX below for why `tools/` is
+# not importable at all from a direct script run), so the duplication is forced -- exactly like
+# that prefix. It is therefore pinned the same way: tests/test_opener_corpus_report.py's
+# test_report_outcome_reader_and_the_store_agree_on_which_opener_owns_an_outcome seeds a real
+# SQLiteStore with one profile drafted-then-DISLIKED and later LIKED, and asserts
+# SQLiteStore.joined_opener_outcomes and read_sqlite_opener_outcomes below return the same
+# number of outcome rows and attribute them to the SAME opener. Behaviour, not literal ==
+# literal: a matching pair of constants would still pass if one side changed which row the rule
+# selects. Two independently-spelled copies of one rule quietly disagreeing is how this project
+# has been bitten before (two regexes for one permitted opener move carried different noun sets).
+DECISION_VALUE_SENT = "like"
+
+# The run_id prefix tools/opener_replay.py stamps on every row it writes (its own
+# REPLAY_RUN_ID_PREFIX), and the ONLY thing that can identify a row in `opener_rejections` as
+# replay-produced rather than captured live: unlike `openers`, that table has no `decision`
+# column for DECISION_REPLAY above to live in (run_id, app, created_at, model, attempt,
+# reason_code, reason, raw_opener, prompt_sha256 -- see ranker/store.py and bigquery_store.py),
+# and adding one is off the table here regardless: this is a read-only reporting tool and that
+# schema belongs to the stores. (An earlier version of this line justified that instead by "the
+# `opener_rejections` WRITE path is still an open investigation (BigQuery has held zero rows
+# against many confirmed billed rejections)". That premise is refuted -- ops/OPENER-REDESIGN.md's
+# `Addendum -- 2026-09-15 (a)`: the "159 confirmed billed rejections" was `COUNT(DISTINCT run_id)`
+# over the whole `spend` table, the spend-without-openers signature is the ordinary staged-commit
+# lifecycle, and a real rejection row landed in BigQuery on 2026-09-14. The decision stands on the
+# sentence above it; only its stated reason was wrong.)
+#
+# SPELLED HERE rather than imported from tools/opener_replay.py, for the identical import-path
+# reason recorded above DECISION_REPLAY in operation_love/opener/replay_corpus.py: `tools/` is
+# only importable when the repo ROOT is on sys.path, so `from tools.opener_replay import ...`
+# would break `python tools/opener_corpus_report.py` outright (a direct script run puts tools/ on
+# sys.path, not the repo root). That is not a hypothetical -- `python
+# tools/opener_outcome_recorder.py --help` fails exactly that way today. DECISION_REPLAY solved
+# it by moving into the installed package; this value cannot follow it there, because a run_id
+# convention belongs to the CLI that mints it and not to operation_love.
+#
+# So the two copies are held together by a TEST, not by an import: tests/test_opener_replay.py's
+# test_report_recognizes_a_run_id_this_tool_actually_writes runs a real --live replay into a real
+# store and asserts THIS module classifies the resulting rejection row as synthetic, and
+# tests/test_opener_corpus_report.py pins the two literals equal. Two independently-spelled
+# allow-lists for one concept is precisely how this project has been bitten before (two regexes
+# for the same permitted opener move carried different noun sets); the duplication is forced
+# here, so the invariant is pinned instead of assumed.
+REPLAY_RUN_ID_PREFIX = "opener_replay_"
+
+
+def is_replay_run_id(run_id: str | None) -> bool:
+    """Whether ``run_id`` marks a row as produced by an offline tools/opener_replay.py pass.
+
+    The ONE predicate this module uses for that question -- every rejection-side live/synthetic
+    split below goes through it (RejectionRow.replay is set from it at read time, once per row,
+    in both backends' readers) so there is exactly one place the rule is written down. A NULL or
+    empty run_id is NOT replay: a row with no run_id at all predates nothing in particular and
+    must never be attributed to this tool on a guess -- and guessing the other way is the cheap
+    error here, since the caveat printed alongside the split already tells a reader the live
+    number is an upper bound rather than a certainty."""
+    return bool(run_id) and str(run_id).startswith(REPLAY_RUN_ID_PREFIX)
+
+
 DEFAULT_DEBUG_DIR = "data/hinge_debug"
 # Matches config.py's own db_file default (data_dir/"operation_love.db") so running this tool
 # with no flags at all inspects the same file a default `config.yaml` would actually write to.
@@ -228,10 +332,12 @@ class OpenerRow:
     decision: str | None = None
     # Raw `decision` column value, normalized so NULL and "" both read as None -- "like" for a
     # landed Like (OpenerService.commit_opener), a non-like reason such as "dislike" or
-    # "never_sent" for a drafted-but-never-sent row (OpenerService.discard_opener), or None for
-    # a row written before decision-tracking existed at all (jsonl NEVER carries this field --
-    # see this module's docstring's SOURCES section -- so every jsonl row is also None here).
-    # See decision_bucket() for how this becomes one of the three report buckets.
+    # "never_sent" for a drafted-but-never-sent row (OpenerService.discard_opener),
+    # "send_unverified" for a draft whose Send tap WAS issued and whose outcome could not be
+    # confirmed (discard_opener again -- the one discard reason that is not a never-sent row),
+    # or None for a row written before decision-tracking existed at all (jsonl NEVER carries
+    # this field -- see this module's docstring's SOURCES section -- so every jsonl row is also
+    # None here). See decision_bucket() for how this becomes one of the report buckets.
 
 
 @dataclass(frozen=True)
@@ -239,6 +345,20 @@ class RejectionRow:
     reason_code: str       # "(none)" when the stored reason_code was NULL/empty
     source: str            # "sqlite" | "bigquery" -- jsonl never carries rejections, see below
     era: str | None
+    # Whether this rejection was produced by an OFFLINE tools/opener_replay.py pass rather than
+    # captured from live use -- is_replay_run_id() applied to the row's `run_id` at read time (see
+    # REPLAY_RUN_ID_PREFIX above for why run_id is the only marker available on this table, and
+    # why the predicate is spelled once). Trailing default False, matching this module's
+    # convention for every added field, so every existing positional RejectionRow(...) call
+    # (tests included) keeps working and simply reports "not replay".
+    #
+    # NOT an exclusion: a replay-produced rejection is a real, correctly-attributed measurement of
+    # what a guard did under that prompt era, and diffing exactly that across eras is
+    # opener_replay.py's whole reason for existing. It is a SPLIT -- the same choice the PRODUCED
+    # side already makes for DECISION_REPLAY openers (own bucket, own count, visible marker, still
+    # counted) rather than the OUTCOMES side's exclusion, which is only right there because a
+    # replay draft was never sent and so can never have earned an outcome at all.
+    replay: bool = False
 
 
 @dataclass(frozen=True)
@@ -353,6 +473,12 @@ class SqliteStats:
     # counts an EXCLUSION, not an inclusion; see format_source_report() for the two lines side
     # by side.
     replay_row_count: int = 0
+    # How many of rejections_row_count's rows were produced by an offline tools/opener_replay.py
+    # pass (is_replay_run_id() on their run_id -- see REPLAY_RUN_ID_PREFIX). The rejections-side
+    # twin of replay_row_count immediately above, and like it an INCLUSION count, not an
+    # exclusion: these rows stay in the corpus and in OPENER REJECTIONS, they are merely reported
+    # separately so a guard-firing rate is never read as live when it is partly synthetic.
+    rejections_replay_row_count: int = 0
 
 
 def read_sqlite_openers(db_path: Path) -> tuple[list[OpenerRow], list[RejectionRow], SqliteStats]:
@@ -420,12 +546,26 @@ def read_sqlite_openers(db_path: Path) -> tuple[list[OpenerRow], list[RejectionR
                 stats.notes.append(
                     "'opener_rejections' table predates the prompt_sha256 column; every row "
                     "here lands in the unknown-era bucket")
-            for reason_code, era in con.execute(
-                    f"SELECT reason_code, {era_expr} FROM opener_rejections"):
+            # `run_id` has been in this table since its first CREATE (see ranker/store.py), so
+            # this branch should never fire -- it is here for the same reason the era_expr one
+            # above is: a column this reader cannot find must degrade into a PRINTED note, never
+            # into a silently wrong number. Without run_id there is no marker at all on this
+            # table, so every row would read as live; say so rather than imply it.
+            run_id_expr = "run_id" if "run_id" in columns else "NULL"
+            if "run_id" not in columns:
+                stats.notes.append(
+                    "'opener_rejections' table has no run_id column; offline-replay rows "
+                    "(tools/opener_replay.py) cannot be told apart from live ones here, so the "
+                    "live/synthetic split below reports every row as live")
+            for reason_code, era, run_id in con.execute(
+                    f"SELECT reason_code, {era_expr}, {run_id_expr} FROM opener_rejections"):
                 stats.rejections_row_count += 1
+                replay = is_replay_run_id(run_id)
+                if replay:
+                    stats.rejections_replay_row_count += 1
                 rejection_rows.append(RejectionRow(
                     reason_code=reason_code if reason_code else "(none)",
-                    source="sqlite", era=era))
+                    source="sqlite", era=era, replay=replay))
     finally:
         con.close()
     return opener_rows, rejection_rows, stats
@@ -444,6 +584,16 @@ class SqliteOutcomeStats:
     joined_row_count: int = 0          # outcome rows actually counted (post every exclusion)
     replay_excluded_count: int = 0     # rows dropped because their opener's decision was
                                        # DECISION_REPLAY (see this module's imports)
+    # Rows dropped because their opener's decision was not DECISION_VALUE_SENT -- i.e. nothing
+    # ever verified that this opener reached that person, so nothing observed on that profile
+    # can be attributed to it. Almost always a genuinely never-sent draft, which is what the
+    # field is named for; a "send_unverified" row (the Send was tapped, the confirmation failed)
+    # is dropped here too, and belongs here rather than among the counted rows for exactly the
+    # reason above -- the ATTRIBUTION question is "did this opener demonstrably reach them",
+    # and an unconfirmed send cannot answer yes. Counted separately from replay_excluded_count
+    # (which is checked FIRST and is a strict subset of the same predicate) so the reasons stay
+    # legible side by side in SOURCES rather than collapsing into one unexplained drop count.
+    not_sent_excluded_count: int = 0
 
 
 def read_sqlite_opener_outcomes(db_path: Path) -> tuple[list[OutcomeRow], SqliteOutcomeStats]:
@@ -472,6 +622,32 @@ def read_sqlite_opener_outcomes(db_path: Path) -> tuple[list[OutcomeRow], Sqlite
     replay draft was never sent to a real person and can never have earned a real owner-observed
     outcome, so it must never be silently joined to somebody else's genuine outcome even if a
     future change to opener_replay.py ever let a replay row carry a real profile_key.
+
+    NEVER-SENT ROWS: the same argument generalizes past replay rows, and Store.joined_opener_
+    outcomes now says so in SQL -- only an opener whose `decision` is DECISION_VALUE_SENT ("like",
+    OpenerService.commit_opener's landed-Like value) can own an outcome. A "dislike"/"never_sent"
+    draft (discard_opener) was generated and thrown away; a NULL/empty-decision row predates
+    decision tracking and is never assumed sent (this module's honesty rule, BE HONEST caveat 4).
+    A "send_unverified" row is the interesting member of this set rather than an oversight: its
+    Send WAS tapped, so it is emphatically not a never-sent draft on the PRODUCED axis (it has
+    its own bucket there, see decision_bucket()), but here the question is whether an observed
+    match or reply can be attributed to it, and "we could not confirm this one landed" is not a
+    yes. It is dropped by the same not-DECISION_VALUE_SENT predicate, with no special case --
+    which is the point: the exclusion is automatic for any decision value that is not the
+    verified-landed one, so a new marker can never quietly start owning outcomes.
+    Either way the opener did not demonstrably reach that profile, so a match or reply seen there was
+    likely earned by something else entirely -- most obviously by whatever opener actually WAS
+    sent to the same person, whose own row would then be double-counted alongside it. Dropped here and
+    counted in `not_sent_excluded_count`, mirroring the store method's predicate rather than
+    re-deciding it -- and that mirroring is PINNED rather than merely claimed, by the
+    cross-module test named above DECISION_VALUE_SENT. DECISION_REPLAY is still checked FIRST so
+    a replay row keeps reporting its own named reason instead of disappearing into the broader
+    never-sent count.
+
+    The one case that cannot apply either check is an `openers` table so old it has no `decision`
+    column at all. Filtering on a column that does not exist would silently zero this whole axis
+    for such a database, so the filter is skipped and the reason is PRINTED as a note (see below)
+    -- the numbers stay as honest as the schema allows and say exactly how far that is.
     """
     stats = SqliteOutcomeStats()
     rows: list[OutcomeRow] = []
@@ -500,19 +676,27 @@ def read_sqlite_opener_outcomes(db_path: Path) -> tuple[list[OutcomeRow], Sqlite
             stats.notes.append(
                 "'openers' table predates the profile_key column; no outcome can be joined")
             return rows, stats
-        era_expr = "prompt_sha256" if "prompt_sha256" in columns else "NULL"
+        # Each of these is a WHOLE select expression, table qualifier included -- "o.prompt_sha256"
+        # or the bare literal "NULL", never a bare column name this query then prefixes with
+        # "o.". The prefixing spelling was a latent crash: on a table missing either column the
+        # query read `SELECT o.NULL`, which is a sqlite3 syntax error, so the very legacy schema
+        # the notes below exist to accommodate raised out of this function instead of reporting
+        # itself. Nothing reached it until the no-decision-column branch got its first test.
+        era_select = "o.prompt_sha256" if "prompt_sha256" in columns else "NULL"
         if "prompt_sha256" not in columns:
             stats.notes.append(
                 "'openers' table predates the prompt_sha256 column; every joined outcome row "
                 "here lands in the unknown-era bucket")
-        decision_expr = "decision" if "decision" in columns else "NULL"
-        if "decision" not in columns:
+        has_decision = "decision" in columns
+        decision_select = "o.decision" if has_decision else "NULL"
+        if not has_decision:
             stats.notes.append(
-                "'openers' table predates the decision column; synthetic replay rows cannot be "
-                "identified and excluded by decision here (the join's own profile_key exclusion "
-                "still applies)")
+                "'openers' table predates the decision column; neither the sent-only filter "
+                "(decision == 'like') nor the synthetic-replay exclusion can be applied here, so "
+                "every joined row below is counted regardless of whether its opener was ever "
+                "sent (the join's own profile_key exclusion still applies)")
         query = (
-            f"SELECT o.{era_expr}, oc.outcome, o.{decision_expr} FROM openers o "
+            f"SELECT {era_select}, oc.outcome, {decision_select} FROM openers o "
             "JOIN opener_outcomes oc ON oc.app = o.app AND oc.profile_key = o.profile_key "
             "WHERE o.profile_key IS NOT NULL AND o.profile_key != '' "
             "AND oc.profile_key IS NOT NULL AND oc.profile_key != ''"
@@ -520,6 +704,14 @@ def read_sqlite_opener_outcomes(db_path: Path) -> tuple[list[OutcomeRow], Sqlite
         for era, outcome, decision in con.execute(query):
             if decision == DECISION_REPLAY:
                 stats.replay_excluded_count += 1
+                continue
+            # Sent-only, mirroring Store.joined_opener_outcomes' own `AND o.decision = 'like'`:
+            # an outcome observed on a profile whose opener was never sent was earned by
+            # something else. Guarded on `has_decision` so a pre-decision-column schema keeps
+            # reporting what it can (with the note above saying so) instead of silently
+            # collapsing to zero -- see this function's docstring's NEVER-SENT ROWS paragraph.
+            if has_decision and decision != DECISION_VALUE_SENT:
+                stats.not_sent_excluded_count += 1
                 continue
             stats.joined_row_count += 1
             rows.append(OutcomeRow(
@@ -543,6 +735,9 @@ class BigQueryStats:
     # See SqliteStats.replay_row_count immediately above -- same meaning, same source table,
     # different backend.
     replay_row_count: int = 0
+    # See SqliteStats.rejections_replay_row_count -- same meaning, same source table, different
+    # backend.
+    rejections_replay_row_count: int = 0
 
 
 def read_bigquery_openers(project_id: str, dataset: str,
@@ -605,14 +800,20 @@ def read_bigquery_openers(project_id: str, dataset: str,
         stats.notes.append(f"could not read {openers_table}: {type(exc).__name__}: {exc}")
 
     try:
+        # `run_id` comes back for the same reason the SQLite reader selects it: it is the ONLY
+        # marker distinguishing an offline tools/opener_replay.py rejection from a live one on
+        # this table (no `decision` column exists here -- see REPLAY_RUN_ID_PREFIX).
         result = client.query(
-            f"SELECT reason_code, prompt_sha256 FROM `{rejections_table}`").result()
+            f"SELECT reason_code, prompt_sha256, run_id FROM `{rejections_table}`").result()
         for row in result:
             stats.rejections_row_count += 1
             reason_code = row["reason_code"]
+            replay = is_replay_run_id(row["run_id"])
+            if replay:
+                stats.rejections_replay_row_count += 1
             rejection_rows.append(RejectionRow(
                 reason_code=reason_code if reason_code else "(none)",
-                source="bigquery", era=row["prompt_sha256"]))
+                source="bigquery", era=row["prompt_sha256"], replay=replay))
     except Exception as exc:  # noqa: BLE001 -- same as above
         stats.notes.append(f"could not read {rejections_table}: {type(exc).__name__}: {exc}")
 
@@ -631,6 +832,8 @@ class BigQueryOutcomeStats:
     notes: list[str] = field(default_factory=list)
     joined_row_count: int = 0
     replay_excluded_count: int = 0
+    # See SqliteOutcomeStats.not_sent_excluded_count -- same meaning, different backend.
+    not_sent_excluded_count: int = 0
 
 
 def read_bigquery_opener_outcomes(project_id: str, dataset: str,
@@ -644,9 +847,12 @@ def read_bigquery_opener_outcomes(project_id: str, dataset: str,
     every other reader in this module reads across every app the local corpus happens to
     contain.
 
-    REPLAY ROWS: see read_sqlite_opener_outcomes()'s own docstring for the full rationale --
-    the same DECISION_REPLAY exclusion applies here, defensively, in addition to the join's own
-    profile_key exclusion.
+    REPLAY ROWS / NEVER-SENT ROWS: see read_sqlite_opener_outcomes()'s own docstring for the full
+    rationale -- the same DECISION_REPLAY exclusion and the same sent-only (DECISION_VALUE_SENT)
+    filter apply here, in addition to the join's own profile_key exclusion. There is no
+    pre-decision-column case to accommodate on this side: `decision` has been in the BigQuery
+    `openers` schema since before this reader existed (see bigquery_store.py's _TABLES), so the
+    column is always selectable and the filter always applies.
     """
     from operation_love.bigquery_validation import validate_bigquery_identifier
 
@@ -688,6 +894,11 @@ def read_bigquery_opener_outcomes(project_id: str, dataset: str,
         for row in result:
             if row["decision"] == DECISION_REPLAY:
                 stats.replay_excluded_count += 1
+                continue
+            # Sent-only, mirroring BigQueryStore.joined_opener_outcomes' own
+            # `AND o.decision = 'like'` -- see read_sqlite_opener_outcomes()'s NEVER-SENT ROWS.
+            if row["decision"] != DECISION_VALUE_SENT:
+                stats.not_sent_excluded_count += 1
                 continue
             outcome = row["outcome"]
             rows.append(OutcomeRow(
@@ -1259,16 +1470,35 @@ def build_era_metrics(rows: Sequence[OpenerRow]) -> dict[str, EraMetrics]:
 
 
 def rejections_by_era(rows: Sequence[RejectionRow]) -> dict[str, Counter[str]]:
-    """reason_code counts, grouped the same way build_era_metrics groups openers."""
+    """reason_code counts, grouped the same way build_era_metrics groups openers.
+
+    Counts EVERY row, live and replay-produced alike -- the split is reported alongside (see
+    replay_rejections_by_era() and format_rejections()), never applied here, because a
+    replay-produced rejection is a real measurement of what a guard did under that prompt era.
+    """
     result: dict[str, Counter[str]] = defaultdict(Counter)
     for row in rows:
         result[row.era or UNKNOWN_ERA][row.reason_code] += 1
     return result
 
 
+def replay_rejections_by_era(rows: Sequence[RejectionRow]) -> dict[str, Counter[str]]:
+    """The offline-replay SUBSET of rejections_by_era() -- same grouping, same reason codes, over
+    only the rows tools/opener_replay.py produced (RejectionRow.replay, set from run_id at read
+    time; see REPLAY_RUN_ID_PREFIX).
+
+    Deliberately DELEGATES to rejections_by_era() over a filtered sequence rather than repeating
+    its grouping: one grouping rule, one place, so the total and its synthetic part can never be
+    computed two subtly different ways and disagree. Callers subtract this from the total to get
+    the LIVE count -- there is no third function for that, for the same reason.
+    """
+    return rejections_by_era([row for row in rows if row.replay])
+
+
 # ---------------------------------------------------------------------------------------
-# Decision grouping -- sent vs not-sent vs synthetic-replay vs unknown/legacy. See this module's
-# docstring's BE HONEST caveat 4 for what the sent/not_sent/unknown boundary means
+# Decision grouping -- sent vs send-unverified vs not-sent vs synthetic-replay vs
+# unknown/legacy. See this module's
+# docstring's BE HONEST caveat 4 for what the sent/send_unverified/not_sent/unknown boundary means
 # (OpenerService.discard_opener), and the caveat appended for synthetic replay rows for what the
 # fourth (DECISION_REPLAY) bucket means -- a replay row is not a human/AUTO decision at all, so it
 # must never be pooled into DECISION_NOT_SENT alongside a real rejected draft. METRICS above
@@ -1277,6 +1507,18 @@ def rejections_by_era(rows: Sequence[RejectionRow]) -> dict[str, Counter[str]]:
 
 DECISION_SENT = "sent"
 DECISION_NOT_SENT = "not_sent"
+# The send-unverified bucket's name is DECISION_SEND_UNVERIFIED ITSELF ("send_unverified",
+# imported from operation_love/opener/service.py -- see this module's top-of-file import
+# comment), for the identical reason the replay bucket below reuses its own raw marker: the
+# exact string a reader could grep the writer for is the exact string this report prints, and
+# the bucket name can never drift from the value decision_bucket() tests against.
+#
+# ITS OWN BUCKET, AND NOT BECAUSE IT IS RARE. Every other non-"like" decision means the draft
+# stayed on this side of the wire; this one means the OPPOSITE -- the opener was typed into the
+# composer and the Send was tapped, and only the confirmation afterwards failed. Pooling it into
+# DECISION_NOT_SENT would make the report under-count real sends, which is the precise defect
+# that made this value exist: worker.py used to file that post-send window as "never_sent".
+# Pooling it into DECISION_SENT would be the opposite lie -- nothing verified a landed Like.
 # The synthetic-replay bucket's name is DECISION_REPLAY ITSELF ("synthetic_replay", imported
 # from tools/opener_replay.py -- see this module's top-of-file import comment) rather than a
 # second, independently-spelled bucket constant: reusing the raw marker string as the bucket
@@ -1284,7 +1526,8 @@ DECISION_NOT_SENT = "not_sent"
 # grep opener_replay.py for is the exact string that shows up in this report) and guarantees the
 # bucket name can never drift from the marker decision_bucket() below is testing against.
 DECISION_UNKNOWN = "unknown"
-_DECISION_BUCKET_ORDER = (DECISION_SENT, DECISION_NOT_SENT, DECISION_REPLAY, DECISION_UNKNOWN)
+_DECISION_BUCKET_ORDER = (DECISION_SENT, DECISION_SEND_UNVERIFIED, DECISION_NOT_SENT,
+                          DECISION_REPLAY, DECISION_UNKNOWN)
 
 
 def decision_bucket(decision: str | None) -> str:
@@ -1295,7 +1538,13 @@ def decision_bucket(decision: str | None) -> str:
     or not-sent, per this module's honesty rule. "like" is OpenerService.commit_opener's own
     decision value for a landed Like (see operation_love/opener/service.py) -- historically the
     ONLY value the `openers` table ever held, and the only one that has ever meant "this
-    reached the device" -- bucketed DECISION_SENT. DECISION_REPLAY ("synthetic_replay",
+    reached the device AND we watched it land" -- bucketed DECISION_SENT.
+    DECISION_SEND_UNVERIFIED ("send_unverified", OpenerService's marker for a draft whose Send
+    Like tap was issued and whose verification then raised) also gets its OWN bucket, checked
+    before the catch-all for the same reason the replay one is but from the other side: that
+    opener DID reach the device, so counting it among the drafts nobody sent under-reports real
+    sends -- while counting it as DECISION_SENT would claim a landed Like nothing ever verified.
+    DECISION_REPLAY ("synthetic_replay",
     tools/opener_replay.py's own marker for an offline-generated row) gets its OWN bucket,
     checked before the catch-all below: a replay row is not a human (or AUTO) decision at all --
     nobody chose not to send it, it was simply never sent to anyone -- so it must never sit
@@ -1303,16 +1552,20 @@ def decision_bucket(decision: str | None) -> str:
     was exactly this function's defect before this bucket existed: every non-"like" decision,
     replay included, folded into the same not_sent bucket a human's own rejected draft landed
     in). Every OTHER non-empty value (today: "dislike" from Training's explicit reject,
-    "never_sent" from AUTO's stop/refusal/exception discard -- see OpenerService.discard_opener)
-    means a draft that was generated but never sent, bucketed DECISION_NOT_SENT -- deliberately a
-    catch-all rather than an enumerated allowlist, so a future discard reason this tool has never
-    seen still lands in the correct bucket instead of silently falling out of every group or
-    being miscounted as sent.
+    "never_sent" from AUTO's and Training's stop/refusal/pre-send-exception discards -- see
+    OpenerService.discard_opener) means a draft that was generated but never sent, bucketed
+    DECISION_NOT_SENT -- deliberately a catch-all rather than an enumerated allowlist, so a
+    future discard reason this tool has never seen still lands in the correct bucket instead of
+    silently falling out of every group or being miscounted as sent. The catch-all's default is
+    the safe direction only for values that mean "not sent", which is why the one known value
+    that does NOT (send_unverified, above) is named explicitly rather than left to fall into it.
     """
     if not decision:
         return DECISION_UNKNOWN
-    if decision == "like":
+    if decision == DECISION_VALUE_SENT:
         return DECISION_SENT
+    if decision == DECISION_SEND_UNVERIFIED:
+        return DECISION_SEND_UNVERIFIED
     if decision == DECISION_REPLAY:
         return DECISION_REPLAY
     return DECISION_NOT_SENT
@@ -1330,7 +1583,7 @@ def build_decision_metrics(rows: Sequence[OpenerRow]) -> dict[str, EraMetrics]:
     Also threads a ``replay_count`` into each bucket exactly like build_era_metrics() does --
     trivially every row of the DECISION_REPLAY bucket itself (a replay row's decision IS the
     replay marker, by decision_bucket()'s own construction) and 0 for every other bucket (a
-    replay row can never land in sent/not_sent/unknown) -- purely so a JSON consumer of
+    replay row can never land in sent/send_unverified/not_sent/unknown) -- purely so a JSON consumer of
     ``by_decision`` never sees an inconsistent 0 on the one bucket where it should read `n`.
     """
     by_bucket: dict[str, list[str]] = defaultdict(list)
@@ -1349,9 +1602,11 @@ def build_decision_metrics(rows: Sequence[OpenerRow]) -> dict[str, EraMetrics]:
 
 
 def sort_decision_keys(buckets: Iterable[str]) -> list[str]:
-    """Deterministic display order: sent, then not_sent, then unknown, then the combined total
-    -- mirrors sort_era_keys()'s own ordering rationale, but only over the (small, fixed)
-    decision vocabulary rather than an alphabetical sort of arbitrary digests."""
+    """Deterministic display order: sent, then send_unverified (the other bucket whose rows
+    reached the device, printed next to it on purpose), then not_sent, then synthetic_replay,
+    then unknown, then the combined total -- mirrors sort_era_keys()'s own ordering rationale,
+    but only over the (small, fixed) decision vocabulary rather than an alphabetical sort of
+    arbitrary digests."""
     present = set(buckets)
     ordered = [bucket for bucket in _DECISION_BUCKET_ORDER if bucket in present]
     if "ALL" in present:
@@ -1887,9 +2142,13 @@ _CAVEATS = (
     "value, and the only thing every store row meant before discard_opener existed). A row "
     "with a non-like decision ('dislike', 'never_sent') is a draft that was generated but "
     "NEVER sent (discard_opener) -- this is NOT retroactive, so a row written before "
-    "discard_opener existed remains sent-only, never reclassified. A row with no decision "
+    "discard_opener existed remains sent-only, never reclassified. A row with "
+    "decision=='send_unverified' is neither: its Send Like tap WAS issued and the driver's own "
+    "verification then failed, so the opener went out and nothing proved it landed -- it is "
+    "counted in its own bucket, never among the drafts nobody sent. A row with no decision "
     "recorded at all (NULL/empty) is bucketed 'unknown', never assumed sent. See METRICS BY "
-    "DECISION below for the sent/not_sent/unknown breakdown this pools into if read alone; the "
+    "DECISION below for the sent/send_unverified/not_sent/unknown breakdown this pools into if "
+    "read alone; the "
     "opener_rejections counts remain the (also store-only, also partial) record of drafts a "
     "GUARD rejected before a human ever saw them, distinct from this decision breakdown.",
     "OUTCOMES (match/reply/no_response/unmatch/unknown) are OWNER-OBSERVED, not automatically "
@@ -1906,7 +2165,15 @@ _CAVEATS = (
     "have earned a real outcome -- they were never sent to a real person -- and are excluded "
     "from every outcome count and denominator here, by an explicit decision check in addition "
     "to the profile_key exclusion above (every replay row is also unattributed by construction "
-    "today, but this exclusion does not depend on that staying true).",
+    "today, but this exclusion does not depend on that staying true). The same holds for EVERY "
+    "never-sent opener, not just replay ones: only a row whose decision is 'like' (it actually "
+    "reached the device AND was verified as landed) can own an outcome here -- a "
+    "'dislike'/'never_sent' draft, a 'send_unverified' row whose send could not be confirmed, "
+    "and a legacy row with no decision recorded at all, are excluded rather than credited with "
+    "whatever was observed on that profile, which was earned by whichever opener actually was "
+    "sent to that person. This mirrors Store.joined_opener_outcomes' own predicate; the one "
+    "exception is a database so old its openers table has no decision column, where the filter "
+    "cannot be applied at all and SOURCES prints a note saying exactly that.",
     "A higher or lower response rate under one prompt era than another is a CORRELATION, not a "
     "causal claim about whichever single rule changed: two eras almost always differ in more "
     "than one rule at once (see --eras), and this axis has no control for who was swiped on, "
@@ -1920,6 +2187,19 @@ _CAVEATS = (
     "live behaviour, and it carries no outcomes by construction: a replay row was never sent to a "
     "real person, so it can never earn one (see the synthetic-replay caveat above, under METRICS "
     "BY OUTCOME).",
+    # APPENDED, never inserted -- see test_caveat_four_still_intact_after_appending_new_caveats
+    # and the "caveats 5-8" references throughout this module: the existing caveats are addressed
+    # by POSITION in both the code and the output, so a new one goes on the end.
+    "OPENER REJECTIONS counts are split LIVE vs SYNTHETIC REPLAY and must be read that way. "
+    "tools/opener_replay.py --live writes a real opener_rejections row for every draft the "
+    "guards refuse during an offline replay, and that table carries no decision column to mark "
+    "them with, so the split is inferred from the run_id prefix opener_replay.py stamps on every "
+    "row it writes. A replay-produced rejection is a genuine measurement of that guard under "
+    "that prompt era and is NOT excluded, but it is GENERATED: a guard's firing rate here is "
+    "inflated by however many offline replays happened to run, so 'this guard is too strict' has "
+    "to be argued from the live half of the split, never from the total. One consequence worth "
+    "stating: this split is only as good as the run_id, so a rejection row written by anything "
+    "that does not use opener_replay.py's prefix counts as live.",
 )
 
 
@@ -1940,7 +2220,9 @@ def format_source_report(report: SourceReport) -> str:
         f"  sqlite  : {'available' if sq.available else 'unavailable'}, "
         f"{sq.openers_row_count} openers row(s) -> {report.sqlite_unique} unique "
         f"({sq.replay_row_count} synthetic-replay row(s) included -- see caveats; PRODUCED-side "
-        f"only, never OUTCOMES), {sq.rejections_row_count} opener_rejections row(s)")
+        f"only, never OUTCOMES), {sq.rejections_row_count} opener_rejections row(s) "
+        f"({sq.rejections_replay_row_count} synthetic-replay row(s) included -- see OPENER "
+        f"REJECTIONS below for the per-era split)")
     lines.extend(f"            NOTE: {note}" for note in sq.notes)
     bq = report.bigquery_stats
     if not bq.attempted:
@@ -1951,7 +2233,8 @@ def format_source_report(report: SourceReport) -> str:
             f"{bq.openers_row_count} openers row(s) -> {report.bigquery_unique} unique "
             f"({bq.replay_row_count} synthetic-replay row(s) included -- see caveats; "
             f"PRODUCED-side only, never OUTCOMES), {bq.rejections_row_count} "
-            "opener_rejections row(s)")
+            f"opener_rejections row(s) ({bq.rejections_replay_row_count} synthetic-replay "
+            "row(s) included -- see OPENER REJECTIONS below for the per-era split)")
         lines.extend(f"            NOTE: {note}" for note in bq.notes)
     lines.append(
         f"  combined corpus after cross-source de-duplication: {report.combined_unique} "
@@ -1960,7 +2243,8 @@ def format_source_report(report: SourceReport) -> str:
     lines.append(
         f"  sqlite opener_outcomes  : {'available' if sqo.available else 'unavailable'}, "
         f"{sqo.joined_row_count} joined outcome row(s) "
-        f"({sqo.replay_excluded_count} synthetic-replay row(s) excluded)")
+        f"({sqo.replay_excluded_count} synthetic-replay row(s) excluded, "
+        f"{sqo.not_sent_excluded_count} not-verified-sent row(s) excluded)")
     lines.extend(f"            NOTE: {note}" for note in sqo.notes)
     bqo = report.bigquery_outcome_stats
     if not bqo.attempted:
@@ -1969,7 +2253,8 @@ def format_source_report(report: SourceReport) -> str:
         lines.append(
             f"  bigquery opener_outcomes: {'available' if bqo.available else 'unavailable'}, "
             f"{bqo.joined_row_count} joined outcome row(s) "
-            f"({bqo.replay_excluded_count} synthetic-replay row(s) excluded)")
+            f"({bqo.replay_excluded_count} synthetic-replay row(s) excluded, "
+            f"{bqo.not_sent_excluded_count} not-verified-sent row(s) excluded)")
         lines.extend(f"            NOTE: {note}" for note in bqo.notes)
     return "\n".join(lines)
 
@@ -1978,7 +2263,7 @@ def format_era_metrics(m: EraMetrics, *, label: str = "era",
                        registry: EraRegistry | None = None) -> str:
     """Render one EraMetrics bucket. ``label`` names the axis this bucket came from ("era" for
     build_era_metrics()'s prompt_sha256 buckets, "decision" for build_decision_metrics()'s
-    sent/not_sent/unknown buckets) -- EraMetrics itself is axis-agnostic (see
+    sent/send_unverified/not_sent/unknown buckets) -- EraMetrics itself is axis-agnostic (see
     build_decision_metrics()'s docstring), only the header needs to say which axis is which.
     On the "era" axis only, the bucket's registry label (see resolve_era_label) is appended in
     brackets so a prompt_sha256 is never printed with nothing to identify it by, and -- also era
@@ -2017,18 +2302,69 @@ def format_era_metrics(m: EraMetrics, *, label: str = "era",
 
 
 def format_rejections(rejections: dict[str, Counter[str]],
-                      registry: EraRegistry | None = None) -> str:
+                      registry: EraRegistry | None = None,
+                      replay: dict[str, Counter[str]] | None = None) -> str:
+    """The OPENER REJECTIONS section, with every count split live vs synthetic replay.
+
+    ``replay`` is replay_rejections_by_era()'s output over the SAME rows ``rejections`` was built
+    from -- the synthetic SUBSET, so live = total - replay at every level. It is optional and
+    defaults to "no replay rows known", purely so an existing two-argument call keeps working;
+    when it is omitted every count prints as fully live, which is what a caller that never looked
+    at the run_ids is entitled to claim and nothing more.
+
+    THE SPLIT IS PRINTED ON EVERY LINE, including the ones where it is 0 synthetic, and that is
+    on purpose: this section is what a "is this guard too strict?" argument gets made from, and
+    tools/opener_replay.py's --live pass writes a real `opener_rejections` row for every draft the
+    guards refuse. An offline replay therefore INFLATES these counts by however many times someone
+    happened to run one, and before the split existed there was nothing in this output to say so.
+    A reader who has to notice an absent annotation to avoid a wrong conclusion will eventually
+    fail to notice it; "0 synthetic replay" said out loud cannot be missed the same way.
+    """
     if not rejections:
         return ("=== OPENER REJECTIONS ===\n  no opener_rejections rows available from any "
                 "queried store (see the SOURCES notes above for why)")
-    lines = ["=== OPENER REJECTIONS (store only; jsonl carries none) ==="]
+    replay = replay or {}
+    grand_total = sum(sum(counts.values()) for counts in rejections.values())
+    grand_replay = sum(sum(counts.values()) for counts in replay.values())
+    lines = [
+        "=== OPENER REJECTIONS (store only; jsonl carries none) ===",
+        f"  {grand_total} row(s) total: {grand_total - grand_replay} live, {grand_replay} "
+        "synthetic replay (rows written by an offline tools/opener_replay.py --live pass, "
+        "identified by their run_id prefix -- they measure the same guards under the same "
+        "prompt era, but they are GENERATED, not captured from live use, and however many "
+        "replays were run is how much they inflate these totals)",
+    ]
     for era in sort_era_keys(rejections.keys()):
         counts = rejections[era]
+        era_replay_counts = replay.get(era, Counter())
         total = sum(counts.values())
-        lines.append(f"  era {era} [{resolve_era_label(era, registry)}] ({total} total):")
+        era_replay = sum(era_replay_counts.values())
+        lines.append(
+            f"  era {era} [{resolve_era_label(era, registry)}] ({total} total: "
+            f"{total - era_replay} live, {era_replay} synthetic replay)"
+            f"{_rejection_synthetic_marker(total, era_replay)}:")
         for reason_code, count in counts.most_common():
-            lines.append(f"    {reason_code}: {count}")
+            reason_replay = era_replay_counts.get(reason_code, 0)
+            lines.append(f"    {reason_code}: {count} "
+                         f"({count - reason_replay} live, {reason_replay} synthetic replay)")
     return "\n".join(lines)
+
+
+def _rejection_synthetic_marker(total: int, replay_count: int) -> str:
+    """The " [...]" suffix on an OPENER REJECTIONS era header when that era's guard-firing counts
+    are wholly or partly synthetic -- "" when they are not, so callers concatenate it
+    unconditionally. Reuses synthetic_status() verbatim rather than re-deciding what "wholly" and
+    "partial" mean: this is the SAME verdict era_synthetic_marker() renders on the produced-side
+    era axis, just against a rejection count instead of a draft count, and the two must never
+    answer that question differently."""
+    status = synthetic_status(total, replay_count)
+    if status == SYNTHETIC_WHOLLY:
+        return (" [WHOLLY SYNTHETIC: every rejection here was produced by an offline "
+                "tools/opener_replay.py pass, none by live use]")
+    if status == SYNTHETIC_PARTIAL:
+        return (f" [PARTIALLY SYNTHETIC: {replay_count}/{total} rejection(s) produced by "
+                "tools/opener_replay.py]")
+    return ""
 
 
 _COMPARE_FIELDS: tuple[tuple[str, str], ...] = (
@@ -2170,6 +2506,7 @@ def build_report(rows: Sequence[OpenerRow], rejections: Sequence[RejectionRow],
     decision_metrics = build_decision_metrics(rows)
     outcome_metrics_map = build_outcome_metrics(outcome_rows)
     rej_by_era = rejections_by_era(rejections)
+    rej_replay_by_era = replay_rejections_by_era(rejections)
     era_labels: dict[str, str] = {}
     if registry is not None and registry.loaded:
         # Every real digest this run actually measured (by_era's keys, minus the "unknown"/"ALL"
@@ -2219,6 +2556,25 @@ def build_report(rows: Sequence[OpenerRow], rejections: Sequence[RejectionRow],
         "by_outcome": {era: outcome_metrics_map[era].to_dict()
                       for era in sort_era_keys(outcome_metrics_map.keys())},
         "rejections_by_era": {era: dict(rej_by_era[era]) for era in sort_era_keys(rej_by_era.keys())},
+        # The SYNTHETIC SUBSET of rejections_by_era above (rows an offline
+        # tools/opener_replay.py --live pass wrote -- see REPLAY_RUN_ID_PREFIX), carried as its
+        # own key with the SAME era/reason_code shape so a consumer subtracts to get the live
+        # count rather than being handed a third, independently-computed number that could
+        # disagree with the other two. Always present, never conditional: a JSON consumer that
+        # does not know this key exists reads rejections_by_era exactly as it always did, and one
+        # that does can never mistake a replay-inflated guard-firing rate for a live one. An era
+        # with no synthetic rows is simply absent from this map (its whole total is live) --
+        # `rejections_synthetic_status` below is the unconditional per-era verdict.
+        "rejections_by_era_replay": {era: dict(rej_replay_by_era[era])
+                                     for era in sort_era_keys(rej_replay_by_era.keys())},
+        # wholly/partial/none per era, over the same rejection counts -- the machine-readable
+        # twin of the bracketed marker format_rejections() prints, via the SAME synthetic_status()
+        # the produced-side era axis uses, so text and JSON can never render different verdicts.
+        "rejections_synthetic_status": {
+            era: synthetic_status(sum(rej_by_era[era].values()),
+                                  sum(rej_replay_by_era.get(era, Counter()).values()))
+            for era in sort_era_keys(rej_by_era.keys())
+        },
         "era_labels": era_labels,
     }
     if compare is not None:
@@ -2284,7 +2640,8 @@ def format_text_report(rows: Sequence[OpenerRow], rejections: Sequence[Rejection
     parts.append("")
     # First class per this module's docstring's METRICS section and caveat 4 -- printed before
     # the by-era breakdown, not after it, and never gated behind --json or --compare.
-    parts.append("=== METRICS BY DECISION (sent vs not_sent vs unknown/legacy -- see caveat 4) ===")
+    parts.append("=== METRICS BY DECISION (sent vs send_unverified vs not_sent vs "
+                 "unknown/legacy -- see caveat 4) ===")
     parts.extend(format_era_metrics(decision_metrics[bucket], label="decision")
                  for bucket in sort_decision_keys(decision_metrics.keys()))
     parts.append("")
@@ -2302,7 +2659,8 @@ def format_text_report(rows: Sequence[OpenerRow], rejections: Sequence[Rejection
     parts.extend(format_outcome_metrics(outcome_metrics_map[era], registry=registry)
                  for era in sort_era_keys(outcome_metrics_map.keys()))
     parts.append("")
-    parts.append(format_rejections(rejections_by_era(rejections), registry=registry))
+    parts.append(format_rejections(rejections_by_era(rejections), registry=registry,
+                                   replay=replay_rejections_by_era(rejections)))
     if compare is not None:
         era_a = resolve_compare_token(list(metrics.keys()), compare[0], registry)
         era_b = resolve_compare_token(list(metrics.keys()), compare[1], registry)

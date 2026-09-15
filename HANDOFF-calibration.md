@@ -1,14 +1,29 @@
 # Historical handoff — Hinge 9.134 inline-composer calibration (superseded)
 
 > **Do not use this file as current release authorization.** It preserves the
-> 2026-08-14 Hinge 9.134 forensic record below. The live configuration targets
-> Hinge **10.1.0** in `mode: training`, with a schema-v3 targeting calibration and
-> accepted still-photo assumption that license numbered targeted suggestions for
-> Training only. The retained 10.0.1 production-Observe mapping, and the 9.134
-> AI-reviewed artifact below, are immutable historical evidence; neither can
-> authorize AUTO on the live build. AUTO remains blocked until the 10.1.0
-> calibration has fresh, build-bound production-Observe release evidence. Follow
+> 2026-08-14 Hinge 9.134 forensic record below. **This banner deliberately names no
+> live Hinge build.** `apps.hinge.targeting_calibration` in `config.yaml` is the single
+> authority for which build the live schema-v3 calibration is bound to: read its
+> `hinge_version_name`, `frame_size_px`, and `calibrated_at` there, because the driver
+> compares the running app against exactly those values before it will offer a numbered
+> targeted suggestion. The separate licence that makes numbered targeted suggestions
+> available at all is equally config-bound: `apps.hinge.still_photo_assumption_acceptance`
+> records what the owner accepted and for which device and build. It is an explicitly
+> UNMEASURED assumption, so it licenses `mode: training` only and can never by itself
+> authorize AUTO. (Its measured alternative is `apps.hinge.still_photo_bound_evidence`;
+> config installs exactly one of the two and rejects both together.) The retained
+> production-Observe mapping under `apps.hinge.observe_release_evidence`, and the 9.134
+> AI-reviewed artifact below, are immutable historical evidence bound to their own older
+> builds; neither can authorize AUTO on the live build. AUTO remains blocked until the
+> calibration `config.yaml` currently carries has fresh, build-bound production-Observe
+> release evidence of its own. Follow
 > [ops/RUNBOOK.md](ops/RUNBOOK.md), especially sections 2 and 4, for current instructions.
+>
+> *Why the indirection (2026-09-15):* this banner previously asserted a concrete live
+> build, and went stale on the 2026-09-11 renewal without anyone noticing. A returning
+> engineer following the stale text would have collected production-Observe evidence
+> bound to a build the gate no longer accepts, which is expensive evidence that cannot
+> satisfy the thing it was gathered for. Point at `config.yaml`; never restate it here.
 
 At the time it was written, this handoff replaced the old paused-PTY, manual-only,
 and pending-release instructions, and the 9.134 AI-reviewed production-Observe
@@ -64,7 +79,7 @@ artifact enabled Auto for that exact historical calibration only.
   (SHA-256 `60952f85f77f5f6ce89a825e08f2b41c7d4818d7ffc1ea7e39620d35b307c303`).
   The 9.134 configuration bound it under `ai_reviewed_observe_release_evidence`,
   removed the Observe-only controller fields, and set global mode to `auto`.
-  The current 10.1.0 configuration retains the mapping only as an immutable
+  The live configuration retains the mapping only as an immutable
   audit record; its exact build binding prevents it from becoming a live AUTO gate.
 - The artifact truthfully records `human_ground_truth: false`; this is an
   explicitly accepted AI-reviewed release, not manual evidence.
@@ -199,6 +214,8 @@ diagnosis and start a fresh session from a confirmed profile top.
 - Ruff is clean for `operation_love`, `tools`, and `tests`; `git diff --check`
   is clean.
 - These counts and quality notes describe the superseded 9.134 handoff, not the
-  current 10.1.0 Training state. Use the current CI run for present verification.
+  current Training state (whose build binding is whatever
+  `apps.hinge.targeting_calibration` in `config.yaml` names). Use the current CI
+  run for present verification.
 - Real profile/debug artifacts under `ops/calibration/` and
   `data/hinge_debug/` are private and gitignored; do not upload or commit them.

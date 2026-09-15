@@ -1,4 +1,5 @@
 """bugreport — redacted markdown diagnostic. Offline."""
+import ast
 import datetime
 import hashlib
 import io
@@ -36,6 +37,12 @@ def test_report_has_core_sections():
 
 
 # ── Run completion assessment ───────────────────────────────────────────────
+# The run under assessment. Named once because seeded _LOG_RING lines have to carry the SAME
+# id the snapshot does: the ring is shared by every run of a hub session, so a line is this
+# run's evidence only when supervisor.py's `Run {run_id}: ` prefix says so.
+_COMPLETION_RUN_ID = "completion-test-run"
+
+
 class _CompletionHub:
     def __init__(self, *, phase="stopped", running=False, hub_error=None, app_state="stopped",
                  app_error=None, stop_kind=None):
@@ -43,7 +50,7 @@ class _CompletionHub:
             "running": running,
             "error": hub_error,
             "status": {
-                "run_id": "completion-test-run",
+                "run_id": _COMPLETION_RUN_ID,
                 "phase": phase,
                 "running": running,
                 "stopping": False,
@@ -129,7 +136,9 @@ def test_completion_assessment_names_recovered_provider_faults_and_coverage(monk
     )
     bugreport._LOG_RING.clear()
     bugreport._LOG_RING.extend([
-        "12:00:00 Gemini opener: gemini-test failed at the transport level (TimeoutError)",
+        "12:00:00 Gemini opener: gemini-test failed at the transport level (TimeoutError: timed "
+        "out); NOT blacklisting -- trying the next configured model for this profile only (this "
+        "model will be retried first on the next profile).",
         "12:00:01 ordinary diagnostic",
     ])
     try:
@@ -138,8 +147,438 @@ def test_completion_assessment_names_recovered_provider_faults_and_coverage(monk
         bugreport._LOG_RING.clear()
 
     assert "Outcome: COMPLETED SAFELY, WITH LIMITATIONS" in md
-    assert "1 recovered provider transport failure" in md
+    assert "1 provider failure(s) recovered by cascading to the next configured model" in md
     assert "still-photo coverage skipped 3 of 5 photo candidate(s)" in md
+
+
+# Rendered copies of every non-fatal branch of the opener cascade's print() calls -- from
+# operation_love/opener/opener.py's GeminiOpener request path (the transport-failure,
+# per-day-429, per-minute-429, retired-model-404, 5xx and rejected-thinking-level branches;
+# line numbers drift, the wording is the contract). bugreport is deliberately stdlib-only and
+# cannot import those messages, so these stand in for real ring lines and drive the completion
+# assessment END TO END, interpolated values and all.
+#
+# What they are NOT is the drift gate. A hand-typed copy pins only itself: reword a print in
+# opener.py and this dict keeps matching its own stale prose while the shipped matcher goes
+# blind -- the EXACT defect this whole fix was about. The gate is the test that reads
+# opener.py's own source, below:
+# test_every_cascade_branch_in_the_shipped_opener_source_carries_the_matched_phrase.
+# These lines are its fixtures, not its evidence.
+#
+# The shipped matcher named only the TRANSPORT wording: the other branches MISSED, and run
+# 257bdd639ca5 cascaded off a 503, printed it in this report's own "Recent logs" section, and
+# was stamped COMPLETED CLEANLY anyway.
+_RECOVERED_CASCADE_LOG_LINES = {
+    "transport": (
+        "Gemini opener: gemini-3.6-flash failed at the transport level (TimeoutError: timed "
+        "out); NOT blacklisting -- trying the next configured model for this profile only "
+        "(this model will be retried first on the next profile)."),
+    "quota-day": (
+        "Gemini opener: gemini-3.6-flash hit its per-day quota (resets at midnight Pacific); "
+        "blacklisting it for the rest of this run and trying the next configured model."),
+    "quota-minute": (
+        "Gemini opener: gemini-3.6-flash hit a per-minute 429; NOT blacklisting -- trying the "
+        "next configured model for this profile only (this model will be retried first on the "
+        "next profile)."),
+    "not-found": (
+        "Gemini opener: gemini-3.6-flash returned 404 NOT_FOUND (models/gemini-3.6-flash is "
+        "not found for API version v1beta); this model id is retired or unavailable to this "
+        "account and will not come back mid-run -- dropping it from the cascade for the rest "
+        "of this run and trying the next configured model."),
+    "server-error": (
+        "Gemini opener: gemini-3.6-flash returned HTTP 503 UNAVAILABLE; NOT blacklisting -- "
+        "trying the next configured model for this profile only (this model will be retried "
+        "first on the next profile)."),
+    "thinking-rejected": (
+        "Gemini opener: gemini-3.7-flash returned HTTP 400 rejecting its configured thinking "
+        "level or budget (Thinking level MINIMAL is not supported for this model. Please "
+        "retry with other thinking level.); this is a per-model capability limit, not a "
+        "property of the request, and will not change mid-run -- dropping it from the cascade "
+        "for the rest of this run and trying the next configured model. Fix opener.thinking "
+        "for this model id."),
+}
+
+
+@pytest.mark.parametrize("branch", sorted(_RECOVERED_CASCADE_LOG_LINES))
+def test_completion_assessment_sees_every_recovered_cascade_branch(monkeypatch, branch):
+    """Each of these is a provider failure the run RECOVERED from by cascading; each one is a
+    limitation of the run, and none of them may pass as a clean completion."""
+    monkeypatch.setattr(bugreport, "_completion_capture_facts", lambda *_: {})
+    bugreport._LOG_RING.clear()
+    bugreport._LOG_RING.append(f"12:00:00 {_RECOVERED_CASCADE_LOG_LINES[branch]}")
+    try:
+        md = bugreport._run_completion_assessment_md(_CompletionHub(), "unused.yaml")
+    finally:
+        bugreport._LOG_RING.clear()
+
+    assert "Outcome: COMPLETED CLEANLY" not in md
+    assert "1 provider failure(s) recovered by cascading to the next configured model" in md
+
+
+def test_completion_assessment_counts_a_cascade_line_split_by_an_exception_newline(monkeypatch):
+    """The anchor phrase can arrive on a ring line that names no provider at all.
+
+    _Tee.write splits captured stdout on newlines BEFORE appending to the ring, and the
+    transport branch interpolates `{type(exc).__name__}: {exc}` ahead of the phrase. An
+    exception whose str() carries a newline therefore lands "Gemini opener: ..." on one ring
+    line and "trying the next configured model" on the next. The matcher used to also require
+    gemini/provider on that same line, so the split line matched nothing and the fault went
+    uncounted -- the very blind spot this matcher was widened to close.
+    """
+    monkeypatch.setattr(bugreport, "_completion_capture_facts", lambda *_: {})
+    bugreport._LOG_RING.clear()
+    # Exactly what _Tee.write puts in the ring for a two-line exception str(): one print, two
+    # timestamped entries, and the second one carries the phrase and nothing else identifying.
+    bugreport._LOG_RING.extend([
+        "12:00:00 Gemini opener: gemini-3.6-flash failed at the transport level "
+        "(RemoteDisconnected: Remote end closed connection without response",
+        "12:00:00 while reading the response body); NOT blacklisting -- trying the next "
+        "configured model for this profile only (this model will be retried first on the next "
+        "profile).",
+    ])
+    try:
+        md = bugreport._run_completion_assessment_md(_CompletionHub(), "unused.yaml")
+    finally:
+        bugreport._LOG_RING.clear()
+
+    assert "Outcome: COMPLETED CLEANLY" not in md
+    assert "1 provider failure(s) recovered by cascading to the next configured model" in md
+
+
+# ── the cascade matcher, pinned against the SHIPPED opener source ───────────
+# Every non-fatal cascade branch of GeminiOpener's request path as of 2026-09-15: a transport
+# failure, a per-day 429, a per-minute/unclassified 429, a retired-model 404, a 5xx, and a
+# rejected thinking level. A LOWER count means the locator below stopped finding branches that
+# are still there (the cascade moved out of the class, the print shape changed), which is
+# silence where the gate should be -- so it fails rather than passing vacuously. A higher count
+# is fine: a new branch is checked like every other one.
+_SHIPPED_CASCADE_BRANCH_COUNT = 6
+# Statements a cascade branch may put between its print and its `return None` without changing
+# where control goes. Anything else (an if, a raise, a return with a value, a loop) means this
+# print does NOT simply fall into a bare `return None`, so it is not a cascade branch.
+_CASCADE_PASSTHROUGH_STMTS = (ast.Assign, ast.AugAssign, ast.AnnAssign, ast.Expr, ast.Pass)
+
+
+def _is_print_stmt(stmt):
+    return (isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call)
+            and isinstance(stmt.value.func, ast.Name) and stmt.value.func.id == "print")
+
+
+def _is_bare_return_none(stmt):
+    return isinstance(stmt, ast.Return) and (
+        stmt.value is None
+        or (isinstance(stmt.value, ast.Constant) and stmt.value.value is None))
+
+
+def _reaches_return_none(rest, tail):
+    """Whether control falls from here into a bare `return None`.
+
+    `tail` is what happens on falling off the end of this block -- the answer computed for the
+    statement that owns it. That is what makes the per-day-429 branch reachable: its print is
+    the LAST statement of an `if` body, and the `return None` sits after the whole `if` in the
+    parent block.
+    """
+    for stmt in rest:
+        if _is_bare_return_none(stmt):
+            return True
+        if isinstance(stmt, _CASCADE_PASSTHROUGH_STMTS):
+            continue
+        return False
+    return tail
+
+
+def _child_statement_bodies(stmt):
+    bodies = [getattr(stmt, field, None) for field in ("body", "orelse", "finalbody")]
+    bodies += [handler.body for handler in getattr(stmt, "handlers", None) or []]
+    return [body for body in bodies
+            if isinstance(body, list) and body and all(isinstance(s, ast.stmt) for s in body)]
+
+
+def _render_print_message(call):
+    """The static text of a `print(...)`, with every interpolated value as `{...}`."""
+    parts = []
+    for arg in call.args:
+        if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+            parts.append(arg.value)
+        elif isinstance(arg, ast.JoinedStr):
+            parts.append("".join(
+                piece.value
+                if isinstance(piece, ast.Constant) and isinstance(piece.value, str) else "{...}"
+                for piece in arg.values))
+        else:
+            parts.append("{...}")
+    return " ".join(parts)
+
+
+def _cascade_print_messages(source, class_name):
+    """Messages of every `print(...)` inside `class_name` whose branch ends in `return None`.
+
+    That control-flow shape IS the cascade contract: a non-fatal provider failure tells the
+    operator what happened and answers None so `generate` moves to the next configured model,
+    while a fatal one raises. Keying on the shape rather than on any wording is the point --
+    a branch that forgets the shared phrase still gets located, and then fails the match.
+    """
+    found = []
+
+    def walk(stmts, tail):
+        for index, stmt in enumerate(stmts):
+            after = _reaches_return_none(stmts[index + 1:], tail)
+            if _is_print_stmt(stmt):
+                if after:
+                    found.append(_render_print_message(stmt.value))
+                continue
+            # A loop body repeats and a nested def/class body is a different call entirely, so
+            # neither one inherits this position's fall-through.
+            inherits = not isinstance(stmt, (ast.For, ast.AsyncFor, ast.While, ast.ClassDef,
+                                             ast.FunctionDef, ast.AsyncFunctionDef))
+            for body in _child_statement_bodies(stmt):
+                walk(body, after if inherits else False)
+
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.ClassDef) and node.name == class_name:
+            walk(node.body, False)
+    return found
+
+
+def test_every_cascade_branch_in_the_shipped_opener_source_carries_the_matched_phrase():
+    """Read opener.py itself. The hand-typed fixtures above pin nothing.
+
+    bugreport is deliberately stdlib-only and cannot import the opener package, so the shared
+    "trying the next configured model" phrase is an UNCHECKED convention between two files --
+    unchecked is exactly how the previous matcher came to see the transport branch and none of
+    the other five, while every test here kept passing on its own private copy of the prose.
+    Tests are under no such import restriction: this one locates the cascade branches in the
+    shipped source by their control-flow shape and holds each one to the matcher the report
+    actually uses.
+    """
+    # Imported for its FILE PATH, not its behaviour: the point is to read what ships. bugreport
+    # itself must never import this package -- that is what keeps it stdlib-only.
+    from operation_love.opener import opener as opener_module
+
+    source = Path(opener_module.__file__).read_text(encoding="utf-8")
+    messages = _cascade_print_messages(source, "GeminiOpener")
+
+    assert len(messages) >= _SHIPPED_CASCADE_BRANCH_COUNT, (
+        f"located only {len(messages)} non-fatal cascade branch(es) in "
+        f"{opener_module.__file__}, but {_SHIPPED_CASCADE_BRANCH_COUNT} shipped when this test "
+        "was written. The locator has gone blind, so this gate is checking nothing -- fix the "
+        f"locator (or update the count deliberately if a branch was really removed). Located: "
+        f"{messages}")
+    for message in messages:
+        assert bugreport._RECOVERED_PROVIDER_FAILURE_RE.search(message), (
+            "this opener cascade branch prints a message the bug report's recovered-failure "
+            "matcher cannot see, so a run that cascades through it is stamped COMPLETED "
+            f"CLEANLY: {message!r}")
+
+
+def test_completion_assessment_ignores_an_unrelated_log_line_mentioning_a_failure(monkeypatch):
+    """The matcher stays narrow on purpose: an ordinary diagnostic that happens to say
+    "failed" must not be able to move the completion verdict."""
+    monkeypatch.setattr(bugreport, "_completion_capture_facts", lambda *_: {})
+    bugreport._LOG_RING.clear()
+    bugreport._LOG_RING.extend([
+        "12:00:00 Hinge worker: a like failed to land on the numbered item; stopping the run",
+        "12:00:01 config: provider key present",
+    ])
+    try:
+        md = bugreport._run_completion_assessment_md(_CompletionHub(), "unused.yaml")
+    finally:
+        bugreport._LOG_RING.clear()
+
+    assert "Outcome: COMPLETED CLEANLY" in md
+
+
+def test_completion_assessment_reports_permanently_dropped_rows_as_data_loss(monkeypatch):
+    """A flush that returned is not proof every row landed.
+
+    The shutdown line is the ONLY terminal evidence of a permanently dropped row: the tally
+    lives on the store, which never reaches RunStatus, and by shutdown the buffer is empty and
+    flush() has succeeded. Read it back rather than reporting COMPLETED CLEANLY over lost data.
+    The wording is pinned against supervisor.py's real printed line by
+    tests/test_supervisor.py's own dropped-rows test.
+    """
+    monkeypatch.setattr(bugreport, "_completion_capture_facts", lambda *_: {})
+    bugreport._LOG_RING.clear()
+    bugreport._LOG_RING.append(
+        f"12:00:02 Run {_COMPLETION_RUN_ID}: saved to bigquery [labels=2 (DROPPED, never "
+        f"written: openers=1)], but 1 {bugreport.DROPPED_ROWS_NOTICE} bigquery (openers=1) — "
+        "NOT an unqualified success, that data is LOST and no retry will recover it")
+    try:
+        md = bugreport._run_completion_assessment_md(_CompletionHub(), "unused.yaml")
+    finally:
+        bugreport._LOG_RING.clear()
+
+    assert "Outcome: COMPLETED CLEANLY" not in md
+    assert "PERMANENTLY DROPPED rows it never wrote (openers=1)" in md
+    assert "that data is LOST" in md
+
+
+def test_completion_assessment_will_not_inherit_another_run_s_dropped_rows(monkeypatch):
+    """One hub process, one _LOG_RING, many runs -- and nothing ever clears it.
+
+    install_log_capture() installs the ring ONCE at hub startup and supervisor.run() executes
+    on a thread inside that same process, so run A's shutdown line is still sitting in the ring
+    when run B's report is built. Unscoped, that line told run B its records were incomplete
+    forever over data run A lost. Only the `Run {run_id}: ` prefix separates them.
+    """
+    monkeypatch.setattr(bugreport, "_completion_capture_facts", lambda *_: {})
+    bugreport._LOG_RING.clear()
+    bugreport._LOG_RING.extend([
+        f"11:59:58 Run an-earlier-run: saved to bigquery, but 1 "
+        f"{bugreport.DROPPED_ROWS_NOTICE} bigquery (openers=1) — NOT an unqualified success, "
+        "that data is LOST and no retry will recover it",
+        f"12:00:00 Run {_COMPLETION_RUN_ID}: ✅ all data saved to bigquery [labels=2]",
+    ])
+    try:
+        md = bugreport._run_completion_assessment_md(_CompletionHub(), "unused.yaml")
+    finally:
+        bugreport._LOG_RING.clear()
+
+    assert "Outcome: COMPLETED CLEANLY" in md
+    assert "PERMANENTLY DROPPED" not in md
+    assert "openers=1" not in md
+
+
+def test_recovered_cascade_count_still_counts_an_untagged_legacy_cascade_line(monkeypatch):
+    """The same never-cleared ring, the OTHER tally -- run_id threading fixed the labelling,
+    not by adding a strict same-run filter but by keeping the over-report bias for anything
+    that cannot be PROVEN to belong to a different run.
+
+    An untagged cascade line (an older build's ring line, a direct `GeminiOpener` construction,
+    or any caller that never passed a run_id -- see OpenerClient.generate's run_id docstring in
+    opener.py) carries no `Run {run_id}: ` prefix at all. _lines_not_attributed_to_another_run
+    keeps it anyway: it cannot prove this line belongs to some OTHER run, and under-reporting a
+    real cascade is the original defect this counter exists to catch (run 257bdd639ca5 cascaded
+    off a 503, printed it in this report's own "Recent logs", and was stamped COMPLETED
+    CLEANLY). Contrast the dropped-rows test directly above: that tally reads _lines_for_run
+    (own-tag-only), because under-reporting IS the safe direction there.
+    """
+    monkeypatch.setattr(bugreport, "_completion_capture_facts", lambda *_: {})
+    bugreport._LOG_RING.clear()
+    bugreport._LOG_RING.extend([
+        # An untagged (legacy-shape) 503 cascade -- no `Run ...:` prefix at all...
+        f"11:59:58 {_RECOVERED_CASCADE_LOG_LINES['server-error']}",
+        # ...while the assessed run printed nothing but a clean shutdown.
+        f"12:00:00 Run {_COMPLETION_RUN_ID}: \u2705 all data saved to bigquery [labels=2]",
+    ])
+    try:
+        md = bugreport._run_completion_assessment_md(_CompletionHub(), "unused.yaml")
+    finally:
+        bugreport._LOG_RING.clear()
+
+    # Still counted: an untagged line is never proof of a DIFFERENT run, so it is not excluded.
+    assert "1 provider failure(s) recovered by cascading to the next configured model" in md
+    assert "Outcome: COMPLETED CLEANLY" not in md
+    assert "this run's own tagged cascade lines, plus any UNTAGGED one" in md
+    # The old process-scoped wording is gone now that the count is genuinely run-scoped
+    # (plus untagged lines) rather than an honest whole-ring admission.
+    assert "PROCESS-SCOPED" not in md
+
+
+def test_recovered_cascade_count_excludes_a_line_explicitly_tagged_for_a_different_run(monkeypatch):
+    """The one case _lines_not_attributed_to_another_run CAN prove: a cascade line explicitly
+    tagged `Run <some-other-id>: ` is provably not about the run being assessed, so unlike an
+    untagged line it is excluded rather than counted.
+
+    This is only possible at all because GeminiOpener.generate() now accepts an optional
+    run_id and prefixes its cascade prints with it (opener.py), threaded from service.py:1003
+    and :1301 -- an EARLIER run that received a run_id would have left a TAGGED cascade line
+    behind, not an untagged one like the legacy-shape test above.
+    """
+    monkeypatch.setattr(bugreport, "_completion_capture_facts", lambda *_: {})
+    bugreport._LOG_RING.clear()
+    bugreport._LOG_RING.extend([
+        # An EARLIER run's own 503 cascade, explicitly tagged with ITS run id, still sitting in
+        # the ring nothing ever clears...
+        f"11:59:58 Run an-earlier-run: {_RECOVERED_CASCADE_LOG_LINES['server-error']}",
+        # ...while the assessed run printed nothing but a clean shutdown.
+        f"12:00:00 Run {_COMPLETION_RUN_ID}: \u2705 all data saved to bigquery [labels=2]",
+    ])
+    try:
+        md = bugreport._run_completion_assessment_md(_CompletionHub(), "unused.yaml")
+    finally:
+        bugreport._LOG_RING.clear()
+
+    # Excluded: this line is provably an earlier run's, so it must not limit THIS run's
+    # otherwise-clean verdict.
+    assert "provider failure(s)" not in md
+    assert "Outcome: COMPLETED CLEANLY" in md
+
+
+def test_recovered_cascade_count_counts_this_run_s_own_tagged_cascade_line(monkeypatch):
+    """The assessed run's own `Run {run_id}: `-tagged cascade line is the central case: it is
+    unambiguously this run's recovered provider failure and must be counted."""
+    monkeypatch.setattr(bugreport, "_completion_capture_facts", lambda *_: {})
+    bugreport._LOG_RING.clear()
+    bugreport._LOG_RING.append(
+        f"12:00:00 Run {_COMPLETION_RUN_ID}: {_RECOVERED_CASCADE_LOG_LINES['server-error']}")
+    try:
+        md = bugreport._run_completion_assessment_md(_CompletionHub(), "unused.yaml")
+    finally:
+        bugreport._LOG_RING.clear()
+
+    assert "1 provider failure(s) recovered by cascading to the next configured model" in md
+    assert "Outcome: COMPLETED CLEANLY" not in md
+
+
+def test_lines_for_run_keeps_only_the_named_run_s_lines():
+    """The prefix is the whole contract: `Run {run_id}: `, as supervisor.py stamps it.
+
+    An unnameable run gets NOTHING rather than everything -- a line this report cannot
+    attribute to the run it is assessing is evidence about some other run.
+    """
+    mine = f"12:00:00 Run {_COMPLETION_RUN_ID}: saved to bigquery"
+    theirs = "11:00:00 Run another-run: saved to bigquery"
+    unprefixed = "11:30:00 Gemini opener: gemini-3.6-flash returned HTTP 503 UNAVAILABLE"
+    lines = [mine, theirs, unprefixed]
+
+    assert bugreport._lines_for_run(lines, _COMPLETION_RUN_ID) == [mine]
+    assert bugreport._lines_for_run(lines, "another-run") == [theirs]
+    # A prefix that is merely a PREFIX of another run's id must not drag that run's lines in.
+    assert bugreport._lines_for_run([f"12:00:00 Run {_COMPLETION_RUN_ID}-2: saved"],
+                                    _COMPLETION_RUN_ID) == []
+    for unnameable in (None, "", "   ", 17, b"completion-test-run"):
+        assert bugreport._lines_for_run(lines, unnameable) == []
+
+
+def test_lines_not_attributed_to_another_run_keeps_own_tag_and_untagged_lines():
+    """The three-way split _run_completion_assessment_md's provider-fault count relies on:
+    this run's own tag is kept, an untagged line is kept (it cannot be proven to belong to
+    some other run), and a DIFFERENT run's own tag is the only thing excluded."""
+    mine = f"12:00:00 Run {_COMPLETION_RUN_ID}: {_RECOVERED_CASCADE_LOG_LINES['server-error']}"
+    theirs = f"11:00:00 Run another-run: {_RECOVERED_CASCADE_LOG_LINES['server-error']}"
+    untagged = f"11:30:00 {_RECOVERED_CASCADE_LOG_LINES['transport']}"
+    lines = [mine, theirs, untagged]
+
+    assert bugreport._lines_not_attributed_to_another_run(lines, _COMPLETION_RUN_ID) == [
+        mine, untagged]
+    # Symmetric: assessed as "another-run" instead, its own line is kept and `mine` (now a
+    # DIFFERENT run's tag) is excluded -- the untagged line is still kept either way.
+    assert bugreport._lines_not_attributed_to_another_run(lines, "another-run") == [
+        theirs, untagged]
+    # A tag that merely shares a PREFIX with the assessed run's id is still a different run --
+    # same precision guarantee _lines_for_run makes, checked here on the complementary function.
+    assert bugreport._lines_not_attributed_to_another_run(
+        [f"12:00:00 Run {_COMPLETION_RUN_ID}-2: {_RECOVERED_CASCADE_LOG_LINES['server-error']}"],
+        _COMPLETION_RUN_ID) == []
+    # An unnameable assessed run cannot prove ANY tag belongs to a different run, so nothing is
+    # excluded -- the safe, over-report-biased default.
+    for unnameable in (None, "", "   ", 17, b"completion-test-run"):
+        assert bugreport._lines_not_attributed_to_another_run(lines, unnameable) == lines
+
+
+def test_dropped_row_tallies_reads_each_tally_once_and_stays_quiet_otherwise():
+    """Two shutdowns in one log ring are two tallies; a repeat of the same line is one."""
+    line = (f"Run r1: saved to bigquery, but 3 {bugreport.DROPPED_ROWS_NOTICE} bigquery "
+            "(labels=2, openers=1) — NOT an unqualified success")
+    other = (f"Run r2: saved to bigquery, but 1 {bugreport.DROPPED_ROWS_NOTICE} bigquery "
+             "(spend=1) — NOT an unqualified success")
+
+    assert bugreport._dropped_row_tallies([line, line, other]) == ["labels=2, openers=1",
+                                                                  "spend=1"]
+    assert bugreport._dropped_row_tallies([]) == []
+    assert bugreport._dropped_row_tallies(
+        ["Run r3: ✅ all data saved to bigquery [labels=2]"]) == []
 
 
 def test_completion_assessment_attributes_latest_coverage_gap_to_operator_stop(monkeypatch):
@@ -2303,7 +2742,51 @@ def test_item_index_repair_summary_reads_v12_runtime_with_legacy_fallback(runtim
 
     assert "bounded-card-split-v13: 'v12_mute_card_track'" in summary
     assert "source frames 7→9" in summary
-    assert "raw no_consensus Nonepx → effective measured 234px" in summary
+    # The raw half REFUSED (a no_consensus record always carries delta_px=None -- refusing is
+    # why a repair record exists at all), so it renders as the em dash every other unmeasured
+    # value in this report uses. It used to render as "Nonepx", which reads as a measurement of
+    # the value None; run 257bdd639ca5 printed exactly that.
+    assert "raw no_consensus — → effective measured 234px" in summary
+    assert "None" not in summary
+
+
+def test_item_index_repair_summary_never_renders_an_unmeasured_shift_as_a_number():
+    """Both halves go through the same renderer, so neither can print `Nonepx` again.
+
+    Feeds the refusal on BOTH sides: the raw one is the shape every real repair record has, and
+    the effective one proves the fix is not a special case for the left-hand value.
+    """
+    summary = bugreport._item_index_repair_summary_md([json.dumps({
+        "action": "item_index_repaired",
+        "item_index_runtime": {"algorithm_id": "bounded-card-split-v13"},
+        "repairs": [{
+            "path": "v12_mute_card_track",
+            "source_pair": [7, 9],
+            "raw": {"status": "no_consensus", "delta_px": None},
+            "effective": {"status": "no_consensus", "delta_px": None},
+        }],
+    })])
+
+    assert "None" not in summary
+    assert "px" not in summary                 # the unit belongs to a measurement, not a slot
+    assert "raw no_consensus — → effective no_consensus —" in summary
+
+
+def test_item_index_repair_summary_keeps_a_measured_shift_in_whole_pixels():
+    """The dash must not swallow real measurements -- including a 0px shift, which is a
+    measured fact (the page did not move), not a missing one."""
+    summary = bugreport._item_index_repair_summary_md([json.dumps({
+        "action": "item_index_repaired",
+        "item_index_runtime": {"algorithm_id": "bounded-card-split-v13"},
+        "repairs": [{
+            "path": "v12_mute_card_track",
+            "source_pair": [7, 9],
+            "raw": {"status": "measured", "delta_px": 0},
+            "effective": {"status": "measured", "delta_px": 440},
+        }],
+    })])
+
+    assert "raw measured 0px → effective measured 440px" in summary
 
 
 def test_debug_report_surfaces_item_numbering_manifest_and_compacts_raw_tail(tmp_path):

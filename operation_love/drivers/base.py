@@ -378,6 +378,41 @@ class DatingAppDriver(ABC):
         """
         return None
 
+    def like_send_attempted(self) -> bool:
+        """Did the most recent like() call get as far as ISSUING ITS SEND?
+
+        `like()` is not atomic, and the half of it that matters is irreversible. A driver that
+        types an opener into a composer and taps Send has already put that text in front of a
+        real person; everything it does afterwards (dismissing an upsell, proving the sheet
+        closed, proving the deck advanced) only establishes whether it can CONFIRM that. When
+        one of those post-send checks raises, the worker learns "this like did not verify" and
+        nothing else -- and it used to record that profile's opener as `decision="never_sent"`,
+        which for that window is simply false.
+
+        True therefore means "the send boundary was crossed and the outcome is whatever the
+        exception says", NOT "the like landed": a driver that can answer this question must set
+        the marker BEFORE its send input, never after, because a raise between the tap and the
+        bookkeeping is exactly the case this exists to describe. False means no send input was
+        ever issued for the current attempt.
+
+        Scoped to ONE like attempt: an implementation resets it as that attempt begins, so a
+        failure can never inherit the previous profile's answer -- the same discipline
+        HingeDriver already applies to its landed-opener evidence. It is therefore only
+        meaningful to a caller inside a handler around its OWN `like()` call; asking later (say
+        at an unrelated refusal one profile further on) reads a stale attempt.
+
+        Defaults to False rather than being abstract, exactly like blocked_reason() above and
+        for the same reason: every driver that has never been taught to track this -- and every
+        lightweight test double -- keeps today's meaning ("nothing said a send happened")
+        instead of crashing or being forced to implement a marker it has no boundary for. A
+        swipe-only flow (Bumble) has no composer and no send to attempt, so False is also the
+        permanently correct answer there rather than a degraded one.
+
+        MUST NEVER raise and MUST NEVER touch the screen: this is read from inside a worker's
+        exception handler, where a second failure would mask the real one.
+        """
+        return False
+
     # --- legacy manual-observation compatibility API ---
     def current_profile(self, *, should_stop=None) -> Profile | None:
         """Capture the card currently shown WITHOUT acting (you swipe manually).

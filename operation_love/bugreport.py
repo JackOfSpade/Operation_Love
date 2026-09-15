@@ -92,8 +92,48 @@ _ADB_SCREENCAP_TIMEOUT_RE = re.compile(
 # These are recovered failures: the opener service logs them while it tries the next model,
 # rather than publishing a terminal AppStatus error. Keep this matcher narrow so an unrelated
 # diagnostic mentioning a failure cannot change the completion verdict.
+#
+# It keys on "trying the next configured model" -- the ONE phrase every non-fatal cascade
+# branch in opener/opener.py shares (transport failure, a 5xx, a per-minute/unclassified 429, a
+# per-day 429, a retired-model 404, a rejected thinking level) -- rather than on any one
+# branch's own prose. The shipped matcher named only the TRANSPORT wording, so the other
+# branches missed entirely: run 257bdd639ca5 cascaded off a 503, printed it in this very
+# report's "Recent logs", and was still stamped COMPLETED CLEANLY. This module is deliberately
+# stdlib-only (see the module docstring) so it cannot import those messages from the opener
+# package; tests/test_bugreport.py reads opener.py's SOURCE and pins every cascade branch's
+# message against this pattern, so prose drift fails the gate rather than silently
+# resurrecting that blind spot.
+#
+# The phrase stands ALONE -- no leading `gemini|provider` requirement. That prefix looked like
+# free narrowing and was not: _Tee.write splits captured stdout on "\n" before it reaches the
+# ring, and the anchor phrase sits AFTER interpolated text in most branches (the transport one
+# interpolates `{type(exc).__name__}: {exc}`), so an exception whose str() carries a newline
+# lands the phrase on a ring line with no "gemini" anywhere on it -- and the fault went
+# uncounted all over again. The phrase occurs nowhere else in the codebase (opener.py's cascade
+# prints and this matcher are the only places it appears at all), so requiring it alone is
+# already as narrow as the prefix ever made it.
+#
+# Attributing a match to a run: as of the run_id threading added to GeminiOpener.generate()
+# (opener.py) and OpenerService (service.py:1003, service.py:1301), a cascade print DOES carry
+# a `Run {run_id}: ` prefix -- but ONLY when the caller that reached generate() passed one, and
+# only in a build that ships the prefixing at all. An older build's ring line, a direct
+# `GeminiOpener` construction, or any caller that passes no run id still prints the exact same
+# phrase with NO tag at all. See _lines_not_attributed_to_another_run (below) and
+# _run_completion_assessment_md for the counting rule this asymmetry forces: a plain "keep only
+# this run's own tag" filter would silently drop every one of those untagged lines, which is
+# the exact under-report this whole matcher exists to prevent.
 _RECOVERED_PROVIDER_FAILURE_RE = re.compile(
-    r"\b(?:gemini|provider)\b.*\bfailed at the transport level\b", re.IGNORECASE)
+    r"\btrying the next configured model\b", re.IGNORECASE)
+# supervisor.py's shutdown line for rows the store permanently gave up on. It imports this
+# exact constant (bugreport is pure stdlib, so anything may import it; the reverse would drag
+# the whole runtime into a diagnostic module), which is what keeps the printer and this reader
+# from drifting apart -- the wording is the only channel there is, because the run-level tally
+# lives on the store and never reaches RunStatus. tests/test_supervisor.py runs a real
+# shutdown's printed line through this pattern so a reworded print cannot quietly stop being
+# detected here.
+DROPPED_ROWS_NOTICE = "row(s) were PERMANENTLY DROPPED and never written to"
+_DROPPED_ROWS_RE = re.compile(
+    re.escape(DROPPED_ROWS_NOTICE) + r"\s+\S+\s+\(([^)]*)\)")
 _ITEM_INDEX_GEOMETRY_SIDECARS_SHOWN = 2    # cap on _item_index_geometry_md blocks -- one
                                   # refused capture per block, most recent last. Two is the
                                   # incident shape: a dwell walk refuses, the retry refuses.
@@ -758,12 +798,125 @@ def _completion_capture_facts(st: dict, config_path: str) -> dict[str, object]:
     return facts
 
 
+def _lines_for_run(lines: list[str], run_id: object) -> list[str]:
+    """Only the log lines the named run itself printed -- `[]` when the run cannot be named.
+
+    _LOG_RING is process-global and installed ONCE by install_log_capture() at hub startup; it
+    holds _MAX_REPORT_LINES lines and nothing ever clears it, while supervisor.run() runs on a
+    thread inside that same hub process. So every run of a hub session writes into one ring,
+    and a report built for run B can read a line run A printed. That is not hypothetical
+    house-keeping: the dropped-rows notice below is a claim that THIS run's records are
+    incomplete forever, and an unscoped read of the ring would put run A's permanent data loss
+    on run B's otherwise clean report.
+
+    Scopes on `Run {run_id}: `, the prefix supervisor.py stamps on its run-level lines. That
+    prefix is a fixed contract between the printer and this reader -- do not change it on
+    either side without changing both.
+
+    An unnameable run (no run_id in the snapshot, or a non-string one) gets NO lines rather
+    than all of them: a line this report cannot attribute to the run it is assessing is
+    evidence about some other run, and reporting it here would be exactly the contamination
+    this function exists to stop. Use this ONLY where under-reporting is the safe direction
+    (the dropped-rows tally just below: a line without this run's own tag says nothing about
+    THIS run's data loss, so it is correctly excluded). opener.py's cascade prints CAN carry
+    this same prefix now (GeminiOpener.generate() accepts an optional run_id -- see
+    service.py:1003 and :1301), but not every caller supplies one and older rings may hold
+    lines from before that prefixing shipped, so a plain intersection filter on THIS function
+    would silently drop those untagged lines. The provider-fault count in
+    _run_completion_assessment_md needs the opposite bias (over-report, never under-report) and
+    uses _lines_not_attributed_to_another_run below instead of this function for exactly that
+    reason.
+    """
+    if not isinstance(run_id, str) or not run_id.strip():
+        return []
+    prefix = re.compile(r"\bRun\s+" + re.escape(run_id.strip()) + r":")
+    return [line for line in lines if prefix.search(line)]
+
+
+# Any "Run <token>: " tag at all, capturing the token -- as opposed to _lines_for_run's regex,
+# which only ever tests for ONE specific, already-known run_id. This one has to discover
+# whatever id (if any) a line is tagged with, so it can be compared against the run actually
+# being assessed.
+_ANY_RUN_TAG_RE = re.compile(r"\bRun\s+(\S+):")
+
+
+def _lines_not_attributed_to_another_run(lines: list[str], run_id: object) -> list[str]:
+    """Every line EXCEPT one explicitly tagged for a run other than the one being assessed.
+
+    This is the counting rule the recovered-provider-failure tally in
+    _run_completion_assessment_md needs, and it is deliberately NOT _lines_for_run: that
+    function keeps only a line carrying THIS run's own `Run {run_id}: ` tag, which silently
+    drops every cascade line that carries NO tag at all -- an older build, a direct
+    `GeminiOpener` construction, or any caller that passes no run id (see
+    OpenerClient.generate's own docstring in opener.py for why run_id is optional there). An
+    uncounted cascade is the ORIGINAL defect this whole counter exists to catch (a 503 that let
+    a run get stamped "COMPLETED CLEANLY" -- run 257bdd639ca5), so under-reporting by filtering
+    too hard is not an acceptable trade for a tidier scope label.
+
+    The rule actually applied, three cases:
+      1. A line carrying THIS run's own `Run {run_id}: ` tag -- kept (it is unambiguously this
+         run's cascade).
+      2. A line carrying NO run tag at all -- kept. Over-reporting an earlier run's untagged
+         cascade as if it might be this run's is the safe direction; the alternative is
+         dropping a real fault this run caused.
+      3. A line carrying a DIFFERENT run's tag -- excluded. This is the one case that IS
+         provably not about the run being assessed, so excluding it is not a guess.
+
+    An unnameable assessed run (no run_id in the snapshot, or a non-string one) cannot prove
+    case 3 for anything -- there is no name to compare a tag against -- so every line is kept.
+    """
+    own = run_id.strip() if isinstance(run_id, str) and run_id.strip() else None
+    if own is None:
+        return list(lines)
+    kept = []
+    for line in lines:
+        match = _ANY_RUN_TAG_RE.search(line)
+        if match is not None and match.group(1) != own:
+            continue
+        kept.append(line)
+    return kept
+
+
+def _dropped_row_tallies(lines: list[str]) -> list[str]:
+    """Per-table tallies of PERMANENTLY DROPPED rows, read out of the shutdown log lines.
+
+    A dropped row is one the store accepted, never wrote, and never will (see
+    ranker/__init__.py's Store.dropped_rows). Nothing about it survives into the hub snapshot:
+    the tally lives on the store object, which this module never holds, and by shutdown the
+    buffer is empty and flush() has returned cleanly -- so the supervisor's own printed line is
+    the only terminal evidence the loss happened at all. Reads it back rather than re-deriving
+    it, matching how recovered provider faults are counted just below.
+
+    Parses whatever lines it is handed and attributes nothing: the ring spans every run of the
+    hub session, so callers reporting on ONE run must hand it `_lines_for_run(...)` output, not
+    the raw ring.
+
+    Returns each distinct tally text ("openers=1, labels=2") in the order seen, never raising:
+    an absent line means the shutdown never reported loss, which is the healthy case.
+    """
+    out: list[str] = []
+    for line in lines:
+        match = _DROPPED_ROWS_RE.search(line)
+        if not match:
+            continue
+        tally = _sanitize_inline(match.group(1))
+        if tally and tally not in out:
+            out.append(tally)
+    return out
+
+
 def _run_completion_assessment_md(hub_state, config_path: str) -> str:
     """Give a concise, deterministic answer to whether a run finished smoothly.
 
     A stopped phase is meaningful: supervisor.py reaches it only after workers exit and store
     flush succeeds. It must not be conflated with save_failed or wedged. Separately name known
     limitations so a durable save cannot disguise them as a perfect run.
+
+    "The flush succeeded" is NOT "every row landed", and this used to read as if it were: a row
+    BigQuery permanently rejects is dropped from the buffer so the rest can drain, the run
+    continues on a warning, and shutdown then flushes an empty buffer successfully. Terminal
+    phase stopped, no app error, no save error -- and the verdict came out COMPLETED CLEANLY on
+    top of lost data. Dropped rows are therefore a limitation of their own below.
     """
     if hub_state is None:
         return "- **Outcome: NOT ASSESSED** — no hub snapshot is available."
@@ -824,6 +977,18 @@ def _run_completion_assessment_md(hub_state, config_path: str) -> str:
                 "inconsistent, so durable completion will not be inferred.")
 
     limitations: list[str] = []
+    recent = recent_logs(_MAX_REPORT_LINES)
+    # Loss leads: everything else in this list is a run that did less than it could have, while
+    # this one is a run whose records are incomplete forever. Read from the shutdown log because
+    # the store's tally has no route into the hub snapshot -- see _dropped_row_tallies.
+    #
+    # Scoped to THIS run's lines, never the whole ring: one hub process runs many runs through
+    # one never-cleared _LOG_RING, so an unscoped read hands run B the permanent data loss run
+    # A suffered -- see _lines_for_run.
+    limitations.extend(
+        f"the store PERMANENTLY DROPPED rows it never wrote ({tally}) — that data is LOST "
+        "and this run's records are incomplete"
+        for tally in _dropped_row_tallies(_lines_for_run(recent, run_id)))
     stop_kinds = {str(row.get("stop_kind")) for row in app_rows if row.get("stop_kind")}
     if "opener" in stop_kinds:
         limitations.append("an opener/provider condition stopped an app")
@@ -834,11 +999,38 @@ def _run_completion_assessment_md(hub_state, config_path: str) -> str:
     elif "blocked" in app_states:
         limitations.append("the deck was blocked")
 
-    provider_faults = sum(bool(_RECOVERED_PROVIDER_FAILURE_RE.search(line))
-                          for line in recent_logs(_MAX_REPORT_LINES))
+    # _lines_not_attributed_to_another_run, NOT _lines_for_run -- the opposite of the
+    # dropped-rows tally above, and deliberately so. Cascade prints in opener.py's
+    # GeminiOpener.generate() CAN carry the same `Run {run_id}: ` tag supervisor.py's own lines
+    # do, now that service.py:1003 and :1301 thread a run_id into every self.client.generate(...)
+    # call -- but that tag is OPTIONAL on the client side (OpenerClient.generate's run_id kwarg
+    # defaults to ""), and an older ring line, a direct `GeminiOpener` construction, or any
+    # caller that never supplies a run_id still prints the identical phrase with NO tag at all.
+    # A plain `_lines_for_run` filter keeps only lines carrying the ASSESSED run's own tag, so
+    # it would silently drop every one of those untagged lines -- reporting ZERO faults for a
+    # run that actually cascaded, which is the exact defect this counter exists to catch (run
+    # 257bdd639ca5 cascaded off a 503, printed it in this report's own "Recent logs", and was
+    # stamped COMPLETED CLEANLY anyway).
+    #
+    # So the rule is the one _lines_not_attributed_to_another_run implements: keep this run's
+    # own tagged lines AND every untagged line, and exclude only a line explicitly tagged for a
+    # DIFFERENT run (see that function's docstring for the three-way split). An earlier run's
+    # UNTAGGED cascade line (an older build, or any ring predating this fix) still counts here
+    # on that basis -- recoverable by reading the log; silently hiding THIS run's own fault is
+    # not, so over-reporting remains the accepted trade, just narrower than a whole-ring scan.
+    provider_faults = sum(
+        bool(_RECOVERED_PROVIDER_FAILURE_RE.search(line))
+        for line in _lines_not_attributed_to_another_run(recent, run_id))
     if provider_faults:
-        limitations.append(f"{provider_faults} recovered provider transport failure(s) appear "
-                           "in the recent process log")
+        # Not "transport failure(s)" any more: the matcher now catches every non-fatal cascade
+        # branch (transport, 5xx, 429, retired-model 404), and naming one of them would be a
+        # confidently wrong label on the other three -- the same mistake the old matcher made by
+        # only ever finding transport failures in the first place.
+        limitations.append(
+            f"{provider_faults} provider failure(s) recovered by cascading to the next "
+            "configured model appear in the recent process log (this run's own tagged cascade "
+            "lines, plus any UNTAGGED one -- a cascade line explicitly tagged for a DIFFERENT "
+            "run is excluded, never one merely lacking a tag)")
     facts = _completion_capture_facts(st, config_path)
     gaps = facts.get("coverage_gaps", 0)
     candidates = facts.get("coverage_candidates", 0)
@@ -2239,11 +2431,17 @@ def _item_index_repair_summary_md(lines: list[str]) -> str:
                          if isinstance(repair.get("effective"), dict) else {})
             if not isinstance(path, str) or not isinstance(source_pair, list) or len(source_pair) != 2:
                 continue
+            # Both shifts go through _delta_px_or_dash: a repair record exists precisely
+            # BECAUSE the raw estimator refused, and a no_consensus refusal always carries
+            # delta_px=None, so interpolating it printed "raw no_consensus Nonepx" -- a
+            # refusal dressed up as a measurement of the value None (run 257bdd639ca5 printed
+            # exactly that line).
             line = (
                 f"{algorithm or 'unknown indexer'}: `{path}` source frames "
                 f"{source_pair[0]}→{source_pair[1]}; raw "
-                f"{raw_shift.get('status')} {raw_shift.get('delta_px')}px → effective "
-                f"{effective.get('status')} {effective.get('delta_px')}px")
+                f"{raw_shift.get('status')} {_delta_px_or_dash(raw_shift.get('delta_px'))} → "
+                f"effective {effective.get('status')} "
+                f"{_delta_px_or_dash(effective.get('delta_px'))}")
             clean = _sanitize_inline(line)
             if clean and clean not in structured:
                 structured.append(clean)
@@ -2887,6 +3085,22 @@ def _round_or_dash(value, places: int = 3) -> str:
     except TypeError:  # noqa: PERF203 -- a non-float numeric that isfinite rejects
         return "—"
     return f"{value:.{places}f}"
+
+
+def _delta_px_or_dash(value) -> str:
+    """`440px` for a measured pixel shift, a bare em dash for a refusal that measured none.
+
+    The unit belongs to the MEASUREMENT, not to the slot: an estimator that refused (every
+    `no_consensus` record carries delta_px=None) did not measure "None pixels", it measured
+    nothing, and "Nonepx" reads as the former. Whole pixels, not thousandths -- these are
+    frame offsets, and a `.000` tail on one would only suggest a precision the estimator never
+    claimed.
+
+    Derives its dash from `_round_or_dash(None)` rather than repeating the glyph, so the two
+    renderings of "there is no number here" cannot drift apart.
+    """
+    rendered = _round_or_dash(value, 0)
+    return rendered if rendered == _round_or_dash(None) else f"{rendered}px"
 
 
 def _item_coverage_lines(capture: dict, *, coverage_interrupted_by_stop: bool = False) -> list[str]:
@@ -4432,8 +4646,9 @@ def _opener_rejection_deadletter_md(config_path: str = "config.yaml") -> str:
     out = [f"- ⚠️ **{len(entries)} opener-rejection row(s) FAILED to reach the store** and were "
            f"written to `{path}`.",
            "  - This is the evidence three prior investigations of the empty "
-           "`opener_rejections` table lacked. Read `cause_type`/`cause_str` first: BigQuery "
-           "client errors bury the real reason in `__cause__`.",
+           "`opener_rejections` table lacked: the exception each failed write actually raised. "
+           "Nothing here diagnoses the cause yet -- read `exc_type`/`exc_str`, then "
+           "`cause_type`/`cause_str`, which is where a chained cause hides.",
            "  - newest first:"]
     for entry in reversed(entries[-5:]):
         if not isinstance(entry, dict):

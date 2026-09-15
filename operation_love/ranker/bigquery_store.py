@@ -1371,8 +1371,9 @@ class BigQueryStore:
         """Every `opener_outcomes` row for `app` joined to its `openers` row by profile_key.
 
         See ranker/__init__.py's Store.joined_opener_outcomes for the full contract (why the
-        join excludes '' and NULL profile_key on both sides, why `prompt_sha256=None` means
-        "no filter" rather than "match NULL"). `opener_outcomes` is a table this change adds;
+        join excludes '' and NULL profile_key on both sides, why it keeps only SENT openers
+        (`decision = 'like'`), why `prompt_sha256=None` means "no filter" rather than "match
+        NULL"). `opener_outcomes` is a table this change adds;
         a project whose live BigQuery dataset has not yet been touched by an `ensure=True`
         store (this method's own class does that in `_ensure_tables`) may not have it yet, so
         a NotFound naming this specific optional table reads as "no outcomes exist" rather
@@ -1392,6 +1393,15 @@ class BigQueryStore:
             "WHERE o.app = @app "
             "AND o.profile_key IS NOT NULL AND o.profile_key != '' "
             "AND oc.profile_key IS NOT NULL AND oc.profile_key != '' "
+            # Only openers that were actually SENT can have earned an outcome. 'like' is the
+            # ONE decision value that has ever meant "this opener reached the device" --
+            # literally tools/opener_outcome_recorder.py's DECISION_SENT. Without this, a
+            # profile drafted-then-DISLIKED in one run and LIKED in a later one returns the
+            # owner's single recorded match TWICE, crediting the earlier prompt era with a
+            # match earned by a draft nobody ever saw. NULL/'' (predates decision tracking)
+            # and 'synthetic_replay' are excluded by the same literal, which is correct: none
+            # of them proves a send, and this must never guess one.
+            "AND o.decision = 'like' "
         )
         if prompt_sha256 is not None:
             query += "AND o.prompt_sha256 = @prompt_sha256 "
@@ -1612,3 +1622,23 @@ class BigQueryStore:
         if dropped:
             body += f" (DROPPED, never written: {', '.join(dropped)})"
         return f"{body} (pending={pending})" if pending else body
+
+    def dropped_rows(self) -> dict[str, int]:
+        """Per-table tally of rows this run PERMANENTLY GAVE UP ON — data that is LOST.
+
+        The same fact `saved_summary` already renders as prose, exposed as DATA so a caller can
+        branch on it instead of grepping a sentence. That distinction is the whole point: a row
+        BigQuery rejects permanently (bad UTF-8 in raw_opener, an over-length field) is dropped
+        by `_flush_table` after _MAX_INSERT_ATTEMPTS so the rest of the buffer can drain, the
+        RuntimeError it raises is caught and merely WARNED about by opener/service.py, and the
+        final shutdown flush then succeeds with an empty buffer. Every terminal signal the
+        supervisor had — flush returned, phase is "stopped" — said the run saved everything,
+        and it printed "✅ all data saved" over the top of real data loss (see supervisor.py's
+        dropped-rows branch, which exists because of exactly that).
+
+        Only nonzero tables appear, so an empty dict means "nothing was lost" and `if
+        store.dropped_rows():` is the whole test a caller needs. See ranker/__init__.py's
+        Store.dropped_rows for the contract both backends share.
+        """
+        with self._lock:
+            return {name: self._dropped[name] for name in _TABLES if self._dropped[name]}

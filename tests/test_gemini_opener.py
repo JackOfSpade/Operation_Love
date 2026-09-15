@@ -1051,6 +1051,48 @@ def test_transport_url_error_cascades_to_the_next_model(capsys):
     assert "URLError" in output
 
 
+# ---------------------------------------------------------------------------------------
+# run_id: an OPTIONAL keyword-only argument to generate() (bugreport.py's completion verdict
+# needs it to attribute a cascade print to the run that made it -- see
+# bugreport._run_completion_assessment_md and _lines_not_attributed_to_another_run). It plays
+# no role in cascade DECISIONS -- it only changes what the cascade prints -- so the coverage
+# here is deliberately narrow: one branch proves the prefix appears when run_id is given, one
+# proves the default keeps every external caller's output byte-identical to before this
+# argument existed.
+# ---------------------------------------------------------------------------------------
+
+def test_generate_prefixes_cascade_prints_with_the_given_run_id(capsys):
+    """A run_id threaded into generate() prefixes every non-fatal cascade print it triggers
+    with `Run {run_id}: `, exactly like supervisor.py's own run-level log lines -- so
+    bugreport.py can tell this run's recovered provider failure apart from another run's
+    sharing the same hub process's one never-cleared log ring."""
+    transport = _MixedTransport([socket.timeout("timed out"), (200, _success())])
+    opener = _opener(transport, models=("gemini-first", "gemini-second"))
+
+    result = opener.generate(Profile(bio="first"), style="s", run_id="run-42")
+
+    assert result.model == "gemini-second"
+    output = capsys.readouterr().out
+    assert "Run run-42: Gemini opener: gemini-first failed at the transport level" in output
+
+
+def test_generate_without_a_run_id_prints_exactly_as_before(capsys):
+    """The default ("") must reproduce today's exact, unprefixed wording -- this is what keeps
+    tools/opener_replay.py and tools/gemini_model_probe.py (neither passes run_id) working
+    unchanged, and it is a real regression risk: it is easy to write `f"Run : Gemini opener..."`
+    instead of `""` for an empty run_id."""
+    transport = _MixedTransport([socket.timeout("timed out"), (200, _success())])
+    opener = _opener(transport, models=("gemini-first", "gemini-second"))
+
+    result = opener.generate(Profile(bio="first"), style="s")
+
+    assert result.model == "gemini-second"
+    output = capsys.readouterr().out
+    assert "Gemini opener: gemini-first failed at the transport level" in output
+    assert "Run :" not in output
+    assert "Run " not in output.split("Gemini opener:")[0]
+
+
 def test_truncated_http_response_cascades_to_the_next_model(capsys):
     """http.client.IncompleteRead is a transport/protocol failure but not an OSError. A
     truncated first response must not abandon the healthy remainder of the cascade."""

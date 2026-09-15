@@ -80,6 +80,11 @@ class _Client:
     generate, which uses this same parameter to steer its cascade away from a model that
     already failed to parse for this profile.
 
+    run_ids_seen records the run_id every call was made with, so a test can pin that
+    maybe_opener() (and _apply_entropy_guard's own extra draw) actually forward the run_id
+    argument through to the client rather than dropping it -- see opener.py's GeminiOpener.
+    generate, which uses this same parameter only to prefix its cascade print()s.
+
     opener_texts, when given, scripts the OPENER TEXT of each successive SUCCESSFUL return
     (success #0 gets opener_texts[0], and the final entry repeats forever once the script runs
     out). Without it EVERY success returns the identical _Res.opener, which the entropy guard
@@ -110,6 +115,7 @@ class _Client:
         self.should_stops = []
         self.skip_models_seen = []
         self.items = []
+        self.run_ids_seen = []
 
     def _success(self):
         res = _Res()
@@ -127,12 +133,13 @@ class _Client:
 
     def generate(self, profile, style, retry_hint="", *, items=None,
                  should_stop=None,
-                 skip_models=frozenset()):
+                 skip_models=frozenset(), run_id: str = ""):
         self.calls += 1
         self.retry_hints.append(retry_hint)
         self.should_stops.append(should_stop)
         self.skip_models_seen.append(skip_models)
         self.items.append(items)
+        self.run_ids_seen.append(run_id)
         if self.exc_sequence is not None:
             step = self.exc_sequence.pop(0) if self.exc_sequence else None
             if step is not None:
@@ -287,6 +294,21 @@ def test_transient_error_degrades_gracefully():
     assert result is None                                   # swipe without opener this time
     assert s.disabled is False                              # service stays enabled (not permanent)
     assert s.stop_requested is False                        # run keeps going
+
+
+def test_maybe_opener_threads_its_run_id_argument_to_the_client():
+    """service.py:1301's self.client.generate(...) call must forward the run_id it was itself
+    given -- see opener.py's GeminiOpener.generate, which uses this same argument only to
+    prefix its own non-fatal cascade print()s with `Run {run_id}: ` so bugreport.py's
+    completion verdict can tell THIS run's recovered provider failures apart from an earlier
+    run's sharing the same hub process's one never-cleared log ring. A client that never
+    receives the id has nothing to prefix with, silently reproducing the under-report this
+    threading exists to avoid."""
+    c = _Client()
+    s = OpenerService(c, _Tracker(), _Store(), "casual")
+    out = s.maybe_opener("run-xyz-1", "bumble", object())
+    assert out.text == _Res.opener
+    assert c.run_ids_seen == ["run-xyz-1"]
 
 
 # ---------------------------------------------------------------------------------------
@@ -1317,6 +1339,52 @@ def test_discard_opener_persists_a_never_sent_row_with_the_generation_time_promp
     assert service.recent_openers_snapshot() == []
 
 
+def test_discard_opener_persists_a_send_unverified_row_for_an_opener_that_went_out():
+    """The third decision value, and the only one in the discard vocabulary that means the
+    opener REACHED somebody.
+
+    `driver.like()` is not atomic: the Send Like tap happens and the verification after it can
+    still raise, so worker.py files that window as `send_unverified` rather than lying in either
+    direction. This service is deliberately generic plumbing -- it does not know what a Send Like
+    tap is -- so what is pinned here is that the caller's value reaches the durable row verbatim,
+    in the same envelope, with the same generation-time prompt stamp every other draft carries.
+    """
+    store = _Store()
+    service = OpenerService(_Client(), _Tracker([False]), store, "casual")
+    pick = service.maybe_opener("run", "hinge", object(), stage=True)
+
+    assert service.discard_opener(
+        pick, profile_id="", decision=service_mod.DECISION_SEND_UNVERIFIED,
+        decision_source="auto", decision_created_at=123.0) is True
+    assert store.opener_kwargs[0]["decision"] == "send_unverified"
+    # NOT a commit, whatever the phone did: nothing verified a landed Like, so the live
+    # "recently committed" diagnostic buffer stays as empty as it does for any other discard.
+    assert service.recent_openers_snapshot() == []
+    # MUTATION CHECK: hardcode `decision=DECISION_NEVER_SENT` inside discard_opener's call to
+    # _record_staged_opener (i.e. stop threading the caller's value) -- re-run: this test fails,
+    # and so does tests/test_worker.py's AUTO post-send test, which is the only other place a
+    # non-default decision reaches a REAL service. Verified by hand, restored exactly.
+
+
+def test_the_discard_vocabulary_is_spelled_once_and_never_collides_with_a_landed_like():
+    """One vocabulary, one place -- worker.py chooses between these two values and
+    tools/opener_corpus_report.py buckets on them, and this project has already been bitten by a
+    rule spelled twice in two places that then disagreed. The default is the never-sent value
+    because almost every abandonment really is one; the post-send window is the exception that
+    has to ask the driver."""
+    import inspect
+
+    assert service_mod.DECISION_NEVER_SENT == "never_sent"
+    assert service_mod.DECISION_SEND_UNVERIFIED == "send_unverified"
+    # A discard is never recorded as a landed Like, whatever went wrong: "like" is the literal
+    # that decides which opener may own an owner-observed outcome downstream.
+    assert "like" not in {service_mod.DECISION_NEVER_SENT,
+                          service_mod.DECISION_SEND_UNVERIFIED}
+    default = inspect.signature(
+        OpenerService.discard_opener).parameters["decision"].default
+    assert default == service_mod.DECISION_NEVER_SENT
+
+
 def test_discard_opener_returns_false_and_touches_nothing_when_pick_was_never_staged():
     """A pick constructed directly (no maybe_opener staging -- e.g. a legacy/direct caller, or
     one already spent) carries no `_staged_record`. discard_opener must recognise that exactly
@@ -1965,7 +2033,7 @@ def test_referenced_defaults_to_empty_string_when_the_client_result_has_no_such_
     class _MinimalClient:
         def generate(self, profile, style, retry_hint="", *, anchor=None, items=None,
                  should_stop=None,
-                     skip_models=frozenset()):
+                     skip_models=frozenset(), run_id: str = ""):
             return SimpleNamespace(model="gemini-x", usage="usage",
                                    opener="hey there", item_index=1)
 
@@ -2053,7 +2121,7 @@ def test_angle_defaults_to_empty_string_when_the_client_result_has_no_such_attri
     class _AngielessClient:
         def generate(self, profile, style, retry_hint="", *, anchor=None, items=None,
                  should_stop=None,
-                     skip_models=frozenset()):
+                     skip_models=frozenset(), run_id: str = ""):
             return SimpleNamespace(model="gemini-x", usage="usage", opener="hey there",
                                    referenced="the lake", item_index=1)
 
@@ -2078,7 +2146,7 @@ def test_item_index_degrades_to_absent_rather_than_to_the_first_item():
     class _IndexlessClient:
         def generate(self, profile, style, retry_hint="", *, anchor=None, items=None,
                  should_stop=None,
-                     skip_models=frozenset()):
+                     skip_models=frozenset(), run_id: str = ""):
             return SimpleNamespace(model="gemini-x", usage="usage", opener="hey there",
                                    referenced="the lake", referenced_index=7)
 
@@ -2130,7 +2198,7 @@ def test_maybe_opener_states_the_index_space_on_the_pick_and_in_the_ring_buffer(
     class _SpacedClient:
         def generate(self, profile, style, retry_hint="", *, anchor=None, items=None,
                  should_stop=None,
-                     skip_models=frozenset()):
+                     skip_models=frozenset(), run_id: str = ""):
             return SimpleNamespace(model="gemini-x", usage="usage", opener="hey there",
                                    referenced="the lake", item_index=2,
                                    index_space=INDEX_SPACE_PROFILE_PHOTOS)
@@ -2202,7 +2270,7 @@ def test_recent_openers_snapshot_is_capped_and_drops_the_oldest():
 
         def generate(self, profile, style, retry_hint="", *, anchor=None, items=None,
                  should_stop=None,
-                     skip_models=frozenset()):
+                     skip_models=frozenset(), run_id: str = ""):
             self.calls += 1
             return SimpleNamespace(model="gemini-x", usage="usage",
                                    opener=f"opener #{self.calls}",
@@ -2303,6 +2371,24 @@ def test_auto_collision_regenerates_exactly_once_and_sends_the_new_opener(capsys
     output = capsys.readouterr().out
     assert f'opens with words already sent this run ("{_NGRAM_A_LEADING}")' in output
     assert "EXEMPT from the per-profile attempt budget" in output
+
+
+def test_entropy_guard_regeneration_threads_its_own_call_s_run_id_to_the_client():
+    """service.py:1003's self.client.generate(...) call (_apply_entropy_guard's extra draw)
+    must forward the SAME run_id as the maybe_opener() call it belongs to -- this regeneration
+    is not a new run's request, it is the current run's second attempt at one profile, so any
+    cascade print it triggers must carry that run's own `Run {run_id}: ` tag, not go
+    unattributed or misattributed to whatever run_id a later call happens to use."""
+    c = _Client(opener_texts=[_NGRAM_A, _NGRAM_A, _NGRAM_B])
+    s = OpenerService(c, _Tracker(), _Store(), "casual")
+
+    s.maybe_opener("run-a", "hinge", object())                    # seeds the buffer with A
+    out = s.maybe_opener("run-b", "hinge", object())               # draft A collides -> redraw
+
+    assert out.text == _NGRAM_B
+    # call 1: run-a's ordinary draw. call 2: run-b's ordinary draw (collides). call 3: run-b's
+    # entropy-guard regeneration -- it must carry run-b, never run-a or "".
+    assert c.run_ids_seen == ["run-a", "run-b", "run-b"]
 
 
 def test_the_regeneration_hint_names_the_repeated_words_without_calling_the_draft_bad():
@@ -2648,7 +2734,7 @@ class _RedundantClient:
 
     def generate(self, profile, style, retry_hint="", *, anchor=None, items=None,
                  should_stop=None,
-                 skip_models=frozenset()):
+                 skip_models=frozenset(), run_id: str = ""):
         return SimpleNamespace(
             model="gemini-x", usage="usage",
             opener="That view by the sauna during sunset looks relaxing, where is this from?",
@@ -2727,7 +2813,7 @@ def test_a_non_list_redundancy_markers_value_degrades_to_an_empty_list():
     class _StringMarkersClient:
         def generate(self, profile, style, retry_hint="", *, anchor=None, items=None,
                  should_stop=None,
-                     skip_models=frozenset()):
+                     skip_models=frozenset(), run_id: str = ""):
             return SimpleNamespace(model="gemini-x", usage="usage", opener="hey there",
                                    referenced="the lake", item_index=1, angle="",
                                    redundancy_markers="sauna")

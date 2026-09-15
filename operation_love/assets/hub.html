@@ -239,14 +239,40 @@ function hubLifecycle(path){
 }
 hubLifecycle('/api/hub/open');
 setInterval(() => hubLifecycle('/api/hub/ping'), 5000);
-window.addEventListener('pageshow', () => hubLifecycle('/api/hub/open'));
+// Re-register the tab AND re-poll status. The throttling described below does not stop at the
+// ping: `tick`'s 1s /api/status poll is the same kind of timer, so a hidden tab polls status at
+// the same ~once/minute -- and profiles in the audited run took 286-383s, far past the point
+// where intensive throttling has kicked in. That is the gap the operator hears: the macOS host
+// chime arrived up to 41s before the browser banner carrying the WORDS ("choose Like or
+// Dislike"), because the banner cannot be constructed until a poll delivers the checkpoint.
+// Do NOT read the audited run's `notification=not-presented` rows as "the native banner is
+// dead": probed directly on that host (2026-09-15), the center's own `deliveredNotifications`
+// list holds this project's own posts with real `actualDeliveryDate` values, so
+// `deliverNotification` does fire and the daemon does retain it. What macOS 26's legacy shim
+// never populates is the `presented` FLAG -- which is why notifications.py treats that field as
+// proof of neither delivery nor non-delivery. The gap this fix closes is the BROWSER one: the
+// banner is the channel that carries the WORDS, and polling the instant the tab wakes collapses
+// the delay before it can be built.
+// Be honest about the limit: this is a PARTIAL fix by construction. It shortens the POST-WAKE
+// gap only. Nothing here makes a still-hidden tab poll any faster, so a chime heard while the
+// tab stays in the background is still a chime with no text until the operator comes back.
+// Stacking this on top of the interval is safe, and each leg was checked separately: tick() is
+// re-entrancy-safe via the _statusRequest generation counter (a superseded response is
+// discarded, never rendered), the checkpoint repaint is fingerprint-deduped so the no-store
+// review PNGs are NOT re-requested for an unchanged card, and notifyTrainingCheckpoint is
+// one-shot per approval key so an extra poll cannot double-notify.
+function hubWake(){
+  hubLifecycle('/api/hub/open');
+  tick();                       // hoisted: same <script>, declared further down
+}
+window.addEventListener('pageshow', hubWake);
 // A hidden tab's setInterval ping can be throttled by the browser to ~once/minute, which can
 // look "stale" and trip a server-side shutdown of a live run. Re-register immediately whenever
 // the tab could be waking up, same as pageshow already does — these fire un-throttled. Named
 // (not inlined) so the hub test suite can eval the real callback with node instead of asserting
 // a substring a comment-only revert could dodge.
-function _onHubVisibilityWake(){ if (!document.hidden) hubLifecycle('/api/hub/open'); }
-function _onHubFocusWake(){ hubLifecycle('/api/hub/open'); }
+function _onHubVisibilityWake(){ if (!document.hidden) hubWake(); }
+function _onHubFocusWake(){ hubWake(); }
 document.addEventListener('visibilitychange', _onHubVisibilityWake);
 window.addEventListener('focus', _onHubFocusWake);
 window.addEventListener('pagehide', (event) => {
@@ -309,7 +335,15 @@ function renderGlobal(snap){
   // 'stopping…' stuck next to a 'stopped' pill forever. shouldClearHint fires on any
   // running->!running transition instead, whatever text is currently sitting there.
   else if(shouldClearHint(running, _wasRunning)) $('#hint').textContent = '';
+  const runningChanged = !!running !== !!_wasRunning;
   _wasRunning = running;
+  // #alerthint names the gesture that can actually arm browser banners, and WHICH gesture that
+  // is flips with the run: Start while Start is clickable, the decision card's "Allow alerts"
+  // button once Start is disabled (see trainingAlertHintText). Re-derive it on the TRANSITION
+  // only, and only AFTER _wasRunning has been updated -- #alerthint is an aria-live region, so
+  // rewriting identical text once a second would make a screen reader re-announce it once a
+  // second for no new information.
+  if(runningChanged) syncTrainingAlertHint();
   if(s){
     const cap = s.budget_cap!=null ? ' / $'+Number(s.budget_cap).toFixed(2) : '';
     $('#budget').textContent = `$${Number(s.budget_spent).toFixed(2)}${cap}`;
@@ -375,31 +409,89 @@ let _trainingImageRetryTimer = null;
 let _trainingBrowserAlertedKey = '';
 let _trainingBrowserPermissionPendingKey = '';
 
+// One reader for the permission, so every surface below agrees on what "unsupported" looks
+// like. '' means the Notification API is absent entirely (older WebViews, or the hub opened over
+// a non-secure origin); anything else is the browser's own permission string, passed through
+// rather than normalised so an unexpected value cannot silently masquerade as 'default'.
+function trainingAlertPermission(){
+  if (!('Notification' in window)) return '';
+  const permission = window.Notification.permission;
+  return typeof permission === 'string' ? permission : '';
+}
+
+// Guidance derives from the precondition that is actually blocking, never from a hardcoded
+// "next step" (this project already lost a day to next-step text that kept naming an
+// already-satisfied prerequisite across five surfaces). The 'default' case is the one that bit
+// us: a permission request is only honoured from a real user gesture, and for a long time the
+// page's ONLY such gesture was the Start click -- which renderGlobal disables for the whole of a
+// live run. So an operator who reloaded the tab, or opened the Hub in a second browser profile,
+// while a run was live was told to press a button that was greyed out, while every checkpoint
+// posted notification=permission-default and returned before constructing a banner. There was no
+// way back without stopping the run. Name the gesture that exists RIGHT NOW: Start while Start
+// is clickable, the decision card's "Allow alerts" button once it is not.
+// Pure + named so the hub test suite can eval it with node.
+function trainingAlertHintText(permission, running){
+  if (!permission) return 'Browser notifications are unavailable; the Mac sound and native fallback remain active.';
+  if (permission === 'granted') return 'Training alerts: browser banners allowed; on macOS the host sound is independent.';
+  if (permission === 'denied') return 'Training alerts: browser banners blocked; on macOS the host sound remains active.';
+  return running
+    ? 'Training alerts: browser banners are not armed yet. Start is disabled while a run is live, so use the Allow alerts button on the decision card; macOS sound is independent.'
+    : 'Training alerts: Start Training to allow browser banners; macOS sound is independent.';
+}
+
+// The decision card's escape hatch for exactly that case. Both halves are genuine preconditions
+// rather than one implying the other: the gesture is worth offering only while the answer is
+// still 'default' (granted or denied can never be re-asked from a page), and only while a run is
+// live, because outside a run Start is the gesture and is sitting right there enabled.
+// Pure + named so the hub test suite can eval it with node.
+function shouldOfferTrainingAlertGesture(permission, running){
+  return permission === 'default' && !!running;
+}
+
+// One guarded reader so renderTrainingCheckpoint needs a single `typeof` check: the renderer is
+// eval'd under node by two test files with a hand-built DOM that has neither `window` nor any
+// run state -- the same reason setTrainingImageZoom and notifyTrainingCheckpoint are reached
+// through typeof guards there.
+function trainingAlertGestureOffered(){
+  return shouldOfferTrainingAlertGesture(trainingAlertPermission(), _wasRunning);
+}
+
 function syncTrainingAlertHint(){
   const hint = $('#alerthint');
   if (!hint) return;
-  if (!('Notification' in window)) {
-    hint.textContent = 'Browser notifications are unavailable; the Mac sound and native fallback remain active.';
-    return;
-  }
-  const permission = window.Notification.permission;
-  hint.textContent = permission === 'granted'
-    ? 'Training alerts: browser banners allowed; on macOS the host sound is independent.'
-    : permission === 'denied'
-      ? 'Training alerts: browser banners blocked; on macOS the host sound remains active.'
-      : 'Training alerts: Start Training to allow browser banners; macOS sound is independent.';
+  hint.textContent = trainingAlertHintText(trainingAlertPermission(), _wasRunning);
 }
 
-// Notification permission must be requested synchronously from the Start click. Waiting until a
-// checkpoint arrives minutes later is outside a user gesture and modern browsers may reject it.
+// Notification permission must be requested synchronously from a user gesture. Waiting until a
+// checkpoint arrives minutes later is outside a gesture and modern browsers may reject it. Two
+// call sites supply one: the Start click, and -- for a tab that came up mid-run already at
+// 'default' -- the decision card's "Allow alerts" button.
 function prepareTrainingBrowserNotifications(){
   syncTrainingAlertHint();
   if (!('Notification' in window) || window.Notification.permission !== 'default') return;
-  try {
-    Promise.resolve(window.Notification.requestPermission())
-      .then(() => syncTrainingAlertHint(), () => syncTrainingAlertHint());
-  } catch (_error) {
+  // The answer landing moves the very precondition that gated the "Allow alerts" control, and
+  // trainingPollRenderFingerprint deliberately does not track permission (putting it there would
+  // force a repaint, i.e. a re-fetch of both no-store review PNGs, on every poll). A waiting card
+  // is otherwise byte-identical poll after poll, so without this the panel would keep offering a
+  // control whose reason to exist is gone. Drop the cached signature exactly here -- once, when
+  // the operator has actually answered -- so ONE later poll repaints and then re-stores it.
+  //
+  // ONLY FOR A REAL ANSWER (2026-09-15). A repaint DOES re-create the
+  // `<img src="/api/training/review.png...">` elements and therefore DOES re-fetch both no-store
+  // review PNGs; an earlier note here claimed a dismissal could not reach this point, which was
+  // simply wrong. Dismissing the browser's prompt resolves it with 'default' left in place --
+  // nothing about the card changed, the control must stay offered, and an operator who dismisses
+  // repeatedly would otherwise buy a full checkpoint repaint every time. The hint is re-derived
+  // unconditionally (it is cheap and phone-free); only the cached signature is gated.
+  const settled = () => {
     syncTrainingAlertHint();
+    if (trainingAlertPermission() === 'default') return;
+    if (typeof _trainingPollRenderSignature !== 'undefined') _trainingPollRenderSignature = '';
+  };
+  try {
+    Promise.resolve(window.Notification.requestPermission()).then(settled, settled);
+  } catch (_error) {
+    settled();
   }
 }
 
@@ -827,6 +919,13 @@ function renderTrainingCheckpoint(checkpoint, message=''){
   const ready = checkpoint.pending === true && checkpoint.phase === 'waiting_training_decision'
     && checkpoint.action === 'ready';
   if (typeof notifyTrainingCheckpoint === 'function') notifyTrainingCheckpoint(checkpoint);
+  // The escape hatch for a notification permission still sitting at 'default' during a live run,
+  // where Start -- the page's other gesture -- is disabled (see trainingAlertHintText). It is
+  // FINE PRINT, never a decision: it carries no primary/danger styling, sits below the
+  // Like/Dislike row rather than ahead of it, restyles nothing around it, and is always ENABLED,
+  // because an affordance the operator cannot press is the exact bug this fixes.
+  const offerAlertGesture = typeof trainingAlertGestureOffered === 'function'
+    && trainingAlertGestureOffered();
   // A malformed local response or a card that has crossed the action boundary must never
   // turn into either decision.
   const canDecide = Boolean(ready && image && hasOpener && reviewImageAvailable
@@ -864,7 +963,13 @@ function renderTrainingCheckpoint(checkpoint, message=''){
     + `<div class="controls" style="margin-top:14px">
          <button id="traininglike" class="primary" aria-label="Like — send opener"${(trainingActionBusyFor(checkpoint) || !canDecide) ? ' disabled' : ''}>Like</button>
          <button id="trainingdislike" class="danger" aria-label="Dislike — pass this profile"${(trainingActionBusyFor(checkpoint) || !canDecide) ? ' disabled' : ''}>Dislike</button>
-       </div>
+       </div>`
+    + (offerAlertGesture ? `
+       <div class="meta" id="trainingalertgesture" style="margin-top:8px">
+         <button id="trainingallowalerts" type="button" aria-label="Allow browser alert banners for training decisions">Allow alerts</button>
+         Browser banners are not armed, so a checkpoint can reach you as sound with no text. This asks the browser now, from this click.
+       </div>` : '')
+    + `
        <div class="meta" id="trainingactionhint" style="margin-top:8px">${escHtml(message)}</div>
   </div>`;
   panel.style.display = 'block';
@@ -895,6 +1000,13 @@ function renderTrainingCheckpoint(checkpoint, message=''){
   const imageZoomButton = $('#trainingimagezoom');
   if (likeButton) likeButton.onclick = () => submitTrainingAction('like');
   if (dislikeButton) dislikeButton.onclick = () => submitTrainingAction('dislike');
+  const allowAlertsButton = $('#trainingallowalerts');
+  // Call it synchronously inside the click: requestPermission is only honoured while the browser
+  // still considers itself inside a user gesture, so routing this through a promise, a timer or
+  // the next poll would put it right back outside one -- the failure this control exists to fix.
+  if (allowAlertsButton) allowAlertsButton.onclick = () => {
+    if (typeof prepareTrainingBrowserNotifications === 'function') prepareTrainingBrowserNotifications();
+  };
   if (imageUpButton) imageUpButton.onclick = () => moveTrainingImage(-1);
   if (imageDownButton) imageDownButton.onclick = () => moveTrainingImage(1);
   const previewImage = $('#trainingimage');
@@ -1070,6 +1182,14 @@ function renderRunStatus(snap){
     if(state === 'wedged') return box('err', `🔴 ${a.app} stopped — worker did not exit cleanly`, a.error || count);
     if(state === 'out_of_profiles') return box('idle', `${a.app}: no more profiles`, count);
     if(state === 'rate_limited') return box('idle', `${a.app}: stopped — rate limit reached`, count);
+    // A latched blocked reason is not proof that the DECK is what is blocked: the worker also
+    // routes a failed cold-relaunch recovery through this channel (it has no other way to carry
+    // a sentence out of a capture that returned None). Headline the actual failure -- "deck
+    // blocked" told the operator to go look at a paywall that was never there -- and keep the
+    // driver's own sentence underneath exactly as the deck case does. Unclassified reasons keep
+    // the historical wording.
+    if(state === 'blocked' && a.stop_kind === 'cold_relaunch_recovery')
+      return box('idle', `${a.app}: stopped — could not recover after the app relaunched`, a.stop_reason);
     if(state === 'blocked') return box('idle', `${a.app}: stopped — deck blocked`, a.stop_reason);
     if(state === 'stopped' && a.last_decision === 'defer')
       return box('idle', `${a.app}: stopped — ranker not ready (cold-start)`, 'run training mode first');

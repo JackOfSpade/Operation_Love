@@ -38,6 +38,18 @@ NODE_BIN = shutil.which("node")
 _LIVENESS_TIMEOUT_S = 15.0
 
 
+def _notification_window_literal(permission) -> str:
+    """The `window` a node harness needs to run the real permission reader.
+
+    `None` means the Notification API is missing entirely (older WebViews, or the hub opened
+    over a non-secure origin) -- a different case from a permission that exists and is 'denied',
+    and the one `trainingAlertPermission` reports as ''.
+    """
+    if permission is None:
+        return "const window={};\n"
+    return "const window={Notification:{permission:" + json.dumps(permission) + "}};\n"
+
+
 def _extract_js_function(js: str, name: str) -> str:
     """Pull a top-level `function name(...) { ... }` out of the hub page's <script>, by
     brace-matching from the definition to its close. Evaluating the REAL body with node
@@ -2291,7 +2303,7 @@ def test_should_clear_hint_only_fires_on_the_running_to_stopped_transition():
     ]
 
 
-def _render_global_script(calls: list) -> str:
+def _render_global_script(calls: list, alert_permission: str = "granted") -> str:
     """Run the real renderGlobal against a minimal DOM, once per entry in `calls`, in the
     SAME node process/script and in order -- renderGlobal is stateful across polls (the
     module-level `_wasRunning` shouldClearHint reads), so a fresh eval per call would miss
@@ -2299,23 +2311,32 @@ def _render_global_script(calls: list) -> str:
     fns = (_extract_js_function(_PAGE, "stopButtonState") + "\n"
            + _extract_js_function(_PAGE, "shouldClearHint") + "\n"
            + _extract_js_function(_PAGE, "formatTimedStopRemaining") + "\n"
+           # renderGlobal re-derives #alerthint on the running transition, so the REAL hint
+           # chain is wired here rather than stubbed: a stub would let the wording drift back
+           # to naming a control the operator cannot reach.
+           + _extract_js_function(_PAGE, "trainingAlertPermission") + "\n"
+           + _extract_js_function(_PAGE, "trainingAlertHintText") + "\n"
+           + _extract_js_function(_PAGE, "syncTrainingAlertHint") + "\n"
            + _extract_js_function(_PAGE, "renderGlobal"))
     return (
         "let _wasRunning = false, _trainingDataMutationBusy = false, _configReady = true;\n"
+        + _notification_window_literal(alert_permission) +
         "let els = {runpill:{textContent:'',className:''}, start:{disabled:false}, "
         "stop:{disabled:false,textContent:''}, hint:{textContent:''}, budget:{textContent:''}, "
         "err:{textContent:''}, stopafter:{disabled:false}, timerhint:{textContent:''}, "
-        "removeLatestTraining:{disabled:false}};\n"
+        "alerthint:{textContent:''}, removeLatestTraining:{disabled:false}};\n"
         "function $(sel){ return els[sel.slice(1)]; }\n"
         + fns + "\n"
         "const calls = " + json.dumps(calls) + ";\n"
         "const results = [];\n"
         "for (const c of calls) {\n"
         "  if (c.presetHint != null) els.hint.textContent = c.presetHint;\n"
+        "  els.alerthint.textContent = '';\n"
         "  renderGlobal(c.snap);\n"
         "  results.push({hint: els.hint.textContent, pill: els.runpill.textContent, "
         "stopDisabled: els.stop.disabled, stopLabel: els.stop.textContent, "
-        "timerDisabled: els.stopafter.disabled, timerHint: els.timerhint.textContent});\n"
+        "timerDisabled: els.stopafter.disabled, timerHint: els.timerhint.textContent, "
+        "alertHint: els.alerthint.textContent});\n"
         "}\n"
         "console.log(JSON.stringify(results));\n"
     )
@@ -2369,6 +2390,24 @@ def test_render_global_shows_server_timer_countdown_and_locks_the_choice_while_r
     assert results[1]["timerHint"] == ""
 
 
+def _hub_wake_script(body: str) -> str:
+    """The three wake callbacks over a stub lifecycle + stub `tick`, run for real under node.
+
+    `tick` is counted rather than stubbed away: re-registering the tab and re-polling status are
+    two different obligations of the same wake, and only counting both can tell them apart.
+    """
+    return (
+        "let calls = [], ticks = 0;\n"
+        "function hubLifecycle(path){ calls.push(path); }\n"
+        "function tick(){ ticks += 1; }\n"
+        "let document = { hidden: true };\n"
+        + _extract_js_function(_PAGE, "hubWake") + "\n"
+        + _extract_js_function(_PAGE, "_onHubVisibilityWake") + "\n"
+        + _extract_js_function(_PAGE, "_onHubFocusWake") + "\n"
+        + body
+    )
+
+
 def test_hub_page_rereigsters_on_tab_wake_events():
     # Chrome throttles a hidden tab's setInterval ping to ~once/minute; the page must also
     # re-register the instant the tab visibly wakes (these fire un-throttled), same as pageshow.
@@ -2382,13 +2421,7 @@ def test_hub_page_rereigsters_on_tab_wake_events():
         pytest.skip("node is not available on this machine")
     assert "document.addEventListener('visibilitychange', _onHubVisibilityWake)" in _PAGE
     assert "window.addEventListener('focus', _onHubFocusWake)" in _PAGE
-    vis_fn = _extract_js_function(_PAGE, "_onHubVisibilityWake")
-    focus_fn = _extract_js_function(_PAGE, "_onHubFocusWake")
-    script = (
-        "let calls = [];\n"
-        "function hubLifecycle(path){ calls.push(path); }\n"
-        "let document = { hidden: true };\n"
-        + vis_fn + "\n" + focus_fn + "\n"
+    script = _hub_wake_script(
         "_onHubVisibilityWake();\n"                 # hidden -> must NOT re-register
         "const afterHidden = calls.slice();\n"
         "document.hidden = false;\n"
@@ -2403,6 +2436,35 @@ def test_hub_page_rereigsters_on_tab_wake_events():
     assert result["afterHidden"] == []
     assert result["afterVisible"] == ["/api/hub/open"]
     assert result["afterFocus"] == ["/api/hub/open", "/api/hub/open"]
+
+
+def test_every_tab_wake_also_repolls_status_not_just_the_lifecycle_registration():
+    """The audited gap: a hidden tab's 1s status poll is throttled exactly like its ping, so a
+    checkpoint raised while the operator was elsewhere could sit un-rendered for up to a minute
+    after they came back -- the macOS chime beat the browser banner by 41s in the audited run,
+    and on that host the native API is sound-only, so the banner is the only text channel.
+
+    All three wake paths must re-poll, not just re-register: `pageshow` is wired to the SAME
+    named callback, so asserting on the wiring plus these two proves the third. A visibility
+    event on a still-hidden tab must stay silent on both counts -- a poll there would neither
+    help (the operator is not looking) nor be honest about what this fix can do.
+    """
+    if NODE_BIN is None:
+        pytest.skip("node is not available on this machine")
+    assert "window.addEventListener('pageshow', hubWake)" in _PAGE
+    script = _hub_wake_script(
+        "_onHubVisibilityWake();\n"                 # still hidden -> no poll either
+        "const hiddenTicks = ticks;\n"
+        "document.hidden = false;\n"
+        "_onHubVisibilityWake();\n"                 # woke visible -> poll now, not in ~60s
+        "const visibleTicks = ticks;\n"
+        "_onHubFocusWake();\n"
+        "hubWake();\n"                              # the pageshow/bfcache leg
+        "console.log(JSON.stringify({hiddenTicks, visibleTicks, ticks, calls: calls.length}));\n"
+    )
+    assert _run_node(script) == {
+        "hiddenTicks": 0, "visibleTicks": 1, "ticks": 3, "calls": 3,
+    }
 
 
 def test_browser_stale_window_clears_throttled_worst_case():
@@ -2677,8 +2739,10 @@ def test_hubstate_apps_none_validates_the_effective_file_config(tmp_path):
         # section and turn this release-gate test into an unrelated storage-config failure.
         r"(?m)^    observe_release_evidence:\n(?:^      [^\n]*\n)+", "",
         Path("config.yaml").read_text(), count=1)
-    # The shipped file intentionally starts in Training while its 10.1.0 production-observe
-    # release is pending. Exercise this test's AUTO release gate explicitly.
+    # The shipped file intentionally starts in Training while its 10.3.0 production-observe
+    # release is pending (config.yaml's targeting_calibration pins hinge_version_name 10.3.0;
+    # this comment said 10.1.0 long after that moved on). Exercise this test's AUTO release gate
+    # explicitly.
     cfg_text = cfg_text.replace("mode: training", "mode: auto", 1)
     cfg_path.write_text(cfg_text)
 
@@ -3234,6 +3298,48 @@ def test_render_run_status_names_pre_opener_targeting_calibration_stop():
     assert "could not attach the generated opener" not in html
 
 
+def test_render_run_status_headlines_a_failed_cold_relaunch_not_a_blocked_deck():
+    """A latched blocked REASON is not proof that the DECK is what is blocked.
+
+    The worker has exactly one channel for a sentence coming out of a capture that returned
+    None, and a failed cold-relaunch recovery latches through it too, so the Hub used to
+    headline "stopped -- deck blocked" for a run where nothing was blocking the deck: the
+    operator was sent to look for a paywall that was never there. Owner rule: the hub must
+    clearly show why a run stopped.
+    """
+    if NODE_BIN is None:
+        pytest.skip("node is not available on this machine")
+    reason = ("Hinge was relaunched cold and the deck could not be proven re-entered; "
+              "no action or label was recorded.")
+    snap = {
+        "running": True,
+        "status": {"apps": {"hinge": {
+            "app": "hinge", "mode": "auto", "state": "blocked",
+            "stop_reason": reason, "stop_kind": "cold_relaunch_recovery", "swipes_run": 3,
+        }}},
+    }
+
+    html = _run_node(_runstatus_script(snap))["html"]
+    assert "could not recover after the app relaunched" in html
+    assert "deck blocked" not in html
+    assert reason in html                          # the driver's own sentence stays underneath
+    assert "🔴" not in html                         # a graceful stop, not a crash cue
+
+    # The branch it was split OUT of is untouched: a genuine paywall still reads as one, and so
+    # does a blocked stop from a driver that never classified its reason at all.
+    for unclassified in ({"stop_kind": "deck_blocked"}, {}):
+        other = _run_node(_runstatus_script({
+            "running": True,
+            "status": {"apps": {"hinge": {
+                "app": "hinge", "mode": "auto", "state": "blocked",
+                "stop_reason": "Hinge is showing its out-of-likes upgrade screen.",
+                **unclassified,
+            }}},
+        }))["html"]
+        assert "deck blocked" in other
+        assert "could not recover after the app relaunched" not in other
+
+
 def test_render_run_status_escapes_auto_stop_reason_before_using_inner_html():
     if NODE_BIN is None:
         pytest.skip("node is not available on this machine")
@@ -3384,8 +3490,13 @@ def test_tick_discards_an_out_of_order_status_response():
     ]
 
 
-def _training_panel_script(checkpoint):
-    """Run the real renderer against the smallest DOM surface it needs."""
+def _training_panel_script(checkpoint, alert_permission="granted", running=False):
+    """Run the real renderer against the smallest DOM surface it needs.
+
+    `alert_permission` / `running` drive the "Allow alerts" affordance only. Their defaults
+    (a granted permission, no run in progress) are the combination that renders nothing extra,
+    so every longstanding markup test below keeps asserting on exactly the card it always did.
+    """
     return (
         "const panel={style:{display:''},innerHTML:''};\n"
         "const buttons={};\n"
@@ -3393,10 +3504,18 @@ def _training_panel_script(checkpoint):
         "const document={querySelector:(selector)=>selector==='.hub-layout'?layout:null};\n"
         "function $(selector){ return selector==='#trainingpanel' ? panel : buttons[selector]; }\n"
         "let _trainingCheckpoint=null, _trainingActionBusy=false, _trainingBusyKey='', _trainingBusyRequest=0, _trainingImageKey='', _trainingImageIndex=0, _trainingImageFailedIndex=null,_trainingImageRenderGeneration=0,_trainingImageFailedGeneration=null; const _trainingIdempotency=new Map();\n"
+        # The permission gate the "Allow alerts" fine print is derived from. `window` is absent
+        # in node, and _wasRunning is renderGlobal's cross-poll run flag -- both are read for
+        # real here rather than stubbed, so the affordance's two preconditions are exercised.
+        + _notification_window_literal(alert_permission) +
+        "let _wasRunning=" + ("true" if running else "false") + ";\n"
         # The real state synchronizer closes a modal when the checkpoint changes.  This
         # renderer-only harness has no persistent modal, so its inert stand-in keeps these
         # longstanding markup tests deliberately scoped to the panel itself.
         "function setTrainingImageZoom(){}\n"
+        + _extract_js_function(_PAGE, "trainingAlertPermission") + "\n"
+        + _extract_js_function(_PAGE, "shouldOfferTrainingAlertGesture") + "\n"
+        + _extract_js_function(_PAGE, "trainingAlertGestureOffered") + "\n"
         + _extract_js_function(_PAGE, "escHtml") + "\n"
         + _extract_js_function(_PAGE, "safeCheckpointImageDataUrl") + "\n"
         + _extract_js_function(_PAGE, "trainingCheckpointKey") + "\n"
@@ -3990,6 +4109,8 @@ def test_actionable_training_checkpoint_requests_one_silent_browser_notification
         pytest.skip("node is not available on this machine")
     functions = "\n".join((
         _extract_js_function(_PAGE, "trainingCheckpointKey"),
+        _extract_js_function(_PAGE, "trainingAlertPermission"),
+        _extract_js_function(_PAGE, "trainingAlertHintText"),
         _extract_js_function(_PAGE, "syncTrainingAlertHint"),
         _extract_js_function(_PAGE, "reportTrainingBrowserNotification"),
         _extract_js_function(_PAGE, "notifyTrainingCheckpoint"),
@@ -4001,7 +4122,7 @@ def test_actionable_training_checkpoint_requests_one_silent_browser_notification
         "BrowserNotification.permission='granted'; const window={Notification:BrowserNotification,"
         "focus(){focused+=1;}}; function $(selector){return selector==='#alerthint'?hint:null;}\n"
         "function postJSON(path,body){posts.push({path,body});return Promise.resolve({ok:true});}\n"
-        "let _trainingBrowserAlertedKey='',_trainingBrowserPermissionPendingKey='';\n"
+        "let _trainingBrowserAlertedKey='',_trainingBrowserPermissionPendingKey='',_wasRunning=true;\n"
         + functions + "\n"
         "const card={run_id:'run-1',app:'hinge',profile_token:'profile-1',"
         "approval_token:'approval-1',pending:true,phase:'waiting_training_decision',action:'ready'};\n"
@@ -4028,6 +4149,241 @@ def test_training_start_requests_browser_permission_inside_click_handler():
     assert re.search(r'id="alerthint"[^>]*role="status"', _PAGE)
 
 
+def _alert_hint_script(cases) -> str:
+    """The real hint text, derived for each (permission, running) pair under node."""
+    return (
+        _extract_js_function(_PAGE, "trainingAlertHintText") + "\n"
+        "const cases=" + json.dumps(cases) + ";\n"
+        "console.log(JSON.stringify(cases.map(c => trainingAlertHintText(c[0], c[1]))));\n"
+    )
+
+
+def test_alert_hint_names_a_gesture_the_operator_can_actually_press():
+    """The audited defect: permission='default' reached mid-run could never be armed again.
+
+    requestPermission is only honoured from a real user gesture, and the page's original only
+    gesture was the Start click -- which renderGlobal disables for the whole of a live run. So
+    the hint told the operator to press a greyed-out button while every checkpoint posted
+    notification=permission-default and returned before constructing a banner. Guidance derives
+    from the precondition that is actually blocking, so the wording has to flip with the run:
+    Start while Start is clickable, the decision card's control once it is not.
+    """
+    if NODE_BIN is None:
+        pytest.skip("node is not available on this machine")
+
+    hints = _run_node(_alert_hint_script([
+        ["default", False], ["default", True],
+        ["granted", True], ["denied", True], ["", True],
+    ]))
+    idle_default, live_default, granted, denied, unsupported = hints
+
+    assert "Start Training" in idle_default and "Allow alerts" not in idle_default
+    # The live-run case must NOT send them to Start: it is disabled, and saying so is the point.
+    assert "Allow alerts" in live_default and "Start Training" not in live_default
+    assert "Start is disabled" in live_default
+    assert "browser banners allowed" in granted and "Allow alerts" not in granted
+    assert "browser banners blocked" in denied and "Allow alerts" not in denied
+    assert "Browser notifications are unavailable" in unsupported
+    # Every branch still says the macOS host sound is a separate channel -- on the audited host
+    # the deprecated native API is sound-only, so the two are never the same alert.
+    assert all(re.search(r"macOS|Mac sound", hint) for hint in hints)
+
+
+def test_alert_hint_is_rewritten_on_the_running_transition_and_only_then():
+    """renderGlobal owns `running`, so it is the only place that can notice the flip.
+
+    #alerthint is an aria-live region: re-deriving it on every poll would make a screen reader
+    re-announce identical text once a second, so the rewrite is gated on the transition. The
+    harness blanks the element before each poll, so a poll that did not re-derive reads ''.
+    """
+    if NODE_BIN is None:
+        pytest.skip("node is not available on this machine")
+
+    results = _run_node(_render_global_script([
+        {"snap": {"running": False, "status": None}},        # no change from the initial state
+        {"snap": {"running": True, "status": {"phase": "live", "budget_spent": 0}}},
+        {"snap": {"running": True, "status": {"phase": "live", "budget_spent": 0}}},
+        {"snap": {"running": False, "status": None}},
+    ], alert_permission="default"))
+
+    assert results[0]["alertHint"] == ""                     # nothing flipped -> no rewrite
+    assert "Allow alerts" in results[1]["alertHint"]         # Start just became unpressable
+    assert results[2]["alertHint"] == ""                     # still live -> no aria-live churn
+    assert "Start Training" in results[3]["alertHint"]       # Start is pressable again
+
+
+def test_live_run_at_default_permission_offers_an_enabled_allow_alerts_control():
+    """The escape hatch itself: a real, clickable gesture inside the decision panel.
+
+    Enabled is the whole point -- a disabled affordance is the bug being fixed -- and it must
+    stay fine print: no primary/danger styling, below the decision row rather than ahead of it,
+    and it must not introduce a GO/WAIT cue of its own (owner rule: the decision window stays
+    the green GO box, run-level context is fine print).
+    """
+    if NODE_BIN is None:
+        pytest.skip("node is not available on this machine")
+
+    html = _run_node(_training_panel_script(
+        _training_checkpoint_with(), alert_permission="default", running=True))["html"]
+
+    assert 'id="trainingallowalerts"' in html
+    assert not re.search(r'id="trainingallowalerts"[^>]* disabled', html)
+    assert ">Allow alerts</button>" in html
+    # Fine print, not a decision: plain button inside a `.meta` row, after Like/Dislike.
+    assert 'id="trainingalertgesture"' in html and 'class="meta" id="trainingalertgesture"' in html
+    assert not re.search(r'id="trainingallowalerts"[^>]*class="(primary|danger)"', html)
+    assert html.index('id="trainingallowalerts"') > html.index('id="trainingdislike"')
+    # It adds no GO/WAIT cue and does not restyle one (hands are banned outright; circles belong
+    # to the run banner, not to this affordance).
+    assert "🟢" not in html and "🔴" not in html and "👍" not in html and "👎" not in html
+    # The decision controls themselves are untouched by its presence.
+    assert ">Like</button>" in html and ">Dislike</button>" in html
+    assert not re.search(r'id="traininglike"[^>]* disabled', html)
+
+
+@pytest.mark.parametrize("permission,running", [
+    ("granted", True),      # already armed -- nothing to ask for
+    ("denied", True),       # a denied permission can never be re-asked from a page
+    ("default", False),     # Start is right there and enabled; it is the gesture
+    (None, True),           # no Notification API at all
+])
+def test_allow_alerts_control_is_absent_whenever_start_or_the_answer_already_settles_it(
+        permission, running):
+    """Both halves of the precondition are load-bearing, so neither alone may render it."""
+    if NODE_BIN is None:
+        pytest.skip("node is not available on this machine")
+
+    html = _run_node(_training_panel_script(
+        _training_checkpoint_with(), alert_permission=permission, running=running))["html"]
+
+    assert "trainingallowalerts" not in html and "trainingalertgesture" not in html
+
+
+# The literal seam the optional affordance is spliced into: the controls row's closing tag, the
+# newline, the template's six-space indentation, and the action-hint row that follows. Written
+# out here as ONE constant on purpose -- see the test below for what a symmetric comparison
+# cannot see.
+_TRAINING_CARD_SEAM = (
+    '</div>\n       <div class="meta" id="trainingactionhint" style="margin-top:8px">')
+
+
+def test_card_without_the_allow_alerts_control_is_byte_identical_to_the_plain_card():
+    """It is an affordance, never a capability: absent, the card must render exactly as before.
+
+    THE SUBTRACTION ALONE PROVES NOTHING ABOUT THE SEAM (2026-09-15). Both renders come from the
+    same template, so a review that deleted whitespace from the shared trailing fragment changed
+    BOTH identically: the subtraction still matched and this test stayed green, blind to the very
+    whitespace bug it was written after. Pin the BOUNDARY as a literal against the render that
+    has no affordance in it, then require that same literal to survive in the with-control render
+    once the block is lifted out -- a shared-fragment edit now fails the first assertion, and a
+    splice that eats or adds a byte at the join fails the second.
+    """
+    if NODE_BIN is None:
+        pytest.skip("node is not available on this machine")
+
+    with_control = _run_node(_training_panel_script(
+        _training_checkpoint_with(), alert_permission="default", running=True))["html"]
+    without = _run_node(_training_panel_script(_training_checkpoint_with()))["html"]
+
+    assert without.count(_TRAINING_CARD_SEAM) == 1
+    block = re.search(
+        r'\n       <div class="meta" id="trainingalertgesture".*?\n       </div>',
+        with_control, re.S)
+    assert block, "the affordance should render as one self-contained fine-print row"
+    lifted = with_control.replace(block.group(0), "", 1)
+    assert lifted.count(_TRAINING_CARD_SEAM) == 1
+    assert lifted == without
+
+
+def test_allow_alerts_click_requests_permission_and_buys_exactly_one_repaint():
+    """The click must reach requestPermission synchronously (a gesture survives nothing else),
+    and the answer landing must free ONE repaint -- but a DISMISSAL must free none.
+
+    trainingPollRenderFingerprint deliberately ignores permission -- putting it in there would
+    re-fetch both no-store review PNGs on every poll. But a waiting card is byte-identical poll
+    after poll, so without clearing the cached signature the panel would go on offering a
+    control whose precondition is gone. Clearing it on the ANSWER (not on the click) means the
+    repaint happens once, after the operator has actually chosen.
+
+    The dismissal leg (2026-09-15) is the half that was missing: closing the browser's prompt
+    without answering resolves it with 'default' still in place. Nothing about the card changed
+    and the control must stay offered, so clearing the signature there bought a full checkpoint
+    repaint -- which DOES re-create the `<img src="/api/training/review.png...">` elements and
+    re-fetch both no-store PNGs -- every single time an operator dismissed.
+    """
+    if NODE_BIN is None:
+        pytest.skip("node is not available on this machine")
+    functions = "\n".join((
+        _extract_js_function(_PAGE, "escHtml"),
+        _extract_js_function(_PAGE, "safeCheckpointImageDataUrl"),
+        _extract_js_function(_PAGE, "trainingCheckpointKey"),
+        _extract_js_function(_PAGE, "resetTrainingIdempotencyIfCardChanged"),
+        _extract_js_function(_PAGE, "resetTrainingBusyIfCardChanged"),
+        _extract_js_function(_PAGE, "trainingActionBusyFor"),
+        _extract_js_function(_PAGE, "checkpointReviewImages"),
+        _extract_js_function(_PAGE, "syncTrainingImageState"),
+        _extract_js_function(_PAGE, "trainingAlertPermission"),
+        _extract_js_function(_PAGE, "trainingAlertHintText"),
+        _extract_js_function(_PAGE, "shouldOfferTrainingAlertGesture"),
+        _extract_js_function(_PAGE, "trainingAlertGestureOffered"),
+        _extract_js_function(_PAGE, "syncTrainingAlertHint"),
+        _extract_js_function(_PAGE, "prepareTrainingBrowserNotifications"),
+        _extract_js_function(_PAGE, "renderTrainingCheckpoint"),
+    ))
+    script = (
+        "function node(){return {hidden:false,disabled:false,src:'',alt:'',textContent:'',"
+        "setAttribute(){},removeAttribute(){}};}\n"
+        "const elements={'#alerthint':node()};\n"
+        "const panel={style:{display:''},_html:'',get innerHTML(){return this._html;},"
+        "set innerHTML(value){this._html=value; for(const id of ['#trainingallowalerts',"
+        "'#traininglike','#trainingdislike','#trainingimage','#trainingimagezoom'])"
+        "if(value.includes('id=\\\"'+id.slice(1)+'\\\"'))elements[id]=node();}};\n"
+        "elements['#trainingpanel']=panel;\n"
+        "const layout={classList:{toggle(){}}};\n"
+        "const document={querySelector(s){return s==='.hub-layout'?layout:null;}};\n"
+        "function $(selector){return elements[selector]||null;} function setTrainingImageZoom(){}\n"
+        "let asked=0,resolvePermission=null;\n"
+        "const window={Notification:{permission:'default',requestPermission(){asked+=1;"
+        "return new Promise(r=>{resolvePermission=r;});}}};\n"
+        "let _trainingCheckpoint=null,_trainingActionBusy=false,_trainingBusyKey='',"
+        "_trainingBusyRequest=0,_trainingImageKey='',_trainingImageIndex=0,"
+        "_trainingImageFailedIndex=null,_trainingImageRenderGeneration=0,"
+        "_trainingImageFailedGeneration=null,_wasRunning=true,"
+        "_trainingPollRenderSignature='a-waiting-card';\n"
+        "const _trainingIdempotency=new Map();\n"
+        + functions + "\n"
+        "renderTrainingCheckpoint(" + json.dumps(_training_checkpoint_with()) + ");\n"
+        "const rendered=!!elements['#trainingallowalerts'];\n"
+        "elements['#trainingallowalerts'].onclick();\n"
+        "const onClick={asked,signature:_trainingPollRenderSignature};\n"
+        # Leg 1: the operator DISMISSES. The prompt resolves with 'default' left in place.
+        "resolvePermission('default');\n"
+        "setImmediate(()=>{const dismissed={asked,signature:_trainingPollRenderSignature,"
+        "hint:elements['#alerthint'].textContent};\n"
+        # Leg 2: the control is still there, so they click again and this time allow.
+        "elements['#trainingallowalerts'].onclick();\n"
+        "window.Notification.permission='granted'; resolvePermission('granted');\n"
+        "setImmediate(()=>console.log(JSON.stringify({rendered,onClick,dismissed,asked,"
+        "signature:_trainingPollRenderSignature,hint:elements['#alerthint'].textContent})));});\n"
+    )
+    result = _run_node(script)
+
+    assert result["rendered"] is True
+    # Synchronous inside the click: asked already incremented before any promise settled.
+    assert result["onClick"]["asked"] == 1
+    # The click alone must NOT invalidate -- the operator may still be staring at the prompt.
+    assert result["onClick"]["signature"] == "a-waiting-card"
+    # A DISMISSAL settles the promise without moving the permission, so it buys no repaint at
+    # all: the cached signature survives and the hint still names the Allow alerts gesture.
+    assert result["dismissed"]["asked"] == 1
+    assert result["dismissed"]["signature"] == "a-waiting-card"
+    assert "Allow alerts button" in result["dismissed"]["hint"]
+    # The real ANSWER does, exactly once, and the hint follows the new permission.
+    assert result["asked"] == 2
+    assert result["signature"] == ""
+    assert "browser banners allowed" in result["hint"]
+
+
 def test_checkpoint_retries_after_an_open_notification_permission_prompt_resolves():
     """Driven through the POLL entry point, which is the only thing that runs in production.
 
@@ -4044,6 +4400,8 @@ def test_checkpoint_retries_after_an_open_notification_permission_prompt_resolve
         _extract_js_function(_PAGE, "trainingCheckpointKey"),
         _extract_js_function(_PAGE, "trainingPollRenderFingerprint"),
         _extract_js_function(_PAGE, "renderTrainingCheckpointFromPoll"),
+        _extract_js_function(_PAGE, "trainingAlertPermission"),
+        _extract_js_function(_PAGE, "trainingAlertHintText"),
         _extract_js_function(_PAGE, "syncTrainingAlertHint"),
         _extract_js_function(_PAGE, "reportTrainingBrowserNotification"),
         _extract_js_function(_PAGE, "notifyTrainingCheckpoint"),
@@ -4054,7 +4412,7 @@ def test_checkpoint_retries_after_an_open_notification_permission_prompt_resolve
         "const window={Notification:BrowserNotification,focus(){}}; function $(selector){"
         "return selector==='#alerthint'?hint:null;} function postJSON(path,body){posts.push({path,body});"
         "return Promise.resolve({ok:true});} let _trainingBrowserAlertedKey='',"
-        "_trainingBrowserPermissionPendingKey='',_trainingPollRenderSignature='',renders=0;"
+        "_trainingBrowserPermissionPendingKey='',_trainingPollRenderSignature='',renders=0,_wasRunning=true;"
         "function renderTrainingCheckpoint(){renders+=1;}\n" + functions + "\n"
         "const card={run_id:'run-1',app:'hinge',profile_token:'profile-1',approval_token:'approval-1',"
         "pending:true,phase:'waiting_training_decision',action:'ready'};"

@@ -98,7 +98,7 @@ class _OpenerClient:
 
     def generate(self, profile, style, retry_hint="", *, anchor=None, items=None,
                  should_stop=None,
-                 skip_models=frozenset()):
+                 skip_models=frozenset(), run_id: str = ""):
         self.anchors.append(anchor)
         return OpenerResult(opener="hi", referenced="r",
                             usage=Usage(input_tokens=400), model="gemini-test-model")

@@ -30,6 +30,11 @@ except ImportError:               # pragma: no cover — exercised on POSIX
 
 from . import config as cfg_mod
 from . import platforms
+# One literal, imported rather than retyped: the shutdown line below is the ONLY channel the
+# bug report has for permanently dropped rows (the tally lives on the store, which never
+# reaches RunStatus), so the printer and the reader must not be able to drift apart. bugreport
+# is deliberately pure stdlib, so importing it here costs nothing and cannot cycle back.
+from .bugreport import DROPPED_ROWS_NOTICE
 from .costing import CostTracker
 from .drivers import make_driver
 from .opener.opener import GeminiOpener
@@ -1041,10 +1046,28 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
             raise save_err
         saved = getattr(store, "saved_summary", lambda: "")()
         detail = f" [{saved}]" if saved else ""
+        # A successful flush proves the BUFFER is empty, not that every row reached the system
+        # of record: a row BigQuery permanently rejects (bad UTF-8 in raw_opener, an
+        # over-length field) is dropped after _MAX_INSERT_ATTEMPTS so the rest of the buffer
+        # can drain, opener/service.py catches the RuntimeError that carries that news and only
+        # warns, and by the time this shutdown flushes there is nothing left to fail. So ask
+        # the store what it LOST before claiming everything saved -- see
+        # ranker/__init__.py's Store.dropped_rows.
+        dropped = _dropped_row_tally(store)
         errored_apps = {
             app for app, terminal_state in terminal_states.items()
             if terminal_state == "error"
         }
+        # Two independent facts, not one slot to fight over: wedged/errored describe what the
+        # run was DOING when it ended and stay the headline, while permanently dropped rows
+        # describe what the run LOST and are reported additively below, on every terminal path.
+        # The loss used to be the third arm of this same if/elif chain, so a run that BOTH
+        # errored and dropped rows took the errored arm and never printed the loss at all --
+        # and this printed line is the tally's ONLY channel (bugreport._dropped_row_tallies
+        # reads it back out of the log ring; the tally lives on the store, which never reaches
+        # RunStatus). The data loss therefore vanished from the report on exactly the runs most
+        # likely to have caused it, which rendered as "COMPLETED WITH ERRORS" carrying no
+        # data-loss limitation whatsoever.
         if wedged:
             names = ", ".join(w.app for w in wedged)
             # The wait actually granted, not a hardcoded "30s": that flat number predates
@@ -1064,8 +1087,53 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
                 f"worker(s) ended with errors ({names}) — this does not prove every landed "
                 f"action produced its complete archive, decision, and label records; {tail}"
             )
-        else:
+        elif not dropped:
+            # The ✅ is the one headline a permanent loss flatly contradicts, so it is the only
+            # one the notice below REPLACES rather than accompanies.
             print(f"Run {run_id}: ✅ all data saved to {cfg.storage.backend}{detail}; {tail}")
+        if dropped:
+            # Last, so the permanent fact is the operator's final word, and self-contained
+            # (own `tail`, own "Run {run_id}: " prefix) because the report reads single lines
+            # out of a bounded ring and bugreport's matcher requires that prefix before it
+            # counts a tally. Names the tables and says the data is gone: alone among the three
+            # outcomes here, no retry recovers this one.
+            names = ", ".join(f"{table}={count}" for table, count in sorted(dropped.items()))
+            total = sum(dropped.values())
+            print(f"Run {run_id}: saved to {cfg.storage.backend}{detail}, but {total} "
+                  f"{DROPPED_ROWS_NOTICE} {cfg.storage.backend} ({names}) — NOT an "
+                  f"unqualified success, that data is LOST and no retry will recover it; the "
+                  f"flush above succeeded only because a permanently rejected row is dropped "
+                  f"so the rest of the buffer can drain; {tail}")
+
+
+def _dropped_row_tally(store) -> dict[str, int]:
+    """Rows this run's store permanently gave up on, per table -- `{}` when nothing was lost.
+
+    Reads the machine-readable tally (ranker/__init__.py's Store.dropped_rows) rather than
+    parsing `saved_summary`'s prose, which is why that method exists. Both shipped backends
+    implement it -- SQLiteStore answers `{}` as a fact, having no buffer a row can be lost from
+    -- so the getattr default here is for TEST DOUBLES and nothing else.
+
+    Defensive about the answer's shape rather than trusting it: this runs inside the shutdown
+    path, after the final flush, where an exception raised over a diagnostic tally would turn a
+    successful save into a crash. A store that cannot answer is reported as "no drops", which
+    is the pre-existing behaviour for every store that never had this method; what it must
+    never do is invent a loss that did not happen.
+    """
+    try:
+        tally = getattr(store, "dropped_rows", dict)()
+    except Exception as exc:  # noqa: BLE001 — a diagnostic tally must not break shutdown
+        print(f"Supervisor: warning reading the store's dropped-row tally: "
+              f"{type(exc).__name__}: {exc}")
+        return {}
+    if not isinstance(tally, dict):
+        print(f"Supervisor: warning: the store's dropped-row tally is not a mapping "
+              f"({type(tally).__name__}); treating it as no dropped rows.")
+        return {}
+    return {
+        str(table): int(count) for table, count in tally.items()
+        if isinstance(count, int) and not isinstance(count, bool) and count > 0
+    }
 
 
 def _android_adb_preflight(app: str, cfg) -> None:

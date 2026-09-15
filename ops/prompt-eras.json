@@ -15,8 +15,8 @@
     "operation_love/opener/opener.py"
   ],
   "generated_from": {
-    "total_revisions": 50,
-    "evaluated_revisions": 26,
+    "total_revisions": 51,
+    "evaluated_revisions": 27,
     "unevaluable_revisions": 24
   },
   "eras": [
@@ -514,12 +514,13 @@
       "first_commit": "9abf49bdb5f5a6b7a4b2e597b17b6232ddb77866",
       "first_date": "2026-09-14T17:23:04-04:00",
       "first_subject": "Teach the opener who already knows, and renew Hinge targeting for 10.3.0",
-      "last_commit": "9abf49bdb5f5a6b7a4b2e597b17b6232ddb77866",
-      "last_date": "2026-09-14T17:23:04-04:00",
-      "last_subject": "Teach the opener who already knows, and renew Hinge targeting for 10.3.0",
-      "commit_count": 1,
+      "last_commit": "64e5d6b65e47beac9b0f5b1b133b6f85ca1cd60b",
+      "last_date": "2026-09-15T15:06:45-04:00",
+      "last_subject": "Stop the durable records from asserting what they never knew",
+      "commit_count": 2,
       "commits": [
-        "9abf49bdb5f5a6b7a4b2e597b17b6232ddb77866"
+        "9abf49bdb5f5a6b7a4b2e597b17b6232ddb77866",
+        "64e5d6b65e47beac9b0f5b1b133b6f85ca1cd60b"
       ],
       "rules": [
         "SHARED CONTEXT RULE",

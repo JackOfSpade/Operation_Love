@@ -1,5 +1,14 @@
 name: Auto-merge branches to main
 
+# DORMANT as of 2026-09-14, and kept deliberately rather than deleted.
+# GitHub Actions is DISABLED for this repository, and the owner's decision is to
+# use act rather than GitHub Actions. This workflow triggers on `workflow_run`,
+# which act does not and cannot raise, so it runs nowhere today. It is retained
+# because it is the setup record for the CI-gated merge policy and becomes live
+# again the moment Actions is re-enabled -- deleting it would throw away the
+# configuration knowledge described below. Anything that must be enforced NOW
+# has to run inside .githooks/pre-push (act) or inside `pytest tests/`.
+
 # Merges every branch in this repo into main automatically — but ONLY once that
 # branch's tip commit has a green run of the workflow named below (default: "CI").
 # A red/missing build never lands on main.

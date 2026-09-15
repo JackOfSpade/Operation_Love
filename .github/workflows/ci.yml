@@ -1,9 +1,22 @@
 name: CI
 
 # Runs this repo's test suite on every push to every branch (and on PRs).
+#
+# READ THIS FIRST (2026-09-14): GitHub Actions is DISABLED for this repository
+# (`gh api repos/.../actions/permissions` -> {"enabled": false}), and the owner's
+# decision is to use act rather than GitHub Actions. Nothing in this file has run
+# on GitHub since 2026-08-11. What DOES run it is .githooks/pre-push
+# (core.hooksPath=.githooks), which executes every push-eligible job through act
+# before any push to a protected branch. So this file is not a description of a
+# remote service; it IS the local gate's program. A step that cannot run under
+# act protects nothing.
+#
 # The auto-merge workflow (auto-merge-to-main.yml) gates on THIS workflow's
 # completion: a branch merges to main only if the CI run for its exact tip
-# commit concluded "success". Both tests and lint are required quality gates.
+# commit concluded "success". That mechanism is GitHub-only and therefore
+# dormant too; it is kept, not deleted, because it is the setup record and
+# becomes live again the moment Actions is re-enabled. Both tests and lint are
+# required quality gates.
 #
 # push: has no branches: filter (was ['claude/**', main]) — CI must run on every
 # branch, not just claude/*, or the auto-merge CI-gate lookup finds no run for a
@@ -143,48 +156,53 @@ jobs:
       # of the registry landing. Failing here is the whole point: a measurement
       # instrument that has quietly gone stale is worse than none.
       #
-      # SKIPPED UNDER act, and the 2026-09-14 investigation corrected two things
-      # this comment used to claim.
+      # RUNS UNDER act TOO, as of 2026-09-14. GitHub Actions is DISABLED for this
+      # repository, so .githooks/pre-push IS the CI rather than a mirror of it,
+      # and this step used to carry `if: env.ACT != 'true'` -- i.e. it was
+      # skipped in the only place CI actually runs, which made it a hole rather
+      # than a fallback.
       #
-      # (1) WHY it fails there. Not "the workspace has no .git" -- .git IS
-      # present. The active hook is the TRACKED .githooks/pre-push
-      # (core.hooksPath=.githooks; the copy under .git/hooks is dormant), and it
-      # builds its temp checkout with
-      # `git worktree add --detach`, so .git is a 75-byte POINTER FILE reading
-      # `gitdir: <host-abs-path>/.git/worktrees/worktree`. act bind-mounts only
-      # the worktree directory, so that target (and the main object database it
-      # needs via commondir) is unreachable in the container and git reports
-      # "not a git repository: (null)". Verified in-container.
+      # It was skipped because act could not reach git history: the hook stages
+      # each push in a detached worktree whose .git is a POINTER FILE naming an
+      # absolute host path outside act's bind mount, so git reported
+      # "not a git repository: (null)". Note the file IS present -- "does .git
+      # exist" was the wrong diagnostic and cost a day. The hook now mounts the
+      # real git dir read-only at that same absolute path (see GIT_MOUNT there),
+      # so the reconstruction works here exactly as it does on a GitHub runner.
       #
-      # (2) It CAN be made to work, two ways, both verified end to end against
-      # this job: mount the real .git at its own absolute path
-      # (ACT_ARGS='--container-options "-v \"$REPO_ROOT/.git:$REPO_ROOT/.git:ro\""'
-      # -- the inner quotes are load-bearing, act splits this option on
-      # whitespace and this repo's path contains a space), or change
-      # .githooks/pre-push to `git clone --local` instead of
-      # `git worktree add`. NEITHER IS COMMITTED, deliberately: the mount needs
-      # a machine-specific absolute path that cannot live in a tracked file, and
-      # `git clone --local` only stays cheap while $TMPDIR shares a filesystem
-      # with the repo -- across filesystems it silently degrades to copying a
-      # multi-GB object store on every protected push. The pytest guards below
-      # buy the same protection with neither risk.
+      # The preflight below exists so a MISSING mount fails loudly and says what
+      # to do, instead of failing with git's own opaque message or, worse,
+      # tempting someone to restore the skip. To actually reach it, run act from
+      # a DETACHED WORKTREE, which is what the hook stages:
+      #   git worktree add --detach /tmp/wt HEAD && cd /tmp/wt && act push --pull=false
+      # Running act by hand from the repository ROOT does NOT reach it: .actrc
+      # passes --bind, and a root workspace already contains the real .git, so
+      # history resolves without any mount at all.
       #
-      # The step therefore stays skipped under act, and that is now SAFE rather
-      # than a hole: tests/test_backfill_prompt_eras.py carries
-      # test_current_prompt_digest_is_recorded_for_this_checkout, a git-free
-      # check that DOES run in act's pytest job and catches the real regression
-      # (a committed prompt digest left sitting in the provisional working_tree
-      # slot). Its stronger sibling,
-      # test_shipped_prompt_era_registry_is_in_sync_with_this_repos_git_history,
-      # runs the full reconstruction wherever git is available and skips where
-      # it is not. This step remains the belt-and-braces copy for GitHub, which
-      # clones with fetch-depth: 0 -- a shallow clone would silently
-      # under-report history rather than fail, which is why that matters.
+      # Why it must be verified at all: ops/prompt-eras.json is the map from an
+      # opaque prompt_sha256 to "which rules were on the wire then", generated
+      # FROM git history, so a commit that edits a prompt surface without
+      # regenerating it leaves every consumer silently mislabelling that era as
+      # the uncommitted working tree. That has now happened twice. A measurement
+      # instrument that has quietly gone stale is worse than none, because it is
+      # trusted.
       #
-      # NOTE 2026-09-14: GitHub Actions is currently DISABLED for this
-      # repository, so nothing in this file has run remotely since 2026-08-11.
-      # Until it is re-enabled, the local act pre-push gate plus the pytest
-      # guards named above are the only enforcement that exists.
+      # This is the belt; the braces are in tests/test_backfill_prompt_eras.py,
+      # whose git-free guard catches the same regression even where history is
+      # unreachable. Note GitHub's checkout uses fetch-depth: 0 above because a
+      # shallow clone makes this reconstruction under-report SILENTLY rather
+      # than fail.
       - name: Prompt-era registry is in sync with git history
-        if: ${{ env.ACT != 'true' }}
-        run: python tools/backfill_prompt_eras.py --check
+        run: |
+          set -euo pipefail
+          if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+            echo "::error::Cannot verify ops/prompt-eras.json: git history is unreachable here." >&2
+            echo "Normally you get here by running act by hand from a detached worktree." >&2
+            echo "Pushing (git push) goes through .githooks/pre-push, which mounts the git dir for you." >&2
+            echo "To do it by hand, mount the PHYSICAL path -- a RELATIVE -v source is a docker named" >&2
+            echo "volume and mounts nothing at all, silently, which looks identical to this failure:" >&2
+            echo '  G=$(cd "$(git rev-parse --git-common-dir)" && pwd -P)' >&2
+            echo '  act push --container-options "-v \"$G:$G:ro\""' >&2
+            exit 1
+          fi
+          python tools/backfill_prompt_eras.py --check

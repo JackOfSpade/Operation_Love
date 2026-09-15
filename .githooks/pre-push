@@ -12,34 +12,31 @@
 #   ACT_CACHE=0                disable successful-result reuse
 #   ACT_CACHE_TTL_SECONDS=N    reuse lifetime (default 24 hours)
 #
-# GIT HISTORY IS NOT AVAILABLE INSIDE act, and that is by construction rather
-# than by oversight. This hook stages each push in `git worktree add --detach`
-# below, so the workspace's .git is a pointer FILE reading
-# `gitdir: <host-abs-path>/.git/worktrees/...`. act bind-mounts only the
-# worktree directory, so that target and the object database it needs are
-# unreachable in the container and git reports "not a git repository: (null)".
-# Anything in CI that walks history is therefore skipped under act -- today
-# that is exactly one step, ci.yml's "Prompt-era registry is in sync with git
-# history", whose reasoning is written out there in full.
+# GIT HISTORY IS MOUNTED INTO act ON PURPOSE. This hook stages each push in a
+# `git worktree add --detach` below, so the workspace's .git is a pointer FILE
+# reading `gitdir: <real-git-dir>/worktrees/...`. act bind-mounts only the
+# worktree directory, so without help that target -- and the object database it
+# reaches through commondir -- is unreachable, git reports
+# "not a git repository: (null)", and anything in CI that walks history is
+# silently useless. That mattered little while act only mirrored GitHub CI. It
+# matters completely now: GitHub Actions is disabled for this repository, so
+# THIS hook is the CI, and a check that cannot run here does not run anywhere.
 #
-# To run that step for real on demand, mount the real .git at its own absolute
-# path (verified 2026-09-14; the INNER quotes are load-bearing, because act
-# splits --container-options on whitespace and this repo's path contains a
-# space), and drop the step's `if: env.ACT != 'true'` guard for the run:
+# So GIT_MOUNT below mounts the real git dir read-only at its own absolute path
+# (the path the pointer file names, resolved at runtime via --git-common-dir --
+# nothing machine-specific is baked into this tracked file). The INNER quotes in
+# GIT_MOUNT are load-bearing: act splits --container-options on whitespace, and
+# this repository's path contains a space, so an unquoted -v silently drops the
+# mount rather than failing -- `act --verbose` shows `Binds:[]` when that
+# happens. Read-only is deliberate: a container must never be able to write to
+# the real object store, and every history walk CI does is plumbing that reads.
 #
-#   ACT_ARGS='--container-options "-v \"'"$PWD"'/.git:'"$PWD"'/.git:ro\""' git push
+# The rejected alternative, recorded so it is not rediscovered: swapping
+# `git worktree add` for `git clone --local` also works and needs no act flags,
+# but only stays cheap while $TMPDIR shares a filesystem with the repository --
+# across filesystems git silently falls back to COPYING a multi-GB object store
+# on every protected push.
 #
-# This is deliberately NOT wired in by default: the mount needs a
-# machine-specific absolute path that cannot live in a tracked file. The
-# alternative -- swapping `git worktree add` for `git clone --local` -- was also
-# verified to work and needs no act flags, but only stays cheap while $TMPDIR
-# shares a filesystem with the repo; across filesystems git silently falls back
-# to COPYING a multi-GB object store on every protected push.
-#
-# None of this leaves a hole: tests/test_backfill_prompt_eras.py carries a
-# git-free guard (test_current_prompt_digest_is_recorded_for_this_checkout)
-# that runs inside act's own pytest job and catches the regression that matters.
-
 set -u
 
 say() { printf '%s\n' "$*" >&2; }
@@ -105,6 +102,16 @@ case "$ACT_TIMEOUT" in
 	;;
 esac
 
+case " ${ACT_ARGS:-} " in
+*" --container-options"*)
+	say "pre-push: BLOCKED - ACT_ARGS sets --container-options. act takes that flag last-wins, so"
+	say "it would REPLACE the read-only git-dir mount this gate depends on, and the prompt-era"
+	say "check would fail with a message about git rather than about your flag. Add what you need"
+	say "to GIT_MOUNT in .githooks/pre-push instead."
+	exit 2
+	;;
+esac
+
 run_act() {
 	if [ "$ACT_TIMEOUT" = 0 ]; then "$@"
 	elif command -v timeout >/dev/null 2>&1; then timeout --preserve-status "$ACT_TIMEOUT" "$@"
@@ -119,6 +126,21 @@ case "$JOBS" in *[!0-9]* | "" | 0) JOBS=1 ;; esac
 COMMON_DIR=$(git -C "$ROOT" rev-parse --git-common-dir 2>/dev/null) || COMMON_DIR=""
 case "$COMMON_DIR" in /* | "") ;; *) COMMON_DIR="$ROOT/$COMMON_DIR" ;; esac
 CACHE_DIR="$COMMON_DIR/act-ci-cache/v1"
+
+# See the header. Empty when the real git dir cannot be resolved, in which case
+# act runs without it and the workflow's own preflight reports the miss loudly
+# rather than skipping the check.
+# Resolved with `pwd -P` rather than reused from COMMON_DIR: `git rev-parse --git-common-dir`
+# prints the SYMLINK spelling when .git is a symlink, while `git worktree add` writes a pointer
+# file naming the RESOLVED target. Mounting the symlink spelling puts the objects somewhere
+# nothing dereferences -- docker follows the link, so the bytes are there, at the wrong path --
+# and git in the container still reports "not a git repository". `[ -d ]` cannot catch this
+# because it follows symlinks too. CACHE_DIR deliberately keeps the unresolved spelling.
+MOUNT_DIR=$(cd "$COMMON_DIR" 2>/dev/null && pwd -P) || MOUNT_DIR=""
+GIT_MOUNT=""
+if [ -n "$MOUNT_DIR" ]; then
+	GIT_MOUNT="-v \"$MOUNT_DIR:$MOUNT_DIR:ro\""
+fi
 TTL=${ACT_CACHE_TTL_SECONDS:-86400}
 case "$TTL" in *[!0-9]* | "") TTL=86400 ;; esac
 
@@ -133,7 +155,7 @@ secret_digest=none
 if [ -f "$ROOT/.secrets" ]; then
 	secret_digest=$(digest <"$ROOT/.secrets") || secret_digest=unavailable
 fi
-CONTEXT=$(printf '%s\n' "hook=2" "jobs=all-push" "act=$(act --version 2>/dev/null)" \
+CONTEXT=$(printf '%s\n' "hook=3" "jobs=all-push" "act=$(act --version 2>/dev/null)" \
 	"arch=$ARCH" "args=${ACT_ARGS:-}" "secrets=$secret_digest" |
 	digest) || CONTEXT=""
 
@@ -199,14 +221,19 @@ while read -r branch sha before; do
 	say "pre-push: validating all push-triggered jobs for $branch at $sha"
 	cd "$ACTIVE" || { status=1; break; }
 	set -f
-	if [ -f "$ROOT/.secrets" ]; then
-		# shellcheck disable=SC2086
-		run_act act push --eventpath "$event" --secret-file "$ROOT/.secrets" $ARCH \
-			--concurrent-jobs "$JOBS" ${ACT_ARGS:-} </dev/null
-	else
-		# shellcheck disable=SC2086
-		run_act act push --eventpath "$event" $ARCH --concurrent-jobs "$JOBS" ${ACT_ARGS:-} </dev/null
-	fi
+	# Built positionally rather than as one long command line so that
+	# --container-options reaches act as a SINGLE argument with its inner quotes
+	# intact; word-splitting it is exactly the failure that silently drops the
+	# mount. $ARCH and $ACT_ARGS stay deliberately unquoted (each may be empty or
+	# several words) and `set -f` above makes that safe from globbing.
+	set -- act push --eventpath "$event"
+	[ -f "$ROOT/.secrets" ] && set -- "$@" --secret-file "$ROOT/.secrets"
+	# shellcheck disable=SC2086
+	set -- "$@" $ARCH --concurrent-jobs "$JOBS"
+	[ -n "$GIT_MOUNT" ] && set -- "$@" --container-options "$GIT_MOUNT"
+	# shellcheck disable=SC2086
+	set -- "$@" ${ACT_ARGS:-}
+	run_act "$@" </dev/null
 	status=$?
 	set +f
 	cd "$ROOT" || status=1

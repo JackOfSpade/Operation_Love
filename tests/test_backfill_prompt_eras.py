@@ -18,10 +18,12 @@ Two kinds of test live here, deliberately kept apart:
      points --check at the REAL ops/prompt-eras.json. Every other test here proves the machinery
      works on a synthetic repo; none of them looked at the artifact this repo actually ships,
      which is how that artifact went stale twice without a red test.
-     test_current_prompt_digest_is_recorded_for_this_checkout is its GIT-FREE companion: the
-     history walk is impossible inside act (no usable .git), so that stronger test skips exactly
-     where the pre-push gate runs. This one needs no history at all and therefore does run
-     there.
+     test_current_prompt_digest_is_recorded_for_this_checkout is its GIT-FREE companion, for the
+     environments where the history walk is impossible: a source export, a shallow clone, or a
+     bare `pytest` run outside a checkout. NOTE, corrected 2026-09-14: act used to be that
+     environment, and is no longer -- .githooks/pre-push now mounts the real git dir into the
+     container, so BOTH tests run there. The companion is kept because those other environments
+     are real and because a guard that needs history is worth having a git-free floor under.
 
 No network, no BigQuery, no imported opener.py module anywhere in these tests except the two
 places that explicitly need the real, live prompt_stamp() to compare against.
@@ -909,11 +911,14 @@ def test_shipped_prompt_era_registry_is_in_sync_with_this_repos_git_history(caps
     believed it for most of an investigation. A mislabelled measurement instrument is worse than
     no instrument, because it is trusted.
 
-    WHY THE GATE THAT WAS SUPPOSED TO CATCH THIS DID NOT. The check runs in CI
-    (.github/workflows/ci.yml, "Prompt-era registry is in sync with git history") but is skipped
-    under `act`, which is what the local pre-push hook runs, because act's workspace has no
-    usable .git. So the only enforcement lived on a gate that does not run before a push. This
-    test puts it somewhere that runs on every ordinary `pytest tests/`.
+    WHY THE GATE THAT WAS SUPPOSED TO CATCH THIS DID NOT, and what changed. The check runs in
+    .github/workflows/ci.yml ("Prompt-era registry is in sync with git history"), which used to
+    be skipped under `act` -- the thing .githooks/pre-push actually runs -- because the staged
+    worktree's .git was a pointer to a path outside the container. Enforcement therefore lived
+    entirely on a gate that never ran before a push, and (Actions being disabled) never ran after
+    one either. Since 2026-09-14 the hook mounts the real git dir, so that step does run. This
+    test is the independent copy: it runs on every ordinary `pytest tests/` as well, so the
+    protection does not depend on one workflow step staying correctly configured.
 
     It calls tools/backfill_prompt_eras.py's own main(--check) rather than reimplementing the
     comparison, so it inherits that path's real semantics -- including the deliberate tolerance
@@ -982,10 +987,12 @@ def test_current_prompt_digest_is_recorded_for_this_checkout():
     """The prompt on disk right now must be FINDABLE in ops/prompt-eras.json.
 
     THE GIT-FREE COMPANION to test_shipped_prompt_era_registry_is_in_sync_with_this_repos_git_history.
-    That test is stronger but needs full history, so it skips inside act -- which is precisely
-    where the pre-push gate runs, leaving the strongest check absent from the only gate that runs
-    before a push. This one reconstructs nothing and therefore runs everywhere: it asks only
-    whether the digest of the files on disk is recorded at all.
+    That test is stronger but needs full history, so it skips wherever history is unreachable: a
+    source export, a shallow clone, a bare `pytest` outside a checkout. CORRECTED 2026-09-14: act
+    used to be on that list and no longer is, because .githooks/pre-push mounts the real git dir
+    into the container. This one reconstructs nothing and therefore runs everywhere regardless:
+    it asks only whether the digest of the files on disk is recorded at all, which keeps a floor
+    under the stronger test rather than depending on the mount staying wired up.
 
     The two branches are not the same assertion at different strengths, they are different
     claims. In a CLEAN checkout the files on disk ARE committed content, so their digest must

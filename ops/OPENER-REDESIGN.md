@@ -6587,3 +6587,30 @@ good faith that it had already fixed this. THE STANDING GAP this exposed, worth 
 someday: no test in this repository has ever inserted a real row into real BigQuery, so every
 store test runs against a fake that accepts anything -- which is why a wire-level failure on one
 table could persist for a month with a fully green suite.
+
+
+#### Addendum -- 2026-09-14 (d): correcting this file on where the prompt-era gate runs
+
+Addendum (a) above says, of the stale-registry hazard: "that gate does not run under the local
+`act` pre-push mirror, which has no `.git`". Both halves are now wrong, and per this file's
+convention the original line stays as written.
+
+WRONG ABOUT THE MECHANISM, even at the time. The workspace is not missing `.git`. The hook stages
+each push with `git worktree add --detach`, so `.git` is a 75-byte POINTER FILE naming an absolute
+host path that sits outside act's bind mount. The file is present and broken, not absent. That
+distinction cost real time, because "does `.git` exist" is the natural check and it answers yes.
+
+WRONG ABOUT THE STATE, as of today. `.githooks/pre-push` now mounts the real git dir read-only at
+its own physical path, so the gate runs under act. Verified as a paired control: with the mount
+the step prints `ops/prompt-eras.json is up to date` and the job succeeds; without it the step
+fails with an explicit error and the job fails. Two independent pytest guards in
+`tests/test_backfill_prompt_eras.py` back it up, one of them git-free precisely so it keeps
+working where a mount does not exist.
+
+AND THE WORD "mirror" WAS THE DEEPER ERROR. act was never a mirror of the real gate here.
+**GitHub Actions is disabled for this repository** and has been since 2026-08-11, so
+`.github/workflows/ci.yml` has not executed remotely once in that time. The owner's decision, made
+2026-09-14, is to use act rather than GitHub Actions. That makes the pre-push hook the CI outright,
+and it reframes every "CI will catch it" statement in this document: a check that cannot run under
+act does not run anywhere. If you are reading an older addendum that leans on GitHub CI as a
+backstop, it is describing a backstop that was already gone.

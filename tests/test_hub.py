@@ -2739,8 +2739,8 @@ def test_hubstate_apps_none_validates_the_effective_file_config(tmp_path):
         # section and turn this release-gate test into an unrelated storage-config failure.
         r"(?m)^    observe_release_evidence:\n(?:^      [^\n]*\n)+", "",
         Path("config.yaml").read_text(), count=1)
-    # The shipped file intentionally starts in Training while its 10.3.0 production-observe
-    # release is pending (config.yaml's targeting_calibration pins hinge_version_name 10.3.0;
+    # The shipped file intentionally starts in Training while its 10.4.0 production release
+    # is pending (config.yaml's targeting_calibration pins hinge_version_name 10.4.0;
     # this comment said 10.1.0 long after that moved on). Exercise this test's AUTO release gate
     # explicitly.
     cfg_text = cfg_text.replace("mode: training", "mode: auto", 1)

@@ -878,6 +878,60 @@ def test_training_item_index_refusal_closes_the_live_phone_session():
     assert bridge.snapshot(run_id="training-run", app="hinge")["checkpoints"] == []
 
 
+def test_training_stops_for_no_opener_consumer_unlike_auto():
+    """Training hard-stops on ``items_unavailable_kind == "no_opener_consumer"`` -- the same
+    generic ``items_unavailable`` stop the untyped-kind case above exercises -- even though
+    AUTO's own items_unavailable check is guarded by ``accepts_opener and not disabled`` and
+    never even reaches this kind while openers are off (see worker.py's AUTO loop, and the
+    comment above this Training branch at worker.py naming both consumers of this kind).
+
+    This is the third consumer of the ``no_opener_consumer`` string, alongside hinge.py (which
+    stamps it) and bugreport.py's completion-verdict layer (which reads it to decline degrading
+    the run's verdict for AUTO's configured-off bare-like). Before this test, worker.py's own
+    reading of the kind for Training was implicit and unpinned: a future change that added a
+    blanket ``no_opener_consumer`` skip to Training too -- copying AUTO's exemption without
+    noticing Training has no bare-like fallback to fall back to -- would leave Training silently
+    producing no opener and no stop, with nothing catching the regression.
+
+    The decision (see worker.py's dated comment on this branch): with no opener consumer,
+    Training -- whose whole purpose is preparing a typed opener for human review -- has nothing
+    to prepare, so it stops, and the stop is reported through stop_kind="opener" rather than
+    stop_kind="targeting_calibration" (that kind is reserved for a live calibration blocker).
+    """
+    refusal = "opener.enabled is false, so no numbered item list was requested"
+
+    class _NoOpenerConsumerDriver(_TrainingDriver):
+        def next_profile(self):
+            if self._profile_returned:
+                return None
+            self._profile_returned = True
+            return Profile(photos=[_FRAME], name="Ari", items_unavailable=refusal,
+                           items_unavailable_kind="no_opener_consumer")
+
+    events = []
+    driver = _NoOpenerConsumerDriver(events)
+    decider = _Decider(events)
+    opener = _Opener(events)
+    store = _Store(events)
+    status = RunStatus("training-run", ["hinge"], min_labels=1, mode="training")
+    stop = threading.Event()
+    bridge = _RecordingBridge(events)
+    worker = Worker("hinge", driver, decider, opener, store, "training-run", _Pacing(), stop,
+                    mode="training", training_action_bridge=bridge, status=status)
+
+    worker.run()
+
+    app = status.app_view("hinge")["app"]
+    assert app["state"] == "stopped"
+    assert app["stop_kind"] == "opener"          # NOT "targeting_calibration"
+    assert refusal in app["stop_reason"]
+    assert stop.is_set()
+    assert driver.opened and driver.closed
+    assert opener.maybe_calls == []
+    assert driver.like_calls == []
+    assert bridge.snapshot(run_id="training-run", app="hinge")["checkpoints"] == []
+
+
 def test_stale_or_absent_training_action_never_creates_label():
     events = []
     stale_bridge = _ReplacingBridge(events)

@@ -73,16 +73,35 @@ class BumbleAndroidDriver(AndroidDriver):
         self._capture_scroll_ledger = []
         self._current_capture_truncated = False
         self._current_sigs = []
-        self._invalidate_item_index("bumble has no swipe-time opener items")
+        # `unavailable_kind="no_opener_consumer"` (2026-09-17): bugreport.py's completion verdict
+        # mutes an `items_unavailable` capture ONLY by this kind now (the config-read half of
+        # that skip was removed as an age-marker that muted genuine refusals -- see
+        # bugreport.py's `_run_completion_assessment_md`). Bumble is the one driver where
+        # `accepts_opener=False` (BUMBLE_SPEC above) makes "no consumer for a numbered item
+        # list" a true CAPABILITY fact, not a policy guess, so it must stamp the same kind
+        # hinge.py's own `_no_opener_consumer_blocks_enumeration` half stamps, or every Bumble
+        # capture would degrade the verdict to WITH LIMITATIONS for behaving exactly as designed.
+        self._invalidate_item_index("bumble has no swipe-time opener items",
+                                    unavailable_kind="no_opener_consumer")
         if self._dbg is not None:
             self._dbg.action(
                 "capture", before=frame, photos=1, capture_truncated=False,
                 items=0, item_context=0, item_translation=[], item_manifest=[],
-                items_unavailable="bumble has no swipe-time opener items", ranker_photos=None,
+                items_unavailable="bumble has no swipe-time opener items",
+                items_unavailable_kind="no_opener_consumer", ranker_photos=None,
             )
         return Profile(
             photos=[frame], prompts=[],
             meta={"app": self.spec.app, "capture_frames": 1, "read_scrolls": 0,
                   "read_dwell_s_total": 0.0, "capture_truncated": False},
             items_unavailable="bumble has no swipe-time opener items",
+            # Mirrors the debug-log action's own kind a few lines up (and hinge.py's own
+            # capture return, which always sets the two fields together -- see
+            # Profile.items_unavailable_kind's docstring). worker.py's live consumers of this
+            # field both happen not to depend on it for Bumble today (Training has no special
+            # case for "no_opener_consumer"; AUTO's own check is gated on `accepts_opener`,
+            # which BUMBLE_SPEC sets False), but the Profile object is the one contract every
+            # future consumer reads, not just today's two, so it must not silently diverge from
+            # what the same capture already told the debug log.
+            items_unavailable_kind="no_opener_consumer",
         )

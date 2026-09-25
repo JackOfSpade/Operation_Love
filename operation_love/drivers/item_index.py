@@ -175,7 +175,13 @@ WHAT THIS MODULE DOES NOT DECIDE, AND WHICH LAYER HAS TO
     Within that window only, a raw measured bridge may project by at most the existing fold
     tolerance onto one unique exact top/bottom/heart delta with an exact NCC witness; this treats
     stable samples inside one confirmed live-video span as corroboration rather than incorrectly
-    splitting the span into separate repair runs.
+    splitting the span into separate repair runs.  Positioned mute-control evidence has one
+    additional, narrower exit case: when the tracked control is present before a pair but its
+    entire NCC bank is weak, the pair may be proposed only if the control projects above the next
+    content band and one unique top-clipped destination moves the same-x heart, observed lower
+    card edge, and both boundaries of the lower canonical gutter by one exact in-range delta.
+    The next frame must contain no mute-control observation, and the complete page rebuild is
+    still mandatory.
     Every other animation shape remains a broken-chain refusal, never a guessed answer.
 """
 from __future__ import annotations
@@ -188,7 +194,7 @@ from itertools import pairwise
 
 from .frameshift import (
     _AGREEMENT_TOLERANCE_PX, SHIFT_MEASURED, SHIFT_NO_CONSENSUS, SHIFT_NO_EVIDENCE,
-    STRIP_MATCHED, ShiftEstimate, estimate_shift,
+    STRIP_MATCHED, STRIP_WEAK, ShiftEstimate, estimate_shift,
 )
 from .item_identity import ProfileIdentity, capture_profile_identity
 # `_GUTTER_PX` / `_GUTTER_TOLERANCE_PX` are imported rather than re-declared, on frameshift.py's
@@ -196,8 +202,8 @@ from .item_identity import ProfileIdentity, capture_profile_identity
 # this module folds, and a second copy would be free to drift away from it.
 from .segment import (
     _GUTTER_PX, _GUTTER_TOLERANCE_PX, _HEART_SEPARATED_NEAR_GUTTER_PX,
-    BLOCK_UNANCHORED, EDGE_CARD_CORNER, EDGE_SCROLL_TOP_MEDIA, EDGE_UNANCHORED_ISLAND,
-    RUN_TOO_LONG, FrameSegmentation, segment_frame)
+    BLOCK_UNANCHORED, EDGE_BAND_EDGE, EDGE_CARD_CORNER, EDGE_SCROLL_TOP_MEDIA,
+    EDGE_UNANCHORED_ISLAND, RUN_TOO_LONG, Block, FrameSegmentation, segment_frame)
 # `_MAX_STEP_PX` is kept as the DEFAULT for every function below that takes a `max_step_px`
 # parameter -- almost every direct unit test in tests/test_item_index.py calls these functions
 # without threading one, and 363 remains a safe (if no longer profile-tuned) bound for a bare
@@ -420,7 +426,7 @@ _END_TAIL_GAP_PX = max(_GUTTER_PX) + _GUTTER_TOLERANCE_PX
 # indexer decision path and splitter.  Those values distinguish "the current source replays
 # cleanly" from "the long-lived
 # worker was still executing an older indexer" without trusting the working tree alone.
-ITEM_INDEX_ALGORITHM_ID = "bounded-card-split-v17"
+ITEM_INDEX_ALGORITHM_ID = "bounded-card-split-v18"
 
 
 # =====================================================================================
@@ -575,7 +581,9 @@ class VideoMuteMarker:
     Unlike the legacy frame boolean, ``x/y`` identify the physical card carrying the app-owned
     control. The indexer never changes frameshift's raw vote. It normally uses this identity
     only to bound a video-card track; the narrow direct-marker bridge additionally derives one
-    auditable effective distance when two contained controls and another card-local anchor agree.
+    auditable effective distance when two contained controls and another card-local anchor agree,
+    while the still narrower same-pair exit bridge requires an all-weak bank plus exact heart,
+    lower-edge and lower-gutter motion as the last control leaves the analysed band.
     """
     frame_index: int
     x: int
@@ -587,7 +595,7 @@ class VideoMuteMarker:
 class ItemIndexRepair:
     """One accepted repair's audit record; it carries no pixels or inferred identity."""
     pair_index: int
-    path: str                    # ``v12_mute_card_track`` or ``legacy_layout_grammar``
+    path: str                    # versioned mute-card mechanism or ``legacy_layout_grammar``
     raw_status: str
     raw_delta_px: int | None
     effective_status: str
@@ -697,6 +705,17 @@ class ItemIndex:
     # with a gap in the evidence". Empty on any index nothing was excluded from, which includes
     # every `ItemIndex` this repo's other test suites hand-build without passing it.
     notes: tuple[str, ...] = ()
+    # (2026-09-17) The SUBSET of `notes` that came from `_screen_fixed_islands`, exposed
+    # separately and ADDITIVELY -- `notes` above is unchanged in content and order. A downstream
+    # reader (bugreport.py) needs to know WHICH notes are a screen-fixed verdict and which are one
+    # of the four other unrelated producers `_fold_page` also concatenates into `notes`
+    # (`_split_long_background_card_top_merges`, `_split_repeated_near_gutter_merges`, `_assemble`,
+    # plus repair notes prepended by `build_item_index` itself); `repairs` (this index's own
+    # `repair_provenance`) cannot answer that, because the two are orthogonal -- a record can
+    # carry a shift repair, a screen-fixed note, both, or neither, independently. Every string
+    # here is a member of `notes`, in the same order; never derive one list from the other by
+    # position, since `repair_notes` is prepended ahead of all of `fold_notes` at the call site.
+    screen_fixed_notes: tuple[str, ...] = ()
 
     @property
     def usable(self) -> bool:
@@ -1390,6 +1409,86 @@ def _direct_marker_bridge_delta(before_segmentation: FrameSegmentation,
     return delta
 
 
+def _lower_observed_gutter(segmentation: FrameSegmentation, upper: Block,
+                           ) -> tuple[int, int] | None:
+    """The canonical gutter immediately below ``upper``, when both sides were observed."""
+    low = min(_GUTTER_PX) - _GUTTER_TOLERANCE_PX
+    high = max(_GUTTER_PX) + _GUTTER_TOLERANCE_PX
+    matches = tuple(
+        (candidate.bottom.y, lower.top.y)
+        for candidate, lower in pairwise(segmentation.blocks)
+        if candidate is upper
+        and candidate.bottom.observed and lower.top.observed
+        and low <= lower.top.y - candidate.bottom.y <= high)
+    return matches[0] if len(matches) == 1 else None
+
+
+def _same_pair_marker_exit_bridge(
+        before_segmentation: FrameSegmentation, after_segmentation: FrameSegmentation,
+        raw: ShiftEstimate, *, before_marker: VideoMuteMarker | None,
+        after_marker_present: bool, max_step_px: int = _MAX_STEP_PX,
+        ) -> tuple[Block, Block, int] | None:
+    """Prove the all-weak pair on which one tracked mute control leaves the band.
+
+    This is deliberately distinct from ``_video_exit_bridge_delta``.  That helper reconnects
+    the *following* unmarked pair from three exact NCC strips after an exit was already proved.
+    Here the active card's last marker is still present in the before frame and the raw bank is
+    wholly silent because its video repainted.  The marker may disappear only when one unique
+    top-clipped destination puts its predicted row above the next content band, while an exact
+    same-x heart, the card's observed lower edge, and both sides of its lower canonical gutter
+    all translate by the same in-range delta.
+
+    Requiring the lower gutter matters: a Hinge heart normally sits at a repeated inset from a
+    card bottom, so heart plus bottom alone are not fully independent evidence.  The next card's
+    observed top makes this a moving page boundary rather than a same-height-card coincidence.
+    ``build_item_index`` still subjects the resulting proposal to the complete ordinary page
+    fold before it may become an effective shift.
+    """
+    if (raw.status != SHIFT_NO_EVIDENCE or raw.delta_px is not None
+            or raw.eligible != 0 or raw.agreeing != 0 or raw.dissenting != 0
+            or not raw.strips or any(strip.state != STRIP_WEAK for strip in raw.strips)
+            or before_marker is None or after_marker_present):
+        return None
+    before = _marker_block(before_segmentation, before_marker)
+    if before is None or not before.complete or before.heart is None:
+        return None
+    before_gutter = _lower_observed_gutter(before_segmentation, before)
+    if before_gutter is None:
+        return None
+
+    passing: list[tuple[Block, int]] = []
+    for after in after_segmentation.blocks:
+        # If the tracked control left through the top of the analysed band, the same card must
+        # be the top-clipped block in the next frame.  A complete/in-band block with no marker is
+        # a detector or identity break, not evidence of an exit.
+        if (after.y0 != after_segmentation.band[0] or after.top.observed
+                or after.top.kind != EDGE_BAND_EDGE or not after.bottom.observed
+                or after.heart is None):
+            continue
+        if abs(before.heart[0] - after.heart[0]) > 2:
+            continue
+        edge_delta = before.bottom.y - after.bottom.y
+        heart_delta = before.heart[1] - after.heart[1]
+        if edge_delta != heart_delta or not 0 < edge_delta <= max_step_px:
+            continue
+        if before_marker.y - edge_delta >= after_segmentation.band[0]:
+            continue
+        after_gutter = _lower_observed_gutter(after_segmentation, after)
+        if (after_gutter is None
+                or before_gutter[0] - after_gutter[0] != edge_delta
+                or before_gutter[1] - after_gutter[1] != edge_delta):
+            continue
+        passing.append((after, edge_delta))
+    if len(passing) != 1:
+        return None
+    after, delta = passing[0]
+    return before, after, delta
+
+
+_SAME_PAIR_MARKER_EXIT_REASON_PREFIX = "v18 mute-card same-pair exit bridge:"
+_SAME_PAIR_MARKER_EXIT_REPAIR_PATH = "v18_mute_card_same_pair_exit"
+
+
 def _video_exit_bridge_delta(raw: ShiftEstimate, *, max_step_px: int = _MAX_STEP_PX) -> int | None:
     """The one high-specificity strip value permitted immediately after a tracked exit.
 
@@ -1445,18 +1544,26 @@ def _video_track_deltas(segmentations: Sequence[FrameSegmentation],
                         max_step_px: int = _MAX_STEP_PX) -> dict[int, int]:
     """Return adjacent pair -> exact delta for uniquely tracked physical video cards.
 
-    A mute hit seeds a card, then a track may continue after that overlay scrolls out of frame
-    only through two exact card-local anchors. Between two visible, uniquely contained mute hits,
-    one raw refusal (``no_evidence`` or ``no_consensus``) may instead use their exact direct
-    displacement plus a second card-local anchor. Immediately after a proved exit, one unique
-    three-strip/heart boundary may
-    rejoin cards below the video. It cannot jump to the next card merely because a frame contains
-    *some* video. Ambiguity removes authority rather than choosing an identity.
+    A mute hit seeds a card. Between two visible, uniquely contained mute hits, one raw refusal
+    (``no_evidence`` or ``no_consensus``) may use their exact direct displacement plus a second
+    card-local anchor. If the last marked frame is followed by an all-weak repaint, the track may
+    cross that same-pair exit only through the exact heart/lower-edge/lower-gutter proof in
+    ``_same_pair_marker_exit_bridge``. Immediately after a proved exit, one unique
+    three-strip/heart boundary may rejoin cards below the video. It cannot jump to the next card
+    merely because a frame contains *some* video. Ambiguity removes authority rather than
+    choosing an identity.
 
     `max_step_px` -- see `_structural_landmarks`'s docstring; threaded to every nested delta
     proposal below.
     """
     by_frame = _unique_markers_by_frame(markers, len(segmentations))
+    # Unlike `_unique_markers_by_frame`, this set retains ambiguous/duplicate sightings.  A
+    # same-pair exit requires the after frame to contain NO marker observation at all; ambiguity
+    # or an uncontained hit is not absence and must not be converted into exit authority.
+    observed_marker_frames = {
+        marker.frame_index for marker in markers
+        if 0 <= marker.frame_index < len(segmentations)
+    }
 
     seeded: dict[int, object] = {}
     marker_blocks: dict[int, object] = {}
@@ -1488,23 +1595,30 @@ def _video_track_deltas(segmentations: Sequence[FrameSegmentation],
         direct_marker_delta = _direct_marker_bridge_delta(
             before_seg, after_seg, before_marker=before_marker, after_marker=after_marker,
             max_step_px=max_step_px)
-        exit_delta = (_video_exit_bridge_delta(raw, max_step_px=max_step_px)
-                      if (pair_index in pending_exit_frames
-                          and before_marker is None and after_marker is None) else None)
+        same_pair_exit = _same_pair_marker_exit_bridge(
+            before_seg, after_seg, raw, before_marker=before_marker,
+            after_marker_present=(pair_index + 1 in observed_marker_frames),
+            max_step_px=max_step_px)
+        post_exit_delta = (_video_exit_bridge_delta(raw, max_step_px=max_step_px)
+                           if (pair_index in pending_exit_frames
+                               and before_marker is None and after_marker is None) else None)
         candidates: list[tuple[object, object, int]] = []
         for before in current:
             deltas = set(_track_candidate_deltas(
                     pair_index, before_seg, after_seg, raw,
                     extent_tolerance_px=extent_tolerance_px, max_step_px=max_step_px))
-            # A raw refusal has no trusted strip candidate. A direct marker bridge is the sole
-            # exception, and only when it continues the very card that is already active; a
-            # later marker may never re-seed a broken trajectory below the video.
+            # A raw refusal has no trusted strip candidate. A direct marker bridge is permitted
+            # only while both controls remain visible; the separately guarded same-pair exit
+            # below is the one all-weak exception when the active control has physically left.
+            # A later marker may never re-seed a broken trajectory below the video.
             if (raw.status in (SHIFT_NO_EVIDENCE, SHIFT_NO_CONSENSUS)
                     and direct_marker_delta is not None
                     and before is _marker_block(before_seg, before_marker)):
                 deltas.add(direct_marker_delta)
-            if exit_delta is not None:
-                deltas.add(exit_delta)
+            if post_exit_delta is not None:
+                deltas.add(post_exit_delta)
+            if same_pair_exit is not None and before is same_pair_exit[0]:
+                candidates.append((before, same_pair_exit[1], same_pair_exit[2]))
             # A marker disappearing while its predicted origin remains inside the next content
             # band invalidates the WHOLE track, including earlier repairs.  Otherwise a later
             # missed UI match could leave a trusted prefix that falsely connects two cards.
@@ -1521,7 +1635,7 @@ def _video_track_deltas(segmentations: Sequence[FrameSegmentation],
                                     and delta == direct_marker_delta)
                 after_pool = ((_marker_block(after_seg, after_marker),)
                               if is_direct_bridge else after_seg.blocks)
-                is_exit_bridge = delta == exit_delta
+                is_exit_bridge = delta == post_exit_delta
                 matches = tuple(
                     after for after in after_pool if after is not None
                     if (_heart_moves_by(before, after, delta) if is_exit_bridge else
@@ -1562,16 +1676,25 @@ def _repair_video_track_shifts(segmentations: Sequence[FrameSegmentation],
     links = _video_track_deltas(segmentations, shifts, markers,
                                 extent_tolerance_px=extent_tolerance_px, max_step_px=max_step_px)
     markers_by_frame = _unique_markers_by_frame(markers, len(segmentations))
+    observed_marker_frames = {
+        marker.frame_index for marker in markers
+        if 0 <= marker.frame_index < len(segmentations)
+    }
     repaired = list(shifts)
     notes: list[str] = []
     raw_provenance: list[tuple[int, ShiftEstimate]] = []
     for pair_index, delta in sorted(links.items()):
         raw = shifts[pair_index]
         before, after = segmentations[pair_index], segmentations[pair_index + 1]
+        repair_note_label = "v12 mute-card track"
         direct_delta = _direct_marker_bridge_delta(
             before, after,
             before_marker=markers_by_frame.get(pair_index),
             after_marker=markers_by_frame.get(pair_index + 1),
+            max_step_px=max_step_px)
+        same_pair_exit = _same_pair_marker_exit_bridge(
+            before, after, raw, before_marker=markers_by_frame.get(pair_index),
+            after_marker_present=(pair_index + 1 in observed_marker_frames),
             max_step_px=max_step_px)
         if (raw.status in (SHIFT_NO_CONSENSUS, SHIFT_NO_EVIDENCE)
                 and direct_delta == delta):
@@ -1584,6 +1707,15 @@ def _repair_video_track_shifts(segmentations: Sequence[FrameSegmentation],
                 reason=("v12 mute-card direct marker bridge: positioned app control plus "
                         "one exact card-local anchor; raw strips retained in "
                         "layout_repaired_shifts"))
+        elif same_pair_exit is not None and same_pair_exit[2] == delta:
+            repair_note_label = "v18 mute-card same-pair exit track"
+            repaired[pair_index] = replace(
+                raw, status=SHIFT_MEASURED, delta_px=delta, consensus_px=delta,
+                saturated=False, confidence=1.0, agreeing=2, dissenting=0, eligible=2,
+                reason=(f"{_SAME_PAIR_MARKER_EXIT_REASON_PREFIX} the active positioned app "
+                        "control projects above the next content band, while its exact same-x "
+                        "heart, observed lower card edge and lower canonical gutter all move "
+                        "together; raw all-weak strips retained in layout_repaired_shifts"))
         elif (raw.status == SHIFT_NO_CONSENSUS
               and _video_exit_bridge_delta(raw, max_step_px=max_step_px) == delta):
             # A link can reach this branch only after the prior pair proved the mute control
@@ -1629,11 +1761,12 @@ def _repair_video_track_shifts(segmentations: Sequence[FrameSegmentation],
         else:
             continue
         raw_provenance.append((pair_index, raw))
-        raw_value = raw.delta_px if raw.delta_px is not None else raw.status
+        raw_description = (f"{raw.status} {raw.delta_px:+d}px"
+                           if raw.delta_px is not None else
+                           f"{raw.status} without a delta")
         notes.append(
-            f"frame {pair_index}'s pair with frame {pair_index + 1}: v12 mute-card track "
-            f"fixed the physical video card at +{delta}px; raw {raw.status} "
-            f"{raw_value} is retained for "
+            f"frame {pair_index}'s pair with frame {pair_index + 1}: {repair_note_label} "
+            f"fixed the physical video card at +{delta}px; raw {raw_description} is retained for "
             "audit and complete-page assembly must still pass"
             + (f"; video-marked measured bridge projected to +{delta}px"
                if raw.status == SHIFT_MEASURED else ""))
@@ -2647,6 +2780,20 @@ _UNCERTAIN_HEART_NOTE = (
 # is a corner the guarded frame-0 conjunction proved by other means, not a weaker signal.
 _LIST_TOP_EDGE_KINDS = frozenset({EDGE_CARD_CORNER, EDGE_SCROLL_TOP_MEDIA})
 
+# Every scroll-top corroboration failure is orthogonal to pair correspondence.  A proposed shift
+# repair may retain its local authority while the finished index remains unusable on this gate;
+# the live driver can then decide whether independent filter-chip evidence licenses the one
+# narrowly supported retry below.  This broader prefix is not itself retry authority.
+_SCROLL_TOP_ASSERTION_FAILURE_PREFIX = "at_scroll_top was asserted,"
+
+# The one `_scroll_top_evidence` failure an independent, non-pinned filter-chip confirmation may
+# waive.  Exported privately so the live driver can avoid rebuilding a broken shift/segmentation
+# chain whose inputs `scroll_top_signal_confirmed` cannot change.  Keeping the prefix beside its
+# producer makes a wording change fail closed (no retry) instead of silently widening the retry.
+_SCROLL_TOP_CORNER_FAILURE_PREFIX = (
+    "at_scroll_top was asserted, and page background does sit above the topmost block, but no "
+    "frame ever saw the first item's OWN top edge")
+
 
 def _scroll_top_evidence(blocks: Sequence[IndexedBlock], band_y0: int) -> str | None:
     """Whether this capture's own geometry corroborates the caller's `at_scroll_top` assertion.
@@ -2739,8 +2886,7 @@ def _scroll_top_evidence(blocks: Sequence[IndexedBlock], band_y0: int) -> str | 
     if not any(o.top_kind in _LIST_TOP_EDGE_KINDS for o in first_item.observations):
         seen = sorted({o.top_kind for o in first_item.observations if o.top_kind})
         return (
-            f"at_scroll_top was asserted, and page background does sit above the topmost block, "
-            f"but no frame ever saw the first item's OWN top edge: the block at page rows "
+            _SCROLL_TOP_CORNER_FAILURE_PREFIX + f": the block at page rows "
             f"{first_item.page_y0}..{first_item.page_y1} was seen "
             f"{len(first_item.observations)} time(s) and its top read as {seen or ['nothing']} "
             "every time, never a card corner. At a genuine scroll top item 1's rounded corner is "
@@ -3115,7 +3261,7 @@ def _fold_page(segmentations: Sequence[FrameSegmentation], offsets: Sequence[int
                at_scroll_top: bool, extent_tolerance_px: int, min_item_gap_px: int,
                scroll_top_signal_confirmed: bool,
                ) -> tuple[tuple[IndexedBlock, ...], tuple[str, ...], tuple[str, ...],
-                          frozenset[tuple[int, int]]]:
+                          tuple[str, ...], frozenset[tuple[int, int]]]:
     """Every frame's segmentation plus a page offset each -> the folded page.
 
     The whole pipeline lives here — screen-fixed islands, observations, the two virtual splits,
@@ -3126,10 +3272,13 @@ def _fold_page(segmentations: Sequence[FrameSegmentation], offsets: Sequence[int
     had to be pasted into both probes, and a probe that drifted would accept or reject a repair on
     evidence the final assembly never sees — the direction that ends in a wrong item index.
 
-    Returns `(blocks, failures, notes, screen_fixed)`. `notes` is the concatenation in pipeline
-    order, so a caller can prepend its own repair notes and hand the result straight to
-    `ItemIndex`. `screen_fixed` is returned because the real fold still has to check the held-out
-    strips for hearts; the probes ignore all but `failures`.
+    Returns `(blocks, failures, notes, island_notes, screen_fixed)`. `notes` is the concatenation
+    in pipeline order, so a caller can prepend its own repair notes and hand the result straight
+    to `ItemIndex`. `island_notes` (2026-09-17) is returned SEPARATELY, ADDITIVELY, as the exact
+    subset of `notes` that `_screen_fixed_islands` produced -- `notes` already contains every one
+    of these strings in the same order, this is only a second handle on which ones they are, for
+    `ItemIndex.screen_fixed_notes`. `screen_fixed` is returned because the real fold still has to
+    check the held-out strips for hearts; the probes ignore all but `failures`.
     """
     screen_fixed, island_notes = _screen_fixed_islands(_islands(segmentations, offsets))
     observations = _observations(segmentations, offsets, screen_fixed)
@@ -3166,7 +3315,7 @@ def _fold_page(segmentations: Sequence[FrameSegmentation], offsets: Sequence[int
         page_coverage=_failure_free_page_coverage(segmentations, offsets))
     return (blocks, failures,
             island_notes + long_run_notes + near_gutter_notes + assembly_notes,
-            screen_fixed)
+            island_notes, screen_fixed)
 
 
 def build_item_index(frames: Sequence[bytes], *, content_band: tuple[float, float],
@@ -3255,14 +3404,15 @@ def build_item_index(frames: Sequence[bytes], *, content_band: tuple[float, floa
 
     `video_mute_markers` is the v12 form of that evidence: positioned, near-perfect matches of
     Hinge's own mute control. A row first binds to one segmented card and may then follow that
-    same card after its overlay leaves the visible band, but only through two exact card-local
-    anchors. One raw refused pair may be bridged only while that same control is affirmatively
-    visible in both frames, its exact displacement agrees with another card-local anchor, and a
-    complete page rebuild succeeds. The one immediately following a proved overlay exit may
-    instead rejoin the lower cards only with three identical strip values and the tracked card's
-    exact heart displacement. When the legacy boolean sequence is omitted, its frame-aligned
-    compatibility view is derived from these rows; an explicitly supplied boolean sequence
-    remains authoritative.
+    same card as its overlay leaves the visible band. One raw refused pair may be bridged while
+    that same control is affirmatively visible in both frames when its exact displacement agrees
+    with another card-local anchor. An all-weak pair on which the control itself exits has the
+    narrower heart/lower-edge/lower-gutter proof in `_same_pair_marker_exit_bridge`. The pair
+    immediately following a proved overlay exit may instead rejoin the lower cards only with
+    three identical strip values and the tracked card's exact heart displacement. Every form is
+    only a proposal until a complete page rebuild succeeds. When the legacy boolean sequence is
+    omitted, its frame-aligned compatibility view is derived from these rows; an explicitly
+    supplied boolean sequence remains authoritative.
 
     `trust_window_px` is forwarded to `frameshift.estimate_shift`; the remaining keywords are
     calibration constants with measured defaults, exposed so a validation pass can vary one
@@ -3386,11 +3536,22 @@ def build_item_index(frames: Sequence[bytes], *, content_band: tuple[float, floa
             # by keeping a copy of it in step. In particular, do not let a screen-pinned Hinge
             # header or a repeatedly proven near-gutter merge reject a repair before the final
             # assembly gets to apply those existing fail-closed rules.
-            _probe_blocks, probe_failures, _probe_notes, _probe_screen_fixed = _fold_page(
+            (_probe_blocks, probe_failures, _probe_notes, _probe_island_notes,
+             _probe_screen_fixed) = _fold_page(
                 segmentations, probe_offsets, at_scroll_top=at_scroll_top,
                 extent_tolerance_px=extent_tolerance_px, min_item_gap_px=min_item_gap_px,
                 scroll_top_signal_confirmed=scroll_top_signal_confirmed)
-        return bool(probe_chain_failures or probe_failures or any(seg.failures for seg in segmentations))
+        # Scroll-top corroboration does not contradict a proposed frame-to-frame shift.  Keep the
+        # repair so the final fold can report that independent gate directly (and the live driver
+        # may perform its separately proved confirmed-top retry) instead of rolling back to a raw
+        # broken chain that hides the real remaining failure.  Nothing is accepted here: the final
+        # ItemIndex remains unusable until that top failure is independently resolved.  Every
+        # other fold or segmentation failure still rolls the whole proposal back as before.
+        repair_contradictions = tuple(
+            failure for failure in probe_failures
+            if not failure.startswith(_SCROLL_TOP_ASSERTION_FAILURE_PREFIX))
+        return bool(probe_chain_failures or repair_contradictions
+                    or any(seg.failures for seg in segmentations))
 
     if repair_notes and repair_probe_failed(shifts):
         if used_video_track:
@@ -3413,7 +3574,12 @@ def build_item_index(frames: Sequence[bytes], *, content_band: tuple[float, floa
 
     repair_provenance = tuple(
         ItemIndexRepair(
-            pair_index=pair_index, path=accepted_repair_path or "legacy_layout_grammar",
+            pair_index=pair_index,
+            path=(_SAME_PAIR_MARKER_EXIT_REPAIR_PATH
+                  if (accepted_repair_path == "v12_mute_card_track"
+                      and shifts[pair_index].reason.startswith(
+                          _SAME_PAIR_MARKER_EXIT_REASON_PREFIX))
+                  else accepted_repair_path or "legacy_layout_grammar"),
             raw_status=raw.status, raw_delta_px=raw.delta_px,
             effective_status=shifts[pair_index].status,
             effective_delta_px=shifts[pair_index].delta_px,
@@ -3454,7 +3620,8 @@ def build_item_index(frames: Sequence[bytes], *, content_band: tuple[float, floa
         if not probe_chain_failures:
             # Same `_fold_page` the real fold below runs, so the contradiction this reads is the
             # contradiction the final assembly would report.
-            _probe_blocks, probe_failures, _probe_notes, _probe_screen_fixed = _fold_page(
+            (_probe_blocks, probe_failures, _probe_notes, _probe_island_notes,
+             _probe_screen_fixed) = _fold_page(
                 segmentations, probe_offsets, at_scroll_top=at_scroll_top,
                 extent_tolerance_px=extent_tolerance_px, min_item_gap_px=min_item_gap_px,
                 scroll_top_signal_confirmed=scroll_top_signal_confirmed)
@@ -3654,12 +3821,15 @@ def build_item_index(frames: Sequence[bytes], *, content_band: tuple[float, floa
         # then misnumber.
         blocks: tuple[IndexedBlock, ...] = ()
         notes: tuple[str, ...] = repair_notes
+        # No fold ran, so `_screen_fixed_islands` never ran either -- there is nothing to be a
+        # subset of. Never fabricate a provenance list for notes that were never separated.
+        screen_fixed_notes: tuple[str, ...] = ()
     else:
         # Hinge 10.1.0 pins a profile header to the SCREEN inside the analysed band. segment.py
         # reports such a strip as `BLOCK_UNANCHORED` without deciding what it is (one frame
         # cannot); this capture's own frames decide it, and a proven one is held out of page
         # space entirely rather than placed at a fabricated `frame_row + offset`.
-        blocks, assembly_failures, fold_notes, screen_fixed = _fold_page(
+        blocks, assembly_failures, fold_notes, screen_fixed_notes, screen_fixed = _fold_page(
             segmentations, offsets, at_scroll_top=at_scroll_top,
             extent_tolerance_px=extent_tolerance_px, min_item_gap_px=min_item_gap_px,
             scroll_top_signal_confirmed=scroll_top_signal_confirmed)
@@ -3711,6 +3881,7 @@ def build_item_index(frames: Sequence[bytes], *, content_band: tuple[float, floa
         page_span=page_span, at_scroll_top=at_scroll_top, reached_end=reached_end,
         tail_gap_px=tail_gap, failures=tuple(failures), identity=identity,
         source_frame_indices=tuple(range(len(frames))), notes=notes,
+        screen_fixed_notes=screen_fixed_notes,
         animation_markers=marker_evidence,
         video_mute_markers=mute_markers,
         repair_provenance=repair_provenance,

@@ -770,6 +770,57 @@ def test_observed_hinge_10_1_0_alternate_unselected_signals_top_confirms(monkeyp
     assert after.distance == 0.0
 
 
+def test_observed_hinge_10_4_0_selected_signals_entry_top_confirms(monkeypatch):
+    """Hinge 10.4.0's measured selected-Signals entry chrome is a new raster, not a threshold.
+
+    The two calibration sessions on 2026-09-19 preserved three entry screenshots.  Their 16x4
+    identity-band fingerprints are exactly equal and the screenshots visibly show the filter row
+    above the profile card.  Before this candidate was registered, all three had the same best
+    old match: 3.296875 to Variant 5 after the existing +2px alignment search -- immediately
+    inside the strict 3..9 dead zone.  Keep the corpus seam chrome-only: no dating-profile frame
+    or identifying text is checked into this test.
+    """
+    observed = scroll_top._SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_SELECTED_10_4_0
+    observed_plus_two_px = (
+        254, 255, 255, 255, 255, 255, 255, 255, 255, 255, 254, 254, 254, 254, 254, 254,
+        255, 199, 166, 166, 201, 250, 232, 231, 231, 248, 251, 251, 251, 250, 252, 252,
+        226,  85,  76,  73,  83, 223, 237, 237, 239, 237, 245, 230, 232, 240, 248, 250,
+        215,  86, 123, 118,  87, 218, 220, 196, 231, 239, 243, 196, 192, 225, 246, 251,
+    )
+    old_candidates = scroll_top._SCROLL_TOP_BAND_FINGERPRINTS[:-1]
+    arr = np.array(observed, dtype="uint8").reshape(_GRID[1], _GRID[0])
+    shifted_arr = np.array(observed_plus_two_px, dtype="uint8").reshape(_GRID[1], _GRID[0])
+
+    def observed_crop(_image, rect, _size):
+        dy_px = round((rect[1] - _IB[1]) * _H)
+        return shifted_arr if dy_px == 2 else arr
+
+    monkeypatch.setattr(hinge, "_band_of_image", observed_crop)
+
+    before = scroll_top.confirm_scroll_top(
+        _frame(_flat(_BASE)), identity_band=_IB, fingerprint=old_candidates)
+    assert before.unknown is True
+    assert before.distance == pytest.approx(3.296875)
+    assert before.alignment_offset_px == 2
+
+    after = scroll_top.confirm_scroll_top(_frame(_flat(_BASE)), identity_band=_IB)
+    assert observed in scroll_top._SCROLL_TOP_BAND_FINGERPRINTS
+    assert after.confirmed is True
+    assert after.distance == 0.0
+
+
+def test_hinge_10_4_0_selected_signals_candidate_keeps_a_scrolled_band_refuted(monkeypatch):
+    """The new discrete raster must not make an unrelated sticky/header band permissive."""
+    scrolled = _offset(scroll_top._SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_SELECTED_10_4_0, -16)
+    arr = np.array(scrolled, dtype="uint8").reshape(_GRID[1], _GRID[0])
+    monkeypatch.setattr(hinge, "_band_of_image", lambda _im, _rect, _size: arr)
+
+    verdict = scroll_top.confirm_scroll_top(_frame(_flat(_BASE)), identity_band=_IB)
+
+    assert verdict.refuted is True
+    assert verdict.distance >= scroll_top._REFUTE_MIN_DIST
+
+
 def test_hinge_10_1_0_variant_keeps_a_synthetic_scrolled_band_refuted(monkeypatch):
     """Adding Variant 13 must not turn a previously refuted band into an unknown one."""
     scrolled = _offset(

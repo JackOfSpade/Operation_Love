@@ -124,11 +124,12 @@ from .item_crops import (
 from .item_type_preflight import INCONCLUSIVE, ItemTypePreflight, preflight_item_type
 from .item_identity import IdentityError, compare_profile_identity
 from .item_index import (
-    ItemIndex, ItemIndexError, _edge_only_two_strip_shift, _exact_multi_strip_shift,
+    ITEM_PARTIAL, ItemIndex, ItemIndexError, _UNCERTAIN_HEART_NOTE,
+    _edge_only_two_strip_shift, _exact_multi_strip_shift,
     _layout_repaired_shift, _measured_layout_bridge, _pitch_relative_max_step,
     _matched_delta_clusters, _observed_gutters, _structural_landmarks,
-    _project_to_exact_full_layout, _structural_tail_shift, VideoMuteMarker, build_item_index,
-    _video_track_deltas,
+    _project_to_exact_full_layout, _SCROLL_TOP_CORNER_FAILURE_PREFIX,
+    _structural_tail_shift, VideoMuteMarker, build_item_index, _video_track_deltas,
 )
 from .item_nav import (NAV_IDENTITY_MISMATCH, NAV_IDENTITY_UNCONFIRMED, NAV_ITEM_BELOW_ENTRY,
                        ItemNavigationError, navigate_to_item)
@@ -4940,11 +4941,65 @@ class AndroidDriver(DatingAppDriver):
         This mirrors the preceding policy/capability precedence in
         `_item_enumeration_blocker`: a disabled opener or an app that cannot attach one is the
         live reason for declining the read, even if its calibration is also absent.  Only the
-        exact live calibration gate gets the structured status consumed by later layers.
+        exact live calibration gate gets THIS status, which is the one worker.py routes to its
+        calibration stop.  That preceding pair is no longer unclassified either -- it carries
+        its own `no_opener_consumer` (see `_no_opener_consumer_blocks_enumeration` below, added
+        2026-09-16) -- and `_item_enumeration_unavailable_kind` is the single place the order
+        between them is resolved, so this predicate never has to know about that one.
         """
         return (getattr(self, "_openers_enabled", True)
                 and self.accepts_opener
                 and self.targeting_calibration is None)
+
+    def _no_opener_consumer_blocks_enumeration(self) -> bool:
+        """Whether "nothing downstream wants a numbered list" is why enumeration is unavailable.
+
+        The sibling of `_targeting_calibration_blocks_enumeration` above, mirroring the same
+        policy/capability precedence in `_item_enumeration_blocker` from the other end: its
+        first two conditions -- `opener.enabled: false`, and an app that cannot attach an
+        opener at swipe time -- are the pair that blocker's own docstring already groups
+        together ("with `opener.enabled: false` there is no consumer for a numbered item list
+        at all"; "an app that cannot send an opener at swipe time has nothing to number items
+        for"). Unlike the calibration gate above this needs NO deferral clause: these two come
+        FIRST in that precedence, so nothing can outrank them.
+
+        WHY THEY ARE WORTH SEPARATING (2026-09-16). The three conditions after these mean "this
+        run WANTED a numbered list and could not safely produce one", which is a limitation of
+        the run. These two mean "nobody asked for one", which is the run behaving exactly as
+        configured -- and worker.py agrees: its own "BUG 2" guard (the `not disabled` check in
+        front of the `items_unavailable` stop) sends the bare like and carries on rather than
+        stopping. Until this kind existed both shapes reached the capture row identically, so
+        bugreport.py's run-completion verdict stamped an openers-off run "COMPLETED SAFELY,
+        WITH LIMITATIONS" over every profile it had handled correctly -- exactly the "cannot
+        tell correct behaviour from a fault" noise that channel was added to remove.
+        """
+        return not getattr(self, "_openers_enabled", True) or not self.accepts_opener
+
+    def _item_enumeration_unavailable_kind(self) -> str:
+        """The structured kind for whatever `_item_enumeration_blocker` refused with, or "".
+
+        ONE function owns this precedence, because two functions owning it is this repo's
+        most-repeated bug (memory: "allow-lists must not disagree", now three recurrences --
+        the last let the VERB a model picked decide whether a correct opener was rejected). The
+        two predicates above answer "is THIS condition live"; this answers "and which kind does
+        the capture row therefore carry", in the blocker's own order: no-consumer first,
+        calibration second, everything else unclassified ("").
+
+        NOT folded into `_item_enumeration_blocker` as a second return value, for two reasons.
+        That method's `str` return is load-carrying: `if self._item_enumeration_blocker():` in
+        `_prepare_actionable_capture_entry` relies on the falsy empty string, and a non-empty
+        tuple is always truthy, which would silently enable the entry rewind everywhere it is
+        meant to stay inactive. And a dozen tests across this suite monkeypatch the blocker
+        itself to force enumeration on or off -- a seam a second entry point would quietly
+        bypass. Their agreement is pinned instead by a test that drives the REAL blocker
+        through all five of its conditions and asserts the kind recorded for each
+        (tests/test_bugreport.py, beside the verdict that consumes these strings).
+        """
+        if self._no_opener_consumer_blocks_enumeration():
+            return "no_opener_consumer"
+        if self._targeting_calibration_blocks_enumeration():
+            return "targeting_calibration"
+        return ""
 
     def _item_enumeration_blocker(self) -> str:
         """Why this capture will not attempt an enumeration read, or "" when it will.
@@ -5260,6 +5315,59 @@ class AndroidDriver(DatingAppDriver):
                 photos[0], identity_band=self.identity_band).confirmed)
         except ScrollTopError:
             return False
+
+    @staticmethod
+    def _index_needs_confirmed_top_retry(index: ItemIndex) -> bool:
+        """Whether independent scroll-top proof can resolve every index contradiction.
+
+        ``scroll_top_signal_confirmed=True`` changes exactly one decision in ``item_index``: it
+        waives the supplementary requirement that segmentation saw item 1's rounded top edge.
+        It cannot repair a broken frameshift chain, a segmentation conflict, or any page-fold
+        contradiction.  Rebuilding those captures is therefore both expensive and guaranteed to
+        return the same refusal (the reported Julia run spent about 21 seconds doing so).
+
+        There are exactly two permitted failure shapes.  The ordinary one is the one corner
+        failure.  The other is its mechanical consequence when the actual leading header is a
+        heartless partial: before the independent proof can class it as chrome,
+        ``_assemble`` must also report that the header might hide heart 1.  On the confirmed
+        rebuild that SAME leading block becomes ``ITEM_LEADING_CHROME``, so the uncertainty no
+        longer applies.  This method recognises that pair only by the block structure and the
+        producer's exact uncertainty text; an uncertainty anywhere else, a third failure, a
+        heart-bearing/bounded leading block, or malformed test-double data remains a refusal.
+
+        The exact producer-owned strings and structure make this fail closed.  If item_index
+        changes either diagnosis without updating this import, the retry is skipped rather than
+        broadened.
+        """
+        try:
+            failures = tuple(getattr(index, "failures", ()) or ())
+            blocks = tuple(index.blocks)
+            first = blocks[0]
+            if (not index.at_scroll_top or not isinstance(first.page_y0, int)
+                    or not isinstance(first.page_y1, int)
+                    or first.page_y1 <= first.page_y0):
+                return False
+        except (AttributeError, IndexError, TypeError):
+            return False
+        corner_failures = tuple(
+            failure for failure in failures
+            if isinstance(failure, str)
+            and failure.startswith(_SCROLL_TOP_CORNER_FAILURE_PREFIX))
+        if len(failures) == 1:
+            return len(corner_failures) == 1
+        if len(failures) != 2 or len(corner_failures) != 1:
+            return False
+        try:
+            leading = blocks[0]
+            if (len(blocks) <= 1
+                    or leading.kind != ITEM_PARTIAL or leading.hearts or leading.complete):
+                return False
+            dependent_uncertainty = (
+                f"the block at page rows {leading.page_y0}..{leading.page_y1} "
+                + _UNCERTAIN_HEART_NOTE)
+        except (AttributeError, TypeError):
+            return False
+        return sum(failure == dependent_uncertainty for failure in failures) == 1
 
     def _restart_index_from_confirmed_top(self, photos: list[bytes], index: ItemIndex,
                                           animation_markers: tuple[bool, ...],
@@ -6418,9 +6526,16 @@ class AndroidDriver(DatingAppDriver):
 
         Same contract as `_record_still_photo_dwell`: diagnostics only, and a failure to write
         one must never alter what the walk itself decided. `outcome` uses the walk's established
-        vocabulary (for example "navigation_refused", "parked_unproved", "proved",
-        "return_unverified", "skipped_return_budget", or "stop") for why a candidate did or did
-        not end up in the returned evidence.
+        vocabulary (for example "navigation_refused", "navigation_cancelled", "parked_unproved",
+        "proved", "return_unverified", "skipped_return_budget", or "stop") for why a candidate
+        did or did not end up in the returned evidence.
+
+        "navigation_cancelled" is deliberately a SIBLING of "navigation_refused", not a reason
+        string under it (2026-09-16): both are written by the same uncoded-exception handlers,
+        but only the refusal is a fault. The two differ solely in what `should_stop` said AT THE
+        CATCH SITE -- see those handlers for why neither the exception type nor a later poll can
+        answer that question. bugreport.py must carry the token in its accepted-outcome whitelist
+        or the dwell-navigation section renders NOTHING for the event.
         """
         if self._dbg is None:
             return
@@ -6913,13 +7028,67 @@ class AndroidDriver(DatingAppDriver):
                 # driver's own delivered-input count settles which of the two happened. A
                 # `should_stop` that fires before the first gesture, or a segmentation refusal on
                 # the entry frame, moved nothing at all.
+                #
+                # AN OPERATOR STOP IS NOT A DRIVER FAULT, AND THIS IS THE ONLY PLACE THAT CAN SAY
+                # SO HONESTLY (2026-09-16, run f78ca90856b4). base.py's own `ActionCancelled`
+                # docstring says it is "neither a targeting refusal nor a driver fault", yet this
+                # branch filed it under the same `navigation_refused` token as four genuine
+                # measurement faults, and the bug report then rendered a row written seconds
+                # earlier as a "legacy/incomplete trace". Ask `should_stop` HERE, in the handler
+                # that caught the cancellation, and nowhere else:
+                #   * NEVER key on the exception TYPE. `ActionCancelled` is also raised for
+                #     non-stop reasons in this same driver -- "training requires a typed opener"
+                #     and "training did not return Like or Dislike" -- so the class name alone
+                #     would relabel those as operator Stops.
+                #   * NEVER re-poll `should_stop` later somewhere else to infer a cause. It is a
+                #     LATCHED ambient flag: a poll taken at a distance would happily relabel a
+                #     genuine `ShiftEstimationError` as a cancellation just because the operator
+                #     pressed Stop while the refusal was being written up.
+                # This is the existing precedent for exactly this question at the training
+                # checkpoint below (`stopped = should_stop is not None and should_stop()`, then
+                # reason="stop_requested" if stopped else "invalid_decision").
+                stopped = should_stop is not None and should_stop()
+                outcome = "navigation_cancelled" if stopped else "navigation_refused"
                 self._dbg_still_photo_walk_candidate(
-                    heart_ordinal, "navigation_refused", reason=type(exc).__name__)
+                    heart_ordinal, outcome, reason=type(exc).__name__)
                 if candidate_started_at is not None:
                     self._dbg_still_photo_walk_candidate_timing(
-                        heart_ordinal, "navigation_refused", started_at=candidate_started_at,
+                        heart_ordinal, outcome, started_at=candidate_started_at,
                         navigation_s=time.monotonic() - navigation_started_at,
                         proof_s=0.0, return_s=0.0)
+                if stopped:
+                    # The cooperative stop sites above and below both record the shortfall; this
+                    # one never did, so `_current_dwell_walk_interruption` stayed None. That
+                    # matters most on the path `_anchor_after_navigation_refusal` rescues: a
+                    # cancellation raised before any gesture keeps the measured anchor, so the
+                    # CAPTURE COMPLETES with real coverage and the completion summary then said
+                    # the generic "still-photo coverage skipped N photo candidate(s)" for a
+                    # shortfall the operator themselves caused.
+                    #
+                    # THE `- 1` IS THIS CARD'S OWN SLOT, and every other call site already
+                    # deducts it (seam review 2026-09-16). The invariant the record keeps is
+                    # that `interrupted_page_hearts` PLUS the sliced
+                    # `unattempted_within_remaining_limit_page_hearts` name exactly the cards
+                    # that were still inside K when the stop landed: `during_base_dwell` passes
+                    # `K - len(interrupted_hearts)`, `during_base_reattach_probe` passes
+                    # `K - len(evidence)` with the probed card already inside `evidence`, and
+                    # the post-proof site below is only ever reached after `hops_run += 1`.
+                    # Here the navigation FAILED, so `hops_run` never counted this card, and a
+                    # bare `remaining - hops_run` lets the slice keep one card too many --
+                    # measured with K=3 and one banked card, it named hearts 3, 2 AND 1 for a
+                    # walk that could only ever have reached two more. bugreport.py's
+                    # `_capture_stop_interrupted_gap_count` intersects that union with the
+                    # capture's coverage gaps, so the extra ordinal is a gap blamed on the
+                    # operator's Stop that the K budget would have skipped regardless.
+                    # Never negative: the loop breaks once `hops_run >= remaining`.
+                    remaining_candidates = candidates[attempt + 1:]
+                    self._record_still_photo_dwell_walk_stop(
+                        next_heart_ordinal=(remaining_candidates[0]
+                                            if remaining_candidates else None),
+                        remaining_heart_ordinals=remaining_candidates,
+                        remaining_candidate_slots=remaining - hops_run - 1,
+                        phase="during_candidate_navigation",
+                        interrupted_heart_ordinals=(heart_ordinal,))
                 return evidence, self._anchor_after_navigation_refusal(
                     entry_anchor, inputs_before_navigation, heart_ordinal,
                     type(exc).__name__)
@@ -7222,12 +7391,35 @@ class AndroidDriver(DatingAppDriver):
                     IdentityError) as exc:
                 navigation_s = (time.monotonic() - navigation_started_at
                                 if navigation_started_at is not None else 0.0)
+                # Same reading, same place, same reasons as the short-hop walk's own uncoded
+                # handler above (2026-09-16): `should_stop` is observed HERE, in the handler that
+                # caught the cancellation, because the exception TYPE cannot tell an operator
+                # Stop from this driver's two non-stop `ActionCancelled` raises, and a later poll
+                # of a LATCHED flag would relabel a genuine measurement fault as a cancellation.
+                stopped = should_stop is not None and should_stop()
+                outcome = "navigation_cancelled" if stopped else "navigation_refused"
                 self._dbg_still_photo_walk_candidate(
-                    heart_ordinal, "navigation_refused", reason=type(exc).__name__)
+                    heart_ordinal, outcome, reason=type(exc).__name__)
                 if candidate_started_at is not None:
                     self._dbg_still_photo_walk_candidate_timing(
-                        heart_ordinal, "navigation_refused", started_at=candidate_started_at,
+                        heart_ordinal, outcome, started_at=candidate_started_at,
                         navigation_s=navigation_s, proof_s=0.0, return_s=0.0)
+                if stopped:
+                    # See the short-hop handler: without this the interruption record is never
+                    # written for a mid-navigation Stop, and a rescued anchor lets the capture
+                    # complete, so the shortfall reads as unexplained rather than as the Stop.
+                    # The `- 1` is this card's own slot, for the same reason and with the same
+                    # measured consequence stated there -- `hops_run` counts COMPLETED
+                    # navigations, and this one did not complete. Never negative: the loop
+                    # breaks once `hops_run >= candidate_slots`.
+                    remaining_candidates = candidates[attempt + 1:]
+                    self._record_still_photo_dwell_walk_stop(
+                        next_heart_ordinal=(remaining_candidates[0]
+                                            if remaining_candidates else None),
+                        remaining_heart_ordinals=remaining_candidates,
+                        remaining_candidate_slots=candidate_slots - hops_run - 1,
+                        phase="during_candidate_navigation",
+                        interrupted_heart_ordinals=(heart_ordinal,))
                 rescued = self._anchor_after_navigation_refusal(
                     current_anchor, inputs_before_navigation, heart_ordinal,
                     type(exc).__name__)
@@ -8069,7 +8261,8 @@ class AndroidDriver(DatingAppDriver):
                 # thing that refused. The retry still rejects every shift, segmentation, heart
                 # and card-boundary contradiction; it only lets the independently confirmed top
                 # class the leading name panel as chrome when its photo corner was not measurable.
-                if not index.usable and self._capture_reconfirms_scroll_top(photos):
+                if (not index.usable and self._index_needs_confirmed_top_retry(index)
+                        and self._capture_reconfirms_scroll_top(photos)):
                     with _time_bucket(stamps, "item_index_confirmed_top_retry_s"):
                         retried = build_item_index(
                             photos, content_band=self.content_band,
@@ -8487,6 +8680,33 @@ class AndroidDriver(DatingAppDriver):
         except Exception:  # noqa: BLE001 -- diagnostics must never alter a live-run result
             pass
 
+    @staticmethod
+    def _item_index_note_text(note: object, source: tuple[int, ...],
+                              ) -> tuple[str, dict[str, int] | None] | None:
+        """Rewrite one raw ``ItemIndex`` note's leading ``frame N`` into source+index coords.
+
+        Shared by ``notes`` and ``screen_fixed_notes`` in `_record_item_index_notes` below so the
+        two undergo IDENTICAL treatment: `ItemIndex.screen_fixed_notes` is defined as a SUBSET of
+        `ItemIndex.notes` by content (2026-09-17; see that field's docstring), and running two
+        different transforms over the same underlying string could let a well-formed screen-fixed
+        note fail to match its own entry in the transformed `notes` list, silently losing it out
+        of the subset check below. Returns None only for a non-string entry, matching what the
+        original inline loop did (skip it outright, no placeholder).
+        """
+        if not isinstance(note, str):
+            return None
+        match = re.match(r"^frame\s+(\d+)\b", note)
+        if match is None:
+            return note[:800], None
+        local = int(match.group(1))
+        if not 0 <= local < len(source):
+            return note[:800], None
+        original = source[local]
+        frame_info = {"local_frame_index": local, "source_frame_index": original}
+        text = re.sub(r"^frame\s+\d+\b", f"source frame {original} (index frame {local})",
+                      note, count=1)[:800]
+        return text, frame_info
+
     def _record_item_index_notes(self, photos: list[bytes], index) -> None:
         """Make a successful, conservative segmentation repair visible in actions.jsonl.
 
@@ -8510,24 +8730,29 @@ class AndroidDriver(DatingAppDriver):
             note_frames: list[dict[str, int]] = []
             notes: list[str] = []
             for note in raw_notes[:16]:  # a corrupt producer must not make one JSONL line huge
-                if not isinstance(note, str):
+                transformed = self._item_index_note_text(note, source)
+                if transformed is None:
                     continue
-                match = re.match(r"^frame\s+(\d+)\b", note)
-                if match is None:
-                    notes.append(note[:800])
-                    continue
-                local = int(match.group(1))
-                if not 0 <= local < len(source):
-                    notes.append(note[:800])
-                    continue
-                original = source[local]
-                note_frames.append({"local_frame_index": local,
-                                    "source_frame_index": original})
-                notes.append(re.sub(r"^frame\s+\d+\b",
-                                    f"source frame {original} (index frame {local})",
-                                    note, count=1)[:800])
+                text, frame_info = transformed
+                if frame_info is not None:
+                    note_frames.append(frame_info)
+                notes.append(text)
             if not notes:
                 return
+            # (2026-09-17) The subset of the SAME notes that `_screen_fixed_islands` produced --
+            # see `ItemIndex.screen_fixed_notes`'s docstring. Membership-checked against the
+            # transformed `notes` above (not re-derived independently) so this can never name a
+            # string absent from `notes` itself; a corrupt or truncated producer degrades this to
+            # fewer classified notes, never to a false one.
+            raw_screen_fixed = tuple(getattr(index, "screen_fixed_notes", ()) or ())
+            screen_fixed_notes: list[str] = []
+            for note in raw_screen_fixed[:16]:
+                transformed = self._item_index_note_text(note, source)
+                if transformed is None:
+                    continue
+                text, _frame_info = transformed
+                if text in notes and text not in screen_fixed_notes:
+                    screen_fixed_notes.append(text)
             first = note_frames[0]["source_frame_index"] if note_frames else None
             runtime = _item_index_runtime_provenance()
             mute_markers = tuple(getattr(index, "video_mute_markers", ()) or ())
@@ -8554,11 +8779,42 @@ class AndroidDriver(DatingAppDriver):
                                   "delta_px": getattr(repair, "effective_delta_px", None)},
                     "mute_markers": marker_evidence,
                 })
-            self._dbg.action("item_index_repaired",
+            # (2026-09-17, corrected same day TWICE -- see the reverted "item_index_unresolved_
+            # strip" name for the first correction) `repairs` mirrors `ItemIndex.repair_provenance`
+            # (video-track/layout SHIFT repairs only) and `notes` is `repair_notes + fold_notes`
+            # (item_index.py:~3666), a concatenation from FIVE unrelated producers. The FIRST fix
+            # keyed the action name on `repairs` emptiness alone and called the empty branch
+            # "item_index_unresolved_strip" -- reproduced wrong on real data: run 5554d6fc51aa's
+            # only note is an ordinal-safe `_assemble` success with no screen-fixed mechanism
+            # involved at all, filed under a heading asserting a failed placement. That name
+            # shipped only inside this session with zero on-disk rows carrying it, so it was
+            # deleted outright.
+            #
+            # But `repairs` emptiness ALONE is also too blunt in the other direction: a count of
+            # all 58 real `item_index_repaired` rows under data/hinge_debug found 12 with
+            # non-empty `repairs`, 44 with `repairs == []` that DO genuinely carry a
+            # `_screen_fixed_islands` note, and only 2 (5554d6fc51aa, 6de69d385cc6) with
+            # `repairs == []` and NO screen-fixed note at all. A neutral name for every
+            # empty-`repairs` row would have thrown away a true, useful signal for 44 of 46 rows
+            # to avoid being wrong on 2 -- over-correction. `ItemIndex.screen_fixed_notes` (added
+            # this same day) answers the real question directly: did `_screen_fixed_islands`
+            # actually contribute a note to THIS record, independent of whether a shift repair
+            # also happened to land on it (see run 0e4257f20e64, where both do, on the same
+            # record). `repairs` non-empty still wins the name outright per the existing
+            # cross-agent contract (worker.py and others key on "item_index_repaired" meaning a
+            # shift repair happened); among the rest, the screen-fixed name is used only when this
+            # record's own notes prove `_screen_fixed_islands` ran.
+            if repairs:
+                action = "item_index_repaired"
+            elif screen_fixed_notes:
+                action = "item_index_screen_fixed_notes"
+            else:
+                action = "item_index_notes"
+            self._dbg.action(action,
                              before=(photos[first] if first is not None else None),
                              notes=notes, note_frames=note_frames,
                              source_frame_indices=list(source), item_index_runtime=runtime,
-                             repairs=repairs)
+                             repairs=repairs, screen_fixed_notes=screen_fixed_notes)
         except Exception:  # noqa: BLE001 -- diagnostics must never affect a usable capture
             pass
 
@@ -9239,7 +9495,13 @@ class AndroidDriver(DatingAppDriver):
         # and a sentence the moment it is not -- the first sentence wins, so a later step's
         # failure never overwrites the reason the read stopped enumerating in the first place.
         enumeration_reason = self._item_enumeration_blocker()
-        calibration_blocks_enumeration = self._targeting_calibration_blocks_enumeration()
+        # SNAPSHOTTED HERE, NOT RE-DERIVED AT THE INVALIDATION BELOW, which is the whole reason
+        # this local exists: the blocker has just re-bound the live calibration
+        # (`_refresh_targeting_calibration_binding` latches a mismatch by clearing
+        # `targeting_calibration`), so this reads the state the refusal was actually made
+        # against. Asking again after the read would let a mid-read rebind relabel a scroll-top
+        # or item-index refusal as a calibration one.
+        enumeration_blocker_kind = self._item_enumeration_unavailable_kind()
         if not enumeration_reason:
             if should_stop is not None and should_stop():
                 # The loop's own first check returns None one line below, so the gate's answer
@@ -9794,10 +10056,16 @@ class AndroidDriver(DatingAppDriver):
         if enumerating:
             enumeration_reason = self._index_captured_items(photos, should_stop)
         if enumeration_reason:
+            # The kind is the BLOCKER's classification, never a property of this sentence:
+            # `enumeration_reason` can equally have come from the stop check, the scroll-top
+            # gate or the index builder, and all three stay unclassified ("") exactly as they
+            # did before. The two that are classified are the two a later layer must tell
+            # apart: 'targeting_calibration' is the one worker.py routes to its calibration
+            # stop, and 'no_opener_consumer' says nothing downstream ever wanted a numbered
+            # list, so bugreport.py's completion verdict can tell a run behaving exactly as
+            # configured from one that hit a fault (see that predicate's docstring).
             self._invalidate_item_index(
-                enumeration_reason,
-                unavailable_kind=("targeting_calibration"
-                                  if calibration_blocks_enumeration else ""))
+                enumeration_reason, unavailable_kind=enumeration_blocker_kind)
             print(f"{self.spec.app}: no numbered item list for this profile -- "
                   f"{enumeration_reason}")
         else:

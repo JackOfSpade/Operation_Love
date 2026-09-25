@@ -41,7 +41,7 @@ from .opener.opener import GeminiOpener
 from .targeting_policy import use_run_still_photo_licence
 from .limits import RateLimiter
 from .opener.replay_corpus import DEFAULT_CORPUS_DIR
-from .opener.service import OpenerService
+from .opener.service import OpenerService, _write_opener_rejection_deadletter
 from .private_files import ensure_private_dir, open_private_rw
 from .ranker import make_store
 from .ranker.bigquery_store import _profile_upload_deadline_s
@@ -527,6 +527,99 @@ def _close_store_after_startup_failure(store, run_id: str) -> None:
               f"{type(close_exc).__name__}: {close_exc}")
 
 
+def _deadletter_stranded_opener_rejections(store, opener_service, exc: Exception) -> None:
+    """(2026-09-17) Extend the opener-rejection dead-letter to the FINAL shutdown flush.
+
+    maybe_opener()'s own dead-letter (opener/service.py's _write_opener_rejection_deadletter)
+    only ever fires from inside the `except Exception as store_exc:` wrapped around ITS OWN
+    synchronous `self.store.record_opener_rejection(...)` call, so it only sees a wire failure
+    that happens to raise AT THAT CALL. BigQueryStore only raises there when `_maybe_flush`
+    decides THIS call is the one that flushes (buffered length has just reached
+    storage.bigquery.flush_every -- see config.yaml's comment on that key, and
+    _write_opener_rejection_deadletter's own "THE flush_every DEPENDENCY" docstring section).
+    At any flush_every above 1 -- the constructor/`make_store` DEFAULT is 25, not the currently
+    shipped 1 -- most calls just buffer and return cleanly, and the real wire failure only ever
+    surfaces later, at this function's caller (the shutdown `store.flush()` a few lines above),
+    by which point maybe_opener's per-row context (reason_code, reason, raw_opener, ...) is
+    long out of scope and unrecoverable from the exception alone.
+
+    So this asks the STORE what it is still holding instead. BigQueryStore now exposes
+    `pending_opener_rejections()` (see ranker/bigquery_store.py): a snapshot of exactly the
+    `opener_rejections` rows still sitting in its buffer -- the ones this failed flush did not
+    (and, per BigQueryStore._flush_table's all-or-nothing insert semantics, largely could not
+    have) written. Each surviving row already carries everything
+    _write_opener_rejection_deadletter needs -- it IS the dict record_opener_rejection built --
+    so this reuses that SAME writer per row, with `exc` (the shutdown flush's real exception,
+    not each row's own original failure) as the evidence, rather than forking a second writer.
+
+    Duck-typed and best-effort throughout. `pending_opener_rejections` is deliberately not
+    added to ranker/__init__.py's Store Protocol: SQLiteStore has nothing to report here (its
+    own dropped_rows docstring: "this backend has no buffer a row can be silently dropped
+    from" -- every SQLiteStore write raises synchronously out of the ORIGINAL call, which the
+    existing per-call dead-letter already covers), so its absence via getattr(...) means
+    "nothing to recover", not an error. Reading the buffer or writing an entry may itself fail
+    -- swallowed unconditionally, because this runs inside a shutdown path that must still
+    report/re-raise the original flush failure (`save_err`) unchanged; a diagnostic must never
+    grow a second, different failure on top of the one it exists to explain.
+    """
+    if opener_service is None:
+        return
+    deadletter_path = getattr(opener_service, "_deadletter_path", None)
+    if not deadletter_path:
+        return
+    pending = getattr(store, "pending_opener_rejections", None)
+    if pending is None:
+        return
+    try:
+        rows = list(pending())
+    except Exception:  # noqa: BLE001 — reading the buffer must not mask the real flush failure
+        return
+    # (2026-09-17) THE DOUBLE-DEAD-LETTER FIX. A row this loop sees is often NOT new evidence:
+    # per _flush_table's own comment in ranker/bigquery_store.py, a FAILED FLUSH LEAVES THE
+    # BATCH BUFFERED, so a row whose synchronous record_opener_rejection call already raised
+    # inside opener/service.py's own `except Exception as store_exc:` (which already wrote ONE
+    # dead-letter entry for it, branch="parse_error"/"opener_error"/"bad_request"/"transient")
+    # is STILL sitting in the buffer right here, unchanged. Before this check, this loop wrote
+    # a SECOND entry for that identical row every time -- under the shipped
+    # storage.bigquery.flush_every: 1, a 3-rejection outage produced 6 dead-letter entries for
+    # 3 actually-lost rows, a 2x overstatement of loss in the one file this project's standing
+    # rule says to read before shipping another opener_rejections theory.
+    #
+    # is_rejection_row_deadlettered (opener/service.py) is the source of truth for "did THIS
+    # process already dead-letter this exact row": OpenerService is the only thing that ever
+    # knows both what it just tried to write AND what it dead-lettered when that write raised,
+    # so the identity check belongs there, not reconstructed here from a row dict alone.
+    #
+    # Fallback when that check is UNAVAILABLE (no such method, or the call itself raises --
+    # e.g. some future duck-typed opener_service this function was never taught about): SKIP
+    # the row rather than write it. The alternative -- write it anyway -- risks reproducing the
+    # exact double-count bug this fix exists to close, and there is no way to make the READER
+    # (bugreport.py, which this task does not own/touch) safe against a duplicate after the
+    # fact. Between "possibly under-reports a genuinely new loss" and "definitely reproduces a
+    # known-wrong 2x overstatement", the former is the honest choice for a diagnostic whose
+    # entire purpose is not inventing loss that did not happen. A real production OpenerService
+    # always has this method (defined unconditionally above), so this branch is a defensive
+    # backstop, not the expected path.
+    checker = getattr(opener_service, "is_rejection_row_deadlettered", None)
+    for row in rows:
+        if not callable(checker):
+            continue
+        try:
+            already_covered = checker(row)
+        except Exception:  # noqa: BLE001 -- an identity-check failure must not mask save_err,
+            # and (same reasoning as the "unavailable" branch above) must not risk a duplicate.
+            continue
+        if already_covered:
+            continue
+        _write_opener_rejection_deadletter(
+            deadletter_path, "shutdown_flush", store,
+            run_id=row.get("run_id", ""), app=row.get("app", ""),
+            model=row.get("model", ""), attempt=row.get("attempt", 0),
+            reason_code=row.get("reason_code", ""), reason=row.get("reason", ""),
+            raw_opener=row.get("raw_opener"), prompt_sha256=row.get("prompt_sha256"),
+            exc=exc)
+
+
 def load_effective_config(config_path: str = "config.yaml", *, mode: str | None = None,
                           enabled_apps=None) -> cfg_mod.Config:
     """Load the exact config a run would use and enforce every start-time gate.
@@ -990,6 +1083,11 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
             store.flush()                 # raises if any buffered insert was rejected
         except Exception as exc:  # noqa: BLE001 — report a clear save outcome, then re-raise
             save_err = exc
+            # (2026-09-17) This flush failure is the ONLY chance a row buffered below
+            # storage.bigquery.flush_every ever gets to be dead-lettered -- see
+            # _deadletter_stranded_opener_rejections' own docstring for why maybe_opener's own
+            # per-call dead-letter cannot see it.
+            _deadletter_stranded_opener_rejections(store, opener_service, exc)
         # close() must run whether or not flush() raised above -- pre-fix, close() sat
         # inside the same try as flush(), so a flush() failure skipped it entirely and
         # (for SQLiteStore) left its sqlite3.Connection open. Benign -- GC reclaims it

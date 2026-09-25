@@ -1268,6 +1268,15 @@ _LOCATION_CONFIRMATION_NOUN = (
 # accept a standalone pronoun in that slot keep "it" as their own local alternative beside the
 # interpolated determiner. Unifying on grammatical role rather than on "whatever each list
 # happened to contain" is what stops this bug recurring a third time one level further down.
+#
+# ADDENDUM 2026-09-16: it did not. Hoisting only reaches the shapes that INTERPOLATE the
+# constants, and "is my guess right?" below interpolated neither, so it sat out both hoists
+# with its own 1-determiner x 2-noun lists and rejected 70 of the 72 combinations its siblings
+# accept (see that shape's own comment). The hoist was still the right fix -- what was missing
+# is an invariant that reads the TABLE rather than a hand-kept list of the shapes someone
+# remembered: test_no_confirmation_shape_hardcodes_its_own_determiner_or_place_noun expands
+# every shape in this tuple and fails on any determiner-then-noun pair that is not these two
+# constants, so a shape that opts out of them cannot ship green a fourth time.
 _LOCATION_CONFIRMATION_DET = r"(?:that|this|the|my)"
 _DIRECT_LOCATION_CONFIRMATION_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"^(?:am|was)\s+i\s+(?:even\s+)?"
@@ -1290,8 +1299,25 @@ _DIRECT_LOCATION_CONFIRMATION_PATTERNS: tuple[re.Pattern[str], ...] = (
                re.IGNORECASE),
     re.compile(r"^(?:is|was|could)\s+(?:that|this|it)\s+(?:be\s+)?"
                r"(?:right|correct|close|(?:way\s+)?off)\?+$", re.IGNORECASE),
-    re.compile(r"^(?:is|was)\s+my\s+(?:guess|call)\s+"
-               r"(?:right|correct|close|(?:way\s+)?off)\?+$", re.IGNORECASE),
+    # THIRD recurrence of the allow-list-disagreement bug, found and fixed 2026-09-16. This
+    # shape kept a hand-written determiner ("my") in front of a hand-written 2-member subset of
+    # the place nouns ("(?:guess|call)") straight through BOTH hoists above -- the 2026-09-14
+    # (b) noun unification and the 2026-09-15 determiner unification each fixed the shapes that
+    # already interpolated a constant, and a shape that interpolates NEITHER is invisible to
+    # that kind of fix. Measured against the shipped constants on 2026-09-16: of the 72 live
+    # determiner x noun combinations every sibling shape accepts, this one accepted 2 ("my
+    # guess", "my call") and rejected 70, so "Is that guess right?" was rejected while the
+    # pinned corpus already carried BOTH "Is my guess right?" and "How close is that guess?" --
+    # the model demonstrably alternates determiners in front of the same noun, and each
+    # rejection spends one of five attempts whose exhaustion stops the run
+    # (OpenerService._exhaust).
+    #
+    # No shape-local "it" alternative is needed in this determiner slot, unlike shapes 2 and 3:
+    # "is it right?" is already a full match of the demonstrative shape directly above, so the
+    # bare pronoun is covered without putting a pronoun where a determiner belongs (see
+    # _LOCATION_CONFIRMATION_DET's comment on why "it" stays out of the shared set).
+    re.compile(rf"^(?:is|was)\s+{_LOCATION_CONFIRMATION_DET}\s+{_LOCATION_CONFIRMATION_NOUN}"
+               r"\s+(?:right|correct|close|(?:way\s+)?off)\?+$", re.IGNORECASE),
     re.compile(r"^where\s+(?:is|was)\s+(?:that|this|it)"
                r"(?:\s+(?:taken|shot|filmed))?\?+$", re.IGNORECASE),
     # "Is that where you were?" / "Is that where this was taken?" -- the same direct place
@@ -2571,6 +2597,81 @@ _QUOTA_SCOPE_LABELS = {"day": "per-day quota", "minute": "per-minute throttle",
 # be actively wrong (same reasoning as "gone", which is also excluded here).
 _TRANSIENT_SCOPES = frozenset({"minute", "unknown", "busy", "transport"})
 
+# The remedy each PERMANENT (non-_TRANSIENT_SCOPES) scope actually needs, phrased as a clause
+# that reads on from "<model> (<label>)". A table rather than a third if/elif ladder because
+# the MIXED-scope fall-through in _exhaustion_reason has to name several of these in one
+# sentence, and the entire point of that function is that they are not interchangeable:
+# waiting for midnight Pacific does nothing for a retired model id, and editing opener.models
+# does nothing for an exhausted daily quota. A scope absent from this table is, by
+# construction, either one of _TRANSIENT_SCOPES or an unrecognized string -- see
+# _UNKNOWN_PERMANENT_REMEDY for why the fallback still refuses to promise that waiting helps.
+_PERMANENT_SCOPE_REMEDIES = {
+    "day": "stays exhausted until the free-tier daily quota resets at midnight Pacific",
+    "gone": ("will not come back mid-run -- fix opener.models to name model ids this account "
+             "can actually use"),
+    "thinking": ("will not start accepting its configured thinking level or budget mid-run -- "
+                 "fix opener.thinking for that model id"),
+}
+# Fallback for a scope that is neither transient nor in the table above. Unreachable today
+# (generate() writes only the seven scopes _QUOTA_SCOPE_LABELS names), and deliberately
+# pessimistic rather than generic-helpful: an unrecognized scope is exactly the case where
+# this code knows least, so it must not be the one place that tells the operator a restart
+# will fix it. Saying less is the fail-safe direction for guidance.
+_UNKNOWN_PERMANENT_REMEDY = "will not clear on its own"
+
+# The one spelling of the "transport" caveat, shared by BOTH branches of _exhaustion_reason
+# that can name a transient scope (2026-09-17). Hoisted rather than written twice because the
+# two branches ALREADY drifted once: the uniform-transient branch was taught that a network or
+# timeout failure may sit on THIS end of the connection, and the mixed branch below it was not,
+# so {'a': 'day', 'b': 'transport'} still told the operator that "restarting in a minute may
+# well get that part of the cascade serving again" -- a promise on a timer, for a dead local
+# wifi/DNS that no amount of waiting fixes. Every other constant in this region exists for the
+# same reason (see _LOCATION_CONFIRMATION_DET's comment): this repository's most-repeated defect
+# is two places owning one piece of vocabulary and disagreeing about it.
+#
+# Only the load-bearing CLAIM is shared, not a whole sentence: each branch has already named
+# the scope by then (the uniform one lists every model, the mixed one lists just the transient
+# half), so a shared lead-in would make one of them say "network or timeout" twice in a row.
+# Each site supplies its own lead-in and both end on this identical guarantee.
+#
+# It also names NO other scope. An earlier draft drew the contrast explicitly ("not on a timer
+# the way a per-minute cap or a provider side outage would") and tripped
+# test_a_mix_with_a_transient_cause_labels_it_from_the_scope_table_not_as_a_minute_cap, which
+# asserts "per-minute" never appears in a message about a cascade where no model hit a
+# per-minute cap. That guard is right and was left intact: naming an absent cause in the one
+# sentence an operator acts on is the whole defect this region keeps re-fixing, and a contrast
+# is not worth re-introducing it. "not merely after waiting" carries the same distinction.
+_TRANSPORT_MAY_BE_LOCAL = (
+    "may be LOCAL to this host rather than the provider -- restarting helps only once the "
+    "connection itself is back, not merely after waiting")
+
+
+def _scope_listing(scopes: Mapping[str, str], models: list[str]) -> str:
+    """Render ``model (human label)`` for each named model, in the order given.
+
+    Shared by _exhaustion_reason's branches so one model always appears under the SAME label
+    everywhere it is named: the mixed-scope message lists every model once up front and then
+    splits them into what a restart can fix and what it cannot, and two spellings of one
+    scope inside a single sentence would read as two different failures.
+    """
+    return ", ".join(f"{model} ({_QUOTA_SCOPE_LABELS.get(scopes[model], scopes[model])})"
+                     for model in models)
+
+
+def _permanent_scope_listing(scopes: Mapping[str, str], models: list[str]) -> str:
+    """Render ``model (human label) <its own remedy>`` for each named model, in order.
+
+    Semicolon-separated rather than comma-separated because each entry is a full clause with
+    its own fix; a comma list of "gemini-a (per-day quota) stays exhausted until ..., gemini-b
+    (model unavailable) will not come back mid-run -- fix opener.models ..." reads as one
+    remedy applying to both, which is the precise conflation this whole function exists to
+    prevent.
+    """
+    return "; ".join(
+        f"{model} ({_QUOTA_SCOPE_LABELS.get(scopes[model], scopes[model])}) "
+        f"{_PERMANENT_SCOPE_REMEDIES.get(scopes[model], _UNKNOWN_PERMANENT_REMEDY)}"
+        for model in models)
+
 
 def _exhaustion_reason(scopes: Mapping[str, str]) -> str:
     """Explain why the whole cascade fell through, precisely enough to act on.
@@ -2594,11 +2695,33 @@ def _exhaustion_reason(scopes: Mapping[str, str]) -> str:
     model coming back "thinking" is a third, distinct dead end, sharing "gone"'s "waiting never
     helps" property but not its cause or its fix: the model id is still valid, only its
     thinkingConfig is wrong for it, so that case gets its own message pointing at
-    opener.thinking instead of opener.models. Anything else (a mix of scopes, or a transient
-    per-minute/unknown 429 in the mix) falls through to the generic listing, which already
-    assumes at least one transient cause may clear on its own shortly. We still stop the run in
-    every case (see OpenerService), because sending a bare like with no opener is a worse
-    outcome than halting; only the guidance differs.
+    opener.thinking instead of opener.models.
+
+    Every model coming back UNIFORMLY transient ("minute"/"unknown"/"busy"/"transport", the
+    _TRANSIENT_SCOPES set) used to get one hardcoded sentence naming the cause as "a
+    per-minute cap or a provider side outage" and asserting "simply restarting should
+    succeed". Fixed 2026-09-17: that sentence is what a host that loses wifi or DNS mid-run
+    actually sees, because every model then raises OSError, every scope becomes "transport",
+    and this branch's all() is True -- so the operator was told a local network outage was a
+    per-minute cap or a Google-side blip that a restart would fix. It will not, until the
+    connection itself is back. This case is now split like the mix below is: the per-model
+    labels name the real causes, and a scope set containing "transport" gets its own caveat
+    that a network or timeout failure may be local to this host rather than the provider.
+
+    Anything else is a MIX, and since 2026-09-16 its
+    guidance is DERIVED from the transient subset rather than asserted: the fall-through used
+    to state, unconditionally, that "at least one of these is a transient per-minute cap ...
+    so restarting in a minute may well succeed". Executed against the shipped function, that
+    sentence came back for {'a': 'day', 'b': 'gone'} and for {'a': 'gone', 'b': 'thinking'} --
+    mixes containing no self-clearing cause at all, where a restart in a minute changes
+    nothing and the "gone" branch's own comment already says naming a reset "would imply
+    waiting helps, and it never does". A mix with no _TRANSIENT_SCOPES member now names only
+    the permanent causes and each one's distinct remedy; a mix with one names which models a
+    restart can help and which it cannot, labelled out of _QUOTA_SCOPE_LABELS rather than by a
+    hardcoded "per-minute cap" that was also wrong whenever the only transient member was a
+    provider 5xx or a network failure. We still stop the run in every case (see
+    OpenerService), because sending a bare like with no opener is a worse outcome than
+    halting; only the guidance differs.
     """
     if not scopes:                      # unreachable today (__init__ requires >=1 model)
         return "no configured Gemini model was available to serve the request"
@@ -2626,17 +2749,62 @@ def _exhaustion_reason(scopes: Mapping[str, str]) -> str:
                 "opener.thinking for each named model id (it is sending a thinkingLevel or "
                 "thinkingBudget that model does not support)")
     if all(scope in _TRANSIENT_SCOPES for scope in scopes.values()):
-        # Nothing here is a real dead end: every model was either momentarily throttled or
-        # reported a provider-side 5xx. Naming a quota reset would send the operator away
-        # for hours over something that typically clears in seconds.
-        return (f"no configured Gemini model could serve the request right now: {listed}. "
-                "Every one of these is a transient failure (a per-minute cap or a provider "
-                "side outage), not an exhausted daily quota, so simply restarting should "
-                "succeed")
-    return (f"no configured Gemini model could serve the request: {listed}. At least one of "
-            "these is a transient per-minute cap rather than a per-day exhaustion, so "
-            "restarting in a minute may well succeed instead of waiting for the midnight "
-            "Pacific daily reset")
+        # Nothing here is a CONFIRMED dead end: every model was either momentarily throttled,
+        # reported a provider-side 5xx, or failed at the transport level. Fixed (2026-09-17):
+        # this branch used to hardcode the cause as "a per-minute cap or a provider side
+        # outage" and assert, unconditionally, that "simply restarting should succeed". That
+        # is the wrong cause and an unearned promise exactly when the HOST itself loses wifi
+        # or DNS: every model then raises OSError, every scope collapses to "transport", the
+        # all() above is True, and the operator was told the failure was a per-minute cap or a
+        # Google-side outage that a restart would fix. It will not -- the network is down, not
+        # the provider -- and a dead local connection is the MORE likely shape a real network
+        # outage takes than the mixed case below, precisely because it knocks out every model
+        # in one request while a provider 5xx or per-minute cap rarely hits all of them at
+        # once. Let the per-model labels _scope_listing already carries name the actual
+        # causes instead of asserting one, and give "transport" its own caveat: unlike a
+        # per-minute cap or a provider 5xx, which clear with the passage of time regardless of
+        # this host, a network or timeout failure may never clear on the provider side at all
+        # because it is sitting on this end of the connection.
+        if "transport" in scopes.values():
+            return (f"no configured Gemini model could serve the request right now: "
+                    f"{_scope_listing(scopes, list(scopes))}. This includes a network or "
+                    f"timeout failure, which {_TRANSPORT_MAY_BE_LOCAL}")
+        return (f"no configured Gemini model could serve the request right now: "
+                f"{_scope_listing(scopes, list(scopes))}. Every one of these is a transient "
+                "failure (a per-minute cap or a provider side outage), not an exhausted "
+                "daily quota, so simply restarting should succeed")
+    # The fall-through: a NON-UNIFORM mix. Everything above returned on a uniform scope set,
+    # so by construction at least one model here is permanent (a uniform transient set was
+    # already answered by the branch directly above) and the split below can never produce an
+    # empty permanent half.
+    transient = [model for model, scope in scopes.items() if scope in _TRANSIENT_SCOPES]
+    permanent = [model for model, scope in scopes.items() if scope not in _TRANSIENT_SCOPES]
+    if not transient:
+        # day+gone, day+thinking, gone+thinking and their supersets: a mix, but not one
+        # containing a single cause that clears itself. Naming a restart here would be the
+        # same error the "gone" branch above refuses to make, one branch further down.
+        return ("no configured Gemini model could serve the request, and not one of these "
+                f"causes clears on its own: {_permanent_scope_listing(scopes, permanent)}. "
+                "Restarting in a minute fixes none of them")
+    # At least one genuinely transient member, so the old sentence's ADVICE was right here --
+    # but it is stated about the models it actually applies to, and labelled from
+    # _QUOTA_SCOPE_LABELS, because "per-minute cap" was the wrong label for the "busy"
+    # (provider 5xx) and "transport" (network or timeout) members of _TRANSIENT_SCOPES.
+    # ...AND THE TRANSIENT HALF GETS THE SAME TRANSPORT CAVEAT THE UNIFORM BRANCH GETS
+    # (2026-09-17). "restarting in a minute may well get that part serving again" is a promise
+    # ON A TIMER, and it is false for exactly one member of _TRANSIENT_SCOPES: "transport" can
+    # be this host's own wifi or DNS, which no amount of waiting repairs. The uniform branch
+    # above learned that the same day this sentence was rewritten and this one did not, which
+    # is why the caveat now lives in a single constant both branches read. Note the test is on
+    # the TRANSIENT half only -- a permanent scope's remedy is already named per-model by
+    # _permanent_scope_listing, and "transport" is never permanent.
+    restart_note = ("so restarting in a minute may well get that part of the cascade serving "
+                    "again")
+    if any(scopes[model] == "transport" for model in transient):
+        restart_note = f"though that network or timeout failure {_TRANSPORT_MAY_BE_LOCAL}"
+    return (f"no configured Gemini model could serve the request: {listed}. Of these, only "
+            f"{_scope_listing(scopes, transient)} failed transiently, {restart_note} -- but "
+            f"not the rest: {_permanent_scope_listing(scopes, permanent)}")
 
 
 def _gemini_error(status_code: int, body: Any) -> GeminiAPIError:
@@ -2707,11 +2875,26 @@ class GeminiOpener:
     as a per-minute 429:
     neither says anything about whether the model would answer the NEXT request, only that
     it failed to answer this one, so it cascades to the next configured model for this
-    profile only and is retried first on the next profile. Authentication, permission, and
-    malformed-request errors, and any other 4xx, are deliberately raised to the caller
-    unchanged rather than silently cascading: those are properties of the request or
-    credentials, not of one model id or one flaky connection, so they would fail identically
-    on every other configured model too.
+    profile only and KEEPS ITS CONFIGURED POSITION for the next profile. Authentication,
+    permission, and malformed-request errors, and any other 4xx, are deliberately raised to
+    the caller unchanged rather than silently cascading: those are properties of the request
+    or credentials, not of one model id or one flaky connection, so they would fail
+    identically on every other configured model too.
+
+    "KEEPS ITS CONFIGURED POSITION", not "is retried first". Until 2026-09-16 this paragraph
+    and three of the printed cascade lines below said such a model would be "retried first on
+    the next profile", and no mechanism for that has ever existed: ``self.models`` is assigned
+    once in __init__ and every later reference only reads it, the cascade is ``for position,
+    model in enumerate(self.models)`` and restarts at index 0 on every call, and the only
+    cross-call state (``_unavailable_models``) only ever REMOVES models -- 5xx, per-minute 429
+    and transport failures deliberately never write to it at all. Demonstrated end to end with
+    a fake transport on 2026-09-16 (models 3.6-flash, 3.5-flash, 3-flash-preview; the first
+    two both 503): profile 1 and profile 2 issue the IDENTICAL request order. The claim was
+    false in a stronger way than "tried second", too: on the next profile such a model may not
+    be requested AT ALL, because a model configured ahead of it succeeds first. Run
+    f78ca90856b4's log shows how that misleads in practice -- at 17:42:58 and 17:43:00 two
+    DIFFERENT models each printed that sentence inside one cascade, and they cannot both be
+    first.
 
     ONE NARROW EXCEPTION to that last rule: a 400 whose message identifies a per-model
     rejection of the configured thinking level/budget (see generate()'s 400 handling and
@@ -3971,7 +4154,10 @@ class GeminiOpener:
                     # 5xx ("busy"): a dropped connection says something about THIS request,
                     # not about whether this model (or any other) would answer the next one,
                     # so cascade to the next configured model for this profile only and do
-                    # NOT retire it -- it stays first in line on the next profile.
+                    # NOT retire it -- it keeps its configured position and is eligible again
+                    # on the next profile. NOT "first in line": nothing in this class reorders
+                    # self.models, and the next profile restarts the same cascade from the top
+                    # (see the class docstring's 2026-09-16 correction).
                     #
                     # Caught as OSError plus HTTPException specifically, NOT bare Exception.
                     # OSError covers timeout, reset, DNS, and refused connections;
@@ -3989,8 +4175,10 @@ class GeminiOpener:
                     scopes[model] = "transport"
                     print(f"{run_prefix}Gemini opener: {model} failed at the transport level "
                           f"({type(exc).__name__}: {exc}); NOT blacklisting -- trying the "
-                          "next configured model for this profile only (this model will be "
-                          "retried first on the next profile).")
+                          "next configured model for this profile only (this model keeps its "
+                          "configured position, and the next profile starts this cascade at "
+                          "the top again, so it is requested again only if every model ahead "
+                          "of it fails again).")
                     return None
                 if not 200 <= int(code) < 300:
                     error = _gemini_error(int(code), response)
@@ -4020,9 +4208,15 @@ class GeminiOpener:
                         else:
                             # Per-minute caps are transient (free-tier RPM can be as low as 5)
                             # and clear within a minute, so do NOT blacklist -- just cascade to
-                            # the next model for this profile; the preferred model is retried
-                            # first on the next profile. "unknown" (no parseable quota details)
-                            # gets the same non-blacklisting treatment: wrongly retiring the
+                            # the next model for this profile; this model keeps its configured
+                            # position and is eligible again on the next profile, which starts
+                            # the cascade at the top exactly as this one did. (Until 2026-09-16
+                            # this comment said "the preferred model is retried first on the
+                            # next profile" -- true of models[0] and of nothing else -- and the
+                            # print below had copied it across as "this model". Nothing
+                            # reorders self.models; see the class docstring.)
+                            # "unknown" (no parseable quota details) gets the same
+                            # non-blacklisting treatment: wrongly retiring the
                             # best model for a whole run on one ambiguous 429 is far more
                             # costly than one wasted retry per profile, and every model 429ing
                             # within a single call still raises GeminiCapacityExhausted below
@@ -4031,7 +4225,9 @@ class GeminiOpener:
                             kind = "per-minute" if scope == "minute" else "unclassified"
                             print(f"{run_prefix}Gemini opener: {model} hit a {kind} 429; NOT blacklisting -- "
                                   "trying the next configured model for this profile only (this "
-                                  "model will be retried first on the next profile).")
+                                  "model keeps its configured position, and the next profile "
+                                  "starts this cascade at the top again, so it is requested "
+                                  "again only if every model ahead of it fails again).")
                         return None
                     if error.http_code == 404:
                         # NOT_FOUND: EMPIRICALLY MEASURED against the real API -- ListModels can
@@ -4062,13 +4258,18 @@ class GeminiOpener:
                         # hand the caller a "transient error" for the whole service and the
                         # worker would send a bare like with no opener -- while six healthy
                         # models sat unused. So cascade to the next model immediately, and do
-                        # NOT retire this one: high demand clears on its own, so it stays first
-                        # in line for the next profile, exactly like a per-minute 429.
+                        # NOT retire this one: high demand clears on its own, so it keeps its
+                        # configured position and is eligible again on the next profile,
+                        # exactly like a per-minute 429 -- "eligible again", not "first in
+                        # line", because nothing reorders self.models (class docstring,
+                        # 2026-09-16).
                         scopes[model] = "busy"
                         print(f"{run_prefix}Gemini opener: {model} returned HTTP {error.http_code} "
                               f"{error.status or 'server error'}; NOT blacklisting -- trying the "
-                              "next configured model for this profile only (this model will be "
-                              "retried first on the next profile).")
+                              "next configured model for this profile only (this model keeps "
+                              "its configured position, and the next profile starts this "
+                              "cascade at the top again, so it is requested again only if "
+                              "every model ahead of it fails again).")
                         return None
                     if error.http_code == 400 and _is_thinking_config_rejection(error.message):
                         # NARROW EXCEPTION to the "every other 4xx is a property of the request,

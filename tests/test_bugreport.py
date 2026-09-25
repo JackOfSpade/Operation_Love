@@ -138,7 +138,8 @@ def test_completion_assessment_names_recovered_provider_faults_and_coverage(monk
     bugreport._LOG_RING.extend([
         "12:00:00 Gemini opener: gemini-test failed at the transport level (TimeoutError: timed "
         "out); NOT blacklisting -- trying the next configured model for this profile only (this "
-        "model will be retried first on the next profile).",
+        "model keeps its configured position, and the next profile starts this cascade at the "
+        "top again, so it is requested again only if every model ahead of it fails again).",
         "12:00:01 ordinary diagnostic",
     ])
     try:
@@ -168,18 +169,31 @@ def test_completion_assessment_names_recovered_provider_faults_and_coverage(monk
 # The shipped matcher named only the TRANSPORT wording: the other branches MISSED, and run
 # 257bdd639ca5 cascaded off a 503, printed it in this report's own "Recent logs" section, and
 # was stamped COMPLETED CLEANLY anyway.
+#
+# THEY ARE REFRESHED FROM opener.py, NEVER ARGUED FROM (2026-09-16). Three of them -- transport,
+# per-minute-429, 5xx -- still ended "(this model will be retried first on the next profile)"
+# after opener.py stopped printing that claim in this same audit: it now says the model keeps
+# its CONFIGURED position and that the next profile restarts the cascade at the top, because
+# nothing ever reorders `self.models`. No behaviour depended on the drift (the gate named below
+# reads opener.py's own source and still matched all six branches), but this is the file whose
+# entire subject is stale copies, and a later reader could have "restored" the removed claim
+# from here. When a cascade print changes: copy the new text down, do not correct opener.py to
+# match these.
 _RECOVERED_CASCADE_LOG_LINES = {
     "transport": (
         "Gemini opener: gemini-3.6-flash failed at the transport level (TimeoutError: timed "
         "out); NOT blacklisting -- trying the next configured model for this profile only "
-        "(this model will be retried first on the next profile)."),
+        "(this model keeps its configured position, and the next profile starts this cascade "
+        "at the top again, so it is requested again only if every model ahead of it fails "
+        "again)."),
     "quota-day": (
         "Gemini opener: gemini-3.6-flash hit its per-day quota (resets at midnight Pacific); "
         "blacklisting it for the rest of this run and trying the next configured model."),
     "quota-minute": (
         "Gemini opener: gemini-3.6-flash hit a per-minute 429; NOT blacklisting -- trying the "
-        "next configured model for this profile only (this model will be retried first on the "
-        "next profile)."),
+        "next configured model for this profile only (this model keeps its configured "
+        "position, and the next profile starts this cascade at the top again, so it is "
+        "requested again only if every model ahead of it fails again)."),
     "not-found": (
         "Gemini opener: gemini-3.6-flash returned 404 NOT_FOUND (models/gemini-3.6-flash is "
         "not found for API version v1beta); this model id is retired or unavailable to this "
@@ -187,8 +201,9 @@ _RECOVERED_CASCADE_LOG_LINES = {
         "of this run and trying the next configured model."),
     "server-error": (
         "Gemini opener: gemini-3.6-flash returned HTTP 503 UNAVAILABLE; NOT blacklisting -- "
-        "trying the next configured model for this profile only (this model will be retried "
-        "first on the next profile)."),
+        "trying the next configured model for this profile only (this model keeps its "
+        "configured position, and the next profile starts this cascade at the top again, so it "
+        "is requested again only if every model ahead of it fails again)."),
     "thinking-rejected": (
         "Gemini opener: gemini-3.7-flash returned HTTP 400 rejecting its configured thinking "
         "level or budget (Thinking level MINIMAL is not supported for this model. Please "
@@ -233,8 +248,9 @@ def test_completion_assessment_counts_a_cascade_line_split_by_an_exception_newli
         "12:00:00 Gemini opener: gemini-3.6-flash failed at the transport level "
         "(RemoteDisconnected: Remote end closed connection without response",
         "12:00:00 while reading the response body); NOT blacklisting -- trying the next "
-        "configured model for this profile only (this model will be retried first on the next "
-        "profile).",
+        "configured model for this profile only (this model keeps its configured position, and "
+        "the next profile starts this cascade at the top again, so it is requested again only "
+        "if every model ahead of it fails again).",
     ])
     try:
         md = bugreport._run_completion_assessment_md(_CompletionHub(), "unused.yaml")
@@ -597,6 +613,566 @@ def test_completion_assessment_attributes_latest_coverage_gap_to_operator_stop(m
     assert "still-photo coverage skipped" not in md
 
 
+def test_completion_verdict_will_not_call_an_abandoned_profile_a_clean_run(monkeypatch):
+    """BUG REPORT 2026-09-16, run f78ca90856b4: the durable verdict line read COMPLETED CLEANLY
+    over a run whose final capture enumerated ZERO items and abandoned profile Sam.
+
+    The defect is ANTI-CORRELATION, not mere omission. Every coverage counter above reads
+    `item_coverage`, and hinge.py sets `item_coverage=None` exactly when the payload is None --
+    so a Stop that left SOME items enumerated was reported while a Stop that destroyed the item
+    index ENTIRELY was silent. (In the real report three Gemini 503s masked it; remove them and
+    the line says COMPLETED CLEANLY.)"""
+    bugreport._LOG_RING.clear()
+    monkeypatch.setattr(
+        bugreport, "_completion_capture_facts",
+        lambda *_: {"coverage_gaps": 0, "coverage_candidates": 0,
+                    "coverage_stop_interrupted_gaps": 0,
+                    "coverage_stop_interrupted_candidates": 0,
+                    "capture_truncated": False,
+                    "items_unavailable": (
+                        "the still-photo dwell or re-attach walk moved the page without a "
+                        "complete measured chain back to the item index, so targeted "
+                        "navigation is unsafe"),
+                    "items_unavailable_kind": None,
+                    "items_unavailable_profile": "Sam",
+                    "items_unavailable_after_stop": True},
+    )
+
+    md = bugreport._run_completion_assessment_md(_CompletionHub(), "unused.yaml")
+
+    assert "Outcome: COMPLETED CLEANLY" not in md
+    assert "Outcome: COMPLETED SAFELY, WITH LIMITATIONS" in md
+    assert ("the requested Stop left the latest capture for profile `Sam` with no numbered "
+            "items at all, so no opener could be targeted at that profile") in md
+    assert "targeted navigation is unsafe" in md
+    # NOT "so that profile was abandoned" (fix-review 2026-09-16). What the worker did next is
+    # not on this row: `items_unavailable` is also what hinge.py records when openers are
+    # administratively disabled, and worker.py sends the bare like and carries on in that case.
+    # See the sibling test below, which pins the same restraint on the reason text itself.
+    assert "abandoned" not in md
+
+
+def test_completion_verdict_words_an_unexplained_item_refusal_as_a_targeting_failure(monkeypatch):
+    """The two causes read identically on the capture row, so the Stop is asserted ONLY from the
+    driver's own evidence. With no `navigation_cancelled`/`stop` row in that capture's window the
+    verdict must say targeting failure and never guess at a Stop."""
+    bugreport._LOG_RING.clear()
+    monkeypatch.setattr(
+        bugreport, "_completion_capture_facts",
+        lambda *_: {"coverage_gaps": 0, "coverage_candidates": 0,
+                    "coverage_stop_interrupted_gaps": 0,
+                    "coverage_stop_interrupted_candidates": 0,
+                    "capture_truncated": False,
+                    "items_unavailable": "the item index could not be built",
+                    "items_unavailable_kind": "item_index",
+                    "items_unavailable_profile": "Sam",
+                    "items_unavailable_after_stop": False},
+    )
+
+    md = bugreport._run_completion_assessment_md(_CompletionHub(), "unused.yaml")
+
+    assert ("the latest capture for profile `Sam` produced no numbered items at all, so no "
+            "opener could be targeted at that profile: `the item index could not be built` "
+            "(kind: `item_index`)") in md
+    assert "requested Stop" not in md
+
+
+def test_completion_verdict_never_says_a_policy_refusal_abandoned_the_profile(monkeypatch):
+    """FIX-REVIEW 2026-09-16. `items_unavailable` is not always a failure, and the verdict line
+    must not describe it as one.
+
+    hinge.py's `_item_enumeration_blocker` records this SAME field for two POLICY decisions --
+    `opener.enabled: false` and an app that cannot attach an opener at swipe time -- and
+    worker.py's "BUG 2" guard deliberately does not stop for either: the bare like is sent and
+    the run carries on. The reason quoted below is that blocker's own first sentence, verbatim.
+    So a sentence ending "so that profile was abandoned" would have been a confidently wrong
+    claim about the WORKER on every completed run of an openers-off session, from a row that
+    records only what the DRIVER enumerated.
+
+    What survives is the consequence the row really does establish, which holds for the refusal
+    case and the policy case alike: nothing was numbered, so nothing could be targeted.
+
+    SECOND PASS, SAME DAY -- READ THE FIXTURE, NOT THE TITLE. A fresh openers-off run no longer
+    produces a limitation here at all: hinge.py now stamps the row `no_opener_consumer` and the
+    verdict skips it (the two tests below). The shape this fixture keeps pinning is the residue
+    that skip cannot reach -- an OLD row, kind null, from a run whose config no longer says
+    openers were off -- which is genuinely indistinguishable from a targeting failure. It is
+    still reported, and this is what pins the restrained wording it is reported with.
+    """
+    bugreport._LOG_RING.clear()
+    monkeypatch.setattr(
+        bugreport, "_completion_capture_facts",
+        lambda *_: {"coverage_gaps": 0, "coverage_candidates": 0,
+                    "coverage_stop_interrupted_gaps": 0,
+                    "coverage_stop_interrupted_candidates": 0,
+                    "capture_truncated": False,
+                    "items_unavailable": (
+                        "openers are disabled for this run (opener.enabled: false), so nothing "
+                        "would consume a numbered item list"),
+                    "items_unavailable_kind": None,
+                    "items_unavailable_profile": "Sam",
+                    "items_unavailable_after_stop": False},
+    )
+
+    md = bugreport._run_completion_assessment_md(_CompletionHub(), "unused.yaml")
+
+    assert "so no opener could be targeted at that profile" in md
+    assert "abandoned" not in md, (
+        "the verdict is claiming the run gave up on a profile that worker.py, with openers "
+        "disabled, liked and moved on from")
+    # The limitation stays for THIS shape (2026-09-17): the skip below keys ONLY on
+    # `kind == "no_opener_consumer"`, and this row's kind is None, so it is reported. That is
+    # deliberate over-reporting on a row this old, not a gap -- see
+    # `_run_completion_assessment_md`'s "THE CONFIG HALF IS GONE" comment for why a config
+    # reading was removed from this decision entirely.
+    assert "Outcome: COMPLETED SAFELY, WITH LIMITATIONS" in md
+    assert "opener.enabled: false" in md
+
+
+def _enumeration_blocker_probe(monkeypatch, **state):
+    """A HingeDriver carrying ONLY the state `_item_enumeration_blocker` reads, so the REAL
+    blocker and the REAL kind resolver can be driven condition by condition.
+
+    Built with `__new__` and no `__init__` on purpose: this must not need a phone, a config, an
+    open session or a decoded template, and anything one of the five conditions touches that is
+    not set below raises AttributeError instead of quietly reading a default -- so the
+    attribute list here IS the blocker's declared input set.
+
+    WHY THIS LIVES IN tests/test_bugreport.py rather than beside the driver's own enumeration
+    tests: `items_unavailable_kind` is a CONTRACT BETWEEN TWO MODULES, and this file is the
+    consumer's. `_run_completion_assessment_md` keys on the literal 'no_opener_consumer';
+    hinge.py is what produces it, out of two predicates that mirror a third function's
+    condition order. That shape is this repo's most-repeated bug (memory: "allow-lists must not
+    disagree", three recurrences -- most recently two regexes for the same permitted opener
+    move carrying different noun sets, so the VERB the model picked decided whether a correct
+    opener was rejected). Testing the producer beside the consumer is the remedy: reorder or
+    re-condition the blocker and this fails, instead of a run being silently mis-classified.
+    """
+    # bugreport.py is deliberately stdlib-only and this file is import-light to match; the
+    # driver (and its vision stack) is imported inside the helper rather than at module scope.
+    from operation_love.drivers import hinge as hinge_mod
+
+    # The fifth condition calls the real `_template("like")`, which would otherwise decode a PNG
+    # off disk. Stub the loader, not the method: `_template` returning None for an app whose
+    # spec names no template is the exact behaviour condition five is about.
+    monkeypatch.setattr(hinge_mod, "_load_template", lambda _name: object())
+    drv = hinge_mod.HingeDriver.__new__(hinge_mod.HingeDriver)
+    drv.spec = types.SimpleNamespace(app="hinge", templates={"like": "hinge_like.png"})
+    drv._openers_enabled = True                 # condition 1: opener.enabled
+    drv.accepts_opener = True                   # condition 2: can this app attach one
+    drv.targeting_calibration = types.SimpleNamespace(   # condition 3, plus the live rebind
+        hinge_version_name="10.1.0", frame_size_px=(1080, 2400))
+    drv._targeting_calibration_unavailable = ""
+    drv._adb = None                             # condition 3 re-binds the calibration against
+    drv._targeting_binding_fetched = True       # the live build; with no device and the read
+    drv._targeting_runtime_version_name = "10.1.0"   # already "fetched" it compares these two
+    drv._targeting_runtime_frame_size = (1080, 2400)
+    drv.identity_band = (150, 260)              # condition 4
+    for name, value in state.items():
+        setattr(drv, name, value)
+    return drv
+
+
+# Every condition of hinge.py's `_item_enumeration_blocker`, in its own order, against the kind
+# the capture row is stamped with. The sentences are matched by fragment, not in full: the exact
+# prose is pinned elsewhere (tests/test_hinge_sheet_verification.py asserts one verbatim), and
+# what this table exists to pin is the PAIRING.
+_ENUMERATION_BLOCKER_CASES = [
+    ("1 openers administratively disabled", {"_openers_enabled": False},
+     "openers are disabled for this run (opener.enabled: false)", "no_opener_consumer"),
+    ("2 the app cannot attach an opener", {"accepts_opener": False},
+     "cannot attach an opener to a like at swipe time", "no_opener_consumer"),
+    ("3 targeting calibration unavailable",
+     {"targeting_calibration": None,
+      "_targeting_calibration_unavailable": "none was configured"},
+     "apps.hinge.targeting_calibration is unavailable", "targeting_calibration"),
+    ("4 no identity_band", {"identity_band": None},
+     "declares no identity_band", ""),
+    ("5 no calibrated like template",
+     {"spec": types.SimpleNamespace(app="hinge", templates={})},
+     "declares no calibrated 'like' glyph template", ""),
+]
+
+
+@pytest.mark.parametrize(
+    ("label", "state", "fragment", "expected_kind"), _ENUMERATION_BLOCKER_CASES,
+    ids=[case[0] for case in _ENUMERATION_BLOCKER_CASES])
+def test_every_enumeration_blocker_condition_records_the_kind_this_verdict_expects(
+        monkeypatch, label, state, fragment, expected_kind):
+    """The producer end of `items_unavailable_kind`, pinned condition by condition.
+
+    Conditions 1-2 are "nothing downstream wanted a numbered list", which this module's verdict
+    must NOT call a limitation; 3 is the one worker.py routes to its calibration stop; 4-5 are
+    unclassified refusals that must keep producing one. A future edit that reorders the blocker,
+    adds a sixth condition, or changes what one of them means now fails here rather than
+    silently mis-classifying a run.
+    """
+    drv = _enumeration_blocker_probe(monkeypatch, **state)
+
+    assert fragment in drv._item_enumeration_blocker()
+    assert drv._item_enumeration_unavailable_kind() == expected_kind
+
+
+def test_the_enumeration_blocker_kinds_are_exactly_the_ones_this_module_handles(monkeypatch):
+    """No blocker condition may invent a kind the verdict has never heard of, and the clear
+    case must stay unclassified.
+
+    The skip below is keyed on a literal string. A driver-side kind this module does not know
+    would fall through to "limitation", which is the safe direction but a silent one -- so the
+    whole producible set is asserted here, where a new one is a failing test and not a mystery
+    bullet in a bug report."""
+    kinds = set()
+    for _label, state, _fragment, _expected in _ENUMERATION_BLOCKER_CASES:
+        kinds.add(_enumeration_blocker_probe(monkeypatch, **state)
+                  ._item_enumeration_unavailable_kind())
+    # Nothing blocking at all: the kind is empty even though every predicate was consulted.
+    clear = _enumeration_blocker_probe(monkeypatch)
+    assert clear._item_enumeration_blocker() == ""
+    assert clear._item_enumeration_unavailable_kind() == ""
+
+    assert kinds == {"no_opener_consumer", "targeting_calibration", ""}
+
+    # PRECEDENCE, not merely membership. An openers-off run on a driver that ALSO has no
+    # calibration and no identity band is still "nobody wanted a list": the blocker answers
+    # with its first condition, so the kind must answer with the first one too. This is the
+    # assertion that fails if the two orders are ever edited apart.
+    both = _enumeration_blocker_probe(
+        monkeypatch, _openers_enabled=False, targeting_calibration=None, identity_band=None,
+        _targeting_calibration_unavailable="none was configured")
+    assert "openers are disabled for this run" in both._item_enumeration_blocker()
+    assert both._item_enumeration_unavailable_kind() == "no_opener_consumer"
+
+
+def test_the_capture_row_records_the_resolver_kind_and_never_re_derives_it():
+    """The other half of the producer pin: the KIND ON THE ROW comes from one function.
+
+    The tests above prove `_item_enumeration_unavailable_kind` answers correctly; this proves
+    the capture path asks IT rather than re-deriving the answer inline, which is how the two
+    orders would drift apart in the first place (the shape this fix replaced was a conditional
+    expression at the call site: `"targeting_calibration" if calibration_blocks... else ""`).
+    Read off hinge.py's AST because that is the only thing that can see a SECOND classifier
+    being added later; a behavioural test can only ever check the classifier it knows about.
+    """
+    from operation_love.drivers import hinge as hinge_mod
+
+    tree = ast.parse(Path(hinge_mod.__file__).read_text())
+    recorded_kinds = []          # every `unavailable_kind=` handed to _invalidate_item_index
+    resolver_results = set()     # every name bound from _item_enumeration_unavailable_kind()
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "_invalidate_item_index"):
+            recorded_kinds.extend(kw.value for kw in node.keywords
+                                  if kw.arg == "unavailable_kind")
+        if (isinstance(node, ast.Assign) and isinstance(node.value, ast.Call)
+                and isinstance(node.value.func, ast.Attribute)
+                and node.value.func.attr == "_item_enumeration_unavailable_kind"):
+            resolver_results.update(t.id for t in node.targets if isinstance(t, ast.Name))
+
+    assert len(recorded_kinds) == 1, (
+        "exactly one call site classifies an enumeration refusal; a second one is a second "
+        "copy of the precedence")
+    assert isinstance(recorded_kinds[0], ast.Name), (
+        "the kind must be a name the resolver produced, never an expression evaluated here")
+    assert recorded_kinds[0].id in resolver_results
+
+
+@pytest.mark.parametrize("state", [{"_openers_enabled": False}, {"accepts_opener": False}],
+                         ids=("openers-off", "app-cannot-attach"))
+def test_a_run_nothing_wanted_a_numbered_list_from_still_completes_cleanly(monkeypatch, state):
+    """ISSUE 1, 2026-09-16: the limitation channel must not fire over configured behaviour.
+
+    A run with `opener.enabled: false` writes the blocker's first sentence on EVERY capture, so
+    the durable verdict came out "COMPLETED SAFELY, WITH LIMITATIONS" for a run that did exactly
+    what it was configured to do -- and worker.py agrees it is not a fault: its "BUG 2" guard
+    sends the bare like and carries on. Re-creating "the verdict cannot tell correct behaviour
+    from a fault" is precisely what this channel was added to fix.
+
+    The reason and the kind are taken from the REAL driver rather than typed here: that is what
+    makes this an end-to-end pin of the two modules' agreement rather than two copies of a
+    string that can drift apart.
+    """
+    drv = _enumeration_blocker_probe(monkeypatch, **state)
+    reason = drv._item_enumeration_blocker()
+    kind = drv._item_enumeration_unavailable_kind()
+    assert reason and kind == "no_opener_consumer"
+    bugreport._LOG_RING.clear()
+    monkeypatch.setattr(
+        bugreport, "_completion_capture_facts",
+        lambda *_: {"coverage_gaps": 0, "coverage_candidates": 0,
+                    "coverage_stop_interrupted_gaps": 0,
+                    "coverage_stop_interrupted_candidates": 0,
+                    "capture_truncated": False,
+                    "items_unavailable": reason,
+                    "items_unavailable_kind": kind,
+                    "items_unavailable_profile": "Sam",
+                    "items_unavailable_after_stop": False},
+    )
+
+    md = bugreport._run_completion_assessment_md(_CompletionHub(), "unused.yaml")
+
+    assert "Outcome: COMPLETED CLEANLY" in md
+    assert "no numbered items at all" not in md
+    assert "Sam" not in md
+
+
+def test_an_old_openers_off_log_is_no_longer_muted_by_a_report_time_config(
+        tmp_path, monkeypatch):
+    """THE CONFIG HALF IS GONE (2026-09-17): a historic row missing the kind entirely must NOT
+    be muted by reading `opener.enabled: false` out of config.yaml at report time.
+
+    This used to be BELT AND BRACES for rows that predate the kind: `_completion_capture_facts`
+    already loads the config, and `opener.enabled: false` looked like the same policy question,
+    so the verdict could "still recognise" an old openers-off row from it. But that premise is
+    false for the current build: `_item_enumeration_unavailable_kind` (hinge.py) returns "" for
+    THREE of the blocker's five LIVE conditions, not only for rows written before the kind
+    existed -- so this exact shape (kind None) also matches a genuine refusal captured under the
+    CURRENT build, and every `items_unavailable` capture row found on disk under data/hinge_debug
+    (10 of them) is exactly that: kind None, genuine fault, none an openers-off policy row.
+    Muting on the config value alone risked silencing every one of those the moment an operator
+    set `opener.enabled: false` before filing the report -- the regression this whole channel
+    exists to prevent. The skip was narrowed to `kind == "no_opener_consumer"` alone; the
+    residual cost pinned here is deliberate over-reporting: a genuinely historic openers-off row
+    now produces one limitation line instead of being silently absorbed.
+
+    End to end on purpose: the facts function is NOT stubbed here, so this also pins that the
+    fact is actually produced and actually consumed.
+    """
+    debug_root = tmp_path / "debug"
+    run = debug_root / _COMPLETION_RUN_ID
+    run.mkdir(parents=True)
+    (run / "actions.jsonl").write_text(json.dumps(
+        {"action": "capture", "profile_name": "Sam", "items": 0, "item_coverage": None,
+         "items_unavailable": ("openers are disabled for this run (opener.enabled: false), so "
+                               "nothing would consume a numbered item list")}) + "\n")
+    cfg = types.SimpleNamespace(
+        enabled_apps=["hinge"],
+        apps={"hinge": {"debug_log": True, "debug_dir": str(debug_root)}},
+        opener=types.SimpleNamespace(enabled=False),
+    )
+    monkeypatch.setattr(oplove_config, "load", lambda _path: cfg)
+    bugreport._LOG_RING.clear()
+
+    facts = bugreport._completion_capture_facts(
+        {"run_id": _COMPLETION_RUN_ID}, "unused.yaml")
+    assert "opener_disabled" not in facts               # the config-read fact is gone
+    assert facts["items_unavailable_kind"] is None      # the old row really has no kind
+
+    md = bugreport._run_completion_assessment_md(_CompletionHub(), "unused.yaml")
+
+    assert "Outcome: COMPLETED CLEANLY" not in md, (
+        "a report-time opener.enabled: false config muted a row with no kind, exactly the "
+        "regression this channel exists to prevent")
+    assert "Outcome: COMPLETED SAFELY, WITH LIMITATIONS" in md
+    assert "no numbered items at all" in md
+
+
+def test_an_openers_on_run_keeps_its_unclassified_item_refusal(tmp_path, monkeypatch):
+    """With openers ENABLED (and unrelated to it), an unclassified refusal is still a
+    limitation. The skip in `_run_completion_assessment_md` fires on `kind ==
+    "no_opener_consumer"` alone (2026-09-17): a row with no kind and no such reason keeps
+    reporting regardless of what config.yaml says."""
+    debug_root = tmp_path / "debug"
+    run = debug_root / _COMPLETION_RUN_ID
+    run.mkdir(parents=True)
+    (run / "actions.jsonl").write_text(json.dumps(
+        {"action": "capture", "profile_name": "Sam", "items": 0, "item_coverage": None,
+         "items_unavailable": "the item index could not be built"}) + "\n")
+    cfg = types.SimpleNamespace(
+        enabled_apps=["hinge"],
+        apps={"hinge": {"debug_log": True, "debug_dir": str(debug_root)}},
+        opener=types.SimpleNamespace(enabled=True),
+    )
+    monkeypatch.setattr(oplove_config, "load", lambda _path: cfg)
+    bugreport._LOG_RING.clear()
+
+    facts = bugreport._completion_capture_facts({"run_id": _COMPLETION_RUN_ID}, "unused.yaml")
+    assert "opener_disabled" not in facts
+
+    md = bugreport._run_completion_assessment_md(_CompletionHub(), "unused.yaml")
+
+    assert "Outcome: COMPLETED SAFELY, WITH LIMITATIONS" in md
+    assert "the item index could not be built" in md
+
+
+def test_a_config_edited_after_the_run_cannot_mute_a_kind_the_driver_stamped(
+        tmp_path, monkeypatch):
+    """The skip no longer reads config.yaml at all (2026-09-17), so an operator editing
+    `opener.enabled` between the run ending and the report being filed cannot affect a kind the
+    driver already stamped at capture time -- this is the regression this test now pins.
+
+    Originally written as a SEAM REVIEW (2026-09-16) for the case where the config-read half and
+    the row's kind disagreed: a `targeting_calibration` kind had to defeat a report-time
+    `opener.enabled: false` reading, because `_item_enumeration_blocker` reaches its calibration
+    condition only PAST `opener.enabled: false` and past "this app cannot attach an opener", so
+    the kind is positive evidence the config reading was stale. That config-read half is now
+    deleted outright (see `_run_completion_assessment_md`'s "THE CONFIG HALF IS GONE" comment),
+    so nothing in config.yaml can reach this decision either way -- this test still exercises the
+    same plausible sequence (a targeting-calibration failure, then the operator switches openers
+    off before filing the report) to prove the kind alone still wins.
+
+    The reason and the kind come from the REAL driver, so this pins the two modules' agreement
+    rather than two copies of a string.
+    """
+    drv = _enumeration_blocker_probe(
+        monkeypatch, targeting_calibration=None,
+        _targeting_calibration_unavailable="none was configured")
+    reason = drv._item_enumeration_blocker()
+    kind = drv._item_enumeration_unavailable_kind()
+    assert kind == "targeting_calibration", kind
+
+    debug_root = tmp_path / "debug"
+    run = debug_root / _COMPLETION_RUN_ID
+    run.mkdir(parents=True)
+    (run / "actions.jsonl").write_text(json.dumps(
+        {"action": "capture", "profile_name": "Sam", "items": 0, "item_coverage": None,
+         "items_unavailable": reason, "items_unavailable_kind": kind}) + "\n")
+    cfg = types.SimpleNamespace(
+        enabled_apps=["hinge"],
+        apps={"hinge": {"debug_log": True, "debug_dir": str(debug_root)}},
+        # The config as it reads NOW -- after the operator switched openers off.
+        opener=types.SimpleNamespace(enabled=False),
+    )
+    monkeypatch.setattr(oplove_config, "load", lambda _path: cfg)
+    bugreport._LOG_RING.clear()
+
+    facts = bugreport._completion_capture_facts({"run_id": _COMPLETION_RUN_ID}, "unused.yaml")
+    assert "opener_disabled" not in facts
+    assert facts["items_unavailable_kind"] == "targeting_calibration"
+
+    md = bugreport._run_completion_assessment_md(_CompletionHub(), "unused.yaml")
+
+    assert "Outcome: COMPLETED CLEANLY" not in md, (
+        "a config edited after the run muted a refusal the driver classified at capture time")
+    assert "Outcome: COMPLETED SAFELY, WITH LIMITATIONS" in md
+    assert "no numbered items at all" in md
+    assert "kind: `targeting_calibration`" in md
+
+
+def test_an_old_row_with_no_kind_now_still_reports_a_genuine_limitation(tmp_path, monkeypatch):
+    """THE BUG THIS PINNED, FIXED (2026-09-17). This test used to be named
+    `test_an_old_row_with_no_kind_is_still_muted_by_an_openers_off_config` and asserted the
+    opposite of what is asserted below -- that a report-time `opener.enabled: false` config
+    muted a row carrying no kind at all. That was the exact regression this whole channel exists
+    to prevent: `_item_enumeration_unavailable_kind` (hinge.py) returns "" for THREE of the
+    blocker's five LIVE conditions, not only for rows written before the kind existed, so a
+    genuine current-build refusal reaches this function with `items_unavailable_kind=None` too.
+    Every `items_unavailable` capture row found on disk under data/hinge_debug (10 of them)
+    carries kind None and is a genuine fault -- none an openers-off policy row -- so muting on
+    the config value here silenced real refusals in practice, not just in theory. This now
+    asserts a row shaped exactly like that MUST still produce a limitation: the skip is keyed
+    solely on `kind == "no_opener_consumer"` (see `_run_completion_assessment_md`).
+    """
+    debug_root = tmp_path / "debug"
+    run = debug_root / _COMPLETION_RUN_ID
+    run.mkdir(parents=True)
+    (run / "actions.jsonl").write_text(json.dumps(
+        {"action": "capture", "profile_name": "Sam", "items": 0, "item_coverage": None,
+         # Written the way a genuine current-build refusal writes it: a kind that normalises to
+         # None, not a stamped `no_opener_consumer`.
+         "items_unavailable": "the item index could not be built",
+         "items_unavailable_kind": ""}) + "\n")
+    cfg = types.SimpleNamespace(
+        enabled_apps=["hinge"],
+        apps={"hinge": {"debug_log": True, "debug_dir": str(debug_root)}},
+        opener=types.SimpleNamespace(enabled=False),
+    )
+    monkeypatch.setattr(oplove_config, "load", lambda _path: cfg)
+    bugreport._LOG_RING.clear()
+
+    facts = bugreport._completion_capture_facts({"run_id": _COMPLETION_RUN_ID}, "unused.yaml")
+    assert facts["items_unavailable_kind"] is None   # '' is normalised away, so it is falsy
+
+    md = bugreport._run_completion_assessment_md(_CompletionHub(), "unused.yaml")
+
+    assert "Outcome: COMPLETED CLEANLY" not in md, (
+        "a report-time opener.enabled: false config muted a genuine refusal with no kind -- "
+        "the exact regression this channel exists to prevent")
+    assert "Outcome: COMPLETED SAFELY, WITH LIMITATIONS" in md
+    assert "no numbered items at all" in md
+    assert "the item index could not be built" in md
+
+
+def test_completion_facts_carry_items_unavailable_and_name_the_stop_from_evidence(
+        tmp_path, monkeypatch):
+    """Both halves of the fix, read off the real row shape hinge.py writes: `items_unavailable`
+    lives TOP-LEVEL on the same capture row (beside a None `item_coverage`), and the Stop is
+    proved by the mid-navigation `navigation_cancelled` row inside that capture's window."""
+    debug_root = tmp_path / "debug"
+    run = debug_root / "completion-test-run"
+    run.mkdir(parents=True)
+    (run / "actions.jsonl").write_text("\n".join(map(json.dumps, [
+        # A preceding clean capture, so the window scan has a real boundary to stop at.
+        {"action": "capture", "profile_name": "Ali", "items": 4, "item_coverage": {
+            "no_dwell_coverage_page_hearts": [], "photo_candidate_page_hearts": [2, 4]}},
+        {"action": "still_photo_dwell_walk_candidate", "heart_ordinal": 6,
+         "outcome": "navigation_cancelled", "reason": "ActionCancelled"},
+        {"action": "capture", "profile_name": "Sam", "items": 0, "item_coverage": None,
+         "items_unavailable": "targeted navigation is unsafe",
+         "items_unavailable_kind": "dwell_chain"},
+    ])) + "\n")
+    cfg = types.SimpleNamespace(
+        enabled_apps=["hinge"],
+        apps={"hinge": {"debug_log": True, "debug_dir": str(debug_root)}},
+    )
+    monkeypatch.setattr(oplove_config, "load", lambda _path: cfg)
+
+    facts = bugreport._completion_capture_facts(
+        {"run_id": "completion-test-run"}, "unused.yaml")
+
+    assert facts["items_unavailable"] == "targeted navigation is unsafe"
+    assert facts["items_unavailable_kind"] == "dwell_chain"
+    assert facts["items_unavailable_profile"] == "Sam"
+    assert facts["items_unavailable_after_stop"] is True
+    # The coverage channel stays at zero on this very row -- which is exactly why it could never
+    # have reported this outcome.
+    assert facts["coverage_gaps"] == 0
+    assert facts["coverage_stop_interrupted_gaps"] == 0
+
+
+def test_completion_facts_do_not_infer_a_stop_from_a_neighbouring_capture(tmp_path, monkeypatch):
+    """The Stop marker must be scoped to the refusing capture's OWN window. A cancellation that
+    belongs to an earlier profile is not evidence about this one."""
+    debug_root = tmp_path / "debug"
+    run = debug_root / "completion-test-run"
+    run.mkdir(parents=True)
+    (run / "actions.jsonl").write_text("\n".join(map(json.dumps, [
+        {"action": "still_photo_dwell_walk_candidate", "heart_ordinal": 6,
+         "outcome": "navigation_cancelled", "reason": "ActionCancelled"},
+        {"action": "capture", "profile_name": "Ali", "items": 3},
+        {"action": "capture", "profile_name": "Sam", "items": 0, "item_coverage": None,
+         "items_unavailable": "targeted navigation is unsafe"},
+    ])) + "\n")
+    cfg = types.SimpleNamespace(
+        enabled_apps=["hinge"],
+        apps={"hinge": {"debug_log": True, "debug_dir": str(debug_root)}},
+    )
+    monkeypatch.setattr(oplove_config, "load", lambda _path: cfg)
+
+    facts = bugreport._completion_capture_facts(
+        {"run_id": "completion-test-run"}, "unused.yaml")
+
+    assert facts["items_unavailable"] == "targeted navigation is unsafe"
+    assert facts["items_unavailable_after_stop"] is False
+
+
+def test_capture_window_stop_marker_accepts_the_mid_navigation_cancellation():
+    """The walk observes one Stop two ways: cooperatively at the top of an iteration ("stop"),
+    or raised THROUGH `navigate_to_item` once the hop began ("navigation_cancelled"). Only the
+    second one fired in run f78ca90856b4, so recognising just "stop" left that Stop invisible to
+    every caller of this helper."""
+    records = [
+        {"action": "capture"},
+        {"action": "still_photo_dwell_walk_candidate", "outcome": "navigation_cancelled"},
+        {"action": "capture"},
+    ]
+
+    assert bugreport._capture_window_has_dwell_walk_stop(records, 2) is True
+    # A plain refusal is NOT a Stop marker: attributing a measurement fault to the operator is
+    # the mirror-image mislabel this whole change exists to remove.
+    records[1]["outcome"] = "navigation_refused"
+    assert bugreport._capture_window_has_dwell_walk_stop(records, 2) is False
+
+
 def test_completion_facts_will_not_follow_a_status_named_run_symlink(tmp_path, monkeypatch):
     """Run IDs are diagnostic input, so their path must not escape the configured debug root."""
     debug_root = tmp_path / "debug"
@@ -622,6 +1198,8 @@ def test_completion_facts_will_not_follow_a_status_named_run_symlink(tmp_path, m
             "coverage_stop_interrupted_gaps": 0,
             "coverage_stop_interrupted_candidates": 0,
             "capture_truncated": False,
+            "items_unavailable": None, "items_unavailable_kind": None,
+            "items_unavailable_profile": None, "items_unavailable_after_stop": False,
         }
 
 
@@ -657,6 +1235,10 @@ def test_completion_facts_scope_dwell_stop_to_latest_capture(tmp_path, monkeypat
         "coverage_stop_interrupted_gaps": 2,
         "coverage_stop_interrupted_candidates": 3,
         "capture_truncated": False,
+        # This capture DID enumerate items, so the separate items_unavailable channel stays
+        # empty -- the two are mutually exclusive by construction in hinge.py.
+        "items_unavailable": None, "items_unavailable_kind": None,
+        "items_unavailable_profile": None, "items_unavailable_after_stop": False,
     }
 
 
@@ -2282,7 +2864,11 @@ def test_debug_log_separates_dwell_navigation_overshoot_from_index_refusal(tmp_p
 
     md = bugreport._one_debug_dir_md("hinge", {"debug_dir": str(tmp_path)})
 
-    assert "dwell-navigation refusals (separate from item-index correspondence):" in md
+    # "and cancellations": `navigation_cancelled` rows render under this heading, and the
+    # bullet beneath it says a requested Stop is "not a targeting or measurement fault" -- so a
+    # heading reading only "refusals" reasserted that mislabel one level up (2026-09-16).
+    assert ("dwell-navigation refusals and cancellations (separate from item-index "
+            "correspondence):") in md
     assert "page heart 6 at navigation frame 1" in md
     assert "dwell-navigation refusal `scroll_overshot`" in md
     assert "step 292px; bound 292px; spacing 812px; sized against 812px" in md
@@ -2309,7 +2895,12 @@ def test_dwell_navigation_refusal_summary_tolerates_legacy_and_malformed_rows(tm
     md = bugreport._one_debug_dir_md("hinge", {"debug_dir": str(tmp_path)})
 
     assert "page heart 2: dwell-navigation navigation_refused (`scroll_overshot`)" in md
-    assert "legacy/incomplete trace has no structured plan" in md
+    # `scroll_overshot` is a coded refusal, not one of the five uncoded exception classes, so
+    # this row gets the NEUTRAL sentence: it says what is missing and claims nothing about when
+    # the row was written. "legacy/incomplete trace" was an age no row records (2026-09-16).
+    assert "this row carries no structured refusal telemetry" in md
+    assert "legacy/incomplete" not in md          # the run DIRECTORY is named ...legacy; the
+                                                  # rendered prose must not be
     assert "unknown page heart: dwell-navigation refusal `bad' # fake heading`" in md
     assert "planned step telemetry unavailable" in md
     assert not any(line.strip().startswith("# fake heading") for line in md.splitlines())
@@ -2331,6 +2922,58 @@ def test_dwell_navigation_refusal_summary_renders_below_entry_after_a_real_gestu
     ])
 
     assert "page heart 4: dwell-navigation below_entry_after_gesture (`below_entry`)" in md
+
+
+def test_dwell_navigation_summary_renders_a_mid_navigation_stop_as_a_stop():
+    """BUG REPORT 2026-09-16, run f78ca90856b4. The report rendered, verbatim:
+
+        "- page heart 6: dwell-navigation navigation_refused (`ActionCancelled`);
+         legacy/incomplete trace has no structured plan, measured climb, or anchor-return
+         telemetry"
+
+    for a row the then-current build had written minutes earlier. Two separate false claims: the
+    operator's own Stop was filed as a driver refusal, and a fresh row was called legacy. The
+    driver now writes the `navigation_cancelled` token for the first, and this renderer must
+    honour this module's own norm (see `_item_manifest_md`: "A Stop is not a failure to diagnose,
+    so this says so plainly rather than borrowing the refusal wording")."""
+    md = bugreport._dwell_navigation_refusal_summary_md([
+        json.dumps({
+            "action": "still_photo_dwell_walk_candidate",
+            "heart_ordinal": 6,
+            "outcome": "navigation_cancelled",
+            "reason": "ActionCancelled",
+        }),
+    ])
+
+    assert ("page heart 6: dwell-navigation CANCELLED by the requested Stop "
+            "(`ActionCancelled`)") in md
+    assert "nothing here is a targeting or measurement fault" in md
+    # The event must still be EXPLAINED: a token missing from the renderer's accepted set makes
+    # the whole section render nothing at all, which is the regression this test guards.
+    assert md.strip()
+    assert "refusal" not in md
+    assert "legacy" not in md
+
+
+def test_dwell_navigation_summary_names_the_uncoded_refusal_classes_without_dating_them():
+    """The mislabel was never cancellation-specific. All five classes hinge.py's uncoded handlers
+    catch are current-schema paths that by construction carry NO `navigation_refusal` dict, and
+    `return_unverified` rows carry no `reason` key at all — yet every one of them rendered as a
+    "legacy/incomplete trace". Say what the refusal class can supply; never infer an age no row
+    records."""
+    md = bugreport._dwell_navigation_refusal_summary_md([
+        json.dumps({"action": "still_photo_dwell_walk_candidate", "heart_ordinal": 3,
+                    "outcome": "navigation_refused", "reason": "ShiftEstimationError"}),
+        json.dumps({"action": "still_photo_dwell_walk_candidate", "heart_ordinal": 5,
+                    "outcome": "return_unverified"}),
+    ])
+
+    assert ("page heart 3: dwell-navigation navigation_refused (`ShiftEstimationError`); this "
+            "refusal class carries no measurement, so no structured plan, measured climb or "
+            "anchor-return telemetry exists for it") in md
+    assert ("page heart 5: dwell-navigation return_unverified (`not recorded`); this row "
+            "carries no structured refusal telemetry") in md
+    assert "legacy" not in md
 
 
 def test_dwell_navigation_chain_refusal_reports_pair_and_both_estimator_directions(tmp_path):
@@ -2621,6 +3264,11 @@ def test_item_index_summary_keeps_long_geometry_once_and_separates_trailing_satu
         "evidence_frames": ["item_index_refused_deadbeef_frame_19.png"],
         "evidence_sidecar": "item_index_refused_deadbeef_evidence.json",
     }
+    # No `repairs` key at all -- this is the shape a LEGACY row has (notes only, before hinge.py
+    # carried structured repair provenance). `repairs` and `notes` are orthogonal (2026-09-17,
+    # corrected same day; see `_item_index_note_bearing_records`), so this record contributes
+    # nothing to the "conservative repairs" heading (no repairs) and its notes land under
+    # "construction notes" regardless of the action name it happens to carry.
     repaired = {"action": "item_index_repaired", "notes": [
         "source frame 20 (index frame 19)'s sighting spans the proven card boundary",
         "source frame 20 (index frame 19)'s sighting spans the proven card boundary",
@@ -2636,7 +3284,8 @@ def test_item_index_summary_keeps_long_geometry_once_and_separates_trailing_satu
     assert "geometry sidecar `item_index_refused_deadbeef_evidence.json`" in md
     assert "main realised cadence (3 measured): min 240px, median 245px, max 250px" in md
     assert "trailing scroll saturation at step 3 was 15px" in md
-    assert "item-index conservative repairs:" in md
+    assert "item-index construction notes (not from the screen-fixed check):" in md
+    assert "item-index conservative repairs:" not in md
     assert md.count("source frame 20 (index frame 19)") == 1
 
 
@@ -2787,6 +3436,216 @@ def test_item_index_repair_summary_keeps_a_measured_shift_in_whole_pixels():
     })])
 
     assert "raw measured 0px → effective measured 440px" in summary
+
+
+def test_item_index_repair_summary_excludes_a_legacy_empty_repairs_row():
+    """CROSS-AGENT CONTRACT (2026-09-17, corrected same day TWICE): the "conservative repairs"
+    heading must never assert a repair that never happened.
+
+    This is the exact record from the report for run 079af74682f1:
+    `{"action":"item_index_repaired","repairs":[],"notes":["the leading strip at frame rows
+    368..410, ... it is placed on the page exactly as it would have been before this check
+    existed"]}` -- a LEGACY row whose `repairs` list is empty. `_item_index_repair_summary_md`
+    reads only `repairs`, so an empty (or absent) list contributes nothing here regardless of
+    what `notes` says -- see `_item_index_screen_fixed_notes_summary_md` for where this
+    particular note belongs instead.
+    """
+    summary = bugreport._item_index_repair_summary_md([json.dumps({
+        "action": "item_index_repaired",
+        "repairs": [],
+        "notes": ["the leading strip at frame rows 368..410, seen in frame(s) [0], was only "
+                 "ever seen at one page offset (0), so nothing distinguishes screen-pinned "
+                 "chrome from page content here; it is placed on the page exactly as it would "
+                 "have been before this check existed"],
+    })])
+
+    assert summary == ""
+
+
+def test_screen_fixed_notes_summary_renders_a_legacy_row_via_text_fallback():
+    """A LEGACY row -- no `screen_fixed_notes` field, only the merged `notes` -- must still land
+    a genuine `_screen_fixed_islands` note under the screen-fixed heading, recovered purely from
+    `_SCREEN_FIXED_NOTE_TEXT_PREFIX` (`_item_index_note_is_screen_fixed`'s fallback). Every real
+    run on disk as of this fix predates the field, so this fallback path is not theoretical --
+    it is the ONLY path every one of the five runs named in this fix's verification exercises.
+    """
+    summary = bugreport._item_index_screen_fixed_notes_summary_md([json.dumps({
+        "action": "item_index_repaired",
+        "repairs": [],
+        "notes": ["the leading strip at frame rows 368..410, seen in frame(s) [0], was only "
+                 "ever seen at one page offset (0), so nothing distinguishes screen-pinned "
+                 "chrome from page content here; it is placed on the page exactly as it would "
+                 "have been before this check existed"],
+    })])
+
+    assert "the leading strip at frame rows 368..410" in summary
+
+
+def test_construction_notes_summary_excludes_a_legacy_screen_fixed_note():
+    """The mirror of the test above: the SAME legacy record's screen-fixed note must NOT also
+    appear under "construction notes" -- a note has exactly one home, not two."""
+    summary = bugreport._item_index_construction_notes_summary_md([json.dumps({
+        "action": "item_index_repaired",
+        "repairs": [],
+        "notes": ["the leading strip at frame rows 368..410, seen in frame(s) [0], was only "
+                 "ever seen at one page offset (0), so nothing distinguishes screen-pinned "
+                 "chrome from page content here; it is placed on the page exactly as it would "
+                 "have been before this check existed"],
+    })])
+
+    assert summary == ""
+
+
+def test_construction_notes_summary_renders_the_new_action_name():
+    """hinge.py's neutral action "item_index_notes" (used when `repairs` is empty AND no note
+    came from `_screen_fixed_islands` -- the rare 2-row real-data case, e.g. run 5554d6fc51aa)
+    renders an ordinary `_assemble` note through the construction-notes heading."""
+    summary = bugreport._item_index_construction_notes_summary_md([json.dumps({
+        "action": "item_index_notes",
+        "repairs": [],
+        "notes": ["the heartless partial block at page rows 626..668 is retained as uncroppable "
+                 "but is ordinal-safe: one failure-free frame heart-scanned every page row "
+                 "537..737 between its complete neighbouring blocks"],
+    })])
+
+    assert "ordinal-safe" in summary
+
+
+def test_screen_fixed_notes_summary_prefers_the_structured_field_over_text():
+    """A NEW-format record (carries `screen_fixed_notes`) is classified by that field, not by
+    text pattern -- so a note the field does NOT list stays out of the screen-fixed heading even
+    if a future producer's wording happened to start with the same words, and a note the field
+    DOES list is included. This is `_item_index_note_is_screen_fixed` preferring the structured
+    field whenever it is present (a list, even an empty one, short-circuits the text fallback).
+    """
+    rec = json.dumps({
+        "action": "item_index_screen_fixed_notes",
+        "repairs": [],
+        "notes": ["the leading strip at frame rows 1..2 is real screen-fixed prose",
+                 "an unrelated construction note that does not start with that phrase"],
+        "screen_fixed_notes": ["the leading strip at frame rows 1..2 is real screen-fixed prose"],
+    })
+
+    screen_fixed = bugreport._item_index_screen_fixed_notes_summary_md([rec])
+    construction = bugreport._item_index_construction_notes_summary_md([rec])
+
+    assert "real screen-fixed prose" in screen_fixed
+    assert "unrelated construction note" not in screen_fixed
+    assert "unrelated construction note" in construction
+    assert "real screen-fixed prose" not in construction
+
+
+def test_screen_fixed_notes_summary_does_not_exclude_a_record_that_also_repaired():
+    """THE REVERSE MISS (found 2026-09-17 on run 0e4257f20e64): a genuine screen-fixed
+    declination note that rides along WITH a shift repair on the SAME record must still surface
+    under the screen-fixed heading. The FIRST cut of this fix (repairs-emptiness-keyed) hid this
+    exact note under "conservative repairs" instead -- the placement this design eliminates by
+    bucketing PER NOTE rather than per record."""
+    summary = bugreport._item_index_screen_fixed_notes_summary_md([json.dumps({
+        "action": "item_index_repaired",
+        "item_index_runtime": {"algorithm_id": "bounded-card-split-v13"},
+        "repairs": [{
+            "path": "v12_mute_card_track",
+            "source_pair": [7, 9],
+            "raw": {"status": "measured", "delta_px": 0},
+            "effective": {"status": "measured", "delta_px": 440},
+        }],
+        "notes": ["the leading strip at frame rows 329..371 was only ever seen at one page "
+                 "offset, so it is placed on the page exactly as it would have been before "
+                 "this check existed"],
+    })])
+
+    assert ("the leading strip at frame rows 329..371 was only ever seen at one page offset"
+            in summary)
+
+
+def test_item_index_summary_separates_repairs_screen_fixed_and_construction_notes(tmp_path):
+    """END TO END, through `_one_debug_dir_md`: reproduces all four consequences named in the
+    2026-09-17 fix-review, TWICE corrected, on the exact report shape the real runs produced.
+
+      1. FALSE ASSERTION (run 5554d6fc51aa) -- an ordinary `_assemble` note with NO repair and NO
+         screen-fixed mechanism must land only under "construction notes", never a heading
+         asserting a screen-fixed placement verdict.
+      2. THE REVERSE MISS (run 0e4257f20e64) -- a genuine screen-fixed note riding with an
+         unrelated shift repair on the SAME record must still appear under the screen-fixed
+         heading, not disappear (or get relabelled) because its record also repaired something.
+      3. DOUBLE PRINT (run 6de69d385cc6) -- the identical screen-fixed note string, once on a
+         repaired record and once on an unrepaired record, must render EXACTLY ONCE in the whole
+         report.
+      4. WORDING -- the screen-fixed heading may not claim a direction ("could not place" implied
+         the opposite of what the do-nothing branch does).
+    """
+    run = tmp_path / "run_item_index_notes_vs_repairs"
+    run.mkdir(parents=True)
+    shared_screen_fixed_note = (
+        "the leading strip at frame rows 368..411, seen in frame(s) [0], was only ever seen at "
+        "one page offset (0), so nothing distinguishes screen-pinned chrome from page content "
+        "here; it is placed on the page exactly as it would have been before this check existed")
+    ordinal_safe_note = ("the heartless partial block at page rows 626..668 is retained as "
+                         "uncroppable but is ordinal-safe: one failure-free frame heart-scanned "
+                         "every page row 537..737 between its complete neighbouring blocks")
+    # (1) FALSE ASSERTION shape: an ordinary assembly note, no repairs, no screen-fixed note.
+    notes_only = {"action": "item_index_notes", "repairs": [], "notes": [ordinal_safe_note]}
+    # (2)+(3) REVERSE MISS + DOUBLE PRINT shape: a repaired record carrying the SAME
+    # screen-fixed note text that also appears, unrepaired, on a sibling record -- reproducing
+    # run 6de69d385cc6's shared-note shape.
+    repaired_with_shared_note = {
+        "action": "item_index_repaired",
+        "item_index_runtime": {"algorithm_id": "bounded-card-split-v16"},
+        "repairs": [{
+            "path": "v12_mute_card_track", "source_pair": [17, 18],
+            "raw": {"status": "no_consensus", "delta_px": None},
+            "effective": {"status": "measured", "delta_px": 507},
+        }],
+        "notes": [shared_screen_fixed_note],
+    }
+    unrepaired_with_shared_note = {"action": "item_index_screen_fixed_notes", "repairs": [],
+                                   "notes": [shared_screen_fixed_note]}
+    (run / "actions.jsonl").write_text(
+        "\n".join(map(json.dumps,
+                      [notes_only, repaired_with_shared_note, unrepaired_with_shared_note]))
+        + "\n")
+
+    md = bugreport._one_debug_dir_md("hinge", {"debug_dir": str(tmp_path)})
+
+    assert "item-index conservative repairs:" in md
+    assert "raw no_consensus — → effective measured 507px" in md
+    assert "item-index screen-fixed check notes:" in md
+    assert "item-index construction notes (not from the screen-fixed check):" in md
+    # (1) the ordinal-safe success note must sit under construction notes, never screen-fixed.
+    assert bugreport._sanitize_inline(ordinal_safe_note) in md
+    assert "could not place" not in md
+    # (2) the shared note (attached to a REPAIRED record) still surfaces under screen-fixed.
+    # (3) ...and exactly once in the whole report, not once per record that carried it.
+    assert md.count(bugreport._sanitize_inline(shared_screen_fixed_note)) == 1
+
+
+def test_compact_debug_tail_line_points_each_note_at_the_heading_it_actually_landed_under():
+    """`_compact_debug_tail_line` must name whichever heading(s) THIS record's notes actually
+    landed under (2026-09-17, corrected same day TWICE): a record can straddle both (run
+    0e4257f20e64 has a screen-fixed note and repair-prose construction notes on the SAME row), so
+    the pointer names both headings when that happens rather than picking one arbitrarily."""
+    repaired_with_screen_fixed_only = json.dumps({
+        "action": "item_index_repaired", "repairs": [{"path": "x"}],
+        "notes": ["the leading strip at frame rows 1..2 riding with a real repair"]})
+    construction_only = json.dumps({"action": "item_index_notes", "repairs": [],
+                                    "notes": ["an ordinary declination note"]})
+    both_at_once = json.dumps({
+        "action": "item_index_repaired", "repairs": [{"path": "x"}],
+        "notes": ["the leading strip at frame rows 1..2 riding with a real repair",
+                 "an ordinary declination note"]})
+
+    compacted_screen_fixed = json.loads(
+        bugreport._compact_debug_tail_line(repaired_with_screen_fixed_only))
+    compacted_construction = json.loads(bugreport._compact_debug_tail_line(construction_only))
+    compacted_both = json.loads(bugreport._compact_debug_tail_line(both_at_once))
+
+    assert compacted_screen_fixed["notes"] == ["see item-index screen-fixed check notes summary "
+                                              "above"]
+    assert compacted_construction["notes"] == ["see item-index construction notes summary above"]
+    assert compacted_both["notes"] == [
+        "see item-index screen-fixed check notes and item-index construction notes summary "
+        "above"]
 
 
 def test_debug_report_surfaces_item_numbering_manifest_and_compacts_raw_tail(tmp_path):
@@ -5001,32 +5860,55 @@ def _geometry_frame(index, offset, blocks, runs):
 
 
 def _block(y0, y1, *, kind="partial", top_kind="background_run", top_observed=False,
-           bottom_kind="gutter", bottom_observed=True, digest=None):
+           bottom_kind="gutter", bottom_observed=True, digest=None, post_check=False):
+    """One `blocks` entry. `post_check` selects WHICH WRITER wrote it.
+
+    `post_check=False` is the historic shape: `content_digest` appears only when a digest was
+    taken and `unanchored_reason` does not exist at all, which is what the two genuinely
+    pre-check sidecars on disk (`78d364c5527d`, `8fb11094ef4d`) look like.
+
+    `post_check=True` reproduces the CURRENT writer at hinge.py's `geometry_record`, which emits
+    BOTH keys on EVERY block unconditionally — `content_digest` None off an unanchored strip, and
+    `unanchored_reason` None unless a digest was taken. Their PRESENCE (never their truthiness)
+    is the only thing in a sidecar that dates it against `item_index._screen_fixed_islands`, so
+    the two shapes must stay distinguishable here or the report's provenance branch is untested.
+    """
     record = {"frame_rows": [y0, y1], "page_rows": None, "kind": kind, "complete": False,
               "top_observed": top_observed, "bottom_observed": bottom_observed,
               "top_kind": top_kind, "bottom_kind": bottom_kind,
               "hearts": {"frame_rows": [], "page_rows": []}}
-    if digest is not None:
+    if post_check:
+        record["content_digest"] = digest
+        record["unanchored_reason"] = (
+            "a leading strip this frame cannot place: page background on both sides"
+            if digest else None)
+    elif digest is not None:
         record["content_digest"] = digest
     return record
 
 
-def _pinned_header_geometry(frames=6, *, unanchored=False, digest=None):
+def _pinned_header_geometry(frames=6, *, unanchored=False, digest=None, post_check=False):
     """The 2026-08-28 shape: a 43px strip at frame rows 368..411 that never moves, an over-long
-    106px background run beneath it that is not gutter-length, and scrolling content below."""
+    106px background run beneath it that is not gutter-length, and scrolling content below.
+
+    `post_check` is threaded straight through to `_block`: it changes only which writer's key set
+    the fixture emits, never any geometry, so the same shape can be presented as a pre-check or a
+    post-check sidecar and the report's two provenance sentences are each exercised on it.
+    """
     records = []
     for i in range(frames):
         offset = i * 500
         if unanchored:
             blocks = [_block(368, 411, kind="unanchored", top_kind="background_run",
                              bottom_kind="unanchored_island", bottom_observed=False,
-                             digest=digest),
-                      _block(517, 1400 + i, kind="selectable", top_kind="unanchored_island")]
+                             digest=digest, post_check=post_check),
+                      _block(517, 1400 + i, kind="selectable", top_kind="unanchored_island",
+                             post_check=post_check)]
             runs = [((300, 368), "clipped"), ((411, 517), "unanchored_island")]
         else:
             # Pre-check shape: the strip was MERGED into the clipped card below it, which is
             # exactly the bug — one block claiming a top 149px above any real content.
-            blocks = [_block(368, 1000 + i, kind="partial")]
+            blocks = [_block(368, 1000 + i, kind="partial", post_check=post_check)]
             runs = [((300, 368), "clipped"), ((411, 517), "too_long")]
         records.append(_geometry_frame(i, offset, blocks, runs))
     return records
@@ -5073,16 +5955,68 @@ def test_geometry_section_names_the_pinned_top_edge_the_refusal_only_hinted_at(t
 
 def test_geometry_section_says_an_old_sidecar_predates_the_screen_fixed_check(tmp_path):
     """No `unanchored` record at all is NOT proof that the strip is page content. Say the check
-    was unavailable, never print a false negative."""
+    was unavailable, never print a false negative.
+
+    KEYED ON SOMETHING REAL (2026-09-16): this branch is now reached only when NO block in the
+    whole sidecar carries either hold-out key, which is exactly the shape of the two genuinely
+    pre-check files on disk. It is not the fallback for "no unanchored block", because a
+    post-check capture whose segmentation placed everything also has none — see the sibling test
+    below."""
     run = _refused_run(tmp_path, _pinned_header_geometry(frames=4))
 
     md = _geometry_md(run)
 
     assert "screen-fixed verdict: unavailable" in md
-    assert "records no `unanchored` block at all" in md
-    assert "predates segment.py's screen-fixed island check" in md
+    assert "no block in this capture's geometry carries the screen-fixed hold-out evidence" in md
+    assert "`unanchored_reason`/`content_digest`" in md
+    assert "written before item_index._screen_fixed_islands existed" in md
+    assert "segment.py's screen-fixed island check" not in md   # the wrong module, and a claim
+    assert "PROVEN screen-fixed" not in md                      # this file's own keys refute
+    assert "NOT proven" not in md
+
+
+def test_geometry_section_does_not_call_a_current_sidecar_older_than_the_check(tmp_path):
+    """FOUND 2026-09-16 on run f78ca90856b4, whose sidecar carries `unanchored_reason` on 54 of
+    54 blocks: the else-branch led with "so it predates segment.py's screen-fixed island check"
+    and demoted the TRUE cause to a parenthetical — on what is the COMMON path. The file itself
+    settles it. `hinge.geometry_record` emits `content_digest` and `unanchored_reason` on every
+    block unconditionally, and both shipped in the same commit as `segment.BLOCK_UNANCHORED` and
+    `item_index._screen_fixed_islands`, so a block carrying either key was written by a writer
+    that already had the check. Same geometry as the test above; only the writer differs."""
+    run = _refused_run(tmp_path, _pinned_header_geometry(frames=4, post_check=True),
+                       name="run_post_check_sidecar")
+
+    md = _geometry_md(run)
+
+    assert "screen-fixed verdict: none to give" in md
+    assert ("this capture's segmentation placed every block on the page and recorded no "
+            "`unanchored` strip to decide on") in md
+    # The two claims this branch exists to stop making.
+    assert "predates" not in md
+    assert "unavailable" not in md
     assert "PROVEN screen-fixed" not in md
     assert "NOT proven" not in md
+
+
+def test_geometry_section_reports_unusable_unanchored_rows_without_dating_the_file(tmp_path):
+    """A sidecar that DOES record unanchored strips plainly has the check; rows this file cannot
+    parse are a parsing limit, not an age. This branch must sit ahead of both provenance
+    sentences so a half-written sidecar is never described by either."""
+    geometry = _pinned_header_geometry(frames=3, post_check=True)
+    for frame in geometry:
+        # Appended, never substituted for blocks[0]: the leading block must stay parseable or
+        # the whole section degrades to silence before any verdict is reached.
+        bad = _block(368, 411, kind="unanchored", digest="a" * 64, post_check=True)
+        bad["frame_rows"] = ["x", None]
+        frame["blocks"].append(bad)
+    run = _refused_run(tmp_path, geometry, name="run_unusable_unanchored_rows")
+
+    md = _geometry_md(run)
+
+    assert ("this capture's geometry records `unanchored` strip(s) but none with usable frame "
+            "rows, so the verdict cannot be re-derived from this file") in md
+    assert "predates" not in md
+    assert "placed every block on the page" not in md
 
 
 def test_geometry_section_proves_a_screen_fixed_strip_when_the_sidecar_carries_digests(tmp_path):

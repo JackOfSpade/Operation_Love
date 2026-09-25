@@ -149,6 +149,36 @@ _ITEM_INDEX_GEOMETRY_SIDECAR_BYTES = 8_000_000   # a sidecar larger than this is
 # token this section keys on keeps bugreport.py pure-stdlib (segment.py needs cv2/numpy,
 # which this module deliberately never hard-imports) while making the coupling greppable.
 _SIDECAR_UNANCHORED_BLOCK_KIND = "unanchored"    # == segment.BLOCK_UNANCHORED
+# The same hold-out evidence, written by hinge.py's `geometry_record` on EVERY block
+# unconditionally (both keys, `unanchored_reason` merely None off an unanchored strip). Their
+# PRESENCE is therefore what dates a sidecar against the screen-fixed island check: they shipped
+# in the same commit as `segment.BLOCK_UNANCHORED` and `item_index._screen_fixed_islands`, so a
+# block carrying either key was written by a writer that already had the check. See
+# `_sidecar_geometry_lines`' final branch for why neither `schema_version` nor the runtime hashes
+# can date it -- both predate that commit.
+_SIDECAR_SCREEN_FIXED_EVIDENCE_KEYS = ("unanchored_reason", "content_digest")
+
+# The driver outcome token an operator Stop mid-navigation writes in place of
+# "navigation_refused" (hinge.py's `_dbg_still_photo_walk_candidate`, 2026-09-16). Named here so
+# both the dwell-navigation renderer and the Stop-attribution fallback key on ONE constant: a
+# token missing from the renderer's accepted set renders NOTHING at all for the event.
+_DWELL_NAVIGATION_CANCELLED = "navigation_cancelled"
+
+# The five exception classes hinge.py's two uncoded dwell-navigation handlers catch, recorded on
+# the row verbatim as `reason=type(exc).__name__`. None of them carries a measurement, so a row
+# naming one of these has no plan/climb/anchor-return telemetry BY CONSTRUCTION -- it is not an
+# old row, and describing it as a "legacy/incomplete trace" asserted an age nothing on the row
+# supports (found 2026-09-16 on a row the CURRENT build had written minutes earlier).
+# A DUPLICATED LIST, deliberately: this module is pure-stdlib on purpose and never imports the
+# drivers (hinge.py pulls in cv2/numpy), so the names are copied rather than derived. It fails
+# SOFT if hinge.py ever widens that catch tuple -- an unlisted class simply gets the neutral
+# "carries no structured refusal telemetry" sentence, which is still true of it. The one thing
+# this list must never do is gain a name hinge.py does NOT raise, which would assert an absence
+# of measurement for a refusal that had one.
+_UNCODED_DWELL_NAVIGATION_REFUSAL_CLASSES = frozenset({
+    "ActionCancelled", "ScrollStepError", "SegmentationError", "ShiftEstimationError",
+    "IdentityError",
+})
 _LOG_RING: deque[str] = deque(maxlen=_MAX_REPORT_LINES)
 _LOG_LOCK = threading.Lock()
 _PROCESS_START = time.time()
@@ -691,12 +721,20 @@ def _redact_report_output(text: str) -> str:
 
 
 def _capture_window_has_dwell_walk_stop(records: list[dict], capture_index: int) -> bool:
-    """Whether Stop interrupted the candidate walk for one completed capture window."""
+    """Whether Stop interrupted the candidate walk for one completed capture window.
+
+    TWO tokens, because the walk has two ways of observing the same Stop. "stop" is the
+    COOPERATIVE one: the loop polled `should_stop` at the top of an iteration and never started
+    the hop. "navigation_cancelled" (2026-09-16) is the one raised THROUGH `navigate_to_item`
+    after the hop began, which the driver distinguishes from a genuine measurement fault by
+    reading `should_stop` in the handler that caught the cancellation. Both say the operator
+    ended the walk; only the second one existed in the run that exposed this gap.
+    """
     for prior in reversed(records[:capture_index]):
         if prior.get("action") == "capture":
             break
         if (prior.get("action") == "still_photo_dwell_walk_candidate"
-                and prior.get("outcome") == "stop"):
+                and prior.get("outcome") in {"stop", _DWELL_NAVIGATION_CANCELLED}):
             return True
     return False
 
@@ -737,6 +775,15 @@ def _completion_capture_facts(st: dict, config_path: str) -> dict[str, object]:
     A debug base can contain many old runs, so this intentionally refuses to fall back to its
     newest folder: only a directory named by the status snapshot's run_id belongs to the run
     being assessed. The facts already exist in the driver JSONL; this extracts its last capture.
+
+    ``items_unavailable`` IS READ HERE BECAUSE THE COVERAGE CHANNEL IS ANTI-CORRELATED WITH IT
+    (found 2026-09-16, run f78ca90856b4). This function used to read only ``item_coverage`` and
+    ``capture_truncated``, and hinge.py writes ``item_coverage=None`` exactly when the payload is
+    None -- i.e. whenever enumeration produced nothing at all. So the one Stop-aware limitation
+    the verdict had could only fire for a capture that still enumerated SOME items, while a Stop
+    that destroyed the item index ENTIRELY left every fact at zero and the durable verdict read
+    "COMPLETED CLEANLY" over an abandoned profile. The refusal was never invisible -- three other
+    sections render it -- but the verdict line is the durable one, and it was silent.
     """
     run_id = st.get("run_id")
     if (not isinstance(run_id, str) or not run_id or run_id in {".", ".."}
@@ -751,7 +798,11 @@ def _completion_capture_facts(st: dict, config_path: str) -> dict[str, object]:
     facts: dict[str, object] = {"coverage_gaps": 0, "coverage_candidates": 0,
                                 "coverage_stop_interrupted_gaps": 0,
                                 "coverage_stop_interrupted_candidates": 0,
-                                "capture_truncated": False}
+                                "capture_truncated": False,
+                                "items_unavailable": None,
+                                "items_unavailable_kind": None,
+                                "items_unavailable_profile": None,
+                                "items_unavailable_after_stop": False}
     for app in cfg.enabled_apps:
         opts = apps.get(app)
         if not isinstance(opts, dict) or not opts.get("debug_log"):
@@ -794,6 +845,25 @@ def _completion_capture_facts(st: dict, config_path: str) -> dict[str, object]:
                             int(facts["coverage_stop_interrupted_candidates"]) + len(candidates))
             facts["capture_truncated"] = bool(facts["capture_truncated"] or
                                                record.get("capture_truncated"))
+            # The SAME row's top-level refusal fields (hinge.py writes them beside
+            # `item_coverage`, deliberately NOT inside it -- see that call site's own comment:
+            # "`item_coverage` is None whenever the payload is -- which is exactly the refusal
+            # case this aggregate exists to explain"). Only the first enabled app to report one
+            # wins, matching every other fact here: this is a verdict line, not a per-app table.
+            unavailable = record.get("items_unavailable")
+            if unavailable and facts["items_unavailable"] is None:
+                facts["items_unavailable"] = str(unavailable)
+                kind = record.get("items_unavailable_kind")
+                facts["items_unavailable_kind"] = str(kind) if kind else None
+                profile = record.get("profile_name")
+                facts["items_unavailable_profile"] = str(profile) if profile else None
+                # WHY A STOP IS ASSERTED ONLY FROM EVIDENCE. The two causes read identically on
+                # this row -- an abandoned index says nothing about who abandoned it -- so the
+                # cause is taken from the driver's own walk rows inside THIS capture's window:
+                # a cooperative "stop" or the mid-navigation "navigation_cancelled" token. With
+                # no such row the verdict says targeting failure, never "probably a Stop".
+                facts["items_unavailable_after_stop"] = _capture_window_has_dwell_walk_stop(
+                    records, capture_index)
             break
     return facts
 
@@ -1050,6 +1120,87 @@ def _run_completion_assessment_md(hub_state, config_path: str) -> str:
                     f"still-photo coverage skipped {remaining_gaps} photo candidate(s)")
         else:
             limitations.append(f"still-photo coverage skipped {gaps}{total} photo candidate(s)")
+    # ITEMS_UNAVAILABLE IS ITS OWN CHANNEL, not a coverage gap. The gap counters above read
+    # `item_coverage`, which hinge.py sets to None exactly when the payload is None -- so the
+    # WORSE outcome (no item index at all, nothing an opener could be aimed at) could never
+    # reach them and the verdict came out COMPLETED CLEANLY over it. See
+    # `_completion_capture_facts`.
+    unavailable = facts.get("items_unavailable")
+    kind = facts.get("items_unavailable_kind")
+    # ...BUT "NOTHING ASKED FOR A NUMBERED LIST" IS NOT A LIMITATION OF THE RUN (second
+    # fix-review pass, 2026-09-16). The wording below stopped this line CLAIMING the profile
+    # was abandoned; it still DEGRADED the verdict. hinge.py's `_item_enumeration_blocker`
+    # records `items_unavailable` for five conditions, and its first two -- `opener.enabled:
+    # false`, and an app that cannot attach an opener at swipe time -- mean no consumer for a
+    # numbered list existed in the first place. worker.py agrees and deliberately does not stop
+    # for them (its "BUG 2" guard, the `not disabled` check in front of the `items_unavailable`
+    # stop): it sends the bare like and carries on. So a run configured with openers off wrote
+    # that sentence on EVERY capture and came out "COMPLETED SAFELY, WITH LIMITATIONS" over
+    # profiles it handled exactly as configured -- noise, and the same "the verdict cannot tell
+    # correct behaviour from a fault" failure this whole channel was added to fix. The driver
+    # now says which it was, and only that one is skipped: the other three conditions mean the
+    # run WANTED a numbered list and could not safely produce one, and they keep their
+    # limitation.
+    #
+    # THE CONFIG HALF IS GONE (2026-09-17). This skip used to also fire for a row carrying no
+    # kind at all, reading `opener.enabled: false` out of config.yaml AT REPORT TIME on the
+    # premise that a kind-less row PREDATES the kind and is therefore a historic openers-off
+    # capture -- an age marker. That premise is false for the current build:
+    # `_item_enumeration_unavailable_kind` (hinge.py) returns "" for THREE of the blocker's five
+    # LIVE conditions, not only for rows written before the kind existed, and every one of those
+    # genuine refusals also reaches this function with `items_unavailable_kind=None`. Reading
+    # the config at report time then muted them identically to a real openers-off row -- and
+    # every `items_unavailable` capture row on disk under data/hinge_debug (10 of them) carries
+    # kind None and is a genuine fault, none an openers-off policy row, so this was not a
+    # theoretical risk. Using kind-falsiness as an age marker is the same "records must not
+    # assert what they never knew" defect commit 64e5d6b6 fixed elsewhere. The skip now keys on
+    # the kind alone: it is stamped by the driver AT CAPTURE TIME, so a current-build
+    # openers-off row is still muted correctly, and the only cost is one spurious limitation
+    # line on a HISTORIC openers-off row written before the kind existed -- over-reporting,
+    # which every comment in this channel already names as the cheap direction.
+    no_opener_consumer = kind == "no_opener_consumer"
+    if isinstance(unavailable, str) and unavailable and not no_opener_consumer:
+        profile = facts.get("items_unavailable_profile")
+        who = (f" for profile `{_sanitize_inline(str(profile))}`"
+               if isinstance(profile, str) and profile else "")
+        kind_text = (f" (kind: `{_sanitize_inline(str(kind))}`)"
+                     if isinstance(kind, str) and kind else "")
+        detail = f"`{_compact_item_index_refusal_text(unavailable)}`{kind_text}"
+        # WORDED FROM EVIDENCE, NEVER FROM AN ASSUMPTION. `items_unavailable_after_stop` is true
+        # only when the driver's own walk rows inside that capture's window recorded a Stop
+        # (cooperative "stop", or the mid-navigation "navigation_cancelled" token). The other
+        # candidate evidence -- supervisor.py's `Run {id}: stop requested ...` print -- is
+        # deliberately NOT consulted: its single raise site is the STARTUP abort, which by
+        # construction runs before any worker and therefore before any capture row could exist,
+        # so matching on it here would only ever be a false positive.
+        #
+        # AND THE CONSEQUENCE IS NAMED, NOT THE OUTCOME (fix-review 2026-09-16). Both sentences
+        # ended "so that profile was abandoned", which is a claim about what the WORKER did next
+        # and nothing on this row can see it. hinge.py writes `items_unavailable` for POLICY
+        # reasons too, not only for refusals: `_item_enumeration_blocker`'s first two conditions
+        # are `opener.enabled: false` and an app that cannot attach an opener at swipe time, and
+        # in both of those worker.py deliberately does NOT stop -- its own "BUG 2" guard (the
+        # `not disabled` check before the `items_unavailable` stop) sends the bare like and moves
+        # on, so with openers switched off EVERY completed run would have been stamped WITH
+        # LIMITATIONS over a profile it handled exactly as configured. THAT SHAPE NO LONGER GETS
+        # THIS FAR -- the `no_opener_consumer` skip above, added the same day, drops it entirely
+        # -- but the restraint below still earns its place, because what remains here is the
+        # residue the skip cannot attribute: a historic row written before the kind existed,
+        # whose run's config no longer says openers were off, reads identically to a genuine
+        # refusal. Observe is the third case: there the human does the liking and this refusal
+        # only makes the item check inconclusive.
+        # What the row DOES establish is the targeting consequence, and it establishes it for all
+        # three: with no numbered item payload there is nothing for an opener to be written about
+        # or verified against -- hinge.py's navigate and verify paths raise `HingeTargetingError`
+        # quoting this very sentence -- so say that much and let the quoted reason carry the rest.
+        if facts.get("items_unavailable_after_stop"):
+            limitations.append(
+                f"the requested Stop left the latest capture{who} with no numbered items at "
+                f"all, so no opener could be targeted at that profile: {detail}")
+        else:
+            limitations.append(
+                f"the latest capture{who} produced no numbered items at all, so no opener "
+                f"could be targeted at that profile: {detail}")
     if facts.get("capture_truncated"):
         limitations.append("the latest capture was truncated")
 
@@ -1904,6 +2055,15 @@ def _sidecar_geometry_lines(frames: list) -> list[str]:
     first_run: dict[int, tuple[int, int, str]] = {}       # frame -> (y0, y1, run kind)
     islands: dict[tuple[int, int], list[tuple[int, int | None, object]]] = {}
     unanchored_rows_unusable = False
+    # DOES THIS SIDECAR'S WRITER POSTDATE THE SCREEN-FIXED ISLAND CHECK? Keyed on the PRESENCE of
+    # the hold-out evidence keys on any block, which is the only thing in the file that dates it:
+    # hinge.py writes both on every block unconditionally, and they shipped in the same commit as
+    # `segment.BLOCK_UNANCHORED` and `item_index._screen_fixed_islands`. Presence, never
+    # truthiness -- `unanchored_reason` is legitimately None off an unanchored strip, and
+    # `content_digest` is None on every ordinary block. Confirmed against all 7 sidecars on disk
+    # 2026-09-16: 78d364c5527d (74 blocks) and 8fb11094ef4d (51 blocks) carry neither key on any
+    # block and are genuinely pre-check; f78ca90856b4 carries them on 54 of 54.
+    writer_records_screen_fixed_evidence = False
 
     for frame in frames:
         if not isinstance(frame, dict):
@@ -1916,6 +2076,12 @@ def _sidecar_geometry_lines(frames: list) -> list[str]:
         blocks = ([b for b in raw_blocks if isinstance(b, dict)]
                   if isinstance(raw_blocks, list) else [])
         for block in blocks:
+            # Asked of EVERY block, before the unanchored filter below: an ordinary `selectable`
+            # block carries the keys too, and a post-check capture whose segmentation happened to
+            # place everything has no unanchored block at all -- which is precisely the case this
+            # flag exists to describe.
+            if any(key in block for key in _SIDECAR_SCREEN_FIXED_EVIDENCE_KEYS):
+                writer_records_screen_fixed_evidence = True
             if block.get("kind") != _SIDECAR_UNANCHORED_BLOCK_KIND:
                 continue
             rows = _row_pair(block.get("frame_rows"))
@@ -2037,14 +2203,39 @@ def _sidecar_geometry_lines(frames: list) -> list[str]:
                                    f"offsets spanning {seen[-1] - seen[0]}px, more than its own "
                                    f"{height}px height; it has no page position at all and is "
                                    "held out of the index entirely")
+    elif unanchored_rows_unusable:
+        # The strips ARE recorded here, so this writer plainly has the check; only these
+        # particular rows cannot be parsed back. Keep this ahead of both branches below so a
+        # half-written sidecar is never described by either of their provenance claims.
+        out.append(f"- screen-fixed verdict: unavailable — this capture's geometry records "
+                   f"`{_SIDECAR_UNANCHORED_BLOCK_KIND}` strip(s) but none with usable frame "
+                   "rows, so the verdict cannot be re-derived from this file. Nothing here "
+                   "decides whether the leading block above is page content or chrome pinned "
+                   "to the screen")
+    elif writer_records_screen_fixed_evidence:
+        # THE COMMON PATH, and until 2026-09-16 it was the one described as "predates ... (or
+        # that check found nothing to place)" -- a provenance claim this very file refutes, with
+        # the true cause demoted to a parenthetical. A block carrying the hold-out evidence keys
+        # was written by a writer that already had the check, so there is no age question left:
+        # the check ran and placed everything.
+        out.append("- screen-fixed verdict: none to give — this capture's segmentation placed "
+                   f"every block on the page and recorded no `{_SIDECAR_UNANCHORED_BLOCK_KIND}` "
+                   "strip to decide on, so the leading block above is page content as far as "
+                   "this check is concerned")
     else:
-        detail = ("records unanchored strips but none with usable frame rows"
-                  if unanchored_rows_unusable else
-                  f"records no `{_SIDECAR_UNANCHORED_BLOCK_KIND}` block at all")
-        out.append(f"- screen-fixed verdict: unavailable — this capture's geometry {detail}, so "
-                   "it predates segment.py's screen-fixed island check (or that check found "
-                   "nothing to place). Nothing here decides whether the leading block above is "
-                   "page content or chrome pinned to the screen")
+        # STILL LIVE, and keyed on something real: no block in the whole sidecar carries either
+        # hold-out key, which is the shape of `data/hinge_debug/78d364c5527d` and
+        # `data/hinge_debug/8fb11094ef4d`. Deliberately NOT keyed on `schema_version` or the
+        # runtime hashes -- both already existed before the check shipped, so neither dates the
+        # file. The module name is `item_index._screen_fixed_islands`, matching the caller's
+        # docstring: segment.py supplies the `unanchored` block kind, item_index applies the
+        # three-condition check.
+        out.append("- screen-fixed verdict: unavailable — no block in this capture's geometry "
+                   "carries the screen-fixed hold-out evidence "
+                   f"(`{'`/`'.join(_SIDECAR_SCREEN_FIXED_EVIDENCE_KEYS)}`), so this sidecar was "
+                   "written before item_index._screen_fixed_islands existed. Nothing here "
+                   "decides whether the leading block above is page content or chrome pinned "
+                   "to the screen")
     return out
 
 
@@ -2113,10 +2304,19 @@ def _dwell_navigation_refusal_summary_md(lines: list[str]) -> str:
 
     An ``item_index_refused`` record is also the terminal envelope used when the dwell walk loses
     its measured return anchor.  That does *not* imply a frame pair in the original enumeration
-    index failed: the index may be complete and every one of its deltas measured.  New candidate
-    rows carry ``navigation_refusal`` with the closed-loop plan and measurement; older rows retain
-    only a code.  Both shapes are useful, but only the new shape lets a report distinguish an
-    over-delivered gesture from an unmeasurable chain or unverified return.
+    index failed: the index may be complete and every one of its deltas measured.
+
+    WHICH ROWS CARRY ``navigation_refusal`` IS A PROPERTY OF THE REFUSAL, NOT OF THE ROW'S AGE
+    (corrected 2026-09-16).  This docstring used to say "new candidate rows carry
+    ``navigation_refusal`` ... older rows retain only a code", and the renderer below acted on
+    that premise by calling every dict-less row a "legacy/incomplete trace".  The premise is
+    false for the CURRENT build: the two uncoded-exception handlers in
+    ``_still_photo_dwell_candidate_walk`` / ``_still_photo_dwell_progressive_sweep`` record only
+    ``reason=type(exc).__name__`` because those five classes carry no measurement at all, and the
+    ``return_unverified`` rows carry no ``reason`` either.  Run f78ca90856b4 rendered a row the
+    then-current build had written MINUTES earlier as "legacy".  Nothing on any row carries an
+    age marker, so this renderer no longer infers one: it says what the refusal class can and
+    cannot supply, and stays neutral when it cannot tell.
     """
     records: list[dict] = []
     for raw in lines:
@@ -2135,6 +2335,17 @@ def _dwell_navigation_refusal_summary_md(lines: list[str]) -> str:
                     # stops the run, so leaving it out rendered nothing at all for the event
                     # the operator is reading the report to understand (2026-09-04).
                     "below_entry_after_gesture",
+                    # A mid-navigation operator Stop (2026-09-16): the literal driver token
+                    # "navigation_cancelled", held in `_DWELL_NAVIGATION_CANCELLED` so this set
+                    # and the Stop-attribution fallback in
+                    # `_capture_window_has_dwell_walk_stop` cannot drift apart. It reaches the
+                    # same terminal envelope as its `navigation_refused` sibling and must be
+                    # explained for the same reason, so the token belongs in this set even
+                    # though it is NOT a fault -- omitting it renders nothing at all for the
+                    # event, the exact regression this comment and the accepted-outcome
+                    # assertion in tests/test_hinge_item_capture.py exist to prevent. It is
+                    # rendered as a Stop below, never as a refusal.
+                    _DWELL_NAVIGATION_CANCELLED,
                 }):
             records.append(rec)
     if not records:
@@ -2150,10 +2361,36 @@ def _dwell_navigation_refusal_summary_md(lines: list[str]) -> str:
         candidate = f"page heart {heart:g}" if heart is not None else "unknown page heart"
         telemetry = rec.get("navigation_refusal")
         if not isinstance(telemetry, dict):
-            code = _sanitize_inline(str(rec.get("reason") or "not recorded"))
-            outcome = _sanitize_inline(str(rec.get("outcome") or "unknown"))
-            out.append(f"- {candidate}: dwell-navigation {outcome} (`{code}`); legacy/incomplete "
-                       "trace has no structured plan, measured climb, or anchor-return telemetry")
+            reason = rec.get("reason")
+            code = _sanitize_inline(str(reason or "not recorded"))
+            outcome_token = str(rec.get("outcome") or "unknown")
+            outcome = _sanitize_inline(outcome_token)
+            if outcome_token == _DWELL_NAVIGATION_CANCELLED:
+                # This module's own norm, already stated for an aborted read in
+                # `_item_manifest_md`: "A Stop is not a failure to diagnose, so this says so
+                # plainly rather than borrowing the refusal wording." The dwell-navigation
+                # renderer used to violate it, filing a Stop under `navigation_refused` and then
+                # calling the row legacy.
+                out.append(f"- {candidate}: dwell-navigation CANCELLED by the requested Stop "
+                           f"(`{code}`); the walk was asked to end while moving to this card, so "
+                           "there is no plan, measured climb, or anchor-return telemetry to show "
+                           "and nothing here is a targeting or measurement fault")
+                continue
+            if (isinstance(reason, str)
+                    and reason in _UNCODED_DWELL_NAVIGATION_REFUSAL_CLASSES):
+                # Not an old row: these five classes are raised by the vision/should_stop layers
+                # UNDER `navigate_to_item` and carry no position, plan or measurement of any
+                # kind, so a current-build row naming one is complete exactly as written.
+                out.append(f"- {candidate}: dwell-navigation {outcome} (`{code}`); this refusal "
+                           "class carries no measurement, so no structured plan, measured climb "
+                           "or anchor-return telemetry exists for it")
+                continue
+            # Everything else -- including `return_unverified`, which the driver writes with no
+            # `reason` key at all. Say only what is true of the row in hand; do not guess at its
+            # age, because no row records one.
+            out.append(f"- {candidate}: dwell-navigation {outcome} (`{code}`); this row carries "
+                       "no structured refusal telemetry, so no plan, measured climb or "
+                       "anchor-return figures can be shown for it")
             continue
 
         code = _sanitize_inline(str(telemetry.get("code") or rec.get("reason") or "not recorded"))
@@ -2215,9 +2452,9 @@ def _dwell_navigation_refusal_summary_md(lines: list[str]) -> str:
 
         # `walk` is new telemetry (2026-08-27): a verified return can let the candidate walk
         # continue past a refusal instead of abandoning it outright, bounded by a small budget of
-        # returned refusals.  Older rows -- every historic run, and the legacy/incomplete branch
-        # above that returns before reaching here -- simply have no "walk" key, so this stays a
-        # no-op and the rendered line is byte-identical to before the budget existed.
+        # returned refusals.  Rows without it -- every historic run, and the telemetry-less
+        # branches above that return before reaching here -- simply have no "walk" key, so this
+        # stays a no-op and the rendered line is byte-identical to before the budget existed.
         walk_text = ""
         walk = telemetry.get("walk")
         if isinstance(walk, dict):
@@ -2404,17 +2641,92 @@ def _dwell_return_chain_refusal_summary_md(lines: list[str]) -> str:
     return "\n".join(out)
 
 
+_ITEM_INDEX_NOTE_ACTIONS = ("item_index_repaired", "item_index_notes",
+                            "item_index_screen_fixed_notes")
+
+# Text fingerprint of a `_screen_fixed_islands`-produced note (item_index.py's `where = (f"the
+# leading strip at frame rows {rows[0]}..{rows[1]}, seen in frame(s) ..."` local, ~line 2096),
+# used ONLY as a fallback for a record written before `ItemIndex.screen_fixed_notes` existed
+# (2026-09-17). Verified unique across every other note producer in item_index.py: neither
+# `_assemble`'s ("the heartless partial block at page rows ...", "the block at page rows ..."),
+# `_split_repeated_near_gutter_merges`'s ("the complete sighting in frame ... bounded the lower
+# card ..."), `_split_long_background_card_top_merges`'s, nor the video/layout repair prose
+# ("frame N's pair with frame N+1: positioned mute-card track fixed ...") begins with this
+# phrase. The
+# nearest neighbour is the DEFENCE-IN-DEPTH string at item_index.py:~3695 ("the strip at frame
+# rows ... was proven fixed to the screen and held out ..."), which is a `failures` entry, never
+# a `notes` entry, and does not share this prefix ("the strip", not "the leading strip"). A
+# record's `screen_fixed_notes` field -- present on every row emitted after this fix -- is always
+# preferred when it exists; this text match is read-only compatibility for historic rows only.
+_SCREEN_FIXED_NOTE_TEXT_PREFIX = "the leading strip at frame rows "
+
+
+def _item_index_note_bearing_records(lines: list[str]) -> list[dict]:
+    """Every screen-fixed-island / assembly record, from ANY note-bearing action, undivided.
+
+    Cross-agent contract (2026-09-17, corrected same day TWICE). hinge.py's emit site
+    (~line 8628, `_record_item_index_notes`) names a record "item_index_repaired" when its
+    `repairs` list (mirrors `ItemIndex.repair_provenance` -- video-track/layout SHIFT repairs
+    ONLY) is non-empty; otherwise "item_index_screen_fixed_notes" when at least one of its notes
+    came from `_screen_fixed_islands`; otherwise the neutral "item_index_notes". `notes` is a
+    SEPARATE field (`repair_notes + fold_notes`, item_index.py:~3666), a concatenation from FIVE
+    unrelated producers (`_screen_fixed_islands`, `_assemble`, `_split_repeated_near_gutter_merges`,
+    `_split_long_background_card_top_merges`, and the video/layout repair prose). `repairs` and
+    `notes` are ORTHOGONAL: a record can carry either, both, or neither, and the presence of one
+    says nothing about the other.
+
+    The FIRST cut of this fix split records into a "repaired" bucket and an "unresolved strip"
+    bucket keyed on `repairs` emptiness alone, and reused each bucket's `notes` as if EVERY note
+    in it described that bucket's mechanism. That key was wrong in both directions on real
+    on-disk data (run 5554d6fc51aa's only note is an ordinary `_assemble` success with no
+    screen-fixed mechanism at all, filed under a heading asserting a failed placement; run
+    0e4257f20e64's genuine screen-fixed note rode with an unrelated shift repair and hid under
+    "conservative repairs"), and it double-printed a note shared between a repaired and an
+    unrepaired record (run 6de69d385cc6).
+
+    But a per-RECORD key can never be right, because `repairs` and note PROVENANCE are properties
+    of individual notes, not of the record they happen to ride in together (exactly what run
+    0e4257f20e64 demonstrates). This function therefore stops splitting records at all -- it
+    returns every note-bearing record undivided -- and the three summaries below bucket PER NOTE:
+    `_item_index_repair_summary_md` reads only `repairs`; `_item_index_screen_fixed_notes_summary_md`
+    and `_item_index_construction_notes_summary_md` partition `notes` itself using
+    `_item_index_note_is_screen_fixed`, each deduplicated globally across every record regardless
+    of which action name wrote it or what else that same record carried.
+    """
+    return [rec for rec in _action_records(lines) if rec.get("action") in _ITEM_INDEX_NOTE_ACTIONS]
+
+
+def _item_index_note_is_screen_fixed(rec: dict, note: str) -> bool:
+    """Whether ONE note string in ONE record came from `_screen_fixed_islands`.
+
+    Bucketing is PER NOTE, not per record (2026-09-17, corrected same day): a record can carry a
+    shift repair AND a screen-fixed note at once (run 0e4257f20e64), and a record's OTHER notes
+    (from the remaining unrelated producers `_fold_page`/`build_item_index` also concatenate into
+    `notes`) must not be swept into the screen-fixed heading just because they share a record
+    with one that IS screen-fixed, or vice versa.
+
+    `screen_fixed_notes` (present on rows written after this fix) is authoritative -- hinge.py
+    populates it as an exact-string subset of that SAME record's `notes` (see
+    `AndroidDriver._record_item_index_notes`). A record without the field is a historic row that
+    predates it; `_SCREEN_FIXED_NOTE_TEXT_PREFIX` recovers the same classification from the note
+    text alone for those.
+    """
+    screen_fixed = rec.get("screen_fixed_notes")
+    if isinstance(screen_fixed, list):
+        return note in screen_fixed
+    return note.startswith(_SCREEN_FIXED_NOTE_TEXT_PREFIX)
+
+
 def _item_index_repair_summary_md(lines: list[str]) -> str:
-    """Show conservative usable-index repairs, with both source and local frame coordinates."""
-    notes: list[str] = []
+    """Structured shift-repair geometry ONLY -- never the place a bare note lands.
+
+    Renders `repairs` entries (mirrors `ItemIndex.repair_provenance`) from every note-bearing
+    record that has any (see `_item_index_note_bearing_records`). `notes` is never consulted
+    here: a note names no shift-repair mechanism this heading could honestly claim, whether or
+    not the same record also carries one.
+    """
     structured: list[str] = []
-    for raw in lines:
-        try:
-            rec = json.loads(raw)
-        except Exception:  # noqa: BLE001
-            continue
-        if not isinstance(rec, dict) or rec.get("action") != "item_index_repaired":
-            continue
+    for rec in _item_index_note_bearing_records(lines):
         # v12 writes the same field name as refusal records.  Keep the older
         # key as a read-only compatibility fallback so historic debug runs
         # remain useful in newly generated reports.
@@ -2445,19 +2757,68 @@ def _item_index_repair_summary_md(lines: list[str]) -> str:
             clean = _sanitize_inline(line)
             if clean and clean not in structured:
                 structured.append(clean)
+    if not structured:
+        return ""
+    shown = structured[:8]
+    hidden = len(structured) - len(shown)
+    suffix = f"; {hidden} more distinct repair record(s) in actions.jsonl" if hidden else ""
+    return "\n".join(f"- {line}" for line in shown) + suffix
+
+
+def _render_deduped_item_index_notes(notes: list[str]) -> str:
+    """Shared tail for the two note summaries below: cap at 8, name how many more exist."""
+    if not notes:
+        return ""
+    shown = notes[:8]
+    hidden = len(notes) - len(shown)
+    suffix = f"; {hidden} more distinct note(s) in actions.jsonl" if hidden else ""
+    return "\n".join(f"- `{note}`" for note in shown) + suffix
+
+
+def _item_index_screen_fixed_notes_summary_md(lines: list[str]) -> str:
+    """Notes `_screen_fixed_islands` produced, deduplicated GLOBALLY across every record.
+
+    Deliberately WORDED FROM WHAT THE CHECK CONCLUDED, never asserting a direction: the check's
+    do-nothing branches PLACE a strip on the page (they decline to hold it OUT, which "could not
+    place" said backwards), while its proof branch does the opposite and holds one out entirely.
+    Both conclusions are screen-fixed-check notes; the prose of each note already says which one
+    it is, so the heading names only the mechanism, not the outcome.
+    """
+    notes: list[str] = []
+    for rec in _item_index_note_bearing_records(lines):
         for note in rec.get("notes", ()) if isinstance(rec.get("notes"), list) else ():
-            if isinstance(note, str):
+            if isinstance(note, str) and _item_index_note_is_screen_fixed(rec, note):
                 clean = _sanitize_inline(note)
                 if clean and clean not in notes:
                     notes.append(clean)
-    if not notes and not structured:
-        return ""
-    shown_structured = structured[:8]
-    shown_notes = notes[:max(0, 8 - len(shown_structured))]
-    rendered = [f"- {line}" for line in shown_structured] + [f"- `{note}`" for note in shown_notes]
-    hidden = len(structured) - len(shown_structured) + len(notes) - len(shown_notes)
-    suffix = f"; {hidden} more distinct repair record(s) in actions.jsonl" if hidden else ""
-    return "\n".join(rendered) + suffix
+    return _render_deduped_item_index_notes(notes)
+
+
+def _item_index_construction_notes_summary_md(lines: list[str]) -> str:
+    """Every OTHER free-text note, deduplicated GLOBALLY across every note-bearing record.
+
+    "Other" means: not classified screen-fixed by `_item_index_note_is_screen_fixed`. This still
+    includes the video/layout repair prose ("frame N's pair with frame N+1: positioned mute-card
+    track fixed ...") on a record whose `repairs` is also non-empty -- that prose and the
+    structured
+    `repairs` entry describe the SAME accepted repair in two formats, so it belongs here rather
+    than nowhere, but it is exactly why this heading never claims "no shift repair applied" or
+    any other single mechanism: the four remaining producers this bucket can hold
+    (`_assemble`, `_split_repeated_near_gutter_merges`, `_split_long_background_card_top_merges`,
+    and the repair prose) do not share one description in common beyond "not the screen-fixed
+    check". Global dedup (one seen-set across every record, not per-bucket) is what fixes the
+    double-print reproduced on run 6de69d385cc6: a note attached to both a repaired and an
+    unrepaired record used to print once under each of two headings, reading as two distinct
+    strips instead of one.
+    """
+    notes: list[str] = []
+    for rec in _item_index_note_bearing_records(lines):
+        for note in rec.get("notes", ()) if isinstance(rec.get("notes"), list) else ():
+            if isinstance(note, str) and not _item_index_note_is_screen_fixed(rec, note):
+                clean = _sanitize_inline(note)
+                if clean and clean not in notes:
+                    notes.append(clean)
+    return _render_deduped_item_index_notes(notes)
 
 
 def _manifest_capture(lines: list[str]) -> dict | None:
@@ -2658,8 +3019,25 @@ def _compact_debug_tail_line(raw: str, expanded: dict | None = None) -> str:
             rec["item_manifest"] = (
                 f"{rows} manifest row(s) in actions.jsonl; the expanded table above belongs to a "
                 f"different capture")
-    elif rec.get("action") == "item_index_repaired" and rec.get("notes"):
-        rec["notes"] = ["see item-index conservative repairs summary above"]
+    elif rec.get("action") in _ITEM_INDEX_NOTE_ACTIONS and rec.get("notes"):
+        # PER NOTE, not per record (2026-09-17, corrected same day TWICE): this record's own
+        # notes can straddle both headings at once (run 0e4257f20e64 has both a screen-fixed
+        # note and repair-prose construction notes on the SAME record), so name whichever
+        # heading(s) this record's notes actually landed under rather than assuming one. A
+        # record's separate `repairs` entries (if any) still land under "item-index conservative
+        # repairs", but that is the untouched `repairs` field printed below, not this pointer.
+        raw_notes = rec["notes"] if isinstance(rec["notes"], list) else []
+        has_screen_fixed = any(isinstance(n, str) and _item_index_note_is_screen_fixed(rec, n)
+                               for n in raw_notes)
+        has_other = any(isinstance(n, str) and not _item_index_note_is_screen_fixed(rec, n)
+                        for n in raw_notes)
+        headings = []
+        if has_screen_fixed:
+            headings.append("item-index screen-fixed check notes")
+        if has_other:
+            headings.append("item-index construction notes")
+        rec["notes"] = [f"see {' and '.join(headings) or 'item-index construction notes'} "
+                        "summary above"]
     return json.dumps(rec)
 
 
@@ -4531,7 +4909,14 @@ def _one_debug_dir_md(app: str, opts: dict, *, current_run_id: str | None = None
                 out.extend(f"    {line}" for line in geometry.splitlines())
             dwell_navigation = _dwell_navigation_refusal_summary_md(raw_lines)
             if dwell_navigation:
-                out.append("  - dwell-navigation refusals (separate from item-index correspondence):")
+                # "and cancellations" is not padding (2026-09-16): `navigation_cancelled` rows
+                # render here, and the bullet under this heading says plainly that a requested
+                # Stop is "not a targeting or measurement fault". A heading reading only
+                # "refusals" reasserts that exact mislabel one level up, which is the thing
+                # this module's own norm forbids -- "A Stop is not a failure to diagnose, so
+                # this says so plainly rather than borrowing the refusal wording".
+                out.append("  - dwell-navigation refusals and cancellations "
+                           "(separate from item-index correspondence):")
                 out.extend(f"    {line}" for line in dwell_navigation.splitlines())
             dwell_return_chains = _dwell_return_chain_refusal_summary_md(raw_lines)
             if dwell_return_chains:
@@ -4541,6 +4926,20 @@ def _one_debug_dir_md(app: str, opts: dict, *, current_run_id: str | None = None
             if repairs:
                 out.append("  - item-index conservative repairs:")
                 out.extend(f"    {line}" for line in repairs.splitlines())
+            # Sibling headings (2026-09-17, corrected same day TWICE): `repairs`, screen-fixed
+            # notes, and every other note are three ORTHOGONAL views of the same note-bearing
+            # records -- see `_item_index_note_bearing_records` and
+            # `_item_index_note_is_screen_fixed` for why the split is per-NOTE, not per-record,
+            # and reads every note-bearing record rather than only the ones the repairs heading
+            # above skipped.
+            screen_fixed_notes = _item_index_screen_fixed_notes_summary_md(raw_lines)
+            if screen_fixed_notes:
+                out.append("  - item-index screen-fixed check notes:")
+                out.extend(f"    {line}" for line in screen_fixed_notes.splitlines())
+            construction_notes = _item_index_construction_notes_summary_md(raw_lines)
+            if construction_notes:
+                out.append("  - item-index construction notes (not from the screen-fixed check):")
+                out.extend(f"    {line}" for line in construction_notes.splitlines())
             manifest = _item_manifest_summary_md(raw_lines)
             if manifest:
                 out.append("  - item-numbering manifest (non-image capture provenance):")

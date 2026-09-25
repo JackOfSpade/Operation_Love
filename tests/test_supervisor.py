@@ -21,6 +21,8 @@ import pytest
 import operation_love.supervisor as sup
 from operation_love.config import OpenerCfg
 from operation_love.drivers.base import DatingAppDriver
+from operation_love.opener.opener import OpenerError
+from operation_love.opener.service import OpenerService
 from operation_love.private_files import UnsafePrivatePathError
 
 # Liveness bound, not a performance bound: it exists only so a genuine hang fails a test
@@ -1779,6 +1781,180 @@ def test_opener_rejection_deadletter_path_reaches_the_constructed_opener_service
     from operation_love import config as _cfg_mod
     expected = _cfg_mod.load(str(cfg_path)).data_dir / "opener_rejection_deadletter.jsonl"
     assert Path(wired) == expected
+
+
+class _StoreWithStrandedOpenerRejections(_FakeStore):
+    """Simulates BigQueryStore at storage.bigquery.flush_every > 1 (config.yaml currently
+    ships 1, but the constructor/`make_store` DEFAULT is 25 -- see that comment and
+    _write_opener_rejection_deadletter's "THE flush_every DEPENDENCY" docstring section): a
+    rejection row was accepted into the buffer WITHOUT raising (BigQueryStore._maybe_flush only
+    flushes once the buffer reaches flush_every), so opener/service.py's own per-call
+    `except Exception as store_exc:` around record_opener_rejection never ran and never
+    dead-lettered it. The wire failure only surfaces here, at the shutdown flush -- exactly the
+    blind spot Task 1(a) (2026-09-17) closes."""
+
+    def __init__(self, flush_error, pending_rows):
+        super().__init__(flush_error=flush_error)
+        self._pending_rows = pending_rows
+
+    def pending_opener_rejections(self):
+        return list(self._pending_rows)
+
+
+def test_shutdown_flush_failure_deadletters_stranded_opener_rejections(monkeypatch, tmp_path):
+    """A wire failure at the FINAL shutdown flush must still dead-letter whatever
+    opener_rejections rows the store was still holding -- not only rows that happened to raise
+    synchronously inside maybe_opener's own try/except (that narrower case is already covered
+    by test_opener_rejection_deadletter_path_reaches_the_constructed_opener_service and by
+    tests/test_opener_service.py; this test is the flush_every > 1 gap Task 1 exists for).
+
+    Uses the REAL OpenerService (not a spy) so the REAL _write_opener_rejection_deadletter
+    actually runs and a real file lands on disk -- a spy would only prove the path was wired,
+    not that the shutdown path calls the writer correctly.
+    """
+    import json
+
+    cfg_path = _write_cfg(tmp_path, _CONFIG)
+    flush_exc = RuntimeError("BigQuery insert errors for opener_rejections: [wire down]")
+    stranded_row = {
+        "run_id": "run-stranded-1", "app": "hinge", "created_at": 0, "model": "gemini-3-flash",
+        "attempt": 2, "reason_code": "unconfirmed_location_followup",
+        "reason": "the model referenced a location detail that could not be confirmed",
+        "raw_opener": "I noticed the mountain in your third photo...",
+        "prompt_sha256": "deadbeef" * 8,
+    }
+    store = _StoreWithStrandedOpenerRejections(flush_exc, [stranded_row])
+    monkeypatch.setattr(sup, "Capabilities", _Caps)
+    monkeypatch.setattr(sup, "Embedder", _FastEmbedder)
+    monkeypatch.setattr(sup, "QualityFilter", _FastQuality)
+    monkeypatch.setattr(sup, "make_store", lambda cfg: store)
+    monkeypatch.setattr(sup, "make_driver", lambda app, cfg: _FakeDriver())
+    monkeypatch.setattr(sup, "_install_signal_handlers", lambda stop: None)
+    _patch_no_adb(monkeypatch)
+
+    with pytest.raises(RuntimeError, match="BigQuery insert errors"):
+        sup.run(str(cfg_path), stop_event=threading.Event())
+
+    from operation_love import config as _cfg_mod
+    deadletter_path = _cfg_mod.load(str(cfg_path)).data_dir / "opener_rejection_deadletter.jsonl"
+    assert deadletter_path.exists(), (
+        "a flush failure at shutdown must still dead-letter whatever opener_rejections rows "
+        "the store was still holding -- see supervisor._deadletter_stranded_opener_rejections")
+    entries = [json.loads(line) for line in deadletter_path.read_text().splitlines() if line.strip()]
+    assert len(entries) == 1
+    entry = entries[0]
+    assert entry["branch"] == "shutdown_flush"
+    assert entry["row"]["run_id"] == "run-stranded-1"
+    assert entry["row"]["reason_code"] == "unconfirmed_location_followup"
+    assert entry["row"]["raw_opener"] == "I noticed the mountain in your third photo..."
+    assert "wire down" in entry["exc_str"]
+
+
+class _StoreWithRejectionThatStaysBuffered:
+    """Reproduces the ACTUAL BigQueryStore shutdown bug end to end, not just its symptom.
+
+    ranker/bigquery_store.py's own `_flush_table` comment: "Keep the whole batch buffered so
+    it gets resent on the next flush" -- a FAILED FLUSH NEVER CLEARS THE ROW. So
+    record_opener_rejection here does two things a real flush_every=1 wire failure also does
+    in one call: it appends the row (so a later pending_opener_rejections() snapshot can see
+    it) AND it raises (so opener/service.py's own per-call `except Exception as store_exc:`
+    fires and writes ITS dead-letter entry). Both effects land on the SAME row, which is
+    exactly the shape that made supervisor._deadletter_stranded_opener_rejections double-count
+    before the 2026-09-17 fix: the row the shutdown sweep finds is not new evidence, it is the
+    one the per-call site already covered.
+    """
+
+    def __init__(self):
+        self._buf: list[dict] = []
+
+    def record_opener_rejection(self, run_id, app, model, attempt, reason_code, reason,
+                                raw_opener, *, prompt_sha256=None):
+        self._buf.append({
+            "run_id": run_id, "app": app, "created_at": "2026-09-17T00:00:00+00:00",
+            "model": model, "attempt": int(attempt), "reason_code": reason_code,
+            "reason": reason, "raw_opener": raw_opener, "prompt_sha256": prompt_sha256,
+        })
+        raise RuntimeError("BigQuery insert errors for opener_rejections: [wire down]")
+
+    def pending_opener_rejections(self):
+        return list(self._buf)
+
+
+class _OpenerErrorClient:
+    """A minimal OpenerClient whose every call raises a per-profile OpenerError -- the
+    simplest of the four maybe_opener() failure branches (no retry loop, no billed usage to
+    track), so driving one real maybe_opener() call is enough to reach the SAME per-call
+    `except Exception as store_exc:` / _write_opener_rejection_deadletter path the double-
+    dead-lettering bug lived in."""
+
+    def generate(self, *args, **kwargs):
+        raise OpenerError("Gemini opener: photo index 0 could not be decoded")
+
+
+class _MinimalTracker:
+    """Just enough CostTracker surface for the OpenerError branch: it checks
+    budget_reached() once, up front, and never calls record() (that branch has no billed
+    usage -- see service.py's own comment on why OpenerError is not retried)."""
+
+    def budget_reached(self):
+        return False
+
+
+def _read_deadletter_jsonl(path):
+    import json as _json
+    return [_json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+
+
+def test_shutdown_sweep_does_not_double_deadletter_a_row_already_recorded_per_call(tmp_path):
+    """Regression pin for the double-dead-lettering bug fixed 2026-09-17.
+
+    The bug: `_deadletter_stranded_opener_rejections` asked the store what opener_rejections
+    rows were still buffered and wrote a fresh dead-letter entry for every one of them --
+    without checking whether the SAME row had already earned an entry from OpenerService's
+    own per-call `except Exception as store_exc:` sites. Since a failed flush never clears
+    the buffered row (ranker/bigquery_store.py's `_flush_table` comment), and the shipped
+    config pins `storage.bigquery.flush_every: 1` (every rejection flushes synchronously),
+    every rejection that failed during an outage got dead-lettered TWICE: once from inside
+    maybe_opener() the instant the write raised, and again from the shutdown sweep because
+    the row was still sitting in the buffer. A 3-rejection outage produced 6 entries for 3
+    actually-lost rows.
+
+    This drives a REAL OpenerService.maybe_opener() call (not a spy) so the real per-call
+    dead-letter write and the real in-run identity tracking
+    (OpenerService._deadlettered_rejection_keys / is_rejection_row_deadlettered) both
+    execute, then calls the real `_deadletter_stranded_opener_rejections` directly with the
+    store's own pending_opener_rejections() snapshot -- exactly the two calls a real
+    shutdown-during-outage run makes, in the same order.
+    """
+    deadletter_path = tmp_path / "deadletter.jsonl"
+    store = _StoreWithRejectionThatStaysBuffered()
+    service = OpenerService(_OpenerErrorClient(), _MinimalTracker(), store, "casual",
+                            deadletter_path=str(deadletter_path))
+
+    # One profile's opener call: OpenerError -> record_opener_rejection raises -> the
+    # SERVICE's own per-call except already writes ONE dead-letter entry (branch=
+    # "opener_error") and leaves the row stuck in the store's buffer -- exactly like the
+    # real bug scenario.
+    out = service.maybe_opener("run-1", "hinge", object())
+    assert out is None
+
+    after_percall = _read_deadletter_jsonl(deadletter_path)
+    assert len(after_percall) == 1, "the per-call path itself must write exactly one entry"
+    assert after_percall[0]["branch"] == "opener_error"
+
+    # Shutdown: the SAME row is still buffered (a failed flush never clears it) and
+    # store.flush() fails again for the same wire reason, so supervisor.py's shutdown
+    # handler calls _deadletter_stranded_opener_rejections. Pre-fix this wrote a SECOND
+    # entry for the identical row; the fix must skip it.
+    sup._deadletter_stranded_opener_rejections(
+        store, service,
+        RuntimeError("BigQuery insert errors for opener_rejections: [wire down]"))
+
+    after_shutdown = _read_deadletter_jsonl(deadletter_path)
+    assert len(after_shutdown) == 1, (
+        "shutdown sweep wrote a duplicate dead-letter entry for a row the per-call path "
+        "already recorded -- see supervisor._deadletter_stranded_opener_rejections and "
+        "OpenerService.is_rejection_row_deadlettered")
 
 
 def test_opener_max_attempts_reaches_the_constructed_opener_service(monkeypatch, tmp_path):

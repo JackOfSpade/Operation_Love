@@ -840,6 +840,27 @@ class Worker(threading.Thread):
                 unavailable = getattr(profile, "items_unavailable", "")
                 unnumbered = getattr(profile, "items_unnumbered", "")
                 unavailable_kind = getattr(profile, "items_unavailable_kind", "")
+                # (2026-09-17) `no_opener_consumer` (hinge.py's `_item_enumeration_blocker`,
+                # first two conditions: `opener.enabled: false`, or an app that cannot attach an
+                # opener at swipe time) gets NO special case here, unlike `targeting_calibration`
+                # just below -- it falls straight into the generic `unavailable` stop a few
+                # lines down. That is deliberate, not an oversight left over from adding the
+                # kind. AUTO's own items_unavailable check (guarded by
+                # `accepts_opener and not disabled`, in this class's AUTO loop) DOES skip it,
+                # because AUTO's job is to keep swiping and a bare like with no opener is an
+                # acceptable degrade when openers are switched off. Training's job is different
+                # -- prepare a typed opener and let a human review it before it sends -- so with
+                # no opener consumer there is genuinely nothing for Training to do, and stopping
+                # is correct. The two consumers of this kind do not disagree about outcome:
+                # bugreport.py's completion-verdict layer separately declines to DEGRADE THE
+                # VERDICT for this same kind (its `no_opener_consumer` skip inside
+                # `_run_completion_assessment_md` -- NOT `_completion_capture_facts`, which only
+                # gathers the row's facts and makes no skip decision), but that channel is
+                # answering "did AUTO's
+                # configured-off bare-like behave as configured", not "should this Training run
+                # report a stop" -- a different question about a different mode. This stop still
+                # reaches the operator through the separate stop_kind="opener" limitation
+                # channel a few lines below, untouched by that verdict-cosmetic suppression.
                 if unavailable_kind == "targeting_calibration":
                     stop_reason = self._targeting_calibration_stop_reason(unavailable)
                     stop_kind = "targeting_calibration"

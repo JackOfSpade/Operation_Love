@@ -939,6 +939,55 @@ def test_provider_5xx_cascades_to_the_next_model_without_retiring_it(code, capsy
     assert "NOT blacklisting" in capsys.readouterr().out
 
 
+def test_a_5xx_on_a_NON_FIRST_model_keeps_its_place_rather_than_being_promoted(capsys):
+    """The generalisation none of the non-blacklisting tests above can reach: every one of them
+    fails models[0], and models[0] leads the cascade on the next profile no matter what the
+    code does -- so "this model will be retried first on the next profile", the sentence all
+    three non-blacklisting branches printed until 2026-09-16, passed all four of them while
+    being false for every other position.
+
+    No reordering mechanism has ever existed. self.models is assigned once in __init__ and
+    only read afterwards, the cascade is `for position, model in enumerate(self.models)` and
+    restarts at index 0 on every call, and the only cross-call state (_unavailable_models)
+    only ever REMOVES models -- 5xx, per-minute 429 and transport failures deliberately never
+    write to it. So gemini-second, which 503'd on profile 1, is not moved to the front of
+    profile 2; profile 2 starts at gemini-first exactly as profile 1 did, and because
+    gemini-first answers, gemini-second is not requested AT ALL.
+
+    That last part is why the old wording misled in a stronger way than "tried second": run
+    f78ca90856b4 printed the sentence for TWO different models inside ONE cascade at 17:42:58
+    and 17:43:00, and they cannot both be first -- in fact on the next profile neither of them
+    needed to be asked. Keeping this test honest means asserting on the printed line too: the
+    behaviour was always right, it was the description that was wrong.
+    """
+    busy = (503, {"error": {"code": 503, "status": "UNAVAILABLE", "message": "high demand"}})
+    transport = _Transport([busy, busy, (200, _success()), (200, _success())])
+    opener = _opener(transport, models=("gemini-first", "gemini-second", "gemini-third"))
+
+    first = opener.generate(Profile(bio="first"), style="s")
+    second = opener.generate(Profile(bio="second"), style="s")
+
+    assert first.model == "gemini-third"     # cascaded past both busy models
+    assert second.model == "gemini-first"    # profile 2 starts at the top again, as always
+    # ORDERING IS THE ASSERTION. gemini-second 503'd on profile 1 and is requested neither
+    # first nor second on profile 2 -- it is never asked at all, because a model configured
+    # ahead of it served the profile.
+    assert _model_calls(transport) == ["gemini-first", "gemini-second", "gemini-third",
+                                       "gemini-first"]
+    assert opener._unavailable_models == {}   # nothing retired: a 5xx never blacklists
+
+    output = capsys.readouterr().out
+    assert "retried first" not in output, (
+        "a non-blacklisting cascade line is claiming a promotion that self.models makes "
+        "impossible -- see this test's docstring and the class docstring's 2026-09-16 note")
+    assert "keeps its configured position" in output
+    # bugreport.py cannot import this package, so its recovered-failure matcher keys on this
+    # one anchor phrase (bugreport._RECOVERED_PROVIDER_FAILURE_RE) rather than on any branch's
+    # own prose. Reword these lines freely; drop the anchor and a run that cascaded off a 5xx
+    # goes back to being stamped COMPLETED CLEANLY.
+    assert "trying the next configured model" in output
+
+
 def test_whole_cascade_5xx_reports_a_transient_stop_reason_not_a_quota_one():
     """When every model is merely busy, the run still stops (a bare like is worse than
     halting) -- but the stop reason must say "restart" rather than sending the operator off
@@ -1126,16 +1175,29 @@ def test_transport_failure_does_not_blacklist_model_retried_first_next_profile()
 
 def test_all_models_transport_failure_raises_transient_capacity_exhausted():
     """When every configured model fails at the transport level within one generate() call,
-    the loop must still fall through to GeminiCapacityExhausted -- and because every scope
-    ends up "busy" (a member of _TRANSIENT_SCOPES), the message must use the transient
-    "restarting should succeed" wording, NOT the daily-quota wording: a total network outage
-    should stop the run with an accurate reason, not send the operator off to wait for a
-    midnight Pacific reset that has nothing to do with the failure."""
+    the loop must still fall through to GeminiCapacityExhausted with an accurate reason, and
+    never send the operator off to wait for a midnight Pacific reset that has nothing to do
+    with the failure.
+
+    REWRITTEN 2026-09-17, and the old docstring's premise was the tell: it asserted every scope
+    "ends up 'busy'".  It does not -- generate()'s transport handler assigns "transport" (see
+    opener.py's `scopes[model] = "transport"`), and "busy" is the provider-5xx scope.  Reading
+    the two as interchangeable is exactly how this test came to pin the wrong sentence: it
+    demanded the unconditional "restarting should succeed", which is precisely the claim a
+    LOCAL network failure makes false.  A dead wifi/DNS on this host knocks out every model in
+    one request, so this is the most likely shape of a real outage, and the operator was being
+    told to restart on a timer and to look at Google.  Assert the accurate wording instead, and
+    keep the original negative assertions, which were right all along."""
     transport = _MixedTransport([socket.timeout("timed out"), urllib.error.URLError("refused")])
     with pytest.raises(GeminiCapacityExhausted) as exc_info:
         _opener(transport, models=("gemini-first", "gemini-second")).generate(Profile(), style="s")
     reason = str(exc_info.value)
-    assert "restarting should succeed" in reason
+    # The per-model label for the scope actually assigned, not a hardcoded cause.
+    assert "network or timeout" in reason
+    # The caveat that makes the guidance true: this may be on our end of the connection.
+    assert "LOCAL to this host" in reason
+    # ...so the promise a restart alone fixes it must NOT be made.
+    assert "simply restarting should succeed" not in reason
     assert "midnight Pacific" not in reason
     assert "per-day" not in reason
 
@@ -2985,6 +3047,87 @@ def test_mixed_thinking_and_404_cascade_reports_both_scopes_distinctly():
     reason = str(exc_info.value)
     assert "gemini-first (thinking config rejected by model)" in reason
     assert "gemini-second (model unavailable)" in reason
+    # 2026-09-16: this test pinned the LABELS from the day the mix got its own test, and
+    # nothing pinned the GUIDANCE printed next to them -- so the fall-through went on telling
+    # the operator, for this exact scope set, that "at least one of these is a transient
+    # per-minute cap ... so restarting in a minute may well succeed". Neither cause here is
+    # transient: a thinking rejection clears only with an opener.thinking edit and a 404 only
+    # with an opener.models edit, which is why each remedy has to be named separately.
+    assert "opener.thinking" in reason and "opener.models" in reason
+    assert "restarting in a minute may well" not in reason
+    assert "Restarting in a minute fixes none of them" in reason
+
+
+def test_a_mix_of_permanent_causes_never_tells_the_operator_a_restart_may_work():
+    """The defect FINDING 5 named, at the boundary where it bites hardest: per-day plus 404.
+
+    _exhaustion_reason's four uniform branches each say the right thing, and its fall-through
+    said one fixed thing -- "at least one of these is a transient per-minute cap rather than a
+    per-day exhaustion, so restarting in a minute may well succeed instead of waiting for the
+    midnight Pacific daily reset" -- for ANY non-uniform mix. Nothing established that
+    precondition: _TRANSIENT_SCOPES is {minute, unknown, busy, transport}, and day+gone,
+    day+thinking and gone+thinking all reach the fall-through carrying no transient member at
+    all. This string is the run's stop reason in the hub (OpenerService._exhaust), so the
+    operator was being sent to restart in a minute over a pair of causes where a minute, an
+    hour and a restart change nothing.
+
+    Both halves have to be asserted. The message must not promise a restart, AND it must still
+    name each cause's OWN remedy: midnight Pacific is the fix for the per-day model and does
+    nothing for the retired one, while fixing opener.models is the reverse.
+    """
+    transport = _Transport([_quota_exhausted(quota_id=_PER_DAY_QUOTA_ID), _not_found()])
+    with pytest.raises(GeminiCapacityExhausted) as exc_info:
+        _opener(transport, models=("gemini-first", "gemini-second")).generate(Profile(),
+                                                                             style="s")
+    reason = str(exc_info.value)
+    assert "gemini-first (per-day quota)" in reason
+    assert "gemini-second (model unavailable)" in reason
+    assert "midnight Pacific" in reason          # the per-day model's remedy, and only its
+    assert "opener.models" in reason             # the retired model's remedy, and only its
+    assert "restarting in a minute may well" not in reason
+    assert "Restarting in a minute fixes none of them" in reason
+
+
+@pytest.mark.parametrize(("build_transport", "expected_label", "expected_advice"), [
+    (lambda day: _Transport([day, (503, {"error": {"code": 503, "status": "UNAVAILABLE",
+                                                   "message": "high demand"}})]),
+     "gemini-second (provider 5xx)", "restarting in a minute"),
+    (lambda day: _MixedTransport([day, socket.timeout("timed out")]),
+     "gemini-second (network or timeout)", "may be LOCAL to this host"),
+], ids=["busy", "transport"])
+def test_a_mix_with_a_transient_cause_labels_it_from_the_scope_table_not_as_a_minute_cap(
+        build_transport, expected_label, expected_advice):
+    """The milder half of FINDING 5. When a transient cause IS in the mix the old sentence's
+    ADVICE was sound -- restarting shortly really may help -- but its LABEL was hardcoded to
+    "a transient per-minute cap", and _TRANSIENT_SCOPES has four members. A cascade that fell
+    through on a per-day quota plus a provider 5xx, or plus a dropped connection, was reported
+    as a per-minute cap: the wrong thing to go looking at, and in the transport case it points
+    at Google when the problem may well be the local network (the exact reason "transport" was
+    given its own scope rather than reusing "busy").
+
+    The guidance is now split rather than generalised: the transient model is named as the one
+    a restart may fix, the per-day model is named with its own midnight-Pacific remedy, and
+    each carries the label _QUOTA_SCOPE_LABELS gives it.
+    """
+    transport = build_transport(_quota_exhausted(quota_id=_PER_DAY_QUOTA_ID))
+    with pytest.raises(GeminiCapacityExhausted) as exc_info:
+        _opener(transport, models=("gemini-first", "gemini-second")).generate(Profile(),
+                                                                             style="s")
+    reason = str(exc_info.value)
+    assert expected_label in reason
+    assert "per-minute" not in reason            # no model here hit a per-minute cap
+    # The ADVICE is parametrized too (2026-09-17), because it is not the same for both members.
+    # This test's own docstring already said why -- "in the transport case it points at Google
+    # when the problem may well be the local network" -- but it went on to assert the identical
+    # "restarting in a minute" for both, which is the promise that sentence argues is wrong. A
+    # provider 5xx does clear on a timer, so a restart really may help; a dropped connection may
+    # be this host's own wifi or DNS, where waiting a minute changes nothing. Assert each one's
+    # real advice rather than the shape they happen to share.
+    assert expected_advice in reason
+    if expected_advice != "restarting in a minute":
+        assert "restarting in a minute" not in reason
+    assert ("gemini-first (per-day quota) stays exhausted until the free-tier daily quota "
+            "resets at midnight Pacific") in reason
 
 
 def test_thinking_config_400_printed_line_never_contains_the_api_key(capsys):

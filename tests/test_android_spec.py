@@ -808,3 +808,70 @@ def test_direct_like_dismisses_the_upsell_and_taps_nothing_else():
     drv.like()
 
     assert adb.taps == [like_pt, dismiss_pt]   # like control, then the dismiss glyph -- never a 3rd tap
+
+
+# --- Bumble's capture-time "no_opener_consumer" stamp (2026-09-17) ---------------------
+# BumbleAndroidDriver.next_profile() never enumerates items (BUMBLE_SPEC.accepts_opener is
+# False, so it has no swipe-time opener consumer at all -- see BUMBLE_SPEC's own comment).
+# That is a CAPABILITY fact, not a run-time failure, so both the Profile it returns and the
+# debug-log "capture" action it records must carry `items_unavailable_kind="no_opener_consumer"`
+# alongside `items_unavailable` -- the same kind hinge.py's `_no_opener_consumer_blocks_
+# enumeration` / `_item_enumeration_unavailable_kind` stamp for the analogous condition
+# (`opener.enabled: false`, or an app that cannot attach an opener). worker.py's Training loop
+# treats any non-"targeting_calibration" kind identically today, and its AUTO loop never even
+# reaches this check for Bumble (gated on `accepts_opener`), so nothing observable breaks if
+# the two literals drift apart right now -- but bugreport.py's completion-verdict layer reads
+# exactly this kind straight from the debug log to avoid degrading a Bumble run's verdict for
+# behaving exactly as configured, and a future consumer of the Profile field would inherit a
+# silent mismatch. This is this repo's most-repeated defect shape (memory: "allow-lists must
+# not disagree"), so it is pinned here rather than trusted from the comments describing it.
+
+class _FakeDbg:
+    """Local per-file fake debug log (this suite's convention -- see the module docstring):
+    records every `.action(...)` call's name and fields without touching disk."""
+    def __init__(self):
+        self.calls = []
+
+    def action(self, name, *, before=None, after=None, **fields):
+        self.calls.append((name, fields))
+
+
+def test_bumble_capture_stamps_no_opener_consumer_kind_on_profile_and_debug_log():
+    adb = FakeAdb([b"nonblank-frame"])
+    drv = BumbleAndroidDriver(_Cfg())
+    drv._adb = adb
+    drv._touch = adb
+    drv._dbg = _FakeDbg()
+
+    profile = drv.next_profile()
+
+    assert profile is not None
+    assert profile.items_unavailable == "bumble has no swipe-time opener items"
+    assert profile.items_unavailable_kind == "no_opener_consumer"
+
+    capture_calls = [fields for name, fields in drv._dbg.calls if name == "capture"]
+    assert len(capture_calls) == 1
+    assert capture_calls[0]["items_unavailable"] == profile.items_unavailable
+    assert capture_calls[0]["items_unavailable_kind"] == profile.items_unavailable_kind
+
+
+def test_bumble_no_opener_consumer_kind_matches_the_generic_androiddriver_derivation():
+    """`_item_enumeration_unavailable_kind` (defined once, on AndroidDriver, and inherited by
+    both HingeDriver and BumbleAndroidDriver -- see that method's own docstring on why only
+    ONE function may own this precedence) independently derives "no_opener_consumer" for ANY
+    driver whose `accepts_opener` is False, with no Bumble-specific code path involved at all.
+    BUMBLE_SPEC.accepts_opener is unconditionally False, so this is true for Bumble before a
+    single frame is ever captured. This test pins bumble.py's hardcoded capture-time literal
+    against that independent, generic derivation, so the two cannot silently drift apart --
+    the exact failure shape a hand-copied literal invites."""
+    drv = BumbleAndroidDriver(_Cfg())
+    assert drv.accepts_opener is False
+    assert drv._no_opener_consumer_blocks_enumeration() is True
+    assert drv._item_enumeration_unavailable_kind() == "no_opener_consumer"
+
+    adb = FakeAdb([b"nonblank-frame"])
+    drv._adb = adb
+    drv._touch = adb
+    profile = drv.next_profile()
+
+    assert profile.items_unavailable_kind == drv._item_enumeration_unavailable_kind()

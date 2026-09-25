@@ -155,6 +155,28 @@ apps:
     # every run forever, which is the pre-2026-08-28 behaviour.
     # NOTE: at 50, the FIRST run after this lands prunes ~224 existing run directories (~10GB).
     # Raise it, or comment it out, if you want that history kept.
+    #
+    # (2026-09-17) A SECOND, narrower deletion rule was added alongside the actions.jsonl one
+    # above (see drivers/debuglog.py's _trim_old_runs docstring, "second rule"): retention may
+    # also reclaim a run directory that is COMPLETELY EMPTY -- no actions.jsonl, no screenshots,
+    # no files of any kind, hidden ones included (so a stray macOS .DS_Store counts as contents
+    # and blocks reclaim, same as any other file) -- and has additionally sat untouched for at
+    # least an hour. Both conditions exist because __init__ creates the run directory before
+    # anything is ever logged into it, so a session that starts and dies before its first action
+    # leaves behind a directory the actions.jsonl rule above can NEVER touch (it will never gain
+    # that file); the age guard is what keeps this from deleting a directory another process
+    # created moments ago and has not written its first record into yet. A directory with ANY
+    # contents is never touched by it, no matter how old, and falls through to the actions.jsonl
+    # rule above like any other directory.
+    #
+    # One thing this rule does NOT do, stated because the first wording of this comment got it
+    # wrong (corrected 2026-09-17): it is not independent of the key below. Its own emptiness and
+    # age criteria ignore `keep_runs` -- an empty directory never consumes a retention slot, and
+    # is reclaimed no matter how many runs are being kept -- but WHETHER RETENTION RUNS AT ALL
+    # still hangs off this key: debuglog.py gates the whole of `_trim_old_runs` behind
+    # `if keep_runs is not None`. So commenting `debug_keep_runs` out, or setting it to null,
+    # disables the empty-run reclaim along with the actions.jsonl pruning, and the directories
+    # this rule exists to collect will accumulate exactly as they did before it was written.
     debug_keep_runs: 50
     # Run directories cited from OUTSIDE data/hinge_debug, which retention must never delete no
     # matter how old they get -- age is a terrible proxy for value here. The release-evidence run
@@ -288,39 +310,29 @@ apps:
     # To replace it with real evidence later, collect a corpus with tools/hinge_video_bound
     # (owner labeled) or tools/hinge_video_bound_auto (circular), then swap this block for
     # `still_photo_bound_evidence`. The two keys are mutually exclusive by design.
-    # TARGETING CALIBRATION — renewed 2026-09-11 on the live Hinge 10.3.0 build.
-    #
-    # Emitted by `tools.hinge_calibrate measure` from four separately collected calibration
-    # profiles and three held-out profiles after hash-bound external AI review at every action
-    # checkpoint and deterministic second-process manifest review. Strategy `photo_1_only_v1`
-    # targets item 1 on every ordinal, so this calibration does NOT exercise deep-item
-    # navigation. Unsupported layouts and pre-heart refusals are never measurement profiles.
-    #
-    # Exact bounds and replay results are in
-    # ops/calibration/targeting_20260911T_10_3_heldout_final_v4/measurement_ledger.json. Both
-    # numeric gates passed with zero foreign accepts and zero false refusals.
-    #
-    # This is EXTERNAL AI-REVIEWED CIRCULAR-RISK evidence (`human_ground_truth: false`). It
-    # licenses numbered targeted suggestions for Training on the exact 10.3.0 build. It does
-    # NOT release AUTO; the production-observe artifact below remains historical 10.0.1
-    # evidence.
+    # TARGETING CALIBRATION — renewed 2026-09-19 for the live Hinge 10.4.0 build.
+    # The exact schema-v3 mapping below was emitted by `tools.hinge_calibrate measure` from four
+    # calibration and three held-out profiles. It covers 21 hybrid AI-reviewed automation
+    # checkpoints using `photo_1_only_v1`; it does not exercise deep-item navigation.
+    # Held-out checks produced zero foreign accepts and zero false refusals. This evidence has
+    # `human_ground_truth: false` and licenses targeted suggestions for Training only, not AUTO.
     targeting_calibration:
       schema_version: 3
       device: "33111JEHN04475"
-      hinge_version_name: "10.3.0"
+      hinge_version_name: "10.4.0"
       frame_size_px: [1080, 2400]
       composer_layout_id: hinge_inline_v1
       item_selection_policy_id: hinge_photos_only_v2
-      identity_match_max_dist: 1.8256
+      identity_match_max_dist: 1.7993
       inline_item_max_dist: 14.9099
-      calibrated_at: "2026-09-11T19:20:24.989030+00:00 — measured from session(s): targeting_20260911T_10_3_calibration_final, targeting_20260911T_10_3_heldout_final_v4"
+      calibrated_at: "2026-09-19T01:45:17.197914+00:00 — measured from session(s): targeting_20260919T_10_4_calibration_v3, targeting_20260919T_10_4_heldout_v3"
       identity_band: [0.1, 0.048, 0.8, 0.094]
       content_band: [0.125, 0.875]
     still_photo_assumption_acceptance:
       acceptance: I_ACCEPT_UNMEASURED_CENTERED_AUTOPLAY_ASSUMPTION
-      accepted_at: "2026-09-11 owner-directed live calibration renewal for Hinge 10.3.0"
+      accepted_at: "2026-09-19 owner-directed live calibration renewal for Hinge 10.4.0"
       device: "33111JEHN04475"
-      hinge_version_name: "10.3.0"
+      hinge_version_name: "10.4.0"
       rationale: >-
         Measuring the held-out video false-accept rate needs roughly 420 profiles and 420 real
         passes at the observed rate of one video per seven profiles, which the owner judged
@@ -330,9 +342,9 @@ apps:
         all while observed, meaning stalled, buffering, unloaded, or an ended non-looping clip.
         The re-attach probe gives such a card a second trigger before anything is called a photo.
     # HISTORICAL MANUAL AUTO RELEASE (2026-08-25): this exact legacy production artifact binds
-    # the historical 10.0.1 calibration to run d8547ff144b4. The phone is now on 10.3.0, so
+    # the historical 10.0.1 calibration to run d8547ff144b4. The phone is now on 10.4.0, so
     # this release artifact does not license AUTO on the live build. Keep it as an immutable
-    # audit record; the current 10.3.0 calibration above licenses Training only, and fresh
+    # audit record; the current 10.4.0 calibration above licenses Training only, and fresh
     # production-observe release evidence is still required before AUTO. The still-photo
     # assumption remains explicitly UNMEASURED and cannot by itself authorize AUTO.
     observe_release_evidence:
@@ -381,6 +393,20 @@ storage:
     # shows it on the hub) instead of surfacing at shutdown. That is the wanted behaviour —
     # a store that is rejecting writes should stop you an hour of manual labelling early, not
     # after — but it does mean one bad row ends the session rather than the save.
+    #
+    # (2026-09-17) This value also gates what operation_love/opener/service.py's opener-
+    # rejection dead-letter (_write_opener_rejection_deadletter) can observe -- see that
+    # function's own "THE flush_every DEPENDENCY" docstring section for the full picture. At 1,
+    # every record_opener_rejection call flushes synchronously, so a wire failure raises INSIDE
+    # maybe_opener's own try/except and is dead-lettered with full per-row context immediately.
+    # Raise this above 1 and most calls merely buffer (BigQueryStore._maybe_flush only flushes
+    # once the buffer reaches this count) -- the same wire failure then only surfaces later, at
+    # store.flush(). supervisor.py's shutdown flush now recovers whatever opener_rejections
+    # rows are still buffered at THAT point too (_deadletter_stranded_opener_rejections), but
+    # only if the run reaches its own shutdown flush at all -- a hard kill/crash before that
+    # still drops any buffered-but-unflushed rejection with no dead-letter whatsoever. Raising
+    # this value trades some of that observability for fewer BigQuery round trips; know that
+    # before changing it.
     flush_every: 1
 
 # --- Decision engine (local, learns YOUR taste from YOUR swipes) ---

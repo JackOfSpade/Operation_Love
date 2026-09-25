@@ -21,9 +21,14 @@ SHAPE) -- this tool should reproduce those figures on the same local corpus, not
 SOURCES, each clearly labeled in the output (see read_all_sources()):
   - data/hinge_debug/<run_id>/actions.jsonl -- walked recursively for any dict key literally
     named "opener" at ANY nesting depth (currently always top-level per run, but the walk does
-    not assume that). These rows carry NO prompt era stamp at all: the debug log was never
-    wired to prompt_stamp(), so every jsonl opener lands in the "unknown era" bucket regardless
-    of when it was actually generated.
+    not assume that). Corrected (2026-09-17): the "never wired to prompt_stamp()" claim this
+    line used to make here was false on arrival -- commit 75155dc7 (2026-09-06) added both this
+    tool AND hinge.py's `"prompt_sha256": self._opener_prompt_sha256` key on the SAME action
+    dict that carries the `opener` string (see hinge.py's _record_auto_opener_pre_send /
+    _record_auto_opener_resumed_send). read_jsonl_openers() now reads `prompt_sha256` off that
+    same owning dict via find_opener_records() below, so a stamped row keeps its real era. Only
+    a row WRITTEN BEFORE 75155dc7 shipped -- when the debug log genuinely carried no such key --
+    still has nothing to read and correctly lands in the "unknown era" bucket.
   - the SQLite store (data/operation_love.db by default; override with --db). Rows written
     since 2026-09-05 (b) carry `prompt_sha256`; earlier rows read back NULL and also land in
     "unknown era". Every row also carries `decision` (see DECISION GROUPING below): NULL/empty
@@ -92,9 +97,11 @@ goes stale the first time one is added -- as it already had, silently, before th
   2. There is no reply, match, or any other conversational-outcome signal anywhere in this
      system. "Did it work" in the dating sense is permanently out of scope for this tool --
      it only ever answers "what did the prompt produce".
-  3. The jsonl corpus carries no era stamp (see SOURCES above), so its numbers are a mixture of
-     however many prompt eras happen to be represented in the local run directories and cannot
-     be attributed to any single one of them.
+  3. The jsonl corpus carries a real era stamp only for rows written since commit 75155dc7
+     (2026-09-06), which added `prompt_sha256` alongside jsonl's `opener` key on the same action
+     dict (see SOURCES above and read_jsonl_openers()). A row written before that commit shipped
+     has no such key and lands in the unknown-era bucket, mixed in with whatever other pre-stamp
+     rows exist locally -- that mixing is real, but it is no longer true of every jsonl row.
   4. The store corpus's survivorship bias is now PARTIAL, not total, and the boundary is
      OpenerService.discard_opener (operation_love/opener/service.py): before that method
      existed, `record_opener` was only ever called from commit_opener at a successful Like
@@ -169,14 +176,21 @@ read via that module's own list_replay_ids/load_replay_capture, never a re-imple
 walk) exist on disk, their captured_at date range, and how many distinct prompt eras they span --
 see read_replay_corpus_stats(). THE PRE-REGISTERED CHECK reports progress toward, and (once
 reached) the result of, ops/OPENER-REDESIGN.md's 2026-09-06 (d) pre-registered NO GRADING
-prediction: PRE_REGISTERED_MIN_DRAFTS drafts (openers rows -- explicitly NOT the same count as a
-replay CAPTURE above; see build_pre_registered_check()'s own docstring for why the two can
-differ and which one the threshold applies to) generated under the CURRENT prompt era
+prediction: PRE_REGISTERED_MIN_DRAFTS DRAFTS under the CURRENT prompt era
 (compute_current_prompt_era(), the same digest tools/opener_replay.py would write its next rows
-under). Below threshold, this prints only the shortfall -- no verdict is ever rendered. At or
-above it, it prints the four pre-registered metrics next to their predicted direction, whether
-each passed, and the falsification verdict, with the exact thresholds pinned to named
-module-level constants (PRE_REGISTERED_GRADE_RATE_MAX and siblings, PRE_REGISTERED_FALSIFY_*)
+under) -- explicitly NOT the same count as a replay CAPTURE above; see build_pre_registered_check()'s
+own docstring for why the two can differ and which one the threshold applies to. BASIS CHANGED
+2026-09-17: this count is the DEDUPED corpus's era-axis `n` -- every source (jsonl debug-log drafts
+AND `openers`-table rows), collapsed by text via dedupe_openers() -- never `openers`-table rows
+alone, because a jsonl row has carried a real era stamp since commit 75155dc7 and excluding it
+would undercount real model output under this era; PreRegisteredCheck.store_drafts (printed
+alongside the total) breaks out how many of that total are `openers`-table rows specifically, so
+the headline number stays reproducible against the store even though it is no longer the same
+thing as a store row count. See ops/OPENER-REDESIGN.md's dated addendum for why the basis moved
+and what it used to mean. Below threshold, this prints only the shortfall -- no verdict is ever
+rendered. At or above it, it prints the four pre-registered metrics next to their predicted
+direction, whether each passed, and the falsification verdict, with the exact thresholds pinned to
+named module-level constants (PRE_REGISTERED_GRADE_RATE_MAX and siblings, PRE_REGISTERED_FALSIFY_*)
 that comment-reference the addendum that set them, so the numbers can never quietly drift from
 the pre-registered record. Both sections are carried through --json under the `replay_corpus`
 and `pre_registered_check` top-level keys.
@@ -382,26 +396,44 @@ class OutcomeRow:
 # SOURCE 1: data/hinge_debug/<run_id>/actions.jsonl
 # ---------------------------------------------------------------------------------------
 
-def find_opener_strings(value: Any) -> list[str]:
+def find_opener_records(value: Any) -> list[tuple[str, dict[str, Any]]]:
     """Recursively walk a decoded JSON value for every dict key literally named "opener" whose
-    value is a non-empty string, at ANY nesting depth.
+    value is a non-empty string, at ANY nesting depth -- returning each string PAIRED WITH the
+    dict that actually carried it, not just the bare text.
 
     Every run directory examined while building this tool carries "opener" as a top-level key
     of the action dict (`auto_opener_pre_send`, `auto_opener_resumed_send`), never nested --
     but the task this tool is built for is repeatable measurement, not a snapshot of today's
     shape, so the walk does not assume the field stays at depth 0 the next time the debug log
     is extended.
+
+    Added (2026-09-17) alongside the fix for read_jsonl_openers()'s era bug: that reader needs
+    `prompt_sha256` off the SAME dict as the `opener` string it came from (hinge.py's
+    _record_auto_opener_pre_send / _record_auto_opener_resumed_send stamp both keys onto one
+    action dict), and a plain list[str] throws the owning dict away before a caller ever sees
+    it -- silently inviting a caller to read the digest off some ancestor dict instead, which
+    would attribute the wrong era to a nested future record. find_opener_strings() below is now
+    a thin projection of this function so the two can never disagree on WHICH strings are
+    found, only on whether the owning dict comes along for the ride.
     """
-    found: list[str] = []
+    found: list[tuple[str, dict[str, Any]]] = []
     if isinstance(value, dict):
         for key, sub in value.items():
             if key == "opener" and isinstance(sub, str) and sub.strip():
-                found.append(sub)
-            found.extend(find_opener_strings(sub))
+                found.append((sub, value))
+            found.extend(find_opener_records(sub))
     elif isinstance(value, list):
         for item in value:
-            found.extend(find_opener_strings(item))
+            found.extend(find_opener_records(item))
     return found
+
+
+def find_opener_strings(value: Any) -> list[str]:
+    """Every "opener" string find_opener_records() would find, text only -- see that function's
+    docstring for the walk itself; this is kept as a thin wrapper because most callers (and the
+    tests pinning the walk's behaviour) only ever want the text, not the owning dict.
+    """
+    return [text for text, _owner in find_opener_records(value)]
 
 
 @dataclass
@@ -415,11 +447,24 @@ class JsonlStats:
 
 
 def read_jsonl_openers(debug_dir: Path) -> tuple[list[OpenerRow], JsonlStats]:
-    """Every ``opener`` string found under ``debug_dir``/<run_id>/actions.jsonl.
+    """Every ``opener`` string found under ``debug_dir``/<run_id>/actions.jsonl, era-stamped
+    from the SAME action dict when that dict carries one.
 
-    Never carries an era: see this module's docstring. A missing ``debug_dir`` is not an
-    error -- it is reported as zero run directories, exactly like an empty one -- since a fresh
-    checkout with no local debug data is a legitimate (if uninformative) thing to report on.
+    Corrected (2026-09-17): this used to hardcode ``era=None`` on every jsonl row, justified by
+    a claim that the debug log "was never wired to prompt_stamp()". That claim was false on
+    arrival -- commit 75155dc7 (2026-09-06) added both this tool AND hinge.py's
+    ``"prompt_sha256": self._opener_prompt_sha256`` key on the SAME action dict that carries the
+    ``opener`` string (see hinge.py's _record_auto_opener_pre_send /
+    _record_auto_opener_resumed_send). find_opener_records() below returns each opener string
+    paired with its OWNING dict precisely so this reader can pull ``prompt_sha256`` off that
+    same record rather than off some ancestor. Only a row written BEFORE 75155dc7 shipped --
+    when the field genuinely did not exist yet -- has nothing to read and still, correctly,
+    lands in the "unknown era" bucket (era=None), exactly like a store row predating the
+    ``prompt_sha256`` column.
+
+    A missing ``debug_dir`` is not an error -- it is reported as zero run directories, exactly
+    like an empty one -- since a fresh checkout with no local debug data is a legitimate (if
+    uninformative) thing to report on.
     """
     stats = JsonlStats()
     rows: list[OpenerRow] = []
@@ -442,11 +487,18 @@ def read_jsonl_openers(debug_dir: Path) -> tuple[list[OpenerRow], JsonlStats]:
                 except json.JSONDecodeError:
                     stats.malformed_lines += 1
                     continue
-                for text in find_opener_strings(obj):
+                for text, owner in find_opener_records(obj):
                     normalized = " ".join(text.split())
                     if not normalized:
                         continue
-                    rows.append(OpenerRow(text=normalized, source="jsonl", era=None))
+                    # Read off `owner`, the SAME dict the opener string itself came from -- never
+                    # off `obj` (some ancestor) -- so a nested future record can never borrow a
+                    # sibling record's era by accident. Falls back to None (unknown era) when the
+                    # key is absent (pre-75155dc7 row) or not a string, mirroring the sqlite/
+                    # bigquery readers' own "NULL and non-string both read as no era" posture.
+                    era_value = owner.get("prompt_sha256")
+                    era = era_value if isinstance(era_value, str) and era_value else None
+                    rows.append(OpenerRow(text=normalized, source="jsonl", era=era))
                     stats.opener_occurrences += 1
                     found_here = True
         if found_here:
@@ -917,24 +969,62 @@ def read_bigquery_opener_outcomes(project_id: str, dataset: str,
 # Cross-source dedup
 # ---------------------------------------------------------------------------------------
 
+def _dedupe_authority(row: OpenerRow) -> tuple[int, int]:
+    """How authoritative one physical draft's copy is, for dedupe_openers()' promotion below --
+    higher wins. A 2-tuple, compared lexicographically:
+
+    1. Count of KNOWN fields this copy carries (era present, decision present -- 0/1/2). More
+       known fields is strictly more informative regardless of source, so this axis is checked
+       first.
+    2. Whether this copy is STORE-backed (sqlite/bigquery) rather than jsonl. Used only to break
+       a tie in (1): `decision` and `outcome` can only ever live on a store row (see OpenerRow's
+       own field comment and this module's docstring's SOURCES section -- jsonl NEVER carries
+       `decision`), so a store copy is never LESS authoritative than a jsonl copy of the same
+       text, even when both happen to carry the same era and neither carries a decision yet.
+
+    Fixed (2026-09-17), regression from the read_jsonl_openers() era fix in this same session.
+    Before that fix, a jsonl row's `era` was unconditionally None, so the OLD single-axis rule
+    ("a row carrying a known era wins") could only ever promote a store row over a jsonl one --
+    era-known was a proxy for store-backed, because only a store row could be era-known at all.
+    Once jsonl rows started carrying a real `prompt_sha256` (find_opener_records() reading it off
+    the same action dict), that proxy broke: for any draft recorded in BOTH sources (which is
+    every sent opener today -- OpenerService.commit_opener writes it to `openers` at exactly the
+    point hinge.py's _record_auto_opener_pre_send also writes it to actions.jsonl), the OLD rule
+    saw two era-known copies, treated it as a tie, and kept whichever was seen FIRST --
+    read_all_sources() concatenates jsonl before sqlite/bigquery, so the jsonl copy always won and
+    the store copy (the only one that could ever carry `decision`) was silently discarded. METRICS
+    BY DECISION's sent/send_unverified/not_sent buckets collapsed toward "unknown" as a result --
+    invisible on this machine only because the local SQLite corpus has zero opener-text overlap
+    with the local jsonl corpus (see tests/test_opener_corpus_report.py's
+    test_dedupe_openers_prefers_a_store_row_over_a_jsonl_row_when_both_carry_an_era for the
+    regression pinned as a test).
+    """
+    known_fields = (1 if row.era else 0) + (1 if row.decision else 0)
+    is_store = 1 if row.source != "jsonl" else 0
+    return (known_fields, is_store)
+
+
 def dedupe_openers(rows: Iterable[OpenerRow]) -> list[OpenerRow]:
     """Collapse rows with identical opener text into one, keeping per-source raw counts
     meaningful (reported separately, before this runs) while every METRIC below is computed
     once per physical draft.
 
-    A row carrying a known era always wins over one that doesn't for the same text (an
-    era-stamped store row is strictly more informative than a jsonl duplicate of the same
-    draft), and ties keep whichever copy was seen first -- callers are expected to pass jsonl
-    rows first, then sqlite, then bigquery (see read_all_sources()), so a first-seen tie is
-    already the least-authoritative source and stable regardless.
+    The surviving copy is the one with the higher _dedupe_authority() -- every axis that carries
+    information (era known, decision known, store- vs jsonl-backed) is ranked, not era alone (see
+    that function's docstring for why era alone stopped being a safe proxy for "more
+    informative" the moment jsonl rows started carrying a real era). A strict tie (identical
+    authority on both axes -- e.g. two copies from the same kind of source, neither carrying a
+    decision) keeps whichever copy was seen first -- callers are expected to pass jsonl rows
+    first, then sqlite, then bigquery (see read_all_sources()), so a first-seen tie is stable
+    regardless of which side of it turns out to matter.
     """
     best: dict[str, OpenerRow] = {}
+    best_rank: dict[str, tuple[int, int]] = {}
     for row in rows:
-        existing = best.get(row.text)
-        if existing is None:
+        rank = _dedupe_authority(row)
+        if row.text not in best or rank > best_rank[row.text]:
             best[row.text] = row
-        elif existing.era is None and row.era is not None:
-            best[row.text] = row
+            best_rank[row.text] = rank
     return list(best.values())
 
 
@@ -1872,9 +1962,13 @@ def resolve_compare_token(available: Sequence[str], token: str,
 # =========================================================================================
 
 # "Predictions for the first NO GRADING era batch of at least 40 drafts." -- the minimum count of
-# DRAFTS (openers rows -- see PreRegisteredCheck.drafts_recorded, and this module's REPLAY CORPUS
-# section above for why a draft is NOT the same count as a replay capture) generated under the
-# CURRENT prompt era before the prediction below is checkable at all.
+# DRAFTS (see PreRegisteredCheck.drafts_recorded, and this module's REPLAY CORPUS section above
+# for why a draft is NOT the same count as a replay capture) generated under the CURRENT prompt
+# era before the prediction below is checkable at all. BASIS CHANGED 2026-09-17: `drafts_recorded`
+# is the DEDUPED corpus's era-axis `n` (every source, collapsed by text -- see dedupe_openers()),
+# not `openers`-table rows alone as it read before jsonl rows carried a real era stamp; see
+# PreRegisteredCheck.store_drafts for the store-only breakout and ops/OPENER-REDESIGN.md's dated
+# addendum for the full reasoning.
 PRE_REGISTERED_MIN_DRAFTS = 40
 
 # The four directional predictions from that same addendum, each compared against the CURRENT
@@ -1960,6 +2054,21 @@ class PreRegisteredCheck:
     CORPUS section). ``replay_captures_on_disk`` is that section's own capture count, carried here
     purely so a reader sees both numbers side by side and never conflates them; the two can differ
     in either direction (see that section's header comment for why).
+
+    BASIS CHANGED 2026-09-17 (see ops/OPENER-REDESIGN.md's dated addendum): ``drafts_recorded`` is
+    the DEDUPED corpus's era-axis ``n`` -- every source (jsonl debug-log drafts read via
+    read_jsonl_openers(), now era-stamped, PLUS ``openers``-table rows), collapsed to one row per
+    physical draft by dedupe_openers(). It used to be, in effect, ``openers``-table rows only,
+    because a jsonl row never carried an era before commit 75155dc7 and so could never contribute
+    to any single era's count. Excluding jsonl now would silently drop real model output generated
+    under this era (a live send's own actions.jsonl line, or a Training draft nobody committed to
+    the store) from a count that is supposed to measure exactly that. ``store_drafts`` (None only
+    when the caller did not supply ``rows`` -- see build_pre_registered_check()) is how many of
+    ``drafts_recorded`` are specifically ``openers``-table rows, so the number stays reproducible
+    against `SELECT COUNT(*) FROM openers WHERE prompt_sha256 = current_era` even though the
+    headline total no longer equals that query on its own (a draft seen in BOTH jsonl and the
+    store, e.g. any sent opener, counts once in ``drafts_recorded`` and once toward
+    ``store_drafts``, never twice).
     """
     current_era: str | None
     current_era_error: str | None
@@ -1976,6 +2085,17 @@ class PreRegisteredCheck:
     min_drafts_required: int
     checkable: bool
     shortfall: int
+    # How many of `drafts_recorded` are specifically `openers`-table rows (source in
+    # {"sqlite", "bigquery"} on the deduped row that survived dedupe_openers() for that text) --
+    # see this dataclass's own BASIS CHANGED paragraph above for why this breakout exists. None
+    # when the caller did not pass `rows` to build_pre_registered_check() (e.g. an older test
+    # exercising this dataclass directly against a hand-built era_metrics_map with no row-level
+    # data available) -- deliberately NOT 0 in that case, since 0 would claim "measured, and the
+    # answer is none" when the true answer is "not computed here". Trailing default, per this
+    # module's own compatibility convention, so every pre-existing positional/keyword
+    # PreRegisteredCheck(...) construction (there is exactly one, in build_pre_registered_check()
+    # below) keeps working unchanged.
+    store_drafts: int | None = None
     predictions: list[PreRegisteredMetricCheck] = field(default_factory=list)
     falsified: bool | None = None  # None until checkable -- see build_pre_registered_check()
 
@@ -1998,6 +2118,9 @@ class PreRegisteredCheck:
             "current_era": self.current_era,
             "current_era_error": self.current_era_error,
             "drafts_recorded": self.drafts_recorded,
+            # None when build_pre_registered_check() was not given `rows` -- see this dataclass's
+            # own field comment; a JSON consumer must not read a bare 0 here as "measured zero".
+            "store_drafts": self.store_drafts,
             "replay_drafts": self.replay_drafts,
             "verdict_basis": self.verdict_basis(),
             "replay_captures_on_disk": self.replay_captures_on_disk,
@@ -2011,12 +2134,23 @@ class PreRegisteredCheck:
 
 def build_pre_registered_check(era_metrics_map: dict[str, EraMetrics], *,
                                current_era: str | None, current_era_error: str | None,
-                               replay_captures_on_disk: int) -> PreRegisteredCheck:
+                               replay_captures_on_disk: int,
+                               rows: Sequence[OpenerRow] | None = None) -> PreRegisteredCheck:
     """Assemble the PreRegisteredCheck for ``current_era`` against ``era_metrics_map``
     (build_era_metrics()'s own output). Below PRE_REGISTERED_MIN_DRAFTS, ``predictions`` stays
     empty and ``falsified`` stays None -- a caller renders a verdict exactly when ``checkable`` is
     True and refuses one otherwise, per this task's own "do not soften it" / "refuse to render a
-    verdict" requirement."""
+    verdict" requirement.
+
+    ``rows`` -- keyword-only, defaulting to None so every pre-existing call site that only ever
+    built ``era_metrics_map`` by hand (this module's own tests) keeps working unchanged -- is the
+    SAME deduped corpus ``era_metrics_map`` was built from (read_all_sources()' return value,
+    already run through dedupe_openers()). It exists ONLY so this function can report
+    ``store_drafts``: how many of ``drafts_recorded`` are specifically ``openers``-table rows
+    (source in {"sqlite", "bigquery"}), broken out because ``drafts_recorded`` itself stopped being
+    that count on 2026-09-17 (see PreRegisteredCheck's own BASIS CHANGED docstring paragraph and
+    ops/OPENER-REDESIGN.md's dated addendum) -- it is now the deduped total across jsonl AND the
+    store. When ``rows`` is omitted, ``store_drafts`` stays None (never guessed as 0)."""
     if current_era is None and current_era_error is None:
         current_era_error = "not computed for this report (no --config was read)"
     _era_present = current_era is not None and current_era in era_metrics_map
@@ -2024,13 +2158,18 @@ def build_pre_registered_check(era_metrics_map: dict[str, EraMetrics], *,
     # EraMetrics already tallies this for the synthetic-era marker; reuse it rather than
     # recounting, so the verdict's provenance and the era axis can never disagree.
     replay_drafts = era_metrics_map[current_era].replay_count if _era_present else 0
+    store_drafts: int | None = None
+    if rows is not None and _era_present:
+        store_drafts = sum(1 for row in rows
+                           if row.era == current_era and row.source != "jsonl")
     shortfall = max(0, PRE_REGISTERED_MIN_DRAFTS - drafts_recorded)
     checkable = current_era is not None and drafts_recorded >= PRE_REGISTERED_MIN_DRAFTS
     check = PreRegisteredCheck(
         current_era=current_era, current_era_error=current_era_error,
         drafts_recorded=drafts_recorded, replay_drafts=replay_drafts,
         replay_captures_on_disk=replay_captures_on_disk,
-        min_drafts_required=PRE_REGISTERED_MIN_DRAFTS, checkable=checkable, shortfall=shortfall)
+        min_drafts_required=PRE_REGISTERED_MIN_DRAFTS, checkable=checkable, shortfall=shortfall,
+        store_drafts=store_drafts)
     if not checkable:
         return check
 
@@ -2073,8 +2212,25 @@ def format_pre_registered_check(check: PreRegisteredCheck, *,
         return "\n".join(lines)
     lines.append(f"  current prompt era (prompt_sha256): {check.current_era} "
                 f"[{resolve_era_label(check.current_era, registry)}]")
-    lines.append(f"  drafts recorded under this era (openers rows -- the threshold applies "
-                f"HERE): {check.drafts_recorded}")
+    lines.append(f"  drafts recorded under this era (deduped drafts across every source -- jsonl "
+                f"debug-log rows + openers-table rows, collapsed to one row per physical draft by "
+                f"text; the threshold applies HERE): {check.drafts_recorded}")
+    if check.store_drafts is None:
+        lines.append("    of which openers-table rows: not computed for this call (no row-level "
+                    "data was supplied to build_pre_registered_check())")
+    else:
+        lines.append(
+            f"    of which openers-table rows (store-backed; reproducible against "
+            f"`SELECT COUNT(*) FROM openers WHERE prompt_sha256 = ...`, modulo dedupe collapsing "
+            f"a text seen twice in the same source): {check.store_drafts}  -- the remaining "
+            f"{check.drafts_recorded - check.store_drafts} are jsonl-only debug-log drafts with "
+            "no surviving openers-table row for that exact text")
+    lines.append(
+        "  NOTE: this count's BASIS CHANGED on 2026-09-17 -- it used to be openers-table rows "
+        "only, because a jsonl row carried no era stamp before commit 75155dc7 and so could never "
+        "be attributed to any one era; a jsonl row now carries a real era, so excluding it would "
+        "undercount real model output generated under this era. See "
+        "ops/OPENER-REDESIGN.md's dated addendum.")
     _basis = check.verdict_basis()
     lines.append(f"    of which SYNTHETIC (tools/opener_replay.py offline replay): "
                 f"{check.replay_drafts}  -> basis: {_basis.upper()}")
@@ -2134,9 +2290,11 @@ _CAVEATS = (
     "the prompt produced, never whether it worked. METRICS BY OUTCOME below is the one place "
     "this report measures performance, and it comes with its own caveats (this list, items 5-8) "
     "that matter at least as much as the numbers themselves.",
-    "The jsonl corpus (data/hinge_debug/<run_id>/actions.jsonl) carries no prompt-era stamp, so "
-    "its rows all land in the 'unknown' era bucket and mix however many real prompt eras are "
-    "represented locally -- they cannot be attributed to any one rewrite.",
+    "The jsonl corpus (data/hinge_debug/<run_id>/actions.jsonl) carries a real prompt-era stamp "
+    "only for rows written since commit 75155dc7 (2026-09-06), which added `prompt_sha256` "
+    "alongside jsonl's `opener` key on the same action dict (see read_jsonl_openers()). A row "
+    "written before that commit shipped has no such key and still lands in the 'unknown' era "
+    "bucket, mixed in with whatever other pre-stamp rows exist locally.",
     "The store corpus's survivorship bias is now PARTIAL, not total: the boundary is "
     "OpenerService.discard_opener. A row with decision=='like' is SENT (commit_opener's only "
     "value, and the only thing every store row meant before discard_opener existed). A row "
@@ -2522,7 +2680,7 @@ def build_report(rows: Sequence[OpenerRow], rejections: Sequence[RejectionRow],
     replay_stats = replay_corpus_stats or ReplayCorpusStats(corpus_dir=Path(DEFAULT_CORPUS_DIR))
     pre_registered_check = build_pre_registered_check(
         metrics, current_era=current_era, current_era_error=current_era_error,
-        replay_captures_on_disk=replay_stats.capture_count)
+        replay_captures_on_disk=replay_stats.capture_count, rows=rows)
     doc: dict[str, Any] = {
         "caveats": list(_CAVEATS),
         # The corpus-on-disk and progress-toward-the-pre-registered-check sections, carried
@@ -2625,7 +2783,7 @@ def format_text_report(rows: Sequence[OpenerRow], rejections: Sequence[Rejection
     replay_stats = replay_corpus_stats or ReplayCorpusStats(corpus_dir=Path(DEFAULT_CORPUS_DIR))
     pre_registered_check = build_pre_registered_check(
         metrics, current_era=current_era, current_era_error=current_era_error,
-        replay_captures_on_disk=replay_stats.capture_count)
+        replay_captures_on_disk=replay_stats.capture_count, rows=rows)
     parts = ["=== CAVEATS (read before trusting any number below) ==="]
     parts.extend(f"  - {caveat}" for caveat in _CAVEATS)
     parts.append("")

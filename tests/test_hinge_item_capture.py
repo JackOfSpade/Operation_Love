@@ -22,6 +22,7 @@ frames with its real reference.
 Every positive is paired with a negative: for each thing the enumeration produces there is a
 test that it is REFUSED, by name and with a reason, rather than degraded into raw frames.
 """
+import ast
 import collections
 import dataclasses
 import hashlib
@@ -30,6 +31,7 @@ import itertools
 import json
 import math
 import random
+import textwrap
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -2921,6 +2923,185 @@ def test_an_index_that_contradicts_itself_is_reported_and_never_degrades_to_raw_
     assert drv._current_item_index is None and drv._current_item_payload is None
 
 
+def test_broken_correspondence_refusal_does_not_retry_the_identical_item_index(
+        monkeypatch):
+    """A reconfirmed top cannot repair a broken page-coordinate chain.
+
+    ``scroll_top_signal_confirmed`` only suppresses the supplementary item-1/corner guard in
+    ``item_index._assemble``.  Rebuilding an index that already refused because frames cannot
+    share a coordinate space repeats expensive segmentation/NCC work without changing one input
+    relevant to that refusal (the 2026-09-17 Julia capture paid for exactly that second build).
+    """
+    failure = "frames 4 and 5 could not be put in one coordinate space: no_consensus"
+    refused = SimpleNamespace(usable=False, failures=(failure,))
+    calls = []
+    drv = _drv(WorldAdb())
+
+    def build(*_args, **kwargs):
+        calls.append(kwargs)
+        return refused
+
+    monkeypatch.setattr(hinge, "build_item_index", build)
+    monkeypatch.setattr(drv, "_latch_scroll_top_pinning", lambda *_args: None)
+    monkeypatch.setattr(drv, "_restart_index_from_confirmed_top", lambda *_args: None)
+    monkeypatch.setattr(drv, "_capture_reconfirms_scroll_top", lambda _photos: True)
+    monkeypatch.setattr(drv, "_item_index_refused", lambda _photos, reason, _index: reason)
+
+    reason = drv._index_captured_items([b"frame 0", b"frame 1"])
+
+    assert failure in reason
+    assert len(calls) == 1
+    assert "scroll_top_signal_confirmed" not in calls[0]
+
+
+def test_supplementary_item_one_corner_refusal_retries_with_confirmed_scroll_top(
+        monkeypatch):
+    """Independent filter-chip proof may waive exactly the item-1 corner supplement."""
+    failure = (
+        "at_scroll_top was asserted, and page background does sit above the topmost block, "
+        "but no frame ever saw the first item's OWN top edge")
+    refused = SimpleNamespace(
+        usable=False, failures=(failure,), at_scroll_top=True,
+        blocks=(SimpleNamespace(page_y0=700, page_y1=1674),))
+    calls = []
+    drv = _drv(WorldAdb())
+
+    def build(*_args, **kwargs):
+        calls.append(kwargs)
+        return refused
+
+    monkeypatch.setattr(hinge, "build_item_index", build)
+    monkeypatch.setattr(drv, "_latch_scroll_top_pinning", lambda *_args: None)
+    monkeypatch.setattr(drv, "_restart_index_from_confirmed_top", lambda *_args: None)
+    monkeypatch.setattr(drv, "_capture_reconfirms_scroll_top", lambda _photos: True)
+    monkeypatch.setattr(drv, "_item_index_refused", lambda _photos, reason, _index: reason)
+
+    reason = drv._index_captured_items([b"frame 0", b"frame 1"])
+
+    assert failure in reason
+    assert len(calls) == 2
+    assert "scroll_top_signal_confirmed" not in calls[0]
+    assert calls[1]["scroll_top_signal_confirmed"] is True
+
+
+@pytest.mark.parametrize(
+    "index",
+    [
+        # `failures` is not iterable, so normalization itself must fail closed.
+        SimpleNamespace(failures=1, at_scroll_top=True,
+                        blocks=(SimpleNamespace(page_y0=700, page_y1=1674),)),
+        # A corner message cannot turn a relative index into absolute heart ordinals.
+        SimpleNamespace(failures=("corner",), at_scroll_top=False,
+                        blocks=(SimpleNamespace(page_y0=700, page_y1=1674),)),
+        # The message alone does not prove there was any folded page to rebuild.
+        SimpleNamespace(failures=("corner",), at_scroll_top=True, blocks=()),
+        # A block without page extent is a malformed test double, not retry authority.
+        SimpleNamespace(failures=("corner",), at_scroll_top=True, blocks=(object(),)),
+    ],
+)
+def test_confirmed_top_retry_rejects_malformed_or_nonabsolute_sole_corner_indexes(index):
+    """The legacy one-failure path still needs a real absolute index behind its message."""
+    corner = (
+        "at_scroll_top was asserted, and page background does sit above the topmost block, "
+        "but no frame ever saw the first item's OWN top edge")
+    if index.failures != 1:
+        index.failures = (corner,)
+
+    assert not hinge.HingeDriver._index_needs_confirmed_top_retry(index)
+
+
+def test_dependent_leading_chrome_uncertainty_retries_with_confirmed_scroll_top(monkeypatch):
+    """The header's hidden-heart refusal is removable only with the corner refusal that caused it.
+
+    This is the Hannah shape: page background above a leading heartless panel, then item 1 whose
+    own corner segmentation missed.  A second, independent filter-chip confirmation authorizes
+    the existing rebuild, which in turn classes only that panel as chrome.
+    """
+    corner = (
+        "at_scroll_top was asserted, and page background does sit above the topmost block, "
+        "but no frame ever saw the first item's OWN top edge")
+    leading = SimpleNamespace(
+        page_y0=334, page_y1=642, kind=item_index.ITEM_PARTIAL, hearts=(), complete=False)
+    uncertainty = (
+        f"the block at page rows {leading.page_y0}..{leading.page_y1} "
+        + item_index._UNCERTAIN_HEART_NOTE)
+    refused = SimpleNamespace(
+        usable=False, failures=(corner, uncertainty), at_scroll_top=True,
+        blocks=(leading, SimpleNamespace()))
+    calls = []
+    drv = _drv(WorldAdb())
+
+    def build(*_args, **kwargs):
+        calls.append(kwargs)
+        return refused
+
+    monkeypatch.setattr(hinge, "build_item_index", build)
+    monkeypatch.setattr(drv, "_latch_scroll_top_pinning", lambda *_args: None)
+    monkeypatch.setattr(drv, "_restart_index_from_confirmed_top", lambda *_args: None)
+    monkeypatch.setattr(drv, "_capture_reconfirms_scroll_top", lambda _photos: True)
+    monkeypatch.setattr(drv, "_item_index_refused", lambda _photos, reason, _index: reason)
+
+    reason = drv._index_captured_items([b"frame 0", b"frame 1"])
+
+    assert corner in reason and uncertainty in reason
+    assert len(calls) == 2
+    assert "scroll_top_signal_confirmed" not in calls[0]
+    assert calls[1]["scroll_top_signal_confirmed"] is True
+
+
+@pytest.mark.parametrize(
+    "at_scroll_top, leading, failures",
+    [
+        # A leading heart is an actual item whose unseen extent could renumber every later card.
+        (True, SimpleNamespace(page_y0=334, page_y1=642, kind=item_index.ITEM_PARTIAL,
+                               hearts=((937, 550),), complete=False), "dependent"),
+        # A complete heartless block is context, not Hinge's never-bounded scroll-top chrome.
+        (True, SimpleNamespace(page_y0=334, page_y1=642, kind=item_index.ITEM_PARTIAL,
+                               hearts=(), complete=True), "dependent"),
+        # The same uncertainty on a later block is independent of the header relabelling.
+        (True, SimpleNamespace(page_y0=334, page_y1=642, kind=item_index.ITEM_PARTIAL,
+                               hearts=(), complete=False), "later"),
+        # A relative index cannot acquire absolute ordinals by retrying its top assertion.
+        (False, SimpleNamespace(page_y0=334, page_y1=642, kind=item_index.ITEM_PARTIAL,
+                                hearts=(), complete=False), "dependent"),
+    ],
+)
+def test_confirmed_top_retry_rejects_near_miss_dependent_failures(
+        at_scroll_top, leading, failures):
+    """Only the exact topmost header uncertainty may accompany the corner failure."""
+    corner = (
+        "at_scroll_top was asserted, and page background does sit above the topmost block, "
+        "but no frame ever saw the first item's OWN top edge")
+    dependent = (
+        f"the block at page rows {leading.page_y0}..{leading.page_y1} "
+        + item_index._UNCERTAIN_HEART_NOTE)
+    later = (
+        "the block at page rows 700..1674 " + item_index._UNCERTAIN_HEART_NOTE)
+    selected_uncertainty = dependent if failures == "dependent" else later
+    index = SimpleNamespace(
+        failures=(corner, selected_uncertainty), at_scroll_top=at_scroll_top,
+        blocks=(leading, SimpleNamespace()))
+
+    assert not hinge.HingeDriver._index_needs_confirmed_top_retry(index)
+
+
+def test_confirmed_top_retry_rejects_an_unrelated_third_failure():
+    """A confirmed top does not buy a second attempt at any other page contradiction."""
+    corner = (
+        "at_scroll_top was asserted, and page background does sit above the topmost block, "
+        "but no frame ever saw the first item's OWN top edge")
+    leading = SimpleNamespace(
+        page_y0=334, page_y1=642, kind=item_index.ITEM_PARTIAL, hearts=(), complete=False)
+    uncertainty = (
+        f"the block at page rows {leading.page_y0}..{leading.page_y1} "
+        + item_index._UNCERTAIN_HEART_NOTE)
+    index = SimpleNamespace(
+        failures=(corner, uncertainty, "frame 4 contradicts itself"), at_scroll_top=True,
+        blocks=(leading, SimpleNamespace()))
+
+    assert not hinge.HingeDriver._index_needs_confirmed_top_retry(index)
+
+
 def test_item_index_refusal_logs_the_broken_pair_and_compact_shift_ledger(tmp_path):
     """A broken correspondence chain used to lose the only two frames that explain it.  The
     refusal record saves that exact pair, every realised delta (with unknown kept as null), and
@@ -3308,6 +3489,14 @@ def test_item_index_refusal_filesystem_evidence_failure_cannot_break_the_live_re
 
 
 def test_item_index_repair_notes_log_original_capture_frame_after_omission_recovery():
+    """The real-repair path: `repair_provenance` is non-empty, so the action name stays
+    "item_index_repaired" REGARDLESS of `screen_fixed_notes` (2026-09-17, corrected same day
+    TWICE -- see `_item_index_note_text` and the two sibling declination tests below for the two
+    branches this priority order defers to only when `repairs` is empty). This `_Index` test
+    double defines no `screen_fixed_notes` attribute at all, matching every historic `ItemIndex`
+    caller in this suite that predates the field; `getattr(..., ()) or ()` degrades that
+    gracefully to an empty list rather than raising.
+    """
     drv = _drv(WorldAdb())
 
     class _Debug:
@@ -3349,6 +3538,106 @@ def test_item_index_repair_notes_log_original_capture_frame_after_omission_recov
                 "x": 106, "y": 876, "score": 1.0,
             }],
         }],
+        "screen_fixed_notes": [],
+    })]
+
+
+def test_item_index_screen_fixed_declination_emits_screen_fixed_notes_action():
+    """The declination path: the screen-fixed-island check could not reach two page offsets.
+
+    (2026-09-17, corrected same day TWICE) `_screen_fixed_islands`' do-nothing branch still
+    leaves `index.notes` (AND, since this fix, `index.screen_fixed_notes`) populated -- an
+    operator needs the reason a decision was declined -- but `repair_provenance` stays empty:
+    nothing on the page changed. Emitting "item_index_repaired" for that row would assert a
+    repair that provably did not happen, exactly the defect fixed in 64e5d6b6 ("Stop the durable
+    records from asserting what they never knew").
+
+    The FIRST fix for this (same day) picked the neutral action name "item_index_unresolved_
+    strip", then just "item_index_notes", for EVERY empty-`repairs` row -- which throws away a
+    true, useful signal for the common case: a reviewer measured 44 of 46 real empty-`repairs`
+    rows under data/hinge_debug as genuinely carrying a `_screen_fixed_islands` note. Now that
+    `ItemIndex.screen_fixed_notes` exists, the action name says so directly whenever this
+    record's own notes prove that check ran: "item_index_screen_fixed_notes". See the sibling
+    test below for the true 2-row minority shape (empty `repairs`, no screen-fixed note either).
+    """
+    drv = _drv(WorldAdb())
+
+    class _Debug:
+        calls = []
+
+        def action(self, name, **fields):
+            self.calls.append((name, fields))
+
+    class _Index:
+        frames = (object(), object(), object())
+        source_frame_indices = (0, 2, 3)
+        notes = ("frame 1's sighting at page rows 600..900, was only ever seen at one page "
+                 "offset (4200), so nothing distinguishes screen-pinned chrome from page "
+                 "content here; it is placed on the page exactly as it would have been before "
+                 "this check existed",)
+        screen_fixed_notes = notes          # this note IS the `_screen_fixed_islands` output
+        video_mute_markers = ()
+        repair_provenance = ()
+
+    debug = _Debug()
+    drv._dbg = debug
+    photos = [b"zero", b"one", b"two", b"three"]
+    drv._record_item_index_notes(photos, _Index())
+
+    transformed = ("source frame 2 (index frame 1)'s sighting at page rows 600..900, was only "
+                  "ever seen at one page offset (4200), so nothing distinguishes screen-pinned "
+                  "chrome from page content here; it is placed on the page exactly as it would "
+                  "have been before this check existed")
+    assert debug.calls == [("item_index_screen_fixed_notes", {
+        "before": b"two",
+        "notes": [transformed],
+        "note_frames": [{"local_frame_index": 1, "source_frame_index": 2}],
+        "source_frame_indices": [0, 2, 3],
+        "item_index_runtime": hinge._item_index_runtime_provenance(),
+        "repairs": [],
+        "screen_fixed_notes": [transformed],
+    })]
+
+
+def test_item_index_neutral_note_emits_notes_action_when_no_screen_fixed_note():
+    """The true 2-row minority shape (measured on real data 2026-09-17): `repairs` empty AND no
+    note came from `_screen_fixed_islands` either -- the record's only note is an ordinary
+    `_assemble` success (real example: run 5554d6fc51aa's ordinal-safe note). Empty `repairs`
+    proves exactly one thing here: no shift repair was applied. The action name says only that:
+    the neutral "item_index_notes", with `screen_fixed_notes: []` alongside `repairs: []` so a
+    reader can see nothing was omitted, only that neither mechanism fired.
+    """
+    drv = _drv(WorldAdb())
+
+    class _Debug:
+        calls = []
+
+        def action(self, name, **fields):
+            self.calls.append((name, fields))
+
+    class _Index:
+        frames = (object(), object(), object())
+        source_frame_indices = (0, 2, 3)
+        notes = ("frame 1's heartless partial block is retained as uncroppable but is "
+                 "ordinal-safe: no unseen rows in which a heart could hide",)
+        screen_fixed_notes = ()             # no `_screen_fixed_islands` contribution at all
+        video_mute_markers = ()
+        repair_provenance = ()
+
+    debug = _Debug()
+    drv._dbg = debug
+    photos = [b"zero", b"one", b"two", b"three"]
+    drv._record_item_index_notes(photos, _Index())
+
+    assert debug.calls == [("item_index_notes", {
+        "before": b"two",
+        "notes": ["source frame 2 (index frame 1)'s heartless partial block is retained as "
+                  "uncroppable but is ordinal-safe: no unseen rows in which a heart could hide"],
+        "note_frames": [{"local_frame_index": 1, "source_frame_index": 2}],
+        "source_frame_indices": [0, 2, 3],
+        "item_index_runtime": hinge._item_index_runtime_provenance(),
+        "repairs": [],
+        "screen_fixed_notes": [],
     })]
 
 
@@ -4862,6 +5151,539 @@ def test_candidate_walk_honors_stop_before_starting_a_deep_sweep(
     assert stop_checks["count"] == 2
     assert navigation_calls == []
     assert (adb.scrolls, adb.reverse_swipes) == (0, 0)
+
+
+# =====================================================================================
+# THE SWEEP'S REFUSAL HANDLERS (measured 2026-09-16, and until then completely unexercised).
+# A sys.monitoring LINE probe over `_still_photo_dwell_progressive_sweep.__code__`, unioned
+# across every xdist worker of a full green suite, reached 0 of the ~50 lines that make up its
+# `ItemNavigationError`-without-recovery arm and its uncoded-exception arm -- the exact branch
+# run f78ca90856b4 took (actions.jsonl 18:10:50: outcome=navigation_refused reason=ActionCancelled,
+# then sweep outcome=position_unmeasured failed_page_heart=6).  The SHORT-HOP twins of both arms
+# are covered several times over, which is precisely why the gap survived: the two handlers read
+# almost identically, so reviewing one reads as reviewing both.
+#
+# WHAT THEY PIN THAT THE SHORT-HOP TESTS CANNOT.  The short-hop walk returns to the
+# enumeration entry after EVERY card, so its refusal handlers can only ever hand back the entry
+# anchor -- `entry_anchor` and "where the phone is now" are the same object there.  The sweep is
+# the one path where they diverge: it carries a measured `current_anchor` forward across hops and
+# repays the whole climb once at the end.  Passing `entry_anchor` to
+# `_anchor_after_navigation_refusal` instead of `current_anchor` therefore ships SILENTLY -- a
+# terminal shift of 0, a zero-leg "returned" cleanup, and a `_current_item_anchor` naming a frame
+# the phone left several hundred pixels ago -- so the cleanup call's OWN arguments are asserted
+# below, not merely that an anchor came back.  Re-running the same LINE probe over these tests
+# alone now reaches every line of both arms and of the sweep's own post-proof stop recorder.
+# =====================================================================================
+
+# One hop's climb, in page pixels. Any non-zero distance works; a named constant is what lets the
+# cleanup assertions below say "repay exactly the hop that was made" rather than repeating a
+# number whose provenance a later reader would have to reconstruct.
+_SWEEP_HOP_CLIMB_PX = 500
+
+
+def _sweep_world(tmp_path, monkeypatch, run_id, *, candidates=4):
+    """A driver whose next candidate is guaranteed to enter the progressive sweep.
+
+    `(1, 0, 1)` is the same return-budget stub the sweep tests above use: a required climb of
+    1px against a legacy return cap of 0px puts EVERY remaining candidate outside the old
+    four-leg envelope, which is the one condition that switches a typed production `ItemIndex`
+    from short hops to the sweep. A debug log is installed because the outcome token these tests
+    are about is only observable in `actions.jsonl`.
+    """
+    index, frames = _full_read_capture()
+    drv = _drv(ProbeWorldAdb(start=_FULL_READ_SCROLLS[-1]),
+               still_photo_dwell_candidates=candidates)
+    drv._dbg = HingeDebugLog(str(tmp_path), run_id=run_id)
+    monkeypatch.setattr(drv, "_still_photo_dwell_walk_return_budget",
+                        lambda _index, _model_index: (1, 0, 1))
+    return drv, index, frames
+
+
+def _action_rows(drv, action):
+    """Every `actions.jsonl` row of one action name, in the order the driver wrote them.
+
+    The order is the assertion in several tests below -- a Stop's own row has to precede the
+    rescue note that follows it -- so this deliberately preserves the file's sequence rather
+    than collecting outcomes into a set.
+    """
+    return [record for record in
+            (json.loads(line)
+             for line in (drv._dbg.dir / "actions.jsonl").read_text().splitlines())
+            if record["action"] == action]
+
+
+def _sweep_hop_target(index):
+    """A landing `navigate_to_item` stub plus the centring correction that seats it.
+
+    One climb of `_SWEEP_HOP_CLIMB_PX` from the enumeration entry, expressed the way the sweep's
+    own re-anchoring arithmetic reads it: `page_offset` is the landing offset in the ORIGINAL
+    index's page space, so subtracting `index.offsets[-1]` is what turns it back into this
+    capture's global displacement. The correction is a measured zero, so the anchor the sweep
+    carries forward is exactly minus `_SWEEP_HOP_CLIMB_PX` and nothing in these tests has to
+    model centring -- which has its own coverage above and is not what these are about.
+    """
+    target = _stub_target(
+        _frame(_FULL_READ_SCROLLS[-1] - _SWEEP_HOP_CLIMB_PX), (700, 1700),
+        climbed_px=_SWEEP_HOP_CLIMB_PX,
+        page_offset=int(index.offsets[-1]) - _SWEEP_HOP_CLIMB_PX)
+    return target, hinge._CenteringCorrection(total_px=0, frame=target.frame)
+
+
+_SWEEP_PROVED = SimpleNamespace(
+    dwell_frame_sha256s=("first", "second"), dwell_exact=True, dwell_span_s=1.0,
+    mute_screens_complete=True, centered=True, reattach_probe_ran=True,
+    reattach_dwell_frame_sha256s=("third", "fourth"), reattach_dwell_exact=True,
+    reattach_dwell_span_s=1.0, reattach_mute_screens_complete=True, reattach_centered=True)
+
+
+def test_a_stop_raised_through_the_sweeps_navigation_is_recorded_as_a_cancellation(
+        monkeypatch, tmp_path, installed_still_photo_bound):
+    """The sweep's uncoded handler, on the branch run f78ca90856b4 actually took.
+
+    `ActionCancelled` reaching this handler with `should_stop` true at the catch site is an
+    operator Stop, not a measurement fault -- base.py's own docstring says it is "neither a
+    targeting refusal nor a driver fault" -- and the token written here is the only thing that
+    can say so: nothing later in the pipeline can separate it from a `ShiftEstimationError`,
+    because the row is all the report ever sees. The page position is a different question and
+    is answered the same way it always was: the cancellation landed AFTER a gesture reached the
+    transport, so the anchor is refused and the capture dies before an opener is bought. Naming
+    the Stop must not, and here does not, soften that.
+    """
+    drv, index, frames = _sweep_world(tmp_path, monkeypatch, "sweep-cancelled-after-a-gesture")
+    stopped = {"now": False}
+
+    def cancels_mid_climb(driver, *_args, **_kwargs):
+        # item_nav's own contract: `should_stop` "is checked before every screencap and upward
+        # gesture" (its module docstring), i.e. the check sits BETWEEN the climb's strokes. So
+        # the realistic shape of a mid-climb Stop is one stroke already delivered through the
+        # driver's real audit chokepoint, and only then the cancellation.
+        driver._audit_device_input("scroll", source="stub", start=[0, 0], end=[0, 0])
+        stopped["now"] = True
+        raise hinge.ActionCancelled("the operator stopped the run mid-climb")
+
+    monkeypatch.setattr(hinge, "navigate_to_item", cancels_mid_climb)
+    banked = SimpleNamespace(dwell_exact=True, reattach_probe_ran=True)
+
+    evidence, anchor = drv._still_photo_dwell_candidate_walk(
+        {4: banked}, frames=frames, index=index, mute_screen=lambda _f, _r: True,
+        eligible_heart_ordinals={1, 2, 3}, should_stop=lambda: stopped["now"],
+        entry_anchor=hinge._MeasuredItemAnchor(frames[-1], 0))
+
+    assert evidence == {4: banked}, "a cancelled candidate never invents evidence"
+    assert anchor is None, "a gesture was spent, so the page is somewhere nobody measured"
+    candidates = _action_rows(drv, "still_photo_dwell_walk_candidate")
+    assert [row["outcome"] for row in candidates] == ["navigation_cancelled"], (
+        "an operator Stop must not be filed under the same token as the four genuine "
+        "measurement faults this handler also catches")
+    assert candidates[0]["reason"] == "ActionCancelled"
+    assert candidates[0]["heart_ordinal"] == 3
+    assert [row["outcome"] for row in
+            _action_rows(drv, "still_photo_dwell_walk_candidate_timing")] == [
+                "navigation_cancelled"], (
+        "the timing sibling is keyed on the same token, and a report that joined the two rows "
+        "by outcome would silently drop this candidate if they disagreed")
+    sweeps = _action_rows(drv, "still_photo_dwell_progressive_sweep")
+    assert [row["outcome"] for row in sweeps] == ["started", "position_unmeasured"]
+    assert sweeps[-1]["failed_page_heart"] == 3
+    assert sweeps[-1]["attempted_page_hearts"] == [3]
+    # And the shortfall is attributed to the Stop rather than left to read as exhausted K.
+    assert drv._current_dwell_walk_interruption == {
+        "reason": "stop_requested",
+        "phase": "during_candidate_navigation",
+        "next_page_heart": 2,
+        "unattempted_within_remaining_limit_page_hearts": [2, 1],
+        "interrupted_page_hearts": [3],
+    }
+
+
+def test_a_gestureless_stop_keeps_the_position_the_sweep_last_measured(
+        monkeypatch, tmp_path, installed_still_photo_bound):
+    """The latent path: a Stop observed before the climb's first stroke, mid-sweep.
+
+    Two things have to be true at once here and only the sweep can put them in tension. The
+    rescue is legitimate -- nothing was delivered, so a measured position still describes the
+    live screen -- and the position it hands back is the one the SWEEP measured after its banked
+    hop, `_SWEEP_HOP_CLIMB_PX` up the page from the enumeration entry the sweep was called with
+    rather than at it. Handing
+    back `entry_anchor` instead would be silent: the cleanup would be asked to repay 0px, report
+    itself "returned", and leave `_current_item_anchor` naming a frame the phone had already
+    left. So the cleanup call's own arguments are what is asserted, not merely that an anchor
+    came back.
+
+    The Stop record is the second half. Both cooperative stop sites (top-of-loop, post-proof)
+    always wrote one; this handler did not, so a cancellation that the rescue then let the
+    capture COMPLETE through produced a real coverage shortfall with no stated cause -- the
+    completion summary said the generic "still-photo coverage skipped N photo candidate(s)" for
+    a shortfall the operator themselves caused.
+    """
+    drv, index, frames = _sweep_world(tmp_path, monkeypatch, "sweep-cancelled-before-a-gesture")
+    adb = drv.adb
+    target, correction = _sweep_hop_target(index)
+    stopped = {"now": False}
+    navigations = []
+
+    def hop_then_cancel(_driver, walk_index, model_index, **_kwargs):
+        navigations.append(walk_index.translation[model_index - 1])
+        if len(navigations) == 1:
+            return target
+        stopped["now"] = True
+        raise hinge.ActionCancelled("the operator stopped the run before the climb began")
+
+    monkeypatch.setattr(hinge, "navigate_to_item", hop_then_cancel)
+    monkeypatch.setattr(
+        HingeDriver, "_still_photo_dwell_over_navigated_target",
+        lambda *_args, **_kwargs: (_SWEEP_PROVED, None, correction))
+    cleanups = []
+    returned = hinge._MeasuredItemAnchor(frames[-1], 0)
+    monkeypatch.setattr(
+        HingeDriver, "_return_to_entry_from_measured_position",
+        lambda *_args, **kwargs: cleanups.append(kwargs) or returned)
+    banked = SimpleNamespace(dwell_exact=True, reattach_probe_ran=True)
+
+    evidence, anchor = drv._still_photo_dwell_candidate_walk(
+        {4: banked}, frames=frames, index=index, mute_screen=lambda _f, _r: True,
+        eligible_heart_ordinals={1, 2, 3}, should_stop=lambda: stopped["now"],
+        entry_anchor=hinge._MeasuredItemAnchor(frames[-1], 0))
+
+    assert navigations == [3, 2], "the premise: one hop banked, the next one cancelled"
+    assert (adb.scrolls, adb.reverse_swipes) == (0, 0), (
+        "the premise: the cancelled candidate delivered nothing to the transport")
+    assert evidence == {4: banked, 3: _SWEEP_PROVED}, "the banked hop survives the Stop"
+    assert anchor is returned, "a position the driver can still name is not a refusal"
+    assert len(cleanups) == 1, "the sweep still makes exactly one measured cleanup return"
+    assert cleanups[0]["terminal_shift_px"] == -_SWEEP_HOP_CLIMB_PX, (
+        "the cleanup repays the hop the sweep actually made, not the zero distance the "
+        "enumeration entry would imply")
+    assert cleanups[0]["frame"] == correction.frame, (
+        "and it is measured from the frame the sweep last placed, not from the entry frame")
+    assert [row["outcome"] for row in
+            _action_rows(drv, "still_photo_dwell_walk_candidate")] == [
+                "proved", "navigation_cancelled", "navigation_refused_no_gesture"], (
+        "the Stop is named, and the rescue that follows it is recorded separately")
+    assert drv._current_dwell_walk_interruption == {
+        "reason": "stop_requested",
+        "phase": "during_candidate_navigation",
+        "next_page_heart": 1,
+        "unattempted_within_remaining_limit_page_hearts": [1],
+        "interrupted_page_hearts": [2],
+    }
+
+
+@pytest.mark.parametrize("through_the_sweep", [False, True], ids=["short-hop", "sweep"])
+def test_a_mid_navigation_stop_names_only_the_cards_still_inside_the_limit(
+        monkeypatch, tmp_path, installed_still_photo_bound, through_the_sweep):
+    """The interruption record's ARITHMETIC, which the two tests above cannot reach.
+
+    `_record_still_photo_dwell_walk_stop`'s contract is that `interrupted_page_hearts` plus the
+    sliced `unattempted_within_remaining_limit_page_hearts` name exactly the cards that were
+    still inside the configured maximum when the stop landed -- that is the whole point of the
+    "does not misleadingly read as an exhausted K budget" clause in its docstring. Both mid-
+    navigation handlers passed `remaining - hops_run` while listing the in-progress card
+    separately, which double-counts its slot: `hops_run` counts COMPLETED navigations and this
+    one did not complete. Every other call site already deducts it (`K - len(interrupted_hearts)`,
+    `K - len(evidence)`, and the post-proof site's own post-increment `hops_run`).
+
+    K=3 with one banked card is the smallest shape that can tell the two apart: two slots remain,
+    the cancelled card takes one, so exactly ONE unattempted card is inside the limit. The tests
+    above both cancel where the remaining list is shorter than the slot count, so they return the
+    same answer either way -- which is why the off-by-one shipped green.
+
+    It is not cosmetic. bugreport.py's `_capture_stop_interrupted_gap_count` intersects this union
+    with the capture's coverage gaps, so an over-long list blames the operator's Stop for a photo
+    candidate the K budget would have skipped anyway, and subtracts it from the separate
+    "still-photo coverage skipped N" line that names genuine non-Stop gaps.
+    """
+    index, frames = _full_read_capture()
+    drv = _drv(ProbeWorldAdb(start=_FULL_READ_SCROLLS[-1]), still_photo_dwell_candidates=3)
+    drv._dbg = HingeDebugLog(str(tmp_path), run_id=f"stop-slots-{through_the_sweep}")
+    if through_the_sweep:
+        # The same return-budget stub `_sweep_world` uses: a 1px required climb against a 0px
+        # legacy cap puts every candidate outside the four-leg envelope and switches the walk
+        # into the progressive sweep. Without it the identical scenario stays on short hops.
+        monkeypatch.setattr(drv, "_still_photo_dwell_walk_return_budget",
+                            lambda _index, _model_index: (1, 0, 1))
+    stopped = {"now": False}
+
+    def cancels_mid_climb(*_args, **_kwargs):
+        stopped["now"] = True
+        raise hinge.ActionCancelled("the operator stopped the run mid-climb")
+
+    monkeypatch.setattr(hinge, "navigate_to_item", cancels_mid_climb)
+    banked = SimpleNamespace(dwell_exact=True, reattach_probe_ran=True)
+
+    drv._still_photo_dwell_candidate_walk(
+        {4: banked}, frames=frames, index=index, mute_screen=lambda _f, _r: True,
+        eligible_heart_ordinals={1, 2, 3}, should_stop=lambda: stopped["now"],
+        entry_anchor=hinge._MeasuredItemAnchor(frames[-1], 0))
+
+    # Fixture guard: the two handlers are separate functions carrying the same arithmetic, so a
+    # parameter that quietly routed through the other one would leave its own handler untested.
+    assert bool(_action_rows(drv, "still_photo_dwell_progressive_sweep")) is through_the_sweep, (
+        "this parameter did not exercise the handler it is named for")
+    assert [row["outcome"] for row in
+            _action_rows(drv, "still_photo_dwell_walk_candidate")][0] == "navigation_cancelled"
+    assert drv._current_dwell_walk_interruption == {
+        "reason": "stop_requested",
+        "phase": "during_candidate_navigation",
+        "next_page_heart": 2,
+        # Heart 1 is deliberately ABSENT: with hearts 4 (banked) and 3 (cancelled) accounted for,
+        # K=3 had room for one more card and that card is heart 2.
+        "unattempted_within_remaining_limit_page_hearts": [2],
+        "interrupted_page_hearts": [3],
+    }
+
+
+def test_a_gestureless_coded_refusal_mid_sweep_keeps_the_measured_position_too(
+        monkeypatch, tmp_path, installed_still_photo_bound):
+    """The coded arm's own fall-through, which is a different handler with the same duty.
+
+    An `ItemNavigationError` carrying no `recovery` cannot walk itself back, so the sweep falls
+    through to the same rescue -- and to the same trap, because it too is reading a position the
+    sweep measured rather than the one it was entered at. `should_stop` is deliberately absent:
+    this is an ordinary refusal, it must stay filed as `navigation_refused`, and the banked hop
+    must still be repaid in full.
+    """
+    drv, index, frames = _sweep_world(tmp_path, monkeypatch, "sweep-coded-refusal-no-gesture")
+    adb = drv.adb
+    target, correction = _sweep_hop_target(index)
+    navigations = []
+
+    def hop_then_refuse(_driver, walk_index, model_index, **_kwargs):
+        navigations.append(walk_index.translation[model_index - 1])
+        if len(navigations) == 1:
+            return target
+        raise item_nav.ItemNavigationError("legacy_unknown", "no terminal measurement")
+
+    monkeypatch.setattr(hinge, "navigate_to_item", hop_then_refuse)
+    monkeypatch.setattr(
+        HingeDriver, "_still_photo_dwell_over_navigated_target",
+        lambda *_args, **_kwargs: (_SWEEP_PROVED, None, correction))
+    cleanups = []
+    returned = hinge._MeasuredItemAnchor(frames[-1], 0)
+    monkeypatch.setattr(
+        HingeDriver, "_return_to_entry_from_measured_position",
+        lambda *_args, **kwargs: cleanups.append(kwargs) or returned)
+    banked = SimpleNamespace(dwell_exact=True, reattach_probe_ran=True)
+
+    evidence, anchor = drv._still_photo_dwell_candidate_walk(
+        {4: banked}, frames=frames, index=index, mute_screen=lambda _f, _r: True,
+        eligible_heart_ordinals={1, 2, 3},
+        entry_anchor=hinge._MeasuredItemAnchor(frames[-1], 0))
+
+    assert navigations == [3, 2], "the premise: one hop banked, the next one refused"
+    assert (adb.scrolls, adb.reverse_swipes) == (0, 0), "the premise: nothing was delivered"
+    assert evidence == {4: banked, 3: _SWEEP_PROVED}
+    assert anchor is returned
+    assert len(cleanups) == 1
+    assert cleanups[0]["terminal_shift_px"] == -_SWEEP_HOP_CLIMB_PX, (
+        "the coded arm owes the same repayment as the uncoded one")
+    assert cleanups[0]["frame"] == correction.frame
+    rows = _action_rows(drv, "still_photo_dwell_walk_candidate")
+    assert [row["outcome"] for row in rows] == [
+        "proved", "navigation_refused", "navigation_refused_no_gesture"], (
+        "with no Stop at the catch site this stays an ordinary refusal")
+    assert rows[1]["reason"] == "legacy_unknown"
+    assert drv._current_dwell_walk_interruption is None, (
+        "and nothing may claim the operator stopped a run they never touched")
+
+
+def test_a_coded_refusal_that_spent_a_gesture_mid_sweep_refuses_the_capture(
+        monkeypatch, tmp_path, installed_still_photo_bound):
+    """The fail-closed half of the same arm, and the sweep's own `position_unmeasured` exit.
+
+    Once a stroke has been delivered, the entry the sweep was called with says nothing about
+    where the phone is, and the banked hop's own anchor says nothing either -- the refused climb
+    happened after it. There is no measured position left to return from, so the sweep must NOT
+    attempt a cleanup over a distance nobody knows, and the capture must die here rather than
+    hand `navigate_to_item` a page that is not there and let it blame the operator's finger at
+    like time. The evidence banked before the refusal is still returned: it was measured, and a
+    later refusal does not unmeasure it.
+
+    The refusal carries a `measurement` here for a second reason, pinned by the same test
+    because it is the same row: "Log what the estimator saw" (2026-09-04) -- the refusal row has
+    to preserve what the ESTIMATOR observed, not just what the driver intended. The short-hop
+    walk has that pinned by `test_chain_broken_candidate_preserves_both_frames_and_estimator_
+    trace`; the sweep writes it from its own, separate call and had nothing saying so.
+    """
+    drv, index, frames = _sweep_world(tmp_path, monkeypatch, "sweep-coded-refusal-after-gesture")
+    target, correction = _sweep_hop_target(index)
+    measurement = {"schema_version": 2, "code": "legacy_unknown",
+                   "achieved": {"measurement_status": "no_consensus",
+                                "measurement_reason": "forward and reverse strips both split"}}
+    navigations = []
+
+    def hop_then_refuse_after_a_stroke(driver, walk_index, model_index, **_kwargs):
+        navigations.append(walk_index.translation[model_index - 1])
+        if len(navigations) == 1:
+            return target
+        driver._audit_device_input("scroll", source="stub", start=[0, 0], end=[0, 0])
+        raise item_nav.ItemNavigationError("legacy_unknown", "no terminal measurement",
+                                           measurement=measurement)
+
+    monkeypatch.setattr(hinge, "navigate_to_item", hop_then_refuse_after_a_stroke)
+    monkeypatch.setattr(
+        HingeDriver, "_still_photo_dwell_over_navigated_target",
+        lambda *_args, **_kwargs: (_SWEEP_PROVED, None, correction))
+    cleanups = []
+    monkeypatch.setattr(
+        HingeDriver, "_return_to_entry_from_measured_position",
+        lambda *_args, **kwargs: cleanups.append(kwargs) or hinge._MeasuredItemAnchor(
+            frames[-1], 0))
+    banked = SimpleNamespace(dwell_exact=True, reattach_probe_ran=True)
+
+    evidence, anchor = drv._still_photo_dwell_candidate_walk(
+        {4: banked}, frames=frames, index=index, mute_screen=lambda _f, _r: True,
+        eligible_heart_ordinals={1, 2, 3},
+        entry_anchor=hinge._MeasuredItemAnchor(frames[-1], 0))
+
+    assert navigations == [3, 2]
+    assert evidence == {4: banked, 3: _SWEEP_PROVED}, "banked evidence is never erased"
+    assert anchor is None, "a page nobody can locate has no anchor to hand model targeting"
+    assert cleanups == [], "and no cleanup return is attempted over a distance nobody knows"
+    refusal_row = _action_rows(drv, "still_photo_dwell_walk_candidate")[-1]
+    assert refusal_row["outcome"] == "navigation_refused"
+    assert refusal_row["device_inputs_before"] == 0, (
+        "the count the decision was made on is recorded, not re-derived later")
+    assert refusal_row["navigation_refusal"] == measurement, (
+        "the estimator's own trace has to survive on the sweep's row too, or a live refusal "
+        "can only be re-argued from the driver's intent")
+    sweeps = _action_rows(drv, "still_photo_dwell_progressive_sweep")
+    assert [row["outcome"] for row in sweeps] == ["started", "position_unmeasured"]
+    assert sweeps[-1]["failed_page_heart"] == 2
+    assert sweeps[-1]["attempted_page_hearts"] == [3, 2]
+
+
+# The two shapes the sweep's post-proof poll has to treat alike. Its condition is
+# `card_evidence is None or not two_burst_proved(card_evidence)`, and a test that only ever
+# supplied `None` would short-circuit before the second clause ever ran -- leaving the more
+# likely live shape (an observation that completed and simply did not PROVE, because the Stop
+# landed between the two bursts) untested by a test named for the Stop.
+_SWEEP_UNPROVED = SimpleNamespace(
+    dwell_frame_sha256s=("first", "second"), dwell_exact=True, dwell_span_s=1.0,
+    mute_screens_complete=True, centered=True, reattach_probe_ran=False)
+
+
+@pytest.mark.parametrize("card_evidence, outcome, banks", [
+    (None, "parked_unproved", False),       # nothing was observed at all
+    (_SWEEP_UNPROVED, "observed_unproved", True),   # observed, but the probe never ran
+])
+def test_a_stop_at_the_sweeps_post_proof_poll_keeps_its_in_progress_phase(
+        monkeypatch, tmp_path, installed_still_photo_bound, card_evidence, outcome, banks):
+    """The sweep's own cooperative stop site, which had no test of any kind.
+
+    A Stop that arrives while a candidate's proof is running is a shortfall with a name, and the
+    phase it is recorded under is the whole point: the NEXT turn of the loop polls `should_stop`
+    again at the top and would file the same Stop as `before_candidate_navigation`, dropping the
+    card that was actually interrupted. `_record_still_photo_dwell_walk_stop`'s first-writer-wins
+    rule is what prevents that, and this is the sweep's only exercise of it. The measured cleanup
+    still runs afterwards: a Stop ends the walk, it does not license leaving the phone parked
+    five hundred pixels up the profile.
+
+    Both parameters must record the SAME interruption, because the operator did the same thing.
+    What differs is only the evidence: an observation that completed keeps its record (it was
+    really made, it simply is not a proof), while no observation at all keeps nothing -- the
+    `_still_photo_dwell_burst` STOP contract, applied one level up.
+    """
+    drv, index, frames = _sweep_world(tmp_path, monkeypatch, "sweep-stop-mid-proof")
+    target, correction = _sweep_hop_target(index)
+    monkeypatch.setattr(hinge, "navigate_to_item", lambda *_args, **_kwargs: target)
+    proofs = {"n": 0}
+
+    def unproved_then_stopped(*_args, **_kwargs):
+        proofs["n"] += 1
+        return card_evidence, None, correction
+
+    monkeypatch.setattr(HingeDriver, "_still_photo_dwell_over_navigated_target",
+                        unproved_then_stopped)
+    cleanups = []
+    returned = hinge._MeasuredItemAnchor(frames[-1], 0)
+    monkeypatch.setattr(
+        HingeDriver, "_return_to_entry_from_measured_position",
+        lambda *_args, **kwargs: cleanups.append(kwargs) or returned)
+    banked = SimpleNamespace(dwell_exact=True, reattach_probe_ran=True)
+
+    evidence, anchor = drv._still_photo_dwell_candidate_walk(
+        {4: banked}, frames=frames, index=index, mute_screen=lambda _f, _r: True,
+        eligible_heart_ordinals={1, 2, 3}, should_stop=lambda: proofs["n"] >= 1,
+        entry_anchor=hinge._MeasuredItemAnchor(frames[-1], 0))
+
+    assert proofs["n"] == 1, "the premise: exactly one candidate's proof ran"
+    assert not drv._still_photo_dwell_two_burst_proved(card_evidence), (
+        "fixture guard: neither parameter may be a completed proof, or the poll's own condition "
+        "is never reached and this test is named for a branch it does not run")
+    assert evidence == ({4: banked, 3: card_evidence} if banks else {4: banked})
+    assert anchor is returned
+    assert [kwargs["terminal_shift_px"] for kwargs in cleanups] == [-_SWEEP_HOP_CLIMB_PX], (
+        "the Stop still repays the climb it made")
+    assert [row["outcome"] for row in
+            _action_rows(drv, "still_photo_dwell_walk_candidate")] == [outcome, "stop"]
+    assert drv._current_dwell_walk_interruption == {
+        "reason": "stop_requested",
+        "phase": "during_candidate_proof",
+        "next_page_heart": 2,
+        "unattempted_within_remaining_limit_page_hearts": [2, 1],
+        "interrupted_page_hearts": [3],
+    }, "the in-progress phase must survive the next turn's top-of-loop poll"
+
+
+def test_a_gestureless_below_entry_card_is_stepped_over_by_the_sweep_too(
+        monkeypatch, tmp_path, installed_still_photo_bound):
+    """The one coded refusal the sweep is allowed to CONTINUE past, and the only one.
+
+    `NAV_ITEM_BELOW_ENTRY` is raised on the first frame, before a single ascending gesture
+    (item_nav's own `if not steps`), so the position the sweep is holding is still exactly as
+    measured and the card is simply unreachable by an ascending-only navigator. Stepping over it
+    is what stops one cut-off bottom card from ending the whole deep sweep -- and the coverage
+    that buys is the entire reason the sweep exists (run 5d257fc1a1f8: three of six candidates
+    attempted). Deleting the `continue` would fall through to the anchor rescue and BREAK, which
+    is silent: the anchor is legitimately rescued, the cleanup is legitimately made, and the run
+    simply collects fewer photos than K promised with nothing anywhere saying why.
+
+    NEVER SUBSTITUTED, though: the refused ordinal stays refused and the next candidate is the
+    next one in the list, not a replacement for it.
+    """
+    drv, index, frames = _sweep_world(tmp_path, monkeypatch, "sweep-below-entry-step-over")
+    adb = drv.adb
+    target, correction = _sweep_hop_target(index)
+    navigations = []
+
+    def below_entry_then_hop(_driver, walk_index, model_index, **_kwargs):
+        navigations.append(walk_index.translation[model_index - 1])
+        if len(navigations) == 1:
+            raise item_nav.ItemNavigationError(
+                item_nav.NAV_ITEM_BELOW_ENTRY, "the card sits below the analysed band")
+        return target
+
+    monkeypatch.setattr(hinge, "navigate_to_item", below_entry_then_hop)
+    monkeypatch.setattr(
+        HingeDriver, "_still_photo_dwell_over_navigated_target",
+        lambda *_args, **_kwargs: (_SWEEP_PROVED, None, correction))
+    cleanups = []
+    returned = hinge._MeasuredItemAnchor(frames[-1], 0)
+    monkeypatch.setattr(
+        HingeDriver, "_return_to_entry_from_measured_position",
+        lambda *_args, **kwargs: cleanups.append(kwargs) or returned)
+    banked = SimpleNamespace(dwell_exact=True, reattach_probe_ran=True)
+
+    evidence, anchor = drv._still_photo_dwell_candidate_walk(
+        {4: banked}, frames=frames, index=index, mute_screen=lambda _f, _r: True,
+        eligible_heart_ordinals={2, 3}, entry_anchor=hinge._MeasuredItemAnchor(frames[-1], 0))
+
+    assert navigations == [3, 2], (
+        "the unreachable card is stepped over and the NEXT listed candidate is attempted")
+    assert (adb.scrolls, adb.reverse_swipes) == (0, 0), "the premise: nothing was delivered"
+    assert evidence == {4: banked, 2: _SWEEP_PROVED}, (
+        "and heart 3 stays refused -- no other card is dwelt in its place")
+    assert anchor is returned
+    assert [kwargs["terminal_shift_px"] for kwargs in cleanups] == [-_SWEEP_HOP_CLIMB_PX]
+    assert [row["outcome"] for row in
+            _action_rows(drv, "still_photo_dwell_walk_candidate")] == [
+                "unreachable_below_entry", "proved"]
+    sweeps = _action_rows(drv, "still_photo_dwell_progressive_sweep")
+    assert [row["outcome"] for row in sweeps] == ["started", "returned"]
+    assert sweeps[-1]["attempted_page_hearts"] == [3, 2]
+    assert drv._current_dwell_walk_interruption is None
+
 
 
 def test_candidate_walk_treats_the_last_attempt_budget_slot_as_final(
@@ -8392,6 +9214,150 @@ def test_a_real_forward_recovery_scroll_is_counted_too(
         "the outcome must also be one the report actually renders")
 
 
+def _driver_dwell_candidate_outcomes(func) -> set[str]:
+    """Every `still_photo_dwell_walk_candidate` outcome literal `func` can write.
+
+    DERIVED FROM THE SOURCE, never restated, because the whole failure mode this guards is a
+    token that exists on exactly one side of a boundary the two modules share by string value
+    alone (bugreport.py is pure-stdlib on purpose and never imports the drivers). A hand-copied
+    list here would be a third copy of the same vocabulary and would drift the same way.
+
+    Both spellings the driver uses have to be collected. Most rows pass the outcome as a literal
+    (`..., "stop")`), but the two uncoded handlers compute it first --
+    `outcome = "navigation_cancelled" if stopped else "navigation_refused"` -- so a reader that
+    only looked at literal call arguments would not see `navigation_cancelled` at all, which is
+    precisely the token this exists to protect.
+    """
+    tree = ast.parse(textwrap.dedent(inspect.getsource(func)))
+    outcomes: set[str] = set()
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "_dbg_still_photo_walk_candidate"
+                and len(node.args) >= 2):
+            continue
+        outcome_arg = node.args[1]
+        if isinstance(outcome_arg, ast.Constant) and isinstance(outcome_arg.value, str):
+            outcomes.add(outcome_arg.value)
+        elif isinstance(outcome_arg, ast.Name):
+            outcomes.update(
+                value.value
+                for assign in ast.walk(tree)
+                if isinstance(assign, ast.Assign)
+                and any(isinstance(target, ast.Name) and target.id == outcome_arg.id
+                        for target in assign.targets)
+                for value in ast.walk(assign.value)
+                if isinstance(value, ast.Constant) and isinstance(value.value, str))
+    return outcomes
+
+
+def _report_accepted_dwell_outcomes() -> set[str]:
+    """The outcome tokens bugreport's dwell-navigation renderer will render at all.
+
+    Read out of the renderer's own membership test rather than duplicated, and resolving the
+    `_DWELL_NAVIGATION_CANCELLED`-style names through the module so a constant and a literal are
+    indistinguishable here -- which is the point of holding the token in a constant on that side.
+
+    Keyed on `... .get("outcome") in {...}` rather than on "any set literal in this function", so
+    an unrelated set added to the renderer later cannot quietly widen what this claims the report
+    accepts. The fixture guard in the test below is what notices if the shape moves instead.
+    """
+    tree = ast.parse(textwrap.dedent(inspect.getsource(
+        bugreport._dwell_navigation_refusal_summary_md)))
+    accepted: set[str] = set()
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Compare) and len(node.ops) == 1
+                and isinstance(node.ops[0], ast.In)
+                and isinstance(node.left, ast.Call)
+                and isinstance(node.left.func, ast.Attribute) and node.left.func.attr == "get"
+                and any(isinstance(arg, ast.Constant) and arg.value == "outcome"
+                        for arg in node.left.args)
+                and isinstance(node.comparators[0], ast.Set)):
+            continue
+        for element in node.comparators[0].elts:
+            if isinstance(element, ast.Constant) and isinstance(element.value, str):
+                accepted.add(element.value)
+            elif isinstance(element, ast.Name):
+                accepted.add(getattr(bugreport, element.id))
+    return accepted
+
+
+def test_the_dwell_navigation_outcome_vocabulary_agrees_across_the_module_boundary():
+    """One token, written by hinge.py and keyed on by bugreport.py, with no import between them.
+
+    The cost of disagreement is not a broken test but a SILENT one: a candidate row whose
+    outcome is missing from the renderer's accepted set makes `_dwell_navigation_refusal_
+    summary_md` return the empty string, so the bug report renders NOTHING AT ALL for the event
+    that ended the capture. That is how run f78ca90856b4 came to be read as "legacy/incomplete
+    trace" for a row the then-current build had written minutes earlier.
+
+    Asserted in both directions, because the two failures look nothing alike.
+      * `navigation_cancelled` present on both sides is the live contract (added 2026-09-16 for
+        a mid-navigation operator Stop). Its absence on the report side renders nothing; its
+        absence on the driver side means the Stop is still being filed as a fault.
+      * Every accepted token must be one some driver path actually writes. A typo'd or obsolete
+        entry in the report's set is invisible from the report side -- it simply never matches --
+        and this is the only place that can notice.
+    The reverse containment is deliberately NOT asserted: several driver outcomes are correctly
+    absent from the report (`unreachable_below_entry` is a card harmlessly stepped over, `proved`
+    is a success), and `test_a_real_forward_recovery_scroll_is_counted_too` above pins the one
+    case where that judgement was wrong.
+    """
+    # (2026-09-17) A third producer writes `still_photo_dwell_walk_candidate` rows too:
+    # `_anchor_after_navigation_refusal` hands back "navigation_refused_no_gesture" through the
+    # same `_dbg_still_photo_walk_candidate` call the extractor already parses (it passes the
+    # outcome as a literal second positional argument, same shape as every other site). Omitting
+    # it here does not just under-count the vocabulary -- it makes the `accepted <=
+    # driver_vocabulary` assertion below blame the WRONG file the day someone correctly teaches
+    # bugreport.py that token: the failure reads "the report accepts outcomes no driver path
+    # writes", which would be false, and points at bugreport.py when hinge.py's driver side was
+    # never missing anything.
+    driver_vocabulary = (
+        _driver_dwell_candidate_outcomes(HingeDriver._still_photo_dwell_candidate_walk)
+        | _driver_dwell_candidate_outcomes(HingeDriver._still_photo_dwell_progressive_sweep)
+        | _driver_dwell_candidate_outcomes(HingeDriver._anchor_after_navigation_refusal))
+    accepted = _report_accepted_dwell_outcomes()
+
+    # Fixture guards first: an extractor that silently returned nothing would make the
+    # containment below vacuously true, which is this repo's documented way of shipping a green
+    # test that never reaches its branch.
+    assert {"proved", "navigation_refused", "stop"} <= driver_vocabulary, sorted(driver_vocabulary)
+    assert "navigation_refused" in accepted, sorted(accepted)
+    assert "navigation_refused_no_gesture" in driver_vocabulary, (
+        "the third producer, _anchor_after_navigation_refusal, must be included above or this "
+        "token stays invisible to the extractor")
+
+    assert bugreport._DWELL_NAVIGATION_CANCELLED == "navigation_cancelled", (
+        "the token is a cross-module contract, spelled once on each side")
+    assert "navigation_cancelled" in driver_vocabulary, (
+        "an operator Stop raised through navigate_to_item must be written as its own outcome, "
+        "not folded back into the four measurement faults the same handler catches")
+    assert "navigation_cancelled" in accepted, (
+        "bugreport's accepted-outcome set must carry the driver's token or the dwell-navigation "
+        "section renders NOTHING for a mid-navigation Stop")
+    assert accepted <= driver_vocabulary, (
+        "the report accepts outcomes no driver path writes, so those entries can never match: "
+        f"{sorted(accepted - driver_vocabulary)}")
+
+
+def test_the_report_really_renders_the_cancellation_token_and_still_skips_a_harmless_skip():
+    """The static agreement above, spent: the renderer is run over one row of each kind.
+
+    A membership set is only worth asserting if it is what decides the output, so this pairs the
+    positive with its negative. `unreachable_below_entry` is the card the walk harmlessly stepped
+    over -- deliberately not in the accepted set -- and its empty render is what proves the
+    acceptance above is the whitelist's doing rather than a renderer that takes anything.
+    """
+    def rendered(outcome):
+        return bugreport._dwell_navigation_refusal_summary_md([json.dumps({
+            "action": "still_photo_dwell_walk_candidate", "heart_ordinal": 3,
+            "outcome": outcome, "reason": "ActionCancelled"})])
+
+    assert rendered("navigation_cancelled"), (
+        "the event that ended the capture must not render as an empty section")
+    assert not rendered("unreachable_below_entry"), (
+        "the accepted set is what decides, so a token outside it must still render nothing")
+
+
 def test_the_anchor_a_gestureless_refusal_rescues_is_the_one_the_fold_installs(
         monkeypatch, installed_still_photo_bound):
     """The composition, and the one thing the existing coverage cannot show.
@@ -8504,6 +9470,15 @@ def test_a_half_delivered_gesture_escapes_the_walk_instead_of_reading_as_stillne
     moved". Nothing stated that dependency, so widening either handler -- a natural-looking "the
     device blipped, keep going" change -- would silently turn a half-delivered gesture into a
     stale anchor. This is the test that says no.
+
+    AND IT HAS TO SAY NO FOR THE SWEEP TOO (extended 2026-09-16).
+    `_still_photo_dwell_progressive_sweep` carries a CHARACTER-IDENTICAL catch tuple over the
+    same delivered-input count, but it is a separate function, so its source lies outside
+    `inspect.getsource(_still_photo_dwell_candidate_walk)` -- the walk only calls it. Widening
+    the sweep's tuple therefore failed nothing here, on the one path where the damage compounds:
+    the short-hop walk returns to the enumeration entry after every card, while the sweep carries
+    a measured anchor forward across hops, so a stale one is re-used by every later navigation
+    and by the final cleanup's repayment distance.
     """
     from operation_love.drivers.adb import AdbError
     from operation_love.drivers.base import DriverClosed
@@ -8517,12 +9492,170 @@ def test_a_half_delivered_gesture_escapes_the_walk_instead_of_reading_as_stillne
             f"{failure.__name__} is raised when a gesture may already have landed; if the walk "
             "catches it, the unchanged input count would be read as 'the phone did not move'")
 
-    # And the walk really does catch only those: read the handlers out of the source rather than
+    # And both really do catch only those: read the handlers out of the source rather than
     # restating them, so this cannot drift from the code it protects.
-    source = inspect.getsource(HingeDriver._still_photo_dwell_candidate_walk)
-    for failure in mid_delivery:
-        assert failure.__name__ not in source, (
-            f"{failure.__name__} now appears in the walk -- re-derive this test's argument")
+    for owner in (HingeDriver._still_photo_dwell_candidate_walk,
+                  HingeDriver._still_photo_dwell_progressive_sweep):
+        source = inspect.getsource(owner)
+        assert "except (ActionCancelled" in source, (
+            f"fixture guard: {owner.__name__} no longer carries the uncoded catch tuple this "
+            "test reads, so the absence checked below would prove nothing")
+        for failure in mid_delivery:
+            assert failure.__name__ not in source, (
+                f"{failure.__name__} now appears in {owner.__name__} -- re-derive this test's "
+                "argument")
+
+
+def _uncoded_dwell_navigation_catch_names(func) -> frozenset[str]:
+    """The exception class names the one UNCODED dwell-navigation handler inside `func` catches.
+
+    DERIVED FROM THE SOURCE and then RESOLVED THROUGH `hinge`, in that order, because the two
+    spellings are not the same fact. The except tuple names a BINDING in hinge.py's namespace,
+    while bugreport.py keys on `type(exc).__name__` -- the token the driver actually stamps onto
+    the row. An `import ... as` on either side would make those two disagree while the source
+    still read correctly, and the comparison the caller wants is against the on-wire token, so
+    this returns `cls.__name__` rather than the identifier it read.
+
+    The handler is picked out by what it DOES, not by what it catches: it is the only tuple
+    handler in either function whose body reaches for `type(exc).__name__`, which is precisely
+    the value bugreport's constant is a list of. Keying on a member of the tuple instead
+    (`"except (ActionCancelled" in source`, as the test above does for its own much narrower
+    purpose) would be circular here -- the tuple's contents ARE the subject.
+
+    "The function's only tuple handler" would not have identified it either:
+    `_still_photo_dwell_progressive_sweep` carries two other tuple handlers today --
+    `(AttributeError, IndexError, TypeError)` and `(AttributeError, ValueError)`, both narrow
+    shape guards around telemetry, neither of which writes a candidate row at all.
+    """
+    tree = ast.parse(textwrap.dedent(inspect.getsource(func)))
+    found: list[frozenset[str]] = []
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.ExceptHandler) and isinstance(node.type, ast.Tuple)):
+            continue
+        reports_the_class_name = any(
+            isinstance(inner, ast.Attribute) and inner.attr == "__name__"
+            and isinstance(inner.value, ast.Call)
+            and isinstance(inner.value.func, ast.Name) and inner.value.func.id == "type"
+            for statement in node.body for inner in ast.walk(statement))
+        if not reports_the_class_name:
+            continue
+        names = [element.id for element in node.type.elts if isinstance(element, ast.Name)]
+        assert len(names) == len(node.type.elts), (
+            f"{func.__name__}'s uncoded handler catches something this extractor cannot read as "
+            "a plain name (an attribute, a starred tuple); the containment below would silently "
+            "drop it and pass")
+        resolved: list[str] = []
+        for name in names:
+            caught = getattr(hinge, name, None)
+            assert isinstance(caught, type), (
+                f"{name} is in {func.__name__}'s uncoded catch tuple but does not resolve to a "
+                "class in hinge.py's namespace, so this test cannot say what `type(exc).__name__`"
+                " would stamp on the row")
+            resolved.append(caught.__name__)
+        found.append(frozenset(resolved))
+    assert len(found) == 1, (
+        f"expected exactly one uncoded dwell-navigation handler in {func.__name__}, found "
+        f"{len(found)}: {[sorted(names) for names in found]}. Either the handler moved or a "
+        "second one now stamps `type(exc).__name__` too -- bugreport.py's single list describes "
+        "ALL of them, so the extractor has to see all of them.")
+    return found[0]
+
+
+def test_the_uncoded_refusal_class_list_agrees_with_both_handlers_it_describes():
+    """The SECOND cross-module string contract on this boundary, pinned (added 2026-09-16).
+
+    `test_the_dwell_navigation_outcome_vocabulary_agrees_across_the_module_boundary` above pins
+    the outcome token. This pins its sibling: `bugreport._UNCODED_DWELL_NAVIGATION_REFUSAL_
+    CLASSES`, a HAND-COPY of the class names hinge.py's two uncoded dwell-navigation handlers
+    catch. Both constants shipped in the same audit; only the first one got a test, and this repo
+    has now shipped the same two-allow-lists-quietly-disagreeing bug three times (see
+    `memory/allow-lists-must-not-disagree.md`: the differing copy decided whether a CORRECT
+    opener was rejected). The copy is deliberate -- bugreport.py is pure-stdlib on purpose and
+    importing the drivers would drag in cv2/numpy -- so a test is the only thing that can hold
+    the two halves together.
+
+    DIRECTION 1 (constant -> both handlers) IS CORRECTNESS, and it is the direction the
+    constant's own comment says must never break. A name in the constant that hinge.py does not
+    catch uncoded makes the renderer stamp "this refusal class carries no measurement, so no
+    structured plan, measured climb or anchor-return telemetry exists for it" onto a row -- an
+    assertion about the ABSENCE of measurement for a refusal that may well have had one. That is
+    the same class of unsupported claim as the "legacy/incomplete trace" wording this whole
+    audit removed: prose the report invented rather than read off the row.
+
+    It has to hold for BOTH handlers, not either. Both write the same `still_photo_dwell_walk_
+    candidate` action with the same outcome tokens, and the row records no producer, so
+    bugreport cannot tell which one wrote it -- a name true of only one handler would be false
+    about half the rows it is applied to, and nothing downstream could tell those apart.
+
+    DIRECTION 2 (both handlers -> constant) IS A DRIFT ALARM, NOT CORRECTNESS. DECISION: it does
+    hold today -- the two sets are equal -- and it is asserted, but for a different reason and
+    with a different remedy than direction 1.
+      * Its failure is SOFT BY DESIGN and the constant's comment says so: a class caught uncoded
+        but missing from the list falls through to the neutral "this row carries no structured
+        refusal telemetry" sentence, which is still TRUE of it (nothing in an uncoded handler
+        attaches a `navigation_refusal` dict). Nothing lies; the operator just gets the vaguer
+        of two true sentences.
+      * It is asserted anyway because that degradation is invisible from both sides -- hinge.py
+        cannot see the prose, bugreport.py never sees the tuple -- and this is the only place
+        that looks at both.
+      * THE REMEDY IS CONDITIONAL, AND THE WRONG ONE IS THE EASY ONE. If this fails because a
+        handler was widened, add the new name to the constant ONLY if that class genuinely
+        carries no measurement. If it can carry one, adding it is precisely the move direction 1
+        forbids -- relax THIS assertion instead and leave the neutral sentence to do its job.
+      * Even green it is not a completeness proof: bugreport keys on `type(exc).__name__`, the
+        CONCRETE class, so any subclass of a caught base raised under `navigate_to_item` already
+        lands outside the constant with both sides in perfect agreement. Set equality here
+        detects drift; it cannot promise coverage.
+    """
+    walk_catches = _uncoded_dwell_navigation_catch_names(
+        HingeDriver._still_photo_dwell_candidate_walk)
+    sweep_catches = _uncoded_dwell_navigation_catch_names(
+        HingeDriver._still_photo_dwell_progressive_sweep)
+    listed = frozenset(bugreport._UNCODED_DWELL_NAVIGATION_REFUSAL_CLASSES)
+
+    # Fixture guards first. An extractor that found an empty tuple, or a constant that had been
+    # emptied, would make every containment below vacuously true -- this repo's documented way of
+    # shipping a green test that never reaches the branch it is named for (see
+    # `memory/fixtures-can-miss-the-branch-they-name.md`). The named member is a guard against a
+    # vacuous read, NOT the contract; the contract is the containment, which names nothing.
+    assert "ScrollStepError" in walk_catches, sorted(walk_catches)
+    assert "ScrollStepError" in sweep_catches, sorted(sweep_catches)
+    assert "ScrollStepError" in listed, sorted(listed)
+
+    # The two handlers against each other. Logically this is implied by the two containments
+    # below; it is stated separately for the MESSAGE, because "the constant does not cover the
+    # sweep" is a confusing way to report "the two handlers stopped matching", and that is the
+    # failure this repo keeps re-living. The constant's own comment describes both handlers with
+    # ONE list ("the five exception classes hinge.py's two uncoded dwell-navigation handlers
+    # catch"), so a divergence falsifies that sentence whichever way it drifts.
+    assert walk_catches == sweep_catches, (
+        "the short-hop walk and the progressive sweep no longer catch the same uncoded classes, "
+        "so no single list in bugreport.py can be true of both: "
+        f"walk-only {sorted(walk_catches - sweep_catches)}, "
+        f"sweep-only {sorted(sweep_catches - walk_catches)}")
+
+    for owner, catches in (("_still_photo_dwell_candidate_walk", walk_catches),
+                           ("_still_photo_dwell_progressive_sweep", sweep_catches)):
+        # DIRECTION 1 -- correctness.
+        assert listed <= catches, (
+            f"_UNCODED_DWELL_NAVIGATION_REFUSAL_CLASSES names {sorted(listed - catches)}, which "
+            f"{owner} does not catch uncoded. A row stamped with one of those would be told it "
+            "carries no measurement -- an absence the row itself never asserted, which is the "
+            "one thing that constant's comment says it must never do.")
+        # DIRECTION 2 -- drift alarm; see the docstring for why the remedy is conditional.
+        assert catches <= listed, (
+            f"{owner} now catches {sorted(catches - listed)}, which "
+            "_UNCODED_DWELL_NAVIGATION_REFUSAL_CLASSES does not list. This fails SOFT -- such a "
+            "row gets the neutral 'carries no structured refusal telemetry' sentence, which is "
+            "still true of it -- so this is an alarm, not a fault. Add the name to the constant "
+            "ONLY if that class carries no measurement; if it can carry one, adding it is the "
+            "move direction 1 forbids, and this assertion is what should be relaxed.")
+
+    # MUTATION CHECK (2026-09-16, by hand): added "HingeTargetingError" to
+    # bugreport._UNCODED_DWELL_NAVIGATION_REFUSAL_CLASSES -- a name hinge.py raises but catches
+    # in a DIFFERENT handler, i.e. exactly the shape the constant's comment forbids. Re-run: this
+    # test fails on the direction-1 assertion, naming the class and the handler, and no other test
+    # in this module moves. Restored exactly; `git diff operation_love/bugreport.py` clean.
 
 
 

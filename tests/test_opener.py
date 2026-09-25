@@ -887,6 +887,15 @@ def test_unconfirmed_location_followup_guard_addendum_20260914b_keeps_the_histor
     "My guess is Rome. Did I get that city right?",
     "My guess is Rome. Did I get my city right?",
     "My guess is Rome. How close is the guess?",
+    # The third recurrence, measured 2026-09-16: "is my guess right?" was the one shape that
+    # interpolated NEITHER shared constant, so it accepted "my guess"/"my call" and rejected
+    # the other 70 determiner x noun combinations its siblings accept. These three are the
+    # rejections that replay showed (the first is the same sentence as the accepted
+    # "is-my-guess-right" entry above with only the determiner changed, which is what makes it
+    # a disagreement rather than a policy).
+    "My guess is Rome. Is that guess right?",
+    "My guess is Rome. Is the city right?",
+    "My guess is Rome. Was this region way off?",
 ], ids=[
     "existing-norway-guess",
     "existing-freezing-guess",
@@ -932,6 +941,9 @@ def test_unconfirmed_location_followup_guard_addendum_20260914b_keeps_the_histor
     "measured-regression-did-i-get-that-city-right",
     "measured-regression-did-i-get-my-city-right",
     "measured-regression-how-close-is-the-guess",
+    "measured-regression-is-that-guess-right",
+    "measured-regression-is-the-city-right",
+    "measured-regression-was-this-region-way-off",
 ])
 def test_unconfirmed_location_followup_guard_preserves_clean_corpus(text):
     assert _unconfirmed_location_followup_markers(text) == []
@@ -953,6 +965,167 @@ def _live_alternation_members(alternation: str, name: str) -> list[str]:
     return members
 
 
+# The two shared constants, rendered as str.format slots once the live alternations have been
+# lifted out of a pattern's source. They are what makes an expanded shape a TEMPLATE rather
+# than a finished sentence, and what the cross-product sweep below fills in.
+_CONFIRMATION_DET_SLOT = "{det}"
+_CONFIRMATION_NOUN_SLOT = "{noun}"
+
+
+def _expand_confirmation_source(source: str) -> list[str]:
+    r"""Expand one _DIRECT_LOCATION_CONFIRMATION_PATTERNS source into EVERY sentence it matches.
+
+    The table is a closed, deliberately simple grammar -- anchors, literal words, ``\s+``
+    between words, a trailing ``\?+``, non-capturing ``(?:a|b)`` alternations and an optional
+    ``?`` on a group -- so a full expansion is finite, small (156 strings for the largest shape
+    today) and exact. That is what lets the tests below derive their own inputs from the
+    SHIPPED table instead of from a hand-kept list of the shapes someone remembered, which is
+    how the 2026-09-16 recurrence shipped green: the invariant test existed, swept the full
+    determiner x noun cross product, and simply did not list the one shape that had the bug.
+
+    Anything outside that grammar (a capturing group, a character class, a backreference, a
+    quantifier on a literal) raises AssertionError rather than being skipped. A silent skip
+    here would be the same failure again one level up -- a test that reads the table but not
+    the branch it was written for -- so an editor who reaches for a richer construct is told to
+    extend this expander instead.
+    """
+    index = 0
+
+    def parse_sequence(inside_group: bool) -> list[str]:
+        nonlocal index
+        finished: list[list[str]] = []
+        current = [""]
+        while index < len(source):
+            char = source[index]
+            if char == "|" and inside_group:
+                index += 1
+                finished.append(current)
+                current = [""]
+                continue
+            if char == ")" and inside_group:
+                break
+            tails = parse_atom()
+            current = [head + tail for head in current for tail in tails]
+            assert len(current) <= 5000, (
+                f"expanding {source!r} exceeded 5000 alternatives; the table has grown a "
+                f"combinatorial shape and this sweep needs a bounded strategy instead")
+        finished.append(current)
+        return [text for branch in finished for text in branch]
+
+    def parse_atom() -> list[str]:
+        nonlocal index
+        char = source[index]
+        if char in "^$":
+            index += 1
+            return [""]
+        if char == "\\":
+            escaped = source[index + 1]
+            index += 2
+            if index < len(source) and source[index] in "+*?":
+                index += 1      # \s+ and \?+ both collapse to one occurrence
+            assert escaped in ("s", "?"), (
+                f"{source!r} uses the escape \\{escaped}, which this expander does not model")
+            return [" " if escaped == "s" else "?"]
+        if char == "(":
+            assert source[index:index + 3] == "(?:", (
+                f"{source!r} uses a group this expander does not model at {source[index:]!r}; "
+                f"the table is non-capturing (?:...) only")
+            index += 3
+            alternatives = parse_sequence(True)
+            assert source[index] == ")"
+            index += 1
+            if index < len(source) and source[index] == "?":
+                index += 1
+                alternatives = [""] + alternatives      # the whole group is optional
+            return alternatives
+        end = index
+        while end < len(source) and source[end] not in "\\()|^$":
+            end += 1
+        literal = source[index:end]
+        index = end
+        assert not set(literal) & {"?", "+", "*"}, (
+            f"{source!r} quantifies a literal ({literal!r}); this expander models quantifiers "
+            f"on groups and on the escapes \\s / \\? only")
+        return [literal]
+
+    expanded = parse_sequence(False)
+    assert index == len(source), f"stopped short of the end of {source!r} at {source[index:]!r}"
+    return expanded
+
+
+def _confirmation_shape_expansions() -> list[tuple[str, list[str]]]:
+    """(pattern source, every sentence it matches) for each shape in the LIVE table.
+
+    The two shared constants are lifted back out of each source first, so a sentence carrying a
+    determiner + place noun comes back as a "{det} {noun}" TEMPLATE -- which is exactly the
+    signal the tests want: a shape whose expansion still contains the literal words means that
+    shape wrote its own list instead of interpolating the shared one.
+    """
+    expansions = []
+    for pattern in opener_mod._DIRECT_LOCATION_CONFIRMATION_PATTERNS:
+        source = (pattern.pattern
+                  .replace(opener_mod._LOCATION_CONFIRMATION_NOUN, _CONFIRMATION_NOUN_SLOT)
+                  .replace(opener_mod._LOCATION_CONFIRMATION_DET, _CONFIRMATION_DET_SLOT))
+        expansions.append((pattern.pattern, _expand_confirmation_source(source)))
+    assert expansions, "the confirmation table is empty -- every sweep below would be vacuous"
+    return expansions
+
+
+# Today's count of shapes that carry a determiner + place-noun slot at all (shapes 1, 2, 3, 5
+# and 7 of _DIRECT_LOCATION_CONFIRMATION_PATTERNS). A floor, not a target: it exists so that
+# an edit which accidentally drops the det+noun slot from every shape turns the cross-product
+# sweep below vacuous LOUDLY rather than silently, the way this repo's "fixtures can miss the
+# branch they name" pattern keeps happening. Raise it deliberately when a shape is added.
+_SHAPES_WITH_DET_AND_NOUN = 5
+
+
+def test_no_confirmation_shape_hardcodes_its_own_determiner_or_place_noun():
+    """The invariant the two hoists were really reaching for, read off the TABLE itself.
+
+    2026-09-14 (b) unified the place NOUN, 2026-09-15 unified the DETERMINER, and on
+    2026-09-16 the bug turned up a third time in "is my guess right?", which had opted out of
+    both constants with its own hand-written "my" + "(?:guess|call)" and so was untouched by
+    either hoist. Measured then: it accepted 2 of the 72 live determiner x noun combinations
+    its four sibling shapes accept, and rejected the other 70 -- "Is that guess right?" was
+    rejected while the corpus pins "Is my guess right?" and "How close is that guess?" as
+    accepted, and every rejection spends one of five attempts whose exhaustion stops the run.
+
+    The cross-product sweep below could not catch that and still cannot: a shape that
+    interpolates neither constant produces no {det}/{noun} template, so it silently drops OUT
+    of a derived sweep instead of failing it (verified by mutation on 2026-09-16 -- restore the
+    hardcoded shape and the sweep stays green while this test fails). So this test asserts on
+    STRUCTURE rather than on verdicts: expand every shape in the live table and require that
+    wherever a determiner is followed by a place noun, BOTH came from the shared constants.
+
+    Deliberately positional. "guess" and "call" are also VERBS in this table ("did i guess it
+    right?") and "that"/"this"/"it" are legitimate bare PRONOUNS in several shapes ("is that
+    right?"), so a flat "no shape may contain these words" rule would fire on correct code.
+    Only the pair -- a determiner immediately in front of a place noun -- is the bug.
+    """
+    nouns = set(_live_alternation_members(
+        opener_mod._LOCATION_CONFIRMATION_NOUN, "_LOCATION_CONFIRMATION_NOUN"))
+    determiners = set(_live_alternation_members(
+        opener_mod._LOCATION_CONFIRMATION_DET, "_LOCATION_CONFIRMATION_DET"))
+    det_tokens = determiners | {_CONFIRMATION_DET_SLOT}
+    noun_tokens = nouns | {_CONFIRMATION_NOUN_SLOT}
+
+    for source, sentences in _confirmation_shape_expansions():
+        for sentence in sentences:
+            words = sentence.rstrip("?").split()
+            # strict=False on purpose: these are ADJACENT PAIRS, so the two operands are
+            # deliberately of unequal length (words[1:] is one shorter) and zip stopping at
+            # the shorter one is the intent, not an oversight B905 should catch.
+            for first, second in zip(words, words[1:], strict=False):
+                if first in det_tokens and second in noun_tokens:
+                    assert (first, second) == (_CONFIRMATION_DET_SLOT,
+                                               _CONFIRMATION_NOUN_SLOT), (
+                        f"{sentence!r} puts {first!r} in front of {second!r} in "
+                        f"{source!r}: this shape wrote its own determiner or place-noun list "
+                        f"instead of interpolating _LOCATION_CONFIRMATION_DET and "
+                        f"_LOCATION_CONFIRMATION_NOUN, which is how the same false positive "
+                        f"reached production three times (2026-09-14, 2026-09-15, 2026-09-16)")
+
+
 def test_location_confirmation_shapes_share_one_noun_and_determiner_set():
     """Regression guard for the 2026-09-14 (b) and 2026-09-15 bugs themselves, not just their
     symptoms: two confirmation shapes once drew from DIFFERENT place-noun lists ("Am I right
@@ -971,30 +1144,47 @@ def test_location_confirmation_shapes_share_one_noun_and_determiner_set():
     a noun. A future editor who extends one pattern's list without the others reproduces either
     bug and fails here immediately, without anyone having to write a new case naming the
     specific determiner or noun that regressed.
+
+    2026-09-16: the SHAPES are now derived too. They were a hand-maintained four-line tuple
+    under a docstring line reading "Keep this list in step with that table", and the table had
+    five det+noun shapes -- the missing one, "is my guess right?", was the one carrying the
+    third recurrence of this very bug. So the sweep no longer writes down the sentences it
+    tests: it expands every shape in the live table (_confirmation_shape_expansions) and tests
+    every expansion that has both slots, which today is 158 templates rather than 4 and costs
+    about a tenth of a second for the whole cross product. Note the limit of deriving them,
+    though: a shape that hardcodes its own lists yields no template at all, so it does not fail
+    this sweep, it VANISHES from it -- only the shape-count floor below notices, and all it can
+    say is that a slot went missing. test_no_confirmation_shape_hardcodes_its_own_determiner_
+    or_place_noun above is the test that names the bug, and mutation on 2026-09-16 (restoring
+    the hardcoded "is my guess right?") confirmed both fail, with that one naming the shape.
     """
     nouns = _live_alternation_members(
         opener_mod._LOCATION_CONFIRMATION_NOUN, "_LOCATION_CONFIRMATION_NOUN")
     determiners = _live_alternation_members(
         opener_mod._LOCATION_CONFIRMATION_DET, "_LOCATION_CONFIRMATION_DET")
 
-    # Every shape in _DIRECT_LOCATION_CONFIRMATION_PATTERNS that has a determiner + noun slot,
-    # written here as the sentence the model would actually produce. Keep this list in step
-    # with that table: a shape missing from here is a shape whose determiner list can drift
-    # again unnoticed.
-    shapes = (
-        "Am I right about {det} {noun}?",
-        "How close is {det} {noun}?",
-        "Did I get {det} {noun} right?",
-        "Is that {det} {noun} where you were?",
-    )
+    shapes = [(source, template)
+              for source, sentences in _confirmation_shape_expansions()
+              for template in sentences
+              if _CONFIRMATION_DET_SLOT in template and _CONFIRMATION_NOUN_SLOT in template]
+    # Anti-vacuity, in this repo's "fixtures can miss the branch they name" tradition: an edit
+    # that leaves every shape without a det+noun slot would make the loop below iterate zero
+    # times and pass. Count the SHAPES, not the templates, because the template count is an
+    # artefact of how many unrelated alternations each pattern happens to carry.
+    assert len({source for source, _ in shapes}) >= _SHAPES_WITH_DET_AND_NOUN, (
+        f"only {len({source for source, _ in shapes})} shape(s) in the live confirmation "
+        f"table carry a determiner + place-noun slot, but {_SHAPES_WITH_DET_AND_NOUN} did "
+        f"when this sweep was written -- either a shape lost its slot (fix it) or one was "
+        f"deliberately removed (lower the constant on purpose)")
     for determiner in determiners:
         for noun in nouns:
-            for shape in shapes:
-                beat = shape.format(det=determiner, noun=noun)
+            for source, template in shapes:
+                beat = template.format(det=determiner, noun=noun)
                 text = f"My guess is Rome. {beat}"
                 assert _unconfirmed_location_followup_markers(text) == [], (
                     f"{beat!r} should be accepted as a location confirmation, the same as "
-                    f"every other determiner x noun combination in the shared sets")
+                    f"every other determiner x noun combination in the shared sets "
+                    f"(expanded from {source!r})")
 
 
 def test_location_confirmation_determiner_set_excludes_the_bare_pronoun_it():
@@ -2416,3 +2606,95 @@ def test_redundant_opener_is_sent_by_the_service_without_burning_a_retry():
     assert pick is not None
     assert pick.text == _REDUNDANT_OPENER
     assert transport.calls == 1
+
+
+# ---------------------------------------------------------------------------------------
+# _exhaustion_reason's three scope tables (_QUOTA_SCOPE_LABELS, _TRANSIENT_SCOPES,
+# _PERMANENT_SCOPE_REMEDIES) are the SAME shape as _DIRECT_LOCATION_CONFIRMATION_PATTERNS'
+# determiner/noun tables above -- several lists that all have to agree about one thing (here:
+# which scopes are transient and which permanent) -- and this repo's single most-recurring
+# defect class is exactly two such lists silently disagreeing. Added 2026-09-17 after that
+# shape turned up here too: _PERMANENT_SCOPE_REMEDIES was added carrying the right three
+# entries (day/gone/thinking) but nothing checked it against the other two tables, so a
+# future scope added to _QUOTA_SCOPE_LABELS without a matching entry here would fall through
+# to _UNKNOWN_PERMANENT_REMEDY silently -- the exact "will not clear on its own" hedge that
+# exists ONLY for an unrecognized scope -- while reading as a deliberate, reviewed choice.
+# ---------------------------------------------------------------------------------------
+
+
+def test_permanent_scope_remedies_partitions_the_quota_scope_labels_table():
+    """The invariant _PERMANENT_SCOPE_REMEDIES exists to satisfy, read off the tables
+    themselves rather than hand-copied: every scope _QUOTA_SCOPE_LABELS names is either
+    self-clearing (_TRANSIENT_SCOPES) or has its own remedy (_PERMANENT_SCOPE_REMEDIES), with
+    no overlap and no scope left out of both. Today that is day/gone/thinking on the permanent
+    side and minute/unknown/busy/transport on the transient side, but this test does not pin
+    that split -- it pins the PARTITION, so a scope added to _QUOTA_SCOPE_LABELS in the future
+    without a matching _TRANSIENT_SCOPES or _PERMANENT_SCOPE_REMEDIES decision fails here
+    instead of quietly hitting _UNKNOWN_PERMANENT_REMEDY at runtime."""
+    assert set(opener_mod._PERMANENT_SCOPE_REMEDIES) == (
+        set(opener_mod._QUOTA_SCOPE_LABELS) - opener_mod._TRANSIENT_SCOPES)
+    # Belt and braces: the two halves the partition claims are disjoint really are, so a scope
+    # cannot be read as BOTH self-clearing and permanent depending on which table a future
+    # editor happens to consult first.
+    assert not (set(opener_mod._PERMANENT_SCOPE_REMEDIES) & opener_mod._TRANSIENT_SCOPES)
+
+
+@pytest.mark.parametrize("scope", sorted(opener_mod._QUOTA_SCOPE_LABELS))
+def test_exhaustion_reason_over_every_singleton_scope_never_over_promises(scope):
+    """Executes the real _exhaustion_reason over every scope _QUOTA_SCOPE_LABELS names, one
+    model at a time, rather than trusting the four hand-picked uniform branches to cover the
+    table -- a scope added to the labels table with no matching branch would otherwise fall
+    through to the mixed-scope code with only one model, which is exactly the kind of gap the
+    table-reading tests above this comment exist to catch here too.
+
+    The assertion is a property of the SCOPE, not a copy of the sentence: a scope absent from
+    _TRANSIENT_SCOPES has nothing about it that clears with the passage of time, so the reason
+    must not claim restarting will succeed. "succeed" is the one word every self-clearing
+    branch uses (see the transient-only branches of _exhaustion_reason) and no permanent
+    branch does -- checking its absence tests the promise, not the prose."""
+    reason = opener_mod._exhaustion_reason({"gemini-a": scope})
+    assert isinstance(reason, str) and reason
+    if scope not in opener_mod._TRANSIENT_SCOPES:
+        assert "succeed" not in reason, (
+            f"scope {scope!r} is not in _TRANSIENT_SCOPES -- nothing about it clears on its "
+            f"own -- so {reason!r} must not promise a restart will succeed")
+
+
+@pytest.mark.parametrize(("scopes", "must_contain", "must_not_contain"), [
+    # Task 1's failure mode: the host itself loses wifi/DNS, every model raises OSError, and
+    # every scope collapses to "transport" -- _TRANSIENT_SCOPES membership alone would let the
+    # old code promise "restarting should succeed" here, which is false until the LOCAL
+    # connection is back. Fixed 2026-09-17; this pins the fix rather than the old bug.
+    ({"gemini-a": "transport", "gemini-b": "transport"}, ["LOCAL"], ["succeed"]),
+    # Every model exhausted its per-day quota: purely self-clearing on a clock, not a restart,
+    # so a restart promise is wrong here for a different reason than the transport case above.
+    ({"gemini-a": "day", "gemini-b": "day"}, ["midnight Pacific"], ["succeed"]),
+    # day+gone: FINDING 5's exact boundary (see ops/OPENER-REDESIGN.md 2026-09-16 addendum) --
+    # a mix with NO self-clearing member at all. Both remedies must be named and neither may
+    # be dressed up as something a restart fixes.
+    ({"gemini-a": "day", "gemini-b": "gone"},
+     ["midnight Pacific", "opener.models"], ["succeed"]),
+    # gone+thinking: the other permanent-only pair, sharing "gone"'s ban on promising a
+    # restart but needing opener.thinking rather than opener.models named as ITS fix.
+    ({"gemini-a": "gone", "gemini-b": "thinking"},
+     ["opener.models", "opener.thinking"], ["succeed"]),
+    # The empty mapping: __init__ requires >=1 model so this is unreachable in a live run, but
+    # _exhaustion_reason still has to return something rather than raising, and that something
+    # must not promise a restart either -- there is no model here to restart at all.
+    ({}, [], ["succeed"]),
+], ids=["all-transport", "all-day", "day-plus-gone", "gone-plus-thinking", "empty"])
+def test_exhaustion_reason_over_representative_mixes_never_over_promises(
+        scopes, must_contain, must_not_contain):
+    """The mix-shaped counterpart to the singleton sweep above, executing the real function
+    over the specific combinations Task 1 and the mixed-scope fix both reasoned about by name,
+    so the reasoning is checked against the shipped code rather than trusted from the comments
+    that describe it. Every case here asserts on FACTS the scope set implies (which model's
+    remedy must be named, and that no restart promise appears), never on a full sentence typed
+    out of the current source, so a future rewording of the prose does not itself break these
+    tests -- only a rewording that drops the fact or reintroduces the promise does."""
+    reason = opener_mod._exhaustion_reason(scopes)
+    assert isinstance(reason, str) and reason
+    for phrase in must_contain:
+        assert phrase in reason
+    for phrase in must_not_contain:
+        assert phrase not in reason

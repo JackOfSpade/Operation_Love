@@ -488,6 +488,29 @@ _SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_UNSELECTED_ALT_10_1_0 = (
     254, 254, 254, 254, 254, 254, 253, 253, 254, 255, 253, 253, 253, 253, 255, 254,
 )
 
+# Variant 18: `( Signals ) Age v Height v Dating Intent ...` (Hinge 10.4.0 selected-Signals
+# chrome).
+#
+# Measured on the Pixel 7a at 1080x2400 from the 2026-09-19 10.4.0 calibration attempts:
+# `targeting_20260919T_10_4_calibration` and
+# `targeting_20260919T_10_4_calibration_v2`.  The three preserved entry screenshots are
+# byte-identical at this 16x4 chrome grid (even though the PNG files differ), and each visibly
+# shows the filter controls above the profile card rather than a per-profile sticky header.  The
+# old nearest candidate was Variant 5; the bounded alignment sweep bottomed out at 3.297 at
+# +2px, just inside the deliberate 3..9 dead zone.  That is a new stable app-chrome raster, not
+# evidence to relax either bound.
+#
+# This exact candidate changes only a matching selected-Signals top to CONFIRMED.  The 3.0
+# confirmation ceiling, 9.0 refutation floor, and +/-12px alignment limit remain unchanged, so
+# an unmeasured sticky header still cannot be accepted merely for being near this rendering.
+# This records only the 16x4 greyscale filter-strip fingerprint, never a profile image or name.
+_SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_SELECTED_10_4_0 = (
+    254, 255, 255, 255, 255, 254, 255, 255, 255, 255, 254, 254, 254, 254, 254, 254,
+    255, 209, 179, 180, 211, 252, 233, 232, 232, 249, 252, 251, 251, 250, 252, 252,
+    229,  88,  72,  69,  86, 225, 238, 239, 240, 237, 246, 235, 236, 243, 248, 250,
+    214,  86, 127, 122,  87, 217, 218, 193, 229, 239, 242, 192, 188, 222, 245, 251,
+)
+
 _SCROLL_TOP_BAND_FINGERPRINTS: tuple[tuple[int, ...], ...] = (
     _SCROLL_TOP_BAND_FINGERPRINT_COMPATIBLE,
     _SCROLL_TOP_BAND_FINGERPRINT_AGE_HEIGHT,
@@ -506,6 +529,7 @@ _SCROLL_TOP_BAND_FINGERPRINTS: tuple[tuple[int, ...], ...] = (
     _SCROLL_TOP_BAND_FINGERPRINT_AGE_HEIGHT_SETTLED_10_1_0,
     _SCROLL_TOP_BAND_FINGERPRINT_AGE_HEIGHT_ALT_10_1_0,
     _SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_UNSELECTED_ALT_10_1_0,
+    _SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_SELECTED_10_4_0,
 )
 
 # Maintained for backwards compatibility:

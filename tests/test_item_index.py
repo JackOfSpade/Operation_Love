@@ -1585,6 +1585,232 @@ def test_positioned_mute_card_track_reconnects_one_boundary_below_a_video(
     assert "post-exit bridge" in index.shifts[5].reason
 
 
+def _all_weak_video_exit_shift():
+    """The 22deee6b0998 frames 5→6 bank: every NCC source strip repainted."""
+    strips = tuple(
+        frameshift.StripMatch(
+            y0=_BAND0 + i * 96, y1=_BAND0 + (i + 1) * 96,
+            state=frameshift.STRIP_WEAK, delta_px=None,
+            score=0.0, runner_up=0.0, stddev=40.0, search=(-900, 900))
+        for i in range(13))
+    return frameshift.ShiftEstimate(
+        delta_px=None, confidence=0.0, status=frameshift.SHIFT_NO_EVIDENCE,
+        saturated=False, consensus_px=None,
+        reason="synthetic all-weak video repaint", strips=strips,
+        frame_size=(_W, _H), band=(_BAND0, _BAND1), trust_window_px=900,
+        agreeing=0, dissenting=0, eligible=0)
+
+
+def _same_pair_marker_exit_segmentations(*, marker_still_visible=False,
+                                         missing_heart=False, heart_x=938,
+                                         missing_edge=False, observed_destination_top=False,
+                                         lower_gutter="exact", ambiguous=False,
+                                         duplicate_marker=False):
+    """The frame-5→6 geometry from 22deee6b0998, without profile pixels.
+
+    Frame 5's mute control at row 524 belongs to the card bounded at 471..1932.  On the
+    +511px transition its predicted row is 13, above the 300px content band.  Frame 6 still
+    sees that same card as 300..1421: its observed bottom and heart both move by exactly 511px.
+    The source/destination lower canonical gutters are 1932..1985 and 1421..1474 respectively.
+    There is deliberately no matching top -- the destination starts clipped at the band's own
+    row 300 -- so bottom, heart, and that shared gutter are the complete, minimal exit proof
+    rather than a disguised three-anchor rule.
+    """
+    before = _segmentation((
+        _seg_block(
+            471, 1932, kind=segment.BLOCK_SELECTABLE,
+            top=_edge(471, segment.EDGE_GUTTER, observed=True),
+            bottom=_edge(1932, segment.EDGE_GUTTER, observed=True), hearts=((938, 1843),)),
+        _seg_block(
+            1985, 2100, kind=segment.BLOCK_CONTEXT,
+            top=_edge(1985, segment.EDGE_GUTTER, observed=True),
+            bottom=_edge(2100, segment.EDGE_BAND_EDGE, observed=False)),
+    ), digest="5" * 64)
+    after_block = _seg_block(
+        300, 1421, kind=segment.BLOCK_SELECTABLE,
+        top=_edge(300,
+                  segment.EDGE_GUTTER if observed_destination_top else segment.EDGE_BAND_EDGE,
+                  observed=observed_destination_top),
+        bottom=_edge(1421, segment.EDGE_GUTTER, observed=not missing_edge),
+        hearts=() if missing_heart else ((heart_x, 1332),))
+    lower_top = 1474 if lower_gutter != "misaligned" else 1475
+    after_blocks = (after_block, _seg_block(
+        lower_top, 2100, kind=segment.BLOCK_CONTEXT,
+        top=_edge(lower_top, segment.EDGE_GUTTER, observed=lower_gutter != "missing"),
+        bottom=_edge(2100, segment.EDGE_BAND_EDGE, observed=False)))
+    if ambiguous:
+        # Two equally exact destinations are ambiguity, not a second witness.  The unit helper
+        # deliberately accepts frame geometry as input, so model that impossible-to-disambiguate
+        # input directly rather than smuggling an arbitrary tie-break into a pixel fixture.
+        after_blocks += (after_block,)
+    after = _segmentation(after_blocks, digest="6" * 64)
+    marker_y = 900 if marker_still_visible else 524
+    markers = [item_index.VideoMuteMarker(frame_index=0, x=106, y=marker_y, score=1.0)]
+    if duplicate_marker:
+        markers.append(item_index.VideoMuteMarker(frame_index=0, x=107, y=marker_y, score=1.0))
+    return (before, after), tuple(markers)
+
+
+def test_same_pair_marker_exit_bridges_an_all_weak_video_pair():
+    """A tracked overlay may exit on the SAME all-weak pair it last appears in.
+
+    This is the unrepaired 22deee6b0998 transition.  The preceding visible marker identifies
+    the card; the predicted marker row has left the band; and the same uniquely selected card
+    carries an exact same-x heart, observed lower edge, and both boundaries of its lower gutter.
+    The raw all-weak bank is retained for audit, but cannot discard this physical-card proof
+    merely because it nominates no NCC candidate.
+    """
+    segmentations, markers = _same_pair_marker_exit_segmentations()
+    raw = _all_weak_video_exit_shift()
+    before, after = segmentations
+    assert raw.status == frameshift.SHIFT_NO_EVIDENCE
+    assert raw.eligible == raw.agreeing == 0
+    assert all(strip.state == frameshift.STRIP_WEAK and strip.delta_px is None
+               for strip in raw.strips)
+    assert after.blocks[0].y0 == after.band[0] == 300
+    assert not after.blocks[0].top.observed
+    assert item_index._shared_gutter_witnesses(before, after, 511) == (
+        (1932, 1985, 1421, 1474),)
+
+    links = item_index._video_track_deltas(
+        segmentations, (raw,), markers,
+        extent_tolerance_px=item_index._EXTENT_TOLERANCE_PX, max_step_px=690)
+
+    assert links == {0: 511}
+
+
+@pytest.mark.parametrize("gate", (
+    "still_visible", "missing_heart", "heart_x", "missing_edge", "observed_top",
+    "missing_gutter", "misaligned_gutter", "ambiguous", "duplicate_marker", "no_consensus",
+))
+def test_same_pair_marker_exit_refuses_when_its_local_proof_is_incomplete_or_ambiguous(gate):
+    """The same-pair exit rule is not permission to follow a merely nearby lower card."""
+    segmentations, markers = _same_pair_marker_exit_segmentations(
+        marker_still_visible=gate == "still_visible",
+        missing_heart=gate == "missing_heart", heart_x=934 if gate == "heart_x" else 938,
+        missing_edge=gate == "missing_edge", observed_destination_top=gate == "observed_top",
+        lower_gutter=("missing" if gate == "missing_gutter" else
+                      "misaligned" if gate == "misaligned_gutter" else "exact"),
+        ambiguous=gate == "ambiguous", duplicate_marker=gate == "duplicate_marker")
+    raw = _all_weak_video_exit_shift()
+    if gate == "no_consensus":
+        # The exception is evidence-category specific: an all-weak `no_evidence` bank says
+        # the repaint erased every NCC source, while `no_consensus` is reserved for a bank that
+        # produced competing correspondence claims.  Do not blur them even when this synthetic
+        # malformed record still reports zero eligible strips.
+        raw = dataclasses.replace(raw, status=frameshift.SHIFT_NO_CONSENSUS)
+
+    links = item_index._video_track_deltas(
+        segmentations, (raw,), markers,
+        extent_tolerance_px=item_index._EXTENT_TOLERANCE_PX, max_step_px=690)
+
+    assert links == {}
+
+
+def test_same_pair_marker_exit_rolls_back_when_complete_page_assembly_contradicts(
+        monkeypatch):
+    """Physical-card evidence proposes a shift; the normal whole-page proof still decides it.
+
+    Record the first offset chain supplied to the probe as well as the final result.  This proves
+    the +511px exit bridge was genuinely proposed before the synthetic page contradiction rolled
+    it back; merely asserting an unusable final index would also pass if the track never ran.
+    """
+    segmentations, markers = _same_pair_marker_exit_segmentations()
+    third = _segmentation((
+        _seg_block(
+            300, 1221, kind=segment.BLOCK_SELECTABLE,
+            top=_edge(300, segment.EDGE_BAND_EDGE, observed=False),
+            bottom=_edge(1221, segment.EDGE_GUTTER, observed=True), hearts=((938, 1132),)),
+    ), digest="7" * 64)
+    segmentations += (third,)
+    frames = [_frame(0), _frame(1), _frame(2)]
+    raw_exit = _all_weak_video_exit_shift()
+    measured_tail = dataclasses.replace(
+        raw_exit, delta_px=200, consensus_px=200, status=frameshift.SHIFT_MEASURED,
+        confidence=1.0, agreeing=3, eligible=3, reason="synthetic measured tail")
+    raw_shifts = (raw_exit, measured_tail)
+
+    monkeypatch.setattr(item_index, "segment_frame",
+                        lambda frame, **_kw: segmentations[frames.index(frame)])
+    monkeypatch.setattr(item_index, "estimate_shift",
+                        lambda before, _after, **_kw: raw_shifts[frames.index(before)])
+    seen_offset_inputs = []
+    real_frame_offsets = item_index._frame_offsets
+
+    def record_offsets(candidate_shifts):
+        seen_offset_inputs.append(tuple(shift.delta_px for shift in candidate_shifts))
+        return real_frame_offsets(candidate_shifts)
+
+    monkeypatch.setattr(item_index, "_frame_offsets", record_offsets)
+    monkeypatch.setattr(item_index, "_assemble",
+                        lambda *_args, **_kw: ((), ("synthetic exit-bridge contradiction",), ()))
+
+    index = item_index.build_item_index(
+        frames, content_band=_CONTENT_BAND, like_template=_TEMPLATE,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD, at_scroll_top=False, identity_band=None,
+        video_mute_markers=markers, _allow_frame_omission_recovery=False)
+
+    assert seen_offset_inputs[0] == (511, 200)
+    assert not index.usable
+    assert index.shifts == raw_shifts
+    assert index.layout_repaired_shifts == () and index.repair_provenance == ()
+
+
+def test_same_pair_marker_exit_survives_a_probe_with_only_scroll_top_failure(monkeypatch):
+    """A top corroboration failure must not erase independently valid pair correspondence.
+
+    The repair probe decides whether card/heart geometry contradicts a proposed shift.  The
+    scroll-top assertion answers an independent question about where enumeration began, and the
+    driver has a separately guarded confirmed-top retry for it.  Keep the physical +511px bridge
+    in the returned (still unusable) index so that retry sees the repaired chain rather than the
+    raw all-weak refusal which would mask the actual top-only fault.
+    """
+    segmentations, markers = _same_pair_marker_exit_segmentations()
+    third = _segmentation((
+        _seg_block(
+            300, 1221, kind=segment.BLOCK_SELECTABLE,
+            top=_edge(300, segment.EDGE_BAND_EDGE, observed=False),
+            bottom=_edge(1221, segment.EDGE_GUTTER, observed=True), hearts=((938, 1132),)),
+    ), digest="7" * 64)
+    segmentations += (third,)
+    frames = [_frame(0), _frame(1), _frame(2)]
+    raw_exit = _all_weak_video_exit_shift()
+    measured_tail = dataclasses.replace(
+        raw_exit, delta_px=200, consensus_px=200, status=frameshift.SHIFT_MEASURED,
+        confidence=1.0, agreeing=3, eligible=3, reason="synthetic measured tail")
+    raw_shifts = (raw_exit, measured_tail)
+    top_failure = (item_index._SCROLL_TOP_ASSERTION_FAILURE_PREFIX
+                   + " synthetic top-only corroboration failure")
+    calls = 0
+
+    monkeypatch.setattr(item_index, "segment_frame",
+                        lambda frame, **_kw: segmentations[frames.index(frame)])
+    monkeypatch.setattr(item_index, "estimate_shift",
+                        lambda before, _after, **_kw: raw_shifts[frames.index(before)])
+
+    def top_only_assembly(*_args, **_kw):
+        nonlocal calls
+        calls += 1
+        return (), (top_failure,), ()
+
+    monkeypatch.setattr(item_index, "_assemble", top_only_assembly)
+    index = item_index.build_item_index(
+        frames, content_band=_CONTENT_BAND, like_template=_TEMPLATE,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD, at_scroll_top=True, identity_band=None,
+        video_mute_markers=markers, _allow_frame_omission_recovery=False)
+
+    assert calls >= 2, "the repair probe and the final fold must both see the top failure"
+    assert not index.usable
+    assert index.failures == (top_failure,)
+    assert index.shifts[0].status == frameshift.SHIFT_MEASURED
+    assert index.shifts[0].delta_px == 511
+    assert [(pair, raw.status, raw.delta_px) for pair, raw in index.layout_repaired_shifts] == [
+        (0, frameshift.SHIFT_NO_EVIDENCE, None)]
+    assert [(repair.pair_index, repair.path, repair.raw_status, repair.effective_delta_px,
+             repair.marker_frames) for repair in index.repair_provenance] == [
+        (0, "v18_mute_card_same_pair_exit", frameshift.SHIFT_NO_EVIDENCE, 511, (0,))]
+
+
 def test_positioned_mute_card_track_survives_a_static_page_stretch(monkeypatch):
     """The track's authority must reach PAST a run of genuine zero-pixel pairs.
 
@@ -4228,6 +4454,21 @@ def test_background_above_without_the_first_items_corner_is_no_longer_accepted()
         "the band-edge wording sends an operator to a row that is not the problem"
     assert contradiction in failures
     assert blocks[0].kind == item_index.ITEM_PARTIAL, "the evidence must not be relabelled chrome"
+    # The top-corner failure prevents the preceding heartless panel from becoming chrome, so its
+    # ordinary ordinal-safety check correctly emits the ONLY dependent second failure.  The live
+    # Hinge driver may recognise exactly this pair (and only this pair) for its independently
+    # reconfirmed filter-chip retry; generic/offline callers still receive both facts.
+    assert len(failures) == 2
+    assert failures[1] == (
+        f"the block at page rows {_SCROLL_TOP_CHROME.page_y0}..{_SCROLL_TOP_CHROME.page_y1} "
+        + item_index._UNCERTAIN_HEART_NOTE)
+
+    reconfirmed, reconfirmed_failures = _assemble(
+        sightings, at_scroll_top=True, scroll_top_signal_confirmed=True)
+    assert reconfirmed_failures == ()
+    assert reconfirmed[0].kind == item_index.ITEM_LEADING_CHROME
+    assert [(block.model_index, block.heart_ordinal) for block in reconfirmed] == [
+        (None, None), (1, 1), (2, 2)]
 
     # ...and it is scoped to the claim, exactly as the band-edge test is.
     _relative, relative_failures = _assemble(sightings, at_scroll_top=False)

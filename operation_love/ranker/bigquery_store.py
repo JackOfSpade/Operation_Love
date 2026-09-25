@@ -1642,3 +1642,27 @@ class BigQueryStore:
         """
         with self._lock:
             return {name: self._dropped[name] for name in _TABLES if self._dropped[name]}
+
+    def pending_opener_rejections(self) -> list[dict]:
+        """(2026-09-17) Snapshot of `opener_rejections` rows still sitting in the buffer.
+
+        Exists for exactly one caller: supervisor.py's shutdown path
+        (_deadletter_stranded_opener_rejections). A wire failure that only ever surfaces at
+        the FINAL store.flush() -- because storage.bigquery.flush_every kept every row below it
+        buffered without ever raising synchronously inside record_opener_rejection -- would
+        otherwise be reported as a bare exception with no row-level evidence at all. This lets
+        that shutdown path dead-letter each surviving row with its own reason_code/reason/
+        raw_opener, the same way a row that DID raise synchronously already gets dead-lettered
+        by opener/service.py. See _write_opener_rejection_deadletter's "THE flush_every
+        DEPENDENCY" docstring section for the full picture.
+
+        Deliberately NOT added to ranker/__init__.py's Store Protocol: SQLiteStore has no
+        buffer a row can be silently lost from (see its own dropped_rows docstring) and so has
+        nothing to report here -- the shutdown caller duck-types this via getattr(...) and
+        treats its absence as "nothing to recover", not an error.
+
+        Returns a snapshot, not a live view -- one dict copy per row -- so a caller mutating the
+        result cannot corrupt a row this store might still successfully flush on a later retry.
+        """
+        with self._lock:
+            return [dict(row) for row in self._buf["opener_rejections"]]

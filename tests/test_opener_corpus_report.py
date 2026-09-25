@@ -218,6 +218,71 @@ def test_dedupe_openers_keeps_distinct_text_separate():
     assert len(m.dedupe_openers(rows)) == 2
 
 
+# Regression pin (2026-09-17): read_jsonl_openers() started stamping a real era onto jsonl rows
+# (see find_opener_records()), which broke the OLD single-axis "era known wins" dedupe rule --
+# once BOTH copies of a sent opener carry an era (the jsonl debug-log line AND its own `openers`
+# row), the old rule saw a tie and kept whichever was seen FIRST, which read_all_sources() always
+# makes the jsonl copy (jsonl rows are concatenated ahead of sqlite/bigquery). The jsonl copy can
+# never carry `decision`, so every sent opener's decision was silently dropped -- collapsing
+# METRICS BY DECISION's sent/send_unverified/not_sent buckets toward "unknown". dedupe_openers()
+# must rank on every axis that carries information (era present, decision present, store- vs
+# jsonl-backed), not era alone -- see _dedupe_authority()'s own docstring for the exact rule.
+def test_dedupe_openers_prefers_a_store_row_over_a_jsonl_row_when_both_carry_an_era():
+    # Both copies of the SAME physical draft carry the same era (exactly the post-fix jsonl
+    # shape) -- only the store copy also carries `decision`. The surviving row must keep BOTH.
+    jsonl_row = m.OpenerRow(text="same text.", source="jsonl", era="era-a", decision=None)
+    store_row = m.OpenerRow(text="same text.", source="sqlite", era="era-a", decision="like")
+
+    deduped = m.dedupe_openers([jsonl_row, store_row])
+
+    assert len(deduped) == 1
+    assert deduped[0].era == "era-a"
+    assert deduped[0].decision == "like"
+    assert deduped[0].source == "sqlite"
+
+
+def test_dedupe_openers_prefers_a_store_row_over_a_jsonl_row_regardless_of_source_order():
+    # Same as above with sources reversed on input, to pin that the promotion is rank-based and
+    # not merely "second row wins" (which would coincidentally pass the test above too).
+    jsonl_row = m.OpenerRow(text="same text.", source="jsonl", era="era-a", decision=None)
+    store_row = m.OpenerRow(text="same text.", source="bigquery", era="era-a",
+                            decision="never_sent")
+
+    deduped = m.dedupe_openers([store_row, jsonl_row])
+
+    assert len(deduped) == 1
+    assert deduped[0].era == "era-a"
+    assert deduped[0].decision == "never_sent"
+    assert deduped[0].source == "bigquery"
+
+
+def test_dedupe_openers_still_prefers_known_era_when_only_one_side_has_one():
+    # The original rule's own case, still correct under the new ranking: a jsonl row with no era
+    # at all (a genuinely pre-75155dc7 row) must still lose to a store row that carries one, even
+    # though neither carries a decision here.
+    jsonl_row = m.OpenerRow(text="same text.", source="jsonl", era=None, decision=None)
+    store_row = m.OpenerRow(text="same text.", source="sqlite", era="era-a", decision=None)
+
+    deduped = m.dedupe_openers([jsonl_row, store_row])
+
+    assert len(deduped) == 1
+    assert deduped[0].era == "era-a"
+    assert deduped[0].source == "sqlite"
+
+
+def test_dedupe_openers_stable_first_seen_on_a_true_tie():
+    # Two rows with identical known-field counts and the same source kind (both jsonl, so
+    # `is_store` ties too) -- the promotion is a strict `>`, so the first-seen copy must survive,
+    # matching read_all_sources()' concatenation order (jsonl, then sqlite, then bigquery).
+    first = m.OpenerRow(text="same text.", source="jsonl", era="era-a", decision=None)
+    second = m.OpenerRow(text="same text.", source="jsonl", era="era-b", decision=None)
+
+    deduped = m.dedupe_openers([first, second])
+
+    assert len(deduped) == 1
+    assert deduped[0].era == "era-a"
+
+
 # ---------------------------------------------------------------------------------------
 # resolve_era + compare mode
 # ---------------------------------------------------------------------------------------
@@ -276,6 +341,25 @@ def test_find_opener_strings_ignores_non_string_and_blank_values():
     assert m.find_opener_strings({"opener": None}) == []
 
 
+def test_find_opener_records_pairs_each_string_with_its_owning_dict_not_an_ancestor():
+    # The exact shape read_jsonl_openers() relies on: a nested "opener" must come back paired
+    # with the dict that actually holds it (which also holds its own prompt_sha256), never with
+    # the outer dict that merely contains it.
+    outer = {"action": "auto_opener_pre_send",
+             "payload": {"opener": "first try", "prompt_sha256": "digest-1"}}
+    [(text, owner)] = m.find_opener_records(outer)
+    assert text == "first try"
+    assert owner is outer["payload"]
+    assert owner["prompt_sha256"] == "digest-1"
+
+
+def test_find_opener_records_agrees_with_find_opener_strings_on_which_strings_are_found():
+    nested = {"action": "auto_opener_pre_send",
+             "payload": {"attempts": [{"opener": "first try"}, {"opener": "second try"}]}}
+    assert [text for text, _owner in m.find_opener_records(nested)] == \
+        m.find_opener_strings(nested)
+
+
 # ---------------------------------------------------------------------------------------
 # read_jsonl_openers
 # ---------------------------------------------------------------------------------------
@@ -290,12 +374,19 @@ def _write_actions(run_dir, lines):
 def test_read_jsonl_openers_walks_populated_and_skips_empty_run_dirs(tmp_path):
     debug_dir = tmp_path / "hinge_debug"
     _write_actions(debug_dir / "run_a", [
+        # UNSTAMPED: no `prompt_sha256` key on this dict at all, exactly like a row written
+        # before commit 75155dc7 (2026-09-06) wired hinge.py to stamp one -- must still land in
+        # the unknown-era bucket (era=None), never invented.
         json.dumps({"action": "auto_opener_pre_send", "opener": "Draft one."}),
         json.dumps({"action": "auto_opener_resumed_send", "opener": "Draft one."}),  # duplicate
         json.dumps({"action": "capture"}),  # no opener key at all
     ])
     _write_actions(debug_dir / "run_b", [
-        json.dumps({"action": "auto_opener_pre_send", "opener": "Draft two."}),
+        # STAMPED: `prompt_sha256` lives on the SAME dict as `opener`, mirroring hinge.py's
+        # _record_auto_opener_pre_send (both keys land on one action dict). This is the exact
+        # shape the read_jsonl_openers() bug got wrong: it used to hardcode era=None here too.
+        json.dumps({"action": "auto_opener_pre_send", "opener": "Draft two.",
+                    "prompt_sha256": "era-b-digest"}),
     ])
     _write_actions(debug_dir / "run_c_unpopulated", [
         json.dumps({"action": "capture"}),
@@ -313,7 +404,10 @@ def test_read_jsonl_openers_walks_populated_and_skips_empty_run_dirs(tmp_path):
     assert stats.run_dirs_populated == 2
     assert stats.opener_occurrences == 3       # 2 in run_a (incl. the duplicate) + 1 in run_b
     assert {row.text for row in rows} == {"Draft one.", "Draft two."}
-    assert all(row.source == "jsonl" and row.era is None for row in rows)
+    assert all(row.source == "jsonl" for row in rows)
+    by_text = {row.text: row for row in rows}
+    assert by_text["Draft one."].era is None
+    assert by_text["Draft two."].era == "era-b-digest"
 
 
 def test_read_jsonl_openers_counts_malformed_lines_without_crashing(tmp_path):
@@ -2646,6 +2740,65 @@ def test_format_pre_registered_check_no_note_when_drafts_and_captures_are_equal(
 
 
 # ---------------------------------------------------------------------------------------
+# store_drafts breakout (2026-09-17 BASIS CHANGED fix): drafts_recorded stopped being
+# `openers`-table rows alone the moment jsonl rows started carrying a real era (see
+# _dedupe_authority()); store_drafts is the honest breakout that keeps the printed gate
+# reproducible against the store even though the headline total no longer equals a plain
+# `SELECT COUNT(*) FROM openers` query on its own.
+# ---------------------------------------------------------------------------------------
+
+def test_build_pre_registered_check_reports_store_drafts_breakout_when_rows_supplied():
+    jsonl_texts = [f"Item number {i} looks calm today." for i in range(30)]
+    store_texts = [f"Store draft number {i} looks calm today." for i in range(10)]
+    rows = [m.OpenerRow(text=t, source="jsonl", era="era-a") for t in jsonl_texts]
+    rows += [m.OpenerRow(text=t, source="sqlite", era="era-a", decision="like")
+            for t in store_texts]
+    metrics_map = m.build_era_metrics(rows)
+
+    check = m.build_pre_registered_check(
+        metrics_map, current_era="era-a", current_era_error=None, replay_captures_on_disk=0,
+        rows=rows)
+
+    assert check.drafts_recorded == _AT_THRESHOLD
+    assert check.store_drafts == 10
+
+
+def test_build_pre_registered_check_store_drafts_is_none_when_rows_omitted():
+    # Every pre-existing caller in this test file builds era_metrics_map by hand with no
+    # OpenerRow-level data available -- store_drafts must read as "not computed", never as 0.
+    metrics_map = {"era-a": m.era_metrics("era-a", ["Nice opener."] * 5)}
+    check = m.build_pre_registered_check(
+        metrics_map, current_era="era-a", current_era_error=None, replay_captures_on_disk=2)
+    assert check.store_drafts is None
+
+
+def test_format_pre_registered_check_reports_store_drafts_breakout_and_basis_change_note():
+    rows = [m.OpenerRow(text="jsonl only draft.", source="jsonl", era="era-a"),
+            m.OpenerRow(text="store backed draft.", source="sqlite", era="era-a",
+                       decision="like")]
+    metrics_map = m.build_era_metrics(rows)
+    check = m.build_pre_registered_check(
+        metrics_map, current_era="era-a", current_era_error=None, replay_captures_on_disk=0,
+        rows=rows)
+
+    text = m.format_pre_registered_check(check)
+
+    assert "of which openers-table rows" in text
+    assert ": 1  -- the remaining 1 are jsonl-only" in text
+    assert "BASIS CHANGED on 2026-09-17" in text
+
+
+def test_format_pre_registered_check_store_drafts_none_reports_not_computed():
+    metrics_map = {"era-a": m.era_metrics("era-a", ["Nice opener."] * 5)}
+    check = m.build_pre_registered_check(
+        metrics_map, current_era="era-a", current_era_error=None, replay_captures_on_disk=2)
+
+    text = m.format_pre_registered_check(check)
+
+    assert "not computed for this call" in text
+
+
+# ---------------------------------------------------------------------------------------
 # Wiring into build_report() / format_text_report() / main() -- including --json
 # ---------------------------------------------------------------------------------------
 
@@ -2754,6 +2907,38 @@ def test_main_reports_current_era_error_when_config_is_unreadable(tmp_path, caps
     assert code == 0
     out = capsys.readouterr().out
     assert "could not determine the current prompt era" in out
+
+
+def test_main_keeps_decision_for_a_draft_recorded_in_both_jsonl_and_the_store(tmp_path, capsys):
+    # End-to-end regression pin for the dedupe fix, through the real CLI: hinge.py's
+    # _record_auto_opener_pre_send writes a SENT opener to BOTH actions.jsonl (era-stamped, per
+    # find_opener_records()) AND, via OpenerService.commit_opener, the `openers` table
+    # (decision="like") -- the exact shape that made a sent opener's decision silently vanish
+    # into "unknown" before dedupe_openers() was fixed to rank on more than era alone.
+    config_path = _write_config(tmp_path)
+    era = prompt_stamp("Be warm, specific, and brief.")
+
+    debug_dir = tmp_path / "debug"
+    _write_actions(debug_dir / "run_a", [
+        json.dumps({"action": "auto_opener_pre_send", "opener": "Shared text opener.",
+                    "prompt_sha256": era}),
+    ])
+
+    db_path = tmp_path / "store.db"
+    store = SQLiteStore(db_path)
+    try:
+        store.record_opener("run_a", "hinge", "gemini-x", "Shared text opener.", "the view",
+                            prompt_sha256=era, decision="like")
+    finally:
+        store.close()
+
+    code = m.main(["--debug-dir", str(debug_dir), "--db", str(db_path),
+                  "--config", str(config_path)])
+
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "--- decision: sent (n=1) ---" in out
+    assert "--- decision: unknown (n=1) ---" not in out
 
 
 # =========================================================================================

@@ -366,6 +366,12 @@ _DEADLETTER_TRUNCATION_MARKER = "...<deadletter-truncated>"
 # entry without re-deriving it from reason_code (REASON_OPENER_ERROR/REASON_BAD_REQUEST/
 # REASON_TRANSIENT_ERROR are shared with other telemetry; OpenerParseError has no single
 # REASON_* of its own since e.reason_code is model-supplied).
+#
+# (2026-09-17) A fifth branch value, "shutdown_flush", is not one of these four -- it is
+# written from OUTSIDE this service, by supervisor.py's
+# _deadletter_stranded_opener_rejections, for rows that never raised here at all. See
+# _write_opener_rejection_deadletter's own "THE flush_every DEPENDENCY" section below for why
+# that second call site exists.
 
 
 def _deadletter_truncate(value: str | None, limit: int = _DEADLETTER_FIELD_LIMIT) -> str | None:
@@ -378,6 +384,46 @@ def _deadletter_truncate(value: str | None, limit: int = _DEADLETTER_FIELD_LIMIT
     if len(value) <= limit:
         return value
     return value[:limit] + _DEADLETTER_TRUNCATION_MARKER
+
+
+def _rejection_identity_key(*, run_id: str, app: str, model: str, attempt: object,
+                            reason_code: str, reason: str, raw_opener: str | None,
+                            prompt_sha256: str | None) -> tuple:
+    """(2026-09-17) Stable, in-run identity for one opener_rejections row, so
+    OpenerService can tell supervisor.py's shutdown sweep "I already dead-lettered this row
+    myself" -- see OpenerService.is_rejection_row_deadlettered and
+    supervisor._deadletter_stranded_opener_rejections, the two places this is compared.
+
+    Built from exactly the eight fields BOTH sides of that comparison actually have: every
+    per-call `except Exception as store_exc:` site in maybe_opener() below calls this with
+    the same run_id/app/model/attempt/reason_code/reason/raw_opener/prompt_sha256 it just
+    passed to record_opener_rejection AND to _write_opener_rejection_deadletter, and
+    BigQueryStore.pending_opener_rejections() (ranker/bigquery_store.py) snapshots a
+    buffered row built from those identical eight values.
+
+    Deliberately EXCLUDES `created_at`: BigQueryStore.record_opener_rejection assigns that
+    timestamp itself, internally, only once the row is appended to its buffer -- the
+    exception handler here never gets it back (record_opener_rejection returns nothing), so
+    a key that depended on it could never match between "the call that raised" and "the
+    still-buffered row a later snapshot sees". The two call sites can only ever agree on
+    what the CALLER supplied, which is exactly this tuple.
+
+    Content-identity, not a nonce -- the same philosophy ranker/bigquery_store.py's own
+    _row_id already uses for BigQuery's streaming dedup (a row the caller cannot tell apart
+    from one already seen IS, by that convention, the same logical row). Two genuinely
+    different rejections would need identical run_id, app, model, attempt, reason_code,
+    reason text, raw_opener text, AND prompt era to produce the same key here -- and
+    `attempt` plus `reason_code` alone already separate the four maybe_opener() branches and
+    every retry within one profile's OpenerParseError loop, since a profile's own retry hint
+    (folded into the model's next raw response) makes two attempts' raw_opener/reason
+    diverge in practice even when the profile is the same. Nothing downstream is asked to
+    consider this cryptographically unique; it only has to avoid colliding across DISTINCT
+    real failures, and the existing latch thresholds (_BAD_REQUEST_LATCH_THRESHOLD,
+    _TRANSIENT_LATCH_THRESHOLD, max_attempts) keep the set of keys any one run ever produces
+    small enough that this holds in practice.
+    """
+    attempt_int = attempt if isinstance(attempt, int) and not isinstance(attempt, bool) else 0
+    return (run_id, app, model, attempt_int, reason_code, reason, raw_opener, prompt_sha256)
 
 
 def _write_opener_rejection_deadletter(path: str | None, branch: str, store: object, *,
@@ -445,6 +491,26 @@ def _write_opener_rejection_deadletter(path: str | None, branch: str, store: obj
     ops/OPENER-REDESIGN.md stating what was found and what, if anything, ships to fix it. Do
     not edit the 2026-09-06 (c) or 2026-09-14 (c) entries; that file is a historical decisions
     log and corrections go at the end.
+
+    THE flush_every DEPENDENCY (2026-09-17). Every call site below reaches this function from
+    inside an `except Exception as store_exc:` wrapped around ITS OWN synchronous
+    self.store.record_opener_rejection(...) call, so each one only ever sees a wire failure
+    that happens to raise AT THAT CALL. For BigQueryStore, a call only raises when
+    storage.bigquery.flush_every makes THIS row the one that triggers a flush -- see
+    BigQueryStore._maybe_flush, which flushes only once the buffer reaches flush_every rows.
+    config.yaml currently pins flush_every to 1 (every call flushes immediately, so this path
+    fires reliably), but at the constructor/`make_store` DEFAULT of 25, most calls merely
+    append to the buffer and return cleanly -- the real wire failure then surfaces much later,
+    at store.flush(), by which point this function's per-row context (reason_code, reason,
+    raw_opener, ...) is long out of scope and unrecoverable from the exception alone.
+    supervisor.py's shutdown path now recovers whatever opener_rejections rows are still
+    buffered at THAT point too (_deadletter_stranded_opener_rejections, which calls this same
+    function per surviving row with branch="shutdown_flush" -- see its own docstring), but
+    only for a run that actually reaches its own shutdown flush. A process killed before that
+    point (or one that never gets there at all) still loses any buffered-but-unflushed
+    rejection with nothing written here. Raising flush_every enlarges that unprotected window;
+    config.yaml's own flush_every comment states this same dependency from the operator's side
+    -- keep the two in agreement if either changes.
 
     NEVER RAISES. This function is called from inside an `except Exception as store_exc:`
     block that already gave up on persisting the real record; it must not turn a diagnostic
@@ -849,6 +915,27 @@ class OpenerService:
         # Guarded by self._lock exactly like recent_openers (maybe_opener already runs its
         # whole body under that lock).
         self.recent_rejections: deque[dict] = deque(maxlen=_RECENT_REJECTIONS)
+        # (2026-09-17) Identity of every opener_rejections row THIS service has already
+        # dead-lettered via a per-call `except Exception as store_exc:` site below (see
+        # _rejection_identity_key's own docstring for exactly what "identity" means here).
+        # Read exclusively by is_rejection_row_deadlettered, which
+        # supervisor._deadletter_stranded_opener_rejections consults before writing a
+        # SECOND dead-letter entry for a row that is still sitting in the store's buffer at
+        # shutdown -- a row already covered here got there because a FAILED flush leaves the
+        # whole batch buffered (ranker/bigquery_store.py's own _flush_table comment), not
+        # because it was never seen. Without this set, that shutdown sweep cannot tell "this
+        # row already has its one entry" apart from "this row was never dead-lettered at
+        # all", and doubled every count.
+        #
+        # Unbounded on purpose, unlike recent_openers/recent_rejections above: this is not a
+        # display ring buffer, it is the actual dedup key set, and dropping an old entry
+        # would silently reopen the double-count bug for a row that happens to still be
+        # stuck in the buffer many profiles later. Safe to leave unbounded in practice
+        # because the same latch thresholds that bound recent_rejections' realistic size
+        # (_BAD_REQUEST_LATCH_THRESHOLD, _TRANSIENT_LATCH_THRESHOLD, max_attempts) bound how
+        # many distinct per-call dead-letter writes one run can ever produce before
+        # _exhaust() disables the service outright.
+        self._deadlettered_rejection_keys: set[tuple] = set()
         self._lock = threading.RLock()
 
     def _register_transient_failure(self, exc: Exception) -> bool:
@@ -1419,6 +1506,14 @@ class OpenerService:
                             run_id=run_id, app=app, model=e.model, attempt=attempt,
                             reason_code=e.reason_code, reason=str(e), raw_opener=e.raw_opener,
                             prompt_sha256=self.prompt_sha256, exc=store_exc)
+                        # (2026-09-17) Remember this row so supervisor.py's shutdown sweep
+                        # (_deadletter_stranded_opener_rejections) does not write a SECOND
+                        # entry for it -- the failed store call above leaves this exact row
+                        # stuck in the store's buffer, same args as just passed above.
+                        self._deadlettered_rejection_keys.add(_rejection_identity_key(
+                            run_id=run_id, app=app, model=e.model, attempt=attempt,
+                            reason_code=e.reason_code, reason=str(e), raw_opener=e.raw_opener,
+                            prompt_sha256=self.prompt_sha256))
                     # In-memory mirror of the row just above, independent of the store call's
                     # success -- see recent_rejections' docstring in __init__ for why this
                     # exists (the bug report's Recent opener rejections section reads this,
@@ -1543,6 +1638,12 @@ class OpenerService:
                             run_id=run_id, app=app, model="", attempt=attempt,
                             reason_code=REASON_OPENER_ERROR, reason=str(e), raw_opener=None,
                             prompt_sha256=self.prompt_sha256, exc=store_exc)
+                        # (2026-09-17) See the parse_error branch's own comment above --
+                        # same reasoning, same shutdown-sweep consumer.
+                        self._deadlettered_rejection_keys.add(_rejection_identity_key(
+                            run_id=run_id, app=app, model="", attempt=attempt,
+                            reason_code=REASON_OPENER_ERROR, reason=str(e), raw_opener=None,
+                            prompt_sha256=self.prompt_sha256))
                     return None
                 except Exception as e:  # noqa: BLE001
                     # HTTP-level / provider-level failures land here, and none of them are
@@ -1596,6 +1697,12 @@ class OpenerService:
                                 run_id=run_id, app=app, model="", attempt=attempt,
                                 reason_code=REASON_BAD_REQUEST, reason=str(e), raw_opener=None,
                                 prompt_sha256=self.prompt_sha256, exc=store_exc)
+                            # (2026-09-17) See the parse_error branch's own comment far
+                            # above -- same reasoning, same shutdown-sweep consumer.
+                            self._deadlettered_rejection_keys.add(_rejection_identity_key(
+                                run_id=run_id, app=app, model="", attempt=attempt,
+                                reason_code=REASON_BAD_REQUEST, reason=str(e), raw_opener=None,
+                                prompt_sha256=self.prompt_sha256))
                         self._consecutive_bad_requests += 1
                         if self._consecutive_bad_requests >= _BAD_REQUEST_LATCH_THRESHOLD:
                             self._exhaust(
@@ -1644,6 +1751,13 @@ class OpenerService:
                             reason_code=REASON_TRANSIENT_ERROR,
                             reason=f"{type(e).__name__}: {e}", raw_opener=None,
                             prompt_sha256=self.prompt_sha256, exc=store_exc)
+                        # (2026-09-17) See the parse_error branch's own comment far above --
+                        # same reasoning, same shutdown-sweep consumer.
+                        self._deadlettered_rejection_keys.add(_rejection_identity_key(
+                            run_id=run_id, app=app, model="", attempt=attempt,
+                            reason_code=REASON_TRANSIENT_ERROR,
+                            reason=f"{type(e).__name__}: {e}", raw_opener=None,
+                            prompt_sha256=self.prompt_sha256))
                     if self._register_transient_failure(e):
                         # Latched -- exhausted_reason now carries the global cause; leave
                         # last_skip_reason (a per-call cause) alone, same reasoning as the
@@ -2016,6 +2130,35 @@ class OpenerService:
         worker thread is concurrently appending to."""
         with self._lock:
             return list(self.recent_rejections)
+
+    def is_rejection_row_deadlettered(self, row: dict) -> bool:
+        """(2026-09-17) Whether `row` -- built the same way
+        BigQueryStore.record_opener_rejection buffers it and pending_opener_rejections()
+        snapshots it -- already has a per-call dead-letter entry from THIS service instance
+        (see the four maybe_opener() `except Exception as store_exc:` sites above, and
+        _rejection_identity_key's own docstring for exactly what "the same row" means here).
+
+        The ONLY caller is supervisor.py's _deadletter_stranded_opener_rejections, which
+        uses this to stop its shutdown sweep from writing a SECOND entry for a row whose
+        per-call write already covered it -- the fix for the double-dead-lettering
+        regression found the same day: a FAILED FLUSH LEAVES THE BATCH BUFFERED
+        (ranker/bigquery_store.py's own _flush_table comment), so the row a shutdown
+        pending_opener_rejections() snapshot sees is very often the EXACT SAME row a
+        per-call exception handler already dead-lettered, not a new one -- and pre-fix,
+        supervisor.py wrote a second entry for it every time, doubling the apparent loss.
+
+        Locked, unlike a bare set membership test would need to be: a worker that is still
+        wedged past its shutdown join timeout (see supervisor._join_worker_for_shutdown) can
+        be concurrently INSIDE maybe_opener, still adding to the tracked set, while the
+        shutdown path calls this from a different thread.
+        """
+        key = _rejection_identity_key(
+            run_id=row.get("run_id", ""), app=row.get("app", ""), model=row.get("model", ""),
+            attempt=row.get("attempt", 0), reason_code=row.get("reason_code", ""),
+            reason=row.get("reason", ""), raw_opener=row.get("raw_opener"),
+            prompt_sha256=row.get("prompt_sha256"))
+        with self._lock:
+            return key in self._deadlettered_rejection_keys
 
     def _exhaust(self, reason: str) -> None:
         """Flip the service permanently disabled and record WHY (exhausted_reason), so an

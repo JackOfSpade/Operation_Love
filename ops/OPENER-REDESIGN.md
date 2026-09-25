@@ -6698,3 +6698,151 @@ can produce it. "Spend with no openers" has two producers, and the second is not
 the designed behaviour of the staging lifecycle `commit_opener` opened on 2026-08-14 and
 `discard_opener` completed on 2026-09-06. The hunt began from an absence of rows, and an absence
 names no mechanism by itself -- it only tells you which table to start reading the CODE for.
+
+#### Addendum -- 2026-09-17 (a): the location-confirmation table disagreed with itself a third time, and shipped a day before this was written down
+
+On 2026-09-16 `_DIRECT_LOCATION_CONFIRMATION_PATTERNS`' "is my guess right?" shape (the pattern
+matching `^(?:is|was)\s+my\s+(?:guess|call)\s+(?:right|correct|close|(?:way\s+)?off)\?+$`) was
+widened to interpolate the two shared constants every sibling shape already uses,
+`_LOCATION_CONFIRMATION_DET` and `_LOCATION_CONFIRMATION_NOUN`, rather than its own hand-written
+determiner ("my") in front of its own hand-written 2-member noun subset ("guess"/"call"). This is
+recorded now, one day after it shipped, because it is the THIRD time this exact defect shape --
+two allow-list tables covering the SAME permitted move disagreeing, so the surface form the model
+happens to reach for decides whether a correct draft is accepted -- has reached production in
+this one table. The place-NOUN lists disagreed first (fixed 2026-09-14, written up above as
+Addendum -- 2026-09-14 (b), "THE SECOND BUG, WHICH ONLY THE REPLAY COULD HAVE FOUND"); the
+DETERMINER lists disagreed one level down the very next day (fixed 2026-09-15); and "is my guess
+right?" survived BOTH of those hoists untouched, because it interpolated neither shared constant
+and so was invisible to a fix that only reaches shapes that already interpolate one. Addendum
+2026-09-14 (b) is the only one of the three that got a dated write-up before this one -- this
+addendum exists so the third does not join the 2026-09-15 determiner fix in going unrecorded too.
+
+MEASURED, not asserted: executed against the shipped constants on 2026-09-16, of the 72 live
+determiner x noun combinations every sibling shape in the table accepts, the old hand-written pair
+accepted exactly 2 ("my guess", "my call") and rejected the other 70. "Is that guess right?" was
+rejected while the pinned corpus already carries both "Is my guess right?" and "How close is that
+guess?" as accepted drafts -- direct evidence the model alternates determiners in front of the
+same noun, so the narrow shape was rejecting live, in-distribution phrasing on nothing but which
+determiner the model happened to reach for that draft. Each such rejection spends one of five
+attempts whose exhaustion stops the run (`OpenerService._exhaust`).
+
+WHY THIS BOUNDARY IS UNRECOVERABLE WITHOUT A DATED NOTE. `prompt_stamp` deliberately excludes
+validators from the hash it stores (see Addendum -- 2026-09-05 (b) on the era boundary becoming a
+column), so `prompt_sha256` is byte-identical on both sides of this change -- the prompt text a
+model saw did not move, only which of its replies this table would accept did. No column in the
+opener corpus distinguishes a draft rejected under the 2-combination acceptance regime from one
+accepted under the 72-combination regime; only a dated addendum like this one can, which is the
+entire reason the second recurrence got written up immediately and this one should have too.
+
+WHAT NOW STOPS A FOURTH. `tests/test_opener.py::test_no_confirmation_shape_hardcodes_its_own_determiner_or_place_noun`
+reads `_DIRECT_LOCATION_CONFIRMATION_PATTERNS` directly rather than pinning example sentences: it
+expands every shape in the live table and fails if any determiner-immediately-before-place-noun
+pair inside a match did not come from the two shared constants. A shape that opts out with its own
+hardcoded list, the way this one did through two prior hoists, now fails on sight instead of
+shipping silently a fourth time. The same allow-list-disagreement shape was found independently the
+same day in `operation_love/opener/opener.py`'s quota-exhaustion scope tables
+(`_QUOTA_SCOPE_LABELS`, `_TRANSIENT_SCOPES`, `_PERMANENT_SCOPE_REMEDIES`); that table now has its
+own partition invariant test for the identical reason.
+
+#### Addendum -- 2026-09-17 (b): a true era stamp broke a dedupe tie-break, and a pre-registered gate's basis moved without saying so
+
+Earlier the same day, `read_jsonl_openers()` was corrected to read a real `prompt_sha256` off the
+same action dict `hinge.py`'s `_record_auto_opener_pre_send`/`_record_auto_opener_resumed_send`
+already stamp alongside the `opener` key (commit 75155dc7, 2026-09-06), instead of hardcoding
+`era=None` on every jsonl row as this document's own earlier addenda describe. That fix is correct
+and stands. An adversarial review of it found two further-order regressions in
+`tools/opener_corpus_report.py` that the fix itself did not touch a line of -- both caused by code
+elsewhere relying, unstated, on jsonl rows never carrying an era.
+
+REGRESSION 1: DEDUPE PRECEDENCE FLIPPED. `dedupe_openers()`'s tie-break -- "a row carrying a known
+era always wins over one that doesn't" -- was written when only a store row could ever carry an
+era, so it was really choosing "store over jsonl" while appearing to choose "known era over
+unknown". Once a jsonl row could carry a real era too, any draft recorded in BOTH places (which is
+every SENT opener: `OpenerService.commit_opener` writes the sent text to the `openers` table at
+exactly the point `hinge.py`'s `_record_auto_opener_pre_send` also writes it to `actions.jsonl`)
+produced two era-known copies. The tie-break then fell through to "keep whichever was seen first",
+and `read_all_sources()` concatenates jsonl rows ahead of sqlite/bigquery rows, so the jsonl copy
+always won -- discarding the store copy, the only one that can ever carry `decision` (or
+`outcome`). Every sent opener's decision was therefore silently reclassified into METRICS BY
+DECISION's `unknown` bucket instead of `sent`.
+
+THIS DID NOT SHOW LOCALLY. The local SQLite store holds only 11 synthetic-replay rows
+(`tools/opener_replay.py`), with zero opener-text overlap against the local jsonl corpus, so no
+row ever hit the code path that flipped. `python tools/opener_corpus_report.py`'s decision buckets
+measured byte-identical before and after the era-stamp fix on this machine: `synthetic_replay=11,
+unknown=148, ALL=159`. `storage.backend` in `config.yaml` is `bigquery`, not `sqlite` -- against
+the real backend, a sent opener's jsonl line and its `openers` row share the same text far more
+often, so the `sent` bucket would have measurably emptied out under `--bigquery` without ever
+tripping a local test.
+
+THE FIX: `dedupe_openers()` now ranks the two copies of a physical draft on every axis that carries
+information, not era alone -- see `_dedupe_authority()`, the new named ranking function its
+docstring documents in full. The rule is a 2-tuple, compared lexicographically: (1) count of known
+fields on the row (`era` present, `decision` present -- 0, 1, or 2), checked first, because more
+known fields is strictly more informative regardless of source; (2) whether the row is store-backed
+(sqlite/bigquery) rather than jsonl, used only to break a tie in (1) -- `decision`/`outcome` can
+only ever live on a store row, so a store copy is never *less* authoritative than a jsonl copy of
+the same text even when neither yet carries a decision. A strict tie keeps the first-seen copy,
+matching `read_all_sources()`'s own jsonl-then-sqlite-then-bigquery concatenation order, exactly as
+the original rule already did for the case it got right. New tests pin both the regression and the
+original case it must not break:
+`test_dedupe_openers_prefers_a_store_row_over_a_jsonl_row_when_both_carry_an_era`,
+`test_dedupe_openers_prefers_a_store_row_over_a_jsonl_row_regardless_of_source_order`,
+`test_dedupe_openers_still_prefers_known_era_when_only_one_side_has_one`,
+`test_dedupe_openers_stable_first_seen_on_a_true_tie`, and an end-to-end pin through the real CLI,
+`test_main_keeps_decision_for_a_draft_recorded_in_both_jsonl_and_the_store`, which writes the same
+sent-opener text to a real `actions.jsonl` line and a real `SQLiteStore` row (mirroring exactly
+what `hinge.py` and `OpenerService.commit_opener` do at a real send) and asserts the CLI's own
+printed METRICS BY DECISION section reports it `sent`, not `unknown`.
+
+REGRESSION 2: THE PRE-REGISTERED GATE'S BASIS MOVED WITHOUT SAYING SO. `build_pre_registered_check()`
+takes `drafts_recorded` from the era axis's own `n` over the deduped corpus. Before the era-stamp
+fix, every jsonl row's era was `None`, so that `n` was, in effect, `openers`-table rows only --
+`--eras-file`-resolvable prompt_sha256 groupings can only ever exist for rows carrying a real era,
+and only store rows ever did. After the fix, jsonl rows contribute to that count too, and the
+printed progress line moved from 1/40 to 32/40 in one commit -- while the operator-facing line and
+this module's own docstring (naming `PRE_REGISTERED_MIN_DRAFTS`) still called the number "openers
+rows" verbatim. The `openers` table under the current era in fact holds exactly ONE row locally; an
+operator trusting the old label after the fix would have read the durable store as holding 32
+drafts it does not hold.
+
+DECIDED: KEEP THE BROADER BASIS, FIX THE LABEL. This document's 2026-09-06 (d) addendum
+pre-registered "at least 40 DRAFTS" against the first NO GRADING era, and a jsonl-captured draft is
+real model output generated under that era exactly as much as a committed `openers` row is --
+excluding it would make the count *less* faithful to what was pre-registered, not more, and would
+silently throw away a live send's or an uncommitted Training draft's evidence. What had to change
+was honesty about what the number now means, not the number's scope:
+  - `format_pre_registered_check()`'s printed line and `build_pre_registered_check()`'s /
+    `PreRegisteredCheck`'s own docstrings now call the count what it is -- "deduped drafts across
+    every source (jsonl debug-log rows + openers-table rows, collapsed to one row per physical
+    draft by text)" -- never "openers rows",
+  - a new field, `PreRegisteredCheck.store_drafts`, breaks out how many of that total are
+    specifically `openers`-table rows (passed through `build_pre_registered_check(..., rows=...)`,
+    the same deduped corpus the era axis was built from), so the number stays reproducible against
+    `SELECT COUNT(*) FROM openers WHERE prompt_sha256 = <current era>` even though the headline
+    total no longer equals that query alone. `store_drafts` is `None`, never `0`, when a caller
+    does not supply `rows` (every pre-existing test in this module builds an `era_metrics_map` by
+    hand with no row-level data), so "not measured here" can never be misread as "measured zero",
+  - and the printed section now states, in its own line, that this count's basis changed on
+    2026-09-17 and why, alongside this addendum.
+Verified: `python tools/opener_corpus_report.py`'s PRE-REGISTERED CHECK section still reads
+`32/40 drafts -- NOT YET CHECKABLE` after the fix (the total did not move, since it was already
+computing the deduped-across-sources count; only its label was wrong), now printed next to
+`of which openers-table rows ...: 1 -- the remaining 31 are jsonl-only debug-log drafts with no
+surviving openers-table row for that exact text` and the dated basis-change note. New tests:
+`test_build_pre_registered_check_reports_store_drafts_breakout_when_rows_supplied`,
+`test_build_pre_registered_check_store_drafts_is_none_when_rows_omitted`,
+`test_format_pre_registered_check_reports_store_drafts_breakout_and_basis_change_note`,
+`test_format_pre_registered_check_store_drafts_none_reports_not_computed`.
+
+WHAT DID NOT CHANGE: `dedupe_openers()`'s signature, `read_jsonl_openers()`'s era-stamping fix
+itself, and the local decision-bucket numbers (`synthetic_replay=11, unknown=148, ALL=159`,
+confirmed byte-identical before and after both fixes above, for the reason given under REGRESSION
+1). `pytest tests/test_opener_corpus_report.py -q -n auto`: 244 -> 252 passed, all green.
+
+THE LESSON, again: a fix that changes what a field CAN now contain (a jsonl row carrying an era)
+can silently invalidate an assumption baked into a DIFFERENT function's tie-break logic, and into a
+THIRD function's printed label, neither of which the fix's own diff touched. Neither regression
+showed in a green local test suite; both were found by re-deriving, by hand, what the new field
+value implied for every downstream reader of it, rather than by re-running the existing tests
+against it.

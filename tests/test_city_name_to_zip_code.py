@@ -69,7 +69,7 @@ def test_legacy_stdout_codeql_suppression_is_standalone_and_targeted():
     ).read_text()
 
     assert (
-        "    # codeql[py/clear-text-logging-sensitive-data] "
-        "-- values are validated public postal codes\n"
+        "    # Values are public, format-checked postal codes reconstructed above.\n"
+        "    # codeql[py/clear-text-logging-sensitive-data]\n"
         '    sys.stdout.write(f"{zip_codes}\\n")'
     ) in source

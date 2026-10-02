@@ -1,13 +1,9 @@
 name: Auto-merge branches to main
 
-# DORMANT as of 2026-09-14, and kept deliberately rather than deleted.
-# GitHub Actions is DISABLED for this repository, and the owner's decision is to
-# use act rather than GitHub Actions. This workflow triggers on `workflow_run`,
-# which act does not and cannot raise, so it runs nowhere today. It is retained
-# because it is the setup record for the CI-gated merge policy and becomes live
-# again the moment Actions is re-enabled -- deleting it would throw away the
-# configuration knowledge described below. Anything that must be enforced NOW
-# has to run inside .githooks/pre-push (act) or inside `pytest tests/`.
+# GitHub Actions is the authoritative CI and merge gate for this repository.
+# This workflow waits for the CI run on the exact branch tip before merging it
+# into main; local checks remain optional developer feedback, not a substitute
+# for the hosted gate.
 
 # Merges every branch in this repo into main automatically — but ONLY once that
 # branch's tip commit has a green run of the workflow named below (default: "CI").
@@ -56,7 +52,7 @@ jobs:
   merge:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: main
           fetch-depth: 0

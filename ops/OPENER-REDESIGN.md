@@ -6615,6 +6615,14 @@ and it reframes every "CI will catch it" statement in this document: a check tha
 act does not run anywhere. If you are reading an older addendum that leans on GitHub CI as a
 backstop, it is describing a backstop that was already gone.
 
+#### Addendum -- 2026-10-02: GitHub Actions restored as the authoritative gate
+
+The local act-based pre-push gate described above has been removed. GitHub
+Actions now runs CI on pushes, pull requests, and manual dispatches, and is the
+authoritative gate for this repository. The historical notes above remain as a
+record of why the prompt-era check needs a full git history; the hosted lint job
+checks it with a full checkout.
+
 
 #### Addendum -- 2026-09-15 (a): the empty table was the wrong question, because that signature is the staged commit
 

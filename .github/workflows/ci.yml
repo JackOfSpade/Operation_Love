@@ -1,27 +1,5 @@
 name: CI
 
-# Runs this repo's test suite on every push to every branch (and on PRs).
-#
-# READ THIS FIRST (2026-09-14): GitHub Actions is DISABLED for this repository
-# (`gh api repos/.../actions/permissions` -> {"enabled": false}), and the owner's
-# decision is to use act rather than GitHub Actions. Nothing in this file has run
-# on GitHub since 2026-08-11. What DOES run it is .githooks/pre-push
-# (core.hooksPath=.githooks), which executes every push-eligible job through act
-# before any push to a protected branch. So this file is not a description of a
-# remote service; it IS the local gate's program. A step that cannot run under
-# act protects nothing.
-#
-# The auto-merge workflow (auto-merge-to-main.yml) gates on THIS workflow's
-# completion: a branch merges to main only if the CI run for its exact tip
-# commit concluded "success". That mechanism is GitHub-only and therefore
-# dormant too; it is kept, not deleted, because it is the setup record and
-# becomes live again the moment Actions is re-enabled. Both tests and lint are
-# required quality gates.
-#
-# push: has no branches: filter (was ['claude/**', main]) — CI must run on every
-# branch, not just claude/*, or the auto-merge CI-gate lookup finds no run for a
-# non-claude branch's SHA and fails closed forever (skips it every drain).
-
 on:
   push:
   pull_request:
@@ -30,179 +8,48 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     name: pytest
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     env:
-      # Don't keep a second copy of every wheel on disk after unpacking it.
-      # The ml extra downloads GBs; the runner only has ~14 GB free.
       PIP_NO_CACHE_DIR: '1'
     steps:
-      # act-local-CI only. `.actrc` puts this stable path first so act does not
-      # replace its bundled Node path with a nonexistent architecture path after
-      # setup-python's first `::add-path::`. Resolve the symlink dynamically
-      # before the first JavaScript action, because act-latest's Node patch
-      # version moves with the image. GitHub-hosted CI never runs this step.
-      - name: Resolve act's Node toolcache path (act-local CI only)
-        if: ${{ env.ACT == 'true' }}
-        run: |
-          set -euo pipefail
-          [ "${ACT:-}" = "true" ] || exit 0
-          node_root=/opt/acttoolcache/node
-          case "$(uname -m)" in
-            aarch64 | arm64) node_arch=arm64 ;;
-            x86_64 | amd64) node_arch=x64 ;;
-            *) echo "Unsupported act runner architecture: $(uname -m)" >&2; exit 1 ;;
-          esac
-          node_dir="$(find "$node_root" -mindepth 1 -maxdepth 1 -type d \
-            ! -name current -print | sort -V | tail -n 1)"
-          [ -n "$node_dir" ] && [ -x "$node_dir/$node_arch/bin/node" ]
-          ln -sfn "$node_dir" "$node_root/current"
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: '3.11'
+          cache: pip
+          cache-dependency-path: pyproject.toml
       - name: Install CPU-only torch
-        # torch on PyPI has no CPU/GPU split: on Linux its deps unconditionally
-        # pull the whole CUDA runtime (~3 GB of nvidia-cu* + triton) that CI
-        # never uses. That is what filled the disk ([Errno 28]) — it doesn't
-        # reproduce on the Mac dev box, where torch resolves a small MPS wheel.
-        # Pre-installing the +cpu build satisfies `torch>=2.2` below so the
-        # extras install never resolves the CUDA one. The +cpu local-version
-        # segment sorts above the plain PyPI wheel, so the cpu index wins.
         run: >
           pip install --quiet
           --index-url https://download.pytorch.org/whl/cpu
           --extra-index-url https://pypi.org/simple
           torch torchvision
-      - name: Install package + test deps
-        # Was `pip install pytest pyyaml` only — never installed the package
-        # itself or its optional extras, so any test needing them (cv2 for
-        # tests/test_hinge_vision.py; sklearn/PIL/torch for the ml-dependent
-        # eval/observe tests) failed on a clean runner. Install the package
-        # editable with the extras its test suite actually exercises.
+      - name: Install package and test dependencies
         run: pip install --quiet -e '.[dev,hinge,ml]'
-      # act-local-CI only. GitHub's ubuntu-latest image ships libGL, which OpenCV
-      # links against; act's runner image (catthehacker/ubuntu:act-latest) does not,
-      # so every test importing cv2 died with
-      # "ImportError: libGL.so.1: cannot open shared object file" under the global
-      # `act push` pre-push hook — a failure with no bearing on the code.
-      # `env.ACT` is set only by act and unset on GitHub-hosted runners, so this is
-      # skipped there and cannot change real CI. `== 'true'` rather than a bare
-      # truthiness test, because GitHub treats ANY non-empty string (including
-      # "false") as true; the in-script re-check is a second guard so a misfiring
-      # `if:` degrades to a no-op instead of failing the job on a transient apt error.
-      - name: Install libGL (act-local CI only — GitHub's runner already has it)
-        if: ${{ env.ACT == 'true' }}
-        run: |
-          set -euo pipefail
-          [ "${ACT:-}" = "true" ] || exit 0
-          if ! ldconfig -p 2>/dev/null | grep -q 'libGL\.so\.1'; then
-            sudo apt-get update -qq
-            sudo apt-get install -y -qq libgl1
-          fi
-
       - name: Run tests
-        # Bound CI memory without reducing coverage. Parallel workers were OOM-killed, and one
-        # monolithic serial process accumulated enough native-library memory to exit 137 at 91%.
-        # The runner validates pytest discovery, then runs every recursively discovered test module
-        # in its own serial process so OpenCV/torch memory is returned to the OS between modules. A
-        # SIGKILLed module alone falls back to one fresh process per collected node ID; assertion or
-        # collection failures still fail immediately, and the final collected/executed counts match.
         run: python scripts/run_ci_test_files.py
 
   lint:
-    name: ruff
+    name: ruff and prompt-era registry
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      # Same act bootstrap as the test job: .actrc is global, so every job must
-      # resolve its stable Node path before its first JavaScript action.
-      - name: Resolve act's Node toolcache path (act-local CI only)
-        if: ${{ env.ACT == 'true' }}
-        run: |
-          set -euo pipefail
-          [ "${ACT:-}" = "true" ] || exit 0
-          node_root=/opt/acttoolcache/node
-          case "$(uname -m)" in
-            aarch64 | arm64) node_arch=arm64 ;;
-            x86_64 | amd64) node_arch=x64 ;;
-            *) echo "Unsupported act runner architecture: $(uname -m)" >&2; exit 1 ;;
-          esac
-          node_dir="$(find "$node_root" -mindepth 1 -maxdepth 1 -type d \
-            ! -name current -print | sort -V | tail -n 1)"
-          [ -n "$node_dir" ] && [ -x "$node_dir/$node_arch/bin/node" ]
-          ln -sfn "$node_dir" "$node_root/current"
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          # Full history: the prompt-era registry check below reconstructs every
-          # historical prompt digest by walking `git log` over config.yaml and
-          # operation_love/opener/opener.py, so a shallow clone would make it
-          # report a fabricated single-era history rather than fail loudly.
           fetch-depth: 0
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: '3.11'
-      # Install the repository's declared development tools so local and CI lint
-      # use the same constrained Ruff release and pyproject configuration.
+          cache: pip
+          cache-dependency-path: pyproject.toml
       - run: pip install --quiet -e '.[dev]'
       - run: ruff check operation_love tests tools scripts
-      # ops/prompt-eras.json is the map from an opaque prompt_sha256 to "which
-      # rules were on the wire then" -- the thing that makes `--rule NAME`
-      # ("have we tried this before?") answerable at all. It is GENERATED from
-      # git history, so a commit that edits a prompt surface without
-      # regenerating it leaves every consumer silently mislabelling that era as
-      # the uncommitted working tree. That already happened once, within hours
-      # of the registry landing. Failing here is the whole point: a measurement
-      # instrument that has quietly gone stale is worse than none.
-      #
-      # RUNS UNDER act TOO, as of 2026-09-14. GitHub Actions is DISABLED for this
-      # repository, so .githooks/pre-push IS the CI rather than a mirror of it,
-      # and this step used to carry `if: env.ACT != 'true'` -- i.e. it was
-      # skipped in the only place CI actually runs, which made it a hole rather
-      # than a fallback.
-      #
-      # It was skipped because act could not reach git history: the hook stages
-      # each push in a detached worktree whose .git is a POINTER FILE naming an
-      # absolute host path outside act's bind mount, so git reported
-      # "not a git repository: (null)". Note the file IS present -- "does .git
-      # exist" was the wrong diagnostic and cost a day. The hook now mounts the
-      # real git dir read-only at that same absolute path (see GIT_MOUNT there),
-      # so the reconstruction works here exactly as it does on a GitHub runner.
-      #
-      # The preflight below exists so a MISSING mount fails loudly and says what
-      # to do, instead of failing with git's own opaque message or, worse,
-      # tempting someone to restore the skip. To actually reach it, run act from
-      # a DETACHED WORKTREE, which is what the hook stages:
-      #   git worktree add --detach /tmp/wt HEAD && cd /tmp/wt && act push --pull=false
-      # Running act by hand from the repository ROOT does NOT reach it: .actrc
-      # passes --bind, and a root workspace already contains the real .git, so
-      # history resolves without any mount at all.
-      #
-      # Why it must be verified at all: ops/prompt-eras.json is the map from an
-      # opaque prompt_sha256 to "which rules were on the wire then", generated
-      # FROM git history, so a commit that edits a prompt surface without
-      # regenerating it leaves every consumer silently mislabelling that era as
-      # the uncommitted working tree. That has now happened twice. A measurement
-      # instrument that has quietly gone stale is worse than none, because it is
-      # trusted.
-      #
-      # This is the belt; the braces are in tests/test_backfill_prompt_eras.py,
-      # whose git-free guard catches the same regression even where history is
-      # unreachable. Note GitHub's checkout uses fetch-depth: 0 above because a
-      # shallow clone makes this reconstruction under-report SILENTLY rather
-      # than fail.
-      - name: Prompt-era registry is in sync with git history
-        run: |
-          set -euo pipefail
-          if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-            echo "::error::Cannot verify ops/prompt-eras.json: git history is unreachable here." >&2
-            echo "Normally you get here by running act by hand from a detached worktree." >&2
-            echo "Pushing (git push) goes through .githooks/pre-push, which mounts the git dir for you." >&2
-            echo "To do it by hand, mount the PHYSICAL path -- a RELATIVE -v source is a docker named" >&2
-            echo "volume and mounts nothing at all, silently, which looks identical to this failure:" >&2
-            echo '  G=$(cd "$(git rev-parse --git-common-dir)" && pwd -P)' >&2
-            echo '  act push --container-options "-v \"$G:$G:ro\""' >&2
-            exit 1
-          fi
-          python tools/backfill_prompt_eras.py --check
+      - run: python tools/backfill_prompt_eras.py --check

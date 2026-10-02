@@ -56,9 +56,6 @@ def main() -> None:
         show(args.config)
     elif args.command == "bugreport":
         from .bugreport import build_report
-        # ``build_report`` applies its final credential-redaction boundary before
-        # returning. Write that owner-requested document directly to the CLI
-        # stream instead of treating it as a log record.
         sys.stdout.write(build_report(None, config_path=args.config) + "\n")
     elif args.command == "hub":
         from .hub import serve

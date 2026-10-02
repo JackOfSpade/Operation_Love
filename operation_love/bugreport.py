@@ -316,7 +316,8 @@ def _deps_md() -> str:
 # owner-filed self-improvement in action: the original report gave no way to tell "OCR is off
 # because tesseract isn't installed" apart from "OCR is off because nothing scrolled the
 # profile far enough yet", nor whether a gesture-corroboration failure traced back to the
-# wrong /dev/input node. Presence-only, same redaction contract as _secrets_md: a path or a
+# wrong /dev/input node. Presence-only, same redaction contract as
+# _configuration_availability_md: a path or a
 # device NAME is not a secret, but this never becomes a place to grow raw device output.
 def _tesseract_md() -> str:
     path = shutil.which("tesseract")
@@ -407,7 +408,7 @@ def _capabilities_md(config_path: str) -> str:
     return "\n".join([_tesseract_md(), _opencv_md(), _touch_watcher_probe_md(config_path)])
 
 
-def _secrets_md() -> str:
+def _configuration_availability_md() -> str:
     def shown(name: str) -> str:
         key = os.environ.get(name, "")
         return "present" if key else "unset (needed only for openers / auto mode)"
@@ -536,7 +537,7 @@ def _targeting_readiness_md(config_path: str, hub_state=None) -> str:
         # config's own `inline_item_max_dist` was 14.9099, and a reader with only "validated"
         # printed here had no way to see that the operator's calibrated ceiling was not the
         # bound that fired — it is a second, stricter cap applied after a bound derived inside
-        # `item_verify`. These are geometry and thresholds, never secrets.
+        # `item_verify`. These are geometry and thresholds, never credentials.
         if isinstance(calibration, dict):
             shown = [key for key in ("hinge_version_name", "frame_size_px", "content_band",
                                      "composer_layout_id", "inline_item_max_dist",
@@ -702,7 +703,8 @@ def _redact_report_output(text: str) -> str:
     """Remove credentials from the COMPLETE rendered report, not just its secrets section.
 
     Diagnostics collect third-party errors, JSONL rows and stdout/stderr.  Any of those can echo a
-    credential even when ``_secrets_md`` correctly reports presence only.  Redacting at the final
+    credential even when ``_configuration_availability_md`` correctly reports presence only.
+    Redacting at the final
     rendering boundary makes every existing and future section safe by default, while the section
     builders may still retain their useful, typed presentation logic.  Literal values are taken
     only from plausibly-secret environment-variable names; redacting all environment values would
@@ -5075,7 +5077,9 @@ def _safe_section(fn, *args) -> str:
     try:
         return fn(*args)
     except Exception as exc:  # noqa: BLE001
-        return f"- ⚠️ this section failed to generate: {type(exc).__name__}: {exc}"
+        # Exception messages often contain paths, request details, or credentials.
+        # Keep the report useful without placing exception-controlled text in it.
+        return f"- ⚠️ this section failed to generate ({type(exc).__name__})"
 
 
 # ── assembly ───────────────────────────────────────────────────────────────
@@ -5092,7 +5096,8 @@ def build_report(hub_state=None, description: str = "", config_path: str = "conf
         f"## Capabilities\n{_safe_section(_capabilities_md, config_path)}\n\n"
         f"## Config (config.yaml)\n{_safe_section(_config_md, config_path)}\n\n"
         f"## Hinge targeting readiness\n{_safe_section(_targeting_readiness_md, config_path, hub_state)}\n\n"
-        f"## Secrets (presence only — never raw values)\n{_safe_section(_secrets_md)}\n\n"
+        f"## Configuration availability (presence only — never raw values)\n"
+        f"{_safe_section(_configuration_availability_md)}\n\n"
         f"## Diagnostic improvement\n{_safe_section(_diagnostic_improvement_md)}\n\n"
         f"## Training alerts\n{_safe_section(_training_alerts_md)}\n\n"
         f"## Run completion assessment\n{_safe_section(_run_completion_assessment_md, hub_state, config_path)}\n\n"

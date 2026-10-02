@@ -26,7 +26,7 @@ def test_report_has_core_sections():
     for h in ["# Operation Love — Bug Report", "## What happened", "it broke",
               "## Reporter follow-up", "## Build", "## System", "## Dependencies", "## Capabilities", "## Config",
               "## Hinge targeting readiness",
-              "## Secrets", "## Diagnostic improvement", "## Run status", "## Recent openers",
+              "## Configuration availability", "## Diagnostic improvement", "## Run status", "## Recent openers",
               "## Training alerts",
               "## Run completion assessment",
               "## Recent opener rejections",
@@ -4892,6 +4892,16 @@ def test_recent_openers_section_survives_a_raising_recent_openers_call():
     assert "⚠️ this section failed to generate" in md
 
 
+def test_safe_section_never_renders_exception_text_that_may_contain_credentials():
+    def fail_with_sensitive_text():
+        raise RuntimeError("api_key=must-not-reach-the-report")
+
+    rendered = bugreport._safe_section(fail_with_sensitive_text)
+
+    assert "RuntimeError" in rendered
+    assert "api_key=must-not-reach-the-report" not in rendered
+
+
 # ── Recent opener rejections: the OTHER half of the opener paper trail -- attempts the
 # deterministic guards in opener.py's _parse REJECTED, not just the successes above. Before
 # this section existed, a rejection was printed to the console and then lost forever.
@@ -6435,4 +6445,3 @@ def test_deadletter_section_degrades_on_an_unreadable_file_without_raising(tmp_p
     md = bugreport._opener_rejection_deadletter_md(str(cfg))
 
     assert "could not be read" in md
-

@@ -35,7 +35,18 @@ def _public_postal_code(value):
     if not isinstance(value, str):
         return "Not Found"
     candidate = value.strip()
-    return candidate if _POSTAL_CODE_RE.fullmatch(candidate) else "Not Found"
+    if not _POSTAL_CODE_RE.fullmatch(candidate):
+        return "Not Found"
+
+    # Reconstruct the public postal-code format from integers after validation.
+    # This preserves leading zeroes while establishing that no arbitrary API
+    # response text can enter either output sink below.
+    digits = candidate.replace("-", "")
+    base = int(digits[:5])
+    if len(digits) == 5:
+        return f"{base:05d}"
+    extension = int(digits[5:])
+    return f"{base:05d}-{extension:04d}"
 
 
 def get_zip_code(city, state, google_api_key):
@@ -78,8 +89,7 @@ cities_input = ["Denver, Colorado", "Glendale, Colorado", "Four Square Mile, Col
 def main():
     cities = parse_cities(cities_input)
     zip_codes = [get_zip_code(city, state, google_api_key) for city, state in cities]
-    # Postal codes have already been reduced to public, format-checked tokens.
-    # Keep the legacy script's result visible to its interactive owner.
+    # Values are public, format-checked postal codes reconstructed above.
     sys.stdout.write(f"{zip_codes}\n")
 
     # Write the zip codes to a text file as a string representation of the list.

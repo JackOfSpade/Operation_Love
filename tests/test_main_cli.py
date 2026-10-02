@@ -23,7 +23,7 @@ def test_stats_command_dispatches_to_stats_show(monkeypatch):
     assert calls == ["x.yaml"]
 
 
-def test_bugreport_command_dispatches_and_prints(monkeypatch, capsys):
+def test_bugreport_command_dispatches_and_prints_the_redacted_report(monkeypatch, capsys):
     monkeypatch.setattr("operation_love.bugreport.build_report",
                         lambda state, config_path: f"REPORT for {config_path}")
     _run(monkeypatch, ["bugreport", "--config", "y.yaml"])

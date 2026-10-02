@@ -36,7 +36,7 @@ ml = [
     # boundary so a real `pip install -e '.[ml,...]'` can never silently resolve a setuptools
     # that drops it out from under the quality filter. Do not remove this as unused cruft --
     # removing it reopens the crash the moment a bare/newer resolver is used.
-    "setuptools<82",
+    "setuptools<85",
 ]
 # App drivers. Browser support is reference-only and deliberately not installed by launchers.
 web = ["playwright>=1.44", "patchright>=1.44"]   # patchright = stealth-patched Playwright (no Runtime.enable CDP leak)

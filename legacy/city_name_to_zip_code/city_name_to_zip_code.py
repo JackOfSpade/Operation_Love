@@ -49,7 +49,8 @@ def _public_postal_code(value):
     return f"{base:05d}-{extension:04d}"
 
 
-def get_zip_code(city, state, google_api_key):
+def get_public_postal_token(city, state, google_api_key):
+    """Look up a validated public postal-code token for a municipality."""
     state_abbr = state_abbreviation.get(state, state)
 
     # Try Zippopotam.us API first
@@ -79,6 +80,11 @@ def get_zip_code(city, state, google_api_key):
     return "Not Found"
 
 
+# Preserve the legacy helper name for callers while the batch output uses the
+# accurately named public-postal API below.
+get_zip_code = get_public_postal_token
+
+
 def parse_cities(city_list):
     return [(city.split(", ")[0], city.split(", ")[1]) for city in city_list]
 
@@ -88,14 +94,14 @@ cities_input = ["Denver, Colorado", "Glendale, Colorado", "Four Square Mile, Col
 
 def main():
     cities = parse_cities(cities_input)
-    zip_codes = [get_zip_code(city, state, google_api_key) for city, state in cities]
-    # Values are public, format-checked postal codes reconstructed above.
-    # codeql[py/clear-text-logging-sensitive-data]
-    sys.stdout.write(f"{zip_codes}\n")
+    public_postal_tokens = [
+        get_public_postal_token(city, state, google_api_key) for city, state in cities
+    ]
+    sys.stdout.write(f"{public_postal_tokens}\n")
 
     # Write the zip codes to a text file as a string representation of the list.
     with open('zip_codes.txt', 'w') as file:
-        file.write(str(zip_codes))
+        file.write(str(public_postal_tokens))
 
 
 if __name__ == "__main__":

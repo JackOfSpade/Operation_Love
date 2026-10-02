@@ -53,7 +53,7 @@ def test_legacy_main_keeps_public_postal_codes_in_stdout_and_output_file(
         monkeypatch, tmp_path, capsys):
     module, _requests = _legacy_module(monkeypatch)
     monkeypatch.setattr(module, "cities_input", ["Cambridge, Massachusetts"])
-    monkeypatch.setattr(module, "get_zip_code", lambda *_args: "02139")
+    monkeypatch.setattr(module, "get_public_postal_token", lambda *_args: "02139")
     monkeypatch.chdir(tmp_path)
 
     module.main()
@@ -62,14 +62,7 @@ def test_legacy_main_keeps_public_postal_codes_in_stdout_and_output_file(
     assert (tmp_path / "zip_codes.txt").read_text() == "['02139']"
 
 
-def test_legacy_stdout_codeql_suppression_is_standalone_and_targeted():
-    source = (
-        Path(__file__).parents[1]
-        / "legacy/city_name_to_zip_code/city_name_to_zip_code.py"
-    ).read_text()
+def test_legacy_zip_helper_alias_keeps_existing_callers_compatible(monkeypatch):
+    module, _requests = _legacy_module(monkeypatch)
 
-    assert (
-        "    # Values are public, format-checked postal codes reconstructed above.\n"
-        "    # codeql[py/clear-text-logging-sensitive-data]\n"
-        '    sys.stdout.write(f"{zip_codes}\\n")'
-    ) in source
+    assert module.get_zip_code is module.get_public_postal_token

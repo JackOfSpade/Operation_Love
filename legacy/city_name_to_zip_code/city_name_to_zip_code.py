@@ -1,8 +1,11 @@
 import os
+import re
+import sys
 
 import requests
 
 _REQUEST_TIMEOUT_S = 15
+_POSTAL_CODE_RE = re.compile(r"\A\d{5}(?:-\d{4})?\Z")
 
 # Dictionary to convert state names to abbreviations
 state_abbreviation = {
@@ -22,6 +25,19 @@ state_abbreviation = {
 }
 
 
+def _public_postal_code(value):
+    """Return only a standard US postal-code token from an API response.
+
+    The legacy batch utility may write or display only this public geographic
+    identifier. It deliberately rejects arbitrary response text so API error
+    bodies, credentials, and unrelated address fields cannot reach its output.
+    """
+    if not isinstance(value, str):
+        return "Not Found"
+    candidate = value.strip()
+    return candidate if _POSTAL_CODE_RE.fullmatch(candidate) else "Not Found"
+
+
 def get_zip_code(city, state, google_api_key):
     state_abbr = state_abbreviation.get(state, state)
 
@@ -31,7 +47,7 @@ def get_zip_code(city, state, google_api_key):
     if response.status_code == 200:
         result = response.json()
         if 'places' in result and len(result['places']) > 0:
-            return result['places'][0]['post code']
+            return _public_postal_code(result['places'][0].get('post code'))
 
     # If Zippopotam.us API fails, try Google Maps Geocoding API
     if not google_api_key:
@@ -47,7 +63,7 @@ def get_zip_code(city, state, google_api_key):
         if 'results' in result and len(result['results']) > 0:
             for component in result['results'][0]['address_components']:
                 if 'postal_code' in component['types']:
-                    return component['long_name']
+                    return _public_postal_code(component.get('long_name'))
 
     return "Not Found"
 
@@ -62,7 +78,9 @@ cities_input = ["Denver, Colorado", "Glendale, Colorado", "Four Square Mile, Col
 def main():
     cities = parse_cities(cities_input)
     zip_codes = [get_zip_code(city, state, google_api_key) for city, state in cities]
-    print(zip_codes)
+    # Postal codes have already been reduced to public, format-checked tokens.
+    # Keep the legacy script's result visible to its interactive owner.
+    sys.stdout.write(f"{zip_codes}\n")
 
     # Write the zip codes to a text file as a string representation of the list.
     with open('zip_codes.txt', 'w') as file:

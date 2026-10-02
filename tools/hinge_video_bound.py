@@ -754,10 +754,9 @@ def burst_span_shortfall(frames: list[tuple[bytes, float]], plan: BurstPlan) -> 
     return float(plan.window_s) - (frames[-1][1] - frames[0][1])
 
 
-def prompt_label(input_fn, *, card_no: int, print_fn=print) -> str:
+def prompt_label(input_fn, *, print_fn=print) -> str:
     """Read one owner label. Garbage re-prompts; EOF ends the session as an abort."""
-    print_fn(f"\ncard {card_no}: tap the card and watch it. Does it PLAY (motion, sound, or a "
-             "scrubber)?")
+    print_fn("\nTap the card and watch it. Does it PLAY (motion, sound, or a scrubber)?")
     while True:
         try:
             answer = input_fn(_LABEL_PROMPT)
@@ -766,7 +765,7 @@ def prompt_label(input_fn, *, card_no: int, print_fn=print) -> str:
         answer = (answer or "").strip().lower()
         if answer in _LABELS:
             return answer
-        print_fn(f"  not a label: {answer!r}. Answer exactly one of {'/'.join(_LABELS)}.")
+        print_fn(f"  Invalid label. Answer exactly one of {'/'.join(_LABELS)}.")
 
 
 def run_capture(*, out_dir: Path, profiles: int, serial: str, adb_path: str,
@@ -846,7 +845,7 @@ def run_capture(*, out_dir: Path, profiles: int, serial: str, adb_path: str,
 
             # The prompt is printed only now, with the burst already closed on disk.
             label_prompted_t = clock()
-            label = prompt_label(input_fn, card_no=ordinal, print_fn=print_fn)
+            label = prompt_label(input_fn, print_fn=print_fn)
             recorded = "skip" if label == "done" else label
             cards.append({
                 "card_id": card_id, "label": recorded, "settled": settled, "settle_reads": reads,

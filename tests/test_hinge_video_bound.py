@@ -323,23 +323,24 @@ def test_record_burst_stamps_monotonic_times_for_every_planned_frame():
 
 @pytest.mark.parametrize("typed", ["video", "photo", "unsure", "skip", "done"])
 def test_prompt_label_accepts_each_label(typed):
-    assert bound.prompt_label(lambda _p: f"  {typed.upper()} ", card_no=1,
+    assert bound.prompt_label(lambda _p: f"  {typed.upper()} ",
                               print_fn=lambda *_a: None) == typed
 
 
 def test_prompt_label_reprompts_until_a_real_label_is_typed():
     answers = iter(["", "maybe", "vidoe", "photo"])
     lines: list[str] = []
-    assert bound.prompt_label(lambda _p: next(answers), card_no=3,
+    assert bound.prompt_label(lambda _p: next(answers),
                               print_fn=lambda text: lines.append(text)) == "photo"
-    assert sum(1 for line in lines if "not a label" in line) == 3
+    assert sum(1 for line in lines if "Invalid label" in line) == 3
+    assert not any("maybe" in line or "vidoe" in line for line in lines)
 
 
 def test_prompt_label_treats_eof_as_done():
     def _eof(_prompt):
         raise EOFError
 
-    assert bound.prompt_label(_eof, card_no=1, print_fn=lambda *_a: None) == "done"
+    assert bound.prompt_label(_eof, print_fn=lambda *_a: None) == "done"
 
 
 # =====================================================================================

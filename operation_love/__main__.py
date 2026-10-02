@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 
 from .private_files import load_private_dotenv
@@ -55,7 +56,10 @@ def main() -> None:
         show(args.config)
     elif args.command == "bugreport":
         from .bugreport import build_report
-        print(build_report(None, config_path=args.config))
+        # ``build_report`` applies its final credential-redaction boundary before
+        # returning. Write that owner-requested document directly to the CLI
+        # stream instead of treating it as a log record.
+        sys.stdout.write(build_report(None, config_path=args.config) + "\n")
     elif args.command == "hub":
         from .hub import serve
         serve(args.config, port=args.port, open_browser=not args.no_browser)

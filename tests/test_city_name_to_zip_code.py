@@ -60,3 +60,16 @@ def test_legacy_main_keeps_public_postal_codes_in_stdout_and_output_file(
 
     assert capsys.readouterr().out == "['02139']\n"
     assert (tmp_path / "zip_codes.txt").read_text() == "['02139']"
+
+
+def test_legacy_stdout_codeql_suppression_is_standalone_and_targeted():
+    source = (
+        Path(__file__).parents[1]
+        / "legacy/city_name_to_zip_code/city_name_to_zip_code.py"
+    ).read_text()
+
+    assert (
+        "    # codeql[py/clear-text-logging-sensitive-data] "
+        "-- values are validated public postal codes\n"
+        '    sys.stdout.write(f"{zip_codes}\\n")'
+    ) in source

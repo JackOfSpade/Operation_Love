@@ -90,7 +90,8 @@ def main():
     cities = parse_cities(cities_input)
     zip_codes = [get_zip_code(city, state, google_api_key) for city, state in cities]
     # Values are public, format-checked postal codes reconstructed above.
-    sys.stdout.write(f"{zip_codes}\n")  # lgtm[py/clear-text-logging-sensitive-data] -- values are validated public postal codes
+    # codeql[py/clear-text-logging-sensitive-data] -- values are validated public postal codes
+    sys.stdout.write(f"{zip_codes}\n")
 
     # Write the zip codes to a text file as a string representation of the list.
     with open('zip_codes.txt', 'w') as file:

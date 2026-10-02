@@ -55,7 +55,7 @@ dev = [
     # processes instead (see tests/conftest.py for why OpenCV is pinned to one thread per
     # worker, and [tool.pytest.ini_options] addopts for the default invocation).
     "pytest-xdist>=3.6",
-    "ruff>=0.15,<0.16",
+    "ruff>=0.15,<0.17",
 ]
 
 # Only install the library package in wheels. Setuptools keeps tests in the source

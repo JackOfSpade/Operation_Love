@@ -18,6 +18,13 @@ def _legacy_module(monkeypatch):
     return module, fake_requests
 
 
+def test_legacy_google_key_has_no_source_default(monkeypatch):
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    module, _requests = _legacy_module(monkeypatch)
+
+    assert module.google_api_key == ""
+
+
 def test_legacy_zip_output_accepts_only_public_postal_code_tokens(monkeypatch):
     module, _requests = _legacy_module(monkeypatch)
 
@@ -40,3 +47,16 @@ def test_legacy_zip_lookup_rejects_arbitrary_api_response_text(monkeypatch):
     fake_requests.get = lambda *_args, **_kwargs: Response()
 
     assert module.get_zip_code("Cambridge", "Massachusetts", "api-key") == "Not Found"
+
+
+def test_legacy_main_keeps_public_postal_codes_in_stdout_and_output_file(
+        monkeypatch, tmp_path, capsys):
+    module, _requests = _legacy_module(monkeypatch)
+    monkeypatch.setattr(module, "cities_input", ["Cambridge, Massachusetts"])
+    monkeypatch.setattr(module, "get_zip_code", lambda *_args: "02139")
+    monkeypatch.chdir(tmp_path)
+
+    module.main()
+
+    assert capsys.readouterr().out == "['02139']\n"
+    assert (tmp_path / "zip_codes.txt").read_text() == "['02139']"

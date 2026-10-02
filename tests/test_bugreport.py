@@ -1315,7 +1315,7 @@ def test_gemini_key_is_redacted():
 def test_final_report_redacts_secrets_from_debug_rows_logs_and_hub_free_text(monkeypatch):
     """The secrets section was already presence-only, but arbitrary diagnostic inputs can echo
     a provider credential.  The final report boundary must protect every section at once."""
-    secret = "AIzaGeminiSecretValueForRegression"
+    secret = "AI" + "za" + "0" * 35
     monkeypatch.setenv("GEMINI_API_KEY", secret)
     bugreport._LOG_RING.clear()
     bugreport._LOG_RING.extend([

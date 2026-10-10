@@ -39,6 +39,7 @@ read's own last frame. Two consequences for this file, both deliberate:
     comparison in the ascending half would simply never fire, which is the failure mode the two
     of them exist to prevent — so neither is tested only through the other.
 """
+
 import dataclasses
 import math
 import random
@@ -50,20 +51,27 @@ import pytest
 from PIL import Image
 
 from operation_love.drivers import (
-    frameshift, hinge, item_index, item_nav, scroll_step, scroll_top, segment)
+    frameshift,
+    hinge,
+    item_index,
+    item_nav,
+    scroll_step,
+    scroll_top,
+    segment,
+)
 
-_W, _H = 1080, 2400                        # the calibrated Pixel 7a screencap size
+_W, _H = 1080, 2400  # the calibrated Pixel 7a screencap size
 _SEED = 17
-_CONTENT_BAND = hinge.HINGE_SPEC.content_band          # (0.125, 0.875) -> rows 300..2100
-_IDENTITY_BAND = hinge.HINGE_SPEC.identity_band        # (0.10, 0.048, 0.80, 0.094)
+_CONTENT_BAND = hinge.HINGE_SPEC.content_band  # (0.125, 0.875) -> rows 300..2100
+_IDENTITY_BAND = hinge.HINGE_SPEC.identity_band  # (0.10, 0.048, 0.80, 0.094)
 _BAND0, _BAND1 = 300, 2100
-_CARD_X0 = segment._CARD_MARGIN_PX                     # 53
+_CARD_X0 = segment._CARD_MARGIN_PX  # 53
 _CARD_X1 = _W - _CARD_X0
-_GUTTER = max(segment._GUTTER_PX)          # 53, the canonical measured gutter
-_CORNER_RADIUS_PX = 22                     # doc 5.10: "~20-23px"
-_HEART_CX = 937                            # bottom-right, as test_segment.py stamps it
+_GUTTER = max(segment._GUTTER_PX)  # 53, the canonical measured gutter
+_CORNER_RADIUS_PX = 22  # doc 5.10: "~20-23px"
+_HEART_CX = 937  # bottom-right, as test_segment.py stamps it
 _HEART_ABOVE_BOTTOM = 90
-_PAGE_TOP, _PAGE_BOTTOM = 254, 243         # doc 5.10's background gradient
+_PAGE_TOP, _PAGE_BOTTOM = 254, 243  # doc 5.10's background gradient
 _WORLD_H = 6000
 
 # THE PAGE, in world rows. Four likeable cards and, between the second and third, the heartless
@@ -71,7 +79,13 @@ _WORLD_H = 6000
 # card table; every heart-to-heart pitch this produces (813, 1321, 873) clears the ~608px floor
 # below which `plan_scroll_step` refuses to enumerate at all.
 _PAGE_TOP_GAP = 400
-_LAYOUT = (("card", 900), ("card", 760), ("context", 215), ("card", 1000), ("card", 820))
+_LAYOUT = (
+    ("card", 900),
+    ("card", 760),
+    ("context", 215),
+    ("card", 1000),
+    ("card", 820),
+)
 
 
 def _layout_rows(layout=_LAYOUT, top_gap=_PAGE_TOP_GAP):
@@ -85,7 +99,9 @@ def _layout_rows(layout=_LAYOUT, top_gap=_PAGE_TOP_GAP):
 _ROWS = _layout_rows()
 _CARDS = [r for r in _ROWS if r[0] == "card"]
 _HEART_PAGE_Y = [y1 - _HEART_ABOVE_BOTTOM for _kind, _y0, y1 in _CARDS]
-assert _ROWS[-1][2] + 400 < _WORLD_H, "the world must have page background below the last card"
+assert _ROWS[-1][2] + 400 < _WORLD_H, (
+    "the world must have page background below the last card"
+)
 
 _TEMPLATE = hinge._load_template(hinge.HINGE_SPEC.templates["like"])
 assert _TEMPLATE is not None, "the shipped like glyph must load"
@@ -95,7 +111,9 @@ def _page_column(height=_WORLD_H):
     return np.linspace(_PAGE_TOP, _PAGE_BOTTOM, height).round().astype(np.uint8)
 
 
-def _build_world(*, layout=_LAYOUT, top_gap=_PAGE_TOP_GAP, hearts=True, extra_heart_on=None):
+def _build_world(
+    *, layout=_LAYOUT, top_gap=_PAGE_TOP_GAP, hearts=True, extra_heart_on=None
+):
     """The tall page. `hearts=False` paints the same cards with no like glyph on any of them —
     the synthetic form of "the glyph matcher did not find it this frame". `extra_heart_on` stamps
     a SECOND glyph on that card, which is the two-hearts-in-one-block segmentation failure."""
@@ -105,16 +123,21 @@ def _build_world(*, layout=_LAYOUT, top_gap=_PAGE_TOP_GAP, hearts=True, extra_he
     card_no = 0
     for kind, y0, y1 in _layout_rows(layout, top_gap):
         world[y0:y1, _CARD_X0:_CARD_X1] = rng.integers(
-            60, 200, size=(y1 - y0, _CARD_X1 - _CARD_X0), dtype=np.uint8)
-        for i in range(_CORNER_RADIUS_PX):             # carve the four corner arcs back to page
+            60, 200, size=(y1 - y0, _CARD_X1 - _CARD_X0), dtype=np.uint8
+        )
+        for i in range(_CORNER_RADIUS_PX):  # carve the four corner arcs back to page
             dy = _CORNER_RADIUS_PX - i
-            inset = int(math.ceil(_CORNER_RADIUS_PX
-                                  - math.sqrt(max(0.0, _CORNER_RADIUS_PX ** 2 - dy ** 2))))
+            inset = int(
+                math.ceil(
+                    _CORNER_RADIUS_PX
+                    - math.sqrt(max(0.0, _CORNER_RADIUS_PX**2 - dy**2))
+                )
+            )
             if inset <= 0:
                 continue
             for y in (y0 + i, y1 - 1 - i):
-                world[y, _CARD_X0:_CARD_X0 + inset] = col[y]
-                world[y, _CARD_X1 - inset:_CARD_X1] = col[y]
+                world[y, _CARD_X0 : _CARD_X0 + inset] = col[y]
+                world[y, _CARD_X1 - inset : _CARD_X1] = col[y]
         if kind != "card":
             continue
         card_no += 1
@@ -130,15 +153,21 @@ def _build_world(*, layout=_LAYOUT, top_gap=_PAGE_TOP_GAP, hearts=True, extra_he
             # coincidence, not a property of the code under test.
             stamps.append(y0 + 420)
         for cy in stamps:
-            world[cy - th // 2: cy - th // 2 + th,
-                  _HEART_CX - tw // 2: _HEART_CX - tw // 2 + tw] = _TEMPLATE
+            world[
+                cy - th // 2 : cy - th // 2 + th,
+                _HEART_CX - tw // 2 : _HEART_CX - tw // 2 + tw,
+            ] = _TEMPLATE
     return world
 
 
 # Static chrome outside the content band, textured but IDENTICAL on every frame — the real
 # device's status bar, floating buttons and bottom nav, none of which translate.
-_CHROME_TOP = np.random.default_rng(3).integers(0, 60, size=(_BAND0, _W), dtype=np.uint8)
-_CHROME_BOTTOM = np.random.default_rng(4).integers(0, 60, size=(_H - _BAND1, _W), dtype=np.uint8)
+_CHROME_TOP = np.random.default_rng(3).integers(
+    0, 60, size=(_BAND0, _W), dtype=np.uint8
+)
+_CHROME_BOTTOM = np.random.default_rng(4).integers(
+    0, 60, size=(_H - _BAND1, _W), dtype=np.uint8
+)
 
 
 def _identity_rect(rect=_IDENTITY_BAND):
@@ -157,8 +186,12 @@ def _chips_band(rows, cols):
     content — the constant's own comment records it as byte-identical across two different
     people, which is why one array serves every profile and why nothing about anyone is in it.
     """
-    cells = np.array(scroll_top._SCROLL_TOP_BAND_FINGERPRINT, dtype="uint8").reshape(4, 16)
-    return np.asarray(Image.fromarray(cells, mode="L").resize((cols, rows), Image.NEAREST))
+    cells = np.array(scroll_top._SCROLL_TOP_BAND_FINGERPRINT, dtype="uint8").reshape(
+        4, 16
+    )
+    return np.asarray(
+        Image.fromarray(cells, mode="L").resize((cols, rows), Image.NEAREST)
+    )
 
 
 # The sticky per-profile header that covers that strip the moment the card is scrolled at all.
@@ -182,7 +215,7 @@ _OTHER_HEADER_VALUE = 30
 # so identity is not readable there at all (item_identity's docstring). Under the rewind that was
 # a precondition a caller had to remember; here it is where the read leaves the card anyway.
 _READ_SCROLLS = tuple(280 * i for i in range(11))
-_ENTRY_SCROLL = _READ_SCROLLS[-1]                          # 2800
+_ENTRY_SCROLL = _READ_SCROLLS[-1]  # 2800
 
 _WORLDS: dict[tuple, np.ndarray] = {}
 _FRAMES: dict[tuple, bytes] = {}
@@ -195,8 +228,14 @@ def _world(**kw):
     return _WORLDS[key]
 
 
-def _frame(scroll: int, *, at_top: bool | None = None, identity_rect=_IDENTITY_BAND,
-           header: int = _HEADER_VALUE, **world_kw) -> bytes:
+def _frame(
+    scroll: int,
+    *,
+    at_top: bool | None = None,
+    identity_rect=_IDENTITY_BAND,
+    header: int = _HEADER_VALUE,
+    **world_kw,
+) -> bytes:
     """The 1080x2400 window of the world at `scroll`, as PNG.
 
     Content at world row `w` lands on frame row `w - scroll`, so `_frame(s)` then `_frame(s + d)`
@@ -209,11 +248,11 @@ def _frame(scroll: int, *, at_top: bool | None = None, identity_rect=_IDENTITY_B
     key = (scroll, top, tuple(identity_rect), header, repr(sorted(world_kw.items())))
     if key not in _FRAMES:
         world = _world(**world_kw)
-        gray = world[scroll:scroll + _H].copy()
+        gray = world[scroll : scroll + _H].copy()
         gray[:_BAND0] = _CHROME_TOP
         gray[_BAND1:] = _CHROME_BOTTOM
         r0, r1, c0, c1 = _identity_rect(identity_rect)
-        gray[r0:r1, c0:c1] = (_chips_band(r1 - r0, c1 - c0) if top else header)
+        gray[r0:r1, c0:c1] = _chips_band(r1 - r0, c1 - c0) if top else header
         ok, buf = cv2.imencode(".png", gray)
         assert ok
         _FRAMES[key] = buf.tobytes()
@@ -223,6 +262,7 @@ def _frame(scroll: int, *, at_top: bool | None = None, identity_rect=_IDENTITY_B
 # =====================================================================================
 # The fake driver: exactly the surface item_nav's docstring lists, and nothing else
 # =====================================================================================
+
 
 class RewindAttempted(AssertionError):
     """The double was asked to rewind. Bottom-up navigation must never do that again."""
@@ -252,13 +292,24 @@ class FakeDriver:
     test that accidentally tapped would fail with AttributeError rather than pass quietly.
     """
 
-    def __init__(self, *, content_band=_CONTENT_BAND, identity_band=_IDENTITY_BAND,
-                 fixed_step_px=None, hide_hearts_between=None,
-                 extra_heart_after=None, extra_heart_card=1,
-                 identity_rect=_IDENTITY_BAND, scroll_captures=8,
-                 start_scroll=_ENTRY_SCROLL, header=_HEADER_VALUE, world_kw=None,
-                 allow_entry_scroll=False, entry_scroll_unmeasurable=False,
-                 pinned_evidence=None):
+    def __init__(
+        self,
+        *,
+        content_band=_CONTENT_BAND,
+        identity_band=_IDENTITY_BAND,
+        fixed_step_px=None,
+        hide_hearts_between=None,
+        extra_heart_after=None,
+        extra_heart_card=1,
+        identity_rect=_IDENTITY_BAND,
+        scroll_captures=8,
+        start_scroll=_ENTRY_SCROLL,
+        header=_HEADER_VALUE,
+        world_kw=None,
+        allow_entry_scroll=False,
+        entry_scroll_unmeasurable=False,
+        pinned_evidence=None,
+    ):
         self.content_band = tuple(content_band)
         self.identity_band = None if identity_band is None else tuple(identity_band)
         self.scroll_captures = scroll_captures
@@ -272,12 +323,14 @@ class FakeDriver:
         self._extra_heart_card = extra_heart_card
         self._identity_rect = identity_rect
         self._header = header
-        self._world_kw = dict(world_kw or {})     # a DIFFERENT page: see `_foreign_driver`
+        self._world_kw = dict(world_kw or {})  # a DIFFERENT page: see `_foreign_driver`
         self._allow_entry_scroll = allow_entry_scroll
         self._entry_scroll_unmeasurable = entry_scroll_unmeasurable
-        self.entry_scrolls: list[tuple[float, float]] = []    # blocker 12's ONE rescue gesture,
-                                                               # kept apart from `gestures` (the
-                                                               # ascending walk's own) on purpose
+        self.entry_scrolls: list[
+            tuple[float, float]
+        ] = []  # blocker 12's ONE rescue gesture,
+        # kept apart from `gestures` (the
+        # ascending walk's own) on purpose
         self._scramble_next_capture = False
         if pinned_evidence is not None:
             # ONLY defined when a test asks for it. Every other test in this file therefore
@@ -300,7 +353,8 @@ class FakeDriver:
             # frame to force `estimate_shift` to refuse rather than guess.
             self._scramble_next_capture = False
             unrelated = np.random.default_rng(1000 + self.captures).integers(
-                0, 255, size=(_H, _W), dtype=np.uint8)
+                0, 255, size=(_H, _W), dtype=np.uint8
+            )
             ok, buf = cv2.imencode(".png", unrelated)
             assert ok
             return buf.tobytes()
@@ -308,30 +362,44 @@ class FakeDriver:
         lo_hi = self._hide_hearts_between
         if lo_hi is not None and lo_hi[0] <= self.scroll <= lo_hi[1]:
             kw["hearts"] = False
-        if self._extra_heart_after is not None and len(self.gestures) >= self._extra_heart_after:
+        if (
+            self._extra_heart_after is not None
+            and len(self.gestures) >= self._extra_heart_after
+        ):
             kw["extra_heart_on"] = self._extra_heart_card
-        return _frame(self.scroll, at_top=self.scroll == 0, identity_rect=self._identity_rect,
-                      header=self._header, **self._world_kw, **kw)
+        return _frame(
+            self.scroll,
+            at_top=self.scroll == 0,
+            identity_rect=self._identity_rect,
+            header=self._header,
+            **self._world_kw,
+            **kw,
+        )
 
     def _scroll_to_top(self, should_stop=None):
         raise RewindAttempted(
             "navigation rewound to the scroll top. Doc 5.5's bottom-up design walks UP from "
             "where the read left the card; the rewind cost ~51 gestures to arrive somewhere the "
-            "read had already been, and replaced a measured anchor with a replayed one")
+            "read had already been, and replaced a measured anchor with a replayed one"
+        )
 
     def _scroll_down_one(self, frac=None, x_frac=None):
         if not self._allow_entry_scroll or self.entry_scrolls:
             raise RewindAttempted(
                 "navigation scrolled FORWARD. Walking up is the whole design; a forward gesture "
                 "here means either the third pass came back, or blocker 12's one bounded "
-                "scroll-top entry recovery (2026-08-22) ran more than once")
+                "scroll-top entry recovery (2026-08-22) ran more than once"
+            )
         assert frac is not None and x_frac is not None
         self.entry_scrolls.append((frac, x_frac))
         if self._entry_scroll_unmeasurable:
             self._scramble_next_capture = True
             return
-        moved = (self._fixed_step_px if self._fixed_step_px is not None
-                 else scroll_step.step_px_for_frac(frac, _H))
+        moved = (
+            self._fixed_step_px
+            if self._fixed_step_px is not None
+            else scroll_step.step_px_for_frac(frac, _H)
+        )
         self.scroll = max(0, min(_WORLD_H - _H, self.scroll + moved))
 
     def _scroll_up_one(self, frac, x_frac):
@@ -341,8 +409,11 @@ class FakeDriver:
         # nowhere to put a None.
         assert frac is not None and x_frac is not None
         self.gestures.append((frac, x_frac))
-        moved = (self._fixed_step_px if self._fixed_step_px is not None
-                 else scroll_step.step_px_for_frac(frac, _H))
+        moved = (
+            self._fixed_step_px
+            if self._fixed_step_px is not None
+            else scroll_step.step_px_for_frac(frac, _H)
+        )
         self.scroll = max(0, min(_WORLD_H - _H, self.scroll - moved))
 
     def _sample_read_step(self, depth, complexity_hint):
@@ -355,8 +426,9 @@ _POLICY_FRAC = hinge.HINGE_SPEC.read_scroll_frac
 _CACHE: dict[str, object] = {}
 
 
-def _reference_index(*, identity_band=_IDENTITY_BAND, identity_rect=_IDENTITY_BAND,
-                     header=_HEADER_VALUE):
+def _reference_index(
+    *, identity_band=_IDENTITY_BAND, identity_rect=_IDENTITY_BAND, header=_HEADER_VALUE
+):
     """The index a real enumeration pass would have produced for this world: a clean read from
     the top past the last card, at a cadence the closed loop would itself have planned.
 
@@ -367,10 +439,16 @@ def _reference_index(*, identity_band=_IDENTITY_BAND, identity_rect=_IDENTITY_BA
     if key not in _CACHE:
         assert _READ_SCROLLS[-1] + _H <= _WORLD_H
         _CACHE[key] = item_index.build_item_index(
-            [_frame(s, identity_rect=identity_rect, header=header) for s in _READ_SCROLLS],
-            content_band=_CONTENT_BAND, like_template=_TEMPLATE,
-            like_threshold=hinge._LIKE_MATCH_THRESHOLD, at_scroll_top=True,
-            identity_band=identity_band)
+            [
+                _frame(s, identity_rect=identity_rect, header=header)
+                for s in _READ_SCROLLS
+            ],
+            content_band=_CONTENT_BAND,
+            like_template=_TEMPLATE,
+            like_threshold=hinge._LIKE_MATCH_THRESHOLD,
+            at_scroll_top=True,
+            identity_band=identity_band,
+        )
     return _CACHE[key]
 
 
@@ -392,20 +470,29 @@ def _deterministic_draws():
 
 def _navigate(driver, model_index, index=None, reference=None, **kw):
     return item_nav.navigate_to_item(
-        driver, index or _reference_index(), model_index,
+        driver,
+        index or _reference_index(),
+        model_index,
         entry_reference=_entry_reference() if reference is None else reference,
-        identity_match_max_dist=kw.pop("identity_match_max_dist", 2.0), **kw)
+        identity_match_max_dist=kw.pop("identity_match_max_dist", 2.0),
+        **kw,
+    )
 
 
 def test_navigation_requires_an_explicit_identity_calibration_bound():
     """This leaf returns a heart a caller can tap, so it must not retain a permissive default."""
     with pytest.raises(TypeError, match="identity_match_max_dist"):
         item_nav.navigate_to_item(
-            FakeDriver(), _reference_index(), 1, entry_reference=_entry_reference())
+            FakeDriver(), _reference_index(), 1, entry_reference=_entry_reference()
+        )
 
 
-@pytest.mark.parametrize("bound", [math.nan, math.inf, -math.inf, True, 0, -1, 2.565, 3.0])
-def test_invalid_identity_calibration_refuses_before_the_first_screencap_or_gesture(bound):
+@pytest.mark.parametrize(
+    "bound", [math.nan, math.inf, -math.inf, True, 0, -1, 2.565, 3.0]
+)
+def test_invalid_identity_calibration_refuses_before_the_first_screencap_or_gesture(
+    bound,
+):
     driver = FakeDriver()
     with pytest.raises(item_nav.ItemNavigationError) as exc:
         _navigate(driver, 1, identity_match_max_dist=bound)
@@ -417,6 +504,7 @@ def test_invalid_identity_calibration_refuses_before_the_first_screencap_or_gest
 # The world is what the test says it is
 # =====================================================================================
 
+
 def test_the_reference_index_is_the_page_that_was_painted():
     """Not an assertion about item_nav — a guard on the fixture. Everything below reads its
     ground truth off these numbers, so if the world stops matching the layout table the failures
@@ -426,8 +514,12 @@ def test_the_reference_index_is_the_page_that_was_painted():
     assert index.usable, index.failures
     assert index.at_scroll_top and index.reached_end
     assert [b.kind for b in index.blocks] == [
-        item_index.ITEM_SELECTABLE, item_index.ITEM_SELECTABLE, item_index.ITEM_CONTEXT,
-        item_index.ITEM_SELECTABLE, item_index.ITEM_SELECTABLE]
+        item_index.ITEM_SELECTABLE,
+        item_index.ITEM_SELECTABLE,
+        item_index.ITEM_CONTEXT,
+        item_index.ITEM_SELECTABLE,
+        item_index.ITEM_SELECTABLE,
+    ]
     assert index.translation == (1, 2, 3, 4)
     assert [item_nav.index_hearts(index)[k][1] for k in (1, 2, 3, 4)] == _HEART_PAGE_Y
 
@@ -446,6 +538,7 @@ def test_the_scroll_top_frames_confirm_and_the_scrolled_ones_refute():
 # THE HEADLINE: every item, landed on exactly
 # =====================================================================================
 
+
 def test_every_item_is_navigated_to_and_lands_on_its_own_heart():
     """Doc 5.5 end to end, bottom-up. For each of the profile's four items in turn: enter where
     the read left the card, walk UP counting hearts in reverse, and land with that item's heart
@@ -462,7 +555,7 @@ def test_every_item_is_navigated_to_and_lands_on_its_own_heart():
         target = _navigate(driver, model_index)
 
         assert target.model_index == model_index
-        assert target.heart_ordinal == model_index          # this page's translation is 1:1
+        assert target.heart_ordinal == model_index  # this page's translation is 1:1
         assert target.point[1] + target.page_offset == _HEART_PAGE_Y[model_index - 1]
         assert target.point[0] == hearts[model_index][0]
         assert target.agreement_px == 0
@@ -516,8 +609,13 @@ def test_the_returned_point_really_is_a_like_glyph_in_the_returned_frame():
     matcher over the landing frame, with no help from the index, and the point must be one of the
     hearts it finds."""
     target = _navigate(FakeDriver(), 3)
-    found = hinge._match_glyph(target.frame, _TEMPLATE, side="right",
-                               threshold=hinge._LIKE_MATCH_THRESHOLD, y_band=_CONTENT_BAND)
+    found = hinge._match_glyph(
+        target.frame,
+        _TEMPLATE,
+        side="right",
+        threshold=hinge._LIKE_MATCH_THRESHOLD,
+        y_band=_CONTENT_BAND,
+    )
 
     assert target.point in found
 
@@ -531,12 +629,12 @@ def test_navigation_never_taps_and_leaves_the_phone_where_it_landed():
     target = _navigate(driver, 2)
 
     assert not hasattr(driver, "_tap")
-    assert driver.scroll == target.page_offset            # still exactly where it landed
+    assert driver.scroll == target.page_offset  # still exactly where it landed
     assert driver._screencap() == target.frame
     # One capture per frame, and the ENTRY frame is both the identity gate's and the anchor's, so
     # there is no separate gate capture to pay for — that is one fewer ADB round-trip than the
     # rewind spent, before counting the swipes it does not make.
-    assert driver.captures == len(target.steps) + 2       # +1 entry, +1 the re-read above
+    assert driver.captures == len(target.steps) + 2  # +1 entry, +1 the re-read above
 
 
 def test_every_gesture_goes_through_the_humanized_path_with_the_planned_distance():
@@ -554,9 +652,9 @@ def test_every_gesture_goes_through_the_humanized_path_with_the_planned_distance
     assert driver.gestures and len(driver.gestures) == len(target.steps)
     for (frac, x_frac), step in zip(driver.gestures, target.steps, strict=True):
         assert (frac, x_frac) == (step.frac, step.x_frac)
-        assert frac != _POLICY_FRAC                       # the policy's frac was DISCARDED
+        assert frac != _POLICY_FRAC  # the policy's frac was DISCARDED
         assert hinge._READ_SCROLL_FRAC_MIN <= frac <= hinge._READ_SCROLL_FRAC_MAX
-        assert x_frac == 0.5                              # ...while its LANE was kept
+        assert x_frac == 0.5  # ...while its LANE was kept
         assert step.ratio is None or step.ratio <= 0.36
 
 
@@ -577,7 +675,9 @@ def test_a_navigation_that_rewinds_fails_loudly_rather_than_working_expensively(
     assert _navigate(FakeDriver(), 1).heart_ordinal == 1
 
 
-def test_the_crosscheck_bound_sums_this_pass_and_the_indexs_own_extent_slack(monkeypatch):
+def test_the_crosscheck_bound_sums_this_pass_and_the_indexs_own_extent_slack(
+    monkeypatch,
+):
     """`_CROSSCHECK_TOLERANCE_PX` is the SUM of two chains' slack, and only one chain is ours.
 
     The other belongs to the index in hand. `item_index`'s frame-omission recovery deliberately
@@ -600,10 +700,12 @@ def test_the_crosscheck_bound_sums_this_pass_and_the_indexs_own_extent_slack(mon
 
     seen.clear()
     recovered = dataclasses.replace(
-        _reference_index(), extent_tolerance_px=item_index._RECOVERY_EXTENT_TOLERANCE_PX)
+        _reference_index(), extent_tolerance_px=item_index._RECOVERY_EXTENT_TOLERANCE_PX
+    )
     assert _navigate(FakeDriver(), 1, index=recovered).heart_ordinal == 1
     assert seen and set(seen) == {
-        item_index._RECOVERY_EXTENT_TOLERANCE_PX + item_index._EXTENT_TOLERANCE_PX}
+        item_index._RECOVERY_EXTENT_TOLERANCE_PX + item_index._EXTENT_TOLERANCE_PX
+    }
 
     # An explicit argument still wins, for a calibration pass varying one bound at a time.
     seen.clear()
@@ -632,21 +734,24 @@ def test_the_gate_reads_the_drivers_band_and_not_the_specs():
     while the paint is elsewhere, and the identity gate refuses — a rect that never shows the
     chips row yields no fingerprint at all, which is `capture_profile_identity`'s deliberate
     refusal to trust a rect that might be pointing at static chrome."""
-    moved = (0.10, 0.020, 0.80, 0.066)                    # same size, 67px further UP
-    assert moved != _IDENTITY_BAND                        # ...and still clear of content_band
+    moved = (0.10, 0.020, 0.80, 0.066)  # same size, 67px further UP
+    assert moved != _IDENTITY_BAND  # ...and still clear of content_band
 
     honoured = FakeDriver(identity_band=moved, identity_rect=moved)
     index = _reference_index(identity_band=moved, identity_rect=moved)
     assert index.identity.known and index.identity.band == moved
-    target = _navigate(honoured, 1, index=index,
-                       reference=_entry_reference(identity_rect=moved))
+    target = _navigate(
+        honoured, 1, index=index, reference=_entry_reference(identity_rect=moved)
+    )
     assert target.identity.matched
 
     ignored = FakeDriver(identity_band=_IDENTITY_BAND, identity_rect=moved)
     blind = _reference_index(identity_band=_IDENTITY_BAND, identity_rect=moved)
-    assert not blind.identity.known                       # nothing ever showed the chips row
+    assert not blind.identity.known  # nothing ever showed the chips row
     with pytest.raises(item_nav.ItemNavigationError) as exc:
-        _navigate(ignored, 1, index=blind, reference=_entry_reference(identity_rect=moved))
+        _navigate(
+            ignored, 1, index=blind, reference=_entry_reference(identity_rect=moved)
+        )
     assert exc.value.code == item_nav.NAV_IDENTITY_UNCONFIRMED
     assert ignored.gestures == []
 
@@ -655,13 +760,18 @@ def test_the_gate_reads_the_drivers_band_and_not_the_specs():
 # Refusal: the index, before a finger moves
 # =====================================================================================
 
+
 def test_an_unusable_index_is_refused_before_the_phone_is_touched():
     """Doc 5.3: "treat a missing table as a hard stop, never as a reason to fall back to a fixed
     coordinate". The control is that NOTHING happened — no swipe, no capture, no gesture."""
     broken = item_index.build_item_index(
-        [_frame(0), _frame(280), _frame(280 + 1400)], content_band=_CONTENT_BAND,
-        like_template=_TEMPLATE, like_threshold=hinge._LIKE_MATCH_THRESHOLD, at_scroll_top=True,
-        identity_band=_IDENTITY_BAND)
+        [_frame(0), _frame(280), _frame(280 + 1400)],
+        content_band=_CONTENT_BAND,
+        like_template=_TEMPLATE,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD,
+        at_scroll_top=True,
+        identity_band=_IDENTITY_BAND,
+    )
     assert not broken.usable
 
     driver = FakeDriver()
@@ -678,9 +788,13 @@ def test_a_relative_index_is_refused_before_the_phone_is_touched():
     the item that was chosen. The index is otherwise perfectly usable, which is the whole
     danger — nothing else on it says the numbering is not the profile's own."""
     relative = item_index.build_item_index(
-        [_frame(280 * i) for i in range(2, 10)], content_band=_CONTENT_BAND,
-        like_template=_TEMPLATE, like_threshold=hinge._LIKE_MATCH_THRESHOLD, at_scroll_top=False,
-        identity_band=_IDENTITY_BAND)
+        [_frame(280 * i) for i in range(2, 10)],
+        content_band=_CONTENT_BAND,
+        like_template=_TEMPLATE,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD,
+        at_scroll_top=False,
+        identity_band=_IDENTITY_BAND,
+    )
     assert relative.usable and relative.selectable and not relative.at_scroll_top
 
     driver = FakeDriver()
@@ -711,6 +825,7 @@ def test_an_item_the_model_was_never_offered_is_refused_and_never_substituted():
 # Refusal: the entry anchor (what replaced the top gate)
 # =====================================================================================
 
+
 def test_the_entry_anchor_is_measured_against_the_reads_own_last_frame_and_is_zero():
     """Bottom-up's zero point. `hinge._capture_current` leaves the screen showing its own last
     KEPT frame in both of its terminating paths, so the shift between the reference and the entry
@@ -738,7 +853,9 @@ def test_a_screen_that_cannot_be_joined_to_the_index_is_a_hard_stop():
     This is also the shape a foreign profile takes on REAL frames, which the synthetic
     cross-profile fixtures below cannot reproduce: two different people's cards do not correlate,
     so a stale payload fails here as well as at the identity gate."""
-    unrelated = np.random.default_rng(11).integers(0, 255, size=(_H, _W), dtype=np.uint8)
+    unrelated = np.random.default_rng(11).integers(
+        0, 255, size=(_H, _W), dtype=np.uint8
+    )
     ok, buf = cv2.imencode(".png", unrelated)
     assert ok
 
@@ -748,7 +865,7 @@ def test_a_screen_that_cannot_be_joined_to_the_index_is_a_hard_stop():
 
     assert exc.value.code == item_nav.NAV_ANCHOR_UNMEASURED
     assert exc.value.anchor is not None and exc.value.anchor.delta_px is None
-    assert driver.gestures == []                  # refused before it moved the phone
+    assert driver.gestures == []  # refused before it moved the phone
 
 
 def test_a_card_that_moved_between_the_read_and_the_like_is_a_hard_stop():
@@ -782,8 +899,10 @@ def test_a_card_that_moved_between_the_read_and_the_like_is_a_hard_stop():
 # Refusal: the scroll
 # =====================================================================================
 
+
 def test_a_capture_transport_failure_after_a_gesture_propagates_without_replaying_navigation(
-        monkeypatch):
+    monkeypatch,
+):
     """A capture retry belongs below navigation, never around its whole walk.
 
     Once an upward gesture returns, the card may already have moved.  Retrying the complete
@@ -820,8 +939,8 @@ def test_a_scroll_that_moves_nothing_is_a_stalled_loop_and_stops():
         _navigate(driver, 1)
 
     assert exc.value.code == item_nav.NAV_SCROLL_STALLED
-    assert len(driver.gestures) == 1              # stopped at the first one, not after a sweep
-    assert exc.value.frame is not None            # ...and kept the frame for the operator
+    assert len(driver.gestures) == 1  # stopped at the first one, not after a sweep
+    assert exc.value.frame is not None  # ...and kept the frame for the operator
     recovery = exc.value.recovery
     assert recovery is not None
     assert recovery.achieved_step_px == 0
@@ -841,7 +960,7 @@ def test_a_gesture_that_goes_the_WRONG_WAY_is_the_same_stall_and_not_progress():
 
     assert exc.value.code == item_nav.NAV_SCROLL_STALLED
     assert "did not move" in str(exc.value)
-    assert "+260px" in str(exc.value)             # the measured delta, sign and all
+    assert "+260px" in str(exc.value)  # the measured delta, sign and all
     assert len(driver.gestures) == 1
 
 
@@ -916,7 +1035,8 @@ def test_a_chain_refusal_records_the_forward_strip_bank_and_not_only_its_aggrega
 
 
 def test_navigation_step_uses_reverse_quorum_when_forward_animation_bank_refuses(
-        monkeypatch):
+    monkeypatch,
+):
     """Regression for the reported still-photo dwell walk's ``chain_broken``.
 
     Source strips from the pre-scroll frame can split over autoplay while source strips from the
@@ -925,14 +1045,31 @@ def test_navigation_step_uses_reverse_quorum_when_forward_animation_bank_refuses
     never replaced by the requested gesture distance.
     """
     forward = item_nav.ShiftEstimate(
-        delta_px=None, confidence=0.5, status=frameshift.SHIFT_NO_CONSENSUS,
-        saturated=False, consensus_px=None, reason="forward video strips split",
-        strips=(), frame_size=(1080, 2400), band=(_BAND0, _BAND1),
-        trust_window_px=900, agreeing=2, dissenting=2, eligible=4)
+        delta_px=None,
+        confidence=0.5,
+        status=frameshift.SHIFT_NO_CONSENSUS,
+        saturated=False,
+        consensus_px=None,
+        reason="forward video strips split",
+        strips=(),
+        frame_size=(1080, 2400),
+        band=(_BAND0, _BAND1),
+        trust_window_px=900,
+        agreeing=2,
+        dissenting=2,
+        eligible=4,
+    )
     reverse = dataclasses.replace(
-        forward, delta_px=563, confidence=1.0, status=frameshift.SHIFT_MEASURED,
-        consensus_px=563, reason="reverse strips reached quorum",
-        agreeing=8, dissenting=0, eligible=8)
+        forward,
+        delta_px=563,
+        confidence=1.0,
+        status=frameshift.SHIFT_MEASURED,
+        consensus_px=563,
+        reason="reverse strips reached quorum",
+        agreeing=8,
+        dissenting=0,
+        eligible=8,
+    )
     calls = []
 
     def measured(first, second, **kwargs):
@@ -942,16 +1079,21 @@ def test_navigation_step_uses_reverse_quorum_when_forward_animation_bank_refuses
     monkeypatch.setattr(item_nav, "estimate_shift", measured)
 
     result, trace = item_nav._navigation_step_shift(
-        b"before", b"after", content_band=_CONTENT_BAND, trust_window_px=900)
+        b"before", b"after", content_band=_CONTENT_BAND, trust_window_px=900
+    )
 
     assert result.delta_px == -563
     assert result.consensus_px == -563
     assert result.status == frameshift.SHIFT_MEASURED
     assert "reverse source strips measured" in result.reason
     assert [(first, second) for first, second, _kwargs in calls] == [
-        (b"before", b"after"), (b"after", b"before")]
-    assert all(kwargs == {"content_band": _CONTENT_BAND, "trust_window_px": 900}
-               for _first, _second, kwargs in calls)
+        (b"before", b"after"),
+        (b"after", b"before"),
+    ]
+    assert all(
+        kwargs == {"content_band": _CONTENT_BAND, "trust_window_px": 900}
+        for _first, _second, kwargs in calls
+    )
     assert trace["forward"]["status"] == frameshift.SHIFT_NO_CONSENSUS
     assert trace["reverse"]["delta_px"] == 563
 
@@ -959,10 +1101,20 @@ def test_navigation_step_uses_reverse_quorum_when_forward_animation_bank_refuses
 def test_navigation_step_does_not_reverse_a_beyond_window_refusal(monkeypatch):
     """Saturation is evidence that the requested step left the trusted correspondence window."""
     saturated = item_nav.ShiftEstimate(
-        delta_px=None, confidence=1.0, status="beyond_window", saturated=True,
-        consensus_px=-1400, reason="measured beyond trusted window", strips=(),
-        frame_size=(1080, 2400), band=(_BAND0, _BAND1), trust_window_px=900,
-        agreeing=8, dissenting=0, eligible=8)
+        delta_px=None,
+        confidence=1.0,
+        status="beyond_window",
+        saturated=True,
+        consensus_px=-1400,
+        reason="measured beyond trusted window",
+        strips=(),
+        frame_size=(1080, 2400),
+        band=(_BAND0, _BAND1),
+        trust_window_px=900,
+        agreeing=8,
+        dissenting=0,
+        eligible=8,
+    )
     calls = []
 
     def measured(first, second, **_kwargs):
@@ -972,14 +1124,17 @@ def test_navigation_step_does_not_reverse_a_beyond_window_refusal(monkeypatch):
     monkeypatch.setattr(item_nav, "estimate_shift", measured)
 
     result, trace = item_nav._navigation_step_shift(
-        b"before", b"after", content_band=_CONTENT_BAND, trust_window_px=900)
+        b"before", b"after", content_band=_CONTENT_BAND, trust_window_px=900
+    )
 
     assert result is saturated
     assert calls == [(b"before", b"after")]
     assert trace["reverse"] is None
 
 
-def test_navigate_to_item_threads_a_reverse_recovered_step_into_the_landing(monkeypatch):
+def test_navigate_to_item_threads_a_reverse_recovered_step_into_the_landing(
+    monkeypatch,
+):
     """The reverse-quorum recovery, driven end to end through the real counting loop.
 
     The two tests above prove the recovery only in isolation, calling `_navigation_step_shift`
@@ -1007,11 +1162,16 @@ def test_navigate_to_item_threads_a_reverse_recovered_step_into_the_landing(monk
             # the recovery at all -- it would just be the ordinary, unrecoverable refusal.
             assert result.status == frameshift.SHIFT_MEASURED, (
                 "the fixture's own first ascending gesture did not correlate cleanly, so this "
-                "test would not be exercising the reverse recovery")
+                "test would not be exercising the reverse recovery"
+            )
             forced_forward_delta.append(result.delta_px)
             return dataclasses.replace(
-                result, status=frameshift.SHIFT_NO_CONSENSUS, delta_px=None, consensus_px=None,
-                reason="forced: simulating an autoplay-directional forward refusal")
+                result,
+                status=frameshift.SHIFT_NO_CONSENSUS,
+                delta_px=None,
+                consensus_px=None,
+                reason="forced: simulating an autoplay-directional forward refusal",
+            )
         return result
 
     monkeypatch.setattr(item_nav, "estimate_shift", flaky)
@@ -1052,6 +1212,7 @@ def test_navigate_to_item_threads_a_reverse_recovered_step_into_the_landing(monk
 # Refusal: the count
 # =====================================================================================
 
+
 def test_a_heart_that_was_on_screen_and_not_counted_stops_the_run():
     """The count's silent failure mode, made loud, in the ascending direction. An UPWARD scroll
     admits new content at the band's TOP edge, so a heart first seen in frame i must have been
@@ -1060,7 +1221,7 @@ def test_a_heart_that_was_on_screen_and_not_counted_stops_the_run():
     already covered it — and the run stops instead of shifting every ordinal counted past it.
 
     The control is that the identical driver WITHOUT the blanking navigates to the same item."""
-    entered_at = _HEART_PAGE_Y[1] - _BAND0                 # the scroll at which heart 2 enters
+    entered_at = _HEART_PAGE_Y[1] - _BAND0  # the scroll at which heart 2 enters
     blinded = FakeDriver(hide_hearts_between=(entered_at - 700, entered_at))
     with pytest.raises(item_nav.ItemNavigationError) as exc:
         _navigate(blinded, 1)
@@ -1071,6 +1232,47 @@ def test_a_heart_that_was_on_screen_and_not_counted_stops_the_run():
     assert _navigate(FakeDriver(), 1).heart_ordinal == 1
 
 
+def test_heart_missed_refusal_carries_measured_recovery():
+    """A post-gesture missed-heart refusal keeps an exact cleanup path, not a tap target."""
+    entered_at = _HEART_PAGE_Y[1] - _BAND0
+    driver = FakeDriver(hide_hearts_between=(entered_at - 700, entered_at))
+
+    with pytest.raises(item_nav.ItemNavigationError) as exc:
+        _navigate(driver, 1)
+
+    assert exc.value.code == item_nav.NAV_HEART_MISSED
+    recovery = exc.value.recovery
+    assert recovery is not None
+    assert recovery.frame is exc.value.frame
+    assert recovery.frame_index == len(driver.gestures)
+    assert recovery.step_index == len(driver.gestures) - 1
+    # The fake phone's physical position is the independent observation of the page-space
+    # offset produced by the accepted navigation steps.  The recovery must name that exact
+    # terminal displacement, not a guessed cleanup distance.
+    assert recovery.page_shift_px == driver.scroll - _ENTRY_SCROLL
+    assert recovery.measurement_delta_px == -recovery.achieved_step_px
+    assert recovery.planned_step_px == scroll_step.step_px_for_frac(recovery.frac, _H)
+    assert recovery.measurement_status == frameshift.SHIFT_MEASURED
+    assert "heart_missed" in recovery.violation
+
+
+def test_zero_gesture_heart_missed_refusal_has_no_recovery(monkeypatch):
+    """A count fault on the entry frame has no measured terminal step to clean up from."""
+    monkeypatch.setattr(
+        item_nav,
+        "_no_heart_was_missed",
+        lambda *_args, **_kwargs: "forced entry-frame miss",
+    )
+    driver = FakeDriver()
+
+    with pytest.raises(item_nav.ItemNavigationError) as exc:
+        _navigate(driver, 1)
+
+    assert exc.value.code == item_nav.NAV_HEART_MISSED
+    assert exc.value.recovery is None
+    assert driver.gestures == []
+
+
 def test_the_missed_heart_rule_directly_in_BOTH_directions():
     """The same rule as arithmetic, with no dependence on what a correlation does, and BOTH sign
     conventions side by side — which is the point, because an inverted comparison in either half
@@ -1079,50 +1281,92 @@ def test_the_missed_heart_rule_directly_in_BOTH_directions():
     Descending, new content arrives at the band's BOTTOM: a heart first seen in frame i must have
     been BELOW frame i-1's band. Ascending, it arrives at the TOP: it must have been ABOVE it.
     Frame 0 is exempt in both, because it has no predecessor."""
+
     def obs(frame_index, page_y0, page_y1, hearts):
         return item_index.BlockObservation(
-            frame_index=frame_index, page_y0=page_y0, page_y1=page_y1, frame_y0=page_y0,
-            frame_y1=page_y1, kind=segment.BLOCK_SELECTABLE, complete=True,
-            top_observed=True, bottom_observed=True,
-            hearts=tuple((_HEART_CX, y) for y in hearts))
+            frame_index=frame_index,
+            page_y0=page_y0,
+            page_y1=page_y1,
+            frame_y0=page_y0,
+            frame_y1=page_y1,
+            kind=segment.BLOCK_SELECTABLE,
+            complete=True,
+            top_observed=True,
+            bottom_observed=True,
+            hearts=tuple((_HEART_CX, y) for y in hearts),
+        )
 
     band, tol = (_BAND0, _BAND1), item_index._EXTENT_TOLERANCE_PX
 
     # DESCENDING. Frame 1's window is 300px FURTHER DOWN the page.
     down = [0, 300]
     clean = [obs(0, 900, 1900, [1810]), obs(1, 2200, 3000, [2910])]
-    assert item_nav._no_heart_was_missed(
-        [(_HEART_CX, 1810), (_HEART_CX, 2910)], clean, down, band, tol,
-        ascending=False) is None
+    assert (
+        item_nav._no_heart_was_missed(
+            [(_HEART_CX, 1810), (_HEART_CX, 2910)],
+            clean,
+            down,
+            band,
+            tol,
+            ascending=False,
+        )
+        is None
+    )
     missed = [obs(0, 900, 1900, [1810]), obs(1, 1000, 2000, [1950])]
     reason = item_nav._no_heart_was_missed(
-        [(_HEART_CX, 1810), (_HEART_CX, 1950)], missed, down, band, tol, ascending=False)
+        [(_HEART_CX, 1810), (_HEART_CX, 1950)], missed, down, band, tol, ascending=False
+    )
     assert reason is not None and "not counted" in reason
 
     # ASCENDING. Frame 1's window is 300px FURTHER UP, so `offsets` decreases and the legitimate
     # new heart is the one ABOVE frame 0's band top (page row 0 + 300).
     up = [1000, 700]
     clean_up = [obs(0, 1400, 2400, [2310]), obs(1, 950, 1300, [1210])]
-    assert item_nav._no_heart_was_missed(
-        [(_HEART_CX, 1210), (_HEART_CX, 2310)], clean_up, up, band, tol,
-        ascending=True) is None
+    assert (
+        item_nav._no_heart_was_missed(
+            [(_HEART_CX, 1210), (_HEART_CX, 2310)],
+            clean_up,
+            up,
+            band,
+            tol,
+            ascending=True,
+        )
+        is None
+    )
     # The failure: a heart first seen in frame 1 at a row frame 0's band already covered
     # (page row 1500, which is inside frame 0's 1300..3100 window).
     missed_up = [obs(0, 1400, 2400, [2310]), obs(1, 1400, 1600, [1500])]
     reason_up = item_nav._no_heart_was_missed(
-        [(_HEART_CX, 1500), (_HEART_CX, 2310)], missed_up, up, band, tol, ascending=True)
+        [(_HEART_CX, 1500), (_HEART_CX, 2310)], missed_up, up, band, tol, ascending=True
+    )
     assert reason_up is not None and "not counted" in reason_up
 
     # AND THE CROSS-CHECK THAT CATCHES AN INVERTED COMPARISON: each direction's LEGITIMATE
     # arrival is the other direction's failure, because a heart that arrived from below cannot
     # also have arrived from above. A branch that read the wrong edge would therefore turn one of
     # these two silent, which no end-to-end test could show.
-    assert item_nav._no_heart_was_missed(
-        [(_HEART_CX, 1810), (_HEART_CX, 2910)], clean, down, band, tol,
-        ascending=True) is not None
-    assert item_nav._no_heart_was_missed(
-        [(_HEART_CX, 1210), (_HEART_CX, 2310)], clean_up, up, band, tol,
-        ascending=False) is not None
+    assert (
+        item_nav._no_heart_was_missed(
+            [(_HEART_CX, 1810), (_HEART_CX, 2910)],
+            clean,
+            down,
+            band,
+            tol,
+            ascending=True,
+        )
+        is not None
+    )
+    assert (
+        item_nav._no_heart_was_missed(
+            [(_HEART_CX, 1210), (_HEART_CX, 2310)],
+            clean_up,
+            up,
+            band,
+            tol,
+            ascending=False,
+        )
+        is not None
+    )
 
 
 def test_a_count_that_disagrees_with_the_index_stops_rather_than_choosing():
@@ -1132,7 +1376,13 @@ def test_a_count_that_disagrees_with_the_index_stops_rather_than_choosing():
     perfect. Everything above it is 130px out, which is what the RELATIVE half of the cross-check
     is for. Neither measurement can be preferred, so the run stops rather than tapping "the
     nearest heart"."""
-    skewed = (("card", 900), ("card", 630), ("context", 215), ("card", 1000), ("card", 950))
+    skewed = (
+        ("card", 900),
+        ("card", 630),
+        ("context", 215),
+        ("card", 1000),
+        ("card", 950),
+    )
     driver = FakeDriver(world_kw={"layout": skewed})
 
     with pytest.raises(item_nav.ItemNavigationError) as exc:
@@ -1140,7 +1390,7 @@ def test_a_count_that_disagrees_with_the_index_stops_rather_than_choosing():
 
     assert exc.value.code == item_nav.NAV_COUNT_DISAGREES
     assert "from the anchor heart 4" in str(exc.value)
-    assert driver.gestures == []                  # caught on the very first frame
+    assert driver.gestures == []  # caught on the very first frame
 
 
 def test_the_landing_card_itself_must_be_the_card_the_index_recorded():
@@ -1159,13 +1409,18 @@ def test_the_landing_card_itself_must_be_the_card_the_index_recorded():
     class Fake:
         def __init__(self, y0, y1, hx, hy):
             self.y0, self.y1, self.hx, self.hy = y0, y1, hx, hy
+
         height = property(lambda self: self.y1 - self.y0)
 
     def check(y0, y1, hx, hy):
         return item_nav._confirm_landing(
-            heart=(hx, hy), block=Fake(y0, y1, hx, hy), index_block=block, index_heart=heart,
+            heart=(hx, hy),
+            block=Fake(y0, y1, hx, hy),
+            index_block=block,
+            index_heart=heart,
             extent_tolerance_px=item_index._EXTENT_TOLERANCE_PX,
-            crosscheck_tolerance_px=item_nav._CROSSCHECK_TOLERANCE_PX)
+            crosscheck_tolerance_px=item_nav._CROSSCHECK_TOLERANCE_PX,
+        )
 
     # The same card, seen at a different page origin: 900 rows further down, identical geometry.
     inset = heart[1] - block.page_y0
@@ -1173,8 +1428,12 @@ def test_the_landing_card_itself_must_be_the_card_the_index_recorded():
 
     tall, moved = 900 + block.height + 20, 900 + inset + 20
     assert "px tall in this frame" in check(900, tall, heart[0], 900 + inset)
-    assert "below its card's top edge" in check(900, 900 + block.height, heart[0], moved)
-    assert "no horizontal component" in check(900, 900 + block.height, heart[0] + 40, 900 + inset)
+    assert "below its card's top edge" in check(
+        900, 900 + block.height, heart[0], moved
+    )
+    assert "no horizontal component" in check(
+        900, 900 + block.height, heart[0] + 40, 900 + inset
+    )
 
 
 _HEARTS = {1: (_HEART_CX, 1000), 2: (_HEART_CX, 1900), 3: (_HEART_CX, 3000)}
@@ -1182,9 +1441,12 @@ _HEARTS = {1: (_HEART_CX, 1000), 2: (_HEART_CX, 1900), 3: (_HEART_CX, 3000)}
 
 def _disagrees(clusters, *, ascending, hearts=None, heart_count=3, tolerance=None):
     return item_nav._count_disagrees(
-        clusters, _HEARTS if hearts is None else hearts, heart_count=heart_count,
+        clusters,
+        _HEARTS if hearts is None else hearts,
+        heart_count=heart_count,
         tolerance=item_nav._CROSSCHECK_TOLERANCE_PX if tolerance is None else tolerance,
-        ascending=ascending)
+        ascending=ascending,
+    )
 
 
 def test_the_crosscheck_compares_distances_and_not_page_rows_in_BOTH_directions():
@@ -1200,9 +1462,15 @@ def test_the_crosscheck_compares_distances_and_not_page_rows_in_BOTH_directions(
     tol = item_nav._CROSSCHECK_TOLERANCE_PX
     for ascending, offset in ((False, 201), (True, tol)):
         shifted = [(_HEART_CX, y + offset) for y in (1000, 1900, 3000)]
-        assert _disagrees(shifted, ascending=ascending) == (None, 0, {
-            1: (_HEART_CX, 1000 + offset), 2: (_HEART_CX, 1900 + offset),
-            3: (_HEART_CX, 3000 + offset)})
+        assert _disagrees(shifted, ascending=ascending) == (
+            None,
+            0,
+            {
+                1: (_HEART_CX, 1000 + offset),
+                2: (_HEART_CX, 1900 + offset),
+                3: (_HEART_CX, 3000 + offset),
+            },
+        )
 
         displaced = [(_HEART_CX, y) for y in (1000, 1900 + tol + 1, 3000)]
         reason, worst, counted = _disagrees(displaced, ascending=ascending)
@@ -1223,16 +1491,20 @@ def test_every_ordinal_counted_is_checked_and_not_only_those_at_the_target():
 
     # DESCENDING: heart 1 is the anchor, so only heart 2 can contradict anything.
     reason, worst, _ = _disagrees(
-        [(_HEART_CX, 1000), (_HEART_CX, 1900 + tol + 1)], ascending=False)
+        [(_HEART_CX, 1000), (_HEART_CX, 1900 + tol + 1)], ascending=False
+    )
     assert reason is not None and "heart 2 sits" in reason and worst == tol + 1
 
     # ASCENDING: heart 3 is the anchor (bottom-most), so heart 2 is where a displacement shows.
     reason, worst, _ = _disagrees(
-        [(_HEART_CX, 1900 + tol + 1), (_HEART_CX, 3000)], ascending=True)
+        [(_HEART_CX, 1900 + tol + 1), (_HEART_CX, 3000)], ascending=True
+    )
     assert reason is not None and "heart 2 sits" in reason and worst == tol + 1
 
     # The controls: the same pairs where the index says they are, which must stay silent.
-    assert _disagrees([(_HEART_CX, 1000), (_HEART_CX, 1900)], ascending=False)[0] is None
+    assert (
+        _disagrees([(_HEART_CX, 1000), (_HEART_CX, 1900)], ascending=False)[0] is None
+    )
     assert _disagrees([(_HEART_CX, 1900), (_HEART_CX, 3000)], ascending=True)[0] is None
 
 
@@ -1247,14 +1519,16 @@ def test_the_ascending_anchor_is_the_bottom_most_heart_and_its_ordinal_is_measur
     different ordinals and therefore a different verdict."""
     # Two hearts that are really ordinals 2 and 3: ascending gets that right by measurement.
     reason, worst, counted = _disagrees(
-        [(_HEART_CX, 1900), (_HEART_CX, 3000)], ascending=True)
+        [(_HEART_CX, 1900), (_HEART_CX, 3000)], ascending=True
+    )
     assert (reason, worst) == (None, 0)
     assert counted == {2: (_HEART_CX, 1900), 3: (_HEART_CX, 3000)}
 
     # ...where the DESCENDING branch would call the same pair ordinals 1 and 2 and refuse, since
     # its anchor claim is "the first heart I saw is heart 1".
     reason, _worst, _counted = _disagrees(
-        [(_HEART_CX, 1900), (_HEART_CX, 3000)], ascending=False)
+        [(_HEART_CX, 1900), (_HEART_CX, 3000)], ascending=False
+    )
     assert reason is not None and "not the first heart of the profile" in reason
 
     # A bottom-most heart that matches NO index heart within the entry anchor's residual is a
@@ -1268,7 +1542,9 @@ def test_the_ascending_anchor_is_the_bottom_most_heart_and_its_ordinal_is_measur
     # which is the ascending form of "the index holds no heart with ordinal k".
     reason, _worst, _counted = _disagrees(
         [(_HEART_CX, -1000), (_HEART_CX, 1000), (_HEART_CX, 1900), (_HEART_CX, 3000)],
-        ascending=True, heart_count=4)
+        ascending=True,
+        heart_count=4,
+    )
     assert reason is not None and "no ordinal 0 for" in reason
 
 
@@ -1292,7 +1568,10 @@ def test_the_entry_anchor_residual_cannot_reach_a_neighbouring_heart(monkeypatch
     # The same claim for the widest residual the module can produce at runtime, in the shape the
     # module's import-time invariant states it — on the residual itself, before the crosscheck
     # tolerance is added, because the cap IS the largest residual that invariant admits.
-    assert item_nav._MAX_ENTRY_ANCHOR_RESIDUAL_PX * 2 < scroll_step._FALLBACK_SPACING_PX // 2
+    assert (
+        item_nav._MAX_ENTRY_ANCHOR_RESIDUAL_PX * 2
+        < scroll_step._FALLBACK_SPACING_PX // 2
+    )
 
     # What the cap buys, said as the thing that would have to go wrong: even at the widest bound
     # the anchor cannot prefer a NEIGHBOUR until the true origin error passes `pitch - bound`,
@@ -1345,12 +1624,17 @@ def test_the_descending_anchor_is_still_checked_against_the_top_gates_residual()
     # hypothetical: the only real cross-profile pair in the calibration corpus sits exactly 218px
     # apart against exactly this 218px bound.
     assert bound == 218
-    for clusters in ([(_HEART_CX, 1000 + bound)],
-                     [(_HEART_CX, 1000 + bound + 1)],
-                     [(_HEART_CX, 1900), (_HEART_CX, 3000)]):
+    for clusters in (
+        [(_HEART_CX, 1000 + bound)],
+        [(_HEART_CX, 1000 + bound + 1)],
+        [(_HEART_CX, 1900), (_HEART_CX, 3000)],
+    ):
         reason, _worst, _counted = _disagrees(clusters, ascending=False)
         assert reason is not None
-        assert "not the first heart of the profile" in reason or "different profile" in reason
+        assert (
+            "not the first heart of the profile" in reason
+            or "different profile" in reason
+        )
 
 
 # =====================================================================================
@@ -1365,6 +1649,7 @@ def test_the_descending_anchor_is_still_checked_against_the_top_gates_residual()
 # profile and 410..479 on the other) — and, separately, the thing that actually differs between
 # two people: the sticky header itself.
 # =====================================================================================
+
 
 def _foreign_driver(shift, *, header=_OTHER_HEADER_VALUE):
     """A driver serving a DIFFERENT profile: the same card layout, its first card `shift` px
@@ -1389,13 +1674,21 @@ def test_the_landing_check_cannot_tell_a_foreign_profiles_card_from_this_ones():
     class Fake:
         def __init__(self, y0, y1):
             self.y0, self.y1 = y0, y1
+
         height = property(lambda self: self.y1 - self.y0)
 
     foreign = Fake(block.page_y0 + shift, block.page_y1 + shift)
-    assert item_nav._confirm_landing(
-        heart=(heart[0], heart[1] + shift), block=foreign, index_block=block, index_heart=heart,
-        extent_tolerance_px=item_index._EXTENT_TOLERANCE_PX,
-        crosscheck_tolerance_px=item_nav._CROSSCHECK_TOLERANCE_PX) is None
+    assert (
+        item_nav._confirm_landing(
+            heart=(heart[0], heart[1] + shift),
+            block=foreign,
+            index_block=block,
+            index_heart=heart,
+            extent_tolerance_px=item_index._EXTENT_TOLERANCE_PX,
+            crosscheck_tolerance_px=item_nav._CROSSCHECK_TOLERANCE_PX,
+        )
+        is None
+    )
 
 
 def test_a_uniformly_translated_foreign_page_is_caught_by_the_entry_drift_and_not_by_geometry():
@@ -1431,7 +1724,7 @@ def test_a_uniformly_translated_foreign_page_is_caught_by_the_entry_drift_and_no
         _navigate(caught, 1)
     assert exc.value.code == item_nav.NAV_ANCHOR_UNMEASURED
     assert exc.value.anchor.delta_px == -floor_px
-    assert caught.gestures == []                  # refused before it moved the phone
+    assert caught.gestures == []  # refused before it moved the phone
 
     # AND THE RESIDUAL, stated rather than left implicit: one pixel under that, geometry has
     # nothing to say. The rewind's anchor DID catch this case (218px against its own 218px
@@ -1460,7 +1753,7 @@ def test_a_nearer_foreign_profile_is_caught_by_the_identity_gate_before_any_gest
 
     assert exc.value.code == item_nav.NAV_IDENTITY_MISMATCH
     assert (driver.captures, driver.gestures) == (1, [])
-    assert exc.value.frame is not None             # the screen is kept for the operator
+    assert exc.value.frame is not None  # the screen is kept for the operator
 
     # The control, and the reason the gate had to exist: with identity held constant — which two
     # real people cannot do — the very same frames navigate to a confident tap target for the
@@ -1533,13 +1826,14 @@ def test_entering_at_a_scroll_top_recovers_with_one_bounded_scroll_and_reaches_t
     displacement into the entry offset, and only then resumes the ordinary ascending count."""
     index = _short_profile_index()
     driver = FakeDriver(start_scroll=0, allow_entry_scroll=True)
-    assert scroll_top.confirm_scroll_top(driver._screencap(),
-                                         identity_band=_IDENTITY_BAND).confirmed
+    assert scroll_top.confirm_scroll_top(
+        driver._screencap(), identity_band=_IDENTITY_BAND
+    ).confirmed
 
     target = _navigate(driver, 1, index=index, reference=_frame(0))
 
     floor_px = scroll_step.step_px_for_frac(hinge._READ_SCROLL_FRAC_MIN, _H)
-    assert len(driver.entry_scrolls) == 1              # exactly one rescue gesture, never a retry
+    assert len(driver.entry_scrolls) == 1  # exactly one rescue gesture, never a retry
     # The SMALLEST legal read-scroll, on the ascending walk's own precedent of discarding the
     # policy's frac and keeping only its LANE — the policy's frac here is production's read
     # cadence, which is far too large a single jump to stay inside the trust window above.
@@ -1565,18 +1859,21 @@ def test_entering_at_a_scroll_top_still_refuses_a_different_profile_after_the_st
     refusal carries the ORIGINAL "cannot tell, at scroll top" wording (never rewritten into a
     fresh "mismatch" diagnosis) plus a note that the step was already tried."""
     index = _short_profile_index()
-    driver = FakeDriver(start_scroll=0, allow_entry_scroll=True, header=_OTHER_HEADER_VALUE)
-    assert scroll_top.confirm_scroll_top(driver._screencap(),
-                                         identity_band=_IDENTITY_BAND).confirmed
+    driver = FakeDriver(
+        start_scroll=0, allow_entry_scroll=True, header=_OTHER_HEADER_VALUE
+    )
+    assert scroll_top.confirm_scroll_top(
+        driver._screencap(), identity_band=_IDENTITY_BAND
+    ).confirmed
 
     with pytest.raises(item_nav.ItemNavigationError) as exc:
         _navigate(driver, 1, index=index, reference=_frame(0))
 
     assert exc.value.code == item_nav.NAV_IDENTITY_UNCONFIRMED
     assert "scroll top" in str(exc.value) and "cannot tell" in str(exc.value)
-    assert "already" in str(exc.value)                 # the appended recovery note
-    assert len(driver.entry_scrolls) == 1               # exactly one attempt, never a second
-    assert driver.gestures == []                        # the ascending walk was never entered
+    assert "already" in str(exc.value)  # the appended recovery note
+    assert len(driver.entry_scrolls) == 1  # exactly one attempt, never a second
+    assert driver.gestures == []  # the ascending walk was never entered
 
 
 def _pinned_evidence(offsets=(0, 900)):
@@ -1591,8 +1888,10 @@ def _pinned_evidence(offsets=(0, 900)):
     """
     evidence = scroll_top.band_pinned_evidence(
         [_frame(s, at_top=True) for s in offsets],
-        identity_band=_IDENTITY_BAND, page_offsets=offsets)
-    assert evidence.pinned, evidence.reason        # the fixture must really be a pinned build
+        identity_band=_IDENTITY_BAND,
+        page_offsets=offsets,
+    )
+    assert evidence.pinned, evidence.reason  # the fixture must really be a pinned build
     return evidence
 
 
@@ -1612,20 +1911,25 @@ def test_the_scroll_top_entry_recovery_declines_to_fire_on_a_build_that_pins_the
     identity here is the same `_OTHER_HEADER_VALUE` mismatch the test above uses, so the two
     differ in exactly one thing -- whether the build was proven to pin the row."""
     index = _short_profile_index()
-    driver = FakeDriver(start_scroll=0, allow_entry_scroll=True, header=_OTHER_HEADER_VALUE,
-                        pinned_evidence=_pinned_evidence())
+    driver = FakeDriver(
+        start_scroll=0,
+        allow_entry_scroll=True,
+        header=_OTHER_HEADER_VALUE,
+        pinned_evidence=_pinned_evidence(),
+    )
     # The RAW gate still confirms this very frame: the downgrade is the evidence's doing, not a
     # different frame's. Without that control the test could pass for the wrong reason.
-    assert scroll_top.confirm_scroll_top(driver._screencap(),
-                                         identity_band=_IDENTITY_BAND).confirmed
+    assert scroll_top.confirm_scroll_top(
+        driver._screencap(), identity_band=_IDENTITY_BAND
+    ).confirmed
 
     with pytest.raises(item_nav.ItemNavigationError) as exc:
         _navigate(driver, 1, index=index, reference=_frame(0))
 
     assert exc.value.code == item_nav.NAV_IDENTITY_UNCONFIRMED
-    assert driver.entry_scrolls == []                   # the rescue gesture was never spent
-    assert driver.gestures == []                        # nor was the ascending walk entered
-    assert "already" not in str(exc.value)              # no recovery note: none was attempted
+    assert driver.entry_scrolls == []  # the rescue gesture was never spent
+    assert driver.gestures == []  # nor was the ascending walk entered
+    assert "already" not in str(exc.value)  # no recovery note: none was attempted
 
 
 def test_an_unproven_pinning_leaves_the_entry_recovery_exactly_as_it_was():
@@ -1638,11 +1942,14 @@ def test_an_unproven_pinning_leaves_the_entry_recovery_exactly_as_it_was():
     declined because a `pinned_evidence` argument was present at all", which is the mistake that
     would silently disable blocker 12 on every build."""
     unproven = scroll_top.band_pinned_evidence(
-        [_frame(0, at_top=True)], identity_band=_IDENTITY_BAND, page_offsets=(0,))
+        [_frame(0, at_top=True)], identity_band=_IDENTITY_BAND, page_offsets=(0,)
+    )
     assert unproven.pinned is False
 
     index = _short_profile_index()
-    driver = FakeDriver(start_scroll=0, allow_entry_scroll=True, pinned_evidence=unproven)
+    driver = FakeDriver(
+        start_scroll=0, allow_entry_scroll=True, pinned_evidence=unproven
+    )
 
     target = _navigate(driver, 1, index=index, reference=_frame(0))
 
@@ -1658,7 +1965,9 @@ def test_a_scroll_top_entry_step_that_cannot_be_measured_is_a_named_refusal():
     fabricated in the first place, so this names the failure rather than assuming the scroll
     landed where it was aimed."""
     index = _short_profile_index()
-    driver = FakeDriver(start_scroll=0, allow_entry_scroll=True, entry_scroll_unmeasurable=True)
+    driver = FakeDriver(
+        start_scroll=0, allow_entry_scroll=True, entry_scroll_unmeasurable=True
+    )
 
     with pytest.raises(item_nav.ItemNavigationError) as exc:
         _navigate(driver, 1, index=index, reference=_frame(0))
@@ -1679,7 +1988,7 @@ def test_entering_already_scrolled_takes_no_extra_entry_step():
     target = _navigate(driver, 4)
 
     assert driver.entry_scrolls == []
-    assert driver.captures == 1                        # the entry capture alone, no rescue one
+    assert driver.captures == 1  # the entry capture alone, no rescue one
     assert target.heart_ordinal == 4
 
 
@@ -1732,12 +2041,13 @@ def test_a_frame_whose_segmentation_contradicts_itself_stops_the_count():
         _navigate(driver, 1)
 
     assert exc.value.code == item_nav.NAV_FRAME_CONTRADICTS
-    assert exc.value.frame_index == 1             # the frame after the first gesture
+    assert exc.value.frame_index == 1  # the frame after the first gesture
 
 
 # =====================================================================================
 # Refusal: never reaching the item
 # =====================================================================================
+
 
 def test_an_item_that_never_becomes_fully_visible_is_refused():
     """A tap needs the card bounded end to end — the extent is what the post-tap check compares
@@ -1747,7 +2057,7 @@ def test_an_item_that_never_becomes_fully_visible_is_refused():
     than tapping a heart whose card it never saw whole.
 
     The control is the same navigation with the shipped band, which lands."""
-    narrow = FakeDriver(content_band=(0.30, 0.70))         # 960 rows, against a 1000px card
+    narrow = FakeDriver(content_band=(0.30, 0.70))  # 960 rows, against a 1000px card
     with pytest.raises(item_nav.ItemNavigationError) as exc:
         _navigate(narrow, 3)
 
@@ -1785,15 +2095,23 @@ def test_a_lower_edge_background_run_is_seated_before_the_ascending_count(monkey
             return seg
         blocks = []
         for block in seg.blocks:
-            if not any(abs(heart[1] - (target_block.heart[1] - entry_scroll))
-                       <= item_index._EXTENT_TOLERANCE_PX for heart in block.hearts):
+            if not any(
+                abs(heart[1] - (target_block.heart[1] - entry_scroll))
+                <= item_index._EXTENT_TOLERANCE_PX
+                for heart in block.hearts
+            ):
                 blocks.append(block)
                 continue
-            bottom = dataclasses.replace(block.bottom, observed=False, kind="background_run",
-                                         run_px=90)
-            blocks.append(dataclasses.replace(
-                block, bottom=bottom,
-                reason="top edge observed; 90px lower background run is not a trusted card end"))
+            bottom = dataclasses.replace(
+                block.bottom, observed=False, kind="background_run", run_px=90
+            )
+            blocks.append(
+                dataclasses.replace(
+                    block,
+                    bottom=bottom,
+                    reason="top edge observed; 90px lower background run is not a trusted card end",
+                )
+            )
         return dataclasses.replace(seg, blocks=tuple(blocks))
 
     monkeypatch.setattr(item_nav, "segment_frame", unresolved_lower_edge)
@@ -1801,14 +2119,18 @@ def test_a_lower_edge_background_run_is_seated_before_the_ascending_count(monkey
     target = _navigate(driver, 3, index=positioned, reference=_frame(entry_scroll))
 
     assert len(driver.entry_scrolls) == 1
-    assert driver.entry_scrolls[0][0] != _POLICY_FRAC  # the closed loop, not policy, sized it
-    assert driver.gestures == []                       # no reverse count was spent before seating
+    assert (
+        driver.entry_scrolls[0][0] != _POLICY_FRAC
+    )  # the closed loop, not policy, sized it
+    assert driver.gestures == []  # no reverse count was spent before seating
     assert target.steps == ()
     assert target.heart_ordinal == 3
     assert target.block_frame_rows[0] >= _BAND0
     assert target.block_frame_rows[1] <= _BAND1
-    assert target.entry_offset > entry_scroll          # the positioning displacement was measured
-    assert calls >= 2                                  # the fresh frame supplied the trusted edge
+    assert (
+        target.entry_offset > entry_scroll
+    )  # the positioning displacement was measured
+    assert calls >= 2  # the fresh frame supplied the trusted edge
 
 
 def test_an_unmeasurable_lower_edge_positioning_step_is_a_named_hard_stop():
@@ -1816,8 +2138,11 @@ def test_an_unmeasurable_lower_edge_positioning_step_is_a_named_hard_stop():
     target_block = index.block_for(3)
     entry_scroll = target_block.page_y1 - (_BAND1 + 50)
     positioned = dataclasses.replace(index, offsets=(entry_scroll,))
-    driver = FakeDriver(start_scroll=entry_scroll, allow_entry_scroll=True,
-                        entry_scroll_unmeasurable=True)
+    driver = FakeDriver(
+        start_scroll=entry_scroll,
+        allow_entry_scroll=True,
+        entry_scroll_unmeasurable=True,
+    )
 
     with pytest.raises(item_nav.ItemNavigationError) as exc:
         _navigate(driver, 3, index=positioned, reference=_frame(entry_scroll))
@@ -1828,7 +2153,9 @@ def test_an_unmeasurable_lower_edge_positioning_step_is_a_named_hard_stop():
     assert driver.gestures == []
 
 
-def test_scroll_top_identity_recovery_never_spends_a_second_forward_positioning_step(monkeypatch):
+def test_scroll_top_identity_recovery_never_spends_a_second_forward_positioning_step(
+    monkeypatch,
+):
     """The two entry recoveries share one forward-gesture budget. A short-profile scroll-top
     recovery has already spent it before the post-scroll frame can reveal a lower-edge uncertainty;
     that uncertainty must stop rather than turn into an unbounded two-step forward walk."""
@@ -1848,16 +2175,21 @@ def test_scroll_top_identity_recovery_never_spends_a_second_forward_positioning_
         target_y = target_block.heart[1] - floor_px
         blocks = []
         for block in seg.blocks:
-            if not any(abs(heart[1] - target_y) <= item_index._EXTENT_TOLERANCE_PX
-                       for heart in block.hearts):
+            if not any(
+                abs(heart[1] - target_y) <= item_index._EXTENT_TOLERANCE_PX
+                for heart in block.hearts
+            ):
                 blocks.append(block)
                 continue
-            bottom = dataclasses.replace(block.bottom, observed=False, kind="background_run",
-                                         run_px=90)
+            bottom = dataclasses.replace(
+                block.bottom, observed=False, kind="background_run", run_px=90
+            )
             blocks.append(dataclasses.replace(block, bottom=bottom))
         return dataclasses.replace(seg, blocks=tuple(blocks))
 
-    monkeypatch.setattr(item_nav, "segment_frame", unresolved_lower_edge_after_identity_recovery)
+    monkeypatch.setattr(
+        item_nav, "segment_frame", unresolved_lower_edge_after_identity_recovery
+    )
 
     with pytest.raises(item_nav.ItemNavigationError) as exc:
         _navigate(driver, 2, index=index, reference=_frame(0))
@@ -1891,18 +2223,22 @@ def test_a_top_edge_partial_never_uses_lower_edge_forward_positioning():
 def test_a_lower_edge_clipped_card_taller_than_the_band_never_gets_a_forward_recovery():
     index = _reference_index()
     target_block = index.block_for(3)
-    narrow_band = (0.20, 0.60)  # 960px, deliberately shorter than target card 3's 1000px extent
+    narrow_band = (
+        0.20,
+        0.60,
+    )  # 960px, deliberately shorter than target card 3's 1000px extent
     narrow_y1 = round(narrow_band[1] * _H)
     entry_scroll = target_block.page_y1 - (narrow_y1 + 50)
     positioned = dataclasses.replace(index, offsets=(entry_scroll,))
-    driver = FakeDriver(content_band=narrow_band, start_scroll=entry_scroll,
-                        allow_entry_scroll=True)
+    driver = FakeDriver(
+        content_band=narrow_band, start_scroll=entry_scroll, allow_entry_scroll=True
+    )
 
     with pytest.raises(item_nav.ItemNavigationError) as exc:
         _navigate(driver, 3, index=positioned, reference=_frame(entry_scroll))
 
     assert exc.value.code == item_nav.NAV_ITEM_NOT_FULLY_VISIBLE
-    assert driver.entry_scrolls == []                  # never forward-scroll a card that cannot fit
+    assert driver.entry_scrolls == []  # never forward-scroll a card that cannot fit
 
 
 def test_an_item_below_where_the_read_ended_is_refused_and_named_as_such():
@@ -1927,7 +2263,7 @@ def test_an_item_below_where_the_read_ended_is_refused_and_named_as_such():
     assert exc.value.code == item_nav.NAV_ITEM_BELOW_ENTRY
     assert "BELOW the analysed band" in str(exc.value)
     assert "full-index selectable item 4, selected by model item 3" in str(exc.value)
-    assert narrow.gestures == []                  # named on the entry frame, before any gesture
+    assert narrow.gestures == []  # named on the entry frame, before any gesture
 
     # The control: the shipped band, same index, same driver position — item 4 is on screen and
     # complete already, so the same navigation returns with no gestures at all.
@@ -1948,24 +2284,32 @@ def test_the_frame_budget_bounds_the_loop_and_is_derived_from_the_ascent():
         _navigate(driver, 1, max_frames=2)
 
     assert exc.value.code == item_nav.NAV_BUDGET_EXHAUSTED
-    assert len(driver.gestures) == 1              # two FRAMES is one gesture
+    assert len(driver.gestures) == 1  # two FRAMES is one gesture
 
     index = _reference_index()
     floor_px = scroll_step.step_px_for_frac(hinge._READ_SCROLL_FRAC_MIN, _H)
-    derived = item_nav._frame_budget(_ENTRY_SCROLL, index.block_for(1).page_y0, _BAND0, _H)
-    assert derived == math.ceil(
-        (_ENTRY_SCROLL + _BAND0 - index.block_for(1).page_y0) / floor_px) + 4
+    derived = item_nav._frame_budget(
+        _ENTRY_SCROLL, index.block_for(1).page_y0, _BAND0, _H
+    )
+    assert (
+        derived
+        == math.ceil((_ENTRY_SCROLL + _BAND0 - index.block_for(1).page_y0) / floor_px)
+        + 4
+    )
     assert derived > driver.scroll_captures
     assert len(_navigate(FakeDriver(), 1).steps) + 1 < derived
 
     # The last item is already on screen: nothing to climb, so nothing but the slack.
-    assert item_nav._frame_budget(
-        _ENTRY_SCROLL, index.block_for(4).page_y0, _BAND0, _H) == item_nav._FRAME_BUDGET_SLACK
+    assert (
+        item_nav._frame_budget(_ENTRY_SCROLL, index.block_for(4).page_y0, _BAND0, _H)
+        == item_nav._FRAME_BUDGET_SLACK
+    )
 
 
 # =====================================================================================
 # The evidence the contract promises
 # =====================================================================================
+
 
 def test_the_target_carries_the_case_for_itself():
     """Doc 5.5's contract ends at "here is where item N's heart is, and here is why I believe
@@ -1990,8 +2334,9 @@ def test_the_target_carries_the_case_for_itself():
     # picture of the card it is about to open, and a second screencap is a different frame.
     y0, y1 = target.block_frame_rows
     decoded = cv2.imdecode(np.frombuffer(target.frame, np.uint8), cv2.IMREAD_GRAYSCALE)
-    painted = _world()[target.block_page_rows[0]:target.block_page_rows[1],
-                       _CARD_X0:_CARD_X1]
+    painted = _world()[
+        target.block_page_rows[0] : target.block_page_rows[1], _CARD_X0:_CARD_X1
+    ]
     assert np.array_equal(decoded[y0:y1, _CARD_X0:_CARD_X1], painted)
 
 
@@ -1999,8 +2344,10 @@ def test_target_reason_distinguishes_model_payload_item_from_full_index_position
     """Payload exclusions can make the model's item number differ from the navigation index."""
     target = _navigate(FakeDriver(), 4, selected_model_item_index=3)
 
-    assert ("page heart 4 is full-index selectable item 4, selected by model item 3"
-            in target.reason)
+    assert (
+        "page heart 4 is full-index selectable item 4, selected by model item 3"
+        in target.reason
+    )
     assert "heart 4 is model item 4" not in target.reason
 
 
@@ -2008,6 +2355,7 @@ def test_stop_cancels_before_the_entry_capture_or_any_gesture():
     """Cancellation is a normal action stop and must not even take the first screencap."""
     driver = FakeDriver()
     from operation_love.drivers.base import ActionCancelled
+
     with pytest.raises(ActionCancelled):
         _navigate(driver, 1, should_stop=lambda: True)
     assert driver.captures == 0
@@ -2019,6 +2367,7 @@ def test_stop_cancels_before_the_next_navigation_gesture():
     driver = FakeDriver()
     polls = iter((False, True))
     from operation_love.drivers.base import ActionCancelled
+
     with pytest.raises(ActionCancelled):
         _navigate(driver, 1, should_stop=lambda: next(polls))
     assert driver.captures == 1

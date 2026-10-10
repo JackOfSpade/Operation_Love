@@ -18,6 +18,7 @@ Everything here is site-agnostic:
 No CSS selector, site URL, or capture logic lives here. Those belong to a concrete
 subclass via the `selectors` dict and the overridable hooks.
 """
+
 from __future__ import annotations
 
 import random
@@ -33,7 +34,7 @@ from ...human import human_delay
 # Anti-phantom-swipe re-check knobs (see _verify_swipe_landed): a like/pass click's
 # effect can lag a beat behind an SPA re-render, so a couple of quick re-checks ride
 # that out before concluding the click was a no-op.
-_SWIPE_VERIFY_TRIES = 2       # re-checks before concluding a like/pass never landed
+_SWIPE_VERIFY_TRIES = 2  # re-checks before concluding a like/pass never landed
 _SWIPE_VERIFY_SETTLE_S = 0.5  # gap between re-checks (SPA re-render lag)
 
 
@@ -229,7 +230,7 @@ class PlaywrightDriver(DatingAppDriver):
         default_debug_dir: str,
     ) -> None:
         app_cfg = (getattr(cfg, "apps", {}) or {}).get(config_key, {})
-        self.app_cfg = app_cfg          # subclass reads its own extra keys from this
+        self.app_cfg = app_cfg  # subclass reads its own extra keys from this
         self.url = app_cfg.get("url", default_url)
         self.headless = bool(app_cfg.get("headless", False))
         self.user_data_dir = Path(app_cfg.get("user_data_dir", default_user_data_dir))
@@ -251,12 +252,12 @@ class PlaywrightDriver(DatingAppDriver):
         # (the browser is watchable, so per-action shots aren't worth the overhead).
         self.debug_log = bool(app_cfg.get("debug_log", False))
         self.debug_dir = app_cfg.get("debug_dir", default_debug_dir)
-        self._dbg = None             # DebugLog (set in open_session when debug_log is on)
+        self._dbg = None  # DebugLog (set in open_session when debug_log is on)
         self._pw = None
         self._ctx = None
         self.page = None
         self._active_channel = None
-        self._mouse_xy = None        # last known cursor position (for human-like moves)
+        self._mouse_xy = None  # last known cursor position (for human-like moves)
         # Subclass fills this in (its own DEFAULT_SELECTORS merged with config
         # overrides) before any selector-driven method is called.
         self.selectors: dict = {}
@@ -309,7 +310,9 @@ class PlaywrightDriver(DatingAppDriver):
             # Prefer the real Google Chrome binary over bundled Chromium for
             # authentic WebGL/plugins/window.chrome; fall back if Chrome's absent.
             self._ctx = self._launch_context(launch_kwargs)
-            print(f"{self.hud_label} browser engine={engine}, channel={self._active_channel}")
+            print(
+                f"{self.hud_label} browser engine={engine}, channel={self._active_channel}"
+            )
             self.page = self._ctx.pages[0] if self._ctx.pages else self._ctx.new_page()
             self.page.set_default_timeout(self.nav_timeout_ms)
             self.page.goto(self.url, wait_until="domcontentloaded")
@@ -338,22 +341,31 @@ class PlaywrightDriver(DatingAppDriver):
         silent, untested fallback tier.)"""
         try:
             from patchright.sync_api import sync_playwright
+
             return sync_playwright, "patchright"
         except Exception:  # noqa: BLE001
             pass
         from playwright.sync_api import sync_playwright  # type: ignore  # lazy: [web] extra
-        return sync_playwright, "playwright (unpatched — pip install patchright for stealth)"
+
+        return (
+            sync_playwright,
+            "playwright (unpatched — pip install patchright for stealth)",
+        )
 
     def _launch_context(self, launch_kwargs: dict):
         channel = (self.browser_channel or "").strip()
         if channel:
             try:
-                ctx = self._pw.chromium.launch_persistent_context(channel=channel, **launch_kwargs)
+                ctx = self._pw.chromium.launch_persistent_context(
+                    channel=channel, **launch_kwargs
+                )
                 self._active_channel = channel
                 return ctx
             except Exception as exc:  # noqa: BLE001
-                print(f"{self.hud_label} channel='{channel}' unavailable ({type(exc).__name__}); "
-                      f"falling back to bundled Chromium.")
+                print(
+                    f"{self.hud_label} channel='{channel}' unavailable ({type(exc).__name__}); "
+                    f"falling back to bundled Chromium."
+                )
         ctx = self._pw.chromium.launch_persistent_context(**launch_kwargs)
         self._active_channel = "chromium (bundled)"
         return ctx
@@ -410,8 +422,10 @@ class PlaywrightDriver(DatingAppDriver):
         the exact middle every time."""
         x, y = float(box.get("x") or 0), float(box.get("y") or 0)
         w, h = float(box.get("width") or 0), float(box.get("height") or 0)
-        return (x + w * (0.5 + random.uniform(-0.22, 0.22)),
-                y + h * (0.5 + random.uniform(-0.22, 0.22)))
+        return (
+            x + w * (0.5 + random.uniform(-0.22, 0.22)),
+            y + h * (0.5 + random.uniform(-0.22, 0.22)),
+        )
 
     def _human_move(self, x: float, y: float) -> None:
         """Move the cursor to (x, y) along a curved (quadratic-Bezier) path with a
@@ -422,11 +436,16 @@ class PlaywrightDriver(DatingAppDriver):
         if not callable(move):
             return
         vp = getattr(self.page, "viewport_size", None) or {"width": 1280, "height": 900}
-        sx, sy = self._mouse_xy or (float(vp.get("width", 1280)) * 0.5,
-                                    float(vp.get("height", 900)) * 0.85)
-        cx = (sx + x) / 2 + random.uniform(-60, 60)     # random control point...
+        sx, sy = self._mouse_xy or (
+            float(vp.get("width", 1280)) * 0.5,
+            float(vp.get("height", 900)) * 0.85,
+        )
+        cx = (sx + x) / 2 + random.uniform(-60, 60)  # random control point...
         cy = (sy + y) / 2 + random.uniform(-60, 60)
-        ox, oy = x + random.uniform(-4, 4), y + random.uniform(-4, 4)   # ...and overshoot
+        ox, oy = (
+            x + random.uniform(-4, 4),
+            y + random.uniform(-4, 4),
+        )  # ...and overshoot
         steps = random.randint(14, 26)
         with _browser_guard():
             for i in range(1, steps + 1):
@@ -436,7 +455,7 @@ class PlaywrightDriver(DatingAppDriver):
                 py = mt * mt * sy + 2 * mt * t * cy + t * t * oy
                 move(px, py)
                 time.sleep(human_delay(0.012))
-            move(x, y)                                  # settle on the (jittered) target
+            move(x, y)  # settle on the (jittered) target
         self._mouse_xy = (x, y)
 
     def _human_mouse_click(self, x: float, y: float) -> None:
@@ -450,10 +469,12 @@ class PlaywrightDriver(DatingAppDriver):
     def _box_center_in_viewport(self, box: dict) -> bool:
         vp = getattr(self.page, "viewport_size", None)
         if not vp:
-            return True                          # unknown viewport -> don't block the human path
+            return True  # unknown viewport -> don't block the human path
         cx = float(box.get("x") or 0) + float(box.get("width") or 0) / 2
         cy = float(box.get("y") or 0) + float(box.get("height") or 0) / 2
-        return 0 <= cx <= float(vp.get("width", 0)) and 0 <= cy <= float(vp.get("height", 0))
+        return 0 <= cx <= float(vp.get("width", 0)) and 0 <= cy <= float(
+            vp.get("height", 0)
+        )
 
     def _human_click(self, selector: str, *, timeout_ms: float | None = None) -> None:
         """Click an element by moving a real cursor to it along a human path.
@@ -489,17 +510,22 @@ class PlaywrightDriver(DatingAppDriver):
                     scroll(timeout=timeout_ms) if timeout_ms is not None else scroll()
                 box = el.bounding_box()
         mouse = getattr(self.page, "mouse", None)
-        if (box and self._box_center_in_viewport(box)
-                and callable(getattr(mouse, "move", None))
-                and callable(getattr(mouse, "click", None))):
+        if (
+            box
+            and self._box_center_in_viewport(box)
+            and callable(getattr(mouse, "move", None))
+            and callable(getattr(mouse, "click", None))
+        ):
             x, y = self._human_target(box)
             self._human_mouse_click(x, y)
             return
         if not box:
             why = "the element has no bounding box (not rendered, or detached)"
         elif not self._box_center_in_viewport(box):
-            why = (f"the element's centre is outside the viewport even after "
-                   f"scroll-into-view (box={box})")
+            why = (
+                f"the element's centre is outside the viewport even after "
+                f"scroll-into-view (box={box})"
+            )
         else:
             why = "the page exposes no usable mouse API"
         raise HumanInputUnavailable(
@@ -608,4 +634,6 @@ class PlaywrightDriver(DatingAppDriver):
                 return
             if attempt < _SWIPE_VERIFY_TRIES - 1:
                 time.sleep(_SWIPE_VERIFY_SETTLE_S)
-        raise ActionNotLandedError(f"{action} did not land — the on-screen profile did not change")
+        raise ActionNotLandedError(
+            f"{action} did not land — the on-screen profile did not change"
+        )

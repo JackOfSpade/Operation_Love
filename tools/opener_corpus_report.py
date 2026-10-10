@@ -195,6 +195,7 @@ that comment-reference the addendum that set them, so the numbers can never quie
 the pre-registered record. Both sections are carried through --json under the `replay_corpus`
 and `pre_registered_check` top-level keys.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -218,11 +219,13 @@ from typing import Any, Iterable, Sequence
 # does not touch the lexicon-isolation rule in this module's docstring above, which is about the
 # GRADE lexicon specifically, not about reusing an existing tokenizer.
 from operation_love.opener.opener import _leading_ngram
+
 # `OPENER_OUTCOME_MATCH`/`OPENER_OUTCOME_REPLY`: the two outcome kinds this tool's OUTCOMES axis
 # (see build_outcome_metrics() below) counts as "a response" -- reused from the store's own
 # documented vocabulary (ranker/__init__.py's KNOWN_OPENER_OUTCOMES) rather than re-spelling the
 # literal strings "match"/"reply" here, so the two can never quietly drift apart.
 from operation_love.ranker import OPENER_OUTCOME_MATCH, OPENER_OUTCOME_REPLY
+
 # `DECISION_SEND_UNVERIFIED`: OpenerService's own marker ("send_unverified") for a draft whose
 # Send Like tap was ISSUED and whose outcome could not then be verified -- a driver.like() that
 # raised from its POST-send verification. Imported from the installed package, not re-spelled,
@@ -232,6 +235,7 @@ from operation_love.ranker import OPENER_OUTCOME_MATCH, OPENER_OUTCOME_REPLY
 # of letting it sit next to a "dislike" as though the model's words had stayed on this side of
 # the wire.
 from operation_love.opener.service import DECISION_SEND_UNVERIFIED
+
 # `DECISION_REPLAY`: the exact decision-column marker tools/opener_replay.py stamps on every
 # synthetic offline-replay row ("synthetic_replay" -- see that module's own constant docstring).
 # Imported, not re-spelled, for the same drift-proofing reason as the outcome constants above --
@@ -338,11 +342,12 @@ UNKNOWN_ERA = "unknown"
 # Row shapes
 # ---------------------------------------------------------------------------------------
 
+
 @dataclass(frozen=True)
 class OpenerRow:
     text: str
-    source: str            # "jsonl" | "sqlite" | "bigquery"
-    era: str | None        # prompt_sha256, or None (predates the stamp / no era column)
+    source: str  # "jsonl" | "sqlite" | "bigquery"
+    era: str | None  # prompt_sha256, or None (predates the stamp / no era column)
     decision: str | None = None
     # Raw `decision` column value, normalized so NULL and "" both read as None -- "like" for a
     # landed Like (OpenerService.commit_opener), a non-like reason such as "dislike" or
@@ -356,8 +361,8 @@ class OpenerRow:
 
 @dataclass(frozen=True)
 class RejectionRow:
-    reason_code: str       # "(none)" when the stored reason_code was NULL/empty
-    source: str            # "sqlite" | "bigquery" -- jsonl never carries rejections, see below
+    reason_code: str  # "(none)" when the stored reason_code was NULL/empty
+    source: str  # "sqlite" | "bigquery" -- jsonl never carries rejections, see below
     era: str | None
     # Whether this rejection was produced by an OFFLINE tools/opener_replay.py pass rather than
     # captured from live use -- is_replay_run_id() applied to the row's `run_id` at read time (see
@@ -383,18 +388,22 @@ class OutcomeRow:
     ever constructed. A row whose owning opener's `decision` was the synthetic-replay marker
     (DECISION_REPLAY) or whose `profile_key` was empty/NULL on either side of the join never
     reaches this dataclass at all -- see this module's OUTCOMES section and BE HONEST caveats."""
-    era: str | None        # the SENT opener's prompt_sha256, or None (predates the stamp)
-    outcome: str            # raw opener_outcomes.outcome text; "(none)" when NULL/empty
-    read_source: str        # "sqlite" | "bigquery" -- which STORE this joined row was read from.
-                            # NOT the same axis as opener_outcomes.source ("owner"/"automated",
-                            # i.e. WHO recorded the observation -- see ranker/__init__.py's
-                            # KNOWN_OPENER_OUTCOME_SOURCES); this tool does not currently group
-                            # by that axis, only by era.
+
+    era: str | None  # the SENT opener's prompt_sha256, or None (predates the stamp)
+    outcome: str  # raw opener_outcomes.outcome text; "(none)" when NULL/empty
+    read_source: (
+        str  # "sqlite" | "bigquery" -- which STORE this joined row was read from.
+    )
+    # NOT the same axis as opener_outcomes.source ("owner"/"automated",
+    # i.e. WHO recorded the observation -- see ranker/__init__.py's
+    # KNOWN_OPENER_OUTCOME_SOURCES); this tool does not currently group
+    # by that axis, only by era.
 
 
 # ---------------------------------------------------------------------------------------
 # SOURCE 1: data/hinge_debug/<run_id>/actions.jsonl
 # ---------------------------------------------------------------------------------------
+
 
 def find_opener_records(value: Any) -> list[tuple[str, dict[str, Any]]]:
     """Recursively walk a decoded JSON value for every dict key literally named "opener" whose
@@ -440,9 +449,11 @@ def find_opener_strings(value: Any) -> list[str]:
 class JsonlStats:
     run_dirs_total: int = 0
     run_dirs_with_actions_file: int = 0
-    run_dirs_populated: int = 0     # >=1 opener key found
-    opener_occurrences: int = 0     # every matching key, including repeats (e.g. a resumed send
-                                    # re-logging the same draft) -- NOT deduped
+    run_dirs_populated: int = 0  # >=1 opener key found
+    opener_occurrences: int = (
+        0  # every matching key, including repeats (e.g. a resumed send
+    )
+    # re-logging the same draft) -- NOT deduped
     malformed_lines: int = 0
 
 
@@ -497,7 +508,9 @@ def read_jsonl_openers(debug_dir: Path) -> tuple[list[OpenerRow], JsonlStats]:
                     # key is absent (pre-75155dc7 row) or not a string, mirroring the sqlite/
                     # bigquery readers' own "NULL and non-string both read as no era" posture.
                     era_value = owner.get("prompt_sha256")
-                    era = era_value if isinstance(era_value, str) and era_value else None
+                    era = (
+                        era_value if isinstance(era_value, str) and era_value else None
+                    )
                     rows.append(OpenerRow(text=normalized, source="jsonl", era=era))
                     stats.opener_occurrences += 1
                     found_here = True
@@ -509,6 +522,7 @@ def read_jsonl_openers(debug_dir: Path) -> tuple[list[OpenerRow], JsonlStats]:
 # ---------------------------------------------------------------------------------------
 # SOURCE 2: the SQLite store (operation_love/ranker/store.py's schema)
 # ---------------------------------------------------------------------------------------
+
 
 @dataclass
 class SqliteStats:
@@ -533,7 +547,9 @@ class SqliteStats:
     rejections_replay_row_count: int = 0
 
 
-def read_sqlite_openers(db_path: Path) -> tuple[list[OpenerRow], list[RejectionRow], SqliteStats]:
+def read_sqlite_openers(
+    db_path: Path,
+) -> tuple[list[OpenerRow], list[RejectionRow], SqliteStats]:
     """Every ``openers``/``opener_rejections`` row in the SQLite store at ``db_path``.
 
     Opened read-only (SQLite's ``mode=ro`` URI) so a report run can never create, migrate, or
@@ -556,26 +572,32 @@ def read_sqlite_openers(db_path: Path) -> tuple[list[OpenerRow], list[RejectionR
         return opener_rows, rejection_rows, stats
     stats.available = True
     try:
-        tables = {row[0] for row in con.execute(
-            "SELECT name FROM sqlite_master WHERE type='table'")}
+        tables = {
+            row[0]
+            for row in con.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
 
         if "openers" not in tables:
             stats.notes.append(
-                "no 'openers' table (pre-redesign schema, or a fresh/empty database)")
+                "no 'openers' table (pre-redesign schema, or a fresh/empty database)"
+            )
         else:
             columns = {row[1] for row in con.execute("PRAGMA table_info(openers)")}
             era_expr = "prompt_sha256" if "prompt_sha256" in columns else "NULL"
             if "prompt_sha256" not in columns:
                 stats.notes.append(
                     "'openers' table predates the prompt_sha256 column; every row here lands "
-                    "in the unknown-era bucket")
+                    "in the unknown-era bucket"
+                )
             decision_expr = "decision" if "decision" in columns else "NULL"
             if "decision" not in columns:
                 stats.notes.append(
                     "'openers' table predates the decision column; every row here lands in "
-                    "the unknown-decision bucket (see caveat 4)")
+                    "the unknown-decision bucket (see caveat 4)"
+                )
             for opener_text, era, decision in con.execute(
-                    f"SELECT opener, {era_expr}, {decision_expr} FROM openers"):
+                f"SELECT opener, {era_expr}, {decision_expr} FROM openers"
+            ):
                 stats.openers_row_count += 1
                 if not isinstance(opener_text, str) or not opener_text.strip():
                     continue
@@ -585,19 +607,27 @@ def read_sqlite_openers(db_path: Path) -> tuple[list[OpenerRow], list[RejectionR
                 normalized_decision = decision if decision else None
                 if normalized_decision == DECISION_REPLAY:
                     stats.replay_row_count += 1
-                opener_rows.append(OpenerRow(
-                    text=normalized, source="sqlite", era=era,
-                    decision=normalized_decision))
+                opener_rows.append(
+                    OpenerRow(
+                        text=normalized,
+                        source="sqlite",
+                        era=era,
+                        decision=normalized_decision,
+                    )
+                )
 
         if "opener_rejections" not in tables:
             stats.notes.append("no 'opener_rejections' table (pre-redesign schema)")
         else:
-            columns = {row[1] for row in con.execute("PRAGMA table_info(opener_rejections)")}
+            columns = {
+                row[1] for row in con.execute("PRAGMA table_info(opener_rejections)")
+            }
             era_expr = "prompt_sha256" if "prompt_sha256" in columns else "NULL"
             if "prompt_sha256" not in columns:
                 stats.notes.append(
                     "'opener_rejections' table predates the prompt_sha256 column; every row "
-                    "here lands in the unknown-era bucket")
+                    "here lands in the unknown-era bucket"
+                )
             # `run_id` has been in this table since its first CREATE (see ranker/store.py), so
             # this branch should never fire -- it is here for the same reason the era_expr one
             # above is: a column this reader cannot find must degrade into a PRINTED note, never
@@ -608,16 +638,23 @@ def read_sqlite_openers(db_path: Path) -> tuple[list[OpenerRow], list[RejectionR
                 stats.notes.append(
                     "'opener_rejections' table has no run_id column; offline-replay rows "
                     "(tools/opener_replay.py) cannot be told apart from live ones here, so the "
-                    "live/synthetic split below reports every row as live")
+                    "live/synthetic split below reports every row as live"
+                )
             for reason_code, era, run_id in con.execute(
-                    f"SELECT reason_code, {era_expr}, {run_id_expr} FROM opener_rejections"):
+                f"SELECT reason_code, {era_expr}, {run_id_expr} FROM opener_rejections"
+            ):
                 stats.rejections_row_count += 1
                 replay = is_replay_run_id(run_id)
                 if replay:
                     stats.rejections_replay_row_count += 1
-                rejection_rows.append(RejectionRow(
-                    reason_code=reason_code if reason_code else "(none)",
-                    source="sqlite", era=era, replay=replay))
+                rejection_rows.append(
+                    RejectionRow(
+                        reason_code=reason_code if reason_code else "(none)",
+                        source="sqlite",
+                        era=era,
+                        replay=replay,
+                    )
+                )
     finally:
         con.close()
     return opener_rows, rejection_rows, stats
@@ -629,13 +666,14 @@ def read_sqlite_openers(db_path: Path) -> tuple[list[OpenerRow], list[RejectionR
 # session as this axis), so a database that predates it is reported via `notes`, never raised.
 # ---------------------------------------------------------------------------------------
 
+
 @dataclass
 class SqliteOutcomeStats:
     available: bool = False
     notes: list[str] = field(default_factory=list)
-    joined_row_count: int = 0          # outcome rows actually counted (post every exclusion)
-    replay_excluded_count: int = 0     # rows dropped because their opener's decision was
-                                       # DECISION_REPLAY (see this module's imports)
+    joined_row_count: int = 0  # outcome rows actually counted (post every exclusion)
+    replay_excluded_count: int = 0  # rows dropped because their opener's decision was
+    # DECISION_REPLAY (see this module's imports)
     # Rows dropped because their opener's decision was not DECISION_VALUE_SENT -- i.e. nothing
     # ever verified that this opener reached that person, so nothing observed on that profile
     # can be attributed to it. Almost always a genuinely never-sent draft, which is what the
@@ -648,7 +686,9 @@ class SqliteOutcomeStats:
     not_sent_excluded_count: int = 0
 
 
-def read_sqlite_opener_outcomes(db_path: Path) -> tuple[list[OutcomeRow], SqliteOutcomeStats]:
+def read_sqlite_opener_outcomes(
+    db_path: Path,
+) -> tuple[list[OutcomeRow], SqliteOutcomeStats]:
     """Every `opener_outcomes` row in the SQLite store at `db_path`, joined to its `openers` row
     by (app, profile_key) -- the SAME join predicate SQLiteStore.joined_opener_outcomes uses
     (empty/NULL profile_key excluded on BOTH sides; see that method's own docstring in
@@ -713,20 +753,25 @@ def read_sqlite_opener_outcomes(db_path: Path) -> tuple[list[OutcomeRow], Sqlite
         return rows, stats
     stats.available = True
     try:
-        tables = {row[0] for row in con.execute(
-            "SELECT name FROM sqlite_master WHERE type='table'")}
+        tables = {
+            row[0]
+            for row in con.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
         if "opener_outcomes" not in tables:
             stats.notes.append(
-                "no 'opener_outcomes' table (predates this axis, or a fresh/empty database)")
+                "no 'opener_outcomes' table (predates this axis, or a fresh/empty database)"
+            )
             return rows, stats
         if "openers" not in tables:
             stats.notes.append(
-                "'opener_outcomes' exists but 'openers' does not -- nothing to join it to")
+                "'opener_outcomes' exists but 'openers' does not -- nothing to join it to"
+            )
             return rows, stats
         columns = {row[1] for row in con.execute("PRAGMA table_info(openers)")}
         if "profile_key" not in columns:
             stats.notes.append(
-                "'openers' table predates the profile_key column; no outcome can be joined")
+                "'openers' table predates the profile_key column; no outcome can be joined"
+            )
             return rows, stats
         # Each of these is a WHOLE select expression, table qualifier included -- "o.prompt_sha256"
         # or the bare literal "NULL", never a bare column name this query then prefixes with
@@ -738,7 +783,8 @@ def read_sqlite_opener_outcomes(db_path: Path) -> tuple[list[OutcomeRow], Sqlite
         if "prompt_sha256" not in columns:
             stats.notes.append(
                 "'openers' table predates the prompt_sha256 column; every joined outcome row "
-                "here lands in the unknown-era bucket")
+                "here lands in the unknown-era bucket"
+            )
         has_decision = "decision" in columns
         decision_select = "o.decision" if has_decision else "NULL"
         if not has_decision:
@@ -746,7 +792,8 @@ def read_sqlite_opener_outcomes(db_path: Path) -> tuple[list[OutcomeRow], Sqlite
                 "'openers' table predates the decision column; neither the sent-only filter "
                 "(decision == 'like') nor the synthetic-replay exclusion can be applied here, so "
                 "every joined row below is counted regardless of whether its opener was ever "
-                "sent (the join's own profile_key exclusion still applies)")
+                "sent (the join's own profile_key exclusion still applies)"
+            )
         query = (
             f"SELECT {era_select}, oc.outcome, {decision_select} FROM openers o "
             "JOIN opener_outcomes oc ON oc.app = o.app AND oc.profile_key = o.profile_key "
@@ -766,8 +813,13 @@ def read_sqlite_opener_outcomes(db_path: Path) -> tuple[list[OutcomeRow], Sqlite
                 stats.not_sent_excluded_count += 1
                 continue
             stats.joined_row_count += 1
-            rows.append(OutcomeRow(
-                era=era, outcome=outcome if outcome else "(none)", read_source="sqlite"))
+            rows.append(
+                OutcomeRow(
+                    era=era,
+                    outcome=outcome if outcome else "(none)",
+                    read_source="sqlite",
+                )
+            )
     finally:
         con.close()
     return rows, stats
@@ -776,6 +828,7 @@ def read_sqlite_opener_outcomes(db_path: Path) -> tuple[list[OutcomeRow], Sqlite
 # ---------------------------------------------------------------------------------------
 # SOURCE 3: BigQuery -- OFF by default, only touched when --bigquery is passed
 # ---------------------------------------------------------------------------------------
+
 
 @dataclass
 class BigQueryStats:
@@ -792,8 +845,9 @@ class BigQueryStats:
     rejections_replay_row_count: int = 0
 
 
-def read_bigquery_openers(project_id: str, dataset: str,
-                          client=None) -> tuple[list[OpenerRow], list[RejectionRow], BigQueryStats]:
+def read_bigquery_openers(
+    project_id: str, dataset: str, client=None
+) -> tuple[list[OpenerRow], list[RejectionRow], BigQueryStats]:
     """Every ``openers``/``opener_rejections`` row in BigQuery's ``project_id.dataset``.
 
     ``client`` is injectable (matching operation_love.ranker.bigquery_store's own testability
@@ -820,19 +874,23 @@ def read_bigquery_openers(project_id: str, dataset: str,
         except ImportError:
             stats.notes.append(
                 "google-cloud-bigquery is not installed (install this project's 'bq' extra, "
-                "or drop --bigquery to measure jsonl/sqlite only)")
+                "or drop --bigquery to measure jsonl/sqlite only)"
+            )
             return opener_rows, rejection_rows, stats
         try:
             client = bigquery.Client(project=project_id)
         except Exception as exc:  # noqa: BLE001 -- a credentials/transport failure is data, not a crash
-            stats.notes.append(f"could not create a BigQuery client: {type(exc).__name__}: {exc}")
+            stats.notes.append(
+                f"could not create a BigQuery client: {type(exc).__name__}: {exc}"
+            )
             return opener_rows, rejection_rows, stats
 
     openers_table = f"{project_id}.{dataset}.openers"
     rejections_table = f"{project_id}.{dataset}.opener_rejections"
     try:
         result = client.query(
-            f"SELECT opener, prompt_sha256, decision FROM `{openers_table}`").result()
+            f"SELECT opener, prompt_sha256, decision FROM `{openers_table}`"
+        ).result()
         for row in result:
             stats.openers_row_count += 1
             text = row["opener"]
@@ -844,30 +902,45 @@ def read_bigquery_openers(project_id: str, dataset: str,
             normalized_decision = decision if decision else None
             if normalized_decision == DECISION_REPLAY:
                 stats.replay_row_count += 1
-            opener_rows.append(OpenerRow(
-                text=" ".join(text.split()), source="bigquery", era=row["prompt_sha256"],
-                decision=normalized_decision))
+            opener_rows.append(
+                OpenerRow(
+                    text=" ".join(text.split()),
+                    source="bigquery",
+                    era=row["prompt_sha256"],
+                    decision=normalized_decision,
+                )
+            )
         stats.available = True
     except Exception as exc:  # noqa: BLE001 -- missing table/dataset/permissions is data, not a crash
-        stats.notes.append(f"could not read {openers_table}: {type(exc).__name__}: {exc}")
+        stats.notes.append(
+            f"could not read {openers_table}: {type(exc).__name__}: {exc}"
+        )
 
     try:
         # `run_id` comes back for the same reason the SQLite reader selects it: it is the ONLY
         # marker distinguishing an offline tools/opener_replay.py rejection from a live one on
         # this table (no `decision` column exists here -- see REPLAY_RUN_ID_PREFIX).
         result = client.query(
-            f"SELECT reason_code, prompt_sha256, run_id FROM `{rejections_table}`").result()
+            f"SELECT reason_code, prompt_sha256, run_id FROM `{rejections_table}`"
+        ).result()
         for row in result:
             stats.rejections_row_count += 1
             reason_code = row["reason_code"]
             replay = is_replay_run_id(row["run_id"])
             if replay:
                 stats.rejections_replay_row_count += 1
-            rejection_rows.append(RejectionRow(
-                reason_code=reason_code if reason_code else "(none)",
-                source="bigquery", era=row["prompt_sha256"], replay=replay))
+            rejection_rows.append(
+                RejectionRow(
+                    reason_code=reason_code if reason_code else "(none)",
+                    source="bigquery",
+                    era=row["prompt_sha256"],
+                    replay=replay,
+                )
+            )
     except Exception as exc:  # noqa: BLE001 -- same as above
-        stats.notes.append(f"could not read {rejections_table}: {type(exc).__name__}: {exc}")
+        stats.notes.append(
+            f"could not read {rejections_table}: {type(exc).__name__}: {exc}"
+        )
 
     return opener_rows, rejection_rows, stats
 
@@ -876,6 +949,7 @@ def read_bigquery_openers(project_id: str, dataset: str,
 # SOURCE 3b: BigQuery's `opener_outcomes` table, JOINED to `openers` -- the OUTCOMES axis. OFF
 # by default, exactly like SOURCE 3 above: only read when --bigquery is passed.
 # ---------------------------------------------------------------------------------------
+
 
 @dataclass
 class BigQueryOutcomeStats:
@@ -888,8 +962,9 @@ class BigQueryOutcomeStats:
     not_sent_excluded_count: int = 0
 
 
-def read_bigquery_opener_outcomes(project_id: str, dataset: str,
-                                  client=None) -> tuple[list[OutcomeRow], BigQueryOutcomeStats]:
+def read_bigquery_opener_outcomes(
+    project_id: str, dataset: str, client=None
+) -> tuple[list[OutcomeRow], BigQueryOutcomeStats]:
     """Every `opener_outcomes` row in BigQuery's `project_id.dataset`, joined to its `openers`
     row by (app, profile_key) -- the SAME join predicate BigQueryStore.joined_opener_outcomes
     uses (empty/NULL profile_key excluded on both sides), issued directly here rather than
@@ -923,12 +998,15 @@ def read_bigquery_opener_outcomes(project_id: str, dataset: str,
         except ImportError:
             stats.notes.append(
                 "google-cloud-bigquery is not installed (install this project's 'bq' extra, "
-                "or drop --bigquery to measure jsonl/sqlite only)")
+                "or drop --bigquery to measure jsonl/sqlite only)"
+            )
             return rows, stats
         try:
             client = bigquery.Client(project=project_id)
         except Exception as exc:  # noqa: BLE001 -- a credentials/transport failure is data, not a crash
-            stats.notes.append(f"could not create a BigQuery client: {type(exc).__name__}: {exc}")
+            stats.notes.append(
+                f"could not create a BigQuery client: {type(exc).__name__}: {exc}"
+            )
             return rows, stats
 
     openers_table = f"{project_id}.{dataset}.openers"
@@ -953,14 +1031,19 @@ def read_bigquery_opener_outcomes(project_id: str, dataset: str,
                 stats.not_sent_excluded_count += 1
                 continue
             outcome = row["outcome"]
-            rows.append(OutcomeRow(
-                era=row["prompt_sha256"], outcome=outcome if outcome else "(none)",
-                read_source="bigquery"))
+            rows.append(
+                OutcomeRow(
+                    era=row["prompt_sha256"],
+                    outcome=outcome if outcome else "(none)",
+                    read_source="bigquery",
+                )
+            )
             stats.joined_row_count += 1
         stats.available = True
     except Exception as exc:  # noqa: BLE001 -- missing table/dataset/permissions is data, not a crash
         stats.notes.append(
-            f"could not read joined {openers_table}/{outcomes_table}: {type(exc).__name__}: {exc}")
+            f"could not read joined {openers_table}/{outcomes_table}: {type(exc).__name__}: {exc}"
+        )
 
     return rows, stats
 
@@ -968,6 +1051,7 @@ def read_bigquery_opener_outcomes(project_id: str, dataset: str,
 # ---------------------------------------------------------------------------------------
 # Cross-source dedup
 # ---------------------------------------------------------------------------------------
+
 
 def _dedupe_authority(row: OpenerRow) -> tuple[int, int]:
     """How authoritative one physical draft's copy is, for dedupe_openers()' promotion below --
@@ -1042,14 +1126,20 @@ class SourceReport:
     # module already applies to every other trailing, defaulted parameter (see e.g.
     # Store.record_opener's own `prompt_sha256`/`profile_key` comments in ranker/__init__.py).
     sqlite_outcome_stats: SqliteOutcomeStats = field(default_factory=SqliteOutcomeStats)
-    bigquery_outcome_stats: BigQueryOutcomeStats = field(default_factory=BigQueryOutcomeStats)
+    bigquery_outcome_stats: BigQueryOutcomeStats = field(
+        default_factory=BigQueryOutcomeStats
+    )
 
 
-def read_all_sources(*, debug_dir: Path, db_path: Path, use_bigquery: bool,
-                     bigquery_project: str | None = None, bigquery_dataset: str = "operation_love",
-                     bigquery_client=None
-                     ) -> tuple[list[OpenerRow], list[RejectionRow], list[OutcomeRow],
-                               SourceReport]:
+def read_all_sources(
+    *,
+    debug_dir: Path,
+    db_path: Path,
+    use_bigquery: bool,
+    bigquery_project: str | None = None,
+    bigquery_dataset: str = "operation_love",
+    bigquery_client=None,
+) -> tuple[list[OpenerRow], list[RejectionRow], list[OutcomeRow], SourceReport]:
     """Read every configured source, dedupe the opener corpus, and return the combined result
     plus a SourceReport describing exactly what each source contributed (see this module's
     docstring's SOURCES section for what each field means).
@@ -1072,28 +1162,38 @@ def read_all_sources(*, debug_dir: Path, db_path: Path, use_bigquery: bool,
             bigquery_stats.attempted = True
             bigquery_stats.notes.append(
                 "--bigquery was passed but no storage.bigquery.project_id was found in config "
-                "(pass --config to point at the right config.yaml)")
+                "(pass --config to point at the right config.yaml)"
+            )
             bigquery_outcome_stats.attempted = True
             bigquery_outcome_stats.notes.append(
                 "--bigquery was passed but no storage.bigquery.project_id was found in config "
-                "(pass --config to point at the right config.yaml)")
+                "(pass --config to point at the right config.yaml)"
+            )
         else:
             bigquery_rows, bigquery_rejections, bigquery_stats = read_bigquery_openers(
-                bigquery_project, bigquery_dataset, client=bigquery_client)
-            bigquery_outcome_rows, bigquery_outcome_stats = read_bigquery_opener_outcomes(
-                bigquery_project, bigquery_dataset, client=bigquery_client)
+                bigquery_project, bigquery_dataset, client=bigquery_client
+            )
+            bigquery_outcome_rows, bigquery_outcome_stats = (
+                read_bigquery_opener_outcomes(
+                    bigquery_project, bigquery_dataset, client=bigquery_client
+                )
+            )
 
     combined = dedupe_openers(jsonl_rows + sqlite_rows + bigquery_rows)
     rejections = sqlite_rejections + bigquery_rejections
     outcomes = sqlite_outcome_rows + bigquery_outcome_rows
 
     report = SourceReport(
-        jsonl_stats=jsonl_stats, jsonl_unique=len({r.text for r in jsonl_rows}),
-        sqlite_stats=sqlite_stats, sqlite_unique=len({r.text for r in sqlite_rows}),
-        bigquery_stats=bigquery_stats, bigquery_unique=len({r.text for r in bigquery_rows}),
+        jsonl_stats=jsonl_stats,
+        jsonl_unique=len({r.text for r in jsonl_rows}),
+        sqlite_stats=sqlite_stats,
+        sqlite_unique=len({r.text for r in sqlite_rows}),
+        bigquery_stats=bigquery_stats,
+        bigquery_unique=len({r.text for r in bigquery_rows}),
         combined_unique=len(combined),
         sqlite_outcome_stats=sqlite_outcome_stats,
-        bigquery_outcome_stats=bigquery_outcome_stats)
+        bigquery_outcome_stats=bigquery_outcome_stats,
+    )
     return combined, rejections, outcomes, report
 
 
@@ -1114,16 +1214,21 @@ def read_all_sources(*, debug_dir: Path, db_path: Path, use_bigquery: bool,
 # threshold applies to.
 # ---------------------------------------------------------------------------------------
 
+
 @dataclass
 class ReplayCorpusStats:
     corpus_dir: Path
     capture_count: int = 0
     earliest_captured_at: float | None = None
     latest_captured_at: float | None = None
-    distinct_prompt_eras: int = 0        # distinct non-null captured-at prompt_sha256 values
-    unknown_era_count: int = 0           # captures whose manifest carries no prompt_sha256 at all
+    distinct_prompt_eras: int = 0  # distinct non-null captured-at prompt_sha256 values
+    unknown_era_count: int = (
+        0  # captures whose manifest carries no prompt_sha256 at all
+    )
     notes: list[str] = field(default_factory=list)
-    load_errors: list[str] = field(default_factory=list)  # "<replay_id>: <error>" per bad capture
+    load_errors: list[str] = field(
+        default_factory=list
+    )  # "<replay_id>: <error>" per bad capture
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -1153,10 +1258,13 @@ def read_replay_corpus_stats(corpus_dir: Path) -> ReplayCorpusStats:
         replay_ids = list_replay_ids(corpus_dir)
     except Exception as exc:  # noqa: BLE001 -- a corrupt corpus root must not crash the report
         stats.notes.append(
-            f"could not list the replay corpus at {corpus_dir}: {type(exc).__name__}: {exc}")
+            f"could not list the replay corpus at {corpus_dir}: {type(exc).__name__}: {exc}"
+        )
         return stats
     if not replay_ids:
-        stats.notes.append(f"no captures found under {corpus_dir} (empty or nonexistent)")
+        stats.notes.append(
+            f"no captures found under {corpus_dir} (empty or nonexistent)"
+        )
         return stats
     eras: set[str] = set()
     captured_ats: list[float] = []
@@ -1197,13 +1305,20 @@ def format_replay_corpus_report(stats: ReplayCorpusStats) -> str:
         lines.extend(f"  NOTE: {note}" for note in stats.notes)
         return "\n".join(lines)
     if stats.earliest_captured_at is not None:
-        lines.append(f"  date range       : {_format_epoch(stats.earliest_captured_at)} -> "
-                     f"{_format_epoch(stats.latest_captured_at)}")
+        lines.append(
+            f"  date range       : {_format_epoch(stats.earliest_captured_at)} -> "
+            f"{_format_epoch(stats.latest_captured_at)}"
+        )
     else:
         lines.append("  date range       : unknown (no capture recorded a captured_at)")
-    era_note = (f", {stats.unknown_era_count} with no era stamp"
-               if stats.unknown_era_count else "")
-    lines.append(f"  distinct prompt eras spanned: {stats.distinct_prompt_eras}{era_note}")
+    era_note = (
+        f", {stats.unknown_era_count} with no era stamp"
+        if stats.unknown_era_count
+        else ""
+    )
+    lines.append(
+        f"  distinct prompt eras spanned: {stats.distinct_prompt_eras}{era_note}"
+    )
     if stats.load_errors:
         lines.append(f"  {len(stats.load_errors)} capture(s) failed to load:")
         lines.extend(f"    {err}" for err in stats.load_errors)
@@ -1237,10 +1352,33 @@ def format_replay_corpus_report(stats: ReplayCorpusStats) -> str:
 # impressively professional", "a great look", "the perfect ...", "an incredible/amazing
 # experience", "is pretty fantastic").
 _EVALUATIVE_ADJECTIVES: tuple[str, ...] = (
-    "elite", "unreal", "unmatched", "iconic", "impressive", "amazing", "incredible",
-    "fantastic", "phenomenal", "legendary", "flawless", "perfect", "immaculate", "unbeatable",
-    "unstoppable", "stunning", "gorgeous", "epic", "insane", "wild", "impeccable",
-    "unforgettable", "magical", "majestic", "glorious", "surreal", "spectacular",
+    "elite",
+    "unreal",
+    "unmatched",
+    "iconic",
+    "impressive",
+    "amazing",
+    "incredible",
+    "fantastic",
+    "phenomenal",
+    "legendary",
+    "flawless",
+    "perfect",
+    "immaculate",
+    "unbeatable",
+    "unstoppable",
+    "stunning",
+    "gorgeous",
+    "epic",
+    "insane",
+    "wild",
+    "impeccable",
+    "unforgettable",
+    "magical",
+    "majestic",
+    "glorious",
+    "surreal",
+    "spectacular",
     "impressively professional",
 )
 # Short evaluative NOUN PHRASES that grade something as a whole ("is a masterpiece") rather
@@ -1248,8 +1386,17 @@ _EVALUATIVE_ADJECTIVES: tuple[str, ...] = (
 # only counts as this predicate's complement when it follows an article (see
 # _grade_complement_after_copula), while a bare adjective does not need one.
 _EVALUATIVE_NOUN_PHRASES: tuple[str, ...] = (
-    "elite move", "bold move", "power move", "masterpiece", "great look", "iconic energy",
-    "weekend energy", "main character energy", "top tier", "chef's kiss", "work of art",
+    "elite move",
+    "bold move",
+    "power move",
+    "masterpiece",
+    "great look",
+    "iconic energy",
+    "weekend energy",
+    "main character energy",
+    "top tier",
+    "chef's kiss",
+    "work of art",
 )
 
 # The copula forms this detector matches, per spec: is / was / are / the 's contraction. A
@@ -1262,7 +1409,9 @@ _COPULA_RE = re.compile(r"\bis\b|\bwas\b|\bare\b|(?<=[A-Za-z0-9])'s\b", re.IGNOR
 # remaining head phrase is compared against the lexicon above. Order matters: "such an elite
 # move" only reduces to "elite move" by removing the intensifier BEFORE the article.
 _GRADE_INTENSIFIER_RE = re.compile(
-    r"^(?:such|so|really|very|truly|absolutely|totally|honestly|pretty)\s+", re.IGNORECASE)
+    r"^(?:such|so|really|very|truly|absolutely|totally|honestly|pretty)\s+",
+    re.IGNORECASE,
+)
 _GRADE_ARTICLE_RE = re.compile(r"^(?:a|an|the)\s+", re.IGNORECASE)
 
 _TRAILING_PUNCTUATION_RE = re.compile(r"[.!?,;:\"'”’]+$")
@@ -1309,7 +1458,7 @@ def is_grade_shaped(sentence: str) -> bool:
     if not text or text.endswith("?"):
         return False
     for match in _COPULA_RE.finditer(text):
-        remainder = text[match.end():].lstrip()
+        remainder = text[match.end() :].lstrip()
         if not remainder:
             continue
         complement = _grade_complement_after_copula(remainder)
@@ -1378,6 +1527,7 @@ def opening_trigram(text: str) -> str:
 # Per-era metrics
 # ---------------------------------------------------------------------------------------
 
+
 @dataclass
 class EraMetrics:
     era: str
@@ -1417,20 +1567,26 @@ class EraMetrics:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "era": self.era, "n": self.n,
-            "grade_count": self.grade_count, "grade_rate": self.grade_rate,
+            "era": self.era,
+            "n": self.n,
+            "grade_count": self.grade_count,
+            "grade_rate": self.grade_rate,
             "sentence_counts": dict(self.sentence_counts),
             "two_sentence_count": self.two_sentence_count,
             "two_sentence_rate": self.two_sentence_rate,
             "question_final_count": self.question_final_count,
             "question_final_rate": self.question_final_rate,
-            "distinct_trigrams": self.distinct_trigrams, "total_trigrams": self.total_trigrams,
+            "distinct_trigrams": self.distinct_trigrams,
+            "total_trigrams": self.total_trigrams,
             "trigram_diversity": self.trigram_diversity,
             "top5_trigrams": [list(pair) for pair in self.top5_trigrams],
             "top5_trigram_coverage": self.top5_trigram_coverage,
-            "apostrophe_count": self.apostrophe_count, "apostrophe_rate": self.apostrophe_rate,
-            "looks_like_count": self.looks_like_count, "looks_like_rate": self.looks_like_rate,
-            "mean_chars": self.mean_chars, "median_chars": self.median_chars,
+            "apostrophe_count": self.apostrophe_count,
+            "apostrophe_rate": self.apostrophe_rate,
+            "looks_like_count": self.looks_like_count,
+            "looks_like_rate": self.looks_like_rate,
+            "mean_chars": self.mean_chars,
+            "median_chars": self.median_chars,
             "replay_count": self.replay_count,
             "synthetic_status": synthetic_status(self.n, self.replay_count),
         }
@@ -1465,11 +1621,15 @@ def era_synthetic_marker(metrics: EraMetrics) -> str:
     ERA-axis buckets) for where this is actually printed."""
     status = synthetic_status(metrics.n, metrics.replay_count)
     if status == SYNTHETIC_WHOLLY:
-        return (" [WHOLLY SYNTHETIC REPLAY ERA -- GENERATED by tools/opener_replay.py, not "
-                "captured from live use; see caveats]")
+        return (
+            " [WHOLLY SYNTHETIC REPLAY ERA -- GENERATED by tools/opener_replay.py, not "
+            "captured from live use; see caveats]"
+        )
     if status == SYNTHETIC_PARTIAL:
-        return (f" [PARTIALLY SYNTHETIC REPLAY: {metrics.replay_count}/{metrics.n} row(s) "
-                "generated by tools/opener_replay.py; see caveats]")
+        return (
+            f" [PARTIALLY SYNTHETIC REPLAY: {metrics.replay_count}/{metrics.n} row(s) "
+            "generated by tools/opener_replay.py; see caveats]"
+        )
     return ""
 
 
@@ -1516,18 +1676,24 @@ def era_metrics(era: str, texts: Sequence[str], *, replay_count: int = 0) -> Era
     top5_coverage = (sum(c for _, c in top5) / n) if n else 0.0
 
     return EraMetrics(
-        era=era, n=n,
-        grade_count=grade_count, grade_rate=(grade_count / n) if n else 0.0,
+        era=era,
+        n=n,
+        grade_count=grade_count,
+        grade_rate=(grade_count / n) if n else 0.0,
         sentence_counts=dict(sorted(sentence_counts.items())),
         two_sentence_count=two_sentence_count,
         two_sentence_rate=(two_sentence_count / n) if n else 0.0,
         question_final_count=question_final_count,
         question_final_rate=(question_final_count / n) if n else 0.0,
-        distinct_trigrams=len(trigram_counts), total_trigrams=n,
+        distinct_trigrams=len(trigram_counts),
+        total_trigrams=n,
         trigram_diversity=(len(trigram_counts) / n) if n else 0.0,
-        top5_trigrams=top5, top5_trigram_coverage=top5_coverage,
-        apostrophe_count=apostrophe_count, apostrophe_rate=(apostrophe_count / n) if n else 0.0,
-        looks_like_count=looks_like_count, looks_like_rate=(looks_like_count / n) if n else 0.0,
+        top5_trigrams=top5,
+        top5_trigram_coverage=top5_coverage,
+        apostrophe_count=apostrophe_count,
+        apostrophe_rate=(apostrophe_count / n) if n else 0.0,
+        looks_like_count=looks_like_count,
+        looks_like_rate=(looks_like_count / n) if n else 0.0,
         mean_chars=statistics.mean(lengths) if lengths else 0.0,
         median_chars=statistics.median(lengths) if lengths else 0.0,
         replay_count=replay_count,
@@ -1551,11 +1717,15 @@ def build_era_metrics(rows: Sequence[OpenerRow]) -> dict[str, EraMetrics]:
         by_era[era].append(row.text)
         if row.decision == DECISION_REPLAY:
             replay_counts[era] += 1
-    result = {era: era_metrics(era, texts, replay_count=replay_counts.get(era, 0))
-             for era, texts in by_era.items()}
+    result = {
+        era: era_metrics(era, texts, replay_count=replay_counts.get(era, 0))
+        for era, texts in by_era.items()
+    }
     result["ALL"] = era_metrics(
-        "ALL", [row.text for row in rows],
-        replay_count=sum(1 for row in rows if row.decision == DECISION_REPLAY))
+        "ALL",
+        [row.text for row in rows],
+        replay_count=sum(1 for row in rows if row.decision == DECISION_REPLAY),
+    )
     return result
 
 
@@ -1616,8 +1786,13 @@ DECISION_NOT_SENT = "not_sent"
 # grep opener_replay.py for is the exact string that shows up in this report) and guarantees the
 # bucket name can never drift from the marker decision_bucket() below is testing against.
 DECISION_UNKNOWN = "unknown"
-_DECISION_BUCKET_ORDER = (DECISION_SENT, DECISION_SEND_UNVERIFIED, DECISION_NOT_SENT,
-                          DECISION_REPLAY, DECISION_UNKNOWN)
+_DECISION_BUCKET_ORDER = (
+    DECISION_SENT,
+    DECISION_SEND_UNVERIFIED,
+    DECISION_NOT_SENT,
+    DECISION_REPLAY,
+    DECISION_UNKNOWN,
+)
 
 
 def decision_bucket(decision: str | None) -> str:
@@ -1683,11 +1858,17 @@ def build_decision_metrics(rows: Sequence[OpenerRow]) -> dict[str, EraMetrics]:
         by_bucket[bucket].append(row.text)
         if row.decision == DECISION_REPLAY:
             bucket_replay_counts[bucket] += 1
-    result = {bucket: era_metrics(bucket, texts, replay_count=bucket_replay_counts.get(bucket, 0))
-             for bucket, texts in by_bucket.items()}
+    result = {
+        bucket: era_metrics(
+            bucket, texts, replay_count=bucket_replay_counts.get(bucket, 0)
+        )
+        for bucket, texts in by_bucket.items()
+    }
     result["ALL"] = era_metrics(
-        "ALL", [row.text for row in rows],
-        replay_count=sum(1 for row in rows if row.decision == DECISION_REPLAY))
+        "ALL",
+        [row.text for row in rows],
+        replay_count=sum(1 for row in rows if row.decision == DECISION_REPLAY),
+    )
     return result
 
 
@@ -1731,7 +1912,8 @@ def resolve_era(available: Sequence[str], token: str) -> str:
     matches = [era for era in available if era.lower().startswith(lowered)]
     if not matches:
         raise ValueError(
-            f"no era matches {token!r}; available eras: {sort_era_keys(available)}")
+            f"no era matches {token!r}; available eras: {sort_era_keys(available)}"
+        )
     if len(matches) > 1:
         raise ValueError(f"{token!r} is ambiguous; matches: {sorted(matches)}")
     return matches[0]
@@ -1775,17 +1957,20 @@ MIN_SAMPLE_FOR_OUTCOME_RATE = 10
 @dataclass
 class OutcomeMetrics:
     era: str
-    n: int                          # total joined outcome rows counted in this bucket
-    counts: dict[str, int]           # raw outcome string -> count (e.g. "match", "reply",
-                                     # "no_response", "unmatch", "unknown", "(none)")
-    response_count: int              # sum of counts[k] for k in _RESPONSE_OUTCOME_KINDS
-    response_rate: float | None      # None exactly when rate_blocked is True
-    rate_blocked: bool                # True when n < MIN_SAMPLE_FOR_OUTCOME_RATE
+    n: int  # total joined outcome rows counted in this bucket
+    counts: dict[str, int]  # raw outcome string -> count (e.g. "match", "reply",
+    # "no_response", "unmatch", "unknown", "(none)")
+    response_count: int  # sum of counts[k] for k in _RESPONSE_OUTCOME_KINDS
+    response_rate: float | None  # None exactly when rate_blocked is True
+    rate_blocked: bool  # True when n < MIN_SAMPLE_FOR_OUTCOME_RATE
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "era": self.era, "n": self.n, "counts": dict(self.counts),
-            "response_count": self.response_count, "response_rate": self.response_rate,
+            "era": self.era,
+            "n": self.n,
+            "counts": dict(self.counts),
+            "response_count": self.response_count,
+            "response_rate": self.response_rate,
             "rate_blocked": self.rate_blocked,
             "min_sample_for_rate": MIN_SAMPLE_FOR_OUTCOME_RATE,
         }
@@ -1798,12 +1983,19 @@ def outcome_metrics(era: str, outcomes: Sequence[str]) -> OutcomeMetrics:
     True exactly like any other too-small bucket -- no separate zero-division branch needed."""
     n = len(outcomes)
     counts: Counter[str] = Counter(outcomes)
-    response_count = sum(c for kind, c in counts.items() if kind in _RESPONSE_OUTCOME_KINDS)
+    response_count = sum(
+        c for kind, c in counts.items() if kind in _RESPONSE_OUTCOME_KINDS
+    )
     rate_blocked = n < MIN_SAMPLE_FOR_OUTCOME_RATE
     response_rate = None if rate_blocked else (response_count / n)
     return OutcomeMetrics(
-        era=era, n=n, counts=dict(sorted(counts.items())), response_count=response_count,
-        response_rate=response_rate, rate_blocked=rate_blocked)
+        era=era,
+        n=n,
+        counts=dict(sorted(counts.items())),
+        response_count=response_count,
+        response_rate=response_rate,
+        rate_blocked=rate_blocked,
+    )
 
 
 def build_outcome_metrics(rows: Sequence[OutcomeRow]) -> dict[str, OutcomeMetrics]:
@@ -1818,8 +2010,9 @@ def build_outcome_metrics(rows: Sequence[OutcomeRow]) -> dict[str, OutcomeMetric
     return result
 
 
-def outcome_bucket_or_empty(outcome_metrics_map: dict[str, OutcomeMetrics], era: str
-                            ) -> OutcomeMetrics:
+def outcome_bucket_or_empty(
+    outcome_metrics_map: dict[str, OutcomeMetrics], era: str
+) -> OutcomeMetrics:
     """The outcome bucket for ``era``, or an explicit empty one (n=0, rate_blocked=True) when no
     outcome row has ever joined under that exact era -- so --compare can always show an outcomes
     delta for whichever two eras the PRODUCED-side axis is comparing, even when one or both sides
@@ -1835,9 +2028,14 @@ def compare_outcome_eras(a: OutcomeMetrics, b: OutcomeMetrics) -> dict[str, Any]
     blocked = a.rate_blocked or b.rate_blocked
     delta = None if blocked else (b.response_rate - a.response_rate)
     return {
-        "a_n": a.n, "b_n": b.n, "a_counts": dict(a.counts), "b_counts": dict(b.counts),
-        "a_response_rate": a.response_rate, "b_response_rate": b.response_rate,
-        "delta_response_rate": delta, "rate_blocked": blocked,
+        "a_n": a.n,
+        "b_n": b.n,
+        "a_counts": dict(a.counts),
+        "b_counts": dict(b.counts),
+        "a_response_rate": a.response_rate,
+        "b_response_rate": b.response_rate,
+        "delta_response_rate": delta,
+        "rate_blocked": blocked,
         "min_sample_for_rate": MIN_SAMPLE_FOR_OUTCOME_RATE,
     }
 
@@ -1871,6 +2069,7 @@ class EraRegistry:
     disk right now and can change on the next edit -- see format_eras_listing()/
     format_rule_lookup() for how each is presented so a reader can never mistake one for the
     other."""
+
     path: Path
     loaded: bool
     eras: dict[str, dict[str, Any]]
@@ -1886,14 +2085,24 @@ def load_era_registry(path: Path) -> EraRegistry:
     back to the bare digest), since a report run should still be useful before anyone has ever
     run tools/backfill_prompt_eras.py."""
     if not path.exists():
-        return EraRegistry(path=path, loaded=False, eras={}, order=[],
-                           note=f"no era registry at {path} (run tools/backfill_prompt_eras.py "
-                                "to generate one)")
+        return EraRegistry(
+            path=path,
+            loaded=False,
+            eras={},
+            order=[],
+            note=f"no era registry at {path} (run tools/backfill_prompt_eras.py "
+            "to generate one)",
+        )
     try:
         doc = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
-        return EraRegistry(path=path, loaded=False, eras={}, order=[],
-                           note=f"could not parse {path} as JSON: {exc}")
+        return EraRegistry(
+            path=path,
+            loaded=False,
+            eras={},
+            order=[],
+            note=f"could not parse {path} as JSON: {exc}",
+        )
     eras: dict[str, dict[str, Any]] = {}
     order: list[str] = []
     for entry in doc.get("eras", []) if isinstance(doc, dict) else []:
@@ -1905,7 +2114,9 @@ def load_era_registry(path: Path) -> EraRegistry:
     working_tree = doc.get("working_tree") if isinstance(doc, dict) else None
     if not isinstance(working_tree, dict):
         working_tree = None
-    return EraRegistry(path=path, loaded=True, eras=eras, order=order, working_tree=working_tree)
+    return EraRegistry(
+        path=path, loaded=True, eras=eras, order=order, working_tree=working_tree
+    )
 
 
 def resolve_era_label(era: str, registry: EraRegistry | None) -> str:
@@ -1933,8 +2144,9 @@ def resolve_era_label(era: str, registry: EraRegistry | None) -> str:
     return f"{era} (unregistered digest; run tools/backfill_prompt_eras.py)"
 
 
-def resolve_compare_token(available: Sequence[str], token: str,
-                          registry: EraRegistry | None) -> str:
+def resolve_compare_token(
+    available: Sequence[str], token: str, registry: EraRegistry | None
+) -> str:
     """resolve_era(), extended to also accept a human era LABEL from the registry (exact,
     case-insensitive match) -- per the task's requirement that --compare take a label as well as
     a digest or digest prefix. Tried FIRST, since a label match is unambiguous by construction
@@ -1943,13 +2155,18 @@ def resolve_compare_token(available: Sequence[str], token: str,
     (or an unloaded registry) reproduces resolve_era()'s old behaviour exactly."""
     if registry is not None and registry.loaded:
         lowered = token.lower()
-        label_matches = [digest for digest in available
-                         if digest in registry.eras
-                         and str(registry.eras[digest].get("label", "")).lower() == lowered]
+        label_matches = [
+            digest
+            for digest in available
+            if digest in registry.eras
+            and str(registry.eras[digest].get("label", "")).lower() == lowered
+        ]
         if len(label_matches) == 1:
             return label_matches[0]
         if len(label_matches) > 1:
-            raise ValueError(f"label {token!r} matches multiple registered eras: {label_matches}")
+            raise ValueError(
+                f"label {token!r} matches multiple registered eras: {label_matches}"
+            )
     return resolve_era(available, token)
 
 
@@ -2019,6 +2236,7 @@ def compute_current_prompt_era(config_path: str) -> tuple[str | None, str | None
     try:
         from operation_love import config as cfg_mod
         from operation_love.opener.opener import prompt_stamp
+
         cfg = cfg_mod.load(config_path)
         return prompt_stamp(cfg.opener.style), None
     except Exception as exc:  # noqa: BLE001 -- a bad/missing config must not crash the report
@@ -2029,14 +2247,19 @@ def compute_current_prompt_era(config_path: str) -> tuple[str | None, str | None
 class PreRegisteredMetricCheck:
     """One of the four directional predictions (see the module-level constants above), evaluated
     against the CURRENT era's measured value."""
+
     metric: str
     predicted: str
     value: float
     passed: bool
 
     def to_dict(self) -> dict[str, Any]:
-        return {"metric": self.metric, "predicted": self.predicted, "value": self.value,
-                "passed": self.passed}
+        return {
+            "metric": self.metric,
+            "predicted": self.predicted,
+            "value": self.value,
+            "passed": self.passed,
+        }
 
 
 @dataclass
@@ -2070,6 +2293,7 @@ class PreRegisteredCheck:
     store, e.g. any sent opener, counts once in ``drafts_recorded`` and once toward
     ``store_drafts``, never twice).
     """
+
     current_era: str | None
     current_era_error: str | None
     drafts_recorded: int
@@ -2097,7 +2321,9 @@ class PreRegisteredCheck:
     # below) keeps working unchanged.
     store_drafts: int | None = None
     predictions: list[PreRegisteredMetricCheck] = field(default_factory=list)
-    falsified: bool | None = None  # None until checkable -- see build_pre_registered_check()
+    falsified: bool | None = (
+        None  # None until checkable -- see build_pre_registered_check()
+    )
 
     def verdict_basis(self) -> str:
         """Where this era's drafts came from: "live", "replay", or "mixed".
@@ -2132,10 +2358,14 @@ class PreRegisteredCheck:
         }
 
 
-def build_pre_registered_check(era_metrics_map: dict[str, EraMetrics], *,
-                               current_era: str | None, current_era_error: str | None,
-                               replay_captures_on_disk: int,
-                               rows: Sequence[OpenerRow] | None = None) -> PreRegisteredCheck:
+def build_pre_registered_check(
+    era_metrics_map: dict[str, EraMetrics],
+    *,
+    current_era: str | None,
+    current_era_error: str | None,
+    replay_captures_on_disk: int,
+    rows: Sequence[OpenerRow] | None = None,
+) -> PreRegisteredCheck:
     """Assemble the PreRegisteredCheck for ``current_era`` against ``era_metrics_map``
     (build_era_metrics()'s own output). Below PRE_REGISTERED_MIN_DRAFTS, ``predictions`` stays
     empty and ``falsified`` stays None -- a caller renders a verdict exactly when ``checkable`` is
@@ -2160,16 +2390,22 @@ def build_pre_registered_check(era_metrics_map: dict[str, EraMetrics], *,
     replay_drafts = era_metrics_map[current_era].replay_count if _era_present else 0
     store_drafts: int | None = None
     if rows is not None and _era_present:
-        store_drafts = sum(1 for row in rows
-                           if row.era == current_era and row.source != "jsonl")
+        store_drafts = sum(
+            1 for row in rows if row.era == current_era and row.source != "jsonl"
+        )
     shortfall = max(0, PRE_REGISTERED_MIN_DRAFTS - drafts_recorded)
     checkable = current_era is not None and drafts_recorded >= PRE_REGISTERED_MIN_DRAFTS
     check = PreRegisteredCheck(
-        current_era=current_era, current_era_error=current_era_error,
-        drafts_recorded=drafts_recorded, replay_drafts=replay_drafts,
+        current_era=current_era,
+        current_era_error=current_era_error,
+        drafts_recorded=drafts_recorded,
+        replay_drafts=replay_drafts,
         replay_captures_on_disk=replay_captures_on_disk,
-        min_drafts_required=PRE_REGISTERED_MIN_DRAFTS, checkable=checkable, shortfall=shortfall,
-        store_drafts=store_drafts)
+        min_drafts_required=PRE_REGISTERED_MIN_DRAFTS,
+        checkable=checkable,
+        shortfall=shortfall,
+        store_drafts=store_drafts,
+    )
     if not checkable:
         return check
 
@@ -2177,102 +2413,143 @@ def build_pre_registered_check(era_metrics_map: dict[str, EraMetrics], *,
     ssr = single_sentence_rate(m)
     check.predictions = [
         PreRegisteredMetricCheck(
-            "grade_rate", f"falls below {_pct(PRE_REGISTERED_GRADE_RATE_MAX)}",
-            m.grade_rate, m.grade_rate < PRE_REGISTERED_GRADE_RATE_MAX),
+            "grade_rate",
+            f"falls below {_pct(PRE_REGISTERED_GRADE_RATE_MAX)}",
+            m.grade_rate,
+            m.grade_rate < PRE_REGISTERED_GRADE_RATE_MAX,
+        ),
         PreRegisteredMetricCheck(
             "single_sentence_rate",
             f"rises above {_pct(PRE_REGISTERED_SINGLE_SENTENCE_RATE_MIN)}",
-            ssr, ssr > PRE_REGISTERED_SINGLE_SENTENCE_RATE_MIN),
+            ssr,
+            ssr > PRE_REGISTERED_SINGLE_SENTENCE_RATE_MIN,
+        ),
         PreRegisteredMetricCheck(
-            "two_sentence_rate", f"falls below {_pct(PRE_REGISTERED_TWO_SENTENCE_RATE_MAX)}",
-            m.two_sentence_rate, m.two_sentence_rate < PRE_REGISTERED_TWO_SENTENCE_RATE_MAX),
+            "two_sentence_rate",
+            f"falls below {_pct(PRE_REGISTERED_TWO_SENTENCE_RATE_MAX)}",
+            m.two_sentence_rate,
+            m.two_sentence_rate < PRE_REGISTERED_TWO_SENTENCE_RATE_MAX,
+        ),
         PreRegisteredMetricCheck(
             "trigram_diversity",
             f"does not fall below {_pct(PRE_REGISTERED_TRIGRAM_DIVERSITY_MIN)}",
-            m.trigram_diversity, m.trigram_diversity >= PRE_REGISTERED_TRIGRAM_DIVERSITY_MIN),
+            m.trigram_diversity,
+            m.trigram_diversity >= PRE_REGISTERED_TRIGRAM_DIVERSITY_MIN,
+        ),
     ]
     # THE FALSIFICATION CRITERION is its own pair of thresholds, never derived from the four
     # PASS/FAIL predictions above (see the module-level constants' own comment).
-    check.falsified = (m.grade_rate >= PRE_REGISTERED_FALSIFY_GRADE_RATE_MIN
-                      and ssr < PRE_REGISTERED_FALSIFY_SINGLE_SENTENCE_RATE_MAX)
+    check.falsified = (
+        m.grade_rate >= PRE_REGISTERED_FALSIFY_GRADE_RATE_MIN
+        and ssr < PRE_REGISTERED_FALSIFY_SINGLE_SENTENCE_RATE_MAX
+    )
     return check
 
 
-def format_pre_registered_check(check: PreRegisteredCheck, *,
-                                registry: EraRegistry | None = None) -> str:
+def format_pre_registered_check(
+    check: PreRegisteredCheck, *, registry: EraRegistry | None = None
+) -> str:
     """The PRE-REGISTERED CHECK section: progress toward PRE_REGISTERED_MIN_DRAFTS for the
     current era, and -- ONLY once that threshold is met -- the pre-registered metrics next to
     their predicted values, whether each passed, and the falsification verdict. Below threshold,
     this prints the shortfall and NOTHING else: no PASS/FAIL, no verdict, per this task's own
     "refuse to render a verdict" requirement."""
-    lines = [f"=== PRE-REGISTERED CHECK (ops/OPENER-REDESIGN.md 2026-09-06 (d): first NO GRADING "
-             f"era batch of at least {check.min_drafts_required} drafts) ==="]
+    lines = [
+        f"=== PRE-REGISTERED CHECK (ops/OPENER-REDESIGN.md 2026-09-06 (d): first NO GRADING "
+        f"era batch of at least {check.min_drafts_required} drafts) ==="
+    ]
     if check.current_era is None:
-        lines.append(f"  could not determine the current prompt era: {check.current_era_error}")
+        lines.append(
+            f"  could not determine the current prompt era: {check.current_era_error}"
+        )
         return "\n".join(lines)
-    lines.append(f"  current prompt era (prompt_sha256): {check.current_era} "
-                f"[{resolve_era_label(check.current_era, registry)}]")
-    lines.append(f"  drafts recorded under this era (deduped drafts across every source -- jsonl "
-                f"debug-log rows + openers-table rows, collapsed to one row per physical draft by "
-                f"text; the threshold applies HERE): {check.drafts_recorded}")
+    lines.append(
+        f"  current prompt era (prompt_sha256): {check.current_era} "
+        f"[{resolve_era_label(check.current_era, registry)}]"
+    )
+    lines.append(
+        f"  drafts recorded under this era (deduped drafts across every source -- jsonl "
+        f"debug-log rows + openers-table rows, collapsed to one row per physical draft by "
+        f"text; the threshold applies HERE): {check.drafts_recorded}"
+    )
     if check.store_drafts is None:
-        lines.append("    of which openers-table rows: not computed for this call (no row-level "
-                    "data was supplied to build_pre_registered_check())")
+        lines.append(
+            "    of which openers-table rows: not computed for this call (no row-level "
+            "data was supplied to build_pre_registered_check())"
+        )
     else:
         lines.append(
             f"    of which openers-table rows (store-backed; reproducible against "
             f"`SELECT COUNT(*) FROM openers WHERE prompt_sha256 = ...`, modulo dedupe collapsing "
             f"a text seen twice in the same source): {check.store_drafts}  -- the remaining "
             f"{check.drafts_recorded - check.store_drafts} are jsonl-only debug-log drafts with "
-            "no surviving openers-table row for that exact text")
+            "no surviving openers-table row for that exact text"
+        )
     lines.append(
         "  NOTE: this count's BASIS CHANGED on 2026-09-17 -- it used to be openers-table rows "
         "only, because a jsonl row carried no era stamp before commit 75155dc7 and so could never "
         "be attributed to any one era; a jsonl row now carries a real era, so excluding it would "
         "undercount real model output generated under this era. See "
-        "ops/OPENER-REDESIGN.md's dated addendum.")
+        "ops/OPENER-REDESIGN.md's dated addendum."
+    )
     _basis = check.verdict_basis()
-    lines.append(f"    of which SYNTHETIC (tools/opener_replay.py offline replay): "
-                f"{check.replay_drafts}  -> basis: {_basis.upper()}")
+    lines.append(
+        f"    of which SYNTHETIC (tools/opener_replay.py offline replay): "
+        f"{check.replay_drafts}  -> basis: {_basis.upper()}"
+    )
     if _basis != "live":
         lines.append(
             "    PROVENANCE: this era's drafts are wholly or partly GENERATED by offline replay, "
             "not captured from a live Training or AUTO run. They are real model output under the "
             "current prompt, so they are valid PRODUCED-side evidence and are counted -- making "
             "this prediction checkable without further device time is precisely why replay "
-            "exists. They are NOT evidence about live behaviour, and they carry no outcomes.")
-    lines.append(f"  replay captures on disk (request inputs, NOT drafts): "
-                f"{check.replay_captures_on_disk}")
+            "exists. They are NOT evidence about live behaviour, and they carry no outcomes."
+        )
+    lines.append(
+        f"  replay captures on disk (request inputs, NOT drafts): "
+        f"{check.replay_captures_on_disk}"
+    )
     if check.drafts_recorded != check.replay_captures_on_disk:
         lines.append(
             f"  NOTE: drafts recorded ({check.drafts_recorded}) and replay captures on disk "
             f"({check.replay_captures_on_disk}) differ -- a single capture can be replayed more "
             "than once under the same era, and a live send needs no capture at all, so these two "
-            "counts are not interchangeable; PRE_REGISTERED_MIN_DRAFTS applies to DRAFTS only.")
+            "counts are not interchangeable; PRE_REGISTERED_MIN_DRAFTS applies to DRAFTS only."
+        )
     if not check.checkable:
         lines.append(
             f"  progress: {check.drafts_recorded}/{check.min_drafts_required} drafts -- "
             f"NOT YET CHECKABLE ({check.shortfall} more draft(s) needed before the pre-registered "
-            "prediction can be checked)")
+            "prediction can be checked)"
+        )
         return "\n".join(lines)
-    lines.append(f"  progress: {check.drafts_recorded}/{check.min_drafts_required} drafts -- "
-                "THRESHOLD MET; the pre-registered prediction is checkable")
+    lines.append(
+        f"  progress: {check.drafts_recorded}/{check.min_drafts_required} drafts -- "
+        "THRESHOLD MET; the pre-registered prediction is checkable"
+    )
     lines.append("  --- pre-registered metrics vs. predicted direction ---")
-    lines.extend(f"    {p.metric:<22}: {_pct(p.value)}  (predicted: {p.predicted})  "
-                f"{'PASS' if p.passed else 'FAIL'}"
-                for p in check.predictions)
+    lines.extend(
+        f"    {p.metric:<22}: {_pct(p.value)}  (predicted: {p.predicted})  "
+        f"{'PASS' if p.passed else 'FAIL'}"
+        for p in check.predictions
+    )
     lines.append(
         f"  falsification criterion (grade_rate >= "
         f"{_pct(PRE_REGISTERED_FALSIFY_GRADE_RATE_MIN)} AND single_sentence_rate < "
         f"{_pct(PRE_REGISTERED_FALSIFY_SINGLE_SENTENCE_RATE_MAX)}): "
-        f"{'MET' if check.falsified else 'NOT MET'}")
-    _suffix = ("" if _basis == "live"
-               else f" [{_basis.upper()}-BASED: {check.replay_drafts}/{check.drafts_recorded} "
-                    "draft(s) generated by offline replay, not live capture]")
+        f"{'MET' if check.falsified else 'NOT MET'}"
+    )
+    _suffix = (
+        ""
+        if _basis == "live"
+        else f" [{_basis.upper()}-BASED: {check.replay_drafts}/{check.drafts_recorded} "
+        "draft(s) generated by offline replay, not live capture]"
+    )
     if check.falsified:
         lines.append(
             f"  VERDICT: FALSIFIED{_suffix} -- the prohibition-only approach did not hold; the "
-            "positive-specification restructure (DECISION 3) ships without further argument.")
+            "positive-specification restructure (DECISION 3) ships without further argument."
+        )
     else:
         lines.append(f"  VERDICT: NOT FALSIFIED{_suffix}")
     return "\n".join(lines)
@@ -2372,7 +2649,12 @@ def format_source_report(report: SourceReport) -> str:
         f"  jsonl   : {js.run_dirs_total} run dir(s), {js.run_dirs_with_actions_file} with an "
         f"actions.jsonl, {js.run_dirs_populated} populated (>=1 opener) -> "
         f"{js.opener_occurrences} occurrence(s), {report.jsonl_unique} unique"
-        + (f" ({js.malformed_lines} malformed line(s) skipped)" if js.malformed_lines else ""))
+        + (
+            f" ({js.malformed_lines} malformed line(s) skipped)"
+            if js.malformed_lines
+            else ""
+        )
+    )
     sq = report.sqlite_stats
     lines.append(
         f"  sqlite  : {'available' if sq.available else 'unavailable'}, "
@@ -2380,7 +2662,8 @@ def format_source_report(report: SourceReport) -> str:
         f"({sq.replay_row_count} synthetic-replay row(s) included -- see caveats; PRODUCED-side "
         f"only, never OUTCOMES), {sq.rejections_row_count} opener_rejections row(s) "
         f"({sq.rejections_replay_row_count} synthetic-replay row(s) included -- see OPENER "
-        f"REJECTIONS below for the per-era split)")
+        f"REJECTIONS below for the per-era split)"
+    )
     lines.extend(f"            NOTE: {note}" for note in sq.notes)
     bq = report.bigquery_stats
     if not bq.attempted:
@@ -2392,33 +2675,40 @@ def format_source_report(report: SourceReport) -> str:
             f"({bq.replay_row_count} synthetic-replay row(s) included -- see caveats; "
             f"PRODUCED-side only, never OUTCOMES), {bq.rejections_row_count} "
             f"opener_rejections row(s) ({bq.rejections_replay_row_count} synthetic-replay "
-            "row(s) included -- see OPENER REJECTIONS below for the per-era split)")
+            "row(s) included -- see OPENER REJECTIONS below for the per-era split)"
+        )
         lines.extend(f"            NOTE: {note}" for note in bq.notes)
     lines.append(
         f"  combined corpus after cross-source de-duplication: {report.combined_unique} "
-        "unique opener(s)")
+        "unique opener(s)"
+    )
     sqo = report.sqlite_outcome_stats
     lines.append(
         f"  sqlite opener_outcomes  : {'available' if sqo.available else 'unavailable'}, "
         f"{sqo.joined_row_count} joined outcome row(s) "
         f"({sqo.replay_excluded_count} synthetic-replay row(s) excluded, "
-        f"{sqo.not_sent_excluded_count} not-verified-sent row(s) excluded)")
+        f"{sqo.not_sent_excluded_count} not-verified-sent row(s) excluded)"
+    )
     lines.extend(f"            NOTE: {note}" for note in sqo.notes)
     bqo = report.bigquery_outcome_stats
     if not bqo.attempted:
-        lines.append("  bigquery opener_outcomes: not queried (pass --bigquery to include it)")
+        lines.append(
+            "  bigquery opener_outcomes: not queried (pass --bigquery to include it)"
+        )
     else:
         lines.append(
             f"  bigquery opener_outcomes: {'available' if bqo.available else 'unavailable'}, "
             f"{bqo.joined_row_count} joined outcome row(s) "
             f"({bqo.replay_excluded_count} synthetic-replay row(s) excluded, "
-            f"{bqo.not_sent_excluded_count} not-verified-sent row(s) excluded)")
+            f"{bqo.not_sent_excluded_count} not-verified-sent row(s) excluded)"
+        )
         lines.extend(f"            NOTE: {note}" for note in bqo.notes)
     return "\n".join(lines)
 
 
-def format_era_metrics(m: EraMetrics, *, label: str = "era",
-                       registry: EraRegistry | None = None) -> str:
+def format_era_metrics(
+    m: EraMetrics, *, label: str = "era", registry: EraRegistry | None = None
+) -> str:
     """Render one EraMetrics bucket. ``label`` names the axis this bucket came from ("era" for
     build_era_metrics()'s prompt_sha256 buckets, "decision" for build_decision_metrics()'s
     sent/send_unverified/not_sent/unknown buckets) -- EraMetrics itself is axis-agnostic (see
@@ -2441,27 +2731,43 @@ def format_era_metrics(m: EraMetrics, *, label: str = "era",
     if m.n == 0:
         lines.append("  (no openers in this bucket)")
         return "\n".join(lines)
-    lines.append(f"  grade_rate            : {_pct(m.grade_rate)} ({m.grade_count}/{m.n})")
-    lines.append(f"  two_sentence_rate     : {_pct(m.two_sentence_rate)} "
-                 f"({m.two_sentence_count}/{m.n})")
+    lines.append(
+        f"  grade_rate            : {_pct(m.grade_rate)} ({m.grade_count}/{m.n})"
+    )
+    lines.append(
+        f"  two_sentence_rate     : {_pct(m.two_sentence_rate)} "
+        f"({m.two_sentence_count}/{m.n})"
+    )
     lines.append(f"  sentence_counts       : {m.sentence_counts}")
-    lines.append(f"  question_final_rate   : {_pct(m.question_final_rate)} "
-                 f"({m.question_final_count}/{m.n})")
-    lines.append(f"  trigram_diversity     : {_pct(m.trigram_diversity)} "
-                 f"({m.distinct_trigrams}/{m.total_trigrams} distinct)")
-    lines.append(f"  top5_trigram_coverage : {_pct(m.top5_trigram_coverage)} -> "
-                 f"{m.top5_trigrams}")
-    lines.append(f"  apostrophe_rate       : {_pct(m.apostrophe_rate)} "
-                 f"({m.apostrophe_count}/{m.n})")
-    lines.append(f"  looks_like_rate       : {_pct(m.looks_like_rate)} "
-                 f"({m.looks_like_count}/{m.n})")
+    lines.append(
+        f"  question_final_rate   : {_pct(m.question_final_rate)} "
+        f"({m.question_final_count}/{m.n})"
+    )
+    lines.append(
+        f"  trigram_diversity     : {_pct(m.trigram_diversity)} "
+        f"({m.distinct_trigrams}/{m.total_trigrams} distinct)"
+    )
+    lines.append(
+        f"  top5_trigram_coverage : {_pct(m.top5_trigram_coverage)} -> "
+        f"{m.top5_trigrams}"
+    )
+    lines.append(
+        f"  apostrophe_rate       : {_pct(m.apostrophe_rate)} "
+        f"({m.apostrophe_count}/{m.n})"
+    )
+    lines.append(
+        f"  looks_like_rate       : {_pct(m.looks_like_rate)} "
+        f"({m.looks_like_count}/{m.n})"
+    )
     lines.append(f"  mean/median chars     : {m.mean_chars:.1f} / {m.median_chars:.1f}")
     return "\n".join(lines)
 
 
-def format_rejections(rejections: dict[str, Counter[str]],
-                      registry: EraRegistry | None = None,
-                      replay: dict[str, Counter[str]] | None = None) -> str:
+def format_rejections(
+    rejections: dict[str, Counter[str]],
+    registry: EraRegistry | None = None,
+    replay: dict[str, Counter[str]] | None = None,
+) -> str:
     """The OPENER REJECTIONS section, with every count split live vs synthetic replay.
 
     ``replay`` is replay_rejections_by_era()'s output over the SAME rows ``rejections`` was built
@@ -2479,8 +2785,10 @@ def format_rejections(rejections: dict[str, Counter[str]],
     fail to notice it; "0 synthetic replay" said out loud cannot be missed the same way.
     """
     if not rejections:
-        return ("=== OPENER REJECTIONS ===\n  no opener_rejections rows available from any "
-                "queried store (see the SOURCES notes above for why)")
+        return (
+            "=== OPENER REJECTIONS ===\n  no opener_rejections rows available from any "
+            "queried store (see the SOURCES notes above for why)"
+        )
     replay = replay or {}
     grand_total = sum(sum(counts.values()) for counts in rejections.values())
     grand_replay = sum(sum(counts.values()) for counts in replay.values())
@@ -2500,11 +2808,14 @@ def format_rejections(rejections: dict[str, Counter[str]],
         lines.append(
             f"  era {era} [{resolve_era_label(era, registry)}] ({total} total: "
             f"{total - era_replay} live, {era_replay} synthetic replay)"
-            f"{_rejection_synthetic_marker(total, era_replay)}:")
+            f"{_rejection_synthetic_marker(total, era_replay)}:"
+        )
         for reason_code, count in counts.most_common():
             reason_replay = era_replay_counts.get(reason_code, 0)
-            lines.append(f"    {reason_code}: {count} "
-                         f"({count - reason_replay} live, {reason_replay} synthetic replay)")
+            lines.append(
+                f"    {reason_code}: {count} "
+                f"({count - reason_replay} live, {reason_replay} synthetic replay)"
+            )
     return "\n".join(lines)
 
 
@@ -2517,11 +2828,15 @@ def _rejection_synthetic_marker(total: int, replay_count: int) -> str:
     answer that question differently."""
     status = synthetic_status(total, replay_count)
     if status == SYNTHETIC_WHOLLY:
-        return (" [WHOLLY SYNTHETIC: every rejection here was produced by an offline "
-                "tools/opener_replay.py pass, none by live use]")
+        return (
+            " [WHOLLY SYNTHETIC: every rejection here was produced by an offline "
+            "tools/opener_replay.py pass, none by live use]"
+        )
     if status == SYNTHETIC_PARTIAL:
-        return (f" [PARTIALLY SYNTHETIC: {replay_count}/{total} rejection(s) produced by "
-                "tools/opener_replay.py]")
+        return (
+            f" [PARTIALLY SYNTHETIC: {replay_count}/{total} rejection(s) produced by "
+            "tools/opener_replay.py]"
+        )
     return ""
 
 
@@ -2548,8 +2863,14 @@ def compare_eras(a: EraMetrics, b: EraMetrics) -> list[tuple[str, float, float, 
     return out
 
 
-def format_compare(era_a: str, era_b: str, a: EraMetrics, b: EraMetrics, *,
-                   registry: EraRegistry | None = None) -> str:
+def format_compare(
+    era_a: str,
+    era_b: str,
+    a: EraMetrics,
+    b: EraMetrics,
+    *,
+    registry: EraRegistry | None = None,
+) -> str:
     """--compare's side-by-side delta. Both ``a`` and ``b`` are always ERA-axis buckets (--compare
     only ever operates on build_era_metrics()'s output -- see main()/build_report()), so
     era_synthetic_marker() is appended to BOTH headers unconditionally (never gated behind a
@@ -2563,21 +2884,29 @@ def format_compare(era_a: str, era_b: str, a: EraMetrics, b: EraMetrics, *,
     if registry is not None:
         header_a += f" [{resolve_era_label(era_a, registry)}]"
         header_b += f" [{resolve_era_label(era_b, registry)}]"
-    lines = [f"=== COMPARE: {header_a} (n={a.n}){era_synthetic_marker(a)} vs "
-            f"{header_b} (n={b.n}){era_synthetic_marker(b)} ==="]
+    lines = [
+        f"=== COMPARE: {header_a} (n={a.n}){era_synthetic_marker(a)} vs "
+        f"{header_b} (n={b.n}){era_synthetic_marker(b)} ==="
+    ]
     for label, va, vb, delta in rows:
         if label in ("n",):
-            lines.append(f"  {label.ljust(label_w)} : {va:g} -> {vb:g}  (delta {delta:+g})")
+            lines.append(
+                f"  {label.ljust(label_w)} : {va:g} -> {vb:g}  (delta {delta:+g})"
+            )
         else:
-            lines.append(f"  {label.ljust(label_w)} : {_pct(va)} -> {_pct(vb)}  "
-                         f"(delta {delta * 100:+.1f} pts)"
-                         if "rate" in label or "coverage" in label or "diversity" in label
-                         else f"  {label.ljust(label_w)} : {va:.1f} -> {vb:.1f}  "
-                              f"(delta {delta:+.1f})")
+            lines.append(
+                f"  {label.ljust(label_w)} : {_pct(va)} -> {_pct(vb)}  "
+                f"(delta {delta * 100:+.1f} pts)"
+                if "rate" in label or "coverage" in label or "diversity" in label
+                else f"  {label.ljust(label_w)} : {va:.1f} -> {vb:.1f}  "
+                f"(delta {delta:+.1f})"
+            )
     return "\n".join(lines)
 
 
-def format_outcome_metrics(m: OutcomeMetrics, *, registry: EraRegistry | None = None) -> str:
+def format_outcome_metrics(
+    m: OutcomeMetrics, *, registry: EraRegistry | None = None
+) -> str:
     """Render one OutcomeMetrics bucket -- the OUTCOMES-axis counterpart of format_era_metrics()
     above, always on the "era" axis (there is no decision-axis equivalent: an outcome is observed
     on a real conversation, never on a draft that was or wasn't sent). Enforces the HARD HONESTY
@@ -2594,15 +2923,24 @@ def format_outcome_metrics(m: OutcomeMetrics, *, registry: EraRegistry | None = 
         lines.append(
             f"  response_rate          : n too small for a rate (n={m.n} < "
             f"{MIN_SAMPLE_FOR_OUTCOME_RATE} -- see MIN_SAMPLE_FOR_OUTCOME_RATE); the raw counts "
-            "above are the only honest number here")
+            "above are the only honest number here"
+        )
     else:
-        lines.append(f"  response_rate          : {_pct(m.response_rate)} "
-                     f"({m.response_count}/{m.n})")
+        lines.append(
+            f"  response_rate          : {_pct(m.response_rate)} "
+            f"({m.response_count}/{m.n})"
+        )
     return "\n".join(lines)
 
 
-def format_compare_outcomes(era_a: str, era_b: str, a: OutcomeMetrics, b: OutcomeMetrics, *,
-                            registry: EraRegistry | None = None) -> str:
+def format_compare_outcomes(
+    era_a: str,
+    era_b: str,
+    a: OutcomeMetrics,
+    b: OutcomeMetrics,
+    *,
+    registry: EraRegistry | None = None,
+) -> str:
     """The OUTCOMES-axis counterpart of format_compare() above -- same era tokens, same small-n
     guard as format_outcome_metrics(): a delta is only ever printed when NEITHER side's rate is
     blocked."""
@@ -2617,21 +2955,28 @@ def format_compare_outcomes(era_a: str, era_b: str, a: OutcomeMetrics, b: Outcom
     if cmp["rate_blocked"]:
         lines.append(
             f"  response_rate : n too small for a rate on at least one side (min sample "
-            f"{MIN_SAMPLE_FOR_OUTCOME_RATE}) -- see the raw counts above instead")
+            f"{MIN_SAMPLE_FOR_OUTCOME_RATE}) -- see the raw counts above instead"
+        )
     else:
-        lines.append(f"  response_rate : {_pct(a.response_rate)} -> {_pct(b.response_rate)}  "
-                     f"(delta {cmp['delta_response_rate'] * 100:+.1f} pts)")
+        lines.append(
+            f"  response_rate : {_pct(a.response_rate)} -> {_pct(b.response_rate)}  "
+            f"(delta {cmp['delta_response_rate'] * 100:+.1f} pts)"
+        )
     return "\n".join(lines)
 
 
-def build_report(rows: Sequence[OpenerRow], rejections: Sequence[RejectionRow],
-                 source_report: SourceReport, *,
-                 outcome_rows: Sequence[OutcomeRow] = (),
-                 compare: tuple[str, str] | None = None,
-                 registry: EraRegistry | None = None,
-                 replay_corpus_stats: ReplayCorpusStats | None = None,
-                 current_era: str | None = None,
-                 current_era_error: str | None = None) -> dict[str, Any]:
+def build_report(
+    rows: Sequence[OpenerRow],
+    rejections: Sequence[RejectionRow],
+    source_report: SourceReport,
+    *,
+    outcome_rows: Sequence[OutcomeRow] = (),
+    compare: tuple[str, str] | None = None,
+    registry: EraRegistry | None = None,
+    replay_corpus_stats: ReplayCorpusStats | None = None,
+    current_era: str | None = None,
+    current_era_error: str | None = None,
+) -> dict[str, Any]:
     """Assemble the full JSON-serializable report document shared by text and --json output.
 
     ``outcome_rows``, the OUTCOMES axis (see build_outcome_metrics()), is keyword-only with an
@@ -2677,10 +3022,16 @@ def build_report(rows: Sequence[OpenerRow], rejections: Sequence[RejectionRow],
         if working_tree_digest is not None:
             digests.add(working_tree_digest)
         era_labels = {digest: resolve_era_label(digest, registry) for digest in digests}
-    replay_stats = replay_corpus_stats or ReplayCorpusStats(corpus_dir=Path(DEFAULT_CORPUS_DIR))
+    replay_stats = replay_corpus_stats or ReplayCorpusStats(
+        corpus_dir=Path(DEFAULT_CORPUS_DIR)
+    )
     pre_registered_check = build_pre_registered_check(
-        metrics, current_era=current_era, current_era_error=current_era_error,
-        replay_captures_on_disk=replay_stats.capture_count, rows=rows)
+        metrics,
+        current_era=current_era,
+        current_era_error=current_era_error,
+        replay_captures_on_disk=replay_stats.capture_count,
+        rows=rows,
+    )
     doc: dict[str, Any] = {
         "caveats": list(_CAVEATS),
         # The corpus-on-disk and progress-toward-the-pre-registered-check sections, carried
@@ -2689,10 +3040,12 @@ def build_report(rows: Sequence[OpenerRow], rejections: Sequence[RejectionRow],
         "replay_corpus": replay_stats.to_dict(),
         "pre_registered_check": pre_registered_check.to_dict(),
         "sources": {
-            "jsonl": vars(source_report.jsonl_stats) | {"unique": source_report.jsonl_unique},
-            "sqlite": vars(source_report.sqlite_stats) | {"unique": source_report.sqlite_unique},
+            "jsonl": vars(source_report.jsonl_stats)
+            | {"unique": source_report.jsonl_unique},
+            "sqlite": vars(source_report.sqlite_stats)
+            | {"unique": source_report.sqlite_unique},
             "bigquery": vars(source_report.bigquery_stats)
-                       | {"unique": source_report.bigquery_unique},
+            | {"unique": source_report.bigquery_unique},
             "combined_unique": source_report.combined_unique,
             # Outcome-axis source stats, kept in their OWN nested key rather than folded into
             # the sqlite/bigquery entries above -- those describe the openers/opener_rejections
@@ -2702,18 +3055,26 @@ def build_report(rows: Sequence[OpenerRow], rejections: Sequence[RejectionRow],
                 "bigquery": vars(source_report.bigquery_outcome_stats),
             },
         },
-        "by_era": {era: metrics[era].to_dict() for era in sort_era_keys(metrics.keys())},
+        "by_era": {
+            era: metrics[era].to_dict() for era in sort_era_keys(metrics.keys())
+        },
         # See this module's docstring's METRICS section and BE HONEST caveat 4: this axis is
         # first class, not a footnote, because it is the only one that answers "sent vs not".
-        "by_decision": {bucket: decision_metrics[bucket].to_dict()
-                        for bucket in sort_decision_keys(decision_metrics.keys())},
+        "by_decision": {
+            bucket: decision_metrics[bucket].to_dict()
+            for bucket in sort_decision_keys(decision_metrics.keys())
+        },
         # The OUTCOMES axis (this task): did the openers written under prompt era X actually
         # PERFORM better -- see build_outcome_metrics()/OutcomeMetrics and BE HONEST caveats 5-8.
         # Carried through --json unconditionally, exactly like by_era/by_decision above, never
         # gated behind a flag.
-        "by_outcome": {era: outcome_metrics_map[era].to_dict()
-                      for era in sort_era_keys(outcome_metrics_map.keys())},
-        "rejections_by_era": {era: dict(rej_by_era[era]) for era in sort_era_keys(rej_by_era.keys())},
+        "by_outcome": {
+            era: outcome_metrics_map[era].to_dict()
+            for era in sort_era_keys(outcome_metrics_map.keys())
+        },
+        "rejections_by_era": {
+            era: dict(rej_by_era[era]) for era in sort_era_keys(rej_by_era.keys())
+        },
         # The SYNTHETIC SUBSET of rejections_by_era above (rows an offline
         # tools/opener_replay.py --live pass wrote -- see REPLAY_RUN_ID_PREFIX), carried as its
         # own key with the SAME era/reason_code shape so a consumer subtracts to get the live
@@ -2723,14 +3084,18 @@ def build_report(rows: Sequence[OpenerRow], rejections: Sequence[RejectionRow],
         # that does can never mistake a replay-inflated guard-firing rate for a live one. An era
         # with no synthetic rows is simply absent from this map (its whole total is live) --
         # `rejections_synthetic_status` below is the unconditional per-era verdict.
-        "rejections_by_era_replay": {era: dict(rej_replay_by_era[era])
-                                     for era in sort_era_keys(rej_replay_by_era.keys())},
+        "rejections_by_era_replay": {
+            era: dict(rej_replay_by_era[era])
+            for era in sort_era_keys(rej_replay_by_era.keys())
+        },
         # wholly/partial/none per era, over the same rejection counts -- the machine-readable
         # twin of the bracketed marker format_rejections() prints, via the SAME synthetic_status()
         # the produced-side era axis uses, so text and JSON can never render different verdicts.
         "rejections_synthetic_status": {
-            era: synthetic_status(sum(rej_by_era[era].values()),
-                                  sum(rej_replay_by_era.get(era, Counter()).values()))
+            era: synthetic_status(
+                sum(rej_by_era[era].values()),
+                sum(rej_replay_by_era.get(era, Counter()).values()),
+            )
             for era in sort_era_keys(rej_by_era.keys())
         },
         "era_labels": era_labels,
@@ -2741,7 +3106,8 @@ def build_report(rows: Sequence[OpenerRow], rejections: Sequence[RejectionRow],
         era_a = resolve_compare_token(available, era_a_token, registry)
         era_b = resolve_compare_token(available, era_b_token, registry)
         doc["compare"] = {
-            "era_a": era_a, "era_b": era_b,
+            "era_a": era_a,
+            "era_b": era_b,
             "era_a_label": resolve_era_label(era_a, registry),
             "era_b_label": resolve_era_label(era_b, registry),
             # Whether EITHER side being compared is wholly/partially populated by
@@ -2752,9 +3118,11 @@ def build_report(rows: Sequence[OpenerRow], rejections: Sequence[RejectionRow],
             "era_a_replay_count": metrics[era_a].replay_count,
             "era_b_replay_count": metrics[era_b].replay_count,
             "era_a_synthetic_status": synthetic_status(
-                metrics[era_a].n, metrics[era_a].replay_count),
+                metrics[era_a].n, metrics[era_a].replay_count
+            ),
             "era_b_synthetic_status": synthetic_status(
-                metrics[era_b].n, metrics[era_b].replay_count),
+                metrics[era_b].n, metrics[era_b].replay_count
+            ),
             "deltas": [
                 {"field": label, "a": va, "b": vb, "delta": delta}
                 for label, va, vb, delta in compare_eras(metrics[era_a], metrics[era_b])
@@ -2764,33 +3132,46 @@ def build_report(rows: Sequence[OpenerRow], rejections: Sequence[RejectionRow],
             # joined outcome rows yet, so this key is always present, never conditionally absent.
             "outcomes": compare_outcome_eras(
                 outcome_bucket_or_empty(outcome_metrics_map, era_a),
-                outcome_bucket_or_empty(outcome_metrics_map, era_b)),
+                outcome_bucket_or_empty(outcome_metrics_map, era_b),
+            ),
         }
     return doc
 
 
-def format_text_report(rows: Sequence[OpenerRow], rejections: Sequence[RejectionRow],
-                       source_report: SourceReport, *,
-                       outcome_rows: Sequence[OutcomeRow] = (),
-                       compare: tuple[str, str] | None = None,
-                       registry: EraRegistry | None = None,
-                       replay_corpus_stats: ReplayCorpusStats | None = None,
-                       current_era: str | None = None,
-                       current_era_error: str | None = None) -> str:
+def format_text_report(
+    rows: Sequence[OpenerRow],
+    rejections: Sequence[RejectionRow],
+    source_report: SourceReport,
+    *,
+    outcome_rows: Sequence[OutcomeRow] = (),
+    compare: tuple[str, str] | None = None,
+    registry: EraRegistry | None = None,
+    replay_corpus_stats: ReplayCorpusStats | None = None,
+    current_era: str | None = None,
+    current_era_error: str | None = None,
+) -> str:
     metrics = build_era_metrics(rows)
     decision_metrics = build_decision_metrics(rows)
     outcome_metrics_map = build_outcome_metrics(outcome_rows)
-    replay_stats = replay_corpus_stats or ReplayCorpusStats(corpus_dir=Path(DEFAULT_CORPUS_DIR))
+    replay_stats = replay_corpus_stats or ReplayCorpusStats(
+        corpus_dir=Path(DEFAULT_CORPUS_DIR)
+    )
     pre_registered_check = build_pre_registered_check(
-        metrics, current_era=current_era, current_era_error=current_era_error,
-        replay_captures_on_disk=replay_stats.capture_count, rows=rows)
+        metrics,
+        current_era=current_era,
+        current_era_error=current_era_error,
+        replay_captures_on_disk=replay_stats.capture_count,
+        rows=rows,
+    )
     parts = ["=== CAVEATS (read before trusting any number below) ==="]
     parts.extend(f"  - {caveat}" for caveat in _CAVEATS)
     parts.append("")
     parts.append(format_source_report(source_report))
     if registry is None or not registry.loaded:
-        parts.append(f"  NOTE: {registry.note if registry is not None else 'no era registry loaded'} "
-                     "-- era labels below fall back to the bare digest")
+        parts.append(
+            f"  NOTE: {registry.note if registry is not None else 'no era registry loaded'} "
+            "-- era labels below fall back to the bare digest"
+        )
     parts.append("")
     parts.append(format_replay_corpus_report(replay_stats))
     parts.append("")
@@ -2798,39 +3179,63 @@ def format_text_report(rows: Sequence[OpenerRow], rejections: Sequence[Rejection
     parts.append("")
     # First class per this module's docstring's METRICS section and caveat 4 -- printed before
     # the by-era breakdown, not after it, and never gated behind --json or --compare.
-    parts.append("=== METRICS BY DECISION (sent vs send_unverified vs not_sent vs "
-                 "unknown/legacy -- see caveat 4) ===")
-    parts.extend(format_era_metrics(decision_metrics[bucket], label="decision")
-                 for bucket in sort_decision_keys(decision_metrics.keys()))
+    parts.append(
+        "=== METRICS BY DECISION (sent vs send_unverified vs not_sent vs "
+        "unknown/legacy -- see caveat 4) ==="
+    )
+    parts.extend(
+        format_era_metrics(decision_metrics[bucket], label="decision")
+        for bucket in sort_decision_keys(decision_metrics.keys())
+    )
     parts.append("")
-    parts.append("=== METRICS BY PROMPT ERA (pools every decision together -- see METRICS BY "
-                 "DECISION above) ===")
-    parts.extend(format_era_metrics(metrics[era], registry=registry)
-                 for era in sort_era_keys(metrics.keys()))
+    parts.append(
+        "=== METRICS BY PROMPT ERA (pools every decision together -- see METRICS BY "
+        "DECISION above) ==="
+    )
+    parts.extend(
+        format_era_metrics(metrics[era], registry=registry)
+        for era in sort_era_keys(metrics.keys())
+    )
     parts.append("")
     # Printed directly after the produced-side era breakdown -- "so a reader can see production
     # and performance side by side" -- and, like METRICS BY DECISION above, unconditional: never
     # gated behind --json or --compare. See BE HONEST caveats 5-8 for what this axis does and
     # does not prove.
-    parts.append("=== METRICS BY OUTCOME (owner-observed; PER PROMPT ERA -- see BE HONEST "
-                 "caveats 5-8) ===")
-    parts.extend(format_outcome_metrics(outcome_metrics_map[era], registry=registry)
-                 for era in sort_era_keys(outcome_metrics_map.keys()))
+    parts.append(
+        "=== METRICS BY OUTCOME (owner-observed; PER PROMPT ERA -- see BE HONEST "
+        "caveats 5-8) ==="
+    )
+    parts.extend(
+        format_outcome_metrics(outcome_metrics_map[era], registry=registry)
+        for era in sort_era_keys(outcome_metrics_map.keys())
+    )
     parts.append("")
-    parts.append(format_rejections(rejections_by_era(rejections), registry=registry,
-                                   replay=replay_rejections_by_era(rejections)))
+    parts.append(
+        format_rejections(
+            rejections_by_era(rejections),
+            registry=registry,
+            replay=replay_rejections_by_era(rejections),
+        )
+    )
     if compare is not None:
         era_a = resolve_compare_token(list(metrics.keys()), compare[0], registry)
         era_b = resolve_compare_token(list(metrics.keys()), compare[1], registry)
         parts.append("")
-        parts.append(format_compare(era_a, era_b, metrics[era_a], metrics[era_b],
-                                    registry=registry))
+        parts.append(
+            format_compare(
+                era_a, era_b, metrics[era_a], metrics[era_b], registry=registry
+            )
+        )
         parts.append("")
-        parts.append(format_compare_outcomes(
-            era_a, era_b,
-            outcome_bucket_or_empty(outcome_metrics_map, era_a),
-            outcome_bucket_or_empty(outcome_metrics_map, era_b),
-            registry=registry))
+        parts.append(
+            format_compare_outcomes(
+                era_a,
+                era_b,
+                outcome_bucket_or_empty(outcome_metrics_map, era_a),
+                outcome_bucket_or_empty(outcome_metrics_map, era_b),
+                registry=registry,
+            )
+        )
     return "\n".join(parts)
 
 
@@ -2841,6 +3246,7 @@ def format_text_report(rows: Sequence[OpenerRow], rejections: Sequence[Rejection
 # main()), since "what happened" is a corpus question, not a registry one.
 # =========================================================================================
 
+
 def _working_tree_listing_lines(working_tree: dict[str, Any] | None) -> list[str]:
     """Render the registry's provisional `working_tree` entry (tools/backfill_prompt_eras.py's
     build_working_tree_entry()) for --eras, in its own clearly headed section so it can never be
@@ -2850,24 +3256,32 @@ def _working_tree_listing_lines(working_tree: dict[str, Any] | None) -> list[str
     empty list is a silent no-op rather than a special case its caller has to handle."""
     if working_tree is None:
         return []
-    lines = ["", "=== UNCOMMITTED WORKING TREE (provisional -- NOT a shipped era; current files "
-                 "on disk, see tools/backfill_prompt_eras.py) ==="]
+    lines = [
+        "",
+        "=== UNCOMMITTED WORKING TREE (provisional -- NOT a shipped era; current files "
+        "on disk, see tools/backfill_prompt_eras.py) ===",
+    ]
     lines.append(f"  label        : {working_tree.get('label')}")
     digest = working_tree.get("prompt_sha256")
     if digest is None:
         lines.append("  digest       : (unevaluable)")
-        lines.extend(f"    reason: {reason}"
-                     for reason in working_tree.get("reasons") or [])
+        lines.extend(
+            f"    reason: {reason}" for reason in working_tree.get("reasons") or []
+        )
         return lines
     lines.append(f"  digest       : {digest}")
     matches = working_tree.get("matches_known_committed_era")
-    lines.append("  matches known committed era: "
-                 f"{matches if matches else '(none -- new, not yet shipped)'}")
+    lines.append(
+        "  matches known committed era: "
+        f"{matches if matches else '(none -- new, not yet shipped)'}"
+    )
     rules = working_tree.get("rules", [])
     lines.append(f"  rules on wire: {len(rules)}")
-    lines.append("  metrics      : not tracked by this listing -- run --rule NAME against your "
-                 "local corpus to check whether anything has actually been measured under this "
-                 "exact digest")
+    lines.append(
+        "  metrics      : not tracked by this listing -- run --rule NAME against your "
+        "local corpus to check whether anything has actually been measured under this "
+        "exact digest"
+    )
     return lines
 
 
@@ -2893,13 +3307,19 @@ def format_eras_listing(registry: EraRegistry) -> str:
         rules = list(entry.get("rules", []))
         lines.append(f"--- {entry.get('label', '(no label)')} ---")
         lines.append(f"  digest       : {digest}")
-        lines.append(f"  date range   : {entry.get('first_date')} -> {entry.get('last_date')}")
-        lines.append(f"  commits      : {entry.get('commit_count')} "
-                     f"(first {str(entry.get('first_commit'))[:10]}, "
-                     f"last {str(entry.get('last_commit'))[:10]})")
+        lines.append(
+            f"  date range   : {entry.get('first_date')} -> {entry.get('last_date')}"
+        )
+        lines.append(
+            f"  commits      : {entry.get('commit_count')} "
+            f"(first {str(entry.get('first_commit'))[:10]}, "
+            f"last {str(entry.get('last_commit'))[:10]})"
+        )
         lines.append(f"  rules on wire: {len(rules)}")
         if previous_rules is None:
-            lines.append("  vs previous  : (baseline era; nothing earlier in this registry)")
+            lines.append(
+                "  vs previous  : (baseline era; nothing earlier in this registry)"
+            )
         else:
             prev_set = set(previous_rules)
             cur_set = set(rules)
@@ -2912,7 +3332,9 @@ def format_eras_listing(registry: EraRegistry) -> str:
     return "\n".join(lines)
 
 
-def _format_rule_metrics_line(digest: str, metrics_by_era: dict[str, EraMetrics] | None) -> str:
+def _format_rule_metrics_line(
+    digest: str, metrics_by_era: dict[str, EraMetrics] | None
+) -> str:
     """The one "measured: ..." line shared by every era row (committed or the provisional
     working tree) in format_rule_lookup() -- factored out so the two can never silently report
     "measured" under different conditions. Never claims a rule was measured unless a real,
@@ -2920,18 +3342,25 @@ def _format_rule_metrics_line(digest: str, metrics_by_era: dict[str, EraMetrics]
     HONEST section) -- the whole reason this helper, and --rule itself, exist."""
     metrics = (metrics_by_era or {}).get(digest)
     if metrics is not None and metrics.n:
-        return (f"      measured (DRAFTS only, see caveats): n={metrics.n} "
-               f"grade_rate={_pct(metrics.grade_rate)} "
-               f"two_sentence_rate={_pct(metrics.two_sentence_rate)} "
-               f"question_final_rate={_pct(metrics.question_final_rate)}")
+        return (
+            f"      measured (DRAFTS only, see caveats): n={metrics.n} "
+            f"grade_rate={_pct(metrics.grade_rate)} "
+            f"two_sentence_rate={_pct(metrics.two_sentence_rate)} "
+            f"question_final_rate={_pct(metrics.question_final_rate)}"
+        )
     if metrics_by_era is not None:
-        return ("      measured: no local openers recorded under this era digest "
-               "(see --debug-dir/--db)")
+        return (
+            "      measured: no local openers recorded under this era digest "
+            "(see --debug-dir/--db)"
+        )
     return "      measured: not checked (no corpus sources were read)"
 
 
-def _format_rule_lookup_working_tree(target: str, working_tree: dict[str, Any] | None,
-                                     metrics_by_era: dict[str, EraMetrics] | None) -> list[str]:
+def _format_rule_lookup_working_tree(
+    target: str,
+    working_tree: dict[str, Any] | None,
+    metrics_by_era: dict[str, EraMetrics] | None,
+) -> list[str]:
     """The trailing "UNCOMMITTED WORKING TREE" section of --rule's output: whether `target` is on
     the wire in the CURRENT uncommitted working tree, regardless of whether it ever appeared in
     committed history -- this is what lets --rule give the correct answer for a rule that was
@@ -2944,25 +3373,36 @@ def _format_rule_lookup_working_tree(target: str, working_tree: dict[str, Any] |
     """
     lines = ["", "UNCOMMITTED WORKING TREE (current files on disk; not a shipped era):"]
     if working_tree is None:
-        lines.append("  not evaluated -- this registry has no 'working_tree' entry (regenerate "
-                     "it with tools/backfill_prompt_eras.py to get one)")
+        lines.append(
+            "  not evaluated -- this registry has no 'working_tree' entry (regenerate "
+            "it with tools/backfill_prompt_eras.py to get one)"
+        )
         return lines
     digest = working_tree.get("prompt_sha256")
     if digest is None:
-        lines.append("  UNEVALUABLE: " + ("; ".join(working_tree.get("reasons") or [])
-                                          or "no reason recorded"))
+        lines.append(
+            "  UNEVALUABLE: "
+            + ("; ".join(working_tree.get("reasons") or []) or "no reason recorded")
+        )
         return lines
     if target in working_tree.get("rules", []):
-        lines.append(f"  {target!r} IS present (label: {working_tree.get('label')}) "
-                     f"digest={digest}")
+        lines.append(
+            f"  {target!r} IS present (label: {working_tree.get('label')}) "
+            f"digest={digest}"
+        )
         lines.append(_format_rule_metrics_line(digest, metrics_by_era))
     else:
-        lines.append(f"  {target!r} is NOT present in the current uncommitted working tree.")
+        lines.append(
+            f"  {target!r} is NOT present in the current uncommitted working tree."
+        )
     return lines
 
 
-def format_rule_lookup(name: str, registry: EraRegistry,
-                       metrics_by_era: dict[str, EraMetrics] | None = None) -> str:
+def format_rule_lookup(
+    name: str,
+    registry: EraRegistry,
+    metrics_by_era: dict[str, EraMetrics] | None = None,
+) -> str:
     """--rule NAME: "have we tried this before, and what happened" for one named ALL CAPS rule.
 
     Matched case-insensitively against the registry's exact stored rule spelling (upper-cased
@@ -2988,35 +3428,50 @@ def format_rule_lookup(name: str, registry: EraRegistry,
     if not registry.loaded:
         lines.append(f"(no era registry: {registry.note})")
         return "\n".join(lines)
-    matches = [digest for digest in registry.order
-              if target in registry.eras[digest].get("rules", [])]
+    matches = [
+        digest
+        for digest in registry.order
+        if target in registry.eras[digest].get("rules", [])
+    ]
     if not matches:
-        lines.append(f"{target!r} was never found on the wire in any of the "
-                     f"{len(registry.order)} known COMMITTED prompt era(s).")
+        lines.append(
+            f"{target!r} was never found on the wire in any of the "
+            f"{len(registry.order)} known COMMITTED prompt era(s)."
+        )
     else:
         first_entry = registry.eras[matches[0]]
-        lines.append(f"first appeared : {first_entry.get('first_date')} "
-                     f"({first_entry.get('label')})")
+        lines.append(
+            f"first appeared : {first_entry.get('first_date')} "
+            f"({first_entry.get('label')})"
+        )
         newest_digest = registry.order[-1]
         last_seen_digest = matches[-1]
         if last_seen_digest == newest_digest:
-            lines.append(f"disappeared    : still on the wire as of the newest known era "
-                         f"({registry.eras[newest_digest].get('label')})")
+            lines.append(
+                f"disappeared    : still on the wire as of the newest known era "
+                f"({registry.eras[newest_digest].get('label')})"
+            )
         else:
             next_digest = registry.order[registry.order.index(last_seen_digest) + 1]
             next_entry = registry.eras[next_digest]
             last_entry = registry.eras[last_seen_digest]
-            lines.append(f"disappeared    : last present in {last_entry.get('label')} "
-                         f"(through {last_entry.get('last_date')}); absent starting "
-                         f"{next_entry.get('label')} ({next_entry.get('first_date')})")
+            lines.append(
+                f"disappeared    : last present in {last_entry.get('label')} "
+                f"(through {last_entry.get('last_date')}); absent starting "
+                f"{next_entry.get('label')} ({next_entry.get('first_date')})"
+            )
         lines.append(f"present in {len(matches)}/{len(registry.order)} known era(s):")
         for digest in matches:
             entry = registry.eras[digest]
-            lines.append(f"  - {entry.get('label')}  "
-                         f"[{entry.get('first_date')} .. {entry.get('last_date')}]  "
-                         f"digest={digest}")
+            lines.append(
+                f"  - {entry.get('label')}  "
+                f"[{entry.get('first_date')} .. {entry.get('last_date')}]  "
+                f"digest={digest}"
+            )
             lines.append(_format_rule_metrics_line(digest, metrics_by_era))
-    lines.extend(_format_rule_lookup_working_tree(target, registry.working_tree, metrics_by_era))
+    lines.extend(
+        _format_rule_lookup_working_tree(target, registry.working_tree, metrics_by_era)
+    )
     return "\n".join(lines)
 
 
@@ -3024,44 +3479,79 @@ def format_rule_lookup(name: str, registry: EraRegistry,
 # CLI
 # =========================================================================================
 
+
 def _build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python tools/opener_corpus_report.py",
         description="Measure what the opener prompt actually produces (jsonl + sqlite by "
-                    "default, BigQuery only with --bigquery), grouped by prompt_sha256 era.")
-    parser.add_argument("--debug-dir", default=DEFAULT_DEBUG_DIR,
-                        help=f"data/hinge_debug-style directory to walk (default {DEFAULT_DEBUG_DIR})")
-    parser.add_argument("--db", default=DEFAULT_DB_FILE,
-                        help=f"SQLite store file to read (default {DEFAULT_DB_FILE})")
-    parser.add_argument("--bigquery", action="store_true",
-                        help="also read BigQuery's openers/opener_rejections tables using "
-                             "storage.bigquery from --config. OFF by default so this tool "
-                             "never needs credentials to be useful.")
-    parser.add_argument("--config", default="config.yaml",
-                        help="config.yaml to read storage.bigquery.{project_id,dataset} from "
-                             "when --bigquery is passed (default config.yaml; never modified)")
-    parser.add_argument("--json", action="store_true",
-                        help="emit one JSON report to stdout instead of the readable text one")
-    parser.add_argument("--compare", nargs=2, metavar=("ERA_A", "ERA_B"), default=None,
-                        help="print a side-by-side delta of every metric between two eras "
-                             "(each may be a full prompt_sha256, a unique prefix of one, a "
-                             "registered era's human label, or the literal 'unknown' or 'ALL')")
-    parser.add_argument("--eras-file", default=DEFAULT_ERAS_FILE,
-                        help="prompt era registry JSON, from tools/backfill_prompt_eras.py "
-                             f"(default {DEFAULT_ERAS_FILE}); used to resolve every printed "
-                             "prompt_sha256 to a human label, and by --eras/--rule below")
-    parser.add_argument("--eras", action="store_true",
-                        help="list every known prompt era (oldest first) with its label, date "
-                             "range, digest, and the rules that changed versus the previous "
-                             "era; reads ONLY --eras-file, never the corpus sources")
-    parser.add_argument("--rule", metavar="NAME", default=None,
-                        help="'have we tried this before': print every known era NAME was on "
-                             "the wire in, when it first/last appeared, and any measured "
-                             "metrics for those eras (reads --eras-file and the corpus sources)")
-    parser.add_argument("--replay-corpus-dir", default=DEFAULT_CORPUS_DIR,
-                        help="operation_love.opener.replay_corpus on-disk corpus directory to "
-                             f"report on (default {DEFAULT_CORPUS_DIR}); read for the REPLAY "
-                             "CORPUS section and the PRE-REGISTERED CHECK's capture count")
+        "default, BigQuery only with --bigquery), grouped by prompt_sha256 era.",
+    )
+    parser.add_argument(
+        "--debug-dir",
+        default=DEFAULT_DEBUG_DIR,
+        help=f"data/hinge_debug-style directory to walk (default {DEFAULT_DEBUG_DIR})",
+    )
+    parser.add_argument(
+        "--db",
+        default=DEFAULT_DB_FILE,
+        help=f"SQLite store file to read (default {DEFAULT_DB_FILE})",
+    )
+    parser.add_argument(
+        "--bigquery",
+        action="store_true",
+        help="also read BigQuery's openers/opener_rejections tables using "
+        "storage.bigquery from --config. OFF by default so this tool "
+        "never needs credentials to be useful.",
+    )
+    parser.add_argument(
+        "--config",
+        default="config.yaml",
+        help="config.yaml to read storage.bigquery.{project_id,dataset} from "
+        "when --bigquery is passed (default config.yaml; never modified)",
+    )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="emit one JSON report to stdout instead of the readable text one",
+    )
+    parser.add_argument(
+        "--compare",
+        nargs=2,
+        metavar=("ERA_A", "ERA_B"),
+        default=None,
+        help="print a side-by-side delta of every metric between two eras "
+        "(each may be a full prompt_sha256, a unique prefix of one, a "
+        "registered era's human label, or the literal 'unknown' or 'ALL')",
+    )
+    parser.add_argument(
+        "--eras-file",
+        default=DEFAULT_ERAS_FILE,
+        help="prompt era registry JSON, from tools/backfill_prompt_eras.py "
+        f"(default {DEFAULT_ERAS_FILE}); used to resolve every printed "
+        "prompt_sha256 to a human label, and by --eras/--rule below",
+    )
+    parser.add_argument(
+        "--eras",
+        action="store_true",
+        help="list every known prompt era (oldest first) with its label, date "
+        "range, digest, and the rules that changed versus the previous "
+        "era; reads ONLY --eras-file, never the corpus sources",
+    )
+    parser.add_argument(
+        "--rule",
+        metavar="NAME",
+        default=None,
+        help="'have we tried this before': print every known era NAME was on "
+        "the wire in, when it first/last appeared, and any measured "
+        "metrics for those eras (reads --eras-file and the corpus sources)",
+    )
+    parser.add_argument(
+        "--replay-corpus-dir",
+        default=DEFAULT_CORPUS_DIR,
+        help="operation_love.opener.replay_corpus on-disk corpus directory to "
+        f"report on (default {DEFAULT_CORPUS_DIR}); read for the REPLAY "
+        "CORPUS section and the PRE-REGISTERED CHECK's capture count",
+    )
     return parser
 
 
@@ -3084,18 +3574,25 @@ def main(argv: list[str] | None = None, *, bigquery_client=None) -> int:
     if args.bigquery:
         try:
             from operation_love import config as cfg_mod
+
             cfg = cfg_mod.load(args.config)
             bigquery_project = cfg.storage.bigquery.get("project_id") or None
             bigquery_dataset = cfg.storage.bigquery.get("dataset", "operation_love")
         except Exception as exc:  # noqa: BLE001 -- config is informational here, never fatal
-            print(f"WARNING: could not read {args.config!r} for BigQuery settings "
-                 f"({type(exc).__name__}: {exc}); --bigquery will report why it found nothing.",
-                 file=sys.stderr)
+            print(
+                f"WARNING: could not read {args.config!r} for BigQuery settings "
+                f"({type(exc).__name__}: {exc}); --bigquery will report why it found nothing.",
+                file=sys.stderr,
+            )
 
     rows, rejections, outcome_rows, source_report = read_all_sources(
-        debug_dir=Path(args.debug_dir), db_path=Path(args.db), use_bigquery=args.bigquery,
-        bigquery_project=bigquery_project, bigquery_dataset=bigquery_dataset,
-        bigquery_client=bigquery_client)
+        debug_dir=Path(args.debug_dir),
+        db_path=Path(args.db),
+        use_bigquery=args.bigquery,
+        bigquery_project=bigquery_project,
+        bigquery_dataset=bigquery_dataset,
+        bigquery_client=bigquery_client,
+    )
 
     # REPLAY CORPUS + PRE-REGISTERED CHECK -- read unconditionally (never gated behind --bigquery
     # or any other flag), matching every other axis in this report.
@@ -3121,15 +3618,33 @@ def main(argv: list[str] | None = None, *, bigquery_client=None) -> int:
             return 1
 
     if args.json:
-        doc = build_report(rows, rejections, source_report, outcome_rows=outcome_rows,
-                          compare=compare, registry=registry, replay_corpus_stats=replay_stats,
-                          current_era=current_era, current_era_error=current_era_error)
+        doc = build_report(
+            rows,
+            rejections,
+            source_report,
+            outcome_rows=outcome_rows,
+            compare=compare,
+            registry=registry,
+            replay_corpus_stats=replay_stats,
+            current_era=current_era,
+            current_era_error=current_era_error,
+        )
         print(json.dumps(doc, indent=2, sort_keys=False))
         return 0
 
-    print(format_text_report(rows, rejections, source_report, outcome_rows=outcome_rows,
-                             compare=compare, registry=registry, replay_corpus_stats=replay_stats,
-                             current_era=current_era, current_era_error=current_era_error))
+    print(
+        format_text_report(
+            rows,
+            rejections,
+            source_report,
+            outcome_rows=outcome_rows,
+            compare=compare,
+            registry=registry,
+            replay_corpus_stats=replay_stats,
+            current_era=current_era,
+            current_era_error=current_era_error,
+        )
+    )
     return 0
 
 

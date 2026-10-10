@@ -6854,3 +6854,27 @@ THIRD function's printed label, neither of which the fix's own diff touched. Nei
 showed in a green local test suite; both were found by re-deriving, by hand, what the new field
 value implied for every downstream reader of it, rather than by re-running the existing tests
 against it.
+
+### Addendum 2026-10-06: interrogative sentences typed with a period are repaired in `_sanitize`
+
+Bug report: the Training opener "Is that Japan." was typed with a period. A BigQuery sweep of the
+~250 stored openers the same day found a second shipped instance, "Where is the signup sheet.",
+so it is a recurring shape, not a one-off.
+
+WHAT SHIPS: `_sanitize` now ends with `_repair_question_periods`, a deterministic one-character
+repair ("." becomes "?") on a sentence whose body matches `_INTERROGATIVE_RE` (an anchored
+inversion shape: aux plus pronoun subject, wh plus aux, a short list of contracted wh forms). It
+is the same class as the comma-before-or removal and wrapping-quote repair: a formatting artifact
+with an unambiguous fix, so it never costs a retry. NO PROMPT TEXT CHANGED, so the prompt era is
+unchanged (`tools/backfill_prompt_eras.py --check` clean) and the 0-of-8 measured-prompt-fix
+record in memory is not extended; this is a code-path fix, verified by tests, not a prompt claim.
+
+RISK ACCEPTED (precision over recall): a question phrased without an inversion ("Why not.",
+"Who knew.") keeps its period; that reads flat, not wrong. Statements that open like a question
+are deliberately excluded and pinned as tests: "Do it.", "Do tell.", "Have fun.", "Don't you
+dare.", "What a day it was.", "Where I was.", "What's more.", "Which is fine.", "Had it up to
+here.", "Where there's a will." (the last three were found in review, not in the first draft:
+`had`, a sentence-initial relative `which`, and `there` in the wh gap).
+
+WATCH: an unexpected "?" on something that was meant as a statement. Query `openers` for text
+ending in "?" whose raw model output ended in "." (the raw value is only in the debug log).

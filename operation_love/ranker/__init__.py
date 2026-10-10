@@ -1,4 +1,5 @@
 """Storage interface + factory — picks the backend from config."""
+
 from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
@@ -11,15 +12,22 @@ from ..costing import Usage
 # and this column exists precisely so an operator (and later, an automated reader -- see
 # `record_opener_outcome`) can say what actually happened. These five are what this project
 # can currently tell apart by looking at Hinge:
-OPENER_OUTCOME_MATCH = "match"                # she matched (mutual like) some time after send
-OPENER_OUTCOME_REPLY = "reply"                # she replied in the conversation this opener sent
-OPENER_OUTCOME_NO_RESPONSE = "no_response"    # observed after a stated wait; still nothing back
-OPENER_OUTCOME_UNMATCH = "unmatch"            # a prior match/conversation later disappeared
-OPENER_OUTCOME_UNKNOWN = "unknown"            # observed, but not classifiable into the above
-KNOWN_OPENER_OUTCOMES = frozenset({
-    OPENER_OUTCOME_MATCH, OPENER_OUTCOME_REPLY, OPENER_OUTCOME_NO_RESPONSE,
-    OPENER_OUTCOME_UNMATCH, OPENER_OUTCOME_UNKNOWN,
-})
+OPENER_OUTCOME_MATCH = "match"  # she matched (mutual like) some time after send
+OPENER_OUTCOME_REPLY = "reply"  # she replied in the conversation this opener sent
+OPENER_OUTCOME_NO_RESPONSE = (
+    "no_response"  # observed after a stated wait; still nothing back
+)
+OPENER_OUTCOME_UNMATCH = "unmatch"  # a prior match/conversation later disappeared
+OPENER_OUTCOME_UNKNOWN = "unknown"  # observed, but not classifiable into the above
+KNOWN_OPENER_OUTCOMES = frozenset(
+    {
+        OPENER_OUTCOME_MATCH,
+        OPENER_OUTCOME_REPLY,
+        OPENER_OUTCOME_NO_RESPONSE,
+        OPENER_OUTCOME_UNMATCH,
+        OPENER_OUTCOME_UNKNOWN,
+    }
+)
 
 # `opener_outcomes.source` vocabulary -- WHO/WHAT produced the observation, also documented
 # rather than enforced. Only `owner` is populated by anything that exists today: collection is
@@ -30,7 +38,8 @@ KNOWN_OPENER_OUTCOMES = frozenset({
 OPENER_OUTCOME_SOURCE_OWNER = "owner"
 OPENER_OUTCOME_SOURCE_AUTOMATED = "automated"
 KNOWN_OPENER_OUTCOME_SOURCES = frozenset(
-    {OPENER_OUTCOME_SOURCE_OWNER, OPENER_OUTCOME_SOURCE_AUTOMATED})
+    {OPENER_OUTCOME_SOURCE_OWNER, OPENER_OUTCOME_SOURCE_AUTOMATED}
+)
 
 
 @runtime_checkable
@@ -43,17 +52,40 @@ class Store(Protocol):
     # all the way to the store (rather than left in the local, rotating debug log) so the
     # system of record can answer "which labels came from a partial read?" later — the exact
     # query you want if truncated-read labels turn out to be noisier than complete ones.
-    def record_profile(self, run_id: str, app: str, profile_id: str, liked: bool,
-                       source: str = "manual", photos: list[bytes] | None = None,
-                       photo_count: int = 0, capture_truncated: bool = False,
-                       progress=None) -> bool: ...
-    def add_label(self, run_id: str, app: str, liked: bool, embedding: list[float],
-                  source: str = "manual", photo_count: int = 0,
-                  profile_id: str = "", profile_name: str = "") -> None: ...
+    def record_profile(
+        self,
+        run_id: str,
+        app: str,
+        profile_id: str,
+        liked: bool,
+        source: str = "manual",
+        photos: list[bytes] | None = None,
+        photo_count: int = 0,
+        capture_truncated: bool = False,
+        progress=None,
+    ) -> bool: ...
+    def add_label(
+        self,
+        run_id: str,
+        app: str,
+        liked: bool,
+        embedding: list[float],
+        source: str = "manual",
+        photo_count: int = 0,
+        profile_id: str = "",
+        profile_name: str = "",
+    ) -> None: ...
     def remove_latest_training_label(self) -> dict | None: ...
-    def record_decision(self, run_id: str, app: str, decision: str, score: float,
-                        source: str = "auto", profile_id: str = "",
-                        created_at: object | None = None) -> None: ...
+    def record_decision(
+        self,
+        run_id: str,
+        app: str,
+        decision: str,
+        score: float,
+        source: str = "auto",
+        profile_id: str = "",
+        created_at: object | None = None,
+    ) -> None: ...
     def retraction_run_rows(self, run_id: str, app: str, source: str) -> dict: ...
     def append_label_retraction(self, row: dict) -> bool: ...
     def advisory_opener_run_rows(self, run_id: str, app: str) -> dict: ...
@@ -94,13 +126,24 @@ class Store(Protocol):
     # positional caller changes shape. "" (not None) is the "no key could be derived for this
     # card" value, matching `profile_id`'s own empty-string convention; NULL is reserved for
     # rows that predate this column entirely (see the paired store migration).
-    def record_opener(self, run_id: str, app: str, model: str, opener: str, referenced: str,
-                      angle: str = "", item_description: str = "", *, profile_id: str = "",
-                      decision: str = "", decision_source: str = "",
-                      decision_created_at: object | None = None,
-                      model_item_index: int | None = None,
-                      prompt_sha256: str | None = None,
-                      profile_key: str = "") -> None: ...
+    def record_opener(
+        self,
+        run_id: str,
+        app: str,
+        model: str,
+        opener: str,
+        referenced: str,
+        angle: str = "",
+        item_description: str = "",
+        *,
+        profile_id: str = "",
+        decision: str = "",
+        decision_source: str = "",
+        decision_created_at: object | None = None,
+        model_item_index: int | None = None,
+        prompt_sha256: str | None = None,
+        profile_key: str = "",
+    ) -> None: ...
     # Durable record of a REJECTED opener attempt (OpenerParseError -- see opener/service.py's
     # OpenerParseError handling), captured for every attempt including the final one that
     # exhausts a profile's retries. Without this, only SUCCEEDED openers were ever recorded
@@ -111,10 +154,18 @@ class Store(Protocol):
     # `prompt_sha256` is the same prompt-era digest record_opener carries, so a guard's firing
     # rate is attributable to the prompt that provoked it; keyword-only with a None default,
     # leaving the seven existing parameters positional for every caller and test double.
-    def record_opener_rejection(self, run_id: str, app: str, model: str, attempt: int,
-                                reason_code: str | None, reason: str,
-                                raw_opener: str | None, *,
-                                prompt_sha256: str | None = None) -> None: ...
+    def record_opener_rejection(
+        self,
+        run_id: str,
+        app: str,
+        model: str,
+        attempt: int,
+        reason_code: str | None,
+        reason: str,
+        raw_opener: str | None,
+        *,
+        prompt_sha256: str | None = None,
+    ) -> None: ...
     # The OUTCOME half of the measurement gap `profile_key` exists to close: what PERFORMED,
     # as distinct from everything else this store already records about what the prompt
     # PRODUCED. Deliberately has no `run_id`: an outcome is observed on a real conversation
@@ -149,10 +200,16 @@ class Store(Protocol):
     # (worker.py, the recording CLI, a future automated reader -- none of which this change
     # touches) who wraps the call in the same non-fatal try/except every other opener-adjacent
     # write already uses (see opener/service.py's record_opener call site for the pattern).
-    def record_opener_outcome(self, app: str, profile_key: str, outcome: str, *,
-                              observed_at: object | None = None,
-                              source: str = OPENER_OUTCOME_SOURCE_OWNER,
-                              note: str = "") -> None: ...
+    def record_opener_outcome(
+        self,
+        app: str,
+        profile_key: str,
+        outcome: str,
+        *,
+        observed_at: object | None = None,
+        source: str = OPENER_OUTCOME_SOURCE_OWNER,
+        note: str = "",
+    ) -> None: ...
     # Read-only. Every `opener_outcomes` row for `app` whose `profile_key` matches an
     # `openers` row's `profile_key` for the same `app` -- the join `profile_key` exists to
     # make possible, kept HERE (in the store) rather than in whatever tool calls this, so a
@@ -187,26 +244,34 @@ class Store(Protocol):
     # (nothing records WHICH send a later match answered), not a defect this predicate can
     # remove, so a caller aggregating per-era rates must decide what to do with duplicates
     # rather than assume rows are one-per-outcome.
-    def joined_opener_outcomes(self, app: str, *,
-                              prompt_sha256: str | None = None) -> list[dict]: ...
-    def record_spend(self, run_id: str, model: str, usage: Usage, cost: float | None) -> None: ...
+    def joined_opener_outcomes(
+        self, app: str, *, prompt_sha256: str | None = None
+    ) -> list[dict]: ...
+    def record_spend(
+        self, run_id: str, model: str, usage: Usage, cost: float | None
+    ) -> None: ...
     def count_today(self, app: str, *, source: str = "auto") -> int: ...
     def spend_today(self) -> float: ...
-    def observe_release_persistence_summary(self, run_id: str, app: str) -> dict[str, int]:
+    def observe_release_persistence_summary(
+        self, run_id: str, app: str
+    ) -> dict[str, int]:
         """Return only aggregate, run-scoped manual pass/like and successful-opener counts.
 
         The Hinge AUTO release verifier uses these exact fields to prove a whole supervised
         manual cycle persisted, without ever exporting profile, embedding, or opener content.
         """
         ...
-    def ai_observe_release_persistence_summary(self, run_id: str, app: str,
-                                               source: str) -> dict[str, int]:
+
+    def ai_observe_release_persistence_summary(
+        self, run_id: str, app: str, source: str
+    ) -> dict[str, int]:
         """Return run-scoped PASS/LIKE persistence for an explicitly non-manual source.
 
         This deliberately has a different method and field names from the manual release
         summary so callers cannot relabel manual rows as autonomous evidence by accident.
         """
         ...
+
     def flush(self) -> None: ...
     # Per-table count of rows this store PERMANENTLY GAVE UP ON during this run -- rows that
     # were accepted by a record_* call, never reached the system of record, and never will.
@@ -240,6 +305,7 @@ def make_store(cfg, ensure: bool = True) -> Store:
     s = cfg.storage
     if s.backend == "bigquery":
         from .bigquery_store import DEFAULT_FLUSH_EVERY, BigQueryStore
+
         bq = s.bigquery
         return BigQueryStore(
             project_id=bq.get("project_id", ""),
@@ -250,4 +316,5 @@ def make_store(cfg, ensure: bool = True) -> Store:
             ensure=ensure,
         )
     from .store import SQLiteStore
+
     return SQLiteStore(cfg.db_file)

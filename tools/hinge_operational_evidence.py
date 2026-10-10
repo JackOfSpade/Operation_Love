@@ -26,6 +26,7 @@ identify a card ordinal or reconstruct which physical gesture produced a frame.
 Privacy: these frames contain real dating profiles.  Do not copy them outside the private,
 gitignored calibration directory or upload them anywhere.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -41,10 +42,21 @@ from operation_love import config as cfg_mod
 from operation_love.drivers import hinge
 from operation_love.drivers.adb import Adb, quote_android_package_id
 from operation_love.drivers.hinge import HINGE_SPEC
-from operation_love.drivers.item_identity import _IDENTITY_GRID, capture_profile_identity
-from operation_love.drivers.like_composer import ComposerDetectionError, ComposerSurface, locate_inline_composer
+from operation_love.drivers.item_identity import (
+    _IDENTITY_GRID,
+    capture_profile_identity,
+)
+from operation_love.drivers.like_composer import (
+    ComposerDetectionError,
+    ComposerSurface,
+    locate_inline_composer,
+)
 from operation_love.drivers.scroll_top import (
-    ScrollTopError, band_fingerprint, confirm_scroll_top, fingerprint_distance)
+    ScrollTopError,
+    band_fingerprint,
+    confirm_scroll_top,
+    fingerprint_distance,
+)
 from operation_love.private_files import (
     atomic_write_private_bytes,
     atomic_write_private_text,
@@ -70,7 +82,9 @@ class EvidenceRefused(RuntimeError):
 
 
 def _canonical_json_digest(value) -> str:
-    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    return hashlib.sha256(
+        json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
 
 
 def _default_out_dir() -> Path:
@@ -85,12 +99,14 @@ def _out_dir(raw: str | None) -> Path:
         destination.relative_to(root)
     except ValueError as exc:
         raise EvidenceRefused(
-            f"--out must stay below private gitignored {root}; got {destination}") from exc
+            f"--out must stay below private gitignored {root}; got {destination}"
+        ) from exc
     if destination.exists() and not destination.is_dir():
         raise EvidenceRefused(f"output {destination} exists and is not a directory")
     if destination.exists() and any(destination.iterdir()):
         raise EvidenceRefused(
-            f"output {destination} is not empty; use a fresh directory so evidence cannot merge")
+            f"output {destination} is not empty; use a fresh directory so evidence cannot merge"
+        )
     ensure_private_dir(destination)
     return destination
 
@@ -99,23 +115,35 @@ def _settings(cfg) -> tuple[str, str, tuple[float, float, float, float], object]
     app_cfg = (getattr(cfg, "apps", {}) or {}).get("hinge", {}) or {}
     serial = app_cfg.get("serial")
     if not isinstance(serial, str) or not serial.strip():
-        raise EvidenceRefused("apps.hinge.serial must name the physical phone to record evidence")
+        raise EvidenceRefused(
+            "apps.hinge.serial must name the physical phone to record evidence"
+        )
     identity_band = app_cfg.get("identity_band", HINGE_SPEC.identity_band)
     if identity_band is None:
         raise EvidenceRefused("effective apps.hinge.identity_band is missing")
     try:
         band = tuple(float(v) for v in identity_band)
     except (TypeError, ValueError) as exc:
-        raise EvidenceRefused("effective apps.hinge.identity_band is not a readable rectangle") from exc
-    if len(band) != 4 or not (0 <= band[0] < band[2] <= 1 and 0 <= band[1] < band[3] <= 1):
-        raise EvidenceRefused("effective apps.hinge.identity_band is not an ordered normalised rectangle")
+        raise EvidenceRefused(
+            "effective apps.hinge.identity_band is not a readable rectangle"
+        ) from exc
+    if len(band) != 4 or not (
+        0 <= band[0] < band[2] <= 1 and 0 <= band[1] < band[3] <= 1
+    ):
+        raise EvidenceRefused(
+            "effective apps.hinge.identity_band is not an ordered normalised rectangle"
+        )
     template_name = HINGE_SPEC.templates.get("confirm")
     template = hinge._load_template(template_name) if template_name else None
     if template is None:
-        raise EvidenceRefused("the shipped Hinge Send Like confirmation template could not be loaded")
+        raise EvidenceRefused(
+            "the shipped Hinge Send Like confirmation template could not be loaded"
+        )
     adb_path = app_cfg.get("adb_path", "adb")
     if not isinstance(adb_path, str) or not adb_path:
-        raise EvidenceRefused("apps.hinge.adb_path must be a nonempty ADB executable path")
+        raise EvidenceRefused(
+            "apps.hinge.adb_path must be a nonempty ADB executable path"
+        )
     return serial.strip(), adb_path, band, template
 
 
@@ -137,7 +165,8 @@ def _read_device_evidence(adb: Adb, *, serial: str, package: str = _PACKAGE) -> 
     width, height = adb.screen_size()
     density = adb.shell("wm density").strip()
     package_dump = adb.shell(
-        f"dumpsys package {quote_android_package_id(package)} | grep versionName")
+        f"dumpsys package {quote_android_package_id(package)} | grep versionName"
+    )
     match = re.search(r"(?m)^\s*versionName=(\S+)\s*$", package_dump)
     version_name = match.group(1) if match else None
     if not model or not density or not version_name:
@@ -145,7 +174,8 @@ def _read_device_evidence(adb: Adb, *, serial: str, package: str = _PACKAGE) -> 
             f"could not read complete device/build evidence (model={model!r}, "
             f"density={density!r}, versionName={version_name!r} from `dumpsys package "
             f"{package}`); refusing an operational trace that cannot be bound to one phone "
-            "and Hinge version")
+            "and Hinge version"
+        )
     return {
         "serial": serial,
         "model": model,
@@ -175,8 +205,16 @@ def _top_record(verdict) -> dict:
     }
 
 
-def record(*, adb, serial: str, identity_band: tuple[float, float, float, float],
-           confirm_template, out_dir: Path, device: dict, ask=input) -> dict:
+def record(
+    *,
+    adb,
+    serial: str,
+    identity_band: tuple[float, float, float, float],
+    confirm_template,
+    out_dir: Path,
+    device: dict,
+    ask=input,
+) -> dict:
     """Prompt through one supervised proof and write its immutable-at-rest frame record.
 
     ``adb`` is intentionally duck-typed to just ``screencap()``.  This function has no route to
@@ -191,90 +229,131 @@ def record(*, adb, serial: str, identity_band: tuple[float, float, float, float]
     interrupted = False
     failure: str | None = None
     expected_device_keys = {
-        "serial", "model", "display_w", "display_h", "density", "hinge_package",
+        "serial",
+        "model",
+        "display_w",
+        "display_h",
+        "density",
+        "hinge_package",
         "hinge_version_name",
     }
-    if (not isinstance(device, dict) or set(device) != expected_device_keys
-            or device.get("serial") != serial or device.get("hinge_package") != _PACKAGE
-            or not isinstance(device.get("display_w"), int) or device["display_w"] <= 0
-            or not isinstance(device.get("display_h"), int) or device["display_h"] <= 0
-            or any(not isinstance(device.get(key), str) or not device[key].strip()
-                   for key in ("model", "density", "hinge_version_name"))):
-        raise EvidenceRefused("device/build evidence is incomplete or does not bind this recorder")
+    if (
+        not isinstance(device, dict)
+        or set(device) != expected_device_keys
+        or device.get("serial") != serial
+        or device.get("hinge_package") != _PACKAGE
+        or not isinstance(device.get("display_w"), int)
+        or device["display_w"] <= 0
+        or not isinstance(device.get("display_h"), int)
+        or device["display_h"] <= 0
+        or any(
+            not isinstance(device.get(key), str) or not device[key].strip()
+            for key in ("model", "density", "hinge_version_name")
+        )
+    ):
+        raise EvidenceRefused(
+            "device/build evidence is incomplete or does not bind this recorder"
+        )
 
     def take(role: str) -> bytes:
         try:
             png = adb.screencap()
         except Exception as exc:  # noqa: BLE001 -- an unreadable device state is a hard stop
-            raise EvidenceRefused(f"could not capture {role}: {type(exc).__name__}: {exc}") from exc
+            raise EvidenceRefused(
+                f"could not capture {role}: {type(exc).__name__}: {exc}"
+            ) from exc
         if not isinstance(png, bytes) or not png:
-            raise EvidenceRefused(f"could not capture {role}: screencap returned no PNG bytes")
+            raise EvidenceRefused(
+                f"could not capture {role}: screencap returned no PNG bytes"
+            )
         name = f"{len(frames) + 1:05d}.png"
         atomic_write_private_bytes(out_dir / name, png, parent=out_dir)
-        frames.append({
-            "file": name,
-            "sha256": hashlib.sha256(png).hexdigest(),
-            "role": role,
-            "captured_utc": datetime.now(timezone.utc).isoformat(),
-        })
+        frames.append(
+            {
+                "file": name,
+                "sha256": hashlib.sha256(png).hexdigest(),
+                "role": role,
+                "captured_utc": datetime.now(timezone.utc).isoformat(),
+            }
+        )
         return png
 
     def require_surface(role: str, frame: bytes) -> ComposerSurface:
         try:
             surface = locate_inline_composer(frame, confirm_template, threshold=0.8)
         except ComposerDetectionError as exc:
-            raise EvidenceRefused(f"{role} did not structurally prove an inline composer: {exc}") from exc
+            raise EvidenceRefused(
+                f"{role} did not structurally prove an inline composer: {exc}"
+            ) from exc
         if surface.layout_id != _LAYOUT_ID:
-            raise EvidenceRefused(f"{role} reported unsupported composer layout {surface.layout_id!r}")
+            raise EvidenceRefused(
+                f"{role} reported unsupported composer layout {surface.layout_id!r}"
+            )
         analyses[role] = {"composer": _surface_record(surface)}
         return surface
 
     try:
         ask(
             "On a NEW profile, put item 1 at its confirmed top. Do not heart anything yet. "
-            "Press ENTER to record the item-1 pre frame > ")
+            "Press ENTER to record the item-1 pre frame > "
+        )
         top_pre = take("confirmed_top_item1_pre")
         try:
             top_verdict = confirm_scroll_top(top_pre, identity_band=identity_band)
         except ScrollTopError as exc:
-            raise EvidenceRefused(f"item-1 pre frame could not confirm scroll top: {exc}") from exc
+            raise EvidenceRefused(
+                f"item-1 pre frame could not confirm scroll top: {exc}"
+            ) from exc
         if not top_verdict.confirmed:
-            raise EvidenceRefused(f"item-1 pre frame is not a confirmed profile top: {top_verdict.reason}")
+            raise EvidenceRefused(
+                f"item-1 pre frame is not a confirmed profile top: {top_verdict.reason}"
+            )
         analyses["confirmed_top_item1_pre"] = {"scroll_top": _top_record(top_verdict)}
 
         ask(
             "Manually heart PHOTO item 1 now. Hinge auto-focuses the composer immediately; do "
-            "not type. Press ENTER once its inline composer and sticky header are visible > ")
+            "not type. Press ENTER once its inline composer and sticky header are visible > "
+        )
         initial = take("composer_initial_autofocused")
         require_surface("composer_initial_autofocused", initial)
         try:
             initial_top = confirm_scroll_top(initial, identity_band=identity_band)
         except ScrollTopError as exc:
-            raise EvidenceRefused(f"initial auto-focused composer could not read identity band: {exc}") from exc
+            raise EvidenceRefused(
+                f"initial auto-focused composer could not read identity band: {exc}"
+            ) from exc
         if not initial_top.refuted:
             raise EvidenceRefused(
                 "initial auto-focused composer did not positively reveal the sticky identity "
-                "header: " + initial_top.reason)
-        analyses["composer_initial_autofocused"]["scroll_top"] = _top_record(initial_top)
+                "header: " + initial_top.reason
+            )
+        analyses["composer_initial_autofocused"]["scroll_top"] = _top_record(
+            initial_top
+        )
 
         ask(
             "Do not touch the phone. Wait for the auto-focused composer/header to settle, then "
-            "press ENTER to record an independent stable reading > ")
+            "press ENTER to record an independent stable reading > "
+        )
         stable = take("composer_stable_autofocused")
         require_surface("composer_stable_autofocused", stable)
         try:
             stable_top = confirm_scroll_top(stable, identity_band=identity_band)
         except ScrollTopError as exc:
-            raise EvidenceRefused(f"stable auto-focused composer could not read identity band: {exc}") from exc
+            raise EvidenceRefused(
+                f"stable auto-focused composer could not read identity band: {exc}"
+            ) from exc
         if not stable_top.refuted:
             raise EvidenceRefused(
                 "stable auto-focused composer did not positively reveal the sticky identity "
-                "header: " + stable_top.reason)
+                "header: " + stable_top.reason
+            )
         analyses["composer_stable_autofocused"]["scroll_top"] = _top_record(stable_top)
 
         ask(
             "Manually heart another PHOTO item on this same profile. Do not send. Press ENTER "
-            "once the persistent inline composer has visibly moved to that item > ")
+            "once the persistent inline composer has visibly moved to that item > "
+        )
         moved = take("other_item_composer_moved")
         require_surface("other_item_composer_moved", moved)
 
@@ -283,10 +362,13 @@ def record(*, adb, serial: str, identity_band: tuple[float, float, float, float]
         # the same profile.  The moved-composer state is transport evidence, not an identity
         # sample: its role is an operator claim that pixels alone cannot establish.
         identity = capture_profile_identity(
-            [top_pre, initial, stable], identity_band=identity_band, grid=_IDENTITY_GRID)
+            [top_pre, initial, stable], identity_band=identity_band, grid=_IDENTITY_GRID
+        )
         if not identity.known or identity.fingerprint is None:
-            raise EvidenceRefused("item-1 proof did not yield a corroborated profile identity: "
-                                  + identity.reason)
+            raise EvidenceRefused(
+                "item-1 proof did not yield a corroborated profile identity: "
+                + identity.reason
+            )
         analyses["item1_profile_identity"] = {
             "fingerprint": list(identity.fingerprint),
             "grid": list(identity.grid),
@@ -296,42 +378,56 @@ def record(*, adb, serial: str, identity_band: tuple[float, float, float, float]
 
         ask(
             "Manually advance to a NEW profile's confirmed top. Do not send the composer. "
-            "Press ENTER only after the prior composer is gone and filter chips are visible > ")
+            "Press ENTER only after the prior composer is gone and filter chips are visible > "
+        )
         new_top = take("new_profile_top_clear")
         try:
             new_top_verdict = confirm_scroll_top(new_top, identity_band=identity_band)
         except ScrollTopError as exc:
             raise EvidenceRefused(f"new-profile top could not be read: {exc}") from exc
         if not new_top_verdict.confirmed:
-            raise EvidenceRefused("new-profile frame is not a confirmed top: " + new_top_verdict.reason)
+            raise EvidenceRefused(
+                "new-profile frame is not a confirmed top: " + new_top_verdict.reason
+            )
         try:
             locate_inline_composer(new_top, confirm_template, threshold=0.8)
         except ComposerDetectionError:
             pass
         else:
-            raise EvidenceRefused("new-profile top still structurally contains an inline composer")
-        analyses["new_profile_top_clear"] = {"scroll_top": _top_record(new_top_verdict),
-                                               "composer_absent": True}
+            raise EvidenceRefused(
+                "new-profile top still structurally contains an inline composer"
+            )
+        analyses["new_profile_top_clear"] = {
+            "scroll_top": _top_record(new_top_verdict),
+            "composer_absent": True,
+        }
 
         ask(
             "On that new profile, manually scroll just enough for its sticky name header to be "
-            "stable. Press ENTER to record the new-profile identity > ")
+            "stable. Press ENTER to record the new-profile identity > "
+        )
         new_sticky = take("new_sticky_identity")
         try:
             new_sticky_top = confirm_scroll_top(new_sticky, identity_band=identity_band)
-            new_fingerprint = band_fingerprint(new_sticky, identity_band=identity_band,
-                                               grid=_IDENTITY_GRID)
+            new_fingerprint = band_fingerprint(
+                new_sticky, identity_band=identity_band, grid=_IDENTITY_GRID
+            )
         except ScrollTopError as exc:
-            raise EvidenceRefused(f"new sticky identity could not be read: {exc}") from exc
+            raise EvidenceRefused(
+                f"new sticky identity could not be read: {exc}"
+            ) from exc
         if not new_sticky_top.refuted:
-            raise EvidenceRefused("new sticky identity was not positively visible: "
-                                  + new_sticky_top.reason)
+            raise EvidenceRefused(
+                "new sticky identity was not positively visible: "
+                + new_sticky_top.reason
+            )
         distance = fingerprint_distance(identity.fingerprint, new_fingerprint)
         if distance <= _NEW_PROFILE_MIN_IDENTITY_DISTANCE:
             raise EvidenceRefused(
                 f"new sticky identity is only {distance:.3f} from the item-1 profile (must be "
                 f"> {_NEW_PROFILE_MIN_IDENTITY_DISTANCE}); do not certify a same-profile scroll "
-                "as a profile advance")
+                "as a profile advance"
+            )
         analyses["new_sticky_identity"] = {
             "scroll_top": _top_record(new_sticky_top),
             "fingerprint": list(new_fingerprint),
@@ -373,7 +469,10 @@ def record(*, adb, serial: str, identity_band: tuple[float, float, float, float]
         # who changes both the JSON and its digest.
         manifest["evidence_sha256"] = _canonical_json_digest(manifest)
         atomic_write_private_text(
-            out_dir / "manifest.json", json.dumps(manifest, indent=2) + "\n", parent=out_dir)
+            out_dir / "manifest.json",
+            json.dumps(manifest, indent=2) + "\n",
+            parent=out_dir,
+        )
 
     if interrupted:
         raise EvidenceRefused("interrupted by Ctrl-C; evidence manifest is incomplete")
@@ -385,28 +484,41 @@ def record(*, adb, serial: str, identity_band: tuple[float, float, float, float]
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
         description="Read-only Hinge operational-evidence recorder. The owner performs every "
-                    "heart and profile advance by hand; this tool only screencaps.")
+        "heart and profile advance by hand; this tool only screencaps."
+    )
     parser.add_argument("--config", default="config.yaml")
-    parser.add_argument("--out", default=None,
-                        help="private output under ops/calibration/ (default timestamped directory)")
+    parser.add_argument(
+        "--out",
+        default=None,
+        help="private output under ops/calibration/ (default timestamped directory)",
+    )
     args = parser.parse_args(argv)
 
     try:
         cfg = cfg_mod.load(args.config)
         serial, adb_path, identity_band, template = _settings(cfg)
         out_dir = _out_dir(args.out)
-        print("READ-ONLY: this tool only queries device evidence and captures screenshots. "
-              "Perform every phone action by hand.")
+        print(
+            "READ-ONLY: this tool only queries device evidence and captures screenshots. "
+            "Perform every phone action by hand."
+        )
         print(f"Frames remain local under {out_dir}; configured Hinge serial: {serial}")
         adb = Adb(serial, adb_path=adb_path)
         device = _read_device_evidence(adb, serial=serial)
-        manifest = record(adb=adb, serial=serial,
-                          identity_band=identity_band, confirm_template=template,
-                          out_dir=out_dir, device=device)
+        manifest = record(
+            adb=adb,
+            serial=serial,
+            identity_band=identity_band,
+            confirm_template=template,
+            out_dir=out_dir,
+            device=device,
+        )
     except EvidenceRefused as exc:
         print(f"REFUSED: {exc}", file=sys.stderr)
         raise SystemExit(1) from exc
-    print(f"SUCCESS: wrote {manifest['frame_count']} hashed evidence frame(s) to {out_dir}")
+    print(
+        f"SUCCESS: wrote {manifest['frame_count']} hashed evidence frame(s) to {out_dir}"
+    )
 
 
 if __name__ == "__main__":

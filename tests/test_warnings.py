@@ -1,4 +1,5 @@
 """warning filter setup — narrow and idempotent."""
+
 import warnings
 
 from operation_love import _warnings as ow
@@ -20,9 +21,18 @@ def test_configure_warnings_adds_two_filters_once():
             for f in warnings.filters
         }
         assert got == {
-            ("ignore", r"pkg_resources is deprecated as an API", UserWarning, r"clip(\.|$)"),
-            ("ignore", r"`estimate` is deprecated", FutureWarning,
-             r"insightface\.utils\.face_align$"),
+            (
+                "ignore",
+                r"pkg_resources is deprecated as an API",
+                UserWarning,
+                r"clip(\.|$)",
+            ),
+            (
+                "ignore",
+                r"`estimate` is deprecated",
+                FutureWarning,
+                r"insightface\.utils\.face_align$",
+            ),
         }
     finally:
         warnings.filters[:] = old_filters

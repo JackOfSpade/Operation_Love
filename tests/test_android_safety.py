@@ -32,6 +32,7 @@ now the delivered point (clamp_xy, shared with both transports), an out-of-range
 raises loudly instead of silently clamping, and a zone check accounts for the jitter a real
 tap can still add AFTER the check runs.
 """
+
 import pytest
 
 from operation_love.drivers import hinge
@@ -92,6 +93,7 @@ def _drv(spec, adb, **overrides):
     # gates correctly refuse BUMBLE_SPEC in both modes.
     class C:
         apps = {spec.app: {"halt_on_error": False, **overrides}}
+
     d = AndroidDriver(C(), spec)
     d._adb = adb
     d._touch = adb
@@ -105,11 +107,14 @@ def _no_sleep(monkeypatch):
 
 # --- spec-level validation (fails at import, not mid-swipe) -----------------
 
+
 def test_card_swipe_spec_without_drag_endpoints_is_rejected():
     # Discovering a missing endpoint mid-run would leave the driver falling back to a tap —
     # exactly what card_swipe exists to prevent. Catch it at construction instead.
     with pytest.raises(ValueError, match="swipe_start"):
-        AndroidAppSpec(app="x", package="x.y", calibrated=False, decide_gesture="card_swipe")
+        AndroidAppSpec(
+            app="x", package="x.y", calibrated=False, decide_gesture="card_swipe"
+        )
 
 
 def test_unknown_decide_gesture_is_rejected():
@@ -120,14 +125,23 @@ def test_unknown_decide_gesture_is_rejected():
 def test_malformed_forbidden_zone_is_rejected():
     # A silently-ignored bad rect would read as protection while providing none.
     with pytest.raises(ValueError, match="forbidden_zones"):
-        AndroidAppSpec(app="x", package="x.y", calibrated=False,
-                       forbidden_zones=((0.7, 0.1, 0.3, 0.9),))   # x0 > x1
+        AndroidAppSpec(
+            app="x",
+            package="x.y",
+            calibrated=False,
+            forbidden_zones=((0.7, 0.1, 0.3, 0.9),),
+        )  # x0 > x1
     with pytest.raises(ValueError, match="forbidden_zones"):
-        AndroidAppSpec(app="x", package="x.y", calibrated=False,
-                       forbidden_zones=((0.1, 0.1, 1.5, 0.9),))   # outside 0..1
+        AndroidAppSpec(
+            app="x",
+            package="x.y",
+            calibrated=False,
+            forbidden_zones=((0.1, 0.1, 1.5, 0.9),),
+        )  # outside 0..1
 
 
 # --- Bumble decides by dragging, never by aiming at the button row ----------
+
 
 def test_bumble_like_is_a_card_drag_and_issues_no_tap_at_all():
     adb = FakeAdb()
@@ -160,7 +174,9 @@ def test_stop_at_card_swipe_transport_boundary_prevents_the_pass_gesture(monkeyp
         original()
         stopped["now"] = True
 
-    monkeypatch.setattr(drv, "_require_foreground_owned_for_input", foreground_then_stop)
+    monkeypatch.setattr(
+        drv, "_require_foreground_owned_for_input", foreground_then_stop
+    )
     with pytest.raises(ActionCancelled):
         drv.dislike(should_stop=lambda: stopped["now"])
     assert adb.swipes == [] and adb.taps == []
@@ -171,7 +187,7 @@ def test_bumble_drag_starts_clear_of_its_own_paid_zone():
     # must not be over the paid control. Self-consistency check on the spec's own numbers.
     drv = _drv(BUMBLE_SPEC, FakeAdb())
     sx, sy = BUMBLE_SPEC.coords["swipe_start"]
-    drv._assert_tap_allowed(int(sx * 1080), int(sy * 2400))   # must not raise
+    drv._assert_tap_allowed(int(sx * 1080), int(sy * 2400))  # must not raise
 
 
 def test_bumble_spec_has_no_action_button_fallback_coords():
@@ -182,6 +198,7 @@ def test_bumble_spec_has_no_action_button_fallback_coords():
 
 
 # --- the forbidden-zone backstop -------------------------------------------
+
 
 def test_a_tap_inside_a_forbidden_zone_raises_and_never_reaches_the_phone():
     adb = FakeAdb()
@@ -235,6 +252,7 @@ def test_forbidden_tap_halts_the_run_rather_than_being_routine():
 # the transport's clamp put it -- which can be inside a zone. These tests reproduce the
 # demonstrated exploit against BUMBLE_SPEC's real zone (0.34, 0.80, 0.66, 1.00).
 
+
 def test_clamp_xy_is_the_exact_arithmetic_both_transports_apply():
     # adb.py's Adb._clamp and uhid.py's _report both delegate to this now; pin its own
     # behaviour directly so the two transports and the zone check can never drift apart on
@@ -269,7 +287,7 @@ def test_out_of_range_error_names_the_offending_value_and_app():
     msg = str(exc.value)
     assert str(x) in msg and str(y) in msg
     assert "bumble" in msg
-    assert "coords" in msg or "frac" in msg   # points at the likely config culprit
+    assert "coords" in msg or "frac" in msg  # points at the likely config culprit
 
 
 def test_out_of_range_tap_error_is_a_hinge_action_error():
@@ -327,6 +345,7 @@ def test_nan_coordinate_still_raises_before_any_touch_call():
 # its REAL, delivered touch-down land inside one. _tap() closes this by widening the
 # zone check by _TAP_ZONE_MARGIN_PX (human_motion.tap_jitter_margin_px()) on every side.
 
+
 def test_tap_margin_rejects_an_aim_point_whose_jitter_could_enter_the_zone():
     adb = FakeAdb()
     drv = _drv(BUMBLE_SPEC, adb)
@@ -335,7 +354,9 @@ def test_tap_margin_rejects_an_aim_point_whose_jitter_could_enter_the_zone():
     margin = drv._TAP_ZONE_MARGIN_PX
     assert margin > 0
     x_mid = int(((x0 + x1) / 2) * w)
-    y_edge = int(y0 * h) - int(margin) + 2   # just inside the margin, just outside the zone
+    y_edge = (
+        int(y0 * h) - int(margin) + 2
+    )  # just inside the margin, just outside the zone
     # Sanity: the NOMINAL point itself must be outside the raw zone -- otherwise this is just
     # re-testing the plain zone check above, not the margin.
     assert not (y0 <= y_edge / h <= y1), "test setup must aim outside the raw zone"
@@ -351,7 +372,7 @@ def test_tap_margin_still_allows_a_point_clearly_outside_any_plausible_jitter():
     w, h = 1080, 2400
     margin = drv._TAP_ZONE_MARGIN_PX
     x_mid = int(((x0 + x1) / 2) * w)
-    y_clear = int(y0 * h) - int(margin) - 20   # comfortably clear of the widened zone
+    y_clear = int(y0 * h) - int(margin) - 20  # comfortably clear of the widened zone
     drv._tap(x_mid, y_clear)
     assert adb.taps == [(x_mid, y_clear)]
 
@@ -367,8 +388,10 @@ def test_swipe_and_scroll_are_not_widened_by_the_tap_margin():
     w, h = 1080, 2400
     margin = drv._TAP_ZONE_MARGIN_PX
     x_mid = int(((x0 + x1) / 2) * w)
-    y_edge = int(y0 * h) - int(margin) + 2   # inside the TAP margin, outside the raw zone
-    drv._swipe(x_mid, y_edge, x_mid, y_edge - 200)   # must not raise
+    y_edge = (
+        int(y0 * h) - int(margin) + 2
+    )  # inside the TAP margin, outside the raw zone
+    drv._swipe(x_mid, y_edge, x_mid, y_edge - 200)  # must not raise
     assert adb.swipes == [(x_mid, y_edge, x_mid, y_edge - 200)]
 
 
@@ -378,6 +401,7 @@ def test_swipe_and_scroll_are_not_widened_by_the_tap_margin():
 # now gone, because a stale coordinate can be occupied by a paid control by the time it fires,
 # and the usual trigger is a MISSING CAPABILITY (OpenCV absent), not a one-off miss.
 
+
 def test_await_button_raises_and_taps_nothing_when_control_cannot_be_located():
     # BUMBLE_SPEC declares no 'like' template at all, so there is no vision path AND -- since
     # the fixed-coordinate fallback is gone -- no way to act on this role at all. The important
@@ -386,7 +410,9 @@ def test_await_button_raises_and_taps_nothing_when_control_cannot_be_located():
     drv = _drv(BUMBLE_SPEC, adb)
     with pytest.raises(UnlocatedControlError):
         drv._await_button("like", tries=1)
-    assert adb.taps == [], "a control vision could not locate must never be tapped blind"
+    assert adb.taps == [], (
+        "a control vision could not locate must never be tapped blind"
+    )
 
 
 def test_await_button_message_blames_opencv_when_the_template_itself_cannot_load():
@@ -394,9 +420,13 @@ def test_await_button_message_blames_opencv_when_the_template_itself_cannot_load
     # file) is missing, so EVERY match silently returns nothing, forever. The refusal message
     # must name that cause so an operator fixes the actual problem instead of assuming a
     # transient UI glitch and retrying.
-    spec = AndroidAppSpec(app="badtemplate", package="x.y", calibrated=False,
-                          coords={"like_heart": (0.5, 0.5), "pass_x": (0.1, 0.9)},
-                          templates={"like": "does_not_exist_glyph.png"})
+    spec = AndroidAppSpec(
+        app="badtemplate",
+        package="x.y",
+        calibrated=False,
+        coords={"like_heart": (0.5, 0.5), "pass_x": (0.1, 0.9)},
+        templates={"like": "does_not_exist_glyph.png"},
+    )
     adb = FakeAdb()
     drv = _drv(spec, adb)
     with pytest.raises(UnlocatedControlError, match="OpenCV"):
@@ -404,7 +434,9 @@ def test_await_button_message_blames_opencv_when_the_template_itself_cannot_load
     assert adb.taps == []
 
 
-def test_await_button_message_blames_the_screen_when_the_glyph_is_simply_not_there(monkeypatch):
+def test_await_button_message_blames_the_screen_when_the_glyph_is_simply_not_there(
+    monkeypatch,
+):
     # Contrast case: the template loads fine (a real, working capability) -- the glyph just
     # is not on THIS screen. The message must say so, and must NOT blame OpenCV: a missing
     # capability and an ordinary "wrong screen / UI changed" miss are different problems that
@@ -430,21 +462,28 @@ def test_unlocated_control_error_is_a_hinge_action_error():
 # nothing and (before the fallback removal above) every action became a blind coordinate tap,
 # indefinitely, with no error. Checking up front turns that into "the run never starts".
 
+
 def test_require_vision_is_a_noop_for_a_spec_declaring_no_templates():
     spec = AndroidAppSpec(app="noviz", package="x.y", calibrated=False, templates={})
     drv = _drv(spec, FakeAdb())
-    drv._require_vision()          # must not raise: there is no vision to lose
+    drv._require_vision()  # must not raise: there is no vision to lose
 
 
 def test_require_vision_raises_when_a_declared_template_cannot_load():
-    spec = AndroidAppSpec(app="badtemplate2", package="x.y", calibrated=False,
-                          templates={"like": "does_not_exist_glyph.png"})
+    spec = AndroidAppSpec(
+        app="badtemplate2",
+        package="x.y",
+        calibrated=False,
+        templates={"like": "does_not_exist_glyph.png"},
+    )
     drv = _drv(spec, FakeAdb())
     with pytest.raises(DriverClosed, match="does_not_exist_glyph.png"):
         drv._require_vision()
 
 
-def test_require_vision_raises_from_open_session_when_a_template_cannot_load(monkeypatch):
+def test_require_vision_raises_from_open_session_when_a_template_cannot_load(
+    monkeypatch,
+):
     # open_session() must call _require_vision() and let it stop the session BEFORE any ADB
     # connection is attempted -- refusing the run before it can act blind, not merely having
     # the helper available and unused. app="hinge" is registered and available in the
@@ -453,13 +492,18 @@ def test_require_vision_raises_from_open_session_when_a_template_cannot_load(mon
     # has_paid_upsell=False so the spec is constructible without an upsell_dismiss template:
     # this test is about _require_vision, and a calibrated spec otherwise has to prove it can
     # dismiss a paid modal (see test_calibrated_spec_without_an_upsell_dismiss_template_*).
-    spec = AndroidAppSpec(app="hinge", package="co.hinge.app", calibrated=True,
-                          has_paid_upsell=False,
-                          templates={"like": "does_not_exist_glyph.png"})
+    spec = AndroidAppSpec(
+        app="hinge",
+        package="co.hinge.app",
+        calibrated=True,
+        has_paid_upsell=False,
+        templates={"like": "does_not_exist_glyph.png"},
+    )
 
     class C:
         mode = "training"
         apps = {}
+
     drv = AndroidDriver(C(), spec)
     # Direct driver construction defaults to the retired passive-observer path.  This test
     # exercises the live Training lifecycle, which is device-driven even before the Hub has a
@@ -468,16 +512,19 @@ def test_require_vision_raises_from_open_session_when_a_template_cannot_load(mon
     # Targeting calibration/readiness is independently tested at the platform boundary.  This
     # test isolates the next gate: a shipped vision template must load before AndroidDriver
     # creates an ADB transport.
-    monkeypatch.setattr("operation_love.platforms.unavailable_reason", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        "operation_love.platforms.unavailable_reason", lambda *_a, **_k: None
+    )
     with pytest.raises(DriverClosed, match="does_not_exist_glyph.png"):
         drv.open_session()
-    assert drv._adb is None        # never got as far as constructing a real ADB connection
+    assert drv._adb is None  # never got as far as constructing a real ADB connection
 
 
 # --- _await_sheet_open(): comment_sheet's FIXED taps are gated on the sheet being open -------
 # comment_box / send_like are fixed coordinates, safe to tap only while the sheet is actually
 # up -- on Hinge, send_like sits mid-card, where per-photo/per-prompt like buttons live, so a
 # missed heart tap could otherwise like the WRONG item instead of doing nothing.
+
 
 def _heart_only_frame(cx=900, cy=1200):
     """A decodable frame carrying ONLY the heart glyph: the tap that opens the sheet succeeds,
@@ -487,17 +534,19 @@ def _heart_only_frame(cx=900, cy=1200):
     this stays a real deck frame if that role's asset ever changes again."""
     import cv2
     import numpy as np
+
     rng = np.random.default_rng(21)
     canvas = rng.integers(60, 200, size=(2400, 1080), dtype=np.uint8)
     t = hinge._load_template(hinge.HINGE_SPEC.templates["like"])
     th, tw = t.shape
-    canvas[cy - th // 2: cy - th // 2 + th, cx - tw // 2: cx - tw // 2 + tw] = t
+    canvas[cy - th // 2 : cy - th // 2 + th, cx - tw // 2 : cx - tw // 2 + tw] = t
     ok, buf = cv2.imencode(".png", canvas)
     return buf.tobytes()
 
 
 class _ConstFrameAdb(FakeAdb):
     """A FakeAdb whose screencap always returns the same fixed frame."""
+
     def __init__(self, frame):
         super().__init__()
         self._frame = frame
@@ -524,10 +573,13 @@ def test_comment_sheet_spec_without_confirm_template_is_rejected():
     # _await_sheet_open can verify the sheet is actually open before doing so. Refuse the
     # spec at construction, not mid-swipe on a real device.
     with pytest.raises(ValueError, match="confirm"):
-        AndroidAppSpec(app="x", package="x.y", calibrated=False, like_flow="comment_sheet")
+        AndroidAppSpec(
+            app="x", package="x.y", calibrated=False, like_flow="comment_sheet"
+        )
 
 
 # --- a spec cannot be declared "calibrated" while blind to paid upsells -------
+
 
 def test_calibrated_spec_without_an_upsell_dismiss_template_is_rejected():
     # With no template, _handle_rose_upsell silently no-ops AND _verify_progress's only
@@ -536,15 +588,24 @@ def test_calibrated_spec_without_an_upsell_dismiss_template_is_rejected():
     # screen for the next gesture to hit unpredictably. Marking a spec calibrated is the
     # claim that it is ready for a real account, so that gap must block it.
     with pytest.raises(ValueError, match="upsell_dismiss"):
-        AndroidAppSpec(app="x", package="x.y", calibrated=True,
-                       templates={"like": "hinge_heart.png"})
+        AndroidAppSpec(
+            app="x",
+            package="x.y",
+            calibrated=True,
+            templates={"like": "hinge_heart.png"},
+        )
 
 
 def test_an_app_with_genuinely_no_paid_upsell_can_say_so_explicitly():
     # The escape hatch is a deliberate claim, not an omission — which is the whole point of
     # defaulting has_paid_upsell to True.
-    spec = AndroidAppSpec(app="x", package="x.y", calibrated=True, has_paid_upsell=False,
-                          templates={"like": "hinge_heart.png"})
+    spec = AndroidAppSpec(
+        app="x",
+        package="x.y",
+        calibrated=True,
+        has_paid_upsell=False,
+        templates={"like": "hinge_heart.png"},
+    )
     assert spec.has_paid_upsell is False
 
 
@@ -575,10 +636,14 @@ def test_bumble_must_gain_an_upsell_template_before_it_can_be_calibrated():
 # every run. The margin was thinner than it looked: at the default read_scroll_frac=0.55
 # the touch-down sits at y=0.775, 2.5% of the screen above Bumble's SuperSwipe zone.
 
+
 def _spec_with_scroll(frac):
     return AndroidAppSpec(
-        app="bumble", package="com.bumble.app", calibrated=False,
-        decide_gesture="card_swipe", read_scroll_frac=frac,
+        app="bumble",
+        package="com.bumble.app",
+        calibrated=False,
+        decide_gesture="card_swipe",
+        read_scroll_frac=frac,
         coords=dict(BUMBLE_SPEC.coords),
         forbidden_zones=BUMBLE_SPEC.forbidden_zones,
     )
@@ -603,7 +668,7 @@ def test_read_scroll_refuses_when_its_column_enters_a_bumble_control_zone():
 
 def test_read_scroll_is_allowed_when_clear_of_the_zone():
     adb = FakeAdb()
-    drv = _drv(_spec_with_scroll(0.55), adb)     # shipped default -> y=0.775, just clear
+    drv = _drv(_spec_with_scroll(0.55), adb)  # shipped default -> y=0.775, just clear
     drv._scroll_down_one()
     assert adb.scrolls == 1
 
@@ -613,18 +678,22 @@ def test_scroll_guard_accounts_for_the_column_jitter_not_just_the_centre():
     # pixel-identical. A guard that only the nominal centre passes would let the jittered
     # extremes stray into a zone -- so both extremes are checked.
     from operation_love.drivers.adb import SCROLL_X_JITTER_PX
+
     w = 1080
     centre_frac = 0.5
     # A zone that the centre misses but the right-hand jitter extreme enters.
     edge = (int(w * centre_frac) + 1) / w
     spec = AndroidAppSpec(
-        app="bumble", package="com.bumble.app", calibrated=False,
-        decide_gesture="card_swipe", coords=dict(BUMBLE_SPEC.coords),
+        app="bumble",
+        package="com.bumble.app",
+        calibrated=False,
+        decide_gesture="card_swipe",
+        coords=dict(BUMBLE_SPEC.coords),
         forbidden_zones=((edge, 0.0, 1.0, 1.0),),
     )
     adb = FakeAdb()
     drv = _drv(spec, adb)
-    assert SCROLL_X_JITTER_PX > 1                 # the extremes really do differ
+    assert SCROLL_X_JITTER_PX > 1  # the extremes really do differ
     with pytest.raises(ForbiddenTapError):
         drv._scroll_down_one()
     assert adb.scrolls == 0
@@ -643,13 +712,20 @@ def test_the_reverse_read_scroll_goes_through_the_same_guard_at_BOTH_ends():
     too, which is the half a start-only check would miss."""
     ok_adb = FakeAdb()
     _drv(_spec_with_scroll(0.55), ok_adb)._scroll_up_one(0.16, 0.5)
-    assert ok_adb.swipes, "the real bottom-of-card zone must not block a reverse read-scroll"
+    assert ok_adb.swipes, (
+        "the real bottom-of-card zone must not block a reverse read-scroll"
+    )
 
-    for zone, where in ((((0.0, 0.0, 1.0, 0.47),), "the press, high on screen"),
-                        (((0.0, 0.53, 1.0, 1.0),), "the release, low on screen")):
+    for zone, where in (
+        (((0.0, 0.0, 1.0, 0.47),), "the press, high on screen"),
+        (((0.0, 0.53, 1.0, 1.0),), "the release, low on screen"),
+    ):
         spec = AndroidAppSpec(
-            app="bumble", package="com.bumble.app", calibrated=False,
-            decide_gesture="card_swipe", coords=dict(BUMBLE_SPEC.coords),
+            app="bumble",
+            package="com.bumble.app",
+            calibrated=False,
+            decide_gesture="card_swipe",
+            coords=dict(BUMBLE_SPEC.coords),
             forbidden_zones=zone,
         )
         adb = FakeAdb()
@@ -674,7 +750,9 @@ def test_the_reverse_read_scroll_records_itself_in_the_ledger_and_never_shortens
     assert len(drv._capture_scroll_ledger) == 2
 
     drv._scroll_up_one(0.14, 0.5)
-    assert len(drv._capture_scroll_ledger) == 3, "a reverse gesture must not shrink the ceiling"
+    assert len(drv._capture_scroll_ledger) == 3, (
+        "a reverse gesture must not shrink the ceiling"
+    )
     assert drv._capture_scrolls == 3
     assert drv._capture_scroll_ledger[-1] == (0.14, 0.5)
 
@@ -690,17 +768,24 @@ def test_scroll_to_top_undo_swipes_go_through_the_guard():
     assert ok_adb.swipes, "the real bottom-of-card zone must not block scroll-to-top"
 
     top_zone = AndroidAppSpec(
-        app="bumble", package="com.bumble.app", calibrated=False,
-        decide_gesture="card_swipe", read_scroll_frac=0.65,
+        app="bumble",
+        package="com.bumble.app",
+        calibrated=False,
+        decide_gesture="card_swipe",
+        read_scroll_frac=0.65,
         coords=dict(BUMBLE_SPEC.coords),
-        forbidden_zones=((0.0, 0.0, 1.0, 0.30),),   # covers y_near, where the undo starts
+        forbidden_zones=(
+            (0.0, 0.0, 1.0, 0.30),
+        ),  # covers y_near, where the undo starts
     )
     adb = FakeAdb()
     drv = _drv(top_zone, adb)
     drv._capture_scrolls = 1
     with pytest.raises(ForbiddenTapError):
         drv._scroll_to_top()
-    assert adb.swipes == [], "routed through _swipe, so a zone hit refuses before the phone"
+    assert adb.swipes == [], (
+        "routed through _swipe, so a zone hit refuses before the phone"
+    )
 
 
 def test_no_driver_gesture_reaches_the_transport_ungarded():
@@ -709,6 +794,7 @@ def test_no_driver_gesture_reaches_the_transport_ungarded():
     import inspect
     import re as _re
     from operation_love.drivers import hinge as _hinge
+
     src = inspect.getsource(_hinge.AndroidDriver)
     direct = _re.findall(r"self\.touch\.(tap|swipe|scroll_up)\(", src)
     assert len(direct) == 3, f"expected exactly the 3 choke points, found {direct}"
@@ -721,6 +807,7 @@ def test_no_driver_gesture_reaches_the_transport_ungarded():
 # own docstring for why
 # a duck-typed test double (like FakeAdb above) never receives it.
 # =====================================================================================
+
 
 class _UhidFakeAdb:
     """Just enough of the real Adb surface for a REAL UhidTouch to run its whole gesture path
@@ -746,7 +833,7 @@ def test_touch_supports_timing_is_true_for_the_real_transports_only():
     from operation_love.drivers.uhid import PersistentUhidTouch, UhidTouch
 
     drv = _drv(HINGE_SPEC, FakeAdb())
-    assert drv._touch_supports_timing() is False        # this file's own duck-typed double
+    assert drv._touch_supports_timing() is False  # this file's own duck-typed double
 
     drv._touch = UhidTouch(_UhidFakeAdb())
     assert drv._touch_supports_timing() is True
@@ -781,8 +868,12 @@ def test_scroll_threads_timing_into_a_real_uhid_transport():
     drv._scroll(0.15, 0.5, _timing=stamps)
 
     assert set(stamps) == {
-        "screen_size_s", "zone_check_s", "foreground_reassert_s",
-        "uhid_plan_swipe_s", "uhid_script_build_s", "uhid_write_file_s",
+        "screen_size_s",
+        "zone_check_s",
+        "foreground_reassert_s",
+        "uhid_plan_swipe_s",
+        "uhid_script_build_s",
+        "uhid_write_file_s",
         "uhid_hid_run_s",
     }
     assert all(v >= 0.0 for v in stamps.values())

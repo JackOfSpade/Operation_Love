@@ -148,6 +148,7 @@ frames and each is genuinely unanswerable from ONE frame. Do not "fix" them here
     See `_unanchored_leading_island_rows`. A caller holding several frames of one scroll can
     settle it; a caller holding one frame must not pretend to.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -346,55 +347,71 @@ _MATCH_GLYPH_HIT_CAP = 12
 # =====================================================================================
 
 # --- block classes, per doc 5.3 -----------------------------------------------------
-BLOCK_SELECTABLE = "selectable"   # fully observed, exactly one heart: a photo or prompt card
-BLOCK_CONTEXT = "context"         # fully observed, no heart: the vitals block (5.3)
-BLOCK_PARTIAL = "partial"         # at least one edge not observed; true extent unknown here
-BLOCK_AMBIGUOUS = "ambiguous"     # >1 heart in one block: a segmentation FAILURE, not a choice
-BLOCK_UNANCHORED = "unanchored"   # a leading strip that one frame cannot place: it may be page
-                                  # content sliced by the band, or app chrome pinned to the
-                                  # SCREEN. Only a cross-frame comparison can tell, so this
-                                  # module names the ambiguity instead of resolving it (see
-                                  # `_unanchored_leading_island_rows`)
+BLOCK_SELECTABLE = (
+    "selectable"  # fully observed, exactly one heart: a photo or prompt card
+)
+BLOCK_CONTEXT = "context"  # fully observed, no heart: the vitals block (5.3)
+BLOCK_PARTIAL = "partial"  # at least one edge not observed; true extent unknown here
+BLOCK_AMBIGUOUS = (
+    "ambiguous"  # >1 heart in one block: a segmentation FAILURE, not a choice
+)
+BLOCK_UNANCHORED = (
+    "unanchored"  # a leading strip that one frame cannot place: it may be page
+)
+# content sliced by the band, or app chrome pinned to the
+# SCREEN. Only a cross-frame comparison can tell, so this
+# module names the ambiguity instead of resolving it (see
+# `_unanchored_leading_island_rows`)
 
 # --- why a block edge is where it is ------------------------------------------------
-EDGE_GUTTER = "gutter"            # a canonical-length page-background run between two cards
-EDGE_CARD_CORNER = "card_corner"  # the card's OWN rounded corner is visible on this row: the
-                                  # span it starts from and the rows it takes to reach the full
-                                  # card width agree on one radius (see `_corner_radius`)
-EDGE_SCROLL_TOP_MEDIA = "scroll_top_media"  # guarded frame-0 recovery for a pale square photo
+EDGE_GUTTER = "gutter"  # a canonical-length page-background run between two cards
+EDGE_CARD_CORNER = (
+    "card_corner"  # the card's OWN rounded corner is visible on this row: the
+)
+# span it starts from and the rows it takes to reach the full
+# card width agree on one radius (see `_corner_radius`)
+EDGE_SCROLL_TOP_MEDIA = (
+    "scroll_top_media"  # guarded frame-0 recovery for a pale square photo
+)
 EDGE_HEART_ANCHORED_MEDIA_GUTTER = "heart_anchored_media_gutter"
-                                  # a tall, page-coloured gap starts at a proven media item's
-                                  # lower edge even though its corner is obscured
+# a tall, page-coloured gap starts at a proven media item's
+# lower edge even though its corner is obscured
 EDGE_HEART_SEPARATED_NEAR_GUTTER = "heart_separated_near_gutter"
-                                  # a 59..64px page-coloured gap lies between proven hearts
+# a 59..64px page-coloured gap lies between proven hearts
 EDGE_UNANCHORED_ISLAND = "unanchored_island"
-                                  # page background separating a leading unanchored island from
-                                  # whatever is below it. NOT observed: the run is the reason
-                                  # the two were split, never evidence that either one ended
-EDGE_BAND_EDGE = "band_edge"      # the block runs straight into the analysed band's edge
+# page background separating a leading unanchored island from
+# whatever is below it. NOT observed: the run is the reason
+# the two were split, never evidence that either one ended
+EDGE_BAND_EDGE = "band_edge"  # the block runs straight into the analysed band's edge
 EDGE_BACKGROUND_RUN = "background_run"  # page background beyond this edge, but neither
-                                  # gutter-length nor corner-confirmed, so what it MEANS is
-                                  # unknown from one frame: "the card ended" and "the card's
-                                  # blank tail continues off-band" look identical
+# gutter-length nor corner-confirmed, so what it MEANS is
+# unknown from one frame: "the card ended" and "the card's
+# blank tail continues off-band" look identical
 
 # --- why a background run was or was not treated as a block boundary -----------------
 RUN_GUTTER = "gutter"
-RUN_CARD_EDGE = "card_edge"       # not gutter-length, but a card's own rounded corner touches
-                                  # one side of it — enough to cut the page gap without claiming
-                                  # the opposite block's edge was observed
-RUN_SCROLL_TOP_MEDIA = "scroll_top_media"  # distinct provenance for the guarded recovery
+RUN_CARD_EDGE = (
+    "card_edge"  # not gutter-length, but a card's own rounded corner touches
+)
+# one side of it — enough to cut the page gap without claiming
+# the opposite block's edge was observed
+RUN_SCROLL_TOP_MEDIA = (
+    "scroll_top_media"  # distinct provenance for the guarded recovery
+)
 RUN_HEART_ANCHORED_MEDIA_GUTTER = "heart_anchored_media_gutter"
 RUN_HEART_SEPARATED_NEAR_GUTTER = "heart_separated_near_gutter"
 RUN_TOO_SHORT = "too_short"
 RUN_TOO_LONG = "too_long"
-RUN_CLIPPED = "clipped"           # touches the analysed band's edge, so its length is a lower
-                                  # bound only and cannot be tested against the gutter window
-RUN_CARD_SURFACE = "card_surface"  # canonical length, but its median level differs from the
-                                   # page: blank space inside one compound card, not a gutter
+RUN_CLIPPED = "clipped"  # touches the analysed band's edge, so its length is a lower
+# bound only and cannot be tested against the gutter window
+RUN_CARD_SURFACE = (
+    "card_surface"  # canonical length, but its median level differs from the
+)
+# page: blank space inside one compound card, not a gutter
 RUN_UNANCHORED_ISLAND = "unanchored_island"
-                                   # an over-long run directly below a leading island that this
-                                   # frame cannot place. The ONLY cut kind that yields UNOBSERVED
-                                   # edges on both sides: it separates without bounding
+# an over-long run directly below a leading island that this
+# frame cannot place. The ONLY cut kind that yields UNOBSERVED
+# edges on both sides: it separates without bounding
 
 
 class SegmentationError(RuntimeError):
@@ -419,6 +436,7 @@ class BackgroundRun:
     hundred px when Hinge's floating pass-X overlaps it (trap 2). It is recorded so a
     validation pass can see HOW close a run came to failing the span test without re-deriving.
     """
+
     y0: int
     y1: int
     kind: str
@@ -451,6 +469,7 @@ class BlockEdge:
     radius, set only for `EDGE_CARD_CORNER`, and is there so a validation pass can see WHY an
     edge was trusted without re-deriving it.
     """
+
     y: int
     observed: bool
     kind: str
@@ -480,6 +499,7 @@ class Block:
     `cv2.IMREAD_GRAYSCALE` greys an sRGB-tagged device PNG differently from a `cv2.imencode`
     round-trip of the same image, which has already cost this project one wrong measurement.
     """
+
     y0: int
     y1: int
     x0: int
@@ -531,10 +551,11 @@ class FrameSegmentation:
     digest makes that check exact instead of nearly useless — same bytes, same frame, no
     tolerance and no false positives.
     """
-    frame_size: tuple[int, int]        # (width, height) in px
-    frame_digest: str                  # sha256 hex of the frame bytes this was measured from
-    band: tuple[int, int]              # analysed rows, half-open
-    card_x: tuple[int, int]            # (x0, x1) card extent, half-open
+
+    frame_size: tuple[int, int]  # (width, height) in px
+    frame_digest: str  # sha256 hex of the frame bytes this was measured from
+    band: tuple[int, int]  # analysed rows, half-open
+    card_x: tuple[int, int]  # (x0, x1) card extent, half-open
     blocks: tuple[Block, ...]
     runs: tuple[BackgroundRun, ...]
     hearts: tuple[tuple[int, int], ...]
@@ -571,7 +592,8 @@ def _require_vision():
     except Exception as exc:  # noqa: BLE001 — surfaced as SegmentationError, never swallowed
         raise SegmentationError(
             "segmentation needs opencv-python + numpy (extra: operation-love[hinge]); "
-            f"import failed: {exc}") from exc
+            f"import failed: {exc}"
+        ) from exc
     return cv2, np
 
 
@@ -603,15 +625,25 @@ def _row_background_profile(gray, *, card_x0: int, probe_inset: int, np):
     margin) that a mean or a peak-to-peak range would get wrong.
     """
     width = gray.shape[1]
-    left = gray[:, probe_inset: card_x0 - probe_inset]
-    right = gray[:, width - card_x0 + probe_inset: width - probe_inset]
+    left = gray[:, probe_inset : card_x0 - probe_inset]
+    right = gray[:, width - card_x0 + probe_inset : width - probe_inset]
     probe = np.concatenate((left, right), axis=1).astype(np.float32)
     lo, mid, hi = np.percentile(probe, (25, 50, 75), axis=1)
     return mid, hi - lo
 
 
-def _classify_rows(gray, *, card_x0: int, card_x1: int, reference, spread, tolerance: float,
-                   min_span_frac: float, max_spread: float, np):
+def _classify_rows(
+    gray,
+    *,
+    card_x0: int,
+    card_x1: int,
+    reference,
+    spread,
+    tolerance: float,
+    min_span_frac: float,
+    max_spread: float,
+    np,
+):
     """Per-row `(is_card, nonbg_span)` for the whole frame.
 
     `nonbg_span` is the distance from the leftmost to the rightmost non-background pixel within
@@ -638,9 +670,18 @@ def _classify_rows(gray, *, card_x0: int, card_x1: int, reference, spread, toler
     return is_card, span
 
 
-def _background_runs(is_card, span, level_delta, *, r0: int, r1: int, gutter_lo: int,
-                     gutter_hi: int, gutter_level_tolerance: float, np,
-                     ) -> list[BackgroundRun]:
+def _background_runs(
+    is_card,
+    span,
+    level_delta,
+    *,
+    r0: int,
+    r1: int,
+    gutter_lo: int,
+    gutter_hi: int,
+    gutter_level_tolerance: float,
+    np,
+) -> list[BackgroundRun]:
     """Maximal runs of background-like rows, classified by length and actual page agreement.
 
     A run that touches either end of the analysed band is `RUN_CLIPPED` regardless of its
@@ -673,16 +714,31 @@ def _background_runs(is_card, span, level_delta, *, r0: int, r1: int, gutter_lo:
             kind = RUN_CARD_SURFACE
         else:
             kind = RUN_GUTTER
-        runs.append(BackgroundRun(y0=start, y1=y, kind=kind,
-                                  widest_intruder_px=int(span[start:y].max()) if height else 0,
-                                  median_level_delta=median_delta))
+        runs.append(
+            BackgroundRun(
+                y0=start,
+                y1=y,
+                kind=kind,
+                widest_intruder_px=int(span[start:y].max()) if height else 0,
+                median_level_delta=median_delta,
+            )
+        )
     return runs
 
 
 def _restore_low_contrast_card_surface_at_strict_gutter(
-        runs: list[BackgroundRun], *, is_card, level_delta,
-        hearts: tuple[tuple[int, int], ...], r0: int, r1: int,
-        gutter_lo: int, gutter_hi: int, gutter_level_tolerance: float, np) -> bool:
+    runs: list[BackgroundRun],
+    *,
+    is_card,
+    level_delta,
+    hearts: tuple[tuple[int, int], ...],
+    r0: int,
+    r1: int,
+    gutter_lo: int,
+    gutter_hi: int,
+    gutter_level_tolerance: float,
+    np,
+) -> bool:
     """Restore a card-white surface that the ordinary span test cannot see.
 
     This is deliberately *not* a wider gutter rule.  On Allison's capture, a 174-row
@@ -735,21 +791,27 @@ def _restore_low_contrast_card_surface_at_strict_gutter(
         # leading surface.  Requiring a classified card immediately after it prevents a blank
         # panel or a long page gap from being promoted.
         prefix_end = strict_prefix_end(run)
-        if (gutter_lo <= prefix_end - run.y0 <= gutter_hi
-                and prefix_end < run.y1
-                and np.all(level_delta[prefix_end:run.y1] > gutter_level_tolerance)
-                and run.y1 < r1 and is_card[run.y1]
-                and has_bottom_heart(run.y0)):
+        if (
+            gutter_lo <= prefix_end - run.y0 <= gutter_hi
+            and prefix_end < run.y1
+            and np.all(level_delta[prefix_end : run.y1] > gutter_level_tolerance)
+            and run.y1 < r1
+            and is_card[run.y1]
+            and has_bottom_heart(run.y0)
+        ):
             candidates.append((prefix_end, run.y1))
 
         # Mirror image: the residual is the preceding card's low-contrast trailing surface and
         # the real gutter is at the run's bottom.
         suffix_start = strict_suffix_start(run)
-        if (gutter_lo <= run.y1 - suffix_start <= gutter_hi
-                and run.y0 < suffix_start
-                and np.all(level_delta[run.y0:suffix_start] > gutter_level_tolerance)
-                and run.y0 > r0 and is_card[run.y0 - 1]
-                and has_bottom_heart(suffix_start)):
+        if (
+            gutter_lo <= run.y1 - suffix_start <= gutter_hi
+            and run.y0 < suffix_start
+            and np.all(level_delta[run.y0 : suffix_start] > gutter_level_tolerance)
+            and run.y0 > r0
+            and is_card[run.y0 - 1]
+            and has_bottom_heart(suffix_start)
+        ):
             candidates.append((run.y0, suffix_start))
 
         # A shape with strict page background at BOTH ends is not this measured one-sided
@@ -763,9 +825,19 @@ def _restore_low_contrast_card_surface_at_strict_gutter(
     return restored
 
 
-def _corner_radius(is_card, span, *, y: int, step: int, lo_row: int, hi_row: int,
-                   card_width: int, radius_px: tuple[int, int], ramp_slack: int,
-                   dip_px: int) -> float | None:
+def _corner_radius(
+    is_card,
+    span,
+    *,
+    y: int,
+    step: int,
+    lo_row: int,
+    hi_row: int,
+    card_width: int,
+    radius_px: tuple[int, int],
+    ramp_slack: int,
+    dip_px: int,
+) -> float | None:
     """The card corner radius measured at row `y`, or None if `y` is not a card's own edge row.
 
     `step` is +1 to test a TOP edge and -1 to test a BOTTOM edge: either way we walk INTO the
@@ -788,7 +860,7 @@ def _corner_radius(is_card, span, *, y: int, step: int, lo_row: int, hi_row: int
     """
     s0 = int(span[y])
     if s0 >= card_width:
-        return None                       # already full width: a card's interior, not its edge
+        return None  # already full width: a card's interior, not its edge
     radius = (card_width - s0) / 2.0
     lo, hi = radius_px
     if not lo <= radius <= hi:
@@ -797,10 +869,10 @@ def _corner_radius(is_card, span, *, y: int, step: int, lo_row: int, hi_row: int
     for n in range(1, int(hi) + ramp_slack + 1):
         row = y + step * n
         if not lo_row <= row < hi_row or not is_card[row]:
-            return None                   # the card ended before the arc closed: not an arc
+            return None  # the card ended before the arc closed: not an arc
         s = int(span[row])
         if s < prev - dip_px:
-            return None                   # the shape turns back in: not a corner arc
+            return None  # the shape turns back in: not a corner arc
         prev = s
         if s >= card_width:
             return radius if abs(n - radius) <= ramp_slack else None
@@ -808,9 +880,17 @@ def _corner_radius(is_card, span, *, y: int, step: int, lo_row: int, hi_row: int
 
 
 def _leading_low_contrast_media_edge(
-        runs: list[BackgroundRun], run_index: int, *, hearts: tuple[tuple[int, int], ...],
-        is_card, span, card_x0: int, card_x1: int, radius_px: tuple[int, int],
-        dip_px: int) -> bool:
+    runs: list[BackgroundRun],
+    run_index: int,
+    *,
+    hearts: tuple[tuple[int, int], ...],
+    is_card,
+    span,
+    card_x0: int,
+    card_x1: int,
+    radius_px: tuple[int, int],
+    dip_px: int,
+) -> bool:
     """Whether one rejected long run safely bounds the first square media card.
 
     This is not a relaxed corner detector. It is the conjunction supplied by an already
@@ -820,15 +900,24 @@ def _leading_low_contrast_media_edge(
     """
     run = runs[run_index]
     if run.kind != RUN_TOO_LONG or not (
-            _SCROLL_TOP_MEDIA_GAP_PX[0] <= run.height <= _SCROLL_TOP_MEDIA_GAP_PX[1]):
+        _SCROLL_TOP_MEDIA_GAP_PX[0] <= run.height <= _SCROLL_TOP_MEDIA_GAP_PX[1]
+    ):
         return False
-    if any(previous.kind in (RUN_GUTTER, RUN_CARD_EDGE, RUN_SCROLL_TOP_MEDIA)
-           for previous in runs[:run_index]):
+    if any(
+        previous.kind in (RUN_GUTTER, RUN_CARD_EDGE, RUN_SCROLL_TOP_MEDIA)
+        for previous in runs[:run_index]
+    ):
         return False
-    if not any(bool(value) for value in is_card[:run.y0]):
+    if not any(bool(value) for value in is_card[: run.y0]):
         return False
-    next_gutter = next((candidate for candidate in runs[run_index + 1:]
-                        if candidate.kind == RUN_GUTTER), None)
+    next_gutter = next(
+        (
+            candidate
+            for candidate in runs[run_index + 1 :]
+            if candidate.kind == RUN_GUTTER
+        ),
+        None,
+    )
     if next_gutter is None:
         return False
     width = card_x1 - card_x0
@@ -839,9 +928,11 @@ def _leading_low_contrast_media_edge(
         return False
     heart_x, heart_y = card_hearts[0]
     inset = next_gutter.y0 - heart_y
-    if (heart_x < card_x0 + width // 2
-            or not (_SCROLL_TOP_MEDIA_HEART_BOTTOM_INSET_PX[0] <= inset
-                    <= _SCROLL_TOP_MEDIA_HEART_BOTTOM_INSET_PX[1])):
+    if heart_x < card_x0 + width // 2 or not (
+        _SCROLL_TOP_MEDIA_HEART_BOTTOM_INSET_PX[0]
+        <= inset
+        <= _SCROLL_TOP_MEDIA_HEART_BOTTOM_INSET_PX[1]
+    ):
         return False
 
     top = run.y1
@@ -860,8 +951,11 @@ def _leading_low_contrast_media_edge(
 
 
 def _heart_anchored_media_gutter(
-        run: BackgroundRun, *, hearts: tuple[tuple[int, int], ...],
-        gutter_level_tolerance: float) -> bool:
+    run: BackgroundRun,
+    *,
+    hearts: tuple[tuple[int, int], ...],
+    gutter_level_tolerance: float,
+) -> bool:
     """Whether a non-canonical page-coloured run is the lower edge of a media item.
 
     This is intentionally not a wider gutter window. A tall blank surface can occur inside one
@@ -872,22 +966,30 @@ def _heart_anchored_media_gutter(
     one has scrolled into view.
     """
     if run.kind != RUN_TOO_LONG or not (
-            _HEART_ANCHORED_MEDIA_GAP_PX[0] <= run.height <=
-            _HEART_ANCHORED_MEDIA_GAP_PX[1]):
+        _HEART_ANCHORED_MEDIA_GAP_PX[0] <= run.height <= _HEART_ANCHORED_MEDIA_GAP_PX[1]
+    ):
         return False
     if run.median_level_delta > gutter_level_tolerance:
         return False
     anchored = [
-        heart for heart in hearts
-        if (_SCROLL_TOP_MEDIA_HEART_BOTTOM_INSET_PX[0] <= run.y0 - heart[1]
-                <= _SCROLL_TOP_MEDIA_HEART_BOTTOM_INSET_PX[1])
+        heart
+        for heart in hearts
+        if (
+            _SCROLL_TOP_MEDIA_HEART_BOTTOM_INSET_PX[0]
+            <= run.y0 - heart[1]
+            <= _SCROLL_TOP_MEDIA_HEART_BOTTOM_INSET_PX[1]
+        )
     ]
     return len(anchored) == 1
 
 
 def _heart_separated_near_gutter(
-        runs: list[BackgroundRun], run_index: int, *, hearts: tuple[tuple[int, int], ...],
-        gutter_level_tolerance: float) -> bool:
+    runs: list[BackgroundRun],
+    run_index: int,
+    *,
+    hearts: tuple[tuple[int, int], ...],
+    gutter_level_tolerance: float,
+) -> bool:
     """Whether a slightly overlong page gap is proven to separate two Hinge items.
 
     The standard length rule rightly refuses to infer a boundary from a 59..64px blank span by
@@ -906,32 +1008,58 @@ def _heart_separated_near_gutter(
     """
     run = runs[run_index]
     if run.kind != RUN_TOO_LONG or not (
-            _HEART_SEPARATED_NEAR_GUTTER_PX[0] <= run.height <=
-            _HEART_SEPARATED_NEAR_GUTTER_PX[1]):
+        _HEART_SEPARATED_NEAR_GUTTER_PX[0]
+        <= run.height
+        <= _HEART_SEPARATED_NEAR_GUTTER_PX[1]
+    ):
         return False
     if run.median_level_delta > gutter_level_tolerance:
         return False
     boundary_kinds = {
-        RUN_GUTTER, RUN_CARD_EDGE, RUN_SCROLL_TOP_MEDIA,
+        RUN_GUTTER,
+        RUN_CARD_EDGE,
+        RUN_SCROLL_TOP_MEDIA,
         RUN_HEART_ANCHORED_MEDIA_GUTTER,
     }
-    previous = next((candidate for candidate in reversed(runs[:run_index])
-                     if candidate.kind in boundary_kinds), None)
-    following = next((candidate for candidate in runs[run_index + 1:]
-                      if candidate.kind in boundary_kinds), None)
+    previous = next(
+        (
+            candidate
+            for candidate in reversed(runs[:run_index])
+            if candidate.kind in boundary_kinds
+        ),
+        None,
+    )
+    following = next(
+        (
+            candidate
+            for candidate in runs[run_index + 1 :]
+            if candidate.kind in boundary_kinds
+        ),
+        None,
+    )
     # A heart farther down the profile is not evidence about this gap.  The lower card must
     # expose its own heart before the next independently confirmed boundary.
     if following is None:
         return False
     upper_start = previous.y1 if previous is not None else 0
-    return (any(upper_start <= y < run.y0 for _, y in hearts)
-            and any(run.y1 <= y < following.y0 for _, y in hearts))
+    return any(upper_start <= y < run.y0 for _, y in hearts) and any(
+        run.y1 <= y < following.y0 for _, y in hearts
+    )
 
 
 def _unanchored_leading_island_rows(
-        runs: list[BackgroundRun], *, hearts: tuple[tuple[int, int], ...], span, r0: int,
-        r1: int, is_card, card_width: int, radius_px: tuple[int, int], ramp_slack: int,
-        dip_px: int) -> tuple[int, int] | None:
+    runs: list[BackgroundRun],
+    *,
+    hearts: tuple[tuple[int, int], ...],
+    span,
+    r0: int,
+    r1: int,
+    is_card,
+    card_width: int,
+    radius_px: tuple[int, int],
+    ramp_slack: int,
+    dip_px: int,
+) -> tuple[int, int] | None:
     """The rows of a leading strip this frame cannot place, or None.
 
     THE FRAME THIS EXISTS FOR. Hinge 10.1.0 pins a per-profile header — filter chips, the name,
@@ -1003,24 +1131,37 @@ def _unanchored_leading_island_rows(
     on its own gets the same label — those frames place a fabricated page position today.
     """
     if len(runs) < 2 or runs[0].kind != RUN_CLIPPED or runs[0].y0 != r0:
-        return None                                                     # (a)
+        return None  # (a)
     y0, y1 = runs[0].y1, runs[1].y0
     if y1 <= y0:
-        return None                                                     # (b)
+        return None  # (b)
     if int(span[y0:y1].max()) >= card_width:
-        return None                                                     # (c)
+        return None  # (c)
     for edge_y, step in ((y0, 1), (y1 - 1, -1)):
-        if _corner_radius(is_card, span, y=edge_y, step=step, lo_row=r0, hi_row=r1,
-                          card_width=card_width, radius_px=radius_px,
-                          ramp_slack=ramp_slack, dip_px=dip_px) is not None:
-            return None                                                 # (d)
+        if (
+            _corner_radius(
+                is_card,
+                span,
+                y=edge_y,
+                step=step,
+                lo_row=r0,
+                hi_row=r1,
+                card_width=card_width,
+                radius_px=radius_px,
+                ramp_slack=ramp_slack,
+                dip_px=dip_px,
+            )
+            is not None
+        ):
+            return None  # (d)
     if any(y0 <= y < runs[1].y1 for _, y in hearts):
-        return None                                                     # (e)
+        return None  # (e)
     return y0, y1
 
 
-def _block_edge(*, y: int, cut: BackgroundRun | None, gap: int,
-                corner: float | None) -> BlockEdge:
+def _block_edge(
+    *, y: int, cut: BackgroundRun | None, gap: int, corner: float | None
+) -> BlockEdge:
     """One end of a block, resolved to a `BlockEdge`.
 
     Precedence, strongest evidence first:
@@ -1044,24 +1185,35 @@ def _block_edge(*, y: int, cut: BackgroundRun | None, gap: int,
     if cut is not None and cut.kind == RUN_GUTTER:
         return BlockEdge(y=y, observed=True, kind=EDGE_GUTTER, run_px=cut.height)
     if cut is not None and cut.kind == RUN_SCROLL_TOP_MEDIA:
-        return BlockEdge(y=y, observed=True, kind=EDGE_SCROLL_TOP_MEDIA, run_px=cut.height)
+        return BlockEdge(
+            y=y, observed=True, kind=EDGE_SCROLL_TOP_MEDIA, run_px=cut.height
+        )
     if cut is not None and cut.kind == RUN_HEART_ANCHORED_MEDIA_GUTTER:
-        return BlockEdge(y=y, observed=True, kind=EDGE_HEART_ANCHORED_MEDIA_GUTTER,
-                         run_px=cut.height)
+        return BlockEdge(
+            y=y, observed=True, kind=EDGE_HEART_ANCHORED_MEDIA_GUTTER, run_px=cut.height
+        )
     if cut is not None and cut.kind == RUN_HEART_SEPARATED_NEAR_GUTTER:
-        return BlockEdge(y=y, observed=True, kind=EDGE_HEART_SEPARATED_NEAR_GUTTER,
-                         run_px=cut.height)
+        return BlockEdge(
+            y=y, observed=True, kind=EDGE_HEART_SEPARATED_NEAR_GUTTER, run_px=cut.height
+        )
     run_px = cut.height if cut is not None else (gap or None)
     if corner is not None:
-        return BlockEdge(y=y, observed=True, kind=EDGE_CARD_CORNER, run_px=run_px,
-                         corner_px=round(corner))
+        return BlockEdge(
+            y=y,
+            observed=True,
+            kind=EDGE_CARD_CORNER,
+            run_px=run_px,
+            corner_px=round(corner),
+        )
     # AFTER the corner test on purpose: an unanchored island's cut separates two regions without
     # bounding either, so it must never pre-empt a card that does show its own corner on this
     # row. `observed` is False and that is not negotiable — marking it True would report a
     # confident extent for a strip whose very placement is the open question, and would let a
     # fabricated extent reach the crop and verification passes as if a frame had measured it.
     if cut is not None and cut.kind == RUN_UNANCHORED_ISLAND:
-        return BlockEdge(y=y, observed=False, kind=EDGE_UNANCHORED_ISLAND, run_px=cut.height)
+        return BlockEdge(
+            y=y, observed=False, kind=EDGE_UNANCHORED_ISLAND, run_px=cut.height
+        )
     if run_px:
         return BlockEdge(y=y, observed=False, kind=EDGE_BACKGROUND_RUN, run_px=run_px)
     return BlockEdge(y=y, observed=False, kind=EDGE_BAND_EDGE, run_px=None)
@@ -1084,39 +1236,53 @@ def _classify_block(*, top: BlockEdge, bottom: BlockEdge, hearts) -> tuple[str, 
     if len(hearts) > 1:
         return BLOCK_AMBIGUOUS, (
             f"{len(hearts)} like hearts inside one block at y={[y for _, y in hearts]} — every "
-            "likeable Hinge item carries exactly one, so a gutter between them was missed")
+            "likeable Hinge item carries exactly one, so a gutter between them was missed"
+        )
     if not top.observed or not bottom.observed:
         detail = "; ".join(
             f"{name} edge unobserved ({edge.kind}"
-            + (f", {edge.run_px}px of background beyond it)" if edge.run_px is not None else ")")
-            for name, edge in (("top", top), ("bottom", bottom)) if not edge.observed)
+            + (
+                f", {edge.run_px}px of background beyond it)"
+                if edge.run_px is not None
+                else ")"
+            )
+            for name, edge in (("top", top), ("bottom", bottom))
+            if not edge.observed
+        )
         return BLOCK_PARTIAL, (
             f"neither a gutter nor a card corner bounds this end, true extent unknown from this "
-            f"frame — {detail}; {len(hearts)} heart(s) visible")
+            f"frame — {detail}; {len(hearts)} heart(s) visible"
+        )
     if hearts:
         return BLOCK_SELECTABLE, (
             f"both edges observed ({top.kind}/{bottom.kind}) and exactly one like heart at "
-            f"y={hearts[0][1]}")
+            f"y={hearts[0][1]}"
+        )
     return BLOCK_CONTEXT, (
         f"both edges observed ({top.kind}/{bottom.kind}) and no like heart — a context block "
-        "(Hinge's vitals block is the known instance: ~215px tall, never selectable)")
+        "(Hinge's vitals block is the known instance: ~215px tall, never selectable)"
+    )
 
 
-def segment_frame(frame: bytes, *, content_band: tuple[float, float], like_template,
-                  like_threshold: float,
-                  recover_leading_low_contrast_media: bool = False,
-                  card_margin_px: int = _CARD_MARGIN_PX,
-                  margin_probe_inset_px: int = _MARGIN_PROBE_INSET_PX,
-                  margin_probe_max_spread: float = _MARGIN_PROBE_MAX_SPREAD,
-                  background_tolerance: float = _BACKGROUND_TOLERANCE,
-                  card_row_min_span_frac: float = _CARD_ROW_MIN_SPAN_FRAC,
-                  gutter_px: tuple[int, int] = _GUTTER_PX,
-                  gutter_tolerance_px: int = _GUTTER_TOLERANCE_PX,
-                  gutter_background_level_tolerance: float =
-                  _GUTTER_BACKGROUND_LEVEL_TOLERANCE,
-                  card_corner_px: tuple[int, int] = _CARD_CORNER_PX,
-                  card_corner_ramp_slack_px: int = _CARD_CORNER_RAMP_SLACK_PX,
-                  card_corner_dip_px: int = _CARD_CORNER_DIP_PX) -> FrameSegmentation:
+def segment_frame(
+    frame: bytes,
+    *,
+    content_band: tuple[float, float],
+    like_template,
+    like_threshold: float,
+    recover_leading_low_contrast_media: bool = False,
+    card_margin_px: int = _CARD_MARGIN_PX,
+    margin_probe_inset_px: int = _MARGIN_PROBE_INSET_PX,
+    margin_probe_max_spread: float = _MARGIN_PROBE_MAX_SPREAD,
+    background_tolerance: float = _BACKGROUND_TOLERANCE,
+    card_row_min_span_frac: float = _CARD_ROW_MIN_SPAN_FRAC,
+    gutter_px: tuple[int, int] = _GUTTER_PX,
+    gutter_tolerance_px: int = _GUTTER_TOLERANCE_PX,
+    gutter_background_level_tolerance: float = _GUTTER_BACKGROUND_LEVEL_TOLERANCE,
+    card_corner_px: tuple[int, int] = _CARD_CORNER_PX,
+    card_corner_ramp_slack_px: int = _CARD_CORNER_RAMP_SLACK_PX,
+    card_corner_dip_px: int = _CARD_CORNER_DIP_PX,
+) -> FrameSegmentation:
     """Segment one screencap into blocks. The entry point; everything above is its machinery.
 
     `content_band` is the `(y0, y1)` height-fraction band cards may occupy — pass the driver's
@@ -1173,33 +1339,45 @@ def segment_frame(frame: bytes, *, content_band: tuple[float, float], like_templ
         # no hearts" and reclassify every card on it as a CONTEXT block. Refuse instead.
         raise SegmentationError(
             "no like-glyph template: segmentation cannot tell a heartless context block from a "
-            "card whose heart we simply failed to load a template for")
+            "card whose heart we simply failed to load a template for"
+        )
 
     img = cv2.imdecode(np.frombuffer(frame, dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
     if img is None:
         raise SegmentationError(
-            f"frame bytes did not decode as an image ({len(frame)} bytes)")
+            f"frame bytes did not decode as an image ({len(frame)} bytes)"
+        )
     height, width = img.shape
 
     if width < 2 * card_margin_px + 1 or card_margin_px < 2 * margin_probe_inset_px + 1:
         raise SegmentationError(
             f"frame is {width}px wide with a {card_margin_px}px card margin and a "
             f"{margin_probe_inset_px}px probe inset — no page margin left to read the "
-            "background reference from")
+            "background reference from"
+        )
 
     r0, r1 = _band_rows(content_band, height)
     if r1 - r0 < 2:
         raise SegmentationError(
             f"analysed band is empty: content_band {content_band} on a {height}-row frame "
-            f"-> rows [{r0}, {r1})")
+            f"-> rows [{r0}, {r1})"
+        )
 
     card_x0, card_x1 = card_margin_px, width - card_margin_px
     reference, spread = _row_background_profile(
-        img, card_x0=card_x0, probe_inset=margin_probe_inset_px, np=np)
+        img, card_x0=card_x0, probe_inset=margin_probe_inset_px, np=np
+    )
     is_card, span = _classify_rows(
-        img, card_x0=card_x0, card_x1=card_x1, reference=reference, spread=spread,
-        tolerance=background_tolerance, min_span_frac=card_row_min_span_frac,
-        max_spread=margin_probe_max_spread, np=np)
+        img,
+        card_x0=card_x0,
+        card_x1=card_x1,
+        reference=reference,
+        spread=spread,
+        tolerance=background_tolerance,
+        min_span_frac=card_row_min_span_frac,
+        max_spread=margin_probe_max_spread,
+        np=np,
+    )
     # The row classifier intentionally tolerates small colour differences so prompt whitespace
     # is not fragmented.  Gutter acceptance gets a stricter, aggregate check: the median of the
     # whole card band must actually match the page margins on those same rows.
@@ -1209,8 +1387,16 @@ def segment_frame(frame: bytes, *, content_band: tuple[float, float], like_templ
     gutter_lo = min(gutter_px) - gutter_tolerance_px
     gutter_hi = max(gutter_px) + gutter_tolerance_px
     runs = _background_runs(
-        is_card, span, level_delta, r0=r0, r1=r1, gutter_lo=gutter_lo,
-        gutter_hi=gutter_hi, gutter_level_tolerance=gutter_background_level_tolerance, np=np)
+        is_card,
+        span,
+        level_delta,
+        r0=r0,
+        r1=r1,
+        gutter_lo=gutter_lo,
+        gutter_hi=gutter_hi,
+        gutter_level_tolerance=gutter_background_level_tolerance,
+        np=np,
+    )
 
     # Deferred import, and the ONLY runtime dependency this module has on hinge.py. Deferring it
     # keeps the import graph acyclic (hinge.py imports segment.py) and, as a bonus, resolves
@@ -1229,10 +1415,17 @@ def segment_frame(frame: bytes, *, content_band: tuple[float, float], like_templ
     # it report a runtime failure separately from a genuine "no hearts" read, which touches its
     # ~10 other call sites and is out of scope here.
     from . import hinge as _hinge
+
     hearts = tuple(
-        (int(x), int(y)) for x, y in _hinge._match_glyph(
-            frame, like_template, side=_HEART_SIDE, threshold=like_threshold,
-            y_band=content_band))
+        (int(x), int(y))
+        for x, y in _hinge._match_glyph(
+            frame,
+            like_template,
+            side=_HEART_SIDE,
+            threshold=like_threshold,
+            y_band=content_band,
+        )
+    )
 
     failures: list[str] = []
     if len(hearts) >= _MATCH_GLYPH_HIT_CAP:
@@ -1243,20 +1436,36 @@ def segment_frame(frame: bytes, *, content_band: tuple[float, float], like_templ
         failures.append(
             f"like-glyph matcher returned {len(hearts)} hits, at or above its "
             f"{_MATCH_GLYPH_HIT_CAP}-iteration non-max-suppression cap — the true count is "
-            "unknown, so no index may be built from this frame")
+            "unknown, so no index may be built from this frame"
+        )
 
     # A strict page-background gutter can be swallowed by the adjacent card's low-contrast
     # white surface: all of those rows miss the broad span classifier, so `_background_runs`
     # initially sees one over-long run.  Restore only the tightly evidenced residual and build
     # the run table again; the ordinary gutter path below then owns the resulting boundary.
     if _restore_low_contrast_card_surface_at_strict_gutter(
-            runs, is_card=is_card, level_delta=level_delta, hearts=hearts, r0=r0, r1=r1,
-            gutter_lo=gutter_lo, gutter_hi=gutter_hi,
-            gutter_level_tolerance=gutter_background_level_tolerance, np=np):
+        runs,
+        is_card=is_card,
+        level_delta=level_delta,
+        hearts=hearts,
+        r0=r0,
+        r1=r1,
+        gutter_lo=gutter_lo,
+        gutter_hi=gutter_hi,
+        gutter_level_tolerance=gutter_background_level_tolerance,
+        np=np,
+    ):
         runs = _background_runs(
-            is_card, span, level_delta, r0=r0, r1=r1, gutter_lo=gutter_lo,
+            is_card,
+            span,
+            level_delta,
+            r0=r0,
+            r1=r1,
+            gutter_lo=gutter_lo,
             gutter_hi=gutter_hi,
-            gutter_level_tolerance=gutter_background_level_tolerance, np=np)
+            gutter_level_tolerance=gutter_background_level_tolerance,
+            np=np,
+        )
 
     # WHICH BACKGROUND RUNS CUT A BLOCK. The ordinary path has exactly two kinds of evidence:
     #
@@ -1293,9 +1502,17 @@ def segment_frame(frame: bytes, *, content_band: tuple[float, float], like_templ
     # computed once, before the loop, because it is a property of the run table as a whole; and
     # it is applied LAST in the chain below so it can never pre-empt a stronger explanation.
     island = _unanchored_leading_island_rows(
-        runs, hearts=hearts, span=span, r0=r0, r1=r1, is_card=is_card,
-        card_width=card_x1 - card_x0, radius_px=card_corner_px,
-        ramp_slack=card_corner_ramp_slack_px, dip_px=card_corner_dip_px)
+        runs,
+        hearts=hearts,
+        span=span,
+        r0=r0,
+        r1=r1,
+        is_card=is_card,
+        card_width=card_x1 - card_x0,
+        radius_px=card_corner_px,
+        ramp_slack=card_corner_ramp_slack_px,
+        dip_px=card_corner_dip_px,
+    )
 
     # TWO PASSES, not one -- and that split is itself load-bearing, not a style choice.
     #
@@ -1325,32 +1542,57 @@ def segment_frame(frame: bytes, *, content_band: tuple[float, float], like_templ
         if run.kind != RUN_TOO_LONG:
             continue
         corner_below = _corner_radius(
-            is_card, span, y=run.y1, step=1, lo_row=r0, hi_row=r1,
-            card_width=card_x1 - card_x0, radius_px=card_corner_px,
-            ramp_slack=card_corner_ramp_slack_px, dip_px=card_corner_dip_px)
+            is_card,
+            span,
+            y=run.y1,
+            step=1,
+            lo_row=r0,
+            hi_row=r1,
+            card_width=card_x1 - card_x0,
+            radius_px=card_corner_px,
+            ramp_slack=card_corner_ramp_slack_px,
+            dip_px=card_corner_dip_px,
+        )
         corner_above = _corner_radius(
-            is_card, span, y=run.y0 - 1, step=-1, lo_row=r0, hi_row=r1,
-            card_width=card_x1 - card_x0, radius_px=card_corner_px,
-            ramp_slack=card_corner_ramp_slack_px, dip_px=card_corner_dip_px)
+            is_card,
+            span,
+            y=run.y0 - 1,
+            step=-1,
+            lo_row=r0,
+            hi_row=r1,
+            card_width=card_x1 - card_x0,
+            radius_px=card_corner_px,
+            ramp_slack=card_corner_ramp_slack_px,
+            dip_px=card_corner_dip_px,
+        )
         if corner_below is not None or corner_above is not None:
             runs[i] = replace(run, kind=RUN_CARD_EDGE)
-        elif (recover_leading_low_contrast_media
-              and _leading_low_contrast_media_edge(
-                  runs, i, hearts=hearts, is_card=is_card, span=span,
-                  card_x0=card_x0, card_x1=card_x1, radius_px=card_corner_px,
-                  dip_px=card_corner_dip_px)):
+        elif recover_leading_low_contrast_media and _leading_low_contrast_media_edge(
+            runs,
+            i,
+            hearts=hearts,
+            is_card=is_card,
+            span=span,
+            card_x0=card_x0,
+            card_x1=card_x1,
+            radius_px=card_corner_px,
+            dip_px=card_corner_dip_px,
+        ):
             runs[i] = replace(run, kind=RUN_SCROLL_TOP_MEDIA)
         elif _heart_anchored_media_gutter(
-                run, hearts=hearts,
-                gutter_level_tolerance=gutter_background_level_tolerance):
+            run, hearts=hearts, gutter_level_tolerance=gutter_background_level_tolerance
+        ):
             runs[i] = replace(run, kind=RUN_HEART_ANCHORED_MEDIA_GUTTER)
 
     for i, run in enumerate(runs):
         if run.kind != RUN_TOO_LONG:
             continue
         if _heart_separated_near_gutter(
-                runs, i, hearts=hearts,
-                gutter_level_tolerance=gutter_background_level_tolerance):
+            runs,
+            i,
+            hearts=hearts,
+            gutter_level_tolerance=gutter_background_level_tolerance,
+        ):
             runs[i] = replace(run, kind=RUN_HEART_SEPARATED_NEAR_GUTTER)
         elif island is not None and run.y0 == island[1]:
             # On a genuine scroll top the corner rescue in pass 1 fires first and keeps
@@ -1362,10 +1604,17 @@ def segment_frame(frame: bytes, *, content_band: tuple[float, float], like_templ
     # order; RUN_GUTTER runs were never touched by either pass above (their kind is fixed the
     # moment `_background_runs` builds the table) and are picked up here for the first time.
     cuts: list[BackgroundRun] = [
-        run for run in runs
-        if run.kind in (RUN_GUTTER, RUN_CARD_EDGE, RUN_SCROLL_TOP_MEDIA,
-                        RUN_HEART_ANCHORED_MEDIA_GUTTER, RUN_HEART_SEPARATED_NEAR_GUTTER,
-                        RUN_UNANCHORED_ISLAND)
+        run
+        for run in runs
+        if run.kind
+        in (
+            RUN_GUTTER,
+            RUN_CARD_EDGE,
+            RUN_SCROLL_TOP_MEDIA,
+            RUN_HEART_ANCHORED_MEDIA_GUTTER,
+            RUN_HEART_SEPARATED_NEAR_GUTTER,
+            RUN_UNANCHORED_ISLAND,
+        )
     ]
 
     blocks: list[Block] = []
@@ -1416,19 +1665,43 @@ def segment_frame(frame: bytes, *, content_band: tuple[float, float], like_templ
         # extent past where the card's content stopped, the reported row is no longer the row the
         # corner was measured on, and calling that edge observed would report a wrong extent.
         top = _block_edge(
-            y=y0, cut=cut_above, gap=gap_above,
+            y=y0,
+            cut=cut_above,
+            gap=gap_above,
             corner=_corner_radius(
-                is_card, span, y=content_y0, step=1, lo_row=seg_y0, hi_row=seg_y1,
-                card_width=card_x1 - card_x0, radius_px=card_corner_px,
-                ramp_slack=card_corner_ramp_slack_px, dip_px=card_corner_dip_px,
-            ) if y0 == content_y0 else None)
+                is_card,
+                span,
+                y=content_y0,
+                step=1,
+                lo_row=seg_y0,
+                hi_row=seg_y1,
+                card_width=card_x1 - card_x0,
+                radius_px=card_corner_px,
+                ramp_slack=card_corner_ramp_slack_px,
+                dip_px=card_corner_dip_px,
+            )
+            if y0 == content_y0
+            else None,
+        )
         bottom = _block_edge(
-            y=y1, cut=cut_below, gap=gap_below,
+            y=y1,
+            cut=cut_below,
+            gap=gap_below,
             corner=_corner_radius(
-                is_card, span, y=content_y1 - 1, step=-1, lo_row=seg_y0, hi_row=seg_y1,
-                card_width=card_x1 - card_x0, radius_px=card_corner_px,
-                ramp_slack=card_corner_ramp_slack_px, dip_px=card_corner_dip_px,
-            ) if y1 == content_y1 else None)
+                is_card,
+                span,
+                y=content_y1 - 1,
+                step=-1,
+                lo_row=seg_y0,
+                hi_row=seg_y1,
+                card_width=card_x1 - card_x0,
+                radius_px=card_corner_px,
+                ramp_slack=card_corner_ramp_slack_px,
+                dip_px=card_corner_dip_px,
+            )
+            if y1 == content_y1
+            else None,
+        )
 
         kind, reason = _classify_block(top=top, bottom=bottom, hearts=block_hearts)
         digest = None
@@ -1445,15 +1718,28 @@ def segment_frame(frame: bytes, *, content_band: tuple[float, float], like_templ
                 f"full width ({widest}px of {card_x1 - card_x0}px), neither end a card corner, "
                 "and heartless — which is what screen-pinned app chrome looks like AND what a "
                 "band-sliced piece of page content looks like. One frame cannot tell them "
-                "apart, so its page position is not asserted here")
+                "apart, so its page position is not asserted here"
+            )
             digest = hashlib.sha256(img[y0:y1].tobytes()).hexdigest()
-        blocks.append(Block(y0=y0, y1=y1, x0=card_x0, x1=card_x1, top=top, bottom=bottom,
-                            kind=kind, hearts=block_hearts, reason=reason,
-                            content_digest=digest))
+        blocks.append(
+            Block(
+                y0=y0,
+                y1=y1,
+                x0=card_x0,
+                x1=card_x1,
+                top=top,
+                bottom=bottom,
+                kind=kind,
+                hearts=block_hearts,
+                reason=reason,
+                content_digest=digest,
+            )
+        )
 
     failures.extend(
         f"block y={block.y0}..{block.y1} is ambiguous: {block.reason}"
-        for block in blocks if block.kind == BLOCK_AMBIGUOUS
+        for block in blocks
+        if block.kind == BLOCK_AMBIGUOUS
     )
 
     unassigned = tuple(h for h in hearts if h not in assigned)
@@ -1464,10 +1750,17 @@ def segment_frame(frame: bytes, *, content_band: tuple[float, float], like_templ
         # tolerate — so it is a failure, not a note.
         failures.append(
             f"{len(unassigned)} like heart(s) at y={[y for _, y in unassigned]} fell outside "
-            "every block — a selectable item exists that segmentation cannot bound")
+            "every block — a selectable item exists that segmentation cannot bound"
+        )
 
     return FrameSegmentation(
-        frame_size=(width, height), frame_digest=hashlib.sha256(frame).hexdigest(),
-        band=(r0, r1), card_x=(card_x0, card_x1),
-        blocks=tuple(blocks), runs=tuple(runs), hearts=hearts,
-        unassigned_hearts=unassigned, failures=tuple(failures))
+        frame_size=(width, height),
+        frame_digest=hashlib.sha256(frame).hexdigest(),
+        band=(r0, r1),
+        card_x=(card_x0, card_x1),
+        blocks=tuple(blocks),
+        runs=tuple(runs),
+        hearts=hearts,
+        unassigned_hearts=unassigned,
+        failures=tuple(failures),
+    )

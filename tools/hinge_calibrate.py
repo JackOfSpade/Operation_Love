@@ -77,6 +77,7 @@ default output lives under ops/calibration/, which is gitignored (see .gitignore
 that line) -- local-only by rule, not by accident. Nothing here uploads, copies outside the
 repo, or transmits a frame anywhere.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -102,23 +103,50 @@ from operation_love.drivers.adb import parse_devices_output
 from operation_love.drivers.frameshift import ShiftEstimationError, estimate_shift
 from operation_love.drivers.hinge import HingeDriver
 from operation_love.drivers.item_crops import (
-    EXCLUSION_REATTACH_PROBE_MISSING, PHOTO_ONLY_POLICY_ID,
-    STILL_PHOTO_AUTOPLAY_CENTER_BAND_FRAC, ItemCropError, ItemPayload, StillPhotoDwell,
-    build_item_payload, card_center_offset_frac, dwell_exact_over_rect, signature_of,
-    still_photo_evidence_from_drift, still_photo_reattach_legs,
-    unnumber_unless_confident_photo, unnumber_without_still_photo_evidence)
+    EXCLUSION_REATTACH_PROBE_MISSING,
+    PHOTO_ONLY_POLICY_ID,
+    STILL_PHOTO_AUTOPLAY_CENTER_BAND_FRAC,
+    ItemCropError,
+    ItemPayload,
+    StillPhotoDwell,
+    build_item_payload,
+    card_center_offset_frac,
+    dwell_exact_over_rect,
+    signature_of,
+    still_photo_evidence_from_drift,
+    still_photo_reattach_legs,
+    unnumber_unless_confident_photo,
+    unnumber_without_still_photo_evidence,
+)
 from operation_love.drivers.item_identity import (
-    IdentityError, ProfileIdentity, capture_profile_identity, compare_profile_identity)
+    IdentityError,
+    ProfileIdentity,
+    capture_profile_identity,
+    compare_profile_identity,
+)
 from operation_love.drivers.item_index import ItemIndexError, build_item_index
 from operation_love.drivers.item_nav import (
-    NAV_ANCHOR_UNMEASURED, ItemNavigationError, navigate_to_item)
+    NAV_ANCHOR_UNMEASURED,
+    ItemNavigationError,
+    navigate_to_item,
+)
 from operation_love.drivers.item_verify import (
-    SheetVerificationError, verification_blocker, verify_sheet_item)
+    SheetVerificationError,
+    verification_blocker,
+    verify_sheet_item,
+)
 from operation_love.drivers.base import ActionCancelled
-from operation_love.drivers.like_composer import ComposerDetectionError, locate_inline_composer
+from operation_love.drivers.like_composer import (
+    ComposerDetectionError,
+    locate_inline_composer,
+)
 from operation_love.drivers.scroll_step import ScrollStepError, plan_scroll_step
 from operation_love.drivers.scroll_top import (
-    ScrollTopError, band_fingerprint, confirm_scroll_top, fingerprint_distance)
+    ScrollTopError,
+    band_fingerprint,
+    confirm_scroll_top,
+    fingerprint_distance,
+)
 from operation_love.drivers.segment import SegmentationError, segment_frame
 from operation_love.human import human_cooldown, human_delay
 from operation_love.opener.opener import GeminiOpener
@@ -130,7 +158,9 @@ from operation_love.private_files import (
 )
 from tools._devicelock import run_holding_the_device
 from tools.hinge_operational_evidence import EvidenceRefused as _DeviceEvidenceRefused
-from tools.hinge_operational_evidence import _read_device_evidence as _read_shared_device_evidence
+from tools.hinge_operational_evidence import (
+    _read_device_evidence as _read_shared_device_evidence,
+)
 
 _TOOL_VERSION = "5"
 _CALIBRATION_SCHEMA_VERSION = 3
@@ -164,7 +194,8 @@ _AUTOMATED_TARGET_STRATEGY_ID = "alternate_photo_1_3_by_profile_ordinal_v1"
 # alternating id above remains the default in every other respect.
 _PHOTO_1_ONLY_TARGET_STRATEGY_ID = "photo_1_only_v1"
 _ACCEPTED_TARGET_STRATEGY_IDS = frozenset(
-    (_AUTOMATED_TARGET_STRATEGY_ID, _PHOTO_1_ONLY_TARGET_STRATEGY_ID))
+    (_AUTOMATED_TARGET_STRATEGY_ID, _PHOTO_1_ONLY_TARGET_STRATEGY_ID)
+)
 # `capture --target-items` CLI spelling -> strategy id. Kept as the single place that maps the
 # operator-facing flag value to the internal id so the CLI and _cmd_capture cannot drift apart.
 _TARGET_ITEMS_FLAG_STRATEGY_IDS = {
@@ -254,20 +285,24 @@ _ROUND_NDIGITS = 4
 _OPERATIONAL_CHECKS = {
     "entry_anchor_scroll_ledger": (
         "Entry anchor / scroll ledger: confirmed top entry, inspected the bottom-up anchor, "
-        "frame/shift ledger, item numbering, and cancellation before authorizing a gesture"),
+        "frame/shift ledger, item numbering, and cancellation before authorizing a gesture"
+    ),
     "item_1_inline_composer_identity": (
         "Item 1 inline composer: operator hearted item 1 without an intervening scroll and "
         "recorded Hinge's immediately auto-focused composer plus the separate profile/item "
-        "proof; do not claim a nonexistent unfocused-to-focused transition"),
+        "proof; do not claim a nonexistent unfocused-to-focused transition"
+    ),
     "gesture_transport": (
         "Gesture transport: on a supervised disposable profile, operator observed a second "
         "heart move the inline composer and a profile advance clear it without sending; keep "
-        "the trace so the operator action is distinguishable from what a screenshot proves"),
+        "the trace so the operator action is distinguishable from what a screenshot proves"
+    ),
     "observe_timing_and_quota": (
         "Pre-calibration passive OBSERVE-cycle/quota bridge: record this tool's completed, "
         "self-hashed observe_check.json after a manual pass/heart/send cycle and synthetic "
         "non-personal Gemini probe. It licenses only a numeric calibration candidate for "
-        "production OBSERVE; the separate observe_release_evidence gate still blocks AUTO."),
+        "production OBSERVE; the separate observe_release_evidence gate still blocks AUTO."
+    ),
 }
 
 _OBSERVE_CHECK_SCHEMA_VERSION = 2
@@ -283,13 +318,21 @@ _OPERATIONAL_EVIDENCE_ROLES = (
     "new_profile_top_clear",
     "new_sticky_identity",
 )
-_OPERATIONAL_EVIDENCE_ANALYSES = frozenset((*_OPERATIONAL_EVIDENCE_ROLES,
-                                             "item1_profile_identity"))
+_OPERATIONAL_EVIDENCE_ANALYSES = frozenset(
+    (*_OPERATIONAL_EVIDENCE_ROLES, "item1_profile_identity")
+)
 _OPERATIONAL_EVIDENCE_DEVICE_KEYS = (
-    "serial", "model", "display_w", "display_h", "density", "hinge_package",
+    "serial",
+    "model",
+    "display_w",
+    "display_h",
+    "density",
+    "hinge_package",
     "hinge_version_name",
 )
-_PRELIMINARY_OBSERVE_SCOPE = "pre_calibration_passive_manual_cycle_and_synthetic_quota_v1"
+_PRELIMINARY_OBSERVE_SCOPE = (
+    "pre_calibration_passive_manual_cycle_and_synthetic_quota_v1"
+)
 _POST_CALIBRATION_OBSERVE_REQUIREMENTS = (
     "production_worker_and_hub_pre_tap_publication",
     "post_tap_target_item_verification",
@@ -347,17 +390,23 @@ _PASS_POINT_RELOCATION_MAX_FRAC = 0.025
 # Small pure helpers
 # =====================================================================================
 
+
 def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
 def _checked_distance(value, *, context: str) -> float:
     """Return a finite nonnegative measured distance; NaN/inf must never erase a guard."""
-    if (isinstance(value, bool) or not isinstance(value, (int, float))
-            or not math.isfinite(value) or value < 0):
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(value)
+        or value < 0
+    ):
         raise _MeasureRefused(
             f"{context} produced invalid distance {value!r}; refusing rather than letting a "
-            "NaN/inf/negative value disable a comparison")
+            "NaN/inf/negative value disable a comparison"
+        )
     return float(value)
 
 
@@ -370,12 +419,15 @@ def _parse_item_numbers(raw: str) -> list[int]:
         raise ValueError("no item numbers given")
     numbers = sorted({int(tok) for tok in tokens})
     if any(n < 1 for n in numbers):
-        raise ValueError("item numbers must be positive (Hinge's model index is 1-based)")
+        raise ValueError(
+            "item numbers must be positive (Hinge's model index is 1-based)"
+        )
     return numbers
 
 
 def _automated_composer_items_for_ordinal(
-        ordinal: int, *, strategy_id: str = _AUTOMATED_TARGET_STRATEGY_ID) -> tuple[int, ...]:
+    ordinal: int, *, strategy_id: str = _AUTOMATED_TARGET_STRATEGY_ID
+) -> tuple[int, ...]:
     """Return the automated photo target(s) for a 1-based profile ordinal under `strategy_id`.
 
     Keeping this as the single source of truth prevents an automated/hybrid capture from
@@ -406,11 +458,15 @@ def _automated_target_depths_for_strategy(strategy_id: str) -> frozenset[int]:
     """
     depths: set[int] = set()
     for ordinal in (1, 2):
-        depths.update(_automated_composer_items_for_ordinal(ordinal, strategy_id=strategy_id))
+        depths.update(
+            _automated_composer_items_for_ordinal(ordinal, strategy_id=strategy_id)
+        )
     return frozenset(depths)
 
 
-def _target_scoped_prefix_reason(index, payload, target_items: tuple[int, ...]) -> str | None:
+def _target_scoped_prefix_reason(
+    index, payload, target_items: tuple[int, ...]
+) -> str | None:
     """Return why a photo-target prefix cannot be acted on, else ``None``.
 
     A normal profile read must remain closed-set: later cards can change what the model sees.
@@ -441,16 +497,26 @@ def _target_scoped_prefix_reason(index, payload, target_items: tuple[int, ...]) 
         try:
             crop = payload.item(item_number)
         except (ItemCropError, AttributeError) as exc:
-            return f"photo item {item_number} is unavailable in the prefix payload ({exc})"
-        if (getattr(crop, "image", None) is None or getattr(crop, "signature", None) is None
-                or getattr(crop, "frame_index", None) is None
-                or getattr(crop, "heart_ordinal", None) is None):
+            return (
+                f"photo item {item_number} is unavailable in the prefix payload ({exc})"
+            )
+        if (
+            getattr(crop, "image", None) is None
+            or getattr(crop, "signature", None) is None
+            or getattr(crop, "frame_index", None) is None
+            or getattr(crop, "heart_ordinal", None) is None
+        ):
             return f"photo item {item_number} has no complete crop/signature/heart evidence"
-        matching = [pos for pos, block in enumerate(blocks)
-                    if getattr(block, "heart_ordinal", None) == crop.heart_ordinal]
+        matching = [
+            pos
+            for pos, block in enumerate(blocks)
+            if getattr(block, "heart_ordinal", None) == crop.heart_ordinal
+        ]
         if len(matching) != 1:
-            return (f"photo item {item_number}'s heart ordinal {crop.heart_ordinal!r} does not "
-                    "resolve to exactly one indexed block")
+            return (
+                f"photo item {item_number}'s heart ordinal {crop.heart_ordinal!r} does not "
+                "resolve to exactly one indexed block"
+            )
         target_pos = matching[0]
         # ``complete`` is the end-to-end card proof.  Do not merely rely on a visible heart: a
         # fragment crop would make post-tap verification circular and unusable.
@@ -464,14 +530,17 @@ def _target_scoped_prefix_reason(index, payload, target_items: tuple[int, ...]) 
             if getattr(predecessor, "kind", None) == "leading_chrome":
                 continue
             if not getattr(predecessor, "complete", False):
-                return (f"a predecessor at page rows {getattr(predecessor, 'page_y0', '?')}.."
-                        f"{getattr(predecessor, 'page_y1', '?')} was not resolved; it may hide "
-                        "a heart and shift the target ordinal")
+                return (
+                    f"a predecessor at page rows {getattr(predecessor, 'page_y0', '?')}.."
+                    f"{getattr(predecessor, 'page_y1', '?')} was not resolved; it may hide "
+                    "a heart and shift the target ordinal"
+                )
     return None
 
 
 def _require_collective_target_depths(
-        profiles: list, *, split: str, strategy_id: str = _AUTOMATED_TARGET_STRATEGY_ID) -> None:
+    profiles: list, *, split: str, strategy_id: str = _AUTOMATED_TARGET_STRATEGY_ID
+) -> None:
     """Require every photo depth `strategy_id` can target, across any split large enough to
     cover them.
 
@@ -494,23 +563,27 @@ def _require_collective_target_depths(
         required = _automated_target_depths_for_strategy(strategy_id)
     except ValueError as exc:
         raise _MeasureRefused(f"{split} split: {exc}") from exc
-    captured = {item for profile in profiles for item, _pre, _composer in profile.composer_pairs}
+    captured = {
+        item for profile in profiles for item, _pre, _composer in profile.composer_pairs
+    }
     missing = sorted(required - captured)
     if missing:
         raise _MeasureRefused(
             f"{split} split has {len(profiles)} profiles but lacks composer evidence for "
             f"required photo target depth(s) {missing} under target strategy {strategy_id!r}; "
-            "retain one pair per profile but collectively cover every depth that strategy targets")
+            "retain one pair per profile but collectively cover every depth that strategy targets"
+        )
 
 
-def _round_down_below(value: float, *, above: float, below: float,
-                      ndigits: int = _ROUND_NDIGITS) -> float:
+def _round_down_below(
+    value: float, *, above: float, below: float, ndigits: int = _ROUND_NDIGITS
+) -> float:
     """Round `value` DOWN to `ndigits` decimals for a friendlier config.yaml paste, without ever
     crossing either the calibration evidence (`above`, e.g. the calibration split's own max
     same-profile/intended-item distance) or the hard collision ceiling (`below`). A cleaner
     number is a nicety; staying strictly between the two is not negotiable, so a rounding that
     would violate either bound is discarded in favour of the untruncated value instead."""
-    factor = 10 ** ndigits
+    factor = 10**ndigits
     rounded = math.floor(value * factor) / factor
     if above < rounded < below:
         return rounded
@@ -525,44 +598,78 @@ def _validate_v3_calibration_block(block: dict) -> None:
     the legacy six-key parser to silently reinterpret inline evidence.
     """
     required = {
-        "schema_version", "device", "hinge_version_name", "frame_size_px",
-        "composer_layout_id", "item_selection_policy_id", "identity_match_max_dist",
+        "schema_version",
+        "device",
+        "hinge_version_name",
+        "frame_size_px",
+        "composer_layout_id",
+        "item_selection_policy_id",
+        "identity_match_max_dist",
         "inline_item_max_dist",
-        "calibrated_at", "identity_band", "content_band",
+        "calibrated_at",
+        "identity_band",
+        "content_band",
     }
     if set(block) != required:
         raise _MeasureRefused(f"v3 calibration keys are not exact: {sorted(block)}")
     if block["schema_version"] != _CALIBRATION_SCHEMA_VERSION:
         raise _MeasureRefused("emitted calibration has the wrong schema_version")
     if block["composer_layout_id"] != _COMPOSER_LAYOUT_ID:
-        raise _MeasureRefused("emitted calibration has an unsupported composer_layout_id")
+        raise _MeasureRefused(
+            "emitted calibration has an unsupported composer_layout_id"
+        )
     if block["item_selection_policy_id"] != PHOTO_ONLY_POLICY_ID:
-        raise _MeasureRefused("emitted calibration has an unsupported item_selection_policy_id")
-    if (not isinstance(block["hinge_version_name"], str)
-            or not block["hinge_version_name"].strip()):
+        raise _MeasureRefused(
+            "emitted calibration has an unsupported item_selection_policy_id"
+        )
+    if (
+        not isinstance(block["hinge_version_name"], str)
+        or not block["hinge_version_name"].strip()
+    ):
         raise _MeasureRefused("emitted calibration has no exact Hinge versionName")
     if not isinstance(block["device"], str) or not block["device"].strip():
         raise _MeasureRefused("emitted calibration has no exact device serial")
-    if not isinstance(block["calibrated_at"], str) or not block["calibrated_at"].strip():
+    if (
+        not isinstance(block["calibrated_at"], str)
+        or not block["calibrated_at"].strip()
+    ):
         raise _MeasureRefused("emitted calibration has no calibration provenance")
     size = block["frame_size_px"]
-    if (not isinstance(size, list) or len(size) != 2
-            or any(isinstance(v, bool) or not isinstance(v, int) or v <= 0 for v in size)):
+    if (
+        not isinstance(size, list)
+        or len(size) != 2
+        or any(isinstance(v, bool) or not isinstance(v, int) or v <= 0 for v in size)
+    ):
         raise _MeasureRefused("emitted calibration has invalid frame_size_px")
-    for key, ceiling in (("identity_match_max_dist", _IDENTITY_FALSE_MATCH_DISTANCE),
-                         ("inline_item_max_dist", _INLINE_FALSE_MATCH_DISTANCE)):
+    for key, ceiling in (
+        ("identity_match_max_dist", _IDENTITY_FALSE_MATCH_DISTANCE),
+        ("inline_item_max_dist", _INLINE_FALSE_MATCH_DISTANCE),
+    ):
         value = block[key]
-        if (isinstance(value, bool) or not isinstance(value, (int, float))
-                or not math.isfinite(value) or not 0 < value < ceiling):
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+            or not 0 < value < ceiling
+        ):
             raise _MeasureRefused(
-                f"emitted calibration {key} is not finite, positive, and strictly below {ceiling}")
+                f"emitted calibration {key} is not finite, positive, and strictly below {ceiling}"
+            )
     for key, size in (("identity_band", 4), ("content_band", 2)):
         values = block[key]
-        if (not isinstance(values, list) or len(values) != size
-                or any(isinstance(value, bool) or not isinstance(value, (int, float))
-                       or not math.isfinite(value) for value in values)):
+        if (
+            not isinstance(values, list)
+            or len(values) != size
+            or any(
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(value)
+                for value in values
+            )
+        ):
             raise _MeasureRefused(
-                f"emitted calibration {key} must contain {size} finite numeric values")
+                f"emitted calibration {key} must contain {size} finite numeric values"
+            )
 
 
 class _CaptureAbort(RuntimeError):
@@ -622,16 +729,29 @@ class _HybridReviewGate:
     supplied stdin: it records the configured Codex review provenance, never human ground truth.
     EOF, a malformed answer, or a refusal stops before another device-changing action.
     """
-    def __init__(self, out_dir: Path, *, device: dict, config_provenance: dict,
-                 reviewer_model: str, reviewer_process: str, reviewer_id: str | None = None,
-        reviewer_version: str | None = None):
+
+    def __init__(
+        self,
+        out_dir: Path,
+        *,
+        device: dict,
+        config_provenance: dict,
+        reviewer_model: str,
+        reviewer_process: str,
+        reviewer_id: str | None = None,
+        reviewer_version: str | None = None,
+    ):
         self.dir = out_dir / "hybrid_review"
         ensure_private_dir(self.dir)
         self.device = device
         self.config_provenance = config_provenance
-        self.reviewer = {"source": _HYBRID_REVIEW_SOURCE, "id": reviewer_id or reviewer_model,
-                         "model": reviewer_model, "version": reviewer_version or reviewer_process,
-                         "process": reviewer_process}
+        self.reviewer = {
+            "source": _HYBRID_REVIEW_SOURCE,
+            "id": reviewer_id or reviewer_model,
+            "model": reviewer_model,
+            "version": reviewer_version or reviewer_process,
+            "process": reviewer_process,
+        }
         self.sequence = 0
         self.decisions: list[dict] = []
 
@@ -641,16 +761,22 @@ class _HybridReviewGate:
         try:
             atomic_write_private_bytes(path, data, parent=path.parent)
         except OSError as exc:
-            raise _CaptureAbort(f"could not atomically write hybrid checkpoint {path.name}: {exc}") from exc
+            raise _CaptureAbort(
+                f"could not atomically write hybrid checkpoint {path.name}: {exc}"
+            ) from exc
 
-    def checkpoint(self, frame: bytes, *, claimed_state: str, action_plan: dict) -> dict:
+    def checkpoint(
+        self, frame: bytes, *, claimed_state: str, action_plan: dict
+    ) -> dict:
         """Persist the exact visual/action binding, then require one exact stdin decision."""
         self.sequence += 1
         stem = f"{self.sequence:05d}"
         frame_name, checkpoint_name = f"{stem}.png", f"{stem}.checkpoint.json"
         frame_path, checkpoint_path = self.dir / frame_name, self.dir / checkpoint_name
         if frame_path.exists() or checkpoint_path.exists():
-            raise _CaptureAbort(f"hybrid reviewer checkpoint namespace collision at {stem}")
+            raise _CaptureAbort(
+                f"hybrid reviewer checkpoint namespace collision at {stem}"
+            )
         frame_sha256 = _sha256(frame)
         self._atomic_write(frame_path, frame)
         body = {
@@ -666,7 +792,9 @@ class _HybridReviewGate:
             "human_ground_truth": False,
         }
         checkpoint = {**body, "evidence_sha256": _canonical_json_digest(body)}
-        checkpoint_raw = (json.dumps(checkpoint, indent=2, sort_keys=True) + "\n").encode("utf-8")
+        checkpoint_raw = (
+            json.dumps(checkpoint, indent=2, sort_keys=True) + "\n"
+        ).encode("utf-8")
         self._atomic_write(checkpoint_path, checkpoint_raw)
         checkpoint_sha256 = _sha256(checkpoint_raw)
         print(
@@ -675,7 +803,8 @@ class _HybridReviewGate:
             f"APPROVE {checkpoint_sha256}, REFUSE {checkpoint_sha256}, RETRY {checkpoint_sha256}, "
             f"RESTART_PROFILE {checkpoint_sha256}, SCROLL_UP {checkpoint_sha256}, "
             f"SCROLL_DOWN {checkpoint_sha256}, or ABORT {checkpoint_sha256}",
-            flush=True)
+            flush=True,
+        )
         response = sys.stdin.readline()
         # Preserve every character except the terminal LF: spaces/case/extra words are refusals.
         response = response[:-1] if response.endswith("\n") else response
@@ -690,19 +819,25 @@ class _HybridReviewGate:
         }
         decision = commands.get(response, "eof" if response == "" else "invalid")
         record = {
-            "checkpoint_file": str(checkpoint_path), "checkpoint_sha256": checkpoint_sha256,
+            "checkpoint_file": str(checkpoint_path),
+            "checkpoint_sha256": checkpoint_sha256,
             "checkpoint_evidence_sha256": checkpoint["evidence_sha256"],
-            "frame_file": str(frame_path), "frame_sha256": frame_sha256,
-            "claimed_state": claimed_state, "action_plan": action_plan,
-            "decision": decision, "source": _HYBRID_REVIEW_SOURCE,
-            "reviewer": self.reviewer, "human_ground_truth": False,
+            "frame_file": str(frame_path),
+            "frame_sha256": frame_sha256,
+            "claimed_state": claimed_state,
+            "action_plan": action_plan,
+            "decision": decision,
+            "source": _HYBRID_REVIEW_SOURCE,
+            "reviewer": self.reviewer,
+            "human_ground_truth": False,
             "decided_utc": datetime.now(timezone.utc).isoformat(),
         }
         self.decisions.append(record)
         if decision in {"refused", "aborted", "eof", "invalid"}:
             raise _CaptureAbort(
                 "hybrid external AI review did not approve the next transport action "
-                f"({decision}); session stopped before it could continue")
+                f"({decision}); session stopped before it could continue"
+            )
         return record
 
 
@@ -718,13 +853,17 @@ def _check_vision_stacks() -> None:
         import numpy  # noqa: F401
         import PIL  # noqa: F401
     except Exception:  # noqa: BLE001 -- report clearly, exit non-zero
-        missing.append("PIL + numpy (`pip install -e '.[ml]'` or `pip install pillow numpy`) "
-                       "-- needed for the identity-band measurement")
+        missing.append(
+            "PIL + numpy (`pip install -e '.[ml]'` or `pip install pillow numpy`) "
+            "-- needed for the identity-band measurement"
+        )
     try:
         import cv2  # noqa: F401
     except Exception:  # noqa: BLE001 -- report clearly, exit non-zero
-        missing.append("opencv-python + numpy (`pip install -e '.[hinge]'`) -- needed for the "
-                       "inline-composer/item measurement")
+        missing.append(
+            "opencv-python + numpy (`pip install -e '.[hinge]'`) -- needed for the "
+            "inline-composer/item measurement"
+        )
     if missing:
         print("ERROR: missing vision dependencies:", file=sys.stderr)
         for m in missing:
@@ -735,6 +874,7 @@ def _check_vision_stacks() -> None:
 # =====================================================================================
 # capture
 # =====================================================================================
+
 
 def _default_out_dir(prefix: str = "targeting") -> Path:
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -753,16 +893,21 @@ def _preflight_serial(cfg) -> tuple[str, str]:
     configured = app_cfg.get("serial") or None
     adb_path = app_cfg.get("adb_path", "adb")
     if not isinstance(configured, str) or not configured.strip():
-        print("ERROR: apps.hinge.serial is not configured in config.yaml. A calibration "
-              "measured without a fixed serial could silently apply to the wrong device. Set "
-              "apps.hinge.serial to the phone's exact `adb devices` serial and retry.",
-              file=sys.stderr)
+        print(
+            "ERROR: apps.hinge.serial is not configured in config.yaml. A calibration "
+            "measured without a fixed serial could silently apply to the wrong device. Set "
+            "apps.hinge.serial to the phone's exact `adb devices` serial and retry.",
+            file=sys.stderr,
+        )
         sys.exit(1)
     try:
         result = subprocess.run(
-            [adb_path, "devices"], capture_output=True, timeout=10, check=False)
+            [adb_path, "devices"], capture_output=True, timeout=10, check=False
+        )
     except FileNotFoundError:
-        print(f"ERROR: adb binary not found ({adb_path!r} not on PATH).", file=sys.stderr)
+        print(
+            f"ERROR: adb binary not found ({adb_path!r} not on PATH).", file=sys.stderr
+        )
         sys.exit(1)
     except subprocess.TimeoutExpired:
         print("ERROR: `adb devices` timed out.", file=sys.stderr)
@@ -774,7 +919,9 @@ def _preflight_serial(cfg) -> tuple[str, str]:
             f"apps.hinge.serial {configured!r}. This tool measures a safety bound for one "
             "specific physical device and refuses to guess which one is on the bench when more "
             f"than one (or the wrong one) is connected. Connect exactly {configured!r} and "
-            "nothing else, then retry.", file=sys.stderr)
+            "nothing else, then retry.",
+            file=sys.stderr,
+        )
         sys.exit(1)
     return configured, adb_path
 
@@ -796,13 +943,20 @@ def _device_evidence(driver: HingeDriver) -> dict:
     it always has."""
     try:
         return _read_shared_device_evidence(
-            driver.adb, serial=driver.serial, package=driver.package)
+            driver.adb, serial=driver.serial, package=driver.package
+        )
     except _DeviceEvidenceRefused as exc:
         raise RuntimeError(str(exc)) from exc
 
 
-def _plan_card_scroll(frame: bytes, *, content_band, like_template, like_threshold,
-                      profile_min_spacing_px: int | None):
+def _plan_card_scroll(
+    frame: bytes,
+    *,
+    content_band,
+    like_template,
+    like_threshold,
+    profile_min_spacing_px: int | None,
+):
     """Plan one forward calibration-enumeration step from this exact saved-frame candidate.
 
     Returning the next profile minimum with the plan makes its state explicit at the one capture
@@ -811,14 +965,22 @@ def _plan_card_scroll(frame: bytes, *, content_band, like_template, like_thresho
     offline replay can repair it later.
     """
     segmentation = segment_frame(
-        frame, content_band=content_band, like_template=like_template,
-        like_threshold=like_threshold)
+        frame,
+        content_band=content_band,
+        like_template=like_template,
+        like_threshold=like_threshold,
+    )
     step = plan_scroll_step(
-        segmentation, x_frac=_CARD_SCROLL_X_FRAC,
-        profile_min_spacing_px=profile_min_spacing_px)
+        segmentation,
+        x_frac=_CARD_SCROLL_X_FRAC,
+        profile_min_spacing_px=profile_min_spacing_px,
+    )
     if step.spacing_px is not None:
-        profile_min_spacing_px = (step.spacing_px if profile_min_spacing_px is None
-                                  else min(profile_min_spacing_px, step.spacing_px))
+        profile_min_spacing_px = (
+            step.spacing_px
+            if profile_min_spacing_px is None
+            else min(profile_min_spacing_px, step.spacing_px)
+        )
     return step, profile_min_spacing_px
 
 
@@ -846,8 +1008,7 @@ def _settled_read_scroll_frame(driver: HingeDriver) -> bytes:
             quiet_comparisons += 1
         else:
             try:
-                shift = estimate_shift(
-                    prior, current, content_band=driver.content_band)
+                shift = estimate_shift(prior, current, content_band=driver.content_band)
             except ShiftEstimationError as exc:
                 quiet_comparisons = 0
                 refusals.append(f"{type(exc).__name__}: {exc}")
@@ -863,7 +1024,8 @@ def _settled_read_scroll_frame(driver: HingeDriver) -> bytes:
     detail = refusals[-1] if refusals else "frames never became byte-stable"
     raise _CaptureAbort(
         "card-enumeration scroll did not park within the bounded "
-        f"{_MAX_READ_SCROLL_SETTLE_PROBES}-comparison settle window: {detail}")
+        f"{_MAX_READ_SCROLL_SETTLE_PROBES}-comparison settle window: {detail}"
+    )
 
 
 @dataclass(frozen=True)
@@ -882,6 +1044,7 @@ class _TargetFrameProof:
     card's rows on these bytes.  Same rule as the mute leg -- carried as data, read back through
     a function that refuses when the proof describes some other frame.
     """
+
     block: object
     frame_sha256: str
     mute_control_absent: bool
@@ -899,14 +1062,16 @@ def _screened_mute_control_absent(proof: object, frame: bytes) -> bool:
     if not isinstance(proof, _TargetFrameProof) or proof.frame_sha256 != _sha256(frame):
         raise _CaptureAbort(
             "checkpoint refused: no target-frame mute-control screen is bound to the exact "
-            "frame whose heart would be approved")
+            "frame whose heart would be approved"
+        )
     if not proof.mute_control_absent:
         # The screen that sees a control already refuses upstream, so arriving here means a
         # later edit let a negative verdict through.  A reviewer must never be offered a heart
         # on a frame the screen itself calls a video, so refuse rather than publish the False.
         raise _CaptureAbort(
             "checkpoint refused: the target-frame mute-control screen found a visible mute "
-            "control on the exact action frame")
+            "control on the exact action frame"
+        )
     return proof.mute_control_absent
 
 
@@ -920,17 +1085,27 @@ def _located_target_heart_visible(proof: object, frame: bytes) -> bool:
     if not isinstance(proof, _TargetFrameProof) or proof.frame_sha256 != _sha256(frame):
         raise _CaptureAbort(
             "checkpoint refused: no target-heart location is bound to the exact frame whose "
-            "heart would be approved")
+            "heart would be approved"
+        )
     if not proof.heart_visible:
         raise _CaptureAbort(
             "checkpoint refused: the target-heart location did not find the reviewed heart on "
-            "the exact action frame")
+            "the exact action frame"
+        )
     return proof.heart_visible
 
 
-def _verified_target_frame_proof(driver: HingeDriver, target, *, frame: bytes,
-                                 content_band, like_template, like_threshold: float,
-                                 expected_rows=None, expected_point=None) -> _TargetFrameProof:
+def _verified_target_frame_proof(
+    driver: HingeDriver,
+    target,
+    *,
+    frame: bytes,
+    content_band,
+    like_template,
+    like_threshold: float,
+    expected_rows=None,
+    expected_point=None,
+) -> _TargetFrameProof:
     """Re-prove the exact target card/heart and absence of visible video UI on one frame.
 
     Returns the evidence, not merely the card block, so a caller that wants to claim the screen
@@ -947,19 +1122,23 @@ def _verified_target_frame_proof(driver: HingeDriver, target, *, frame: bytes,
     point = tuple(target.point if expected_point is None else expected_point)
     try:
         segmentation = segment_frame(
-            frame, content_band=content_band, like_template=like_template,
-            like_threshold=like_threshold)
+            frame,
+            content_band=content_band,
+            like_template=like_template,
+            like_threshold=like_threshold,
+        )
         if not segmentation.ok:
             raise SegmentationError("; ".join(segmentation.failures))
         matching_blocks = [
-            block for block in segmentation.blocks
-            if (block.y0, block.y1) == rows
+            block for block in segmentation.blocks if (block.y0, block.y1) == rows
         ]
-        heart_visible = (len(matching_blocks) == 1
-                         and list(matching_blocks[0].hearts) == [point])
+        heart_visible = len(matching_blocks) == 1 and list(
+            matching_blocks[0].hearts
+        ) == [point]
         if not heart_visible:
             raise SegmentationError(
-                "frame does not contain exactly one reviewed heart in the reviewed card")
+                "frame does not contain exactly one reviewed heart in the reviewed card"
+            )
         screen = getattr(driver, "_target_frame_video_screen_reason", None)
         if not callable(screen):
             raise SegmentationError("driver has no exact target-frame video screen")
@@ -968,13 +1147,17 @@ def _verified_target_frame_proof(driver: HingeDriver, target, *, frame: bytes,
             raise SegmentationError(video_reason)
     except SegmentationError as exc:
         raise _CaptureAbort(
-            "target photo proof refused on the exact action frame: " + str(exc)) from exc
+            "target photo proof refused on the exact action frame: " + str(exc)
+        ) from exc
     # `video_reason` is the screen's own verdict on these exact bytes.  Deriving the published
     # predicate from it here, rather than restating it at the checkpoint, is what keeps the two
     # from drifting apart when either moves.
-    return _TargetFrameProof(block=matching_blocks[0], frame_sha256=_sha256(frame),
-                             mute_control_absent=video_reason is None,
-                             heart_visible=heart_visible)
+    return _TargetFrameProof(
+        block=matching_blocks[0],
+        frame_sha256=_sha256(frame),
+        mute_control_absent=video_reason is None,
+        heart_visible=heart_visible,
+    )
 
 
 @dataclass(frozen=True)
@@ -999,6 +1182,7 @@ class _StillPhotoProof:
     and bind the screen that is really up.  The digests remain the binding authority; the bytes
     are there to be re-proved, never to be taken as evidence on their own.
     """
+
     action_frame_sha256: str
     pre_probe_frame_sha256: str
     dwell_frame_sha256s: tuple[str, ...]
@@ -1024,10 +1208,13 @@ def _verified_still_photo_evidence(proof: object, frame: bytes) -> bool:
     burst still has to chain to the pre-probe frame and the second to the action frame, because
     those are the screens each of them was actually measured on.
     """
-    if not isinstance(proof, _StillPhotoProof) or proof.action_frame_sha256 != _sha256(frame):
+    if not isinstance(proof, _StillPhotoProof) or proof.action_frame_sha256 != _sha256(
+        frame
+    ):
         raise _CaptureAbort(
             "checkpoint refused: no still-photo (C1-C3) verdict is bound to the exact frame "
-            "whose heart would be approved")
+            "whose heart would be approved"
+        )
     if not proof.still_photo_verified:
         # The producer already refuses a negative verdict, so a False arriving here means a later
         # edit routed one through.  Refuse rather than publish it: a reviewer reading a predicate
@@ -1035,14 +1222,20 @@ def _verified_still_photo_evidence(proof: object, frame: bytes) -> bool:
         # real video got one keystroke from a like on 2026-08-21.
         raise _CaptureAbort(
             "checkpoint refused: the still-photo acceptance did not pass on the exact action "
-            "frame")
-    if (len(proof.dwell_frame_sha256s) < 2
-            or proof.dwell_frame_sha256s[0] != proof.pre_probe_frame_sha256):
+            "frame"
+        )
+    if (
+        len(proof.dwell_frame_sha256s) < 2
+        or proof.dwell_frame_sha256s[0] != proof.pre_probe_frame_sha256
+    ):
         raise _CaptureAbort(
             "checkpoint refused: the un-interacted dwell is not chained to the exact frame "
-            "whose heart would be approved")
-    if (len(proof.reattach_frame_sha256s) < 2
-            or proof.reattach_frame_sha256s[0] != proof.action_frame_sha256):
+            "whose heart would be approved"
+        )
+    if (
+        len(proof.reattach_frame_sha256s) < 2
+        or proof.reattach_frame_sha256s[0] != proof.action_frame_sha256
+    ):
         # The second burst must name the screen it was actually taken on, and that screen is the
         # one this checkpoint is about. The probe scrolls the card out of Hinge's autoplay band
         # and back; where the return leg leaves a residual the producer MEASURES it, carries the
@@ -1053,15 +1246,20 @@ def _verified_still_photo_evidence(proof: object, frame: bytes) -> bool:
         raise _CaptureAbort(
             "checkpoint refused: no re-attach dwell burst is chained to the exact frame whose "
             "heart would be approved, so a video that was stalled or unloaded during the first "
-            "dwell was never given a second chance to reveal itself")
-    if proof.page_residual_px and proof.action_frame_sha256 == proof.pre_probe_frame_sha256:
+            "dwell was never given a second chance to reveal itself"
+        )
+    if (
+        proof.page_residual_px
+        and proof.action_frame_sha256 == proof.pre_probe_frame_sha256
+    ):
         # A proof claiming the probe displaced the page while naming ONE frame for both bursts is
         # internally inconsistent -- corrupt, not silent -- so it cannot say which screen the
         # re-attach observation describes. Refuse rather than pick one of the two readings.
         raise _CaptureAbort(
             "checkpoint refused: the still-photo proof reports a displaced page yet names one "
             "frame for both dwell bursts, so which screen the re-attach burst describes is "
-            "unknown")
+            "unknown"
+        )
     return proof.still_photo_verified
 
 
@@ -1099,7 +1297,9 @@ def _frame_width_px(frame: bytes) -> int | None:
     return None if image is None else int(image.shape[1])
 
 
-def _content_band_rect_px(frame: bytes, content_band) -> tuple[int, int, int, int] | None:
+def _content_band_rect_px(
+    frame: bytes, content_band
+) -> tuple[int, int, int, int] | None:
     """The full-width pixel rect of `frame`'s scrolling content band, or None if undecodable.
 
     Android's status bar and Hinge's bottom nav are fixed chrome: they do not translate when the
@@ -1119,7 +1319,8 @@ def _content_band_rect_px(frame: bytes, content_band) -> tuple[int, int, int, in
 
 
 def _reviewed_target_protected_prefix_rect(
-        frame: bytes, content_band, reviewed_rows) -> tuple[int, int, int, int] | None:
+    frame: bytes, content_band, reviewed_rows
+) -> tuple[int, int, int, int] | None:
     """Return the exact-match prefix that protects a reviewed heart from stale pixels.
 
     The full content band is deliberately too broad for this particular pre-tap guard: a later,
@@ -1138,19 +1339,27 @@ def _reviewed_target_protected_prefix_rect(
     band_rect = _content_band_rect_px(frame, content_band)
     if band_rect is None:
         return None
-    if (not isinstance(reviewed_rows, (tuple, list)) or len(reviewed_rows) != 2
-            or any(isinstance(value, bool) or not isinstance(value, int)
-                   for value in reviewed_rows)):
+    if (
+        not isinstance(reviewed_rows, (tuple, list))
+        or len(reviewed_rows) != 2
+        or any(
+            isinstance(value, bool) or not isinstance(value, int)
+            for value in reviewed_rows
+        )
+    ):
         raise ItemCropError("reviewed target rows must be two integer frame rows")
     target_y0, target_y1 = reviewed_rows
     _x0, band_y0, width, band_y1 = band_rect
     if not (0 <= target_y0 < target_y1 <= band_y1):
         raise ItemCropError(
-            "reviewed target rows must be valid frame rows ending within the configured content band")
+            "reviewed target rows must be valid frame rows ending within the configured content band"
+        )
     return (0, min(band_y0, target_y0), width, target_y1)
 
 
-def _identity_band_rect_px(frame: bytes, identity_band) -> tuple[int, int, int, int] | None:
+def _identity_band_rect_px(
+    frame: bytes, identity_band
+) -> tuple[int, int, int, int] | None:
     """Return the exact configured identity-band ROI for a decodable frame.
 
     The protected content prefix begins below this band on the current Hinge layout.  Keep the
@@ -1161,13 +1370,22 @@ def _identity_band_rect_px(frame: bytes, identity_band) -> tuple[int, int, int, 
     width = _frame_width_px(frame)
     if not height or not width:
         return None
-    if (not isinstance(identity_band, (tuple, list)) or len(identity_band) != 4
-            or any(isinstance(value, bool) or not isinstance(value, (int, float))
-                   for value in identity_band)):
+    if (
+        not isinstance(identity_band, (tuple, list))
+        or len(identity_band) != 4
+        or any(
+            isinstance(value, bool) or not isinstance(value, (int, float))
+            for value in identity_band
+        )
+    ):
         raise ItemCropError("identity band must be four numeric fractions")
     x0_frac, y0_frac, x1_frac, y1_frac = identity_band
-    rect = (int(x0_frac * width), int(y0_frac * height),
-            int(x1_frac * width), int(y1_frac * height))
+    rect = (
+        int(x0_frac * width),
+        int(y0_frac * height),
+        int(x1_frac * width),
+        int(y1_frac * height),
+    )
     if not (0 <= rect[0] < rect[2] <= width and 0 <= rect[1] < rect[3] <= height):
         raise ItemCropError("configured identity band is outside the reviewed frame")
     return rect
@@ -1184,15 +1402,17 @@ def _dwell_centering(rect, frame: bytes, content_band):
     if not height or content_band is None:
         return None, None
     try:
-        offset = card_center_offset_frac(tuple(rect), frame_height=height,
-                                         content_band=content_band)
+        offset = card_center_offset_frac(
+            tuple(rect), frame_height=height, content_band=content_band
+        )
     except ItemCropError:
         return None, None
     return abs(offset) <= STILL_PHOTO_AUTOPLAY_CENTER_BAND_FRAC, float(offset)
 
 
-def _parked_card_center_offset(target, proof, *, frame: bytes, content_band,
-                               rows=None) -> float | None:
+def _parked_card_center_offset(
+    target, proof, *, frame: bytes, content_band, rows=None
+) -> float | None:
     """Signed autoplay-zone offset of the card navigation just parked, or None if unmeasurable.
 
     Cheap on purpose.  It re-uses evidence already in hand: the frame rows are the ones
@@ -1214,15 +1434,21 @@ def _parked_card_center_offset(target, proof, *, frame: bytes, content_band,
     if rows is None or block is None or not height or content_band is None:
         return None
     try:
-        return float(card_center_offset_frac(
-            (block.x0, rows[0], block.x1, rows[1]), frame_height=height,
-            content_band=content_band))
+        return float(
+            card_center_offset_frac(
+                (block.x0, rows[0], block.x1, rows[1]),
+                frame_height=height,
+                content_band=content_band,
+            )
+        )
     except ItemCropError:
         return None
 
 
-def _parked_signature_drift(frames, rect: tuple[int, int, int, int],
-                            ) -> tuple[float | None, tuple[int, ...]]:
+def _parked_signature_drift(
+    frames,
+    rect: tuple[int, int, int, int],
+) -> tuple[float | None, tuple[int, ...]]:
     """C1's re-observation drift over frames taken at ONE parked card position.
 
     The ladder's drift rung wants "how much did this crop's own pixels move when the same rows
@@ -1253,9 +1479,12 @@ def _parked_signature_drift(frames, rect: tuple[int, int, int, int],
     return worst, tuple(sampled)
 
 
-def _cross_position_signature_drift(frame_a: bytes, rect_a: tuple[int, int, int, int],
-                                    frame_b: bytes, rect_b: tuple[int, int, int, int],
-                                    ) -> tuple[float | None, tuple[int, ...]]:
+def _cross_position_signature_drift(
+    frame_a: bytes,
+    rect_a: tuple[int, int, int, int],
+    frame_b: bytes,
+    rect_b: tuple[int, int, int, int],
+) -> tuple[float | None, tuple[int, ...]]:
     """C1's re-observation drift across a MEASURED page residual, rather than at one position.
 
     `_parked_signature_drift` looks at ONE unmoved rect across several frames of the same parked
@@ -1281,7 +1510,9 @@ def _cross_position_signature_drift(frame_a: bytes, rect_a: tuple[int, int, int,
     return reference.distance(other), (1,)
 
 
-def _verified_still_photo_proof(driver: HingeDriver, *, frame: bytes, block) -> _StillPhotoProof:
+def _verified_still_photo_proof(
+    driver: HingeDriver, *, frame: bytes, block
+) -> _StillPhotoProof:
     """Re-run the acceptance on the action frame plus TWO no-input dwell bursts.
 
     Both bursts are the driver's own `_still_photo_dwell_burst`, not a local copy: the window is
@@ -1331,8 +1562,12 @@ def _verified_still_photo_proof(driver: HingeDriver, *, frame: bytes, block) -> 
     content_band = getattr(driver, "content_band", None)
 
     def screened_clean(data: bytes) -> bool:
-        return hinge_mod.video_mute_screen_reason(
-            data, rect, match=getattr(driver, "_match_video_mute", None)) is None
+        return (
+            hinge_mod.video_mute_screen_reason(
+                data, rect, match=getattr(driver, "_match_video_mute", None)
+            )
+            is None
+        )
 
     burst, span_s = driver._still_photo_dwell_burst()
     frames = [frame, *burst]
@@ -1343,31 +1578,43 @@ def _verified_still_photo_proof(driver: HingeDriver, *, frame: bytes, block) -> 
         drift, drift_frames = _parked_signature_drift(frames, rect)
     except ItemCropError as exc:
         raise _CaptureAbort(
-            f"target still-photo proof refused on the exact action frame: {exc}") from exc
+            f"target still-photo proof refused on the exact action frame: {exc}"
+        ) from exc
     centered, offset = _dwell_centering(rect, frame, content_band)
-    first = StillPhotoDwell(dwell_frame_sha256s=digests, dwell_exact=exact, dwell_span_s=span_s,
-                            mute_screens_complete=screened, centered=centered,
-                            center_offset_frac=offset)
+    first = StillPhotoDwell(
+        dwell_frame_sha256s=digests,
+        dwell_exact=exact,
+        dwell_span_s=span_s,
+        mute_screens_complete=screened,
+        centered=centered,
+        center_offset_frac=offset,
+    )
     # Ask the ladder BEFORE spending the probe's real gestures (two strokes, three when the
     # first exit direction measures clamped).  Every rung above the probe
     # answers from frames we already hold, so a card that fails one of them is refused for THAT
     # reason -- the policy blocker on an unlicensed build, the mute screen, the centring -- and
     # never for a probe it was never eligible for.  The comparison is by identity against the
     # exported constant, so this can never start reading prose.
-    prelim = unnumber_without_still_photo_evidence(still_photo_evidence_from_drift(
-        drift, drift_frames, first))
+    prelim = unnumber_without_still_photo_evidence(
+        still_photo_evidence_from_drift(drift, drift_frames, first)
+    )
     if prelim != EXCLUSION_REATTACH_PROBE_MISSING:
         raise _CaptureAbort(
             "target still-photo proof refused on the exact action frame: "
-            + (prelim if prelim is not None else
-               "the acceptance passed a card no re-attach probe had looked at, which the "
-               "ladder must never do"))
+            + (
+                prelim
+                if prelim is not None
+                else "the acceptance passed a card no re-attach probe had looked at, which the "
+                "ladder must never do"
+            )
+        )
     probe = driver._still_photo_reattach_probe(frame, rect)
     if probe is None:
         raise _CaptureAbort(
             "target still-photo proof refused on the exact action frame: the re-attach probe "
             "could not take this card out of Hinge's autoplay band and bring it back, so a "
-            "video that was not playing during the dwell was never asked to start")
+            "video that was not playing during the dwell was never asked to start"
+        )
     # `frameshift.estimate_shift`'s docstring, verbatim: "frame_a is the EARLIER frame ...
     # Positive delta_px means the content moved UP the screen ... content at row y of A is at
     # row y - delta_px of B."  F0 is `frame` (earlier); F1 is `probe.anchor` (later, the frame
@@ -1386,7 +1633,8 @@ def _verified_still_photo_proof(driver: HingeDriver, *, frame: bytes, block) -> 
             raise _CaptureAbort(
                 "target still-photo proof refused on the exact action frame: the probe's "
                 "return leg displacement could not be measured, so the second burst cannot be "
-                "bound to the reviewed card")
+                "bound to the reviewed card"
+            )
         rect2 = (rect[0], rect[1] - residual, rect[2], rect[3] - residual)
         action_frame = probe.anchor
         height2 = _frame_height_px(action_frame)
@@ -1394,14 +1642,19 @@ def _verified_still_photo_proof(driver: HingeDriver, *, frame: bytes, block) -> 
             raise _CaptureAbort(
                 "target still-photo proof refused on the exact action frame: the probe's "
                 f"return leg left a {residual}px residual that puts the reviewed card partly "
-                "off screen, so it cannot be re-proved there")
+                "off screen, so it cannot be re-proved there"
+            )
     reattach_frames = [action_frame, *probe.frames]
     reattach_digests = tuple(_sha256(data) for data in reattach_frames)
     try:
         reattach_legs = still_photo_reattach_legs(
-            reattach_frames, rect2, span_s=probe.span_s,
+            reattach_frames,
+            rect2,
+            span_s=probe.span_s,
             mute_screen=lambda data, _rect: screened_clean(data),
-            frame_height=_frame_height_px(action_frame), content_band=content_band)
+            frame_height=_frame_height_px(action_frame),
+            content_band=content_band,
+        )
         # THE FINAL C1 MEASUREMENT.  At residual == 0 every frame this proof holds describes the
         # SAME unmoved rect -- the anchor, the first burst, and the post-probe burst the probe
         # brought back to that same anchor byte-for-byte -- so the existing worst-of-N
@@ -1411,23 +1664,36 @@ def _verified_still_photo_proof(driver: HingeDriver, *, frame: bytes, block) -> 
         # move: see `_cross_position_signature_drift`.
         if residual:
             final_drift, final_drift_frames = _cross_position_signature_drift(
-                frame, rect, action_frame, rect2)
+                frame, rect, action_frame, rect2
+            )
         else:
             final_drift, final_drift_frames = _parked_signature_drift(
-                [*frames, *probe.frames], rect)
+                [*frames, *probe.frames], rect
+            )
     except ItemCropError as exc:
         raise _CaptureAbort(
-            f"target still-photo proof refused on the exact action frame: {exc}") from exc
-    refusal = unnumber_without_still_photo_evidence(still_photo_evidence_from_drift(
-        final_drift, final_drift_frames, replace(first, **reattach_legs)))
+            f"target still-photo proof refused on the exact action frame: {exc}"
+        ) from exc
+    refusal = unnumber_without_still_photo_evidence(
+        still_photo_evidence_from_drift(
+            final_drift, final_drift_frames, replace(first, **reattach_legs)
+        )
+    )
     if refusal is not None:
         raise _CaptureAbort(
-            "target still-photo proof refused on the exact action frame: " + refusal)
+            "target still-photo proof refused on the exact action frame: " + refusal
+        )
     return _StillPhotoProof(
-        action_frame_sha256=_sha256(action_frame), pre_probe_frame_sha256=_sha256(frame),
-        dwell_frame_sha256s=digests, dwell_span_s=span_s, still_photo_verified=True,
-        reattach_frame_sha256s=reattach_digests, reattach_dwell_span_s=probe.span_s,
-        page_residual_px=int(residual), action_frame=action_frame)
+        action_frame_sha256=_sha256(action_frame),
+        pre_probe_frame_sha256=_sha256(frame),
+        dwell_frame_sha256s=digests,
+        dwell_span_s=span_s,
+        still_photo_verified=True,
+        reattach_frame_sha256s=reattach_digests,
+        reattach_dwell_span_s=probe.span_s,
+        page_residual_px=int(residual),
+        action_frame=action_frame,
+    )
 
 
 @dataclass(frozen=True)
@@ -1440,6 +1706,7 @@ class _VerificationBlockerProof:
     impressive-looking claim than the check can support, which is the failure mode this whole
     family of proof objects exists to prevent.
     """
+
     item_number: int
     heart_ordinal: object
     blocker: str
@@ -1450,28 +1717,46 @@ def _verified_blocker_absence(payload, item_number: int) -> _VerificationBlocker
     """Run doc 5.6's blocker screen for one item and carry its verdict."""
     blocker = verification_blocker(payload, item_number)
     return _VerificationBlockerProof(
-        item_number=item_number, heart_ordinal=payload.item(item_number).heart_ordinal,
-        blocker=blocker or "", blocker_absent=not blocker)
+        item_number=item_number,
+        heart_ordinal=payload.item(item_number).heart_ordinal,
+        blocker=blocker or "",
+        blocker_absent=not blocker,
+    )
 
 
-def _screened_verification_blocker_absent(proof: object, payload, item_number: int) -> bool:
+def _screened_verification_blocker_absent(
+    proof: object, payload, item_number: int
+) -> bool:
     """Report the blocker verdict for this item, refusing when nothing screened it."""
-    if (not isinstance(proof, _VerificationBlockerProof) or proof.item_number != item_number
-            or proof.heart_ordinal != payload.item(item_number).heart_ordinal):
+    if (
+        not isinstance(proof, _VerificationBlockerProof)
+        or proof.item_number != item_number
+        or proof.heart_ordinal != payload.item(item_number).heart_ordinal
+    ):
         raise _CaptureAbort(
             "checkpoint refused: no verification-blocker screen is bound to the exact payload "
-            "item whose heart would be approved")
+            "item whose heart would be approved"
+        )
     if not proof.blocker_absent:
         raise _CaptureAbort(
             "checkpoint refused: the verification-blocker screen refused this item: "
-            + proof.blocker)
+            + proof.blocker
+        )
     return proof.blocker_absent
 
 
-def _fresh_reviewed_target_point(driver: HingeDriver, target, *, reviewed_point: object,
-                                 content_band, like_template,
-                                 like_threshold: float, expected_point=None,
-                                 expected_frame=None, expected_rows=None) -> tuple[int, int]:
+def _fresh_reviewed_target_point(
+    driver: HingeDriver,
+    target,
+    *,
+    reviewed_point: object,
+    content_band,
+    like_template,
+    like_threshold: float,
+    expected_point=None,
+    expected_frame=None,
+    expected_rows=None,
+) -> tuple[int, int]:
     """Re-bind a reviewed heart target to the screen at the instant before its tap.
 
     A hybrid review can take long enough for animated media or auto-hiding controls to change
@@ -1542,42 +1827,59 @@ def _fresh_reviewed_target_point(driver: HingeDriver, target, *, reviewed_point:
     """
     point = target.point if expected_point is None else tuple(expected_point)
     rows = tuple(target.block_frame_rows if expected_rows is None else expected_rows)
-    if (not isinstance(reviewed_point, list) or len(reviewed_point) != 2
-            or any(isinstance(value, bool) or not isinstance(value, int)
-                   for value in reviewed_point)
-            or tuple(reviewed_point) != point):
+    if (
+        not isinstance(reviewed_point, list)
+        or len(reviewed_point) != 2
+        or any(
+            isinstance(value, bool) or not isinstance(value, int)
+            for value in reviewed_point
+        )
+        or tuple(reviewed_point) != point
+    ):
         raise _CaptureAbort(
             "hybrid heart refused: the approved action point no longer exactly binds the "
-            "navigator's reviewed target")
+            "navigator's reviewed target"
+        )
 
     frame_to_match = target.frame if expected_frame is None else expected_frame
     fresh = driver.adb.screencap()
     try:
         protected_prefix_rect = _reviewed_target_protected_prefix_rect(
-            frame_to_match, content_band, rows)
+            frame_to_match, content_band, rows
+        )
         identity_rect = _identity_band_rect_px(frame_to_match, driver.identity_band)
     except ItemCropError as exc:
         raise _CaptureAbort(
             f"hybrid heart refused: the reviewed target could not scope its protected "
-            f"prefix/identity comparison: {exc}") from exc
+            f"prefix/identity comparison: {exc}"
+        ) from exc
     if protected_prefix_rect is None or identity_rect is None:
         raise _CaptureAbort(
             "hybrid heart refused: the reviewed frame could not be read to scope the protected "
-            "prefix/identity comparison")
+            "prefix/identity comparison"
+        )
     try:
-        prefix_unchanged = dwell_exact_over_rect([frame_to_match, fresh], protected_prefix_rect)
-        identity_unchanged = dwell_exact_over_rect([frame_to_match, fresh], identity_rect)
+        prefix_unchanged = dwell_exact_over_rect(
+            [frame_to_match, fresh], protected_prefix_rect
+        )
+        identity_unchanged = dwell_exact_over_rect(
+            [frame_to_match, fresh], identity_rect
+        )
     except ItemCropError as exc:
-        raise _CaptureAbort(f"hybrid heart refused: the reviewed target's protected "
-                            f"prefix/identity bands could not be compared: {exc}") from exc
+        raise _CaptureAbort(
+            f"hybrid heart refused: the reviewed target's protected "
+            f"prefix/identity bands could not be compared: {exc}"
+        ) from exc
     if not prefix_unchanged:
         raise _CaptureAbort(
             "hybrid heart refused: the reviewed target's protected content prefix changed after "
-            "review; refusing to spend coordinates from a stale checkpoint")
+            "review; refusing to spend coordinates from a stale checkpoint"
+        )
     if not identity_unchanged:
         raise _CaptureAbort(
             "hybrid heart refused: the reviewed profile identity band changed after review; "
-            "refusing to spend coordinates from a stale checkpoint")
+            "refusing to spend coordinates from a stale checkpoint"
+        )
 
     # The identity gate's reference is fingerprinted directly off `frame_to_match` -- the frame
     # the checkpoint was reviewed against, the SAME frame the protected-prefix comparison above just
@@ -1594,25 +1896,32 @@ def _fresh_reviewed_target_point(driver: HingeDriver, target, *, reviewed_point:
     # and in-content name region unchanged, while the separate exact identity-band ROI above
     # prevents a changed sticky header from passing as lower-card animation.
     try:
-        reviewed_top = confirm_scroll_top(frame_to_match, identity_band=driver.identity_band)
+        reviewed_top = confirm_scroll_top(
+            frame_to_match, identity_band=driver.identity_band
+        )
     except ScrollTopError as exc:
         raise _CaptureAbort(
             "hybrid heart refused: the reviewed frame's profile identity could not be re-read, "
-            f"so the tap cannot be proved to land on the reviewed profile: {exc}") from exc
+            f"so the tap cannot be proved to land on the reviewed profile: {exc}"
+        ) from exc
 
     reviewed_identity = None
     if reviewed_top.refuted:
         try:
             reviewed_fingerprint = band_fingerprint(
-                frame_to_match, identity_band=driver.identity_band, grid=_IDENTITY_GRID)
+                frame_to_match, identity_band=driver.identity_band, grid=_IDENTITY_GRID
+            )
         except ScrollTopError as exc:
             raise _CaptureAbort(
                 "hybrid heart refused: the reviewed frame's profile identity could not be "
                 f"re-read, so the tap cannot be proved to land on the reviewed profile: {exc}"
             ) from exc
         reviewed_identity = ProfileIdentity(
-            fingerprint=reviewed_fingerprint, band=tuple(driver.identity_band),
-            grid=_IDENTITY_GRID, frame_index=None, scroll_top_distance=reviewed_top.distance,
+            fingerprint=reviewed_fingerprint,
+            band=tuple(driver.identity_band),
+            grid=_IDENTITY_GRID,
+            frame_index=None,
+            scroll_top_distance=reviewed_top.distance,
             agreeing_frames=1,
             reason=(
                 "fingerprinted directly from the reviewed checkpoint frame -- the frame the tap "
@@ -1620,32 +1929,50 @@ def _fresh_reviewed_target_point(driver: HingeDriver, target, *, reviewed_point:
                 "index-build capture, so it is comparable to a fresh frame at the SAME scroll "
                 "position; confirmed to refute scroll top at "
                 f"{reviewed_top.distance:.3f} grey levels from the profile-independent "
-                "filter-chips row"))
+                "filter-chips row"
+            ),
+        )
     # ELSE (`confirmed` top or `cannot_tell`): no fingerprint is taken and none is compared below.
     # This is a recorded skip, not a silent one -- it is reachable only after the content-band
     # byte comparison above has already passed, which is the proof that licenses it.
 
     try:
         proof = _verified_target_frame_proof(
-            driver, target, frame=fresh, content_band=content_band,
-            like_template=like_template, like_threshold=like_threshold,
-            expected_rows=rows, expected_point=expected_point)
+            driver,
+            target,
+            frame=fresh,
+            content_band=content_band,
+            like_template=like_template,
+            like_threshold=like_threshold,
+            expected_rows=rows,
+            expected_point=expected_point,
+        )
         if reviewed_identity is not None:
             fresh_identity = compare_profile_identity(
-                fresh, reviewed_identity, identity_band=driver.identity_band,
-                match_max_dist=target.identity.match_max)
+                fresh,
+                reviewed_identity,
+                identity_band=driver.identity_band,
+                match_max_dist=target.identity.match_max,
+            )
             if not fresh_identity.matched:
                 raise IdentityError(fresh_identity.reason)
     except (IdentityError, SegmentationError) as exc:
         raise _CaptureAbort(
             "hybrid heart refused: fresh structural/identity revalidation failed: "
-            f"{type(exc).__name__}: {exc}") from exc
+            f"{type(exc).__name__}: {exc}"
+        ) from exc
     return proof.block.hearts[0]
 
 
-def _rewind_automated_profile_to_confirmed_top(driver: HingeDriver, *, ordinal: int,
-                                                identity_band, content_band, like_template,
-                                                like_threshold) -> bytes:
+def _rewind_automated_profile_to_confirmed_top(
+    driver: HingeDriver,
+    *,
+    ordinal: int,
+    identity_band,
+    content_band,
+    like_template,
+    like_threshold,
+) -> bytes:
     """Return a visually-confirmed profile top for one automated/hybrid profile entry.
 
     This deliberately does *not* call ``driver._scroll_to_top``.  That method correctly
@@ -1671,6 +1998,7 @@ def _rewind_automated_profile_to_confirmed_top(driver: HingeDriver, *, ordinal: 
     without that deck proof, an unreadable detector, an unchanged post-gesture frame, a planning
     refusal, or exhaustion of the explicit cap all still stop the run.
     """
+
     def settled_verdict(frame: bytes, *, stage: str) -> tuple[bytes, object]:
         """Re-read an unsettled scroll-top gate without touching the screen (see the constant)."""
         for probe in range(_MAX_UNSETTLED_TOP_REPROBES + 1):
@@ -1679,14 +2007,21 @@ def _rewind_automated_profile_to_confirmed_top(driver: HingeDriver, *, ordinal: 
             except ScrollTopError as exc:
                 raise _CaptureAbort(
                     f"automated profile {ordinal}: could not read the scroll-top gate {stage} "
-                    f"hybrid rewind: {exc}") from exc
-            if verdict.confirmed or verdict.refuted or probe >= _MAX_UNSETTLED_TOP_REPROBES:
+                    f"hybrid rewind: {exc}"
+                ) from exc
+            if (
+                verdict.confirmed
+                or verdict.refuted
+                or probe >= _MAX_UNSETTLED_TOP_REPROBES
+            ):
                 return frame, verdict
             # Humanized so the re-look is not a fixed-interval poll; `dwell_s` is absent on the
             # narrow fakes used by the offline rewind tests, which never reach a real screen.
             time.sleep(human_delay(getattr(driver, "dwell_s", 0.6)))
             frame = driver.adb.screencap()
-        raise _CaptureAbort(f"automated profile {ordinal}: unreachable settle probe exhaustion")
+        raise _CaptureAbort(
+            f"automated profile {ordinal}: unreachable settle probe exhaustion"
+        )
 
     def unknown_deck_recovery_allowed(candidate: bytes) -> bool:
         """Return the positive, non-actionable deck fact needed for one UNKNOWN recovery.
@@ -1715,11 +2050,14 @@ def _rewind_automated_profile_to_confirmed_top(driver: HingeDriver, *, ordinal: 
             if not unknown_deck_recovery_allowed(frame):
                 raise _CaptureAbort(
                     f"automated profile {ordinal}: hybrid rewind refused an unconfirmed "
-                    f"scroll-top state ({verdict.state}): {verdict.reason}")
+                    f"scroll-top state ({verdict.state}): {verdict.reason}"
+                )
             if unknown_deck_recovery_spent:
                 # Symmetric with the post-gesture branch: the deck is proven, so this is an
                 # advanceable but unusable layout, not a run-ending mystery.
-                raise _UnsupportedEntryDeck(frame, state=verdict.state, reason=verdict.reason)
+                raise _UnsupportedEntryDeck(
+                    frame, state=verdict.state, reason=verdict.reason
+                )
             # An UNKNOWN band cannot establish that this is merely a scrolled profile.  Spend
             # exactly one guarded upward stroke only after the independent, current-frame deck
             # proof above; a second UNKNOWN is an unresolved layout/state change, never a reason
@@ -1731,15 +2069,21 @@ def _rewind_automated_profile_to_confirmed_top(driver: HingeDriver, *, ordinal: 
                 f"{_MAX_AUTOMATED_TOP_REWIND_STEPS}-gesture budget while top remained "
                 # State, not a fixed phrase: the last iteration can now be the one that spends
                 # the UNKNOWN allowance, so this is no longer always a positive refutation.
-                f"unconfirmed ({verdict.state}: {verdict.reason})")
+                f"unconfirmed ({verdict.state}: {verdict.reason})"
+            )
         try:
             step, min_spacing_px = _plan_card_scroll(
-                frame, content_band=content_band, like_template=like_template,
-                like_threshold=like_threshold, profile_min_spacing_px=min_spacing_px)
+                frame,
+                content_band=content_band,
+                like_template=like_template,
+                like_threshold=like_threshold,
+                profile_min_spacing_px=min_spacing_px,
+            )
         except (SegmentationError, ScrollStepError) as exc:
             raise _CaptureAbort(
                 f"automated profile {ordinal}: hybrid rewind could not plan a guarded "
-                f"upward scroll from the current frame: {type(exc).__name__}: {exc}") from exc
+                f"upward scroll from the current frame: {type(exc).__name__}: {exc}"
+            ) from exc
         driver._scroll_up_one(step.frac, step.x_frac)
         after = driver.adb.screencap()
         # Confirm after every real input first.  A byte-identical frame that still refutes top
@@ -1762,25 +2106,36 @@ def _rewind_automated_profile_to_confirmed_top(driver: HingeDriver, *, ordinal: 
                 # It is safe to advance through the public action guard, but this nearly blank
                 # band is not a positive top anchor and must never enter calibration evidence.
                 raise _UnsupportedEntryDeck(
-                    after, state=after_verdict.state, reason=after_verdict.reason)
+                    after, state=after_verdict.state, reason=after_verdict.reason
+                )
             raise _CaptureAbort(
                 f"automated profile {ordinal}: hybrid rewind reached an unconfirmed "
-                f"scroll-top state ({after_verdict.state}): {after_verdict.reason}")
+                f"scroll-top state ({after_verdict.state}): {after_verdict.reason}"
+            )
         if after == frame:
             raise _CaptureAbort(
                 f"automated profile {ordinal}: hybrid rewind stalled after guarded gesture "
-                f"{attempt + 1}; top remains positively refuted ({after_verdict.reason})")
+                f"{attempt + 1}; top remains positively refuted ({after_verdict.reason})"
+            )
         frame = after
 
     # The range/cap branch above is exhaustive.  Keep a fail-closed guard if this loop is
     # refactored so no caller can ever mistake an unconfirmed frame for a valid entry anchor.
-    raise _CaptureAbort(f"automated profile {ordinal}: hybrid rewind ended without a confirmed top")
+    raise _CaptureAbort(
+        f"automated profile {ordinal}: hybrid rewind ended without a confirmed top"
+    )
 
 
 def _skip_automated_unsupported_entry_deck(
-        driver: HingeDriver, *, ordinal: int, entry: _UnsupportedEntryDeck,
-        identity_band, review_gate: _HybridReviewGate | None = None,
-        send_like: bool = False, skip_reason: _PreActionProfileRetry | None = None) -> dict:
+    driver: HingeDriver,
+    *,
+    ordinal: int,
+    entry: _UnsupportedEntryDeck,
+    identity_band,
+    review_gate: _HybridReviewGate | None = None,
+    send_like: bool = False,
+    skip_reason: _PreActionProfileRetry | None = None,
+) -> dict:
     """Advance a proven deck whose layout cannot supply a calibration top anchor.
 
     Unlike a normal pre-action skip, this trace makes no identity or top claim. Permission to
@@ -1797,13 +2152,15 @@ def _skip_automated_unsupported_entry_deck(
     try:
         if driver._observe_deck_ready(frame) is not True:
             raise _CaptureAbort(
-                f"automated profile {ordinal}: unsupported entry no longer proves an ordinary deck")
+                f"automated profile {ordinal}: unsupported entry no longer proves an ordinary deck"
+            )
     except _CaptureAbort:
         raise
     except Exception as exc:  # noqa: BLE001 -- failed perception cannot license input
         raise _CaptureAbort(
             f"automated profile {ordinal}: unsupported-entry deck proof failed: "
-            f"{type(exc).__name__}: {exc}") from exc
+            f"{type(exc).__name__}: {exc}"
+        ) from exc
     try:
         locate_inline_composer(frame, driver._template("confirm"), threshold=0.8)
     except ComposerDetectionError:
@@ -1811,38 +2168,52 @@ def _skip_automated_unsupported_entry_deck(
     else:
         raise _CaptureAbort(
             f"automated profile {ordinal}: refusing unsupported-entry advance while an inline "
-            "composer is structurally present")
+            "composer is structurally present"
+        )
 
-    action_name = ("advance_unusable_profile_with_priority_like" if send_like
-                   else "skip_profile_without_heart")
-    public_transport = ("HingeDriver.like" if send_like else "HingeDriver.dislike")
+    action_name = (
+        "advance_unusable_profile_with_priority_like"
+        if send_like
+        else "skip_profile_without_heart"
+    )
+    public_transport = "HingeDriver.like" if send_like else "HingeDriver.dislike"
     reason_code = "unsupported_entry_layout"
     reason_detail = (
         f"ordinary deck controls were proved, but schema-v3 could not positively confirm the "
-        f"entry top ({entry.state}: {entry.reason})")
+        f"entry top ({entry.state}: {entry.reason})"
+    )
     if skip_reason is not None:
-        reason_detail += (
-            f"; escalated from a pre-action skip for {skip_reason.code}: {skip_reason.detail}")
+        reason_detail += f"; escalated from a pre-action skip for {skip_reason.code}: {skip_reason.detail}"
     review = None
     if review_gate is not None:
         review = review_gate.checkpoint(
-            frame, claimed_state="pre_action_unsupported_entry_deck_ready",
+            frame,
+            claimed_state="pre_action_unsupported_entry_deck_ready",
             action_plan={
-                "action": action_name, "photo_model_item": None, "point": None,
+                "action": action_name,
+                "photo_model_item": None,
+                "point": None,
                 "point_source": f"public {public_transport}",
                 "predicates": {
-                    "ordinary_deck_ready": True, "inline_composer_absent": True,
+                    "ordinary_deck_ready": True,
+                    "inline_composer_absent": True,
                     "calibration_top_unconfirmed": True,
-                    "skip_reason_code": reason_code, "skip_reason_detail": reason_detail,
+                    "skip_reason_code": reason_code,
+                    "skip_reason_detail": reason_detail,
                     "forbidden_zone_guarded_transport": public_transport,
-                    **({"send_like_requested_for_unusable_profile": True} if send_like else {
-                        "no_photo_heart_or_send_like_on_current_profile": True}),
+                    **(
+                        {"send_like_requested_for_unusable_profile": True}
+                        if send_like
+                        else {"no_photo_heart_or_send_like_on_current_profile": True}
+                    ),
                 },
-            })
+            },
+        )
         if review["decision"] != "approved":
             raise _CaptureAbort(
                 "hybrid reviewer did not approve the unsupported-entry profile skip; refusing "
-                "to advance this profile")
+                "to advance this profile"
+            )
 
     try:
         if send_like:
@@ -1852,12 +2223,14 @@ def _skip_automated_unsupported_entry_deck(
     except Exception as exc:  # noqa: BLE001 -- preserve public action's fail-closed refusal
         raise _CaptureAbort(
             f"automated profile {ordinal}: public {public_transport} refused unsupported-entry "
-            f"advance: {type(exc).__name__}: {exc}") from exc
+            f"advance: {type(exc).__name__}: {exc}"
+        ) from exc
     time.sleep(human_delay(driver.dwell_s))
     post = driver.adb.screencap()
     if post == frame:
         raise _CaptureAbort(
-            "automated unsupported-entry skip did not produce a changed deck frame")
+            "automated unsupported-entry skip did not produce a changed deck frame"
+        )
 
     # A consecutive unsupported layout is valid retry input but still not evidence. Accept it
     # only as an ordinary, composer-free deck and let the bounded outer skip budget decide
@@ -1869,17 +2242,26 @@ def _skip_automated_unsupported_entry_deck(
     except ComposerDetectionError:
         pass
     else:
-        raise _CaptureAbort("automated unsupported-entry skip left an inline composer visible")
+        raise _CaptureAbort(
+            "automated unsupported-entry skip left an inline composer visible"
+        )
     if driver._observe_deck_ready(post) is not True:
         screen_width, screen_height = driver.adb.screen_size()
-        if (not isinstance(screen_width, int) or screen_width <= 0
-                or not isinstance(screen_height, int) or screen_height <= 0):
+        if (
+            not isinstance(screen_width, int)
+            or screen_width <= 0
+            or not isinstance(screen_height, int)
+            or screen_height <= 0
+        ):
             raise _CaptureAbort(
-                "automated unsupported-entry skip cannot recover modal: invalid screen size")
-        driver._swipe(round(screen_width * _EDGE_BACK_START_X_FRAC),
-                      round(screen_height * _EDGE_BACK_Y_FRAC),
-                      round(screen_width * _EDGE_BACK_END_X_FRAC),
-                      round(screen_height * _EDGE_BACK_Y_FRAC))
+                "automated unsupported-entry skip cannot recover modal: invalid screen size"
+            )
+        driver._swipe(
+            round(screen_width * _EDGE_BACK_START_X_FRAC),
+            round(screen_height * _EDGE_BACK_Y_FRAC),
+            round(screen_width * _EDGE_BACK_END_X_FRAC),
+            round(screen_height * _EDGE_BACK_Y_FRAC),
+        )
         modal_edge_back_used = True
         time.sleep(human_delay(driver.dwell_s))
         post = driver.adb.screencap()
@@ -1889,15 +2271,18 @@ def _skip_automated_unsupported_entry_deck(
             pass
         else:
             raise _CaptureAbort(
-                "automated unsupported-entry modal recovery left an inline composer visible")
+                "automated unsupported-entry modal recovery left an inline composer visible"
+            )
         if driver._observe_deck_ready(post) is not True:
             raise _CaptureAbort(
-                "automated unsupported-entry modal recovery did not reach an ordinary deck")
+                "automated unsupported-entry modal recovery did not reach an ordinary deck"
+            )
     try:
         post_top = confirm_scroll_top(post, identity_band=identity_band)
     except ScrollTopError as exc:
         raise _CaptureAbort(
-            f"automated unsupported-entry skip cannot read the next deck top state: {exc}") from exc
+            f"automated unsupported-entry skip cannot read the next deck top state: {exc}"
+        ) from exc
 
     reason_digest = _sha256(f"{reason_code}\n{reason_detail}".encode("utf-8"))
     return {
@@ -1924,14 +2309,18 @@ def _skip_automated_unsupported_entry_deck(
             "pre_action_deck_ready": True,
             "pre_action_composer_absent": True,
             "calibration_top_unconfirmed": True,
-            **({
-                "send_like_requested_for_unusable_profile": True,
-                "send_like_tapped": True,
-                "public_action_guard_used": True,
-            } if send_like else {
-                "no_photo_heart_or_send_like_on_current_profile": True,
-                "public_dislike_guard_used": True,
-            }),
+            **(
+                {
+                    "send_like_requested_for_unusable_profile": True,
+                    "send_like_tapped": True,
+                    "public_action_guard_used": True,
+                }
+                if send_like
+                else {
+                    "no_photo_heart_or_send_like_on_current_profile": True,
+                    "public_dislike_guard_used": True,
+                }
+            ),
             "public_action_progress_verified": True,
             "deck_frame_changed": True,
             "new_deck_ready": True,
@@ -1945,8 +2334,15 @@ def _skip_automated_unsupported_entry_deck(
 
 
 def _scroll_next_profile_to_sticky_header(
-        driver: HingeDriver, *, top_frame: bytes, identity_band, content_band,
-        like_template, like_threshold: float, context: str) -> bytes:
+    driver: HingeDriver,
+    *,
+    top_frame: bytes,
+    identity_band,
+    content_band,
+    like_template,
+    like_threshold: float,
+    context: str,
+) -> bytes:
     """Expose a post-advance sticky header with at most two guarded read scrolls.
 
     The caller already proved ``top_frame`` is a fresh ordinary deck. Each gesture is sized by
@@ -1964,15 +2360,21 @@ def _scroll_next_profile_to_sticky_header(
             if not callable(deck_ready) or deck_ready(frame) is not True:
                 raise _CaptureAbort(
                     f"{context}: the first identity-proof scroll did not expose a sticky name "
-                    "header and the ordinary deck could not be re-proved before a second scroll")
+                    "header and the ordinary deck could not be re-proved before a second scroll"
+                )
         try:
             step, min_spacing_px = _plan_card_scroll(
-                frame, content_band=content_band, like_template=like_template,
-                like_threshold=like_threshold, profile_min_spacing_px=min_spacing_px)
+                frame,
+                content_band=content_band,
+                like_template=like_template,
+                like_threshold=like_threshold,
+                profile_min_spacing_px=min_spacing_px,
+            )
         except (SegmentationError, ScrollStepError) as exc:
             raise _CaptureAbort(
                 f"{context}: cannot plan guarded post-advance identity scroll "
-                f"{attempt + 1}: {type(exc).__name__}: {exc}") from exc
+                f"{attempt + 1}: {type(exc).__name__}: {exc}"
+            ) from exc
         driver._scroll_down_one(step.frac, step.x_frac)
         # SETTLED, not the first frame back (restored 2026-09-04). `adb shell input swipe` returns
         # when the finger path ends while Hinge is still snapping the new profile, and
@@ -1988,19 +2390,27 @@ def _scroll_next_profile_to_sticky_header(
         except ScrollTopError as exc:
             raise _CaptureAbort(
                 f"{context}: cannot read the post-advance sticky identity after scroll "
-                f"{attempt + 1}: {exc}") from exc
+                f"{attempt + 1}: {exc}"
+            ) from exc
         if verdict.refuted:
             return frame
     assert verdict is not None
     raise _CaptureAbort(
         f"{context}: sticky name header was not proven after the bounded "
         f"{_MAX_POST_ADVANCE_STICKY_SCROLLS}-scroll probe; final state "
-        f"{verdict.state}: {verdict.reason}")
+        f"{verdict.state}: {verdict.reason}"
+    )
 
 
 def _prove_post_advance_identity_distinct(
-        driver: HingeDriver, *, prior_fingerprint, initial_frame: bytes, identity_band,
-        content_band, context: str) -> tuple[bytes, float, dict]:
+    driver: HingeDriver,
+    *,
+    prior_fingerprint,
+    initial_frame: bytes,
+    identity_band,
+    content_band,
+    context: str,
+) -> tuple[bytes, float, dict]:
     """Return a distinct sticky-header frame, repairing only a proven late repaint.
 
     ``_scroll_next_profile_to_sticky_header`` has already spent its bounded gesture budget and
@@ -2011,15 +2421,21 @@ def _prove_post_advance_identity_distinct(
     stationary, distinct from the prior identity, and mutually agreeing.  No retry changes either
     threshold or invokes a transport method.
     """
-    prior_fingerprint_sha256 = _sha256(repr(prior_fingerprint).encode("utf-8", "replace"))
+    prior_fingerprint_sha256 = _sha256(
+        repr(prior_fingerprint).encode("utf-8", "replace")
+    )
 
-    def fingerprint_and_distance(frame: bytes, *, stage: str) -> tuple[object | None, float | None, str | None]:
+    def fingerprint_and_distance(
+        frame: bytes, *, stage: str
+    ) -> tuple[object | None, float | None, str | None]:
         try:
             fingerprint = band_fingerprint(
-                frame, identity_band=identity_band, grid=_IDENTITY_GRID)
+                frame, identity_band=identity_band, grid=_IDENTITY_GRID
+            )
             distance = _checked_distance(
                 fingerprint_distance(prior_fingerprint, fingerprint),
-                context=f"{context} {stage} identity")
+                context=f"{context} {stage} identity",
+            )
         except (ScrollTopError, _MeasureRefused) as exc:
             # The eventual refusal names only the exception class: detector prose can describe a
             # real profile surface, while the hashes and numeric measurements remain sufficient
@@ -2035,19 +2451,29 @@ def _prove_post_advance_identity_distinct(
         except ShiftEstimationError as exc:
             return False, None, type(exc).__name__
         delta = getattr(shift, "delta_px", None)
-        if (isinstance(delta, bool) or not isinstance(delta, (int, float))
-                or not math.isfinite(delta)):
+        if (
+            isinstance(delta, bool)
+            or not isinstance(delta, (int, float))
+            or not math.isfinite(delta)
+        ):
             return False, None, "invalid_shift"
-        return (bool(shift.ok) and abs(delta) <= _READ_SCROLL_SETTLE_MAX_SHIFT_PX,
-                float(delta), "stationary" if bool(shift.ok) else "shift_unavailable")
+        return (
+            bool(shift.ok) and abs(delta) <= _READ_SCROLL_SETTLE_MAX_SHIFT_PX,
+            float(delta),
+            "stationary" if bool(shift.ok) else "shift_unavailable",
+        )
 
     initial_fp, initial_distance, initial_error = fingerprint_and_distance(
-        initial_frame, stage="initial sticky")
+        initial_frame, stage="initial sticky"
+    )
     initial_sample = {
         "stage": "initial_sticky",
         "frame_sha256": _sha256(initial_frame),
-        "fingerprint_sha256": (_sha256(repr(initial_fp).encode("utf-8", "replace"))
-                               if initial_fp is not None else None),
+        "fingerprint_sha256": (
+            _sha256(repr(initial_fp).encode("utf-8", "replace"))
+            if initial_fp is not None
+            else None
+        ),
         "distance_from_prior": initial_distance,
         "measurement_error": initial_error,
     }
@@ -2061,7 +2487,8 @@ def _prove_post_advance_identity_distinct(
             f"{context}: cannot measure initial post-advance sticky identity "
             f"({initial_error}); no gesture was issued and identity thresholds unchanged; "
             f"prior_fingerprint_sha256={prior_fingerprint_sha256}; "
-            f"initial_frame_sha256={initial_sample['frame_sha256']}")
+            f"initial_frame_sha256={initial_sample['frame_sha256']}"
+        )
     assert initial_distance is not None
     if initial_distance > _IDENTITY_FALSE_MATCH_DISTANCE:
         return initial_frame, initial_distance, trace
@@ -2084,13 +2511,17 @@ def _prove_post_advance_identity_distinct(
         else:
             top_state, top_refuted, top_error = top.state, bool(top.refuted), None
         fingerprint, distance, measurement_error = fingerprint_and_distance(
-            frame, stage=f"read-only reprobe {probe}")
+            frame, stage=f"read-only reprobe {probe}"
+        )
         is_stationary, shift_px, shift_state = stationary(previous_frame, frame)
         sample = {
             "stage": f"read_only_reprobe_{probe}",
             "frame_sha256": _sha256(frame),
-            "fingerprint_sha256": (_sha256(repr(fingerprint).encode("utf-8", "replace"))
-                                   if fingerprint is not None else None),
+            "fingerprint_sha256": (
+                _sha256(repr(fingerprint).encode("utf-8", "replace"))
+                if fingerprint is not None
+                else None
+            ),
             "distance_from_prior": distance,
             "measurement_error": measurement_error,
             "scroll_top_state": top_state,
@@ -2115,7 +2546,8 @@ def _prove_post_advance_identity_distinct(
                 try:
                     pair_distance = _checked_distance(
                         fingerprint_distance(left_raw, right_raw),
-                        context=f"{context} consecutive read-only reprobe agreement")
+                        context=f"{context} consecutive read-only reprobe agreement",
+                    )
                 except _MeasureRefused:
                     pair_distance = None
             trace["last_consecutive_reprobe_distance"] = pair_distance
@@ -2131,7 +2563,8 @@ def _prove_post_advance_identity_distinct(
                 # smuggled into this condition.
                 and bool(right.get("content_stationary_from_previous"))
                 and pair_distance is not None
-                and pair_distance <= _UNATTENDED_PROVISIONAL_IDENTITY_MAX_DIST)
+                and pair_distance <= _UNATTENDED_PROVISIONAL_IDENTITY_MAX_DIST
+            )
             if pair_is_safe:
                 trace["accepted_read_only_reprobe_pair"] = [probe - 1, probe]
                 return frame, float(right["distance_from_prior"]), trace
@@ -2140,7 +2573,10 @@ def _prove_post_advance_identity_distinct(
     sample_summary = "; ".join(
         "{stage}(sha256={frame_sha256},distance={distance_from_prior},top={scroll_top_state},"
         "refuted={scroll_top_refuted},shift={content_shift_from_previous_px})".format(
-            **sample) for sample in reprobe_samples)
+            **sample
+        )
+        for sample in reprobe_samples
+    )
     raise _CaptureAbort(
         f"{context}: post-advance sticky identity reprobe refused after "
         f"{_MAX_POST_ADVANCE_IDENTITY_REPROBES} read-only screencaps; no gesture was issued and "
@@ -2148,13 +2584,23 @@ def _prove_post_advance_identity_distinct(
         f"consecutive_agreement<={_UNATTENDED_PROVISIONAL_IDENTITY_MAX_DIST:.3f}); "
         f"prior_fingerprint_sha256={prior_fingerprint_sha256}; "
         f"initial(sha256={initial_sample['frame_sha256']},distance={initial_distance:.3f}); "
-        f"reprobes=[{sample_summary}]")
+        f"reprobes=[{sample_summary}]"
+    )
 
 
 def _skip_automated_profile_before_heart(
-        driver: HingeDriver, *, ordinal: int, reason: _PreActionProfileRetry,
-        identity: ProfileIdentity, identity_band, content_band, like_template, like_threshold,
-        review_gate: _HybridReviewGate | None = None, send_like: bool = False) -> dict:
+    driver: HingeDriver,
+    *,
+    ordinal: int,
+    reason: _PreActionProfileRetry,
+    identity: ProfileIdentity,
+    identity_band,
+    content_band,
+    like_template,
+    like_threshold,
+    review_gate: _HybridReviewGate | None = None,
+    send_like: bool = False,
+) -> dict:
     """Advance one unusable profile without pretending it was calibration evidence.
 
     The default remains the historical public ``HingeDriver.dislike`` transport. An explicitly
@@ -2165,13 +2611,19 @@ def _skip_automated_profile_before_heart(
     driver's production action guard/landed proof, and record the result only in
     ``skipped_attempts`` so measurement cannot count a bad target as evidence.
     """
-    if (not identity.known or identity.fingerprint is None):
+    if not identity.known or identity.fingerprint is None:
         raise _CaptureAbort(
             f"automated profile {ordinal}: cannot skip {reason.code} without a corroborated "
-            "current-profile identity")
+            "current-profile identity"
+        )
     top_frame = _rewind_automated_profile_to_confirmed_top(
-        driver, ordinal=ordinal, identity_band=identity_band, content_band=content_band,
-        like_template=like_template, like_threshold=like_threshold)
+        driver,
+        ordinal=ordinal,
+        identity_band=identity_band,
+        content_band=content_band,
+        like_template=like_template,
+        like_threshold=like_threshold,
+    )
     try:
         locate_inline_composer(top_frame, driver._template("confirm"), threshold=0.8)
     except ComposerDetectionError:
@@ -2179,12 +2631,16 @@ def _skip_automated_profile_before_heart(
     else:
         raise _CaptureAbort(
             f"automated profile {ordinal}: refusing pre-action skip while an inline composer "
-            "is structurally present")
+            "is structurally present"
+        )
 
     review = None
-    action_name = ("advance_unusable_profile_with_priority_like" if send_like
-                   else "skip_profile_without_heart")
-    public_transport = ("HingeDriver.like" if send_like else "HingeDriver.dislike")
+    action_name = (
+        "advance_unusable_profile_with_priority_like"
+        if send_like
+        else "skip_profile_without_heart"
+    )
+    public_transport = "HingeDriver.like" if send_like else "HingeDriver.dislike"
     pre_action_predicates = {
         "confirmed_profile_top": True,
         "inline_composer_absent": True,
@@ -2193,28 +2649,35 @@ def _skip_automated_profile_before_heart(
         "forbidden_zone_guarded_transport": public_transport,
     }
     if send_like:
-        pre_action_predicates.update({
-            "no_profile_action_sent_yet": True,
-            "send_like_requested_for_unusable_profile": True,
-        })
+        pre_action_predicates.update(
+            {
+                "no_profile_action_sent_yet": True,
+                "send_like_requested_for_unusable_profile": True,
+            }
+        )
     else:
         # Preserve the established default-Pass manifest/checkpoint shape byte-for-byte in
         # semantics; the new owner rule is opt-in only through --send-like.
         pre_action_predicates["no_photo_heart_or_send_like_on_current_profile"] = True
     if review_gate is not None:
         review = review_gate.checkpoint(
-            top_frame, claimed_state="pre_action_profile_skip_ready",
+            top_frame,
+            claimed_state="pre_action_profile_skip_ready",
             action_plan={
-                "action": action_name, "photo_model_item": None,
-                "point": None, "point_source": f"public {public_transport}",
+                "action": action_name,
+                "photo_model_item": None,
+                "point": None,
+                "point_source": f"public {public_transport}",
                 # The reviewer is approving a real action on a real person. The diagnosis and
                 # exact transport are inside the checkpoint hash, never inferred afterward.
                 "predicates": pre_action_predicates,
-            })
+            },
+        )
         if review["decision"] != "approved":
             raise _CaptureAbort(
                 "hybrid reviewer did not approve the pre-action profile skip; refusing to "
-                "advance this profile")
+                "advance this profile"
+            )
 
     # These are deliberately public APIs, rather than `_await_button`/`_tap`: they retain the
     # ordinary deck/action preflights and landed verification, so a composer, paywall, or other
@@ -2227,28 +2690,44 @@ def _skip_automated_profile_before_heart(
     except Exception as exc:  # noqa: BLE001 -- preserve the public guard's fail-closed refusal
         raise _CaptureAbort(
             f"automated profile {ordinal}: public {public_transport} refused pre-action advance: "
-            f"{type(exc).__name__}: {exc}") from exc
+            f"{type(exc).__name__}: {exc}"
+        ) from exc
     time.sleep(human_delay(driver.dwell_s))
     raw_advanced_top = driver.adb.screencap()
     if raw_advanced_top == top_frame:
-        raise _CaptureAbort("automated pre-action profile skip did not produce a changed deck frame")
+        raise _CaptureAbort(
+            "automated pre-action profile skip did not produce a changed deck frame"
+        )
     advanced_top, settle_trace = _settle_automated_post_pass_to_top(
-        driver, frame=raw_advanced_top, confirm_template=driver._template("confirm"),
-        identity_band=identity_band)
+        driver,
+        frame=raw_advanced_top,
+        confirm_template=driver._template("confirm"),
+        identity_band=identity_band,
+    )
 
     # A top frame proves the ordinary deck returned. A tightly bounded planner-approved read is
     # then required to expose the sticky identity and prove this is not merely the same card
     # redrawn. The next attempt starts with its own visual rewind, so this does not leak a
     # process-local scroll estimate into the retry.
     advanced_identity = _scroll_next_profile_to_sticky_header(
-        driver, top_frame=advanced_top, identity_band=identity_band,
-        content_band=content_band, like_template=like_template,
+        driver,
+        top_frame=advanced_top,
+        identity_band=identity_band,
+        content_band=content_band,
+        like_template=like_template,
         like_threshold=like_threshold,
-        context=f"automated profile {ordinal} pre-action skip")
-    advanced_identity, distance, sticky_header_trace = _prove_post_advance_identity_distinct(
-        driver, prior_fingerprint=identity.fingerprint, initial_frame=advanced_identity,
-        identity_band=identity_band, content_band=content_band,
-        context=f"automated profile {ordinal} pre-action skip")
+        context=f"automated profile {ordinal} pre-action skip",
+    )
+    advanced_identity, distance, sticky_header_trace = (
+        _prove_post_advance_identity_distinct(
+            driver,
+            prior_fingerprint=identity.fingerprint,
+            initial_frame=advanced_identity,
+            identity_band=identity_band,
+            content_band=content_band,
+            context=f"automated profile {ordinal} pre-action skip",
+        )
+    )
 
     # `reason_sha256` binds code+detail, so carrying the plaintext detail beside it makes this
     # record SELF-VERIFYING rather than weaker: any reader can recompute the digest.  Publishing
@@ -2273,14 +2752,18 @@ def _skip_automated_profile_before_heart(
         "predicates": {
             "pre_action_confirmed_top": True,
             "pre_action_composer_absent": True,
-            **({
-                "send_like_requested_for_unusable_profile": True,
-                "send_like_tapped": True,
-                "public_action_guard_used": True,
-            } if send_like else {
-                "no_photo_heart_or_send_like_on_current_profile": True,
-                "public_dislike_guard_used": True,
-            }),
+            **(
+                {
+                    "send_like_requested_for_unusable_profile": True,
+                    "send_like_tapped": True,
+                    "public_action_guard_used": True,
+                }
+                if send_like
+                else {
+                    "no_photo_heart_or_send_like_on_current_profile": True,
+                    "public_dislike_guard_used": True,
+                }
+            ),
             "deck_frame_changed": True,
             "new_profile_top_confirmed": True,
             "new_profile_composer_absent": True,
@@ -2290,8 +2773,9 @@ def _skip_automated_profile_before_heart(
     }
 
 
-def _verified_automated_composer(frame: bytes, *, confirm_template, payload: ItemPayload,
-                                 item_number: int):
+def _verified_automated_composer(
+    frame: bytes, *, confirm_template, payload: ItemPayload, item_number: int
+):
     """Return the only inline composer surface automation may clear with Pass.
 
     Unlike a production decision, this is deliberately scoped to calibration capture after a
@@ -2304,18 +2788,22 @@ def _verified_automated_composer(frame: bytes, *, confirm_template, payload: Ite
         surface = locate_inline_composer(frame, confirm_template, threshold=0.8)
         if surface.layout_id != _COMPOSER_LAYOUT_ID:
             raise ComposerDetectionError(f"unsupported layout {surface.layout_id!r}")
-        verdict = verify_sheet_item(frame, payload, item_number, composer_surface=surface)
+        verdict = verify_sheet_item(
+            frame, payload, item_number, composer_surface=surface
+        )
         if not verdict.matched:
             raise SheetVerificationError(verdict.reason)
     except (ComposerDetectionError, SheetVerificationError) as exc:
         raise _CaptureAbort(
             f"automated Pass refused: current frame does not structurally prove the prior "
-            f"inline composer for photo item {item_number}: {exc}") from exc
+            f"inline composer for photo item {item_number}: {exc}"
+        ) from exc
     return surface
 
 
-def _only_transient_empty_comment_caret_change(reviewed_frame: bytes, fresh_frame: bytes, *,
-                                                surface) -> bool:
+def _only_transient_empty_comment_caret_change(
+    reviewed_frame: bytes, fresh_frame: bytes, *, surface
+) -> bool:
     """Allow the one harmless framebuffer race a focused, empty composer creates.
 
     A Hinge screencap taken after a human hybrid-review approval can differ only because the
@@ -2328,9 +2816,13 @@ def _only_transient_empty_comment_caret_change(reviewed_frame: bytes, fresh_fram
     try:
         import cv2
         import numpy as np
-    except Exception:  # pragma: no cover - capture preflight normally establishes this dependency
+    except (
+        Exception
+    ):  # pragma: no cover - capture preflight normally establishes this dependency
         return False
-    reviewed = cv2.imdecode(np.frombuffer(reviewed_frame, dtype=np.uint8), cv2.IMREAD_COLOR)
+    reviewed = cv2.imdecode(
+        np.frombuffer(reviewed_frame, dtype=np.uint8), cv2.IMREAD_COLOR
+    )
     fresh = cv2.imdecode(np.frombuffer(fresh_frame, dtype=np.uint8), cv2.IMREAD_COLOR)
     if reviewed is None or fresh is None or reviewed.shape != fresh.shape:
         return False
@@ -2353,7 +2845,8 @@ def _only_transient_empty_comment_caret_change(reviewed_frame: bytes, fresh_fram
     # the earlier whole-left-inset allowance could also admit a second narrow mark beside it.
     width, height = x1 - x0, y1 - y0
     component_count, _labels, stats, _centroids = cv2.connectedComponentsWithStats(
-        changed.astype(np.uint8), connectivity=8)
+        changed.astype(np.uint8), connectivity=8
+    )
     if component_count != 2:  # background + exactly one changed component
         return False
     component_area = int(stats[1, cv2.CC_STAT_AREA])
@@ -2373,9 +2866,11 @@ def _only_transient_empty_comment_caret_change(reviewed_frame: bytes, fresh_fram
     reviewed_gray = cv2.cvtColor(reviewed[y0:y1, x0:x1], cv2.COLOR_BGR2GRAY)
     fresh_gray = cv2.cvtColor(fresh[y0:y1, x0:x1], cv2.COLOR_BGR2GRAY)
     dark_to_light = (
-        np.mean(reviewed_gray <= 90) >= 0.75 and np.mean(fresh_gray >= 110) >= 0.75)
+        np.mean(reviewed_gray <= 90) >= 0.75 and np.mean(fresh_gray >= 110) >= 0.75
+    )
     light_to_dark = (
-        np.mean(fresh_gray <= 90) >= 0.75 and np.mean(reviewed_gray >= 110) >= 0.75)
+        np.mean(fresh_gray <= 90) >= 0.75 and np.mean(reviewed_gray >= 110) >= 0.75
+    )
     return bool(dark_to_light or light_to_dark)
 
 
@@ -2384,7 +2879,9 @@ def _same_actionable_pixels(first_frame: bytes, second_frame: bytes) -> bool:
     try:
         import cv2
         import numpy as np
-    except Exception:  # pragma: no cover - capture preflight normally establishes this dependency
+    except (
+        Exception
+    ):  # pragma: no cover - capture preflight normally establishes this dependency
         return False
     first = cv2.imdecode(np.frombuffer(first_frame, dtype=np.uint8), cv2.IMREAD_COLOR)
     second = cv2.imdecode(np.frombuffer(second_frame, dtype=np.uint8), cv2.IMREAD_COLOR)
@@ -2394,8 +2891,9 @@ def _same_actionable_pixels(first_frame: bytes, second_frame: bytes) -> bool:
     return bool(np.array_equal(first[status_bar_bottom:], second[status_bar_bottom:]))
 
 
-def _require_same_profile_header_after_edge_back(frame: bytes, *, identity: ProfileIdentity,
-                                                  identity_band) -> float:
+def _require_same_profile_header_after_edge_back(
+    frame: bytes, *, identity: ProfileIdentity, identity_band
+) -> float:
     """Prove that an edge-back left us on the indexed profile, now with its sticky header.
 
     On current Hinge, dismissing an auto-focused inline composer may restore the profile's
@@ -2406,32 +2904,45 @@ def _require_same_profile_header_after_edge_back(frame: bytes, *, identity: Prof
     """
     if not identity.known or identity.fingerprint is None:
         raise _CaptureAbort(
-            "automated Pass refused: indexed profile has no corroborated identity fingerprint")
+            "automated Pass refused: indexed profile has no corroborated identity fingerprint"
+        )
     try:
         top = confirm_scroll_top(frame, identity_band=identity_band)
         if not top.refuted:
             raise _CaptureAbort(
                 "automated Pass refused: Android edge-back did not expose a positively "
-                "refuted (sticky-header) profile identity band")
-        current = band_fingerprint(frame, identity_band=identity_band, grid=_IDENTITY_GRID)
+                "refuted (sticky-header) profile identity band"
+            )
+        current = band_fingerprint(
+            frame, identity_band=identity_band, grid=_IDENTITY_GRID
+        )
         distance = fingerprint_distance(identity.fingerprint, current)
     except ScrollTopError as exc:
         raise _CaptureAbort(
             "automated Pass refused: could not read the profile identity after Android "
-            f"edge-back: {exc}") from exc
-    if (isinstance(distance, bool) or not isinstance(distance, (int, float))
-            or not math.isfinite(distance) or distance < 0):
-        raise _CaptureAbort("automated Pass refused: post-edge profile identity distance was invalid")
+            f"edge-back: {exc}"
+        ) from exc
+    if (
+        isinstance(distance, bool)
+        or not isinstance(distance, (int, float))
+        or not math.isfinite(distance)
+        or distance < 0
+    ):
+        raise _CaptureAbort(
+            "automated Pass refused: post-edge profile identity distance was invalid"
+        )
     if distance > _UNATTENDED_PROVISIONAL_IDENTITY_MAX_DIST:
         raise _CaptureAbort(
             "automated Pass refused: Android edge-back exposed a different or unstable profile "
             f"header ({distance:.3f} > provisional "
-            f"{_UNATTENDED_PROVISIONAL_IDENTITY_MAX_DIST:.3f})")
+            f"{_UNATTENDED_PROVISIONAL_IDENTITY_MAX_DIST:.3f})"
+        )
     return float(distance)
 
 
-def _settle_automated_post_pass_to_top(driver: HingeDriver, *, frame: bytes,
-                                        confirm_template, identity_band) -> tuple[bytes, dict]:
+def _settle_automated_post_pass_to_top(
+    driver: HingeDriver, *, frame: bytes, confirm_template, identity_band
+) -> tuple[bytes, dict]:
     """Accept a post-Pass deck only after one bounded, non-purchase modal recovery.
 
     Hinge can insert an unsolicited Hinge+ page just after a real public/calibration Pass.  It
@@ -2442,6 +2953,7 @@ def _settle_automated_post_pass_to_top(driver: HingeDriver, *, frame: bytes,
     may receive one guarded Android edge-back; its next frame must then prove an ordinary
     composer-free top.
     """
+
     def composer_absent(candidate: bytes, *, context: str) -> None:
         try:
             locate_inline_composer(candidate, confirm_template, threshold=0.8)
@@ -2458,7 +2970,8 @@ def _settle_automated_post_pass_to_top(driver: HingeDriver, *, frame: bytes,
         except Exception as exc:  # noqa: BLE001 -- no missing/failed detector may imply deck
             raise _CaptureAbort(
                 f"automated Pass cannot prove ordinary deck readiness {context}: "
-                f"{type(exc).__name__}: {exc}") from exc
+                f"{type(exc).__name__}: {exc}"
+            ) from exc
 
     initial_frame = frame
     last_top = None
@@ -2479,7 +2992,8 @@ def _settle_automated_post_pass_to_top(driver: HingeDriver, *, frame: bytes,
         else:
             if last_top.confirmed:
                 last_ready = ordinary_deck_ready(
-                    frame, context=f"after action settlement probe {probe + 1}")
+                    frame, context=f"after action settlement probe {probe + 1}"
+                )
                 if last_ready:
                     return frame, {
                         "modal_edge_back_used": False,
@@ -2500,36 +3014,51 @@ def _settle_automated_post_pass_to_top(driver: HingeDriver, *, frame: bytes,
         raise _CaptureAbort(
             "automated Pass post-action settlement preserved state: scroll-top remained "
             f"unknown/unreadable after {_MAX_UNSETTLED_TOP_REPROBES} read-only reprobes "
-            f"({last_top_error or 'no verdict'}); no modal edge-back was issued")
+            f"({last_top_error or 'no verdict'}); no modal edge-back was issued"
+        )
     if not last_top.confirmed:
         state = "refuted/scrolled" if last_top.refuted else "unknown"
         raise _CaptureAbort(
             "automated Pass post-action settlement preserved state: scroll-top remained "
             f"{state} after {_MAX_UNSETTLED_TOP_REPROBES} read-only reprobes "
-            f"({last_top.reason}); no modal edge-back was issued")
+            f"({last_top.reason}); no modal edge-back was issued"
+        )
     # ``composer_absent`` already proved the last candidate above.  `last_ready` is false here:
     # a true value would have returned, so this is precisely the confirmed-top promo predicate.
     screen_width, screen_height = driver.adb.screen_size()
-    if (not isinstance(screen_width, int) or screen_width <= 0
-            or not isinstance(screen_height, int) or screen_height <= 0):
-        raise _CaptureAbort("automated Pass cannot recover modal: device returned invalid screen size")
-    driver._swipe(round(screen_width * _EDGE_BACK_START_X_FRAC),
-                  round(screen_height * _EDGE_BACK_Y_FRAC),
-                  round(screen_width * _EDGE_BACK_END_X_FRAC),
-                  round(screen_height * _EDGE_BACK_Y_FRAC))
+    if (
+        not isinstance(screen_width, int)
+        or screen_width <= 0
+        or not isinstance(screen_height, int)
+        or screen_height <= 0
+    ):
+        raise _CaptureAbort(
+            "automated Pass cannot recover modal: device returned invalid screen size"
+        )
+    driver._swipe(
+        round(screen_width * _EDGE_BACK_START_X_FRAC),
+        round(screen_height * _EDGE_BACK_Y_FRAC),
+        round(screen_width * _EDGE_BACK_END_X_FRAC),
+        round(screen_height * _EDGE_BACK_Y_FRAC),
+    )
     time.sleep(human_delay(driver.dwell_s))
     settled = driver.adb.screencap()
     if settled == frame:
-        raise _CaptureAbort("automated Pass modal edge-back did not change the post-action frame")
+        raise _CaptureAbort(
+            "automated Pass modal edge-back did not change the post-action frame"
+        )
     try:
         settled_top = confirm_scroll_top(settled, identity_band=identity_band)
     except ScrollTopError as exc:
-        raise _CaptureAbort(f"automated Pass cannot read state after modal edge-back: {exc}") from exc
+        raise _CaptureAbort(
+            f"automated Pass cannot read state after modal edge-back: {exc}"
+        ) from exc
     settled_ready = ordinary_deck_ready(settled, context="after modal edge-back")
     if not settled_top.confirmed or not settled_ready:
         raise _CaptureAbort(
             "automated Pass modal edge-back did not reach a confirmed ordinary new profile "
-            f"top ({settled_top.reason}; deck_ready={settled_ready})")
+            f"top ({settled_top.reason}; deck_ready={settled_ready})"
+        )
     composer_absent(settled, context="modal recovery")
     return settled, {
         "modal_edge_back_used": True,
@@ -2540,10 +3069,16 @@ def _settle_automated_post_pass_to_top(driver: HingeDriver, *, frame: bytes,
     }
 
 
-def _automated_pass_from_verified_composer(driver: HingeDriver, *, frame: bytes,
-                                            confirm_template, payload: ItemPayload,
-                                            item_number: int, identity: ProfileIdentity,
-                                            identity_band) -> tuple[bytes, dict]:
+def _automated_pass_from_verified_composer(
+    driver: HingeDriver,
+    *,
+    frame: bytes,
+    confirm_template,
+    payload: ItemPayload,
+    item_number: int,
+    identity: ProfileIdentity,
+    identity_band,
+) -> tuple[bytes, dict]:
     """Calibration-only, fail-closed path from a verified inline composer to Pass.
 
     This intentionally does not call ``HingeDriver.dislike``.  Its public deck guard correctly
@@ -2558,17 +3093,30 @@ def _automated_pass_from_verified_composer(driver: HingeDriver, *, frame: bytes,
     action.
     """
     _verified_automated_composer(
-        frame, confirm_template=confirm_template, payload=payload, item_number=item_number)
+        frame,
+        confirm_template=confirm_template,
+        payload=payload,
+        item_number=item_number,
+    )
     return _automated_pass_from_confirmed_composer(
-        driver, frame=frame, confirm_template=confirm_template, identity=identity,
-        identity_band=identity_band, selected_item_verified=True)
+        driver,
+        frame=frame,
+        confirm_template=confirm_template,
+        identity=identity,
+        identity_band=identity_band,
+        selected_item_verified=True,
+    )
 
 
-def _automated_send_from_verified_composer(driver: HingeDriver, *, frame: bytes,
-                                           confirm_template, payload: ItemPayload,
-                                           item_number: int,
-                                           reviewed_confirm_point: tuple[int, int]
-                                           ) -> tuple[bytes, dict]:
+def _automated_send_from_verified_composer(
+    driver: HingeDriver,
+    *,
+    frame: bytes,
+    confirm_template,
+    payload: ItemPayload,
+    item_number: int,
+    reviewed_confirm_point: tuple[int, int],
+) -> tuple[bytes, dict]:
     """Owner-opted-in path from a verified inline composer to a REAL, permanent Send.
 
     Only reachable with ``capture --send-like --send-like-confirmation
@@ -2582,13 +3130,19 @@ def _automated_send_from_verified_composer(driver: HingeDriver, *, frame: bytes,
     if driver.halt_on_error is not True:
         raise _CaptureAbort(
             "automated Send refused: halt_on_error must be enabled so delivery is structurally "
-            "verified rather than merely attempted")
+            "verified rather than merely attempted"
+        )
     reviewed_surface = _verified_automated_composer(
-        frame, confirm_template=confirm_template, payload=payload, item_number=item_number)
+        frame,
+        confirm_template=confirm_template,
+        payload=payload,
+        item_number=item_number,
+    )
     if reviewed_surface.confirm_point != reviewed_confirm_point:
         raise _CaptureAbort(
             "automated Send refused: the checkpoint point does not exactly match the reviewed "
-            "composer confirmation point")
+            "composer confirmation point"
+        )
 
     # This is deliberately the final read before `_tap`.  A reviewer can take long enough for
     # video controls or the composer itself to move; never replay the approved coordinate on a
@@ -2596,30 +3150,38 @@ def _automated_send_from_verified_composer(driver: HingeDriver, *, frame: bytes,
     fresh_frame = driver.adb.screencap()
     for blink_attempt in range(_CARET_BLINK_RECHECK_ATTEMPTS):
         fresh_surface = _verified_automated_composer(
-            fresh_frame, confirm_template=confirm_template, payload=payload,
-            item_number=item_number)
+            fresh_frame,
+            confirm_template=confirm_template,
+            payload=payload,
+            item_number=item_number,
+        )
         if fresh_surface != reviewed_surface:
             raise _CaptureAbort(
                 "automated Send refused: fresh composer geometry changed after review; the "
-                "reviewed action is no longer exact")
+                "reviewed action is no longer exact"
+            )
         if fresh_surface.confirm_point != reviewed_confirm_point:
             # Keep this separately named even though full-surface equality above also implies it.
             # It is the invariant that licenses the actual tap and protects against future
             # surface fields becoming intentionally tolerant.
             raise _CaptureAbort(
                 "automated Send refused: fresh composer detection moved the confirmation point; "
-                "the reviewed action is no longer exact")
+                "the reviewed action is no longer exact"
+            )
         if fresh_frame == frame or _same_actionable_pixels(frame, fresh_frame):
             break
         if not _only_transient_empty_comment_caret_change(
-                frame, fresh_frame, surface=reviewed_surface):
+            frame, fresh_frame, surface=reviewed_surface
+        ):
             raise _CaptureAbort(
                 "automated Send refused: the composer framebuffer changed outside the "
-                "empty-comment caret blink; no stale confirmation coordinate was tapped")
+                "empty-comment caret blink; no stale confirmation coordinate was tapped"
+            )
         if blink_attempt == _CARET_BLINK_RECHECK_ATTEMPTS - 1:
             raise _CaptureAbort(
                 "automated Send refused: the empty-comment caret did not return to the exact "
-                "reviewed blink phase; no confirmation coordinate was tapped")
+                "reviewed blink phase; no confirmation coordinate was tapped"
+            )
         # A real caret alternates back to the exact reviewed pixels.  A typed vertical mark or
         # other persistent glyph does not, so it can never license Send merely by fitting a box.
         time.sleep(_CARET_BLINK_RECHECK_S)
@@ -2631,8 +3193,11 @@ def _automated_send_from_verified_composer(driver: HingeDriver, *, frame: bytes,
     advance_frame = driver.adb.screencap()
     return advance_frame, {
         "action": "automated_send_priority_like",
-        "transport": ["HingeDriver._tap(confirm_point)", "HingeDriver._handle_rose_upsell",
-                      "HingeDriver._verify_like_landed"],
+        "transport": [
+            "HingeDriver._tap(confirm_point)",
+            "HingeDriver._handle_rose_upsell",
+            "HingeDriver._verify_like_landed",
+        ],
         "pre_frame_sha256": _sha256(frame),
         "pre_tap_frame_sha256": _sha256(fresh_frame),
         "post_frame_sha256": _sha256(advance_frame),
@@ -2647,10 +3212,15 @@ def _automated_send_from_verified_composer(driver: HingeDriver, *, frame: bytes,
     }
 
 
-def _automated_pass_from_confirmed_composer(driver: HingeDriver, *, frame: bytes,
-                                             confirm_template, identity: ProfileIdentity,
-                                             identity_band,
-                                             selected_item_verified: bool) -> tuple[bytes, dict]:
+def _automated_pass_from_confirmed_composer(
+    driver: HingeDriver,
+    *,
+    frame: bytes,
+    confirm_template,
+    identity: ProfileIdentity,
+    identity_band,
+    selected_item_verified: bool,
+) -> tuple[bytes, dict]:
     """Clear a structurally confirmed composer through the calibration-only Pass route.
 
     This is the deliberately smaller primitive below ``_automated_pass_from_verified_composer``.
@@ -2662,9 +3232,15 @@ def _automated_pass_from_confirmed_composer(driver: HingeDriver, *, frame: bytes
     identity, vision-located Pass, guarded transport, and no-Send-Like guarantees.
     """
     screen_width, screen_height = driver.adb.screen_size()
-    if (not isinstance(screen_width, int) or screen_width <= 0
-            or not isinstance(screen_height, int) or screen_height <= 0):
-        raise _CaptureAbort("automated Pass refused: device returned an invalid screen size")
+    if (
+        not isinstance(screen_width, int)
+        or screen_width <= 0
+        or not isinstance(screen_height, int)
+        or screen_height <= 0
+    ):
+        raise _CaptureAbort(
+            "automated Pass refused: device returned an invalid screen size"
+        )
     transport: list[str] = []
     try:
         surface = locate_inline_composer(frame, confirm_template, threshold=0.8)
@@ -2673,7 +3249,8 @@ def _automated_pass_from_confirmed_composer(driver: HingeDriver, *, frame: bytes
     except ComposerDetectionError as exc:
         raise _CaptureAbort(
             "automated Pass refused: current frame no longer structurally proves the inline "
-            f"composer before cleanup: {exc}") from exc
+            f"composer before cleanup: {exc}"
+        ) from exc
 
     # An unfocused composer can already expose Pass.  A second Android edge-back in that state
     # may leave Hinge altogether (observed live), so it is not a harmless idempotent dismissal.
@@ -2681,7 +3258,8 @@ def _automated_pass_from_confirmed_composer(driver: HingeDriver, *, frame: bytes
     # ordinary vision locations on that state.  Locator absence/motion means "not ready" and may
     # take the existing one-edge fallback; an identity failure is a hard refusal with no gesture.
     initial_identity_distance = _require_same_profile_header_after_edge_back(
-        frame, identity=identity, identity_band=identity_band)
+        frame, identity=identity, identity_band=identity_band
+    )
 
     def stable_visible_pass() -> tuple[bytes, tuple[int, int], float] | None:
         try:
@@ -2694,7 +3272,8 @@ def _automated_pass_from_confirmed_composer(driver: HingeDriver, *, frame: bytes
         # Do not turn a changed/misidentified state into the edge-back fallback.  We have already
         # observed a protected control; a non-matching header now is terminal without input.
         candidate_identity_distance = _require_same_profile_header_after_edge_back(
-            candidate, identity=identity, identity_band=identity_band)
+            candidate, identity=identity, identity_band=identity_band
+        )
         try:
             refreshed_point = driver._locate_button("pass")
         except Exception:  # noqa: BLE001 -- no second location, no direct guarded tap
@@ -2714,15 +3293,18 @@ def _automated_pass_from_confirmed_composer(driver: HingeDriver, *, frame: bytes
     # Do not infer keyboard state from a brittle absolute composer-CTA height.  The measured
     # postcondition is the re-exposed floating Pass plus an identity-matching sticky header.
     if visible_pass is None:
-        driver._swipe(round(screen_width * _EDGE_BACK_START_X_FRAC),
-                      round(screen_height * _EDGE_BACK_Y_FRAC),
-                      round(screen_width * _EDGE_BACK_END_X_FRAC),
-                      round(screen_height * _EDGE_BACK_Y_FRAC))
+        driver._swipe(
+            round(screen_width * _EDGE_BACK_START_X_FRAC),
+            round(screen_height * _EDGE_BACK_Y_FRAC),
+            round(screen_width * _EDGE_BACK_END_X_FRAC),
+            round(screen_height * _EDGE_BACK_Y_FRAC),
+        )
         transport.append("HingeDriver._swipe(android_edge_back)")
         time.sleep(human_delay(driver.dwell_s))
         post_edge_frame = driver.adb.screencap()
         post_edge_identity_distance = _require_same_profile_header_after_edge_back(
-            post_edge_frame, identity=identity, identity_band=identity_band)
+            post_edge_frame, identity=identity, identity_band=identity_band
+        )
 
         # `_await_button` is the existing vision/retry locator; do not substitute a coordinate.
         # Re-locate once on the immediately preceding stable state and require agreement before
@@ -2731,32 +3313,42 @@ def _automated_pass_from_confirmed_composer(driver: HingeDriver, *, frame: bytes
         located_point = driver._await_button("pass")
         pre_tap_frame = driver.adb.screencap()
         pre_tap_identity_distance = _require_same_profile_header_after_edge_back(
-            pre_tap_frame, identity=identity, identity_band=identity_band)
+            pre_tap_frame, identity=identity, identity_band=identity_band
+        )
         refreshed_point = driver._locate_button("pass")
         if refreshed_point is None:
-            raise _CaptureAbort("automated Pass refused: floating Pass X disappeared before guarded tap")
+            raise _CaptureAbort(
+                "automated Pass refused: floating Pass X disappeared before guarded tap"
+            )
         max_relocation = max(1.0, screen_width * _PASS_POINT_RELOCATION_MAX_FRAC)
         if math.dist(located_point, refreshed_point) > max_relocation:
             raise _CaptureAbort(
                 "automated Pass refused: floating Pass X moved after vision location "
-                f"({math.dist(located_point, refreshed_point):.1f}px > {max_relocation:.1f}px)")
+                f"({math.dist(located_point, refreshed_point):.1f}px > {max_relocation:.1f}px)"
+            )
     else:
         pre_tap_frame, refreshed_point, pre_tap_identity_distance = visible_pass
         post_edge_frame = frame
         post_edge_identity_distance = initial_identity_distance
-        transport.extend(("HingeDriver._locate_button(pass)",
-                          "HingeDriver._locate_button(pass)"))
+        transport.extend(
+            ("HingeDriver._locate_button(pass)", "HingeDriver._locate_button(pass)")
+        )
     driver._tap(*refreshed_point)
     if edge_back_used:
-        transport.extend(("HingeDriver._await_button(pass)", "HingeDriver._locate_button(pass)"))
+        transport.extend(
+            ("HingeDriver._await_button(pass)", "HingeDriver._locate_button(pass)")
+        )
     transport.append("HingeDriver._tap")
     time.sleep(human_delay(driver.dwell_s))
     raw_advance_frame = driver.adb.screencap()
     if raw_advance_frame == pre_tap_frame:
         raise _CaptureAbort("automated Pass did not produce a changed deck frame")
     advance_frame, settle_trace = _settle_automated_post_pass_to_top(
-        driver, frame=raw_advance_frame, confirm_template=confirm_template,
-        identity_band=identity_band)
+        driver,
+        frame=raw_advance_frame,
+        confirm_template=confirm_template,
+        identity_band=identity_band,
+    )
 
     return advance_frame, {
         "action": "automated_pass",
@@ -2778,8 +3370,10 @@ def _automated_pass_from_confirmed_composer(driver: HingeDriver, *, frame: bytes
             "initial_post_edge_identity_distance": post_edge_identity_distance,
             "post_edge_composer_reverified": False,
             "post_edge_composer_visibility": (
-                "not_required_may_be_offscreen" if edge_back_used
-                else "structurally_visible_unfocused_before_pass"),
+                "not_required_may_be_offscreen"
+                if edge_back_used
+                else "structurally_visible_unfocused_before_pass"
+            ),
             "pass_vision_relocated_before_guarded_tap": True,
             "send_like_tapped": False,
             "deck_frame_changed": True,
@@ -2792,8 +3386,16 @@ def _automated_pass_from_confirmed_composer(driver: HingeDriver, *, frame: bytes
 
 
 def _recover_automated_abort_from_open_composer(
-        driver: HingeDriver, *, frame: bytes, confirm_template, payload: ItemPayload,
-        item_number: int, identity: ProfileIdentity, identity_band, failure_stage: str) -> dict:
+    driver: HingeDriver,
+    *,
+    frame: bytes,
+    confirm_template,
+    payload: ItemPayload,
+    item_number: int,
+    identity: ProfileIdentity,
+    identity_band,
+    failure_stage: str,
+) -> dict:
     """Best-effort, fail-closed cleanup after an automated heart left an unsent composer.
 
     ``capture`` normally refuses a post-tap comparison before it can call the verified-composer
@@ -2833,53 +3435,82 @@ def _recover_automated_abort_from_open_composer(
         # stringent precondition and makes recovery merely an abort-time invocation of the
         # already-audited Pass implementation.
         advance, pass_trace = _automated_pass_from_verified_composer(
-            driver, frame=frame, confirm_template=confirm_template, payload=payload,
-            item_number=item_number, identity=identity, identity_band=identity_band)
-        trace.update({
-            "outcome": "cleared",
-            "selected_item_verified_before_cleanup": True,
-            "post_frame_sha256": _sha256(advance),
-            "cleanup_trace": pass_trace,
-        })
+            driver,
+            frame=frame,
+            confirm_template=confirm_template,
+            payload=payload,
+            item_number=item_number,
+            identity=identity,
+            identity_band=identity_band,
+        )
+        trace.update(
+            {
+                "outcome": "cleared",
+                "selected_item_verified_before_cleanup": True,
+                "post_frame_sha256": _sha256(advance),
+                "cleanup_trace": pass_trace,
+            }
+        )
         return trace
     except _CaptureAbort as verified_exc:
         # A *comparison* refusal is the one state this function was created for.  Do not fall
         # back after an edge-back/Pass failure: another gesture could be acting on a state the
         # normal helper has already changed or found unsafe.
         try:
-            verdict = verify_sheet_item(frame, payload, item_number, composer_surface=surface)
+            verdict = verify_sheet_item(
+                frame, payload, item_number, composer_surface=surface
+            )
         except Exception as exc:  # noqa: BLE001 -- no unknown verifier state licenses a Pass
             trace["refusal"] = (
                 "could not classify verified-composer failure before cleanup fallback: "
-                f"{type(exc).__name__}: {exc}")
+                f"{type(exc).__name__}: {exc}"
+            )
             return trace
         if verdict.matched:
             trace["refusal"] = (
                 "verified-composer Pass changed/refused after item verification; no fallback "
-                f"gesture is permitted: {verified_exc}")
+                f"gesture is permitted: {verified_exc}"
+            )
             return trace
         try:
             advance, pass_trace = _automated_pass_from_confirmed_composer(
-                driver, frame=frame, confirm_template=confirm_template, identity=identity,
-                identity_band=identity_band, selected_item_verified=False)
+                driver,
+                frame=frame,
+                confirm_template=confirm_template,
+                identity=identity,
+                identity_band=identity_band,
+                selected_item_verified=False,
+            )
         except _CaptureAbort as cleanup_exc:
             trace["refusal"] = (
                 "structural-composer cleanup refused before a safe completion: "
-                f"{cleanup_exc}")
+                f"{cleanup_exc}"
+            )
             return trace
-        trace.update({
-            "outcome": "cleared",
-            "selected_item_verified_before_cleanup": False,
-            "selected_item_verification_refusal": str(verified_exc),
-            "post_frame_sha256": _sha256(advance),
-            "cleanup_trace": pass_trace,
-        })
+        trace.update(
+            {
+                "outcome": "cleared",
+                "selected_item_verified_before_cleanup": False,
+                "selected_item_verification_refusal": str(verified_exc),
+                "post_frame_sha256": _sha256(advance),
+                "cleanup_trace": pass_trace,
+            }
+        )
         return trace
 
 
-def _save_frame(out_dir: Path, frames_meta: list, frame_counter: int, png: bytes, *,
-                role: str, profile_ordinal: int, profile_id: str,
-                item_number: int | None, captured_utc: str | None = None) -> int:
+def _save_frame(
+    out_dir: Path,
+    frames_meta: list,
+    frame_counter: int,
+    png: bytes,
+    *,
+    role: str,
+    profile_ordinal: int,
+    profile_id: str,
+    item_number: int | None,
+    captured_utc: str | None = None,
+) -> int:
     """Append one frame to disk + the manifest's `frames` list. Filenames are a single counter
     across the WHOLE session (not per-profile), `%05d.png`, matching every other
     `ops/calibration/` tool in this repo -- so capture order is unambiguous from the filename
@@ -2888,21 +3519,29 @@ def _save_frame(out_dir: Path, frames_meta: list, frame_counter: int, png: bytes
     frame_counter += 1
     name = f"{frame_counter:05d}.png"
     atomic_write_private_bytes(out_dir / name, png, parent=out_dir)
-    frames_meta.append({
-        "file": name,
-        "sha256": _sha256(png),
-        "role": role,
-        "profile_ordinal": profile_ordinal,
-        "profile_id": profile_id,
-        "item_number": item_number,
-        "captured_utc": captured_utc or datetime.now(timezone.utc).isoformat(),
-    })
+    frames_meta.append(
+        {
+            "file": name,
+            "sha256": _sha256(png),
+            "role": role,
+            "profile_ordinal": profile_ordinal,
+            "profile_id": profile_id,
+            "item_number": item_number,
+            "captured_utc": captured_utc or datetime.now(timezone.utc).isoformat(),
+        }
+    )
     return frame_counter
 
 
-def _commit_profile_frames(out_dir: Path, frames_meta: list, frame_counter: int,
-                           staged: list[tuple[bytes, str, int | None, str]], *,
-                           profile_ordinal: int, profile_id: str) -> int:
+def _commit_profile_frames(
+    out_dir: Path,
+    frames_meta: list,
+    frame_counter: int,
+    staged: list[tuple[bytes, str, int | None, str]],
+    *,
+    profile_ordinal: int,
+    profile_id: str,
+) -> int:
     """Commit one successful attempt atomically at the manifest level.
 
     A refused retry must not leave frames behind under an ordinal later reused for another
@@ -2913,9 +3552,16 @@ def _commit_profile_frames(out_dir: Path, frames_meta: list, frame_counter: int,
     """
     for png, role, item_number, captured_utc in staged:
         frame_counter = _save_frame(
-            out_dir, frames_meta, frame_counter, png, role=role,
-            profile_ordinal=profile_ordinal, profile_id=profile_id,
-            item_number=item_number, captured_utc=captured_utc)
+            out_dir,
+            frames_meta,
+            frame_counter,
+            png,
+            role=role,
+            profile_ordinal=profile_ordinal,
+            profile_id=profile_id,
+            item_number=item_number,
+            captured_utc=captured_utc,
+        )
     return frame_counter
 
 
@@ -2929,7 +3575,9 @@ class _OfflineNavigationReplay:
     the read's final frame and every subsequent frame moves toward the confirmed top.
     """
 
-    def __init__(self, frames: list[bytes], *, identity_band, content_band, like_template):
+    def __init__(
+        self, frames: list[bytes], *, identity_band, content_band, like_template
+    ):
         if not frames:
             raise _MeasureRefused("entry-anchor replay was given no card-scroll frames")
         self._frames = list(reversed(frames))
@@ -2942,7 +3590,9 @@ class _OfflineNavigationReplay:
 
     def _template(self, name):
         if name != "like":
-            raise AssertionError(f"offline navigation requested unexpected template {name!r}")
+            raise AssertionError(
+                f"offline navigation requested unexpected template {name!r}"
+            )
         return self._like_template
 
     def _screencap(self) -> bytes:
@@ -2950,7 +3600,8 @@ class _OfflineNavigationReplay:
         if self._position >= len(self._frames):
             raise AssertionError(
                 "offline entry-anchor replay would need a frame that was not captured; refusing "
-                "rather than fabricating a navigation result")
+                "rather than fabricating a navigation result"
+            )
         return self._frames[self._position]
 
     def _sample_read_step(self, _step_index, _profile):
@@ -2963,12 +3614,21 @@ class _OfflineNavigationReplay:
         if self._position >= len(self._frames):
             raise AssertionError(
                 "offline entry-anchor replay would scroll beyond the recorded card frames; "
-                "refusing rather than issuing a live gesture")
+                "refusing rather than issuing a live gesture"
+            )
 
 
-def _entry_anchor_profile_report(*, ordinal: int, profile_id: str, card_frames: list[bytes],
-                                 frame_records: list[dict], identity_band, content_band,
-                                 like_template, like_threshold) -> dict:
+def _entry_anchor_profile_report(
+    *,
+    ordinal: int,
+    profile_id: str,
+    card_frames: list[bytes],
+    frame_records: list[dict],
+    identity_band,
+    content_band,
+    like_template,
+    like_threshold,
+) -> dict:
     """Prove one captured profile is navigable bottom-up using only its recorded bytes.
 
     The replay-only identity ceiling is deliberately derived solely to call the production
@@ -2976,128 +3636,182 @@ def _entry_anchor_profile_report(*, ordinal: int, profile_id: str, card_frames: 
     value: it is omitted from config/YAML and cannot escape this JSON evidence artifact.
     """
     if len(card_frames) != len(frame_records) or not card_frames:
-        raise _MeasureRefused(f"profile {profile_id!r}: card-frame records are incomplete")
+        raise _MeasureRefused(
+            f"profile {profile_id!r}: card-frame records are incomplete"
+        )
     for data, rec in zip(card_frames, frame_records, strict=True):
         if _sha256(data) != rec.get("sha256"):
             raise _MeasureRefused(
                 f"profile {profile_id!r}: entry-anchor source frame {rec.get('file')!r} no "
-                "longer matches its recorded sha256")
+                "longer matches its recorded sha256"
+            )
     try:
         top = confirm_scroll_top(card_frames[0], identity_band=identity_band)
     except ScrollTopError as exc:
         raise _MeasureRefused(
             f"profile {profile_id!r}: entry-anchor source cannot read the claimed top frame "
-            f"({exc})") from exc
+            f"({exc})"
+        ) from exc
     if not top.confirmed:
         raise _MeasureRefused(
             f"profile {profile_id!r}: first card frame is not a confirmed profile top "
-            f"({top.reason})")
+            f"({top.reason})"
+        )
     try:
         index = build_item_index(
-            card_frames, content_band=content_band, like_template=like_template,
-            like_threshold=like_threshold, at_scroll_top=True, identity_band=identity_band)
+            card_frames,
+            content_band=content_band,
+            like_template=like_template,
+            like_threshold=like_threshold,
+            at_scroll_top=True,
+            identity_band=identity_band,
+        )
         # Classifier-only, matching the capture loops byte for byte.  This replay exists to
         # prove that the numbering capture produced is REPRODUCIBLE from the committed frames;
         # a stricter gate here would refuse items capture legitimately numbered and turn a
         # reproduction check into a different check.
         payload = build_item_payload(
-            card_frames, index, unnumber=unnumber_unless_confident_photo)
-    except (ItemIndexError, ItemCropError, SegmentationError, ShiftEstimationError) as exc:
+            card_frames, index, unnumber=unnumber_unless_confident_photo
+        )
+    except (
+        ItemIndexError,
+        ItemCropError,
+        SegmentationError,
+        ShiftEstimationError,
+    ) as exc:
         raise _MeasureRefused(
             f"profile {profile_id!r}: could not rebuild complete photo-only item numbering "
-            f"for entry-anchor evidence ({type(exc).__name__}: {exc})") from exc
+            f"for entry-anchor evidence ({type(exc).__name__}: {exc})"
+        ) from exc
     if not index.usable or not index.complete or not payload.usable:
         raise _MeasureRefused(
             f"profile {profile_id!r}: entry-anchor evidence requires a usable complete index "
             f"and usable photo-only payload (index usable={index.usable}, complete={index.complete}, "
-            f"payload usable={payload.usable})")
+            f"payload usable={payload.usable})"
+        )
     if not index.identity.known:
         raise _MeasureRefused(
-            f"profile {profile_id!r}: complete index has no corroborated sticky-header identity")
+            f"profile {profile_id!r}: complete index has no corroborated sticky-header identity"
+        )
     if not payload.items:
         raise _MeasureRefused(
-            f"profile {profile_id!r}: complete profile has no photo-only model items to replay")
+            f"profile {profile_id!r}: complete profile has no photo-only model items to replay"
+        )
     if payload.translation != tuple(c.heart_ordinal for c in payload.items):
         raise _MeasureRefused(
-            f"profile {profile_id!r}: photo-only payload translation is internally inconsistent")
+            f"profile {profile_id!r}: photo-only payload translation is internally inconsistent"
+        )
 
     try:
-        entry_fp = band_fingerprint(card_frames[-1], identity_band=identity_band,
-                                    grid=_IDENTITY_GRID)
+        entry_fp = band_fingerprint(
+            card_frames[-1], identity_band=identity_band, grid=_IDENTITY_GRID
+        )
         entry_distance = _checked_distance(
             fingerprint_distance(index.identity.fingerprint, entry_fp),
-            context=f"profile {profile_id!r} offline navigation entry identity")
+            context=f"profile {profile_id!r} offline navigation entry identity",
+        )
     except ScrollTopError as exc:
         raise _MeasureRefused(
-            f"profile {profile_id!r}: could not fingerprint bottom-up replay entry ({exc})") from exc
+            f"profile {profile_id!r}: could not fingerprint bottom-up replay entry ({exc})"
+        ) from exc
     if entry_distance >= _IDENTITY_FALSE_MATCH_DISTANCE:
         raise _MeasureRefused(
             f"profile {profile_id!r}: replay entry identity is at/over the known foreign-profile "
-            f"ceiling ({entry_distance:.3f} >= {_IDENTITY_FALSE_MATCH_DISTANCE})")
+            f"ceiling ({entry_distance:.3f} >= {_IDENTITY_FALSE_MATCH_DISTANCE})"
+        )
     # This midpoint is a per-artifact replay permit, not a measured runtime threshold. It is
     # strictly above this replay's observed same-profile entry and strictly below the collision.
     replay_identity_ceiling = (entry_distance + _IDENTITY_FALSE_MATCH_DISTANCE) / 2.0
 
     cancellation_replay = _OfflineNavigationReplay(
-        card_frames, identity_band=identity_band, content_band=content_band,
-        like_template=like_template)
+        card_frames,
+        identity_band=identity_band,
+        content_band=content_band,
+        like_template=like_template,
+    )
     first_crop = payload.items[0]
     try:
         first_index_model = index.translation.index(first_crop.heart_ordinal) + 1
         navigate_to_item(
-            cancellation_replay, index, first_index_model, entry_reference=card_frames[-1],
-            identity_match_max_dist=replay_identity_ceiling, should_stop=lambda: True,
-            max_frames=len(card_frames))
+            cancellation_replay,
+            index,
+            first_index_model,
+            entry_reference=card_frames[-1],
+            identity_match_max_dist=replay_identity_ceiling,
+            should_stop=lambda: True,
+            max_frames=len(card_frames),
+        )
     except ActionCancelled:
         pass
     except Exception as exc:  # noqa: BLE001 -- a different refusal is not cancellation proof
         raise _MeasureRefused(
             f"profile {profile_id!r}: cancellation dry-run did not stop before navigation "
-            f"({type(exc).__name__}: {exc})") from exc
+            f"({type(exc).__name__}: {exc})"
+        ) from exc
     else:
         raise _MeasureRefused(
-            f"profile {profile_id!r}: cancellation dry-run unexpectedly returned a target")
+            f"profile {profile_id!r}: cancellation dry-run unexpectedly returned a target"
+        )
     if cancellation_replay.capture_calls or cancellation_replay.scroll_up_calls:
         raise _MeasureRefused(
-            f"profile {profile_id!r}: cancellation dry-run touched replay input before stopping")
+            f"profile {profile_id!r}: cancellation dry-run touched replay input before stopping"
+        )
 
     targets = []
     for crop in payload.items:
         if crop.heart_ordinal not in index.translation:
             raise _MeasureRefused(
                 f"profile {profile_id!r}: photo item {crop.number} maps to a heart missing from "
-                "the absolute index translation")
+                "the absolute index translation"
+            )
         index_model = index.translation.index(crop.heart_ordinal) + 1
         replay = _OfflineNavigationReplay(
-            card_frames, identity_band=identity_band, content_band=content_band,
-            like_template=like_template)
+            card_frames,
+            identity_band=identity_band,
+            content_band=content_band,
+            like_template=like_template,
+        )
         try:
             target = navigate_to_item(
-                replay, index, index_model, entry_reference=card_frames[-1],
-                identity_match_max_dist=replay_identity_ceiling, max_frames=len(card_frames))
-        except (ItemNavigationError, AssertionError, ShiftEstimationError, SegmentationError) as exc:
+                replay,
+                index,
+                index_model,
+                entry_reference=card_frames[-1],
+                identity_match_max_dist=replay_identity_ceiling,
+                max_frames=len(card_frames),
+            )
+        except (
+            ItemNavigationError,
+            AssertionError,
+            ShiftEstimationError,
+            SegmentationError,
+        ) as exc:
             raise _MeasureRefused(
                 f"profile {profile_id!r}: offline bottom-up replay refused photo item {crop.number} "
-                f"(heart {crop.heart_ordinal}; {type(exc).__name__}: {exc})") from exc
-        targets.append({
-            "photo_model_item": crop.number,
-            "heart_ordinal": crop.heart_ordinal,
-            "index_model_item": index_model,
-            "entry_anchor_delta_px": target.anchor.delta_px,
-            "entry_offset_px": target.entry_offset,
-            "landing_frame_sha256": _sha256(target.frame),
-            "landing_frame_index": target.frame_index,
-            "landing_page_offset_px": target.page_offset,
-            "hearts_counted": target.hearts_counted,
-            "crosscheck_max_disagreement_px": target.agreement_px,
-            "replay_scroll_steps": len(target.steps),
-            "replay_shift_deltas_px": [shift.delta_px for shift in target.shifts],
-        })
+                f"(heart {crop.heart_ordinal}; {type(exc).__name__}: {exc})"
+            ) from exc
+        targets.append(
+            {
+                "photo_model_item": crop.number,
+                "heart_ordinal": crop.heart_ordinal,
+                "index_model_item": index_model,
+                "entry_anchor_delta_px": target.anchor.delta_px,
+                "entry_offset_px": target.entry_offset,
+                "landing_frame_sha256": _sha256(target.frame),
+                "landing_frame_index": target.frame_index,
+                "landing_page_offset_px": target.page_offset,
+                "hearts_counted": target.hearts_counted,
+                "crosscheck_max_disagreement_px": target.agreement_px,
+                "replay_scroll_steps": len(target.steps),
+                "replay_shift_deltas_px": [shift.delta_px for shift in target.shifts],
+            }
+        )
     return {
         "ordinal": ordinal,
         "profile_id_sha256": _sha256(profile_id.encode("utf-8", "replace")),
         "source_card_frames": [
-            {"file": rec["file"], "sha256": rec["sha256"]} for rec in frame_records],
+            {"file": rec["file"], "sha256": rec["sha256"]} for rec in frame_records
+        ],
         "confirmed_top": True,
         "index_complete": True,
         "index_reached_end": bool(index.reached_end),
@@ -3112,8 +3826,16 @@ def _entry_anchor_profile_report(*, ordinal: int, profile_id: str, card_frames: 
     }
 
 
-def _write_entry_anchor_ledger(out_dir: Path, *, frames_meta: list[dict], profiles_meta: list[dict],
-                               identity_band, content_band, like_template, like_threshold) -> dict:
+def _write_entry_anchor_ledger(
+    out_dir: Path,
+    *,
+    frames_meta: list[dict],
+    profiles_meta: list[dict],
+    identity_band,
+    content_band,
+    like_template,
+    like_threshold,
+) -> dict:
     """Write a hash-bound, offline-only proof for the entry-anchor checklist item."""
     by_ordinal: dict[int, list[dict]] = {}
     for rec in frames_meta:
@@ -3125,7 +3847,8 @@ def _write_entry_anchor_ledger(out_dir: Path, *, frames_meta: list[dict], profil
         records = by_ordinal.get(ordinal, [])
         if not records:
             raise _MeasureRefused(
-                f"profile {meta['profile_id']!r}: no committed card-scroll frames for entry-anchor evidence")
+                f"profile {meta['profile_id']!r}: no committed card-scroll frames for entry-anchor evidence"
+            )
         card_frames = []
         for rec in records:
             path = out_dir / rec["file"]
@@ -3133,12 +3856,22 @@ def _write_entry_anchor_ledger(out_dir: Path, *, frames_meta: list[dict], profil
                 raise _MeasureRefused(f"entry-anchor source frame {path} is missing")
             data = path.read_bytes()
             if _sha256(data) != rec["sha256"]:
-                raise _MeasureRefused(f"entry-anchor source frame {path} changed after capture")
+                raise _MeasureRefused(
+                    f"entry-anchor source frame {path} changed after capture"
+                )
             card_frames.append(data)
-        reports.append(_entry_anchor_profile_report(
-            ordinal=ordinal, profile_id=meta["profile_id"], card_frames=card_frames,
-            frame_records=records, identity_band=identity_band, content_band=content_band,
-            like_template=like_template, like_threshold=like_threshold))
+        reports.append(
+            _entry_anchor_profile_report(
+                ordinal=ordinal,
+                profile_id=meta["profile_id"],
+                card_frames=card_frames,
+                frame_records=records,
+                identity_band=identity_band,
+                content_band=content_band,
+                like_template=like_template,
+                like_threshold=like_threshold,
+            )
+        )
     artifact = {
         "schema_version": _ENTRY_ANCHOR_LEDGER_SCHEMA_VERSION,
         "kind": "hinge_entry_anchor_offline_replay",
@@ -3150,13 +3883,21 @@ def _write_entry_anchor_ledger(out_dir: Path, *, frames_meta: list[dict], profil
         "profiles": reports,
     }
     path = out_dir / _ENTRY_ANCHOR_LEDGER_FILE
-    atomic_write_private_text(path, json.dumps(artifact, indent=2) + "\n", parent=out_dir)
+    atomic_write_private_text(
+        path, json.dumps(artifact, indent=2) + "\n", parent=out_dir
+    )
     return {"file": path.name, "sha256": _sha256(path.read_bytes())}
 
 
-def _capture_one_profile(driver: HingeDriver, out_dir: Path, *, ordinal: int,
-                         frame_counter: int, frames_meta: list,
-                         used_profile_ids: set[str]) -> tuple[dict, int]:
+def _capture_one_profile(
+    driver: HingeDriver,
+    out_dir: Path,
+    *,
+    ordinal: int,
+    frame_counter: int,
+    frames_meta: list,
+    used_profile_ids: set[str],
+) -> tuple[dict, int]:
     """Capture one profile's complete card sequence plus persistent inline-composer evidence.
 
     Every heart-tap and profile advance is done by the OWNER, by hand -- see the module
@@ -3181,17 +3922,23 @@ def _capture_one_profile(driver: HingeDriver, out_dir: Path, *, ordinal: int,
                 f"  Profile {ordinal}: type a short LOCAL label for this profile (e.g. "
                 "initials plus a distinguishing suffix -- it MUST uniquely identify this real "
                 "profile across every calibration session; never committed anywhere but this "
-                "session's own gitignored manifest.json) > ").strip()
+                "session's own gitignored manifest.json) > "
+            ).strip()
             if candidate in used_profile_ids:
-                print(f"  Profile id {candidate!r} was already used in this session. Use a "
-                      "new, unique id so foreign-profile comparisons cannot be skipped.")
+                print(
+                    f"  Profile id {candidate!r} was already used in this session. Use a "
+                    "new, unique id so foreign-profile comparisons cannot be skipped."
+                )
                 continue
             profile_id = candidate
         try:
-            target_items = _parse_item_numbers(input(
-                f"  Profile {ordinal} ({profile_id}): which PHOTO number(s) will you target for "
-                "the inline-composer calibration? Prompts are never numbered or targeted. "
-                "Comma-separated, e.g. 1,3 > "))
+            target_items = _parse_item_numbers(
+                input(
+                    f"  Profile {ordinal} ({profile_id}): which PHOTO number(s) will you target for "
+                    "the inline-composer calibration? Prompts are never numbered or targeted. "
+                    "Comma-separated, e.g. 1,3 > "
+                )
+            )
         except ValueError as exc:
             print(f"  {exc}; try again.")
             continue
@@ -3199,19 +3946,23 @@ def _capture_one_profile(driver: HingeDriver, out_dir: Path, *, ordinal: int,
         input(
             "  On the phone: open a NEW real profile you have not already used in this "
             "session, and scroll it to its very TOP by hand (the filter-chips row visible, no "
-            "per-profile header yet). Press ENTER once it is at the top > ")
+            "per-profile header yet). Press ENTER once it is at the top > "
+        )
 
         top_frame = driver.adb.screencap()
         top_verdict = confirm_scroll_top(top_frame, identity_band=identity_band)
         if not top_verdict.confirmed:
             print(f"  Not confirmed at scroll top ({top_verdict.reason}).")
             if input("  Retry this profile? [Y/n] > ").strip().lower().startswith("n"):
-                raise _CaptureAbort("owner declined to retry after a scroll-top refusal")
+                raise _CaptureAbort(
+                    "owner declined to retry after a scroll-top refusal"
+                )
             continue
 
         card_frames: list[bytes] = [top_frame]
-        staged_frames.append((top_frame, "card_scroll", None,
-                              datetime.now(timezone.utc).isoformat()))
+        staged_frames.append(
+            (top_frame, "card_scroll", None, datetime.now(timezone.utc).isoformat())
+        )
 
         identity: ProfileIdentity | None = None
         index = None
@@ -3221,14 +3972,20 @@ def _capture_one_profile(driver: HingeDriver, out_dir: Path, *, ordinal: int,
         planning_refusal = None
         satisfied = False
         for _step in range(_MAX_CARD_SCROLLS):
-            identity = capture_profile_identity(card_frames, identity_band=identity_band,
-                                                grid=_IDENTITY_GRID)
+            identity = capture_profile_identity(
+                card_frames, identity_band=identity_band, grid=_IDENTITY_GRID
+            )
             index_ok = False
             try:
                 index = build_item_index(
-                    card_frames, content_band=content_band, like_template=like_template,
-                    like_threshold=like_threshold, at_scroll_top=True,
-                    identity_band=identity_band, _prefix_index=prior_index)
+                    card_frames,
+                    content_band=content_band,
+                    like_template=like_template,
+                    like_threshold=like_threshold,
+                    at_scroll_top=True,
+                    identity_band=identity_band,
+                    _prefix_index=prior_index,
+                )
                 # The next pass may reuse only this exact successful frame prefix.  The index
                 # builder hash-checks it and otherwise rebuilds from scratch; it still folds the
                 # whole sequence every pass, so this cache cannot change a stop/refusal result.
@@ -3247,11 +4004,19 @@ def _capture_one_profile(driver: HingeDriver, out_dir: Path, *, ordinal: int,
                     # frame, so this loop has no un-interacted dwell to offer and the dwell rung
                     # can never pass on read-scroll frames.
                     payload = build_item_payload(
-                        card_frames, index, unnumber=unnumber_unless_confident_photo)
-                    index_ok = payload.usable and len(payload.items) >= max(target_items)
+                        card_frames, index, unnumber=unnumber_unless_confident_photo
+                    )
+                    index_ok = payload.usable and len(payload.items) >= max(
+                        target_items
+                    )
                 else:
                     payload = None
-            except (ItemIndexError, ItemCropError, SegmentationError, ShiftEstimationError):
+            except (
+                ItemIndexError,
+                ItemCropError,
+                SegmentationError,
+                ShiftEstimationError,
+            ):
                 index = None
                 payload = None
             if identity.known and index_ok:
@@ -3259,13 +4024,17 @@ def _capture_one_profile(driver: HingeDriver, out_dir: Path, *, ordinal: int,
                 break
             try:
                 step, profile_min_spacing_px = _plan_card_scroll(
-                    card_frames[-1], content_band=content_band, like_template=like_template,
+                    card_frames[-1],
+                    content_band=content_band,
+                    like_template=like_template,
                     like_threshold=like_threshold,
-                    profile_min_spacing_px=profile_min_spacing_px)
+                    profile_min_spacing_px=profile_min_spacing_px,
+                )
             except (SegmentationError, ScrollStepError) as exc:
                 planning_refusal = (
                     "could not safely plan the next card-enumeration scroll from the current "
-                    f"frame ({type(exc).__name__}: {exc})")
+                    f"frame ({type(exc).__name__}: {exc})"
+                )
                 break
             time.sleep(human_delay(driver.dwell_s))
             # Both plan arguments are required.  In particular, passing just a fraction lets the
@@ -3274,8 +4043,9 @@ def _capture_one_profile(driver: HingeDriver, out_dir: Path, *, ordinal: int,
             driver._scroll_down_one(step.frac, step.x_frac)
             frame = _settled_read_scroll_frame(driver)
             card_frames.append(frame)
-            staged_frames.append((frame, "card_scroll", None,
-                                  datetime.now(timezone.utc).isoformat()))
+            staged_frames.append(
+                (frame, "card_scroll", None, datetime.now(timezone.utc).isoformat())
+            )
 
         if not satisfied:
             if planning_refusal is not None:
@@ -3286,13 +4056,24 @@ def _capture_one_profile(driver: HingeDriver, out_dir: Path, *, ordinal: int,
                 reason = "; ".join(index.failures)
             else:
                 have = len(payload.items) if payload is not None else 0
-                reason = (f"only {have} photo item(s) indexed, need >= {max(target_items)}, "
-                          "or the full profile end/partial-block check was not satisfied")
-            print(f"  Could not capture a complete, usable, identity-confirmed sequence "
-                  f"covering every item through requested item {max(target_items)} within "
-                  f"{_MAX_CARD_SCROLLS} scrolls: {reason}")
-            if input("  Retry this profile from a fresh top? [Y/n] > ").strip().lower().startswith("n"):
-                raise _CaptureAbort("owner declined to retry after a card-sequence refusal")
+                reason = (
+                    f"only {have} photo item(s) indexed, need >= {max(target_items)}, "
+                    "or the full profile end/partial-block check was not satisfied"
+                )
+            print(
+                f"  Could not capture a complete, usable, identity-confirmed sequence "
+                f"covering every item through requested item {max(target_items)} within "
+                f"{_MAX_CARD_SCROLLS} scrolls: {reason}"
+            )
+            if (
+                input("  Retry this profile from a fresh top? [Y/n] > ")
+                .strip()
+                .lower()
+                .startswith("n")
+            ):
+                raise _CaptureAbort(
+                    "owner declined to retry after a card-sequence refusal"
+                )
             continue
 
         composer_items_meta = []
@@ -3300,71 +4081,110 @@ def _capture_one_profile(driver: HingeDriver, out_dir: Path, *, ordinal: int,
             while True:
                 input(
                     f"  Position item {n} so its card is visible. Press ENTER immediately BEFORE "
-                    "you tap its heart > ")
+                    "you tap its heart > "
+                )
                 target_pre = driver.adb.screencap()
                 input(
                     f"  Manually tap item {n}'s heart now (YOUR OWN HAND -- this tool never "
                     "targets an item). The inline composer persists; do NOT try to dismiss it. "
-                    "Press ENTER once Send Like is visible beneath the selected item > ")
+                    "Press ENTER once Send Like is visible beneath the selected item > "
+                )
                 composer_open = driver.adb.screencap()
                 try:
-                    surface = locate_inline_composer(composer_open, confirm_template, threshold=0.8)
+                    surface = locate_inline_composer(
+                        composer_open, confirm_template, threshold=0.8
+                    )
                 except ComposerDetectionError as exc:
-                    print(f"  That does not structurally prove an inline composer ({exc}). Try again.")
+                    print(
+                        f"  That does not structurally prove an inline composer ({exc}). Try again."
+                    )
                     continue
                 if surface.layout_id != _COMPOSER_LAYOUT_ID:
-                    print(f"  Refusing unknown composer layout {surface.layout_id!r}; try again.")
+                    print(
+                        f"  Refusing unknown composer layout {surface.layout_id!r}; try again."
+                    )
                     continue
                 break
             captured_utc = datetime.now(timezone.utc).isoformat()
-            staged_frames.extend(((target_pre, "target_pre", n, captured_utc),
-                                  (composer_open, "composer_open", n, captured_utc)))
+            staged_frames.extend(
+                (
+                    (target_pre, "target_pre", n, captured_utc),
+                    (composer_open, "composer_open", n, captured_utc),
+                )
+            )
             composer_items_meta.append(n)
 
         while True:
             input(
                 "  After the final composer capture, manually advance to a NEW profile and its "
                 "scroll top. Do NOT tap Send Like. Press ENTER once filter chips are visible and "
-                "the previous composer is gone > ")
+                "the previous composer is gone > "
+            )
             advance_frame = driver.adb.screencap()
             top_verdict = confirm_scroll_top(advance_frame, identity_band=identity_band)
             if not top_verdict.confirmed:
-                print(f"  New profile top was not confirmed ({top_verdict.reason}). Try again.")
+                print(
+                    f"  New profile top was not confirmed ({top_verdict.reason}). Try again."
+                )
                 continue
             try:
                 locate_inline_composer(advance_frame, confirm_template, threshold=0.8)
             except ComposerDetectionError:
                 break
-            print("  An inline composer is still visible; advance to a new profile before continuing.")
-        staged_frames.append((advance_frame, "profile_advance_clear", None,
-                              datetime.now(timezone.utc).isoformat()))
+            print(
+                "  An inline composer is still visible; advance to a new profile before continuing."
+            )
+        staged_frames.append(
+            (
+                advance_frame,
+                "profile_advance_clear",
+                None,
+                datetime.now(timezone.utc).isoformat(),
+            )
+        )
         while True:
             input(
                 "  On that NEW profile, scroll just enough for its sticky name header to replace "
-                "the filter chips. Press ENTER once it is visibly stable > ")
+                "the filter chips. Press ENTER once it is visibly stable > "
+            )
             advance_identity = driver.adb.screencap()
             try:
-                identity_top = confirm_scroll_top(advance_identity, identity_band=identity_band)
+                identity_top = confirm_scroll_top(
+                    advance_identity, identity_band=identity_band
+                )
                 if not identity_top.refuted:
-                    print("  The new profile's sticky header was not positively visible. Try again.")
+                    print(
+                        "  The new profile's sticky header was not positively visible. Try again."
+                    )
                     continue
                 advance_fp = band_fingerprint(
-                    advance_identity, identity_band=identity_band, grid=_IDENTITY_GRID)
+                    advance_identity, identity_band=identity_band, grid=_IDENTITY_GRID
+                )
                 distance = _checked_distance(
                     fingerprint_distance(identity.fingerprint, advance_fp),
-                    context=f"profile {profile_id!r} advance identity")
+                    context=f"profile {profile_id!r} advance identity",
+                )
             except ScrollTopError as exc:
-                print(f"  Could not read the new profile identity header ({exc}). Try again.")
+                print(
+                    f"  Could not read the new profile identity header ({exc}). Try again."
+                )
                 continue
             if distance <= _IDENTITY_FALSE_MATCH_DISTANCE:
                 print(
                     f"  The claimed next profile is only {distance:.3f} from the prior identity "
                     f"(must be > {_IDENTITY_FALSE_MATCH_DISTANCE}); do not certify a same-profile "
-                    "scroll as an advance. Try again.")
+                    "scroll as an advance. Try again."
+                )
                 continue
             break
-        staged_frames.append((advance_identity, "profile_advance_identity", None,
-                              datetime.now(timezone.utc).isoformat()))
+        staged_frames.append(
+            (
+                advance_identity,
+                "profile_advance_identity",
+                None,
+                datetime.now(timezone.utc).isoformat(),
+            )
+        )
 
         profile_meta = {
             "ordinal": ordinal,
@@ -3377,22 +4197,32 @@ def _capture_one_profile(driver: HingeDriver, out_dir: Path, *, ordinal: int,
             "identity_agreeing_frames": identity.agreeing_frames,
         }
         frame_counter = _commit_profile_frames(
-            out_dir, frames_meta, frame_counter, staged_frames,
-            profile_ordinal=ordinal, profile_id=profile_id)
+            out_dir,
+            frames_meta,
+            frame_counter,
+            staged_frames,
+            profile_ordinal=ordinal,
+            profile_id=profile_id,
+        )
         used_profile_ids.add(profile_id)
         return profile_meta, frame_counter
 
 
-def _capture_one_profile_unattended(driver: HingeDriver, out_dir: Path, *, ordinal: int,
-                                    frame_counter: int, frames_meta: list,
-                                    used_profile_ids: set[str],
-                                    review_gate: _HybridReviewGate | None = None,
-                                    skipped_attempts: list[dict] | None = None,
-                                    abort_recoveries: list[dict] | None = None,
-                                    send_like: bool = False,
-                                    entry_drift_restart_attempts: int = 0,
-                                    target_strategy_id: str = _AUTOMATED_TARGET_STRATEGY_ID
-                                    ) -> tuple[dict, int]:
+def _capture_one_profile_unattended(
+    driver: HingeDriver,
+    out_dir: Path,
+    *,
+    ordinal: int,
+    frame_counter: int,
+    frames_meta: list,
+    used_profile_ids: set[str],
+    review_gate: _HybridReviewGate | None = None,
+    skipped_attempts: list[dict] | None = None,
+    abort_recoveries: list[dict] | None = None,
+    send_like: bool = False,
+    entry_drift_restart_attempts: int = 0,
+    target_strategy_id: str = _AUTOMATED_TARGET_STRATEGY_ID,
+) -> tuple[dict, int]:
     """Capture one profile with explicitly-authorized device actions.
 
     This is deliberately separate from the supervised path above.  It uses the same bounded
@@ -3408,18 +4238,31 @@ def _capture_one_profile_unattended(driver: HingeDriver, out_dir: Path, *, ordin
     like_template = driver._template("like")
     confirm_template = driver._template("confirm")
     like_threshold = hinge_mod._LIKE_MATCH_THRESHOLD
-    if (type(entry_drift_restart_attempts) is not int
-            or not 0 <= entry_drift_restart_attempts
-            <= _MAX_ENTRY_DRIFT_REENUMERATION_RESTARTS_PER_PROFILE):
+    if (
+        type(entry_drift_restart_attempts) is not int
+        or not 0
+        <= entry_drift_restart_attempts
+        <= _MAX_ENTRY_DRIFT_REENUMERATION_RESTARTS_PER_PROFILE
+    ):
         raise _CaptureAbort("invalid bounded entry-drift re-enumeration restart count")
-    target_items = _automated_composer_items_for_ordinal(ordinal, strategy_id=target_strategy_id)
+    target_items = _automated_composer_items_for_ordinal(
+        ordinal, strategy_id=target_strategy_id
+    )
 
-    def recover_unsent_composer(*, frame: bytes, item_number: int, failure_stage: str) -> dict:
+    def recover_unsent_composer(
+        *, frame: bytes, item_number: int, failure_stage: str
+    ) -> dict:
         """Record the cleanup result even though this profile never becomes evidence."""
         recovery = _recover_automated_abort_from_open_composer(
-            driver, frame=frame, confirm_template=confirm_template, payload=payload,
-            item_number=item_number, identity=identity, identity_band=identity_band,
-            failure_stage=failure_stage)
+            driver,
+            frame=frame,
+            confirm_template=confirm_template,
+            payload=payload,
+            item_number=item_number,
+            identity=identity,
+            identity_band=identity_band,
+            failure_stage=failure_stage,
+        )
         recovery["ordinal"] = ordinal
         recovery["profile_id_sha256"] = _sha256(profile_id.encode("utf-8", "replace"))
         if abort_recoveries is not None:
@@ -3430,24 +4273,39 @@ def _capture_one_profile_unattended(driver: HingeDriver, out_dir: Path, *, ordin
         # Check budgets *before* the public Pass.  A cap must stop a changed implementation
         # before it spends another profile, not merely decline to record the extra advance.
         attempts = skipped_attempts or []
-        ordinal_attempts = sum(1 for attempt in attempts if attempt.get("ordinal") == ordinal)
+        ordinal_attempts = sum(
+            1 for attempt in attempts if attempt.get("ordinal") == ordinal
+        )
         if ordinal_attempts >= _MAX_PREACTION_PROFILE_SKIPS_PER_ORDINAL:
             raise _CaptureAbort(
                 f"automated profile {ordinal}: exceeded the bounded "
-                f"{_MAX_PREACTION_PROFILE_SKIPS_PER_ORDINAL}-attempt pre-action skip budget")
+                f"{_MAX_PREACTION_PROFILE_SKIPS_PER_ORDINAL}-attempt pre-action skip budget"
+            )
         if len(attempts) >= _MAX_PREACTION_PROFILE_SKIPS_PER_SESSION:
             raise _CaptureAbort(
                 "automated capture exceeded the bounded session pre-action skip budget of "
-                f"{_MAX_PREACTION_PROFILE_SKIPS_PER_SESSION}")
+                f"{_MAX_PREACTION_PROFILE_SKIPS_PER_SESSION}"
+            )
 
-    def skip_before_heart(reason: _PreActionProfileRetry, identity: ProfileIdentity) -> _ProfileSkipped:
+    def skip_before_heart(
+        reason: _PreActionProfileRetry, identity: ProfileIdentity
+    ) -> _ProfileSkipped:
         assert_skip_budget()
         try:
-            return _ProfileSkipped(_skip_automated_profile_before_heart(
-                driver, ordinal=ordinal, reason=reason, identity=identity,
-                identity_band=identity_band, content_band=content_band,
-                like_template=like_template, like_threshold=like_threshold,
-                review_gate=review_gate, send_like=send_like))
+            return _ProfileSkipped(
+                _skip_automated_profile_before_heart(
+                    driver,
+                    ordinal=ordinal,
+                    reason=reason,
+                    identity=identity,
+                    identity_band=identity_band,
+                    content_band=content_band,
+                    like_template=like_template,
+                    like_threshold=like_threshold,
+                    review_gate=review_gate,
+                    send_like=send_like,
+                )
+            )
         except _UnsupportedEntryDeck as exc:
             # The pre-action skip's own rewind meets the same unsupported layout the entry
             # rewind does, from deeper in the card, so it must escalate the same way. Letting it
@@ -3456,26 +4314,47 @@ def _capture_one_profile_unattended(driver: HingeDriver, out_dir: Path, *, ordin
             # is the first thing that function does after its identity precondition, so no
             # device action has happened yet; the budget was already charged once above and this
             # escalation still emits exactly one skip record.
-            return _ProfileSkipped(_skip_automated_unsupported_entry_deck(
-                driver, ordinal=ordinal, entry=exc, identity_band=identity_band,
-                review_gate=review_gate, send_like=send_like, skip_reason=reason))
+            return _ProfileSkipped(
+                _skip_automated_unsupported_entry_deck(
+                    driver,
+                    ordinal=ordinal,
+                    entry=exc,
+                    identity_band=identity_band,
+                    review_gate=review_gate,
+                    send_like=send_like,
+                    skip_reason=reason,
+                )
+            )
 
     # Every automated/hybrid profile begins with a visually-driven rewind, including profiles
     # reached after a reviewer-directed restart.  It is intentionally independent of the
     # driver's in-process scroll ledger, which cannot represent a handoff position.
     try:
         top_frame = _rewind_automated_profile_to_confirmed_top(
-            driver, ordinal=ordinal, identity_band=identity_band, content_band=content_band,
-            like_template=like_template, like_threshold=like_threshold)
+            driver,
+            ordinal=ordinal,
+            identity_band=identity_band,
+            content_band=content_band,
+            like_template=like_template,
+            like_threshold=like_threshold,
+        )
     except _UnsupportedEntryDeck as exc:
         assert_skip_budget()
-        raise _ProfileSkipped(_skip_automated_unsupported_entry_deck(
-            driver, ordinal=ordinal, entry=exc, identity_band=identity_band,
-            review_gate=review_gate, send_like=send_like)) from exc
+        raise _ProfileSkipped(
+            _skip_automated_unsupported_entry_deck(
+                driver,
+                ordinal=ordinal,
+                entry=exc,
+                identity_band=identity_band,
+                review_gate=review_gate,
+                send_like=send_like,
+            )
+        ) from exc
 
     card_frames = [top_frame]
     staged_frames: list[tuple[bytes, str, int | None, str]] = [
-        (top_frame, "card_scroll", None, datetime.now(timezone.utc).isoformat())]
+        (top_frame, "card_scroll", None, datetime.now(timezone.utc).isoformat())
+    ]
     identity: ProfileIdentity | None = None
     index = None
     payload = None
@@ -3483,13 +4362,19 @@ def _capture_one_profile_unattended(driver: HingeDriver, out_dir: Path, *, ordin
     min_spacing = None
     target_scope_reason = "index not yet built"
     for _step in range(_MAX_CARD_SCROLLS):
-        identity = capture_profile_identity(card_frames, identity_band=identity_band,
-                                            grid=_IDENTITY_GRID)
+        identity = capture_profile_identity(
+            card_frames, identity_band=identity_band, grid=_IDENTITY_GRID
+        )
         try:
-            index = build_item_index(card_frames, content_band=content_band,
-                                     like_template=like_template, like_threshold=like_threshold,
-                                     at_scroll_top=True, identity_band=identity_band,
-                                     _prefix_index=prior_index)
+            index = build_item_index(
+                card_frames,
+                content_band=content_band,
+                like_template=like_template,
+                like_threshold=like_threshold,
+                at_scroll_top=True,
+                identity_band=identity_band,
+                _prefix_index=prior_index,
+            )
             prior_index = index
             # The automated strategy has one target only.  It does not need to claim that it
             # saw the lower, untouched profile tail; it needs a complete absolute prefix through
@@ -3505,52 +4390,82 @@ def _capture_one_profile_unattended(driver: HingeDriver, out_dir: Path, *, ordin
             # a read scroll separates every candidate from its next frame, so this loop has no
             # un-interacted dwell to offer -- so every candidate refused, every payload came back
             # unusable and every profile skipped (live failure 2026-08-22).
-            payload = (build_item_payload(card_frames, index,
-                                          unnumber=unnumber_unless_confident_photo)
-                       if index.usable else None)
-            target_scope_reason = (_target_scoped_prefix_reason(index, payload, target_items)
-                                   if payload is not None else "photo-only payload unavailable")
+            payload = (
+                build_item_payload(
+                    card_frames, index, unnumber=unnumber_unless_confident_photo
+                )
+                if index.usable
+                else None
+            )
+            target_scope_reason = (
+                _target_scoped_prefix_reason(index, payload, target_items)
+                if payload is not None
+                else "photo-only payload unavailable"
+            )
             if target_scope_reason is None:
                 break
-        except (ItemIndexError, ItemCropError, SegmentationError, ShiftEstimationError) as exc:
+        except (
+            ItemIndexError,
+            ItemCropError,
+            SegmentationError,
+            ShiftEstimationError,
+        ) as exc:
             index = payload = None
             # Say what actually happened.  Leaving the initial placeholder in place meant a run
             # where EVERY iteration raised reported "index not yet built" as its skip detail --
             # a sentence describing the state before the loop started, not the failure the
             # operator has to fix.
-            target_scope_reason = f"enumeration raised {type(exc).__name__} on this frame set"
+            target_scope_reason = (
+                f"enumeration raised {type(exc).__name__} on this frame set"
+            )
         try:
             step, min_spacing = _plan_card_scroll(
-                card_frames[-1], content_band=content_band, like_template=like_template,
-                like_threshold=like_threshold, profile_min_spacing_px=min_spacing)
+                card_frames[-1],
+                content_band=content_band,
+                like_template=like_template,
+                like_threshold=like_threshold,
+                profile_min_spacing_px=min_spacing,
+            )
         except (SegmentationError, ScrollStepError) as exc:
-            raise _CaptureAbort(f"automated profile {ordinal}: no alias-safe read scroll: {exc}") from exc
+            raise _CaptureAbort(
+                f"automated profile {ordinal}: no alias-safe read scroll: {exc}"
+            ) from exc
         time.sleep(human_delay(driver.dwell_s))
         driver._scroll_down_one(step.frac, step.x_frac)
         frame = _settled_read_scroll_frame(driver)
         card_frames.append(frame)
-        staged_frames.append((frame, "card_scroll", None, datetime.now(timezone.utc).isoformat()))
+        staged_frames.append(
+            (frame, "card_scroll", None, datetime.now(timezone.utc).isoformat())
+        )
     else:
         if identity is None or not identity.known:
             raise _CaptureAbort(
                 f"automated profile {ordinal}: did not obtain an identity-bound target prefix "
-                f"for {target_items}, and has no identity safe enough to skip")
+                f"for {target_items}, and has no identity safe enough to skip"
+            )
         retry = _PreActionProfileRetry(
             "target_unavailable_or_incomplete_index",
             f"did not obtain a safe target-scoped photo prefix for {target_items} within "
-            f"{_MAX_CARD_SCROLLS} bounded read scrolls ({target_scope_reason})")
+            f"{_MAX_CARD_SCROLLS} bounded read scrolls ({target_scope_reason})",
+        )
         raise skip_before_heart(retry, identity)
 
     if identity is None or not identity.known or index is None or payload is None:
-        raise _CaptureAbort(f"automated profile {ordinal}: index/identity unexpectedly unavailable")
+        raise _CaptureAbort(
+            f"automated profile {ordinal}: index/identity unexpectedly unavailable"
+        )
     target_scope_reason = _target_scoped_prefix_reason(index, payload, target_items)
     if target_scope_reason is not None:
-        raise _CaptureAbort(f"automated profile {ordinal}: target prefix changed before action: "
-                            f"{target_scope_reason}")
+        raise _CaptureAbort(
+            f"automated profile {ordinal}: target prefix changed before action: "
+            f"{target_scope_reason}"
+        )
     profile_id = "auto-" + _sha256(b"".join(card_frames[:3]))[:20]
     if profile_id in used_profile_ids:
-        raise _CaptureAbort("automated capture encountered a duplicate profile fingerprint; refusing "
-                            "to reuse a profile across the evidence split")
+        raise _CaptureAbort(
+            "automated capture encountered a duplicate profile fingerprint; refusing "
+            "to reuse a profile across the evidence split"
+        )
 
     action_trace: list[dict] = []
     for item_number in target_items:
@@ -3558,15 +4473,21 @@ def _capture_one_profile_unattended(driver: HingeDriver, out_dir: Path, *, ordin
         if not blocker_proof.blocker_absent:
             retry = _PreActionProfileRetry(
                 "target_verification_blocked",
-                f"item {item_number}: {blocker_proof.blocker}")
+                f"item {item_number}: {blocker_proof.blocker}",
+            )
             raise skip_before_heart(retry, identity)
         review_before = None
         adjustment_count = 0
         center_offsets_tried: list[float] = []
 
         def _apply_bounded_centering_correction(
-                center_offset: float, *, target_pre: bytes, item_number: int,
-                adjustment_count: int, center_offsets_tried: list[float]) -> int:
+            center_offset: float,
+            *,
+            target_pre: bytes,
+            item_number: int,
+            adjustment_count: int,
+            center_offsets_tried: list[float],
+        ) -> int:
             """One bounded corrective read-scroll, charged against the shared adjustment
             budget, or the bounded pre-action skip once that budget is exhausted.  Returns the
             incremented adjustment count; the caller stores it back.
@@ -3594,15 +4515,22 @@ def _capture_one_profile_unattended(driver: HingeDriver, out_dir: Path, *, ordin
                     f"item {item_number}: navigation could not park this card inside "
                     f"Hinge's autoplay trigger zone (card centre offset {tried} over "
                     f"{len(center_offsets_tried) - 1} corrective scroll(s), limit "
-                    f"{STILL_PHOTO_AUTOPLAY_CENTER_BAND_FRAC:.3f})")
+                    f"{STILL_PHOTO_AUTOPLAY_CENTER_BAND_FRAC:.3f})",
+                )
                 raise skip_before_heart(retry, identity)
             try:
                 step, _ = _plan_card_scroll(
-                    target_pre, content_band=content_band, like_template=like_template,
-                    like_threshold=like_threshold, profile_min_spacing_px=None)
+                    target_pre,
+                    content_band=content_band,
+                    like_template=like_template,
+                    like_threshold=like_threshold,
+                    profile_min_spacing_px=None,
+                )
             except (SegmentationError, ScrollStepError) as exc:
-                raise _CaptureAbort("centring correction could not be planned as a bounded "
-                                    f"scroll: {exc}") from exc
+                raise _CaptureAbort(
+                    "centring correction could not be planned as a bounded "
+                    f"scroll: {exc}"
+                ) from exc
             if center_offset < 0:
                 # The card sits HIGH of the content centre, so the CONTENT has to come DOWN.
                 driver._scroll_up_one(step.frac, step.x_frac)
@@ -3617,10 +4545,20 @@ def _capture_one_profile_unattended(driver: HingeDriver, out_dir: Path, *, ordin
                 heart_ordinal = payload.item(item_number).heart_ordinal
                 navigation_index = index.translation.index(heart_ordinal) + 1
                 target = navigate_to_item(
-                    driver, index, navigation_index, entry_reference=card_frames[-1],
-                    identity_match_max_dist=_UNATTENDED_PROVISIONAL_IDENTITY_MAX_DIST)
-            except (ItemCropError, ValueError, ItemNavigationError, ShiftEstimationError,
-                    SegmentationError, ScrollStepError) as exc:
+                    driver,
+                    index,
+                    navigation_index,
+                    entry_reference=card_frames[-1],
+                    identity_match_max_dist=_UNATTENDED_PROVISIONAL_IDENTITY_MAX_DIST,
+                )
+            except (
+                ItemCropError,
+                ValueError,
+                ItemNavigationError,
+                ShiftEstimationError,
+                SegmentationError,
+                ScrollStepError,
+            ) as exc:
                 # A navigation entry refusal is decided from two exact frames: the last indexed
                 # read position and the navigator's fresh entry capture.  Persist both privately
                 # before the skip rewinds/advances the phone; without the pair, a real -500px
@@ -3635,38 +4573,58 @@ def _capture_one_profile_unattended(driver: HingeDriver, out_dir: Path, *, ordin
                     # pair is independent evidence about a different scan, so never overwrite
                     # scan 1 with scan 2 just because both target the same profile/item.
                     scan_attempt = entry_drift_restart_attempts + 1
-                    stem = (f"refused_navigation_p{ordinal}_item{item_number}"
-                            f"_scan{scan_attempt}")
+                    stem = (
+                        f"refused_navigation_p{ordinal}_item{item_number}"
+                        f"_scan{scan_attempt}"
+                    )
                     try:
                         forensics_dir = ensure_private_dir(out_dir / "forensics")
                         atomic_write_private_bytes(
-                            forensics_dir / f"{stem}_read_reference.png", card_frames[-1],
-                            parent=forensics_dir)
+                            forensics_dir / f"{stem}_read_reference.png",
+                            card_frames[-1],
+                            parent=forensics_dir,
+                        )
                         atomic_write_private_bytes(
-                            forensics_dir / f"{stem}_entry.png", exc.frame,
-                            parent=forensics_dir)
+                            forensics_dir / f"{stem}_entry.png",
+                            exc.frame,
+                            parent=forensics_dir,
+                        )
                         anchor = exc.anchor
                         atomic_write_private_text(
                             forensics_dir / f"{stem}.json",
-                            json.dumps({
-                                "kind": "navigation_refusal_forensic_v1",
-                                "ordinal": ordinal,
-                                "item_number": item_number,
-                                "error_code": exc.code,
-                                "error": str(exc),
-                                "read_reference_sha256": _sha256(card_frames[-1]),
-                                "entry_sha256": _sha256(exc.frame),
-                                "anchor_delta_px": getattr(anchor, "delta_px", None),
-                                "anchor_status": getattr(anchor, "status", None),
-                                "anchor_confidence": getattr(anchor, "confidence", None),
-                                "anchor_reason": getattr(anchor, "reason", None),
-                                "calibration_evidence": False,
-                            }, indent=2, sort_keys=True) + "\n",
-                            parent=forensics_dir)
-                        print("Wrote forensic (non-evidence) navigation pair: "
-                              f"{forensics_dir / stem}")
+                            json.dumps(
+                                {
+                                    "kind": "navigation_refusal_forensic_v1",
+                                    "ordinal": ordinal,
+                                    "item_number": item_number,
+                                    "error_code": exc.code,
+                                    "error": str(exc),
+                                    "read_reference_sha256": _sha256(card_frames[-1]),
+                                    "entry_sha256": _sha256(exc.frame),
+                                    "anchor_delta_px": getattr(
+                                        anchor, "delta_px", None
+                                    ),
+                                    "anchor_status": getattr(anchor, "status", None),
+                                    "anchor_confidence": getattr(
+                                        anchor, "confidence", None
+                                    ),
+                                    "anchor_reason": getattr(anchor, "reason", None),
+                                    "calibration_evidence": False,
+                                },
+                                indent=2,
+                                sort_keys=True,
+                            )
+                            + "\n",
+                            parent=forensics_dir,
+                        )
+                        print(
+                            "Wrote forensic (non-evidence) navigation pair: "
+                            f"{forensics_dir / stem}"
+                        )
                     except Exception as diagnostic_exc:  # noqa: BLE001 -- never mask refusal
-                        print(f"Could not write navigation-refusal diagnostic: {diagnostic_exc}")
+                        print(
+                            f"Could not write navigation-refusal diagnostic: {diagnostic_exc}"
+                        )
                 # Do not rebase a large entry delta onto this index.  Even a unanimous
                 # translation only proves two rendered frames correspond; it does not make the
                 # old enumeration's frame sequence the current scan.  Before ANY action or
@@ -3677,17 +4635,21 @@ def _capture_one_profile_unattended(driver: HingeDriver, out_dir: Path, *, ordin
                 large_measured_entry_drift = (
                     isinstance(exc, ItemNavigationError)
                     and exc.code == NAV_ANCHOR_UNMEASURED
-                    and isinstance(getattr(exc.anchor, "delta_px", None), int))
+                    and isinstance(getattr(exc.anchor, "delta_px", None), int)
+                )
                 if large_measured_entry_drift and not action_trace:
                     if entry_drift_restart_attempts < (
-                            _MAX_ENTRY_DRIFT_REENUMERATION_RESTARTS_PER_PROFILE):
+                        _MAX_ENTRY_DRIFT_REENUMERATION_RESTARTS_PER_PROFILE
+                    ):
                         raise _RestartProfile(
                             "measured pre-action navigation entry drift "
                             f"{exc.anchor.delta_px:+d}px; discarding the scan and taking the "
-                            "one bounded fresh re-enumeration") from exc
+                            "one bounded fresh re-enumeration"
+                        ) from exc
                 retry = _PreActionProfileRetry(
                     "pre_heart_navigation_refused",
-                    f"item {item_number}: {type(exc).__name__}: {exc}")
+                    f"item {item_number}: {type(exc).__name__}: {exc}",
+                )
                 raise skip_before_heart(retry, identity) from exc
             target_pre = target.frame
             # Default to the navigator's own point/rows.  Both are overwritten below only when
@@ -3697,12 +4659,17 @@ def _capture_one_profile_unattended(driver: HingeDriver, out_dir: Path, *, ordin
             moved_rows = target.block_frame_rows
             try:
                 target_proof = _verified_target_frame_proof(
-                    driver, target, frame=target_pre, content_band=content_band,
-                    like_template=like_template, like_threshold=like_threshold)
+                    driver,
+                    target,
+                    frame=target_pre,
+                    content_band=content_band,
+                    like_template=like_template,
+                    like_threshold=like_threshold,
+                )
             except _CaptureAbort as exc:
                 retry = _PreActionProfileRetry(
-                    "target_verification_blocked",
-                    f"item {item_number}: {exc}")
+                    "target_verification_blocked", f"item {item_number}: {exc}"
+                )
                 raise skip_before_heart(retry, identity) from exc
             # A POSITIONAL REFUSAL IS NOT A CONTENT REFUSAL, and only one of the two is
             # correctable.  The reviewer-directed SCROLL_UP/SCROLL_DOWN machinery below already
@@ -3727,12 +4694,19 @@ def _capture_one_profile_unattended(driver: HingeDriver, out_dir: Path, *, ordin
             # overcorrection needs no clamp -- the deck stops at the top, and the next pass
             # simply measures whatever is really on the screen.
             center_offset = _parked_card_center_offset(
-                target, target_proof, frame=target_pre, content_band=content_band)
-            if (center_offset is not None
-                    and abs(center_offset) > STILL_PHOTO_AUTOPLAY_CENTER_BAND_FRAC):
+                target, target_proof, frame=target_pre, content_band=content_band
+            )
+            if (
+                center_offset is not None
+                and abs(center_offset) > STILL_PHOTO_AUTOPLAY_CENTER_BAND_FRAC
+            ):
                 adjustment_count = _apply_bounded_centering_correction(
-                    center_offset, target_pre=target_pre, item_number=item_number,
-                    adjustment_count=adjustment_count, center_offsets_tried=center_offsets_tried)
+                    center_offset,
+                    target_pre=target_pre,
+                    item_number=item_number,
+                    adjustment_count=adjustment_count,
+                    center_offsets_tried=center_offsets_tried,
+                )
                 continue
             try:
                 # The dwell runs HERE, inside the pre-heart window and after the card is parked
@@ -3742,11 +4716,12 @@ def _capture_one_profile_unattended(driver: HingeDriver, out_dir: Path, *, ordin
                 # residual no longer refuses the card outright (2026-08-22, attempt 7): it hands
                 # back the frame the page actually settled on, re-proved below.
                 still_photo_proof = _verified_still_photo_proof(
-                    driver, frame=target_pre, block=target_proof.block)
+                    driver, frame=target_pre, block=target_proof.block
+                )
             except _CaptureAbort as exc:
                 retry = _PreActionProfileRetry(
-                    "target_verification_blocked",
-                    f"item {item_number}: {exc}")
+                    "target_verification_blocked", f"item {item_number}: {exc}"
+                )
                 raise skip_before_heart(retry, identity) from exc
             if still_photo_proof.action_frame != target_pre:
                 # THE GATE IS THE BYTES CHANGING, NOT THE RESIDUAL.  `action_frame` can differ
@@ -3769,36 +4744,56 @@ def _capture_one_profile_unattended(driver: HingeDriver, out_dir: Path, *, ordin
                 residual = still_photo_proof.page_residual_px
                 target_pre = still_photo_proof.action_frame
                 if residual:
-                    moved_rows = (target.block_frame_rows[0] - residual,
-                                 target.block_frame_rows[1] - residual)
+                    moved_rows = (
+                        target.block_frame_rows[0] - residual,
+                        target.block_frame_rows[1] - residual,
+                    )
                     tap_target_point = (target.point[0], target.point[1] - residual)
                 try:
                     target_proof = _verified_target_frame_proof(
-                        driver, target, frame=target_pre, content_band=content_band,
-                        like_template=like_template, like_threshold=like_threshold,
-                        expected_rows=moved_rows, expected_point=tap_target_point)
+                        driver,
+                        target,
+                        frame=target_pre,
+                        content_band=content_band,
+                        like_template=like_template,
+                        like_threshold=like_threshold,
+                        expected_rows=moved_rows,
+                        expected_point=tap_target_point,
+                    )
                 except _CaptureAbort as exc:
                     retry = _PreActionProfileRetry(
-                        "target_verification_blocked",
-                        f"item {item_number}: {exc}")
+                        "target_verification_blocked", f"item {item_number}: {exc}"
+                    )
                     raise skip_before_heart(retry, identity) from exc
                 center_offset = _parked_card_center_offset(
-                    target, target_proof, frame=target_pre, content_band=content_band,
-                    rows=moved_rows)
-                if (center_offset is not None
-                        and abs(center_offset) > STILL_PHOTO_AUTOPLAY_CENTER_BAND_FRAC):
+                    target,
+                    target_proof,
+                    frame=target_pre,
+                    content_band=content_band,
+                    rows=moved_rows,
+                )
+                if (
+                    center_offset is not None
+                    and abs(center_offset) > STILL_PHOTO_AUTOPLAY_CENTER_BAND_FRAC
+                ):
                     adjustment_count = _apply_bounded_centering_correction(
-                        center_offset, target_pre=target_pre, item_number=item_number,
+                        center_offset,
+                        target_pre=target_pre,
+                        item_number=item_number,
                         adjustment_count=adjustment_count,
-                        center_offsets_tried=center_offsets_tried)
+                        center_offsets_tried=center_offsets_tried,
+                    )
                     continue
             if review_gate is None:
                 break
             review_before = review_gate.checkpoint(
-                target_pre, claimed_state="target_heart_visible",
+                target_pre,
+                claimed_state="target_heart_visible",
                 action_plan={
-                    "action": "automated_photo_heart", "photo_model_item": item_number,
-                    "point": list(tap_target_point), "point_source": "navigate_to_item",
+                    "action": "automated_photo_heart",
+                    "photo_model_item": item_number,
+                    "point": list(tap_target_point),
+                    "point_source": "navigate_to_item",
                     # Every predicate below is the RETURN VALUE of the check that establishes it,
                     # read back through a function that refuses unless the proof binds this exact
                     # frame (or, for the blocker, this exact payload item).  None of them can be
@@ -3810,42 +4805,54 @@ def _capture_one_profile_unattended(driver: HingeDriver, out_dir: Path, *, ordin
                         # bursts taken moments ago -- the second after the card was scrolled out
                         # of Hinge's autoplay band and back, so a stalled or unloaded video had
                         # to restart to stay hidden -- with every frame named by digest.
-                        "positive_still_photo_evidence_verified":
-                            _verified_still_photo_evidence(still_photo_proof, target_pre),
+                        "positive_still_photo_evidence_verified": _verified_still_photo_evidence(
+                            still_photo_proof, target_pre
+                        ),
                         # Evidence: the verdict of the mute screen that ran on these exact
                         # bytes.  Reading it out of the proof refuses when nothing screened
                         # this frame, so the claim cannot outlive the screen behind it.
-                        "target_frame_mute_control_screened_absent":
-                            _screened_mute_control_absent(target_proof, target_pre),
-                        "verification_blocker_absent":
-                            _screened_verification_blocker_absent(
-                                blocker_proof, payload, item_number),
-                        "target_heart_visible":
-                            _located_target_heart_visible(target_proof, target_pre),
+                        "target_frame_mute_control_screened_absent": _screened_mute_control_absent(
+                            target_proof, target_pre
+                        ),
+                        "verification_blocker_absent": _screened_verification_blocker_absent(
+                            blocker_proof, payload, item_number
+                        ),
+                        "target_heart_visible": _located_target_heart_visible(
+                            target_proof, target_pre
+                        ),
                         "forbidden_zone_guarded_transport": "HingeDriver._tap",
                     },
-                })
+                },
+            )
             if review_before["decision"] == "approved":
                 break
             if review_before["decision"] == "restart_profile":
                 if item_number == target_items[0]:
                     retry = _PreActionProfileRetry(
                         "reviewer_requested_restart_before_first_heart",
-                        "reviewer requested RESTART_PROFILE before the first photo heart")
+                        "reviewer requested RESTART_PROFILE before the first photo heart",
+                    )
                     raise skip_before_heart(retry, identity)
-                raise _CaptureAbort("reviewer requested restart after a prior heart; refusing to hide "
-                                    "a real action by replaying the profile")
+                raise _CaptureAbort(
+                    "reviewer requested restart after a prior heart; refusing to hide "
+                    "a real action by replaying the profile"
+                )
             if review_before["decision"] == "retry":
                 adjustment_count += 1
             elif review_before["decision"] in {"scroll_up", "scroll_down"}:
                 adjustment_count += 1
                 try:
                     step, _ = _plan_card_scroll(
-                        target_pre, content_band=content_band, like_template=like_template,
-                        like_threshold=like_threshold, profile_min_spacing_px=None)
+                        target_pre,
+                        content_band=content_band,
+                        like_template=like_template,
+                        like_threshold=like_threshold,
+                        profile_min_spacing_px=None,
+                    )
                 except (SegmentationError, ScrollStepError) as exc:
-                    raise _CaptureAbort("reviewer-requested bounded scroll could not be planned: "
-                                        f"{exc}") from exc
+                    raise _CaptureAbort(
+                        f"reviewer-requested bounded scroll could not be planned: {exc}"
+                    ) from exc
                 if review_before["decision"] == "scroll_up":
                     driver._scroll_up_one(step.frac, step.x_frac)
                 else:
@@ -3853,36 +4860,54 @@ def _capture_one_profile_unattended(driver: HingeDriver, out_dir: Path, *, ordin
                 # Never reuse a target point after a reviewer-directed visual adjustment.
                 driver.adb.screencap()
             if adjustment_count > _HYBRID_MAX_ADJUSTMENTS_PER_ACTION:
-                raise _CaptureAbort("reviewer exceeded the bounded hybrid adjustment budget for one "
-                                    "heart; abort and modify/relaunch rather than continue blind")
+                raise _CaptureAbort(
+                    "reviewer exceeded the bounded hybrid adjustment budget for one "
+                    "heart; abort and modify/relaunch rather than continue blind"
+                )
         # External review authorizes one exact frame and point, not a coordinate that remains
         # valid indefinitely. Re-capture and re-run the structural/identity gates immediately
         # before the driver's foreground-guarded transport choke point.
         tap_point = tap_target_point
         if review_gate is not None:
-            plan = review_before.get("action_plan") if isinstance(review_before, dict) else None
+            plan = (
+                review_before.get("action_plan")
+                if isinstance(review_before, dict)
+                else None
+            )
             tap_point = _fresh_reviewed_target_point(
-                driver, target,
+                driver,
+                target,
                 reviewed_point=plan.get("point") if isinstance(plan, dict) else None,
-                content_band=content_band, like_template=like_template,
-                like_threshold=like_threshold, expected_point=tap_target_point,
-                expected_frame=target_pre, expected_rows=moved_rows)
+                content_band=content_band,
+                like_template=like_template,
+                like_threshold=like_threshold,
+                expected_point=tap_target_point,
+                expected_frame=target_pre,
+                expected_rows=moved_rows,
+            )
         # _tap is the driver's forbidden-zone/foreground-checked humanized transport chokepoint.
         driver._tap(*tap_point)
         time.sleep(human_delay(driver.dwell_s))
         composer_open = driver.adb.screencap()
         try:
-            surface = locate_inline_composer(composer_open, confirm_template, threshold=0.8)
+            surface = locate_inline_composer(
+                composer_open, confirm_template, threshold=0.8
+            )
             if surface.layout_id != _COMPOSER_LAYOUT_ID:
-                raise ComposerDetectionError(f"unsupported layout {surface.layout_id!r}")
-            verdict = verify_sheet_item(composer_open, payload, item_number,
-                                        composer_surface=surface)
+                raise ComposerDetectionError(
+                    f"unsupported layout {surface.layout_id!r}"
+                )
+            verdict = verify_sheet_item(
+                composer_open, payload, item_number, composer_surface=surface
+            )
             if not verdict.matched:
                 raise SheetVerificationError(verdict.reason)
         except (ComposerDetectionError, SheetVerificationError) as exc:
             recovery = recover_unsent_composer(
-                frame=composer_open, item_number=item_number,
-                failure_stage="post_tap_composer_or_item_verification_refused")
+                frame=composer_open,
+                item_number=item_number,
+                failure_stage="post_tap_composer_or_item_verification_refused",
+            )
             # The refusal text names a MEASURED geometry -- how many rows of the stored crop
             # the inline composer preview hid -- and that geometry is the only way to
             # re-derive `_INLINE_REFRAME_MAX_HIDDEN_FRACTION` after an app update changes the
@@ -3896,7 +4921,9 @@ def _capture_one_profile_unattended(driver: HingeDriver, out_dir: Path, *, ordin
                 diagnostic_stem = f"refused_composer_p{ordinal}_item{item_number}"
                 diagnostic_frame_path = out_dir / f"{diagnostic_stem}.png"
                 ensure_private_dir(out_dir)
-                atomic_write_private_bytes(diagnostic_frame_path, composer_open, parent=out_dir)
+                atomic_write_private_bytes(
+                    diagnostic_frame_path, composer_open, parent=out_dir
+                )
                 diagnostic_record = {
                     "ordinal": ordinal,
                     "item_number": item_number,
@@ -3905,79 +4932,119 @@ def _capture_one_profile_unattended(driver: HingeDriver, out_dir: Path, *, ordin
                 }
                 try:
                     device_evidence = _device_evidence(driver)
-                    diagnostic_record["hinge_version_name"] = device_evidence["hinge_version_name"]
+                    diagnostic_record["hinge_version_name"] = device_evidence[
+                        "hinge_version_name"
+                    ]
                     diagnostic_record["frame_size_px"] = [
-                        device_evidence["display_w"], device_evidence["display_h"]]
+                        device_evidence["display_w"],
+                        device_evidence["display_h"],
+                    ]
                 except Exception:  # noqa: BLE001 -- diagnostic-only; omit rather than fail
                     pass
                 try:
-                    diagnostic_record["stored_crop_height_px"] = payload.item(item_number).height
+                    diagnostic_record["stored_crop_height_px"] = payload.item(
+                        item_number
+                    ).height
                 except Exception:  # noqa: BLE001 -- diagnostic-only; omit rather than fail
                     pass
                 diagnostic_json_path = out_dir / f"{diagnostic_stem}.json"
                 atomic_write_private_bytes(
                     diagnostic_json_path,
-                    (json.dumps(diagnostic_record, indent=2, sort_keys=True) + "\n").encode("utf-8"),
-                    parent=out_dir)
-                print(f"Wrote forensic (non-evidence) refusal diagnostic: {diagnostic_frame_path}")
+                    (
+                        json.dumps(diagnostic_record, indent=2, sort_keys=True) + "\n"
+                    ).encode("utf-8"),
+                    parent=out_dir,
+                )
+                print(
+                    f"Wrote forensic (non-evidence) refusal diagnostic: {diagnostic_frame_path}"
+                )
             except Exception:  # noqa: BLE001 -- diagnostic-only; never mask the real refusal
                 pass
-            raise _CaptureAbort(f"automated profile {ordinal} item {item_number}: post-tap "
-                                f"composer/item verification refused: {exc}; abort cleanup "
-                                f"outcome={recovery['outcome']}") from exc
+            raise _CaptureAbort(
+                f"automated profile {ordinal} item {item_number}: post-tap "
+                f"composer/item verification refused: {exc}; abort cleanup "
+                f"outcome={recovery['outcome']}"
+            ) from exc
         review_after = None
         if review_gate is not None:
             post_retries = 0
             while True:
                 try:
                     review_after = review_gate.checkpoint(
-                        composer_open, claimed_state="composer_and_item_verified",
+                        composer_open,
+                        claimed_state="composer_and_item_verified",
                         action_plan={
-                            "action": "review_heart_result", "photo_model_item": item_number,
-                            "point": list(tap_point), "point_source": "completed HingeDriver._tap",
-                            "predicates": {"inline_composer_verified": True,
-                                           "post_tap_item_relative_verified": True,
-                                           "send_like_tapped": False},
-                        })
+                            "action": "review_heart_result",
+                            "photo_model_item": item_number,
+                            "point": list(tap_point),
+                            "point_source": "completed HingeDriver._tap",
+                            "predicates": {
+                                "inline_composer_verified": True,
+                                "post_tap_item_relative_verified": True,
+                                "send_like_tapped": False,
+                            },
+                        },
+                    )
                 except _CaptureAbort as exc:
                     recovery = recover_unsent_composer(
-                        frame=composer_open, item_number=item_number,
-                        failure_stage="post_tap_reviewer_checkpoint_aborted")
+                        frame=composer_open,
+                        item_number=item_number,
+                        failure_stage="post_tap_reviewer_checkpoint_aborted",
+                    )
                     raise _CaptureAbort(
                         "hybrid reviewer stopped after a real heart; abort cleanup "
-                        f"outcome={recovery['outcome']}") from exc
+                        f"outcome={recovery['outcome']}"
+                    ) from exc
                 if review_after["decision"] == "approved":
                     break
-                if review_after["decision"] == "retry" and post_retries < _HYBRID_MAX_ADJUSTMENTS_PER_ACTION:
+                if (
+                    review_after["decision"] == "retry"
+                    and post_retries < _HYBRID_MAX_ADJUSTMENTS_PER_ACTION
+                ):
                     post_retries += 1
                     continue
                 recovery = recover_unsent_composer(
-                    frame=composer_open, item_number=item_number,
-                    failure_stage="post_tap_reviewer_nonapproval")
-                raise _CaptureAbort("reviewer did not approve the verified heart result; no further "
-                                    "device action is allowed in this session; abort cleanup "
-                                    f"outcome={recovery['outcome']}")
+                    frame=composer_open,
+                    item_number=item_number,
+                    failure_stage="post_tap_reviewer_nonapproval",
+                )
+                raise _CaptureAbort(
+                    "reviewer did not approve the verified heart result; no further "
+                    "device action is allowed in this session; abort cleanup "
+                    f"outcome={recovery['outcome']}"
+                )
         captured = datetime.now(timezone.utc).isoformat()
-        staged_frames.extend(((target_pre, "target_pre", item_number, captured),
-                              (composer_open, "composer_open", item_number, captured)))
-        action_trace.append({"action": "automated_photo_heart", "photo_model_item": item_number,
-                             "transport": "HingeDriver._tap",
-                             "pre_frame_sha256": _sha256(target_pre),
-                             "post_frame_sha256": _sha256(composer_open),
-                             "post_tap_composer_verified": True,
-                             "post_tap_item_relative_verified": True,
-                             "target_scoped_prefix_proof": {
-                                 "id": _TARGET_SCOPED_PREFIX_PROOF_ID,
-                                 "index_complete": bool(index.complete),
-                                 "target_photo_model_item": item_number,
-                                 "target_heart_ordinal": payload.item(item_number).heart_ordinal,
-                                 "predecessors_resolved": True,
-                                 "target_crop_complete": True,
-                                 "identity_known": True,
-                             },
-                             "review_checkpoints": ({"before": review_before,
-                                                     "after": review_after}
-                                                    if review_gate is not None else None)})
+        staged_frames.extend(
+            (
+                (target_pre, "target_pre", item_number, captured),
+                (composer_open, "composer_open", item_number, captured),
+            )
+        )
+        action_trace.append(
+            {
+                "action": "automated_photo_heart",
+                "photo_model_item": item_number,
+                "transport": "HingeDriver._tap",
+                "pre_frame_sha256": _sha256(target_pre),
+                "post_frame_sha256": _sha256(composer_open),
+                "post_tap_composer_verified": True,
+                "post_tap_item_relative_verified": True,
+                "target_scoped_prefix_proof": {
+                    "id": _TARGET_SCOPED_PREFIX_PROOF_ID,
+                    "index_complete": bool(index.complete),
+                    "target_photo_model_item": item_number,
+                    "target_heart_ordinal": payload.item(item_number).heart_ordinal,
+                    "predecessors_resolved": True,
+                    "target_crop_complete": True,
+                    "identity_known": True,
+                },
+                "review_checkpoints": (
+                    {"before": review_before, "after": review_after}
+                    if review_gate is not None
+                    else None
+                ),
+            }
+        )
 
     # A persistent inline composer hides the normal deck Like glyph, so production
     # `HingeDriver.dislike()` correctly refuses it.  Calibration instead has one narrow,
@@ -3988,43 +5055,62 @@ def _capture_one_profile_unattended(driver: HingeDriver, out_dir: Path, *, ordin
     pass_item_number = target_items[-1]
     try:
         pass_surface = _verified_automated_composer(
-            pass_frame, confirm_template=confirm_template, payload=payload,
-            item_number=pass_item_number)
+            pass_frame,
+            confirm_template=confirm_template,
+            payload=payload,
+            item_number=pass_item_number,
+        )
     except _CaptureAbort as exc:
         recovery = recover_unsent_composer(
-            frame=pass_frame, item_number=pass_item_number,
-            failure_stage="pre_pass_composer_reverification_refused")
-        raise _CaptureAbort("automated profile "
-                            f"{ordinal}: composer could not be reverified before Pass: {exc}; "
-                            f"abort cleanup outcome={recovery['outcome']}") from exc
+            frame=pass_frame,
+            item_number=pass_item_number,
+            failure_stage="pre_pass_composer_reverification_refused",
+        )
+        raise _CaptureAbort(
+            "automated profile "
+            f"{ordinal}: composer could not be reverified before Pass: {exc}; "
+            f"abort cleanup outcome={recovery['outcome']}"
+        ) from exc
     pass_review = None
     if review_gate is not None:
         pass_adjustments = 0
         while True:
             try:
                 pass_review = review_gate.checkpoint(
-                    pass_frame, claimed_state="composer_open_before_pass",
+                    pass_frame,
+                    claimed_state="composer_open_before_pass",
                     action_plan={
-                        "action": ("automated_send_priority_like" if send_like
-                                  else "automated_pass"),
+                        "action": (
+                            "automated_send_priority_like"
+                            if send_like
+                            else "automated_pass"
+                        ),
                         "photo_model_item": None,
-                        "point": (list(pass_surface.confirm_point) if send_like else None),
-                        "point_source": ("calibration-only verified-composer Send transport"
-                                        if send_like else
-                                        "calibration-only verified-composer Pass transport"),
+                        "point": (
+                            list(pass_surface.confirm_point) if send_like else None
+                        ),
+                        "point_source": (
+                            "calibration-only verified-composer Send transport"
+                            if send_like
+                            else "calibration-only verified-composer Pass transport"
+                        ),
                         "predicates": {
                             "inline_composer_and_selected_photo_verified_before_action": True,
                             "send_like_tapped": False,
                             "forbidden_zone_guarded_transport": "HingeDriver._tap",
                         },
-                    })
+                    },
+                )
             except _CaptureAbort as exc:
                 recovery = recover_unsent_composer(
-                    frame=pass_frame, item_number=pass_item_number,
-                    failure_stage="pre_pass_reviewer_checkpoint_aborted")
+                    frame=pass_frame,
+                    item_number=pass_item_number,
+                    failure_stage="pre_pass_reviewer_checkpoint_aborted",
+                )
                 raise _CaptureAbort(
                     "hybrid reviewer stopped before Pass/Send after a real heart; abort cleanup "
-                    f"outcome={recovery['outcome']}") from exc
+                    f"outcome={recovery['outcome']}"
+                ) from exc
             if pass_review["decision"] == "approved":
                 break
             if pass_review["decision"] == "retry":
@@ -4033,45 +5119,81 @@ def _capture_one_profile_unattended(driver: HingeDriver, out_dir: Path, *, ordin
                 pass_adjustments += 1
                 try:
                     step, _ = _plan_card_scroll(
-                        pass_frame, content_band=content_band, like_template=like_template,
-                        like_threshold=like_threshold, profile_min_spacing_px=None)
+                        pass_frame,
+                        content_band=content_band,
+                        like_template=like_template,
+                        like_threshold=like_threshold,
+                        profile_min_spacing_px=None,
+                    )
                 except (SegmentationError, ScrollStepError) as exc:
-                    raise _CaptureAbort("reviewer-requested bounded Pass scroll could not be planned: "
-                                        f"{exc}") from exc
+                    raise _CaptureAbort(
+                        "reviewer-requested bounded Pass scroll could not be planned: "
+                        f"{exc}"
+                    ) from exc
                 if pass_review["decision"] == "scroll_up":
                     driver._scroll_up_one(step.frac, step.x_frac)
                 else:
                     driver._scroll_down_one(step.frac, step.x_frac)
                 pass_frame = driver.adb.screencap()
                 pass_surface = _verified_automated_composer(
-                    pass_frame, confirm_template=confirm_template, payload=payload,
-                    item_number=pass_item_number)
+                    pass_frame,
+                    confirm_template=confirm_template,
+                    payload=payload,
+                    item_number=pass_item_number,
+                )
             else:
                 recovery = recover_unsent_composer(
-                    frame=pass_frame, item_number=pass_item_number,
-                    failure_stage="pre_pass_reviewer_nonapproval")
-                raise _CaptureAbort("reviewer requested profile restart after hearting; session must "
-                                    "abort rather than disguise prior real actions; abort cleanup "
-                                    f"outcome={recovery['outcome']}")
+                    frame=pass_frame,
+                    item_number=pass_item_number,
+                    failure_stage="pre_pass_reviewer_nonapproval",
+                )
+                raise _CaptureAbort(
+                    "reviewer requested profile restart after hearting; session must "
+                    "abort rather than disguise prior real actions; abort cleanup "
+                    f"outcome={recovery['outcome']}"
+                )
             if pass_adjustments > _HYBRID_MAX_ADJUSTMENTS_PER_ACTION:
-                raise _CaptureAbort("reviewer exceeded bounded hybrid adjustment budget before Pass")
+                raise _CaptureAbort(
+                    "reviewer exceeded bounded hybrid adjustment budget before Pass"
+                )
     try:
         if send_like:
-            plan = pass_review.get("action_plan") if isinstance(pass_review, dict) else None
+            plan = (
+                pass_review.get("action_plan")
+                if isinstance(pass_review, dict)
+                else None
+            )
             reviewed_point = plan.get("point") if isinstance(plan, dict) else None
-            if (not isinstance(reviewed_point, list) or len(reviewed_point) != 2
-                    or any(isinstance(value, bool) or not isinstance(value, int)
-                           for value in reviewed_point)):
+            if (
+                not isinstance(reviewed_point, list)
+                or len(reviewed_point) != 2
+                or any(
+                    isinstance(value, bool) or not isinstance(value, int)
+                    for value in reviewed_point
+                )
+            ):
                 raise _CaptureAbort(
                     "automated Send refused: no exact reviewer-approved confirmation point is "
-                    "bound to the terminal checkpoint")
+                    "bound to the terminal checkpoint"
+                )
             advance_frame, pass_trace = _automated_send_from_verified_composer(
-                driver, frame=pass_frame, confirm_template=confirm_template, payload=payload,
-                item_number=pass_item_number, reviewed_confirm_point=tuple(reviewed_point))
+                driver,
+                frame=pass_frame,
+                confirm_template=confirm_template,
+                payload=payload,
+                item_number=pass_item_number,
+                reviewed_confirm_point=tuple(reviewed_point),
+            )
         else:
             advance_frame, pass_trace = _automated_pass_from_verified_composer(
-                driver, frame=pass_frame, confirm_template=confirm_template, payload=payload,
-                item_number=pass_item_number, identity=identity, identity_band=identity_band)
+                driver,
+                frame=pass_frame,
+                confirm_template=confirm_template,
+                payload=payload,
+                item_number=pass_item_number,
+                identity=identity,
+                identity_band=identity_band,
+            )
     except _CaptureAbort as exc:
         # The terminal helper can still refuse after the hybrid reviewer approves: most notably
         # its final, fresh-frame proof runs immediately before a real Send.  A pre-tap refusal
@@ -4081,47 +5203,94 @@ def _capture_one_profile_unattended(driver: HingeDriver, out_dir: Path, *, ordin
         # absence of a structurally proven composer makes recovery a no-input `not_cleared`.
         recovery_frame = driver.adb.screencap()
         recovery = recover_unsent_composer(
-            frame=recovery_frame, item_number=pass_item_number,
-            failure_stage=("terminal_send_refused" if send_like else "terminal_pass_refused"))
+            frame=recovery_frame,
+            item_number=pass_item_number,
+            failure_stage=(
+                "terminal_send_refused" if send_like else "terminal_pass_refused"
+            ),
+        )
         raise _CaptureAbort(
             f"automated profile {ordinal}: terminal "
             f"{'Send' if send_like else 'Pass'} refused after a real heart: {exc}; "
-            f"abort cleanup outcome={recovery['outcome']}") from exc
-    staged_frames.append((advance_frame, "profile_advance_clear", None,
-                          datetime.now(timezone.utc).isoformat()))
-    pass_trace["review_checkpoints"] = ({"before": pass_review}
-                                          if review_gate is not None else None)
+            f"abort cleanup outcome={recovery['outcome']}"
+        ) from exc
+    staged_frames.append(
+        (
+            advance_frame,
+            "profile_advance_clear",
+            None,
+            datetime.now(timezone.utc).isoformat(),
+        )
+    )
+    pass_trace["review_checkpoints"] = (
+        {"before": pass_review} if review_gate is not None else None
+    )
     action_trace.append(pass_trace)
 
     # Make at most two bounded, planner-authorized scrolls solely to prove the next profile's
     # sticky identity, then use the driver's normal humanized rewind for the following profile.
     advance_identity = _scroll_next_profile_to_sticky_header(
-        driver, top_frame=advance_frame, identity_band=identity_band,
-        content_band=content_band, like_template=like_template,
-        like_threshold=like_threshold, context=f"automated profile {ordinal}")
-    advance_identity, distance, sticky_header_trace = _prove_post_advance_identity_distinct(
-        driver, prior_fingerprint=identity.fingerprint, initial_frame=advance_identity,
-        identity_band=identity_band, content_band=content_band,
-        context=f"automated profile {ordinal}")
-    staged_frames.append((advance_identity, "profile_advance_identity", None,
-                          datetime.now(timezone.utc).isoformat()))
-    action_trace.append({"action": "automated_sticky_header_proof", "transport": "HingeDriver._scroll_down_one",
-                         "new_profile_identity_distance": distance,
-                         **sticky_header_trace})
+        driver,
+        top_frame=advance_frame,
+        identity_band=identity_band,
+        content_band=content_band,
+        like_template=like_template,
+        like_threshold=like_threshold,
+        context=f"automated profile {ordinal}",
+    )
+    advance_identity, distance, sticky_header_trace = (
+        _prove_post_advance_identity_distinct(
+            driver,
+            prior_fingerprint=identity.fingerprint,
+            initial_frame=advance_identity,
+            identity_band=identity_band,
+            content_band=content_band,
+            context=f"automated profile {ordinal}",
+        )
+    )
+    staged_frames.append(
+        (
+            advance_identity,
+            "profile_advance_identity",
+            None,
+            datetime.now(timezone.utc).isoformat(),
+        )
+    )
+    action_trace.append(
+        {
+            "action": "automated_sticky_header_proof",
+            "transport": "HingeDriver._scroll_down_one",
+            "new_profile_identity_distance": distance,
+            **sticky_header_trace,
+        }
+    )
 
     profile_meta = {
-        "ordinal": ordinal, "profile_id": profile_id, "card_scroll_frames": len(card_frames),
+        "ordinal": ordinal,
+        "profile_id": profile_id,
+        "card_scroll_frames": len(card_frames),
         "target_strategy_id": target_strategy_id,
-        "composer_items": list(target_items), "profile_advance_cleared_composer": True,
-        "profile_advance_identity_mismatched": True, "identity_frame_index": identity.frame_index,
+        "composer_items": list(target_items),
+        "profile_advance_cleared_composer": True,
+        "profile_advance_identity_mismatched": True,
+        "identity_frame_index": identity.frame_index,
         "identity_agreeing_frames": identity.agreeing_frames,
-        "action_evidence_mode": (_HYBRID_CAPTURE_MODE if review_gate is not None
-                                  else "automated_circular_risk_accepted"),
+        "action_evidence_mode": (
+            _HYBRID_CAPTURE_MODE
+            if review_gate is not None
+            else "automated_circular_risk_accepted"
+        ),
         "capture_evidence_scope": _TARGET_SCOPED_PREFIX_PROOF_ID,
         "automated_actions": action_trace,
     }
-    frame_counter = _commit_profile_frames(out_dir, frames_meta, frame_counter, staged_frames,
-                                           profile_ordinal=ordinal, profile_id=profile_id)
+    frame_counter = _commit_profile_frames(
+        out_dir,
+        frames_meta,
+        frame_counter,
+        staged_frames,
+        profile_ordinal=ordinal,
+        profile_id=profile_id,
+    )
     used_profile_ids.add(profile_id)
     return profile_meta, frame_counter
 
@@ -4136,15 +5305,22 @@ def _capture_out_dir(raw: str | None, *, prefix: str = "targeting") -> Path:
         print(
             f"ERROR: --out must stay under the gitignored {root}. Profile screenshots contain "
             "private personal data and cannot be written to a tracked or external directory "
-            f"(got {out_dir}).", file=sys.stderr)
+            f"(got {out_dir}).",
+            file=sys.stderr,
+        )
         sys.exit(1)
     if out_dir.exists() and not out_dir.is_dir():
-        print(f"ERROR: capture output {out_dir} exists and is not a directory.", file=sys.stderr)
+        print(
+            f"ERROR: capture output {out_dir} exists and is not a directory.",
+            file=sys.stderr,
+        )
         sys.exit(1)
     if out_dir.exists() and any(out_dir.iterdir()):
-        print(f"ERROR: capture output directory {out_dir} already exists and is not empty. "
-              "Use a fresh directory so two evidence sessions cannot be merged.",
-              file=sys.stderr)
+        print(
+            f"ERROR: capture output directory {out_dir} already exists and is not empty. "
+            "Use a fresh directory so two evidence sessions cannot be merged.",
+            file=sys.stderr,
+        )
         sys.exit(1)
     ensure_private_dir(out_dir)
     return out_dir
@@ -4158,7 +5334,8 @@ def _existing_calibration_session_dir(raw: str) -> Path:
         sess_dir.relative_to(root)
     except ValueError as exc:
         raise RuntimeError(
-            f"session directory must stay under private {root}; got {sess_dir}") from exc
+            f"session directory must stay under private {root}; got {sess_dir}"
+        ) from exc
     if not sess_dir.is_dir():
         raise RuntimeError(f"session directory does not exist: {sess_dir}")
     return sess_dir
@@ -4173,14 +5350,18 @@ def _record_operational_checks(enabled: bool) -> dict:
     if not enabled:
         return result
     print("\n=== Required supervised operational checks ===")
-    print("These checks license real targeting behavior in addition to the numeric bounds. "
-          "Perform each check as written in ops/RUNBOOK.md, then enter a nonempty local debug "
-          "run / ledger reference. An assertion without a traceable reference is not evidence.")
+    print(
+        "These checks license real targeting behavior in addition to the numeric bounds. "
+        "Perform each check as written in ops/RUNBOOK.md, then enter a nonempty local debug "
+        "run / ledger reference. An assertion without a traceable reference is not evidence."
+    )
     for key, description in _OPERATIONAL_CHECKS.items():
         print(f"\n{description}")
         evidence = ""
         while not evidence:
-            evidence = input("  Evidence reference (local path/run id; blank is not accepted) > ").strip()
+            evidence = input(
+                "  Evidence reference (local path/run id; blank is not accepted) > "
+            ).strip()
         result[key] = {
             "confirmed": True,
             "evidence": evidence,
@@ -4210,7 +5391,9 @@ def _config_provenance(config_path: str, cfg) -> dict:
     try:
         raw = path.read_bytes()
     except OSError as exc:
-        raise RuntimeError(f"cannot read capture config for provenance {path}: {exc}") from exc
+        raise RuntimeError(
+            f"cannot read capture config for provenance {path}: {exc}"
+        ) from exc
     hinge_cfg = (getattr(cfg, "apps", {}) or {}).get("hinge", {})
     return {
         "schema_version": _UNATTENDED_PROVENANCE_SCHEMA_VERSION,
@@ -4247,22 +5430,41 @@ def _synthetic_gemini_quota_probe(cfg) -> dict:
     """
     opener = cfg.opener
     if not opener.enabled or opener.provider != "gemini":
-        raise RuntimeError("observe-check requires enabled opener.provider: gemini for its synthetic quota probe")
+        raise RuntimeError(
+            "observe-check requires enabled opener.provider: gemini for its synthetic quota probe"
+        )
     if not os.environ.get("GEMINI_API_KEY"):
-        raise RuntimeError("GEMINI_API_KEY is required for observe-check's synthetic quota probe")
+        raise RuntimeError(
+            "GEMINI_API_KEY is required for observe-check's synthetic quota probe"
+        )
     models = opener.effective_models
     if not models:
         raise RuntimeError("observe-check found no configured Gemini model")
 
     # Construct only to reuse the production credential/timeout transport.  Do not call
     # `generate`: that method accepts a Profile and is therefore deliberately out of bounds.
-    client = GeminiOpener(models, max_tokens=16, request_timeout_s=opener.request_timeout_s,
-                          api_key=os.environ["GEMINI_API_KEY"], thinking={})
+    client = GeminiOpener(
+        models,
+        max_tokens=16,
+        request_timeout_s=opener.request_timeout_s,
+        api_key=os.environ["GEMINI_API_KEY"],
+        thinking={},
+    )
     model = models[0]
     payload = {
-        "contents": [{"role": "user", "parts": [{"text": (
-            "Synthetic Operation Love observe-only quota check. Return exactly "
-            "{\"probe\":\"ok\"}. This request contains no dating-profile data.") }]}],
+        "contents": [
+            {
+                "role": "user",
+                "parts": [
+                    {
+                        "text": (
+                            "Synthetic Operation Love observe-only quota check. Return exactly "
+                            '{"probe":"ok"}. This request contains no dating-profile data.'
+                        )
+                    }
+                ],
+            }
+        ],
         "generationConfig": {
             "temperature": 0,
             "maxOutputTokens": 16,
@@ -4280,7 +5482,13 @@ def _synthetic_gemini_quota_probe(cfg) -> dict:
             opener.request_timeout_s,
         )
         code = int(code)
-        outcome = "ok" if 200 <= code < 300 else "quota_refused" if code == 429 else "http_error"
+        outcome = (
+            "ok"
+            if 200 <= code < 300
+            else "quota_refused"
+            if code == 429
+            else "http_error"
+        )
         return {
             "kind": "synthetic_non_personal_gemini_generate_content",
             "model": model,
@@ -4312,7 +5520,8 @@ def _write_observe_check_evidence(out_dir: Path, evidence: dict) -> Path:
     body["evidence_sha256"] = _canonical_json_digest(body)
     path = out_dir / "observe_check.json"
     atomic_write_private_text(
-        path, json.dumps(body, indent=2, sort_keys=True) + "\n", parent=out_dir)
+        path, json.dumps(body, indent=2, sort_keys=True) + "\n", parent=out_dir
+    )
     return path
 
 
@@ -4321,7 +5530,8 @@ def _require_operator_event(prompt: str, token: str) -> None:
     entered = input(prompt).strip()
     if entered != token:
         raise _CaptureAbort(
-            f"operator did not enter {token!r}; refusing to infer a manual action or continue")
+            f"operator did not enter {token!r}; refusing to infer a manual action or continue"
+        )
 
 
 def _cmd_observe_check(args: argparse.Namespace) -> None:
@@ -4333,9 +5543,15 @@ def _cmd_observe_check(args: argparse.Namespace) -> None:
     can become a substitute for a measured targeting calibration or the later production OBSERVE
     validation that must happen before AUTO.
     """
-    if not getattr(args, "supervised", False) or args.confirmation != _OBSERVE_CHECK_CONFIRMATION:
-        print("ERROR: observe-check is available only with --supervised --confirmation "
-              f"{_OBSERVE_CHECK_CONFIRMATION!r}.", file=sys.stderr)
+    if (
+        not getattr(args, "supervised", False)
+        or args.confirmation != _OBSERVE_CHECK_CONFIRMATION
+    ):
+        print(
+            "ERROR: observe-check is available only with --supervised --confirmation "
+            f"{_OBSERVE_CHECK_CONFIRMATION!r}.",
+            file=sys.stderr,
+        )
         sys.exit(2)
 
     cfg = cfg_mod.load(args.config)
@@ -4390,64 +5606,121 @@ def _cmd_observe_check(args: argparse.Namespace) -> None:
         driver.open_session()
         device = _device_evidence(driver)
         evidence["device"] = {
-            key: device[key] for key in ("serial", "model", "display_w", "display_h",
-                                         "hinge_package", "hinge_version_name")
+            key: device[key]
+            for key in (
+                "serial",
+                "model",
+                "display_w",
+                "display_h",
+                "hinge_package",
+                "hinge_version_name",
+            )
         }
         confirm_template = driver._template("confirm")
         if confirm_template is None:
-            raise RuntimeError("Hinge confirm template is unavailable; cannot prove inline composer")
+            raise RuntimeError(
+                "Hinge confirm template is unavailable; cannot prove inline composer"
+            )
 
         # The single provider call is deliberately synthetic and precedes any operator tap.
         evidence["quota_probe"] = _synthetic_gemini_quota_probe(cfg)
         if evidence["quota_probe"]["outcome"] not in {"ok", "quota_refused"}:
-            raise RuntimeError("synthetic Gemini quota probe did not receive a usable response")
+            raise RuntimeError(
+                "synthetic Gemini quota probe did not receive a usable response"
+            )
 
-        print("OBSERVE-CHECK is preliminary and passive. The tool will not tap, swipe, type, "
-              "send, construct Worker/hub/store, generate an opener, enumerate profile items, "
-              "or transmit profile data. It cannot prove production OBSERVE timing or label "
-              "persistence and cannot authorize AUTO. Perform all phone actions yourself; only "
-              "SHA-256 frame digests are written locally.")
+        print(
+            "OBSERVE-CHECK is preliminary and passive. The tool will not tap, swipe, type, "
+            "send, construct Worker/hub/store, generate an opener, enumerate profile items, "
+            "or transmit profile data. It cannot prove production OBSERVE timing or label "
+            "persistence and cannot authorize AUTO. Perform all phone actions yourself; only "
+            "SHA-256 frame digests are written locally."
+        )
         _require_operator_event(
             "With a normal profile visible, type READY immediately before your manual PASS > ",
-            "READY")
-        events.append(_event_from_frame("before_manual_pass", driver.adb.screencap(),
-                                        started_monotonic=started_monotonic))
-        _require_operator_event("Manually PASS now, then type PASSED once the next card is stable > ",
-                                "PASSED")
-        events.append(_event_from_frame("after_manual_pass", driver.adb.screencap(),
-                                        started_monotonic=started_monotonic))
+            "READY",
+        )
+        events.append(
+            _event_from_frame(
+                "before_manual_pass",
+                driver.adb.screencap(),
+                started_monotonic=started_monotonic,
+            )
+        )
+        _require_operator_event(
+            "Manually PASS now, then type PASSED once the next card is stable > ",
+            "PASSED",
+        )
+        events.append(
+            _event_from_frame(
+                "after_manual_pass",
+                driver.adb.screencap(),
+                started_monotonic=started_monotonic,
+            )
+        )
 
         _require_operator_event(
             "On the next profile, type READY immediately before manually hearting a PHOTO > ",
-            "READY")
-        events.append(_event_from_frame("before_manual_heart", driver.adb.screencap(),
-                                        started_monotonic=started_monotonic))
+            "READY",
+        )
+        events.append(
+            _event_from_frame(
+                "before_manual_heart",
+                driver.adb.screencap(),
+                started_monotonic=started_monotonic,
+            )
+        )
         _require_operator_event(
             "Manually heart that PHOTO now; type COMPOSER when Send Like is visibly open > ",
-            "COMPOSER")
+            "COMPOSER",
+        )
         composer_frame = driver.adb.screencap()
-        surface = locate_inline_composer(composer_frame, confirm_template, threshold=0.8)
-        events.append({
-            **_event_from_frame("after_manual_heart_inline_composer", composer_frame,
-                                started_monotonic=started_monotonic),
-            "composer_layout_id": surface.layout_id,
-            "comment_rect": [surface.comment_rect.x0, surface.comment_rect.y0,
-                             surface.comment_rect.x1, surface.comment_rect.y1],
-            "send_rect": [surface.send_rect.x0, surface.send_rect.y0,
-                          surface.send_rect.x1, surface.send_rect.y1],
-            "confirm_point": list(surface.confirm_point),
-        })
+        surface = locate_inline_composer(
+            composer_frame, confirm_template, threshold=0.8
+        )
+        events.append(
+            {
+                **_event_from_frame(
+                    "after_manual_heart_inline_composer",
+                    composer_frame,
+                    started_monotonic=started_monotonic,
+                ),
+                "composer_layout_id": surface.layout_id,
+                "comment_rect": [
+                    surface.comment_rect.x0,
+                    surface.comment_rect.y0,
+                    surface.comment_rect.x1,
+                    surface.comment_rect.y1,
+                ],
+                "send_rect": [
+                    surface.send_rect.x0,
+                    surface.send_rect.y0,
+                    surface.send_rect.x1,
+                    surface.send_rect.y1,
+                ],
+                "confirm_point": list(surface.confirm_point),
+            }
+        )
 
         _require_operator_event(
             "Type READY immediately before manually pressing Send Like (or observing its refusal) > ",
-            "READY")
-        events.append(_event_from_frame("before_manual_send", driver.adb.screencap(),
-                                        started_monotonic=started_monotonic))
+            "READY",
+        )
+        events.append(
+            _event_from_frame(
+                "before_manual_send",
+                driver.adb.screencap(),
+                started_monotonic=started_monotonic,
+            )
+        )
         send_outcome = input(
             "Manually press Send Like once, then type SENT when it resolves (or REFUSED for a "
-            "visible quota/paywall refusal) > ").strip()
+            "visible quota/paywall refusal) > "
+        ).strip()
         if send_outcome not in {"SENT", "REFUSED"}:
-            raise _CaptureAbort("operator did not enter 'SENT' or 'REFUSED'; refusing completion")
+            raise _CaptureAbort(
+                "operator did not enter 'SENT' or 'REFUSED'; refusing completion"
+            )
         after_send = driver.adb.screencap()
         try:
             locate_inline_composer(after_send, confirm_template, threshold=0.8)
@@ -4455,23 +5728,33 @@ def _cmd_observe_check(args: argparse.Namespace) -> None:
             composer_cleared = True
         else:
             composer_cleared = False
-        events.append({
-            **_event_from_frame("after_manual_send", after_send,
-                                started_monotonic=started_monotonic),
-            "operator_outcome": send_outcome.lower(),
-            "inline_composer_cleared": composer_cleared,
-            "deck_ready": bool(driver._observe_deck_ready(after_send)),
-        })
+        events.append(
+            {
+                **_event_from_frame(
+                    "after_manual_send", after_send, started_monotonic=started_monotonic
+                ),
+                "operator_outcome": send_outcome.lower(),
+                "inline_composer_cleared": composer_cleared,
+                "deck_ready": bool(driver._observe_deck_ready(after_send)),
+            }
+        )
         if not composer_cleared:
-            raise RuntimeError("inline composer remains visible after the claimed manual send; refusing completion")
+            raise RuntimeError(
+                "inline composer remains visible after the claimed manual send; refusing completion"
+            )
         if send_outcome == "SENT" and not events[-1]["deck_ready"]:
-            raise RuntimeError("claimed manual send did not reach a confirmed ready deck")
+            raise RuntimeError(
+                "claimed manual send did not reach a confirmed ready deck"
+            )
         if send_outcome == "REFUSED":
             blocked = getattr(driver, "blocked_reason", lambda: None)()
             events[-1]["blocked_reason_sha256"] = (
-                _sha256(str(blocked).encode("utf-8", "replace")) if blocked else None)
+                _sha256(str(blocked).encode("utf-8", "replace")) if blocked else None
+            )
             if not blocked:
-                raise RuntimeError("claimed refusal/paywall was not affirmatively recognized by the driver")
+                raise RuntimeError(
+                    "claimed refusal/paywall was not affirmatively recognized by the driver"
+                )
         complete = True
     except (_CaptureAbort, ComposerDetectionError, RuntimeError) as exc:
         evidence["failure"] = {
@@ -4485,13 +5768,17 @@ def _cmd_observe_check(args: argparse.Namespace) -> None:
         finally:
             evidence["completed"] = complete
             evidence["ended_utc"] = datetime.now(timezone.utc).isoformat()
-            evidence["elapsed_s"] = round(max(0.0, time.monotonic() - started_monotonic), 3)
+            evidence["elapsed_s"] = round(
+                max(0.0, time.monotonic() - started_monotonic), 3
+            )
             path = _write_observe_check_evidence(out_dir, evidence)
             print(f"Wrote local hashed observe-check evidence to {path}")
-            print("NEXT REQUIRED BEFORE AUTO: install the measured calibration for a supervised "
-                  "production OBSERVE-only run, then record Worker/hub pre-tap, post-tap item "
-                  "verification, real provider/quota, store persistence, and paywall/refusal "
-                  "evidence. This preliminary artifact cannot satisfy that release check.")
+            print(
+                "NEXT REQUIRED BEFORE AUTO: install the measured calibration for a supervised "
+                "production OBSERVE-only run, then record Worker/hub pre-tap, post-tap item "
+                "verification, real provider/quota, store persistence, and paywall/refusal "
+                "evidence. This preliminary artifact cannot satisfy that release check."
+            )
     if not complete:
         sys.exit(1)
 
@@ -4505,26 +5792,43 @@ def _cmd_capture(args: argparse.Namespace) -> None:
     hybrid_review = bool(getattr(args, "hybrid_review", False))
     automated = unattended or hybrid_review
     if unattended and hybrid_review:
-        print("ERROR: choose only one of --unattended or --hybrid-review.", file=sys.stderr)
+        print(
+            "ERROR: choose only one of --unattended or --hybrid-review.",
+            file=sys.stderr,
+        )
         sys.exit(1)
     if unattended and args.confirmation != _UNATTENDED_CONFIRMATION:
-        print("ERROR: --unattended requires the exact --confirmation "
-              f"{_UNATTENDED_CONFIRMATION!r}. It authorizes real automated hearts and Passes, "
-              "and is intentionally not enabled by a short flag alone.", file=sys.stderr)
+        print(
+            "ERROR: --unattended requires the exact --confirmation "
+            f"{_UNATTENDED_CONFIRMATION!r}. It authorizes real automated hearts and Passes, "
+            "and is intentionally not enabled by a short flag alone.",
+            file=sys.stderr,
+        )
         sys.exit(1)
     if hybrid_review and args.confirmation != _HYBRID_REVIEW_CONFIRMATION:
-        print("ERROR: --hybrid-review requires the exact --confirmation "
-              f"{_HYBRID_REVIEW_CONFIRMATION!r}. It authorizes real automated hearts and Passes "
-              "only after a reviewer approves each private frame checkpoint.", file=sys.stderr)
+        print(
+            "ERROR: --hybrid-review requires the exact --confirmation "
+            f"{_HYBRID_REVIEW_CONFIRMATION!r}. It authorizes real automated hearts and Passes "
+            "only after a reviewer approves each private frame checkpoint.",
+            file=sys.stderr,
+        )
         sys.exit(1)
-    if hybrid_review and (not str(getattr(args, "reviewer_model", "")).strip()
-                           or not str(getattr(args, "reviewer_process", "")).strip()):
-        print("ERROR: --hybrid-review requires nonempty --reviewer-model and --reviewer-process "
-              "so the manifest does not pretend its AI review provenance is anonymous.", file=sys.stderr)
+    if hybrid_review and (
+        not str(getattr(args, "reviewer_model", "")).strip()
+        or not str(getattr(args, "reviewer_process", "")).strip()
+    ):
+        print(
+            "ERROR: --hybrid-review requires nonempty --reviewer-model and --reviewer-process "
+            "so the manifest does not pretend its AI review provenance is anonymous.",
+            file=sys.stderr,
+        )
         sys.exit(1)
     if automated and getattr(args, "record_operational_checks", False):
-        print("ERROR: automated capture cannot record supervised operational checks. Its manifest "
-              "will label device actions and circular-risk acceptance explicitly.", file=sys.stderr)
+        print(
+            "ERROR: automated capture cannot record supervised operational checks. Its manifest "
+            "will label device actions and circular-risk acceptance explicitly.",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     send_like = bool(getattr(args, "send_like", False))
@@ -4535,57 +5839,80 @@ def _cmd_capture(args: argparse.Namespace) -> None:
         # also keeps the evidence path consistent: `_verified_automated_circular_evidence` (the
         # --unattended validator) only authenticates the Pass-without-send terminal action, so an
         # unattended send capture could never be measured anyway.
-        print("ERROR: --send-like requires --hybrid-review. Real Send Priority Likes are "
-              "permanent, so each one must be approved at a reviewer checkpoint; --unattended "
-              "has no reviewer in the loop.", file=sys.stderr)
+        print(
+            "ERROR: --send-like requires --hybrid-review. Real Send Priority Likes are "
+            "permanent, so each one must be approved at a reviewer checkpoint; --unattended "
+            "has no reviewer in the loop.",
+            file=sys.stderr,
+        )
         sys.exit(1)
-    if send_like and getattr(args, "send_like_confirmation", None) != _SEND_LIKE_CONFIRMATION:
-        print("ERROR: --send-like requires the exact --send-like-confirmation "
-              f"{_SEND_LIKE_CONFIRMATION!r}, separate from --confirmation. It replaces every "
-              "calibration Pass with a REAL, PERMANENT Send Priority Like and is intentionally "
-              "not enabled by a short flag alone.", file=sys.stderr)
+    if (
+        send_like
+        and getattr(args, "send_like_confirmation", None) != _SEND_LIKE_CONFIRMATION
+    ):
+        print(
+            "ERROR: --send-like requires the exact --send-like-confirmation "
+            f"{_SEND_LIKE_CONFIRMATION!r}, separate from --confirmation. It replaces every "
+            "calibration Pass with a REAL, PERMANENT Send Priority Like and is intentionally "
+            "not enabled by a short flag alone.",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     target_items_flag = getattr(args, "target_items", "alternate-1-3")
     try:
         target_strategy_id = _TARGET_ITEMS_FLAG_STRATEGY_IDS[target_items_flag]
     except KeyError:
-        print(f"ERROR: unknown --target-items {target_items_flag!r}; choose one of "
-              f"{sorted(_TARGET_ITEMS_FLAG_STRATEGY_IDS)}.", file=sys.stderr)
+        print(
+            f"ERROR: unknown --target-items {target_items_flag!r}; choose one of "
+            f"{sorted(_TARGET_ITEMS_FLAG_STRATEGY_IDS)}.",
+            file=sys.stderr,
+        )
         sys.exit(1)
     photo_1_only = target_strategy_id == _PHOTO_1_ONLY_TARGET_STRATEGY_ID
     target_items_description = (
         "photo model item 1 on EVERY profile -- deep-item navigation is NOT exercised; this is "
         "an explicit narrowing of the evidence (--target-items photo-1-only)"
-        if photo_1_only else
-        "photo model item 1 on odd profile ordinals and item 3 on even ordinals")
+        if photo_1_only
+        else "photo model item 1 on odd profile ordinals and item 3 on even ordinals"
+    )
 
     if not automated:
-        print("HUMANIZED, NARROW-SCOPE: this tool only ever screencaps (read-only) and performs "
-              "small humanized SCROLL gestures through the driver's own transport -- never a raw "
-              "`adb shell input tap`/`input swipe`. It NEVER taps a heart, NEVER dismisses or "
-              "sends a comment, and NEVER types anything: every one of those is done BY YOU, "
-              "by hand, on the phone, when prompted.")
+        print(
+            "HUMANIZED, NARROW-SCOPE: this tool only ever screencaps (read-only) and performs "
+            "small humanized SCROLL gestures through the driver's own transport -- never a raw "
+            "`adb shell input tap`/`input swipe`. It NEVER taps a heart, NEVER dismisses or "
+            "sends a comment, and NEVER types anything: every one of those is done BY YOU, "
+            "by hand, on the phone, when prompted."
+        )
     if unattended:
-        print("UNATTENDED / CIRCULAR-RISK ACCEPTED: this run will use HingeDriver's guarded "
-              f"humanized tap/dislike transport to heart {target_items_description}, verify the "
-              "inline composer structurally, then Pass without sending. The manifest records "
-              "human_ground_truth=false and cannot stand in for supervised operational evidence.")
+        print(
+            "UNATTENDED / CIRCULAR-RISK ACCEPTED: this run will use HingeDriver's guarded "
+            f"humanized tap/dislike transport to heart {target_items_description}, verify the "
+            "inline composer structurally, then Pass without sending. The manifest records "
+            "human_ground_truth=false and cannot stand in for supervised operational evidence."
+        )
     if hybrid_review:
-        print("HYBRID / AI-REVIEWED AUTOMATION: guarded HingeDriver transport will heart "
-              f"{target_items_description}, then "
-              f"{'send a REAL Priority Like' if send_like else 'Pass without sending'}, but only "
-              "after a private PNG+JSON checkpoint is reviewed through stdin before every "
-              "heart/Pass-or-Send and after every heart result. EOF, REFUSE, ABORT, or malformed "
-              "input stops cleanly.")
+        print(
+            "HYBRID / AI-REVIEWED AUTOMATION: guarded HingeDriver transport will heart "
+            f"{target_items_description}, then "
+            f"{'send a REAL Priority Like' if send_like else 'Pass without sending'}, but only "
+            "after a private PNG+JSON checkpoint is reviewed through stdin before every "
+            "heart/Pass-or-Send and after every heart result. EOF, REFUSE, ABORT, or malformed "
+            "input stops cleanly."
+        )
     if send_like:
-        print("SEND-LIKE ENABLED: every profile captured this run ends with a REAL, PERMANENT "
-              "Send Priority Like instead of Pass -- owner-directed exception to this tool's "
-              "default never-send design, requested because this account runs unlimited HingeX "
-              "likes. Uses the exact same tap/upsell-dismiss/landed-verification as a normal "
-              "AUTO/OBSERVE like.")
-    print("Frames are LOCAL-ONLY: ops/calibration/ is gitignored -- these are real people's "
-          "dating profiles, so do not upload, copy outside the repo, or transmit them anywhere.")
+        print(
+            "SEND-LIKE ENABLED: every profile captured this run ends with a REAL, PERMANENT "
+            "Send Priority Like instead of Pass -- owner-directed exception to this tool's "
+            "default never-send design, requested because this account runs unlimited HingeX "
+            "likes. Uses the exact same tap/upsell-dismiss/landed-verification as a normal "
+            "AUTO/OBSERVE like."
+        )
+    print(
+        "Frames are LOCAL-ONLY: ops/calibration/ is gitignored -- these are real people's "
+        "dating profiles, so do not upload, copy outside the repo, or transmit them anywhere."
+    )
 
     cfg = cfg_mod.load(args.config)
     # VALIDATE, not just load (found live 2026-08-22, attempt 3 of the first campaign): the
@@ -4619,14 +5946,19 @@ def _cmd_capture(args: argparse.Namespace) -> None:
     if callable(session_policy):
         session_policy(None)
     if driver.identity_band is None or driver.content_band is None:
-        print("ERROR: this app's effective identity_band/content_band is None (no band "
-              "declared, or an override disabled it). Targeting calibration is meaningless "
-              "without both.", file=sys.stderr)
+        print(
+            "ERROR: this app's effective identity_band/content_band is None (no band "
+            "declared, or an override disabled it). Targeting calibration is meaningless "
+            "without both.",
+            file=sys.stderr,
+        )
         sys.exit(1)
     identity_band, content_band = driver.identity_band, driver.content_band
-    print(f"Effective identity_band={identity_band}  content_band={content_band}  "
-          "(config-merged; read from driver.identity_band/content_band, never HINGE_SPEC's own "
-          "defaults)")
+    print(
+        f"Effective identity_band={identity_band}  content_band={content_band}  "
+        "(config-merged; read from driver.identity_band/content_band, never HINGE_SPEC's own "
+        "defaults)"
+    )
 
     serial, _adb_path = _preflight_serial(cfg)
     out_dir = _capture_out_dir(args.out)
@@ -4635,7 +5967,9 @@ def _cmd_capture(args: argparse.Namespace) -> None:
     try:
         driver.open_session()
     except Exception as exc:  # noqa: BLE001 -- report clearly, exit non-zero, never retry blind
-        print(f"ERROR: open_session() raised {type(exc).__name__}: {exc}", file=sys.stderr)
+        print(
+            f"ERROR: open_session() raised {type(exc).__name__}: {exc}", file=sys.stderr
+        )
         sys.exit(1)
 
     frames_meta: list[dict] = []
@@ -4658,20 +5992,30 @@ def _cmd_capture(args: argparse.Namespace) -> None:
         except Exception as exc:  # noqa: BLE001 -- report clearly, exit non-zero
             print(f"ERROR: {exc}", file=sys.stderr)
             sys.exit(1)
-        print(f"Device: {evidence['model']} serial={evidence['serial']} "
-              f"{evidence['display_w']}x{evidence['display_h']} density={evidence['density']} "
-              f"Hinge versionName={evidence['hinge_version_name']}")
+        print(
+            f"Device: {evidence['model']} serial={evidence['serial']} "
+            f"{evidence['display_w']}x{evidence['display_h']} density={evidence['density']} "
+            f"Hinge versionName={evidence['hinge_version_name']}"
+        )
         if hybrid_review:
             if config_provenance is None:
                 raise _CaptureAbort(
-                    "hybrid review cannot start without hash-bound config provenance")
+                    "hybrid review cannot start without hash-bound config provenance"
+                )
             review_gate = _HybridReviewGate(
-                out_dir, device=evidence, config_provenance=config_provenance,
+                out_dir,
+                device=evidence,
+                config_provenance=config_provenance,
                 reviewer_model=getattr(args, "reviewer_model", _HYBRID_REVIEW_SOURCE),
-                reviewer_process=getattr(args, "reviewer_process", "stdin_checkpoint_protocol"),
+                reviewer_process=getattr(
+                    args, "reviewer_process", "stdin_checkpoint_protocol"
+                ),
                 reviewer_id=getattr(args, "reviewer_id", None),
-                reviewer_version=getattr(args, "reviewer_version", None))
-        print(f"\nCapturing split={args.split!r}, {args.profiles} profile(s) -> {out_dir}\n")
+                reviewer_version=getattr(args, "reviewer_version", None),
+            )
+        print(
+            f"\nCapturing split={args.split!r}, {args.profiles} profile(s) -> {out_dir}\n"
+        )
 
         try:
             ordinal = 0
@@ -4683,8 +6027,11 @@ def _cmd_capture(args: argparse.Namespace) -> None:
             while ordinal < args.profiles:
                 ordinal += 1
                 print(f"\n=== Profile {ordinal}/{args.profiles} ({args.split}) ===")
-                capture_fn = (_capture_one_profile_unattended if automated
-                              else _capture_one_profile)
+                capture_fn = (
+                    _capture_one_profile_unattended
+                    if automated
+                    else _capture_one_profile
+                )
                 try:
                     if automated:
                         automated_kwargs = {
@@ -4698,30 +6045,51 @@ def _cmd_capture(args: argparse.Namespace) -> None:
                         # Keep pre-existing alternate capture callables compatible on the
                         # ordinary first attempt; the real recorder's default is also zero.
                         if restart_attempts:
-                            automated_kwargs["entry_drift_restart_attempts"] = restart_attempts
+                            automated_kwargs["entry_drift_restart_attempts"] = (
+                                restart_attempts
+                            )
                         profile_meta, frame_counter = capture_fn(
-                            driver, out_dir, ordinal=ordinal, frame_counter=frame_counter,
-                            frames_meta=frames_meta, used_profile_ids=used_profile_ids,
-                            **automated_kwargs)
+                            driver,
+                            out_dir,
+                            ordinal=ordinal,
+                            frame_counter=frame_counter,
+                            frames_meta=frames_meta,
+                            used_profile_ids=used_profile_ids,
+                            **automated_kwargs,
+                        )
                     else:
                         profile_meta, frame_counter = capture_fn(
-                            driver, out_dir, ordinal=ordinal, frame_counter=frame_counter,
-                            frames_meta=frames_meta, used_profile_ids=used_profile_ids)
+                            driver,
+                            out_dir,
+                            ordinal=ordinal,
+                            frame_counter=frame_counter,
+                            frames_meta=frames_meta,
+                            used_profile_ids=used_profile_ids,
+                        )
                 except _RestartProfile as exc:
                     restart_attempts = entry_drift_restarts.get(ordinal, 0) + 1
-                    if restart_attempts > _MAX_ENTRY_DRIFT_REENUMERATION_RESTARTS_PER_PROFILE:
+                    if (
+                        restart_attempts
+                        > _MAX_ENTRY_DRIFT_REENUMERATION_RESTARTS_PER_PROFILE
+                    ):
                         raise _CaptureAbort(
                             f"automated profile {ordinal}: exceeded the bounded "
                             f"{_MAX_ENTRY_DRIFT_REENUMERATION_RESTARTS_PER_PROFILE}-restart "
-                            "entry-drift re-enumeration limit") from exc
+                            "entry-drift re-enumeration limit"
+                        ) from exc
                     entry_drift_restarts[ordinal] = restart_attempts
-                    print(f"Restarting profile {ordinal} from a driver-owned top: {exc}")
+                    print(
+                        f"Restarting profile {ordinal} from a driver-owned top: {exc}"
+                    )
                     ordinal -= 1
                     continue
                 except _ProfileSkipped as exc:
                     entry_drift_restarts.pop(ordinal, None)
                     prior_for_ordinal = sum(
-                        1 for attempt in skipped_attempts if attempt.get("ordinal") == ordinal)
+                        1
+                        for attempt in skipped_attempts
+                        if attempt.get("ordinal") == ordinal
+                    )
                     record = dict(exc.record)
                     record["attempt_number_for_ordinal"] = prior_for_ordinal + 1
                     record["session_skip_number"] = len(skipped_attempts) + 1
@@ -4732,17 +6100,21 @@ def _cmd_capture(args: argparse.Namespace) -> None:
                     # cause in its class.
                     advance_description = (
                         "after advancing it with a verified public Like"
-                        if record.get("action") == "advance_unusable_profile_with_priority_like"
-                        else "before any heart")
+                        if record.get("action")
+                        == "advance_unusable_profile_with_priority_like"
+                        else "before any heart"
+                    )
                     retry_description = (
                         "the next proven ordinary deck"
                         if record.get("reason_code") == "unsupported_entry_layout"
-                        else "the distinct next profile")
+                        else "the distinct next profile"
+                    )
                     print(
                         f"Skipped unsuitable calibration evidence {advance_description} for "
                         f"ordinal {ordinal} ({record['reason_code']}: "
                         f"{record['reason_detail']}); retrying this ordinal on "
-                        f"{retry_description}.")
+                        f"{retry_description}."
+                    )
                     ordinal -= 1
                     continue
                 profiles_meta.append(profile_meta)
@@ -4755,12 +6127,20 @@ def _cmd_capture(args: argparse.Namespace) -> None:
             # remain closed-set and retain their offline all-item ledger unchanged.
             if not automated:
                 entry_anchor_ledger = _write_entry_anchor_ledger(
-                    out_dir, frames_meta=frames_meta, profiles_meta=profiles_meta,
-                    identity_band=identity_band, content_band=content_band,
-                    like_template=driver._template("like"), like_threshold=hinge_mod._LIKE_MATCH_THRESHOLD)
-                print(f"Verified offline entry-anchor replay: {out_dir / entry_anchor_ledger['file']}")
+                    out_dir,
+                    frames_meta=frames_meta,
+                    profiles_meta=profiles_meta,
+                    identity_band=identity_band,
+                    content_band=content_band,
+                    like_template=driver._template("like"),
+                    like_threshold=hinge_mod._LIKE_MATCH_THRESHOLD,
+                )
+                print(
+                    f"Verified offline entry-anchor replay: {out_dir / entry_anchor_ledger['file']}"
+                )
             operational_checks = _record_operational_checks(
-                bool(getattr(args, "record_operational_checks", False)))
+                bool(getattr(args, "record_operational_checks", False))
+            )
         except _CaptureAbort as exc:
             print(f"\nAborting capture: {exc}", file=sys.stderr)
             interrupted = True
@@ -4768,7 +6148,9 @@ def _cmd_capture(args: argparse.Namespace) -> None:
             interrupted = True
             print("\nInterrupted by Ctrl-C.")
         except Exception as exc:  # noqa: BLE001 -- surface clearly, stop, never guess
-            print(f"\nERROR during capture: {type(exc).__name__}: {exc}", file=sys.stderr)
+            print(
+                f"\nERROR during capture: {type(exc).__name__}: {exc}", file=sys.stderr
+            )
             interrupted = True
     finally:
         driver.close()
@@ -4779,45 +6161,74 @@ def _cmd_capture(args: argparse.Namespace) -> None:
         "calibration_schema_version": _CALIBRATION_SCHEMA_VERSION,
         "composer_layout_id": _COMPOSER_LAYOUT_ID,
         "item_selection_policy_id": PHOTO_ONLY_POLICY_ID,
-        "frame_size_px": [evidence["display_w"], evidence["display_h"]] if evidence else None,
+        "frame_size_px": [evidence["display_w"], evidence["display_h"]]
+        if evidence
+        else None,
         "split": args.split,
-        "capture_mode": (_HYBRID_CAPTURE_MODE if hybrid_review
-                         else "automated_circular_risk_accepted" if unattended else "supervised_manual"),
+        "capture_mode": (
+            _HYBRID_CAPTURE_MODE
+            if hybrid_review
+            else "automated_circular_risk_accepted"
+            if unattended
+            else "supervised_manual"
+        ),
         "automated_target_strategy_id": (target_strategy_id if automated else None),
-        "capture_evidence_scope": (_TARGET_SCOPED_PREFIX_PROOF_ID if automated else "closed_set_profile_v1"),
+        "capture_evidence_scope": (
+            _TARGET_SCOPED_PREFIX_PROOF_ID if automated else "closed_set_profile_v1"
+        ),
         "human_ground_truth": not automated,
         "unattended_provenance_schema_version": (
-            _UNATTENDED_PROVENANCE_SCHEMA_VERSION if automated else None),
+            _UNATTENDED_PROVENANCE_SCHEMA_VERSION if automated else None
+        ),
         "config_provenance": config_provenance,
-        "automation_acceptance": ({
-            "confirmation": (_HYBRID_REVIEW_CONFIRMATION if hybrid_review
-                             else _UNATTENDED_CONFIRMATION),
-            "accepted_utc": start_utc.isoformat(),
-            "target_strategy_id": target_strategy_id,
-            "targets_photo_model_items": sorted(_automated_target_depths_for_strategy(target_strategy_id)),
-            "provisional_identity_match_max_dist": _UNATTENDED_PROVISIONAL_IDENTITY_MAX_DIST,
-            "not_independent_ground_truth": True,
-            "not_supervised_operational_evidence": True,
-            # Owner-accepted real sends replace this capture's Pass-without-send terminal action.
-            # Recorded here (not inferred downstream) so `hinge_calibration_review`/`measure` can
-            # gate on an explicit acceptance instead of silently tolerating a send trace, and so
-            # the evidence never reads as Pass-only when real likes were actually delivered.
-            "send_like_accepted": send_like,
-            "send_like_confirmation": (_SEND_LIKE_CONFIRMATION if send_like else None),
-            "terminal_advance_action": ("automated_send_priority_like" if send_like
-                                        else "automated_pass"),
-            "reviewer_protocol": ("stdin_checkpoint_sha256_v1" if review_gate is not None
-                                  else None),
-            "reviewer_source": (_HYBRID_REVIEW_SOURCE if review_gate is not None else None),
-            "reviewer": (review_gate.reviewer if review_gate is not None else None),
-        } if automated else None),
-        "hybrid_review": ({
-            "schema_version": _HYBRID_CHECKPOINT_SCHEMA_VERSION,
-            "protocol": "stdin_checkpoint_sha256_v1",
-            "reviewer": review_gate.reviewer,
-            "decisions": review_gate.decisions,
-            "human_ground_truth": False,
-        } if review_gate is not None else None),
+        "automation_acceptance": (
+            {
+                "confirmation": (
+                    _HYBRID_REVIEW_CONFIRMATION
+                    if hybrid_review
+                    else _UNATTENDED_CONFIRMATION
+                ),
+                "accepted_utc": start_utc.isoformat(),
+                "target_strategy_id": target_strategy_id,
+                "targets_photo_model_items": sorted(
+                    _automated_target_depths_for_strategy(target_strategy_id)
+                ),
+                "provisional_identity_match_max_dist": _UNATTENDED_PROVISIONAL_IDENTITY_MAX_DIST,
+                "not_independent_ground_truth": True,
+                "not_supervised_operational_evidence": True,
+                # Owner-accepted real sends replace this capture's Pass-without-send terminal action.
+                # Recorded here (not inferred downstream) so `hinge_calibration_review`/`measure` can
+                # gate on an explicit acceptance instead of silently tolerating a send trace, and so
+                # the evidence never reads as Pass-only when real likes were actually delivered.
+                "send_like_accepted": send_like,
+                "send_like_confirmation": (
+                    _SEND_LIKE_CONFIRMATION if send_like else None
+                ),
+                "terminal_advance_action": (
+                    "automated_send_priority_like" if send_like else "automated_pass"
+                ),
+                "reviewer_protocol": (
+                    "stdin_checkpoint_sha256_v1" if review_gate is not None else None
+                ),
+                "reviewer_source": (
+                    _HYBRID_REVIEW_SOURCE if review_gate is not None else None
+                ),
+                "reviewer": (review_gate.reviewer if review_gate is not None else None),
+            }
+            if automated
+            else None
+        ),
+        "hybrid_review": (
+            {
+                "schema_version": _HYBRID_CHECKPOINT_SCHEMA_VERSION,
+                "protocol": "stdin_checkpoint_sha256_v1",
+                "reviewer": review_gate.reviewer,
+                "decisions": review_gate.decisions,
+                "human_ground_truth": False,
+            }
+            if review_gate is not None
+            else None
+        ),
         "config_path": str(args.config),
         "device": evidence,
         "identity_band": list(identity_band),
@@ -4837,12 +6248,18 @@ def _cmd_capture(args: argparse.Namespace) -> None:
         "operational_checks": operational_checks,
     }
     atomic_write_private_text(
-        out_dir / "manifest.json", json.dumps(manifest, indent=2) + "\n", parent=out_dir)
-    print(f"\nWrote {len(frames_meta)} frame(s) across {len(profiles_meta)} profile(s) to "
-          f"{out_dir}")
+        out_dir / "manifest.json", json.dumps(manifest, indent=2) + "\n", parent=out_dir
+    )
+    print(
+        f"\nWrote {len(frames_meta)} frame(s) across {len(profiles_meta)} profile(s) to "
+        f"{out_dir}"
+    )
     if interrupted:
-        print("Capture was interrupted/aborted before completion -- review manifest.json before "
-              "using this session in `measure`.", file=sys.stderr)
+        print(
+            "Capture was interrupted/aborted before completion -- review manifest.json before "
+            "using this session in `measure`.",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
 
@@ -4850,12 +6267,15 @@ def _cmd_capture(args: argparse.Namespace) -> None:
 # measure
 # =====================================================================================
 
+
 @dataclass
 class _ProfileData:
     ordinal: int
     profile_id: str
     card_frames: list  # list[bytes], in capture order
-    composer_pairs: list  # list[tuple[int, target_pre_bytes, composer_open_bytes]], capture order
+    composer_pairs: (
+        list  # list[tuple[int, target_pre_bytes, composer_open_bytes]], capture order
+    )
     profile_advance_clear: bytes
     profile_advance_identity: bytes
     target_scoped_prefix: bool = False
@@ -4875,57 +6295,95 @@ class _SessionData:
 def _validate_entry_anchor_ledger(sess_dir: Path, manifest: dict) -> None:
     """Bind the offline replay artifact to the exact card-frame digest set it replayed."""
     ref = manifest.get("entry_anchor_ledger")
-    if (not isinstance(ref, dict) or set(ref) != {"file", "sha256"}
-            or ref.get("file") != _ENTRY_ANCHOR_LEDGER_FILE
-            or not isinstance(ref.get("sha256"), str)):
+    if (
+        not isinstance(ref, dict)
+        or set(ref) != {"file", "sha256"}
+        or ref.get("file") != _ENTRY_ANCHOR_LEDGER_FILE
+        or not isinstance(ref.get("sha256"), str)
+    ):
         raise RuntimeError(
             "manifest.json lacks the exact hash-bound entry_anchor_ledger reference; run "
             "verify-entry-anchor only if this is an otherwise completed v3 manifest, or "
-            "recapture rather than treating a free-form checklist path as navigation evidence")
+            "recapture rather than treating a free-form checklist path as navigation evidence"
+        )
     path = sess_dir / ref["file"]
     if not path.is_file() or _sha256(path.read_bytes()) != ref["sha256"]:
-        raise RuntimeError("entry-anchor ledger is missing or does not match manifest sha256")
+        raise RuntimeError(
+            "entry-anchor ledger is missing or does not match manifest sha256"
+        )
     try:
         artifact = json.loads(path.read_text())
     except (OSError, json.JSONDecodeError) as exc:
         raise RuntimeError("entry-anchor ledger is not readable JSON") from exc
     required = {
-        "schema_version", "kind", "tool_version", "created_utc", "offline_only",
-        "phone_input_issued", "runtime_targeting_calibration_emitted", "profiles",
+        "schema_version",
+        "kind",
+        "tool_version",
+        "created_utc",
+        "offline_only",
+        "phone_input_issued",
+        "runtime_targeting_calibration_emitted",
+        "profiles",
     }
-    if (not isinstance(artifact, dict) or set(artifact) != required
-            or artifact.get("schema_version") != _ENTRY_ANCHOR_LEDGER_SCHEMA_VERSION
-            or artifact.get("kind") != "hinge_entry_anchor_offline_replay"
-            or artifact.get("tool_version") != _TOOL_VERSION
-            or artifact.get("offline_only") is not True
-            or artifact.get("phone_input_issued") is not False
-            or artifact.get("runtime_targeting_calibration_emitted") is not False):
+    if (
+        not isinstance(artifact, dict)
+        or set(artifact) != required
+        or artifact.get("schema_version") != _ENTRY_ANCHOR_LEDGER_SCHEMA_VERSION
+        or artifact.get("kind") != "hinge_entry_anchor_offline_replay"
+        or artifact.get("tool_version") != _TOOL_VERSION
+        or artifact.get("offline_only") is not True
+        or artifact.get("phone_input_issued") is not False
+        or artifact.get("runtime_targeting_calibration_emitted") is not False
+    ):
         raise RuntimeError("entry-anchor ledger has an unsupported or unsafe schema")
     profiles = artifact.get("profiles")
     expected_profiles = manifest.get("profiles")
-    if (not isinstance(profiles, list) or not isinstance(expected_profiles, list)
-            or len(profiles) != len(expected_profiles)):
+    if (
+        not isinstance(profiles, list)
+        or not isinstance(expected_profiles, list)
+        or len(profiles) != len(expected_profiles)
+    ):
         raise RuntimeError("entry-anchor ledger/profile metadata is not a list")
     expected_sources: dict[int, list[dict]] = {}
     for rec in manifest.get("frames", []):
         if isinstance(rec, dict) and rec.get("role") == "card_scroll":
             expected_sources.setdefault(rec.get("profile_ordinal"), []).append(
-                {"file": rec.get("file"), "sha256": rec.get("sha256")})
+                {"file": rec.get("file"), "sha256": rec.get("sha256")}
+            )
     by_ordinal = {rec.get("ordinal"): rec for rec in profiles if isinstance(rec, dict)}
     if len(by_ordinal) != len(profiles):
-        raise RuntimeError("entry-anchor ledger has duplicate or malformed profile reports")
+        raise RuntimeError(
+            "entry-anchor ledger has duplicate or malformed profile reports"
+        )
     report_required = {
-        "ordinal", "profile_id_sha256", "source_card_frames", "confirmed_top",
-        "index_complete", "index_reached_end", "index_heart_translation",
-        "photo_only_translation", "offline_replay_identity_ceiling",
-        "offline_replay_identity_entry_distance", "cancellation_before_capture",
-        "cancellation_replay_capture_calls", "cancellation_replay_scroll_up_calls", "targets",
+        "ordinal",
+        "profile_id_sha256",
+        "source_card_frames",
+        "confirmed_top",
+        "index_complete",
+        "index_reached_end",
+        "index_heart_translation",
+        "photo_only_translation",
+        "offline_replay_identity_ceiling",
+        "offline_replay_identity_entry_distance",
+        "cancellation_before_capture",
+        "cancellation_replay_capture_calls",
+        "cancellation_replay_scroll_up_calls",
+        "targets",
     }
     target_required = {
-        "photo_model_item", "heart_ordinal", "index_model_item", "entry_anchor_delta_px",
-        "entry_offset_px", "landing_frame_sha256", "landing_frame_index",
-        "landing_page_offset_px", "hearts_counted", "crosscheck_max_disagreement_px",
-        "replay_scroll_steps", "replay_shift_deltas_px",
+        "photo_model_item",
+        "heart_ordinal",
+        "index_model_item",
+        "entry_anchor_delta_px",
+        "entry_offset_px",
+        "landing_frame_sha256",
+        "landing_frame_index",
+        "landing_page_offset_px",
+        "hearts_counted",
+        "crosscheck_max_disagreement_px",
+        "replay_scroll_steps",
+        "replay_shift_deltas_px",
     }
     for meta in expected_profiles:
         ordinal = meta.get("ordinal") if isinstance(meta, dict) else None
@@ -4935,36 +6393,59 @@ def _validate_entry_anchor_ledger(sess_dir: Path, manifest: dict) -> None:
         if report.get("source_card_frames") != expected_sources.get(ordinal):
             raise RuntimeError(
                 f"entry-anchor ledger profile ordinal {ordinal!r} does not bind the exact "
-                "manifest card-frame sequence")
+                "manifest card-frame sequence"
+            )
         translation = report.get("index_heart_translation")
         photos = report.get("photo_only_translation")
         targets = report.get("targets")
-        if (report.get("confirmed_top") is not True or report.get("index_complete") is not True
-                or report.get("index_reached_end") is not True
-                or report.get("cancellation_before_capture") is not True
-                or report.get("cancellation_replay_capture_calls") != 0
-                or report.get("cancellation_replay_scroll_up_calls") != 0
-                or not isinstance(translation, list) or not translation
-                or not isinstance(photos, list) or not photos
-                or any(isinstance(n, bool) or not isinstance(n, int) or n < 1 for n in translation)
-                or any(isinstance(n, bool) or not isinstance(n, int) or n < 1 for n in photos)
-                or len(set(translation)) != len(translation) or len(set(photos)) != len(photos)
-                or not set(photos).issubset(translation)
-                or not isinstance(targets, list) or len(targets) != len(photos)
-                or any(not isinstance(t, dict) or set(t) != target_required for t in targets)):
+        if (
+            report.get("confirmed_top") is not True
+            or report.get("index_complete") is not True
+            or report.get("index_reached_end") is not True
+            or report.get("cancellation_before_capture") is not True
+            or report.get("cancellation_replay_capture_calls") != 0
+            or report.get("cancellation_replay_scroll_up_calls") != 0
+            or not isinstance(translation, list)
+            or not translation
+            or not isinstance(photos, list)
+            or not photos
+            or any(
+                isinstance(n, bool) or not isinstance(n, int) or n < 1
+                for n in translation
+            )
+            or any(
+                isinstance(n, bool) or not isinstance(n, int) or n < 1 for n in photos
+            )
+            or len(set(translation)) != len(translation)
+            or len(set(photos)) != len(photos)
+            or not set(photos).issubset(translation)
+            or not isinstance(targets, list)
+            or len(targets) != len(photos)
+            or any(
+                not isinstance(t, dict) or set(t) != target_required for t in targets
+            )
+        ):
             raise RuntimeError(
                 f"entry-anchor ledger profile ordinal {ordinal!r} lacks complete top/index/"
-                "cancellation/replay evidence")
-        if ([t["photo_model_item"] for t in targets] != list(range(1, len(photos) + 1))
-                or [t["heart_ordinal"] for t in targets] != photos
-                or any(t["index_model_item"] != translation.index(t["heart_ordinal"]) + 1
-                       for t in targets)):
+                "cancellation/replay evidence"
+            )
+        if (
+            [t["photo_model_item"] for t in targets] != list(range(1, len(photos) + 1))
+            or [t["heart_ordinal"] for t in targets] != photos
+            or any(
+                t["index_model_item"] != translation.index(t["heart_ordinal"]) + 1
+                for t in targets
+            )
+        ):
             raise RuntimeError(
                 f"entry-anchor ledger profile ordinal {ordinal!r} has inconsistent photo/index "
-                "translation targets")
+                "translation targets"
+            )
 
 
-def _load_session(sess_dir: Path, *, require_entry_anchor_ledger: bool = True) -> _SessionData:
+def _load_session(
+    sess_dir: Path, *, require_entry_anchor_ledger: bool = True
+) -> _SessionData:
     """Load one capture session, re-verifying every frame's sha256 against the manifest as it
     goes -- calibration evidence must be byte-exact (api_contracts.md §6: `ItemPayload` can only
     ever be rebuilt from the EXACT original frame bytes an index was built from), so a frame
@@ -4976,24 +6457,29 @@ def _load_session(sess_dir: Path, *, require_entry_anchor_ledger: bool = True) -
     if manifest.get("tool_version") != _TOOL_VERSION:
         raise RuntimeError(
             f"manifest.json tool_version={manifest.get('tool_version')!r} is not the supported "
-            f"{_TOOL_VERSION!r}; recapture rather than interpreting an unknown schema")
+            f"{_TOOL_VERSION!r}; recapture rather than interpreting an unknown schema"
+        )
     if manifest.get("interrupted") is not False:
         raise RuntimeError(
             "manifest.json is interrupted, partial, or does not carry an explicit completed "
-            "state; partial capture evidence can never calibrate a targeting bound")
+            "state; partial capture evidence can never calibrate a targeting bound"
+        )
     if manifest.get("calibration_schema_version") != _CALIBRATION_SCHEMA_VERSION:
         raise RuntimeError(
             "manifest.json does not carry the supported inline calibration schema v"
-            f"{_CALIBRATION_SCHEMA_VERSION}; recapture rather than interpreting modal evidence")
+            f"{_CALIBRATION_SCHEMA_VERSION}; recapture rather than interpreting modal evidence"
+        )
     if manifest.get("composer_layout_id") != _COMPOSER_LAYOUT_ID:
         raise RuntimeError(
             f"manifest.json composer_layout_id={manifest.get('composer_layout_id')!r} is not "
-            f"the supported {_COMPOSER_LAYOUT_ID!r}")
+            f"the supported {_COMPOSER_LAYOUT_ID!r}"
+        )
     if manifest.get("item_selection_policy_id") != PHOTO_ONLY_POLICY_ID:
         raise RuntimeError(
             f"manifest.json item_selection_policy_id="
             f"{manifest.get('item_selection_policy_id')!r} is not the supported "
-            f"{PHOTO_ONLY_POLICY_ID!r}")
+            f"{PHOTO_ONLY_POLICY_ID!r}"
+        )
     split = manifest.get("split")
     if split not in _SPLITS:
         raise RuntimeError(f"manifest.json split={split!r} is not one of {_SPLITS}")
@@ -5001,25 +6487,37 @@ def _load_session(sess_dir: Path, *, require_entry_anchor_ledger: bool = True) -
         identity_band = tuple(manifest["identity_band"])
         content_band = tuple(manifest["content_band"])
     except (KeyError, TypeError) as exc:
-        raise RuntimeError("manifest.json does not contain readable identity/content bands") from exc
+        raise RuntimeError(
+            "manifest.json does not contain readable identity/content bands"
+        ) from exc
     device_serial = (manifest.get("device") or {}).get("serial")
     frame_size = manifest.get("frame_size_px")
     device = manifest.get("device") or {}
-    if (not isinstance(frame_size, list) or len(frame_size) != 2
-            or any(isinstance(v, bool) or not isinstance(v, int) or v <= 0 for v in frame_size)
-            or frame_size != [device.get("display_w"), device.get("display_h")]):
+    if (
+        not isinstance(frame_size, list)
+        or len(frame_size) != 2
+        or any(
+            isinstance(v, bool) or not isinstance(v, int) or v <= 0 for v in frame_size
+        )
+        or frame_size != [device.get("display_w"), device.get("display_h")]
+    ):
         raise RuntimeError(
-            "manifest.json frame_size_px is not a positive exact match for device display evidence")
+            "manifest.json frame_size_px is not a positive exact match for device display evidence"
+        )
 
     profile_meta = manifest.get("profiles")
     requested_profiles = manifest.get("requested_profiles")
-    if (isinstance(requested_profiles, bool) or not isinstance(requested_profiles, int)
-            or requested_profiles < 1):
+    if (
+        isinstance(requested_profiles, bool)
+        or not isinstance(requested_profiles, int)
+        or requested_profiles < 1
+    ):
         raise RuntimeError("manifest.json requested_profiles is not a positive integer")
     if not isinstance(profile_meta, list) or len(profile_meta) != requested_profiles:
         raise RuntimeError(
             f"manifest.json completed {len(profile_meta) if isinstance(profile_meta, list) else 0} "
-            f"profile(s), not its requested {requested_profiles}; refusing a partial session")
+            f"profile(s), not its requested {requested_profiles}; refusing a partial session"
+        )
     expected: dict[int, dict] = {}
     expected_ids: set[str] = set()
     for meta in profile_meta:
@@ -5027,28 +6525,45 @@ def _load_session(sess_dir: Path, *, require_entry_anchor_ledger: bool = True) -
             raise RuntimeError("manifest.json profiles contains a non-mapping entry")
         ordinal = meta.get("ordinal")
         profile_id = meta.get("profile_id")
-        if (isinstance(ordinal, bool) or not isinstance(ordinal, int) or ordinal < 1
-                or ordinal in expected):
-            raise RuntimeError(f"manifest.json has an invalid/duplicate profile ordinal {ordinal!r}")
+        if (
+            isinstance(ordinal, bool)
+            or not isinstance(ordinal, int)
+            or ordinal < 1
+            or ordinal in expected
+        ):
+            raise RuntimeError(
+                f"manifest.json has an invalid/duplicate profile ordinal {ordinal!r}"
+            )
         if not isinstance(profile_id, str) or not profile_id.strip():
-            raise RuntimeError(f"profile ordinal {ordinal} has no nonempty unique profile_id")
+            raise RuntimeError(
+                f"profile ordinal {ordinal} has no nonempty unique profile_id"
+            )
         if profile_id in expected_ids:
             raise RuntimeError(
                 f"profile_id {profile_id!r} is duplicated in {sess_dir}; foreign-profile "
-                "comparisons require a unique id for every real profile")
+                "comparisons require a unique id for every real profile"
+            )
         composer_items = meta.get("composer_items")
-        if (not isinstance(composer_items, list) or not composer_items
-                or any(isinstance(n, bool) or not isinstance(n, int) or n < 1
-                       for n in composer_items)
-                or len(set(composer_items)) != len(composer_items)):
+        if (
+            not isinstance(composer_items, list)
+            or not composer_items
+            or any(
+                isinstance(n, bool) or not isinstance(n, int) or n < 1
+                for n in composer_items
+            )
+            or len(set(composer_items)) != len(composer_items)
+        ):
             raise RuntimeError(
-                f"profile {profile_id!r} has no valid, unique positive composer_items list")
+                f"profile {profile_id!r} has no valid, unique positive composer_items list"
+            )
         if meta.get("profile_advance_cleared_composer") is not True:
             raise RuntimeError(
-                f"profile {profile_id!r} lacks explicit profile-advance composer-clear evidence")
+                f"profile {profile_id!r} lacks explicit profile-advance composer-clear evidence"
+            )
         if meta.get("profile_advance_identity_mismatched") is not True:
             raise RuntimeError(
-                f"profile {profile_id!r} lacks explicit next-profile identity-mismatch evidence")
+                f"profile {profile_id!r} lacks explicit next-profile identity-mismatch evidence"
+            )
         expected[ordinal] = meta
         expected_ids.add(profile_id)
 
@@ -5060,24 +6575,32 @@ def _load_session(sess_dir: Path, *, require_entry_anchor_ledger: bool = True) -
     if not isinstance(skipped_attempts, list):
         raise RuntimeError("manifest.json skipped_attempts is not a list")
     if len(skipped_attempts) > _MAX_PREACTION_PROFILE_SKIPS_PER_SESSION:
-        raise RuntimeError("manifest.json skipped_attempts exceeds the bounded session cap")
+        raise RuntimeError(
+            "manifest.json skipped_attempts exceeds the bounded session cap"
+        )
     if manifest.get("capture_mode") == "supervised_manual" and skipped_attempts:
-        raise RuntimeError("supervised capture cannot contain automated skipped_attempts")
+        raise RuntimeError(
+            "supervised capture cannot contain automated skipped_attempts"
+        )
 
     checks = manifest.get("operational_checks")
     if not isinstance(checks, dict) or set(checks) != set(_OPERATIONAL_CHECKS):
         raise RuntimeError(
             "manifest.json does not carry the exact supervised operational-check schema; "
-            "recapture with this tool version")
+            "recapture with this tool version"
+        )
     for key, rec in checks.items():
         if not isinstance(rec, dict) or not isinstance(rec.get("confirmed"), bool):
             raise RuntimeError(f"operational_checks.{key} is malformed")
         if rec["confirmed"] and (
-                not isinstance(rec.get("evidence"), str) or not rec["evidence"].strip()
-                or not isinstance(rec.get("recorded_utc"), str)
-                or not rec["recorded_utc"].strip()):
+            not isinstance(rec.get("evidence"), str)
+            or not rec["evidence"].strip()
+            or not isinstance(rec.get("recorded_utc"), str)
+            or not rec["recorded_utc"].strip()
+        ):
             raise RuntimeError(
-                f"operational_checks.{key} is marked confirmed without traceable evidence")
+                f"operational_checks.{key} is marked confirmed without traceable evidence"
+            )
 
     by_profile: dict[int, dict] = {}
     frame_records = manifest.get("frames")
@@ -5090,14 +6613,19 @@ def _load_session(sess_dir: Path, *, require_entry_anchor_ledger: bool = True) -
         if not isinstance(rec, dict):
             raise RuntimeError("manifest.json frames contains a non-mapping entry")
         name = rec.get("file")
-        if (not isinstance(name, str) or Path(name).name != name
-                or re.fullmatch(r"\d{5}\.png", name) is None or name in seen_files):
+        if (
+            not isinstance(name, str)
+            or Path(name).name != name
+            or re.fullmatch(r"\d{5}\.png", name) is None
+            or name in seen_files
+        ):
             raise RuntimeError(f"invalid, unsafe, or duplicate frame filename {name!r}")
         expected_name = f"{sequence:05d}.png"
         if name != expected_name:
             raise RuntimeError(
                 f"manifest frame order is not the original contiguous capture sequence: "
-                f"record {sequence} is {name!r}, expected {expected_name!r}")
+                f"record {sequence} is {name!r}, expected {expected_name!r}"
+            )
         seen_files.add(name)
         path = sess_dir / name
         if not path.is_file():
@@ -5108,36 +6636,59 @@ def _load_session(sess_dir: Path, *, require_entry_anchor_ledger: bool = True) -
             raise RuntimeError(
                 f"{path} sha256 mismatch (manifest {rec['sha256']}, on-disk {digest}) -- frame "
                 "bytes changed since capture; refusing to measure against evidence that no "
-                "longer matches what was recorded")
+                "longer matches what was recorded"
+            )
         pid = rec.get("profile_ordinal")
         if pid not in expected:
-            raise RuntimeError(f"frame {name} refers to unknown profile ordinal {pid!r}")
+            raise RuntimeError(
+                f"frame {name} refers to unknown profile ordinal {pid!r}"
+            )
         entry = by_profile.setdefault(
-            pid, {"profile_id": rec.get("profile_id"), "card": [], "pairs": [],
-                  "sequence": []})
-        if (entry["profile_id"] != rec.get("profile_id")
-                or rec.get("profile_id") != expected[pid]["profile_id"]):
+            pid,
+            {
+                "profile_id": rec.get("profile_id"),
+                "card": [],
+                "pairs": [],
+                "sequence": [],
+            },
+        )
+        if (
+            entry["profile_id"] != rec.get("profile_id")
+            or rec.get("profile_id") != expected[pid]["profile_id"]
+        ):
             raise RuntimeError(
                 f"profile ordinal {pid} has inconsistent profile_id in {sess_dir} "
-                f"({entry['profile_id']!r} vs {rec.get('profile_id')!r})")
+                f"({entry['profile_id']!r} vs {rec.get('profile_id')!r})"
+            )
         role = rec.get("role")
         if role == "card_scroll":
             if rec.get("item_number") is not None:
-                raise RuntimeError(f"card frame {name} unexpectedly carries an item number")
+                raise RuntimeError(
+                    f"card frame {name} unexpectedly carries an item number"
+                )
             entry["card"].append(data)
         elif role in ("target_pre", "composer_open"):
             item_number = rec.get("item_number")
-            if (isinstance(item_number, bool) or not isinstance(item_number, int)
-                    or item_number < 1):
-                raise RuntimeError(f"{role} frame {name} has invalid item_number {item_number!r}")
+            if (
+                isinstance(item_number, bool)
+                or not isinstance(item_number, int)
+                or item_number < 1
+            ):
+                raise RuntimeError(
+                    f"{role} frame {name} has invalid item_number {item_number!r}"
+                )
             entry["sequence"].append((role, item_number, data))
         elif role == "profile_advance_clear":
             if rec.get("item_number") is not None:
-                raise RuntimeError(f"profile-advance frame {name} unexpectedly carries an item number")
+                raise RuntimeError(
+                    f"profile-advance frame {name} unexpectedly carries an item number"
+                )
             entry["sequence"].append((role, None, data))
         elif role == "profile_advance_identity":
             if rec.get("item_number") is not None:
-                raise RuntimeError(f"profile-advance identity frame {name} unexpectedly carries an item number")
+                raise RuntimeError(
+                    f"profile-advance identity frame {name} unexpectedly carries an item number"
+                )
             entry["sequence"].append((role, None, data))
         else:
             raise RuntimeError(f"unknown frame role {role!r} in {sess_dir}")
@@ -5146,57 +6697,80 @@ def _load_session(sess_dir: Path, *, require_entry_anchor_ledger: bool = True) -
     if actual_pngs != seen_files:
         raise RuntimeError(
             f"session PNG set does not exactly match manifest frames (unlisted "
-            f"{sorted(actual_pngs - seen_files)}, missing {sorted(seen_files - actual_pngs)})")
+            f"{sorted(actual_pngs - seen_files)}, missing {sorted(seen_files - actual_pngs)})"
+        )
     target_scoped_automated = (
         manifest.get("capture_evidence_scope") == _TARGET_SCOPED_PREFIX_PROOF_ID
-        and manifest.get("capture_mode") in {
-            "automated_circular_risk_accepted", _HYBRID_CAPTURE_MODE}
-        and manifest.get("human_ground_truth") is False)
+        and manifest.get("capture_mode")
+        in {"automated_circular_risk_accepted", _HYBRID_CAPTURE_MODE}
+        and manifest.get("human_ground_truth") is False
+    )
     if require_entry_anchor_ledger and not target_scoped_automated:
         _validate_entry_anchor_ledger(sess_dir, manifest)
     if target_scoped_automated and manifest.get("entry_anchor_ledger") is not None:
         raise RuntimeError(
             "target-scoped automated evidence must not carry a closed-set entry-anchor ledger; "
-            "that would obscure which proof the capture actually made")
+            "that would obscure which proof the capture actually made"
+        )
 
     profiles = []
     for pid, v in sorted(by_profile.items()):
         expected_items = expected[pid]["composer_items"]
         expected_sequence = []
         for item_number in expected_items:
-            expected_sequence.extend((("target_pre", item_number), ("composer_open", item_number)))
-        expected_sequence.extend((("profile_advance_clear", None),
-                                  ("profile_advance_identity", None)))
+            expected_sequence.extend(
+                (("target_pre", item_number), ("composer_open", item_number))
+            )
+        expected_sequence.extend(
+            (("profile_advance_clear", None), ("profile_advance_identity", None))
+        )
         actual_sequence = [(role, number) for role, number, _data in v["sequence"]]
         if actual_sequence != expected_sequence:
             raise RuntimeError(
                 f"profile {v['profile_id']!r} inline frame roles/items {actual_sequence} do not "
-                f"exactly match required persistent-composer sequence {expected_sequence}")
+                f"exactly match required persistent-composer sequence {expected_sequence}"
+            )
         pairs = []
         for offset, item_number in enumerate(expected_items):
             pre = v["sequence"][2 * offset][2]
             composer = v["sequence"][2 * offset + 1][2]
             pairs.append((item_number, pre, composer))
-        profiles.append(_ProfileData(
-            ordinal=pid, profile_id=v["profile_id"], card_frames=v["card"],
-            composer_pairs=pairs, profile_advance_clear=v["sequence"][-2][2],
-            profile_advance_identity=v["sequence"][-1][2],
-            target_scoped_prefix=target_scoped_automated))
+        profiles.append(
+            _ProfileData(
+                ordinal=pid,
+                profile_id=v["profile_id"],
+                card_frames=v["card"],
+                composer_pairs=pairs,
+                profile_advance_clear=v["sequence"][-2][2],
+                profile_advance_identity=v["sequence"][-1][2],
+                target_scoped_prefix=target_scoped_automated,
+            )
+        )
     if {p.ordinal for p in profiles} != set(expected):
-        raise RuntimeError(f"{sess_dir} has completed profile metadata without matching frames")
+        raise RuntimeError(
+            f"{sess_dir} has completed profile metadata without matching frames"
+        )
     for p in profiles:
         if not p.card_frames:
             raise RuntimeError(
-                f"profile {p.profile_id!r} in {sess_dir} has no card_scroll frames")
+                f"profile {p.profile_id!r} in {sess_dir} has no card_scroll frames"
+            )
         if expected[p.ordinal].get("card_scroll_frames") != len(p.card_frames):
             raise RuntimeError(
                 f"profile {p.profile_id!r} has {len(p.card_frames)} card frame(s), but its "
                 f"completed-attempt metadata records "
-                f"{expected[p.ordinal].get('card_scroll_frames')!r}")
+                f"{expected[p.ordinal].get('card_scroll_frames')!r}"
+            )
 
-    return _SessionData(dir=sess_dir, split=split, device_serial=device_serial,
-                        identity_band=identity_band, content_band=content_band,
-                        profiles=profiles, manifest=manifest)
+    return _SessionData(
+        dir=sess_dir,
+        split=split,
+        device_serial=device_serial,
+        identity_band=identity_band,
+        content_band=content_band,
+        profiles=profiles,
+        manifest=manifest,
+    )
 
 
 def _cmd_verify_entry_anchor(args: argparse.Namespace) -> None:
@@ -5212,37 +6786,63 @@ def _cmd_verify_entry_anchor(args: argparse.Namespace) -> None:
         if not manifest_path.is_file():
             raise RuntimeError(
                 "no manifest.json: refusing to reconstruct card/composer/advance roles from "
-                "unmanifested private PNGs")
+                "unmanifested private PNGs"
+            )
         # First authenticate every listed card byte and the exact persistent-composer terminal
         # sequence.  Bypassing only the ledger gate is intentional: this command creates it.
         session = _load_session(sess_dir, require_entry_anchor_ledger=False)
         if session.manifest.get("entry_anchor_ledger") is not None:
             _validate_entry_anchor_ledger(sess_dir, session.manifest)
-            print(f"Existing entry-anchor ledger already validates: "
-                  f"{sess_dir / _ENTRY_ANCHOR_LEDGER_FILE}")
+            print(
+                f"Existing entry-anchor ledger already validates: "
+                f"{sess_dir / _ENTRY_ANCHOR_LEDGER_FILE}"
+            )
             return
 
         cfg = cfg_mod.load(args.config)
-        replay_driver = HingeDriver(cfg)  # construction/template lookup only; never open_session()
-        if (replay_driver.identity_band != session.identity_band
-                or replay_driver.content_band != session.content_band):
+        replay_driver = HingeDriver(
+            cfg
+        )  # construction/template lookup only; never open_session()
+        if (
+            replay_driver.identity_band != session.identity_band
+            or replay_driver.content_band != session.content_band
+        ):
             raise RuntimeError(
                 "current config's effective identity/content bands do not exactly match this "
-                "captured manifest; refusing to replay with a different detector binding")
+                "captured manifest; refusing to replay with a different detector binding"
+            )
         ref = _write_entry_anchor_ledger(
-            sess_dir, frames_meta=session.manifest["frames"],
-            profiles_meta=session.manifest["profiles"], identity_band=session.identity_band,
-            content_band=session.content_band, like_template=replay_driver._template("like"),
-            like_threshold=hinge_mod._LIKE_MATCH_THRESHOLD)
+            sess_dir,
+            frames_meta=session.manifest["frames"],
+            profiles_meta=session.manifest["profiles"],
+            identity_band=session.identity_band,
+            content_band=session.content_band,
+            like_template=replay_driver._template("like"),
+            like_threshold=hinge_mod._LIKE_MATCH_THRESHOLD,
+        )
         session.manifest["entry_anchor_ledger"] = ref
         atomic_write_private_text(
-            manifest_path, json.dumps(session.manifest, indent=2) + "\n", parent=sess_dir)
+            manifest_path,
+            json.dumps(session.manifest, indent=2) + "\n",
+            parent=sess_dir,
+        )
         _validate_entry_anchor_ledger(sess_dir, session.manifest)
-    except (OSError, RuntimeError, _MeasureRefused, ItemIndexError, ItemCropError,
-            SegmentationError, ShiftEstimationError) as exc:
-        print(f"ERROR: offline entry-anchor verification refused: {exc}", file=sys.stderr)
+    except (
+        OSError,
+        RuntimeError,
+        _MeasureRefused,
+        ItemIndexError,
+        ItemCropError,
+        SegmentationError,
+        ShiftEstimationError,
+    ) as exc:
+        print(
+            f"ERROR: offline entry-anchor verification refused: {exc}", file=sys.stderr
+        )
         sys.exit(1)
-    print(f"Wrote hash-bound offline entry-anchor replay: {sess_dir / _ENTRY_ANCHOR_LEDGER_FILE}")
+    print(
+        f"Wrote hash-bound offline entry-anchor replay: {sess_dir / _ENTRY_ANCHOR_LEDGER_FILE}"
+    )
 
 
 def _cmd_attach_operational_evidence(args: argparse.Namespace) -> None:
@@ -5262,46 +6862,69 @@ def _cmd_attach_operational_evidence(args: argparse.Namespace) -> None:
         if session.manifest.get("entry_anchor_ledger") is not None:
             raise RuntimeError(
                 "session already has an entry-anchor ledger; refuse to rewrite its operational "
-                "references. Measure it as-is or recapture a fresh evidence session")
+                "references. Measure it as-is or recapture a fresh evidence session"
+            )
         checks = session.manifest.get("operational_checks")
-        required = ("entry_anchor_scroll_ledger", "item_1_inline_composer_identity",
-                    "gesture_transport")
-        if (not isinstance(checks, dict)
-                or any(not isinstance(checks.get(key), dict)
-                       or checks[key].get("confirmed") is not True for key in required)):
+        required = (
+            "entry_anchor_scroll_ledger",
+            "item_1_inline_composer_identity",
+            "gesture_transport",
+        )
+        if not isinstance(checks, dict) or any(
+            not isinstance(checks.get(key), dict)
+            or checks[key].get("confirmed") is not True
+            for key in required
+        ):
             raise RuntimeError(
                 "completed capture lacks affirmative existing entry/item-1/gesture operational "
-                "records; this migration cannot invent an owner-performed check")
+                "records; this migration cannot invent an owner-performed check"
+            )
         expected_device = session.manifest.get("device")
         reason = _operational_evidence_reference_reason(
-            args.operational_evidence, expected_device=expected_device,
-            identity_band=session.identity_band)
+            args.operational_evidence,
+            expected_device=expected_device,
+            identity_band=session.identity_band,
+        )
         if reason:
-            raise RuntimeError("supplied operational recorder artifact is invalid: " + reason)
+            raise RuntimeError(
+                "supplied operational recorder artifact is invalid: " + reason
+            )
         op_manifest, op_manifest_reason = _operational_evidence_manifest_path(
-            args.operational_evidence)
+            args.operational_evidence
+        )
         if op_manifest is None:
             raise RuntimeError(
                 "validated operational evidence became unavailable: "
-                + (op_manifest_reason or "manifest path could not be resolved"))
+                + (op_manifest_reason or "manifest path could not be resolved")
+            )
 
         cfg = cfg_mod.load(args.config)
-        replay_driver = HingeDriver(cfg)  # template lookup only; this command never opens ADB
-        if (replay_driver.identity_band != session.identity_band
-                or replay_driver.content_band != session.content_band):
+        replay_driver = HingeDriver(
+            cfg
+        )  # template lookup only; this command never opens ADB
+        if (
+            replay_driver.identity_band != session.identity_band
+            or replay_driver.content_band != session.content_band
+        ):
             raise RuntimeError(
                 "current config's effective identity/content bands do not exactly match this "
-                "captured manifest; refusing to attach evidence under a different binding")
+                "captured manifest; refusing to attach evidence under a different binding"
+            )
         entry_candidate = sess_dir / _ENTRY_ANCHOR_LEDGER_FILE
         created_ledger = entry_candidate
         entry_ref = _write_entry_anchor_ledger(
-            sess_dir, frames_meta=session.manifest["frames"],
-            profiles_meta=session.manifest["profiles"], identity_band=session.identity_band,
-            content_band=session.content_band, like_template=replay_driver._template("like"),
-            like_threshold=hinge_mod._LIKE_MATCH_THRESHOLD)
+            sess_dir,
+            frames_meta=session.manifest["frames"],
+            profiles_meta=session.manifest["profiles"],
+            identity_band=session.identity_band,
+            content_band=session.content_band,
+            like_template=replay_driver._template("like"),
+            like_threshold=hinge_mod._LIKE_MATCH_THRESHOLD,
+        )
         session.manifest["entry_anchor_ledger"] = entry_ref
         checks["entry_anchor_scroll_ledger"]["evidence"] = str(
-            (sess_dir / _ENTRY_ANCHOR_LEDGER_FILE).resolve())
+            (sess_dir / _ENTRY_ANCHOR_LEDGER_FILE).resolve()
+        )
         checks["item_1_inline_composer_identity"]["evidence"] = str(op_manifest)
         checks["gesture_transport"]["evidence"] = str(op_manifest)
         manifest_path = sess_dir / "manifest.json"
@@ -5313,15 +6936,30 @@ def _cmd_attach_operational_evidence(args: argparse.Namespace) -> None:
         # If any prior check refused, the catch below removes the newly-created ledger too, so a
         # later run never mistakes an orphan side file for an attached audit trail.
         atomic_write_private_text(
-            manifest_path, json.dumps(session.manifest, indent=2) + "\n", parent=sess_dir)
-    except (OSError, RuntimeError, _MeasureRefused, ItemIndexError, ItemCropError,
-            SegmentationError, ShiftEstimationError) as exc:
+            manifest_path,
+            json.dumps(session.manifest, indent=2) + "\n",
+            parent=sess_dir,
+        )
+    except (
+        OSError,
+        RuntimeError,
+        _MeasureRefused,
+        ItemIndexError,
+        ItemCropError,
+        SegmentationError,
+        ShiftEstimationError,
+    ) as exc:
         if created_ledger is not None:
             created_ledger.unlink(missing_ok=True)
-        print(f"ERROR: offline operational-evidence attachment refused: {exc}", file=sys.stderr)
+        print(
+            f"ERROR: offline operational-evidence attachment refused: {exc}",
+            file=sys.stderr,
+        )
         sys.exit(1)
-    print("Attached hash-valid recorder v2 evidence and entry-anchor replay to "
-          f"{sess_dir / 'manifest.json'}")
+    print(
+        "Attached hash-valid recorder v2 evidence and entry-anchor replay to "
+        f"{sess_dir / 'manifest.json'}"
+    )
 
 
 def _split_profiles(sessions: list) -> list:
@@ -5332,13 +6970,17 @@ def _session_sort_key(sess: _SessionData):
     m = re.search(r"(\d{8}T\d{6}Z)$", sess.dir.name)
     if m:
         try:
-            return datetime.strptime(m.group(1), "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+            return datetime.strptime(m.group(1), "%Y%m%dT%H%M%SZ").replace(
+                tzinfo=timezone.utc
+            )
         except ValueError:
             pass
     return datetime.fromtimestamp(sess.dir.stat().st_mtime, tz=timezone.utc)
 
 
-def _validate_profile_advance_clears(profiles: list, *, identity_band, confirm_template) -> None:
+def _validate_profile_advance_clears(
+    profiles: list, *, identity_band, confirm_template
+) -> None:
     """Re-check terminal transition evidence offline; absence from view is not a cancellation.
 
     Hinge's inline composer persists until the owner advances the profile.  A terminal frame is
@@ -5348,53 +6990,71 @@ def _validate_profile_advance_clears(profiles: list, *, identity_band, confirm_t
     """
     for p in profiles:
         try:
-            top = confirm_scroll_top(p.profile_advance_clear, identity_band=identity_band)
+            top = confirm_scroll_top(
+                p.profile_advance_clear, identity_band=identity_band
+            )
         except ScrollTopError as exc:
             raise _MeasureRefused(
                 f"profile {p.profile_id!r}: advance-clear frame could not confirm a new profile top "
-                f"({exc})") from exc
+                f"({exc})"
+            ) from exc
         if not top.confirmed:
             raise _MeasureRefused(
                 f"profile {p.profile_id!r}: advance-clear frame is not a confirmed profile top "
-                f"({top.reason})")
+                f"({top.reason})"
+            )
         try:
-            locate_inline_composer(p.profile_advance_clear, confirm_template, threshold=0.8)
+            locate_inline_composer(
+                p.profile_advance_clear, confirm_template, threshold=0.8
+            )
         except ComposerDetectionError:
             continue
         raise _MeasureRefused(
             f"profile {p.profile_id!r}: terminal advance-clear frame still contains an inline "
-            "composer; do not treat a persistent/offscreen composer as cancelled")
+            "composer; do not treat a persistent/offscreen composer as cancelled"
+        )
 
     for p in profiles:
         try:
             prior = capture_profile_identity(
-                p.card_frames, identity_band=identity_band, grid=_IDENTITY_GRID)
+                p.card_frames, identity_band=identity_band, grid=_IDENTITY_GRID
+            )
             if not prior.known:
                 raise _MeasureRefused(
                     f"profile {p.profile_id!r}: prior card-scroll capture has no identity "
-                    f"representative ({prior.reason})")
+                    f"representative ({prior.reason})"
+                )
             identity_top = confirm_scroll_top(
-                p.profile_advance_identity, identity_band=identity_band)
+                p.profile_advance_identity, identity_band=identity_band
+            )
             if not identity_top.refuted:
                 raise _MeasureRefused(
                     f"profile {p.profile_id!r}: next-profile identity frame does not positively "
-                    f"show a sticky header ({identity_top.reason})")
+                    f"show a sticky header ({identity_top.reason})"
+                )
             next_fp = band_fingerprint(
-                p.profile_advance_identity, identity_band=identity_band, grid=_IDENTITY_GRID)
+                p.profile_advance_identity,
+                identity_band=identity_band,
+                grid=_IDENTITY_GRID,
+            )
             distance = _checked_distance(
                 fingerprint_distance(prior.fingerprint, next_fp),
-                context=f"profile {p.profile_id!r} next-profile identity")
+                context=f"profile {p.profile_id!r} next-profile identity",
+            )
         except ScrollTopError as exc:
             raise _MeasureRefused(
-                f"profile {p.profile_id!r}: next-profile identity frame could not be read ({exc})") from exc
+                f"profile {p.profile_id!r}: next-profile identity frame could not be read ({exc})"
+            ) from exc
         if distance <= _IDENTITY_FALSE_MATCH_DISTANCE:
             raise _MeasureRefused(
                 f"profile {p.profile_id!r}: claimed next profile identity is {distance:.3f} from "
                 f"the prior profile, at/under the {_IDENTITY_FALSE_MATCH_DISTANCE} ambiguity "
-                "ceiling. A same-profile scroll cannot certify composer clearance")
+                "ceiling. A same-profile scroll cannot certify composer clearance"
+            )
 
 
 # --- IDENTITY ------------------------------------------------------------------------
+
 
 @dataclass
 class _IdentitySample:
@@ -5412,20 +7072,27 @@ def _profile_identity_samples(profiles: list, *, identity_band) -> list:
     every other profile's."""
     samples: list[_IdentitySample] = []
     for p in profiles:
-        identity = capture_profile_identity(p.card_frames, identity_band=identity_band,
-                                            grid=_IDENTITY_GRID)
+        identity = capture_profile_identity(
+            p.card_frames, identity_band=identity_band, grid=_IDENTITY_GRID
+        )
         if not identity.known:
             raise _MeasureRefused(
                 f"profile {p.profile_id!r}: card-scroll frames do not establish an identity "
-                f"fingerprint ({identity.reason})")
-        samples.append(_IdentitySample(p.profile_id, "representative", identity.fingerprint))
+                f"fingerprint ({identity.reason})"
+            )
+        samples.append(
+            _IdentitySample(p.profile_id, "representative", identity.fingerprint)
+        )
         for item_number, _target_pre, frame in p.composer_pairs:
             try:
-                fp = band_fingerprint(frame, identity_band=identity_band, grid=_IDENTITY_GRID)
+                fp = band_fingerprint(
+                    frame, identity_band=identity_band, grid=_IDENTITY_GRID
+                )
             except ScrollTopError as exc:
                 raise _MeasureRefused(
                     f"profile {p.profile_id!r} item {item_number}: composer frame's identity band "
-                    f"could not be read ({exc})") from exc
+                    f"could not be read ({exc})"
+                ) from exc
             samples.append(_IdentitySample(p.profile_id, f"composer:{item_number}", fp))
     return samples
 
@@ -5435,10 +7102,18 @@ def _identity_pair_distances(samples: list) -> tuple[list, list]:
     for a, b in combinations(samples, 2):
         d = _checked_distance(
             fingerprint_distance(a.fingerprint, b.fingerprint),
-            context=(f"identity comparison {a.profile_id!r}/{a.origin} against "
-                     f"{b.profile_id!r}/{b.origin}"))
-        rec = {"a_profile": a.profile_id, "a_origin": a.origin, "b_profile": b.profile_id,
-               "b_origin": b.origin, "distance": d}
+            context=(
+                f"identity comparison {a.profile_id!r}/{a.origin} against "
+                f"{b.profile_id!r}/{b.origin}"
+            ),
+        )
+        rec = {
+            "a_profile": a.profile_id,
+            "a_origin": a.origin,
+            "b_profile": b.profile_id,
+            "b_origin": b.origin,
+            "distance": d,
+        }
         (same if a.profile_id == b.profile_id else diff).append(rec)
     return same, diff
 
@@ -5447,13 +7122,17 @@ def _freeze_identity_bound(samples: list) -> tuple[float | None, dict]:
     same, diff = _identity_pair_distances(samples)
     report = {"same_profile_pairs": same, "different_profile_pairs": diff}
     if not same:
-        report["reason"] = ("no same-profile pairs on the calibration split -- need at least "
-                            "one profile with >= 2 fingerprints (its card representative plus "
-                            ">= 1 captured composer)")
+        report["reason"] = (
+            "no same-profile pairs on the calibration split -- need at least "
+            "one profile with >= 2 fingerprints (its card representative plus "
+            ">= 1 captured composer)"
+        )
         return None, report
     if not diff:
-        report["reason"] = ("no different-profile pairs on the calibration split -- need >= 2 "
-                            "distinct profiles")
+        report["reason"] = (
+            "no different-profile pairs on the calibration split -- need >= 2 "
+            "distinct profiles"
+        )
         return None, report
     max_same = max(r["distance"] for r in same)
     min_diff = min(r["distance"] for r in diff)
@@ -5463,7 +7142,8 @@ def _freeze_identity_bound(samples: list) -> tuple[float | None, dict]:
     if max_same >= min_diff:
         report["reason"] = (
             f"not separable: max same-profile distance {max_same:.3f} >= min different-profile "
-            f"distance {min_diff:.3f}")
+            f"distance {min_diff:.3f}"
+        )
         return None, report
     bound = (max_same + min_diff) / 2.0
     if bound >= _IDENTITY_FALSE_MATCH_DISTANCE:
@@ -5473,7 +7153,8 @@ def _freeze_identity_bound(samples: list) -> tuple[float | None, dict]:
             f"the midpoint bound is at/above the known {_IDENTITY_FALSE_MATCH_DISTANCE} "
             f"collision ceiling, and clamping it strictly below that ceiling would put it "
             f"at/under this split's own max same-profile distance ({max_same:.3f}) -- not a "
-            "usable bound")
+            "usable bound"
+        )
         return None, report
     report["frozen_bound_raw"] = bound
     return bound, report
@@ -5485,27 +7166,47 @@ def _apply_identity_bound(samples: list, bound: float) -> tuple[bool, str, dict]
     # boundary here: equality is a foreign accept, while a same-profile equality is accepted.
     foreign_accepts = [r for r in diff if r["distance"] <= bound]
     false_refusals = [r for r in same if r["distance"] > bound]
-    detail = {"same_profile_pairs": same, "different_profile_pairs": diff,
-              "foreign_accepts": foreign_accepts, "false_refusals": false_refusals}
+    detail = {
+        "same_profile_pairs": same,
+        "different_profile_pairs": diff,
+        "foreign_accepts": foreign_accepts,
+        "false_refusals": false_refusals,
+    }
     if foreign_accepts:
         nearest = min(r["distance"] for r in foreign_accepts)
-        return False, (
-            f"{len(foreign_accepts)} held-out different-profile pair(s) scored under the "
-            f"frozen bound {bound:.4f} (nearest {nearest:.3f}) -- this bound would have liked "
-            "the WRONG profile's item. The bound is INVALIDATED, not just this run"), detail
+        return (
+            False,
+            (
+                f"{len(foreign_accepts)} held-out different-profile pair(s) scored under the "
+                f"frozen bound {bound:.4f} (nearest {nearest:.3f}) -- this bound would have liked "
+                "the WRONG profile's item. The bound is INVALIDATED, not just this run"
+            ),
+            detail,
+        )
     if false_refusals:
-        return False, (
-            f"{len(false_refusals)} held-out same-profile pair(s) scored at/over the frozen "
-            f"bound {bound:.4f} -- a false refusal is a stop/re-measurement signal, never a "
-            "reason to widen the bound"), detail
+        return (
+            False,
+            (
+                f"{len(false_refusals)} held-out same-profile pair(s) scored at/over the frozen "
+                f"bound {bound:.4f} -- a false refusal is a stop/re-measurement signal, never a "
+                "reason to widen the bound"
+            ),
+            detail,
+        )
     if not diff:
-        return False, (
-            "held-out split produced no different-profile pairs to test 0 foreign-profile "
-            "accepts against -- need >= 2 distinct profiles in the held-out split"), detail
+        return (
+            False,
+            (
+                "held-out split produced no different-profile pairs to test 0 foreign-profile "
+                "accepts against -- need >= 2 distinct profiles in the held-out split"
+            ),
+            detail,
+        )
     return True, "0 foreign-profile accepts, 0 false refusals", detail
 
 
 # --- INLINE COMPOSER ITEMS -------------------------------------------------------------
+
 
 @dataclass
 class _ProfilePayload:
@@ -5514,28 +7215,37 @@ class _ProfilePayload:
     composer_pairs: list  # list[tuple[int, target_pre_bytes, composer_open_bytes]]
 
 
-def _build_profile_payloads(profiles: list, *, content_band, identity_band, like_template,
-                            like_threshold) -> list:
+def _build_profile_payloads(
+    profiles: list, *, content_band, identity_band, like_template, like_threshold
+) -> list:
     out: list[_ProfilePayload] = []
     for p in profiles:
         try:
             index = build_item_index(
-                p.card_frames, content_band=content_band, like_template=like_template,
-                like_threshold=like_threshold, at_scroll_top=True, identity_band=identity_band)
+                p.card_frames,
+                content_band=content_band,
+                like_template=like_template,
+                like_threshold=like_threshold,
+                at_scroll_top=True,
+                identity_band=identity_band,
+            )
         except (ItemIndexError, SegmentationError, ShiftEstimationError) as exc:
             raise _MeasureRefused(
                 f"profile {p.profile_id!r}: could not build an item index from its "
-                f"card-scroll frames ({type(exc).__name__}: {exc})") from exc
+                f"card-scroll frames ({type(exc).__name__}: {exc})"
+            ) from exc
         if not index.usable:
             raise _MeasureRefused(
                 f"profile {p.profile_id!r}: item index is not usable: "
-                + "; ".join(index.failures))
+                + "; ".join(index.failures)
+            )
         if not index.complete and not p.target_scoped_prefix:
             raise _MeasureRefused(
                 f"profile {p.profile_id!r}: item index does not cover the complete profile "
                 f"(at_scroll_top={index.at_scroll_top}, reached_end={index.reached_end}, "
                 f"partial_blocks={len(index.partial)}); every available foreign item must be "
-                "included in calibration negatives")
+                "included in calibration negatives"
+            )
         try:
             # Classifier-only, matching capture.  Measure rebuilds the numbering capture already
             # committed to; if it applied a gate capture did not, it would refuse the very items
@@ -5543,21 +7253,26 @@ def _build_profile_payloads(profiles: list, *, content_band, identity_band, like
             # the same bytes.  The still-photo licence for a HEART is not this call's job -- it
             # was `_verified_still_photo_proof`'s, live, in the pre-heart window.
             payload = build_item_payload(
-                p.card_frames, index, unnumber=unnumber_unless_confident_photo)
+                p.card_frames, index, unnumber=unnumber_unless_confident_photo
+            )
         except ItemCropError as exc:
             raise _MeasureRefused(
-                f"profile {p.profile_id!r}: could not build item crops: {exc}") from exc
+                f"profile {p.profile_id!r}: could not build item crops: {exc}"
+            ) from exc
         if not payload.usable:
             raise _MeasureRefused(
                 f"profile {p.profile_id!r}: item payload is not usable: "
-                + "; ".join(payload.failures))
-        target_items = tuple(item_number for item_number, _target_pre, _composer_open
-                             in p.composer_pairs)
+                + "; ".join(payload.failures)
+            )
+        target_items = tuple(
+            item_number for item_number, _target_pre, _composer_open in p.composer_pairs
+        )
         if p.target_scoped_prefix:
             reason = _target_scoped_prefix_reason(index, payload, target_items)
             if reason is not None:
                 raise _MeasureRefused(
-                    f"profile {p.profile_id!r}: target-scoped prefix proof refused: {reason}")
+                    f"profile {p.profile_id!r}: target-scoped prefix proof refused: {reason}"
+                )
         available = {c.number for c in payload.items}
         for item_number, _target_pre, _composer_open in p.composer_pairs:
             if item_number not in available:
@@ -5565,9 +7280,15 @@ def _build_profile_payloads(profiles: list, *, content_band, identity_band, like
                     f"profile {p.profile_id!r}: a composer was captured for item {item_number}, "
                     f"which this profile's index/payload never produced ({sorted(available)} "
                     "available) -- capture and measure disagree about this profile's item "
-                    "numbering, refusing rather than guessing")
-        out.append(_ProfilePayload(profile_id=p.profile_id, payload=payload,
-                                   composer_pairs=list(p.composer_pairs)))
+                    "numbering, refusing rather than guessing"
+                )
+        out.append(
+            _ProfilePayload(
+                profile_id=p.profile_id,
+                payload=payload,
+                composer_pairs=list(p.composer_pairs),
+            )
+        )
     return out
 
 
@@ -5601,66 +7322,106 @@ def _inline_distance_records(profiles: list, *, confirm_template) -> list:
                 surface = locate_inline_composer(frame, confirm_template, threshold=0.8)
                 if surface.layout_id != _COMPOSER_LAYOUT_ID:
                     raise SheetVerificationError(
-                        f"unsupported composer layout {surface.layout_id!r}")
-                verdict = verify_sheet_item(frame, pp.payload, item_number,
-                                            absolute_max_dist=None,
-                                            composer_surface=surface)
+                        f"unsupported composer layout {surface.layout_id!r}"
+                    )
+                verdict = verify_sheet_item(
+                    frame,
+                    pp.payload,
+                    item_number,
+                    absolute_max_dist=None,
+                    composer_surface=surface,
+                )
             except (ComposerDetectionError, SheetVerificationError) as exc:
                 raise _MeasureRefused(
                     f"profile {pp.profile_id!r} item {item_number}: composer frame could not be "
-                    f"compared against its own payload ({exc})") from exc
+                    f"compared against its own payload ({exc})"
+                ) from exc
             for comp in verdict.comparisons:
                 if comp.distance is None:
                     raise _MeasureRefused(
                         f"profile {pp.profile_id!r} item {item_number}: comparison against its "
                         f"own item {comp.number} had no distance ({comp.reason}); the protocol "
-                        "requires every available alternative, so it cannot be omitted")
+                        "requires every available alternative, so it cannot be omitted"
+                    )
                 distance = _checked_distance(
                     comp.distance,
-                    context=(f"composer {pp.profile_id!r} item {item_number} against own item "
-                             f"{comp.number}"))
-                kind = "own_intended" if comp.number == item_number else "own_foreign_item"
-                records.append(_InlineDistanceRecord(
-                    kind=kind, composer_profile_id=pp.profile_id, composer_item_number=item_number,
-                    against_profile_id=pp.profile_id, against_item_number=comp.number,
-                    distance=distance))
+                    context=(
+                        f"composer {pp.profile_id!r} item {item_number} against own item "
+                        f"{comp.number}"
+                    ),
+                )
+                kind = (
+                    "own_intended" if comp.number == item_number else "own_foreign_item"
+                )
+                records.append(
+                    _InlineDistanceRecord(
+                        kind=kind,
+                        composer_profile_id=pp.profile_id,
+                        composer_item_number=item_number,
+                        against_profile_id=pp.profile_id,
+                        against_item_number=comp.number,
+                        distance=distance,
+                    )
+                )
             for other in profiles:
                 if other is pp:
                     continue
-                probe_number = min((c.number for c in other.payload.items), default=None)
+                probe_number = min(
+                    (c.number for c in other.payload.items), default=None
+                )
                 if probe_number is None:
                     continue
                 try:
-                    foreign_verdict = verify_sheet_item(frame, other.payload, probe_number,
-                                                        absolute_max_dist=None,
-                                                        composer_surface=surface)
+                    foreign_verdict = verify_sheet_item(
+                        frame,
+                        other.payload,
+                        probe_number,
+                        absolute_max_dist=None,
+                        composer_surface=surface,
+                    )
                 except SheetVerificationError as exc:
                     raise _MeasureRefused(
                         f"profile {pp.profile_id!r} item {item_number}: composer frame could not "
                         f"be compared against profile {other.profile_id!r}'s payload "
-                        f"({exc})") from exc
+                        f"({exc})"
+                    ) from exc
                 for comp in foreign_verdict.comparisons:
                     if comp.distance is None:
                         raise _MeasureRefused(
                             f"profile {pp.profile_id!r} item {item_number}: comparison against "
                             f"foreign profile {other.profile_id!r} item {comp.number} had no "
-                            f"distance ({comp.reason}); foreign candidates cannot be omitted")
+                            f"distance ({comp.reason}); foreign candidates cannot be omitted"
+                        )
                     distance = _checked_distance(
                         comp.distance,
-                        context=(f"composer {pp.profile_id!r} item {item_number} against foreign "
-                                 f"profile {other.profile_id!r} item {comp.number}"))
-                    records.append(_InlineDistanceRecord(
-                        kind="foreign_profile", composer_profile_id=pp.profile_id,
-                        composer_item_number=item_number, against_profile_id=other.profile_id,
-                        against_item_number=comp.number, distance=distance))
+                        context=(
+                            f"composer {pp.profile_id!r} item {item_number} against foreign "
+                            f"profile {other.profile_id!r} item {comp.number}"
+                        ),
+                    )
+                    records.append(
+                        _InlineDistanceRecord(
+                            kind="foreign_profile",
+                            composer_profile_id=pp.profile_id,
+                            composer_item_number=item_number,
+                            against_profile_id=other.profile_id,
+                            against_item_number=comp.number,
+                            distance=distance,
+                        )
+                    )
     return records
 
 
 def _record_dicts(records: list) -> list:
     return [
-        {"kind": r.kind, "composer_profile_id": r.composer_profile_id,
-         "composer_item_number": r.composer_item_number, "against_profile_id": r.against_profile_id,
-         "against_item_number": r.against_item_number, "distance": r.distance}
+        {
+            "kind": r.kind,
+            "composer_profile_id": r.composer_profile_id,
+            "composer_item_number": r.composer_item_number,
+            "against_profile_id": r.against_profile_id,
+            "against_item_number": r.against_item_number,
+            "distance": r.distance,
+        }
         for r in records
     ]
 
@@ -5669,19 +7430,25 @@ def _freeze_inline_bound(records: list) -> tuple[float | None, dict]:
     for r in records:
         _checked_distance(
             r.distance,
-            context=(f"{r.kind} inline comparison {r.composer_profile_id!r}/"
-                     f"{r.composer_item_number} against {r.against_profile_id!r}/"
-                     f"{r.against_item_number}"))
+            context=(
+                f"{r.kind} inline comparison {r.composer_profile_id!r}/"
+                f"{r.composer_item_number} against {r.against_profile_id!r}/"
+                f"{r.against_item_number}"
+            ),
+        )
     intended = [r for r in records if r.kind == "own_intended"]
     foreign = [r for r in records if r.kind in ("own_foreign_item", "foreign_profile")]
     report = {"intended": _record_dicts(intended), "foreign": _record_dicts(foreign)}
     if not intended:
-        report["reason"] = "no intended-item distances measured on the calibration split"
+        report["reason"] = (
+            "no intended-item distances measured on the calibration split"
+        )
         return None, report
     if not foreign:
         report["reason"] = (
             "no foreign-item/foreign-profile distances measured on the calibration split -- "
-            "need either a profile with >= 2 items or >= 2 distinct profiles")
+            "need either a profile with >= 2 items or >= 2 distinct profiles"
+        )
         return None, report
     max_correct = max(r.distance for r in intended)
     min_foreign = min(r.distance for r in foreign)
@@ -5691,7 +7458,8 @@ def _freeze_inline_bound(records: list) -> tuple[float | None, dict]:
     if max_correct >= min_foreign:
         report["reason"] = (
             f"not separable: max intended-item distance {max_correct:.3f} >= min foreign "
-            f"distance {min_foreign:.3f}")
+            f"distance {min_foreign:.3f}"
+        )
         return None, report
     bound = (max_correct + min_foreign) / 2.0
     if bound >= _INLINE_FALSE_MATCH_DISTANCE:
@@ -5700,7 +7468,8 @@ def _freeze_inline_bound(records: list) -> tuple[float | None, dict]:
         report["reason"] = (
             f"the midpoint bound is at/above the known {_INLINE_FALSE_MATCH_DISTANCE} collision "
             f"ceiling, and clamping it strictly below that ceiling would put it at/under this "
-            f"split's own max intended-item distance ({max_correct:.3f}) -- not a usable bound")
+            f"split's own max intended-item distance ({max_correct:.3f}) -- not a usable bound"
+        )
         return None, report
     report["frozen_bound_raw"] = bound
     return bound, report
@@ -5711,32 +7480,53 @@ def _apply_inline_bound(records: list, bound: float) -> tuple[bool, str, dict]:
     for r in records:
         _checked_distance(
             r.distance,
-            context=(f"held-out {r.kind} inline comparison {r.composer_profile_id!r}/"
-                     f"{r.composer_item_number} against {r.against_profile_id!r}/"
-                     f"{r.against_item_number}"))
+            context=(
+                f"held-out {r.kind} inline comparison {r.composer_profile_id!r}/"
+                f"{r.composer_item_number} against {r.against_profile_id!r}/"
+                f"{r.against_item_number}"
+            ),
+        )
     intended = [r for r in records if r.kind == "own_intended"]
     foreign = [r for r in records if r.kind in ("own_foreign_item", "foreign_profile")]
     foreign_accepts = [r for r in foreign if r.distance < bound]
     false_refusals = [r for r in intended if r.distance >= bound]
-    detail = {"intended": _record_dicts(intended), "foreign": _record_dicts(foreign),
-              "foreign_accepts": _record_dicts(foreign_accepts),
-              "false_refusals": _record_dicts(false_refusals)}
+    detail = {
+        "intended": _record_dicts(intended),
+        "foreign": _record_dicts(foreign),
+        "foreign_accepts": _record_dicts(foreign_accepts),
+        "false_refusals": _record_dicts(false_refusals),
+    }
     if foreign_accepts:
         nearest = min(r.distance for r in foreign_accepts)
-        return False, (
-            f"{len(foreign_accepts)} held-out foreign-item/foreign-profile inline comparison(s) "
-            f"scored under the frozen bound {bound:.4f} (nearest {nearest:.3f}) -- this bound "
-            "would have accepted the WRONG item's composer. The bound is INVALIDATED, not just "
-            "this run"), detail
+        return (
+            False,
+            (
+                f"{len(foreign_accepts)} held-out foreign-item/foreign-profile inline comparison(s) "
+                f"scored under the frozen bound {bound:.4f} (nearest {nearest:.3f}) -- this bound "
+                "would have accepted the WRONG item's composer. The bound is INVALIDATED, not just "
+                "this run"
+            ),
+            detail,
+        )
     if false_refusals:
-        return False, (
-            f"{len(false_refusals)} held-out intended-item inline comparison(s) scored at/over "
-            f"the frozen bound {bound:.4f} -- a false refusal is a stop/re-measurement signal, "
-            "never a reason to widen the bound"), detail
+        return (
+            False,
+            (
+                f"{len(false_refusals)} held-out intended-item inline comparison(s) scored at/over "
+                f"the frozen bound {bound:.4f} -- a false refusal is a stop/re-measurement signal, "
+                "never a reason to widen the bound"
+            ),
+            detail,
+        )
     if not foreign:
-        return False, (
-            "held-out split produced no foreign-item/foreign-profile comparisons to test 0 "
-            "accepts against"), detail
+        return (
+            False,
+            (
+                "held-out split produced no foreign-item/foreign-profile comparisons to test 0 "
+                "accepts against"
+            ),
+            detail,
+        )
     return True, "0 foreign-item/foreign-profile accepts, 0 false refusals", detail
 
 
@@ -5750,14 +7540,18 @@ def _preliminary_observe_check_reference_reason(reference: str) -> str | None:
     if path.is_dir():
         path /= "observe_check.json"
     if path.name != "observe_check.json" or not path.is_file():
-        return (f"{path} is not a readable observe_check.json artifact; a free-form path or "
-                "assertion cannot satisfy the preliminary OBSERVE gate")
+        return (
+            f"{path} is not a readable observe_check.json artifact; a free-form path or "
+            "assertion cannot satisfy the preliminary OBSERVE gate"
+        )
     try:
         record = json.loads(path.read_text())
     except (OSError, json.JSONDecodeError) as exc:
         return f"could not read observe-check evidence {path}: {type(exc).__name__}"
-    if (record.get("kind") != "hinge_supervised_observe_only_check"
-            or record.get("evidence_scope") != _PRELIMINARY_OBSERVE_SCOPE):
+    if (
+        record.get("kind") != "hinge_supervised_observe_only_check"
+        or record.get("evidence_scope") != _PRELIMINARY_OBSERVE_SCOPE
+    ):
         return f"{path} is not a recognised preliminary observe-check artifact"
     if record.get("completed") is not True:
         return f"{path} is an incomplete preliminary observe-check artifact"
@@ -5786,23 +7580,30 @@ def _entry_anchor_reference_reason(session: _SessionData, reference: str) -> str
     except OSError as exc:
         return f"could not resolve entry-anchor evidence {path}: {type(exc).__name__}"
     if actual != expected or not actual.is_file():
-        return (f"{path} is not this session's exact {_ENTRY_ANCHOR_LEDGER_FILE}; a free-form "
-                "assertion cannot satisfy the entry-anchor check")
+        return (
+            f"{path} is not this session's exact {_ENTRY_ANCHOR_LEDGER_FILE}; a free-form "
+            "assertion cannot satisfy the entry-anchor check"
+        )
     return None
 
 
-def _operational_evidence_manifest_path(reference: str) -> tuple[Path | None, str | None]:
+def _operational_evidence_manifest_path(
+    reference: str,
+) -> tuple[Path | None, str | None]:
     path = Path(reference).expanduser()
     if path.is_dir():
         path /= "manifest.json"
     if path.name != "manifest.json" or not path.is_file():
-        return None, (f"{path} is not a readable operational-evidence manifest.json; a free-form "
-                      "path or assertion cannot satisfy this check")
+        return None, (
+            f"{path} is not a readable operational-evidence manifest.json; a free-form "
+            "path or assertion cannot satisfy this check"
+        )
     return path.resolve(), None
 
 
-def _operational_evidence_reference_reason(reference: str, *, expected_device: dict,
-                                           identity_band: tuple) -> str | None:
+def _operational_evidence_reference_reason(
+    reference: str, *, expected_device: dict, identity_band: tuple
+) -> str | None:
     """Validate one v2 read-only operational recorder artifact without trusting its labels.
 
     Every screen is re-hashed, its geometry is checked against the recorder's device evidence,
@@ -5820,28 +7621,49 @@ def _operational_evidence_reference_reason(reference: str, *, expected_device: d
     except (OSError, json.JSONDecodeError) as exc:
         return f"could not read operational evidence {path}: {type(exc).__name__}"
     expected_keys = {
-        "tool_version", "completed", "interrupted", "device", "frame_size_px",
-        "identity_band", "composer_layout_id", "config_binding",
-        "new_profile_min_identity_distance", "start_utc", "end_utc", "frame_count",
-        "frames", "analyses", "failure", "evidence_sha256",
+        "tool_version",
+        "completed",
+        "interrupted",
+        "device",
+        "frame_size_px",
+        "identity_band",
+        "composer_layout_id",
+        "config_binding",
+        "new_profile_min_identity_distance",
+        "start_utc",
+        "end_utc",
+        "frame_count",
+        "frames",
+        "analyses",
+        "failure",
+        "evidence_sha256",
     }
     if not isinstance(artifact, dict) or set(artifact) != expected_keys:
         return f"{path} has an unsupported operational-evidence schema; recapture with recorder v2"
-    if (artifact.get("tool_version") != _OPERATIONAL_EVIDENCE_TOOL_VERSION
-            or artifact.get("completed") is not True or artifact.get("interrupted") is not False
-            or artifact.get("failure") is not None):
+    if (
+        artifact.get("tool_version") != _OPERATIONAL_EVIDENCE_TOOL_VERSION
+        or artifact.get("completed") is not True
+        or artifact.get("interrupted") is not False
+        or artifact.get("failure") is not None
+    ):
         return f"{path} is not one completed, successful operational recorder v2 trace"
     claimed_digest = artifact.get("evidence_sha256")
     digest_body = dict(artifact)
     digest_body.pop("evidence_sha256", None)
-    if (not isinstance(claimed_digest, str)
-            or claimed_digest != _canonical_json_digest(digest_body)):
+    if not isinstance(claimed_digest, str) or claimed_digest != _canonical_json_digest(
+        digest_body
+    ):
         return f"{path} has an invalid operational-evidence manifest self-hash"
     device = artifact.get("device")
-    if (not isinstance(device, dict) or set(device) != set(_OPERATIONAL_EVIDENCE_DEVICE_KEYS)
-            or device != expected_device):
-        return (f"{path} device/build evidence does not exactly match the calibration/held-out "
-                "sessions")
+    if (
+        not isinstance(device, dict)
+        or set(device) != set(_OPERATIONAL_EVIDENCE_DEVICE_KEYS)
+        or device != expected_device
+    ):
+        return (
+            f"{path} device/build evidence does not exactly match the calibration/held-out "
+            "sessions"
+        )
     frame_size = artifact.get("frame_size_px")
     if frame_size != [device["display_w"], device["display_h"]]:
         return f"{path} frame_size_px does not exactly match its device evidence"
@@ -5851,12 +7673,17 @@ def _operational_evidence_reference_reason(reference: str, *, expected_device: d
         return f"{path} has an unsupported composer layout"
     binding = artifact.get("config_binding")
     expected_binding = {
-        "serial": device["serial"], "identity_band": list(identity_band),
-        "composer_layout_id": _COMPOSER_LAYOUT_ID, "hinge_package": device["hinge_package"],
+        "serial": device["serial"],
+        "identity_band": list(identity_band),
+        "composer_layout_id": _COMPOSER_LAYOUT_ID,
+        "hinge_package": device["hinge_package"],
     }
     if binding != expected_binding:
         return f"{path} config binding does not exactly match the effective calibration config"
-    if artifact.get("new_profile_min_identity_distance") != _IDENTITY_FALSE_MATCH_DISTANCE:
+    if (
+        artifact.get("new_profile_min_identity_distance")
+        != _IDENTITY_FALSE_MATCH_DISTANCE
+    ):
         return f"{path} has an unsupported new-profile identity separation threshold"
     frames = artifact.get("frames")
     if not isinstance(frames, list) or len(frames) != len(_OPERATIONAL_EVIDENCE_ROLES):
@@ -5866,13 +7693,22 @@ def _operational_evidence_reference_reason(reference: str, *, expected_device: d
     seen_names: set[str] = set()
     frame_bytes: list[bytes] = []
     for ordinal, (frame, role) in enumerate(
-            zip(frames, _OPERATIONAL_EVIDENCE_ROLES, strict=True), 1):
-        if (not isinstance(frame, dict) or set(frame) != {"file", "sha256", "role", "captured_utc"}
-                or frame.get("role") != role or frame.get("file") != f"{ordinal:05d}.png"
-                or not isinstance(frame.get("sha256"), str) or len(frame["sha256"]) != 64
-                or not isinstance(frame.get("captured_utc"), str) or not frame["captured_utc"]
-                or frame["file"] in seen_names):
-            return f"{path} has malformed or wrongly ordered operational evidence frames"
+        zip(frames, _OPERATIONAL_EVIDENCE_ROLES, strict=True), 1
+    ):
+        if (
+            not isinstance(frame, dict)
+            or set(frame) != {"file", "sha256", "role", "captured_utc"}
+            or frame.get("role") != role
+            or frame.get("file") != f"{ordinal:05d}.png"
+            or not isinstance(frame.get("sha256"), str)
+            or len(frame["sha256"]) != 64
+            or not isinstance(frame.get("captured_utc"), str)
+            or not frame["captured_utc"]
+            or frame["file"] in seen_names
+        ):
+            return (
+                f"{path} has malformed or wrongly ordered operational evidence frames"
+            )
         seen_names.add(frame["file"])
         png_path = path.parent / frame["file"]
         if not png_path.is_file():
@@ -5885,34 +7721,50 @@ def _operational_evidence_reference_reason(reference: str, *, expected_device: d
             return f"{path} frame {frame['file']!r} is missing or its sha256 no longer matches"
         try:
             from PIL import Image
+
             with Image.open(io.BytesIO(raw)) as image:
                 if image.size != tuple(frame_size):
-                    return (f"{path} frame {frame['file']!r} has size {image.size}, not the "
-                            "recorder's bound framebuffer")
+                    return (
+                        f"{path} frame {frame['file']!r} has size {image.size}, not the "
+                        "recorder's bound framebuffer"
+                    )
         except Exception as exc:  # noqa: BLE001 -- malformed proof is always a refusal
             return f"{path} frame {frame['file']!r} is not a readable PNG: {type(exc).__name__}"
         frame_bytes.append(raw)
     if {entry.name for entry in path.parent.glob("*.png")} != seen_names:
         return f"{path} PNG set is not exactly the six hash-bound recorder frames"
     analyses = artifact.get("analyses")
-    if not isinstance(analyses, dict) or set(analyses) != _OPERATIONAL_EVIDENCE_ANALYSES:
+    if (
+        not isinstance(analyses, dict)
+        or set(analyses) != _OPERATIONAL_EVIDENCE_ANALYSES
+    ):
         return f"{path} lacks the exact v2 inline-composer/topology analyses"
+
     def top_claim(verdict) -> dict:
-        return {"state": verdict.state, "distance": verdict.distance, "reason": verdict.reason,
-                "grid": list(verdict.grid)}
+        return {
+            "state": verdict.state,
+            "distance": verdict.distance,
+            "reason": verdict.reason,
+            "grid": list(verdict.grid),
+        }
 
     def surface_claim(surface) -> dict:
         return {
             "layout_id": surface.layout_id,
-            "comment_rect": {key: getattr(surface.comment_rect, key)
-                             for key in ("x0", "y0", "x1", "y1")},
-            "send_rect": {key: getattr(surface.send_rect, key)
-                          for key in ("x0", "y0", "x1", "y1")},
+            "comment_rect": {
+                key: getattr(surface.comment_rect, key)
+                for key in ("x0", "y0", "x1", "y1")
+            },
+            "send_rect": {
+                key: getattr(surface.send_rect, key) for key in ("x0", "y0", "x1", "y1")
+            },
             "confirm_point": list(surface.confirm_point),
         }
 
     template_name = hinge_mod.HINGE_SPEC.templates.get("confirm")
-    confirm_template = hinge_mod._load_template(template_name) if template_name else None
+    confirm_template = (
+        hinge_mod._load_template(template_name) if template_name else None
+    )
     if confirm_template is None:
         return f"{path} could not load the shipped confirmation template for replay"
     try:
@@ -5921,47 +7773,83 @@ def _operational_evidence_reference_reason(reference: str, *, expected_device: d
         stable_top = confirm_scroll_top(frame_bytes[2], identity_band=identity_band)
         new_top = confirm_scroll_top(frame_bytes[4], identity_band=identity_band)
         sticky_top = confirm_scroll_top(frame_bytes[5], identity_band=identity_band)
-        initial_surface = locate_inline_composer(frame_bytes[1], confirm_template, threshold=0.8)
-        stable_surface = locate_inline_composer(frame_bytes[2], confirm_template, threshold=0.8)
-        moved_surface = locate_inline_composer(frame_bytes[3], confirm_template, threshold=0.8)
+        initial_surface = locate_inline_composer(
+            frame_bytes[1], confirm_template, threshold=0.8
+        )
+        stable_surface = locate_inline_composer(
+            frame_bytes[2], confirm_template, threshold=0.8
+        )
+        moved_surface = locate_inline_composer(
+            frame_bytes[3], confirm_template, threshold=0.8
+        )
         try:
             locate_inline_composer(frame_bytes[4], confirm_template, threshold=0.8)
         except ComposerDetectionError:
             composer_cleared = True
         else:
             composer_cleared = False
-        identity = capture_profile_identity(frame_bytes[:3], identity_band=identity_band,
-                                            grid=_IDENTITY_GRID)
-        sticky_fingerprint = band_fingerprint(frame_bytes[5], identity_band=identity_band,
-                                              grid=_IDENTITY_GRID)
+        identity = capture_profile_identity(
+            frame_bytes[:3], identity_band=identity_band, grid=_IDENTITY_GRID
+        )
+        sticky_fingerprint = band_fingerprint(
+            frame_bytes[5], identity_band=identity_band, grid=_IDENTITY_GRID
+        )
         if not identity.known or identity.fingerprint is None:
             return f"{path} replay could not corroborate the item-1 profile identity"
         sticky_distance = fingerprint_distance(identity.fingerprint, sticky_fingerprint)
-    except (ComposerDetectionError, IdentityError, ScrollTopError, ItemIndexError, ValueError) as exc:
+    except (
+        ComposerDetectionError,
+        IdentityError,
+        ScrollTopError,
+        ItemIndexError,
+        ValueError,
+    ) as exc:
         return f"{path} pure replay of hashed recorder frames refused: {type(exc).__name__}: {exc}"
-    if (not pre_top.confirmed or not initial_top.refuted or not stable_top.refuted
-            or not new_top.confirmed or not sticky_top.refuted):
+    if (
+        not pre_top.confirmed
+        or not initial_top.refuted
+        or not stable_top.refuted
+        or not new_top.confirmed
+        or not sticky_top.refuted
+    ):
         return f"{path} replayed top/sticky topology does not meet the v2 operational contract"
-    if any(surface.layout_id != _COMPOSER_LAYOUT_ID
-           for surface in (initial_surface, stable_surface, moved_surface)) or not composer_cleared:
+    if (
+        any(
+            surface.layout_id != _COMPOSER_LAYOUT_ID
+            for surface in (initial_surface, stable_surface, moved_surface)
+        )
+        or not composer_cleared
+    ):
         return f"{path} replayed inline-composer topology does not meet the v2 operational contract"
     if sticky_distance <= _IDENTITY_FALSE_MATCH_DISTANCE:
         return f"{path} replayed new sticky identity is not distinct from item 1"
     expected_analyses = {
         "confirmed_top_item1_pre": {"scroll_top": top_claim(pre_top)},
         "composer_initial_autofocused": {
-            "composer": surface_claim(initial_surface), "scroll_top": top_claim(initial_top)},
+            "composer": surface_claim(initial_surface),
+            "scroll_top": top_claim(initial_top),
+        },
         "composer_stable_autofocused": {
-            "composer": surface_claim(stable_surface), "scroll_top": top_claim(stable_top)},
+            "composer": surface_claim(stable_surface),
+            "scroll_top": top_claim(stable_top),
+        },
         "other_item_composer_moved": {"composer": surface_claim(moved_surface)},
         "item1_profile_identity": {
-            "fingerprint": list(identity.fingerprint), "grid": list(identity.grid),
-            "frame_index": identity.frame_index, "reason": identity.reason},
+            "fingerprint": list(identity.fingerprint),
+            "grid": list(identity.grid),
+            "frame_index": identity.frame_index,
+            "reason": identity.reason,
+        },
         "new_profile_top_clear": {
-            "scroll_top": top_claim(new_top), "composer_absent": True},
+            "scroll_top": top_claim(new_top),
+            "composer_absent": True,
+        },
         "new_sticky_identity": {
-            "scroll_top": top_claim(sticky_top), "fingerprint": list(sticky_fingerprint),
-            "grid": list(_IDENTITY_GRID), "distance_from_item1_profile": sticky_distance},
+            "scroll_top": top_claim(sticky_top),
+            "fingerprint": list(sticky_fingerprint),
+            "grid": list(_IDENTITY_GRID),
+            "distance_from_item1_profile": sticky_distance,
+        },
     }
     if analyses != expected_analyses:
         return f"{path} recorded analyses do not exactly match pure replay of its hashed frames"
@@ -5976,75 +7864,103 @@ def _verified_operational_checks(sessions: list[_SessionData]) -> dict:
     separate ``observe_release_evidence`` config gate still blocks AUTO.
     """
     if not sessions:
-        raise _MeasureRefused("no sessions supplied for supervised operational-check validation")
+        raise _MeasureRefused(
+            "no sessions supplied for supervised operational-check validation"
+        )
     expected_device = sessions[0].manifest.get("device")
-    if (not isinstance(expected_device, dict)
-            or set(expected_device) != set(_OPERATIONAL_EVIDENCE_DEVICE_KEYS)):
+    if not isinstance(expected_device, dict) or set(expected_device) != set(
+        _OPERATIONAL_EVIDENCE_DEVICE_KEYS
+    ):
         raise _MeasureRefused("calibration sessions lack exact device/build evidence")
     identity_band = sessions[0].identity_band
     verified: dict[str, list[dict]] = {key: [] for key in _OPERATIONAL_CHECKS}
     operational_paths: dict[str, set[Path]] = {
-        "item_1_inline_composer_identity": set(), "gesture_transport": set(),
+        "item_1_inline_composer_identity": set(),
+        "gesture_transport": set(),
     }
     for sess in sessions:
-        if sess.manifest.get("device") != expected_device or sess.identity_band != identity_band:
+        if (
+            sess.manifest.get("device") != expected_device
+            or sess.identity_band != identity_band
+        ):
             raise _MeasureRefused(
                 "sessions disagree on device/build or identity-band before operational evidence "
-                "can be bound")
+                "can be bound"
+            )
         checks = sess.manifest.get("operational_checks") or {}
         for key in _OPERATIONAL_CHECKS:
             rec = checks.get(key)
-            if (isinstance(rec, dict) and rec.get("confirmed") is True
-                    and isinstance(rec.get("evidence"), str) and rec["evidence"].strip()
-                    and isinstance(rec.get("recorded_utc"), str)
-                    and rec["recorded_utc"].strip()):
+            if (
+                isinstance(rec, dict)
+                and rec.get("confirmed") is True
+                and isinstance(rec.get("evidence"), str)
+                and rec["evidence"].strip()
+                and isinstance(rec.get("recorded_utc"), str)
+                and rec["recorded_utc"].strip()
+            ):
                 if key == "observe_timing_and_quota":
                     preliminary_reason = _preliminary_observe_check_reference_reason(
-                        rec["evidence"].strip())
+                        rec["evidence"].strip()
+                    )
                     if preliminary_reason:
                         raise _MeasureRefused(
                             "the preliminary OBSERVE operational-check reference is invalid: "
-                            + preliminary_reason)
+                            + preliminary_reason
+                        )
                 elif key == "entry_anchor_scroll_ledger":
-                    entry_reason = _entry_anchor_reference_reason(sess, rec["evidence"].strip())
+                    entry_reason = _entry_anchor_reference_reason(
+                        sess, rec["evidence"].strip()
+                    )
                     if entry_reason:
                         raise _MeasureRefused(
                             "the entry-anchor operational-check reference is invalid: "
-                            + entry_reason)
+                            + entry_reason
+                        )
                 elif key in operational_paths:
                     operational_reason = _operational_evidence_reference_reason(
-                        rec["evidence"].strip(), expected_device=expected_device,
-                        identity_band=identity_band)
+                        rec["evidence"].strip(),
+                        expected_device=expected_device,
+                        identity_band=identity_band,
+                    )
                     if operational_reason:
                         raise _MeasureRefused(
                             f"the {key} operational-check reference is invalid: "
-                            + operational_reason)
-                    manifest_path, manifest_reason = _operational_evidence_manifest_path(
-                        rec["evidence"].strip())
+                            + operational_reason
+                        )
+                    manifest_path, manifest_reason = (
+                        _operational_evidence_manifest_path(rec["evidence"].strip())
+                    )
                     if manifest_path is None:
                         raise _MeasureRefused(
                             f"the {key} operational-check manifest became unavailable after "
-                            f"validation: {manifest_reason or 'path could not be resolved'}")
+                            f"validation: {manifest_reason or 'path could not be resolved'}"
+                        )
                     operational_paths[key].add(manifest_path)
-                verified[key].append({
-                    "session": str(sess.dir),
-                    "evidence": rec["evidence"].strip(),
-                    "recorded_utc": rec["recorded_utc"].strip(),
-                })
+                verified[key].append(
+                    {
+                        "session": str(sess.dir),
+                        "evidence": rec["evidence"].strip(),
+                        "recorded_utc": rec["recorded_utc"].strip(),
+                    }
+                )
     missing = [key for key, evidence in verified.items() if not evidence]
     if missing:
         raise _MeasureRefused(
             "the required supervised operational checks are not all confirmed with evidence "
             f"references (missing {missing}). Re-run a capture with "
             "--record-operational-checks after completing ops/RUNBOOK.md's four checks; numeric "
-            "separation alone does not license a real targeting gesture")
-    common_operational = (operational_paths["item_1_inline_composer_identity"]
-                          & operational_paths["gesture_transport"])
+            "separation alone does not license a real targeting gesture"
+        )
+    common_operational = (
+        operational_paths["item_1_inline_composer_identity"]
+        & operational_paths["gesture_transport"]
+    )
     if not common_operational:
         raise _MeasureRefused(
             "item-1 identity and gesture transport must share one completed, hash-valid v2 "
             "operational-evidence manifest; recapture the six-frame auto-focused trace rather "
-            "than combining unrelated assertions")
+            "than combining unrelated assertions"
+        )
     return verified
 
 
@@ -6064,13 +7980,17 @@ def _verified_automated_circular_evidence(sessions: list[_SessionData]) -> dict:
     def target_proof_reason(action: dict) -> str | None:
         proof = action.get("target_scoped_prefix_proof")
         ordinal = proof.get("target_heart_ordinal") if isinstance(proof, dict) else None
-        if (not isinstance(proof, dict)
-                or proof.get("id") != _TARGET_SCOPED_PREFIX_PROOF_ID
-                or proof.get("target_photo_model_item") != action.get("photo_model_item")
-                or proof.get("predecessors_resolved") is not True
-                or proof.get("target_crop_complete") is not True
-                or proof.get("identity_known") is not True
-                or isinstance(ordinal, bool) or not isinstance(ordinal, int) or ordinal < 1):
+        if (
+            not isinstance(proof, dict)
+            or proof.get("id") != _TARGET_SCOPED_PREFIX_PROOF_ID
+            or proof.get("target_photo_model_item") != action.get("photo_model_item")
+            or proof.get("predecessors_resolved") is not True
+            or proof.get("target_crop_complete") is not True
+            or proof.get("identity_known") is not True
+            or isinstance(ordinal, bool)
+            or not isinstance(ordinal, int)
+            or ordinal < 1
+        ):
             return "missing or malformed target-scoped prefix proof"
         return None
 
@@ -6079,100 +7999,160 @@ def _verified_automated_circular_evidence(sessions: list[_SessionData]) -> dict:
         acceptance = manifest.get("automation_acceptance")
         manifest_strategy_id = manifest.get("automated_target_strategy_id")
         acceptance_strategy_id = (
-            acceptance.get("target_strategy_id") if isinstance(acceptance, dict) else None)
-        if (manifest.get("capture_mode") != "automated_circular_risk_accepted"
-                or manifest.get("human_ground_truth") is not False
-                or not isinstance(acceptance, dict)
-                or acceptance.get("confirmation") != _UNATTENDED_CONFIRMATION
-                or manifest_strategy_id not in _ACCEPTED_TARGET_STRATEGY_IDS
-                or acceptance_strategy_id not in _ACCEPTED_TARGET_STRATEGY_IDS
-                or manifest_strategy_id != acceptance_strategy_id
-                or acceptance.get("not_independent_ground_truth") is not True
-                or acceptance.get("not_supervised_operational_evidence") is not True):
+            acceptance.get("target_strategy_id")
+            if isinstance(acceptance, dict)
+            else None
+        )
+        if (
+            manifest.get("capture_mode") != "automated_circular_risk_accepted"
+            or manifest.get("human_ground_truth") is not False
+            or not isinstance(acceptance, dict)
+            or acceptance.get("confirmation") != _UNATTENDED_CONFIRMATION
+            or manifest_strategy_id not in _ACCEPTED_TARGET_STRATEGY_IDS
+            or acceptance_strategy_id not in _ACCEPTED_TARGET_STRATEGY_IDS
+            or manifest_strategy_id != acceptance_strategy_id
+            or acceptance.get("not_independent_ground_truth") is not True
+            or acceptance.get("not_supervised_operational_evidence") is not True
+        ):
             raise _MeasureRefused(
-                f"{sess.dir} is not an exact unattended circular-risk capture manifest")
+                f"{sess.dir} is not an exact unattended circular-risk capture manifest"
+            )
         strategy_id = manifest_strategy_id
         session_strategy_ids.add(strategy_id)
-        target_scoped = manifest.get("capture_evidence_scope") == _TARGET_SCOPED_PREFIX_PROOF_ID
+        target_scoped = (
+            manifest.get("capture_evidence_scope") == _TARGET_SCOPED_PREFIX_PROOF_ID
+        )
         for profile in manifest.get("profiles", []):
             if not isinstance(profile, dict):
-                raise _MeasureRefused(f"{sess.dir} has a malformed automated profile trace")
-            actions = profile.get("automated_actions") if isinstance(profile, dict) else None
-            hearts = [a for a in actions or [] if a.get("action") == "automated_photo_heart"]
+                raise _MeasureRefused(
+                    f"{sess.dir} has a malformed automated profile trace"
+                )
+            actions = (
+                profile.get("automated_actions") if isinstance(profile, dict) else None
+            )
+            hearts = [
+                a for a in actions or [] if a.get("action") == "automated_photo_heart"
+            ]
             ordinal = profile.get("ordinal") if isinstance(profile, dict) else None
             try:
                 expected_items = _automated_composer_items_for_ordinal(
-                    ordinal, strategy_id=strategy_id)
+                    ordinal, strategy_id=strategy_id
+                )
             except ValueError as exc:
-                raise _MeasureRefused(f"{sess.dir} has invalid automated profile ordinal") from exc
+                raise _MeasureRefused(
+                    f"{sess.dir} has invalid automated profile ordinal"
+                ) from exc
             # Membership in the accepted set is not enough: every profile's own strategy id must
             # agree with the manifest/acceptance id already pinned above, so a session can never
             # mix strategies across its profiles.
-            if (profile.get("target_strategy_id") != strategy_id
-                    or (target_scoped and profile.get("capture_evidence_scope") != _TARGET_SCOPED_PREFIX_PROOF_ID)
-                    or profile.get("composer_items") != list(expected_items)
-                    or [a.get("photo_model_item") for a in hearts] != list(expected_items)
-                    or any(a.get("post_tap_composer_verified") is not True for a in hearts)
-                    or any(a.get("post_tap_item_relative_verified") is not True for a in hearts)
-                    or not any(a.get("action") == "automated_pass" and
-                               a.get("send_like_tapped") is False and
-                               a.get("composer_clear_visible") is True for a in actions or [])):
+            if (
+                profile.get("target_strategy_id") != strategy_id
+                or (
+                    target_scoped
+                    and profile.get("capture_evidence_scope")
+                    != _TARGET_SCOPED_PREFIX_PROOF_ID
+                )
+                or profile.get("composer_items") != list(expected_items)
+                or [a.get("photo_model_item") for a in hearts] != list(expected_items)
+                or any(a.get("post_tap_composer_verified") is not True for a in hearts)
+                or any(
+                    a.get("post_tap_item_relative_verified") is not True for a in hearts
+                )
+                or not any(
+                    a.get("action") == "automated_pass"
+                    and a.get("send_like_tapped") is False
+                    and a.get("composer_clear_visible") is True
+                    for a in actions or []
+                )
+            ):
                 raise _MeasureRefused(
                     f"{sess.dir} profile {profile.get('ordinal')!r} lacks the exact automated "
-                    "heart/composer/Pass trace")
-            if target_scoped and any(target_proof_reason(action) is not None for action in hearts):
+                    "heart/composer/Pass trace"
+                )
+            if target_scoped and any(
+                target_proof_reason(action) is not None for action in hearts
+            ):
                 raise _MeasureRefused(
                     f"{sess.dir} profile {profile.get('ordinal')!r} lacks exact target-scoped "
-                    "prefix proof for its only automated heart")
-        records.append({"session": str(sess.dir), "manifest_sha256": _sha256(
-            (sess.dir / "manifest.json").read_bytes()), "human_ground_truth": False})
+                    "prefix proof for its only automated heart"
+                )
+        records.append(
+            {
+                "session": str(sess.dir),
+                "manifest_sha256": _sha256((sess.dir / "manifest.json").read_bytes()),
+                "human_ground_truth": False,
+            }
+        )
     if len(session_strategy_ids) > 1:
         raise _MeasureRefused(
             f"sessions use disagreeing automated target strategies {sorted(session_strategy_ids)}; "
-            "one measure invocation must use exactly one target strategy across every session")
-    return {"kind": "automated_circular_risk_accepted", "records": records,
-            "not_supervised_operational_evidence": True,
-            "target_strategy_id": next(iter(session_strategy_ids), _AUTOMATED_TARGET_STRATEGY_ID)}
+            "one measure invocation must use exactly one target strategy across every session"
+        )
+    return {
+        "kind": "automated_circular_risk_accepted",
+        "records": records,
+        "not_supervised_operational_evidence": True,
+        "target_strategy_id": next(
+            iter(session_strategy_ids), _AUTOMATED_TARGET_STRATEGY_ID
+        ),
+    }
 
 
-def _approved_hybrid_decision(record: object, *, acceptance: dict, review: dict,
-                              action: str, item: int | None) -> bool:
+def _approved_hybrid_decision(
+    record: object, *, acceptance: dict, review: dict, action: str, item: int | None
+) -> bool:
     """Return whether one ledger member is the exact approved action/item decision."""
     plan = record.get("action_plan") if isinstance(record, dict) else None
-    return (isinstance(record, dict) and record.get("decision") == "approved"
-            and record.get("source") == acceptance.get("reviewer_source")
-            and record.get("reviewer") == acceptance.get("reviewer")
-            and record.get("human_ground_truth") is False
-            and isinstance(plan, dict) and plan.get("action") == action
-            and plan.get("photo_model_item") == item
-            and isinstance(record.get("checkpoint_evidence_sha256"), str)
-            and isinstance(record.get("frame_sha256"), str)
-            and record in review.get("decisions", []))
+    return (
+        isinstance(record, dict)
+        and record.get("decision") == "approved"
+        and record.get("source") == acceptance.get("reviewer_source")
+        and record.get("reviewer") == acceptance.get("reviewer")
+        and record.get("human_ground_truth") is False
+        and isinstance(plan, dict)
+        and plan.get("action") == action
+        and plan.get("photo_model_item") == item
+        and isinstance(record.get("checkpoint_evidence_sha256"), str)
+        and isinstance(record.get("frame_sha256"), str)
+        and record in review.get("decisions", [])
+    )
 
 
-def _exact_hybrid_terminal_checkpoint(action: object, *, session_dir: Path, manifest: dict,
-                                      acceptance: dict, review: dict,
-                                      expected_action: str,
-                                      expected_point: list[int] | None) -> bool:
+def _exact_hybrid_terminal_checkpoint(
+    action: object,
+    *,
+    session_dir: Path,
+    manifest: dict,
+    acceptance: dict,
+    review: dict,
+    expected_action: str,
+    expected_point: list[int] | None,
+) -> bool:
     """Authenticate the checkpoint JSON, PNG, ledger and exact terminal action plan."""
     if not isinstance(action, dict):
         return False
     checks = action.get("review_checkpoints")
     before = checks.get("before") if isinstance(checks, dict) else None
-    if (not _approved_hybrid_decision(
-            before, acceptance=acceptance, review=review,
-            action=expected_action, item=None)
-            or not isinstance(before, dict)):
+    if not _approved_hybrid_decision(
+        before, acceptance=acceptance, review=review, action=expected_action, item=None
+    ) or not isinstance(before, dict):
         return False
-    checkpoint_file, frame_file = before.get("checkpoint_file"), before.get("frame_file")
+    checkpoint_file, frame_file = (
+        before.get("checkpoint_file"),
+        before.get("frame_file"),
+    )
     if not isinstance(checkpoint_file, str) or not isinstance(frame_file, str):
         return False
     try:
         review_dir = (session_dir / "hybrid_review").resolve(strict=True)
         checkpoint_path = Path(checkpoint_file).resolve(strict=True)
         checkpoint_frame_path = Path(frame_file).resolve(strict=True)
-        if (checkpoint_path.parent != review_dir or checkpoint_frame_path.parent != review_dir
-                or not checkpoint_path.is_file() or not checkpoint_frame_path.is_file()):
+        if (
+            checkpoint_path.parent != review_dir
+            or checkpoint_frame_path.parent != review_dir
+            or not checkpoint_path.is_file()
+            or not checkpoint_frame_path.is_file()
+        ):
             return False
         checkpoint_raw = checkpoint_path.read_bytes()
         checkpoint = json.loads(checkpoint_raw)
@@ -6187,14 +8167,18 @@ def _exact_hybrid_terminal_checkpoint(action: object, *, session_dir: Path, mani
     predicates = plan.get("predicates") if isinstance(plan, dict) else None
     frame = checkpoint.get("frame")
     config_provenance = manifest.get("config_provenance")
-    config_sha256 = (config_provenance.get("sha256")
-                     if isinstance(config_provenance, dict) else None)
-    expected_source = ("calibration-only verified-composer Send transport"
-                       if expected_action == "automated_send_priority_like"
-                       else "calibration-only verified-composer Pass transport")
+    config_sha256 = (
+        config_provenance.get("sha256") if isinstance(config_provenance, dict) else None
+    )
+    expected_source = (
+        "calibration-only verified-composer Send transport"
+        if expected_action == "automated_send_priority_like"
+        else "calibration-only verified-composer Pass transport"
+    )
     return (
         before.get("checkpoint_sha256") == _sha256(checkpoint_raw)
-        and checkpoint.get("evidence_sha256") == before.get("checkpoint_evidence_sha256")
+        and checkpoint.get("evidence_sha256")
+        == before.get("checkpoint_evidence_sha256")
         and checkpoint.get("evidence_sha256") == _canonical_json_digest(checkpoint_body)
         and checkpoint.get("schema_version") == _HYBRID_CHECKPOINT_SCHEMA_VERSION
         and checkpoint.get("kind") == _HYBRID_CHECKPOINT_KIND
@@ -6209,8 +8193,8 @@ def _exact_hybrid_terminal_checkpoint(action: object, *, session_dir: Path, mani
         and plan.get("point") == expected_point
         and plan.get("point_source") == expected_source
         and isinstance(predicates, dict)
-        and predicates.get(
-            "inline_composer_and_selected_photo_verified_before_action") is True
+        and predicates.get("inline_composer_and_selected_photo_verified_before_action")
+        is True
         and predicates.get("send_like_tapped") is False
         and predicates.get("forbidden_zone_guarded_transport") == "HingeDriver._tap"
         and isinstance(frame, dict)
@@ -6233,71 +8217,109 @@ def _verified_hybrid_reviewed_evidence(sessions: list[_SessionData]) -> dict:
     def target_proof_reason(action: dict) -> str | None:
         proof = action.get("target_scoped_prefix_proof")
         ordinal = proof.get("target_heart_ordinal") if isinstance(proof, dict) else None
-        if (not isinstance(proof, dict)
-                or proof.get("id") != _TARGET_SCOPED_PREFIX_PROOF_ID
-                or proof.get("target_photo_model_item") != action.get("photo_model_item")
-                or proof.get("predecessors_resolved") is not True
-                or proof.get("target_crop_complete") is not True
-                or proof.get("identity_known") is not True
-                or isinstance(ordinal, bool) or not isinstance(ordinal, int) or ordinal < 1):
+        if (
+            not isinstance(proof, dict)
+            or proof.get("id") != _TARGET_SCOPED_PREFIX_PROOF_ID
+            or proof.get("target_photo_model_item") != action.get("photo_model_item")
+            or proof.get("predecessors_resolved") is not True
+            or proof.get("target_crop_complete") is not True
+            or proof.get("identity_known") is not True
+            or isinstance(ordinal, bool)
+            or not isinstance(ordinal, int)
+            or ordinal < 1
+        ):
             return "missing or malformed target-scoped prefix proof"
         return None
 
     for sess in sessions:
         manifest = sess.manifest
-        acceptance, review = manifest.get("automation_acceptance"), manifest.get("hybrid_review")
+        acceptance, review = (
+            manifest.get("automation_acceptance"),
+            manifest.get("hybrid_review"),
+        )
         manifest_strategy_id = manifest.get("automated_target_strategy_id")
         acceptance_strategy_id = (
-            acceptance.get("target_strategy_id") if isinstance(acceptance, dict) else None)
-        if (manifest.get("capture_mode") != "hybrid_ai_reviewed_automation"
-                or manifest.get("human_ground_truth") is not False
-                or not isinstance(acceptance, dict)
-                or acceptance.get("confirmation") != _HYBRID_REVIEW_CONFIRMATION
-                or manifest_strategy_id not in _ACCEPTED_TARGET_STRATEGY_IDS
-                or acceptance_strategy_id not in _ACCEPTED_TARGET_STRATEGY_IDS
-                or manifest_strategy_id != acceptance_strategy_id
-                or acceptance.get("reviewer_protocol") != "stdin_checkpoint_sha256_v1"
-                or acceptance.get("reviewer_source") != "external_ai_review"
-                or not isinstance(acceptance.get("reviewer"), dict)
-                or not required_reviewer.issubset(acceptance["reviewer"])
-                or any(not isinstance(acceptance["reviewer"][key], str)
-                       or not acceptance["reviewer"][key].strip() for key in required_reviewer)
-                or not isinstance(review, dict) or review.get("schema_version") != 1
-                or review.get("protocol") != "stdin_checkpoint_sha256_v1"
-                or review.get("reviewer") != acceptance["reviewer"]
-                or review.get("human_ground_truth") is not False
-                or not isinstance(review.get("decisions"), list)):
-            raise _MeasureRefused(f"{sess.dir} is not an exact hybrid AI-reviewed capture manifest")
+            acceptance.get("target_strategy_id")
+            if isinstance(acceptance, dict)
+            else None
+        )
+        if (
+            manifest.get("capture_mode") != "hybrid_ai_reviewed_automation"
+            or manifest.get("human_ground_truth") is not False
+            or not isinstance(acceptance, dict)
+            or acceptance.get("confirmation") != _HYBRID_REVIEW_CONFIRMATION
+            or manifest_strategy_id not in _ACCEPTED_TARGET_STRATEGY_IDS
+            or acceptance_strategy_id not in _ACCEPTED_TARGET_STRATEGY_IDS
+            or manifest_strategy_id != acceptance_strategy_id
+            or acceptance.get("reviewer_protocol") != "stdin_checkpoint_sha256_v1"
+            or acceptance.get("reviewer_source") != "external_ai_review"
+            or not isinstance(acceptance.get("reviewer"), dict)
+            or not required_reviewer.issubset(acceptance["reviewer"])
+            or any(
+                not isinstance(acceptance["reviewer"][key], str)
+                or not acceptance["reviewer"][key].strip()
+                for key in required_reviewer
+            )
+            or not isinstance(review, dict)
+            or review.get("schema_version") != 1
+            or review.get("protocol") != "stdin_checkpoint_sha256_v1"
+            or review.get("reviewer") != acceptance["reviewer"]
+            or review.get("human_ground_truth") is not False
+            or not isinstance(review.get("decisions"), list)
+        ):
+            raise _MeasureRefused(
+                f"{sess.dir} is not an exact hybrid AI-reviewed capture manifest"
+            )
         strategy_id = manifest_strategy_id
         session_strategy_ids.add(strategy_id)
-        target_scoped = manifest.get("capture_evidence_scope") == _TARGET_SCOPED_PREFIX_PROOF_ID
+        target_scoped = (
+            manifest.get("capture_evidence_scope") == _TARGET_SCOPED_PREFIX_PROOF_ID
+        )
         # See _SEND_LIKE_CONFIRMATION: a capture ends each profile with Pass-without-send unless
         # the owner explicitly accepted real sends at capture time. Read the acceptance from the
         # manifest so a send trace can never authorize itself.
         send_like_accepted = acceptance.get("send_like_accepted")
         if send_like_accepted is not None and type(send_like_accepted) is not bool:
-            raise _MeasureRefused(f"{sess.dir} has a non-boolean send_like_accepted acceptance")
+            raise _MeasureRefused(
+                f"{sess.dir} has a non-boolean send_like_accepted acceptance"
+            )
         send_like_accepted = bool(send_like_accepted)
-        if send_like_accepted and acceptance.get("send_like_confirmation") != _SEND_LIKE_CONFIRMATION:
+        if (
+            send_like_accepted
+            and acceptance.get("send_like_confirmation") != _SEND_LIKE_CONFIRMATION
+        ):
             raise _MeasureRefused(
-                f"{sess.dir} records accepted real sends without the exact send-like confirmation")
-        if not send_like_accepted and acceptance.get("send_like_confirmation") is not None:
+                f"{sess.dir} records accepted real sends without the exact send-like confirmation"
+            )
+        if (
+            not send_like_accepted
+            and acceptance.get("send_like_confirmation") is not None
+        ):
             raise _MeasureRefused(
-                f"{sess.dir} carries a send-like confirmation without accepting real sends")
-        terminal_action = ("automated_send_priority_like" if send_like_accepted
-                           else "automated_pass")
+                f"{sess.dir} carries a send-like confirmation without accepting real sends"
+            )
+        terminal_action = (
+            "automated_send_priority_like" if send_like_accepted else "automated_pass"
+        )
         declared_terminal = acceptance.get("terminal_advance_action")
         if declared_terminal is not None and declared_terminal != terminal_action:
             raise _MeasureRefused(
-                f"{sess.dir} declares a terminal advance action that contradicts its acceptance")
+                f"{sess.dir} declares a terminal advance action that contradicts its acceptance"
+            )
 
         profiles_by_ordinal = {profile.ordinal: profile for profile in sess.profiles}
 
         def has_exact_send_summary(
-                action: object, *, ordinal: int,
-                send_like_accepted=send_like_accepted,
-                profiles_by_ordinal=profiles_by_ordinal, session_dir=sess.dir,
-                manifest=manifest, acceptance=acceptance, review=review) -> bool:
+            action: object,
+            *,
+            ordinal: int,
+            send_like_accepted=send_like_accepted,
+            profiles_by_ordinal=profiles_by_ordinal,
+            session_dir=sess.dir,
+            manifest=manifest,
+            acceptance=acceptance,
+            review=review,
+        ) -> bool:
             """Authenticate an owner-accepted REAL Send Priority Like terminal action.
 
             Only reachable when this manifest carries the explicit send-like acceptance above.
@@ -6309,139 +8331,247 @@ def _verified_hybrid_reviewed_evidence(sessions: list[_SessionData]) -> dict:
             if not isinstance(action, dict) or not send_like_accepted:
                 return False
             profile_data = profiles_by_ordinal.get(ordinal)
-            action_predicates, transport = action.get("predicates"), action.get("transport")
+            action_predicates, transport = (
+                action.get("predicates"),
+                action.get("transport"),
+            )
             point = action.get("confirm_point")
-            if (profile_data is None
-                    or not isinstance(action_predicates, dict) or not isinstance(transport, list)
-                    or transport != ["HingeDriver._tap(confirm_point)",
-                                     "HingeDriver._handle_rose_upsell",
-                                     "HingeDriver._verify_like_landed"]
-                    or action.get("send_like_tapped") is not True
-                    or action_predicates.get("send_like_tapped") is not True
-                    or action_predicates.get(
-                        "inline_composer_and_selected_photo_verified_before_action") is not True
-                    or action_predicates.get("like_landed_verified") is not True
-                    or action.get("post_frame_sha256") != _sha256(profile_data.profile_advance_clear)
-                    or not profile_data.profile_advance_identity):
+            if (
+                profile_data is None
+                or not isinstance(action_predicates, dict)
+                or not isinstance(transport, list)
+                or transport
+                != [
+                    "HingeDriver._tap(confirm_point)",
+                    "HingeDriver._handle_rose_upsell",
+                    "HingeDriver._verify_like_landed",
+                ]
+                or action.get("send_like_tapped") is not True
+                or action_predicates.get("send_like_tapped") is not True
+                or action_predicates.get(
+                    "inline_composer_and_selected_photo_verified_before_action"
+                )
+                is not True
+                or action_predicates.get("like_landed_verified") is not True
+                or action.get("post_frame_sha256")
+                != _sha256(profile_data.profile_advance_clear)
+                or not profile_data.profile_advance_identity
+            ):
                 return False
-            if (not isinstance(point, list) or len(point) != 2
-                    or any(isinstance(v, bool) or not isinstance(v, int) for v in point)):
+            if (
+                not isinstance(point, list)
+                or len(point) != 2
+                or any(isinstance(v, bool) or not isinstance(v, int) for v in point)
+            ):
                 return False
             return _exact_hybrid_terminal_checkpoint(
-                action, session_dir=session_dir, manifest=manifest, acceptance=acceptance,
-                review=review, expected_action="automated_send_priority_like",
-                expected_point=point)
+                action,
+                session_dir=session_dir,
+                manifest=manifest,
+                acceptance=acceptance,
+                review=review,
+                expected_action="automated_send_priority_like",
+                expected_point=point,
+            )
 
         def has_exact_pass_summary(
-                action: object, *, ordinal: int,
-                profiles_by_ordinal=profiles_by_ordinal, session_dir=sess.dir,
-                manifest=manifest, acceptance=acceptance, review=review) -> bool:
+            action: object,
+            *,
+            ordinal: int,
+            profiles_by_ordinal=profiles_by_ordinal,
+            session_dir=sess.dir,
+            manifest=manifest,
+            acceptance=acceptance,
+            review=review,
+        ) -> bool:
             """Authenticate the pre-summary hybrid Pass format without inventing a summary."""
             if not isinstance(action, dict):
                 return False
             missing = object()
             sent = action.get("send_like_tapped", missing)
             clear = action.get("composer_clear_visible", missing)
-            if ((sent is not missing or clear is not missing)
-                    and not (sent is False and clear is True)):
+            if (sent is not missing or clear is not missing) and not (
+                sent is False and clear is True
+            ):
                 return False
             profile_data = profiles_by_ordinal.get(ordinal)
-            if (profile_data is None
-                    or not _exact_hybrid_terminal_checkpoint(
-                        action, session_dir=session_dir, manifest=manifest,
-                        acceptance=acceptance, review=review,
-                        expected_action="automated_pass", expected_point=None)):
+            if profile_data is None or not _exact_hybrid_terminal_checkpoint(
+                action,
+                session_dir=session_dir,
+                manifest=manifest,
+                acceptance=acceptance,
+                review=review,
+                expected_action="automated_pass",
+                expected_point=None,
+            ):
                 return False
-            action_predicates, transport = action.get("predicates"), action.get("transport")
-            if (not isinstance(action_predicates, dict) or not isinstance(transport, list)
-                    or any(not isinstance(step, str) for step in transport)
-                    or len(transport) < 2 or transport[-2:] != ["HingeDriver._locate_button(pass)",
-                                                                 "HingeDriver._tap"]
-                    or action_predicates.get("inline_composer_and_selected_photo_verified_before_action") is not True
-                    or action_predicates.get("inline_composer_structurally_confirmed_before_action") is not True
-                    or action_predicates.get("edge_back_transport_performed") is not True
-                    or action_predicates.get("pass_vision_relocated_before_guarded_tap") is not True
-                    or action_predicates.get("send_like_tapped") is not False
-                    or action_predicates.get("deck_frame_changed") is not True
-                    or action_predicates.get("composer_clear_visible") is not True
-                    or action_predicates.get("new_profile_top_confirmed") is not True
-                    or action.get("post_frame_sha256") != _sha256(profile_data.profile_advance_clear)
-                    or not profile_data.profile_advance_identity):
+            action_predicates, transport = (
+                action.get("predicates"),
+                action.get("transport"),
+            )
+            if (
+                not isinstance(action_predicates, dict)
+                or not isinstance(transport, list)
+                or any(not isinstance(step, str) for step in transport)
+                or len(transport) < 2
+                or transport[-2:]
+                != ["HingeDriver._locate_button(pass)", "HingeDriver._tap"]
+                or action_predicates.get(
+                    "inline_composer_and_selected_photo_verified_before_action"
+                )
+                is not True
+                or action_predicates.get(
+                    "inline_composer_structurally_confirmed_before_action"
+                )
+                is not True
+                or action_predicates.get("edge_back_transport_performed") is not True
+                or action_predicates.get("pass_vision_relocated_before_guarded_tap")
+                is not True
+                or action_predicates.get("send_like_tapped") is not False
+                or action_predicates.get("deck_frame_changed") is not True
+                or action_predicates.get("composer_clear_visible") is not True
+                or action_predicates.get("new_profile_top_confirmed") is not True
+                or action.get("post_frame_sha256")
+                != _sha256(profile_data.profile_advance_clear)
+                or not profile_data.profile_advance_identity
+            ):
                 return False
             return True
 
         for profile in manifest.get("profiles", []):
             if not isinstance(profile, dict):
-                raise _MeasureRefused(f"{sess.dir} has a malformed hybrid profile trace")
-            actions = profile.get("automated_actions") if isinstance(profile, dict) else None
-            hearts = [action for action in actions or []
-                      if isinstance(action, dict) and action.get("action") == "automated_photo_heart"]
+                raise _MeasureRefused(
+                    f"{sess.dir} has a malformed hybrid profile trace"
+                )
+            actions = (
+                profile.get("automated_actions") if isinstance(profile, dict) else None
+            )
+            hearts = [
+                action
+                for action in actions or []
+                if isinstance(action, dict)
+                and action.get("action") == "automated_photo_heart"
+            ]
             try:
                 expected_items = _automated_composer_items_for_ordinal(
-                    profile.get("ordinal"), strategy_id=strategy_id)
+                    profile.get("ordinal"), strategy_id=strategy_id
+                )
             except ValueError as exc:
-                raise _MeasureRefused(f"{sess.dir} has invalid hybrid profile ordinal") from exc
+                raise _MeasureRefused(
+                    f"{sess.dir} has invalid hybrid profile ordinal"
+                ) from exc
             # Every profile's own strategy id must agree with the manifest/acceptance id already
             # pinned above -- membership in the accepted set alone would let one session mix
             # strategies across its profiles.
-            if (not isinstance(profile, dict)
-                    or profile.get("action_evidence_mode") != "hybrid_ai_reviewed_automation"
-                    or profile.get("target_strategy_id") != strategy_id
-                    or (target_scoped and profile.get("capture_evidence_scope") != _TARGET_SCOPED_PREFIX_PROOF_ID)
-                    or profile.get("composer_items") != list(expected_items)
-                    or [action.get("photo_model_item") for action in hearts] != list(expected_items)
-                    or any(action.get("post_tap_composer_verified") is not True
-                           or action.get("post_tap_item_relative_verified") is not True
-                           or not isinstance(action.get("review_checkpoints"), dict)
-                           or not _approved_hybrid_decision(
-                               action["review_checkpoints"].get("before"),
-                               acceptance=acceptance, review=review,
-                               action="automated_photo_heart",
-                               item=action.get("photo_model_item"))
-                           or not _approved_hybrid_decision(
-                               action["review_checkpoints"].get("after"),
-                               acceptance=acceptance, review=review,
-                               action="review_heart_result",
-                               item=action.get("photo_model_item"))
-                           for action in hearts)):
-                raise _MeasureRefused(f"{sess.dir} profile {profile.get('ordinal')!r} lacks exact "
-                                      "approved hybrid heart checkpoints")
-            if target_scoped and any(target_proof_reason(action) is not None for action in hearts):
-                raise _MeasureRefused(f"{sess.dir} profile {profile.get('ordinal')!r} lacks exact "
-                                      "target-scoped prefix proof")
-            passes = [action for action in actions or []
-                      if isinstance(action, dict) and action.get("action") == terminal_action]
-            summary_ok = (has_exact_send_summary if send_like_accepted else has_exact_pass_summary)
-            if (len(passes) != 1 or not summary_ok(passes[0], ordinal=profile.get("ordinal"))
-                    or not isinstance(passes[0].get("review_checkpoints"), dict)
+            if (
+                not isinstance(profile, dict)
+                or profile.get("action_evidence_mode")
+                != "hybrid_ai_reviewed_automation"
+                or profile.get("target_strategy_id") != strategy_id
+                or (
+                    target_scoped
+                    and profile.get("capture_evidence_scope")
+                    != _TARGET_SCOPED_PREFIX_PROOF_ID
+                )
+                or profile.get("composer_items") != list(expected_items)
+                or [action.get("photo_model_item") for action in hearts]
+                != list(expected_items)
+                or any(
+                    action.get("post_tap_composer_verified") is not True
+                    or action.get("post_tap_item_relative_verified") is not True
+                    or not isinstance(action.get("review_checkpoints"), dict)
                     or not _approved_hybrid_decision(
-                        passes[0]["review_checkpoints"].get("before"),
-                        acceptance=acceptance, review=review,
-                        action=terminal_action, item=None)):
+                        action["review_checkpoints"].get("before"),
+                        acceptance=acceptance,
+                        review=review,
+                        action="automated_photo_heart",
+                        item=action.get("photo_model_item"),
+                    )
+                    or not _approved_hybrid_decision(
+                        action["review_checkpoints"].get("after"),
+                        acceptance=acceptance,
+                        review=review,
+                        action="review_heart_result",
+                        item=action.get("photo_model_item"),
+                    )
+                    for action in hearts
+                )
+            ):
+                raise _MeasureRefused(
+                    f"{sess.dir} profile {profile.get('ordinal')!r} lacks exact "
+                    "approved hybrid heart checkpoints"
+                )
+            if target_scoped and any(
+                target_proof_reason(action) is not None for action in hearts
+            ):
+                raise _MeasureRefused(
+                    f"{sess.dir} profile {profile.get('ordinal')!r} lacks exact "
+                    "target-scoped prefix proof"
+                )
+            passes = [
+                action
+                for action in actions or []
+                if isinstance(action, dict) and action.get("action") == terminal_action
+            ]
+            summary_ok = (
+                has_exact_send_summary if send_like_accepted else has_exact_pass_summary
+            )
+            if (
+                len(passes) != 1
+                or not summary_ok(passes[0], ordinal=profile.get("ordinal"))
+                or not isinstance(passes[0].get("review_checkpoints"), dict)
+                or not _approved_hybrid_decision(
+                    passes[0]["review_checkpoints"].get("before"),
+                    acceptance=acceptance,
+                    review=review,
+                    action=terminal_action,
+                    item=None,
+                )
+            ):
                 raise _MeasureRefused(
                     f"{sess.dir} profile {profile.get('ordinal')!r} lacks exact approved hybrid "
-                    f"{'Send Priority Like' if send_like_accepted else 'Pass'} checkpoint")
-            other_action = ("automated_pass" if send_like_accepted
-                            else "automated_send_priority_like")
-            if any(isinstance(action, dict) and action.get("action") == other_action
-                   for action in actions or []):
+                    f"{'Send Priority Like' if send_like_accepted else 'Pass'} checkpoint"
+                )
+            other_action = (
+                "automated_pass"
+                if send_like_accepted
+                else "automated_send_priority_like"
+            )
+            if any(
+                isinstance(action, dict) and action.get("action") == other_action
+                for action in actions or []
+            ):
                 raise _MeasureRefused(
                     f"{sess.dir} profile {profile.get('ordinal')!r} mixes Pass and Send terminal "
-                    "actions in one ledger")
-        records.append({"session": str(sess.dir), "manifest_sha256": _sha256(
-            (sess.dir / "manifest.json").read_bytes()), "human_ground_truth": False,
-            "reviewer": acceptance["reviewer"]})
+                    "actions in one ledger"
+                )
+        records.append(
+            {
+                "session": str(sess.dir),
+                "manifest_sha256": _sha256((sess.dir / "manifest.json").read_bytes()),
+                "human_ground_truth": False,
+                "reviewer": acceptance["reviewer"],
+            }
+        )
     if len(session_strategy_ids) > 1:
         raise _MeasureRefused(
             f"sessions use disagreeing automated target strategies {sorted(session_strategy_ids)}; "
-            "one measure invocation must use exactly one target strategy across every session")
-    return {"kind": "hybrid_ai_reviewed_automation", "records": records,
-            "not_supervised_operational_evidence": True, "human_ground_truth": False,
-            "target_strategy_id": next(iter(session_strategy_ids), _AUTOMATED_TARGET_STRATEGY_ID)}
+            "one measure invocation must use exactly one target strategy across every session"
+        )
+    return {
+        "kind": "hybrid_ai_reviewed_automation",
+        "records": records,
+        "not_supervised_operational_evidence": True,
+        "human_ground_truth": False,
+        "target_strategy_id": next(
+            iter(session_strategy_ids), _AUTOMATED_TARGET_STRATEGY_ID
+        ),
+    }
 
 
-def _unattended_review_reference_reason(reference: str, sessions: list[_SessionData], *,
-                                        config_path: str) -> str | None:
+def _unattended_review_reference_reason(
+    reference: str, sessions: list[_SessionData], *, config_path: str
+) -> str | None:
     """Authenticate the separate stdlib review without re-running its capture/vision logic.
 
     The reviewer is purposely invoked before measure as a distinct process.  This small reader
@@ -6463,16 +8593,20 @@ def _unattended_review_reference_reason(reference: str, sessions: list[_SessionD
     body.pop("evidence_sha256", None)
     if not isinstance(claimed, str) or claimed != _canonical_json_digest(body):
         return "unattended review artifact self-hash does not match its contents"
-    if (body.get("schema_version") != _UNATTENDED_REVIEW_SCHEMA_VERSION
-            or body.get("kind") != _UNATTENDED_REVIEW_KIND
-            or body.get("human_ground_truth") is not False
-            or body.get("not_independent_ground_truth") is not True):
+    if (
+        body.get("schema_version") != _UNATTENDED_REVIEW_SCHEMA_VERSION
+        or body.get("kind") != _UNATTENDED_REVIEW_KIND
+        or body.get("human_ground_truth") is not False
+        or body.get("not_independent_ground_truth") is not True
+    ):
         return "unattended review artifact has unsupported provenance/schema"
     reviewer = body.get("reviewer")
-    if (not isinstance(reviewer, dict)
-            or reviewer.get("deterministic_second_process") is not True
-            or reviewer.get("imports_capture_or_vision_stack") is not False
-            or not isinstance(reviewer.get("implementation_sha256"), str)):
+    if (
+        not isinstance(reviewer, dict)
+        or reviewer.get("deterministic_second_process") is not True
+        or reviewer.get("imports_capture_or_vision_stack") is not False
+        or not isinstance(reviewer.get("implementation_sha256"), str)
+    ):
         return "unattended review does not attest independent deterministic reviewer provenance"
     try:
         config_digest = _sha256(Path(config_path).read_bytes())
@@ -6496,24 +8630,37 @@ def _unattended_review_reference_reason(reference: str, sessions: list[_SessionD
         # (a legacy closed-set session may be measured alongside a target-scoped one), so it is
         # bound per session here rather than read back from the loop variable below.
         expected[str(session.dir.resolve())] = (
-            manifest_digest, device,
+            manifest_digest,
+            device,
             session.manifest.get("frame_size_px"),
             session.manifest.get("capture_evidence_scope", "closed_set_profile_v1"),
         )
     seen: set[str] = set()
     for record in captures:
-        if not isinstance(record, dict) or record.get("human_ground_truth") is not False:
+        if (
+            not isinstance(record, dict)
+            or record.get("human_ground_truth") is not False
+        ):
             return "unattended review contains malformed/non-automated capture record"
         session_path = record.get("session")
-        if not isinstance(session_path, str) or session_path in seen or session_path not in expected:
-            return "unattended review capture session does not exactly match measure input"
+        if (
+            not isinstance(session_path, str)
+            or session_path in seen
+            or session_path not in expected
+        ):
+            return (
+                "unattended review capture session does not exactly match measure input"
+            )
         seen.add(session_path)
         manifest_digest, device, frame_size, expected_scope = expected[session_path]
-        if (record.get("manifest_sha256") != manifest_digest
-                or record.get("device") != device
-                or record.get("frame_size_px") != frame_size
-                or record.get("config_sha256") != config_digest
-                or record.get("capture_evidence_scope", "closed_set_profile_v1") != expected_scope):
+        if (
+            record.get("manifest_sha256") != manifest_digest
+            or record.get("device") != device
+            or record.get("frame_size_px") != frame_size
+            or record.get("config_sha256") != config_digest
+            or record.get("capture_evidence_scope", "closed_set_profile_v1")
+            != expected_scope
+        ):
             return "unattended review capture binding differs from exact manifest/device/frame/config"
     if seen != set(expected):
         return "unattended review omitted a supplied capture session"
@@ -6522,12 +8669,18 @@ def _unattended_review_reference_reason(reference: str, sessions: list[_SessionD
 
 # --- top level -------------------------------------------------------------------------
 
+
 def _cmd_measure(args: argparse.Namespace) -> None:
     cfg = cfg_mod.load(args.config)
-    driver = HingeDriver(cfg)  # inert: no adb, no touch transport -- measure never opens one
+    driver = HingeDriver(
+        cfg
+    )  # inert: no adb, no touch transport -- measure never opens one
     if driver.identity_band is None or driver.content_band is None:
-        print("ERROR: this app's effective identity_band/content_band is None. Targeting "
-              "calibration is meaningless without both.", file=sys.stderr)
+        print(
+            "ERROR: this app's effective identity_band/content_band is None. Targeting "
+            "calibration is meaningless without both.",
+            file=sys.stderr,
+        )
         sys.exit(1)
     effective_identity = tuple(driver.identity_band)
     effective_content = tuple(driver.content_band)
@@ -6537,8 +8690,11 @@ def _cmd_measure(args: argparse.Namespace) -> None:
 
     configured_serial = (getattr(cfg, "apps", {}) or {}).get("hinge", {}).get("serial")
     if not isinstance(configured_serial, str) or not configured_serial.strip():
-        print("ERROR: apps.hinge.serial is not set in config.yaml; the calibration block's "
-              "`device` field must exactly equal it.", file=sys.stderr)
+        print(
+            "ERROR: apps.hinge.serial is not set in config.yaml; the calibration block's "
+            "`device` field must exactly equal it.",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     loaded: list[_SessionData] = []
@@ -6551,19 +8707,25 @@ def _cmd_measure(args: argparse.Namespace) -> None:
             sys.exit(1)
 
     for sess in loaded:
-        if sess.identity_band != effective_identity or sess.content_band != effective_content:
+        if (
+            sess.identity_band != effective_identity
+            or sess.content_band != effective_content
+        ):
             print(
                 f"ERROR: session {sess.dir} was captured with identity_band={sess.identity_band} "
                 f"content_band={sess.content_band}, which does not exactly match the current "
                 f"effective identity_band={effective_identity} content_band={effective_content}. "
                 "A calibration cannot be reused after either crop changes -- recapture.",
-                file=sys.stderr)
+                file=sys.stderr,
+            )
             sys.exit(1)
         if sess.device_serial != configured_serial:
             print(
                 f"ERROR: session {sess.dir} was captured on serial {sess.device_serial!r}, "
                 f"which does not match apps.hinge.serial {configured_serial!r}. A calibration "
-                "is only valid for the exact device it was measured on.", file=sys.stderr)
+                "is only valid for the exact device it was measured on.",
+                file=sys.stderr,
+            )
             sys.exit(1)
 
     calibration_sessions = [s for s in loaded if s.split == _SPLIT_CALIBRATION]
@@ -6573,7 +8735,9 @@ def _cmd_measure(args: argparse.Namespace) -> None:
             "ERROR: need at least one session of EACH split. The held-out set must be "
             "SEPARATELY COLLECTED, never drawn retroactively from one pool "
             f"(calibration sessions: {len(calibration_sessions)}, heldout sessions: "
-            f"{len(heldout_sessions)}).", file=sys.stderr)
+            f"{len(heldout_sessions)}).",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     calibration_profiles = _split_profiles(calibration_sessions)
@@ -6587,69 +8751,102 @@ def _cmd_measure(args: argparse.Namespace) -> None:
         print(
             f"ERROR: profile id(s) {sorted(overlap)} appear in BOTH the calibration and "
             "held-out splits. The held-out set must be a separately collected, disjoint set of "
-            "real profiles -- relabel or recapture so no id is shared.", file=sys.stderr)
+            "real profiles -- relabel or recapture so no id is shared.",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
-    for split_name, profiles in ((_SPLIT_CALIBRATION, calibration_profiles),
-                                 (_SPLIT_HELDOUT, heldout_profiles)):
+    for split_name, profiles in (
+        (_SPLIT_CALIBRATION, calibration_profiles),
+        (_SPLIT_HELDOUT, heldout_profiles),
+    ):
         ids = [p.profile_id for p in profiles]
-        duplicates = sorted({profile_id for profile_id in ids if ids.count(profile_id) > 1})
+        duplicates = sorted(
+            {profile_id for profile_id in ids if ids.count(profile_id) > 1}
+        )
         if duplicates:
             print(
                 f"ERROR: profile id(s) {duplicates} are duplicated within the {split_name} "
                 "split. Every real profile needs one globally unique id; duplicate labels "
-                "silently suppress required foreign-profile comparisons.", file=sys.stderr)
+                "silently suppress required foreign-profile comparisons.",
+                file=sys.stderr,
+            )
             sys.exit(1)
 
-    evidence_keys = ("serial", "model", "display_w", "display_h", "density",
-                     "hinge_package", "hinge_version_name")
+    evidence_keys = (
+        "serial",
+        "model",
+        "display_w",
+        "display_h",
+        "density",
+        "hinge_package",
+        "hinge_version_name",
+    )
     device_evidence = []
     for sess in loaded:
         device = sess.manifest.get("device") or {}
         missing = [key for key in evidence_keys if device.get(key) in (None, "")]
         if missing:
-            print(f"ERROR: session {sess.dir} is missing device/build evidence {missing}.",
-                  file=sys.stderr)
+            print(
+                f"ERROR: session {sess.dir} is missing device/build evidence {missing}.",
+                file=sys.stderr,
+            )
             sys.exit(1)
         device_evidence.append(tuple(device[key] for key in evidence_keys))
     if len(set(device_evidence)) != 1:
         print(
             "ERROR: calibration and held-out sessions disagree on device model, display size, "
             "density, package, or Hinge build. Those change the measured pixel-distance space; "
-            "recapture both splits under one exact device/build state.", file=sys.stderr)
+            "recapture both splits under one exact device/build state.",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     try:
-        unattended_evidence = bool(getattr(args, "accept_automated_circular_evidence", False))
+        unattended_evidence = bool(
+            getattr(args, "accept_automated_circular_evidence", False)
+        )
         hybrid_evidence = bool(getattr(args, "accept_hybrid_reviewed_evidence", False))
         if unattended_evidence and hybrid_evidence:
-            raise _MeasureRefused("choose exactly one automated evidence mode, never a mixed-mode campaign")
+            raise _MeasureRefused(
+                "choose exactly one automated evidence mode, never a mixed-mode campaign"
+            )
         if unattended_evidence:
             if getattr(args, "confirmation", "") != _UNATTENDED_CONFIRMATION:
-                raise _MeasureRefused("--accept-automated-circular-evidence requires exact "
-                                      f"--confirmation {_UNATTENDED_CONFIRMATION!r}")
+                raise _MeasureRefused(
+                    "--accept-automated-circular-evidence requires exact "
+                    f"--confirmation {_UNATTENDED_CONFIRMATION!r}"
+                )
             review_reason = _unattended_review_reference_reason(
-                getattr(args, "unattended_review", ""), loaded, config_path=args.config)
+                getattr(args, "unattended_review", ""), loaded, config_path=args.config
+            )
             if review_reason is not None:
                 raise _MeasureRefused(review_reason)
             operational_check_evidence = _verified_automated_circular_evidence(loaded)
             operational_check_evidence["independent_review"] = {
                 "artifact": str(getattr(args, "unattended_review", "")).strip(),
-                "sha256": _sha256(Path(getattr(args, "unattended_review", "")).read_bytes()),
+                "sha256": _sha256(
+                    Path(getattr(args, "unattended_review", "")).read_bytes()
+                ),
                 "human_ground_truth": False,
             }
         elif hybrid_evidence:
             if getattr(args, "confirmation", "") != _HYBRID_REVIEW_CONFIRMATION:
-                raise _MeasureRefused("--accept-hybrid-reviewed-evidence requires exact "
-                                      f"--confirmation {_HYBRID_REVIEW_CONFIRMATION!r}")
+                raise _MeasureRefused(
+                    "--accept-hybrid-reviewed-evidence requires exact "
+                    f"--confirmation {_HYBRID_REVIEW_CONFIRMATION!r}"
+                )
             review_reason = _unattended_review_reference_reason(
-                getattr(args, "unattended_review", ""), loaded, config_path=args.config)
+                getattr(args, "unattended_review", ""), loaded, config_path=args.config
+            )
             if review_reason is not None:
                 raise _MeasureRefused(review_reason)
             operational_check_evidence = _verified_hybrid_reviewed_evidence(loaded)
             operational_check_evidence["independent_review"] = {
                 "artifact": str(getattr(args, "unattended_review", "")).strip(),
-                "sha256": _sha256(Path(getattr(args, "unattended_review", "")).read_bytes()),
+                "sha256": _sha256(
+                    Path(getattr(args, "unattended_review", "")).read_bytes()
+                ),
                 "human_ground_truth": False,
             }
         else:
@@ -6660,16 +8857,23 @@ def _cmd_measure(args: argparse.Namespace) -> None:
         # known. Supervised (manual) evidence carries no such id, so `.get` keeps today's
         # alternating-strategy default for that path exactly as before.
         measure_strategy_id = operational_check_evidence.get(
-            "target_strategy_id", _AUTOMATED_TARGET_STRATEGY_ID)
+            "target_strategy_id", _AUTOMATED_TARGET_STRATEGY_ID
+        )
         # One composer pair per profile is sufficient, provided every split with at least two
         # profiles collectively reaches every depth `measure_strategy_id` targets.
         _require_collective_target_depths(
-            calibration_profiles, split=_SPLIT_CALIBRATION, strategy_id=measure_strategy_id)
+            calibration_profiles,
+            split=_SPLIT_CALIBRATION,
+            strategy_id=measure_strategy_id,
+        )
         _require_collective_target_depths(
-            heldout_profiles, split=_SPLIT_HELDOUT, strategy_id=measure_strategy_id)
+            heldout_profiles, split=_SPLIT_HELDOUT, strategy_id=measure_strategy_id
+        )
         _validate_profile_advance_clears(
-            calibration_profiles + heldout_profiles, identity_band=effective_identity,
-            confirm_template=confirm_template)
+            calibration_profiles + heldout_profiles,
+            identity_band=effective_identity,
+            confirm_template=confirm_template,
+        )
     except _MeasureRefused as exc:
         print(f"REFUSED: {exc}", file=sys.stderr)
         sys.exit(1)
@@ -6677,32 +8881,42 @@ def _cmd_measure(args: argparse.Namespace) -> None:
     # --- IDENTITY ---
     try:
         calib_identity_samples = _profile_identity_samples(
-            calibration_profiles, identity_band=effective_identity)
+            calibration_profiles, identity_band=effective_identity
+        )
         heldout_identity_samples = _profile_identity_samples(
-            heldout_profiles, identity_band=effective_identity)
+            heldout_profiles, identity_band=effective_identity
+        )
         # Human labels are evidence aids, not an identity oracle. Detect the same real profile
         # reused under two different labels by comparing the independently captured card
         # representatives across splits at production's exact grid. The known 2.565
         # different-profile collision is only a hard upper limit; anything at/under it is too
         # ambiguous to certify as held out and therefore forces fresh collection.
-        calib_representatives = [s for s in calib_identity_samples
-                                 if s.origin == "representative"]
-        heldout_representatives = [s for s in heldout_identity_samples
-                                   if s.origin == "representative"]
+        calib_representatives = [
+            s for s in calib_identity_samples if s.origin == "representative"
+        ]
+        heldout_representatives = [
+            s for s in heldout_identity_samples if s.origin == "representative"
+        ]
         cross_split_near_matches = []
         for calibration_sample in calib_representatives:
             for heldout_sample in heldout_representatives:
                 distance = _checked_distance(
-                    fingerprint_distance(calibration_sample.fingerprint,
-                                         heldout_sample.fingerprint),
-                    context=(f"cross-split identity {calibration_sample.profile_id!r} against "
-                             f"{heldout_sample.profile_id!r}"))
+                    fingerprint_distance(
+                        calibration_sample.fingerprint, heldout_sample.fingerprint
+                    ),
+                    context=(
+                        f"cross-split identity {calibration_sample.profile_id!r} against "
+                        f"{heldout_sample.profile_id!r}"
+                    ),
+                )
                 if distance <= _IDENTITY_FALSE_MATCH_DISTANCE:
-                    cross_split_near_matches.append({
-                        "calibration_profile": calibration_sample.profile_id,
-                        "heldout_profile": heldout_sample.profile_id,
-                        "distance": distance,
-                    })
+                    cross_split_near_matches.append(
+                        {
+                            "calibration_profile": calibration_sample.profile_id,
+                            "heldout_profile": heldout_sample.profile_id,
+                            "distance": distance,
+                        }
+                    )
         if cross_split_near_matches:
             nearest = min(rec["distance"] for rec in cross_split_near_matches)
             raise _MeasureRefused(
@@ -6710,82 +8924,115 @@ def _cmd_measure(args: argparse.Namespace) -> None:
                 f"sit at/under the known {_IDENTITY_FALSE_MATCH_DISTANCE} ambiguous identity "
                 f"distance (nearest {nearest:.3f}). The same real profile may have been reused "
                 "under a different label, so the held-out population is not provably disjoint; "
-                "collect fresh held-out profiles")
-        raw_identity_bound, identity_report = _freeze_identity_bound(calib_identity_samples)
+                "collect fresh held-out profiles"
+            )
+        raw_identity_bound, identity_report = _freeze_identity_bound(
+            calib_identity_samples
+        )
     except _MeasureRefused as exc:
         print(f"REFUSED: {exc}", file=sys.stderr)
         sys.exit(1)
 
     if raw_identity_bound is None:
-        print(f"REFUSED: identity bound not separable on the calibration split: "
-              f"{identity_report.get('reason')}", file=sys.stderr)
+        print(
+            f"REFUSED: identity bound not separable on the calibration split: "
+            f"{identity_report.get('reason')}",
+            file=sys.stderr,
+        )
         sys.exit(1)
     identity_bound = _round_down_below(
-        raw_identity_bound, above=identity_report["max_same_profile_distance"],
-        below=_IDENTITY_FALSE_MATCH_DISTANCE)
+        raw_identity_bound,
+        above=identity_report["max_same_profile_distance"],
+        below=_IDENTITY_FALSE_MATCH_DISTANCE,
+    )
     identity_report["frozen_bound"] = identity_bound
 
     try:
         identity_ok, identity_msg, identity_heldout_detail = _apply_identity_bound(
-            heldout_identity_samples, identity_bound)
+            heldout_identity_samples, identity_bound
+        )
     except _MeasureRefused as exc:
         print(f"REFUSED: {exc}", file=sys.stderr)
         sys.exit(1)
     if not identity_ok:
-        print(f"REFUSED: identity bound failed held-out verification: {identity_msg}",
-              file=sys.stderr)
+        print(
+            f"REFUSED: identity bound failed held-out verification: {identity_msg}",
+            file=sys.stderr,
+        )
         sys.exit(1)
-    print(f"[OK] identity_match_max_dist={identity_bound:.4f} "
-          f"(calibration margin {identity_report['margin']:.3f}; held-out: {identity_msg})")
+    print(
+        f"[OK] identity_match_max_dist={identity_bound:.4f} "
+        f"(calibration margin {identity_report['margin']:.3f}; held-out: {identity_msg})"
+    )
 
     # --- INLINE COMPOSER ITEMS ---
     try:
         calib_payloads = _build_profile_payloads(
-            calibration_profiles, content_band=effective_content,
-            identity_band=effective_identity, like_template=like_template,
-            like_threshold=like_threshold)
+            calibration_profiles,
+            content_band=effective_content,
+            identity_band=effective_identity,
+            like_template=like_template,
+            like_threshold=like_threshold,
+        )
         heldout_payloads = _build_profile_payloads(
-            heldout_profiles, content_band=effective_content,
-            identity_band=effective_identity, like_template=like_template,
-            like_threshold=like_threshold)
+            heldout_profiles,
+            content_band=effective_content,
+            identity_band=effective_identity,
+            like_template=like_template,
+            like_threshold=like_threshold,
+        )
         calib_inline_records = _inline_distance_records(
-            calib_payloads, confirm_template=confirm_template)
+            calib_payloads, confirm_template=confirm_template
+        )
         heldout_inline_records = _inline_distance_records(
-            heldout_payloads, confirm_template=confirm_template)
+            heldout_payloads, confirm_template=confirm_template
+        )
         raw_inline_bound, inline_report = _freeze_inline_bound(calib_inline_records)
     except _MeasureRefused as exc:
         print(f"REFUSED: {exc}", file=sys.stderr)
         sys.exit(1)
 
     if raw_inline_bound is None:
-        print(f"REFUSED: inline-item bound not separable on the calibration split: "
-              f"{inline_report.get('reason')}", file=sys.stderr)
+        print(
+            f"REFUSED: inline-item bound not separable on the calibration split: "
+            f"{inline_report.get('reason')}",
+            file=sys.stderr,
+        )
         sys.exit(1)
     inline_bound = _round_down_below(
-        raw_inline_bound, above=inline_report["max_intended_distance"],
-        below=_INLINE_FALSE_MATCH_DISTANCE)
+        raw_inline_bound,
+        above=inline_report["max_intended_distance"],
+        below=_INLINE_FALSE_MATCH_DISTANCE,
+    )
     inline_report["frozen_bound"] = inline_bound
 
     try:
         inline_ok, inline_msg, inline_heldout_detail = _apply_inline_bound(
-            heldout_inline_records, inline_bound)
+            heldout_inline_records, inline_bound
+        )
     except _MeasureRefused as exc:
         print(f"REFUSED: {exc}", file=sys.stderr)
         sys.exit(1)
     if not inline_ok:
-        print(f"REFUSED: inline-item bound failed held-out verification: {inline_msg}",
-              file=sys.stderr)
+        print(
+            f"REFUSED: inline-item bound failed held-out verification: {inline_msg}",
+            file=sys.stderr,
+        )
         sys.exit(1)
-    print(f"[OK] inline_item_max_dist={inline_bound:.4f} "
-          f"(calibration margin {inline_report['margin']:.3f}; held-out: {inline_msg})")
+    print(
+        f"[OK] inline_item_max_dist={inline_bound:.4f} "
+        f"(calibration margin {inline_report['margin']:.3f}; held-out: {inline_msg})"
+    )
 
     # Build and round-trip the exact payload before writing a ledger or printing success.  The
     # runtime driver's independent parser is the gesture-boundary authority, while safe_dump /
     # safe_load protects unusual but legal serials and session-directory names from YAML syntax.
     newest = max(loaded, key=_session_sort_key)
     measured_at = datetime.now(timezone.utc)
-    calibrated_at = (f"{measured_at.isoformat()} — measured from session(s): "
-                     + ", ".join(s.dir.name for s in loaded))
+    calibrated_at = (
+        f"{measured_at.isoformat()} — measured from session(s): "
+        + ", ".join(s.dir.name for s in loaded)
+    )
     calibration_block = {
         "schema_version": _CALIBRATION_SCHEMA_VERSION,
         "device": configured_serial,
@@ -6802,39 +9049,63 @@ def _cmd_measure(args: argparse.Namespace) -> None:
     try:
         _validate_v3_calibration_block(calibration_block)
     except _MeasureRefused as exc:
-        print(f"REFUSED: the measured v3 calibration block is invalid: {exc}", file=sys.stderr)
+        print(
+            f"REFUSED: the measured v3 calibration block is invalid: {exc}",
+            file=sys.stderr,
+        )
         sys.exit(1)
     parsed, parse_reason = hinge_mod._parse_targeting_calibration(
-        calibration_block, configured_serial, identity_band=effective_identity,
-        content_band=effective_content)
+        calibration_block,
+        configured_serial,
+        identity_band=effective_identity,
+        content_band=effective_content,
+    )
     if parsed is None:
-        print("REFUSED: runtime rejected the measured v3 calibration block: "
-              f"{parse_reason}", file=sys.stderr)
+        print(
+            "REFUSED: runtime rejected the measured v3 calibration block: "
+            f"{parse_reason}",
+            file=sys.stderr,
+        )
         sys.exit(1)
     yaml_document = yaml.safe_dump(
         {"apps": {"hinge": {"targeting_calibration": calibration_block}}},
-        sort_keys=False, allow_unicode=True)
+        sort_keys=False,
+        allow_unicode=True,
+    )
     try:
-        round_trip = yaml.safe_load(yaml_document)["apps"]["hinge"]["targeting_calibration"]
+        round_trip = yaml.safe_load(yaml_document)["apps"]["hinge"][
+            "targeting_calibration"
+        ]
     except Exception as exc:  # noqa: BLE001 -- malformed output must never be printed as success
-        print(f"REFUSED: generated calibration YAML did not parse: {exc}", file=sys.stderr)
+        print(
+            f"REFUSED: generated calibration YAML did not parse: {exc}", file=sys.stderr
+        )
         sys.exit(1)
     if round_trip != calibration_block:
-        print("REFUSED: generated calibration YAML did not round-trip byte-for-value; refusing "
-              "to print an ambiguous paste block.", file=sys.stderr)
+        print(
+            "REFUSED: generated calibration YAML did not round-trip byte-for-value; refusing "
+            "to print an ambiguous paste block.",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     # --- ledger ---
     ledger = {
         "tool_version": _TOOL_VERSION,
         "measured_at_utc": measured_at.isoformat(),
-        "sessions": [{"dir": str(s.dir), "split": s.split, "device_serial": s.device_serial}
-                     for s in loaded],
+        "sessions": [
+            {"dir": str(s.dir), "split": s.split, "device_serial": s.device_serial}
+            for s in loaded
+        ],
         "identity_band": list(effective_identity),
         "content_band": list(effective_content),
         "identity": {
             "calibration": identity_report,
-            "heldout": {"ok": identity_ok, "reason": identity_msg, **identity_heldout_detail},
+            "heldout": {
+                "ok": identity_ok,
+                "reason": identity_msg,
+                **identity_heldout_detail,
+            },
             "frozen_bound": identity_bound,
         },
         "inline": {
@@ -6846,29 +9117,37 @@ def _cmd_measure(args: argparse.Namespace) -> None:
         "device_evidence": dict(zip(evidence_keys, device_evidence[0], strict=True)),
         "operational_checks": operational_check_evidence,
         "measurement_evidence_mode": (
-            "automated_circular_risk_accepted" if unattended_evidence
-            else "hybrid_ai_reviewed_automation" if hybrid_evidence
-            else "supervised_operational_evidence"),
+            "automated_circular_risk_accepted"
+            if unattended_evidence
+            else "hybrid_ai_reviewed_automation"
+            if hybrid_evidence
+            else "supervised_operational_evidence"
+        ),
         "targeting_calibration": calibration_block,
         "auto_release_status": "pending_post_calibration_production_observe_validation",
         "auto_release_requirements": list(_POST_CALIBRATION_OBSERVE_REQUIREMENTS),
     }
     ledger_path = newest.dir / "measurement_ledger.json"
     atomic_write_private_text(
-        ledger_path, json.dumps(ledger, indent=2) + "\n", parent=newest.dir)
+        ledger_path, json.dumps(ledger, indent=2) + "\n", parent=newest.dir
+    )
     print(f"\nWrote measurement ledger to {ledger_path}")
 
     print("\n" + "=" * 78)
     if unattended_evidence or hybrid_evidence:
-        print("AUTOMATED CIRCULAR-RISK NUMERIC CANDIDATE. This is NOT supervised operational "
-              "evidence and does NOT release AUTO. The measurement ledger carries that exact "
-              "provenance; retain it with any review of this candidate.")
+        print(
+            "AUTOMATED CIRCULAR-RISK NUMERIC CANDIDATE. This is NOT supervised operational "
+            "evidence and does NOT release AUTO. The measurement ledger carries that exact "
+            "provenance; retain it with any review of this candidate."
+        )
     else:
-        print("NUMERIC CALIBRATION CANDIDATE. Paste targeting_calibration into config.yaml under "
-              "apps.hinge only for a supervised production OBSERVE validation; this tool never "
-              "writes config.yaml. It does NOT release AUTO: before AUTO, record separate evidence "
-              "from production Worker/hub showing pre-tap publication, post-tap item verification, "
-              "real provider/quota behaviour, persisted labels, and refusal/paywall handling.")
+        print(
+            "NUMERIC CALIBRATION CANDIDATE. Paste targeting_calibration into config.yaml under "
+            "apps.hinge only for a supervised production OBSERVE validation; this tool never "
+            "writes config.yaml. It does NOT release AUTO: before AUTO, record separate evidence "
+            "from production Worker/hub showing pre-tap publication, post-tap item verification, "
+            "real provider/quota behaviour, persisted labels, and refusal/paywall handling."
+        )
     print("=" * 78)
     print(yaml_document.rstrip())
     print("=" * 78)
@@ -6877,6 +9156,7 @@ def _cmd_measure(args: argparse.Namespace) -> None:
 # =====================================================================================
 # CLI
 # =====================================================================================
+
 
 def _run_holding_the_device(args: argparse.Namespace, command) -> None:
     """Run a phone-touching subcommand under the same lock a production run holds.
@@ -6898,124 +9178,207 @@ def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(
         prog="python -m tools.hinge_calibrate",
         description="Measure identity_match_max_dist and inline_item_max_dist, the two "
-                     "operator-calibrated Hinge targeting bounds ops/RUNBOOK.md's held-out "
-                     "device measurement protocol requires before any targeted opener or "
-                     "targeted AUTO like can run.")
+        "operator-calibrated Hinge targeting bounds ops/RUNBOOK.md's held-out "
+        "device measurement protocol requires before any targeted opener or "
+        "targeted AUTO like can run.",
+    )
     sub = ap.add_subparsers(dest="command", required=True)
 
     cap = sub.add_parser(
         "capture",
         help="Capture a calibration or held-out session on the real device. TOUCHES THE PHONE "
-             "(read-only screencaps + small humanized scroll gestures); every heart-tap and "
-             "profile advance is done by the owner, by hand, when prompted.")
-    cap.add_argument("--split", choices=list(_SPLITS), required=True,
-                     help="which split this session belongs to. The held-out set must be "
-                          "SEPARATELY COLLECTED, never carved out of a calibration pool later")
-    cap.add_argument("--profiles", type=int, default=3,
-                     help="how many distinct real profiles to capture in this session "
-                          "(default 3; need >= 2 for cross-profile identity pairs)")
+        "(read-only screencaps + small humanized scroll gestures); every heart-tap and "
+        "profile advance is done by the owner, by hand, when prompted.",
+    )
+    cap.add_argument(
+        "--split",
+        choices=list(_SPLITS),
+        required=True,
+        help="which split this session belongs to. The held-out set must be "
+        "SEPARATELY COLLECTED, never carved out of a calibration pool later",
+    )
+    cap.add_argument(
+        "--profiles",
+        type=int,
+        default=3,
+        help="how many distinct real profiles to capture in this session "
+        "(default 3; need >= 2 for cross-profile identity pairs)",
+    )
     cap.add_argument("--config", default="config.yaml")
-    cap.add_argument("--out", default=None,
-                     help="output directory (default ops/calibration/targeting_<UTC "
-                          "timestamp>/)")
     cap.add_argument(
-        "--record-operational-checks", action="store_true",
+        "--out",
+        default=None,
+        help="output directory (default ops/calibration/targeting_<UTC timestamp>/)",
+    )
+    cap.add_argument(
+        "--record-operational-checks",
+        action="store_true",
         help="after capture, record evidence references for all four supervised operational "
-             "checks required by ops/RUNBOOK.md. `measure` refuses to emit calibration YAML "
-             "until the supplied sessions collectively contain all four confirmations")
-    cap.add_argument("--unattended", action="store_true",
-                    help="explicitly authorize automated HingeDriver hearts on photo model "
-                          "item 1 for odd profile ordinals and item 3 for even ordinals, plus "
-                          "a Pass-without-send. Evidence is marked circular "
-                          "and is not supervised operational evidence.")
-    cap.add_argument("--hybrid-review", action="store_true",
-                     help="automated transport with fail-closed AI review checkpoints before every "
-                          "heart/Pass and after every heart result; mutually exclusive with "
-                          "--unattended")
+        "checks required by ops/RUNBOOK.md. `measure` refuses to emit calibration YAML "
+        "until the supplied sessions collectively contain all four confirmations",
+    )
     cap.add_argument(
-        "--target-items", choices=sorted(_TARGET_ITEMS_FLAG_STRATEGY_IDS),
+        "--unattended",
+        action="store_true",
+        help="explicitly authorize automated HingeDriver hearts on photo model "
+        "item 1 for odd profile ordinals and item 3 for even ordinals, plus "
+        "a Pass-without-send. Evidence is marked circular "
+        "and is not supervised operational evidence.",
+    )
+    cap.add_argument(
+        "--hybrid-review",
+        action="store_true",
+        help="automated transport with fail-closed AI review checkpoints before every "
+        "heart/Pass and after every heart result; mutually exclusive with "
+        "--unattended",
+    )
+    cap.add_argument(
+        "--target-items",
+        choices=sorted(_TARGET_ITEMS_FLAG_STRATEGY_IDS),
         default="alternate-1-3",
         help="which automated/hybrid photo-item targeting strategy to run. alternate-1-3 "
-             "(default) targets photo model item 1 on odd profile ordinals and item 3 on even "
-             "ordinals -- unchanged default behaviour. photo-1-only always targets item 1 and "
-             "DOES NOT EXERCISE DEEP-ITEM NAVIGATION: real decks rarely carry three numberable "
-             "photos, so this is an explicit, narrower calibration that proves less about deep "
-             "navigation -- pick it deliberately, not as a default.")
-    cap.add_argument("--confirmation", default="",
-                     help="required exact phrase: "
-                          f"--unattended={_UNATTENDED_CONFIRMATION}; "
-                          f"--hybrid-review={_HYBRID_REVIEW_CONFIRMATION}")
-    cap.add_argument("--reviewer-model", default=_HYBRID_REVIEW_SOURCE,
-                     help="manifest-only AI reviewer model/id for --hybrid-review")
-    cap.add_argument("--reviewer-id", default="",
-                     help="manifest-only reviewer name/id for --hybrid-review (defaults to model)")
-    cap.add_argument("--reviewer-version", default="",
-                     help="manifest-only reviewer model/version for --hybrid-review (defaults to process)")
-    cap.add_argument("--reviewer-process", default="stdin_checkpoint_protocol",
-                     help="manifest-only AI reviewer process/version for --hybrid-review")
-    cap.add_argument("--send-like", action="store_true",
-                     help="owner-directed exception to this tool's default never-send design: "
-                          "replace every calibration Pass with a REAL, PERMANENT Send Priority "
-                          "Like instead. Requires --hybrid-review (every send must clear a "
-                          "reviewer checkpoint) plus --send-like-confirmation")
-    cap.add_argument("--send-like-confirmation", default="",
-                     help=f"required exact phrase for --send-like: {_SEND_LIKE_CONFIRMATION}")
+        "(default) targets photo model item 1 on odd profile ordinals and item 3 on even "
+        "ordinals -- unchanged default behaviour. photo-1-only always targets item 1 and "
+        "DOES NOT EXERCISE DEEP-ITEM NAVIGATION: real decks rarely carry three numberable "
+        "photos, so this is an explicit, narrower calibration that proves less about deep "
+        "navigation -- pick it deliberately, not as a default.",
+    )
+    cap.add_argument(
+        "--confirmation",
+        default="",
+        help="required exact phrase: "
+        f"--unattended={_UNATTENDED_CONFIRMATION}; "
+        f"--hybrid-review={_HYBRID_REVIEW_CONFIRMATION}",
+    )
+    cap.add_argument(
+        "--reviewer-model",
+        default=_HYBRID_REVIEW_SOURCE,
+        help="manifest-only AI reviewer model/id for --hybrid-review",
+    )
+    cap.add_argument(
+        "--reviewer-id",
+        default="",
+        help="manifest-only reviewer name/id for --hybrid-review (defaults to model)",
+    )
+    cap.add_argument(
+        "--reviewer-version",
+        default="",
+        help="manifest-only reviewer model/version for --hybrid-review (defaults to process)",
+    )
+    cap.add_argument(
+        "--reviewer-process",
+        default="stdin_checkpoint_protocol",
+        help="manifest-only AI reviewer process/version for --hybrid-review",
+    )
+    cap.add_argument(
+        "--send-like",
+        action="store_true",
+        help="owner-directed exception to this tool's default never-send design: "
+        "replace every calibration Pass with a REAL, PERMANENT Send Priority "
+        "Like instead. Requires --hybrid-review (every send must clear a "
+        "reviewer checkpoint) plus --send-like-confirmation",
+    )
+    cap.add_argument(
+        "--send-like-confirmation",
+        default="",
+        help=f"required exact phrase for --send-like: {_SEND_LIKE_CONFIRMATION}",
+    )
 
     mea = sub.add_parser(
         "measure",
         help="Offline-only: freeze both bounds from one or more previously captured session "
-             "directories, spanning both splits. NEVER opens an ADB session or touches the "
-             "device.")
-    mea.add_argument("sessions", nargs="+",
-                     help="capture session director(ies) (ops/calibration/targeting_*/)")
+        "directories, spanning both splits. NEVER opens an ADB session or touches the "
+        "device.",
+    )
+    mea.add_argument(
+        "sessions",
+        nargs="+",
+        help="capture session director(ies) (ops/calibration/targeting_*/)",
+    )
     mea.add_argument("--config", default="config.yaml")
-    mea.add_argument("--accept-automated-circular-evidence", action="store_true",
-                     help="allow only exact --unattended manifests to produce a clearly marked "
-                          "numeric candidate. It does not convert them to supervised evidence "
-                          "or release AUTO.")
-    mea.add_argument("--accept-hybrid-reviewed-evidence", action="store_true",
-                     help="allow only exact --hybrid-review manifests with accepted external "
-                          "review checkpoints to produce a clearly marked numeric candidate; "
-                          "it never converts AI review into human ground truth or releases AUTO")
-    mea.add_argument("--confirmation", default="",
-                     help="required exact phrase: "
-                          f"--accept-automated-circular-evidence={_UNATTENDED_CONFIRMATION}; "
-                          f"--accept-hybrid-reviewed-evidence={_HYBRID_REVIEW_CONFIRMATION}")
-    mea.add_argument("--unattended-review", default="",
-                     help="required with either automated-evidence flag: deterministic self-hashed "
-                          "artifact from tools.hinge_calibration_review bound to these exact "
-                          "captures and config bytes")
+    mea.add_argument(
+        "--accept-automated-circular-evidence",
+        action="store_true",
+        help="allow only exact --unattended manifests to produce a clearly marked "
+        "numeric candidate. It does not convert them to supervised evidence "
+        "or release AUTO.",
+    )
+    mea.add_argument(
+        "--accept-hybrid-reviewed-evidence",
+        action="store_true",
+        help="allow only exact --hybrid-review manifests with accepted external "
+        "review checkpoints to produce a clearly marked numeric candidate; "
+        "it never converts AI review into human ground truth or releases AUTO",
+    )
+    mea.add_argument(
+        "--confirmation",
+        default="",
+        help="required exact phrase: "
+        f"--accept-automated-circular-evidence={_UNATTENDED_CONFIRMATION}; "
+        f"--accept-hybrid-reviewed-evidence={_HYBRID_REVIEW_CONFIRMATION}",
+    )
+    mea.add_argument(
+        "--unattended-review",
+        default="",
+        help="required with either automated-evidence flag: deterministic self-hashed "
+        "artifact from tools.hinge_calibration_review bound to these exact "
+        "captures and config bytes",
+    )
 
     anchor = sub.add_parser(
         "verify-entry-anchor",
         help="Offline-only: attach the required hash-bound entry-anchor replay to one completed "
-             "private v3 manifest. NEVER opens ADB or touches the device.")
-    anchor.add_argument("session", help="completed capture directory under ops/calibration/")
-    anchor.add_argument("--config", default="config.yaml",
-                        help="used only to load the existing like detector; no ADB session opens")
+        "private v3 manifest. NEVER opens ADB or touches the device.",
+    )
+    anchor.add_argument(
+        "session", help="completed capture directory under ops/calibration/"
+    )
+    anchor.add_argument(
+        "--config",
+        default="config.yaml",
+        help="used only to load the existing like detector; no ADB session opens",
+    )
 
     attach = sub.add_parser(
         "attach-operational-evidence",
         help="Offline-only one-time migration for a completed, unledgered v3 capture paused at "
-             "legacy evidence prompts. It validates recorder-v2 evidence, creates the normal "
-             "entry-anchor replay, and replaces only the three trace references.")
-    attach.add_argument("session", help="completed unledgered capture directory under ops/calibration/")
-    attach.add_argument("operational_evidence",
-                        help="completed recorder-v2 directory or its manifest.json")
-    attach.add_argument("--config", default="config.yaml",
-                        help="used only for offline replay/template binding; no ADB session opens")
+        "legacy evidence prompts. It validates recorder-v2 evidence, creates the normal "
+        "entry-anchor replay, and replaces only the three trace references.",
+    )
+    attach.add_argument(
+        "session", help="completed unledgered capture directory under ops/calibration/"
+    )
+    attach.add_argument(
+        "operational_evidence",
+        help="completed recorder-v2 directory or its manifest.json",
+    )
+    attach.add_argument(
+        "--config",
+        default="config.yaml",
+        help="used only for offline replay/template binding; no ADB session opens",
+    )
 
     observe = sub.add_parser(
         "observe-check",
         help="Pre-calibration passive-cycle + synthetic-quota evidence only. It never exercises "
-             "production Worker/hub/store and cannot authorize AUTO.")
+        "production Worker/hub/store and cannot authorize AUTO.",
+    )
     observe.add_argument("--config", default="config.yaml")
-    observe.add_argument("--out", default=None,
-                         help="output directory (default ops/calibration/observe_check_<UTC>/)")
-    observe.add_argument("--supervised", action="store_true",
-                         help="required acknowledgement that a human, not this tool, performs every action")
-    observe.add_argument("--confirmation", default="",
-                         help=f"required exact acknowledgement: {_OBSERVE_CHECK_CONFIRMATION}")
+    observe.add_argument(
+        "--out",
+        default=None,
+        help="output directory (default ops/calibration/observe_check_<UTC>/)",
+    )
+    observe.add_argument(
+        "--supervised",
+        action="store_true",
+        help="required acknowledgement that a human, not this tool, performs every action",
+    )
+    observe.add_argument(
+        "--confirmation",
+        default="",
+        help=f"required exact acknowledgement: {_OBSERVE_CHECK_CONFIRMATION}",
+    )
 
     args = ap.parse_args(argv)
     _check_vision_stacks()

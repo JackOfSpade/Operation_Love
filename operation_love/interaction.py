@@ -6,6 +6,7 @@ like, but it never changes training, probabilities, or manual/observe labels.
 Everything here is deterministic when supplied a seeded ``random.Random`` and a
 local-hour callable, which keeps the behaviour testable without device access.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
@@ -79,17 +80,22 @@ class AutoSessionPolicy:
     it can never manufacture a positive action from a model ``dislike``.
     """
 
-    def __init__(self, *, rng: random.Random | None = None,
-                 local_hour: Callable[[], int] | None = None,
-                 base_threshold: float = 0.5,
-                 max_threshold_lift: float = _THRESHOLD_MAX_LIFT):
+    def __init__(
+        self,
+        *,
+        rng: random.Random | None = None,
+        local_hour: Callable[[], int] | None = None,
+        base_threshold: float = 0.5,
+        max_threshold_lift: float = _THRESHOLD_MAX_LIFT,
+    ):
         base_threshold = _finite_real("base_threshold", base_threshold)
         max_threshold_lift = _finite_real("max_threshold_lift", max_threshold_lift)
         if not 0.0 < base_threshold < 1.0:
             raise ValueError("base_threshold must be in (0, 1)")
         if not 0.0 <= max_threshold_lift <= _THRESHOLD_MAX_LIFT:
             raise ValueError(
-                f"max_threshold_lift must be in [0, {_THRESHOLD_MAX_LIFT}]")
+                f"max_threshold_lift must be in [0, {_THRESHOLD_MAX_LIFT}]"
+            )
         self.rng = rng if rng is not None else random.Random()
         self._local_hour = local_hour or (lambda: datetime.now().hour)
         self.base_threshold = base_threshold
@@ -120,27 +126,36 @@ class AutoSessionPolicy:
         """
         depth = _exact_nonnegative_int("depth", depth)
         captured_frames = _exact_nonnegative_int(
-            "captured_frames", captured_frames, minimum=1)
+            "captured_frames", captured_frames, minimum=1
+        )
         complexity = min(1.0, (captured_frames - 1) / 7.0)
         # Deeper cards get slightly shorter advances, avoiding a mechanically
         # identical 55%-of-screen sequence while still remaining in a safe range.
         fraction = _clamp(
             0.51 + self._read_bias - 0.010 * min(depth, 5) + self.rng.gauss(0.0, 0.025),
-            _READ_FRACTION_MIN, _READ_FRACTION_MAX)
-        x_frac = _clamp(self._lane_bias + 0.50 + self.rng.gauss(0.0, 0.028),
-                         _READ_X_MIN, _READ_X_MAX)
+            _READ_FRACTION_MIN,
+            _READ_FRACTION_MAX,
+        )
+        x_frac = _clamp(
+            self._lane_bias + 0.50 + self.rng.gauss(0.0, 0.028),
+            _READ_X_MIN,
+            _READ_X_MAX,
+        )
         dwell = 1.10 * self._tempo
         dwell *= 1.0 + 0.055 * complexity + 0.065 * min(depth, 6)
         dwell *= math.exp(self.rng.gauss(0.0, 0.25))
-        return ReadStep(fraction, x_frac, _clamp(dwell, _READ_DWELL_MIN_S, _READ_DWELL_MAX_S))
+        return ReadStep(
+            fraction, x_frac, _clamp(dwell, _READ_DWELL_MIN_S, _READ_DWELL_MAX_S)
+        )
 
     def capture_limit(self, baseline: int) -> int:
         """Vary only the emergency ceiling, never truncate configured coverage."""
         baseline = _exact_nonnegative_int("baseline", baseline, minimum=1)
         return baseline + self.rng.choice((0, 0, 1, 1, 2))
 
-    def post_action_delay_s(self, decision: str, profile: Profile, score: float,
-                            *, scale: float = 1.0) -> float:
+    def post_action_delay_s(
+        self, decision: str, profile: Profile, score: float, *, scale: float = 1.0
+    ) -> float:
         """Return a contextual wait after a *landed* automatic action.
 
         The caller supplies the existing pacing scale (and bypasses this method
@@ -194,7 +209,9 @@ class AutoSessionPolicy:
         if decision.score >= threshold:
             return PolicyDecision(decision, threshold)
         return PolicyDecision(
-            replace(decision, decision="dislike", source=f"{decision.source}_contextual"),
+            replace(
+                decision, decision="dislike", source=f"{decision.source}_contextual"
+            ),
             threshold,
             demoted=True,
         )
@@ -220,7 +237,9 @@ class AutoSessionPolicy:
         score = _finite_real("score", score)
         uncertainty = 1.0 - min(1.0, abs(score - self.base_threshold) / 0.10)
         fatigue = min(1.0, self.actions / 35.0)
-        like_streak = min(1.0, self._streak / 5.0) if self._last_action == "like" else 0.0
+        like_streak = (
+            min(1.0, self._streak / 5.0) if self._last_action == "like" else 0.0
+        )
         hour = _clamp(_finite_real("local_hour", self._local_hour()), 0.0, 23.0)
         night = 1.0 if hour < 6.0 or hour >= 22.0 else 0.0
         # Context determines a bounded *available* lift, while a fresh beta draw
@@ -229,11 +248,14 @@ class AutoSessionPolicy:
         # boundary.  The final floor still guarantees no below-model likes.
         available = 0.006 + self._strictness + 0.014 * uncertainty + 0.010 * fatigue
         available += 0.008 * like_streak + 0.004 * night - 0.004 * complexity
-        lift = max(0.0, available * self.rng.betavariate(1.4, 2.4)
-                   + self.rng.gauss(0.0, 0.002))
-        return _clamp(self.base_threshold + lift,
-                      self.base_threshold,
-                      self.base_threshold + self.max_threshold_lift)
+        lift = max(
+            0.0, available * self.rng.betavariate(1.4, 2.4) + self.rng.gauss(0.0, 0.002)
+        )
+        return _clamp(
+            self.base_threshold + lift,
+            self.base_threshold,
+            self.base_threshold + self.max_threshold_lift,
+        )
 
     @staticmethod
     def _safe_meta_int(meta: Mapping, key: str, default: int) -> int:
@@ -262,10 +284,10 @@ class AutoSessionPolicy:
         """
         raw = meta.get(key, default)
         try:
-            value = int(raw) if raw else default   # falsy (0/""/None) -> "not provided"
+            value = int(raw) if raw else default  # falsy (0/""/None) -> "not provided"
         except (TypeError, ValueError, OverflowError):
             return default
-        return max(0, value)   # a negative count is never sane pacing context
+        return max(0, value)  # a negative count is never sane pacing context
 
     @classmethod
     def _profile_complexity(cls, profile: Profile) -> float:
@@ -275,7 +297,9 @@ class AutoSessionPolicy:
         if not isinstance(meta, Mapping):
             meta = {}
         capture_frames = cls._safe_meta_int(meta, "capture_frames", photos)
-        read_scrolls = cls._safe_meta_int(meta, "read_scrolls", max(0, capture_frames - 1))
+        read_scrolls = cls._safe_meta_int(
+            meta, "read_scrolls", max(0, capture_frames - 1)
+        )
         # Cap every observed dimension so a malformed meta value cannot generate
         # excessive pacing.  Hinge's present capture path supplies photos; these
         # metadata fields let a driver add reading context without model coupling.
@@ -284,5 +308,6 @@ class AutoSessionPolicy:
             + 0.25 * min(capture_frames, 8) / 8.0
             + 0.20 * min(read_scrolls, 7) / 7.0
             + 0.10 * min(text, 400) / 400.0,
-            0.0, 1.0,
+            0.0,
+            1.0,
         )

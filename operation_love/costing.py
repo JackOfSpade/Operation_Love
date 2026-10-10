@@ -3,6 +3,7 @@
 Providers return token usage but do not offer a portable remaining-credit API, so
 we calculate configured prices locally and enforce a per-run cap.
 """
+
 from __future__ import annotations
 
 import math
@@ -35,9 +36,10 @@ def _safe_value_repr(value: object) -> str:
 @dataclass(frozen=True)
 class ModelPricing:
     """USD per 1,000,000 tokens."""
+
     input: float
     output: float
-    cache_read: float = 0.0   # ~0.1x input
+    cache_read: float = 0.0  # ~0.1x input
     cache_write: float = 0.0  # 5-minute ephemeral write, ~1.25x input
 
     def __post_init__(self) -> None:
@@ -46,7 +48,8 @@ class ModelPricing:
             if not _is_finite_real(value) or value < 0:
                 raise ValueError(
                     f"ModelPricing.{name} must be a finite nonnegative number "
-                    f"(got {_safe_value_repr(value)})")
+                    f"(got {_safe_value_repr(value)})"
+                )
 
     @classmethod
     def from_dict(cls, d: Mapping[str, object]) -> "ModelPricing":
@@ -71,7 +74,8 @@ class ModelPricing:
                 details.append(f"unknown {sorted(unknown)}")
             raise ValueError(
                 "ModelPricing mapping must contain input/output and only supported "
-                f"keys ({'; '.join(details)})")
+                f"keys ({'; '.join(details)})"
+            )
         return cls(
             input=d["input"],
             output=d["output"],
@@ -88,12 +92,17 @@ class Usage:
     cache_creation_input_tokens: int = 0
 
     def __post_init__(self) -> None:
-        for name in ("input_tokens", "output_tokens", "cache_read_input_tokens",
-                     "cache_creation_input_tokens"):
+        for name in (
+            "input_tokens",
+            "output_tokens",
+            "cache_read_input_tokens",
+            "cache_creation_input_tokens",
+        ):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-                raise ValueError(f"Usage.{name} must be a nonnegative integer "
-                                 f"(got {value!r})")
+                raise ValueError(
+                    f"Usage.{name} must be a nonnegative integer (got {value!r})"
+                )
 
     @classmethod
     def from_gemini(cls, usage) -> "Usage":
@@ -104,22 +113,28 @@ class Usage:
         thoughts are both output/billed-generation tokens.  The latter is essential for
         thinking-capable Gemini models: omitting it would understate the run budget.
         """
+
         def g(name: str) -> int:
             value = getattr(usage, name, 0)
             if value is None:
                 return 0
             if isinstance(value, bool) or not isinstance(value, int):
-                raise ValueError(f"Gemini usage {name} must be an integer (got {value!r})")
+                raise ValueError(
+                    f"Gemini usage {name} must be an integer (got {value!r})"
+                )
             if value < 0:
                 raise ValueError(
-                    f"Gemini usage {name} must be nonnegative (got {value!r})")
+                    f"Gemini usage {name} must be nonnegative (got {value!r})"
+                )
             return value
+
         cached = g("cached_content_token_count")
         prompt = g("prompt_token_count")
         if cached > prompt:
             raise ValueError(
                 "Gemini usage cached_content_token_count cannot exceed "
-                f"prompt_token_count (got {cached} > {prompt})")
+                f"prompt_token_count (got {cached} > {prompt})"
+            )
         return cls(
             input_tokens=prompt - cached,
             output_tokens=g("candidates_token_count") + g("thoughts_token_count"),
@@ -166,7 +181,9 @@ class CostTracker:
     app workers (Bumble + Hinge run concurrently but draw on one cap).
     """
 
-    def __init__(self, pricing: Mapping[str, ModelPricing], run_budget_usd: float | None):
+    def __init__(
+        self, pricing: Mapping[str, ModelPricing], run_budget_usd: float | None
+    ):
         if not isinstance(pricing, Mapping):
             raise ValueError("pricing must be a mapping of model ids to ModelPricing")
         normalized_pricing: dict[str, ModelPricing] = {}
@@ -174,13 +191,15 @@ class CostTracker:
             if not isinstance(model, str) or not model.strip():
                 raise ValueError("pricing model ids must be non-empty strings")
             if not isinstance(model_pricing, ModelPricing):
-                raise ValueError(
-                    f"pricing[{model!r}] must be a ModelPricing instance")
+                raise ValueError(f"pricing[{model!r}] must be a ModelPricing instance")
             normalized_pricing[model] = model_pricing
-        if (run_budget_usd is not None
-                and (not _is_finite_real(run_budget_usd) or run_budget_usd < 0)):
-            raise ValueError("run_budget_usd must be None or a finite nonnegative number "
-                             f"(got {_safe_value_repr(run_budget_usd)})")
+        if run_budget_usd is not None and (
+            not _is_finite_real(run_budget_usd) or run_budget_usd < 0
+        ):
+            raise ValueError(
+                "run_budget_usd must be None or a finite nonnegative number "
+                f"(got {_safe_value_repr(run_budget_usd)})"
+            )
         # Keep the tracker invariant stable if the caller later mutates its mapping.
         self.pricing = normalized_pricing
         self.run_budget_usd = run_budget_usd

@@ -1,4 +1,5 @@
 """Synthetic bitmap coverage for doc 5.8's deliberately conservative coarse check."""
+
 import cv2
 import numpy as np
 
@@ -23,8 +24,18 @@ def _png(array) -> bytes:
 
 def _written_card() -> bytes:
     card = np.full((180, 260, 3), 238, dtype=np.uint8)
-    cv2.putText(card, "A PROMPT", (24, 84), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (25, 25, 25), 2)
-    cv2.putText(card, "with an answer", (24, 122), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (25, 25, 25), 1)
+    cv2.putText(
+        card, "A PROMPT", (24, 84), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (25, 25, 25), 2
+    )
+    cv2.putText(
+        card,
+        "with an answer",
+        (24, 122),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.55,
+        (25, 25, 25),
+        1,
+    )
     return _png(card)
 
 
@@ -39,7 +50,9 @@ def _mixed_prompt_card() -> bytes:
     rng = np.random.default_rng(17)
     card = rng.integers(0, 256, (180, 260, 3), dtype=np.uint8)
     cv2.rectangle(card, (10, 30), (250, 150), (245, 245, 245), -1)
-    cv2.putText(card, "A PROMPT", (30, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (20, 20, 20), 2)
+    cv2.putText(
+        card, "A PROMPT", (30, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (20, 20, 20), 2
+    )
     return _png(card)
 
 
@@ -84,9 +97,17 @@ def test_rectangular_captioned_low_detail_photo_is_affirmatively_photo():
     """A title band, calm sky and non-square geometry must not turn a real photo into UNKNOWN."""
     height, width = 300, 260
     card = np.full((height, width, 3), 245, dtype=np.uint8)
-    cv2.putText(card, "TAKE ME BACK", (15, 31), cv2.FONT_HERSHEY_SIMPLEX,
-                0.55, (20, 20, 20), 2, cv2.LINE_AA)
-    y, x = np.mgrid[0:height - 50, 0:width]
+    cv2.putText(
+        card,
+        "TAKE ME BACK",
+        (15, 31),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.55,
+        (20, 20, 20),
+        2,
+        cv2.LINE_AA,
+    )
+    y, x = np.mgrid[0 : height - 50, 0:width]
     card[50:, :, 0] = np.clip(160 + y * 0.15 + 20 * np.sin(x / 10), 0, 255)
     card[50:, :, 1] = np.clip(120 + y * 0.25 + 18 * np.sin(x / 14), 0, 255)
     card[50:, :, 2] = np.clip(80 + y * 0.45 + 15 * np.sin(x / 18), 0, 255)
@@ -107,12 +128,36 @@ def test_high_contrast_hinge_prompt_with_heart_control_is_still_written():
     every low-variation rectangle a prompt.
     """
     card = np.full((220, 320, 3), 246, dtype=np.uint8)
-    cv2.putText(card, "UNUSUAL SKILLS", (20, 55), cv2.FONT_HERSHEY_SIMPLEX,
-                0.75, (15, 15, 15), 2, cv2.LINE_AA)
-    cv2.putText(card, "I BUY STOCKS", (20, 115), cv2.FONT_HERSHEY_SIMPLEX,
-                1.0, (15, 15, 15), 2, cv2.LINE_AA)
-    cv2.putText(card, "HIGH SELL LOW", (20, 170), cv2.FONT_HERSHEY_SIMPLEX,
-                0.9, (15, 15, 15), 2, cv2.LINE_AA)
+    cv2.putText(
+        card,
+        "UNUSUAL SKILLS",
+        (20, 55),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.75,
+        (15, 15, 15),
+        2,
+        cv2.LINE_AA,
+    )
+    cv2.putText(
+        card,
+        "I BUY STOCKS",
+        (20, 115),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        1.0,
+        (15, 15, 15),
+        2,
+        cv2.LINE_AA,
+    )
+    cv2.putText(
+        card,
+        "HIGH SELL LOW",
+        (20, 170),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.9,
+        (15, 15, 15),
+        2,
+        cv2.LINE_AA,
+    )
     cv2.circle(card, (290, 187), 24, (12, 12, 12), -1)
 
     evidence = crop_type_evidence(_png(card))

@@ -5,6 +5,7 @@ drivers use host-side ADB (screencap perception + humanized `input motionevent` 
 at screen-fraction coordinates — no uiautomator2 / on-device helper, see
 ops/HINGE-PIXEL-RUNBOOK.md §5). A generic Playwright base remains reference-only.
 """
+
 from __future__ import annotations
 
 import time
@@ -103,8 +104,15 @@ class ItemTargetingError(RuntimeError):
     two and a bare small int that does not state its space is the exact bug the 2026-08-12 audit
     found (see opener.py's INDEX_SPACE_* constants)."""
 
-    def __init__(self, message: str, *, stage: str = "", intended=None, actual=None,
-                 index_space: str = "") -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        stage: str = "",
+        intended=None,
+        actual=None,
+        index_space: str = "",
+    ) -> None:
         super().__init__(message)
         self.stage = stage
         self.intended = intended
@@ -115,9 +123,13 @@ class ItemTargetingError(RuntimeError):
 OBSERVE_ITEM_MATCH = "match"
 OBSERVE_ITEM_MISMATCH = "mismatch"
 OBSERVE_ITEM_INCONCLUSIVE = "inconclusive"
-_OBSERVE_ITEM_STATES = frozenset({
-    OBSERVE_ITEM_MATCH, OBSERVE_ITEM_MISMATCH, OBSERVE_ITEM_INCONCLUSIVE,
-})
+_OBSERVE_ITEM_STATES = frozenset(
+    {
+        OBSERVE_ITEM_MATCH,
+        OBSERVE_ITEM_MISMATCH,
+        OBSERVE_ITEM_INCONCLUSIVE,
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -137,14 +149,21 @@ class ObserveItemCheck:
         if self.state not in _OBSERVE_ITEM_STATES:
             raise ValueError(f"unknown Observe item-check state {self.state!r}")
         if self.state != OBSERVE_ITEM_MATCH and not self.reason:
-            raise ValueError(f"Observe item-check state {self.state!r} requires a reason")
+            raise ValueError(
+                f"Observe item-check state {self.state!r} requires a reason"
+            )
 
     def __bool__(self):
         raise TypeError("ObserveItemCheck has no truth value -- inspect .state")
 
 
-def open_debug_log(debug_dir: str, *, run_id: str | None = None,
-                   keep_runs: int | None = None, protect_runs=()):
+def open_debug_log(
+    debug_dir: str,
+    *,
+    run_id: str | None = None,
+    keep_runs: int | None = None,
+    protect_runs=(),
+):
     """Best-effort DebugLog bootstrap shared by every driver's open_session().
 
     Returns a DebugLog instance, or None if construction fails. Debug logging must
@@ -153,10 +172,14 @@ def open_debug_log(debug_dir: str, *, run_id: str | None = None,
     """
     try:
         from .debuglog import DebugLog
-        return DebugLog(debug_dir, run_id=run_id, keep_runs=keep_runs,
-                        protect_runs=protect_runs)
+
+        return DebugLog(
+            debug_dir, run_id=run_id, keep_runs=keep_runs, protect_runs=protect_runs
+        )
     except Exception as exc:  # noqa: BLE001 — logging must never break a run
-        print(f"Debug log unavailable ({type(exc).__name__}: {exc}); continuing without it.")
+        print(
+            f"Debug log unavailable ({type(exc).__name__}: {exc}); continuing without it."
+        )
         return None
 
 
@@ -278,8 +301,14 @@ class DatingAppDriver(ABC):
         no new return value or exception is needed to carry the difference."""
 
     @abstractmethod
-    def like(self, opener: str | None = None, item_index: int | None = None, *,
-             model_item_index: int | None = None, should_stop=None) -> str | None:
+    def like(
+        self,
+        opener: str | None = None,
+        item_index: int | None = None,
+        *,
+        model_item_index: int | None = None,
+        should_stop=None,
+    ) -> str | None:
         """Like the current profile, optionally sending an opener message. item_index is the
         0-based index (capture order) of the photo/prompt the opener is about, so drivers that
         comment per-item (Hinge) can target it; drivers without that notion ignore it.
@@ -422,10 +451,13 @@ class DatingAppDriver(ABC):
         `should_stop=None` must reproduce the pre-existing behaviour exactly — tools that
         drive profile perception by hand (tools/hinge_inspect.py) call this with no
         arguments at all."""
-        raise NotImplementedError("manual profile observation is not supported by this driver")
+        raise NotImplementedError(
+            "manual profile observation is not supported by this driver"
+        )
 
-    def wait_for_decision(self, timeout: float | None = 120.0, should_stop=None,
-                          on_like_intent=None) -> bool | None:
+    def wait_for_decision(
+        self, timeout: float | None = 120.0, should_stop=None, on_like_intent=None
+    ) -> bool | None:
         """Block until the user manually likes/passes the current card.
 
         Returns True (liked), False (passed), or None (card changed, timeout,
@@ -443,7 +475,9 @@ class DatingAppDriver(ABC):
         there is nothing left on screen to show a picture of once the sheet has closed).
         This is only a UI-notification hook; it must not cause device input.
         """
-        raise NotImplementedError("manual profile observation is not supported by this driver")
+        raise NotImplementedError(
+            "manual profile observation is not supported by this driver"
+        )
 
     def render_status(self, status: dict) -> None:
         """Optionally paint a live status overlay in the app's own UI.

@@ -1,4 +1,5 @@
 """Host-side debug log for the Hinge driver — bounded action and evidence screenshots."""
+
 import json
 import os
 import shutil
@@ -20,7 +21,11 @@ def test_action_writes_record_and_before_after_shots(tmp_path):
     dl = HingeDebugLog(str(tmp_path), run_id="r")
     dl.action("like", before=b"AAA", after=b"BBB", heart=[937, 1600], rose_modal=True)
     rec = _recs(dl)[0]
-    assert rec["action"] == "like" and rec["heart"] == [937, 1600] and rec["rose_modal"] is True
+    assert (
+        rec["action"] == "like"
+        and rec["heart"] == [937, 1600]
+        and rec["rose_modal"] is True
+    )
     assert (dl.dir / rec["before"]).read_bytes() == b"AAA"
     assert (dl.dir / rec["after"]).read_bytes() == b"BBB"
 
@@ -42,7 +47,9 @@ def test_reopening_a_run_keeps_existing_screenshots_and_allocates_a_new_name(tmp
     assert (second.dir / second_name).read_bytes() == b"SECOND_FRAME"
 
 
-def test_restart_enforces_the_normal_shot_cap_without_rotating_protected_evidence(tmp_path):
+def test_restart_enforces_the_normal_shot_cap_without_rotating_protected_evidence(
+    tmp_path,
+):
     """The screenshot cap belongs to a run, not merely to one DebugLog instance."""
     first = HingeDebugLog(str(tmp_path), run_id="r", keep_shots=8)
     first.action("recoverable", before=b"KEEP_BEFORE", keep_before=True)
@@ -62,14 +69,16 @@ def test_restart_enforces_the_normal_shot_cap_without_rotating_protected_evidenc
     # file, then the next normal capture rotates the next-oldest one.
     second = HingeDebugLog(str(tmp_path), run_id="r", keep_shots=2)
     normal_bytes = {
-        path.read_bytes() for path in second.dir.glob("*.png")
+        path.read_bytes()
+        for path in second.dir.glob("*.png")
         if path.name not in {kept_before, error_shot}
     }
     assert normal_bytes == {b"NORMAL_2", b"NORMAL_3"}
 
     second.action("capture", before=b"NORMAL_4")
     normal_bytes = {
-        path.read_bytes() for path in second.dir.glob("*.png")
+        path.read_bytes()
+        for path in second.dir.glob("*.png")
         if path.name not in {kept_before, error_shot}
     }
     assert normal_bytes == {b"NORMAL_3", b"NORMAL_4"}
@@ -87,19 +96,25 @@ def test_action_can_preserve_an_identity_anchor_shot(tmp_path):
 
 def test_normal_shots_rotate_separately_from_recent_error_evidence(tmp_path):
     dl = HingeDebugLog(str(tmp_path), run_id="r", keep_shots=4)
-    dl.error("unexpected", b"CRITICAL", ValueError("boom"))   # error shot — must survive rotation
-    for i in range(20):                                        # flood with normal shots
+    dl.error(
+        "unexpected", b"CRITICAL", ValueError("boom")
+    )  # error shot — must survive rotation
+    for i in range(20):  # flood with normal shots
         dl.action("dislike", before=bytes([i]), after=bytes([i + 64]))
     pngs = list(dl.dir.glob("*.png"))
-    assert len(pngs) <= 4 + 1                                  # rotating cap + the kept error shot
+    assert len(pngs) <= 4 + 1  # rotating cap + the kept error shot
     err = _recs(dl)[0]
     assert err["action"] == "unexpected" and "boom" in err["error"]
-    assert (dl.dir / err["screenshot"]).read_bytes() == b"CRITICAL"   # crucial log preserved
+    assert (
+        dl.dir / err["screenshot"]
+    ).read_bytes() == b"CRITICAL"  # crucial log preserved
 
 
 def test_recoverable_action_can_keep_its_raw_evidence(tmp_path):
     dl = HingeDebugLog(str(tmp_path), run_id="r", keep_shots=2)
-    dl.action("enumeration_segmentation_fallback", before=b"BAD_FRAME", keep_before=True)
+    dl.action(
+        "enumeration_segmentation_fallback", before=b"BAD_FRAME", keep_before=True
+    )
     for i in range(8):
         dl.action("capture", before=bytes([i]))
 
@@ -109,7 +124,7 @@ def test_recoverable_action_can_keep_its_raw_evidence(tmp_path):
 
 def test_logging_is_best_effort_no_frame(tmp_path):
     dl = HingeDebugLog(str(tmp_path), run_id="r")
-    dl.action("capture", before=None, photos=0)               # no screenshot -> no shot keys
+    dl.action("capture", before=None, photos=0)  # no screenshot -> no shot keys
     rec = _recs(dl)[0]
     assert rec["action"] == "capture" and "before" not in rec
 
@@ -132,27 +147,38 @@ def test_keep_shots_requires_an_exact_positive_integer(value, tmp_path):
 def test_keep_shots_rejects_values_above_bounded_maximum(tmp_path):
     with pytest.raises(ValueError, match="keep_shots"):
         HingeDebugLog(
-            str(tmp_path), run_id="r", keep_shots=debuglog_module._MAX_KEEP_SHOTS + 1)
+            str(tmp_path), run_id="r", keep_shots=debuglog_module._MAX_KEEP_SHOTS + 1
+        )
 
 
-def test_screenshot_write_failure_is_swallowed_but_record_still_written(tmp_path, monkeypatch):
+def test_screenshot_write_failure_is_swallowed_but_record_still_written(
+    tmp_path, monkeypatch
+):
     dl = HingeDebugLog(str(tmp_path), run_id="r")
-    def boom(*_args, **_kwargs):                               # disk dies mid-write
+
+    def boom(*_args, **_kwargs):  # disk dies mid-write
         raise OSError("disk full")
+
     monkeypatch.setattr(debuglog_module, "write_private_bytes", boom)
-    dl.action("like", before=b"PNGDATA")                       # must not raise despite the bad write
-    dl.error("unexpected", b"PNGDATA", RuntimeError("x"))      # error shots are best-effort too
+    dl.action("like", before=b"PNGDATA")  # must not raise despite the bad write
+    dl.error(
+        "unexpected", b"PNGDATA", RuntimeError("x")
+    )  # error shots are best-effort too
     recs = _recs(dl)
-    assert recs[0]["action"] == "like" and "before" not in recs[0]   # line written, just no shot key
+    assert (
+        recs[0]["action"] == "like" and "before" not in recs[0]
+    )  # line written, just no shot key
     assert recs[1]["action"] == "unexpected" and "screenshot" not in recs[1]
 
 
 def test_jsonl_append_failure_is_swallowed(tmp_path, monkeypatch):
     dl = HingeDebugLog(str(tmp_path), run_id="r")
-    def boom(*_args, **_kwargs):                               # actions.jsonl append fails
+
+    def boom(*_args, **_kwargs):  # actions.jsonl append fails
         raise OSError("disk full")
+
     monkeypatch.setattr(debuglog_module, "append_private_text", boom)
-    dl.action("dislike")                                       # must not raise despite the bad append
+    dl.action("dislike")  # must not raise despite the bad append
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX permission bits")
@@ -200,7 +226,9 @@ def test_existing_actions_symlink_is_rejected_without_touching_its_target(tmp_pa
 
 
 @pytest.mark.skipif(os.name != "posix", reason="symlink and POSIX permission semantics")
-def test_restart_skips_managed_png_symlink_without_reading_or_chmodding_target(tmp_path):
+def test_restart_skips_managed_png_symlink_without_reading_or_chmodding_target(
+    tmp_path,
+):
     first = HingeDebugLog(str(tmp_path), run_id="r")
     unrelated = tmp_path / "unrelated.png"
     unrelated.write_bytes(b"outside profile image")
@@ -225,10 +253,10 @@ def test_identical_frames_write_one_png_but_two_jsonl_records(tmp_path):
     dl.action("observe_waiting", after=b"SAME_SCREEN", reason="no_change")
 
     recs = _recs(dl)
-    assert len(recs) == 3                                      # still one record per poll
+    assert len(recs) == 3  # still one record per poll
     names = {r["after"] for r in recs}
-    assert len(names) == 1                                     # but all three point at ONE file
-    assert len(list(dl.dir.glob("*.png"))) == 1                # and only one PNG was ever written
+    assert len(names) == 1  # but all three point at ONE file
+    assert len(list(dl.dir.glob("*.png"))) == 1  # and only one PNG was ever written
     assert (dl.dir / recs[0]["after"]).read_bytes() == b"SAME_SCREEN"
 
 
@@ -250,11 +278,13 @@ def test_dedup_survives_interleaving_with_distinct_frames(tmp_path):
     dl = HingeDebugLog(str(tmp_path), run_id="r")
     dl.action("observe_waiting", after=b"SCREEN_A", reason="no_change")
     dl.action("observe_waiting", after=b"SCREEN_B", reason="no_change")
-    dl.action("observe_waiting", after=b"SCREEN_A", reason="no_change")   # repeats the FIRST frame
+    dl.action(
+        "observe_waiting", after=b"SCREEN_A", reason="no_change"
+    )  # repeats the FIRST frame
 
     recs = _recs(dl)
-    assert len(list(dl.dir.glob("*.png"))) == 2                # only 2 distinct PNGs on disk
-    assert recs[0]["after"] == recs[2]["after"]                # 1st and 3rd record share a file
+    assert len(list(dl.dir.glob("*.png"))) == 2  # only 2 distinct PNGs on disk
+    assert recs[0]["after"] == recs[2]["after"]  # 1st and 3rd record share a file
     assert recs[0]["after"] != recs[1]["after"]
 
 
@@ -264,17 +294,17 @@ def test_rotated_away_duplicate_is_saved_fresh_not_pointed_at_a_deleted_file(tmp
     frame this run has never seen before (see the comment on hash-entry cleanup in
     _save_shot's rotation loop)."""
     dl = HingeDebugLog(str(tmp_path), run_id="r", keep_shots=2)
-    dl.action("dislike", before=b"REPEAT_ME")                  # shot #1 (will rotate away)
-    dl.action("dislike", before=b"FILLER_A")                   # shot #2
-    dl.action("dislike", before=b"FILLER_B")                   # shot #3 -> rotation drops shot #1
+    dl.action("dislike", before=b"REPEAT_ME")  # shot #1 (will rotate away)
+    dl.action("dislike", before=b"FILLER_A")  # shot #2
+    dl.action("dislike", before=b"FILLER_B")  # shot #3 -> rotation drops shot #1
 
     recs = _recs(dl)
     first_name = recs[0]["before"]
-    assert not (dl.dir / first_name).exists()                  # rotated away, as expected
+    assert not (dl.dir / first_name).exists()  # rotated away, as expected
 
-    dl.action("dislike", before=b"REPEAT_ME")                  # same bytes as the rotated shot
+    dl.action("dislike", before=b"REPEAT_ME")  # same bytes as the rotated shot
     newest = _recs(dl)[-1]["before"]
-    assert newest != first_name                                # NOT the dangling old name
+    assert newest != first_name  # NOT the dangling old name
     assert (dl.dir / newest).exists()
     assert (dl.dir / newest).read_bytes() == b"REPEAT_ME"
 
@@ -284,10 +314,10 @@ def test_error_shots_are_never_deduped_against_normal_shots(tmp_path):
     as a dedup source for normal shots either, so this path stays as unconditional as it was."""
     dl = HingeDebugLog(str(tmp_path), run_id="r")
     dl.error("unexpected", b"SAME_BYTES", ValueError("boom"))
-    dl.action("dislike", before=b"SAME_BYTES")                 # byte-identical to the error shot
+    dl.action("dislike", before=b"SAME_BYTES")  # byte-identical to the error shot
 
     recs = _recs(dl)
-    assert recs[0]["screenshot"] != recs[1]["before"]          # each got its own file
+    assert recs[0]["screenshot"] != recs[1]["before"]  # each got its own file
     assert len(list(dl.dir.glob("*.png"))) == 2
 
 
@@ -303,19 +333,29 @@ def test_two_identical_error_shots_both_write_their_own_file(tmp_path):
 
 
 def test_retained_error_pool_is_bounded_and_restart_keeps_only_newest(
-        monkeypatch, tmp_path):
+    monkeypatch, tmp_path
+):
     monkeypatch.setattr(debuglog_module, "_MAX_RETAINED_SHOTS", 2)
     first = HingeDebugLog(str(tmp_path), run_id="r")
     first.error("unexpected", b"ERROR_1", RuntimeError("one"))
     first.error("unexpected", b"ERROR_2", RuntimeError("two"))
     first.error("unexpected", b"ERROR_3", RuntimeError("three"))
 
-    assert {path.read_bytes() for path in first.dir.glob("*.png")} == {b"ERROR_2", b"ERROR_3"}
+    assert {path.read_bytes() for path in first.dir.glob("*.png")} == {
+        b"ERROR_2",
+        b"ERROR_3",
+    }
 
     second = HingeDebugLog(str(tmp_path), run_id="r")
-    assert {path.read_bytes() for path in second.dir.glob("*.png")} == {b"ERROR_2", b"ERROR_3"}
+    assert {path.read_bytes() for path in second.dir.glob("*.png")} == {
+        b"ERROR_2",
+        b"ERROR_3",
+    }
     second.error("unexpected", b"ERROR_4", RuntimeError("four"))
-    assert {path.read_bytes() for path in second.dir.glob("*.png")} == {b"ERROR_3", b"ERROR_4"}
+    assert {path.read_bytes() for path in second.dir.glob("*.png")} == {
+        b"ERROR_3",
+        b"ERROR_4",
+    }
 
 
 def test_dedupe_never_files_one_action_s_frame_under_another_s_name(tmp_path):
@@ -332,7 +372,9 @@ def test_dedupe_never_files_one_action_s_frame_under_another_s_name(tmp_path):
 
     records = _recs(log)
     assert "observe_waiting" in records[0]["before"]
-    assert "observe_decision" in records[1]["before"]      # its own name, not the waiting one
+    assert (
+        "observe_decision" in records[1]["before"]
+    )  # its own name, not the waiting one
 
 
 def test_dedupe_still_collapses_the_repeat_that_actually_causes_the_bloat(tmp_path):
@@ -368,6 +410,7 @@ def test_run_id_must_be_a_single_leaf_and_cannot_escape_base_dir(tmp_path):
 # data/hinge_debug reached 274 runs / 12GB. These pin the narrow candidate rule, because the
 # operation is an irreversible rmtree of an operator's diagnostics.
 
+
 def _run_dir(base, name, *, mtime, actions=True):
     d = base / name
     d.mkdir(parents=True, exist_ok=True)
@@ -375,6 +418,7 @@ def _run_dir(base, name, *, mtime, actions=True):
         (d / "actions.jsonl").write_text('{"action":"x"}\n')
     (d / "00001_shot_before.png").write_bytes(b"png")
     import os
+
     os.utime(d, (mtime, mtime))
     return d
 
@@ -388,7 +432,12 @@ def test_debug_log_keeps_only_the_newest_runs(tmp_path):
     survivors = sorted(d.name for d in base.iterdir() if d.is_dir())
     # ``keep_runs`` counts all normal run directories, including the active run.
     assert survivors == ["run_004", "run_current"]
-    assert not old[0].exists() and not old[1].exists() and not old[2].exists() and not old[3].exists()
+    assert (
+        not old[0].exists()
+        and not old[1].exists()
+        and not old[2].exists()
+        and not old[3].exists()
+    )
 
 
 def test_debug_log_never_prunes_the_run_it_is_writing(tmp_path):
@@ -400,7 +449,7 @@ def test_debug_log_never_prunes_the_run_it_is_writing(tmp_path):
     would choose the current run for deletion.
     """
     base = tmp_path / "hinge_debug"
-    resumed = _run_dir(base, "run_current", mtime=1_000)     # older, and already has a log
+    resumed = _run_dir(base, "run_current", mtime=1_000)  # older, and already has a log
     (resumed / "actions.jsonl").write_text('{"action":"from_the_first_attempt"}\n')
     for i in range(4):
         _run_dir(base, f"run_{i:03d}", mtime=9_000_000 + i)
@@ -410,7 +459,7 @@ def test_debug_log_never_prunes_the_run_it_is_writing(tmp_path):
 
     assert log.dir.exists()
     text = (log.dir / "actions.jsonl").read_text()
-    assert "from_the_first_attempt" in text      # the restarted run's history survived
+    assert "from_the_first_attempt" in text  # the restarted run's history survived
     assert "probe" in text
 
 
@@ -418,7 +467,7 @@ def test_debug_log_only_prunes_directories_it_wrote(tmp_path):
     """A folder without actions.jsonl is not this logger's; an rmtree must never reach it."""
     base = tmp_path / "hinge_debug"
     _run_dir(base, "run_old", mtime=1_000)
-    foreign = base / "operator_notes"          # no actions.jsonl
+    foreign = base / "operator_notes"  # no actions.jsonl
     foreign.mkdir(parents=True)
     (foreign / "keepme.txt").write_text("do not delete")
 
@@ -432,7 +481,7 @@ def test_debug_log_keeps_every_run_when_unset(tmp_path):
     for i in range(6):
         _run_dir(base, f"run_{i:03d}", mtime=1_000 + i)
 
-    HingeDebugLog(str(base), run_id="run_current")      # keep_runs omitted
+    HingeDebugLog(str(base), run_id="run_current")  # keep_runs omitted
 
     assert len([d for d in base.iterdir() if d.is_dir()]) == 7
 
@@ -452,12 +501,13 @@ def test_debug_log_never_prunes_a_protected_run(tmp_path):
     Age-based retention would delete exactly that run first.
     """
     base = tmp_path / "hinge_debug"
-    _run_dir(base, "release_evidence", mtime=1)          # the OLDEST run on disk
+    _run_dir(base, "release_evidence", mtime=1)  # the OLDEST run on disk
     for i in range(6):
         _run_dir(base, f"run_{i:03d}", mtime=9_000 + i)
 
-    HingeDebugLog(str(base), run_id="run_current", keep_runs=2,
-                  protect_runs={"release_evidence"})
+    HingeDebugLog(
+        str(base), run_id="run_current", keep_runs=2, protect_runs={"release_evidence"}
+    )
 
     assert (base / "release_evidence").exists()
     assert (base / "release_evidence" / "actions.jsonl").exists()
@@ -505,11 +555,15 @@ def test_every_run_directory_a_test_depends_on_is_protected_from_retention():
     # 2026-08-28 prune found: present on disk, named by a test, protected by nothing. Synthetic
     # fixture strings that never name a real directory are not a hazard and are skipped.
     debug_dir = repo / hinge.get("debug_dir", "./data/hinge_debug")
-    unprotected = {run: sorted(where) for run, where in referenced.items()
-                   if run not in protected and (debug_dir / run).is_dir()}
+    unprotected = {
+        run: sorted(where)
+        for run, where in referenced.items()
+        if run not in protected and (debug_dir / run).is_dir()
+    }
     assert not unprotected, (
         "these run directories exist on disk and are named by tests/config, but are not in "
-        f"apps.hinge.debug_protect_runs, so retention will eventually delete them: {unprotected}")
+        f"apps.hinge.debug_protect_runs, so retention will eventually delete them: {unprotected}"
+    )
 
 
 # --- empty run directories (2026-09-16) -------------------------------------------------
@@ -520,6 +574,7 @@ def test_every_run_directory_a_test_depends_on_is_protected_from_retention():
 # normal + 11 protected, i.e. pruning of real runs worked exactly as designed) and 45 holding
 # nothing at all, the newest from 2026-09-11 -- an ongoing leak, not an old-naming-era relic.
 
+
 def _empty_run_dir(base, name, *, age_s):
     """A run directory created but never written to, aged `age_s` seconds into the past."""
     d = base / name
@@ -529,8 +584,8 @@ def _empty_run_dir(base, name, *, age_s):
     return d
 
 
-_STALE = debuglog_module._EMPTY_RUN_RECLAIM_AGE_S + 60      # comfortably past the guard
-_FRESH = 5                                                  # seconds old: a live logger
+_STALE = debuglog_module._EMPTY_RUN_RECLAIM_AGE_S + 60  # comfortably past the guard
+_FRESH = 5  # seconds old: a live logger
 
 
 def test_reclaimable_empty_predicate_needs_emptiness_AND_age_and_fails_closed(tmp_path):
@@ -554,14 +609,14 @@ def test_reclaimable_empty_predicate_needs_emptiness_AND_age_and_fails_closed(tm
     empty_fresh = tmp_path / "empty_fresh"
     empty_fresh.mkdir()
     os.utime(empty_fresh, (fresh, fresh))
-    assert predicate(empty_fresh, time.time()) is False      # age clause
+    assert predicate(empty_fresh, time.time()) is False  # age clause
 
     for leftover in ("actions.jsonl", "00001_capture_before.png", ".DS_Store"):
         occupied = tmp_path / f"occupied_{leftover}"
         occupied.mkdir()
         (occupied / leftover).write_bytes(b"evidence")
         os.utime(occupied, (stale, stale))
-        assert predicate(occupied, time.time()) is False, leftover   # emptiness clause
+        assert predicate(occupied, time.time()) is False, leftover  # emptiness clause
 
     holds_a_subdir = tmp_path / "holds_a_subdir"
     (holds_a_subdir / "nested").mkdir(parents=True)
@@ -580,7 +635,7 @@ def test_debug_log_reclaims_a_stale_empty_run_directory(tmp_path):
     HingeDebugLog(str(base), run_id="run_current", keep_runs=50)
 
     assert not leaked.exists()
-    assert (base / "run_current").is_dir()      # the active run is untouched
+    assert (base / "run_current").is_dir()  # the active run is untouched
 
 
 def test_debug_log_never_reclaims_a_FRESH_empty_run_directory(tmp_path):
@@ -629,14 +684,18 @@ def test_debug_log_never_reclaims_a_protected_empty_run_directory(tmp_path):
     base = tmp_path / "hinge_debug"
     protected_empty = _empty_run_dir(base, "run_20260811_011416", age_s=_STALE)
 
-    HingeDebugLog(str(base), run_id="run_current", keep_runs=1,
-                  protect_runs={"run_20260811_011416"})
+    HingeDebugLog(
+        str(base),
+        run_id="run_current",
+        keep_runs=1,
+        protect_runs={"run_20260811_011416"},
+    )
 
     assert protected_empty.is_dir()
 
 
 def test_debug_log_never_reclaims_a_stale_foreign_directory_with_contents(tmp_path):
-    """"Not one of ours" still means not ours. Only the EMPTY case was ever ambiguous.
+    """ "Not one of ours" still means not ours. Only the EMPTY case was ever ambiguous.
 
     End-to-end only: `rmdir` would decline this directory even if the predicate misjudged it, so
     the emptiness DECISION is pinned in
@@ -671,18 +730,21 @@ def test_a_symlinked_run_directory_never_consumes_a_retention_slot(tmp_path):
     (outside / "actions.jsonl").write_text('{"action":"not_ours"}\n')
     older = [_run_dir(base, f"run_{i:03d}", mtime=1_000 + i) for i in range(2)]
     link = base / "run_20260901_000000"
-    link.symlink_to(outside, target_is_directory=True)     # newest by mtime, so it would win
+    link.symlink_to(
+        outside, target_is_directory=True
+    )  # newest by mtime, so it would win
 
     HingeDebugLog(str(base), run_id="run_current", keep_runs=2)
 
     assert link.is_symlink() and (outside / "actions.jsonl").exists()
     # keep_runs=2 = the active run + ONE prior run, and that slot belongs to a real run.
     assert older[1].exists(), "the symlink took a retention slot from a real run"
-    assert not older[0].exists()                           # normal ageing is unchanged
+    assert not older[0].exists()  # normal ageing is unchanged
 
 
-def test_reclaiming_an_empty_directory_uses_rmdir_so_a_late_write_survives(tmp_path,
-                                                                          monkeypatch):
+def test_reclaiming_an_empty_directory_uses_rmdir_so_a_late_write_survives(
+    tmp_path, monkeypatch
+):
     """The last line of the concurrency guard: the emptiness check is not atomic with the delete.
 
     Between "this directory is empty" and the removal, another process can write its first
@@ -709,9 +771,11 @@ def test_reclaiming_an_empty_directory_uses_rmdir_so_a_late_write_survives(tmp_p
 
     HingeDebugLog(str(base), run_id="run_current", keep_runs=50)
 
-    assert "run_that_wrote_late" in calls          # the branch under test was actually reached
+    assert "run_that_wrote_late" in calls  # the branch under test was actually reached
     assert racing.is_dir()
-    assert (racing / "00001_capture_before.png").read_bytes() == b"arrived_during_the_race"
+    assert (
+        racing / "00001_capture_before.png"
+    ).read_bytes() == b"arrived_during_the_race"
 
 
 def test_an_empty_directory_never_consumes_a_retention_slot(tmp_path):
@@ -730,10 +794,15 @@ def test_an_empty_directory_never_consumes_a_retention_slot(tmp_path):
     HingeDebugLog(str(base), run_id="run_current", keep_runs=3)
 
     assert not any(d.exists() for d in empties)
-    assert real[2].exists() and real[1].exists()        # the 2 newest real runs kept their slots
-    assert not real[0].exists()                         # the oldest real run still ages out
+    assert (
+        real[2].exists() and real[1].exists()
+    )  # the 2 newest real runs kept their slots
+    assert not real[0].exists()  # the oldest real run still ages out
     assert sorted(d.name for d in base.iterdir() if d.is_dir()) == [
-        "run_001", "run_002", "run_current"]
+        "run_001",
+        "run_002",
+        "run_current",
+    ]
 
 
 # --- what the retention message claims (2026-09-16) --------------------------------------
@@ -742,8 +811,10 @@ def test_an_empty_directory_never_consumes_a_retention_slot(tmp_path):
 # CAP as though it were the outcome -- the defect commit 64e5d6b6 ("Stop the durable records
 # from asserting what they never knew") removed from the durable records.
 
-def test_retention_message_reports_what_remains_not_the_configured_cap(tmp_path, monkeypatch,
-                                                                       capsys):
+
+def test_retention_message_reports_what_remains_not_the_configured_cap(
+    tmp_path, monkeypatch, capsys
+):
     """A failed rmtree is the cleanest separator of "cap" from "outcome".
 
     Deletion is per-directory best-effort, so `removed` can be less than `doomed`. Here keep_runs
@@ -790,12 +861,16 @@ def test_retention_message_counts_protected_runs_separately(tmp_path, capsys):
     for i in range(4):
         _empty_run_dir(base, f"run_empty_{i}", age_s=_STALE)
 
-    HingeDebugLog(str(base), run_id="run_current", keep_runs=5,
-                  protect_runs={"release_evidence", "video_replay"})
+    HingeDebugLog(
+        str(base),
+        run_id="run_current",
+        keep_runs=5,
+        protect_runs={"release_evidence", "video_replay"},
+    )
 
     out = capsys.readouterr().out
     assert "reclaimed 4 empty run directory(ies)" in out
-    assert "pruned" not in out                      # no real run was eligible
+    assert "pruned" not in out  # no real run was eligible
     assert "4 run directory(ies) remain, including the active run" in out
     assert "plus 2 protected run directory(ies) retained regardless of age" in out
     # And the sentence is true of the disk: 3 prior + active = 4 normal, 2 protected besides.
@@ -821,7 +896,10 @@ def test_retention_says_nothing_when_it_deleted_nothing(tmp_path, capsys):
 # surviving directory is the same class of small untruth as quoting the setting, one notch down.
 # These pin the third clause, and the one directory that could be counted twice.
 
-def test_retention_message_counts_an_empty_directory_it_declined_to_reclaim(tmp_path, capsys):
+
+def test_retention_message_counts_an_empty_directory_it_declined_to_reclaim(
+    tmp_path, capsys
+):
     """The concurrency guard spares a fresh empty directory -- and it is STILL THERE afterwards.
 
     An operator checks a claim like this by listing the directory, which is why the fix counts
@@ -843,10 +921,14 @@ def test_retention_message_counts_an_empty_directory_it_declined_to_reclaim(tmp_
     assert "plus 1 empty run directory(ies) left in place" in out
     on_disk = sorted(d.name for d in base.iterdir() if d.is_dir())
     assert on_disk == ["run_002", "run_current", "run_from_another_driver"]
-    assert 2 + 1 == len(on_disk), "the reported clauses no longer add up to what ls shows"
+    assert 2 + 1 == len(on_disk), (
+        "the reported clauses no longer add up to what ls shows"
+    )
 
 
-def test_retention_message_counts_an_empty_reclaim_that_failed(tmp_path, monkeypatch, capsys):
+def test_retention_message_counts_an_empty_reclaim_that_failed(
+    tmp_path, monkeypatch, capsys
+):
     """A reclaim that lost the race is also a directory this pass left behind.
 
     `reclaimed` counts rmdir calls that SUCCEEDED, so an empty directory that grew contents
@@ -869,20 +951,24 @@ def test_retention_message_counts_an_empty_reclaim_that_failed(tmp_path, monkeyp
     def also_the_racing_one(entry, now):
         return entry.name == "run_that_wrote_late" or real_predicate(entry, now)
 
-    monkeypatch.setattr(debuglog_module, "_is_reclaimable_empty_run", also_the_racing_one)
+    monkeypatch.setattr(
+        debuglog_module, "_is_reclaimable_empty_run", also_the_racing_one
+    )
 
     HingeDebugLog(str(base), run_id="run_current", keep_runs=50)
 
     out = capsys.readouterr().out
-    assert not doomed_empty.exists()                 # this one really was reclaimed
-    assert racing.is_dir()                           # this one's rmdir refused, as designed
+    assert not doomed_empty.exists()  # this one really was reclaimed
+    assert racing.is_dir()  # this one's rmdir refused, as designed
     assert "reclaimed 1 empty run directory(ies)" in out
     assert "1 run directory(ies) remain, including the active run" in out
     assert "plus 1 empty run directory(ies) left in place" in out
     assert len([d for d in base.iterdir() if d.is_dir()]) == 1 + 1
 
 
-def test_retention_message_reports_a_protected_active_run_exactly_once(tmp_path, capsys):
+def test_retention_message_reports_a_protected_active_run_exactly_once(
+    tmp_path, capsys
+):
     """An active run whose own id is ALSO in protect_runs belongs to one clause, not two.
 
     The combination is legitimate: config.yaml protects ids precisely so that a future run
@@ -895,15 +981,19 @@ def test_retention_message_reports_a_protected_active_run_exactly_once(tmp_path,
     base = tmp_path / "hinge_debug"
     for i in range(3):
         _run_dir(base, f"run_{i:03d}", mtime=1_000 + i)
-    _run_dir(base, "release_evidence", mtime=1)          # the oldest, and protected
+    _run_dir(base, "release_evidence", mtime=1)  # the oldest, and protected
 
-    HingeDebugLog(str(base), run_id="run_current", keep_runs=2,
-                  protect_runs={"run_current", "release_evidence"})
+    HingeDebugLog(
+        str(base),
+        run_id="run_current",
+        keep_runs=2,
+        protect_runs={"run_current", "release_evidence"},
+    )
 
     out = capsys.readouterr().out
     assert "2 run directory(ies) remain, including the active run" in out
     assert "plus 1 protected run directory(ies) retained regardless of age" in out
-    assert "plus 2 protected" not in out             # the active run is not counted twice
+    assert "plus 2 protected" not in out  # the active run is not counted twice
     on_disk = sorted(d.name for d in base.iterdir() if d.is_dir())
     assert on_disk == ["release_evidence", "run_002", "run_current"]
     assert 2 + 1 == len(on_disk)
@@ -919,15 +1009,16 @@ def test_retention_message_reports_a_protected_active_run_exactly_once(tmp_path,
 # record in silence. The writer heals rather than the deletion rule narrowing: widening the rule
 # restores the 45-directory leak, and a longer age only moves the window.
 
+
 def test_logger_whose_directory_vanished_recreates_it_and_keeps_writing(tmp_path):
     base = tmp_path / "hinge_debug"
     log = HingeDebugLog(str(base), run_id="run_blocked_on_a_paywall", keep_runs=50)
     run_dir = log.dir
 
-    run_dir.rmdir()                      # exactly what another pass's empty-run reclaim does
+    run_dir.rmdir()  # exactly what another pass's empty-run reclaim does
     assert not run_dir.exists()
 
-    log.action("deck_unblocked")         # the first record after the loss
+    log.action("deck_unblocked")  # the first record after the loss
 
     assert run_dir.is_dir()
     assert "deck_unblocked" in (run_dir / "actions.jsonl").read_text()
@@ -945,7 +1036,9 @@ def test_logger_whose_directory_vanished_recreates_it_and_keeps_writing(tmp_path
         assert stat.S_IMODE((run_dir / "actions.jsonl").stat().st_mode) == 0o600
 
 
-def test_self_healing_gives_up_after_one_attempt_and_still_never_raises(tmp_path, monkeypatch):
+def test_self_healing_gives_up_after_one_attempt_and_still_never_raises(
+    tmp_path, monkeypatch
+):
     """A second failure must not reach the caller, and must not become a retry storm.
 
     The `healed` assertion is what keeps this test honest: "it did not raise" passes just as
@@ -961,18 +1054,19 @@ def test_self_healing_gives_up_after_one_attempt_and_still_never_raises(tmp_path
         return real_ensure(path, **kwargs)
 
     def boom(*_args, **_kwargs):
-        raise OSError("disk full")       # not a missing directory: healing cannot fix this
+        raise OSError("disk full")  # not a missing directory: healing cannot fix this
 
     monkeypatch.setattr(debuglog_module, "ensure_private_dir", counting_ensure)
     monkeypatch.setattr(debuglog_module, "append_private_text", boom)
 
-    log.action("still_best_effort")      # must not raise
+    log.action("still_best_effort")  # must not raise
 
-    assert healed == [log.dir]           # exactly one recovery attempt, then it gave up
+    assert healed == [log.dir]  # exactly one recovery attempt, then it gave up
 
 
-def test_a_write_that_succeeds_never_re_creates_the_directory_or_doubles_the_record(tmp_path,
-                                                                                    monkeypatch):
+def test_a_write_that_succeeds_never_re_creates_the_directory_or_doubles_the_record(
+    tmp_path, monkeypatch
+):
     """The healthy path must stop at the successful append, because the recovery branch APPENDS.
 
     Falling through into it after a write that already worked would write every record twice --
@@ -995,8 +1089,9 @@ def test_a_write_that_succeeds_never_re_creates_the_directory_or_doubles_the_rec
     assert [r["action"] for r in _recs(log)] == ["ordinary"]
 
 
-def test_an_unserialisable_field_is_still_swallowed_and_never_triggers_a_heal(tmp_path,
-                                                                              monkeypatch):
+def test_an_unserialisable_field_is_still_swallowed_and_never_triggers_a_heal(
+    tmp_path, monkeypatch
+):
     """json.dumps moved OUT of the append's try (the retry needs the line), so it needs a guard.
 
     hinge.py's NAV_CHAIN_BROKEN path (~11045) documents exactly this hazard -- raw PNG bytes
@@ -1008,12 +1103,17 @@ def test_an_unserialisable_field_is_still_swallowed_and_never_triggers_a_heal(tm
     log = HingeDebugLog(str(tmp_path / "hinge_debug"), run_id="r")
     healed = []
     real_ensure = debuglog_module.ensure_private_dir
-    monkeypatch.setattr(debuglog_module, "ensure_private_dir",
-                        lambda path, **kw: (healed.append(path), real_ensure(path, **kw))[1])
+    monkeypatch.setattr(
+        debuglog_module,
+        "ensure_private_dir",
+        lambda path, **kw: (healed.append(path), real_ensure(path, **kw))[1],
+    )
 
-    log.action("nav_chain_broken", pair_before=b"\x89PNG_raw_bytes")     # must not raise
+    log.action("nav_chain_broken", pair_before=b"\x89PNG_raw_bytes")  # must not raise
 
-    assert healed == []                             # not a missing directory; nothing to fix
-    assert not (log.dir / "actions.jsonl").exists()  # the record is dropped, exactly as before
+    assert healed == []  # not a missing directory; nothing to fix
+    assert not (
+        log.dir / "actions.jsonl"
+    ).exists()  # the record is dropped, exactly as before
     log.action("the_next_record_still_lands")
     assert [r["action"] for r in _recs(log)] == ["the_next_record_still_lands"]

@@ -5,6 +5,7 @@ the original provider-fallback tests: this file pins the ONE property those did 
 fallback decision is about whether ANY photo failed provider-shaped and not about which
 exception happened to arrive first.
 """
+
 import types
 
 from operation_love.perception.capture import Profile
@@ -26,7 +27,7 @@ def _embedder_on_coreml():
     embedder._device = "mps"
     embedder._arc_providers = ["CoreMLExecutionProvider", "CPUExecutionProvider"]
     embedder._arc_on_cpu = False
-    embedder._arc = object()          # non-None: short-circuits _ensure()'s lazy model load
+    embedder._arc = object()  # non-None: short-circuits _ensure()'s lazy model load
     return embedder
 
 
@@ -68,7 +69,7 @@ def test_cpu_fallback_fires_when_a_corrupt_photo_precedes_the_provider_failure(c
 
     assert rebuilds == [["CPUExecutionProvider"]]
     assert embedder._arc_on_cpu is True
-    assert vec is not None                       # the 2 decodable photos embedded on CPU
+    assert vec is not None  # the 2 decodable photos embedded on CPU
     out = capsys.readouterr().out
     # The corrupt photo still fails on CPU, so the partial-embedding warning stays loud, and
     # the summary reports the whole failed CoreML pass rather than a clean-looking retry.

@@ -3,6 +3,7 @@
 These tests call the private transport helpers directly on purpose: calibration and diagnostic
 tools use the same helpers, so a public-driver entry check alone cannot protect those paths.
 """
+
 from __future__ import annotations
 
 import ast
@@ -79,13 +80,13 @@ def test_malformed_configured_package_is_rejected_before_any_adb_command():
     class Config:
         apps = {"hinge": {"package": "co.hinge.app; id >/tmp/operation-love-injected"}}
 
-    with pytest.raises(DriverClosed, match="apps.hinge.package.*dotted Android identifier"):
+    with pytest.raises(
+        DriverClosed, match="apps.hinge.package.*dotted Android identifier"
+    ):
         AndroidDriver(Config(), HINGE_SPEC)
 
 
-_GESTURES: tuple[
-    tuple[str, Callable[[AndroidDriver], None]], ...
-] = (
+_GESTURES: tuple[tuple[str, Callable[[AndroidDriver], None]], ...] = (
     ("tap", lambda driver: driver._tap(540, 1200)),
     ("swipe", lambda driver: driver._swipe(540, 1700, 540, 700)),
     ("scroll", lambda driver: driver._scroll(0.2, 0.5)),
@@ -95,7 +96,8 @@ _GESTURES: tuple[
 
 @pytest.mark.parametrize(("name", "gesture"), _GESTURES)
 def test_direct_gesture_refuses_a_proven_foreign_foreground_without_transport_input(
-        name, gesture):
+    name, gesture
+):
     adb = _ForegroundAdb(["com.android.systemui"])
     driver = _driver(adb)
 
@@ -112,7 +114,9 @@ def test_direct_gesture_refuses_a_proven_foreign_foreground_without_transport_in
 
 
 @pytest.mark.parametrize(("name", "gesture"), _GESTURES)
-def test_direct_gesture_preserves_visual_fallback_when_foreground_is_unknown(name, gesture):
+def test_direct_gesture_preserves_visual_fallback_when_foreground_is_unknown(
+    name, gesture
+):
     adb = _ForegroundAdb([None])
     driver = _driver(adb)
 
@@ -222,18 +226,21 @@ def test_android_driver_has_no_transport_input_bypass_outside_guarded_choke_poin
         def visit_Call(self, node):
             function = node.func
             owner = function.value if isinstance(function, ast.Attribute) else None
-            if (isinstance(owner, ast.Attribute)
-                    and isinstance(owner.value, ast.Name) and owner.value.id == "self"
-                    and owner.attr in {"adb", "touch", "_adb", "_touch"}
-                    # `keyevent` is in the verb set even though no CURRENT call site matches
-                    # this shape: `_hide_keyboard_for_training` resolves it through
-                    # `getattr(self.adb, "keyevent", None)` and calls a local name, which this
-                    # walk cannot see. Pinning the verb means a future direct
-                    # `self.adb.keyevent(...)` has to come here and be accounted for -- it is a
-                    # device input, and `HingeDriver._device_inputs_delivered` (the count the
-                    # still-photo walk uses to decide whether a measured page anchor survives a
-                    # navigation refusal) is only sound while every input is audited.
-                    and function.attr in {"tap", "swipe", "scroll_up", "text", "keyevent"}):
+            if (
+                isinstance(owner, ast.Attribute)
+                and isinstance(owner.value, ast.Name)
+                and owner.value.id == "self"
+                and owner.attr in {"adb", "touch", "_adb", "_touch"}
+                # `keyevent` is in the verb set even though no CURRENT call site matches
+                # this shape: `_hide_keyboard_for_training` resolves it through
+                # `getattr(self.adb, "keyevent", None)` and calls a local name, which this
+                # walk cannot see. Pinning the verb means a future direct
+                # `self.adb.keyevent(...)` has to come here and be accounted for -- it is a
+                # device input, and `HingeDriver._device_inputs_delivered` (the count the
+                # still-photo walk uses to decide whether a measured page anchor survives a
+                # navigation refusal) is only sound while every input is audited.
+                and function.attr in {"tap", "swipe", "scroll_up", "text", "keyevent"}
+            ):
                 direct_calls.add((self.functions[-1], owner.attr, function.attr))
             self.generic_visit(node)
 
@@ -277,22 +284,31 @@ def test_every_transport_input_call_site_also_audits_the_input():
                 self.generic_visit(node)
                 return
             owner = function.value
-            if (isinstance(owner, ast.Attribute) and isinstance(owner.value, ast.Name)
-                    and owner.value.id == "self"
-                    and owner.attr in {"adb", "touch", "_adb", "_touch"}
-                    and function.attr in input_verbs):
+            if (
+                isinstance(owner, ast.Attribute)
+                and isinstance(owner.value, ast.Name)
+                and owner.value.id == "self"
+                and owner.attr in {"adb", "touch", "_adb", "_touch"}
+                and function.attr in input_verbs
+            ):
                 sends.add(self.functions[-1])
-            if (isinstance(owner, ast.Name) and owner.id == "self"
-                    and function.attr == "_audit_device_input"):
+            if (
+                isinstance(owner, ast.Name)
+                and owner.id == "self"
+                and function.attr == "_audit_device_input"
+            ):
                 audits.add(self.functions[-1])
             self.generic_visit(node)
 
     Visitor().visit(tree)
 
-    assert sends, "the AST walk found no transport call sites at all -- it has stopped working"
+    assert sends, (
+        "the AST walk found no transport call sites at all -- it has stopped working"
+    )
     unaudited = sends - audits
     assert not unaudited, (
-        f"these functions send a device input without auditing it: {sorted(unaudited)}")
+        f"these functions send a device input without auditing it: {sorted(unaudited)}"
+    )
     # `_hide_keyboard_for_training` sends through `getattr(self.adb, "keyevent", None)`, which no
     # `self.adb.<verb>` walk can see, so it cannot appear in `sends` -- but it must still audit,
     # and that is asserted directly rather than left to a walk that structurally cannot check it.
@@ -301,10 +317,12 @@ def test_every_transport_input_call_site_also_audits_the_input():
 
 @pytest.mark.parametrize("current_first", [True, False])
 def test_current_focused_window_wins_over_stale_focused_app_regardless_of_line_order(
-        current_first):
+    current_first,
+):
     current = (
         "mCurrentFocus=Window{123 u0 "
-        "com.android.systemui/.shade.NotificationShadeWindowView}")
+        "com.android.systemui/.shade.NotificationShadeWindowView}"
+    )
     activity = "mFocusedApp=ActivityRecord{abc u0 co.hinge.app/.MainActivity t42}"
     lines = [current, activity] if current_first else [activity, current]
 

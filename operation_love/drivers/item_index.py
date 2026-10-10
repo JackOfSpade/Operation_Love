@@ -184,6 +184,7 @@ WHAT THIS MODULE DOES NOT DECIDE, AND WHICH LAYER HAS TO
     still mandatory.
     Every other animation shape remains a broken-chain refusal, never a guessed answer.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -193,17 +194,35 @@ from dataclasses import dataclass, replace
 from itertools import pairwise
 
 from .frameshift import (
-    _AGREEMENT_TOLERANCE_PX, SHIFT_MEASURED, SHIFT_NO_CONSENSUS, SHIFT_NO_EVIDENCE,
-    STRIP_MATCHED, STRIP_WEAK, ShiftEstimate, estimate_shift,
+    _AGREEMENT_TOLERANCE_PX,
+    SHIFT_MEASURED,
+    SHIFT_NO_CONSENSUS,
+    SHIFT_NO_EVIDENCE,
+    STRIP_MATCHED,
+    STRIP_WEAK,
+    ShiftEstimate,
+    estimate_shift,
 )
 from .item_identity import ProfileIdentity, capture_profile_identity
+
 # `_GUTTER_PX` / `_GUTTER_TOLERANCE_PX` are imported rather than re-declared, on frameshift.py's
 # precedent: that window is already measured-and-cited in segment.py, it is what CUT the blocks
 # this module folds, and a second copy would be free to drift away from it.
 from .segment import (
-    _GUTTER_PX, _GUTTER_TOLERANCE_PX, _HEART_SEPARATED_NEAR_GUTTER_PX,
-    BLOCK_UNANCHORED, EDGE_BAND_EDGE, EDGE_CARD_CORNER, EDGE_SCROLL_TOP_MEDIA,
-    EDGE_UNANCHORED_ISLAND, RUN_TOO_LONG, Block, FrameSegmentation, segment_frame)
+    _GUTTER_PX,
+    _GUTTER_TOLERANCE_PX,
+    _HEART_SEPARATED_NEAR_GUTTER_PX,
+    BLOCK_UNANCHORED,
+    EDGE_BAND_EDGE,
+    EDGE_CARD_CORNER,
+    EDGE_SCROLL_TOP_MEDIA,
+    EDGE_UNANCHORED_ISLAND,
+    RUN_TOO_LONG,
+    Block,
+    FrameSegmentation,
+    segment_frame,
+)
+
 # `_MAX_STEP_PX` is kept as the DEFAULT for every function below that takes a `max_step_px`
 # parameter -- almost every direct unit test in tests/test_item_index.py calls these functions
 # without threading one, and 363 remains a safe (if no longer profile-tuned) bound for a bare
@@ -215,8 +234,12 @@ from .segment import (
 # `_FALLBACK_SPACING_PX` are the raw materials that computation and the separate multi-gesture
 # bridge bound (see `_enum_step_ceiling`) are built from.
 from .scroll_step import (
-    MAX_SEGMENTATION_FALLBACK_FRAMES, _ENUM_TRUST_CEILING_BAND_FRAC, _FALLBACK_SPACING_PX,
-    _MAX_STEP_PX, measure_local_spacing)
+    MAX_SEGMENTATION_FALLBACK_FRAMES,
+    _ENUM_TRUST_CEILING_BAND_FRAC,
+    _FALLBACK_SPACING_PX,
+    _MAX_STEP_PX,
+    measure_local_spacing,
+)
 
 
 # =====================================================================================
@@ -353,9 +376,12 @@ _MIN_ITEM_GAP_PX = min(_GUTTER_PX) - _GUTTER_TOLERANCE_PX
 # repairs, and MORE pairs fall through to an ordinary refusal -- exactly the accepted trade (owner-
 # approved rise in enumeration refusal rate, ~20% to ~29%) rather than a silent wrong pairing. A
 # repair that cannot be safely proposed is not attempted; it is never approximated.
-def _pitch_relative_max_step(segmentations: Sequence[FrameSegmentation], *,
-                             margin_px: int = _MIN_ITEM_GAP_PX,
-                             fallback_spacing_px: int = _FALLBACK_SPACING_PX) -> int:
+def _pitch_relative_max_step(
+    segmentations: Sequence[FrameSegmentation],
+    *,
+    margin_px: int = _MIN_ITEM_GAP_PX,
+    fallback_spacing_px: int = _FALLBACK_SPACING_PX,
+) -> int:
     """The landmark-pairing ceiling for THIS profile: strictly below its own smallest measured
     card pitch, by at least one real Hinge gutter's worth of margin.
 
@@ -384,8 +410,11 @@ def _pitch_relative_max_step(segmentations: Sequence[FrameSegmentation], *,
     safe pairing exists) but better expressed by every repair function's own dead code path than
     by an accidental degenerate range here.
     """
-    measured = [px for px in (measure_local_spacing(seg).px for seg in segmentations)
-               if px is not None]
+    measured = [
+        px
+        for px in (measure_local_spacing(seg).px for seg in segmentations)
+        if px is not None
+    ]
     pitch = min(measured) if measured else int(fallback_spacing_px)
     return max(1, pitch - int(margin_px))
 
@@ -439,14 +468,16 @@ ITEM_INDEX_ALGORITHM_ID = "bounded-card-split-v18"
 # class in `BlockObservation.kind`.
 # =====================================================================================
 
-ITEM_SELECTABLE = "selectable"      # extent resolved, exactly one heart: gets a model index
-ITEM_CONTEXT = "context"            # extent resolved, no heart: read and referenced, never a
-                                    # choice; consumes NO model index and NO heart ordinal
-ITEM_PARTIAL = "partial"            # never observed complete: not croppable, so not selectable,
-                                    # but STILL consumes a heart ordinal if it has a heart
-ITEM_AMBIGUOUS = "ambiguous"        # >1 heart at one page position: a failure, not a choice
-ITEM_LEADING_CHROME = "leading_chrome"  # Hinge's header above item 1, at a confirmed scroll-top;
-                                    # outside both index spaces (see the module docstring)
+ITEM_SELECTABLE = "selectable"  # extent resolved, exactly one heart: gets a model index
+ITEM_CONTEXT = "context"  # extent resolved, no heart: read and referenced, never a
+# choice; consumes NO model index and NO heart ordinal
+ITEM_PARTIAL = "partial"  # never observed complete: not croppable, so not selectable,
+# but STILL consumes a heart ordinal if it has a heart
+ITEM_AMBIGUOUS = "ambiguous"  # >1 heart at one page position: a failure, not a choice
+ITEM_LEADING_CHROME = (
+    "leading_chrome"  # Hinge's header above item 1, at a confirmed scroll-top;
+)
+# outside both index spaces (see the module docstring)
 
 
 class ItemIndexError(RuntimeError):
@@ -478,6 +509,7 @@ class BlockObservation:
     PARTIAL on a block that the page-level index resolves completely. `hearts` are `(x, page_y)`
     — x needs no correction because a list scroll has no horizontal component.
     """
+
     frame_index: int
     page_y0: int
     page_y1: int
@@ -513,6 +545,7 @@ class UnanchoredIsland:
     frame's accumulated page offset, and `digest` is segment.py's hash of its pixels. Those three
     are exactly what `_screen_fixed_islands` needs and nothing more.
     """
+
     frame_index: int
     frame_y0: int
     frame_y1: int
@@ -534,6 +567,7 @@ class IndexedBlock:
     partial block with a heart has an ordinal but no model index. That asymmetry is doc 5.3's
     whole point and is not a special case to remove.
     """
+
     page_y0: int
     page_y1: int
     x0: int
@@ -585,6 +619,7 @@ class VideoMuteMarker:
     while the still narrower same-pair exit bridge requires an all-weak bank plus exact heart,
     lower-edge and lower-gutter motion as the last control leaves the analysed band.
     """
+
     frame_index: int
     x: int
     y: int
@@ -594,8 +629,9 @@ class VideoMuteMarker:
 @dataclass(frozen=True)
 class ItemIndexRepair:
     """One accepted repair's audit record; it carries no pixels or inferred identity."""
+
     pair_index: int
-    path: str                    # versioned mute-card mechanism or ``legacy_layout_grammar``
+    path: str  # versioned mute-card mechanism or ``legacy_layout_grammar``
     raw_status: str
     raw_delta_px: int | None
     effective_status: str
@@ -632,6 +668,7 @@ class ItemIndex:
     with no `identity_band`, a capture that never scrolled far enough to reveal the sticky
     header — and navigation refuses such an index rather than proceeding unchecked.
     """
+
     blocks: tuple[IndexedBlock, ...]
     frames: tuple[FrameSegmentation, ...]
     shifts: tuple[ShiftEstimate, ...]
@@ -787,12 +824,14 @@ class ItemIndex:
         if not self.usable:
             raise ItemIndexError(
                 "this item index is unusable and carries no valid model indices: "
-                + "; ".join(self.failures))
+                + "; ".join(self.failures)
+            )
         items = self.selectable
         if not 1 <= model_index <= len(items):
             raise ItemIndexError(
                 f"model index {model_index} is outside 1..{len(items)}; the model was offered "
-                f"{len(items)} item(s) and may not be answered with anything else")
+                f"{len(items)} item(s) and may not be answered with anything else"
+            )
         return items[model_index - 1]
 
     def heart_ordinal_for(self, model_index: int) -> int:
@@ -823,11 +862,14 @@ class ItemIndex:
                 "really items 5..9. Counting to one of them from a genuine scroll top taps a "
                 "fixed number of cards away from the item that was chosen, so there is no "
                 "ordinal to return. Re-index from an affirmatively confirmed top "
-                "(scroll_top.confirm_scroll_top) instead")
+                "(scroll_top.confirm_scroll_top) instead"
+            )
         return self.block_for(model_index).heart_ordinal
 
 
-def _matched_delta_clusters(shift: ShiftEstimate) -> tuple[tuple[int, tuple[int, ...]], ...]:
+def _matched_delta_clusters(
+    shift: ShiftEstimate,
+) -> tuple[tuple[int, tuple[int, ...]], ...]:
     """The admissible disjoint clusters among usable strip votes for layout corroboration.
 
     ``frameshift`` intentionally has the final word on an ordinary strip-only measurement.  This
@@ -847,8 +889,11 @@ def _matched_delta_clusters(shift: ShiftEstimate) -> tuple[tuple[int, tuple[int,
     candidate out of evidence that also supports its neighbour.  Disjoint alternatives are
     retained so independent layout can select between them.
     """
-    deltas = sorted(s.delta_px for s in shift.strips
-                    if s.state == STRIP_MATCHED and s.delta_px is not None)
+    deltas = sorted(
+        s.delta_px
+        for s in shift.strips
+        if s.state == STRIP_MATCHED and s.delta_px is not None
+    )
     if shift.status == SHIFT_NO_CONSENSUS and len(deltas) == 1:
         return ((deltas[0], (deltas[0],)),)
 
@@ -856,23 +901,37 @@ def _matched_delta_clusters(shift: ShiftEstimate) -> tuple[tuple[int, tuple[int,
     for left in range(len(deltas)):
         for right in range(left + 1, len(deltas)):
             candidate = int(round((deltas[left] + deltas[right]) / 2))
-            supporters = tuple(i for i, delta in enumerate(deltas)
-                               if abs(delta - candidate) <= _AGREEMENT_TOLERANCE_PX)
+            supporters = tuple(
+                i
+                for i, delta in enumerate(deltas)
+                if abs(delta - candidate) <= _AGREEMENT_TOLERANCE_PX
+            )
             if supporters == (left, right):
-                candidates.append((candidate, (left, right), (deltas[left], deltas[right])))
+                candidates.append(
+                    (candidate, (left, right), (deltas[left], deltas[right]))
+                )
 
     overlapping: set[int] = set()
     for i, (_candidate, voter_indices, _voters) in enumerate(candidates):
-        if any(set(voter_indices).intersection(other_indices)
-               for j, (_other, other_indices, _other_voters) in enumerate(candidates) if i != j):
+        if any(
+            set(voter_indices).intersection(other_indices)
+            for j, (_other, other_indices, _other_voters) in enumerate(candidates)
+            if i != j
+        ):
             overlapping.add(i)
-    return tuple((candidate, voters) for i, (candidate, _indices, voters) in enumerate(candidates)
-                 if i not in overlapping)
+    return tuple(
+        (candidate, voters)
+        for i, (candidate, _indices, voters) in enumerate(candidates)
+        if i not in overlapping
+    )
 
 
-def _structural_landmarks(before: FrameSegmentation, after: FrameSegmentation, *,
-                          max_step_px: int = _MAX_STEP_PX,
-                          ) -> tuple[tuple[str, int], ...]:
+def _structural_landmarks(
+    before: FrameSegmentation,
+    after: FrameSegmentation,
+    *,
+    max_step_px: int = _MAX_STEP_PX,
+) -> tuple[tuple[str, int], ...]:
     """Independent same-type landmark deltas that physically fit one read-scroll.
 
     A top/bottom edge is used only when its own frame observed it; a heart is a separately
@@ -888,16 +947,27 @@ def _structural_landmarks(before: FrameSegmentation, after: FrameSegmentation, *
     """
     landmarks: list[tuple[str, int]] = []
     for kind, attr in (("top", "top"), ("bottom", "bottom")):
-        left = [getattr(block, attr).y for block in before.blocks
-                if getattr(block, attr).observed]
-        right = [getattr(block, attr).y for block in after.blocks
-                 if getattr(block, attr).observed]
-        landmarks.extend((kind, a - b) for a in left for b in right
-                         if 0 <= a - b <= max_step_px)
+        left = [
+            getattr(block, attr).y
+            for block in before.blocks
+            if getattr(block, attr).observed
+        ]
+        right = [
+            getattr(block, attr).y
+            for block in after.blocks
+            if getattr(block, attr).observed
+        ]
+        landmarks.extend(
+            (kind, a - b) for a in left for b in right if 0 <= a - b <= max_step_px
+        )
     left_hearts = [heart for block in before.blocks for heart in block.hearts]
     right_hearts = [heart for block in after.blocks for heart in block.hearts]
-    landmarks.extend(("heart", ay - by) for ax, ay in left_hearts for bx, by in right_hearts
-                     if abs(ax - bx) <= 2 and 0 <= ay - by <= max_step_px)
+    landmarks.extend(
+        ("heart", ay - by)
+        for ax, ay in left_hearts
+        for bx, by in right_hearts
+        if abs(ax - bx) <= 2 and 0 <= ay - by <= max_step_px
+    )
     return tuple(landmarks)
 
 
@@ -920,22 +990,29 @@ def _observed_gutters(segmentation: FrameSegmentation) -> tuple[tuple[int, int],
     return tuple(gutters)
 
 
-def _shared_gutter_witnesses(before: FrameSegmentation, after: FrameSegmentation,
-                             candidate: int,
-                             ) -> tuple[tuple[int, int, int, int], ...]:
+def _shared_gutter_witnesses(
+    before: FrameSegmentation,
+    after: FrameSegmentation,
+    candidate: int,
+) -> tuple[tuple[int, int, int, int], ...]:
     """Shared canonical gutters whose two independently segmented edges move `candidate` px."""
     return tuple(
         (before_bottom, before_top, after_bottom, after_top)
         for before_bottom, before_top in _observed_gutters(before)
         for after_bottom, after_top in _observed_gutters(after)
-        if before_bottom - after_bottom == candidate and before_top - after_top == candidate
+        if before_bottom - after_bottom == candidate
+        and before_top - after_top == candidate
     )
 
 
-def _edge_only_two_strip_shift(pair_index: int, before: FrameSegmentation,
-                               after: FrameSegmentation, shift: ShiftEstimate, *,
-                               max_step_px: int = _MAX_STEP_PX,
-                               ) -> tuple[ShiftEstimate, str | None]:
+def _edge_only_two_strip_shift(
+    pair_index: int,
+    before: FrameSegmentation,
+    after: FrameSegmentation,
+    shift: ShiftEstimate,
+    *,
+    max_step_px: int = _MAX_STEP_PX,
+) -> tuple[ShiftEstimate, str | None]:
     """Propose the saved transition's two-NCC plus exact-shared-gutter shift.
 
     This helper never grants ordinary layout acceptance.  `_repair_shifts_from_layout` admits
@@ -962,26 +1039,37 @@ def _edge_only_two_strip_shift(pair_index: int, before: FrameSegmentation,
     candidate, voters, witness = passing[0]
     before_bottom, before_top, after_bottom, after_top = witness
     repaired = replace(
-        shift, delta_px=candidate, consensus_px=candidate, status=SHIFT_MEASURED,
-        agreeing=2, dissenting=max(0, shift.eligible - 2),
+        shift,
+        delta_px=candidate,
+        consensus_px=candidate,
+        status=SHIFT_MEASURED,
+        agreeing=2,
+        dissenting=max(0, shift.eligible - 2),
         confidence=(2 / shift.eligible if shift.eligible else 0.0),
         reason=(
             f"three-pair edge companion from {shift.status}: exactly two independent NCC strips "
             f"({voters[0]:+d}px, {voters[1]:+d}px) form +{candidate}px; one canonical gutter "
             f"moves exactly from rows {before_bottom}..{before_top} to "
-            f"{after_bottom}..{after_top}"))
+            f"{after_bottom}..{after_top}"
+        ),
+    )
     note = (
         f"frame {pair_index}'s pair with frame {pair_index + 1}: three-pair edge companion "
         f"+{candidate}px from exactly two NCC strips {list(voters)} and one exact shared gutter "
-        f"{before_bottom}..{before_top} -> {after_bottom}..{after_top}")
+        f"{before_bottom}..{before_top} -> {after_bottom}..{after_top}"
+    )
     return repaired, note
 
 
-def _layout_repaired_shift(pair_index: int, before: FrameSegmentation, after: FrameSegmentation,
-                           shift: ShiftEstimate, *,
-                           extent_tolerance_px: int = _EXTENT_TOLERANCE_PX,
-                           max_step_px: int = _MAX_STEP_PX,
-                           ) -> tuple[ShiftEstimate, str | None]:
+def _layout_repaired_shift(
+    pair_index: int,
+    before: FrameSegmentation,
+    after: FrameSegmentation,
+    shift: ShiftEstimate,
+    *,
+    extent_tolerance_px: int = _EXTENT_TOLERANCE_PX,
+    max_step_px: int = _MAX_STEP_PX,
+) -> tuple[ShiftEstimate, str | None]:
     """Return a strictly layout-corroborated two-strip repair, or the original shift.
 
     This does *not* relax ``frameshift``.  It may only rescue a no-consensus result, or replace
@@ -1008,13 +1096,18 @@ def _layout_repaired_shift(pair_index: int, before: FrameSegmentation, after: Fr
     for candidate, voters in candidates:
         if not 0 < candidate <= max_step_px:
             continue
-        corroborating = tuple((kind, delta) for kind, delta in landmarks
-                               if abs(delta - candidate) <= _AGREEMENT_TOLERANCE_PX)
+        corroborating = tuple(
+            (kind, delta)
+            for kind, delta in landmarks
+            if abs(delta - candidate) <= _AGREEMENT_TOLERANCE_PX
+        )
         kinds = {kind for kind, _delta in corroborating}
         exact_kinds = {kind for kind, delta in landmarks if delta == candidate}
-        enough_layout = (len(corroborating) >= 3 and
-                         (exact_kinds == {"top", "bottom", "heart"} if len(voters) == 1
-                          else len(kinds) >= 2))
+        enough_layout = len(corroborating) >= 3 and (
+            exact_kinds == {"top", "bottom", "heart"}
+            if len(voters) == 1
+            else len(kinds) >= 2
+        )
         if enough_layout:
             passing.append((candidate, voters, corroborating))
 
@@ -1029,12 +1122,17 @@ def _layout_repaired_shift(pair_index: int, before: FrameSegmentation, after: Fr
     # `_repair_shifts_from_layout` still requires an adjacent two-strip repair and the builder
     # still probes the complete page before committing the run.
     if not passing and shift.status == SHIFT_NO_CONSENSUS:
-        matched = tuple(s.delta_px for s in shift.strips
-                        if s.state == STRIP_MATCHED and s.delta_px is not None)
+        matched = tuple(
+            s.delta_px
+            for s in shift.strips
+            if s.state == STRIP_MATCHED and s.delta_px is not None
+        )
         for candidate in sorted(set(matched)):
             if matched.count(candidate) != 1 or not 0 < candidate <= max_step_px:
                 continue
-            exact = tuple((kind, delta) for kind, delta in landmarks if delta == candidate)
+            exact = tuple(
+                (kind, delta) for kind, delta in landmarks if delta == candidate
+            )
             if {kind for kind, _delta in exact} == {"top", "bottom", "heart"}:
                 passing.append((candidate, (candidate,), exact))
     if len(passing) != 1:
@@ -1061,29 +1159,45 @@ def _layout_repaired_shift(pair_index: int, before: FrameSegmentation, after: Fr
             return shift, None
 
     types = ", ".join(sorted({kind for kind, _delta in corroborating}))
-    old = (f"{shift.status} {shift.delta_px:+d}px" if shift.delta_px is not None
-           else shift.status)
-    witness_label = "one NCC strip" if len(voters) == 1 else "exactly two independent NCC strips"
+    old = (
+        f"{shift.status} {shift.delta_px:+d}px"
+        if shift.delta_px is not None
+        else shift.status
+    )
+    witness_label = (
+        "one NCC strip" if len(voters) == 1 else "exactly two independent NCC strips"
+    )
     repaired = replace(
-        shift, delta_px=candidate, consensus_px=candidate, status=SHIFT_MEASURED,
-        agreeing=len(voters), dissenting=max(0, shift.eligible - len(voters)),
+        shift,
+        delta_px=candidate,
+        consensus_px=candidate,
+        status=SHIFT_MEASURED,
+        agreeing=len(voters),
+        dissenting=max(0, shift.eligible - len(voters)),
         confidence=(len(voters) / shift.eligible if shift.eligible else 0.0),
         reason=(
             f"layout-assisted acceptance from {old}: {witness_label} "
             f"({', '.join(f'{value:+d}px' for value in voters)}) form +{candidate}px; "
             f"{len(corroborating)} observed structural landmark pairings across {types} "
-            f"also land within {_AGREEMENT_TOLERANCE_PX}px (one-step maximum {max_step_px}px)"))
+            f"also land within {_AGREEMENT_TOLERANCE_PX}px (one-step maximum {max_step_px}px)"
+        ),
+    )
     note = (
         f"frame {pair_index}'s pair with frame {pair_index + 1}: layout-assisted shift from {old} "
         f"to +{candidate}px using {witness_label} {list(voters)} plus "
-        f"{len(corroborating)} structural landmark pairings across {types}")
+        f"{len(corroborating)} structural landmark pairings across {types}"
+    )
     return repaired, note
 
 
-def _structural_tail_shift(pair_index: int, before: FrameSegmentation, after: FrameSegmentation,
-                           shift: ShiftEstimate, *,
-                           max_step_px: int = _MAX_STEP_PX,
-                           ) -> tuple[ShiftEstimate, str | None]:
+def _structural_tail_shift(
+    pair_index: int,
+    before: FrameSegmentation,
+    after: FrameSegmentation,
+    shift: ShiftEstimate,
+    *,
+    max_step_px: int = _MAX_STEP_PX,
+) -> tuple[ShiftEstimate, str | None]:
     """Propose one exact-layout tail beyond the ordinary majority-override ceiling.
 
     This is deliberately not part of `_layout_repaired_shift`: it may have zero NCC witnesses at
@@ -1101,43 +1215,65 @@ def _structural_tail_shift(pair_index: int, before: FrameSegmentation, after: Fr
     if shift.status != SHIFT_MEASURED or shift.delta_px is None:
         return shift, None
     landmarks = _structural_landmarks(before, after, max_step_px=max_step_px)
-    candidates = tuple(sorted({
-        delta for _kind, delta in landmarks
-        if 0 < delta <= max_step_px
-        and {kind for kind, other in landmarks if other == delta}
-        == {"top", "bottom", "heart"}
-    }))
+    candidates = tuple(
+        sorted(
+            {
+                delta
+                for _kind, delta in landmarks
+                if 0 < delta <= max_step_px
+                and {kind for kind, other in landmarks if other == delta}
+                == {"top", "bottom", "heart"}
+            }
+        )
+    )
     if len(candidates) != 1:
         return shift, None
     candidate = candidates[0]
     correction = abs(shift.delta_px - candidate)
-    if not _STRUCTURAL_TAIL_CORRECTION_PX[0] <= correction \
-            <= _STRUCTURAL_TAIL_CORRECTION_PX[1]:
+    if (
+        not _STRUCTURAL_TAIL_CORRECTION_PX[0]
+        <= correction
+        <= _STRUCTURAL_TAIL_CORRECTION_PX[1]
+    ):
         return shift, None
 
-    matched = tuple(s.delta_px for s in shift.strips
-                    if s.state == STRIP_MATCHED and s.delta_px == candidate)
+    matched = tuple(
+        s.delta_px
+        for s in shift.strips
+        if s.state == STRIP_MATCHED and s.delta_px == candidate
+    )
     repaired = replace(
-        shift, delta_px=candidate, consensus_px=candidate, status=SHIFT_MEASURED,
-        agreeing=len(matched), dissenting=max(0, shift.eligible - len(matched)),
+        shift,
+        delta_px=candidate,
+        consensus_px=candidate,
+        status=SHIFT_MEASURED,
+        agreeing=len(matched),
+        dissenting=max(0, shift.eligible - len(matched)),
         confidence=(len(matched) / shift.eligible if shift.eligible else 0.0),
         reason=(
             f"four-pair structural tail proposal from measured {shift.delta_px:+d}px to "
             f"+{candidate}px: exact top, bottom and heart geometry; correction {correction}px "
             f"is above the ordinary {_MAJORITY_OVERRIDE_PX[1]}px strip-supported ceiling and "
             f"inside the dedicated {_STRUCTURAL_TAIL_CORRECTION_PX[0]}.."
-            f"{_STRUCTURAL_TAIL_CORRECTION_PX[1]}px structural-tail window"))
+            f"{_STRUCTURAL_TAIL_CORRECTION_PX[1]}px structural-tail window"
+        ),
+    )
     note = (
         f"frame {pair_index}'s pair with frame {pair_index + 1}: four-pair structural tail "
         f"from measured {shift.delta_px:+d}px to +{candidate}px using exact top, bottom and "
-        f"heart geometry")
+        f"heart geometry"
+    )
     return repaired, note
 
 
-def _exact_multi_strip_shift(pair_index: int, before: FrameSegmentation,
-                             after: FrameSegmentation, shift: ShiftEstimate, *,
-                             max_step_px: int = _MAX_STEP_PX,
-                             ) -> tuple[ShiftEstimate, str | None]:
+def _exact_multi_strip_shift(
+    pair_index: int,
+    before: FrameSegmentation,
+    after: FrameSegmentation,
+    shift: ShiftEstimate,
+    *,
+    max_step_px: int = _MAX_STEP_PX,
+) -> tuple[ShiftEstimate, str | None]:
     """Propose one exact 3+-strip/full-layout boundary, for the five-pair or two-pair grammars.
 
     This is deliberately separate from `_matched_delta_clusters`.  The ordinary helper exposes
@@ -1152,8 +1288,11 @@ def _exact_multi_strip_shift(pair_index: int, before: FrameSegmentation,
     """
     if shift.status != SHIFT_NO_CONSENSUS:
         return shift, None
-    matched = tuple(s.delta_px for s in shift.strips
-                    if s.state == STRIP_MATCHED and s.delta_px is not None)
+    matched = tuple(
+        s.delta_px
+        for s in shift.strips
+        if s.state == STRIP_MATCHED and s.delta_px is not None
+    )
     landmarks = _structural_landmarks(before, after, max_step_px=max_step_px)
     passing: list[tuple[int, int, tuple[tuple[str, int], ...]]] = []
     for candidate in sorted(set(matched)):
@@ -1168,26 +1307,37 @@ def _exact_multi_strip_shift(pair_index: int, before: FrameSegmentation,
 
     candidate, supporters, exact = passing[0]
     repaired = replace(
-        shift, delta_px=candidate, consensus_px=candidate, status=SHIFT_MEASURED,
-        agreeing=supporters, dissenting=max(0, shift.eligible - supporters),
+        shift,
+        delta_px=candidate,
+        consensus_px=candidate,
+        status=SHIFT_MEASURED,
+        agreeing=supporters,
+        dissenting=max(0, shift.eligible - supporters),
         confidence=(supporters / shift.eligible if shift.eligible else 0.0),
         reason=(
             f"exact-multi boundary proposal from {shift.status}: {supporters} independent NCC "
             f"strips land exactly at +{candidate}px and exact top, bottom and heart geometry "
-            "selects that one repeated strip value"))
+            "selects that one repeated strip value"
+        ),
+    )
     note = (
         f"frame {pair_index}'s pair with frame {pair_index + 1}: exact-multi full-landmark "
         f"cluster boundary +{candidate}px from {supporters} exact NCC strips plus exact top, "
-        "bottom and heart geometry")
+        "bottom and heart geometry"
+    )
     return repaired, note
 
 
-def _measured_layout_bridge(pair_index: int, before: FrameSegmentation,
-                            after: FrameSegmentation, shift: ShiftEstimate, *,
-                            allow_full_layout_projection: bool = False,
-                            extent_tolerance_px: int = _EXTENT_TOLERANCE_PX,
-                            max_step_px: int = _MAX_STEP_PX,
-                            ) -> tuple[ShiftEstimate, str | None]:
+def _measured_layout_bridge(
+    pair_index: int,
+    before: FrameSegmentation,
+    after: FrameSegmentation,
+    shift: ShiftEstimate,
+    *,
+    allow_full_layout_projection: bool = False,
+    extent_tolerance_px: int = _EXTENT_TOLERANCE_PX,
+    max_step_px: int = _MAX_STEP_PX,
+) -> tuple[ShiftEstimate, str | None]:
     """Describe a raw measured pair strong enough to bridge two nearby repair proposals.
 
     It already passed frameshift's ordinary quorum.  Ordinarily this helper only adds an
@@ -1203,8 +1353,12 @@ def _measured_layout_bridge(pair_index: int, before: FrameSegmentation,
     `max_step_px` -- see `_structural_landmarks`'s docstring. Gates both the raw measured delta
     (a bridge cannot exceed one plausible single-card step either) and the projection candidates.
     """
-    if (shift.status != SHIFT_MEASURED or shift.delta_px is None or shift.agreeing < 3
-            or not 0 < shift.delta_px <= max_step_px):
+    if (
+        shift.status != SHIFT_MEASURED
+        or shift.delta_px is None
+        or shift.agreeing < 3
+        or not 0 < shift.delta_px <= max_step_px
+    ):
         return shift, None
     landmarks = _structural_landmarks(before, after, max_step_px=max_step_px)
     exact = tuple((kind, delta) for kind, delta in landmarks if delta == shift.delta_px)
@@ -1213,46 +1367,68 @@ def _measured_layout_bridge(pair_index: int, before: FrameSegmentation,
         return shift, (
             f"frame {pair_index}'s pair with frame {pair_index + 1}: retained raw measured "
             f"bridge +{shift.delta_px}px from {shift.agreeing} NCC strips and {len(exact)} "
-            f"exact landmark pairings across {', '.join(sorted(kinds))}")
+            f"exact landmark pairings across {', '.join(sorted(kinds))}"
+        )
     if not allow_full_layout_projection:
         return shift, None
 
-    candidates = tuple(sorted({
-        delta for _kind, delta in landmarks
-        if 0 < delta <= max_step_px
-        and 0 < abs(delta - shift.delta_px) <= extent_tolerance_px
-        and {kind for kind, other in landmarks if other == delta}
-        == {"top", "bottom", "heart"}
-        and any(strip.state == STRIP_MATCHED and strip.delta_px == delta
-                for strip in shift.strips)
-    }))
+    candidates = tuple(
+        sorted(
+            {
+                delta
+                for _kind, delta in landmarks
+                if 0 < delta <= max_step_px
+                and 0 < abs(delta - shift.delta_px) <= extent_tolerance_px
+                and {kind for kind, other in landmarks if other == delta}
+                == {"top", "bottom", "heart"}
+                and any(
+                    strip.state == STRIP_MATCHED and strip.delta_px == delta
+                    for strip in shift.strips
+                )
+            }
+        )
+    )
     if len(candidates) != 1:
         return shift, None
     candidate = candidates[0]
-    voters = tuple(strip.delta_px for strip in shift.strips
-                   if strip.state == STRIP_MATCHED and strip.delta_px is not None
-                   and abs(strip.delta_px - candidate) <= _AGREEMENT_TOLERANCE_PX)
+    voters = tuple(
+        strip.delta_px
+        for strip in shift.strips
+        if strip.state == STRIP_MATCHED
+        and strip.delta_px is not None
+        and abs(strip.delta_px - candidate) <= _AGREEMENT_TOLERANCE_PX
+    )
     projected = replace(
-        shift, delta_px=candidate, consensus_px=candidate,
-        agreeing=len(voters), dissenting=max(0, shift.eligible - len(voters)),
+        shift,
+        delta_px=candidate,
+        consensus_px=candidate,
+        agreeing=len(voters),
+        dissenting=max(0, shift.eligible - len(voters)),
         confidence=(len(voters) / shift.eligible if shift.eligible else 0.0),
         reason=(
             f"video-marked measured-bridge projection from raw measured {shift.delta_px:+d}px "
             f"({shift.agreeing} agreeing NCC strips) to +{candidate}px: exact top, bottom and "
             f"heart geometry plus exact NCC witness; correction "
             f"{abs(candidate - shift.delta_px)}px is inside the existing "
-            f"{extent_tolerance_px}px fold tolerance"))
+            f"{extent_tolerance_px}px fold tolerance"
+        ),
+    )
     return projected, (
         f"frame {pair_index}'s pair with frame {pair_index + 1}: video-marked measured bridge "
         f"projected from raw {shift.delta_px:+d}px to exact full-layout {candidate:+d}px; "
-        f"{len(voters)} NCC strip(s) remain within {_AGREEMENT_TOLERANCE_PX}px")
+        f"{len(voters)} NCC strip(s) remain within {_AGREEMENT_TOLERANCE_PX}px"
+    )
 
 
-def _project_to_exact_full_layout(pair_index: int, before: FrameSegmentation,
-                                  after: FrameSegmentation, raw: ShiftEstimate,
-                                  proposed: ShiftEstimate, *,
-                                  max_step_px: int = _MAX_STEP_PX,
-                                  ) -> tuple[ShiftEstimate, str | None]:
+def _project_to_exact_full_layout(
+    pair_index: int,
+    before: FrameSegmentation,
+    after: FrameSegmentation,
+    raw: ShiftEstimate,
+    proposed: ShiftEstimate,
+    *,
+    max_step_px: int = _MAX_STEP_PX,
+) -> tuple[ShiftEstimate, str | None]:
     """Project one two-strip proposal onto its unique exact full-layout delta, if different.
 
     A rounded two-vote centroid can sit between the physical answers (`+274,+275` rounds to
@@ -1263,34 +1439,54 @@ def _project_to_exact_full_layout(pair_index: int, before: FrameSegmentation,
 
     `max_step_px` -- see `_structural_landmarks`'s docstring.
     """
-    if (raw.status != SHIFT_NO_CONSENSUS or proposed.delta_px is None
-            or proposed.agreeing != 2):
+    if (
+        raw.status != SHIFT_NO_CONSENSUS
+        or proposed.delta_px is None
+        or proposed.agreeing != 2
+    ):
         return proposed, None
-    voters = tuple(s.delta_px for s in raw.strips
-                   if s.state == STRIP_MATCHED and s.delta_px is not None
-                   and abs(s.delta_px - proposed.delta_px) <= _AGREEMENT_TOLERANCE_PX)
+    voters = tuple(
+        s.delta_px
+        for s in raw.strips
+        if s.state == STRIP_MATCHED
+        and s.delta_px is not None
+        and abs(s.delta_px - proposed.delta_px) <= _AGREEMENT_TOLERANCE_PX
+    )
     if len(voters) != 2:
         return proposed, None
     landmarks = _structural_landmarks(before, after, max_step_px=max_step_px)
-    candidates = tuple(sorted({
-        delta for _kind, delta in landmarks
-        if 0 < delta <= max_step_px
-        and {kind for kind, other in landmarks if other == delta}
-        == {"top", "bottom", "heart"}
-        and all(abs(voter - delta) <= _AGREEMENT_TOLERANCE_PX for voter in voters)
-    }))
+    candidates = tuple(
+        sorted(
+            {
+                delta
+                for _kind, delta in landmarks
+                if 0 < delta <= max_step_px
+                and {kind for kind, other in landmarks if other == delta}
+                == {"top", "bottom", "heart"}
+                and all(
+                    abs(voter - delta) <= _AGREEMENT_TOLERANCE_PX for voter in voters
+                )
+            }
+        )
+    )
     if len(candidates) != 1 or candidates[0] == proposed.delta_px:
         return proposed, None
     candidate = candidates[0]
     projected = replace(
-        proposed, delta_px=candidate, consensus_px=candidate,
-        reason=(f"{proposed.reason}; measured-bridge exact-layout projection from "
-                f"{proposed.delta_px:+d}px to {candidate:+d}px using top, bottom and heart"))
+        proposed,
+        delta_px=candidate,
+        consensus_px=candidate,
+        reason=(
+            f"{proposed.reason}; measured-bridge exact-layout projection from "
+            f"{proposed.delta_px:+d}px to {candidate:+d}px using top, bottom and heart"
+        ),
+    )
     return projected, (
         f"frame {pair_index}'s pair with frame {pair_index + 1}: measured-bridge projection "
         f"from two-strip centroid {proposed.delta_px:+d}px to exact full-layout "
         f"{candidate:+d}px; voters {list(voters)} remain within "
-        f"{_AGREEMENT_TOLERANCE_PX}px")
+        f"{_AGREEMENT_TOLERANCE_PX}px"
+    )
 
 
 def _marker_block(segmentation: FrameSegmentation, marker: VideoMuteMarker):
@@ -1300,15 +1496,23 @@ def _marker_block(segmentation: FrameSegmentation, marker: VideoMuteMarker):
     identity check, not an attempt to classify image pixels: a marker in page chrome or in a
     gutter never starts a video track.
     """
-    candidates = tuple(block for block in segmentation.blocks
-                       if block.x0 <= marker.x < block.x1 and block.y0 <= marker.y < block.y1)
+    candidates = tuple(
+        block
+        for block in segmentation.blocks
+        if block.x0 <= marker.x < block.x1 and block.y0 <= marker.y < block.y1
+    )
     return candidates[0] if len(candidates) == 1 else None
 
 
-def _track_candidate_deltas(pair_index: int, before: FrameSegmentation,
-                            after: FrameSegmentation, raw: ShiftEstimate, *,
-                            extent_tolerance_px: int,
-                            max_step_px: int = _MAX_STEP_PX) -> tuple[int, ...]:
+def _track_candidate_deltas(
+    pair_index: int,
+    before: FrameSegmentation,
+    after: FrameSegmentation,
+    raw: ShiftEstimate,
+    *,
+    extent_tolerance_px: int,
+    max_step_px: int = _MAX_STEP_PX,
+) -> tuple[int, ...]:
     """Strict candidate deltas a *known* video card may use to link adjacent sightings.
 
     This merely supplies alternatives for card-identity matching.  The caller separately keeps
@@ -1321,18 +1525,30 @@ def _track_candidate_deltas(pair_index: int, before: FrameSegmentation,
     if raw.status == SHIFT_MEASURED and raw.delta_px is not None:
         candidates.add(raw.delta_px)
         projected, note = _measured_layout_bridge(
-            pair_index, before, after, raw, allow_full_layout_projection=True,
-            extent_tolerance_px=extent_tolerance_px, max_step_px=max_step_px)
+            pair_index,
+            before,
+            after,
+            raw,
+            allow_full_layout_projection=True,
+            extent_tolerance_px=extent_tolerance_px,
+            max_step_px=max_step_px,
+        )
         if note is not None and projected.delta_px is not None:
             candidates.add(projected.delta_px)
     elif raw.status == SHIFT_NO_CONSENSUS:
         proposed, note = _layout_repaired_shift(
-            pair_index, before, after, raw, extent_tolerance_px=extent_tolerance_px,
-            max_step_px=max_step_px)
+            pair_index,
+            before,
+            after,
+            raw,
+            extent_tolerance_px=extent_tolerance_px,
+            max_step_px=max_step_px,
+        )
         if note is not None and proposed.delta_px is not None:
             candidates.add(proposed.delta_px)
             projected, projection_note = _project_to_exact_full_layout(
-                pair_index, before, after, raw, proposed, max_step_px=max_step_px)
+                pair_index, before, after, raw, proposed, max_step_px=max_step_px
+            )
             if projection_note is not None and projected.delta_px is not None:
                 candidates.add(projected.delta_px)
     # 0 is admissible HERE and nowhere else. A page that has hit its bottom while a video keeps
@@ -1347,35 +1563,58 @@ def _track_candidate_deltas(pair_index: int, before: FrameSegmentation,
     return tuple(sorted(delta for delta in candidates if 0 <= delta <= max_step_px))
 
 
-def _track_anchor_count(before, after, delta: int, *,
-                        before_marker: VideoMuteMarker | None,
-                        after_marker: VideoMuteMarker | None) -> int:
+def _track_anchor_count(
+    before,
+    after,
+    delta: int,
+    *,
+    before_marker: VideoMuteMarker | None,
+    after_marker: VideoMuteMarker | None,
+) -> int:
     """Count independent card-local anchors that translate by one exact delta."""
     anchors = 0
     for name, before_y, after_y in (
-            ("top", before.top.y, after.top.y),
-            ("bottom", before.bottom.y, after.bottom.y),
-            ("heart", before.heart[1] if before.heart else None,
-             after.heart[1] if after.heart else None)):
-        if (before_y is not None and after_y is not None
-                and ((name == "top" and before.top.observed and after.top.observed)
-                     or (name == "bottom" and before.bottom.observed and after.bottom.observed)
-                     or name == "heart")
-                and before_y - after_y == delta):
+        ("top", before.top.y, after.top.y),
+        ("bottom", before.bottom.y, after.bottom.y),
+        (
+            "heart",
+            before.heart[1] if before.heart else None,
+            after.heart[1] if after.heart else None,
+        ),
+    ):
+        if (
+            before_y is not None
+            and after_y is not None
+            and (
+                (name == "top" and before.top.observed and after.top.observed)
+                or (
+                    name == "bottom"
+                    and before.bottom.observed
+                    and after.bottom.observed
+                )
+                or name == "heart"
+            )
+            and before_y - after_y == delta
+        ):
             anchors += 1
-    if (before_marker is not None and after_marker is not None
-            and before_marker.y - after_marker.y == delta
-            and before_marker.x == after_marker.x):
+    if (
+        before_marker is not None
+        and after_marker is not None
+        and before_marker.y - after_marker.y == delta
+        and before_marker.x == after_marker.x
+    ):
         anchors += 1
     return anchors
 
 
-def _direct_marker_bridge_delta(before_segmentation: FrameSegmentation,
-                                after_segmentation: FrameSegmentation, *,
-                                before_marker: VideoMuteMarker | None,
-                                after_marker: VideoMuteMarker | None,
-                                max_step_px: int = _MAX_STEP_PX,
-                                ) -> int | None:
+def _direct_marker_bridge_delta(
+    before_segmentation: FrameSegmentation,
+    after_segmentation: FrameSegmentation,
+    *,
+    before_marker: VideoMuteMarker | None,
+    after_marker: VideoMuteMarker | None,
+    max_step_px: int = _MAX_STEP_PX,
+) -> int | None:
     """One direct mute-control bridge across a pair with no usable pixel shift.
 
     Animated video can make every NCC strip weak even though Hinge's app-owned mute control
@@ -1390,7 +1629,11 @@ def _direct_marker_bridge_delta(before_segmentation: FrameSegmentation,
     plausible single-card step is exactly as suspect here as everywhere else in this repair
     family, so it is held to the same bound.
     """
-    if before_marker is None or after_marker is None or before_marker.x != after_marker.x:
+    if (
+        before_marker is None
+        or after_marker is None
+        or before_marker.x != after_marker.x
+    ):
         return None
     delta = before_marker.y - after_marker.y
     # A direct-marker bridge is a synthetic repair for an otherwise refused pair, never a
@@ -1402,15 +1645,24 @@ def _direct_marker_bridge_delta(before_segmentation: FrameSegmentation,
     after_block = _marker_block(after_segmentation, after_marker)
     if before_block is None or after_block is None:
         return None
-    if _track_anchor_count(
-            before_block, after_block, delta,
-            before_marker=before_marker, after_marker=after_marker) < 2:
+    if (
+        _track_anchor_count(
+            before_block,
+            after_block,
+            delta,
+            before_marker=before_marker,
+            after_marker=after_marker,
+        )
+        < 2
+    ):
         return None
     return delta
 
 
-def _lower_observed_gutter(segmentation: FrameSegmentation, upper: Block,
-                           ) -> tuple[int, int] | None:
+def _lower_observed_gutter(
+    segmentation: FrameSegmentation,
+    upper: Block,
+) -> tuple[int, int] | None:
     """The canonical gutter immediately below ``upper``, when both sides were observed."""
     low = min(_GUTTER_PX) - _GUTTER_TOLERANCE_PX
     high = max(_GUTTER_PX) + _GUTTER_TOLERANCE_PX
@@ -1418,16 +1670,22 @@ def _lower_observed_gutter(segmentation: FrameSegmentation, upper: Block,
         (candidate.bottom.y, lower.top.y)
         for candidate, lower in pairwise(segmentation.blocks)
         if candidate is upper
-        and candidate.bottom.observed and lower.top.observed
-        and low <= lower.top.y - candidate.bottom.y <= high)
+        and candidate.bottom.observed
+        and lower.top.observed
+        and low <= lower.top.y - candidate.bottom.y <= high
+    )
     return matches[0] if len(matches) == 1 else None
 
 
 def _same_pair_marker_exit_bridge(
-        before_segmentation: FrameSegmentation, after_segmentation: FrameSegmentation,
-        raw: ShiftEstimate, *, before_marker: VideoMuteMarker | None,
-        after_marker_present: bool, max_step_px: int = _MAX_STEP_PX,
-        ) -> tuple[Block, Block, int] | None:
+    before_segmentation: FrameSegmentation,
+    after_segmentation: FrameSegmentation,
+    raw: ShiftEstimate,
+    *,
+    before_marker: VideoMuteMarker | None,
+    after_marker_present: bool,
+    max_step_px: int = _MAX_STEP_PX,
+) -> tuple[Block, Block, int] | None:
     """Prove the all-weak pair on which one tracked mute control leaves the band.
 
     This is deliberately distinct from ``_video_exit_bridge_delta``.  That helper reconnects
@@ -1444,10 +1702,17 @@ def _same_pair_marker_exit_bridge(
     ``build_item_index`` still subjects the resulting proposal to the complete ordinary page
     fold before it may become an effective shift.
     """
-    if (raw.status != SHIFT_NO_EVIDENCE or raw.delta_px is not None
-            or raw.eligible != 0 or raw.agreeing != 0 or raw.dissenting != 0
-            or not raw.strips or any(strip.state != STRIP_WEAK for strip in raw.strips)
-            or before_marker is None or after_marker_present):
+    if (
+        raw.status != SHIFT_NO_EVIDENCE
+        or raw.delta_px is not None
+        or raw.eligible != 0
+        or raw.agreeing != 0
+        or raw.dissenting != 0
+        or not raw.strips
+        or any(strip.state != STRIP_WEAK for strip in raw.strips)
+        or before_marker is None
+        or after_marker_present
+    ):
         return None
     before = _marker_block(before_segmentation, before_marker)
     if before is None or not before.complete or before.heart is None:
@@ -1461,9 +1726,13 @@ def _same_pair_marker_exit_bridge(
         # If the tracked control left through the top of the analysed band, the same card must
         # be the top-clipped block in the next frame.  A complete/in-band block with no marker is
         # a detector or identity break, not evidence of an exit.
-        if (after.y0 != after_segmentation.band[0] or after.top.observed
-                or after.top.kind != EDGE_BAND_EDGE or not after.bottom.observed
-                or after.heart is None):
+        if (
+            after.y0 != after_segmentation.band[0]
+            or after.top.observed
+            or after.top.kind != EDGE_BAND_EDGE
+            or not after.bottom.observed
+            or after.heart is None
+        ):
             continue
         if abs(before.heart[0] - after.heart[0]) > 2:
             continue
@@ -1474,9 +1743,11 @@ def _same_pair_marker_exit_bridge(
         if before_marker.y - edge_delta >= after_segmentation.band[0]:
             continue
         after_gutter = _lower_observed_gutter(after_segmentation, after)
-        if (after_gutter is None
-                or before_gutter[0] - after_gutter[0] != edge_delta
-                or before_gutter[1] - after_gutter[1] != edge_delta):
+        if (
+            after_gutter is None
+            or before_gutter[0] - after_gutter[0] != edge_delta
+            or before_gutter[1] - after_gutter[1] != edge_delta
+        ):
             continue
         passing.append((after, edge_delta))
     if len(passing) != 1:
@@ -1489,7 +1760,9 @@ _SAME_PAIR_MARKER_EXIT_REASON_PREFIX = "v18 mute-card same-pair exit bridge:"
 _SAME_PAIR_MARKER_EXIT_REPAIR_PATH = "v18_mute_card_same_pair_exit"
 
 
-def _video_exit_bridge_delta(raw: ShiftEstimate, *, max_step_px: int = _MAX_STEP_PX) -> int | None:
+def _video_exit_bridge_delta(
+    raw: ShiftEstimate, *, max_step_px: int = _MAX_STEP_PX
+) -> int | None:
     """The one high-specificity strip value permitted immediately after a tracked exit.
 
     Once a contained mute control has affirmatively left the content band, the next frame may
@@ -1503,24 +1776,35 @@ def _video_exit_bridge_delta(raw: ShiftEstimate, *, max_step_px: int = _MAX_STEP
     """
     if raw.status != SHIFT_NO_CONSENSUS:
         return None
-    matched = tuple(strip.delta_px for strip in raw.strips
-                    if strip.state == STRIP_MATCHED and strip.delta_px is not None)
-    candidates = tuple(sorted(
-        delta for delta in set(matched)
-        if 0 < delta <= max_step_px and matched.count(delta) >= 3))
+    matched = tuple(
+        strip.delta_px
+        for strip in raw.strips
+        if strip.state == STRIP_MATCHED and strip.delta_px is not None
+    )
+    candidates = tuple(
+        sorted(
+            delta
+            for delta in set(matched)
+            if 0 < delta <= max_step_px and matched.count(delta) >= 3
+        )
+    )
     return candidates[0] if len(candidates) == 1 else None
 
 
 def _heart_moves_by(before, after, delta: int) -> bool:
     """One exact same-card heart anchor for the post-video exit boundary."""
     return bool(
-        before.heart is not None and after.heart is not None
+        before.heart is not None
+        and after.heart is not None
         and abs(before.heart[0] - after.heart[0]) <= 2
-        and before.heart[1] - after.heart[1] == delta)
+        and before.heart[1] - after.heart[1] == delta
+    )
 
 
-def _unique_markers_by_frame(markers: Sequence[VideoMuteMarker], frame_count: int,
-                             ) -> dict[int, VideoMuteMarker]:
+def _unique_markers_by_frame(
+    markers: Sequence[VideoMuteMarker],
+    frame_count: int,
+) -> dict[int, VideoMuteMarker]:
     """Keep only one positioned mute observation per valid frame.
 
     A second match is ambiguity, not corroboration: without an app-provided card id there is no
@@ -1534,14 +1818,21 @@ def _unique_markers_by_frame(markers: Sequence[VideoMuteMarker], frame_count: in
             rows[marker.frame_index] = None
         else:
             rows[marker.frame_index] = marker
-    return {frame_index: marker for frame_index, marker in rows.items() if marker is not None}
+    return {
+        frame_index: marker
+        for frame_index, marker in rows.items()
+        if marker is not None
+    }
 
 
-def _video_track_deltas(segmentations: Sequence[FrameSegmentation],
-                        shifts: Sequence[ShiftEstimate],
-                        markers: Sequence[VideoMuteMarker], *,
-                        extent_tolerance_px: int,
-                        max_step_px: int = _MAX_STEP_PX) -> dict[int, int]:
+def _video_track_deltas(
+    segmentations: Sequence[FrameSegmentation],
+    shifts: Sequence[ShiftEstimate],
+    markers: Sequence[VideoMuteMarker],
+    *,
+    extent_tolerance_px: int,
+    max_step_px: int = _MAX_STEP_PX,
+) -> dict[int, int]:
     """Return adjacent pair -> exact delta for uniquely tracked physical video cards.
 
     A mute hit seeds a card. Between two visible, uniquely contained mute hits, one raw refusal
@@ -1561,7 +1852,8 @@ def _video_track_deltas(segmentations: Sequence[FrameSegmentation],
     # same-pair exit requires the after frame to contain NO marker observation at all; ambiguity
     # or an uncontained hit is not absence and must not be converted into exit authority.
     observed_marker_frames = {
-        marker.frame_index for marker in markers
+        marker.frame_index
+        for marker in markers
         if 0 <= marker.frame_index < len(segmentations)
     }
 
@@ -1578,7 +1870,8 @@ def _video_track_deltas(segmentations: Sequence[FrameSegmentation],
     # start a second "same video" track below it.
     first_seed = min(seeded, default=None)
     active: set[tuple[int, object]] = (
-        {(first_seed, seeded[first_seed])} if first_seed is not None else set())
+        {(first_seed, seeded[first_seed])} if first_seed is not None else set()
+    )
     # Frame indices whose active card has just been proved to leave the band.  Exactly the next
     # unmarked pair may re-establish the lower coordinate space with `_video_exit_bridge_delta`.
     # The set is intentionally not propagated: allowing a general post-video grammar would make
@@ -1586,34 +1879,60 @@ def _video_track_deltas(segmentations: Sequence[FrameSegmentation],
     pending_exit_frames: set[int] = set()
     links: dict[int, int] = {}
     for pair_index, (before_seg, after_seg, raw) in enumerate(
-            zip(segmentations[:-1], segmentations[1:], shifts, strict=True)):
+        zip(segmentations[:-1], segmentations[1:], shifts, strict=True)
+    ):
         current = tuple(block for frame, block in active if frame == pair_index)
         if not current:
             continue
-        before_marker = marker_blocks.get(pair_index)  # only contained, unambiguous controls
+        before_marker = marker_blocks.get(
+            pair_index
+        )  # only contained, unambiguous controls
         after_marker = marker_blocks.get(pair_index + 1)
         direct_marker_delta = _direct_marker_bridge_delta(
-            before_seg, after_seg, before_marker=before_marker, after_marker=after_marker,
-            max_step_px=max_step_px)
+            before_seg,
+            after_seg,
+            before_marker=before_marker,
+            after_marker=after_marker,
+            max_step_px=max_step_px,
+        )
         same_pair_exit = _same_pair_marker_exit_bridge(
-            before_seg, after_seg, raw, before_marker=before_marker,
+            before_seg,
+            after_seg,
+            raw,
+            before_marker=before_marker,
             after_marker_present=(pair_index + 1 in observed_marker_frames),
-            max_step_px=max_step_px)
-        post_exit_delta = (_video_exit_bridge_delta(raw, max_step_px=max_step_px)
-                           if (pair_index in pending_exit_frames
-                               and before_marker is None and after_marker is None) else None)
+            max_step_px=max_step_px,
+        )
+        post_exit_delta = (
+            _video_exit_bridge_delta(raw, max_step_px=max_step_px)
+            if (
+                pair_index in pending_exit_frames
+                and before_marker is None
+                and after_marker is None
+            )
+            else None
+        )
         candidates: list[tuple[object, object, int]] = []
         for before in current:
-            deltas = set(_track_candidate_deltas(
-                    pair_index, before_seg, after_seg, raw,
-                    extent_tolerance_px=extent_tolerance_px, max_step_px=max_step_px))
+            deltas = set(
+                _track_candidate_deltas(
+                    pair_index,
+                    before_seg,
+                    after_seg,
+                    raw,
+                    extent_tolerance_px=extent_tolerance_px,
+                    max_step_px=max_step_px,
+                )
+            )
             # A raw refusal has no trusted strip candidate. A direct marker bridge is permitted
             # only while both controls remain visible; the separately guarded same-pair exit
             # below is the one all-weak exception when the active control has physically left.
             # A later marker may never re-seed a broken trajectory below the video.
-            if (raw.status in (SHIFT_NO_EVIDENCE, SHIFT_NO_CONSENSUS)
-                    and direct_marker_delta is not None
-                    and before is _marker_block(before_seg, before_marker)):
+            if (
+                raw.status in (SHIFT_NO_EVIDENCE, SHIFT_NO_CONSENSUS)
+                and direct_marker_delta is not None
+                and before is _marker_block(before_seg, before_marker)
+            ):
                 deltas.add(direct_marker_delta)
             if post_exit_delta is not None:
                 deltas.add(post_exit_delta)
@@ -1622,8 +1941,13 @@ def _video_track_deltas(segmentations: Sequence[FrameSegmentation],
             # A marker disappearing while its predicted origin remains inside the next content
             # band invalidates the WHOLE track, including earlier repairs.  Otherwise a later
             # missed UI match could leave a trusted prefix that falsely connects two cards.
-            if (before_marker is not None and after_marker is None
-                    and any(before_marker.y - delta >= after_seg.band[0] for delta in deltas)):
+            if (
+                before_marker is not None
+                and after_marker is None
+                and any(
+                    before_marker.y - delta >= after_seg.band[0] for delta in deltas
+                )
+            ):
                 return {}
             for delta in sorted(deltas):
                 # A control may disappear only by leaving the analysed band.  If its predicted
@@ -1631,18 +1955,33 @@ def _video_track_deltas(segmentations: Sequence[FrameSegmentation],
                 # permission to follow whichever lower card geometry happens to fit.
                 # On a direct bridge the after marker identifies the card, so do not let its
                 # one extra anchor make a similarly-shaped neighbour look interchangeable.
-                is_direct_bridge = (raw.status in (SHIFT_NO_EVIDENCE, SHIFT_NO_CONSENSUS)
-                                    and delta == direct_marker_delta)
-                after_pool = ((_marker_block(after_seg, after_marker),)
-                              if is_direct_bridge else after_seg.blocks)
+                is_direct_bridge = (
+                    raw.status in (SHIFT_NO_EVIDENCE, SHIFT_NO_CONSENSUS)
+                    and delta == direct_marker_delta
+                )
+                after_pool = (
+                    (_marker_block(after_seg, after_marker),)
+                    if is_direct_bridge
+                    else after_seg.blocks
+                )
                 is_exit_bridge = delta == post_exit_delta
                 matches = tuple(
-                    after for after in after_pool if after is not None
-                    if (_heart_moves_by(before, after, delta) if is_exit_bridge else
-                        _track_anchor_count(
-                            before, after, delta,
+                    after
+                    for after in after_pool
+                    if after is not None
+                    if (
+                        _heart_moves_by(before, after, delta)
+                        if is_exit_bridge
+                        else _track_anchor_count(
+                            before,
+                            after,
+                            delta,
                             before_marker=before_marker,
-                            after_marker=after_marker) >= 2))
+                            after_marker=after_marker,
+                        )
+                        >= 2
+                    )
+                )
                 if len(matches) == 1:
                     candidates.append((before, matches[0], delta))
         # A direct, single-card continuation is the only authority.  Multiple valid mappings
@@ -1659,13 +1998,16 @@ def _video_track_deltas(segmentations: Sequence[FrameSegmentation],
     return links
 
 
-def _repair_video_track_shifts(segmentations: Sequence[FrameSegmentation],
-                               shifts: Sequence[ShiftEstimate],
-                               markers: Sequence[VideoMuteMarker], *,
-                               extent_tolerance_px: int,
-                               max_step_px: int = _MAX_STEP_PX,
-                               ) -> tuple[tuple[ShiftEstimate, ...], tuple[str, ...],
-                                          tuple[tuple[int, ShiftEstimate], ...]]:
+def _repair_video_track_shifts(
+    segmentations: Sequence[FrameSegmentation],
+    shifts: Sequence[ShiftEstimate],
+    markers: Sequence[VideoMuteMarker],
+    *,
+    extent_tolerance_px: int,
+    max_step_px: int = _MAX_STEP_PX,
+) -> tuple[
+    tuple[ShiftEstimate, ...], tuple[str, ...], tuple[tuple[int, ShiftEstimate], ...]
+]:
     """Repair only strictly tracked video pairs, then require a whole-page rebuild.
 
     `max_step_px` -- see `_structural_landmarks`'s docstring; threaded to every nested delta
@@ -1673,11 +2015,17 @@ def _repair_video_track_shifts(segmentations: Sequence[FrameSegmentation],
     `_pitch_relative_max_step` and passes to this function and to `_repair_shifts_from_layout`
     alike.
     """
-    links = _video_track_deltas(segmentations, shifts, markers,
-                                extent_tolerance_px=extent_tolerance_px, max_step_px=max_step_px)
+    links = _video_track_deltas(
+        segmentations,
+        shifts,
+        markers,
+        extent_tolerance_px=extent_tolerance_px,
+        max_step_px=max_step_px,
+    )
     markers_by_frame = _unique_markers_by_frame(markers, len(segmentations))
     observed_marker_frames = {
-        marker.frame_index for marker in markers
+        marker.frame_index
+        for marker in markers
         if 0 <= marker.frame_index < len(segmentations)
     }
     repaired = list(shifts)
@@ -1688,63 +2036,109 @@ def _repair_video_track_shifts(segmentations: Sequence[FrameSegmentation],
         before, after = segmentations[pair_index], segmentations[pair_index + 1]
         repair_note_label = "v12 mute-card track"
         direct_delta = _direct_marker_bridge_delta(
-            before, after,
+            before,
+            after,
             before_marker=markers_by_frame.get(pair_index),
             after_marker=markers_by_frame.get(pair_index + 1),
-            max_step_px=max_step_px)
+            max_step_px=max_step_px,
+        )
         same_pair_exit = _same_pair_marker_exit_bridge(
-            before, after, raw, before_marker=markers_by_frame.get(pair_index),
+            before,
+            after,
+            raw,
+            before_marker=markers_by_frame.get(pair_index),
             after_marker_present=(pair_index + 1 in observed_marker_frames),
-            max_step_px=max_step_px)
-        if (raw.status in (SHIFT_NO_CONSENSUS, SHIFT_NO_EVIDENCE)
-                and direct_delta == delta):
+            max_step_px=max_step_px,
+        )
+        if (
+            raw.status in (SHIFT_NO_CONSENSUS, SHIFT_NO_EVIDENCE)
+            and direct_delta == delta
+        ):
             # Two contained controls identify the same physical card across an otherwise noisy
             # pair. This can corroborate a raw no-consensus result just as it can bridge an
             # all-weak one; raw NCC evidence remains recorded rather than being relabelled.
             repaired[pair_index] = replace(
-                raw, status=SHIFT_MEASURED, delta_px=delta, consensus_px=delta,
-                saturated=False, confidence=1.0, agreeing=2, dissenting=0, eligible=2,
-                reason=("v12 mute-card direct marker bridge: positioned app control plus "
-                        "one exact card-local anchor; raw strips retained in "
-                        "layout_repaired_shifts"))
+                raw,
+                status=SHIFT_MEASURED,
+                delta_px=delta,
+                consensus_px=delta,
+                saturated=False,
+                confidence=1.0,
+                agreeing=2,
+                dissenting=0,
+                eligible=2,
+                reason=(
+                    "v12 mute-card direct marker bridge: positioned app control plus "
+                    "one exact card-local anchor; raw strips retained in "
+                    "layout_repaired_shifts"
+                ),
+            )
         elif same_pair_exit is not None and same_pair_exit[2] == delta:
             repair_note_label = "v18 mute-card same-pair exit track"
             repaired[pair_index] = replace(
-                raw, status=SHIFT_MEASURED, delta_px=delta, consensus_px=delta,
-                saturated=False, confidence=1.0, agreeing=2, dissenting=0, eligible=2,
-                reason=(f"{_SAME_PAIR_MARKER_EXIT_REASON_PREFIX} the active positioned app "
-                        "control projects above the next content band, while its exact same-x "
-                        "heart, observed lower card edge and lower canonical gutter all move "
-                        "together; raw all-weak strips retained in layout_repaired_shifts"))
-        elif (raw.status == SHIFT_NO_CONSENSUS
-              and _video_exit_bridge_delta(raw, max_step_px=max_step_px) == delta):
+                raw,
+                status=SHIFT_MEASURED,
+                delta_px=delta,
+                consensus_px=delta,
+                saturated=False,
+                confidence=1.0,
+                agreeing=2,
+                dissenting=0,
+                eligible=2,
+                reason=(
+                    f"{_SAME_PAIR_MARKER_EXIT_REASON_PREFIX} the active positioned app "
+                    "control projects above the next content band, while its exact same-x "
+                    "heart, observed lower card edge and lower canonical gutter all move "
+                    "together; raw all-weak strips retained in layout_repaired_shifts"
+                ),
+            )
+        elif (
+            raw.status == SHIFT_NO_CONSENSUS
+            and _video_exit_bridge_delta(raw, max_step_px=max_step_px) == delta
+        ):
             # A link can reach this branch only after the prior pair proved the mute control
             # physically exited the band. Recheck that complete, local grammar here instead of
             # inferring it from the repaired list, so a future caller cannot invoke this helper
             # with an arbitrary three-strip refusal and receive a synthetic shift.
             previous = pair_index - 1
             previous_marker = markers_by_frame.get(previous)
-            if (previous < 0 or previous_marker is None
-                    or markers_by_frame.get(pair_index) is not None
-                    or markers_by_frame.get(pair_index + 1) is not None
-                    or previous not in links
-                    or previous_marker.y - links[previous] >= after.band[0]):
+            if (
+                previous < 0
+                or previous_marker is None
+                or markers_by_frame.get(pair_index) is not None
+                or markers_by_frame.get(pair_index + 1) is not None
+                or previous not in links
+                or previous_marker.y - links[previous] >= after.band[0]
+            ):
                 continue
             repaired[pair_index] = replace(
-                raw, status=SHIFT_MEASURED, delta_px=delta, consensus_px=delta,
-                saturated=False, agreeing=3,
+                raw,
+                status=SHIFT_MEASURED,
+                delta_px=delta,
+                consensus_px=delta,
+                saturated=False,
+                agreeing=3,
                 dissenting=max(0, raw.eligible - 3),
                 confidence=(3 / raw.eligible if raw.eligible else 0.0),
-                reason=("v12 mute-card post-exit bridge: three exact NCC strips plus the "
-                        "tracked card's exact heart anchor; raw no-consensus strips retained "
-                        "in layout_repaired_shifts"))
+                reason=(
+                    "v12 mute-card post-exit bridge: three exact NCC strips plus the "
+                    "tracked card's exact heart anchor; raw no-consensus strips retained "
+                    "in layout_repaired_shifts"
+                ),
+            )
         elif raw.status == SHIFT_NO_CONSENSUS:
             proposed, note = _layout_repaired_shift(
-                pair_index, before, after, raw, extent_tolerance_px=extent_tolerance_px,
-                max_step_px=max_step_px)
+                pair_index,
+                before,
+                after,
+                raw,
+                extent_tolerance_px=extent_tolerance_px,
+                max_step_px=max_step_px,
+            )
             if note is not None:
                 projected, projection_note = _project_to_exact_full_layout(
-                    pair_index, before, after, raw, proposed, max_step_px=max_step_px)
+                    pair_index, before, after, raw, proposed, max_step_px=max_step_px
+                )
                 if projection_note is not None:
                     proposed = projected
                     note = f"{note}; {projection_note}"
@@ -1753,33 +2147,48 @@ def _repair_video_track_shifts(segmentations: Sequence[FrameSegmentation],
             repaired[pair_index] = proposed
         elif raw.status == SHIFT_MEASURED and raw.delta_px != delta:
             proposed, note = _measured_layout_bridge(
-                pair_index, before, after, raw, allow_full_layout_projection=True,
-                extent_tolerance_px=extent_tolerance_px, max_step_px=max_step_px)
+                pair_index,
+                before,
+                after,
+                raw,
+                allow_full_layout_projection=True,
+                extent_tolerance_px=extent_tolerance_px,
+                max_step_px=max_step_px,
+            )
             if note is None or proposed.delta_px != delta:
                 continue
             repaired[pair_index] = proposed
         else:
             continue
         raw_provenance.append((pair_index, raw))
-        raw_description = (f"{raw.status} {raw.delta_px:+d}px"
-                           if raw.delta_px is not None else
-                           f"{raw.status} without a delta")
+        raw_description = (
+            f"{raw.status} {raw.delta_px:+d}px"
+            if raw.delta_px is not None
+            else f"{raw.status} without a delta"
+        )
         notes.append(
             f"frame {pair_index}'s pair with frame {pair_index + 1}: {repair_note_label} "
             f"fixed the physical video card at +{delta}px; raw {raw_description} is retained for "
             "audit and complete-page assembly must still pass"
-            + (f"; video-marked measured bridge projected to +{delta}px"
-               if raw.status == SHIFT_MEASURED else ""))
+            + (
+                f"; video-marked measured bridge projected to +{delta}px"
+                if raw.status == SHIFT_MEASURED
+                else ""
+            )
+        )
     return tuple(repaired), tuple(notes), tuple(raw_provenance)
 
 
-def _repair_shifts_from_layout(segmentations: Sequence[FrameSegmentation],
-                               shifts: Sequence[ShiftEstimate], *,
-                               extent_tolerance_px: int = _EXTENT_TOLERANCE_PX,
-                               animation_markers: Sequence[bool] = (),
-                               max_step_px: int = _MAX_STEP_PX,
-                               ) -> tuple[tuple[ShiftEstimate, ...], tuple[str, ...],
-                                          tuple[tuple[int, ShiftEstimate], ...]]:
+def _repair_shifts_from_layout(
+    segmentations: Sequence[FrameSegmentation],
+    shifts: Sequence[ShiftEstimate],
+    *,
+    extent_tolerance_px: int = _EXTENT_TOLERANCE_PX,
+    animation_markers: Sequence[bool] = (),
+    max_step_px: int = _MAX_STEP_PX,
+) -> tuple[
+    tuple[ShiftEstimate, ...], tuple[str, ...], tuple[tuple[int, ShiftEstimate], ...]
+]:
     """Propose one bounded animation run, never an isolated layout repair.
 
     `max_step_px` -- see `_structural_landmarks`'s docstring; threaded to every nested repair
@@ -1836,24 +2245,33 @@ def _repair_shifts_from_layout(segmentations: Sequence[FrameSegmentation],
     edge_only_indices: list[int] = []
     structural_tail_indices: list[int] = []
     exact_multi_indices: list[int] = []
-    for i, (before, after, shift) in enumerate(zip(segmentations[:-1], segmentations[1:], shifts,
-                                                     strict=True)):
-        result, note = _layout_repaired_shift(i, before, after, shift,
-                                              extent_tolerance_px=extent_tolerance_px,
-                                              max_step_px=max_step_px)
+    for i, (before, after, shift) in enumerate(
+        zip(segmentations[:-1], segmentations[1:], shifts, strict=True)
+    ):
+        result, note = _layout_repaired_shift(
+            i,
+            before,
+            after,
+            shift,
+            extent_tolerance_px=extent_tolerance_px,
+            max_step_px=max_step_px,
+        )
         if note is None:
-            result, note = _edge_only_two_strip_shift(i, before, after, shift,
-                                                       max_step_px=max_step_px)
+            result, note = _edge_only_two_strip_shift(
+                i, before, after, shift, max_step_px=max_step_px
+            )
             if note is not None:
                 edge_only_indices.append(i)
         if note is None:
-            result, note = _structural_tail_shift(i, before, after, shift,
-                                                   max_step_px=max_step_px)
+            result, note = _structural_tail_shift(
+                i, before, after, shift, max_step_px=max_step_px
+            )
             if note is not None:
                 structural_tail_indices.append(i)
         if note is None:
-            result, note = _exact_multi_strip_shift(i, before, after, shift,
-                                                     max_step_px=max_step_px)
+            result, note = _exact_multi_strip_shift(
+                i, before, after, shift, max_step_px=max_step_px
+            )
             if note is not None:
                 exact_multi_indices.append(i)
         repaired.append(result)
@@ -1878,23 +2296,36 @@ def _repair_shifts_from_layout(segmentations: Sequence[FrameSegmentation],
         # this path.  At least two proposals are required, so a measured neighbour can never
         # bootstrap an isolated two-strip coincidence.
         proposal_indices = tuple(i for i, note in enumerate(notes) if note is not None)
-        if (edge_only_indices or structural_tail_indices or exact_multi_indices
-                or not 2 <= len(proposal_indices) <= 3):
+        if (
+            edge_only_indices
+            or structural_tail_indices
+            or exact_multi_indices
+            or not 2 <= len(proposal_indices) <= 3
+        ):
             return tuple(shifts), (), ()
         start, end = proposal_indices[0], proposal_indices[-1] + 1
         measured_bridge_indices = tuple(
-            i for i in range(start, end) if notes[i] is None)
-        if (end - start > 5 or not 1 <= len(measured_bridge_indices) <= 2
-                or start == 0 or end >= len(shifts)
-                or any(shifts[i].status != SHIFT_NO_CONSENSUS
-                       or shifts[i].agreeing != 2 or shifts[i].eligible != 2
-                       or shifts[i].dissenting != 0
-                       or sum(1 for strip in shifts[i].strips
-                              if strip.state == STRIP_MATCHED) != 2
-                       for i in proposal_indices)):
+            i for i in range(start, end) if notes[i] is None
+        )
+        if (
+            end - start > 5
+            or not 1 <= len(measured_bridge_indices) <= 2
+            or start == 0
+            or end >= len(shifts)
+            or any(
+                shifts[i].status != SHIFT_NO_CONSENSUS
+                or shifts[i].agreeing != 2
+                or shifts[i].eligible != 2
+                or shifts[i].dissenting != 0
+                or sum(1 for strip in shifts[i].strips if strip.state == STRIP_MATCHED)
+                != 2
+                for i in proposal_indices
+            )
+        ):
             return tuple(shifts), (), ()
-        if (len(animation_markers) != len(segmentations)
-                or not any(bool(animation_markers[i]) for i in range(start, end + 1))):
+        if len(animation_markers) != len(segmentations) or not any(
+            bool(animation_markers[i]) for i in range(start, end + 1)
+        ):
             # This broader connection of otherwise independent repair islands exists only for
             # an app-confirmed animated/video window.  Layout alone continues to use the older
             # contiguous-run grammars; absence of a marker is absence of authority.
@@ -1904,9 +2335,14 @@ def _repair_shifts_from_layout(segmentations: Sequence[FrameSegmentation],
         projected_bridges: list[int] = []
         for i in anchor_indices:
             bridge_shift, bridge_note = _measured_layout_bridge(
-                i, segmentations[i], segmentations[i + 1], shifts[i],
+                i,
+                segmentations[i],
+                segmentations[i + 1],
+                shifts[i],
                 allow_full_layout_projection=(i in measured_bridge_indices),
-                extent_tolerance_px=extent_tolerance_px, max_step_px=max_step_px)
+                extent_tolerance_px=extent_tolerance_px,
+                max_step_px=max_step_px,
+            )
             if bridge_note is None:
                 return tuple(shifts), (), ()
             if i in measured_bridge_indices:
@@ -1924,22 +2360,36 @@ def _repair_shifts_from_layout(segmentations: Sequence[FrameSegmentation],
         shared_gutter = 0
         for i in proposal_indices:
             projected, projection_note = _project_to_exact_full_layout(
-                i, segmentations[i], segmentations[i + 1], shifts[i], repaired[i],
-                max_step_px=max_step_px)
+                i,
+                segmentations[i],
+                segmentations[i + 1],
+                shifts[i],
+                repaired[i],
+                max_step_px=max_step_px,
+            )
             repaired[i] = projected
             if projection_note is not None:
                 notes[i] = f"{notes[i]}; {projection_note}"
             delta = repaired[i].delta_px
             exact_kinds = {
-                kind for kind, landmark_delta in _structural_landmarks(
-                    segmentations[i], segmentations[i + 1], max_step_px=max_step_px)
+                kind
+                for kind, landmark_delta in _structural_landmarks(
+                    segmentations[i], segmentations[i + 1], max_step_px=max_step_px
+                )
                 if delta is not None and landmark_delta == delta
             }
             if exact_kinds == {"top", "bottom", "heart"}:
                 full_layout += 1
-            elif (exact_kinds == {"top", "bottom"} and delta is not None
-                    and len(_shared_gutter_witnesses(
-                        segmentations[i], segmentations[i + 1], delta)) == 1):
+            elif (
+                exact_kinds == {"top", "bottom"}
+                and delta is not None
+                and len(
+                    _shared_gutter_witnesses(
+                        segmentations[i], segmentations[i + 1], delta
+                    )
+                )
+                == 1
+            ):
                 shared_gutter += 1
             else:
                 return tuple(shifts), (), ()
@@ -1962,29 +2412,46 @@ def _repair_shifts_from_layout(segmentations: Sequence[FrameSegmentation],
         raw = shifts[i]
         proposed = repaired[i]
         matched = tuple(
-            strip.delta_px for strip in raw.strips
-            if strip.state == STRIP_MATCHED and strip.delta_px is not None)
+            strip.delta_px
+            for strip in raw.strips
+            if strip.state == STRIP_MATCHED and strip.delta_px is not None
+        )
         exact_kinds = {
-            kind for kind, delta in _structural_landmarks(
-                segmentations[i], segmentations[i + 1], max_step_px=max_step_px)
+            kind
+            for kind, delta in _structural_landmarks(
+                segmentations[i], segmentations[i + 1], max_step_px=max_step_px
+            )
             if proposed.delta_px is not None and delta == proposed.delta_px
         }
         bracket_notes: list[str] = []
-        if (not edge_only_indices and not structural_tail_indices and not exact_multi_indices
-                and 0 < i < len(shifts) - 1
-                and raw.status == SHIFT_NO_CONSENSUS
-                and raw.eligible == raw.agreeing == 2 and raw.dissenting == 0
-                and proposed.delta_px is not None
-                and matched == (proposed.delta_px, proposed.delta_px)
-                and exact_kinds == {"top", "bottom", "heart"}):
+        if (
+            not edge_only_indices
+            and not structural_tail_indices
+            and not exact_multi_indices
+            and 0 < i < len(shifts) - 1
+            and raw.status == SHIFT_NO_CONSENSUS
+            and raw.eligible == raw.agreeing == 2
+            and raw.dissenting == 0
+            and proposed.delta_px is not None
+            and matched == (proposed.delta_px, proposed.delta_px)
+            and exact_kinds == {"top", "bottom", "heart"}
+        ):
             for bracket in (i - 1, i + 1):
                 bridge, bridge_note = _measured_layout_bridge(
-                    bracket, segmentations[bracket], segmentations[bracket + 1], shifts[bracket],
-                    extent_tolerance_px=extent_tolerance_px, max_step_px=max_step_px)
+                    bracket,
+                    segmentations[bracket],
+                    segmentations[bracket + 1],
+                    shifts[bracket],
+                    extent_tolerance_px=extent_tolerance_px,
+                    max_step_px=max_step_px,
+                )
                 bridge_kinds = {
-                    kind for kind, delta in _structural_landmarks(
-                        segmentations[bracket], segmentations[bracket + 1],
-                        max_step_px=max_step_px)
+                    kind
+                    for kind, delta in _structural_landmarks(
+                        segmentations[bracket],
+                        segmentations[bracket + 1],
+                        max_step_px=max_step_px,
+                    )
                     if bridge.delta_px is not None and delta == bridge.delta_px
                 }
                 if bridge_note is None or bridge_kinds != {"top", "bottom", "heart"}:
@@ -1997,8 +2464,11 @@ def _repair_shifts_from_layout(segmentations: Sequence[FrameSegmentation],
                     ((i, raw),),
                 )
         return tuple(shifts), (), ()
-    max_run = 5 if (exact_multi_indices or measured_bridge_indices) \
+    max_run = (
+        5
+        if (exact_multi_indices or measured_bridge_indices)
         else (4 if structural_tail_indices else 3)
+    )
     if not 2 <= end - start <= max_run:
         return tuple(shifts), (), ()
     indices = tuple(range(start, end))
@@ -2021,41 +2491,59 @@ def _repair_shifts_from_layout(segmentations: Sequence[FrameSegmentation],
         # the old heart leaves, then two strips with full layout, then one exact strip with full
         # layout -- and ordinary measured shifts must bracket the whole island on both sides.
         common_guard = (
-            edge_only_indices or structural_tail_indices
+            edge_only_indices
+            or structural_tail_indices
             or tuple(exact_multi_indices) != (start, end - 1)
-            or start == 0 or end >= len(shifts)
+            or start == 0
+            or end >= len(shifts)
             or shifts[start - 1].status != SHIFT_MEASURED
             or shifts[end].status != SHIFT_MEASURED
-            or repaired[start].agreeing < 3 or repaired[end - 1].agreeing < 3)
+            or repaired[start].agreeing < 3
+            or repaired[end - 1].agreeing < 3
+        )
         if end - start == 2:
             if common_guard:
                 return tuple(shifts), (), ()
             for i in indices:
                 delta = repaired[i].delta_px
                 exact_kinds = {
-                    kind for kind, landmark_delta in _structural_landmarks(
-                        segmentations[i], segmentations[i + 1], max_step_px=max_step_px)
+                    kind
+                    for kind, landmark_delta in _structural_landmarks(
+                        segmentations[i], segmentations[i + 1], max_step_px=max_step_px
+                    )
                     if delta is not None and landmark_delta == delta
                 }
                 if exact_kinds != {"top", "bottom", "heart"}:
                     return tuple(shifts), (), ()
             two_pair_exact_multi_window = True
         else:
-            if (common_guard or end - start != 5
-                    or any(shifts[i].status != SHIFT_NO_CONSENSUS for i in indices)
-                    or tuple(repaired[i].agreeing for i in indices[1:-1]) != (2, 2, 1)):
+            if (
+                common_guard
+                or end - start != 5
+                or any(shifts[i].status != SHIFT_NO_CONSENSUS for i in indices)
+                or tuple(repaired[i].agreeing for i in indices[1:-1]) != (2, 2, 1)
+            ):
                 return tuple(shifts), (), ()
             for position, i in enumerate(indices):
                 delta = repaired[i].delta_px
                 exact_kinds = {
-                    kind for kind, landmark_delta in _structural_landmarks(
-                        segmentations[i], segmentations[i + 1], max_step_px=max_step_px)
+                    kind
+                    for kind, landmark_delta in _structural_landmarks(
+                        segmentations[i], segmentations[i + 1], max_step_px=max_step_px
+                    )
                     if delta is not None and landmark_delta == delta
                 }
                 if position == 1:
-                    if (exact_kinds != {"top", "bottom"} or delta is None
-                            or len(_shared_gutter_witnesses(
-                                segmentations[i], segmentations[i + 1], delta)) != 1):
+                    if (
+                        exact_kinds != {"top", "bottom"}
+                        or delta is None
+                        or len(
+                            _shared_gutter_witnesses(
+                                segmentations[i], segmentations[i + 1], delta
+                            )
+                        )
+                        != 1
+                    ):
                         return tuple(shifts), (), ()
                 elif exact_kinds != {"top", "bottom", "heart"}:
                     return tuple(shifts), (), ()
@@ -2064,16 +2552,21 @@ def _repair_shifts_from_layout(segmentations: Sequence[FrameSegmentation],
         # safe only as this one fully bracketed transition: the middle pair corrects a measured
         # majority with the ordinary two-strip/full-layout rule, and the trailing pair is the
         # sole-strip/exact-full-layout rule.  Neither weak pair can bootstrap the other.
-        if (tuple(edge_only_indices) != (start,) or end - start != 3
-                or tuple(shifts[i].status for i in indices) != (
-                    SHIFT_NO_CONSENSUS, SHIFT_MEASURED, SHIFT_NO_CONSENSUS)
-                or tuple(repaired[i].agreeing for i in indices) != (2, 2, 1)):
+        if (
+            tuple(edge_only_indices) != (start,)
+            or end - start != 3
+            or tuple(shifts[i].status for i in indices)
+            != (SHIFT_NO_CONSENSUS, SHIFT_MEASURED, SHIFT_NO_CONSENSUS)
+            or tuple(repaired[i].agreeing for i in indices) != (2, 2, 1)
+        ):
             return tuple(shifts), (), ()
         for i in indices[1:]:
             delta = repaired[i].delta_px
             corroborating_kinds = {
-                kind for kind, landmark_delta in _structural_landmarks(
-                    segmentations[i], segmentations[i + 1], max_step_px=max_step_px)
+                kind
+                for kind, landmark_delta in _structural_landmarks(
+                    segmentations[i], segmentations[i + 1], max_step_px=max_step_px
+                )
                 if delta is not None
                 and abs(landmark_delta - delta) <= _AGREEMENT_TOLERANCE_PX
             }
@@ -2085,35 +2578,53 @@ def _repair_shifts_from_layout(segmentations: Sequence[FrameSegmentation],
         # progressively 2, 2, and 1 NCC witnesses.  The last two of those and the tail must all
         # carry exact full landmark geometry; the first already passed the ordinary multi-edge
         # layout gate.  Any other placement, status grammar, or evidence strength remains raw.
-        if (edge_only_indices or tuple(structural_tail_indices) != (end - 1,)
-                or end - start != 4
-                or tuple(shifts[i].status for i in indices) != (
-                    SHIFT_NO_CONSENSUS, SHIFT_NO_CONSENSUS,
-                    SHIFT_NO_CONSENSUS, SHIFT_MEASURED)
-                or tuple(repaired[i].agreeing for i in indices[:3]) != (2, 2, 1)):
+        if (
+            edge_only_indices
+            or tuple(structural_tail_indices) != (end - 1,)
+            or end - start != 4
+            or tuple(shifts[i].status for i in indices)
+            != (
+                SHIFT_NO_CONSENSUS,
+                SHIFT_NO_CONSENSUS,
+                SHIFT_NO_CONSENSUS,
+                SHIFT_MEASURED,
+            )
+            or tuple(repaired[i].agreeing for i in indices[:3]) != (2, 2, 1)
+        ):
             return tuple(shifts), (), ()
         for i in indices[1:]:
             delta = repaired[i].delta_px
             exact_kinds = {
-                kind for kind, landmark_delta in _structural_landmarks(
-                    segmentations[i], segmentations[i + 1], max_step_px=max_step_px)
+                kind
+                for kind, landmark_delta in _structural_landmarks(
+                    segmentations[i], segmentations[i + 1], max_step_px=max_step_px
+                )
                 if delta is not None and landmark_delta == delta
             }
             if exact_kinds != {"top", "bottom", "heart"}:
                 return tuple(shifts), (), ()
-    if not two_pair_exact_multi_window and not any(repaired[i].agreeing == 2 for i in indices):
+    if not two_pair_exact_multi_window and not any(
+        repaired[i].agreeing == 2 for i in indices
+    ):
         # Two adjacent lone-strip coincidences are not independent evidence for one another.
         # The one-strip exception is a companion to an ordinary two-strip layout repair only.
         # A two-pair exact-multi window has no lone-strip repair to begin with -- both pairs
         # already cleared the stronger 3+-exact-strip bar above -- so this guard does not apply.
         return tuple(shifts), (), ()
-    return (tuple(repaired),
-            tuple(note for note in window_notes[start:end] if note is not None),
-            tuple((i, shifts[i]) for i in indices
-                  if notes[i] is not None or i in projected_bridge_indices))
+    return (
+        tuple(repaired),
+        tuple(note for note in window_notes[start:end] if note is not None),
+        tuple(
+            (i, shifts[i])
+            for i in indices
+            if notes[i] is not None or i in projected_bridge_indices
+        ),
+    )
 
 
-def _frame_offsets(shifts: Sequence[ShiftEstimate]) -> tuple[list[int | None], list[str]]:
+def _frame_offsets(
+    shifts: Sequence[ShiftEstimate],
+) -> tuple[list[int | None], list[str]]:
     """Each frame's page offset, and a failure for the first pair that broke the chain.
 
     Page coordinates are anchored on frame 0 (`offsets[0] == 0`), and content at row `y` of frame
@@ -2139,34 +2650,46 @@ def _frame_offsets(shifts: Sequence[ShiftEstimate]) -> tuple[list[int | None], l
             # `consensus_px` is quoted when there is one because it is the difference between
             # "scroll again, smaller" and "these frames do not correspond, stop" — see
             # frameshift's SHIFT_BEYOND_WINDOW. It is NEVER used as a delta.
-            measured = ("" if est.consensus_px is None
-                        else f" (the strips do agree on {est.consensus_px:+d}px, which is only a "
-                             "magnitude and may not be used as a shift)")
+            measured = (
+                ""
+                if est.consensus_px is None
+                else f" (the strips do agree on {est.consensus_px:+d}px, which is only a "
+                "magnitude and may not be used as a shift)"
+            )
             failures.append(
                 f"frames {i} and {i + 1} could not be put in one coordinate space: "
                 f"{est.status} — {est.reason}{measured}. Without it there is no way to tell a "
                 "heart that moved from a new heart that arrived, which is exactly how doc 5.10's "
-                "phantom item was fabricated, so no item may be indexed from this capture")
+                "phantom item was fabricated, so no item may be indexed from this capture"
+            )
             continue
         offsets.append(current + est.delta_px)
     return offsets, failures
 
 
-def _islands(segmentations: Sequence[FrameSegmentation],
-             offsets: Sequence[int | None]) -> tuple[UnanchoredIsland, ...]:
+def _islands(
+    segmentations: Sequence[FrameSegmentation], offsets: Sequence[int | None]
+) -> tuple[UnanchoredIsland, ...]:
     """Every placed frame's `BLOCK_UNANCHORED` sightings, in frame order."""
     return tuple(
-        UnanchoredIsland(frame_index=i, frame_y0=block.y0, frame_y1=block.y1, offset=offset,
-                         digest=block.content_digest)
+        UnanchoredIsland(
+            frame_index=i,
+            frame_y0=block.y0,
+            frame_y1=block.y1,
+            offset=offset,
+            digest=block.content_digest,
+        )
         for i, (seg, offset) in enumerate(zip(segmentations, offsets, strict=True))
         if offset is not None
         for block in seg.blocks
-        if block.kind == BLOCK_UNANCHORED)
+        if block.kind == BLOCK_UNANCHORED
+    )
 
 
 def _failure_free_page_coverage(
-        segmentations: Sequence[FrameSegmentation], offsets: Sequence[int | None],
-        ) -> tuple[tuple[int, int], ...]:
+    segmentations: Sequence[FrameSegmentation],
+    offsets: Sequence[int | None],
+) -> tuple[tuple[int, int], ...]:
     """Page intervals whose whole analysed band completed without a segmentation failure.
 
     Heart matching runs over the entire band before hearts are assigned to blocks. A clean
@@ -2177,11 +2700,13 @@ def _failure_free_page_coverage(
     return tuple(
         (seg.band[0] + offset, seg.band[1] + offset)
         for seg, offset in zip(segmentations, offsets, strict=True)
-        if offset is not None and not seg.failures)
+        if offset is not None and not seg.failures
+    )
 
 
-def _screen_fixed_islands(islands: Sequence[UnanchoredIsland],
-                          ) -> tuple[frozenset[tuple[int, int]], tuple[str, ...]]:
+def _screen_fixed_islands(
+    islands: Sequence[UnanchoredIsland],
+) -> tuple[frozenset[tuple[int, int]], tuple[str, ...]]:
     """Which unanchored strips this capture PROVES are pinned to the screen rather than the page.
 
     segment.py reports a leading strip it cannot place (see `_unanchored_leading_island_rows`).
@@ -2226,8 +2751,10 @@ def _screen_fixed_islands(islands: Sequence[UnanchoredIsland],
         offsets = sorted({s.offset for s in sightings})
         digests = {s.digest for s in sightings}
         frames = sorted({s.frame_index for s in sightings})
-        where = (f"the leading strip at frame rows {rows[0]}..{rows[1]}, seen in frame(s) "
-                 f"{frames}")
+        where = (
+            f"the leading strip at frame rows {rows[0]}..{rows[1]}, seen in frame(s) "
+            f"{frames}"
+        )
         if len(offsets) < 2:
             # NAME THE NEAR MISS. Grouping is by exact frame extent, so a strip that reports one
             # row differently on one frame splits into two groups, neither reaches two offsets,
@@ -2236,48 +2763,61 @@ def _screen_fixed_islands(islands: Sequence[UnanchoredIsland],
             # clustering them would be the guess this module exists to avoid — but an operator
             # reading the refusal must be able to see that it was one row away from proving it.
             near = sorted(
-                other for other in groups
-                if other != rows and abs(other[0] - rows[0]) <= _EXTENT_TOLERANCE_PX
-                and abs(other[1] - rows[1]) <= _EXTENT_TOLERANCE_PX)
+                other
+                for other in groups
+                if other != rows
+                and abs(other[0] - rows[0]) <= _EXTENT_TOLERANCE_PX
+                and abs(other[1] - rows[1]) <= _EXTENT_TOLERANCE_PX
+            )
             notes.append(
                 f"{where}, was only ever seen at one page offset ({offsets[0]}), so nothing "
                 "distinguishes screen-pinned chrome from page content here; it is placed on the "
                 "page exactly as it would have been before this check existed"
-                + (f" — note that a strip at {near} was reported on other frames of this same "
-                   "capture, within measurement slack of this one: if those are the same strip "
-                   "reported a row or two differently, that difference alone is what prevented "
-                   "the proof" if near else ""))
+                + (
+                    f" — note that a strip at {near} was reported on other frames of this same "
+                    "capture, within measurement slack of this one: if those are the same strip "
+                    "reported a row or two differently, that difference alone is what prevented "
+                    "the proof"
+                    if near
+                    else ""
+                )
+            )
         elif offsets[-1] - offsets[0] < height:
             notes.append(
                 f"{where}, was seen across only {offsets[-1] - offsets[0]}px of scroll, less "
                 f"than its own {height}px height, so the page rows it would have shown still "
                 "overlap and one piece of page content could explain both sightings; it is "
-                "placed on the page rather than assumed to be chrome")
+                "placed on the page rather than assumed to be chrome"
+            )
         elif None in digests:
             # Fail closed rather than treating "no evidence" as "same evidence": a sighting with
             # no digest is one segment.py did not hash, and two of those are not a match.
             notes.append(
                 f"{where}, was seen {len(sightings)} time(s) but at least one sighting carries "
-                "no pixel digest, so there is nothing to compare; it is placed on the page")
+                "no pixel digest, so there is nothing to compare; it is placed on the page"
+            )
         elif len(digests) != 1:
             notes.append(
                 f"{where}, showed {len(digests)} different pixel contents across "
                 f"{len(offsets)} offsets, so it is not a static element — an animating or "
-                "live-updating header reads exactly like this; it is placed on the page")
+                "live-updating header reads exactly like this; it is placed on the page"
+            )
         else:
             proven.add(rows)
             notes.append(
                 f"{where}, showed identical pixels at {len(offsets)} page offsets spanning "
                 f"{offsets[-1] - offsets[0]}px, more than its own {height}px height — it is "
                 "fixed to the SCREEN, not to the page, so it has no page position and is held "
-                "out of the index entirely")
+                "out of the index entirely"
+            )
     return frozenset(proven), tuple(notes)
 
 
-def _observations(segmentations: Sequence[FrameSegmentation],
-                  offsets: Sequence[int | None],
-                  screen_fixed: frozenset[tuple[int, int]] = frozenset(),
-                  ) -> list[BlockObservation]:
+def _observations(
+    segmentations: Sequence[FrameSegmentation],
+    offsets: Sequence[int | None],
+    screen_fixed: frozenset[tuple[int, int]] = frozenset(),
+) -> list[BlockObservation]:
     """Every frame's blocks, lifted into the shared page space. Frames with no offset contribute
     nothing — they are the frames past a broken chain, whose page position is unknown.
 
@@ -2306,25 +2846,32 @@ def _observations(segmentations: Sequence[FrameSegmentation],
         held = None
         for block in seg.blocks:
             if block.kind == BLOCK_UNANCHORED:
-                if held is not None:                    # never seen: the rule is leading-only
+                if held is not None:  # never seen: the rule is leading-only
                     out.append(_observation(i, held, offset))
                 if (block.y0, block.y1) in screen_fixed:
-                    held = None                                         # disposition 1
+                    held = None  # disposition 1
                     continue
-                held = block                                # 2 or 3, decided by the next block
+                held = block  # 2 or 3, decided by the next block
                 continue
             if held is not None and block.top.kind == EDGE_UNANCHORED_ISLAND:
                 # Disposition 2: report the span the unsplit block covered, keeping the LOWER
                 # block's bottom evidence and its hearts (the strip is heartless by segment.py's
                 # clause (e)). The top stays unobserved, which it already was.
-                out.append(BlockObservation(
-                    frame_index=i,
-                    page_y0=held.y0 + offset, page_y1=block.y1 + offset,
-                    frame_y0=held.y0, frame_y1=block.y1,
-                    kind=block.kind, complete=False,
-                    top_observed=False, bottom_observed=block.bottom.observed,
-                    hearts=tuple((x, y + offset) for x, y in block.hearts),
-                    top_kind=held.top.kind))
+                out.append(
+                    BlockObservation(
+                        frame_index=i,
+                        page_y0=held.y0 + offset,
+                        page_y1=block.y1 + offset,
+                        frame_y0=held.y0,
+                        frame_y1=block.y1,
+                        kind=block.kind,
+                        complete=False,
+                        top_observed=False,
+                        bottom_observed=block.bottom.observed,
+                        hearts=tuple((x, y + offset) for x, y in block.hearts),
+                        top_kind=held.top.kind,
+                    )
+                )
                 held = None
                 continue
             if held is not None:
@@ -2341,18 +2888,25 @@ def _observation(frame_index: int, block, offset: int) -> BlockObservation:
     """One frame's block, lifted into page space verbatim."""
     return BlockObservation(
         frame_index=frame_index,
-        page_y0=block.y0 + offset, page_y1=block.y1 + offset,
-        frame_y0=block.y0, frame_y1=block.y1,
-        kind=block.kind, complete=block.complete,
-        top_observed=block.top.observed, bottom_observed=block.bottom.observed,
+        page_y0=block.y0 + offset,
+        page_y1=block.y1 + offset,
+        frame_y0=block.y0,
+        frame_y1=block.y1,
+        kind=block.kind,
+        complete=block.complete,
+        top_observed=block.top.observed,
+        bottom_observed=block.bottom.observed,
         hearts=tuple((x, y + offset) for x, y in block.hearts),
-        top_kind=block.top.kind)
+        top_kind=block.top.kind,
+    )
 
 
 def _split_repeated_near_gutter_merges(
-        observations: Sequence[BlockObservation],
-        near_gutters: Sequence[tuple[int, int, int]], *, tolerance: int,
-        ) -> tuple[tuple[BlockObservation, ...], tuple[str, ...]]:
+    observations: Sequence[BlockObservation],
+    near_gutters: Sequence[tuple[int, int, int]],
+    *,
+    tolerance: int,
+) -> tuple[tuple[BlockObservation, ...], tuple[str, ...]]:
     """Restore a missed 59..64px gutter only when the capture itself proves it.
 
     ``segment.py`` deliberately does not treat every slightly-long page-coloured span as a
@@ -2387,23 +2941,29 @@ def _split_repeated_near_gutter_merges(
             continue
         run_y0 = sorted(y0 for _frame, y0, _y1 in cluster)[len(cluster) // 2]
         upper_ends = sorted(
-            obs.page_y1 for obs in observations
-            if obs.complete and abs(obs.page_y1 - run_y0) <= tolerance)
+            obs.page_y1
+            for obs in observations
+            if obs.complete and abs(obs.page_y1 - run_y0) <= tolerance
+        )
         if not upper_ends:
             continue
         upper_end = upper_ends[len(upper_ends) // 2]
         lower_starts = sorted(
-            obs.page_y0 for obs in observations
-            if gutter_low <= obs.page_y0 - upper_end <= gutter_high)
+            obs.page_y0
+            for obs in observations
+            if gutter_low <= obs.page_y0 - upper_end <= gutter_high
+        )
         if not lower_starts:
             continue
         lower_start = lower_starts[len(lower_starts) // 2]
         # A heart in the unmodelled rows would make the virtual split discard selectable
         # evidence.  Leave that capture untouched so the ordinary loud refusal remains.
         if any(
-                obs.page_y0 < upper_end and obs.page_y1 > lower_start
-                and any(upper_end <= y < lower_start for _x, y in obs.hearts)
-                for obs in observations):
+            obs.page_y0 < upper_end
+            and obs.page_y1 > lower_start
+            and any(upper_end <= y < lower_start for _x, y in obs.hearts)
+            for obs in observations
+        ):
             continue
         boundaries.append((upper_end, lower_start, frame_indices))
 
@@ -2416,29 +2976,46 @@ def _split_repeated_near_gutter_merges(
         # Complete sightings are the independent evidence that licensed the repair; changing
         # one would convert a measurement into an inference.  Split only a partial that spans
         # both proven sides of the boundary.
-        boundary = next((candidate for candidate in boundaries
-                         if not obs.complete
-                         and obs.page_y0 < candidate[0]
-                         and obs.page_y1 > candidate[1]), None)
+        boundary = next(
+            (
+                candidate
+                for candidate in boundaries
+                if not obs.complete
+                and obs.page_y0 < candidate[0]
+                and obs.page_y1 > candidate[1]
+            ),
+            None,
+        )
         if boundary is None:
             repaired.append(obs)
             continue
         upper_end, lower_start, frame_indices = boundary
         split_at_upper = obs.frame_y0 + (upper_end - obs.page_y0)
         split_at_lower = obs.frame_y0 + (lower_start - obs.page_y0)
-        repaired.extend((
-            replace(obs, page_y1=upper_end, frame_y1=split_at_upper,
+        repaired.extend(
+            (
+                replace(
+                    obs,
+                    page_y1=upper_end,
+                    frame_y1=split_at_upper,
                     bottom_observed=False,
-                    hearts=tuple((x, y) for x, y in obs.hearts if y < upper_end)),
-            # `top_kind` describes the row at `page_y0` and nothing else. The lower fragment's
-            # `page_y0` is a VIRTUAL row this pass invented, so carrying the original sighting's
-            # kind forward would fabricate evidence about it — and a leaked `EDGE_CARD_CORNER`
-            # is read by `_scroll_top_evidence` as "some frame saw the first item's own top
-            # edge", which is exactly the positive test that catches a false `at_scroll_top`.
-            replace(obs, page_y0=lower_start, frame_y0=split_at_lower,
-                    top_observed=False, top_kind="",
-                    hearts=tuple((x, y) for x, y in obs.hearts if y >= lower_start)),
-        ))
+                    hearts=tuple((x, y) for x, y in obs.hearts if y < upper_end),
+                ),
+                # `top_kind` describes the row at `page_y0` and nothing else. The lower fragment's
+                # `page_y0` is a VIRTUAL row this pass invented, so carrying the original sighting's
+                # kind forward would fabricate evidence about it — and a leaked `EDGE_CARD_CORNER`
+                # is read by `_scroll_top_evidence` as "some frame saw the first item's own top
+                # edge", which is exactly the positive test that catches a false `at_scroll_top`.
+                replace(
+                    obs,
+                    page_y0=lower_start,
+                    frame_y0=split_at_lower,
+                    top_observed=False,
+                    top_kind="",
+                    hearts=tuple((x, y) for x, y in obs.hearts if y >= lower_start),
+                ),
+            )
+        )
         if boundary not in used:
             used.append(boundary)
 
@@ -2448,14 +3025,17 @@ def _split_repeated_near_gutter_merges(
         f"card end {upper_end} in frames {list(frame_indices)}, with a canonical-gutter "
         f"lower fragment beginning at {lower_start}; spanning partial sightings were split "
         "without claiming either virtual edge was observed"
-        for upper_end, lower_start, frame_indices in used)
+        for upper_end, lower_start, frame_indices in used
+    )
     return tuple(repaired), notes
 
 
 def _split_long_background_card_top_merges(
-        observations: Sequence[BlockObservation],
-        long_runs: Sequence[tuple[int, int, int]], *, tolerance: int,
-        ) -> tuple[tuple[BlockObservation, ...], tuple[str, ...]]:
+    observations: Sequence[BlockObservation],
+    long_runs: Sequence[tuple[int, int, int]],
+    *,
+    tolerance: int,
+) -> tuple[tuple[BlockObservation, ...], tuple[str, ...]]:
     """Split a heartless partial that fused a scrolling section heading to the next card.
 
     A long page-background run is deliberately *not* a generic card boundary: pale card
@@ -2488,26 +3068,37 @@ def _split_long_background_card_top_merges(
             repaired.append(observation)
             continue
 
-        proposals: list[tuple[int, int, int, int, tuple[int, ...], tuple[int, ...]]] = []
+        proposals: list[
+            tuple[int, int, int, int, tuple[int, ...], tuple[int, ...]]
+        ] = []
         for frame_index, run_y0, run_y1 in long_runs:
-            if (frame_index != observation.frame_index
-                    or not observation.page_y0 < run_y0 < run_y1 < observation.page_y1):
+            if (
+                frame_index != observation.frame_index
+                or not observation.page_y0 < run_y0 < run_y1 < observation.page_y1
+            ):
                 continue
             matching = [
-                bounded for bounded in complete
+                bounded
+                for bounded in complete
                 if bounded.frame_index != observation.frame_index
                 and abs(bounded.page_y0 - run_y1) <= tolerance
                 and observation.page_y1 - run_y1 > tolerance
                 and observation.page_y1 <= bounded.page_y1 + tolerance
             ]
-            proving_frames = tuple(sorted({bounded.frame_index for bounded in matching}))
+            proving_frames = tuple(
+                sorted({bounded.frame_index for bounded in matching})
+            )
             if not matching:
                 continue
             # Do not hide a complete-vs-complete disagreement behind a virtual split.
-            if (max(bounded.page_y0 for bounded in matching)
-                    - min(bounded.page_y0 for bounded in matching) > tolerance
-                    or max(bounded.page_y1 for bounded in matching)
-                    - min(bounded.page_y1 for bounded in matching) > tolerance):
+            if (
+                max(bounded.page_y0 for bounded in matching)
+                - min(bounded.page_y0 for bounded in matching)
+                > tolerance
+                or max(bounded.page_y1 for bounded in matching)
+                - min(bounded.page_y1 for bounded in matching)
+                > tolerance
+            ):
                 continue
             # One complete measurement can still license this *specific* repair when two other
             # frames independently saw the lower card begin at that exact trusted edge.  This is
@@ -2519,27 +3110,44 @@ def _split_long_background_card_top_merges(
                 matching, key=lambda bounded: (bounded.page_y0, bounded.page_y1)
             )[len(matching) // 2]
             top_witnesses = [
-                candidate for candidate in observations
-                if (not candidate.complete
+                candidate
+                for candidate in observations
+                if (
+                    not candidate.complete
                     and candidate.frame_index != observation.frame_index
                     and candidate.top_observed
                     and abs(candidate.page_y0 - run_y1) <= tolerance
                     and candidate.top_kind == representative.top_kind
                     and candidate.page_y1 - run_y1 > tolerance
-                    and candidate.page_y1 <= representative.page_y1 + tolerance)
+                    and candidate.page_y1 <= representative.page_y1 + tolerance
+                )
             ]
-            top_witness_frames = tuple(sorted({candidate.frame_index for candidate in top_witnesses}))
+            top_witness_frames = tuple(
+                sorted({candidate.frame_index for candidate in top_witnesses})
+            )
             # Each witness may be within tolerance of the complete top, but that alone admits
             # a 2*tolerance spread between two partials on opposite sides.  They are a second
             # measurement of ONE edge only when their entire cluster, including the complete
             # observation, still fits in the ordinary fold tolerance.
-            top_cluster = [representative.page_y0, *(candidate.page_y0
-                                                       for candidate in top_witnesses)]
+            top_cluster = [
+                representative.page_y0,
+                *(candidate.page_y0 for candidate in top_witnesses),
+            ]
             tops_agree = max(top_cluster) - min(top_cluster) <= tolerance
-            if len(proving_frames) < 2 and (len(top_witness_frames) < 2 or not tops_agree):
+            if len(proving_frames) < 2 and (
+                len(top_witness_frames) < 2 or not tops_agree
+            ):
                 continue
-            proposals.append((run_y0, run_y1, representative.page_y0,
-                              representative.page_y1, proving_frames, top_witness_frames))
+            proposals.append(
+                (
+                    run_y0,
+                    run_y1,
+                    representative.page_y0,
+                    representative.page_y1,
+                    proving_frames,
+                    top_witness_frames,
+                )
+            )
 
         # More than one independently licensed seam has no unique disposition. Preserve the
         # unsplit observation and let its existing fold checks refuse it.
@@ -2547,24 +3155,37 @@ def _split_long_background_card_top_merges(
             repaired.append(observation)
             continue
 
-        run_y0, run_y1, card_y0, card_y1, proving_frames, top_witness_frames = proposals[0]
+        run_y0, run_y1, card_y0, card_y1, proving_frames, top_witness_frames = (
+            proposals[0]
+        )
         split_at_upper = observation.frame_y0 + (run_y0 - observation.page_y0)
         split_at_lower = observation.frame_y0 + (run_y1 - observation.page_y0)
-        repaired.extend((
-            replace(observation, page_y1=run_y0, frame_y1=split_at_upper,
-                    bottom_observed=False),
-            # As in `_split_repeated_near_gutter_merges`: the lower fragment starts on the
-            # invented seam row, so it inherits no top evidence. Clearing `top_kind` with
-            # `top_observed` keeps `_scroll_top_evidence` from reading the ORIGINAL top's
-            # card corner as proof that a frame saw this fragment's own top edge.
-            replace(observation, page_y0=run_y1, frame_y0=split_at_lower,
-                    top_observed=False, top_kind=""),
-        ))
+        repaired.extend(
+            (
+                replace(
+                    observation,
+                    page_y1=run_y0,
+                    frame_y1=split_at_upper,
+                    bottom_observed=False,
+                ),
+                # As in `_split_repeated_near_gutter_merges`: the lower fragment starts on the
+                # invented seam row, so it inherits no top evidence. Clearing `top_kind` with
+                # `top_observed` keeps `_scroll_top_evidence` from reading the ORIGINAL top's
+                # card corner as proof that a frame saw this fragment's own top edge.
+                replace(
+                    observation,
+                    page_y0=run_y1,
+                    frame_y0=split_at_lower,
+                    top_observed=False,
+                    top_kind="",
+                ),
+            )
+        )
         corroboration = (
             f"complete sightings in frames {list(proving_frames)} independently bounded the "
             f"lower card at {card_y0}..{card_y1}"
-            if len(proving_frames) >= 2 else
-            f"the complete sighting in frame {proving_frames[0]} bounded the lower card at "
+            if len(proving_frames) >= 2
+            else f"the complete sighting in frame {proving_frames[0]} bounded the lower card at "
             f"{card_y0}..{card_y1}; trusted top-edge sightings in frames "
             f"{list(top_witness_frames)} independently corroborated its {card_y0}px top"
         )
@@ -2573,12 +3194,15 @@ def _split_long_background_card_top_merges(
             f"{observation.page_y0}..{observation.page_y1} was split around its "
             f"RUN_TOO_LONG page-background seam {run_y0}..{run_y1}: {corroboration}, so the "
             "heading remnant and card fragment remain partial "
-            "while the proven background rows are held out of the fold")
+            "while the proven background rows are held out of the fold"
+        )
 
     return tuple(repaired), tuple(notes)
 
 
-def _overlap_groups(observations: Sequence[BlockObservation]) -> list[list[BlockObservation]]:
+def _overlap_groups(
+    observations: Sequence[BlockObservation],
+) -> list[list[BlockObservation]]:
     """Sightings folded into groups by page-position OVERLAP: one group per physical block.
 
     Overlap needs no tolerance and gets none. Two DISTINCT blocks are at least `_MIN_ITEM_GAP_PX`
@@ -2603,8 +3227,11 @@ def _overlap_groups(observations: Sequence[BlockObservation]) -> list[list[Block
     return groups
 
 
-def _heart_clusters(observations: Sequence[BlockObservation], *, tolerance: int,
-                    ) -> list[tuple[int, int]]:
+def _heart_clusters(
+    observations: Sequence[BlockObservation],
+    *,
+    tolerance: int,
+) -> list[tuple[int, int]]:
     """The DISTINCT hearts of one block, `(x, page_y)`, in page order.
 
     The same heart seen in six frames lands within `tolerance` of itself six times and is one
@@ -2615,7 +3242,9 @@ def _heart_clusters(observations: Sequence[BlockObservation], *, tolerance: int,
     observed extent: the number is used to aim a tap, and it should be somewhere a frame saw a
     heart.
     """
-    seen = sorted({h for o in observations for h in o.hearts}, key=lambda h: (h[1], h[0]))
+    seen = sorted(
+        {h for o in observations for h in o.hearts}, key=lambda h: (h[1], h[0])
+    )
     clusters: list[list[tuple[int, int]]] = []
     for heart in seen:
         if clusters and heart[1] - clusters[-1][-1][1] <= tolerance:
@@ -2625,8 +3254,9 @@ def _heart_clusters(observations: Sequence[BlockObservation], *, tolerance: int,
     return [sorted(c, key=lambda h: (h[1], h[0]))[len(c) // 2] for c in clusters]
 
 
-def _resolve_group(group: Sequence[BlockObservation], *, tolerance: int,
-                   card_x: tuple[int, int]) -> tuple[IndexedBlock, list[str]]:
+def _resolve_group(
+    group: Sequence[BlockObservation], *, tolerance: int, card_x: tuple[int, int]
+) -> tuple[IndexedBlock, list[str]]:
     """One group of sightings -> one block, plus whatever the sightings contradict.
 
     The extent comes from the COMPLETE sightings when there are any, because only they measured
@@ -2648,8 +3278,10 @@ def _resolve_group(group: Sequence[BlockObservation], *, tolerance: int,
         page_y0, page_y1 = rep.page_y0, rep.page_y1
         bounded_by = rep.frame_index
         for other in complete:
-            if (abs(other.page_y0 - page_y0) > tolerance
-                    or abs(other.page_y1 - page_y1) > tolerance):
+            if (
+                abs(other.page_y0 - page_y0) > tolerance
+                or abs(other.page_y1 - page_y1) > tolerance
+            ):
                 # Naming the FRAME-LOCAL rows alongside the page rows is what lets an operator go
                 # find the actual pixels: page rows are only meaningful relative to this capture's
                 # own offsets, frame rows are what is really on screen in `frames[frame_index]`.
@@ -2661,7 +3293,8 @@ def _resolve_group(group: Sequence[BlockObservation], *, tolerance: int,
                         origin = (
                             f"both sightings are frame {rep.frame_index}'s own and their "
                             "extents overlap — segment.py's blocks are disjoint within one "
-                            "frame, so this is a self-contradictory frame")
+                            "frame, so this is a self-contradictory frame"
+                        )
                     else:
                         # The confusing live shape: one frame bounded two separate cards, then a
                         # missed gutter in another frame bridged them into this overlap group.
@@ -2669,7 +3302,8 @@ def _resolve_group(group: Sequence[BlockObservation], *, tolerance: int,
                             f"both sightings are frame {rep.frame_index}'s own but their "
                             "extents are disjoint: one frame bounded two separate cards, folded "
                             "into this one group by a gutter missed in some OTHER frame — not "
-                            f"frame {rep.frame_index} disagreeing with itself")
+                            f"frame {rep.frame_index} disagreeing with itself"
+                        )
                 else:
                     origin = "both observed both edges, so one of them is wrong"
                 failures.append(
@@ -2678,11 +3312,15 @@ def _resolve_group(group: Sequence[BlockObservation], *, tolerance: int,
                     f"{other.height}px ({other.page_y0}..{other.page_y1}) — frame "
                     f"{rep.frame_index} saw its own frame rows {rep.frame_y0}..{rep.frame_y1}, "
                     f"frame {other.frame_index} saw frame rows {other.frame_y0}..{other.frame_y1}"
-                    f". {origin}; averaging them would produce an extent neither frame saw")
+                    f". {origin}; averaging them would produce an extent neither frame saw"
+                )
         for other in observations:
             if other.complete:
                 continue
-            if other.page_y0 < page_y0 - tolerance or other.page_y1 > page_y1 + tolerance:
+            if (
+                other.page_y0 < page_y0 - tolerance
+                or other.page_y1 > page_y1 + tolerance
+            ):
                 # WHICH FRAME IS AT FAULT. A fragment that OVERLAPS the bounded card and runs
                 # past it is the one that crossed the boundary: it is the sighting whose own
                 # extent spans two cards, and it is what chained them into a single fold group.
@@ -2693,11 +3331,17 @@ def _resolve_group(group: Sequence[BlockObservation], *, tolerance: int,
                 bridges = other.page_y0 < page_y1 and page_y0 < other.page_y1
                 if other.frame_index != rep.frame_index:
                     origin = (
-                        ("either a gutter was missed or these two sightings are not the same "
-                         "block") if bridges else
-                        ("these two sightings are disjoint, so this fragment did not cross the "
-                         "boundary itself — it is a sighting of the neighbouring card, dragged "
-                         "into this group by whichever frame's block does span the boundary"))
+                        (
+                            "either a gutter was missed or these two sightings are not the same "
+                            "block"
+                        )
+                        if bridges
+                        else (
+                            "these two sightings are disjoint, so this fragment did not cross the "
+                            "boundary itself — it is a sighting of the neighbouring card, dragged "
+                            "into this group by whichever frame's block does span the boundary"
+                        )
+                    )
                 elif bridges:
                     # Segment.py's blocks are disjoint within one frame, so a frame contributing
                     # both the bounding sighting and an OVERLAPPING fragment to one group should
@@ -2707,7 +3351,8 @@ def _resolve_group(group: Sequence[BlockObservation], *, tolerance: int,
                         f"both are frame {rep.frame_index}'s own sightings and their extents "
                         "OVERLAP, which should never happen — segment.py's blocks are disjoint "
                         "within one frame, so this is not an ordinary missed gutter but a "
-                        "self-contradictory frame")
+                        "self-contradictory frame"
+                    )
                 else:
                     # The overlap test above is what this branch was missing until 2026-08-28,
                     # and its absence sent an operator to the wrong frame on a live refusal: the
@@ -2723,13 +3368,15 @@ def _resolve_group(group: Sequence[BlockObservation], *, tolerance: int,
                         "are DISJOINT: that frame bounded one card and separately saw a fragment "
                         "of the next, and some OTHER frame's missed boundary folded the two into "
                         f"one group — frame {rep.frame_index} is not disagreeing with itself, so "
-                        "look for the frame whose own block spans this boundary")
+                        "look for the frame whose own block spans this boundary"
+                    )
                 failures.append(
                     f"frame {other.frame_index} sees page rows {other.page_y0}..{other.page_y1} "
                     f"(its own frame rows {other.frame_y0}..{other.frame_y1}) where the block was "
                     f"bounded at {page_y0}..{page_y1} by frame {rep.frame_index} (frame rows "
                     f"{rep.frame_y0}..{rep.frame_y1}) — a fragment cannot reach past the card "
-                    f"that contains it, so {origin}")
+                    f"that contains it, so {origin}"
+                )
     else:
         page_y0 = min(o.page_y0 for o in observations)
         page_y1 = max(o.page_y1 for o in observations)
@@ -2739,28 +3386,46 @@ def _resolve_group(group: Sequence[BlockObservation], *, tolerance: int,
 
     if len(hearts) > 1:
         kind = ITEM_AMBIGUOUS
-        reason = (f"{len(hearts)} distinct like hearts at page rows "
-                  f"{[y for _, y in hearts]} inside one block — every likeable Hinge item "
-                  f"carries exactly one, so a gutter between them was missed; {seen_in}")
-        failures.append(f"block at page rows {page_y0}..{page_y1} is ambiguous: {reason}")
+        reason = (
+            f"{len(hearts)} distinct like hearts at page rows "
+            f"{[y for _, y in hearts]} inside one block — every likeable Hinge item "
+            f"carries exactly one, so a gutter between them was missed; {seen_in}"
+        )
+        failures.append(
+            f"block at page rows {page_y0}..{page_y1} is ambiguous: {reason}"
+        )
     elif not complete:
         kind = ITEM_PARTIAL
-        reason = (f"no frame observed both edges, so {page_y0}..{page_y1} is the hull of "
-                  f"{len(observations)} fragment(s) and a lower bound on the real card; "
-                  f"{len(hearts)} heart(s); {seen_in}")
+        reason = (
+            f"no frame observed both edges, so {page_y0}..{page_y1} is the hull of "
+            f"{len(observations)} fragment(s) and a lower bound on the real card; "
+            f"{len(hearts)} heart(s); {seen_in}"
+        )
     elif hearts:
         kind = ITEM_SELECTABLE
-        reason = (f"bounded at {page_y0}..{page_y1} by frame {bounded_by} with exactly one "
-                  f"like heart at page row {hearts[0][1]}; {seen_in}")
+        reason = (
+            f"bounded at {page_y0}..{page_y1} by frame {bounded_by} with exactly one "
+            f"like heart at page row {hearts[0][1]}; {seen_in}"
+        )
     else:
         kind = ITEM_CONTEXT
-        reason = (f"bounded at {page_y0}..{page_y1} by frame {bounded_by} and no like "
-                  f"heart — a context block, read and referenced but never selectable; {seen_in}")
+        reason = (
+            f"bounded at {page_y0}..{page_y1} by frame {bounded_by} and no like "
+            f"heart — a context block, read and referenced but never selectable; {seen_in}"
+        )
 
     block = IndexedBlock(
-        page_y0=page_y0, page_y1=page_y1, x0=card_x[0], x1=card_x[1],
-        kind=kind, hearts=hearts, heart_ordinal=None, model_index=None,
-        observations=observations, reason=reason)
+        page_y0=page_y0,
+        page_y1=page_y1,
+        x0=card_x[0],
+        x1=card_x[1],
+        kind=kind,
+        hearts=hearts,
+        heart_ordinal=None,
+        model_index=None,
+        observations=observations,
+        reason=reason,
+    )
     return block, failures
 
 
@@ -2771,7 +3436,8 @@ def _resolve_group(group: Sequence[BlockObservation], *, tolerance: int,
 # `truncated`) rather than a hard stop, and the middle of a page a hard stop.
 _UNCERTAIN_HEART_NOTE = (
     "was never observed complete and shows no like heart, so a heart may sit in the rows that "
-    "were never inside the analysed band; every heart ordinal below it would then be wrong")
+    "were never inside the analysed band; every heart ordinal below it would then be wrong"
+)
 
 
 # The edge kinds that mean "this card's OWN top edge was visible on this row", as opposed to
@@ -2792,7 +3458,8 @@ _SCROLL_TOP_ASSERTION_FAILURE_PREFIX = "at_scroll_top was asserted,"
 # producer makes a wording change fail closed (no retry) instead of silently widening the retry.
 _SCROLL_TOP_CORNER_FAILURE_PREFIX = (
     "at_scroll_top was asserted, and page background does sit above the topmost block, but no "
-    "frame ever saw the first item's OWN top edge")
+    "frame ever saw the first item's OWN top edge"
+)
 
 
 def _scroll_top_evidence(blocks: Sequence[IndexedBlock], band_y0: int) -> str | None:
@@ -2878,7 +3545,8 @@ def _scroll_top_evidence(blocks: Sequence[IndexedBlock], band_y0: int) -> str | 
             "band edge looks like rather than the top of a profile — at a genuine scroll top "
             "Hinge's header sits BELOW that row with page background above it (measured 34px "
             "and 68px on the two calibration profiles). Heart ordinal 1 would not be the "
-            "profile's first heart, and nothing else in this result would say so")
+            "profile's first heart, and nothing else in this result would say so"
+        )
     candidates = blocks
     if len(blocks) > 1 and blocks[0].kind == ITEM_PARTIAL and not blocks[0].hearts:
         candidates = blocks[1:]
@@ -2893,12 +3561,16 @@ def _scroll_top_evidence(blocks: Sequence[IndexedBlock], band_y0: int) -> str | 
             "visible and is what bounds it; past the top, the band edge or a screen-pinned "
             "header slices whatever card is there and its real top is off-band. Background above "
             "the topmost block is not by itself evidence of a scroll top — a pinned header puts "
-            "it there on every frame of a capture")
+            "it there on every frame of a capture"
+        )
     return None
 
 
-def _split_on_bounded_cards(group: Sequence[BlockObservation], *, tolerance: int,
-                            ) -> tuple[list[list[BlockObservation]], list[str]]:
+def _split_on_bounded_cards(
+    group: Sequence[BlockObservation],
+    *,
+    tolerance: int,
+) -> tuple[list[list[BlockObservation]], list[str]]:
     """Split ONE `_overlap_groups` group on a card boundary the group's OWN complete sightings
     prove exists, when a bridging fragment has folded two real cards into it.
 
@@ -2950,8 +3622,11 @@ def _split_on_bounded_cards(group: Sequence[BlockObservation], *, tolerance: int
     # Each proven card's extent is the hull of ITS OWN complete sightings — several independent
     # corner-corroborated measurements of the same card, which is what folding them found, not a
     # blend across the boundary this split exists to find.
-    proven = [(min(o.page_y0 for o in card), max(o.page_y1 for o in card), card) for card in cards]
-    proven.sort(key=lambda p: p[0])          # page order, so the returned subgroups are too
+    proven = [
+        (min(o.page_y0 for o in card), max(o.page_y1 for o in card), card)
+        for card in cards
+    ]
+    proven.sort(key=lambda p: p[0])  # page order, so the returned subgroups are too
 
     def overlap_px(o: BlockObservation, y0: int, y1: int) -> int:
         return max(0, min(o.page_y1, y1) - max(o.page_y0, y0))
@@ -2963,13 +3638,17 @@ def _split_on_bounded_cards(group: Sequence[BlockObservation], *, tolerance: int
     assigned: dict[int, int] = {}
     excluded: set[int] = set()
     for i, frag in enumerate(fragments):
-        hits = [c for c, (y0, y1, _) in enumerate(proven) if overlap_px(frag, y0, y1) > tolerance]
+        hits = [
+            c
+            for c, (y0, y1, _) in enumerate(proven)
+            if overlap_px(frag, y0, y1) > tolerance
+        ]
         if not hits:
             return [group], []
         if len(hits) == 1:
             assigned[i] = hits[0]
         else:
-            excluded.add(i)          # overlaps 2+ proven cards: the frame-19/20 bridging shape
+            excluded.add(i)  # overlaps 2+ proven cards: the frame-19/20 bridging shape
 
     # HEART SAFETY. `heart_ordinal` and selectability are downstream of every heart this module
     # sees, so dropping an excluded sighting must never quietly drop a heart nothing else reports.
@@ -2982,43 +3661,67 @@ def _split_on_bounded_cards(group: Sequence[BlockObservation], *, tolerance: int
     for i in excluded:
         frag = fragments[i]
         for _x, y in frag.hearts:
-            card_idx = next((c for c, (y0, y1, _) in enumerate(proven)
-                             if y0 - tolerance <= y <= y1 + tolerance), None)
+            card_idx = next(
+                (
+                    c
+                    for c, (y0, y1, _) in enumerate(proven)
+                    if y0 - tolerance <= y <= y1 + tolerance
+                ),
+                None,
+            )
             if card_idx is None:
                 return [group], []
             _y0, _y1, complete_sightings = proven[card_idx]
             surviving = list(complete_sightings) + [
-                fragments[j] for j, c in assigned.items() if c == card_idx]
-            if not any(abs(hy - y) <= tolerance for s in surviving for _hx, hy in s.hearts):
+                fragments[j] for j, c in assigned.items() if c == card_idx
+            ]
+            if not any(
+                abs(hy - y) <= tolerance for s in surviving for _hx, hy in s.hearts
+            ):
                 return [group], []
 
     subgroups = [
-        list(complete_sightings) + [fragments[i] for i, c in assigned.items() if c == idx]
-        for idx, (_y0, _y1, complete_sightings) in enumerate(proven)]
+        list(complete_sightings)
+        + [fragments[i] for i, c in assigned.items() if c == idx]
+        for idx, (_y0, _y1, complete_sightings) in enumerate(proven)
+    ]
 
     # One note per excluded sighting, worded for an operator to act on: which frame, what it saw,
     # and which proven boundary it bridged — that boundary IS the gutter segmentation missed.
     notes = []
     for i in sorted(excluded):
         frag = fragments[i]
-        hits = [c for c, (y0, y1, _) in enumerate(proven) if overlap_px(frag, y0, y1) > tolerance]
+        hits = [
+            c
+            for c, (y0, y1, _) in enumerate(proven)
+            if overlap_px(frag, y0, y1) > tolerance
+        ]
         boundary = " and ".join(f"{proven[c][0]}..{proven[c][1]}" for c in hits)
         notes.append(
             f"frame {frag.frame_index}'s sighting at page rows {frag.page_y0}..{frag.page_y1} "
             f"(frame rows {frag.frame_y0}..{frag.frame_y1}) spans the proven card boundary "
             f"between {boundary}: segmentation missed the gutter between them in this frame, so "
-            "the fragment was excluded rather than folded into either card")
+            "the fragment was excluded rather than folded into either card"
+        )
 
     return subgroups, notes
 
 
-def _assemble(observations: Sequence[BlockObservation], *, at_scroll_top: bool,
-              card_x: tuple[int, int], extent_tolerance_px: int, min_item_gap_px: int,
-              band_y0: int, include_notes: bool = False,
-              scroll_top_signal_confirmed: bool = False,
-              page_coverage: Sequence[tuple[int, int]] = (),
-              ) -> (tuple[tuple[IndexedBlock, ...], tuple[str, ...]]
-                    | tuple[tuple[IndexedBlock, ...], tuple[str, ...], tuple[str, ...]]):
+def _assemble(
+    observations: Sequence[BlockObservation],
+    *,
+    at_scroll_top: bool,
+    card_x: tuple[int, int],
+    extent_tolerance_px: int,
+    min_item_gap_px: int,
+    band_y0: int,
+    include_notes: bool = False,
+    scroll_top_signal_confirmed: bool = False,
+    page_coverage: Sequence[tuple[int, int]] = (),
+) -> (
+    tuple[tuple[IndexedBlock, ...], tuple[str, ...]]
+    | tuple[tuple[IndexedBlock, ...], tuple[str, ...], tuple[str, ...]]
+):
     """Sightings in page space -> the ordered block list, the two index spaces, the failures, and
     the notes — sightings `_split_on_bounded_cards` excluded on the way, reported rather than
     silently dropped.
@@ -3046,11 +3749,14 @@ def _assemble(observations: Sequence[BlockObservation], *, at_scroll_top: bool,
         # already fold correctly; it only does work when the group's own complete sightings prove
         # it actually holds two (or more) cards a bridging fragment merged. See its docstring for
         # the live capture that made this necessary.
-        subgroups, split_notes = _split_on_bounded_cards(group, tolerance=extent_tolerance_px)
+        subgroups, split_notes = _split_on_bounded_cards(
+            group, tolerance=extent_tolerance_px
+        )
         notes.extend(split_notes)
         for subgroup in subgroups:
             block, group_failures = _resolve_group(
-                subgroup, tolerance=extent_tolerance_px, card_x=card_x)
+                subgroup, tolerance=extent_tolerance_px, card_x=card_x
+            )
             blocks.append(block)
             failures.extend(group_failures)
 
@@ -3065,8 +3771,9 @@ def _assemble(observations: Sequence[BlockObservation], *, at_scroll_top: bool,
     # where Hinge's name panel meets its first photo. It is deliberately an explicit second
     # input rather than a looser edge predicate: direct/offline callers keep the ordinary
     # geometry guard, and no other page contradiction is waived.
-    top_contradiction = (None if scroll_top_signal_confirmed
-                         else _scroll_top_evidence(blocks, band_y0))
+    top_contradiction = (
+        None if scroll_top_signal_confirmed else _scroll_top_evidence(blocks, band_y0)
+    )
     top_confirmed = bool(blocks) and top_contradiction is None
     if at_scroll_top and blocks and top_contradiction is not None:
         failures.append(top_contradiction)
@@ -3078,14 +3785,23 @@ def _assemble(observations: Sequence[BlockObservation], *, at_scroll_top: bool,
     # exception. The `top_confirmed` term matters beyond the failure already appended: without
     # it this relabelling is what SWALLOWS the evidence, turning the sliced leading fragment of a
     # false top into a "chrome" block that no later rule looks at again.
-    if (at_scroll_top and top_confirmed and len(blocks) > 1
-            and blocks[0].kind == ITEM_PARTIAL and not blocks[0].hearts):
+    if (
+        at_scroll_top
+        and top_confirmed
+        and len(blocks) > 1
+        and blocks[0].kind == ITEM_PARTIAL
+        and not blocks[0].hearts
+    ):
         blocks[0] = replace(
-            blocks[0], kind=ITEM_LEADING_CHROME,
-            reason=("the topmost block at a confirmed scroll-top, heartless and never bounded: "
-                    "Hinge's filter-chips header and name row, which sit above item 1 and are "
-                    "chrome rather than an item — outside both index spaces; "
-                    + blocks[0].reason))
+            blocks[0],
+            kind=ITEM_LEADING_CHROME,
+            reason=(
+                "the topmost block at a confirmed scroll-top, heartless and never bounded: "
+                "Hinge's filter-chips header and name row, which sit above item 1 and are "
+                "chrome rather than an item — outside both index spaces; "
+                + blocks[0].reason
+            ),
+        )
 
     # THE FABRICATED-ITEM GUARD. Folding by overlap can only ever merge too much; the way it
     # could invent an item is by leaving one card as two fragments that never overlapped. Two
@@ -3100,12 +3816,13 @@ def _assemble(observations: Sequence[BlockObservation], *, at_scroll_top: bool,
                 f"{below.page_y0}..{below.page_y1} are only {gap}px apart, closer than the "
                 f"{min_item_gap_px}px minimum gutter the layout can draw — they are one card "
                 "whose sightings never overlapped, and counting them as two would fabricate an "
-                "item")
+                "item"
+            )
 
     for i, block in enumerate(blocks):
         if block.kind == ITEM_LEADING_CHROME or block.hearts or block.complete:
             continue
-        if any(later.hearts for later in blocks[i + 1:]):
+        if any(later.hearts for later in blocks[i + 1 :]):
             # A partial block normally hard-stops here because an unseen extension may contain
             # a heart and shift every ordinal below it. The live 2026-08-30 capture exposed the
             # exact converse: Hinge's 37px "From people close to Katie" page heading was seen
@@ -3131,51 +3848,64 @@ def _assemble(observations: Sequence[BlockObservation], *, at_scroll_top: bool,
             if 0 < i < len(blocks) - 1:
                 above, below = blocks[i - 1], blocks[i + 1]
                 complete_neighbour_bracket = (
-                    above.complete and below.complete
+                    above.complete
+                    and below.complete
                     and above.page_y1 <= block.page_y0
                     and block.page_y1 <= below.page_y0
                 )
                 canonical_neighbour_gaps = (
                     complete_neighbour_bracket
-                    and _MIN_ITEM_GAP_PX <= block.page_y0 - above.page_y1 <= _END_TAIL_GAP_PX
-                    and _MIN_ITEM_GAP_PX <= below.page_y0 - block.page_y1 <= _END_TAIL_GAP_PX
+                    and _MIN_ITEM_GAP_PX
+                    <= block.page_y0 - above.page_y1
+                    <= _END_TAIL_GAP_PX
+                    and _MIN_ITEM_GAP_PX
+                    <= below.page_y0 - block.page_y1
+                    <= _END_TAIL_GAP_PX
                 )
-                bracketed_and_scanned = (
-                    complete_neighbour_bracket
-                    and any(covered_y0 <= above.page_y1
-                            and below.page_y0 <= covered_y1
-                            for covered_y0, covered_y1 in page_coverage)
-            )
+                bracketed_and_scanned = complete_neighbour_bracket and any(
+                    covered_y0 <= above.page_y1 and below.page_y0 <= covered_y1
+                    for covered_y0, covered_y1 in page_coverage
+                )
             own_edges_and_scanned = (
                 canonical_neighbour_gaps
-                and any(observation.top_observed
+                and any(
+                    observation.top_observed
                     and abs(observation.page_y0 - block.page_y0) <= extent_tolerance_px
-                    for observation in block.observations)
-                and any(observation.bottom_observed
-                        and abs(observation.page_y1 - block.page_y1) <= extent_tolerance_px
-                        for observation in block.observations)
-                and any(covered_y0 <= block.page_y0 and block.page_y1 <= covered_y1
-                        for covered_y0, covered_y1 in page_coverage)
+                    for observation in block.observations
+                )
+                and any(
+                    observation.bottom_observed
+                    and abs(observation.page_y1 - block.page_y1) <= extent_tolerance_px
+                    for observation in block.observations
+                )
+                and any(
+                    covered_y0 <= block.page_y0 and block.page_y1 <= covered_y1
+                    for covered_y0, covered_y1 in page_coverage
+                )
             )
             if bracketed_and_scanned or own_edges_and_scanned:
                 if own_edges_and_scanned and not bracketed_and_scanned:
                     coverage_reason = (
                         f"its own observed edges and one failure-free frame heart-scanned every "
-                        f"page row {block.page_y0}..{block.page_y1} of its resolved extent")
+                        f"page row {block.page_y0}..{block.page_y1} of its resolved extent"
+                    )
                 else:
                     above, below = blocks[i - 1], blocks[i + 1]
                     coverage_reason = (
                         f"one failure-free frame heart-scanned every page row "
                         f"{above.page_y1}..{below.page_y0} between its complete neighbouring "
-                        "blocks")
+                        "blocks"
+                    )
                 notes.append(
                     f"the heartless partial block at page rows {block.page_y0}..{block.page_y1} "
                     f"is retained as uncroppable but is ordinal-safe: {coverage_reason}, so it "
-                    "has no unseen rows in which a heart could hide")
+                    "has no unseen rows in which a heart could hide"
+                )
                 continue
             failures.append(
                 f"the block at page rows {block.page_y0}..{block.page_y1} "
-                + _UNCERTAIN_HEART_NOTE)
+                + _UNCERTAIN_HEART_NOTE
+            )
 
     # The two numberings, in page order. The heart counter advances by the block's heart COUNT
     # rather than by one, so an ambiguous block's second heart still occupies its ordinal and
@@ -3199,8 +3929,11 @@ def _assemble(observations: Sequence[BlockObservation], *, at_scroll_top: bool,
 _FRAGMENT_OVERRUN_FAILURE = re.compile(
     r"^frame (?P<frame>\d+) sees page rows (?P<y0>\d+)\.\.(?P<y1>\d+) .*? where the block was "
     r"bounded at (?P<by0>\d+)\.\.(?P<by1>\d+) by frame \d+ .* — a fragment cannot reach past "
-    r"the card that contains it, so ")
-_GROUP_AMBIGUOUS_FAILURE = re.compile(r"^block at page rows (\d+)\.\.(\d+) is ambiguous: ")
+    r"the card that contains it, so "
+)
+_GROUP_AMBIGUOUS_FAILURE = re.compile(
+    r"^block at page rows (\d+)\.\.(\d+) is ambiguous: "
+)
 
 
 def _fragment_overrun_frame_indices(failures: Sequence[str]) -> tuple[int, ...]:
@@ -3245,7 +3978,7 @@ def _fragment_overrun_frame_indices(failures: Sequence[str]) -> tuple[int, ...]:
             y0, y1 = int(match["y0"]), int(match["y1"])
             by0, by1 = int(match["by0"]), int(match["by1"])
             bounded.add((by0, by1))
-            if y0 < by1 and by0 < y1:                       # overlaps the card AND runs past it
+            if y0 < by1 and by0 < y1:  # overlaps the card AND runs past it
                 bridging.append(int(match["frame"]))
             continue
         ambiguity = _GROUP_AMBIGUOUS_FAILURE.match(failure)
@@ -3257,11 +3990,21 @@ def _fragment_overrun_frame_indices(failures: Sequence[str]) -> tuple[int, ...]:
     return tuple(sorted(set(bridging)))
 
 
-def _fold_page(segmentations: Sequence[FrameSegmentation], offsets: Sequence[int | None], *,
-               at_scroll_top: bool, extent_tolerance_px: int, min_item_gap_px: int,
-               scroll_top_signal_confirmed: bool,
-               ) -> tuple[tuple[IndexedBlock, ...], tuple[str, ...], tuple[str, ...],
-                          tuple[str, ...], frozenset[tuple[int, int]]]:
+def _fold_page(
+    segmentations: Sequence[FrameSegmentation],
+    offsets: Sequence[int | None],
+    *,
+    at_scroll_top: bool,
+    extent_tolerance_px: int,
+    min_item_gap_px: int,
+    scroll_top_signal_confirmed: bool,
+) -> tuple[
+    tuple[IndexedBlock, ...],
+    tuple[str, ...],
+    tuple[str, ...],
+    tuple[str, ...],
+    frozenset[tuple[int, int]],
+]:
     """Every frame's segmentation plus a page offset each -> the folded page.
 
     The whole pipeline lives here — screen-fixed islands, observations, the two virtual splits,
@@ -3288,48 +4031,73 @@ def _fold_page(segmentations: Sequence[FrameSegmentation], offsets: Sequence[int
     long_runs = tuple(
         (frame_index, run.y0 + offset, run.y1 + offset)
         for frame_index, (segmentation, offset) in enumerate(
-            zip(segmentations, offsets, strict=True))
+            zip(segmentations, offsets, strict=True)
+        )
         if offset is not None
-        for run in segmentation.runs if run.kind == RUN_TOO_LONG)
+        for run in segmentation.runs
+        if run.kind == RUN_TOO_LONG
+    )
     observations, long_run_notes = _split_long_background_card_top_merges(
-        observations, long_runs, tolerance=extent_tolerance_px)
+        observations, long_runs, tolerance=extent_tolerance_px
+    )
     # A 59..64px page-background run stays `RUN_TOO_LONG` in one frame unless that frame's own
     # hearts prove a boundary.  Preserve that conservative segmenter rule, but let the page fold
     # use the stronger cross-frame proof when it is present (see helper).
     near_gutters = tuple(
         (frame_index, run.y0 + offset, run.y1 + offset)
         for frame_index, (segmentation, offset) in enumerate(
-            zip(segmentations, offsets, strict=True))
+            zip(segmentations, offsets, strict=True)
+        )
         if offset is not None
         for run in segmentation.runs
-        if (run.kind == RUN_TOO_LONG
-            and min(_HEART_SEPARATED_NEAR_GUTTER_PX) <= run.height
-            <= max(_HEART_SEPARATED_NEAR_GUTTER_PX)))
+        if (
+            run.kind == RUN_TOO_LONG
+            and min(_HEART_SEPARATED_NEAR_GUTTER_PX)
+            <= run.height
+            <= max(_HEART_SEPARATED_NEAR_GUTTER_PX)
+        )
+    )
     observations, near_gutter_notes = _split_repeated_near_gutter_merges(
-        observations, near_gutters, tolerance=extent_tolerance_px)
+        observations, near_gutters, tolerance=extent_tolerance_px
+    )
     blocks, failures, assembly_notes = _assemble(
-        observations, at_scroll_top=at_scroll_top, card_x=segmentations[0].card_x,
-        extent_tolerance_px=extent_tolerance_px, min_item_gap_px=min_item_gap_px,
-        band_y0=segmentations[0].band[0], include_notes=True,
+        observations,
+        at_scroll_top=at_scroll_top,
+        card_x=segmentations[0].card_x,
+        extent_tolerance_px=extent_tolerance_px,
+        min_item_gap_px=min_item_gap_px,
+        band_y0=segmentations[0].band[0],
+        include_notes=True,
         scroll_top_signal_confirmed=scroll_top_signal_confirmed,
-        page_coverage=_failure_free_page_coverage(segmentations, offsets))
-    return (blocks, failures,
-            island_notes + long_run_notes + near_gutter_notes + assembly_notes,
-            island_notes, screen_fixed)
+        page_coverage=_failure_free_page_coverage(segmentations, offsets),
+    )
+    return (
+        blocks,
+        failures,
+        island_notes + long_run_notes + near_gutter_notes + assembly_notes,
+        island_notes,
+        screen_fixed,
+    )
 
 
-def build_item_index(frames: Sequence[bytes], *, content_band: tuple[float, float],
-                     like_template, like_threshold: float, at_scroll_top: bool,
-                     identity_band: tuple[float, float, float, float] | None,
-                     scroll_top_signal_confirmed: bool = False,
-                     animation_markers: Sequence[bool] | None = None,
-                     video_mute_markers: Sequence[VideoMuteMarker] | None = None,
-                     trust_window_px: int | None = None,
-                     extent_tolerance_px: int = _EXTENT_TOLERANCE_PX,
-                     min_item_gap_px: int = _MIN_ITEM_GAP_PX,
-                     end_tail_gap_px: int = _END_TAIL_GAP_PX,
-                     _prefix_index: ItemIndex | None = None,
-                     _allow_frame_omission_recovery: bool = True) -> ItemIndex:
+def build_item_index(
+    frames: Sequence[bytes],
+    *,
+    content_band: tuple[float, float],
+    like_template,
+    like_threshold: float,
+    at_scroll_top: bool,
+    identity_band: tuple[float, float, float, float] | None,
+    scroll_top_signal_confirmed: bool = False,
+    animation_markers: Sequence[bool] | None = None,
+    video_mute_markers: Sequence[VideoMuteMarker] | None = None,
+    trust_window_px: int | None = None,
+    extent_tolerance_px: int = _EXTENT_TOLERANCE_PX,
+    min_item_gap_px: int = _MIN_ITEM_GAP_PX,
+    end_tail_gap_px: int = _END_TAIL_GAP_PX,
+    _prefix_index: ItemIndex | None = None,
+    _allow_frame_omission_recovery: bool = True,
+) -> ItemIndex:
     """Fold an ordered run of scroll frames into ONE list of the profile's items.
 
     `frames` are consecutive screencaps of the SAME profile, earliest first, captured while
@@ -3425,23 +4193,32 @@ def build_item_index(frames: Sequence[bytes], *, content_band: tuple[float, floa
     if not frames:
         raise ItemIndexError(
             "no frames to index: an empty capture is a capture failure, and returning an empty "
-            "item list for it would read as 'this profile has no items'")
-    marker_evidence = (tuple(False for _ in frames) if animation_markers is None
-                       else tuple(bool(value) for value in animation_markers))
+            "item list for it would read as 'this profile has no items'"
+        )
+    marker_evidence = (
+        tuple(False for _ in frames)
+        if animation_markers is None
+        else tuple(bool(value) for value in animation_markers)
+    )
     if len(marker_evidence) != len(frames):
         raise ItemIndexError(
             f"{len(marker_evidence)} animation marker(s) given for {len(frames)} frame(s) — "
-            "video evidence must be frame-aligned and may not be guessed or padded")
+            "video evidence must be frame-aligned and may not be guessed or padded"
+        )
     mute_markers = tuple(video_mute_markers or ())
     if any(not isinstance(marker, VideoMuteMarker) for marker in mute_markers):
-        raise ItemIndexError("video mute markers must be VideoMuteMarker records, never booleans")
+        raise ItemIndexError(
+            "video mute markers must be VideoMuteMarker records, never booleans"
+        )
     if any(not (0 <= marker.frame_index < len(frames)) for marker in mute_markers):
         raise ItemIndexError("video mute marker frame index is outside this capture")
     if animation_markers is None and mute_markers:
         # Structured rows are stronger evidence; deriving their historical frame flag keeps the
         # all-or-nothing v11 fallback available after a v12 track rejects itself.
-        marker_evidence = tuple(any(marker.frame_index == frame_index for marker in mute_markers)
-                                for frame_index in range(len(frames)))
+        marker_evidence = tuple(
+            any(marker.frame_index == frame_index for marker in mute_markers)
+            for frame_index in range(len(frames))
+        )
 
     # `_prefix_index` is intentionally private: the supervised calibration reader is the only
     # caller that grows one frame list by one frame at a time.  Reuse only measurements whose
@@ -3455,7 +4232,9 @@ def build_item_index(frames: Sequence[bytes], *, content_band: tuple[float, floa
         candidate_count = len(_prefix_index.frames)
         if all(
             seg.frame_digest == hashlib.sha256(frame).hexdigest()
-            for seg, frame in zip(_prefix_index.frames, frames[:candidate_count], strict=True)
+            for seg, frame in zip(
+                _prefix_index.frames, frames[:candidate_count], strict=True
+            )
         ):
             prefix_count = candidate_count
 
@@ -3464,29 +4243,51 @@ def build_item_index(frames: Sequence[bytes], *, content_band: tuple[float, floa
         # are safe results, but the raw evidence must be replayed here so the extended capture
         # re-applies the same bounded-run gate and retains provenance instead of silently
         # treating a synthetic acceptance as an ordinary frameshift quorum.
-        prefix_raw_shifts = dict(getattr(_prefix_index, "layout_repaired_shifts", ()) or ())
+        prefix_raw_shifts = dict(
+            getattr(_prefix_index, "layout_repaired_shifts", ()) or ()
+        )
         segmentations = _prefix_index.frames + tuple(
             segment_frame(
-                frame, content_band=content_band, like_template=like_template,
+                frame,
+                content_band=content_band,
+                like_template=like_template,
                 like_threshold=like_threshold,
-                recover_leading_low_contrast_media=bool(at_scroll_top and i == 0))
-            for i, frame in enumerate(frames[prefix_count:], start=prefix_count))
-        shifts = tuple(prefix_raw_shifts.get(i, shift)
-                       for i, shift in enumerate(_prefix_index.shifts)) + tuple(
-            estimate_shift(frames[i], frames[i + 1], content_band=content_band,
-                           trust_window_px=trust_window_px)
-            for i in range(prefix_count - 1, len(frames) - 1))
+                recover_leading_low_contrast_media=bool(at_scroll_top and i == 0),
+            )
+            for i, frame in enumerate(frames[prefix_count:], start=prefix_count)
+        )
+        shifts = tuple(
+            prefix_raw_shifts.get(i, shift)
+            for i, shift in enumerate(_prefix_index.shifts)
+        ) + tuple(
+            estimate_shift(
+                frames[i],
+                frames[i + 1],
+                content_band=content_band,
+                trust_window_px=trust_window_px,
+            )
+            for i in range(prefix_count - 1, len(frames) - 1)
+        )
     else:
         segmentations = tuple(
             segment_frame(
-                frame, content_band=content_band, like_template=like_template,
+                frame,
+                content_band=content_band,
+                like_template=like_template,
                 like_threshold=like_threshold,
-                recover_leading_low_contrast_media=bool(at_scroll_top and i == 0))
-            for i, frame in enumerate(frames))
+                recover_leading_low_contrast_media=bool(at_scroll_top and i == 0),
+            )
+            for i, frame in enumerate(frames)
+        )
         shifts = tuple(
-            estimate_shift(frames[i], frames[i + 1], content_band=content_band,
-                           trust_window_px=trust_window_px)
-            for i in range(len(frames) - 1))
+            estimate_shift(
+                frames[i],
+                frames[i + 1],
+                content_band=content_band,
+                trust_window_px=trust_window_px,
+            )
+            for i in range(len(frames) - 1)
+        )
 
     # `frameshift` keeps its own three-strip quorum unchanged.  Only after the independent
     # segmenter has produced card edges and heart glyphs may a bounded animation-shaped run
@@ -3506,8 +4307,12 @@ def build_item_index(frames: Sequence[bytes], *, content_band: tuple[float, floa
     accepted_repair_path: str | None = None
     if mute_markers:
         shifts, repair_notes, layout_repaired_shifts = _repair_video_track_shifts(
-            segmentations, shifts, mute_markers,
-            extent_tolerance_px=extent_tolerance_px, max_step_px=pitch_max_step_px)
+            segmentations,
+            shifts,
+            mute_markers,
+            extent_tolerance_px=extent_tolerance_px,
+            max_step_px=pitch_max_step_px,
+        )
         used_video_track = bool(repair_notes)
         if repair_notes:
             accepted_repair_path = "v12_mute_card_track"
@@ -3516,18 +4321,27 @@ def build_item_index(frames: Sequence[bytes], *, content_band: tuple[float, floa
             # older replay even when its historical frame-aligned flag was recorded.  Keep that
             # compatibility path as a proposal-only fallback; live Hinge never relies on it.
             shifts, repair_notes, layout_repaired_shifts = _repair_shifts_from_layout(
-                segmentations, raw_shifts, extent_tolerance_px=extent_tolerance_px,
-                animation_markers=marker_evidence, max_step_px=pitch_max_step_px)
+                segmentations,
+                raw_shifts,
+                extent_tolerance_px=extent_tolerance_px,
+                animation_markers=marker_evidence,
+                max_step_px=pitch_max_step_px,
+            )
             if repair_notes:
                 accepted_repair_path = "legacy_layout_grammar"
     else:
         # Compatibility for recorded/offline callers which only stored the pre-v12 frame flag.
         # Production Hinge sends positioned markers and never grants repair authority from this.
         shifts, repair_notes, layout_repaired_shifts = _repair_shifts_from_layout(
-            segmentations, shifts, extent_tolerance_px=extent_tolerance_px,
-            animation_markers=marker_evidence, max_step_px=pitch_max_step_px)
+            segmentations,
+            shifts,
+            extent_tolerance_px=extent_tolerance_px,
+            animation_markers=marker_evidence,
+            max_step_px=pitch_max_step_px,
+        )
         if repair_notes:
             accepted_repair_path = "legacy_layout_grammar"
+
     def repair_probe_failed(candidate_shifts: Sequence[ShiftEstimate]) -> bool:
         probe_offsets, probe_chain_failures = _frame_offsets(candidate_shifts)
         probe_failures: tuple[str, ...] = ()
@@ -3536,11 +4350,20 @@ def build_item_index(frames: Sequence[bytes], *, content_band: tuple[float, floa
             # by keeping a copy of it in step. In particular, do not let a screen-pinned Hinge
             # header or a repeatedly proven near-gutter merge reject a repair before the final
             # assembly gets to apply those existing fail-closed rules.
-            (_probe_blocks, probe_failures, _probe_notes, _probe_island_notes,
-             _probe_screen_fixed) = _fold_page(
-                segmentations, probe_offsets, at_scroll_top=at_scroll_top,
-                extent_tolerance_px=extent_tolerance_px, min_item_gap_px=min_item_gap_px,
-                scroll_top_signal_confirmed=scroll_top_signal_confirmed)
+            (
+                _probe_blocks,
+                probe_failures,
+                _probe_notes,
+                _probe_island_notes,
+                _probe_screen_fixed,
+            ) = _fold_page(
+                segmentations,
+                probe_offsets,
+                at_scroll_top=at_scroll_top,
+                extent_tolerance_px=extent_tolerance_px,
+                min_item_gap_px=min_item_gap_px,
+                scroll_top_signal_confirmed=scroll_top_signal_confirmed,
+            )
         # Scroll-top corroboration does not contradict a proposed frame-to-frame shift.  Keep the
         # repair so the final fold can report that independent gate directly (and the live driver
         # may perform its separately proved confirmed-top retry) instead of rolling back to a raw
@@ -3548,10 +4371,15 @@ def build_item_index(frames: Sequence[bytes], *, content_band: tuple[float, floa
         # ItemIndex remains unusable until that top failure is independently resolved.  Every
         # other fold or segmentation failure still rolls the whole proposal back as before.
         repair_contradictions = tuple(
-            failure for failure in probe_failures
-            if not failure.startswith(_SCROLL_TOP_ASSERTION_FAILURE_PREFIX))
-        return bool(probe_chain_failures or repair_contradictions
-                    or any(seg.failures for seg in segmentations))
+            failure
+            for failure in probe_failures
+            if not failure.startswith(_SCROLL_TOP_ASSERTION_FAILURE_PREFIX)
+        )
+        return bool(
+            probe_chain_failures
+            or repair_contradictions
+            or any(seg.failures for seg in segmentations)
+        )
 
     if repair_notes and repair_probe_failed(shifts):
         if used_video_track:
@@ -3559,11 +4387,18 @@ def build_item_index(frames: Sequence[bytes], *, content_band: tuple[float, floa
             # the page is discarded wholesale, then the independently audited historical
             # grammar gets one fresh all-or-nothing probe from the original raw shifts.
             legacy_shifts, legacy_notes, legacy_raw = _repair_shifts_from_layout(
-                segmentations, raw_shifts, extent_tolerance_px=extent_tolerance_px,
-                animation_markers=marker_evidence, max_step_px=pitch_max_step_px)
+                segmentations,
+                raw_shifts,
+                extent_tolerance_px=extent_tolerance_px,
+                animation_markers=marker_evidence,
+                max_step_px=pitch_max_step_px,
+            )
             if legacy_notes and not repair_probe_failed(legacy_shifts):
                 shifts, repair_notes, layout_repaired_shifts = (
-                    legacy_shifts, legacy_notes, legacy_raw)
+                    legacy_shifts,
+                    legacy_notes,
+                    legacy_raw,
+                )
                 accepted_repair_path = "legacy_layout_grammar"
             else:
                 shifts, repair_notes, layout_repaired_shifts = raw_shifts, (), ()
@@ -3575,18 +4410,28 @@ def build_item_index(frames: Sequence[bytes], *, content_band: tuple[float, floa
     repair_provenance = tuple(
         ItemIndexRepair(
             pair_index=pair_index,
-            path=(_SAME_PAIR_MARKER_EXIT_REPAIR_PATH
-                  if (accepted_repair_path == "v12_mute_card_track"
-                      and shifts[pair_index].reason.startswith(
-                          _SAME_PAIR_MARKER_EXIT_REASON_PREFIX))
-                  else accepted_repair_path or "legacy_layout_grammar"),
-            raw_status=raw.status, raw_delta_px=raw.delta_px,
+            path=(
+                _SAME_PAIR_MARKER_EXIT_REPAIR_PATH
+                if (
+                    accepted_repair_path == "v12_mute_card_track"
+                    and shifts[pair_index].reason.startswith(
+                        _SAME_PAIR_MARKER_EXIT_REASON_PREFIX
+                    )
+                )
+                else accepted_repair_path or "legacy_layout_grammar"
+            ),
+            raw_status=raw.status,
+            raw_delta_px=raw.delta_px,
             effective_status=shifts[pair_index].status,
             effective_delta_px=shifts[pair_index].delta_px,
-            marker_frames=tuple(marker.frame_index for marker in mute_markers
-                                if marker.frame_index in (pair_index, pair_index + 1)),
+            marker_frames=tuple(
+                marker.frame_index
+                for marker in mute_markers
+                if marker.frame_index in (pair_index, pair_index + 1)
+            ),
         )
-        for pair_index, raw in layout_repaired_shifts)
+        for pair_index, raw in layout_repaired_shifts
+    )
 
     # An ordinary read can contain one unusable *intermediate* frame while both of its neighbours
     # still correspond.  That produces either one failed pair (only one side was damaged) or two
@@ -3614,17 +4459,29 @@ def build_item_index(frames: Sequence[bytes], *, content_band: tuple[float, floa
     # exact shape.  Let that *specific proof* nominate its own frames for the same direct-bridge
     # recovery; do not search through ostensibly good frames looking for a better answer.
     fold_contradiction_frames: tuple[int, ...] = ()
-    if (_allow_frame_omission_recovery and not failed_pairs
-            and not failed_segmentation_frames):
+    if (
+        _allow_frame_omission_recovery
+        and not failed_pairs
+        and not failed_segmentation_frames
+    ):
         probe_offsets, probe_chain_failures = _frame_offsets(shifts)
         if not probe_chain_failures:
             # Same `_fold_page` the real fold below runs, so the contradiction this reads is the
             # contradiction the final assembly would report.
-            (_probe_blocks, probe_failures, _probe_notes, _probe_island_notes,
-             _probe_screen_fixed) = _fold_page(
-                segmentations, probe_offsets, at_scroll_top=at_scroll_top,
-                extent_tolerance_px=extent_tolerance_px, min_item_gap_px=min_item_gap_px,
-                scroll_top_signal_confirmed=scroll_top_signal_confirmed)
+            (
+                _probe_blocks,
+                probe_failures,
+                _probe_notes,
+                _probe_island_notes,
+                _probe_screen_fixed,
+            ) = _fold_page(
+                segmentations,
+                probe_offsets,
+                at_scroll_top=at_scroll_top,
+                extent_tolerance_px=extent_tolerance_px,
+                min_item_gap_px=min_item_gap_px,
+                scroll_top_signal_confirmed=scroll_top_signal_confirmed,
+            )
             fold_contradiction_frames = _fragment_overrun_frame_indices(probe_failures)
     # One short, contiguous contradictory run is also eligible for the same conservative
     # recovery.  A white-on-white Hinge card boundary can remain invisible for four adjacent
@@ -3640,22 +4497,25 @@ def build_item_index(frames: Sequence[bytes], *, content_band: tuple[float, floa
         1 <= len(segmentation_frames) <= MAX_SEGMENTATION_FALLBACK_FRAMES
         and segmentation_frames[0] > 0
         and segmentation_frames[-1] < len(frames) - 1
-        and segmentation_frames == tuple(range(segmentation_frames[0],
-                                               segmentation_frames[-1] + 1)))
+        and segmentation_frames
+        == tuple(range(segmentation_frames[0], segmentation_frames[-1] + 1))
+    )
     if segmentation_recovery:
         omitted_set = set(segmentation_frames)
         # A pair may fail because it touches the bad run; a failure wholly outside it proves the
         # sequence has a second fault and cannot be repaired by dropping these frames.
         segmentation_recovery = all(
             pair_index in omitted_set or pair_index + 1 in omitted_set
-            for pair_index in failed_pairs)
+            for pair_index in failed_pairs
+        )
 
     fold_recovery = (
         1 <= len(fold_contradiction_frames) <= MAX_SEGMENTATION_FALLBACK_FRAMES
         and fold_contradiction_frames[0] > 0
         and fold_contradiction_frames[-1] < len(frames) - 1
-        and fold_contradiction_frames == tuple(range(
-            fold_contradiction_frames[0], fold_contradiction_frames[-1] + 1)))
+        and fold_contradiction_frames
+        == tuple(range(fold_contradiction_frames[0], fold_contradiction_frames[-1] + 1))
+    )
 
     if failed_segmentation_frames:
         candidate_runs = [segmentation_frames] if segmentation_recovery else []
@@ -3668,8 +4528,10 @@ def build_item_index(frames: Sequence[bytes], *, content_band: tuple[float, floa
             right = segmentation_frames[-1] + 1
             if left > 0 and len(segmentation_frames) < MAX_SEGMENTATION_FALLBACK_FRAMES:
                 candidate_runs.append((left,) + segmentation_frames)
-            if (right < len(frames) - 1
-                    and len(segmentation_frames) < MAX_SEGMENTATION_FALLBACK_FRAMES):
+            if (
+                right < len(frames) - 1
+                and len(segmentation_frames) < MAX_SEGMENTATION_FALLBACK_FRAMES
+            ):
                 candidate_runs.append(segmentation_frames + (right,))
     elif fold_recovery:
         # Unlike the segmenter-failure path, the page fold names every bad partial explicitly;
@@ -3679,7 +4541,9 @@ def build_item_index(frames: Sequence[bytes], *, content_band: tuple[float, floa
         candidate_runs = [(candidate,) for candidate in sorted(omission_candidates)]
 
     if _allow_frame_omission_recovery and candidate_runs:
-        candidates: list[tuple[tuple[float, float, float, int], tuple[int, ...], ItemIndex]] = []
+        candidates: list[
+            tuple[tuple[float, float, float, int], tuple[int, ...], ItemIndex]
+        ] = []
         # `_enum_step_ceiling`, NOT `_pitch_relative_max_step`/`pitch_max_step_px` above: this is
         # a different question from the landmark-pairing bound ("how far could N ordinary
         # enumeration GESTURES have moved the content", not "how close can two landmarks be
@@ -3697,7 +4561,9 @@ def build_item_index(frames: Sequence[bytes], *, content_band: tuple[float, floa
         # refused consensus or assumed sum enters the recovered coordinate space.
         for omitted_frames in candidate_runs:
             omitted_set = set(omitted_frames)
-            reduced_frames = tuple(frame for i, frame in enumerate(frames) if i not in omitted_set)
+            reduced_frames = tuple(
+                frame for i, frame in enumerate(frames) if i not in omitted_set
+            )
             # The direct bridge spans the omitted frames plus the next real read, regardless of
             # WHY a frame was omitted. Its maximum is therefore a known multiple of the driver's
             # own one-gesture ceiling, not an inferred page offset. Widen only that fresh bridge
@@ -3706,40 +4572,75 @@ def build_item_index(frames: Sequence[bytes], *, content_band: tuple[float, floa
             default_window = (segmentations[0].band[1] - segmentations[0].band[0]) // 2
             recovery_trust_window_px = max(
                 default_window if trust_window_px is None else trust_window_px,
-                (len(omitted_frames) + 1) * enum_step_ceiling_px)
+                (len(omitted_frames) + 1) * enum_step_ceiling_px,
+            )
             recovered = build_item_index(
-                reduced_frames, content_band=content_band, like_template=like_template,
-                like_threshold=like_threshold, at_scroll_top=at_scroll_top,
+                reduced_frames,
+                content_band=content_band,
+                like_template=like_template,
+                like_threshold=like_threshold,
+                at_scroll_top=at_scroll_top,
                 identity_band=identity_band,
                 scroll_top_signal_confirmed=scroll_top_signal_confirmed,
-                animation_markers=tuple(value for i, value in enumerate(marker_evidence)
-                                        if i not in omitted_set),
+                animation_markers=tuple(
+                    value
+                    for i, value in enumerate(marker_evidence)
+                    if i not in omitted_set
+                ),
                 video_mute_markers=tuple(
                     VideoMuteMarker(
-                        frame_index=(marker.frame_index - sum(
-                            omitted < marker.frame_index for omitted in omitted_frames)),
-                        x=marker.x, y=marker.y, score=marker.score)
-                    for marker in mute_markers if marker.frame_index not in omitted_set),
+                        frame_index=(
+                            marker.frame_index
+                            - sum(
+                                omitted < marker.frame_index
+                                for omitted in omitted_frames
+                            )
+                        ),
+                        x=marker.x,
+                        y=marker.y,
+                        score=marker.score,
+                    )
+                    for marker in mute_markers
+                    if marker.frame_index not in omitted_set
+                ),
                 trust_window_px=recovery_trust_window_px,
-                extent_tolerance_px=max(extent_tolerance_px, _RECOVERY_EXTENT_TOLERANCE_PX),
+                extent_tolerance_px=max(
+                    extent_tolerance_px, _RECOVERY_EXTENT_TOLERANCE_PX
+                ),
                 min_item_gap_px=min_item_gap_px,
-                end_tail_gap_px=end_tail_gap_px, _allow_frame_omission_recovery=False)
+                end_tail_gap_px=end_tail_gap_px,
+                _allow_frame_omission_recovery=False,
+            )
             bridge = (omitted_frames[0] - 1, omitted_frames[-1] + 1)
             # The source index shifts by one after the omission, but the bridge always starts at
             # the original left neighbour.  ``usable`` also rules out any other broken pair.
             bridge_shift = recovered.shifts[bridge[0]] if recovered.usable else None
             bridge_step_ceiling_px = (len(omitted_frames) + 1) * enum_step_ceiling_px
             ordinary_pairs_stay_one_step = all(
-                pair_index == bridge[0] or shift.delta_px is not None
+                pair_index == bridge[0]
+                or shift.delta_px is not None
                 and 0 <= shift.delta_px <= enum_step_ceiling_px
-                for pair_index, shift in enumerate(recovered.shifts))
-            if (bridge_shift is not None and bridge_shift.status == SHIFT_MEASURED
-                    and bridge_shift.delta_px is not None
-                    and 0 <= bridge_shift.delta_px <= bridge_step_ceiling_px
-                    and ordinary_pairs_stay_one_step):
-                candidates.append((
-                    (bridge_shift.agreeing, bridge_shift.confidence,
-                     -bridge_shift.dissenting, -omitted_frames[0]), omitted_frames, recovered))
+                for pair_index, shift in enumerate(recovered.shifts)
+            )
+            if (
+                bridge_shift is not None
+                and bridge_shift.status == SHIFT_MEASURED
+                and bridge_shift.delta_px is not None
+                and 0 <= bridge_shift.delta_px <= bridge_step_ceiling_px
+                and ordinary_pairs_stay_one_step
+            ):
+                candidates.append(
+                    (
+                        (
+                            bridge_shift.agreeing,
+                            bridge_shift.confidence,
+                            -bridge_shift.dissenting,
+                            -omitted_frames[0],
+                        ),
+                        omitted_frames,
+                        recovered,
+                    )
+                )
         # Pair-shift recovery has a measured-fitness tie-breaker because both possible omitted
         # frames are directly implicated by the failed pair.  A clean rebuild that drops exactly
         # the explicitly contradictory segmentation frames takes priority over every expansion:
@@ -3751,57 +4652,88 @@ def build_item_index(frames: Sequence[bytes], *, content_band: tuple[float, floa
         candidate_pool = candidates
         if failed_segmentation_frames:
             direct_candidates = [
-                candidate for candidate in candidates
-                if len(candidate[1]) == len(segmentation_frames)]
+                candidate
+                for candidate in candidates
+                if len(candidate[1]) == len(segmentation_frames)
+            ]
             expanded_candidates = [
-                candidate for candidate in candidates
-                if len(candidate[1]) > len(segmentation_frames)]
-            candidate_pool = (direct_candidates if direct_candidates else
-                              expanded_candidates if len(expanded_candidates) == 1 else [])
+                candidate
+                for candidate in candidates
+                if len(candidate[1]) > len(segmentation_frames)
+            ]
+            candidate_pool = (
+                direct_candidates
+                if direct_candidates
+                else expanded_candidates
+                if len(expanded_candidates) == 1
+                else []
+            )
         if candidate_pool:
             # Most independent agreement wins; stable secondary keys make an audit replay choose
             # the same reduction when both bridges are sound.
-            _score, omitted_frames, recovered = max(candidate_pool, key=lambda candidate: candidate[0])
+            _score, omitted_frames, recovered = max(
+                candidate_pool, key=lambda candidate: candidate[0]
+            )
             bridge = (omitted_frames[0] - 1, omitted_frames[-1] + 1)
             return replace(
                 recovered,
-                source_frame_indices=tuple(i for i in range(len(frames)) if i not in omitted_frames),
-                recovered_from_pair=(failed_pair_records[0] if failed_pair_records else None),
+                source_frame_indices=tuple(
+                    i for i in range(len(frames)) if i not in omitted_frames
+                ),
+                recovered_from_pair=(
+                    failed_pair_records[0] if failed_pair_records else None
+                ),
                 recovery_bridge=bridge,
-                recovery_failed_shift=(shifts[failed_pairs[0]] if failed_pairs else None),
+                recovery_failed_shift=(
+                    shifts[failed_pairs[0]] if failed_pairs else None
+                ),
                 recovered_from_pairs=failed_pair_records,
                 recovery_failed_shifts=tuple(shifts[i] for i in failed_pairs),
                 recovered_from_segmentation_frames=(
-                    omitted_frames if failed_segmentation_frames else ()),
+                    omitted_frames if failed_segmentation_frames else ()
+                ),
                 recovered_from_fold_contradiction_frames=(
-                    omitted_frames if fold_contradiction_frames else ()),
+                    omitted_frames if fold_contradiction_frames else ()
+                ),
                 recovery_reason=(
                     f"frame{'s' if len(omitted_frames) > 1 else ''} "
-                    + ", ".join(str(frame) for frame in omitted_frames) + " "
-                    + ("were omitted after a segmentation contradiction and one adjacent "
-                       "frame's geometry could not be reconciled with the complete page"
-                       if (failed_segmentation_frames
-                           and len(omitted_frames) > len(segmentation_frames)) else
-                       "were omitted after their segmentations contradicted themselves"
-                       if len(omitted_frames) > 1 and failed_segmentation_frames else
-                       "was omitted after its segmentation contradicted itself"
-                       if failed_segmentation_frames else
-                       "were omitted after the complete page fold proved each partial sighting "
-                       "crossed a bounded card"
-                       if len(omitted_frames) > 1 and fold_contradiction_frames else
-                       "was omitted after the complete page fold proved its partial sighting "
-                       "crossed a bounded card"
-                       if fold_contradiction_frames else
-                       f"frames {failed_pairs[0]} and {failed_pairs[0] + 1} had no trustworthy "
-                       "shift" if len(failed_pairs) == 1 else
-                       f"pairs {', '.join(f'{a}/{b}' for a, b in failed_pair_records)} had no "
-                       "trustworthy shifts")
+                    + ", ".join(str(frame) for frame in omitted_frames)
+                    + " "
+                    + (
+                        "were omitted after a segmentation contradiction and one adjacent "
+                        "frame's geometry could not be reconciled with the complete page"
+                        if (
+                            failed_segmentation_frames
+                            and len(omitted_frames) > len(segmentation_frames)
+                        )
+                        else "were omitted after their segmentations contradicted themselves"
+                        if len(omitted_frames) > 1 and failed_segmentation_frames
+                        else "was omitted after its segmentation contradicted itself"
+                        if failed_segmentation_frames
+                        else "were omitted after the complete page fold proved each partial sighting "
+                        "crossed a bounded card"
+                        if len(omitted_frames) > 1 and fold_contradiction_frames
+                        else "was omitted after the complete page fold proved its partial sighting "
+                        "crossed a bounded card"
+                        if fold_contradiction_frames
+                        else f"frames {failed_pairs[0]} and {failed_pairs[0] + 1} had no trustworthy "
+                        "shift"
+                        if len(failed_pairs) == 1
+                        else f"pairs {', '.join(f'{a}/{b}' for a, b in failed_pair_records)} had no "
+                        "trustworthy shifts"
+                    )
                     + "; the fresh direct bridge from "
                     f"frame {bridge[0]} to frame {bridge[1]} and the complete rebuilt index "
                     "both passed without assuming an offset"
-                    + (f" (the bridge alone was measured inside the "
-                       f"{(len(omitted_frames) + 1) * enum_step_ceiling_px}px "
-                       "multi-read window)" if len(omitted_frames) > 1 else "")))
+                    + (
+                        f" (the bridge alone was measured inside the "
+                        f"{(len(omitted_frames) + 1) * enum_step_ceiling_px}px "
+                        "multi-read window)"
+                        if len(omitted_frames) > 1
+                        else ""
+                    )
+                ),
+            )
 
     failures: list[str] = []
     for i, seg in enumerate(segmentations):
@@ -3829,10 +4761,16 @@ def build_item_index(frames: Sequence[bytes], *, content_band: tuple[float, floa
         # reports such a strip as `BLOCK_UNANCHORED` without deciding what it is (one frame
         # cannot); this capture's own frames decide it, and a proven one is held out of page
         # space entirely rather than placed at a fabricated `frame_row + offset`.
-        blocks, assembly_failures, fold_notes, screen_fixed_notes, screen_fixed = _fold_page(
-            segmentations, offsets, at_scroll_top=at_scroll_top,
-            extent_tolerance_px=extent_tolerance_px, min_item_gap_px=min_item_gap_px,
-            scroll_top_signal_confirmed=scroll_top_signal_confirmed)
+        blocks, assembly_failures, fold_notes, screen_fixed_notes, screen_fixed = (
+            _fold_page(
+                segmentations,
+                offsets,
+                at_scroll_top=at_scroll_top,
+                extent_tolerance_px=extent_tolerance_px,
+                min_item_gap_px=min_item_gap_px,
+                scroll_top_signal_confirmed=scroll_top_signal_confirmed,
+            )
+        )
         notes = repair_notes + fold_notes
         failures.extend(assembly_failures)
         # DEFENCE IN DEPTH. segment.py refuses to label any strip that holds a heart, so this is
@@ -3847,17 +4785,25 @@ def build_item_index(frames: Sequence[bytes], *, content_band: tuple[float, floa
             f"held out of the page, but it carries {len(block.hearts)} like heart(s) at "
             f"y={[y for _, y in block.hearts]} in frame {seg.frame_digest[:12]} — holding it out "
             "would drop a likeable item and renumber every heart ordinal below it"
-            for seg, offset in zip(segmentations, offsets, strict=True) if offset is not None
+            for seg, offset in zip(segmentations, offsets, strict=True)
+            if offset is not None
             for block in seg.blocks
-            if (block.kind == BLOCK_UNANCHORED
-                and (block.y0, block.y1) in screen_fixed and block.hearts))
+            if (
+                block.kind == BLOCK_UNANCHORED
+                and (block.y0, block.y1) in screen_fixed
+                and block.hearts
+            )
+        )
 
     placed = [
-        (seg, off) for seg, off in zip(segmentations, offsets, strict=True)
+        (seg, off)
+        for seg, off in zip(segmentations, offsets, strict=True)
         if off is not None
     ]
-    page_span = (min(seg.band[0] + off for seg, off in placed),
-                 max(seg.band[1] + off for seg, off in placed))
+    page_span = (
+        min(seg.band[0] + off for seg, off in placed),
+        max(seg.band[1] + off for seg, off in placed),
+    )
 
     reached_end, tail_gap = _tail(segmentations[-1], end_tail_gap_px=end_tail_gap_px)
     # WHOSE profile this is, from these very frames. Never raises and never contributes a
@@ -3875,18 +4821,28 @@ def build_item_index(frames: Sequence[bytes], *, content_band: tuple[float, floa
     # capture forever against a check that cannot answer. Identity itself is unchanged: it fails
     # closed either way, and `item_nav` refuses to navigate without a fingerprint.
     identity = capture_profile_identity(
-        frames, identity_band=identity_band, page_offsets=offsets)
+        frames, identity_band=identity_band, page_offsets=offsets
+    )
     return ItemIndex(
-        blocks=blocks, frames=segmentations, shifts=shifts, offsets=tuple(offsets),
-        page_span=page_span, at_scroll_top=at_scroll_top, reached_end=reached_end,
-        tail_gap_px=tail_gap, failures=tuple(failures), identity=identity,
-        source_frame_indices=tuple(range(len(frames))), notes=notes,
+        blocks=blocks,
+        frames=segmentations,
+        shifts=shifts,
+        offsets=tuple(offsets),
+        page_span=page_span,
+        at_scroll_top=at_scroll_top,
+        reached_end=reached_end,
+        tail_gap_px=tail_gap,
+        failures=tuple(failures),
+        identity=identity,
+        source_frame_indices=tuple(range(len(frames))),
+        notes=notes,
         screen_fixed_notes=screen_fixed_notes,
         animation_markers=marker_evidence,
         video_mute_markers=mute_markers,
         repair_provenance=repair_provenance,
         layout_repaired_shifts=layout_repaired_shifts,
-        extent_tolerance_px=extent_tolerance_px)
+        extent_tolerance_px=extent_tolerance_px,
+    )
 
 
 def _tail(last: FrameSegmentation, *, end_tail_gap_px: int) -> tuple[bool, int | None]:

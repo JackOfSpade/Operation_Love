@@ -1,4 +1,5 @@
 """Worker + OpenerService tests with fakes — no Playwright/emulator/SDK/network."""
+
 import math
 import threading
 import time
@@ -7,8 +8,12 @@ from types import SimpleNamespace
 import pytest
 
 from operation_love.costing import CostTracker, ModelPricing, Usage
-from operation_love.drivers.base import (DatingAppDriver, DeckBlockedError, DriverClosed,
-                                        ItemTargetingError)
+from operation_love.drivers.base import (
+    DatingAppDriver,
+    DeckBlockedError,
+    DriverClosed,
+    ItemTargetingError,
+)
 from operation_love.drivers.adb import AdbError
 from operation_love.opener.opener import (
     FIRST_ITEM_INDEX,
@@ -75,8 +80,11 @@ def test_worker_keeps_its_startup_targeting_licence_when_config_state_changes():
 
     accepted = tp.StillPhotoAssumptionAcceptance(
         acceptance=tp.STILL_PHOTO_CENTERED_AUTOPLAY_ASSUMPTION,
-        accepted_at="2026-09-10T12:00:00Z", device="pixel-serial",
-        hinge_version_name="9.134.0", rationale="regression test")
+        accepted_at="2026-09-10T12:00:00Z",
+        device="pixel-serial",
+        hinge_version_name="9.134.0",
+        rationale="regression test",
+    )
     tp.install_accepted_still_photo_assumption(accepted)
 
     reached_open = threading.Event()
@@ -94,8 +102,17 @@ def test_worker_keeps_its_startup_targeting_licence_when_config_state_changes():
     driver = SnapshotDriver(0)
     store = FakeStore()
     service = OpenerService(None, CostTracker(PRICING, None), store, "style")
-    worker = Worker("hinge", driver, FakeDecider("dislike"), service, store, "run1",
-                    _Pacing(), threading.Event(), mode="auto")
+    worker = Worker(
+        "hinge",
+        driver,
+        FakeDecider("dislike"),
+        service,
+        store,
+        "run1",
+        _Pacing(),
+        threading.Event(),
+        mode="auto",
+    )
     worker.start()
     assert reached_open.wait(_LIVENESS_TIMEOUT_S)
     # This is the exact process-global mutation config.validate() performs before it can report
@@ -113,12 +130,17 @@ def test_staged_opener_generation_context_uses_only_the_existing_pick_and_stage(
 
     pick = SimpleNamespace(
         _staged_record=SimpleNamespace(model="gemini-test-model"),
-        index_space="model_items", referenced="two puppies", angle="a playful question",
-        item_description="photo of two puppies")
+        index_space="model_items",
+        referenced="two puppies",
+        angle="a playful question",
+        item_description="photo of two puppies",
+    )
 
     assert _staged_opener_generation_context(pick) == {
-        "model": "gemini-test-model", "index_space": "model_items",
-        "referenced": "two puppies", "angle": "a playful question",
+        "model": "gemini-test-model",
+        "index_space": "model_items",
+        "referenced": "two puppies",
+        "angle": "a playful question",
         "item_description": "photo of two puppies",
     }
     assert _staged_opener_generation_context(None) is None
@@ -132,13 +154,25 @@ def test_worker_run_publishes_the_complete_adb_timeout_summary():
         def next_profile(self):
             exc = AdbError(
                 ["adb", "-s", "pixel", "exec-out", "screencap", "-p"],
-                "ADB command timed out after 10s", "transport stalled")
+                "ADB command timed out after 10s",
+                "transport stalled",
+            )
             exc.add_note("read-only screencap retry was exhausted")
             raise exc
 
     status = RunStatus("run1", ["bumble"], min_labels=1, mode="auto")
-    Worker("bumble", TimeoutDriver(1), FakeDecider("dislike"), None, FakeStore(), "run1",
-           _Pacing(), threading.Event(), mode="auto", status=status).run()
+    Worker(
+        "bumble",
+        TimeoutDriver(1),
+        FakeDecider("dislike"),
+        None,
+        FakeStore(),
+        "run1",
+        _Pacing(),
+        threading.Event(),
+        mode="auto",
+        status=status,
+    ).run()
 
     error = status.app_view("bumble")["app"]["error"]
     assert error.startswith("AdbError: ADB command timed out after 10s")
@@ -163,13 +197,16 @@ class FakeDriver(DatingAppDriver):
         self.like_item_indexes = []
         self.like_model_item_indexes = []
 
-    def open_session(self): self.opened = True
+    def open_session(self):
+        self.opened = True
+
     def next_profile(self):
         if self.i >= len(self.cards):
             return None
         p = self.cards[self.i]
         self.i += 1
         return p
+
     # No `anchored_opener` keyword, deliberately: the driver's repair hatch -- a callback that
     # re-asked the model for text about whatever item the tap had actually landed on -- was
     # removed on 2026-08-12 (ops/OPENER-REDESIGN.md 5.6: rewriting the opener to match whatever
@@ -184,20 +221,29 @@ class FakeDriver(DatingAppDriver):
         # and a test that cannot see which of the two arguments was used cannot tell a navigated
         # like from a capture-order one.
         self.like_model_item_indexes.append(model_item_index)
+
     def dislike(self, *, should_stop=None):
         if should_stop is not None and should_stop():
             from operation_love.drivers.base import ActionCancelled
+
             raise ActionCancelled("test pass cancelled")
         self.dislikes += 1
-    def out_of_profiles(self): return self.i >= len(self.cards)
-    def close(self): self.closed = True
+
+    def out_of_profiles(self):
+        return self.i >= len(self.cards)
+
+    def close(self):
+        self.closed = True
 
 
-_PAYWALL_REASON = "Hinge is out of free likes for today — the Hinge+ upgrade screen is up"
+_PAYWALL_REASON = (
+    "Hinge is out of free likes for today — the Hinge+ upgrade screen is up"
+)
 
 
 class _BlockedDriver(FakeDriver):
     """An AUTO deck that is unavailable before any profile can be captured."""
+
     def __init__(self, n, reason=_PAYWALL_REASON):
         super().__init__(n)
         self.reason = reason
@@ -210,6 +256,7 @@ class _BlockedDriver(FakeDriver):
 
 class _BlockedAfterLikeDriver(FakeDriver):
     """The deck is healthy until the app rejects Send Like with a paywall."""
+
     accepts_opener = False
 
     def __init__(self):
@@ -226,6 +273,7 @@ class _BlockedAfterLikeDriver(FakeDriver):
 
 class _BlockedAndEmptyDriver(FakeDriver):
     """A blocked deck can also look empty; the block reason must take precedence."""
+
     def __init__(self):
         super().__init__(0)
 
@@ -240,7 +288,9 @@ class InterruptibleLikeDriver(FakeDriver):
         super().__init__(n)
         self.like_stop_callbacks = []
 
-    def like(self, opener=None, item_index=None, *, model_item_index=None, should_stop=None):
+    def like(
+        self, opener=None, item_index=None, *, model_item_index=None, should_stop=None
+    ):
         self.like_stop_callbacks.append(should_stop)
         return super().like(opener, item_index, model_item_index=model_item_index)
 
@@ -248,12 +298,14 @@ class InterruptibleLikeDriver(FakeDriver):
 class ClosedDriver(FakeDriver):
     def __init__(self):
         super().__init__(1)
+
     def next_profile(self):
         raise DriverClosed("browser closed")
 
 
 class RaisingLikeDriver(FakeDriver):
     """Hinge-style: halts on unexpected, and its like() raises (e.g. an unsent like)."""
+
     halt_on_error = True
 
     def __init__(self, n):
@@ -267,7 +319,7 @@ class RaisingLikeDriver(FakeDriver):
         self.snapshotted.append((self._adb_live(), exc))
 
     def _adb_live(self):
-        return not self.closed          # snapshot must run while the transport is still open
+        return not self.closed  # snapshot must run while the transport is still open
 
 
 # A minimal duck-typed stand-in for drivers.item_identity.ProfileIdentity -- profile_key.
@@ -290,14 +342,17 @@ class _IdentityDriver(FakeDriver):
     worker read the identity BEFORE the action, not after: if the worker read it late, the
     profile_key recorded would reflect this post-action value instead.
     """
+
     _POST_ACTION_UNSET = object()
 
     def __init__(self, n, identity, *, identity_after_action=_POST_ACTION_UNSET):
         super().__init__(n)
         self._identity = identity
         self._identity_after_action = (
-            identity if identity_after_action is self._POST_ACTION_UNSET
-            else identity_after_action)
+            identity
+            if identity_after_action is self._POST_ACTION_UNSET
+            else identity_after_action
+        )
         self._action_taken = False
 
     def current_profile_identity(self):
@@ -317,14 +372,18 @@ class _IdentityDriver(FakeDriver):
 class FakeDecider:
     def __init__(self, decision="dislike"):
         self.decision = decision
+
     def decide(self, profile):
-        return Decision(decision=self.decision, score=0.9, embedding=[0.1, 0.2], source="ranker")
+        return Decision(
+            decision=self.decision, score=0.9, embedding=[0.1, 0.2], source="ranker"
+        )
 
 
 class StopAfterDecide(FakeDecider):
     def __init__(self, stop_event):
         super().__init__("dislike")
         self.stop_event = stop_event
+
     def decide(self, profile):
         self.stop_event.set()
         return super().decide(profile)
@@ -334,11 +393,20 @@ class FakeOpenerClient:
     def __init__(self, cost_tokens=400):
         self.calls = 0
         self.cost_tokens = cost_tokens
-        self.should_stops = []   # records should_stop from every call -- see BUG 1's tests
-        self.items = []          # records items from every call -- doc 5.2's crop request shape
-    def generate(self, profile, style, retry_hint="", *, items=None,
-                 should_stop=None,
-                 skip_models=frozenset(), run_id: str = ""):
+        self.should_stops = []  # records should_stop from every call -- see BUG 1's tests
+        self.items = []  # records items from every call -- doc 5.2's crop request shape
+
+    def generate(
+        self,
+        profile,
+        style,
+        retry_hint="",
+        *,
+        items=None,
+        should_stop=None,
+        skip_models=frozenset(),
+        run_id: str = "",
+    ):
         self.calls += 1
         self.should_stops.append(should_stop)
         self.items.append(items)
@@ -352,18 +420,32 @@ class FakeOpenerClient:
         # unrelated to what it's actually testing. Tests that DO want an absent/untranslatable
         # index construct their own OpenerPick directly (see _SequencedOpenerService) instead
         # of going through this fake.
-        return OpenerResult(opener=f"hi {self.calls}", referenced="r",
-                            usage=Usage(input_tokens=self.cost_tokens), model="gemini-test-model",
-                            item_index=FIRST_ITEM_INDEX, index_space=INDEX_SPACE_PROFILE_PHOTOS)
+        return OpenerResult(
+            opener=f"hi {self.calls}",
+            referenced="r",
+            usage=Usage(input_tokens=self.cost_tokens),
+            model="gemini-test-model",
+            item_index=FIRST_ITEM_INDEX,
+            index_space=INDEX_SPACE_PROFILE_PHOTOS,
+        )
 
 
 class SlowOpenerClient(FakeOpenerClient):
-    def generate(self, profile, style, retry_hint="", *, items=None,
-                 should_stop=None,
-                 skip_models=frozenset(), run_id: str = ""):
+    def generate(
+        self,
+        profile,
+        style,
+        retry_hint="",
+        *,
+        items=None,
+        should_stop=None,
+        skip_models=frozenset(),
+        run_id: str = "",
+    ):
         time.sleep(0.05)
-        return super().generate(profile, style, retry_hint, items=items,
-                                should_stop=should_stop)
+        return super().generate(
+            profile, style, retry_hint, items=items, should_stop=should_stop
+        )
 
 
 # --- opener clients that fail in the PER-CALL (not global-exhaustion) ways
@@ -377,53 +459,96 @@ class SlowOpenerClient(FakeOpenerClient):
 class ParseErrorOpenerClient:
     """Model returned a billed response that didn't parse into a usable opener, every
     single attempt -- exercises maybe_opener()'s retry-until-exhausted path."""
+
     def __init__(self):
         self.calls = 0
         self.retry_hints = []
-    def generate(self, profile, style, retry_hint="", *, items=None,
-                 should_stop=None,
-                 skip_models=frozenset(), run_id: str = ""):
+
+    def generate(
+        self,
+        profile,
+        style,
+        retry_hint="",
+        *,
+        items=None,
+        should_stop=None,
+        skip_models=frozenset(),
+        run_id: str = "",
+    ):
         self.calls += 1
         self.retry_hints.append(retry_hint)
-        raise OpenerParseError("bad JSON in response body", Usage(input_tokens=10),
-                               "gemini-test-model")
+        raise OpenerParseError(
+            "bad JSON in response body", Usage(input_tokens=10), "gemini-test-model"
+        )
 
 
 class OpenerErrorOpenerClient:
     """Per-profile content problem raised before/without a billed round trip (e.g. a
     corrupt captured photo that couldn't be decoded). NOT retried by maybe_opener()."""
+
     def __init__(self):
         self.calls = 0
-    def generate(self, profile, style, retry_hint="", *, items=None,
-                 should_stop=None,
-                 skip_models=frozenset(), run_id: str = ""):
+
+    def generate(
+        self,
+        profile,
+        style,
+        retry_hint="",
+        *,
+        items=None,
+        should_stop=None,
+        skip_models=frozenset(),
+        run_id: str = "",
+    ):
         self.calls += 1
         raise OpenerError("Gemini opener: photo index 0 could not be decoded")
 
 
 class SafetyBlockedOpenerClient:
     """Gemini accepted the call but blocked this profile's content before generation."""
+
     def __init__(self):
         self.calls = 0
-    def generate(self, profile, style, retry_hint="", *, items=None,
-                 should_stop=None,
-                 skip_models=frozenset(), run_id: str = ""):
+
+    def generate(
+        self,
+        profile,
+        style,
+        retry_hint="",
+        *,
+        items=None,
+        should_stop=None,
+        skip_models=frozenset(),
+        run_id: str = "",
+    ):
         self.calls += 1
         raise OpenerParseError(
             "Gemini blocked the opener prompt before generating content "
             "(promptFeedback.blockReason=PROHIBITED_CONTENT)",
-            Usage(input_tokens=10), "gemini-test-model",
-            reason_code=REASON_PROMPT_BLOCKED)
+            Usage(input_tokens=10),
+            "gemini-test-model",
+            reason_code=REASON_PROMPT_BLOCKED,
+        )
 
 
 class BadRequestOpenerClient:
     """A single HTTP 400 -- below _BAD_REQUEST_LATCH_THRESHOLD, so this alone must not
     disable the service, only skip this one profile's opener."""
+
     def __init__(self):
         self.calls = 0
-    def generate(self, profile, style, retry_hint="", *, items=None,
-                 should_stop=None,
-                 skip_models=frozenset(), run_id: str = ""):
+
+    def generate(
+        self,
+        profile,
+        style,
+        retry_hint="",
+        *,
+        items=None,
+        should_stop=None,
+        skip_models=frozenset(),
+        run_id: str = "",
+    ):
         self.calls += 1
         raise GeminiAPIError(400, "INVALID_ARGUMENT", "bad image or request")
 
@@ -431,18 +556,34 @@ class BadRequestOpenerClient:
 class TransientOpenerClient:
     """An unclassified exception (timeout/connection blip) -- below
     _TRANSIENT_LATCH_THRESHOLD, so this alone must not disable the service."""
+
     def __init__(self):
         self.calls = 0
-    def generate(self, profile, style, retry_hint="", *, items=None,
-                 should_stop=None,
-                 skip_models=frozenset(), run_id: str = ""):
+
+    def generate(
+        self,
+        profile,
+        style,
+        retry_hint="",
+        *,
+        items=None,
+        should_stop=None,
+        skip_models=frozenset(),
+        run_id: str = "",
+    ):
         self.calls += 1
         raise RuntimeError("connection reset")
 
 
 class FakeStore:
     def __init__(self):
-        self.decisions, self.labels, self.profiles, self.spend, self.openers = [], [], [], [], []
+        self.decisions, self.labels, self.profiles, self.spend, self.openers = (
+            [],
+            [],
+            [],
+            [],
+            [],
+        )
         self.rejections = []
         self.opener_stamps, self.rejection_stamps = [], []
         # Full per-call keyword lineage (profile_id/decision/decision_source/
@@ -451,14 +592,22 @@ class FakeStore:
         # back the `decision` a committed-vs-abandoned row was written with, without changing
         # what every pre-existing opener-count assertion reads off `openers`/`opener_stamps`.
         self.opener_rows = []
-    def load_labels(self): return []
+
+    def load_labels(self):
+        return []
+
     def record_profile(self, run_id, app, profile_id, liked, source="manual", **k):
         self.profiles.append((app, profile_id, liked, k))
         return True
-    def add_label(self, run_id, app, liked, embedding, source="manual", profile_id="", **k):
+
+    def add_label(
+        self, run_id, app, liked, embedding, source="manual", profile_id="", **k
+    ):
         self.labels.append((app, profile_id, liked, k))
+
     def record_decision(self, run_id, app, decision, score, source="auto", **_):
         self.decisions.append((app, decision, source))
+
     # Signature mirrors ranker/store.py's real record_opener EXACTLY, both trailing
     # parameters included: angle="" (doc 3.4/3.5: the model's free-text account of what its
     # opener is doing) and item_description="" (doc 5.7: the model's description of the ITEM
@@ -468,29 +617,66 @@ class FakeStore:
     # spend record" and leaves self.openers empty, which surfaces as an unrelated-looking
     # count assertion failing further down. Keeping the parameters explicit means the
     # mismatch is at least visible in the traceback when it happens again.
-    def record_opener(self, run_id, app, model, opener, referenced, angle="",
-                      item_description="", *, prompt_sha256=None, **kw):
+    def record_opener(
+        self,
+        run_id,
+        app,
+        model,
+        opener,
+        referenced,
+        angle="",
+        item_description="",
+        *,
+        prompt_sha256=None,
+        **kw,
+    ):
         self.openers.append(opener)
         # Captured separately from `openers` so a test can assert the prompt-era stamp reached
         # the sink without changing what every existing opener-count assertion reads.
         self.opener_stamps.append(prompt_sha256)
-        self.opener_rows.append({"model": model, "opener": opener, "referenced": referenced,
-                                 "angle": angle, "item_description": item_description,
-                                 "prompt_sha256": prompt_sha256, **kw})
+        self.opener_rows.append(
+            {
+                "model": model,
+                "opener": opener,
+                "referenced": referenced,
+                "angle": angle,
+                "item_description": item_description,
+                "prompt_sha256": prompt_sha256,
+                **kw,
+            }
+        )
+
     # Signature mirrors ranker/store.py's real record_opener_rejection EXACTLY, the trailing
     # keyword-only prompt_sha256 included (2026-09-05 (b): the digest of the prompt era that
     # produced the rejected attempt). Spelled out rather than **kw for the same reason as
     # record_opener above: the service persists inside a non-fatal try/except, so a fake that
     # drifts from the real signature prints a warning and records nothing rather than raising.
-    def record_opener_rejection(self, run_id, app, model, attempt, reason_code, reason, raw_opener,
-                                *, prompt_sha256=None):
+    def record_opener_rejection(
+        self,
+        run_id,
+        app,
+        model,
+        attempt,
+        reason_code,
+        reason,
+        raw_opener,
+        *,
+        prompt_sha256=None,
+    ):
         self.rejections.append((app, model, attempt, reason_code, reason, raw_opener))
         self.rejection_stamps.append(prompt_sha256)
-    def record_spend(self, run_id, model, usage, cost): self.spend.append(cost)
+
+    def record_spend(self, run_id, model, usage, cost):
+        self.spend.append(cost)
+
     def count_today(self, app):
         return sum(1 for row in self.decisions if row[0] == app and row[2] == "auto")
-    def flush(self): pass
-    def close(self): pass
+
+    def flush(self):
+        pass
+
+    def close(self):
+        pass
 
 
 class _Pacing:
@@ -500,13 +686,31 @@ class _Pacing:
 @pytest.mark.parametrize("mode", ["auto_testing", "", "other"])
 def test_worker_rejects_retired_or_unknown_modes(mode):
     with pytest.raises(ValueError, match="mode"):
-        Worker("bumble", FakeDriver(0), FakeDecider(), None, FakeStore(), "run1", _Pacing(),
-               threading.Event(), mode=mode)
+        Worker(
+            "bumble",
+            FakeDriver(0),
+            FakeDecider(),
+            None,
+            FakeStore(),
+            "run1",
+            _Pacing(),
+            threading.Event(),
+            mode=mode,
+        )
 
 
 def _worker(driver, decider, service, store):
-    return Worker("bumble", driver, decider, service, store, "run1", _Pacing(),
-                  threading.Event(), mode="auto")
+    return Worker(
+        "bumble",
+        driver,
+        decider,
+        service,
+        store,
+        "run1",
+        _Pacing(),
+        threading.Event(),
+        mode="auto",
+    )
 
 
 def test_capture_progress_callback_publishes_hinge_capture_detail_and_is_cleared():
@@ -533,8 +737,18 @@ def test_capture_progress_callback_publishes_hinge_capture_detail_and_is_cleared
 
     status = RunStatus("run1", ["hinge"], min_labels=1, mode="training")
     driver = ProgressDriver()
-    worker = Worker("hinge", driver, FakeDecider(), None, FakeStore(), "run1", _Pacing(),
-                    threading.Event(), mode="training", status=status)
+    worker = Worker(
+        "hinge",
+        driver,
+        FakeDecider(),
+        None,
+        FakeStore(),
+        "run1",
+        _Pacing(),
+        threading.Event(),
+        mode="training",
+        status=status,
+    )
 
     assert worker._capture_profile("next_profile") is not None
     app = status.app_view("hinge")["app"]
@@ -583,9 +797,19 @@ def test_training_replaces_capture_progress_before_the_gemini_opener_call():
 
     status = RunStatus("run1", ["hinge"], min_labels=1, mode="training")
     driver, service, stop = ProgressDriver(), EmptyOpenerService(), threading.Event()
-    Worker("hinge", driver, FakeDecider("like"), service, FakeStore(), "run1", _Pacing(), stop,
-           mode="training", status=status,
-           training_action_bridge=TrainingActionBridge()).run()
+    Worker(
+        "hinge",
+        driver,
+        FakeDecider("like"),
+        service,
+        FakeStore(),
+        "run1",
+        _Pacing(),
+        stop,
+        mode="training",
+        status=status,
+        training_action_bridge=TrainingActionBridge(),
+    ).run()
 
     assert service.during_request is not None
     assert service.during_request["state"] == "scoring"
@@ -615,6 +839,7 @@ def test_worker_binds_opt_in_driver_to_the_service_prompt_era_before_opening():
     table already is (see Worker._bind_opener_prompt_stamp and
     HingeDriver.set_opener_prompt_sha256's docstrings for why a one-time, run-level bind is
     exactly as fresh as threading the value through every like() call would have been)."""
+
     class BindingDriver(FakeDriver):
         def __init__(self):
             super().__init__(0)
@@ -649,6 +874,7 @@ def test_worker_run_binds_the_opener_prompt_era_before_any_profile_is_read(monke
     """Integration pin: run() itself calls the bind (mirroring bind_debug_run/set_opener_enabled
     right beside it), not just some inner loop -- so a driver lacking a captured profile still
     gets bound before the session closes."""
+
     class BindingDriver(FakeDriver):
         def __init__(self):
             super().__init__(0)
@@ -667,24 +893,24 @@ def test_worker_run_binds_the_opener_prompt_era_before_any_profile_is_read(monke
 def test_worker_never_calls_the_prompt_era_hook_on_a_driver_that_lacks_it():
     """A driver (or legacy/third-party opener service) without this optional hook must be
     completely unaffected -- exactly like bind_debug_run/set_opener_enabled above it."""
-    driver = FakeDriver(1)   # no set_opener_prompt_sha256 method at all
+    driver = FakeDriver(1)  # no set_opener_prompt_sha256 method at all
     store = FakeStore()
     svc = OpenerService(FakeOpenerClient(), CostTracker(PRICING, None), store, "s")
-    _worker(driver, FakeDecider("dislike"), svc, store).run()   # must not raise
+    _worker(driver, FakeDecider("dislike"), svc, store).run()  # must not raise
 
 
 # --- OpenerService (global budget) --------------------------------------
 def test_budget_caps_openers_globally():
-    tracker = CostTracker(PRICING, run_budget_usd=0.001)   # 400 input tok = $0.002 > cap
+    tracker = CostTracker(PRICING, run_budget_usd=0.001)  # 400 input tok = $0.002 > cap
     client = FakeOpenerClient(cost_tokens=400)
     svc = OpenerService(client, tracker, FakeStore(), "style")
-    assert svc.maybe_opener("r", "bumble", Profile()).text == "hi 1"   # first allowed
-    assert svc.maybe_opener("r", "hinge", Profile()) is None           # second over budget
+    assert svc.maybe_opener("r", "bumble", Profile()).text == "hi 1"  # first allowed
+    assert svc.maybe_opener("r", "hinge", Profile()) is None  # second over budget
     assert client.calls == 1 and svc.stop_requested is True
 
 
 def test_budget_caps_openers_across_concurrent_workers():
-    tracker = CostTracker(PRICING, run_budget_usd=0.001)   # first call spends past cap
+    tracker = CostTracker(PRICING, run_budget_usd=0.001)  # first call spends past cap
     client = SlowOpenerClient(cost_tokens=400)
     store = FakeStore()
     svc = OpenerService(client, tracker, store, "style")
@@ -694,7 +920,9 @@ def test_budget_caps_openers_across_concurrent_workers():
         pick = svc.maybe_opener("r", app, Profile())
         results.append(pick.text if pick else None)
 
-    threads = [threading.Thread(target=call, args=(app,)) for app in ("bumble", "hinge")]
+    threads = [
+        threading.Thread(target=call, args=(app,)) for app in ("bumble", "hinge")
+    ]
     for t in threads:
         t.start()
     for t in threads:
@@ -709,23 +937,26 @@ def test_budget_caps_openers_across_concurrent_workers():
 
 class _CalibratedDriver(FakeDriver):
     """A driver whose app has a real, measured think_time_s() calibration (Hinge)."""
+
     think_time_calibrated = True
 
 
 def test_pace_scales_think_time_by_configured_anchor(monkeypatch):
     from operation_love import worker as worker_mod
 
-    w = _worker(_CalibratedDriver(0), FakeDecider("like"), FakeOpenerClient(), FakeStore())
+    w = _worker(
+        _CalibratedDriver(0), FakeDecider("like"), FakeOpenerClient(), FakeStore()
+    )
     monkeypatch.setattr(worker_mod, "think_time_s", lambda decision: 10.0)
 
     class _Scaled:
-        swipe_delay_s = worker_mod._THINK_TIME_BASELINE_S * 0.5   # -> scale 0.5
+        swipe_delay_s = worker_mod._THINK_TIME_BASELINE_S * 0.5  # -> scale 0.5
 
     w.pacing = _Scaled()
     waited = []
     monkeypatch.setattr(w.stop_event, "wait", lambda s: waited.append(s))
     w._pace("like")
-    assert waited == [5.0]                    # 10.0 * 0.5
+    assert waited == [5.0]  # 10.0 * 0.5
 
 
 def test_pace_uses_flat_anchor_for_a_driver_without_calibrated_pacing(monkeypatch):
@@ -734,8 +965,11 @@ def test_pace_uses_flat_anchor_for_a_driver_without_calibrated_pacing(monkeypatc
     from operation_love import worker as worker_mod
 
     w = _worker(FakeDriver(0), FakeDecider("like"), FakeOpenerClient(), FakeStore())
-    monkeypatch.setattr(worker_mod, "think_time_s",
-                        lambda decision: (_ for _ in ()).throw(AssertionError("must not be called")))
+    monkeypatch.setattr(
+        worker_mod,
+        "think_time_s",
+        lambda decision: (_ for _ in ()).throw(AssertionError("must not be called")),
+    )
     monkeypatch.setattr(worker_mod, "human_delay", lambda s: s * 2)
     waited = []
     monkeypatch.setattr(w.stop_event, "wait", lambda s: waited.append(s))
@@ -746,16 +980,20 @@ def test_pace_uses_flat_anchor_for_a_driver_without_calibrated_pacing(monkeypatc
 @pytest.mark.parametrize("value", [-1.0, 0.5, math.nan, math.inf, 1e300, True, "3.5"])
 def test_pace_rejects_invalid_direct_pacing_for_both_driver_branches(value):
     """Direct Worker construction must enforce the same finite 0-or-[1,3600] contract."""
+
     class _InvalidPacing:
         swipe_delay_s = value
 
-    flat_worker = _worker(FakeDriver(0), FakeDecider("like"), FakeOpenerClient(), FakeStore())
+    flat_worker = _worker(
+        FakeDriver(0), FakeDecider("like"), FakeOpenerClient(), FakeStore()
+    )
     flat_worker.pacing = _InvalidPacing()
     with pytest.raises(ValueError, match="swipe_delay_s"):
         flat_worker._pace("like")
 
-    calibrated_worker = _worker(_CalibratedDriver(0), FakeDecider("like"),
-                                FakeOpenerClient(), FakeStore())
+    calibrated_worker = _worker(
+        _CalibratedDriver(0), FakeDecider("like"), FakeOpenerClient(), FakeStore()
+    )
     calibrated_worker.pacing = _InvalidPacing()
     with pytest.raises(ValueError, match="swipe_delay_s"):
         calibrated_worker._pace("like")
@@ -764,16 +1002,20 @@ def test_pace_rejects_invalid_direct_pacing_for_both_driver_branches(value):
 def test_pace_maps_dislike_to_the_pass_think_time_bucket(monkeypatch):
     from operation_love import worker as worker_mod
 
-    w = _worker(_CalibratedDriver(0), FakeDecider("like"), FakeOpenerClient(), FakeStore())
+    w = _worker(
+        _CalibratedDriver(0), FakeDecider("like"), FakeOpenerClient(), FakeStore()
+    )
     seen = []
-    monkeypatch.setattr(worker_mod, "think_time_s", lambda decision: seen.append(decision) or 10.0)
+    monkeypatch.setattr(
+        worker_mod, "think_time_s", lambda decision: seen.append(decision) or 10.0
+    )
 
     class _Scaled:
-        swipe_delay_s = worker_mod._THINK_TIME_BASELINE_S   # -> scale 1.0
+        swipe_delay_s = worker_mod._THINK_TIME_BASELINE_S  # -> scale 1.0
 
     w.pacing = _Scaled()
     monkeypatch.setattr(w.stop_event, "wait", lambda s: None)
-    w._pace("dislike")           # decider decisions are "like"/"dislike", never "pass"
+    w._pace("dislike")  # decider decisions are "like"/"dislike", never "pass"
     assert seen == ["pass"]
 
 
@@ -790,8 +1032,11 @@ def test_pace_uses_session_context_when_the_auto_loop_supplies_profile():
         swipe_delay_s = 7.0
 
     class _Stop:
-        def __init__(self): self.waits = []
-        def wait(self, seconds): self.waits.append(seconds)
+        def __init__(self):
+            self.waits = []
+
+        def wait(self, seconds):
+            self.waits.append(seconds)
 
     w = Worker.__new__(Worker)
     w.driver = _CalibratedDriver(0)
@@ -806,14 +1051,17 @@ def test_pace_uses_session_context_when_the_auto_loop_supplies_profile():
     assert w.stop_event.waits == [8.25]
 
 
-def test_auto_session_policy_is_installed_and_counts_only_landed_final_action(monkeypatch):
+def test_auto_session_policy_is_installed_and_counts_only_landed_final_action(
+    monkeypatch,
+):
     """Worker owns session-policy lifecycle; the driver only receives its optional hook."""
     from operation_love import worker as worker_mod
 
     made = []
 
     class _Adjusted:
-        def __init__(self, decision): self.decision = decision
+        def __init__(self, decision):
+            self.decision = decision
 
     class _Policy:
         def __init__(self, *, base_threshold):
@@ -825,8 +1073,11 @@ def test_auto_session_policy_is_installed_and_counts_only_landed_final_action(mo
             self.applied.append((decision, profile))
             # Simulate the real policy's only permitted decision change: a marginal
             # model like becomes a pass before the action and rate-limit checks.
-            return _Adjusted(Decision("dislike", decision.score, decision.embedding,
-                                      "ranker_contextual"))
+            return _Adjusted(
+                Decision(
+                    "dislike", decision.score, decision.embedding, "ranker_contextual"
+                )
+            )
 
         def record_landed_action(self, decision):
             self.landed.append(decision)
@@ -842,8 +1093,17 @@ def test_auto_session_policy_is_installed_and_counts_only_landed_final_action(mo
     store = FakeStore()
     svc = OpenerService(None, CostTracker(PRICING, None), store, "s")
 
-    Worker("bumble", driver, decider, svc, store, "run1", _Pacing(),
-           threading.Event(), mode="auto").run()
+    Worker(
+        "bumble",
+        driver,
+        decider,
+        svc,
+        store,
+        "run1",
+        _Pacing(),
+        threading.Event(),
+        mode="auto",
+    ).run()
 
     policy = made[0]
     assert policy.base_threshold == 0.61
@@ -876,13 +1136,14 @@ def test_session_break_low_fatigue_effectively_never_fires(monkeypatch):
     fairly low random() draw must not trigger a break -- a fixed 8%-per-swipe roll
     (the old behavior) would have fired here."""
     from operation_love import worker as worker_mod
+
     w = _break_worker()
     monkeypatch.setattr(worker_mod.random, "random", lambda: 0.01)
     waited = []
     monkeypatch.setattr(w.stop_event, "wait", lambda s: waited.append(s))
     w._maybe_session_break()
-    assert waited == []                    # no break fired
-    assert w._actions_since_break == 1      # fatigue counter still advances
+    assert waited == []  # no break fired
+    assert w._actions_since_break == 1  # fatigue counter still advances
 
 
 def test_session_break_fires_once_fatigue_builds(monkeypatch):
@@ -891,19 +1152,23 @@ def test_session_break_fires_once_fatigue_builds(monkeypatch):
     -> p = 0.08*2.0 = 0.16 here) -- proving the hazard actually ramps with fatigue
     rather than staying at one constant rate."""
     from operation_love import worker as worker_mod
+
     w = _break_worker()
-    w._actions_since_break = 39            # -> 40 after increment; fatigue = 40/20 = 2.0
-    monkeypatch.setattr(worker_mod.random, "random", lambda: 0.1)   # between 0.004 and 0.16
+    w._actions_since_break = 39  # -> 40 after increment; fatigue = 40/20 = 2.0
+    monkeypatch.setattr(
+        worker_mod.random, "random", lambda: 0.1
+    )  # between 0.004 and 0.16
     monkeypatch.setattr(worker_mod, "human_delay", lambda anchor, sigma=None: 42.0)
     waited = []
     monkeypatch.setattr(w.stop_event, "wait", lambda s: waited.append(s))
     w._maybe_session_break()
     assert waited == [42.0]
-    assert w._actions_since_break == 0      # reset after firing
+    assert w._actions_since_break == 0  # reset after firing
 
 
 def test_session_break_hazard_is_capped_after_extreme_fatigue(monkeypatch):
     from operation_love import worker as worker_mod
+
     w = _break_worker()
     w._actions_since_break = 999
     # Capped p = .08 * 2.5 = .20, so .21 must not fire. Without the cap the raw
@@ -928,12 +1193,13 @@ def test_session_break_rerolls_hazard_and_interval_after_firing(monkeypatch):
     random.uniform prove the specific new attrs get the specific new draws, in the
     hazard-then-interval order the implementation calls them."""
     from operation_love import worker as worker_mod
+
     w = _break_worker()
     w._actions_since_break = 39
-    monkeypatch.setattr(worker_mod.random, "random", lambda: 0.0)   # always fires
+    monkeypatch.setattr(worker_mod.random, "random", lambda: 0.0)  # always fires
     monkeypatch.setattr(worker_mod, "human_delay", lambda anchor, sigma=None: 1.0)
     monkeypatch.setattr(w.stop_event, "wait", lambda s: None)
-    draws = iter([0.1234, 27.5])           # first call -> hazard, second -> due_after
+    draws = iter([0.1234, 27.5])  # first call -> hazard, second -> due_after
     monkeypatch.setattr(worker_mod.random, "uniform", lambda a, b: next(draws))
     w._maybe_session_break()
     assert w._break_hazard == 0.1234
@@ -944,9 +1210,10 @@ def test_session_break_pause_is_lognormal_not_flat_uniform(monkeypatch):
     """The pause duration comes from human_delay(45.0, sigma=0.5) -- a log-normal
     draw -- not the old flat random.uniform(20, 90)."""
     from operation_love import worker as worker_mod
+
     w = _break_worker()
     w._actions_since_break = 39
-    monkeypatch.setattr(worker_mod.random, "random", lambda: 0.0)   # always fires
+    monkeypatch.setattr(worker_mod.random, "random", lambda: 0.0)  # always fires
     seen = {}
 
     def _fake_human_delay(anchor, sigma=None):
@@ -970,9 +1237,20 @@ def test_auto_loop_initializes_session_break_fatigue_state(monkeypatch):
     store = FakeStore()
     svc = OpenerService(None, CostTracker(PRICING, None), store, "s")
     stop_event = threading.Event()
-    monkeypatch.setattr(stop_event, "wait", lambda s=None: None)   # keep the test instant
-    w = Worker("bumble", driver, FakeDecider("dislike"), svc, store, "run1", _NonZeroPacing(),
-               stop_event, mode="auto")
+    monkeypatch.setattr(
+        stop_event, "wait", lambda s=None: None
+    )  # keep the test instant
+    w = Worker(
+        "bumble",
+        driver,
+        FakeDecider("dislike"),
+        svc,
+        store,
+        "run1",
+        _NonZeroPacing(),
+        stop_event,
+        mode="auto",
+    )
     w.run()
     assert w._actions_since_break >= 0
     assert 0.04 <= w._break_hazard <= 0.14
@@ -989,8 +1267,18 @@ def test_unlimited_limiter_does_not_query_irrelevant_daily_history():
     driver = FakeDriver(2)
     store = _NoDailyReadStore()
     svc = OpenerService(None, CostTracker(PRICING, None), store, "s")
-    Worker("bumble", driver, FakeDecider("dislike"), svc, store, "run1", _Pacing(),
-           threading.Event(), mode="auto", limiter=RateLimiter()).run()
+    Worker(
+        "bumble",
+        driver,
+        FakeDecider("dislike"),
+        svc,
+        store,
+        "run1",
+        _Pacing(),
+        threading.Event(),
+        mode="auto",
+        limiter=RateLimiter(),
+    ).run()
     assert driver.dislikes == 2
 
 
@@ -998,7 +1286,9 @@ def test_unlimited_limiter_does_not_query_irrelevant_daily_history():
 def test_worker_dislikes_whole_deck():
     driver = FakeDriver(3)
     store = FakeStore()
-    svc = OpenerService(None, CostTracker(PRICING, None), store, "s")  # openers disabled
+    svc = OpenerService(
+        None, CostTracker(PRICING, None), store, "s"
+    )  # openers disabled
     _worker(driver, FakeDecider("dislike"), svc, store).run()
     assert driver.dislikes == 3 and driver.likes == []
     # AUTO mode is pure inference: decisions are logged, but NO training labels/profiles
@@ -1069,8 +1359,13 @@ def test_auto_persists_landed_decision_before_committing_its_staged_opener():
 
         def record_opener(self, *args, **kwargs):
             events.append("opener")
-            for key in ("profile_id", "decision", "decision_source", "decision_created_at",
-                        "model_item_index"):
+            for key in (
+                "profile_id",
+                "decision",
+                "decision_source",
+                "decision_created_at",
+                "model_item_index",
+            ):
                 kwargs.pop(key, None)
             return super().record_opener(*args, **kwargs)
 
@@ -1091,21 +1386,32 @@ def test_auto_persists_landed_decision_before_committing_its_staged_opener():
 
 def test_auto_keeps_legacy_opener_service_without_stage_keyword_compatible():
     """The stage/commit protocol is additive; an old injected service must not crash AUTO."""
+
     class LegacyService:
         disabled = False
         stop_requested = False
 
         def maybe_opener(self, run_id, app, profile, *, items=None, should_stop=None):
-            return OpenerPick("legacy opener", index=1,
-                              index_space=INDEX_SPACE_PROFILE_PHOTOS)
+            return OpenerPick(
+                "legacy opener", index=1, index_space=INDEX_SPACE_PROFILE_PHOTOS
+            )
 
         def commit_opener(self, pick, **_):
             raise AssertionError("legacy service must not receive a staged commit")
 
     driver = FakeDriver(1)
     store = FakeStore()
-    Worker("bumble", driver, FakeDecider("like"), LegacyService(), store, "run1", _Pacing(),
-           threading.Event(), mode="auto").run()
+    Worker(
+        "bumble",
+        driver,
+        FakeDecider("like"),
+        LegacyService(),
+        store,
+        "run1",
+        _Pacing(),
+        threading.Event(),
+        mode="auto",
+    ).run()
 
     assert driver.likes == ["legacy opener"]
     assert store.decisions == [("bumble", "like", "auto")]
@@ -1132,6 +1438,7 @@ def test_auto_targeting_failure_discards_the_staged_opener_as_never_sent():
 def test_auto_post_send_paywall_discards_the_staged_opener_as_never_sent():
     class _PaywallWithOpener(_BlockedAfterLikeDriver):
         accepts_opener = True
+
     driver = _PaywallWithOpener()
     store = FakeStore()
     svc = OpenerService(FakeOpenerClient(), CostTracker(PRICING, None), store, "s")
@@ -1163,6 +1470,7 @@ class _SendThenVerifyDriver(FakeDriver):
     raise here, selected by `raise_before_send`, because this defect existed precisely because
     only one of the two directions was ever tested.
     """
+
     halt_on_error = True
 
     def __init__(self, n=1, *, raise_before_send=False):
@@ -1178,8 +1486,10 @@ class _SendThenVerifyDriver(FakeDriver):
         self.like_item_indexes.append(item_index)
         self.like_model_item_indexes.append(model_item_index)
         if self.raise_before_send:
-            raise RuntimeError("the comment sheet never opened; nothing was typed or sent")
-        self._send_attempted = True                  # the Send Like tap: past the point of return
+            raise RuntimeError(
+                "the comment sheet never opened; nothing was typed or sent"
+            )
+        self._send_attempted = True  # the Send Like tap: past the point of return
         raise RuntimeError("like did not complete -- the like composer is still open")
 
     def like_send_attempted(self):
@@ -1201,7 +1511,9 @@ def test_auto_post_send_verification_failure_records_the_draft_as_send_unverifie
     svc = OpenerService(FakeOpenerClient(), CostTracker(PRICING, None), store, "s")
     _worker(driver, FakeDecider("like"), svc, store).run()
 
-    assert driver.likes == ["hi 1"], "fixture guard: the driver really was asked to send"
+    assert driver.likes == ["hi 1"], (
+        "fixture guard: the driver really was asked to send"
+    )
     # Not committed either: an unverified send is not a landed Like, and `recent_openers` is the
     # live view that only ever describes committed ones.
     assert svc.recent_openers_snapshot() == []
@@ -1273,26 +1585,45 @@ def test_auto_send_marker_from_a_previous_profile_cannot_describe_a_later_refusa
     places that may consult it: a driver still reporting a completed send hands a later,
     pre-action refusal `never_sent` only because that site passes the constant instead.
     """
+
     class _StillReportingLastSend(FakeDriver):
         """A send from an earlier attempt that nothing has cleared yet -- the marker is cleared
         as the NEXT attempt begins, so between two profiles it legitimately still reads True."""
+
         def like_send_attempted(self):
             return True
 
     class _NoItemClient:
         """Produces a real, billed draft that names no item, so AUTO refuses BEFORE like()."""
-        def generate(self, profile, style, retry_hint="", *, items=None, should_stop=None,
-                     skip_models=frozenset(), run_id: str = ""):
-            return OpenerResult(opener="a billed draft nothing was done with", referenced="r",
-                                usage=Usage(input_tokens=400), model="gemini-test-model",
-                                item_index=ITEM_INDEX_ABSENT, index_space=INDEX_SPACE_MODEL_ITEMS)
+
+        def generate(
+            self,
+            profile,
+            style,
+            retry_hint="",
+            *,
+            items=None,
+            should_stop=None,
+            skip_models=frozenset(),
+            run_id: str = "",
+        ):
+            return OpenerResult(
+                opener="a billed draft nothing was done with",
+                referenced="r",
+                usage=Usage(input_tokens=400),
+                model="gemini-test-model",
+                item_index=ITEM_INDEX_ABSENT,
+                index_space=INDEX_SPACE_MODEL_ITEMS,
+            )
 
     driver = _StillReportingLastSend(1)
     store = FakeStore()
     svc = OpenerService(_NoItemClient(), CostTracker(PRICING, None), store, "s")
     _worker(driver, FakeDecider("like"), svc, store).run()
 
-    assert driver.likes == [], "fixture guard: this profile's draft never reached the device"
+    assert driver.likes == [], (
+        "fixture guard: this profile's draft never reached the device"
+    )
     assert len(store.opener_rows) == 1
     assert store.opener_rows[0]["decision"] == "never_sent"
 
@@ -1301,16 +1632,31 @@ def test_auto_never_sent_discard_when_the_model_names_no_item():
     """The "not targeted" refusal (opener generated no item number to target) is a clean stop,
     not a device action -- and, exactly like the targeting/exception abandonment paths above,
     must not leave this profile's real, billed draft silently missing from the durable table."""
+
     class _NoItemClient:
         def __init__(self):
             self.calls = 0
 
-        def generate(self, profile, style, retry_hint="", *, items=None, should_stop=None,
-                     skip_models=frozenset(), run_id: str = ""):
+        def generate(
+            self,
+            profile,
+            style,
+            retry_hint="",
+            *,
+            items=None,
+            should_stop=None,
+            skip_models=frozenset(),
+            run_id: str = "",
+        ):
             self.calls += 1
-            return OpenerResult(opener=f"hi {self.calls}", referenced="r",
-                                usage=Usage(input_tokens=400), model="gemini-test-model",
-                                item_index=ITEM_INDEX_ABSENT, index_space=INDEX_SPACE_MODEL_ITEMS)
+            return OpenerResult(
+                opener=f"hi {self.calls}",
+                referenced="r",
+                usage=Usage(input_tokens=400),
+                model="gemini-test-model",
+                item_index=ITEM_INDEX_ABSENT,
+                index_space=INDEX_SPACE_MODEL_ITEMS,
+            )
 
     driver = FakeDriver(1)
     store = FakeStore()
@@ -1383,6 +1729,7 @@ def test_auto_committed_like_decision_and_source_are_unchanged():
 # whichever of commit_opener/discard_opener this profile's outcome reaches. Exercised through
 # the REAL OpenerService + FakeStore, exactly like the lineage test just above.
 # ---------------------------------------------------------------------------------------
+
 
 def test_auto_committed_opener_carries_a_profile_key_from_the_driver():
     driver = _IdentityDriver(1, _FAKE_IDENTITY)
@@ -1470,27 +1817,48 @@ def test_auto_never_sent_discard_store_failure_does_not_change_the_targeting_sto
     store = _RaisingOnDiscardStore()
     svc = OpenerService(FakeOpenerClient(), CostTracker(PRICING, None), store, "s")
     status = RunStatus("run1", ["bumble"], min_labels=1, mode="auto")
-    Worker("bumble", driver, FakeDecider("like"), svc, store, "run1", _Pacing(),
-           threading.Event(), mode="auto", status=status).run()
+    Worker(
+        "bumble",
+        driver,
+        FakeDecider("like"),
+        svc,
+        store,
+        "run1",
+        _Pacing(),
+        threading.Event(),
+        mode="auto",
+        status=status,
+    ).run()
 
     app = status.app_view("bumble")["app"]
     assert app["state"] == "stopped"
     assert app["stop_kind"] == "targeting"
     assert app["error"] is None
-    assert store.openers == []          # the write itself failed -- nothing durable landed
+    assert store.openers == []  # the write itself failed -- nothing durable landed
 
 
 def test_auto_commits_staged_opener_when_stop_arrives_after_like_lands():
     stop = threading.Event()
+
     class _LandedThenStop(FakeDriver):
         def like(self, *args, **kwargs):
             super().like(*args, **kwargs)
             stop.set()
+
     driver = _LandedThenStop(1)
     store = FakeStore()
     svc = OpenerService(FakeOpenerClient(), CostTracker(PRICING, None), store, "s")
-    Worker("bumble", driver, FakeDecider("like"), svc, store, "run1", _Pacing(), stop,
-           mode="auto").run()
+    Worker(
+        "bumble",
+        driver,
+        FakeDecider("like"),
+        svc,
+        store,
+        "run1",
+        _Pacing(),
+        stop,
+        mode="auto",
+    ).run()
     assert driver.likes == ["hi 1"]
     assert len(store.openers) == 1 and len(svc.recent_openers_snapshot()) == 1
 
@@ -1515,9 +1883,20 @@ def test_auto_stop_during_opener_generation_never_starts_like_but_discards_the_d
 
     driver = FakeDriver(1)
     store = FakeStore()
-    service = OpenerService(_StopsAfterGenerating(), CostTracker(PRICING, None), store, "s")
-    Worker("bumble", driver, FakeDecider("like"), service, store, "run1", _Pacing(), stop,
-           mode="auto").run()
+    service = OpenerService(
+        _StopsAfterGenerating(), CostTracker(PRICING, None), store, "s"
+    )
+    Worker(
+        "bumble",
+        driver,
+        FakeDecider("like"),
+        service,
+        store,
+        "run1",
+        _Pacing(),
+        stop,
+        mode="auto",
+    ).run()
 
     assert driver.likes == []
     assert store.decisions == []
@@ -1567,8 +1946,18 @@ def test_training_stop_during_opener_generation_discards_the_staged_draft():
 
     driver, store = _TrainingReviewDriver(), FakeStore()
     svc = OpenerService(_StopsAfterGenerating(), CostTracker(PRICING, None), store, "s")
-    Worker("hinge", driver, FakeDecider("like"), svc, store, "run1", _Pacing(), stop,
-           mode="training", training_action_bridge=TrainingActionBridge()).run()
+    Worker(
+        "hinge",
+        driver,
+        FakeDecider("like"),
+        svc,
+        store,
+        "run1",
+        _Pacing(),
+        stop,
+        mode="training",
+        training_action_bridge=TrainingActionBridge(),
+    ).run()
 
     # Stop is observed before the checkpoint is prepared, so no review was ever published and
     # the phone was never touched -- no label or decision exists for this profile.
@@ -1613,8 +2002,18 @@ def test_training_untargetable_opener_discards_the_staged_draft():
 
     driver, store, stop = _TrainingReviewDriver(), FakeStore(), threading.Event()
     svc = OpenerService(FakeOpenerClient(), CostTracker(PRICING, None), store, "s")
-    Worker("hinge", driver, FakeDecider("like"), svc, store, "run1", _Pacing(), stop,
-           mode="training", training_action_bridge=TrainingActionBridge()).run()
+    Worker(
+        "hinge",
+        driver,
+        FakeDecider("like"),
+        svc,
+        store,
+        "run1",
+        _Pacing(),
+        stop,
+        mode="training",
+        training_action_bridge=TrainingActionBridge(),
+    ).run()
 
     assert stop.is_set()
     assert driver.decision_calls == [] and driver.likes == []
@@ -1656,9 +2055,19 @@ def test_training_driver_exception_discards_the_staged_draft_before_reraising():
     driver, store, stop = _RaisingTrainingDriver(), FakeStore(), threading.Event()
     svc = OpenerService(FakeOpenerClient(), CostTracker(PRICING, None), store, "s")
     status = RunStatus("run1", ["hinge"], min_labels=1, mode="training")
-    Worker("hinge", driver, FakeDecider("like"), svc, store, "run1", _Pacing(), stop,
-           mode="training", status=status,
-           training_action_bridge=TrainingActionBridge()).run()
+    Worker(
+        "hinge",
+        driver,
+        FakeDecider("like"),
+        svc,
+        store,
+        "run1",
+        _Pacing(),
+        stop,
+        mode="training",
+        status=status,
+        training_action_bridge=TrainingActionBridge(),
+    ).run()
 
     # The checkpoint callback WAS installed and then cleared, so this exit is genuinely past
     # the pre-device refusals the two tests above cover, not another spelling of them.
@@ -1691,7 +2100,7 @@ def test_worker_skips_openers_when_driver_declines():
     client = FakeOpenerClient()
     svc = OpenerService(client, CostTracker(PRICING, None), store, "s")
     _worker(driver, FakeDecider("like"), svc, store).run()
-    assert driver.likes == [None, None, None]      # liked, but with no opener
+    assert driver.likes == [None, None, None]  # liked, but with no opener
     assert client.calls == 0 and store.openers == [] and store.spend == []
 
 
@@ -1725,8 +2134,18 @@ def test_auto_mode_stop_reason_is_visible_in_status_when_opener_budget_exhausts(
     client = FakeOpenerClient(cost_tokens=400)  # $0.002/call
     svc = OpenerService(client, CostTracker(PRICING, run_budget_usd=0.001), store, "s")
     status = RunStatus("run1", ["bumble"], min_labels=1, mode="auto")
-    Worker("bumble", driver, FakeDecider("like"), svc, store, "run1", _Pacing(),
-           threading.Event(), mode="auto", status=status).run()
+    Worker(
+        "bumble",
+        driver,
+        FakeDecider("like"),
+        svc,
+        store,
+        "run1",
+        _Pacing(),
+        threading.Event(),
+        mode="auto",
+        status=status,
+    ).run()
 
     app = status.app_view("bumble")["app"]
     assert app["state"] == "stopped"
@@ -1753,6 +2172,7 @@ def test_auto_mode_stop_reason_is_visible_in_status_when_opener_budget_exhausts(
 # pins the opposite result for that one structured outcome.
 # ---------------------------------------------------------------------------------------
 
+
 def test_worker_halts_before_bare_like_when_the_opener_ultimately_fails_every_retry():
     """THE OWNER'S RULE: a bad AI response is retried, never sent bare, and if it is STILL
     bad after max_attempts (5, the OpenerService default) that means something is wrong and
@@ -1766,10 +2186,14 @@ def test_worker_halts_before_bare_like_when_the_opener_ultimately_fails_every_re
     svc = OpenerService(client, CostTracker(PRICING, None), store, "s")
     _worker(driver, FakeDecider("like"), svc, store).run()
 
-    assert client.calls == svc.max_attempts == 5   # every retry attempt was actually made
-    assert driver.likes == []                       # no bare like sent
-    assert store.decisions == []                     # no decision recorded for the abandoned profile
-    assert svc.disabled is True and svc.stop_requested is True   # the service gave up for the run
+    assert (
+        client.calls == svc.max_attempts == 5
+    )  # every retry attempt was actually made
+    assert driver.likes == []  # no bare like sent
+    assert store.decisions == []  # no decision recorded for the abandoned profile
+    assert (
+        svc.disabled is True and svc.stop_requested is True
+    )  # the service gave up for the run
     assert svc.exhausted_reason and "bad JSON in response body" in svc.exhausted_reason
     assert driver.closed
 
@@ -1797,8 +2221,17 @@ def test_worker_auto_likes_without_comment_when_profile_content_is_safety_blocke
     client = SafetyBlockedOpenerClient()
     svc = OpenerService(client, CostTracker(PRICING, None), store, "s")
 
-    Worker("hinge", driver, FakeDecider("like"), svc, store, "run1", _Pacing(),
-           threading.Event(), mode="auto").run()
+    Worker(
+        "hinge",
+        driver,
+        FakeDecider("like"),
+        svc,
+        store,
+        "run1",
+        _Pacing(),
+        threading.Event(),
+        mode="auto",
+    ).run()
 
     assert client.calls == 1
     assert driver.likes == [None]
@@ -1818,15 +2251,28 @@ def test_training_stops_before_a_commentless_safety_block_like():
     class _TestingDriver(FakeDriver):
         accepts_opener = True
         supports_training_decision = True
+
         def set_training_decision(self, _approval):
             pass
 
     driver = _TestingDriver(1)
     store = FakeStore()
-    service = OpenerService(SafetyBlockedOpenerClient(), CostTracker(PRICING, None), store, "s")
+    service = OpenerService(
+        SafetyBlockedOpenerClient(), CostTracker(PRICING, None), store, "s"
+    )
     stop = threading.Event()
-    Worker("hinge", driver, FakeDecider("like"), service, store, "run1", _Pacing(), stop,
-           mode="training", training_action_bridge=TrainingActionBridge()).run()
+    Worker(
+        "hinge",
+        driver,
+        FakeDecider("like"),
+        service,
+        store,
+        "run1",
+        _Pacing(),
+        stop,
+        mode="training",
+        training_action_bridge=TrainingActionBridge(),
+    ).run()
 
     assert stop.is_set()
     assert driver.likes == []
@@ -1848,7 +2294,9 @@ def test_training_stale_hinge_calibration_stops_with_recalibration_action(capsys
             return mismatch
 
         def next_profile(self):
-            pytest.fail("a stale live calibration must stop before the first profile capture")
+            pytest.fail(
+                "a stale live calibration must stop before the first profile capture"
+            )
 
         def set_training_decision(self, _approval):
             pass
@@ -1860,18 +2308,32 @@ def test_training_stale_hinge_calibration_stops_with_recalibration_action(capsys
 
         def maybe_opener(self, *_args, **_kwargs):
             self.calls += 1
-            pytest.fail("a stale targeting calibration must stop before opener generation")
+            pytest.fail(
+                "a stale targeting calibration must stop before opener generation"
+            )
 
-    mismatch = ("apps.hinge.targeting_calibration is unavailable (the live app build/frame "
-                "geometry does not exactly match schema-v3 calibration "
-                "('10.1.0'/(1080, 2400) != '10.0.1'/(1080, 2400)))")
+    mismatch = (
+        "apps.hinge.targeting_calibration is unavailable (the live app build/frame "
+        "geometry does not exactly match schema-v3 calibration "
+        "('10.1.0'/(1080, 2400) != '10.0.1'/(1080, 2400)))"
+    )
     driver = _TestingDriver(1)
     service, store, stop = _UnreachableOpenerService(), FakeStore(), threading.Event()
     status = RunStatus("run1", ["hinge"], min_labels=1, mode="training")
 
-    Worker("hinge", driver, FakeDecider("like"), service, store, "run1", _Pacing(), stop,
-           mode="training", status=status,
-           training_action_bridge=TrainingActionBridge()).run()
+    Worker(
+        "hinge",
+        driver,
+        FakeDecider("like"),
+        service,
+        store,
+        "run1",
+        _Pacing(),
+        stop,
+        mode="training",
+        status=status,
+        training_action_bridge=TrainingActionBridge(),
+    ).run()
 
     terminal_log = capsys.readouterr().out
     app = status.app_view("hinge")["app"]
@@ -1879,7 +2341,10 @@ def test_training_stale_hinge_calibration_stops_with_recalibration_action(capsys
     assert app["stop_kind"] == "targeting_calibration"
     assert "Capture and validate a fresh targeting calibration" in app["stop_reason"]
     assert mismatch in app["stop_reason"]
-    assert terminal_log.count("Hinge: stopped — targeting calibration must be renewed:") == 1
+    assert (
+        terminal_log.count("Hinge: stopped — targeting calibration must be renewed:")
+        == 1
+    )
     assert mismatch in terminal_log
     assert service.calls == 0
     assert driver.i == 0
@@ -1893,9 +2358,11 @@ def test_training_rechecks_calibration_before_requesting_an_opener():
     from operation_love.status import RunStatus
     from operation_love.training_actions import TrainingActionBridge
 
-    mismatch = ("apps.hinge.targeting_calibration is unavailable (the live app build/frame "
-                "geometry does not exactly match schema-v3 calibration "
-                "('10.1.0'/(1080, 2400) != '10.0.1'/(1080, 2400)))")
+    mismatch = (
+        "apps.hinge.targeting_calibration is unavailable (the live app build/frame "
+        "geometry does not exactly match schema-v3 calibration "
+        "('10.1.0'/(1080, 2400) != '10.0.1'/(1080, 2400)))"
+    )
 
     class _TestingDriver(FakeDriver):
         accepts_opener = True
@@ -1924,21 +2391,39 @@ def test_training_rechecks_calibration_before_requesting_an_opener():
 
         def maybe_opener(self, *_args, **_kwargs):
             self.calls += 1
-            pytest.fail("a calibration invalidated during capture must stop before opener generation")
+            pytest.fail(
+                "a calibration invalidated during capture must stop before opener generation"
+            )
 
     driver, service, store, stop = (
-        _TestingDriver(), _UnreachableOpenerService(), FakeStore(), threading.Event())
+        _TestingDriver(),
+        _UnreachableOpenerService(),
+        FakeStore(),
+        threading.Event(),
+    )
     status = RunStatus("run1", ["hinge"], min_labels=1, mode="training")
 
-    Worker("hinge", driver, FakeDecider("like"), service, store, "run1", _Pacing(), stop,
-           mode="training", status=status,
-           training_action_bridge=TrainingActionBridge()).run()
+    Worker(
+        "hinge",
+        driver,
+        FakeDecider("like"),
+        service,
+        store,
+        "run1",
+        _Pacing(),
+        stop,
+        mode="training",
+        status=status,
+        training_action_bridge=TrainingActionBridge(),
+    ).run()
 
     app = status.app_view("hinge")["app"]
     assert app["state"] == "stopped"
     assert app["stop_kind"] == "targeting_calibration"
     assert mismatch in app["stop_reason"]
-    assert driver.i == 1, "the profile was captured before its runtime calibration changed"
+    assert driver.i == 1, (
+        "the profile was captured before its runtime calibration changed"
+    )
     assert service.calls == 0
     assert driver.likes == []
     assert store.decisions == []
@@ -1953,6 +2438,7 @@ def test_training_stops_before_navigation_for_an_empty_opener_object(text):
     class _TestingDriver(FakeDriver):
         accepts_opener = True
         supports_training_decision = True
+
         def set_training_decision(self, _approval):
             pass
 
@@ -1966,9 +2452,18 @@ def test_training_stops_before_navigation_for_an_empty_opener_object(text):
             return SimpleNamespace(text=text)
 
     driver, store, stop = _TestingDriver(1), FakeStore(), threading.Event()
-    Worker("hinge", driver, FakeDecider("like"), _BlankPickService(), store, "run1",
-           _Pacing(), stop, mode="training",
-           training_action_bridge=TrainingActionBridge()).run()
+    Worker(
+        "hinge",
+        driver,
+        FakeDecider("like"),
+        _BlankPickService(),
+        store,
+        "run1",
+        _Pacing(),
+        stop,
+        mode="training",
+        training_action_bridge=TrainingActionBridge(),
+    ).run()
 
     assert stop.is_set()
     assert driver.likes == []
@@ -1983,6 +2478,7 @@ def test_training_refuses_a_noop_decision_setter_before_any_like():
     class _NoopApprovalDriver(FakeDriver):
         accepts_opener = True
         supports_training_decision = True
+
         def set_training_decision(self, _approval):
             pass
 
@@ -1994,12 +2490,25 @@ def test_training_refuses_a_noop_decision_setter_before_any_like():
 
         def maybe_opener(self, *_args, **_kwargs):
             return SimpleNamespace(
-                text="A complete opener", index=1,
-                index_space=INDEX_SPACE_PROFILE_PHOTOS, capture_order_index=0)
+                text="A complete opener",
+                index=1,
+                index_space=INDEX_SPACE_PROFILE_PHOTOS,
+                capture_order_index=0,
+            )
 
     driver, store, stop = _NoopApprovalDriver(1), FakeStore(), threading.Event()
-    Worker("hinge", driver, FakeDecider("like"), _Service(), store, "run1", _Pacing(), stop,
-           mode="training", training_action_bridge=TrainingActionBridge()).run()
+    Worker(
+        "hinge",
+        driver,
+        FakeDecider("like"),
+        _Service(),
+        store,
+        "run1",
+        _Pacing(),
+        stop,
+        mode="training",
+        training_action_bridge=TrainingActionBridge(),
+    ).run()
 
     assert stop.is_set()
     assert driver.likes == []
@@ -2037,21 +2546,40 @@ def test_training_generation_context_clears_when_decision_hook_installation_fail
 
         def maybe_opener(self, *_args, **_kwargs):
             return SimpleNamespace(
-                text="A complete opener", index=1,
-                index_space=INDEX_SPACE_PROFILE_PHOTOS, capture_order_index=0,
-                referenced="a visible detail", angle="a question",
+                text="A complete opener",
+                index=1,
+                index_space=INDEX_SPACE_PROFILE_PHOTOS,
+                capture_order_index=0,
+                referenced="a visible detail",
+                angle="a question",
                 item_description="a photo",
-                _staged_record=SimpleNamespace(model="gemini-test-model"))
+                _staged_record=SimpleNamespace(model="gemini-test-model"),
+            )
 
     driver, store, stop = _FailingDecisionDriver(), FakeStore(), threading.Event()
-    Worker("hinge", driver, FakeDecider("like"), _Service(), store, "run1", _Pacing(), stop,
-           mode="training", training_action_bridge=TrainingActionBridge()).run()
+    Worker(
+        "hinge",
+        driver,
+        FakeDecider("like"),
+        _Service(),
+        store,
+        "run1",
+        _Pacing(),
+        stop,
+        mode="training",
+        training_action_bridge=TrainingActionBridge(),
+    ).run()
 
-    assert driver.context_calls == [{
-        "model": "gemini-test-model", "index_space": INDEX_SPACE_PROFILE_PHOTOS,
-        "referenced": "a visible detail", "angle": "a question",
-        "item_description": "a photo",
-    }, None]
+    assert driver.context_calls == [
+        {
+            "model": "gemini-test-model",
+            "index_space": INDEX_SPACE_PROFILE_PHOTOS,
+            "referenced": "a visible detail",
+            "angle": "a question",
+            "item_description": "a photo",
+        },
+        None,
+    ]
     # Preserve the old decision-cleanup semantics: a setter that raises while installing is not
     # called again with None, because the driver's callback state is unknowable.
     assert len(driver.decision_calls) == 1 and driver.decision_calls[0] is not None
@@ -2065,7 +2593,7 @@ def test_worker_stops_before_bare_like_on_single_bad_request():
     svc = OpenerService(client, CostTracker(PRICING, None), store, "s")
     _worker(driver, FakeDecider("like"), svc, store).run()
 
-    assert client.calls == 1                       # below _BAD_REQUEST_LATCH_THRESHOLD -- didn't latch
+    assert client.calls == 1  # below _BAD_REQUEST_LATCH_THRESHOLD -- didn't latch
     assert driver.likes == []
     assert store.decisions == []
     assert svc.disabled is False and svc.stop_requested is False
@@ -2080,7 +2608,7 @@ def test_worker_stops_before_bare_like_on_single_transient_failure():
     svc = OpenerService(client, CostTracker(PRICING, None), store, "s")
     _worker(driver, FakeDecider("like"), svc, store).run()
 
-    assert client.calls == 1                       # below _TRANSIENT_LATCH_THRESHOLD -- didn't latch
+    assert client.calls == 1  # below _TRANSIENT_LATCH_THRESHOLD -- didn't latch
     assert driver.likes == []
     assert store.decisions == []
     assert svc.disabled is False and svc.stop_requested is False
@@ -2101,8 +2629,18 @@ def test_auto_mode_stop_reason_names_the_cause_when_every_retry_attempt_fails():
     client = ParseErrorOpenerClient()
     svc = OpenerService(client, CostTracker(PRICING, None), store, "s")
     status = RunStatus("run1", ["bumble"], min_labels=1, mode="auto")
-    Worker("bumble", driver, FakeDecider("like"), svc, store, "run1", _Pacing(),
-           threading.Event(), mode="auto", status=status).run()
+    Worker(
+        "bumble",
+        driver,
+        FakeDecider("like"),
+        svc,
+        store,
+        "run1",
+        _Pacing(),
+        threading.Event(),
+        mode="auto",
+        status=status,
+    ).run()
 
     app = status.app_view("bumble")["app"]
     assert app["state"] == "stopped"
@@ -2121,14 +2659,14 @@ def test_worker_skips_openers_when_driver_declines_even_through_opener_failures(
     driver = FakeDriver(3)
     driver.accepts_opener = False
     store = FakeStore()
-    client = ParseErrorOpenerClient()          # would halt an opener-capable app every time
+    client = ParseErrorOpenerClient()  # would halt an opener-capable app every time
     svc = OpenerService(client, CostTracker(PRICING, None), store, "s")
     _worker(driver, FakeDecider("like"), svc, store).run()
 
     assert driver.likes == [None, None, None]  # liked all 3, normally, with no opener
-    assert client.calls == 0                   # opener service never even called
+    assert client.calls == 0  # opener service never even called
     assert len(store.decisions) == 3
-    assert svc.last_skip_reason is None         # never touched
+    assert svc.last_skip_reason is None  # never touched
 
 
 def test_worker_with_opener_disabled_by_config_still_likes_normally_in_auto_mode():
@@ -2141,13 +2679,13 @@ def test_worker_with_opener_disabled_by_config_still_likes_normally_in_auto_mode
     driver = FakeDriver(3)
     store = FakeStore()
     svc = OpenerService(None, CostTracker(PRICING, None), store, "s")
-    assert svc.disabled is True                # opener.enabled=false -- no client configured
+    assert svc.disabled is True  # opener.enabled=false -- no client configured
 
     _worker(driver, FakeDecider("like"), svc, store).run()
 
-    assert driver.likes == [None, None, None]   # liked all 3, normally, with no opener
+    assert driver.likes == [None, None, None]  # liked all 3, normally, with no opener
     assert len(store.decisions) == 3
-    assert svc.stop_requested is False           # never asked anyone to stop
+    assert svc.stop_requested is False  # never asked anyone to stop
 
 
 def test_auto_mode_stops_as_blocked_and_never_acts_when_driver_reports_a_blocked_deck():
@@ -2161,14 +2699,26 @@ def test_auto_mode_stops_as_blocked_and_never_acts_when_driver_reports_a_blocked
     store = FakeStore()
     svc = OpenerService(None, CostTracker(PRICING, None), store, "s")
     status = RunStatus("run1", ["bumble"], min_labels=1, mode="auto")
-    Worker("bumble", driver, FakeDecider("like"), svc, store, "run1", _Pacing(),
-           threading.Event(), mode="auto", status=status).run()
+    Worker(
+        "bumble",
+        driver,
+        FakeDecider("like"),
+        svc,
+        store,
+        "run1",
+        _Pacing(),
+        threading.Event(),
+        mode="auto",
+        status=status,
+    ).run()
 
     app = status.app_view("bumble")["app"]
     assert app["state"] == "blocked"
     assert app["stop_reason"] == _PAYWALL_REASON
     assert app["stop_kind"] == "deck_blocked"
-    assert driver.likes == [] and driver.dislikes == 0    # no autonomous action into a paywall
+    assert (
+        driver.likes == [] and driver.dislikes == 0
+    )  # no autonomous action into a paywall
     assert store.decisions == []
     assert driver.closed
 
@@ -2177,8 +2727,10 @@ def test_auto_none_capture_publishes_the_driver_latched_entry_refusal_as_blocked
     """The post-capture blocked_reason probe must explain a conservative entry refusal."""
     from operation_love.status import RunStatus
 
-    reason = ("the capture entry could not be proven at scroll top after a rewind: "
-              "confirmed_not_top")
+    reason = (
+        "the capture entry could not be proven at scroll top after a rewind: "
+        "confirmed_not_top"
+    )
 
     class EntryRefusalDriver(FakeDriver):
         def __init__(self):
@@ -2195,8 +2747,18 @@ def test_auto_none_capture_publishes_the_driver_latched_entry_refusal_as_blocked
     driver = EntryRefusalDriver()
     store = FakeStore()
     status = RunStatus("run1", ["hinge"], min_labels=1, mode="auto")
-    Worker("hinge", driver, FakeDecider("like"), None, store, "run1", _Pacing(),
-           threading.Event(), mode="auto", status=status).run()
+    Worker(
+        "hinge",
+        driver,
+        FakeDecider("like"),
+        None,
+        store,
+        "run1",
+        _Pacing(),
+        threading.Event(),
+        mode="auto",
+        status=status,
+    ).run()
 
     app = status.app_view("hinge")["app"]
     assert app["state"] == "blocked"
@@ -2208,7 +2770,9 @@ def test_auto_none_capture_publishes_the_driver_latched_entry_refusal_as_blocked
     assert store.decisions == [] and driver.closed
 
 
-def test_auto_none_capture_publishes_a_failed_cold_relaunch_under_its_own_stop_kind(monkeypatch):
+def test_auto_none_capture_publishes_a_failed_cold_relaunch_under_its_own_stop_kind(
+    monkeypatch,
+):
     """blocked_reason() is the ONLY channel a capture returning None has for carrying a
     sentence, so a failed cold-relaunch recovery latches through it too.
 
@@ -2224,8 +2788,10 @@ def test_auto_none_capture_publishes_a_failed_cold_relaunch_under_its_own_stop_k
     """
     from operation_love.status import RunStatus
 
-    reason = ("Hinge was relaunched cold and the deck could not be proven re-entered; "
-              "no action or label was recorded.")
+    reason = (
+        "Hinge was relaunched cold and the deck could not be proven re-entered; "
+        "no action or label was recorded."
+    )
 
     class ColdRelaunchDriver(FakeDriver):
         def __init__(self):
@@ -2245,8 +2811,18 @@ def test_auto_none_capture_publishes_a_failed_cold_relaunch_under_its_own_stop_k
     driver = ColdRelaunchDriver()
     store = FakeStore()
     status = RunStatus("run1", ["hinge"], min_labels=1, mode="auto")
-    Worker("hinge", driver, FakeDecider("like"), None, store, "run1", _Pacing(),
-           threading.Event(), mode="auto", status=status).run()
+    Worker(
+        "hinge",
+        driver,
+        FakeDecider("like"),
+        None,
+        store,
+        "run1",
+        _Pacing(),
+        threading.Event(),
+        mode="auto",
+        status=status,
+    ).run()
 
     app = status.app_view("hinge")["app"]
     assert app["state"] == "blocked" and app["stop_reason"] == reason
@@ -2266,8 +2842,18 @@ def test_auto_mode_post_send_blocked_error_records_no_rejected_like():
     store = FakeStore()
     svc = OpenerService(None, CostTracker(PRICING, None), store, "s")
     status = RunStatus("run1", ["bumble"], min_labels=1, mode="auto")
-    Worker("bumble", driver, FakeDecider("like"), svc, store, "run1", _Pacing(),
-           threading.Event(), mode="auto", status=status).run()
+    Worker(
+        "bumble",
+        driver,
+        FakeDecider("like"),
+        svc,
+        store,
+        "run1",
+        _Pacing(),
+        threading.Event(),
+        mode="auto",
+        status=status,
+    ).run()
 
     app = status.app_view("bumble")["app"]
     assert driver.like_calls == 1
@@ -2307,13 +2893,26 @@ def test_worker_handles_concrete_hinge_blocked_error_without_count_store_or_fail
     assert issubclass(HingeDeckBlockedError, DeckBlockedError)
     assert issubclass(HingeDeckBlockedError, HingeActionError)
     assert HingeDeckBlockedError.__mro__[:3] == (
-        HingeDeckBlockedError, HingeActionError, DeckBlockedError)
+        HingeDeckBlockedError,
+        HingeActionError,
+        DeckBlockedError,
+    )
 
     driver = ConcreteHingePaywallDriver()
     store = FakeStore()
     status = RunStatus("run1", ["hinge"], min_labels=1, mode="auto")
-    Worker("hinge", driver, FakeDecider("like"), None, store, "run1", _Pacing(),
-           threading.Event(), mode="auto", status=status).run()
+    Worker(
+        "hinge",
+        driver,
+        FakeDecider("like"),
+        None,
+        store,
+        "run1",
+        _Pacing(),
+        threading.Event(),
+        mode="auto",
+        status=status,
+    ).run()
 
     app = status.app_view("hinge")["app"]
     assert app["state"] == "blocked" and app["stop_kind"] == "deck_blocked"
@@ -2348,8 +2947,18 @@ def test_auto_mode_handles_concrete_hinge_blocked_error_from_dislike_boundary():
     driver = ForegroundLostOnDislike()
     store = FakeStore()
     status = RunStatus("run1", ["hinge"], min_labels=1, mode="auto")
-    Worker("hinge", driver, FakeDecider("dislike"), None, store, "run1", _Pacing(),
-           threading.Event(), mode="auto", status=status).run()
+    Worker(
+        "hinge",
+        driver,
+        FakeDecider("dislike"),
+        None,
+        store,
+        "run1",
+        _Pacing(),
+        threading.Event(),
+        mode="auto",
+        status=status,
+    ).run()
 
     app = status.app_view("hinge")["app"]
     assert app["state"] == "blocked" and app["stop_kind"] == "deck_blocked"
@@ -2381,8 +2990,18 @@ def test_auto_mode_surfaces_block_latched_during_capture_that_returns_no_profile
     driver = ForegroundLostDuringCapture()
     store = FakeStore()
     status = RunStatus("run1", ["hinge"], min_labels=1, mode="auto")
-    Worker("hinge", driver, FakeDecider("dislike"), None, store, "run1", _Pacing(),
-           threading.Event(), mode="auto", status=status).run()
+    Worker(
+        "hinge",
+        driver,
+        FakeDecider("dislike"),
+        None,
+        store,
+        "run1",
+        _Pacing(),
+        threading.Event(),
+        mode="auto",
+        status=status,
+    ).run()
 
     app = status.app_view("hinge")["app"]
     assert driver.blocked_calls == 2
@@ -2396,15 +3015,27 @@ def test_auto_mode_prefers_blocked_over_out_of_profiles_when_driver_reports_both
     from operation_love.status import RunStatus
 
     driver = _BlockedAndEmptyDriver()
-    assert driver.out_of_profiles() is True          # sanity: the empty-deck condition really holds
+    assert (
+        driver.out_of_profiles() is True
+    )  # sanity: the empty-deck condition really holds
     store = FakeStore()
     svc = OpenerService(None, CostTracker(PRICING, None), store, "s")
     status = RunStatus("run1", ["bumble"], min_labels=1, mode="auto")
-    Worker("bumble", driver, FakeDecider("like"), svc, store, "run1", _Pacing(),
-           threading.Event(), mode="auto", status=status).run()
+    Worker(
+        "bumble",
+        driver,
+        FakeDecider("like"),
+        svc,
+        store,
+        "run1",
+        _Pacing(),
+        threading.Event(),
+        mode="auto",
+        status=status,
+    ).run()
 
     app = status.app_view("bumble")["app"]
-    assert app["state"] == "blocked"                  # NOT "out_of_profiles"
+    assert app["state"] == "blocked"  # NOT "out_of_profiles"
     assert app["stop_reason"] == _PAYWALL_REASON
     assert app["stop_kind"] == "deck_blocked"
     assert driver.likes == [] and driver.dislikes == 0
@@ -2417,6 +3048,7 @@ def test_auto_mode_unaffected_when_driver_explicitly_reports_no_blocked_deck():
     always answers None -- "nothing standing between us and the deck" -- must swipe the
     whole deck exactly as before, with blocked_reason() polled once per loop iteration
     (proving the check genuinely runs every time) but never once tripping it."""
+
     class ExplicitlyUnblockedDriver(FakeDriver):
         def __init__(self, n):
             super().__init__(n)
@@ -2443,8 +3075,18 @@ def test_worker_stops_at_per_run_like_budget():
     store = FakeStore()
     svc = OpenerService(FakeOpenerClient(), CostTracker(PRICING, None), store, "s")
     limiter = RateLimiter(max_likes_per_run=2)
-    Worker("bumble", driver, FakeDecider("like"), svc, store, "run1", _Pacing(),
-           threading.Event(), mode="auto", limiter=limiter).run()
+    Worker(
+        "bumble",
+        driver,
+        FakeDecider("like"),
+        svc,
+        store,
+        "run1",
+        _Pacing(),
+        threading.Event(),
+        mode="auto",
+        limiter=limiter,
+    ).run()
     # Likes up to the budget, then stops the run before the over-budget like.
     assert driver.likes == ["hi 1", "hi 2"]
     # AUTO is inference-only: 2 decisions logged, no training labels saved.
@@ -2476,8 +3118,9 @@ def test_hinge_normal_auto_uses_ranker_and_continues_past_the_first_card(monkeyp
         def decide(self, _profile):
             self.calls += 1
             decision = next(self.decisions)
-            return Decision(decision, 0.9 if decision == "like" else 0.1,
-                            [0.1, 0.2], "ranker")
+            return Decision(
+                decision, 0.9 if decision == "like" else 0.1, [0.1, 0.2], "ranker"
+            )
 
     monkeypatch.setattr(worker_mod, "AutoSessionPolicy", IdentityPolicy)
     driver = FakeDriver(3)
@@ -2485,13 +3128,26 @@ def test_hinge_normal_auto_uses_ranker_and_continues_past_the_first_card(monkeyp
     store = FakeStore()
     service = OpenerService(FakeOpenerClient(), CostTracker(PRICING, None), store, "s")
 
-    Worker("hinge", driver, decider, service, store, "run1", _Pacing(),
-           threading.Event(), mode="auto", limiter=RateLimiter()).run()
+    Worker(
+        "hinge",
+        driver,
+        decider,
+        service,
+        store,
+        "run1",
+        _Pacing(),
+        threading.Event(),
+        mode="auto",
+        limiter=RateLimiter(),
+    ).run()
 
     assert decider.calls == 3
     assert driver.likes == ["hi 1", "hi 2"] and driver.dislikes == 1
     assert [decision for _app, decision, _source in store.decisions] == [
-        "like", "dislike", "like"]
+        "like",
+        "dislike",
+        "like",
+    ]
 
 
 class ScriptedScoreDecider:
@@ -2499,6 +3155,7 @@ class ScriptedScoreDecider:
     drive the ratio-ceiling shaper (worker.py's _auto_loop, via RateLimiter.
     allow_like_ratio in limits.py) through a specific marginal/strong score sequence,
     which the old constant-score FakeDecider can't do."""
+
     def __init__(self, scores):
         self.scores = list(scores)
         self.calls = 0
@@ -2506,7 +3163,9 @@ class ScriptedScoreDecider:
     def decide(self, profile):
         score = self.scores[self.calls]
         self.calls += 1
-        return Decision(decision="like", score=score, embedding=[0.1, 0.2], source="ranker")
+        return Decision(
+            decision="like", score=score, embedding=[0.1, 0.2], source="ranker"
+        )
 
 
 def test_like_ratio_ceiling_demotes_marginal_likes_but_lets_strong_ones_through():
@@ -2548,8 +3207,18 @@ def test_like_ratio_ceiling_demotes_marginal_likes_but_lets_strong_ones_through(
     svc = OpenerService(FakeOpenerClient(), CostTracker(PRICING, None), store, "s")
     limiter = RateLimiter(target_like_ratio=0.5)
     decider = ScriptedScoreDecider([0.55, 0.55, 0.95, 0.55])
-    Worker("bumble", driver, decider, svc, store, "run1", _Pacing(),
-           threading.Event(), mode="auto", limiter=limiter).run()
+    Worker(
+        "bumble",
+        driver,
+        decider,
+        svc,
+        store,
+        "run1",
+        _Pacing(),
+        threading.Event(),
+        mode="auto",
+        limiter=limiter,
+    ).run()
 
     # All 4 cards processed — NOT halted.
     assert len(store.decisions) == 4
@@ -2589,9 +3258,21 @@ def test_ratio_ceiling_demotion_tags_a_distinguishable_source(monkeypatch):
     # 0.55, not 0.51: stays clear of AutoSessionPolicy's own independent demotion --
     # see the worked-numbers comment in
     # test_like_ratio_ceiling_demotes_marginal_likes_but_lets_strong_ones_through above.
-    decider = ScriptedScoreDecider([0.55, 0.55])   # card 2: marginal, ratio at ceiling -> demoted
-    Worker("bumble", driver, decider, svc, store, "run1", _Pacing(),
-           threading.Event(), mode="auto", limiter=limiter).run()
+    decider = ScriptedScoreDecider(
+        [0.55, 0.55]
+    )  # card 2: marginal, ratio at ceiling -> demoted
+    Worker(
+        "bumble",
+        driver,
+        decider,
+        svc,
+        store,
+        "run1",
+        _Pacing(),
+        threading.Event(),
+        mode="auto",
+        limiter=limiter,
+    ).run()
 
     demoted = [d for d in created if d.decision == "dislike"]
     assert len(demoted) == 1
@@ -2611,6 +3292,7 @@ class _RatioNoZeroGuardLimiter:
     ZeroDivisionError; only the worker's own `acted > 0` short-circuit can prevent that
     call from ever happening on the very first 'like' decision of a run (acted is still 0
     at the moment of that check -- see _auto_loop, `acted` only increments AFTER it)."""
+
     max_per_day = None
     target_like_ratio = 0.5
 
@@ -2621,7 +3303,9 @@ class _RatioNoZeroGuardLimiter:
         return True
 
     def allow_like_ratio(self, liked, acted):
-        return liked / acted < self.target_like_ratio   # no acted == 0 guard, unlike limits.py
+        return (
+            liked / acted < self.target_like_ratio
+        )  # no acted == 0 guard, unlike limits.py
 
     def describe(self):
         return "test double (no internal zero guard)"
@@ -2635,10 +3319,20 @@ def test_first_like_survives_a_limiter_double_with_no_internal_zero_guard():
     driver = FakeDriver(1)
     store = FakeStore()
     svc = OpenerService(FakeOpenerClient(), CostTracker(PRICING, None), store, "s")
-    Worker("bumble", driver, FakeDecider("like"), svc, store, "run1", _Pacing(),
-           threading.Event(), mode="auto", limiter=_RatioNoZeroGuardLimiter()).run()
+    Worker(
+        "bumble",
+        driver,
+        FakeDecider("like"),
+        svc,
+        store,
+        "run1",
+        _Pacing(),
+        threading.Event(),
+        mode="auto",
+        limiter=_RatioNoZeroGuardLimiter(),
+    ).run()
 
-    assert driver.likes == ["hi 1"]                         # the like landed, not swallowed
+    assert driver.likes == ["hi 1"]  # the like landed, not swallowed
     assert store.decisions == [("bumble", "like", "auto")]
 
 
@@ -2647,8 +3341,18 @@ def test_worker_daily_limit_ignores_manual_decisions():
     store = FakeStore()
     store.decisions = [("bumble", "like", "manual")] * 83
     svc = OpenerService(None, CostTracker(PRICING, None), store, "s")
-    Worker("bumble", driver, FakeDecider("dislike"), svc, store, "run1", _Pacing(),
-           threading.Event(), mode="auto", limiter=RateLimiter(max_per_day=1)).run()
+    Worker(
+        "bumble",
+        driver,
+        FakeDecider("dislike"),
+        svc,
+        store,
+        "run1",
+        _Pacing(),
+        threading.Event(),
+        mode="auto",
+        limiter=RateLimiter(max_per_day=1),
+    ).run()
 
     assert driver.dislikes == 1
     assert store.count_today("bumble") == 1
@@ -2659,7 +3363,9 @@ def test_worker_daily_limit_ignores_manual_decisions():
 def test_no_auto_decision_recorded_when_like_raises_and_snapshot_runs_live():
     driver = RaisingLikeDriver(2)
     store = FakeStore()
-    svc = OpenerService(None, CostTracker(PRICING, None), store, "s")   # openers disabled -> pick None
+    svc = OpenerService(
+        None, CostTracker(PRICING, None), store, "s"
+    )  # openers disabled -> pick None
     _worker(driver, FakeDecider("like"), svc, store).run()
     # like() raised -> halt_on_error -> the phantom 'like' must NOT be recorded (record is post-action)
     assert store.decisions == []
@@ -2673,8 +3379,17 @@ def test_worker_treats_browser_close_as_graceful_stop():
     store = FakeStore()
     stop_event = threading.Event()
     svc = OpenerService(None, CostTracker(PRICING, None), store, "s")
-    Worker("bumble", driver, FakeDecider("like"), svc, store, "run1", _Pacing(),
-           stop_event, mode="auto").run()
+    Worker(
+        "bumble",
+        driver,
+        FakeDecider("like"),
+        svc,
+        store,
+        "run1",
+        _Pacing(),
+        stop_event,
+        mode="auto",
+    ).run()
 
     assert stop_event.is_set()
     assert driver.closed
@@ -2687,8 +3402,17 @@ def test_worker_stops_before_writing_auto_decision_after_stop():
     store = FakeStore()
     stop_event = threading.Event()
     svc = OpenerService(None, CostTracker(PRICING, None), store, "s")
-    Worker("bumble", driver, StopAfterDecide(stop_event), svc, store, "run1", _Pacing(),
-           stop_event, mode="auto").run()
+    Worker(
+        "bumble",
+        driver,
+        StopAfterDecide(stop_event),
+        svc,
+        store,
+        "run1",
+        _Pacing(),
+        stop_event,
+        mode="auto",
+    ).run()
 
     assert store.decisions == []
     assert store.labels == [] and store.profiles == []
@@ -2716,8 +3440,18 @@ def test_auto_pass_stop_at_driver_input_boundary_is_not_landed_or_recorded():
     store = FakeStore()
     status = RunStatus("run1", ["bumble"], min_labels=1, mode="auto")
     service = OpenerService(None, CostTracker(PRICING, None), store, "style")
-    Worker("bumble", driver, FakeDecider("dislike"), service, store, "run1", _Pacing(),
-           stop_event, mode="auto", status=status).run()
+    Worker(
+        "bumble",
+        driver,
+        FakeDecider("dislike"),
+        service,
+        store,
+        "run1",
+        _Pacing(),
+        stop_event,
+        mode="auto",
+        status=status,
+    ).run()
 
     assert driver.dislikes == 0
     assert store.decisions == []
@@ -2739,8 +3473,18 @@ def test_auto_refuses_to_pass_with_a_driver_that_cannot_honour_stop():
     store = FakeStore()
     status = RunStatus("run1", ["bumble"], min_labels=1, mode="auto")
     service = OpenerService(None, CostTracker(PRICING, None), store, "style")
-    Worker("bumble", driver, FakeDecider("dislike"), service, store, "run1", _Pacing(),
-           threading.Event(), mode="auto", status=status).run()
+    Worker(
+        "bumble",
+        driver,
+        FakeDecider("dislike"),
+        service,
+        store,
+        "run1",
+        _Pacing(),
+        threading.Event(),
+        mode="auto",
+        status=status,
+    ).run()
 
     assert driver.dislikes == 0
     assert store.decisions == []
@@ -2749,6 +3493,7 @@ def test_auto_refuses_to_pass_with_a_driver_that_cannot_honour_stop():
 
 def test_worker_closes_open_session_when_post_open_setup_raises():
     """The outer worker finalizer owns a driver after open_session() returns."""
+
     class _PostOpenFailure(FakeDriver):
         accepts_opener = True
 
@@ -2766,10 +3511,21 @@ def test_worker_closes_open_session_when_post_open_setup_raises():
     driver = _PostOpenFailure()
     store = FakeStore()
     from operation_love.status import RunStatus
+
     status = RunStatus("run1", ["bumble"], min_labels=1, mode="auto")
     service = OpenerService(None, CostTracker(PRICING, None), store, "style")
-    Worker("bumble", driver, FakeDecider("dislike"), service, store, "run1", _Pacing(),
-           threading.Event(), mode="auto", status=status).run()
+    Worker(
+        "bumble",
+        driver,
+        FakeDecider("dislike"),
+        service,
+        store,
+        "run1",
+        _Pacing(),
+        threading.Event(),
+        mode="auto",
+        status=status,
+    ).run()
 
     assert driver.opened and driver.closed
     assert driver.close_calls == 1
@@ -2786,11 +3542,14 @@ def test_auto_mode_halts_on_unexpected_even_when_a_driver_opts_out_of_halting():
     defaults to True on DatingAppDriver, so "a driver that never mentions it" no longer means
     "a driver that restarts". Setting it False makes this the strongest version of the claim —
     auto mode overrides the opt-out."""
+
     class BoomDriver(FakeDriver):
-        halt_on_error = False           # explicitly opted out — auto must override it anyway
+        halt_on_error = False  # explicitly opted out — auto must override it anyway
+
         def __init__(self, n):
             super().__init__(n)
             self.calls = 0
+
         def next_profile(self):
             self.calls += 1
             raise RuntimeError("unexpected boom")
@@ -2799,11 +3558,21 @@ def test_auto_mode_halts_on_unexpected_even_when_a_driver_opts_out_of_halting():
     store = FakeStore()
     svc = OpenerService(None, CostTracker(PRICING, None), store, "s")
     stop = threading.Event()
-    Worker("bumble", driver, FakeDecider("like"), svc, store, "run1", _Pacing(),
-           stop, mode="auto", max_restarts=5).run()
+    Worker(
+        "bumble",
+        driver,
+        FakeDecider("like"),
+        svc,
+        store,
+        "run1",
+        _Pacing(),
+        stop,
+        mode="auto",
+        max_restarts=5,
+    ).run()
 
-    assert driver.calls == 1        # halted on the first error — did NOT restart-and-retry
-    assert stop.is_set()            # stop set (halt path), so the supervisor saves buffered data
+    assert driver.calls == 1  # halted on the first error — did NOT restart-and-retry
+    assert stop.is_set()  # stop set (halt path), so the supervisor saves buffered data
     assert driver.closed
 
 
@@ -2817,16 +3586,21 @@ def test_pace_scales_wait_by_configured_swipe_delay(monkeypatch):
     like/pass dwell shape for apps it was actually calibrated on (Hinge), and falls back
     to a flat anchor otherwise -- so without one this exercises the wrong branch."""
     import operation_love.worker as wmod
-    monkeypatch.setattr(wmod, "think_time_s", lambda key: 2.0)   # fixed, deterministic base
+
+    monkeypatch.setattr(
+        wmod, "think_time_s", lambda key: 2.0
+    )  # fixed, deterministic base
 
     class _Pacing2:
-        swipe_delay_s = 7.0   # 2x the 3.5s default anchor -> scale == 2.0
+        swipe_delay_s = 7.0  # 2x the 3.5s default anchor -> scale == 2.0
 
     class _RecordingStopEvent:
         def __init__(self):
             self.waits = []
+
         def wait(self, t):
             self.waits.append(t)
+
         def is_set(self):
             return False
 
@@ -2838,15 +3612,18 @@ def test_pace_scales_wait_by_configured_swipe_delay(monkeypatch):
     w.pacing = _Pacing2()
     w.stop_event = _RecordingStopEvent()
     w._pace("like")
-    assert w.stop_event.waits == [4.0]   # 2.0 * (7.0 / 3.5)
+    assert w.stop_event.waits == [4.0]  # 2.0 * (7.0 / 3.5)
 
 
 def test_auto_defer_cold_start_stops_without_action_or_record():
     """AUTO cold-start: a not-ready ranker returns 'defer' -> the loop STOPS after pulling the
     first card, takes no swipe, records no decision/label, and still closes the driver."""
+
     class DeferDecider(FakeDecider):
         def decide(self, profile):
-            return Decision(decision="defer", score=0.0, embedding=[0.1], source="cold_start")
+            return Decision(
+                decision="defer", score=0.0, embedding=[0.1], source="cold_start"
+            )
 
     driver = FakeDriver(3)
     store = FakeStore()
@@ -2883,13 +3660,25 @@ def test_auto_like_with_opener_service_none_does_not_crash():
     driver = FakeDriver(1)
     store = FakeStore()
     status = RunStatus("run1", ["bumble"], min_labels=1, mode="auto")
-    Worker("bumble", driver, FakeDecider("like"), None, store, "run1", _Pacing(),
-           threading.Event(), mode="auto", status=status).run()
+    Worker(
+        "bumble",
+        driver,
+        FakeDecider("like"),
+        None,
+        store,
+        "run1",
+        _Pacing(),
+        threading.Event(),
+        mode="auto",
+        status=status,
+    ).run()
 
     app = status.app_view("bumble")["app"]
-    assert app["state"] != "error"          # not the HALT-on-unexpected path (an AttributeError)
+    assert (
+        app["state"] != "error"
+    )  # not the HALT-on-unexpected path (an AttributeError)
     assert app.get("error") is None
-    assert driver.likes == [None]           # no opener service -> liked, but with no opener
+    assert driver.likes == [None]  # no opener service -> liked, but with no opener
     assert driver.closed
 
 
@@ -2901,8 +3690,18 @@ def test_auto_dislike_with_opener_service_none_does_not_crash():
     driver = FakeDriver(2)
     store = FakeStore()
     status = RunStatus("run1", ["bumble"], min_labels=1, mode="auto")
-    Worker("bumble", driver, FakeDecider("dislike"), None, store, "run1", _Pacing(),
-           threading.Event(), mode="auto", status=status).run()
+    Worker(
+        "bumble",
+        driver,
+        FakeDecider("dislike"),
+        None,
+        store,
+        "run1",
+        _Pacing(),
+        threading.Event(),
+        mode="auto",
+        status=status,
+    ).run()
 
     app = status.app_view("bumble")["app"]
     assert app["state"] != "error"
@@ -2922,11 +3721,13 @@ def test_auto_dislike_with_opener_service_none_does_not_crash():
 # this file).
 # ---------------------------------------------------------------------------------------
 
+
 class _SequencedOpenerService:
     """Records every maybe_opener() call's kwargs and returns a SCRIPTED pick per call, in
     call order -- so a test can drive several opener calls through DIFFERENT results and tell
     which call produced which text. A scripted entry of None models a call that produced no
     opener at all."""
+
     stop_requested = False
     disabled = False
 
@@ -2934,10 +3735,18 @@ class _SequencedOpenerService:
         self.picks = list(picks)
         self.calls = []
 
-    def maybe_opener(self, run_id, app, profile, *, anchor=None, items=None,
-                     should_stop=None):
-        self.calls.append({"run_id": run_id, "app": app, "anchor": anchor, "items": items,
-                           "should_stop": should_stop})
+    def maybe_opener(
+        self, run_id, app, profile, *, anchor=None, items=None, should_stop=None
+    ):
+        self.calls.append(
+            {
+                "run_id": run_id,
+                "app": app,
+                "anchor": anchor,
+                "items": items,
+                "should_stop": should_stop,
+            }
+        )
         return self.picks[len(self.calls) - 1]
 
 
@@ -2954,11 +3763,24 @@ def test_auto_like_passes_the_translated_item_index_and_no_repair_callback():
     rather than silently reintroducing the substitution path."""
     driver = FakeDriver(1)
     store = FakeStore()
-    svc = _SequencedOpenerService([
-        OpenerPick("hi 1", index=3, referenced="r", index_space=INDEX_SPACE_PROFILE_PHOTOS),
-    ])
-    Worker("bumble", driver, FakeDecider("like"), svc, store, "run1", _Pacing(),
-           threading.Event(), mode="auto").run()
+    svc = _SequencedOpenerService(
+        [
+            OpenerPick(
+                "hi 1", index=3, referenced="r", index_space=INDEX_SPACE_PROFILE_PHOTOS
+            ),
+        ]
+    )
+    Worker(
+        "bumble",
+        driver,
+        FakeDecider("like"),
+        svc,
+        store,
+        "run1",
+        _Pacing(),
+        threading.Event(),
+        mode="auto",
+    ).run()
 
     assert driver.likes == ["hi 1"]
     assert driver.like_item_indexes == [2]
@@ -2980,17 +3802,31 @@ def test_auto_like_passes_the_translated_item_index_and_no_repair_callback():
 # as a reason to fall back to a fixed coordinate") and stops the run instead. These tests pin
 # the crossing itself, at the seam, in the worker, where both bugs lived.
 
+
 def test_auto_like_translates_a_profile_photo_index_into_the_drivers_capture_order():
     """The legacy frame shape numbers profile.photos 1..N, and the driver's capture order is
     that same list 0-based, so model item 3 is capture-order index 2. The worker must send the
     CONVERTED value -- sending 3 would target the next frame down."""
     driver = FakeDriver(1)
     store = FakeStore()
-    svc = _SequencedOpenerService([
-        OpenerPick("hi 1", index=3, referenced="r", index_space=INDEX_SPACE_PROFILE_PHOTOS),
-    ])
-    Worker("bumble", driver, FakeDecider("like"), svc, store, "run1", _Pacing(),
-           threading.Event(), mode="auto").run()
+    svc = _SequencedOpenerService(
+        [
+            OpenerPick(
+                "hi 1", index=3, referenced="r", index_space=INDEX_SPACE_PROFILE_PHOTOS
+            ),
+        ]
+    )
+    Worker(
+        "bumble",
+        driver,
+        FakeDecider("like"),
+        svc,
+        store,
+        "run1",
+        _Pacing(),
+        threading.Event(),
+        mode="auto",
+    ).run()
 
     assert driver.like_item_indexes == [2]
 
@@ -3009,15 +3845,28 @@ def test_auto_like_hands_a_model_item_number_to_the_driver_rather_than_convertin
     combination `hinge._like_comment_sheet` routes to counting navigation."""
     driver = FakeDriver(1)
     store = FakeStore()
-    svc = _SequencedOpenerService([
-        OpenerPick("hi 1", index=3, referenced="r", index_space=INDEX_SPACE_MODEL_ITEMS),
-    ])
-    Worker("bumble", driver, FakeDecider("like"), svc, store, "run1", _Pacing(),
-           threading.Event(), mode="auto").run()
+    svc = _SequencedOpenerService(
+        [
+            OpenerPick(
+                "hi 1", index=3, referenced="r", index_space=INDEX_SPACE_MODEL_ITEMS
+            ),
+        ]
+    )
+    Worker(
+        "bumble",
+        driver,
+        FakeDecider("like"),
+        svc,
+        store,
+        "run1",
+        _Pacing(),
+        threading.Event(),
+        mode="auto",
+    ).run()
 
     assert driver.likes == ["hi 1"]
-    assert driver.like_model_item_indexes == [3]      # the model's own number, unconverted
-    assert driver.like_item_indexes == [None]         # ...and NO capture-order index beside it
+    assert driver.like_model_item_indexes == [3]  # the model's own number, unconverted
+    assert driver.like_item_indexes == [None]  # ...and NO capture-order index beside it
     assert len(store.decisions) == 1
 
 
@@ -3029,11 +3878,24 @@ def test_auto_like_never_turns_an_absent_item_index_into_the_first_item():
     space: the worker refuses to call driver.like() and stops the run instead."""
     for space in (INDEX_SPACE_PROFILE_PHOTOS, INDEX_SPACE_MODEL_ITEMS):
         driver = FakeDriver(1)
-        svc = _SequencedOpenerService([
-            OpenerPick("hi 1", index=ITEM_INDEX_ABSENT, referenced="r", index_space=space),
-        ])
-        Worker("bumble", driver, FakeDecider("like"), svc, FakeStore(), "run1", _Pacing(),
-               threading.Event(), mode="auto").run()
+        svc = _SequencedOpenerService(
+            [
+                OpenerPick(
+                    "hi 1", index=ITEM_INDEX_ABSENT, referenced="r", index_space=space
+                ),
+            ]
+        )
+        Worker(
+            "bumble",
+            driver,
+            FakeDecider("like"),
+            svc,
+            FakeStore(),
+            "run1",
+            _Pacing(),
+            threading.Event(),
+            mode="auto",
+        ).run()
 
         assert driver.likes == [], space
         assert driver.like_item_indexes == [], space
@@ -3055,10 +3917,22 @@ def test_auto_mode_stop_reason_names_absent_item_index_distinctly_from_an_unknow
     from operation_love.status import RunStatus
 
     driver = FakeDriver(1)
-    svc = _SequencedOpenerService([OpenerPick("hi 1", index=ITEM_INDEX_ABSENT, referenced="r")])
+    svc = _SequencedOpenerService(
+        [OpenerPick("hi 1", index=ITEM_INDEX_ABSENT, referenced="r")]
+    )
     status = RunStatus("run1", ["bumble"], min_labels=1, mode="auto")
-    Worker("bumble", driver, FakeDecider("like"), svc, FakeStore(), "run1", _Pacing(),
-           threading.Event(), mode="auto", status=status).run()
+    Worker(
+        "bumble",
+        driver,
+        FakeDecider("like"),
+        svc,
+        FakeStore(),
+        "run1",
+        _Pacing(),
+        threading.Event(),
+        mode="auto",
+        status=status,
+    ).run()
 
     app = status.app_view("bumble")["app"]
     assert app["state"] == "stopped"
@@ -3067,12 +3941,26 @@ def test_auto_mode_stop_reason_names_absent_item_index_distinctly_from_an_unknow
     assert driver.likes == []
 
     driver2 = FakeDriver(1)
-    svc2 = _SequencedOpenerService([
-        OpenerPick("hi 1", index=3, referenced="r", index_space="some_future_space"),
-    ])
+    svc2 = _SequencedOpenerService(
+        [
+            OpenerPick(
+                "hi 1", index=3, referenced="r", index_space="some_future_space"
+            ),
+        ]
+    )
     status2 = RunStatus("run1", ["bumble"], min_labels=1, mode="auto")
-    Worker("bumble", driver2, FakeDecider("like"), svc2, FakeStore(), "run1", _Pacing(),
-           threading.Event(), mode="auto", status=status2).run()
+    Worker(
+        "bumble",
+        driver2,
+        FakeDecider("like"),
+        svc2,
+        FakeStore(),
+        "run1",
+        _Pacing(),
+        threading.Event(),
+        mode="auto",
+        status=status2,
+    ).run()
 
     app2 = status2.app_view("bumble")["app"]
     assert app2["state"] == "stopped"
@@ -3087,6 +3975,7 @@ def test_auto_mode_stop_reason_names_absent_item_index_distinctly_from_an_unknow
 # (ops/OPENER-REDESIGN.md 5.2/5.7)
 # =====================================================================================
 
+
 def test_auto_sends_the_enumerated_item_crops_as_the_request_not_the_scroll_frames():
     """Doc 5.2's whole point: with crops, image k IS item k, so the number the model answers
     with means something. When the capture enumerated the profile, the AUTO loop must build an
@@ -3098,11 +3987,23 @@ def test_auto_sends_the_enumerated_item_crops_as_the_request_not_the_scroll_fram
     driver = FakeDriver(1)
     driver.cards[0] = Profile(
         photos=[b"frame-0", b"frame-1", b"frame-2"],
-        name="Ada", items=(b"crop-1", b"crop-2"), item_context=(b"vitals",),
-        items_truncated=True)
+        name="Ada",
+        items=(b"crop-1", b"crop-2"),
+        item_context=(b"vitals",),
+        items_truncated=True,
+    )
 
-    Worker("bumble", driver, FakeDecider("like"), svc, FakeStore(), "run1", _Pacing(),
-           threading.Event(), mode="auto").run()
+    Worker(
+        "bumble",
+        driver,
+        FakeDecider("like"),
+        svc,
+        FakeStore(),
+        "run1",
+        _Pacing(),
+        threading.Event(),
+        mode="auto",
+    ).run()
 
     assert len(client.items) == 1
     request = client.items[0]
@@ -3125,8 +4026,17 @@ def test_auto_keeps_the_frame_shape_for_a_driver_that_enumerates_nothing():
     svc = OpenerService(client, CostTracker(PRICING, None), FakeStore(), "s")
     driver = FakeDriver(1)
 
-    Worker("bumble", driver, FakeDecider("like"), svc, FakeStore(), "run1", _Pacing(),
-           threading.Event(), mode="auto").run()
+    Worker(
+        "bumble",
+        driver,
+        FakeDecider("like"),
+        svc,
+        FakeStore(),
+        "run1",
+        _Pacing(),
+        threading.Event(),
+        mode="auto",
+    ).run()
 
     assert client.items == [None]
     assert driver.likes == ["hi 1"]
@@ -3144,11 +4054,22 @@ def test_auto_stops_when_the_capture_could_not_produce_numbered_items():
     driver = FakeDriver(1)
     driver.cards[0] = Profile(
         photos=[b"frame-0", b"frame-1"],
-        items_unavailable="the card is not confirmed to be at its scroll top (confirmed_not_top)")
+        items_unavailable="the card is not confirmed to be at its scroll top (confirmed_not_top)",
+    )
     status = RunStatus("run1", ["bumble"], min_labels=1, mode="auto")
 
-    Worker("bumble", driver, FakeDecider("like"), svc, FakeStore(), "run1", _Pacing(),
-           threading.Event(), mode="auto", status=status).run()
+    Worker(
+        "bumble",
+        driver,
+        FakeDecider("like"),
+        svc,
+        FakeStore(),
+        "run1",
+        _Pacing(),
+        threading.Event(),
+        mode="auto",
+        status=status,
+    ).run()
 
     app = status.app_view("bumble")["app"]
     assert app["state"] == "stopped"
@@ -3162,19 +4083,33 @@ def test_auto_stops_when_the_capture_could_not_produce_numbered_items():
 def test_auto_stale_hinge_calibration_stops_before_opener_or_like(capsys):
     from operation_love.status import RunStatus
 
-    mismatch = ("apps.hinge.targeting_calibration is unavailable (the live app build/frame "
-                "geometry does not exactly match schema-v3 calibration "
-                "('10.1.0'/(1080, 2400) != '10.0.1'/(1080, 2400)))")
+    mismatch = (
+        "apps.hinge.targeting_calibration is unavailable (the live app build/frame "
+        "geometry does not exactly match schema-v3 calibration "
+        "('10.1.0'/(1080, 2400) != '10.0.1'/(1080, 2400)))"
+    )
     client = FakeOpenerClient()
     svc = OpenerService(client, CostTracker(PRICING, None), FakeStore(), "s")
     driver = FakeDriver(1)
     driver.cards[0] = Profile(
-        photos=[b"frame-0"], items_unavailable=mismatch,
-        items_unavailable_kind="targeting_calibration")
+        photos=[b"frame-0"],
+        items_unavailable=mismatch,
+        items_unavailable_kind="targeting_calibration",
+    )
     status = RunStatus("run1", ["hinge"], min_labels=1, mode="auto")
 
-    Worker("hinge", driver, FakeDecider("like"), svc, FakeStore(), "run1", _Pacing(),
-           threading.Event(), mode="auto", status=status).run()
+    Worker(
+        "hinge",
+        driver,
+        FakeDecider("like"),
+        svc,
+        FakeStore(),
+        "run1",
+        _Pacing(),
+        threading.Event(),
+        mode="auto",
+        status=status,
+    ).run()
 
     terminal_log = capsys.readouterr().out
     app = status.app_view("hinge")["app"]
@@ -3182,7 +4117,10 @@ def test_auto_stale_hinge_calibration_stops_before_opener_or_like(capsys):
     assert app["stop_kind"] == "targeting_calibration"
     assert "fresh targeting calibration" in app["stop_reason"]
     assert mismatch in app["stop_reason"]
-    assert terminal_log.count("Hinge: stopped — targeting calibration must be renewed:") == 1
+    assert (
+        terminal_log.count("Hinge: stopped — targeting calibration must be renewed:")
+        == 1
+    )
     assert mismatch in terminal_log
     assert client.items == []
     assert driver.likes == []
@@ -3192,9 +4130,11 @@ def test_auto_stale_live_calibration_stops_before_profile_capture_or_action():
     """AUTO must not pass profiles while its live targeting licence is stale."""
     from operation_love.status import RunStatus
 
-    mismatch = ("apps.hinge.targeting_calibration is unavailable (the live app build/frame "
-                "geometry does not exactly match schema-v3 calibration "
-                "('10.1.0'/(1080, 2400) != '10.0.1'/(1080, 2400)))")
+    mismatch = (
+        "apps.hinge.targeting_calibration is unavailable (the live app build/frame "
+        "geometry does not exactly match schema-v3 calibration "
+        "('10.1.0'/(1080, 2400) != '10.0.1'/(1080, 2400)))"
+    )
 
     class _TestingDriver(FakeDriver):
         accepts_opener = True
@@ -3203,15 +4143,27 @@ def test_auto_stale_live_calibration_stops_before_profile_capture_or_action():
             return mismatch
 
         def next_profile(self):
-            pytest.fail("a stale live calibration must stop AUTO before the first capture")
+            pytest.fail(
+                "a stale live calibration must stop AUTO before the first capture"
+            )
 
     client, store = FakeOpenerClient(), FakeStore()
     service = OpenerService(client, CostTracker(PRICING, None), store, "s")
     driver = _TestingDriver(1)
     status = RunStatus("run1", ["hinge"], min_labels=1, mode="auto")
 
-    Worker("hinge", driver, FakeDecider("dislike"), service, store, "run1", _Pacing(),
-           threading.Event(), mode="auto", status=status).run()
+    Worker(
+        "hinge",
+        driver,
+        FakeDecider("dislike"),
+        service,
+        store,
+        "run1",
+        _Pacing(),
+        threading.Event(),
+        mode="auto",
+        status=status,
+    ).run()
 
     app = status.app_view("hinge")["app"]
     assert app["state"] == "stopped"
@@ -3237,21 +4189,36 @@ def test_auto_does_not_stop_on_items_unavailable_when_openers_are_disabled():
     if a driver enumerates anyway (a fake, an older driver, or a future one that forgets the hook)."""
     from operation_love.status import RunStatus
 
-    svc = OpenerService(None, CostTracker(PRICING, None), FakeStore(), "s")   # openers disabled
+    svc = OpenerService(
+        None, CostTracker(PRICING, None), FakeStore(), "s"
+    )  # openers disabled
     driver = FakeDriver(1)
     driver.cards[0] = Profile(
         photos=[b"frame-0", b"frame-1"],
-        items_unavailable="the card is not confirmed to be at its scroll top (confirmed_not_top)")
+        items_unavailable="the card is not confirmed to be at its scroll top (confirmed_not_top)",
+    )
     status = RunStatus("run1", ["bumble"], min_labels=1, mode="auto")
 
-    Worker("bumble", driver, FakeDecider("like"), svc, FakeStore(), "run1", _Pacing(),
-           threading.Event(), mode="auto", status=status).run()
+    Worker(
+        "bumble",
+        driver,
+        FakeDecider("like"),
+        svc,
+        FakeStore(),
+        "run1",
+        _Pacing(),
+        threading.Event(),
+        mode="auto",
+        status=status,
+    ).run()
 
     app = status.app_view("bumble")["app"]
     assert app["state"] != "stopped"
     assert svc.stop_requested is False
-    assert driver.likes == [None]     # liked normally, with no opener -- exactly as if openers
-                                       # did not exist for this run at all
+    assert driver.likes == [
+        None
+    ]  # liked normally, with no opener -- exactly as if openers
+    # did not exist for this run at all
 
 
 # --- THE items_unnumbered REGRESSION (found+fixed 2026-08-22, second pass, same day) -----------
@@ -3267,6 +4234,7 @@ def test_auto_does_not_stop_on_items_unavailable_when_openers_are_disabled():
 # These tests pin the fix -- a LIKE decision now stops here, by call count, not just by message --
 # and re-confirm the PASS side the first pass already got right.
 
+
 def test_auto_stops_on_like_when_enumeration_numbered_nothing():
     """The regression itself. `maybe_opener` must never be reached -- not "reached and it
     returned nothing useful", literally never invoked -- and `driver.like` must never be called
@@ -3275,22 +4243,38 @@ def test_auto_stops_on_like_when_enumeration_numbered_nothing():
     None`, after `maybe_opener` already ran on the wrong request)."""
     from operation_love.status import RunStatus
 
-    svc = _SequencedOpenerService([])   # any call at all is a bug; nothing is scripted to return
+    svc = _SequencedOpenerService(
+        []
+    )  # any call at all is a bug; nothing is scripted to return
     driver = FakeDriver(1)
     driver.cards[0] = Profile(
-        photos=[b"frame-0"], items=(),
+        photos=[b"frame-0"],
+        items=(),
         items_unnumbered="15 selectable card(s) were considered; 15 could not be judged because "
-                          "this capture's configured bounded dwell walk did not cover them.")
+        "this capture's configured bounded dwell walk did not cover them.",
+    )
     status = RunStatus("run1", ["bumble"], min_labels=1, mode="auto")
 
-    Worker("bumble", driver, FakeDecider("like"), svc, FakeStore(), "run1", _Pacing(),
-           threading.Event(), mode="auto", status=status).run()
+    Worker(
+        "bumble",
+        driver,
+        FakeDecider("like"),
+        svc,
+        FakeStore(),
+        "run1",
+        _Pacing(),
+        threading.Event(),
+        mode="auto",
+        status=status,
+    ).run()
 
     app = status.app_view("bumble")["app"]
     assert app["state"] == "stopped"
     assert app["stop_kind"] == "opener"
     assert svc.calls == [], "maybe_opener must not be invoked when nothing was numbered"
-    assert driver.likes == [], "no like may be sent with no verifiable item to attach it to"
+    assert driver.likes == [], (
+        "no like may be sent with no verifiable item to attach it to"
+    )
 
 
 def test_auto_does_not_stop_on_pass_when_enumeration_numbered_nothing():
@@ -3301,14 +4285,27 @@ def test_auto_does_not_stop_on_pass_when_enumeration_numbered_nothing():
     svc = _SequencedOpenerService([])
     driver = FakeDriver(2)
     driver.cards[0] = Profile(
-        photos=[b"frame-0"], items=(),
+        photos=[b"frame-0"],
+        items=(),
         items_unnumbered="15 selectable card(s) were considered; 15 could not be judged because "
-                          "this capture's configured bounded dwell walk did not cover them.")
+        "this capture's configured bounded dwell walk did not cover them.",
+    )
 
-    Worker("bumble", driver, FakeDecider("dislike"), svc, FakeStore(), "run1", _Pacing(),
-           threading.Event(), mode="auto").run()
+    Worker(
+        "bumble",
+        driver,
+        FakeDecider("dislike"),
+        svc,
+        FakeStore(),
+        "run1",
+        _Pacing(),
+        threading.Event(),
+        mode="auto",
+    ).run()
 
-    assert driver.dislikes == 2, "both cards were reached -- the run did not stop on card one"
+    assert driver.dislikes == 2, (
+        "both cards were reached -- the run did not stop on card one"
+    )
     assert svc.calls == []
     assert driver.out_of_profiles()
 
@@ -3327,21 +4324,42 @@ def test_items_unnumbered_stop_reason_is_distinguishable_from_items_unavailable(
     unavailable_driver = FakeDriver(1)
     unavailable_driver.cards[0] = Profile(
         photos=[b"frame-0"],
-        items_unavailable="the card is not confirmed to be at its scroll top (confirmed_not_top)")
-    Worker("bumble", unavailable_driver, FakeDecider("like"), _SequencedOpenerService([]),
-           FakeStore(), "run1", _Pacing(), threading.Event(),
-           mode="auto", status=unavailable_status).run()
+        items_unavailable="the card is not confirmed to be at its scroll top (confirmed_not_top)",
+    )
+    Worker(
+        "bumble",
+        unavailable_driver,
+        FakeDecider("like"),
+        _SequencedOpenerService([]),
+        FakeStore(),
+        "run1",
+        _Pacing(),
+        threading.Event(),
+        mode="auto",
+        status=unavailable_status,
+    ).run()
     unavailable_reason = unavailable_status.app_view("bumble")["app"]["stop_reason"]
 
     unnumbered_status = RunStatus("run1", ["bumble"], min_labels=1, mode="auto")
     unnumbered_driver = FakeDriver(1)
     unnumbered_driver.cards[0] = Profile(
-        photos=[b"frame-0"], items=(),
+        photos=[b"frame-0"],
+        items=(),
         items_unnumbered="15 selectable card(s) were considered; 15 could not be judged because "
-                          "this capture's configured bounded dwell walk did not cover them.")
-    Worker("bumble", unnumbered_driver, FakeDecider("like"), _SequencedOpenerService([]),
-           FakeStore(), "run1", _Pacing(), threading.Event(),
-           mode="auto", status=unnumbered_status).run()
+        "this capture's configured bounded dwell walk did not cover them.",
+    )
+    Worker(
+        "bumble",
+        unnumbered_driver,
+        FakeDecider("like"),
+        _SequencedOpenerService([]),
+        FakeStore(),
+        "run1",
+        _Pacing(),
+        threading.Event(),
+        mode="auto",
+        status=unnumbered_status,
+    ).run()
     unnumbered_reason = unnumbered_status.app_view("bumble")["app"]["stop_reason"]
 
     assert "15 selectable card(s) were considered" in unnumbered_reason
@@ -3366,17 +4384,32 @@ def test_all_video_profile_reaches_neither_the_opener_nor_the_targeting_path():
     svc = _SequencedOpenerService([])
     driver = FakeDriver(1)
     driver.cards[0] = Profile(
-        photos=[b"frame-0", b"frame-1"], items=(),
+        photos=[b"frame-0", b"frame-1"],
+        items=(),
         items_unnumbered="4 selectable card(s) were considered; 4 could not be judged because "
-                          "video_mute_v1 matched every one of them.")
+        "video_mute_v1 matched every one of them.",
+    )
     status = RunStatus("run1", ["bumble"], min_labels=1, mode="auto")
 
-    Worker("bumble", driver, FakeDecider("like"), svc, FakeStore(), "run1", _Pacing(),
-           threading.Event(), mode="auto", status=status).run()
+    Worker(
+        "bumble",
+        driver,
+        FakeDecider("like"),
+        svc,
+        FakeStore(),
+        "run1",
+        _Pacing(),
+        threading.Event(),
+        mode="auto",
+        status=status,
+    ).run()
 
     assert svc.calls == [], "the opener path was never reached"
-    assert driver.likes == [] and driver.like_item_indexes == [] \
-        and driver.like_model_item_indexes == [], "the targeting path was never reached either"
+    assert (
+        driver.likes == []
+        and driver.like_item_indexes == []
+        and driver.like_model_item_indexes == []
+    ), "the targeting path was never reached either"
     assert status.app_view("bumble")["app"]["state"] == "stopped"
 
 
@@ -3397,14 +4430,29 @@ class _TargetingMissDriver(FakeDriver):
     Raises the DRIVER-AGNOSTIC base.ItemTargetingError rather than a Hinge symbol, which is the
     contract the worker is written against -- worker.py must not have to import a concrete driver
     to recognise the one failure class with a specific, non-error stop to render."""
+
     halt_on_error = True
 
-    def __init__(self, n, *, stage="navigate", intended=4, actual=None,
-                 index_space="model_items", message="could not reach it", identity=None):
+    def __init__(
+        self,
+        n,
+        *,
+        stage="navigate",
+        intended=4,
+        actual=None,
+        index_space="model_items",
+        message="could not reach it",
+        identity=None,
+    ):
         super().__init__(n)
         self.snapshotted = []
-        self._exc = ItemTargetingError(message, stage=stage, intended=intended, actual=actual,
-                                       index_space=index_space)
+        self._exc = ItemTargetingError(
+            message,
+            stage=stage,
+            intended=intended,
+            actual=actual,
+            index_space=index_space,
+        )
         # Optional (defaults None, exactly like every pre-existing construction of this class):
         # lets a test prove that a NEVER-SENT discard is attributed exactly like a committed
         # Like would have been, for the same captured profile.
@@ -3414,7 +4462,9 @@ class _TargetingMissDriver(FakeDriver):
         return self._identity
 
     def like(self, opener=None, item_index=None, *, model_item_index=None):
-        self.likes.append(opener)          # recorded so a test can prove it was CALLED and failed
+        self.likes.append(
+            opener
+        )  # recorded so a test can prove it was CALLED and failed
         raise self._exc
 
     def snapshot_failure(self, exc):
@@ -3424,13 +4474,28 @@ class _TargetingMissDriver(FakeDriver):
 def _run_targeting_stop(driver, *, app="bumble"):
     """Run one auto profile against `driver` and hand back the published app status + the store."""
     from operation_love.status import RunStatus
-    svc = _SequencedOpenerService([
-        OpenerPick("hi 1", index=1, referenced="r", index_space=INDEX_SPACE_PROFILE_PHOTOS),
-    ])
+
+    svc = _SequencedOpenerService(
+        [
+            OpenerPick(
+                "hi 1", index=1, referenced="r", index_space=INDEX_SPACE_PROFILE_PHOTOS
+            ),
+        ]
+    )
     store = FakeStore()
     status = RunStatus("run1", [app], min_labels=1, mode="auto")
-    Worker(app, driver, FakeDecider("like"), svc, store, "run1", _Pacing(),
-           threading.Event(), mode="auto", status=status).run()
+    Worker(
+        app,
+        driver,
+        FakeDecider("like"),
+        svc,
+        store,
+        "run1",
+        _Pacing(),
+        threading.Event(),
+        mode="auto",
+        status=status,
+    ).run()
     return status.app_view(app)["app"], store
 
 
@@ -3451,8 +4516,10 @@ def test_a_targeting_miss_stops_the_run_instead_of_crashing_it():
 
     assert app["state"] == "stopped"
     assert app["stop_kind"] == "targeting"
-    assert app["stop_kind"] != "opener"    # not the capacity/exhaustion channel -- see above
-    assert app["error"] is None            # NOT an error banner -- this is a clean stop
+    assert (
+        app["stop_kind"] != "opener"
+    )  # not the capacity/exhaustion channel -- see above
+    assert app["error"] is None  # NOT an error banner -- this is a clean stop
 
 
 def test_the_targeting_stop_records_intended_and_actual():
@@ -3460,22 +4527,31 @@ def test_the_targeting_stop_records_intended_and_actual():
     exception's own fields rather than being parsed back out of its prose, so the stop record
     cannot drift out of agreement with the stop it describes."""
     app, _store = _run_targeting_stop(
-        _TargetingMissDriver(2, stage="verify", intended=4, actual=6,
-                             message="the like sheet is NOT showing it"))
+        _TargetingMissDriver(
+            2,
+            stage="verify",
+            intended=4,
+            actual=6,
+            message="the like sheet is NOT showing it",
+        )
+    )
 
     reason = app["stop_reason"]
     assert "item 4" in reason and "item 6" in reason
     assert "Intended" in reason and "Actual" in reason
-    assert "model_items" in reason                       # which numbering those two are in
-    assert "the like sheet is NOT showing it" in reason  # the driver's own words, kept whole
+    assert "model_items" in reason  # which numbering those two are in
+    assert (
+        "the like sheet is NOT showing it" in reason
+    )  # the driver's own words, kept whole
 
 
 def test_the_targeting_stop_says_so_when_nothing_was_ever_reached():
-    """"we could not reach item 4" and "we reached item 6 while aiming at item 4" are different
+    """ "we could not reach item 4" and "we reached item 6 while aiming at item 4" are different
     diagnoses, and the second is a much stronger signal that the item list itself is wrong. An
     absent `actual` must therefore say it is absent rather than render as a number."""
-    app, _store = _run_targeting_stop(_TargetingMissDriver(2, stage="navigate", intended=4,
-                                                          actual=None))
+    app, _store = _run_targeting_stop(
+        _TargetingMissDriver(2, stage="navigate", intended=4, actual=None)
+    )
 
     assert "never got far enough" in app["stop_reason"]
 
@@ -3488,7 +4564,7 @@ def test_the_targeting_stop_does_not_record_the_like_as_a_decision():
     app, store = _run_targeting_stop(driver)
 
     assert store.decisions == []
-    assert driver.likes == ["hi 1"]        # exactly one attempt, on the first profile
+    assert driver.likes == ["hi 1"]  # exactly one attempt, on the first profile
     assert driver.dislikes == 0
     assert app["state"] == "stopped"
 
@@ -3509,8 +4585,17 @@ def test_training_worker_without_hub_fails_before_opening_the_device_session():
     driver = FakeDriver(1)
     store = FakeStore()
     stop = threading.Event()
-    Worker("hinge", driver, FakeDecider("like"), None, store, "run1", _Pacing(), stop,
-           mode="training").run()
+    Worker(
+        "hinge",
+        driver,
+        FakeDecider("like"),
+        None,
+        store,
+        "run1",
+        _Pacing(),
+        stop,
+        mode="training",
+    ).run()
 
     assert stop.is_set()
     assert driver.opened is False
@@ -3543,33 +4628,46 @@ def test_training_closes_the_driver_when_the_device_action_raises_unexpectedly()
         # returns BEFORE open_session() and this test proves nothing.
         accepts_opener = True
         supports_training_decision = True
-        halt_on_error = False           # even an explicit opt-out must still be closed
+        halt_on_error = False  # even an explicit opt-out must still be closed
 
         def set_training_decision(self, approval):
             self._approval = approval
 
         def like(self, opener=None, item_index=None, *, model_item_index=None):
             raised.append((opener, model_item_index))
-            raise RuntimeError("the training checkpoint does not show Hinge's pass control")
+            raise RuntimeError(
+                "the training checkpoint does not show Hinge's pass control"
+            )
 
-    class _Service:                      # must name a target, or the loop stops before like()
+    class _Service:  # must name a target, or the loop stops before like()
         disabled = False
         stop_requested = False
         last_skip_reason = None
         last_skip_allows_commentless_like = False
 
         def maybe_opener(self, *_args, **_kwargs):
-            return SimpleNamespace(text="A complete opener", index=1,
-                                   index_space=INDEX_SPACE_MODEL_ITEMS)
+            return SimpleNamespace(
+                text="A complete opener", index=1, index_space=INDEX_SPACE_MODEL_ITEMS
+            )
 
     status = RunStatus("run1", ["hinge"], min_labels=1, mode="training")
     driver, store, stop = _BoomDriver(1), FakeStore(), threading.Event()
-    Worker("hinge", driver, FakeDecider("like"), _Service(), store, "run1", _Pacing(), stop,
-           mode="training", status=status,
-           training_action_bridge=TrainingActionBridge()).run()
+    Worker(
+        "hinge",
+        driver,
+        FakeDecider("like"),
+        _Service(),
+        store,
+        "run1",
+        _Pacing(),
+        stop,
+        mode="training",
+        status=status,
+        training_action_bridge=TrainingActionBridge(),
+    ).run()
 
     app = status.snapshot()["apps"]["hinge"]
-    assert driver.opened                        # the session really opened, so a transport exists
+    assert driver.opened  # the session really opened, so a transport exists
     assert raised == [("A complete opener", 1)]  # like() WAS reached
     # THE discriminating assertion. state == "error" alone is NOT enough: a driver that returns
     # None instead of raising also halts, via worker.py:574's "training driver returned no
@@ -3577,6 +4675,6 @@ def test_training_closes_the_driver_when_the_device_action_raises_unexpectedly()
     # exception is what tore the session down.
     assert app["state"] == "error"
     assert "does not show Hinge's pass control" in str(app["error"])
-    assert stop.is_set()                        # supervisor flushes buffered data
-    assert driver.likes == []                   # nothing was recorded as sent
-    assert driver.closed                        # <-- the persistent virtual touchscreen is released
+    assert stop.is_set()  # supervisor flushes buffered data
+    assert driver.likes == []  # nothing was recorded as sent
+    assert driver.closed  # <-- the persistent virtual touchscreen is released

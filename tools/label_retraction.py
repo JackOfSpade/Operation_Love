@@ -1,4 +1,5 @@
 """Plan and append a narrowly bound, auditable correction without deleting training data."""
+
 from __future__ import annotations
 
 import argparse
@@ -11,20 +12,44 @@ from pathlib import Path
 from operation_love import config as cfg_mod
 from operation_love.private_files import atomic_write_private_text, ensure_private_dir
 from operation_love.ranker import make_store
-from operation_love.ranker.retractions import (RetractionRefused, make_plan, profile_id_for_label_ordinal,
-                                                is_exact_existing_retraction, retraction_row, verify_plan)
+from operation_love.ranker.retractions import (
+    RetractionRefused,
+    make_plan,
+    profile_id_for_label_ordinal,
+    is_exact_existing_retraction,
+    retraction_row,
+    verify_plan,
+)
 
 CONFIRM_PREFIX = "I_CONFIRM_APPEND_ONLY_LABEL_RETRACTION:"
 
 
-def plan(*, store, run_id: str, app: str, source: str, profile_id: str, reason: str,
-         evidence_ref: str, evidence_metadata: dict | None = None) -> dict:
-    return make_plan(rows=store.retraction_run_rows(run_id, app, source), run_id=run_id, app=app,
-                     source=source, profile_id=profile_id, reason=reason, evidence_ref=evidence_ref,
-                     evidence_metadata=evidence_metadata)
+def plan(
+    *,
+    store,
+    run_id: str,
+    app: str,
+    source: str,
+    profile_id: str,
+    reason: str,
+    evidence_ref: str,
+    evidence_metadata: dict | None = None,
+) -> dict:
+    return make_plan(
+        rows=store.retraction_run_rows(run_id, app, source),
+        run_id=run_id,
+        app=app,
+        source=source,
+        profile_id=profile_id,
+        reason=reason,
+        evidence_ref=evidence_ref,
+        evidence_metadata=evidence_metadata,
+    )
 
 
-def _debug_target(actions: Path, row_number: int, *, run_id: str, app: str) -> tuple[int, list[str], str, dict]:
+def _debug_target(
+    actions: Path, row_number: int, *, run_id: str, app: str
+) -> tuple[int, list[str], str, dict]:
     """Bind a correction target to a literal Worker log row, never an operator-supplied id."""
     repo = Path.cwd().resolve()
     # The correction plan's evidence must remain a stable, local release artifact.  In
@@ -36,7 +61,9 @@ def _debug_target(actions: Path, row_number: int, *, run_id: str, app: str) -> t
         relative = lexical.relative_to(repo)
         resolved.relative_to(repo)
     except ValueError as exc:
-        raise RetractionRefused("debug actions must be a repository-local artifact") from exc
+        raise RetractionRefused(
+            "debug actions must be a repository-local artifact"
+        ) from exc
     if lexical != resolved:
         raise RetractionRefused("debug actions must not be a symlinked artifact")
     if actions.parent.name != run_id:
@@ -50,13 +77,24 @@ def _debug_target(actions: Path, row_number: int, *, run_id: str, app: str) -> t
     except json.JSONDecodeError as exc:
         raise RetractionRefused("debug actions file is malformed") from exc
     binding = rows[0] if rows else None
-    if (not isinstance(binding, dict) or set(binding) != {"ts", "action", "run_id", "app"}
-            or binding.get("action") != "observe_release_run_binding"
-            or binding.get("run_id") != run_id or binding.get("app") != app
-            or not isinstance(binding.get("ts"), str) or not binding["ts"].strip()):
-        raise RetractionRefused("debug actions lacks the required first Worker run/app binding")
+    if (
+        not isinstance(binding, dict)
+        or set(binding) != {"ts", "action", "run_id", "app"}
+        or binding.get("action") != "observe_release_run_binding"
+        or binding.get("run_id") != run_id
+        or binding.get("app") != app
+        or not isinstance(binding.get("ts"), str)
+        or not binding["ts"].strip()
+    ):
+        raise RetractionRefused(
+            "debug actions lacks the required first Worker run/app binding"
+        )
     row = rows[row_number - 1]
-    if not isinstance(row, dict) or row.get("action") != "observe_decision" or row.get("decision") != "pass":
+    if (
+        not isinstance(row, dict)
+        or row.get("action") != "observe_decision"
+        or row.get("decision") != "pass"
+    ):
         raise RetractionRefused("debug row is not the false OBSERVE pass decision")
     outcomes = []
     target_ordinal = None
@@ -81,9 +119,17 @@ def _debug_target(actions: Path, row_number: int, *, run_id: str, app: str) -> t
     digest = hashlib.sha256(raw).hexdigest()
     row_digest = hashlib.sha256(lines[row_number - 1]).hexdigest()
     ref = f"{relative.as_posix()}#row={row_number};actions_sha256={digest};row_sha256={row_digest}"
-    return ordinal, outcomes, ref, {"debug_actions_sha256": digest, "debug_row": row_number,
-                                     "debug_row_sha256": row_digest,
-                                     "debug_decision_outcomes": outcomes}
+    return (
+        ordinal,
+        outcomes,
+        ref,
+        {
+            "debug_actions_sha256": digest,
+            "debug_row": row_number,
+            "debug_row_sha256": row_digest,
+            "debug_decision_outcomes": outcomes,
+        },
+    )
 
 
 def _require_exact_debug_store_sequence(rows: dict, debug_outcomes: list[str]) -> None:
@@ -95,37 +141,61 @@ def _require_exact_debug_store_sequence(rows: dict, debug_outcomes: list[str]) -
     inverted outcome otherwise shifts the target to an unrelated profile.
     """
     try:
-        label_outcomes = ["like" if bool(value["liked"]) else "pass" for value in rows["labels"]]
-        decision_outcomes = ["like" if value["decision"] == "like" else "pass"
-                             if value["decision"] == "dislike" else None for value in rows["decisions"]]
+        label_outcomes = [
+            "like" if bool(value["liked"]) else "pass" for value in rows["labels"]
+        ]
+        decision_outcomes = [
+            "like"
+            if value["decision"] == "like"
+            else "pass"
+            if value["decision"] == "dislike"
+            else None
+            for value in rows["decisions"]
+        ]
     except (KeyError, TypeError) as exc:
         raise RetractionRefused("persisted sequence is malformed") from exc
     if None in decision_outcomes:
-        raise RetractionRefused("persisted sequence has an unsupported decision outcome")
+        raise RetractionRefused(
+            "persisted sequence has an unsupported decision outcome"
+        )
     if debug_outcomes != label_outcomes or debug_outcomes != decision_outcomes:
-        raise RetractionRefused("debug and persisted decision sequences differ; refusing ordinal binding")
+        raise RetractionRefused(
+            "debug and persisted decision sequences differ; refusing ordinal binding"
+        )
 
 
 def apply(*, store, document: dict, confirmation: str) -> bool:
     plan_doc = verify_plan(document)
     if confirmation != CONFIRM_PREFIX + plan_doc["plan_sha256"]:
         raise RetractionRefused("exact confirmation must bind this plan hash")
-    rows = store.retraction_run_rows(plan_doc["run_id"], plan_doc["app"], plan_doc["source"])
+    rows = store.retraction_run_rows(
+        plan_doc["run_id"], plan_doc["app"], plan_doc["source"]
+    )
     if is_exact_existing_retraction(rows, plan_doc):
         return False
-    current = make_plan(rows=rows, run_id=plan_doc["run_id"], app=plan_doc["app"],
-                        source=plan_doc["source"], profile_id=plan_doc["profile_id"],
-                        reason=plan_doc["reason"], evidence_ref=plan_doc["evidence_ref"],
-                        evidence_metadata=plan_doc.get("evidence_metadata"))
+    current = make_plan(
+        rows=rows,
+        run_id=plan_doc["run_id"],
+        app=plan_doc["app"],
+        source=plan_doc["source"],
+        profile_id=plan_doc["profile_id"],
+        reason=plan_doc["reason"],
+        evidence_ref=plan_doc["evidence_ref"],
+        evidence_metadata=plan_doc.get("evidence_metadata"),
+    )
     if current != plan_doc:
-        raise RetractionRefused("run rows changed since planning; create and review a new plan")
+        raise RetractionRefused(
+            "run rows changed since planning; create and review a new plan"
+        )
     return store.append_label_retraction(retraction_row(plan_doc))
 
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="python -m tools.label_retraction")
     sub = parser.add_subparsers(dest="command", required=True)
-    create = sub.add_parser("dry-run", help="read exact rows and write a self-hashed plan; no mutation")
+    create = sub.add_parser(
+        "dry-run", help="read exact rows and write a self-hashed plan; no mutation"
+    )
     create.add_argument("--config", default="config.yaml")
     create.add_argument("--run-id", required=True)
     create.add_argument("--app", required=True)
@@ -143,34 +213,54 @@ def main(argv: list[str] | None = None) -> None:
         if args.command == "dry-run":
             output = Path(args.out)
             if output.exists():
-                raise RetractionRefused("plan output already exists; refusing to overwrite it")
+                raise RetractionRefused(
+                    "plan output already exists; refusing to overwrite it"
+                )
             store = make_store(cfg_mod.load(args.config), ensure=False)
             try:
                 debug_actions = Path(args.debug_actions)
                 ordinal, outcomes, evidence_ref, metadata = _debug_target(
-                    debug_actions, args.debug_row, run_id=args.run_id, app=args.app)
+                    debug_actions, args.debug_row, run_id=args.run_id, app=args.app
+                )
                 rows = store.retraction_run_rows(args.run_id, args.app, args.source)
                 _require_exact_debug_store_sequence(rows, outcomes)
                 profile_id = profile_id_for_label_ordinal(rows, ordinal)
-                document = make_plan(rows=rows, run_id=args.run_id, app=args.app, source=args.source,
-                                     profile_id=profile_id, reason=args.reason, evidence_ref=evidence_ref,
-                                     evidence_metadata=metadata)
+                document = make_plan(
+                    rows=rows,
+                    run_id=args.run_id,
+                    app=args.app,
+                    source=args.source,
+                    profile_id=profile_id,
+                    reason=args.reason,
+                    evidence_ref=evidence_ref,
+                    evidence_metadata=metadata,
+                )
             finally:
                 store.close()
             if not output.parent.exists():
                 ensure_private_dir(output.parent)
             atomic_write_private_text(
-                output, json.dumps(document, indent=2, sort_keys=True) + "\n",
+                output,
+                json.dumps(document, indent=2, sort_keys=True) + "\n",
                 parent=output.parent,
             )
-            print(json.dumps({"plan": str(output), "plan_sha256": document["plan_sha256"],
-                              "confirmation": CONFIRM_PREFIX + document["plan_sha256"]}))
+            print(
+                json.dumps(
+                    {
+                        "plan": str(output),
+                        "plan_sha256": document["plan_sha256"],
+                        "confirmation": CONFIRM_PREFIX + document["plan_sha256"],
+                    }
+                )
+            )
         else:
             document = json.loads(Path(args.plan).read_text())
             # Apply is the only path that may initialize the new append-only BQ table.
             store = make_store(cfg_mod.load(args.config), ensure=True)
             try:
-                inserted = apply(store=store, document=document, confirmation=args.confirmation)
+                inserted = apply(
+                    store=store, document=document, confirmation=args.confirmation
+                )
             finally:
                 store.close()
             print("appended" if inserted else "already appended (idempotent no-op)")

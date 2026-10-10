@@ -1,4 +1,5 @@
 """Pure, fail-closed planning for append-only label retractions."""
+
 from __future__ import annotations
 
 import hashlib
@@ -13,8 +14,15 @@ class RetractionRefused(RuntimeError):
 
 
 def canonical_sha(value: object) -> str:
-    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":"),
-                                      ensure_ascii=True, allow_nan=False).encode()).hexdigest()
+    return hashlib.sha256(
+        json.dumps(
+            value,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        ).encode()
+    ).hexdigest()
 
 
 def _timestamp(value: object) -> float:
@@ -55,7 +63,9 @@ def _strict(rows: list[dict], kind: str) -> list[dict]:
     except (KeyError, TypeError) as exc:
         raise RetractionRefused(f"{kind} rows are malformed") from exc
     if any(a >= b for a, b in pairwise(values)):
-        raise RetractionRefused(f"{kind} rows do not have strict unique created_at ordering")
+        raise RetractionRefused(
+            f"{kind} rows do not have strict unique created_at ordering"
+        )
     return ordered
 
 
@@ -110,11 +120,15 @@ def _legacy_pairs(labels: list[dict], decisions: list[dict]) -> list[tuple[dict,
     """
     if len(labels) != len(decisions):
         raise RetractionRefused(
-            "label/decision sequence cardinality differs; cannot pair legacy decision")
+            "label/decision sequence cardinality differs; cannot pair legacy decision"
+        )
     pairs = list(zip(labels, decisions, strict=True))
-    if any(_label_liked(label) != _decision_liked(decision)
-           for label, decision in pairs):
-        raise RetractionRefused("label/decision outcomes differ; cannot pair legacy decision")
+    if any(
+        _label_liked(label) != _decision_liked(decision) for label, decision in pairs
+    ):
+        raise RetractionRefused(
+            "label/decision outcomes differ; cannot pair legacy decision"
+        )
     label_times = [_timestamp(label["created_at"]) for label in labels]
     decision_times = [_timestamp(decision["created_at"]) for decision in decisions]
     last = len(pairs) - 1
@@ -130,12 +144,14 @@ def _legacy_pairs(labels: list[dict], decisions: list[dict]) -> list[tuple[dict,
     )
     if decision_then_label == label_then_decision:
         raise RetractionRefused(
-            "legacy rows do not form one unambiguous adjacent causal sequence")
+            "legacy rows do not form one unambiguous adjacent causal sequence"
+        )
     return pairs
 
 
-def _paired_decision(*, labels: list[dict], decisions: list[dict],
-                     label: dict, profile_id: str) -> dict:
+def _paired_decision(
+    *, labels: list[dict], decisions: list[dict], label: dict, profile_id: str
+) -> dict:
     """Prefer exact modern lineage, falling back to the strict legacy timeline."""
     linked = [(row, _decision_profile_id(row)) for row in decisions]
     matches = [row for row, linked_id in linked if linked_id == profile_id]
@@ -149,21 +165,40 @@ def _paired_decision(*, labels: list[dict], decisions: list[dict],
     return _legacy_pairs(labels, decisions)[ordinal][1]
 
 
-def make_plan(*, rows: dict, run_id: str, app: str, source: str, profile_id: str,
-              reason: str, evidence_ref: str, evidence_metadata: dict | None = None) -> dict:
+def make_plan(
+    *,
+    rows: dict,
+    run_id: str,
+    app: str,
+    source: str,
+    profile_id: str,
+    reason: str,
+    evidence_ref: str,
+    evidence_metadata: dict | None = None,
+) -> dict:
     """Bind one profile label to exactly one causal decision, or refuse safely.
 
     Current worker rows share a generated profile id and bind directly.  Older decision rows
     lack that lineage, so they use :func:`_legacy_pairs`' strict adjacent-timeline invariant.
     No nearest-time guess is allowed: the plan is a correction, not recovery.
     """
-    if not all(isinstance(x, str) and x.strip() for x in
-               (run_id, app, source, profile_id, reason, evidence_ref)):
-        raise RetractionRefused("run/app/source/profile-id/reason/evidence-ref must be nonempty text")
+    if not all(
+        isinstance(x, str) and x.strip()
+        for x in (run_id, app, source, profile_id, reason, evidence_ref)
+    ):
+        raise RetractionRefused(
+            "run/app/source/profile-id/reason/evidence-ref must be nonempty text"
+        )
     if not isinstance(rows, dict):
         raise RetractionRefused("store snapshot is malformed")
-    if rows.get("run_id") != run_id or rows.get("app") != app or rows.get("source") != source:
-        raise RetractionRefused("store snapshot is not bound to the requested run/app/source")
+    if (
+        rows.get("run_id") != run_id
+        or rows.get("app") != app
+        or rows.get("source") != source
+    ):
+        raise RetractionRefused(
+            "store snapshot is not bound to the requested run/app/source"
+        )
     # The plan is a durable JSON document.  Reject NaN/Infinity (and other
     # non-JSON objects) before binding individual rows so a malformed snapshot
     # cannot leak a raw json encoder exception out of this fail-closed API.
@@ -172,7 +207,9 @@ def make_plan(*, rows: dict, run_id: str, app: str, source: str, profile_id: str
         if evidence_metadata is not None:
             canonical_sha(evidence_metadata)
     except (TypeError, ValueError) as exc:
-        raise RetractionRefused("store snapshot or evidence metadata is not canonical JSON data") from exc
+        raise RetractionRefused(
+            "store snapshot or evidence metadata is not canonical JSON data"
+        ) from exc
     labels = _snapshot_rows(rows, "labels", "label")
     decisions = _snapshot_rows(rows, "decisions", "decision")
     profiles = _snapshot_rows(rows, "profiles", "profile")
@@ -182,7 +219,9 @@ def make_plan(*, rows: dict, run_id: str, app: str, source: str, profile_id: str
     # BigQuery supplies an archive manifest; SQLite has no historical profile archive, so an
     # empty profiles list means only that backend's documented labels-only fallback.
     if profiles and sum(r.get("profile_id") == profile_id for r in profiles) != 1:
-        raise RetractionRefused("target profile archive mapping is missing or ambiguous")
+        raise RetractionRefused(
+            "target profile archive mapping is missing or ambiguous"
+        )
     target = [r for r in labels if r.get("profile_id") == profile_id]
     if len(target) != 1:
         raise RetractionRefused("target profile must map to exactly one label")
@@ -191,12 +230,16 @@ def make_plan(*, rows: dict, run_id: str, app: str, source: str, profile_id: str
     label = target[0]
     ordinal = labels.index(label)
     decision = _paired_decision(
-        labels=labels, decisions=decisions, label=label, profile_id=profile_id)
+        labels=labels, decisions=decisions, label=label, profile_id=profile_id
+    )
     if _label_liked(label) != _decision_liked(decision):
         raise RetractionRefused("paired decision outcome does not match target label")
     decision_identity = {
-        "run_id": run_id, "app": app, "source": source,
-        "created_at": decision["created_at"], "decision": decision.get("decision"),
+        "run_id": run_id,
+        "app": app,
+        "source": source,
+        "created_at": decision["created_at"],
+        "decision": decision.get("decision"),
         "score": decision.get("score"),
     }
     linked_profile_id = _decision_profile_id(decision)
@@ -204,18 +247,39 @@ def make_plan(*, rows: dict, run_id: str, app: str, source: str, profile_id: str
         decision_identity["profile_id"] = linked_profile_id
     decision_fingerprint = canonical_sha(decision_identity)
     body = {
-        "schema_version": 1, "kind": "operation_love_label_retraction_plan",
-        "run_id": run_id, "app": app, "source": source, "profile_id": profile_id,
-        "label_created_at": label["created_at"], "decision_created_at": decision["created_at"],
-        "decision_fingerprint": decision_fingerprint, "label_ordinal": ordinal,
-        "reason": reason, "evidence_ref": evidence_ref,
+        "schema_version": 1,
+        "kind": "operation_love_label_retraction_plan",
+        "run_id": run_id,
+        "app": app,
+        "source": source,
+        "profile_id": profile_id,
+        "label_created_at": label["created_at"],
+        "decision_created_at": decision["created_at"],
+        "decision_fingerprint": decision_fingerprint,
+        "label_ordinal": ordinal,
+        "reason": reason,
+        "evidence_ref": evidence_ref,
         "snapshot_sha256": snapshot_sha,
     }
     if evidence_metadata is not None:
         body["evidence_metadata"] = evidence_metadata
-    body["correction_id"] = canonical_sha({key: body[key] for key in (
-        "run_id", "app", "source", "profile_id", "label_created_at", "decision_created_at",
-        "decision_fingerprint", "reason", "evidence_ref", "snapshot_sha256")})
+    body["correction_id"] = canonical_sha(
+        {
+            key: body[key]
+            for key in (
+                "run_id",
+                "app",
+                "source",
+                "profile_id",
+                "label_created_at",
+                "decision_created_at",
+                "decision_fingerprint",
+                "reason",
+                "evidence_ref",
+                "snapshot_sha256",
+            )
+        }
+    )
     body["plan_sha256"] = canonical_sha(body)
     return body
 
@@ -239,7 +303,9 @@ def profile_id_for_label_ordinal(rows: dict, ordinal: int) -> str:
     """
     labels = _strict(_snapshot_rows(rows, "labels", "label"), "label")
     if ordinal < 0 or ordinal >= len(labels):
-        raise RetractionRefused("debug decision ordinal has no matching persisted label")
+        raise RetractionRefused(
+            "debug decision ordinal has no matching persisted label"
+        )
     profile_id = labels[ordinal].get("profile_id")
     if not isinstance(profile_id, str) or not profile_id:
         raise RetractionRefused("ordered target label has no auditable profile_id")
@@ -247,11 +313,16 @@ def profile_id_for_label_ordinal(rows: dict, ordinal: int) -> str:
 
 
 def verify_plan(plan: dict) -> dict:
-    if not isinstance(plan, dict) or plan.get("kind") != "operation_love_label_retraction_plan":
+    if (
+        not isinstance(plan, dict)
+        or plan.get("kind") != "operation_love_label_retraction_plan"
+    ):
         raise RetractionRefused("invalid correction plan")
     supplied = plan.get("plan_sha256")
     try:
-        actual = canonical_sha({key: value for key, value in plan.items() if key != "plan_sha256"})
+        actual = canonical_sha(
+            {key: value for key, value in plan.items() if key != "plan_sha256"}
+        )
     except (TypeError, ValueError) as exc:
         raise RetractionRefused("correction plan is not canonical JSON data") from exc
     if not isinstance(supplied, str) or supplied != actual:
@@ -261,20 +332,41 @@ def verify_plan(plan: dict) -> dict:
 
 def retraction_row(plan: dict, *, created_at: str | None = None) -> dict:
     verify_plan(plan)
-    return {key: plan[key] for key in (
-        "correction_id", "run_id", "app", "source", "profile_id", "label_created_at",
-        "decision_created_at", "decision_fingerprint", "reason", "evidence_ref")} | {
-        "created_at": created_at or datetime.now(timezone.utc).isoformat()}
+    return {
+        key: plan[key]
+        for key in (
+            "correction_id",
+            "run_id",
+            "app",
+            "source",
+            "profile_id",
+            "label_created_at",
+            "decision_created_at",
+            "decision_fingerprint",
+            "reason",
+            "evidence_ref",
+        )
+    } | {"created_at": created_at or datetime.now(timezone.utc).isoformat()}
 
 
 def is_exact_existing_retraction(rows: dict, plan: dict) -> bool:
     """True only when a previous append has exactly the correction this plan authorizes."""
-    expected = {key: plan[key] for key in ("correction_id", "profile_id", "label_created_at",
-                                            "decision_created_at", "decision_fingerprint")}
+    expected = {
+        key: plan[key]
+        for key in (
+            "correction_id",
+            "profile_id",
+            "label_created_at",
+            "decision_created_at",
+            "decision_fingerprint",
+        )
+    }
     for existing in _snapshot_rows(rows, "retractions", "retraction"):
         comparable = {key: existing.get(key) for key in expected}
         if comparable == expected:
             return True
         if existing.get("profile_id") == plan.get("profile_id"):
-            raise RetractionRefused("target profile has a different existing retraction")
+            raise RetractionRefused(
+                "target profile has a different existing retraction"
+            )
     return False

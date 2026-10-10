@@ -1,4 +1,5 @@
 """Training Hub mailbox: exact-card Like/Dislike, cancellation, and replay."""
+
 from __future__ import annotations
 
 import struct
@@ -9,17 +10,27 @@ from unittest.mock import patch
 import pytest
 
 from operation_love.training_actions import (
-    _MAX_PROTOCOL_STRING_LENGTH, TrainingActionBridge, _valid_png_idat)
+    _MAX_PROTOCOL_STRING_LENGTH,
+    TrainingActionBridge,
+    _valid_png_idat,
+)
 
 
 def _chunk(kind: bytes, data: bytes) -> bytes:
-    return (struct.pack(">I", len(data)) + kind + data
-            + struct.pack(">I", zlib.crc32(kind + data) & 0xffffffff))
+    return (
+        struct.pack(">I", len(data))
+        + kind
+        + data
+        + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
+    )
 
 
-_FRAME = (b"\x89PNG\r\n\x1a\n"
-          + _chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 0, 0, 0, 0))
-          + _chunk(b"IDAT", zlib.compress(b"\x00\x00")) + _chunk(b"IEND", b""))
+_FRAME = (
+    b"\x89PNG\r\n\x1a\n"
+    + _chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 0, 0, 0, 0))
+    + _chunk(b"IDAT", zlib.compress(b"\x00\x00"))
+    + _chunk(b"IEND", b"")
+)
 
 
 class _Worker:
@@ -40,15 +51,22 @@ class _Pick:
 
 
 def _body(card, command="like", token="request-1"):
-    return {"command": command, "run_id": card["run_id"], "app": card["app"],
-            "profile_token": card["profile_token"], "approval_token": card["approval_token"],
-            "idempotency_token": token}
+    return {
+        "command": command,
+        "run_id": card["run_id"],
+        "app": card["app"],
+        "profile_token": card["profile_token"],
+        "approval_token": card["approval_token"],
+        "idempotency_token": token,
+    }
 
 
 def test_training_checkpoint_has_only_valid_like_dislike_capability():
     bridge, worker = TrainingActionBridge(), _Worker()
     bridge.register(worker)
-    card = bridge.publish_checkpoint(worker, _FRAME, _Pick(), {"evidence_id": "post-hide"})
+    card = bridge.publish_checkpoint(
+        worker, _FRAME, _Pick(), {"evidence_id": "post-hide"}
+    )
     checkpoint = bridge.snapshot()["checkpoints"][0]
     assert checkpoint["phase"] == "waiting_training_decision"
     assert checkpoint["pending"] is True
@@ -64,21 +82,33 @@ def test_live_checkpoint_identity_can_bind_browser_alert_telemetry():
     card = bridge.publish_checkpoint(worker, _FRAME, _Pick())
 
     assert bridge.has_checkpoint(
-        run_id=card["run_id"], app=card["app"], profile_token=card["profile_token"])
+        run_id=card["run_id"], app=card["app"], profile_token=card["profile_token"]
+    )
     assert not bridge.has_checkpoint(
-        run_id=card["run_id"], app=card["app"], profile_token="stale-profile")
+        run_id=card["run_id"], app=card["app"], profile_token="stale-profile"
+    )
     # Every component must be matched, not just the profile token.
     assert not bridge.has_checkpoint(
-        run_id="another-run", app=card["app"], profile_token=card["profile_token"])
+        run_id="another-run", app=card["app"], profile_token=card["profile_token"]
+    )
     assert not bridge.has_checkpoint(
-        run_id=card["run_id"], app="bumble", profile_token=card["profile_token"])
+        run_id=card["run_id"], app="bumble", profile_token=card["profile_token"]
+    )
     # The browser alert body is arbitrary JSON: a non-string (and, for a list/dict, UNHASHABLE)
     # identifier must answer False rather than raise out of the request handler.
     for bad in (None, 123, ["run"], {"run": 1}):
-        assert bridge.has_checkpoint(
-            run_id=bad, app=card["app"], profile_token=card["profile_token"]) is False
-        assert bridge.has_checkpoint(
-            run_id=card["run_id"], app=card["app"], profile_token=bad) is False
+        assert (
+            bridge.has_checkpoint(
+                run_id=bad, app=card["app"], profile_token=card["profile_token"]
+            )
+            is False
+        )
+        assert (
+            bridge.has_checkpoint(
+                run_id=card["run_id"], app=card["app"], profile_token=bad
+            )
+            is False
+        )
 
 
 def test_oversized_protocol_token_is_rejected_before_the_card_lookup():
@@ -113,24 +143,46 @@ def test_training_checkpoint_exposes_ordered_profile_images_only_through_bound_e
     bridge, worker = TrainingActionBridge(), _Worker()
     bridge.register(worker)
     card = bridge.publish_checkpoint(
-        worker, _FRAME, _Pick(), profile_frames=(_FRAME, _FRAME))
+        worker, _FRAME, _Pick(), profile_frames=(_FRAME, _FRAME)
+    )
 
     checkpoint = bridge.snapshot()["checkpoints"][0]
     assert checkpoint["profile_image_count"] == 2
     assert "_profile_frames" not in checkpoint
     assert "_profile_frames" not in card
-    assert bridge.profile_review_image(
-        run_id=card["run_id"], app=card["app"],
-        profile_token=card["profile_token"], index=0) == _FRAME
-    assert bridge.profile_review_image(
-        run_id=card["run_id"], app=card["app"],
-        profile_token=card["profile_token"], index=1) == _FRAME
-    assert bridge.profile_review_image(
-        run_id=card["run_id"], app=card["app"],
-        profile_token="stale", index=0) is None
-    assert bridge.profile_review_image(
-        run_id=card["run_id"], app=card["app"],
-        profile_token=card["profile_token"], index=2) is None
+    assert (
+        bridge.profile_review_image(
+            run_id=card["run_id"],
+            app=card["app"],
+            profile_token=card["profile_token"],
+            index=0,
+        )
+        == _FRAME
+    )
+    assert (
+        bridge.profile_review_image(
+            run_id=card["run_id"],
+            app=card["app"],
+            profile_token=card["profile_token"],
+            index=1,
+        )
+        == _FRAME
+    )
+    assert (
+        bridge.profile_review_image(
+            run_id=card["run_id"], app=card["app"], profile_token="stale", index=0
+        )
+        is None
+    )
+    assert (
+        bridge.profile_review_image(
+            run_id=card["run_id"],
+            app=card["app"],
+            profile_token=card["profile_token"],
+            index=2,
+        )
+        is None
+    )
 
 
 def test_training_checkpoint_carries_the_media_ordinal_review_hint_when_it_was_countable():
@@ -147,27 +199,37 @@ def test_training_checkpoint_carries_the_media_ordinal_review_hint_when_it_was_c
     assert bridge.snapshot()["checkpoints"][0]["item_media_ordinal"] == 3
 
 
-@pytest.mark.parametrize("ordinal", [
-    None,      # the driver refused to count: publish exactly today's card
-    0, -1,     # never a 1-based position
-    True,      # an int in Python, never an ordinal
-    "3", 2.0,  # the protocol carries an integer or nothing
-])
-def test_training_checkpoint_without_a_countable_ordinal_is_byte_for_byte_todays_card(ordinal):
+@pytest.mark.parametrize(
+    "ordinal",
+    [
+        None,  # the driver refused to count: publish exactly today's card
+        0,
+        -1,  # never a 1-based position
+        True,  # an int in Python, never an ordinal
+        "3",
+        2.0,  # the protocol carries an integer or nothing
+    ],
+)
+def test_training_checkpoint_without_a_countable_ordinal_is_byte_for_byte_todays_card(
+    ordinal,
+):
     """FAIL-CLOSED, NEVER BLOCKING. A hint that could not be proven must cost the reviewer the
     hint and nothing else: the key is absent (not null, which the page would have to
     special-case) and every other field, capability and phase is unchanged."""
     bridge, worker = TrainingActionBridge(), _Worker()
     bridge.register(worker)
 
-    card = bridge.publish_checkpoint(worker, _FRAME, _Pick(), item_media_ordinal=ordinal)
+    card = bridge.publish_checkpoint(
+        worker, _FRAME, _Pick(), item_media_ordinal=ordinal
+    )
 
     assert "item_media_ordinal" not in card
     assert "item_media_ordinal" not in bridge.snapshot()["checkpoints"][0]
     baseline = bridge.publish_checkpoint(worker, _FRAME, _Pick())
     volatile = {"profile_token", "approval_token", "updated_at"}
-    assert ({name: value for name, value in card.items() if name not in volatile}
-            == {name: value for name, value in baseline.items() if name not in volatile})
+    assert {name: value for name, value in card.items() if name not in volatile} == {
+        name: value for name, value in baseline.items() if name not in volatile
+    }
     assert bridge.submit(_body(baseline, "like"))[2] == 202
 
 
@@ -177,7 +239,8 @@ def test_training_checkpoint_rejects_malformed_supplementary_profile_frame():
 
     with pytest.raises(ValueError, match="complete PNG frames"):
         bridge.publish_checkpoint(
-            worker, _FRAME, _Pick(), profile_frames=(_FRAME, b"not png"))
+            worker, _FRAME, _Pick(), profile_frames=(_FRAME, b"not png")
+        )
 
     assert bridge.snapshot()["checkpoints"] == []
 
@@ -192,14 +255,19 @@ def test_training_checkpoint_rejects_oversized_frame_without_publishing_card():
     assert bridge.snapshot()["checkpoints"] == []
 
 
-@pytest.mark.parametrize(("frame", "text", "match"), [
-    (b"", "The typed opener", "post-type image"),
-    (b"not a raster", "The typed opener", "complete PNG"),
-    (b"\x89PNG\r\n\x1a\n", "The typed opener", "complete PNG"),
-    (b"\xff\xd8not a complete JPEG\xff\xd9", "The typed opener", "complete PNG"),
-    (_FRAME, " \n\t ", "typed opener"),
-])
-def test_training_checkpoint_never_publishes_without_complete_review_data(frame, text, match):
+@pytest.mark.parametrize(
+    ("frame", "text", "match"),
+    [
+        (b"", "The typed opener", "post-type image"),
+        (b"not a raster", "The typed opener", "complete PNG"),
+        (b"\x89PNG\r\n\x1a\n", "The typed opener", "complete PNG"),
+        (b"\xff\xd8not a complete JPEG\xff\xd9", "The typed opener", "complete PNG"),
+        (_FRAME, " \n\t ", "typed opener"),
+    ],
+)
+def test_training_checkpoint_never_publishes_without_complete_review_data(
+    frame, text, match
+):
     bridge, worker = TrainingActionBridge(), _Worker()
     worker_pick = type("Pick", (), {"text": text})()
     bridge.register(worker)
@@ -213,10 +281,12 @@ def test_training_checkpoint_never_publishes_without_complete_review_data(frame,
 def test_training_checkpoint_rejects_crc_valid_png_with_undecodable_pixel_data():
     bridge, worker = TrainingActionBridge(), _Worker()
     bridge.register(worker)
-    malformed = (b"\x89PNG\r\n\x1a\n"
-                 + _chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 0, 0, 0, 0))
-                 + _chunk(b"IDAT", b"not a zlib stream")
-                 + _chunk(b"IEND", b""))
+    malformed = (
+        b"\x89PNG\r\n\x1a\n"
+        + _chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 0, 0, 0, 0))
+        + _chunk(b"IDAT", b"not a zlib stream")
+        + _chunk(b"IEND", b"")
+    )
 
     with pytest.raises(ValueError, match="complete PNG"):
         bridge.publish_checkpoint(worker, malformed, _Pick())
@@ -233,9 +303,12 @@ def test_training_checkpoint_rejects_a_decompressed_png_with_an_invalid_row_filt
     """
     bridge, worker = TrainingActionBridge(), _Worker()
     bridge.register(worker)
-    malformed = (b"\x89PNG\r\n\x1a\n"
-                 + _chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 0, 0, 0, 0))
-                 + _chunk(b"IDAT", zlib.compress(b"\x05\x00")) + _chunk(b"IEND", b""))
+    malformed = (
+        b"\x89PNG\r\n\x1a\n"
+        + _chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 0, 0, 0, 0))
+        + _chunk(b"IDAT", zlib.compress(b"\x05\x00"))
+        + _chunk(b"IEND", b"")
+    )
 
     with pytest.raises(ValueError, match="complete PNG"):
         bridge.publish_checkpoint(worker, malformed, _Pick())
@@ -245,11 +318,20 @@ def test_training_checkpoint_rejects_a_decompressed_png_with_an_invalid_row_filt
 
 def test_png_validator_rejects_large_inflated_rasters_before_decompression():
     """A compact zlib bomb must not allocate the 240 MB permitted by pixel dimensions alone."""
-    with patch("operation_love.training_actions.zlib.decompressobj",
-               side_effect=AssertionError("large raster must not be decompressed")):
+    with patch(
+        "operation_love.training_actions.zlib.decompressobj",
+        side_effect=AssertionError("large raster must not be decompressed"),
+    ):
         assert not _valid_png_idat(
-            width=3_000, height=3_000, bit_depth=16, color_type=6,
-            compression=0, filter_method=0, interlace=0, data=b"tiny")
+            width=3_000,
+            height=3_000,
+            bit_depth=16,
+            color_type=6,
+            compression=0,
+            filter_method=0,
+            interlace=0,
+            data=b"tiny",
+        )
 
 
 def test_training_checkpoint_requires_a_palette_for_indexed_png_frames():
@@ -263,8 +345,13 @@ def test_training_checkpoint_requires_a_palette_for_indexed_png_frames():
     with pytest.raises(ValueError, match="complete PNG"):
         bridge.publish_checkpoint(worker, malformed, _Pick())
 
-    complete = (b"\x89PNG\r\n\x1a\n" + header + _chunk(b"PLTE", b"\x00\x00\x00")
-                + data + _chunk(b"IEND", b""))
+    complete = (
+        b"\x89PNG\r\n\x1a\n"
+        + header
+        + _chunk(b"PLTE", b"\x00\x00\x00")
+        + data
+        + _chunk(b"IEND", b"")
+    )
     checkpoint = bridge.publish_checkpoint(worker, complete, _Pick())
     assert checkpoint["image_data_url"].startswith("data:image/png;base64,")
 
@@ -273,10 +360,13 @@ def test_training_checkpoint_rejects_palette_on_grayscale_png_frames():
     """PLTE is forbidden for grayscale types 0/4 even when its bytes and IDAT are valid."""
     bridge, worker = TrainingActionBridge(), _Worker()
     bridge.register(worker)
-    malformed = (b"\x89PNG\r\n\x1a\n"
-                 + _chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 0, 0, 0, 0))
-                 + _chunk(b"PLTE", b"\x00\x00\x00")
-                 + _chunk(b"IDAT", zlib.compress(b"\x00\x00")) + _chunk(b"IEND", b""))
+    malformed = (
+        b"\x89PNG\r\n\x1a\n"
+        + _chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 0, 0, 0, 0))
+        + _chunk(b"PLTE", b"\x00\x00\x00")
+        + _chunk(b"IDAT", zlib.compress(b"\x00\x00"))
+        + _chunk(b"IEND", b"")
+    )
 
     with pytest.raises(ValueError, match="complete PNG"):
         bridge.publish_checkpoint(worker, malformed, _Pick())
@@ -286,10 +376,13 @@ def test_training_checkpoint_rejects_unknown_critical_png_chunks():
     """Uppercase chunk names are critical: a browser cannot ignore an unknown one."""
     bridge, worker = TrainingActionBridge(), _Worker()
     bridge.register(worker)
-    malformed = (b"\x89PNG\r\n\x1a\n"
-                 + _chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 0, 0, 0, 0))
-                 + _chunk(b"ABCD", b"")
-                 + _chunk(b"IDAT", zlib.compress(b"\x00\x00")) + _chunk(b"IEND", b""))
+    malformed = (
+        b"\x89PNG\r\n\x1a\n"
+        + _chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 0, 0, 0, 0))
+        + _chunk(b"ABCD", b"")
+        + _chunk(b"IDAT", zlib.compress(b"\x00\x00"))
+        + _chunk(b"IEND", b"")
+    )
 
     with pytest.raises(ValueError, match="complete PNG"):
         bridge.publish_checkpoint(worker, malformed, _Pick())
@@ -300,10 +393,13 @@ def test_training_checkpoint_rejects_malformed_png_chunk_types(chunk_type):
     """Chunk type bytes must be ASCII letters and retain PNG's uppercase reserved bit."""
     bridge, worker = TrainingActionBridge(), _Worker()
     bridge.register(worker)
-    malformed = (b"\x89PNG\r\n\x1a\n"
-                 + _chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 0, 0, 0, 0))
-                 + _chunk(chunk_type, b"")
-                 + _chunk(b"IDAT", zlib.compress(b"\x00\x00")) + _chunk(b"IEND", b""))
+    malformed = (
+        b"\x89PNG\r\n\x1a\n"
+        + _chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 0, 0, 0, 0))
+        + _chunk(chunk_type, b"")
+        + _chunk(b"IDAT", zlib.compress(b"\x00\x00"))
+        + _chunk(b"IEND", b"")
+    )
 
     with pytest.raises(ValueError, match="complete PNG"):
         bridge.publish_checkpoint(worker, malformed, _Pick())
@@ -313,11 +409,13 @@ def test_training_checkpoint_rejects_a_truecolor_palette_with_over_256_entries()
     """Truecolour's 16-bit depth does not expand PNG PLTE beyond its fixed 256 entries."""
     bridge, worker = TrainingActionBridge(), _Worker()
     bridge.register(worker)
-    malformed = (b"\x89PNG\r\n\x1a\n"
-                 + _chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 16, 2, 0, 0, 0))
-                 + _chunk(b"PLTE", b"\x00\x00\x00" * 257)
-                 + _chunk(b"IDAT", zlib.compress(b"\x00" + b"\x00" * 6))
-                 + _chunk(b"IEND", b""))
+    malformed = (
+        b"\x89PNG\r\n\x1a\n"
+        + _chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 16, 2, 0, 0, 0))
+        + _chunk(b"PLTE", b"\x00\x00\x00" * 257)
+        + _chunk(b"IDAT", zlib.compress(b"\x00" + b"\x00" * 6))
+        + _chunk(b"IEND", b"")
+    )
 
     with pytest.raises(ValueError, match="complete PNG"):
         bridge.publish_checkpoint(worker, malformed, _Pick())
@@ -365,7 +463,9 @@ def test_stop_or_worker_replacement_never_claims_an_action():
     bridge.register(worker)
     card = bridge.publish_checkpoint(worker, _FRAME, _Pick())
     worker.stop_event.set()
-    assert bridge.wait_for_action(worker, card["profile_token"], worker.stop_event) is None
+    assert (
+        bridge.wait_for_action(worker, card["profile_token"], worker.stop_event) is None
+    )
     bridge.cancel_checkpoint(worker, card["profile_token"])
     bridge.unregister(worker)
 
@@ -375,7 +475,9 @@ def test_stop_or_worker_replacement_never_claims_an_action():
     with pytest.raises(RuntimeError, match="prior worker unregisters"):
         bridge.register(replacement)
     assert old.stop_event.is_set()
-    assert bridge.wait_for_action(old, old_card["profile_token"], old.stop_event) is None
+    assert (
+        bridge.wait_for_action(old, old_card["profile_token"], old.stop_event) is None
+    )
     bridge.unregister(old)
     bridge.register(replacement)
 
@@ -446,4 +548,8 @@ def test_only_executing_action_can_complete_and_failed_replay_is_not_success():
     assert bridge.complete(action, "failed", "storage unavailable") is True
     ok, replay, code = bridge.submit(_body(card, "like"))
     assert (ok, code, replay["status"], replay["reason"]) == (
-        False, 409, "failed", "storage unavailable")
+        False,
+        409,
+        "failed",
+        "storage unavailable",
+    )

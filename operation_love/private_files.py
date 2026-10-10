@@ -5,6 +5,7 @@ their existing permissions are never changed. File operations reject a symlink a
 leaf and use ``O_NOFOLLOW`` where the host provides it. Callers decide whether an error is fatal
 (configuration and release tools) or best-effort (debug logging).
 """
+
 from __future__ import annotations
 
 import os
@@ -43,7 +44,9 @@ def _chmod_nofollow(path: Path, mode: int) -> None:
 def _require_directory(path: Path) -> None:
     info = _lstat(path)
     if info is None or not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode):
-        raise UnsafePrivatePathError(f"private directory is not a real directory: {path}")
+        raise UnsafePrivatePathError(
+            f"private directory is not a real directory: {path}"
+        )
 
 
 def _require_regular(path: Path, *, missing_ok: bool = False) -> bool:
@@ -52,8 +55,11 @@ def _require_regular(path: Path, *, missing_ok: bool = False) -> bool:
         if missing_ok:
             return False
         raise FileNotFoundError(path)
-    if (stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode)
-            or getattr(info, "st_nlink", 1) != 1):
+    if (
+        stat.S_ISLNK(info.st_mode)
+        or not stat.S_ISREG(info.st_mode)
+        or getattr(info, "st_nlink", 1) != 1
+    ):
         raise UnsafePrivatePathError(f"private file is not a regular file: {path}")
     return True
 
@@ -61,7 +67,9 @@ def _require_regular(path: Path, *, missing_ok: bool = False) -> bool:
 def _require_direct_parent(path: Path, parent: Path | None) -> Path:
     expected = Path(parent) if parent is not None else path.parent
     if path.parent.absolute() != expected.absolute():
-        raise UnsafePrivatePathError(f"private file is outside its managed directory: {path}")
+        raise UnsafePrivatePathError(
+            f"private file is outside its managed directory: {path}"
+        )
     _require_directory(expected)
     return expected
 
@@ -74,8 +82,12 @@ def ensure_private_dir(path: str | Path, *, exist_ok: bool = True) -> Path:
     """
     directory = Path(path)
     info = _lstat(directory)
-    if info is not None and (stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode)):
-        raise UnsafePrivatePathError(f"private directory is not a real directory: {directory}")
+    if info is not None and (
+        stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode)
+    ):
+        raise UnsafePrivatePathError(
+            f"private directory is not a real directory: {directory}"
+        )
     if info is not None and not exist_ok:
         raise FileExistsError(directory)
     directory.mkdir(mode=PRIVATE_DIR_MODE, parents=True, exist_ok=exist_ok)
@@ -84,8 +96,9 @@ def ensure_private_dir(path: str | Path, *, exist_ok: bool = True) -> Path:
     return directory
 
 
-def tighten_private_file(path: str | Path, *, parent: str | Path | None = None,
-                         missing_ok: bool = False) -> bool:
+def tighten_private_file(
+    path: str | Path, *, parent: str | Path | None = None, missing_ok: bool = False
+) -> bool:
     """Tighten an existing regular leaf to 0600; never chmod through a symlink."""
     target = Path(path)
     _require_direct_parent(target, Path(parent) if parent is not None else None)
@@ -96,8 +109,12 @@ def tighten_private_file(path: str | Path, *, parent: str | Path | None = None,
 
 
 def _private_open_flags(flags: int) -> int:
-    return (flags | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
-            | getattr(os, "O_BINARY", 0))
+    return (
+        flags
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_BINARY", 0)
+    )
 
 
 def _verify_private_fd(fd: int, path: Path) -> None:
@@ -112,12 +129,17 @@ def _verify_private_fd(fd: int, path: Path) -> None:
         pass
 
 
-def write_private_bytes(path: str | Path, data: bytes, *, parent: str | Path | None = None) -> None:
+def write_private_bytes(
+    path: str | Path, data: bytes, *, parent: str | Path | None = None
+) -> None:
     """Create one new 0600 regular file, refusing collisions and symlink leaves."""
     target = Path(path)
     _require_direct_parent(target, Path(parent) if parent is not None else None)
-    fd = os.open(target, _private_open_flags(os.O_WRONLY | os.O_CREAT | os.O_EXCL),
-                 PRIVATE_FILE_MODE)
+    fd = os.open(
+        target,
+        _private_open_flags(os.O_WRONLY | os.O_CREAT | os.O_EXCL),
+        PRIVATE_FILE_MODE,
+    )
     try:
         _verify_private_fd(fd, target)
         with os.fdopen(fd, "wb") as stream:
@@ -137,9 +159,11 @@ def open_private_rw(path: str | Path, *, parent: str | Path | None = None) -> in
     target = Path(path)
     _require_direct_parent(target, Path(parent) if parent is not None else None)
     existing = _lstat(target)
-    if existing is not None and (stat.S_ISLNK(existing.st_mode)
-                                 or not stat.S_ISREG(existing.st_mode)
-                                 or getattr(existing, "st_nlink", 1) != 1):
+    if existing is not None and (
+        stat.S_ISLNK(existing.st_mode)
+        or not stat.S_ISREG(existing.st_mode)
+        or getattr(existing, "st_nlink", 1) != 1
+    ):
         raise UnsafePrivatePathError(f"private file is not a regular file: {target}")
     fd = os.open(target, _private_open_flags(os.O_RDWR | os.O_CREAT), PRIVATE_FILE_MODE)
     try:
@@ -184,17 +208,24 @@ def load_private_dotenv(path: str | Path) -> bool:
             os.close(fd)
 
 
-def append_private_text(path: str | Path, text: str, *, parent: str | Path | None = None) -> None:
+def append_private_text(
+    path: str | Path, text: str, *, parent: str | Path | None = None
+) -> None:
     """Append text to a regular 0600 file without following a symlink leaf."""
     target = Path(path)
     _require_direct_parent(target, Path(parent) if parent is not None else None)
     existing = _lstat(target)
-    if existing is not None and (stat.S_ISLNK(existing.st_mode)
-                                 or not stat.S_ISREG(existing.st_mode)
-                                 or getattr(existing, "st_nlink", 1) != 1):
+    if existing is not None and (
+        stat.S_ISLNK(existing.st_mode)
+        or not stat.S_ISREG(existing.st_mode)
+        or getattr(existing, "st_nlink", 1) != 1
+    ):
         raise UnsafePrivatePathError(f"private file is not a regular file: {target}")
-    fd = os.open(target, _private_open_flags(os.O_WRONLY | os.O_APPEND | os.O_CREAT),
-                 PRIVATE_FILE_MODE)
+    fd = os.open(
+        target,
+        _private_open_flags(os.O_WRONLY | os.O_APPEND | os.O_CREAT),
+        PRIVATE_FILE_MODE,
+    )
     try:
         _verify_private_fd(fd, target)
         with os.fdopen(fd, "a", encoding="utf-8") as stream:
@@ -205,12 +236,17 @@ def append_private_text(path: str | Path, text: str, *, parent: str | Path | Non
             os.close(fd)
 
 
-def atomic_write_private_bytes(path: str | Path, data: bytes, *,
-                               parent: str | Path | None = None) -> None:
+def atomic_write_private_bytes(
+    path: str | Path, data: bytes, *, parent: str | Path | None = None
+) -> None:
     """Atomically replace a regular artifact with a same-directory 0600 temporary file."""
     target = Path(path)
-    directory = _require_direct_parent(target, Path(parent) if parent is not None else None)
-    _require_regular(target, missing_ok=True)  # explicitly reject an existing symlink/special file
+    directory = _require_direct_parent(
+        target, Path(parent) if parent is not None else None
+    )
+    _require_regular(
+        target, missing_ok=True
+    )  # explicitly reject an existing symlink/special file
     fd, temporary_name = tempfile.mkstemp(prefix=f".{target.name}.", dir=directory)
     temporary = Path(temporary_name)
     try:
@@ -231,6 +267,7 @@ def atomic_write_private_bytes(path: str | Path, data: bytes, *,
             pass
 
 
-def atomic_write_private_text(path: str | Path, text: str, *,
-                              parent: str | Path | None = None) -> None:
+def atomic_write_private_text(
+    path: str | Path, text: str, *, parent: str | Path | None = None
+) -> None:
     atomic_write_private_bytes(path, text.encode("utf-8"), parent=parent)

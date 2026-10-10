@@ -69,6 +69,7 @@ docstring for exactly how each mode is implemented and why age-based purges reus
 operation_love.opener.replay_corpus.prune_replay_corpus directly rather than a second,
 independently-written deletion path.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -95,6 +96,7 @@ from operation_love.opener.opener import (
     _stdlib_gemini_transport,
     prompt_stamp,
 )
+
 # `prune_replay_corpus`: the SAME safety-audited, oldest-first, symlink-safe deletion helper
 # OpenerService's own automatic retention bound uses (see replay_corpus.py's module docstring's
 # PRIVACY section) -- reused here, never re-implemented, for --purge's age-based mode (see
@@ -186,8 +188,13 @@ def _redact(text: str, secret: str | None) -> str:
     return text.replace(secret, "<redacted-api-key>")
 
 
-def estimate_request_bytes(opener: GeminiOpener, profile: Profile, style: str, model: str,
-                          item_request: ItemRequest) -> int:
+def estimate_request_bytes(
+    opener: GeminiOpener,
+    profile: Profile,
+    style: str,
+    model: str,
+    item_request: ItemRequest,
+) -> int:
     """The EXACT local size (UTF-8 bytes of the serialized JSON body) of the request this
     capture would produce against ``model``, computed with zero network I/O by building the
     real request payload (``GeminiOpener._payload`` -- the same private method
@@ -203,65 +210,107 @@ def estimate_request_bytes(opener: GeminiOpener, profile: Profile, style: str, m
 def _build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Replay captured opener requests (operation_love.opener.replay_corpus) "
-                    "through the prompt CURRENTLY configured in config.yaml, so a prompt "
-                    "revision can be measured offline against real historical inputs -- no "
-                    "phone, no live batch. Defaults to a DRY RUN that spends no API quota; "
-                    "pass --live to actually generate and persist openers. The configured "
-                    "Gemini key is a FREE-TIER key with per-model daily caps as low as 20 "
-                    "requests/day, so spending it on a whole corpus replay is never the "
-                    "default.")
-    parser.add_argument("--corpus-dir", default=DEFAULT_CORPUS_DIR,
-                        help=f"replay corpus directory to read (default {DEFAULT_CORPUS_DIR})")
-    parser.add_argument("--config", default="config.yaml",
-                        help="config.yaml to read opener.models/opener.style/opener.thinking "
-                             "from (default config.yaml; never modified)")
-    parser.add_argument("--db", default=DEFAULT_DB_FILE,
-                        help=f"local SQLite store to write replay rows to in --live mode "
-                             f"(default {DEFAULT_DB_FILE}); never BigQuery, regardless of "
-                             "config.yaml's storage.backend -- see this module's docstring")
-    parser.add_argument("--app", default=DEFAULT_APP,
-                        help=f"app label recorded on every written row (default {DEFAULT_APP})")
-    parser.add_argument("--run-id", default=None,
-                        help=f"run_id recorded on every written row (default: a fresh generated "
-                             f"id, printed at the start of the run). Whatever is passed here is "
-                             f"prefixed with {REPLAY_RUN_ID_PREFIX!r} if it does not already "
-                             f"start with it -- that prefix is the only thing marking a row in "
-                             f"opener_rejections as replay-produced (see this module's "
-                             f"docstring), so it is never optional; the effective value is "
-                             f"printed at the start of the run")
-    parser.add_argument("--replay-ids", default=None,
-                        help="comma-separated list of specific replay_id(s) to use, IN THIS "
-                             "ORDER (default: every capture in the corpus, in the corpus's own "
-                             "deterministic captured_at/replay_id order). Passing the exact "
-                             "same list twice makes two replay runs directly comparable.")
-    parser.add_argument("--limit", type=int, default=None,
-                        help="use only the first N selected captures (applied AFTER "
-                             "--replay-ids selection/ordering, never before)")
-    parser.add_argument("--live", action="store_true",
-                        help="actually call the Gemini API and persist results (spends real "
-                             "free-tier quota). Without this flag, nothing is sent over the "
-                             "network and nothing is written to the store.")
-    parser.add_argument("--yes", action="store_true",
-                        help="skip the interactive confirmation before a --live run")
-    parser.add_argument("--json", action="store_true",
-                        help="emit a single JSON report on stdout instead of narrative text "
-                             "(narrative still goes to stderr)")
-    parser.add_argument("--purge", action="store_true",
-                        help="remove captures from --corpus-dir instead of replaying anything: "
-                             "the WHOLE corpus by default, or only captures older than "
-                             "--purge-older-than-days when that flag is also given. DRY RUN BY "
-                             "DEFAULT (reports exactly what would be removed; deletes nothing); "
-                             "pass --delete to actually remove them. Every other flag above is "
-                             "ignored in this mode.")
-    parser.add_argument("--purge-older-than-days", type=float, default=None,
-                        help="with --purge, remove only captures whose captured_at is older "
-                             "than this many days (age-based purge, via "
-                             "operation_love.opener.replay_corpus.prune_replay_corpus); omit to "
-                             "purge the WHOLE corpus instead")
-    parser.add_argument("--delete", action="store_true",
-                        help="with --purge, ACTUALLY remove the selected captures. Without "
-                             "this flag, --purge only reports what it would remove -- nothing "
-                             "on disk is touched.")
+        "through the prompt CURRENTLY configured in config.yaml, so a prompt "
+        "revision can be measured offline against real historical inputs -- no "
+        "phone, no live batch. Defaults to a DRY RUN that spends no API quota; "
+        "pass --live to actually generate and persist openers. The configured "
+        "Gemini key is a FREE-TIER key with per-model daily caps as low as 20 "
+        "requests/day, so spending it on a whole corpus replay is never the "
+        "default."
+    )
+    parser.add_argument(
+        "--corpus-dir",
+        default=DEFAULT_CORPUS_DIR,
+        help=f"replay corpus directory to read (default {DEFAULT_CORPUS_DIR})",
+    )
+    parser.add_argument(
+        "--config",
+        default="config.yaml",
+        help="config.yaml to read opener.models/opener.style/opener.thinking "
+        "from (default config.yaml; never modified)",
+    )
+    parser.add_argument(
+        "--db",
+        default=DEFAULT_DB_FILE,
+        help=f"local SQLite store to write replay rows to in --live mode "
+        f"(default {DEFAULT_DB_FILE}); never BigQuery, regardless of "
+        "config.yaml's storage.backend -- see this module's docstring",
+    )
+    parser.add_argument(
+        "--app",
+        default=DEFAULT_APP,
+        help=f"app label recorded on every written row (default {DEFAULT_APP})",
+    )
+    parser.add_argument(
+        "--run-id",
+        default=None,
+        help=f"run_id recorded on every written row (default: a fresh generated "
+        f"id, printed at the start of the run). Whatever is passed here is "
+        f"prefixed with {REPLAY_RUN_ID_PREFIX!r} if it does not already "
+        f"start with it -- that prefix is the only thing marking a row in "
+        f"opener_rejections as replay-produced (see this module's "
+        f"docstring), so it is never optional; the effective value is "
+        f"printed at the start of the run",
+    )
+    parser.add_argument(
+        "--replay-ids",
+        default=None,
+        help="comma-separated list of specific replay_id(s) to use, IN THIS "
+        "ORDER (default: every capture in the corpus, in the corpus's own "
+        "deterministic captured_at/replay_id order). Passing the exact "
+        "same list twice makes two replay runs directly comparable.",
+    )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="use only the first N selected captures (applied AFTER "
+        "--replay-ids selection/ordering, never before)",
+    )
+    parser.add_argument(
+        "--live",
+        action="store_true",
+        help="actually call the Gemini API and persist results (spends real "
+        "free-tier quota). Without this flag, nothing is sent over the "
+        "network and nothing is written to the store.",
+    )
+    parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="skip the interactive confirmation before a --live run",
+    )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="emit a single JSON report on stdout instead of narrative text "
+        "(narrative still goes to stderr)",
+    )
+    parser.add_argument(
+        "--purge",
+        action="store_true",
+        help="remove captures from --corpus-dir instead of replaying anything: "
+        "the WHOLE corpus by default, or only captures older than "
+        "--purge-older-than-days when that flag is also given. DRY RUN BY "
+        "DEFAULT (reports exactly what would be removed; deletes nothing); "
+        "pass --delete to actually remove them. Every other flag above is "
+        "ignored in this mode.",
+    )
+    parser.add_argument(
+        "--purge-older-than-days",
+        type=float,
+        default=None,
+        help="with --purge, remove only captures whose captured_at is older "
+        "than this many days (age-based purge, via "
+        "operation_love.opener.replay_corpus.prune_replay_corpus); omit to "
+        "purge the WHOLE corpus instead",
+    )
+    parser.add_argument(
+        "--delete",
+        action="store_true",
+        help="with --purge, ACTUALLY remove the selected captures. Without "
+        "this flag, --purge only reports what it would remove -- nothing "
+        "on disk is touched.",
+    )
     return parser
 
 
@@ -280,8 +329,9 @@ def _format_epoch(ts: float | None) -> str:
     return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
 
 
-def _mirror_manifests_for_dry_run_preview(corpus_dir: Path, replay_ids: list[str],
-                                          shadow_root: Path) -> None:
+def _mirror_manifests_for_dry_run_preview(
+    corpus_dir: Path, replay_ids: list[str], shadow_root: Path
+) -> None:
     """Populate ``shadow_root`` with one bare-bones manifest.json per real capture in
     ``replay_ids`` -- ONLY the ``captured_at`` field ``prune_replay_corpus`` actually reads to
     decide what is too old, never the real crop images or her name. Used exclusively so an
@@ -297,11 +347,13 @@ def _mirror_manifests_for_dry_run_preview(corpus_dir: Path, replay_ids: list[str
         capture_dir = shadow_root / replay_id
         capture_dir.mkdir(parents=True, exist_ok=True)
         (capture_dir / "manifest.json").write_text(
-            json.dumps({"captured_at": capture.captured_at}), encoding="utf-8")
+            json.dumps({"captured_at": capture.captured_at}), encoding="utf-8"
+        )
 
 
-def _run_age_based_purge(corpus_dir: Path, older_than_days: float, *, delete: bool
-                         ) -> tuple[bool, list[tuple[str, float | None, str]], str | None]:
+def _run_age_based_purge(
+    corpus_dir: Path, older_than_days: float, *, delete: bool
+) -> tuple[bool, list[tuple[str, float | None, str]], str | None]:
     """Age-based purge: (ok, removed[(replay_id, captured_at, reason)], error). ALWAYS goes
     through ``prune_replay_corpus`` -- the exact same call, for real, against ``corpus_dir``
     when ``delete`` is True. When ``delete`` is False (the default), that same function is
@@ -315,7 +367,11 @@ def _run_age_based_purge(corpus_dir: Path, older_than_days: float, *, delete: bo
         result = prune_replay_corpus(corpus_dir, max_age_days=older_than_days)
         if not result.ok:
             return False, [], result.error
-        return True, [(r.replay_id, r.captured_at, r.reason) for r in result.removed], None
+        return (
+            True,
+            [(r.replay_id, r.captured_at, r.reason) for r in result.removed],
+            None,
+        )
 
     try:
         replay_ids = list_replay_ids(corpus_dir)
@@ -330,8 +386,9 @@ def _run_age_based_purge(corpus_dir: Path, older_than_days: float, *, delete: bo
     return True, [(r.replay_id, r.captured_at, r.reason) for r in result.removed], None
 
 
-def _run_whole_corpus_purge(corpus_dir: Path, *, delete: bool
-                            ) -> tuple[bool, list[tuple[str, float | None, str]], str | None]:
+def _run_whole_corpus_purge(
+    corpus_dir: Path, *, delete: bool
+) -> tuple[bool, list[tuple[str, float | None, str]], str | None]:
     """Whole-corpus purge: every capture ``list_replay_ids`` finds under ``corpus_dir``,
     unconditionally. Deliberately NOT routed through ``prune_replay_corpus``:
     ``max_captures``/``max_age_days`` are both documented as "0 means unlimited" (see that
@@ -377,10 +434,13 @@ def _run_purge(args: argparse.Namespace) -> int:
     corpus_dir = Path(args.corpus_dir)
     older_than_days = args.purge_older_than_days
     log: Callable[..., None] = (
-        (lambda *a, **k: print(*a, file=sys.stderr, **k)) if args.json else print)
+        (lambda *a, **k: print(*a, file=sys.stderr, **k)) if args.json else print
+    )
 
     if older_than_days is not None:
-        ok, removed, error = _run_age_based_purge(corpus_dir, older_than_days, delete=args.delete)
+        ok, removed, error = _run_age_based_purge(
+            corpus_dir, older_than_days, delete=args.delete
+        )
         scope_desc = f"captures older than {older_than_days} day(s)"
     else:
         ok, removed, error = _run_whole_corpus_purge(corpus_dir, delete=args.delete)
@@ -398,18 +458,27 @@ def _run_purge(args: argparse.Namespace) -> int:
     else:
         log(f"  {verb} {len(removed)} capture(s):")
         for replay_id, captured_at, reason in removed:
-            log(f"    {replay_id}  captured_at={_format_epoch(captured_at)}  reason={reason}")
+            log(
+                f"    {replay_id}  captured_at={_format_epoch(captured_at)}  reason={reason}"
+            )
     if not args.delete:
         log("\nDRY RUN -- nothing was deleted. Pass --delete to actually remove these.")
 
     if args.json:
-        print(json.dumps({
-            "mode": "delete" if args.delete else "dry_run",
-            "corpus_dir": str(corpus_dir),
-            "purge_older_than_days": older_than_days,
-            "removed": [{"replay_id": rid, "captured_at": cat, "reason": reason}
-                       for rid, cat, reason in removed],
-        }, indent=2))
+        print(
+            json.dumps(
+                {
+                    "mode": "delete" if args.delete else "dry_run",
+                    "corpus_dir": str(corpus_dir),
+                    "purge_older_than_days": older_than_days,
+                    "removed": [
+                        {"replay_id": rid, "captured_at": cat, "reason": reason}
+                        for rid, cat, reason in removed
+                    ],
+                },
+                indent=2,
+            )
+        )
     return 0
 
 
@@ -419,10 +488,14 @@ def _parse_replay_ids(raw: str | None) -> list[str] | None:
     return [piece.strip() for piece in raw.split(",") if piece.strip()]
 
 
-def main(argv: list[str] | None = None, *, transport: GeminiTransport | None = None,
-         env: Mapping[str, str] | None = None,
-         confirm: Callable[[str], bool] | None = None,
-         store: Any | None = None) -> int:
+def main(
+    argv: list[str] | None = None,
+    *,
+    transport: GeminiTransport | None = None,
+    env: Mapping[str, str] | None = None,
+    confirm: Callable[[str], bool] | None = None,
+    store: Any | None = None,
+) -> int:
     """CLI entry point. ``transport``/``env``/``confirm``/``store`` are the injection seams
     tests use to keep this hermetic (no network, no real .env, no interactive stdin, no real
     database file) -- see this module's docstring's TESTABILITY paragraph. Real usage (the
@@ -437,29 +510,43 @@ def main(argv: list[str] | None = None, *, transport: GeminiTransport | None = N
         return _run_purge(args)
 
     log: Callable[..., None] = (
-        (lambda *a, **k: print(*a, file=sys.stderr, **k)) if args.json else print)
+        (lambda *a, **k: print(*a, file=sys.stderr, **k)) if args.json else print
+    )
 
     replay_ids = _parse_replay_ids(args.replay_ids)
     try:
-        captures = load_replay_corpus(args.corpus_dir, replay_ids=replay_ids, limit=args.limit)
+        captures = load_replay_corpus(
+            args.corpus_dir, replay_ids=replay_ids, limit=args.limit
+        )
     except Exception as exc:  # noqa: BLE001 -- a bad --replay-ids entry or a corrupt corpus
         # entry must not traceback; report it and stop.
-        print(f"ERROR: could not load the replay corpus from {args.corpus_dir!r}: "
-              f"{type(exc).__name__}: {exc}", file=sys.stderr)
+        print(
+            f"ERROR: could not load the replay corpus from {args.corpus_dir!r}: "
+            f"{type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
         return 1
 
     if not captures:
-        log(f"No captures found under {args.corpus_dir!r} (nothing selected). Nothing to do.")
+        log(
+            f"No captures found under {args.corpus_dir!r} (nothing selected). Nothing to do."
+        )
         if args.json:
-            print(json.dumps({"mode": "live" if args.live else "dry_run", "captures": []},
-                             indent=2))
+            print(
+                json.dumps(
+                    {"mode": "live" if args.live else "dry_run", "captures": []},
+                    indent=2,
+                )
+            )
         return 0
 
     try:
         cfg = cfg_mod.load(args.config)
     except Exception as exc:  # noqa: BLE001
-        print(f"ERROR: could not read {args.config!r}: {type(exc).__name__}: {exc}",
-              file=sys.stderr)
+        print(
+            f"ERROR: could not read {args.config!r}: {type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
         return 1
 
     models = list(cfg.opener.effective_models)
@@ -474,8 +561,11 @@ def main(argv: list[str] | None = None, *, transport: GeminiTransport | None = N
             environment = env
         api_key = environment.get("GEMINI_API_KEY")
         if not api_key:
-            print("ERROR: GEMINI_API_KEY is not set (checked the environment and .env). "
-                  "Required for --live; a dry run does not need it.", file=sys.stderr)
+            print(
+                "ERROR: GEMINI_API_KEY is not set (checked the environment and .env). "
+                "Required for --live; a dry run does not need it.",
+                file=sys.stderr,
+            )
             return 1
     else:
         # _payload() never reads this value and no network call is made in dry-run mode, so a
@@ -484,29 +574,45 @@ def main(argv: list[str] | None = None, *, transport: GeminiTransport | None = N
 
     live_transport = transport or _stdlib_gemini_transport
     try:
-        gemini = GeminiOpener(models, max_tokens=cfg.opener.max_tokens,
-                              request_timeout_s=cfg.opener.request_timeout_s, api_key=api_key,
-                              transport=live_transport, thinking=cfg.opener.thinking)
+        gemini = GeminiOpener(
+            models,
+            max_tokens=cfg.opener.max_tokens,
+            request_timeout_s=cfg.opener.request_timeout_s,
+            api_key=api_key,
+            transport=live_transport,
+            thinking=cfg.opener.thinking,
+        )
     except Exception as exc:  # noqa: BLE001
-        print(f"ERROR: could not build a GeminiOpener from {args.config!r}: "
-              f"{type(exc).__name__}: {exc}", file=sys.stderr)
+        print(
+            f"ERROR: could not build a GeminiOpener from {args.config!r}: "
+            f"{type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
         return 1
 
-    profile = Profile()  # her profile TEXT (bio/prompts) is always empty on Hinge, the only
-                          # live driver as of this writing -- see replay_corpus.py's module
-                          # docstring and opener.opener.GeminiOpener.generate()'s own comment.
+    profile = (
+        Profile()
+    )  # her profile TEXT (bio/prompts) is always empty on Hinge, the only
+    # live driver as of this writing -- see replay_corpus.py's module
+    # docstring and opener.opener.GeminiOpener.generate()'s own comment.
 
     # Context crops remain in every ReplayCapture for forensic inspection and future research,
     # but must never be reintroduced to the model by an offline replay after live generation
     # stopped sending them. The numbered images are the complete model-visible image set.
     item_requests = [
-        (capture, ItemRequest(items=capture.items, name=capture.name,
-                              truncated=capture.truncated))
+        (
+            capture,
+            ItemRequest(
+                items=capture.items, name=capture.name, truncated=capture.truncated
+            ),
+        )
         for capture in captures
     ]
 
-    log(f"Corpus: {args.corpus_dir!r} -- {len(captures)} capture(s) selected: "
-        f"{[c.replay_id for c in captures]}")
+    log(
+        f"Corpus: {args.corpus_dir!r} -- {len(captures)} capture(s) selected: "
+        f"{[c.replay_id for c in captures]}"
+    )
     log(f"Configured model cascade (opener.models): {models}")
     log(f"Current prompt era (prompt_sha256): {current_prompt_sha256}")
 
@@ -519,14 +625,17 @@ def main(argv: list[str] | None = None, *, transport: GeminiTransport | None = N
             "context_count": len(capture.context),
             "sent_context_count": item_request.context_count,
             "truncated": item_request.truncated,
-            "name_present": bool(capture.name),  # never echo her literal name in this tool's
-                                                  # output (text or JSON) -- see this comment;
-                                                  # the manifest itself still has it if needed.
+            "name_present": bool(
+                capture.name
+            ),  # never echo her literal name in this tool's
+            # output (text or JSON) -- see this comment;
+            # the manifest itself still has it if needed.
             "captured_prompt_sha256": capture.prompt_sha256,
         }
         try:
             entry["estimated_request_bytes"] = estimate_request_bytes(
-                gemini, profile, style, sizing_model, item_request)
+                gemini, profile, style, sizing_model, item_request
+            )
         except Exception as exc:  # noqa: BLE001 -- an oversized/corrupt capture must not abort
             # sizing every other one.
             entry["estimated_request_bytes"] = None
@@ -534,39 +643,56 @@ def main(argv: list[str] | None = None, *, transport: GeminiTransport | None = N
         per_capture.append(entry)
 
     if not args.live:
-        log("\n=== DRY RUN (default; no network call, no store write) -- pass --live to "
-            "actually spend quota ===")
+        log(
+            "\n=== DRY RUN (default; no network call, no store write) -- pass --live to "
+            "actually spend quota ==="
+        )
         for entry in per_capture:
             size = entry["estimated_request_bytes"]
-            size_text = f"~{size} byte(s)" if size is not None else f"ERROR: {entry['size_error']}"
-            log(f"  {entry['replay_id']}: item_count={entry['item_count']} "
+            size_text = (
+                f"~{size} byte(s)"
+                if size is not None
+                else f"ERROR: {entry['size_error']}"
+            )
+            log(
+                f"  {entry['replay_id']}: item_count={entry['item_count']} "
                 f"context_count={entry['context_count']} sent_context_count="
                 f"{entry['sent_context_count']} truncated={entry['truncated']} "
                 f"estimated_request_bytes={size_text} "
-                f"(sized against {sizing_model!r})")
+                f"(sized against {sizing_model!r})"
+            )
         worst_case = len(captures) * len(models)
-        log(f"\nWorst case billed request count if --live were used: {len(captures)} "
+        log(
+            f"\nWorst case billed request count if --live were used: {len(captures)} "
             f"capture(s) x {len(models)} configured model(s) = {worst_case} (actual is "
             "usually far fewer -- generate() stops at the first model that answers 2xx per "
-            "capture).")
+            "capture)."
+        )
         if args.json:
-            print(json.dumps({
-                "mode": "dry_run",
-                "corpus_dir": str(args.corpus_dir),
-                "prompt_sha256": current_prompt_sha256,
-                "models": models,
-                "worst_case_total_requests": worst_case,
-                "captures": per_capture,
-            }, indent=2))
+            print(
+                json.dumps(
+                    {
+                        "mode": "dry_run",
+                        "corpus_dir": str(args.corpus_dir),
+                        "prompt_sha256": current_prompt_sha256,
+                        "models": models,
+                        "worst_case_total_requests": worst_case,
+                        "captures": per_capture,
+                    },
+                    indent=2,
+                )
+            )
         return 0
 
     # --live from here on: real generateContent calls, real store writes.
     worst_case = len(captures) * len(models)
     log("\n=== COST TRANSPARENCY ===")
-    log(f"About to replay {len(captures)} capture(s) through the model cascade {models}. "
+    log(
+        f"About to replay {len(captures)} capture(s) through the model cascade {models}. "
         f"Worst case total billed request(s): {worst_case} (each capture stops at the first "
         "model that answers 2xx; a capture that hits transient failures on earlier models in "
-        "the cascade spends more than one request against that capture alone).")
+        "the cascade spends more than one request against that capture alone)."
+    )
 
     if not args.yes:
         ask = confirm or _interactive_confirm
@@ -584,11 +710,16 @@ def main(argv: list[str] | None = None, *, transport: GeminiTransport | None = N
     # effective value is logged (and carried in --json) immediately below, so a caller scripting
     # on run_id sees exactly what was written rather than what it asked for.
     if args.run_id:
-        run_id = args.run_id if args.run_id.startswith(REPLAY_RUN_ID_PREFIX) \
+        run_id = (
+            args.run_id
+            if args.run_id.startswith(REPLAY_RUN_ID_PREFIX)
             else f"{REPLAY_RUN_ID_PREFIX}{args.run_id}"
+        )
         if run_id != args.run_id:
-            log(f"note: --run-id {args.run_id!r} prefixed with {REPLAY_RUN_ID_PREFIX!r} so the "
-                "rows it writes stay identifiable as replay-produced")
+            log(
+                f"note: --run-id {args.run_id!r} prefixed with {REPLAY_RUN_ID_PREFIX!r} so the "
+                "rows it writes stay identifiable as replay-produced"
+            )
     else:
         run_id = f"{REPLAY_RUN_ID_PREFIX}{int(time.time())}_{uuid.uuid4().hex[:8]}"
     log(f"run_id: {run_id}")
@@ -601,52 +732,97 @@ def main(argv: list[str] | None = None, *, transport: GeminiTransport | None = N
         try:
             result = gemini.generate(profile, style, items=item_request)
         except OpenerParseError as exc:
-            outcome.update(outcome_kind="rejected", reason_code=exc.reason_code,
-                          message=_redact(str(exc), api_key))
-            log(f"  {capture.replay_id}: REJECTED ({exc.reason_code}): {outcome['message']}")
+            outcome.update(
+                outcome_kind="rejected",
+                reason_code=exc.reason_code,
+                message=_redact(str(exc), api_key),
+            )
+            log(
+                f"  {capture.replay_id}: REJECTED ({exc.reason_code}): {outcome['message']}"
+            )
             try:
                 active_store.record_opener_rejection(
-                    run_id, args.app, exc.model, 1, exc.reason_code, str(exc), exc.raw_opener,
-                    prompt_sha256=current_prompt_sha256)
+                    run_id,
+                    args.app,
+                    exc.model,
+                    1,
+                    exc.reason_code,
+                    str(exc),
+                    exc.raw_opener,
+                    prompt_sha256=current_prompt_sha256,
+                )
             except Exception as store_exc:  # noqa: BLE001 -- telemetry must never abort a replay
                 log(f"    warning: failed to persist rejection record: {store_exc}")
-        except (OpenerAborted, GeminiCapacityExhausted, GeminiAPIError, OpenerError) as exc:
+        except (
+            OpenerAborted,
+            GeminiCapacityExhausted,
+            GeminiAPIError,
+            OpenerError,
+        ) as exc:
             outcome.update(outcome_kind="error", message=_redact(str(exc), api_key))
-            log(f"  {capture.replay_id}: ERROR ({type(exc).__name__}): {outcome['message']}")
+            log(
+                f"  {capture.replay_id}: ERROR ({type(exc).__name__}): {outcome['message']}"
+            )
         except Exception as exc:  # noqa: BLE001 -- an operator tool must never traceback over
             # one capture.
-            outcome.update(outcome_kind="error",
-                          message=f"unexpected {type(exc).__name__}: "
-                                  f"{_redact(str(exc), api_key)}")
-            log(f"  {capture.replay_id}: ERROR (unexpected {type(exc).__name__}): "
-                f"{outcome['message']}")
+            outcome.update(
+                outcome_kind="error",
+                message=f"unexpected {type(exc).__name__}: "
+                f"{_redact(str(exc), api_key)}",
+            )
+            log(
+                f"  {capture.replay_id}: ERROR (unexpected {type(exc).__name__}): "
+                f"{outcome['message']}"
+            )
         else:
-            outcome.update(outcome_kind="ok", model=result.model, opener=result.opener,
-                          item_index=result.item_index)
-            log(f"  {capture.replay_id}: ok (model={result.model}, "
-                f"item_index={result.item_index}): {result.opener!r}")
+            outcome.update(
+                outcome_kind="ok",
+                model=result.model,
+                opener=result.opener,
+                item_index=result.item_index,
+            )
+            log(
+                f"  {capture.replay_id}: ok (model={result.model}, "
+                f"item_index={result.item_index}): {result.opener!r}"
+            )
             try:
                 active_store.record_opener(
-                    run_id, args.app, result.model, result.opener, result.referenced,
-                    result.angle, result.item_description, profile_id=capture.replay_id,
-                    decision=DECISION_REPLAY, decision_source="opener_replay",
-                    model_item_index=result.item_index, prompt_sha256=current_prompt_sha256)
+                    run_id,
+                    args.app,
+                    result.model,
+                    result.opener,
+                    result.referenced,
+                    result.angle,
+                    result.item_description,
+                    profile_id=capture.replay_id,
+                    decision=DECISION_REPLAY,
+                    decision_source="opener_replay",
+                    model_item_index=result.item_index,
+                    prompt_sha256=current_prompt_sha256,
+                )
             except Exception as store_exc:  # noqa: BLE001 -- telemetry must never abort a replay
                 log(f"    warning: failed to persist opener record: {store_exc}")
         results.append(outcome)
 
     ok_count = sum(1 for r in results if r["outcome_kind"] == "ok")
-    log(f"\n=== SUMMARY === {ok_count}/{len(results)} succeeded and were written under "
-        f"decision={DECISION_REPLAY!r}, prompt_sha256={current_prompt_sha256}")
+    log(
+        f"\n=== SUMMARY === {ok_count}/{len(results)} succeeded and were written under "
+        f"decision={DECISION_REPLAY!r}, prompt_sha256={current_prompt_sha256}"
+    )
 
     if args.json:
-        print(json.dumps({
-            "mode": "live",
-            "run_id": run_id,
-            "prompt_sha256": current_prompt_sha256,
-            "models": models,
-            "results": results,
-        }, indent=2))
+        print(
+            json.dumps(
+                {
+                    "mode": "live",
+                    "run_id": run_id,
+                    "prompt_sha256": current_prompt_sha256,
+                    "models": models,
+                    "results": results,
+                },
+                indent=2,
+            )
+        )
     # A partial success (some captures rejected/errored, others fine) still exits 0 -- exactly
     # gemini_model_probe.py's own convention of reporting per-item outcomes without failing the
     # whole process over one bad item. But EVERY capture failing is not partial: nothing this

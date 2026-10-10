@@ -1,4 +1,5 @@
 """Worker seams for doc 5.8: no gesture on AUTO before a type mismatch stops it."""
+
 import threading
 
 from operation_love.config import PacingCfg
@@ -49,7 +50,9 @@ class _PreflightDriver(DatingAppDriver):
         self.preflight_calls += 1
         assert item_description == "a prompt answer"
         assert model_item_index == 1
-        return ItemTypePreflight(MISMATCH, WRITTEN, PHOTO, "model selected a written prompt")
+        return ItemTypePreflight(
+            MISMATCH, WRITTEN, PHOTO, "model selected a written prompt"
+        )
 
     def close(self):
         self.closed = True
@@ -80,8 +83,17 @@ class _OnePickService:
 
 def test_auto_refuses_a_model_pick_that_calls_a_numbered_photo_a_prompt_before_like():
     driver = _PreflightDriver()
-    worker = Worker("test", driver, _LikeDecider(), _OnePickService(), _Store(), "run",
-                    PacingCfg(swipe_delay_s=0), threading.Event(), mode="auto")
+    worker = Worker(
+        "test",
+        driver,
+        _LikeDecider(),
+        _OnePickService(),
+        _Store(),
+        "run",
+        PacingCfg(swipe_delay_s=0),
+        threading.Event(),
+        mode="auto",
+    )
     worker.run()
 
     assert driver.preflight_calls == 1
@@ -97,13 +109,16 @@ def test_auto_legacy_profile_photo_pick_skips_model_crop_preflight():
     model-item preflight hook with its 1-based raw-frame number would inspect an unrelated crop
     and can manufacture a false hard stop, so this driver treats such a call as a test failure.
     """
+
     class LegacyDriver(_PreflightDriver):
         def __init__(self):
             super().__init__()
             self.like_args = []
 
         def item_type_preflight(self, *args):
-            raise AssertionError("legacy capture-order pick reached model-item preflight")
+            raise AssertionError(
+                "legacy capture-order pick reached model-item preflight"
+            )
 
         def like(self, opener=None, item_index=None, *, model_item_index=None):
             self.like_args.append((opener, item_index, model_item_index))
@@ -120,13 +135,26 @@ def test_auto_legacy_profile_photo_pick_skips_model_crop_preflight():
 
     class LegacyService(_OnePickService):
         def maybe_opener(self, *args, **kwargs):
-            return OpenerPick("hello", index=1, item_description="a photo",
-                              index_space=INDEX_SPACE_PROFILE_PHOTOS)
+            return OpenerPick(
+                "hello",
+                index=1,
+                item_description="a photo",
+                index_space=INDEX_SPACE_PROFILE_PHOTOS,
+            )
 
     driver = LegacyDriver()
     store = LegacyStore()
-    worker = Worker("test", driver, _LikeDecider(), LegacyService(), store, "run",
-                    PacingCfg(swipe_delay_s=0), threading.Event(), mode="auto")
+    worker = Worker(
+        "test",
+        driver,
+        _LikeDecider(),
+        LegacyService(),
+        store,
+        "run",
+        PacingCfg(swipe_delay_s=0),
+        threading.Event(),
+        mode="auto",
+    )
     worker.run()
 
     assert driver.like_args == [("hello", 0, None)]

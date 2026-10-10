@@ -1,7 +1,12 @@
 """Shared driver helpers (drivers/base.py) used by both Bumble and Hinge:
 open_debug_log() and snapshot_failure_frame(). No prior test file exercised
 these directly."""
-from operation_love.drivers.base import DatingAppDriver, open_debug_log, snapshot_failure_frame
+
+from operation_love.drivers.base import (
+    DatingAppDriver,
+    open_debug_log,
+    snapshot_failure_frame,
+)
 
 
 # --- blocked_reason() default (added 2026-08-11, see THE INCIDENT in worker.py/status.py) --
@@ -41,7 +46,7 @@ def test_blocked_reason_is_not_abstract_and_a_silent_driver_still_instantiates()
     mentions blocked_reason must still construct cleanly. Guards against a future edit that
     turns it into @abstractmethod, which would break every driver written before this field
     existed (Bumble Android, the Playwright web drivers) the moment they're instantiated."""
-    driver = _MinimalConcreteDriver()          # must not raise
+    driver = _MinimalConcreteDriver()  # must not raise
     assert isinstance(driver, DatingAppDriver)
 
 
@@ -58,11 +63,14 @@ def test_blocked_reason_defaults_to_none_for_an_uncalibrated_driver():
     # addition -- a driver that also says nothing about observe mode still fails loudly
     # there, exactly as before blocked_reason() existed.
     import pytest
+
     with pytest.raises(NotImplementedError):
         driver.current_profile()
 
 
-def test_open_debug_log_returns_none_and_prints_on_construction_failure(monkeypatch, capsys):
+def test_open_debug_log_returns_none_and_prints_on_construction_failure(
+    monkeypatch, capsys
+):
     import operation_love.drivers.debuglog as debuglog_mod
 
     def _boom(base_dir):
@@ -75,8 +83,10 @@ def test_open_debug_log_returns_none_and_prints_on_construction_failure(monkeypa
 
 def test_snapshot_failure_frame_noop_when_dbg_is_none():
     calls = []
-    snapshot_failure_frame(None, RuntimeError("boom"), lambda: calls.append(1) or b"frame")
-    assert calls == []                          # capture_frame never even called
+    snapshot_failure_frame(
+        None, RuntimeError("boom"), lambda: calls.append(1) or b"frame"
+    )
+    assert calls == []  # capture_frame never even called
 
 
 def test_snapshot_failure_frame_logs_with_a_frame():
@@ -113,4 +123,6 @@ def test_snapshot_failure_frame_never_raises_even_if_dbg_error_raises():
 
     # Must not raise -- this runs inside the worker's own except handler and must
     # never mask the real error it was called to report.
-    snapshot_failure_frame(_BrokenDbg(), RuntimeError("original failure"), lambda: b"frame")
+    snapshot_failure_frame(
+        _BrokenDbg(), RuntimeError("original failure"), lambda: b"frame"
+    )

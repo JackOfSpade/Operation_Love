@@ -61,6 +61,7 @@ PRIVACY: every frame saved here is a screenshot of a real person's dating profil
 confined to gitignored ops/calibration/ and the tool refuses to run against any directory git
 does not actually ignore. Nothing is uploaded or copied outside the repository.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -81,7 +82,10 @@ import yaml
 
 from operation_love import targeting_policy as _policy
 from operation_love.private_files import (
-    atomic_write_private_bytes, atomic_write_private_text, ensure_private_dir)
+    atomic_write_private_bytes,
+    atomic_write_private_text,
+    ensure_private_dir,
+)
 from tools._devicelock import holding_the_device
 
 _TOOL_VERSION = "1"
@@ -102,20 +106,39 @@ _POLICY_DEFAULTS = {
     "STILL_PHOTO_BOUND_GROUND_TRUTH_CHANNEL": "owner_tap_to_play_v1",
     "STILL_PHOTO_DWELL_WINDOW_SAFETY_FACTOR": 3.0,
 }
-_POLICY_FALLBACKS = tuple(sorted(n for n in _POLICY_DEFAULTS if not hasattr(_policy, n)))
-MIN_VIDEO_CARDS = getattr(_policy, "STILL_PHOTO_BOUND_MIN_VIDEO_CARDS",
-                          _POLICY_DEFAULTS["STILL_PHOTO_BOUND_MIN_VIDEO_CARDS"])
-MIN_PHOTO_CARDS = getattr(_policy, "STILL_PHOTO_BOUND_MIN_PHOTO_CARDS",
-                          _POLICY_DEFAULTS["STILL_PHOTO_BOUND_MIN_PHOTO_CARDS"])
+_POLICY_FALLBACKS = tuple(
+    sorted(n for n in _POLICY_DEFAULTS if not hasattr(_policy, n))
+)
+MIN_VIDEO_CARDS = getattr(
+    _policy,
+    "STILL_PHOTO_BOUND_MIN_VIDEO_CARDS",
+    _POLICY_DEFAULTS["STILL_PHOTO_BOUND_MIN_VIDEO_CARDS"],
+)
+MIN_PHOTO_CARDS = getattr(
+    _policy,
+    "STILL_PHOTO_BOUND_MIN_PHOTO_CARDS",
+    _POLICY_DEFAULTS["STILL_PHOTO_BOUND_MIN_PHOTO_CARDS"],
+)
 MAX_PHOTO_FALSE_REFUSAL_FRAC = getattr(
-    _policy, "STILL_PHOTO_BOUND_MAX_PHOTO_FALSE_REFUSAL_FRAC",
-    _POLICY_DEFAULTS["STILL_PHOTO_BOUND_MAX_PHOTO_FALSE_REFUSAL_FRAC"])
-REQUIRED_VIDEO_ACCEPTS = getattr(_policy, "STILL_PHOTO_BOUND_REQUIRED_VIDEO_ACCEPTS",
-                                 _POLICY_DEFAULTS["STILL_PHOTO_BOUND_REQUIRED_VIDEO_ACCEPTS"])
-GROUND_TRUTH_CHANNEL = getattr(_policy, "STILL_PHOTO_BOUND_GROUND_TRUTH_CHANNEL",
-                               _POLICY_DEFAULTS["STILL_PHOTO_BOUND_GROUND_TRUTH_CHANNEL"])
-DWELL_WINDOW_SAFETY_FACTOR = getattr(_policy, "STILL_PHOTO_DWELL_WINDOW_SAFETY_FACTOR",
-                                     _POLICY_DEFAULTS["STILL_PHOTO_DWELL_WINDOW_SAFETY_FACTOR"])
+    _policy,
+    "STILL_PHOTO_BOUND_MAX_PHOTO_FALSE_REFUSAL_FRAC",
+    _POLICY_DEFAULTS["STILL_PHOTO_BOUND_MAX_PHOTO_FALSE_REFUSAL_FRAC"],
+)
+REQUIRED_VIDEO_ACCEPTS = getattr(
+    _policy,
+    "STILL_PHOTO_BOUND_REQUIRED_VIDEO_ACCEPTS",
+    _POLICY_DEFAULTS["STILL_PHOTO_BOUND_REQUIRED_VIDEO_ACCEPTS"],
+)
+GROUND_TRUTH_CHANNEL = getattr(
+    _policy,
+    "STILL_PHOTO_BOUND_GROUND_TRUTH_CHANNEL",
+    _POLICY_DEFAULTS["STILL_PHOTO_BOUND_GROUND_TRUTH_CHANNEL"],
+)
+DWELL_WINDOW_SAFETY_FACTOR = getattr(
+    _policy,
+    "STILL_PHOTO_DWELL_WINDOW_SAFETY_FACTOR",
+    _POLICY_DEFAULTS["STILL_PHOTO_DWELL_WINDOW_SAFETY_FACTOR"],
+)
 
 # --- the second, owner-accepted label channel (2026-08-21) ---------------------------------
 # `tools/hinge_video_bound_auto.py` runs this same protocol unattended and derives each label
@@ -131,11 +154,15 @@ _CIRCULAR_POLICY_DEFAULTS = {
     "STILL_PHOTO_BOUND_CIRCULAR_ACCEPTANCE": "I_ACCEPT_CIRCULAR_AI_LABELED_STILL_PHOTO_BOUND",
 }
 CIRCULAR_GROUND_TRUTH_CHANNEL = getattr(
-    _policy, "STILL_PHOTO_BOUND_CIRCULAR_CHANNEL",
-    _CIRCULAR_POLICY_DEFAULTS["STILL_PHOTO_BOUND_CIRCULAR_CHANNEL"])
+    _policy,
+    "STILL_PHOTO_BOUND_CIRCULAR_CHANNEL",
+    _CIRCULAR_POLICY_DEFAULTS["STILL_PHOTO_BOUND_CIRCULAR_CHANNEL"],
+)
 CIRCULAR_ACCEPTANCE = getattr(
-    _policy, "STILL_PHOTO_BOUND_CIRCULAR_ACCEPTANCE",
-    _CIRCULAR_POLICY_DEFAULTS["STILL_PHOTO_BOUND_CIRCULAR_ACCEPTANCE"])
+    _policy,
+    "STILL_PHOTO_BOUND_CIRCULAR_ACCEPTANCE",
+    _CIRCULAR_POLICY_DEFAULTS["STILL_PHOTO_BOUND_CIRCULAR_ACCEPTANCE"],
+)
 # One short factual sentence, frozen into the artifact and printed by every report of a circular
 # campaign.  A reader who sees "0 video accepts" without it will read a false-accept bound that
 # is simply not there, so it names what the campaign DOES deliver in the same breath.
@@ -143,7 +170,8 @@ LABEL_BLIND_SPOT = (
     "AI-labeled channel: the label and the accept rule read the same pixels, so the video "
     "accept count is zero BY CONSTRUCTION and this campaign is not evidence against a static "
     "video whose mute control never rendered. Its real deliverables are max_video_exact_run_s "
-    "measured on playing videos, the still-photo false-refusal rate, and the persisted corpus.")
+    "measured on playing videos, the still-photo false-refusal rate, and the persisted corpus."
+)
 
 # Auto-mode owner rule: no timing parameter in this repository may be a fixed constant, because a
 # fixed cadence is itself a bot signature.  These are the SPANS the per-burst hazard draws from;
@@ -162,8 +190,10 @@ _LABELS = ("video", "photo", "unsure", "skip", "done")
 CARD_LABELS = ("video", "photo", "unsure", "skip", "written")
 _DENOMINATOR_LABELS = ("video", "photo")
 _LABEL_PROMPT = "card label? video/photo/unsure/skip/done > "
-_READY_PROMPT = ("park the next card fully in view, take your hands off the screen, then press "
-                 "Enter (or type done) > ")
+_READY_PROMPT = (
+    "park the next card fully in view, take your hands off the screen, then press "
+    "Enter (or type done) > "
+)
 
 _CALIBRATION_ROOT = Path("ops/calibration")
 _PACKAGE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+$")
@@ -171,10 +201,22 @@ _PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 _DEFAULT_PACKAGE = "co.hinge.app"
 
 BOUND_ARTIFACT_KEYS = {
-    "schema_version", "ground_truth_channel", "human_ground_truth", "device",
-    "hinge_version_name", "frame_size_px", "captured_at", "config_sha256", "video_cards",
-    "video_accepts", "photo_cards", "photo_false_refusals", "max_video_exact_run_s", "dwell",
-    "cards", "evidence_sha256",
+    "schema_version",
+    "ground_truth_channel",
+    "human_ground_truth",
+    "device",
+    "hinge_version_name",
+    "frame_size_px",
+    "captured_at",
+    "config_sha256",
+    "video_cards",
+    "video_accepts",
+    "photo_cards",
+    "photo_false_refusals",
+    "max_video_exact_run_s",
+    "dwell",
+    "cards",
+    "evidence_sha256",
 }
 BOUND_CARD_KEYS = {"card_id", "label", "frames", "longest_exact_run_s", "accept"}
 # Two keys the circular channel MUST carry and the owner channel must NOT.  The asymmetry is the
@@ -184,9 +226,19 @@ CIRCULAR_ARTIFACT_KEYS = {"accepted_circular_risk", "label_blind_spot"}
 # Config validation for this exact key set is implemented separately in operation_love/config.py.
 # Keep the tuple and the validator's expectation identical; a paste block that does not match is
 # a bug in one of the two, never something to paper over by hand-editing config.yaml.
-PASTE_KEYS = ("artifact_path", "artifact_sha256", "ground_truth_channel", "video_cards",
-              "video_accepts", "photo_cards", "photo_false_refusals", "max_video_exact_run_s",
-              "captured_at", "device", "hinge_version_name")
+PASTE_KEYS = (
+    "artifact_path",
+    "artifact_sha256",
+    "ground_truth_channel",
+    "video_cards",
+    "video_accepts",
+    "photo_cards",
+    "photo_false_refusals",
+    "max_video_exact_run_s",
+    "captured_at",
+    "device",
+    "hinge_version_name",
+)
 # Appended, in this order, on the circular channel only -- again matching config.py's optional
 # key.  The owner must re-state the acceptance in the file they paste, so binding a circular
 # bound to a running config can never be a silent consequence of re-running the tool.
@@ -217,7 +269,13 @@ CIRCULAR_PASTE_KEYS = ("accepted_circular_risk",)
 ADJUDICATION_FILENAME = "adjudications.json"
 ADJUDICATION_DOCUMENT_KEYS = {"adjudicator", "entries"}
 ADJUDICATION_ADJUDICATOR_KEYS = {"model", "process"}
-ADJUDICATION_ENTRY_KEYS = {"card_id", "from_label", "to_label", "frame_sha256s", "rationale"}
+ADJUDICATION_ENTRY_KEYS = {
+    "card_id",
+    "from_label",
+    "to_label",
+    "frame_sha256s",
+    "rationale",
+}
 LEGAL_ADJUDICATIONS = (("unsure", "photo"), ("unsure", "video"), ("photo", "video"))
 # Present in the artifact only when a campaign was actually adjudicated, so a campaign with no
 # adjudications.json produces byte-identical evidence to one measured before this existed.
@@ -241,12 +299,15 @@ class VideoBoundRefused(RuntimeError):
 # Digests, canonical JSON, repo-relative paths
 # =====================================================================================
 
+
 def _sha(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
 def _canonical(value) -> bytes:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()
+    return json.dumps(
+        value, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+    ).encode()
 
 
 def _inside_repo(path: Path, *, label: str) -> str:
@@ -262,7 +323,9 @@ def _read_json(path: Path, label: str):
         raw = path.read_bytes()
         value = json.loads(raw)
     except (OSError, json.JSONDecodeError) as exc:
-        raise VideoBoundRefused(f"could not read {label}: {type(exc).__name__}") from exc
+        raise VideoBoundRefused(
+            f"could not read {label}: {type(exc).__name__}"
+        ) from exc
     if not isinstance(value, dict):
         raise VideoBoundRefused(f"{label} must be a JSON object")
     return value, raw
@@ -272,6 +335,7 @@ def _read_json(path: Path, label: str):
 # Private, gitignored output
 # =====================================================================================
 
+
 def _ignored_by_git(path: Path) -> bool | None:
     """`git check-ignore`'s verdict for one path, or None when git cannot answer.
 
@@ -280,8 +344,12 @@ def _ignored_by_git(path: Path) -> bool | None:
     profile screenshots into a tracked directory.
     """
     try:
-        result = subprocess.run(["git", "check-ignore", "-q", str(path)],
-                                capture_output=True, timeout=10, check=False)
+        result = subprocess.run(
+            ["git", "check-ignore", "-q", str(path)],
+            capture_output=True,
+            timeout=10,
+            check=False,
+        )
     except (OSError, subprocess.SubprocessError):
         return None
     if result.returncode == 0:
@@ -305,17 +373,20 @@ def _private_out_dir(raw: str | None, *, prefix: str) -> Path:
         raise VideoBoundRefused(
             f"--out must stay under the gitignored {root}; every frame here is a real person's "
             f"dating profile and cannot be written to a tracked or external directory "
-            f"(got {out_dir})") from exc
+            f"(got {out_dir})"
+        ) from exc
     if _ignored_by_git(out_dir) is False:
         raise VideoBoundRefused(
             f"git does not ignore {out_dir}; refusing to write private profile frames to a "
-            "path that would be committable. Restore the ops/calibration/ rule in .gitignore.")
+            "path that would be committable. Restore the ops/calibration/ rule in .gitignore."
+        )
     if out_dir.exists() and not out_dir.is_dir():
         raise VideoBoundRefused(f"output {out_dir} exists and is not a directory")
     if out_dir.exists() and any(out_dir.iterdir()):
         raise VideoBoundRefused(
             f"output directory {out_dir} already exists and is not empty; use a fresh directory "
-            "so two campaigns cannot be merged into one bound")
+            "so two campaigns cannot be merged into one bound"
+        )
     ensure_private_dir(out_dir)
     return out_dir
 
@@ -327,7 +398,8 @@ def _existing_campaign_dir(raw: str) -> Path:
         campaign.relative_to(root)
     except ValueError as exc:
         raise VideoBoundRefused(
-            f"campaign directory must stay under private {root}; got {campaign}") from exc
+            f"campaign directory must stay under private {root}; got {campaign}"
+        ) from exc
     if not campaign.is_dir():
         raise VideoBoundRefused(f"campaign directory {campaign} does not exist")
     return campaign
@@ -341,6 +413,7 @@ def _existing_campaign_dir(raw: str) -> Path:
 # screencap -p`, `devices`, and one `shell dumpsys package ... | grep versionName`.
 # =====================================================================================
 
+
 def _load_config_mapping(path: str | None) -> tuple[dict, bytes | None]:
     """Read config.yaml as plain data.
 
@@ -353,7 +426,9 @@ def _load_config_mapping(path: str | None) -> tuple[dict, bytes | None]:
         raw = Path(path).read_bytes()
         value = yaml.safe_load(raw) or {}
     except (OSError, yaml.YAMLError) as exc:
-        raise VideoBoundRefused(f"could not read config {path}: {type(exc).__name__}") from exc
+        raise VideoBoundRefused(
+            f"could not read config {path}: {type(exc).__name__}"
+        ) from exc
     if not isinstance(value, dict):
         raise VideoBoundRefused(f"config {path} must be a mapping")
     return value, raw
@@ -371,10 +446,13 @@ def _ready_devices(adb_path: str) -> list[str]:
     from operation_love.drivers.adb import parse_devices_output
 
     try:
-        result = subprocess.run([adb_path, "devices"], capture_output=True, timeout=15,
-                                check=False)
+        result = subprocess.run(
+            [adb_path, "devices"], capture_output=True, timeout=15, check=False
+        )
     except FileNotFoundError as exc:
-        raise VideoBoundRefused(f"adb binary not found ({adb_path!r} not on PATH)") from exc
+        raise VideoBoundRefused(
+            f"adb binary not found ({adb_path!r} not on PATH)"
+        ) from exc
     except subprocess.SubprocessError as exc:
         raise VideoBoundRefused(f"`adb devices` failed: {type(exc).__name__}") from exc
     return parse_devices_output(result.stdout.decode("utf-8", errors="replace"))
@@ -391,29 +469,37 @@ def _resolve_serial(app_cfg: dict, override: str | None) -> tuple[str, str]:
     if not serial:
         raise VideoBoundRefused(
             "apps.hinge.serial is not configured and --serial was not given; a bound measured "
-            "without a fixed serial could silently be attributed to the wrong device")
+            "without a fixed serial could silently be attributed to the wrong device"
+        )
     ready = _ready_devices(adb_path)
     if len(ready) > 1 and not override:
         raise VideoBoundRefused(
             f"multiple ADB devices are ready {ready!r}; pass --serial to name the one phone this "
-            "campaign is measured on")
+            "campaign is measured on"
+        )
     if serial not in ready:
         raise VideoBoundRefused(
-            f"requested serial {serial!r} is not among the ready ADB devices {ready!r}")
+            f"requested serial {serial!r} is not among the ready ADB devices {ready!r}"
+        )
     return serial, adb_path
 
 
 def _screencap(serial: str, adb_path: str, *, timeout: float = 30.0) -> bytes:
     """One read-only frame. This is the only frame source in the entire module."""
     try:
-        result = subprocess.run([adb_path, "-s", serial, "exec-out", "screencap", "-p"],
-                                capture_output=True, timeout=timeout, check=False)
+        result = subprocess.run(
+            [adb_path, "-s", serial, "exec-out", "screencap", "-p"],
+            capture_output=True,
+            timeout=timeout,
+            check=False,
+        )
     except subprocess.SubprocessError as exc:
         raise VideoBoundRefused(f"screencap failed: {type(exc).__name__}") from exc
     if result.returncode != 0 or not result.stdout.startswith(_PNG_MAGIC):
         raise VideoBoundRefused(
             "screencap did not return a PNG frame "
-            f"(rc={result.returncode}, {len(result.stdout)} bytes)")
+            f"(rc={result.returncode}, {len(result.stdout)} bytes)"
+        )
     return result.stdout
 
 
@@ -429,23 +515,37 @@ def _device_version_name(serial: str, adb_path: str, package: str) -> str | None
     device vocabulary is three raw adb commands and no driver session (see the module docstring).
     """
     if not _PACKAGE_RE.match(package):
-        raise VideoBoundRefused(f"apps.hinge.package {package!r} is not an Android package id")
+        raise VideoBoundRefused(
+            f"apps.hinge.package {package!r} is not an Android package id"
+        )
     try:
         result = subprocess.run(
-            [adb_path, "-s", serial, "shell", f"dumpsys package {package} | grep versionName"],
-            capture_output=True, timeout=30, check=False)
+            [
+                adb_path,
+                "-s",
+                serial,
+                "shell",
+                f"dumpsys package {package} | grep versionName",
+            ],
+            capture_output=True,
+            timeout=30,
+            check=False,
+        )
     except (OSError, subprocess.SubprocessError):
         return None
     if result.returncode != 0:
         return None
-    match = re.search(r"(?m)^\s*versionName=(\S+)\s*$",
-                      result.stdout.decode("utf-8", errors="replace"))
+    match = re.search(
+        r"(?m)^\s*versionName=(\S+)\s*$",
+        result.stdout.decode("utf-8", errors="replace"),
+    )
     return match.group(1) if match else None
 
 
 # =====================================================================================
 # Frames: decoding, the content band, byte-exact runs
 # =====================================================================================
+
 
 def _decode(frame: bytes):
     import cv2
@@ -469,7 +569,9 @@ def _effective_content_band(app_cfg: dict, override: str | None) -> tuple[float,
         try:
             band = tuple(float(part) for part in parts)
         except ValueError as exc:
-            raise VideoBoundRefused("--band must be two comma-separated fractions y0,y1") from exc
+            raise VideoBoundRefused(
+                "--band must be two comma-separated fractions y0,y1"
+            ) from exc
     else:
         configured = app_cfg.get("content_band")
         if configured is None:
@@ -481,9 +583,12 @@ def _effective_content_band(app_cfg: dict, override: str | None) -> tuple[float,
                 band = tuple(float(part) for part in configured)
             except (TypeError, ValueError) as exc:
                 raise VideoBoundRefused(
-                    "apps.hinge.content_band must be two numeric fractions") from exc
+                    "apps.hinge.content_band must be two numeric fractions"
+                ) from exc
     if len(band) != 2 or not 0.0 <= band[0] < band[1] <= 1.0:
-        raise VideoBoundRefused(f"content_band must be ordered fractions in [0,1]; got {band!r}")
+        raise VideoBoundRefused(
+            f"content_band must be ordered fractions in [0,1]; got {band!r}"
+        )
     return band
 
 
@@ -597,7 +702,9 @@ def _unchanged_row_spans(changed) -> list[tuple[int, int]]:
     return spans
 
 
-def _mute_observation(frame: bytes, band: tuple[float, float], size: tuple[int, int]) -> dict:
+def _mute_observation(
+    frame: bytes, band: tuple[float, float], size: tuple[int, int]
+) -> dict:
     """Run the shipped mute matcher and record its score. OBSERVATIONAL METADATA ONLY.
 
     This is never a label and must never become one: section 2 objection 1 is that a corpus
@@ -610,13 +717,17 @@ def _mute_observation(frame: bytes, band: tuple[float, float], size: tuple[int, 
     width, height = size
     rect = (0, round(band[0] * height), round(0.30 * width), round(band[1] * height))
     screened, score = HingeDriver._match_video_mute(frame, rect)
-    return {"screened": bool(screened), "score": None if score is None else float(score),
-            "observational_only": True}
+    return {
+        "screened": bool(screened),
+        "score": None if score is None else float(score),
+        "observational_only": True,
+    }
 
 
 # =====================================================================================
 # Hazard-randomized burst planning (auto-mode owner rule)
 # =====================================================================================
+
 
 @dataclass(frozen=True)
 class BurstPlan:
@@ -656,8 +767,10 @@ def plan_burst(rnd: random.Random) -> BurstPlan:
 # The capture loop
 # =====================================================================================
 
-def settle(capture_fn, *, sleep_fn, rnd: random.Random,
-           max_reads: int | None = None) -> tuple[bytes, bool, int]:
+
+def settle(
+    capture_fn, *, sleep_fn, rnd: random.Random, max_reads: int | None = None
+) -> tuple[bytes, bool, int]:
     """Read frames until two consecutive whole-frame screencaps come back byte-identical.
 
     Returns the settled frame, whether it actually settled, and how many reads it took.  The
@@ -676,7 +789,9 @@ def settle(capture_fn, *, sleep_fn, rnd: random.Random,
     return previous, False, max_reads
 
 
-def record_burst(capture_fn, plan: BurstPlan, *, sleep_fn, clock) -> list[tuple[bytes, float]]:
+def record_burst(
+    capture_fn, plan: BurstPlan, *, sleep_fn, clock
+) -> list[tuple[bytes, float]]:
     """Capture the planned dwell burst, stamping every frame with a monotonic time.
 
     The burst is complete and returned before its caller prints a single character of the label
@@ -714,8 +829,13 @@ BURST_SPAN_TOLERANCE_S = 0.5
 CARD_SPAN_OVERRUN_TOLERANCE_S = 5.0
 
 
-def record_spanning_burst(capture_fn, plan: BurstPlan, *, sleep_fn, clock,
-                          ) -> list[tuple[bytes, float]]:
+def record_spanning_burst(
+    capture_fn,
+    plan: BurstPlan,
+    *,
+    sleep_fn,
+    clock,
+) -> list[tuple[bytes, float]]:
     """Capture the planned burst on ABSOLUTE deadlines, so it cannot compress.
 
     `record_burst` sizes each sleep from the previous frame's stamp, which is correct arithmetic
@@ -756,7 +876,9 @@ def burst_span_shortfall(frames: list[tuple[bytes, float]], plan: BurstPlan) -> 
 
 def prompt_label(input_fn, *, print_fn=print) -> str:
     """Read one owner label. Garbage re-prompts; EOF ends the session as an abort."""
-    print_fn("\nTap the card and watch it. Does it PLAY (motion, sound, or a scrubber)?")
+    print_fn(
+        "\nTap the card and watch it. Does it PLAY (motion, sound, or a scrubber)?"
+    )
     while True:
         try:
             answer = input_fn(_LABEL_PROMPT)
@@ -768,15 +890,29 @@ def prompt_label(input_fn, *, print_fn=print) -> str:
         print_fn(f"  Invalid label. Answer exactly one of {'/'.join(_LABELS)}.")
 
 
-def run_capture(*, out_dir: Path, profiles: int, serial: str, adb_path: str,
-                band: tuple[float, float], package: str, config_sha256: str | None,
-                capture_fn=None, input_fn=input, print_fn=print, sleep_fn=time.sleep,
-                clock=time.monotonic, rnd: random.Random | None = None) -> dict:
+def run_capture(
+    *,
+    out_dir: Path,
+    profiles: int,
+    serial: str,
+    adb_path: str,
+    band: tuple[float, float],
+    package: str,
+    config_sha256: str | None,
+    capture_fn=None,
+    input_fn=input,
+    print_fn=print,
+    sleep_fn=time.sleep,
+    clock=time.monotonic,
+    rnd: random.Random | None = None,
+) -> dict:
     """Run the owner-labeled corpus campaign and write manifest.json."""
     rnd = rnd or random.Random()
     if capture_fn is None:
+
         def capture_fn():
             return _screencap(serial, adb_path)
+
     cards_dir = ensure_private_dir(out_dir / "cards")
     version_name = _device_version_name(serial, adb_path, package)
     frame_size: list[int] | None = None
@@ -789,7 +925,8 @@ def run_capture(*, out_dir: Path, profiles: int, serial: str, adb_path: str,
         "frames and asks.\nFor each card: park it in view hands-off, let the harness record its "
         "dwell burst, and only THEN tap it\nto see whether it plays. The label you type is the "
         "only ground truth in this campaign; the mute\nmatcher's scores are recorded beside it "
-        "as observation, never as a label.\n")
+        "as observation, never as a label.\n"
+    )
 
     # An interrupted campaign must not lose an hour of owner labeling: whatever was already
     # recorded is written out as an explicitly INCOMPLETE manifest (which `measure` refuses)
@@ -807,13 +944,19 @@ def run_capture(*, out_dir: Path, profiles: int, serial: str, adb_path: str,
                 break
             frame, settled, reads = settle(capture_fn, sleep_fn=sleep_fn, rnd=rnd)
             if not settled:
-                print_fn(f"  note: the screen never produced two identical frames in {reads} reads; "
-                         "recording the burst anyway and marking settled=false.")
+                print_fn(
+                    f"  note: the screen never produced two identical frames in {reads} reads; "
+                    "recording the burst anyway and marking settled=false."
+                )
             if frame_size is None:
                 frame_size = list(_frame_size(frame))
             plan = plan_burst(rnd)
-            print_fn(f"  recording {plan.frames} frames over ~{plan.window_s:.1f}s. Hands off.")
-            burst = record_spanning_burst(capture_fn, plan, sleep_fn=sleep_fn, clock=clock)
+            print_fn(
+                f"  recording {plan.frames} frames over ~{plan.window_s:.1f}s. Hands off."
+            )
+            burst = record_spanning_burst(
+                capture_fn, plan, sleep_fn=sleep_fn, clock=clock
+            )
             shortfall = burst_span_shortfall(burst, plan)
             if shortfall > BURST_SPAN_TOLERANCE_S:
                 # The 2026-08-21 failure, refused at the card rather than at the campaign: this
@@ -824,10 +967,12 @@ def run_capture(*, out_dir: Path, profiles: int, serial: str, adb_path: str,
                 # production dwell will meet, and a compressed one reaching `measure` licenses a
                 # dwell window nothing was ever watched for.
                 short_bursts += 1
-                print_fn(f"  REFUSED card_{ordinal:04d}: the burst spanned "
-                         f"{plan.window_s - shortfall:.2f}s of its drawn {plan.window_s:.2f}s "
-                         f"window (short by {shortfall:.2f}s, tolerance "
-                         f"{BURST_SPAN_TOLERANCE_S:.2f}s). Nothing recorded; park the next card.")
+                print_fn(
+                    f"  REFUSED card_{ordinal:04d}: the burst spanned "
+                    f"{plan.window_s - shortfall:.2f}s of its drawn {plan.window_s:.2f}s "
+                    f"window (short by {shortfall:.2f}s, tolerance "
+                    f"{BURST_SPAN_TOLERANCE_S:.2f}s). Nothing recorded; park the next card."
+                )
                 continue
             burst_completed_t = clock()
 
@@ -839,22 +984,35 @@ def run_capture(*, out_dir: Path, profiles: int, serial: str, adb_path: str,
             for index, (payload, stamp) in enumerate(burst):
                 name = f"frame_{index:03d}.png"
                 atomic_write_private_bytes(card_dir / name, payload, parent=card_dir)
-                frames_meta.append({"path": f"cards/{card_id}/{name}", "sha256": _sha(payload),
-                                    "t": round(stamp - origin, 6)})
-                mute_meta.append(_mute_observation(payload, band, (frame_size[0], frame_size[1])))
+                frames_meta.append(
+                    {
+                        "path": f"cards/{card_id}/{name}",
+                        "sha256": _sha(payload),
+                        "t": round(stamp - origin, 6),
+                    }
+                )
+                mute_meta.append(
+                    _mute_observation(payload, band, (frame_size[0], frame_size[1]))
+                )
 
             # The prompt is printed only now, with the burst already closed on disk.
             label_prompted_t = clock()
             label = prompt_label(input_fn, print_fn=print_fn)
             recorded = "skip" if label == "done" else label
-            cards.append({
-                "card_id": card_id, "label": recorded, "settled": settled, "settle_reads": reads,
-                "planned_frames": plan.frames, "planned_window_s": round(plan.window_s, 6),
-                "frames": frames_meta,
-                "burst_completed_t": round(burst_completed_t - origin, 6),
-                "label_prompted_t": round(label_prompted_t - origin, 6),
-                "mute_matcher_observations": mute_meta,
-            })
+            cards.append(
+                {
+                    "card_id": card_id,
+                    "label": recorded,
+                    "settled": settled,
+                    "settle_reads": reads,
+                    "planned_frames": plan.frames,
+                    "planned_window_s": round(plan.window_s, 6),
+                    "frames": frames_meta,
+                    "burst_completed_t": round(burst_completed_t - origin, 6),
+                    "label_prompted_t": round(label_prompted_t - origin, 6),
+                    "mute_matcher_observations": mute_meta,
+                }
+            )
             print_fn(f"  recorded {card_id} as {recorded} ({len(frames_meta)} frames).")
             if label == "done":
                 ended = "done_at_label_prompt"
@@ -864,14 +1022,19 @@ def run_capture(*, out_dir: Path, profiles: int, serial: str, adb_path: str,
         aborted = exc
 
     manifest = {
-        "schema_version": _MANIFEST_SCHEMA_VERSION, "kind": _CAMPAIGN_KIND,
-        "tool_version": _TOOL_VERSION, "ground_truth_channel": GROUND_TRUTH_CHANNEL,
+        "schema_version": _MANIFEST_SCHEMA_VERSION,
+        "kind": _CAMPAIGN_KIND,
+        "tool_version": _TOOL_VERSION,
+        "ground_truth_channel": GROUND_TRUTH_CHANNEL,
         "human_ground_truth": True,
         "mute_matcher_is_observational_not_ground_truth": True,
-        "completed": ended in ("profiles_reached", "done_at_label_prompt",
-                               "done_at_ready_prompt"),
-        "ended": ended, "device": serial, "hinge_version_name": version_name,
-        "frame_size_px": frame_size, "content_band": [band[0], band[1]],
+        "completed": ended
+        in ("profiles_reached", "done_at_label_prompt", "done_at_ready_prompt"),
+        "ended": ended,
+        "device": serial,
+        "hinge_version_name": version_name,
+        "frame_size_px": frame_size,
+        "content_band": [band[0], band[1]],
         "config_sha256": config_sha256,
         # Cards the sitting threw away because their burst did not span its drawn window. A
         # dropped card leaves no other trace, and "how often did this phone fail to hold a
@@ -880,9 +1043,11 @@ def run_capture(*, out_dir: Path, profiles: int, serial: str, adb_path: str,
         "captured_at": datetime.now(timezone.utc).isoformat(),
         "cards": cards,
     }
-    atomic_write_private_text(out_dir / "manifest.json",
-                              json.dumps(manifest, indent=2, sort_keys=True) + "\n",
-                              parent=out_dir)
+    atomic_write_private_text(
+        out_dir / "manifest.json",
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+        parent=out_dir,
+    )
     if aborted is not None:
         raise aborted
     return manifest
@@ -892,20 +1057,34 @@ def run_capture(*, out_dir: Path, profiles: int, serial: str, adb_path: str,
 # hold-test: the cheap falsifier (protocol step 5)
 # =====================================================================================
 
-def run_hold_test(*, out_dir: Path, seconds: float, interval: float,
-                  band: tuple[float, float], serial: str, adb_path: str,
-                  capture_fn=None, print_fn=print, sleep_fn=time.sleep,
-                  clock=time.monotonic) -> dict:
+
+def run_hold_test(
+    *,
+    out_dir: Path,
+    seconds: float,
+    interval: float,
+    band: tuple[float, float],
+    serial: str,
+    adb_path: str,
+    capture_fn=None,
+    print_fn=print,
+    sleep_fn=time.sleep,
+    clock=time.monotonic,
+) -> dict:
     """Screencap a parked, known video hands-off and report its byte-exact runs."""
     if capture_fn is None:
+
         def capture_fn():
             return _screencap(serial, adb_path)
+
     if seconds <= 0 or interval <= 0:
         raise VideoBoundRefused("--seconds and --interval must both be positive")
     frames_dir = ensure_private_dir(out_dir / "frames")
-    print_fn(f"Park ONE KNOWN VIDEO fully in view and take your hands off the screen.\n"
-             f"Reading every {interval:.2f}s for {seconds:.0f}s. This tool sends nothing to the "
-             "phone.\n")
+    print_fn(
+        f"Park ONE KNOWN VIDEO fully in view and take your hands off the screen.\n"
+        f"Reading every {interval:.2f}s for {seconds:.0f}s. This tool sends nothing to the "
+        "phone.\n"
+    )
     payloads: list[bytes] = []
     times: list[float] = []
     meta: list[dict] = []
@@ -921,8 +1100,13 @@ def run_hold_test(*, out_dir: Path, seconds: float, interval: float,
         atomic_write_private_bytes(frames_dir / name, payload, parent=frames_dir)
         payloads.append(payload)
         times.append(stamp - origin)
-        meta.append({"path": f"frames/{name}", "sha256": _sha(payload),
-                     "t": round(stamp - origin, 6)})
+        meta.append(
+            {
+                "path": f"frames/{name}",
+                "sha256": _sha(payload),
+                "t": round(stamp - origin, 6),
+            }
+        )
         index += 1
         elapsed = clock() - stamp
         sleep_fn(max(0.0, interval - elapsed))
@@ -940,72 +1124,108 @@ def run_hold_test(*, out_dir: Path, seconds: float, interval: float,
         block_bands = [view[r0:r1] for view in bands]
         block_pairs = _exact_pairs(block_bands)
         run_s, run_frames = _longest_exact_run_s(times, block_pairs)
-        blocks.append({"rows": [r0, r1], "longest_exact_run_s": round(run_s, 6),
-                       "longest_exact_run_frames": run_frames,
-                       "exact_pairs": sum(1 for pair in block_pairs if pair)})
+        blocks.append(
+            {
+                "rows": [r0, r1],
+                "longest_exact_run_s": round(run_s, 6),
+                "longest_exact_run_frames": run_frames,
+                "exact_pairs": sum(1 for pair in block_pairs if pair),
+            }
+        )
     unchanged_spans = _unchanged_row_spans(changed)
-    longest_unchanged = max(unchanged_spans, key=lambda span: span[1] - span[0], default=None)
+    longest_unchanged = max(
+        unchanged_spans, key=lambda span: span[1] - span[0], default=None
+    )
 
     report = {
-        "schema_version": _MANIFEST_SCHEMA_VERSION, "kind": _HOLD_TEST_KIND,
-        "tool_version": _TOOL_VERSION, "device": serial, "content_band": [band[0], band[1]],
-        "seconds": seconds, "interval": interval, "frame_count": len(payloads),
+        "schema_version": _MANIFEST_SCHEMA_VERSION,
+        "kind": _HOLD_TEST_KIND,
+        "tool_version": _TOOL_VERSION,
+        "device": serial,
+        "content_band": [band[0], band[1]],
+        "seconds": seconds,
+        "interval": interval,
+        "frame_count": len(payloads),
         "frames": meta,
         "band_longest_exact_run_s": round(whole_run_s, 6),
         "band_longest_exact_run_frames": whole_run_frames,
-        "band_exact_pairs": exact_pairs, "pair_count": len(pairs),
+        "band_exact_pairs": exact_pairs,
+        "pair_count": len(pairs),
         "changed_row_blocks": blocks,
         "band_rows": int(bands[0].shape[0]),
         "unchanged_row_count": sum(span[1] - span[0] for span in unchanged_spans),
-        "longest_unchanged_row_span": (None if longest_unchanged is None
-                                       else [longest_unchanged[0], longest_unchanged[1]]),
+        "longest_unchanged_row_span": (
+            None
+            if longest_unchanged is None
+            else [longest_unchanged[0], longest_unchanged[1]]
+        ),
         "captured_at": datetime.now(timezone.utc).isoformat(),
     }
-    atomic_write_private_text(out_dir / "holdtest.json",
-                              json.dumps(report, indent=2, sort_keys=True) + "\n",
-                              parent=out_dir)
+    atomic_write_private_text(
+        out_dir / "holdtest.json",
+        json.dumps(report, indent=2, sort_keys=True) + "\n",
+        parent=out_dir,
+    )
     print_hold_report(report, print_fn=print_fn)
     return report
 
 
 def print_hold_report(report: dict, *, print_fn=print) -> None:
-    print_fn(f"\nframes {report['frame_count']} over {report['seconds']:.0f}s "
-             f"({report['pair_count']} consecutive pairs), band "
-             f"{report['content_band'][0]}..{report['content_band'][1]}")
-    print_fn(f"whole band: {report['band_exact_pairs']} byte-exact pairs, longest exact run "
-             f"{report['band_longest_exact_run_s']:.3f}s "
-             f"({report['band_longest_exact_run_frames']} frames)")
+    print_fn(
+        f"\nframes {report['frame_count']} over {report['seconds']:.0f}s "
+        f"({report['pair_count']} consecutive pairs), band "
+        f"{report['content_band'][0]}..{report['content_band'][1]}"
+    )
+    print_fn(
+        f"whole band: {report['band_exact_pairs']} byte-exact pairs, longest exact run "
+        f"{report['band_longest_exact_run_s']:.3f}s "
+        f"({report['band_longest_exact_run_frames']} frames)"
+    )
     blocks = report["changed_row_blocks"]
     print_fn(f"changed-pixel row blocks (8-connected): {len(blocks)}")
     for block in sorted(blocks, key=lambda b: -b["longest_exact_run_s"])[:5]:
-        print_fn(f"  rows {block['rows'][0]}..{block['rows'][1]}: longest exact run "
-                 f"{block['longest_exact_run_s']:.3f}s "
-                 f"({block['longest_exact_run_frames']} frames, "
-                 f"{block['exact_pairs']} exact pairs)")
+        print_fn(
+            f"  rows {block['rows'][0]}..{block['rows'][1]}: longest exact run "
+            f"{block['longest_exact_run_s']:.3f}s "
+            f"({block['longest_exact_run_frames']} frames, "
+            f"{block['exact_pairs']} exact pairs)"
+        )
     span = report["longest_unchanged_row_span"]
-    print_fn(f"band rows that never changed: {report['unchanged_row_count']} of "
-             f"{report['band_rows']}"
-             + ("" if span is None else f" (longest contiguous span rows {span[0]}..{span[1]})"))
+    print_fn(
+        f"band rows that never changed: {report['unchanged_row_count']} of "
+        f"{report['band_rows']}"
+        + (
+            ""
+            if span is None
+            else f" (longest contiguous span rows {span[0]}..{span[1]})"
+        )
+    )
     if report["band_exact_pairs"]:
         print_fn(
             "\nVERDICT: a known video produced consecutive byte-exact frames over the FULL "
             "content band.\nPer ops/STILL-PHOTO-DISCRIMINATOR.md section 4 step 5 the dwell "
             "window W must grow past this\nrun with margin, or the dwell design is abandoned "
-            "honestly. Do not patch around this result.")
+            "honestly. Do not patch around this result."
+        )
     else:
-        print_fn("\nVERDICT: no consecutive byte-exact pair over the full content band. The "
-                 "dwell falsifier did\nnot fire; proceed to the corpus campaign, which is what "
-                 "actually bounds the false-accept rate.")
+        print_fn(
+            "\nVERDICT: no consecutive byte-exact pair over the full content band. The "
+            "dwell falsifier did\nnot fire; proceed to the corpus campaign, which is what "
+            "actually bounds the false-accept rate."
+        )
     if blocks and max(block["exact_pairs"] for block in blocks):
-        print_fn("NOTE: at least one changed-pixel row block held byte-exact across consecutive "
-                 "frames. Region-\nlocal stillness inside a moving band is exactly what a "
-                 "whole-band verdict hides; read the block\ntable above before trusting the "
-                 "whole-band line.")
+        print_fn(
+            "NOTE: at least one changed-pixel row block held byte-exact across consecutive "
+            "frames. Region-\nlocal stillness inside a moving band is exactly what a "
+            "whole-band verdict hides; read the block\ntable above before trusting the "
+            "whole-band line."
+        )
 
 
 # =====================================================================================
 # measure: the offline bound
 # =====================================================================================
+
 
 @dataclass(frozen=True)
 class CardStat:
@@ -1050,20 +1270,24 @@ class BoundResult:
 # Offline adjudication (optional <campaign>/adjudications.json)
 # =====================================================================================
 
+
 def _adjudication_entry(entry, position: int, cards_by_id: dict, claimed: set) -> dict:
     """Validate one entry against the MANIFEST and return it canonicalised."""
     where = f"adjudications.json entry {position}"
     if not isinstance(entry, dict) or set(entry) != ADJUDICATION_ENTRY_KEYS:
         raise VideoBoundRefused(
-            f"{where} must carry exactly {sorted(ADJUDICATION_ENTRY_KEYS)}")
+            f"{where} must carry exactly {sorted(ADJUDICATION_ENTRY_KEYS)}"
+        )
     card_id = entry["card_id"]
     if not isinstance(card_id, str) or card_id not in cards_by_id:
         raise VideoBoundRefused(
             f"{where} names card {card_id!r}, which this campaign does not contain; an "
-            "adjudication may re-label a captured card and may never add one")
+            "adjudication may re-label a captured card and may never add one"
+        )
     if card_id in claimed:
         raise VideoBoundRefused(
-            f"{where} is a second verdict for card {card_id}; one card gets one adjudication")
+            f"{where} is a second verdict for card {card_id}; one card gets one adjudication"
+        )
     card = cards_by_id[card_id]
     from_label, to_label = entry["from_label"], entry["to_label"]
     current = card.get("label")
@@ -1071,7 +1295,8 @@ def _adjudication_entry(entry, position: int, cards_by_id: dict, claimed: set) -
         raise VideoBoundRefused(
             f"{where} claims card {card_id} is currently labelled {from_label!r}, but the "
             f"campaign labelled it {current!r}; the adjudicator was shown a different card "
-            "than the one this manifest records")
+            "than the one this manifest records"
+        )
     if (from_label, to_label) not in LEGAL_ADJUDICATIONS:
         raise VideoBoundRefused(
             f"{where} asks for {from_label!r} -> {to_label!r}, which is not one of the legal "
@@ -1079,27 +1304,41 @@ def _adjudication_entry(entry, position: int, cards_by_id: dict, claimed: set) -
             "deliberately one-way: it may move a card toward caution and never away from it, "
             "because the rule being applied (no mute icon means picture) is the inference "
             "ops/STILL-PHOTO-DISCRIMINATOR.md section 2 objection 2 refuted -- the control "
-            "auto-hides, and proven videos score 0.267-0.305 before it renders")
+            "auto-hides, and proven videos score 0.267-0.305 before it renders"
+        )
     digests = entry["frame_sha256s"]
-    if (not isinstance(digests, list) or not digests
-            or not all(isinstance(digest, str) and digest for digest in digests)):
+    if (
+        not isinstance(digests, list)
+        or not digests
+        or not all(isinstance(digest, str) and digest for digest in digests)
+    ):
         raise VideoBoundRefused(
-            f"{where} must cite at least one frame sha256 the verdict was formed from")
+            f"{where} must cite at least one frame sha256 the verdict was formed from"
+        )
     # Checked against the MANIFEST's recorded digests, not against whatever is on disk: the
     # filesystem is re-verified separately by `_card_stat`, and an adjudication that cited a
     # frame only present on disk would be evidence about bytes this campaign never recorded.
-    recorded = {frame.get("sha256") for frame in (card.get("frames") or [])
-                if isinstance(frame, dict)}
+    recorded = {
+        frame.get("sha256")
+        for frame in (card.get("frames") or [])
+        if isinstance(frame, dict)
+    }
     unknown = [digest for digest in digests if digest not in recorded]
     if unknown:
         raise VideoBoundRefused(
             f"{where} cites frame sha256 {unknown[0]} which is not among card {card_id}'s "
-            "recorded frames")
+            "recorded frames"
+        )
     rationale = entry["rationale"]
     if not isinstance(rationale, str) or not rationale.strip():
         raise VideoBoundRefused(f"{where} must carry a nonempty rationale")
-    return {"card_id": card_id, "from_label": from_label, "to_label": to_label,
-            "frame_sha256s": list(digests), "rationale": rationale}
+    return {
+        "card_id": card_id,
+        "from_label": from_label,
+        "to_label": to_label,
+        "frame_sha256s": list(digests),
+        "rationale": rationale,
+    }
 
 
 def load_adjudications(campaign: Path, manifest: dict) -> dict | None:
@@ -1120,40 +1359,56 @@ def load_adjudications(campaign: Path, manifest: dict) -> dict | None:
         raise VideoBoundRefused(
             f"{ADJUDICATION_FILENAME} cannot be applied to a {GROUND_TRUTH_CHANNEL!r} campaign: "
             "its labels are the owner's own tap-to-play verdicts, and re-labelling any of them "
-            "would leave the artifact claiming human ground truth it no longer has")
+            "would leave the artifact claiming human ground truth it no longer has"
+        )
     document, _raw = _read_json(path, ADJUDICATION_FILENAME)
     if set(document) != ADJUDICATION_DOCUMENT_KEYS:
         raise VideoBoundRefused(
-            f"{ADJUDICATION_FILENAME} must carry exactly {sorted(ADJUDICATION_DOCUMENT_KEYS)}")
+            f"{ADJUDICATION_FILENAME} must carry exactly {sorted(ADJUDICATION_DOCUMENT_KEYS)}"
+        )
     adjudicator = document["adjudicator"]
-    if (not isinstance(adjudicator, dict)
-            or set(adjudicator) != ADJUDICATION_ADJUDICATOR_KEYS
-            or not all(isinstance(adjudicator[key], str) and adjudicator[key].strip()
-                       for key in ADJUDICATION_ADJUDICATOR_KEYS)):
+    if (
+        not isinstance(adjudicator, dict)
+        or set(adjudicator) != ADJUDICATION_ADJUDICATOR_KEYS
+        or not all(
+            isinstance(adjudicator[key], str) and adjudicator[key].strip()
+            for key in ADJUDICATION_ADJUDICATOR_KEYS
+        )
+    ):
         raise VideoBoundRefused(
             f"{ADJUDICATION_FILENAME} must name its adjudicator with nonempty "
-            f"{sorted(ADJUDICATION_ADJUDICATOR_KEYS)}; anonymous re-labelling is not evidence")
+            f"{sorted(ADJUDICATION_ADJUDICATOR_KEYS)}; anonymous re-labelling is not evidence"
+        )
     entries = document["entries"]
     if not isinstance(entries, list) or not entries:
         raise VideoBoundRefused(
             f"{ADJUDICATION_FILENAME} carries no entries; delete the file rather than binding "
-            "an empty verdict into the artifact digest")
-    cards_by_id = {card.get("card_id"): card for card in manifest.get("cards") or []
-                   if isinstance(card, dict)}
+            "an empty verdict into the artifact digest"
+        )
+    cards_by_id = {
+        card.get("card_id"): card
+        for card in manifest.get("cards") or []
+        if isinstance(card, dict)
+    }
     claimed: set = set()
     applied = []
     for position, entry in enumerate(entries):
         record = _adjudication_entry(entry, position, cards_by_id, claimed)
         claimed.add(record["card_id"])
         applied.append(record)
-    return {"adjudicator": {key: adjudicator[key] for key in
-                            sorted(ADJUDICATION_ADJUDICATOR_KEYS)},
-            "entries": applied}
+    return {
+        "adjudicator": {
+            key: adjudicator[key] for key in sorted(ADJUDICATION_ADJUDICATOR_KEYS)
+        },
+        "entries": applied,
+    }
 
 
 def _relabelled(manifest: dict, adjudications: dict) -> dict:
     """A copy of the manifest with the adjudicated cards' labels rewritten. Never mutates."""
-    verdicts = {entry["card_id"]: entry["to_label"] for entry in adjudications["entries"]}
+    verdicts = {
+        entry["card_id"]: entry["to_label"] for entry in adjudications["entries"]
+    }
     cards = []
     for card in manifest["cards"]:
         if isinstance(card, dict) and card.get("card_id") in verdicts:
@@ -1219,8 +1474,9 @@ class CampaignSource:
     dropped_trailing_cards: int
 
 
-def _verified_stats(campaign: Path, cards: list, band: tuple[float, float], *,
-                    allow_trailing_drop: bool) -> tuple[list[CardStat], int]:
+def _verified_stats(
+    campaign: Path, cards: list, band: tuple[float, float], *, allow_trailing_drop: bool
+) -> tuple[list[CardStat], int]:
     """Verify every card end to end; return the proven ones and how many trailing were dropped.
 
     A campaign that halted can have been interrupted mid-write on its LAST card, which is a
@@ -1235,21 +1491,26 @@ def _verified_stats(campaign: Path, cards: list, band: tuple[float, float], *,
             outcomes.append(_card_stat(campaign, card, band))
         except VideoBoundRefused as exc:
             outcomes.append(exc)
-    failed = [index for index, outcome in enumerate(outcomes)
-              if isinstance(outcome, VideoBoundRefused)]
+    failed = [
+        index
+        for index, outcome in enumerate(outcomes)
+        if isinstance(outcome, VideoBoundRefused)
+    ]
     if not failed:
         return list(outcomes), 0
     first = failed[0]
     if not allow_trailing_drop:
         raise outcomes[first]
     if set(failed) != set(range(first, len(outcomes))):
-        intact_after = next(index for index in range(first, len(outcomes))
-                            if index not in set(failed))
+        intact_after = next(
+            index for index in range(first, len(outcomes)) if index not in set(failed)
+        )
         raise VideoBoundRefused(
             f"card {cards[first].get('card_id')!r} failed verification but card "
             f"{cards[intact_after].get('card_id')!r} after it is intact, so this is not an "
             "interrupted write at the end of a halted campaign; it is a corrupted record "
-            f"({outcomes[first]})") from outcomes[first]
+            f"({outcomes[first]})"
+        ) from outcomes[first]
     return list(outcomes[:first]), len(failed)
 
 
@@ -1260,35 +1521,53 @@ def _load_campaign(campaign: Path) -> CampaignSource:
     ended = manifest.get("ended")
     halted = manifest.get("completed") is not True
     band = (float(manifest["content_band"][0]), float(manifest["content_band"][1]))
-    stats, dropped = _verified_stats(campaign, manifest["cards"], band,
-                                     allow_trailing_drop=halted)
+    stats, dropped = _verified_stats(
+        campaign, manifest["cards"], band, allow_trailing_drop=halted
+    )
     if dropped:
         # The dropped cards leave the manifest view too, so an adjudication cannot name one and
         # the tallies cannot count one.
         manifest = dict(manifest)
-        manifest["cards"] = manifest["cards"][:len(stats)]
+        manifest["cards"] = manifest["cards"][: len(stats)]
     if not manifest["cards"]:
         raise VideoBoundRefused(
             f"{campaign.name} has no card that survives verification; a halted campaign is "
-            "evidence only for the cards it finished writing")
+            "evidence only for the cards it finished writing"
+        )
     # Applied BEFORE anything is grouped by label, so the denominators, the accept verdicts and
     # the artifact all describe one consistent set of labels.  Scoped to THIS directory: an
     # adjudications.json may only re-label cards of the campaign it sits beside, which is why it
     # is resolved here rather than against the merged set.
     adjudications = load_adjudications(campaign, manifest)
-    original = {label: sum(1 for card in manifest["cards"]
-                           if isinstance(card, dict) and card.get("label") == label)
-                for label in CARD_LABELS}
+    original = {
+        label: sum(
+            1
+            for card in manifest["cards"]
+            if isinstance(card, dict) and card.get("label") == label
+        )
+        for label in CARD_LABELS
+    }
     if adjudications is not None:
         manifest = _relabelled(manifest, adjudications)
-        verdicts = {entry["card_id"]: entry["to_label"] for entry in adjudications["entries"]}
-        stats = [replace(stat, label=verdicts.get(stat.card_id, stat.label)) for stat in stats]
-    return CampaignSource(root=campaign, name=campaign.name, manifest=manifest,
-                          adjudications=adjudications, original_label_counts=original,
-                          manifest_sha256=_sha(raw), stats=tuple(stats),
-                          ended=ended if isinstance(ended, str) else "unknown",
-                          halt_reason=manifest.get("halt_reason"),
-                          dropped_trailing_cards=dropped)
+        verdicts = {
+            entry["card_id"]: entry["to_label"] for entry in adjudications["entries"]
+        }
+        stats = [
+            replace(stat, label=verdicts.get(stat.card_id, stat.label))
+            for stat in stats
+        ]
+    return CampaignSource(
+        root=campaign,
+        name=campaign.name,
+        manifest=manifest,
+        adjudications=adjudications,
+        original_label_counts=original,
+        manifest_sha256=_sha(raw),
+        stats=tuple(stats),
+        ended=ended if isinstance(ended, str) else "unknown",
+        halt_reason=manifest.get("halt_reason"),
+        dropped_trailing_cards=dropped,
+    )
 
 
 def _require_agreement(sources: list[CampaignSource]) -> None:
@@ -1299,7 +1578,8 @@ def _require_agreement(sources: list[CampaignSource]) -> None:
         if previous is not None:
             raise VideoBoundRefused(
                 f"two campaign directories share the basename {source.name!r} ({previous} and "
-                f"{source.root}); card ids are namespaced by basename, so they would collide")
+                f"{source.root}); card ids are namespaced by basename, so they would collide"
+            )
         seen_names[source.name] = source.root
     first = sources[0]
     for field in _MERGE_AGREEMENT_FIELDS:
@@ -1311,10 +1591,13 @@ def _require_agreement(sources: list[CampaignSource]) -> None:
                     f"campaigns disagree on {field}: {first.name} records {reference!r} but "
                     f"{source.name} records {value!r}. Every field the artifact binds must be "
                     "identical across a merged set, because a bound that cannot name one device, "
-                    "one build and one dwell is not evidence about any of them")
+                    "one build and one dwell is not evidence about any of them"
+                )
 
 
-def _merged_adjudications(sources: list[CampaignSource], *, namespaced: bool) -> dict | None:
+def _merged_adjudications(
+    sources: list[CampaignSource], *, namespaced: bool
+) -> dict | None:
     """One adjudication block for the merged set, with card ids namespaced when merging.
 
     Each directory keeps its OWN adjudications.json and each entry was already validated against
@@ -1330,7 +1613,8 @@ def _merged_adjudications(sources: list[CampaignSource], *, namespaced: bool) ->
             raise VideoBoundRefused(
                 f"campaigns disagree on the adjudicator: {carrying[0].name} names "
                 f"{adjudicator!r} but {source.name} names "
-                f"{source.adjudications['adjudicator']!r}; one merged bound records one reviewer")
+                f"{source.adjudications['adjudicator']!r}; one merged bound records one reviewer"
+            )
     entries = []
     for source in carrying:
         for entry in source.adjudications["entries"]:
@@ -1343,12 +1627,19 @@ def _merged_adjudications(sources: list[CampaignSource], *, namespaced: bool) ->
 
 def _load_manifest(campaign: Path) -> dict:
     manifest, _raw = _read_json(campaign / "manifest.json", "campaign manifest")
-    if manifest.get("schema_version") != _MANIFEST_SCHEMA_VERSION or manifest.get("kind") != _CAMPAIGN_KIND:
+    if (
+        manifest.get("schema_version") != _MANIFEST_SCHEMA_VERSION
+        or manifest.get("kind") != _CAMPAIGN_KIND
+    ):
         raise VideoBoundRefused("campaign manifest has an unsupported schema/kind")
-    if manifest.get("completed") is not True and manifest.get("ended") not in _MEASURABLE_HALT_ENDED:
+    if (
+        manifest.get("completed") is not True
+        and manifest.get("ended") not in _MEASURABLE_HALT_ENDED
+    ):
         raise VideoBoundRefused(
             "campaign manifest is not completed and did not stop at a recognized safety halt; "
-            "an aborted session is not evidence")
+            "an aborted session is not evidence"
+        )
     channel = manifest.get("ground_truth_channel")
     if channel == CIRCULAR_GROUND_TRUTH_CHANNEL:
         # The circular channel is readable only because the owner opted into it by name, and the
@@ -1360,21 +1651,27 @@ def _load_manifest(campaign: Path) -> dict:
             raise VideoBoundRefused(
                 f"a {CIRCULAR_GROUND_TRUTH_CHANNEL!r} campaign labels its cards with the same "
                 "signals the accept rule reads, so it is measurable only when its manifest "
-                f"carries the acceptance phrase {CIRCULAR_ACCEPTANCE!r} verbatim")
+                f"carries the acceptance phrase {CIRCULAR_ACCEPTANCE!r} verbatim"
+            )
         if manifest.get("human_ground_truth") is not False:
             raise VideoBoundRefused(
                 f"a {CIRCULAR_GROUND_TRUTH_CHANNEL!r} campaign has no human in its label loop "
-                "and must record human_ground_truth false")
+                "and must record human_ground_truth false"
+            )
     elif channel != GROUND_TRUTH_CHANNEL:
         raise VideoBoundRefused(
             f"campaign ground_truth_channel must be {GROUND_TRUTH_CHANNEL!r}; the whole design "
-            "rests on labels the mute matcher cannot produce")
+            "rests on labels the mute matcher cannot produce"
+        )
     elif manifest.get("human_ground_truth") is not True:
         raise VideoBoundRefused("campaign manifest does not claim human ground truth")
     band = manifest.get("content_band")
-    if (not isinstance(band, list) or len(band) != 2
-            or not all(isinstance(value, (int, float)) for value in band)
-            or not 0.0 <= band[0] < band[1] <= 1.0):
+    if (
+        not isinstance(band, list)
+        or len(band) != 2
+        or not all(isinstance(value, (int, float)) for value in band)
+        or not 0.0 <= band[0] < band[1] <= 1.0
+    ):
         raise VideoBoundRefused("campaign manifest has no usable content_band")
     if not isinstance(manifest.get("cards"), list) or not manifest["cards"]:
         raise VideoBoundRefused("campaign manifest records no cards")
@@ -1392,21 +1689,26 @@ def _card_stat(campaign: Path, card: dict, band: tuple[float, float]) -> CardSta
     payloads: list[bytes] = []
     times: list[float] = []
     for record in frames:
-        if (not isinstance(record, dict) or set(record) != {"path", "sha256", "t"}
-                or not isinstance(record["path"], str)
-                or not isinstance(record["sha256"], str)
-                or not isinstance(record["t"], (int, float))):
+        if (
+            not isinstance(record, dict)
+            or set(record) != {"path", "sha256", "t"}
+            or not isinstance(record["path"], str)
+            or not isinstance(record["sha256"], str)
+            or not isinstance(record["t"], (int, float))
+        ):
             raise VideoBoundRefused(f"card {card_id} has a malformed frame record")
         path = campaign / record["path"]
         try:
             payload = path.read_bytes()
         except OSError as exc:
             raise VideoBoundRefused(
-                f"card {card_id} frame {record['path']} is missing: {type(exc).__name__}") from exc
+                f"card {card_id} frame {record['path']} is missing: {type(exc).__name__}"
+            ) from exc
         if _sha(payload) != record["sha256"]:
             raise VideoBoundRefused(
                 f"card {card_id} frame {record['path']} does not match its manifest sha256; the "
-                "campaign on disk is not the campaign that was captured")
+                "campaign on disk is not the campaign that was captured"
+            )
         payloads.append(payload)
         times.append(float(record["t"]))
     if times != sorted(times):
@@ -1416,7 +1718,8 @@ def _card_stat(campaign: Path, card: dict, band: tuple[float, float]) -> CardSta
         if not isinstance(prompted, (int, float)) or prompted < times[-1]:
             raise VideoBoundRefused(
                 f"card {card_id} was labeled before its dwell burst closed; the burst may carry "
-                "the owner's tap and cannot be used as dwell evidence")
+                "the owner's tap and cannot be used as dwell evidence"
+            )
     # The one place BOTH harnesses' spans have to survive, and the reason it lives here rather
     # than at either recorder: `burst_span_s` is what `observed_window_s`, `accepted()` and the
     # margin guard are all computed from, so a span that is not a measurement of the window the
@@ -1426,31 +1729,50 @@ def _card_stat(campaign: Path, card: dict, band: tuple[float, float]) -> CardSta
     # into one frame list, which inflates every deep card's dwell and makes the accept rule that
     # ships not the rule that was validated.
     planned = card.get("planned_window_s")
-    if isinstance(planned, bool) or not isinstance(planned, (int, float)) or planned <= 0:
+    if (
+        isinstance(planned, bool)
+        or not isinstance(planned, (int, float))
+        or planned <= 0
+    ):
         raise VideoBoundRefused(
             f"card {card_id} records no usable planned_window_s, so nothing says what window its "
-            "frames were supposed to span")
+            "frames were supposed to span"
+        )
     span = float(times[-1] - times[0])
     if span < float(planned) - BURST_SPAN_TOLERANCE_S:
         raise VideoBoundRefused(
             f"card {card_id} spanned {span:.3f}s of the {float(planned):.3f}s window it was "
             f"drawn for (tolerance {BURST_SPAN_TOLERANCE_S:.2f}s); a burst that did not span its "
-            "window cannot bound the exact-run tail a production dwell will meet")
+            "window cannot bound the exact-run tail a production dwell will meet"
+        )
     if span > float(planned) + CARD_SPAN_OVERRUN_TOLERANCE_S:
         raise VideoBoundRefused(
             f"card {card_id} spanned {span:.3f}s, well past the {float(planned):.3f}s window it "
             f"was drawn for (tolerance {CARD_SPAN_OVERRUN_TOLERANCE_S:.2f}s); its frame "
-            "timestamps are not one clock's measurement of one dwell")
+            "timestamps are not one clock's measurement of one dwell"
+        )
     if len(payloads) < 2:
-        return CardStat(card_id=card_id, label=label, frames=tuple(frames),
-                        longest_exact_run_s=0.0, longest_exact_run_frames=1,
-                        burst_span_s=0.0, all_pairs_exact=False)
+        return CardStat(
+            card_id=card_id,
+            label=label,
+            frames=tuple(frames),
+            longest_exact_run_s=0.0,
+            longest_exact_run_frames=1,
+            burst_span_s=0.0,
+            all_pairs_exact=False,
+        )
     bands = [_band_view(payload, band) for payload in payloads]
     pairs = _exact_pairs(bands)
     run_s, run_frames = _longest_exact_run_s(times, pairs)
-    return CardStat(card_id=card_id, label=label, frames=tuple(frames),
-                    longest_exact_run_s=run_s, longest_exact_run_frames=run_frames,
-                    burst_span_s=float(times[-1] - times[0]), all_pairs_exact=all(pairs))
+    return CardStat(
+        card_id=card_id,
+        label=label,
+        frames=tuple(frames),
+        longest_exact_run_s=run_s,
+        longest_exact_run_frames=run_frames,
+        burst_span_s=float(times[-1] - times[0]),
+        all_pairs_exact=all(pairs),
+    )
 
 
 def measure(campaigns, *, config_path: str | None = None) -> BoundResult:
@@ -1477,39 +1799,53 @@ def measure(campaigns, *, config_path: str | None = None) -> BoundResult:
     adjudications = _merged_adjudications(sources, namespaced=namespaced)
     original_label_counts = {
         label: sum(source.original_label_counts.get(label, 0) for source in sources)
-        for label in CARD_LABELS}
+        for label in CARD_LABELS
+    }
     if config_path is not None:
         _cfg_map, cfg_raw = _load_config_mapping(config_path)
         # Every campaign agreed on config_sha256 above, so checking the representative checks
         # all of them.
         recorded = representative.get("config_sha256")
-        if isinstance(recorded, str) and cfg_raw is not None and recorded != _sha(cfg_raw):
+        if (
+            isinstance(recorded, str)
+            and cfg_raw is not None
+            and recorded != _sha(cfg_raw)
+        ):
             raise VideoBoundRefused(
                 "campaign was captured against different config bytes than the config supplied "
-                "here; a bound cannot be carried across a config change")
+                "here; a bound cannot be carried across a config change"
+            )
     stats: list[CardStat] = []
     campaign_records: list[dict] = []
     for source in sources:
         # Already verified against THIS directory's own recorded digests by `_load_campaign`.
         local = list(source.stats)
         if namespaced:
-            local = [replace(stat, card_id=f"{source.name}/{stat.card_id}") for stat in local]
+            local = [
+                replace(stat, card_id=f"{source.name}/{stat.card_id}") for stat in local
+            ]
         stats.extend(local)
-        campaign_records.append({
-            "dir": source.name,
-            "manifest_sha256": source.manifest_sha256,
-            "captured_at": source.manifest.get("captured_at"),
-            # Provenance, not decoration: a halted sitting is measurable, and a reader of the
-            # artifact has to be able to see which of its cards came from one and why it stopped.
-            "ended": source.ended,
-            "halt_reason": source.halt_reason,
-            "dropped_trailing_cards": source.dropped_trailing_cards,
-            "cards": len(local),
-            **{f"{label}_cards": sum(1 for stat in local if stat.label == label)
-               for label in CARD_LABELS},
-        })
+        campaign_records.append(
+            {
+                "dir": source.name,
+                "manifest_sha256": source.manifest_sha256,
+                "captured_at": source.manifest.get("captured_at"),
+                # Provenance, not decoration: a halted sitting is measurable, and a reader of the
+                # artifact has to be able to see which of its cards came from one and why it stopped.
+                "ended": source.ended,
+                "halt_reason": source.halt_reason,
+                "dropped_trailing_cards": source.dropped_trailing_cards,
+                "cards": len(local),
+                **{
+                    f"{label}_cards": sum(1 for stat in local if stat.label == label)
+                    for label in CARD_LABELS
+                },
+            }
+        )
     stats = tuple(stats)
-    by_label = {label: [stat for stat in stats if stat.label == label] for label in CARD_LABELS}
+    by_label = {
+        label: [stat for stat in stats if stat.label == label] for label in CARD_LABELS
+    }
     videos, photos = by_label["video"], by_label["photo"]
     if not videos:
         raise VideoBoundRefused("campaign contains no owner-labeled video cards")
@@ -1528,36 +1864,60 @@ def measure(campaigns, *, config_path: str | None = None) -> BoundResult:
     # section 4 wants; the separate margin check below then refuses whenever the safety factor
     # cannot be achieved inside what was observed.  A zero worst-case run is the best possible
     # result, not a licence to ship a zero-length dwell, so it falls back to the same cap.
-    dwell_min_window_s = (min(candidate_window_s, observed_window_s)
-                          if candidate_window_s > 0 else observed_window_s)
+    dwell_min_window_s = (
+        min(candidate_window_s, observed_window_s)
+        if candidate_window_s > 0
+        else observed_window_s
+    )
 
     def accepted(stat: CardStat) -> bool:
-        return (stat.burst_span_s >= dwell_min_window_s
-                and stat.longest_exact_run_s >= dwell_min_window_s)
+        return (
+            stat.burst_span_s >= dwell_min_window_s
+            and stat.longest_exact_run_s >= dwell_min_window_s
+        )
 
     accepts = {stat.card_id: accepted(stat) for stat in stats}
     video_accepts = sum(1 for stat in videos if accepts[stat.card_id])
     photo_false_refusals = sum(1 for stat in photos if not stat.all_pairs_exact)
-    photo_false_refusals_at_window = sum(1 for stat in photos if not accepts[stat.card_id])
+    photo_false_refusals_at_window = sum(
+        1 for stat in photos if not accepts[stat.card_id]
+    )
     dwell_min_frames = min(len(stat.frames) for stat in videos + photos)
 
     result = BoundResult(
-        manifest=representative, stats=stats, video_cards=len(videos), photo_cards=len(photos),
-        unsure_cards=len(by_label["unsure"]), skipped_cards=len(by_label["skip"]),
+        manifest=representative,
+        stats=stats,
+        video_cards=len(videos),
+        photo_cards=len(photos),
+        unsure_cards=len(by_label["unsure"]),
+        skipped_cards=len(by_label["skip"]),
         written_cards=len(by_label["written"]),
-        video_accepts=video_accepts, photo_false_refusals=photo_false_refusals,
+        video_accepts=video_accepts,
+        photo_false_refusals=photo_false_refusals,
         photo_false_refusals_at_window=photo_false_refusals_at_window,
-        max_video_exact_run_s=max_video_exact_run_s, observed_window_s=observed_window_s,
-        candidate_window_s=candidate_window_s, dwell_min_window_s=dwell_min_window_s,
-        dwell_min_frames=dwell_min_frames, accepts=accepts, adjudications=adjudications,
+        max_video_exact_run_s=max_video_exact_run_s,
+        observed_window_s=observed_window_s,
+        candidate_window_s=candidate_window_s,
+        dwell_min_window_s=dwell_min_window_s,
+        dwell_min_frames=dwell_min_frames,
+        accepts=accepts,
+        adjudications=adjudications,
         original_label_counts=original_label_counts,
         # Recorded whenever there is more than one sitting to tell apart OR any sitting stopped
         # at a safety halt.  A single COMPLETED campaign keeps no block at all, which is what
         # makes its artifact byte-identical to one produced before any of this existed.
-        campaigns=(tuple(campaign_records)
-                   if (namespaced or any(record["ended"] in _MEASURABLE_HALT_ENDED
-                                         for record in campaign_records))
-                   else None))
+        campaigns=(
+            tuple(campaign_records)
+            if (
+                namespaced
+                or any(
+                    record["ended"] in _MEASURABLE_HALT_ENDED
+                    for record in campaign_records
+                )
+            )
+            else None
+        ),
+    )
     _enforce_thresholds(result)
     return result
 
@@ -1566,38 +1926,44 @@ def _enforce_thresholds(result: BoundResult) -> None:
     if result.video_cards < MIN_VIDEO_CARDS:
         raise VideoBoundRefused(
             f"only {result.video_cards} owner-labeled video cards; section 4 requires "
-            f">= {MIN_VIDEO_CARDS} for the Rule-of-Three 95% upper bound this artifact claims")
+            f">= {MIN_VIDEO_CARDS} for the Rule-of-Three 95% upper bound this artifact claims"
+        )
     if result.photo_cards < MIN_PHOTO_CARDS:
         raise VideoBoundRefused(
             f"only {result.photo_cards} owner-labeled still-photo cards; section 4 requires "
-            f">= {MIN_PHOTO_CARDS}")
+            f">= {MIN_PHOTO_CARDS}"
+        )
     if result.video_accepts != REQUIRED_VIDEO_ACCEPTS:
         raise VideoBoundRefused(
             f"{result.video_accepts} owner-labeled video card(s) would have been ACCEPTED at a "
             f"{result.dwell_min_window_s:.3f}s dwell window; section 4 requires exactly "
             f"{REQUIRED_VIDEO_ACCEPTS}. Do not widen the window to recover this: a video accept "
-            "is the failure mode the whole discriminator exists to exclude.")
+            "is the failure mode the whole discriminator exists to exclude."
+        )
     if result.candidate_window_s > result.observed_window_s:
         raise VideoBoundRefused(
             f"the dwell window this campaign licenses ({result.candidate_window_s:.3f}s = "
             f"{DWELL_WINDOW_SAFETY_FACTOR} x the worst-case video byte-exact run "
             f"{result.max_video_exact_run_s:.3f}s) exceeds the {result.observed_window_s:.3f}s "
             "every card was actually watched for. The safety factor cannot be achieved inside "
-            "what was observed; capture longer bursts rather than shrinking the margin.")
+            "what was observed; capture longer bursts rather than shrinking the margin."
+        )
     ceiling = MAX_PHOTO_FALSE_REFUSAL_FRAC * result.photo_cards
     if result.photo_false_refusals > ceiling:
         raise VideoBoundRefused(
             f"{result.photo_false_refusals} of {result.photo_cards} owner-labeled still photos "
             f"would be falsely refused, above the {MAX_PHOTO_FALSE_REFUSAL_FRAC:.0%} ceiling "
-            f"({ceiling:.2f} cards)")
+            f"({ceiling:.2f} cards)"
+        )
 
 
 def _adjudicated_suffix(result: BoundResult, label: str) -> str:
-    """" (+N adjudicated)" when N cards were re-labelled INTO this label, else ""."""
+    """ " (+N adjudicated)" when N cards were re-labelled INTO this label, else ""."""
     if not result.adjudications:
         return ""
-    gained = sum(1 for entry in result.adjudications["entries"]
-                 if entry["to_label"] == label)
+    gained = sum(
+        1 for entry in result.adjudications["entries"] if entry["to_label"] == label
+    )
     return f" (+{gained} adjudicated)" if gained else ""
 
 
@@ -1611,29 +1977,53 @@ def print_bound_report(result: BoundResult, *, print_fn=print) -> None:
         print_fn("STRUCTURAL VACUITY CAVEAT")
         print_fn(LABEL_BLIND_SPOT)
         print_fn("=" * 88)
-    print_fn(f"\ncampaign device {result.manifest.get('device')} build "
-             f"{result.manifest.get('hinge_version_name')} "
-             f"frame {result.manifest.get('frame_size_px')}")
-    print_fn(f"ground truth: {channel} "
-             + ("(AI-labeled from the same pixels the accept rule reads; the video-accept line "
-                "below is vacuous)" if circular
-                else "(owner-typed; the mute matcher's scores are observation only)"))
+    print_fn(
+        f"\ncampaign device {result.manifest.get('device')} build "
+        f"{result.manifest.get('hinge_version_name')} "
+        f"frame {result.manifest.get('frame_size_px')}"
+    )
+    print_fn(
+        f"ground truth: {channel} "
+        + (
+            "(AI-labeled from the same pixels the accept rule reads; the video-accept line "
+            "below is vacuous)"
+            if circular
+            else "(owner-typed; the mute matcher's scores are observation only)"
+        )
+    )
     if result.campaigns:
         print_fn(f"campaign directories in this bound: {len(result.campaigns)}")
         for record in result.campaigns:
-            note = "" if record["ended"] not in _MEASURABLE_HALT_ENDED else (
-                f"  [HALTED: {record['ended']}"
-                + (f" -- {record['halt_reason']}" if record.get("halt_reason") else "")
-                + (f"; dropped {record['dropped_trailing_cards']} trailing partial card(s)"
-                   if record["dropped_trailing_cards"] else "") + "]")
-            print_fn(f"  {record['dir']}: {record['cards']} cards "
-                     f"({record['video_cards']} video, {record['photo_cards']} photo, "
-                     f"{record['written_cards']} written, {record['unsure_cards']} unsure)"
-                     + note)
-    print_fn(f"cards: {result.video_cards} video{_adjudicated_suffix(result, 'video')}, "
-             f"{result.photo_cards} photo{_adjudicated_suffix(result, 'photo')} "
-             f"(excluded from both denominators: {result.unsure_cards} unsure, "
-             f"{result.written_cards} written, {result.skipped_cards} skipped)")
+            note = (
+                ""
+                if record["ended"] not in _MEASURABLE_HALT_ENDED
+                else (
+                    f"  [HALTED: {record['ended']}"
+                    + (
+                        f" -- {record['halt_reason']}"
+                        if record.get("halt_reason")
+                        else ""
+                    )
+                    + (
+                        f"; dropped {record['dropped_trailing_cards']} trailing partial card(s)"
+                        if record["dropped_trailing_cards"]
+                        else ""
+                    )
+                    + "]"
+                )
+            )
+            print_fn(
+                f"  {record['dir']}: {record['cards']} cards "
+                f"({record['video_cards']} video, {record['photo_cards']} photo, "
+                f"{record['written_cards']} written, {record['unsure_cards']} unsure)"
+                + note
+            )
+    print_fn(
+        f"cards: {result.video_cards} video{_adjudicated_suffix(result, 'video')}, "
+        f"{result.photo_cards} photo{_adjudicated_suffix(result, 'photo')} "
+        f"(excluded from both denominators: {result.unsure_cards} unsure, "
+        f"{result.written_cards} written, {result.skipped_cards} skipped)"
+    )
     if result.adjudications:
         adjudicator = result.adjudications["adjudicator"]
         moves = {}
@@ -1641,48 +2031,73 @@ def print_bound_report(result: BoundResult, *, print_fn=print) -> None:
             key = f"{entry['from_label']} -> {entry['to_label']}"
             moves[key] = moves.get(key, 0) + 1
         original = result.original_label_counts or {}
-        print_fn(f"adjudicated OFFLINE by {adjudicator['model']} via "
-                 f"{adjudicator['process']}: "
-                 + ", ".join(f"{count} x {move}" for move, count in sorted(moves.items())))
-        print_fn("  the capture's own labels were: "
-                 + ", ".join(f"{original.get(label, 0)} {label}"
-                             for label in ("video", "photo", "unsure")))
+        print_fn(
+            f"adjudicated OFFLINE by {adjudicator['model']} via "
+            f"{adjudicator['process']}: "
+            + ", ".join(f"{count} x {move}" for move, count in sorted(moves.items()))
+        )
+        print_fn(
+            "  the capture's own labels were: "
+            + ", ".join(
+                f"{original.get(label, 0)} {label}"
+                for label in ("video", "photo", "unsure")
+            )
+        )
     print_fn(f"worst-case video byte-exact run: {result.max_video_exact_run_s:.3f}s")
     if result.candidate_window_s > 0:
-        print_fn(f"candidate dwell window: {result.candidate_window_s:.3f}s "
-                 f"({DWELL_WINDOW_SAFETY_FACTOR} x that worst case)")
+        print_fn(
+            f"candidate dwell window: {result.candidate_window_s:.3f}s "
+            f"({DWELL_WINDOW_SAFETY_FACTOR} x that worst case)"
+        )
     else:
-        print_fn("candidate dwell window: no video ever held two byte-identical frames, so the "
-                 "safety factor has\n  nothing to multiply and the window is whatever the "
-                 "campaign actually watched")
-    print_fn(f"evaluated at: {result.dwell_min_window_s:.3f}s, capped by the "
-             f"{result.observed_window_s:.3f}s every card was actually watched for")
-    print_fn(f"video accepts at that window: {result.video_accepts} "
-             f"(required {REQUIRED_VIDEO_ACCEPTS})")
-    print_fn(f"photo false refusals: {result.photo_false_refusals} of {result.photo_cards} "
-             f"(ceiling {MAX_PHOTO_FALSE_REFUSAL_FRAC:.0%}; "
-             f"{result.photo_false_refusals_at_window} refused at the candidate window)")
-    print_fn(f"dwell to ship: min_frames {result.dwell_min_frames}, "
-             f"min_window_s {result.dwell_min_window_s:.3f}")
+        print_fn(
+            "candidate dwell window: no video ever held two byte-identical frames, so the "
+            "safety factor has\n  nothing to multiply and the window is whatever the "
+            "campaign actually watched"
+        )
+    print_fn(
+        f"evaluated at: {result.dwell_min_window_s:.3f}s, capped by the "
+        f"{result.observed_window_s:.3f}s every card was actually watched for"
+    )
+    print_fn(
+        f"video accepts at that window: {result.video_accepts} "
+        f"(required {REQUIRED_VIDEO_ACCEPTS})"
+    )
+    print_fn(
+        f"photo false refusals: {result.photo_false_refusals} of {result.photo_cards} "
+        f"(ceiling {MAX_PHOTO_FALSE_REFUSAL_FRAC:.0%}; "
+        f"{result.photo_false_refusals_at_window} refused at the candidate window)"
+    )
+    print_fn(
+        f"dwell to ship: min_frames {result.dwell_min_frames}, "
+        f"min_window_s {result.dwell_min_window_s:.3f}"
+    )
     if circular:
-        print_fn("\nREMINDER: the video-accept count above is zero by construction on this "
-                 "channel. What this\ncampaign actually delivers is the worst-case byte-exact "
-                 "run measured on playing videos, the\nstill-photo false-refusal rate, and the "
-                 "persisted corpus a later owner-labeled run can reuse.")
+        print_fn(
+            "\nREMINDER: the video-accept count above is zero by construction on this "
+            "channel. What this\ncampaign actually delivers is the worst-case byte-exact "
+            "run measured on playing videos, the\nstill-photo false-refusal rate, and the "
+            "persisted corpus a later owner-labeled run can reuse."
+        )
 
 
 # =====================================================================================
 # emit: freeze the artifact and print the config paste block
 # =====================================================================================
 
-def build_artifact(result: BoundResult, *, config_sha256: str,
-                   hinge_version_name: str) -> dict:
+
+def build_artifact(
+    result: BoundResult, *, config_sha256: str, hinge_version_name: str
+) -> dict:
     cards = []
     for stat in result.stats:
-        card = {"card_id": stat.card_id, "label": stat.label,
-                "frames": [dict(frame) for frame in stat.frames],
-                "longest_exact_run_s": round(stat.longest_exact_run_s, 6),
-                "accept": bool(result.accepts[stat.card_id])}
+        card = {
+            "card_id": stat.card_id,
+            "label": stat.label,
+            "frames": [dict(frame) for frame in stat.frames],
+            "longest_exact_run_s": round(stat.longest_exact_run_s, 6),
+            "accept": bool(result.accepts[stat.card_id]),
+        }
         if set(card) != BOUND_CARD_KEYS:
             raise AssertionError("bound card schema drift")
         cards.append(card)
@@ -1706,8 +2121,10 @@ def build_artifact(result: BoundResult, *, config_sha256: str,
         "photo_cards": result.photo_cards,
         "photo_false_refusals": result.photo_false_refusals,
         "max_video_exact_run_s": round(result.max_video_exact_run_s, 6),
-        "dwell": {"min_frames": result.dwell_min_frames,
-                  "min_window_s": round(result.dwell_min_window_s, 6)},
+        "dwell": {
+            "min_frames": result.dwell_min_frames,
+            "min_window_s": round(result.dwell_min_window_s, 6),
+        },
         "cards": cards,
         "evidence_sha256": "",
     }
@@ -1730,15 +2147,23 @@ def build_artifact(result: BoundResult, *, config_sha256: str,
         # own manifest sha256, so a merged artifact names exactly the sittings it merged and a
         # later reader can re-verify every one of them.
         artifact["campaigns"] = [dict(record) for record in result.campaigns]
-    if set(artifact) != _artifact_keys(circular, bool(result.adjudications),
-                                       center_band is not None, bool(result.campaigns)):
+    if set(artifact) != _artifact_keys(
+        circular,
+        bool(result.adjudications),
+        center_band is not None,
+        bool(result.campaigns),
+    ):
         raise AssertionError("bound artifact schema drift")
     artifact["evidence_sha256"] = _sha(_canonical(artifact))
     return artifact
 
 
-_OPTIONAL_ARTIFACT_KEY_SETS = (CIRCULAR_ARTIFACT_KEYS, ADJUDICATION_ARTIFACT_KEYS,
-                               AUTOPLAY_ARTIFACT_KEYS, MERGE_ARTIFACT_KEYS)
+_OPTIONAL_ARTIFACT_KEY_SETS = (
+    CIRCULAR_ARTIFACT_KEYS,
+    ADJUDICATION_ARTIFACT_KEYS,
+    AUTOPLAY_ARTIFACT_KEYS,
+    MERGE_ARTIFACT_KEYS,
+)
 
 
 def _artifact_captured_at(result: BoundResult):
@@ -1750,16 +2175,26 @@ def _artifact_captured_at(result: BoundResult):
     """
     if not result.campaigns:
         return result.manifest.get("captured_at")
-    stamps = [record.get("captured_at") for record in result.campaigns
-              if isinstance(record.get("captured_at"), str)]
+    stamps = [
+        record.get("captured_at")
+        for record in result.campaigns
+        if isinstance(record.get("captured_at"), str)
+    ]
     return min(stamps) if stamps else result.manifest.get("captured_at")
 
 
-def _artifact_keys(circular: bool, adjudicated: bool = False, autoplay: bool = False,
-                   merged: bool = False) -> set:
+def _artifact_keys(
+    circular: bool,
+    adjudicated: bool = False,
+    autoplay: bool = False,
+    merged: bool = False,
+) -> set:
     keys = set(BOUND_ARTIFACT_KEYS)
-    for present, optional in zip((circular, adjudicated, autoplay, merged),
-                                 _OPTIONAL_ARTIFACT_KEY_SETS, strict=True):
+    for present, optional in zip(
+        (circular, adjudicated, autoplay, merged),
+        _OPTIONAL_ARTIFACT_KEY_SETS,
+        strict=True,
+    ):
         if present:
             keys |= optional
     return keys
@@ -1767,8 +2202,9 @@ def _artifact_keys(circular: bool, adjudicated: bool = False, autoplay: bool = F
 
 def verify_artifact_digest(artifact: dict) -> bool:
     """Recompute the self-digest exactly as build_artifact wrote it."""
-    if set(artifact) not in [_artifact_keys(*flags) for flags in
-                            itertools.product((False, True), repeat=4)]:
+    if set(artifact) not in [
+        _artifact_keys(*flags) for flags in itertools.product((False, True), repeat=4)
+    ]:
         return False
     subject = dict(artifact)
     claimed = subject["evidence_sha256"]
@@ -1776,7 +2212,9 @@ def verify_artifact_digest(artifact: dict) -> bool:
     return isinstance(claimed, str) and _sha(_canonical(subject)) == claimed
 
 
-def emit(campaigns, *, config_path: str, serial_override: str | None = None) -> tuple[dict, dict]:
+def emit(
+    campaigns, *, config_path: str, serial_override: str | None = None
+) -> tuple[dict, dict]:
     """Re-run the measurement over the same directory list and freeze bound.json + the paste block.
 
     The artifact is written into the FIRST directory of the list, which is deterministic and
@@ -1809,9 +2247,11 @@ def emit(campaigns, *, config_path: str, serial_override: str | None = None) -> 
     if not isinstance(version_name, str) or not version_name.strip():
         raise VideoBoundRefused(
             "no Hinge versionName is available from the phone or the campaign manifest; an "
-            "artifact that cannot name the build it was measured on is not evidence")
-    artifact = build_artifact(result, config_sha256=_sha(cfg_raw),
-                              hinge_version_name=version_name)
+            "artifact that cannot name the build it was measured on is not evidence"
+        )
+    artifact = build_artifact(
+        result, config_sha256=_sha(cfg_raw), hinge_version_name=version_name
+    )
     output = campaign / "bound.json"
     payload = json.dumps(artifact, indent=2, sort_keys=True).encode() + b"\n"
     atomic_write_private_bytes(output, payload, parent=campaign)
@@ -1841,6 +2281,7 @@ def emit(campaigns, *, config_path: str, serial_override: str | None = None) -> 
 # CLI
 # =====================================================================================
 
+
 def _band_and_device(args, *, need_device: bool):
     cfg_map, cfg_raw = _load_config_mapping(args.config)
     app_cfg = _hinge_app_config(cfg_map)
@@ -1855,11 +2296,14 @@ def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(
         prog="python -m tools.hinge_video_bound",
         description="Owner-labeled held-out video false-accept bound for Hinge's still-photo "
-                    "dwell discriminator (ops/STILL-PHOTO-DISCRIMINATOR.md section 4). Reads "
-                    "frames and asks questions; it never sends anything to the phone.")
+        "dwell discriminator (ops/STILL-PHOTO-DISCRIMINATOR.md section 4). Reads "
+        "frames and asks questions; it never sends anything to the phone.",
+    )
     sub = ap.add_subparsers(dest="command", required=True)
 
-    hold = sub.add_parser("hold-test", help="60-second parked-video falsifier (run this first)")
+    hold = sub.add_parser(
+        "hold-test", help="60-second parked-video falsifier (run this first)"
+    )
     hold.add_argument("--out", default=None)
     hold.add_argument("--config", default="config.yaml")
     hold.add_argument("--serial", default=None)
@@ -1874,17 +2318,26 @@ def main(argv: list[str] | None = None) -> None:
     capture.add_argument("--band", default=None, help="content band fractions y0,y1")
     capture.add_argument("--profiles", type=int, required=True)
 
-    measure_cmd = sub.add_parser("measure",
-                                 help="offline bound over one or more captured campaigns")
-    measure_cmd.add_argument("campaign", nargs="+",
-                             help="one or more completed campaign directories; every field the "
-                                  "artifact binds must be identical across them")
+    measure_cmd = sub.add_parser(
+        "measure", help="offline bound over one or more captured campaigns"
+    )
+    measure_cmd.add_argument(
+        "campaign",
+        nargs="+",
+        help="one or more completed campaign directories; every field the "
+        "artifact binds must be identical across them",
+    )
     measure_cmd.add_argument("--config", default=None)
 
-    emit_cmd = sub.add_parser("emit", help="freeze bound.json and print the config paste block")
-    emit_cmd.add_argument("campaign", nargs="+",
-                          help="the same directory list `measure` passed; bound.json is written "
-                               "into the first")
+    emit_cmd = sub.add_parser(
+        "emit", help="freeze bound.json and print the config paste block"
+    )
+    emit_cmd.add_argument(
+        "campaign",
+        nargs="+",
+        help="the same directory list `measure` passed; bound.json is written "
+        "into the first",
+    )
     emit_cmd.add_argument("--config", default="config.yaml")
     emit_cmd.add_argument("--serial", default=None)
 
@@ -1902,11 +2355,18 @@ def main(argv: list[str] | None = None) -> None:
             # hatch -- turning an unrelated validation error into a silently UNLOCKED campaign.
             # `None` takes the identical lock; the lock path reads nothing out of a config.
             with holding_the_device(None):
-                _app_cfg, band, serial, adb_path, _sha256 = _band_and_device(args,
-                                                                            need_device=True)
+                _app_cfg, band, serial, adb_path, _sha256 = _band_and_device(
+                    args, need_device=True
+                )
                 out_dir = _private_out_dir(args.out, prefix="videobound_hold")
-                run_hold_test(out_dir=out_dir, seconds=args.seconds, interval=args.interval,
-                              band=band, serial=serial, adb_path=adb_path)
+                run_hold_test(
+                    out_dir=out_dir,
+                    seconds=args.seconds,
+                    interval=args.interval,
+                    band=band,
+                    serial=serial,
+                    adb_path=adb_path,
+                )
         elif args.command == "capture":
             if args.profiles < 1:
                 raise VideoBoundRefused("--profiles must be at least 1")
@@ -1914,30 +2374,49 @@ def main(argv: list[str] | None = None) -> None:
             # config.load, so passing a path through the lock helper buys nothing and arms the
             # escape hatch that would run the whole campaign unlocked.
             with holding_the_device(None):
-                app_cfg, band, serial, adb_path, config_sha = _band_and_device(args,
-                                                                              need_device=True)
+                app_cfg, band, serial, adb_path, config_sha = _band_and_device(
+                    args, need_device=True
+                )
                 out_dir = _private_out_dir(args.out, prefix="videobound")
-                manifest = run_capture(out_dir=out_dir, profiles=args.profiles, serial=serial,
-                                       adb_path=adb_path, band=band,
-                                       package=app_cfg.get("package", _DEFAULT_PACKAGE),
-                                       config_sha256=config_sha)
-            print(f"\nwrote {out_dir / 'manifest.json'} with {len(manifest['cards'])} cards")
+                manifest = run_capture(
+                    out_dir=out_dir,
+                    profiles=args.profiles,
+                    serial=serial,
+                    adb_path=adb_path,
+                    band=band,
+                    package=app_cfg.get("package", _DEFAULT_PACKAGE),
+                    config_sha256=config_sha,
+                )
+            print(
+                f"\nwrote {out_dir / 'manifest.json'} with {len(manifest['cards'])} cards"
+            )
         elif args.command == "measure":
-            result = measure([_existing_campaign_dir(path) for path in args.campaign],
-                             config_path=args.config)
+            result = measure(
+                [_existing_campaign_dir(path) for path in args.campaign],
+                config_path=args.config,
+            )
             print_bound_report(result)
             print("\nbound holds. Run `emit` to freeze the artifact.")
         else:
             roots = [_existing_campaign_dir(path) for path in args.campaign]
             campaign = roots[0]
-            artifact, paste = emit(roots, config_path=args.config,
-                                   serial_override=args.serial)
-            print(f"wrote {campaign / 'bound.json'} "
-                  f"(evidence_sha256 {artifact['evidence_sha256']})\n")
-            print("Paste into config.yaml by hand. These numbers install NUMBERING readiness "
-                  "only;\nAuto stays blocked by its own separate release chain.\n")
-            print(yaml.safe_dump({"apps": {"hinge": {"still_photo_bound_evidence": paste}}},
-                                 sort_keys=False))
+            artifact, paste = emit(
+                roots, config_path=args.config, serial_override=args.serial
+            )
+            print(
+                f"wrote {campaign / 'bound.json'} "
+                f"(evidence_sha256 {artifact['evidence_sha256']})\n"
+            )
+            print(
+                "Paste into config.yaml by hand. These numbers install NUMBERING readiness "
+                "only;\nAuto stays blocked by its own separate release chain.\n"
+            )
+            print(
+                yaml.safe_dump(
+                    {"apps": {"hinge": {"still_photo_bound_evidence": paste}}},
+                    sort_keys=False,
+                )
+            )
     except VideoBoundRefused as exc:
         print(f"REFUSED: {exc}", file=sys.stderr)
         sys.exit(1)

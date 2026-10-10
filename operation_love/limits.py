@@ -23,6 +23,7 @@ general (a real run cannot un-swipe an earlier profile); the score-aware rule be
 instead makes sure THIS call, on its own, never sacrifices a clearly strong like to
 chase the ratio.
 """
+
 from __future__ import annotations
 
 import math
@@ -51,21 +52,29 @@ class RateLimiter:
     # of that lift is ever exempted here.
     _STRONG_LIKE_MARGIN = 0.15
 
-    def __init__(self, max_per_run: int | None = None, max_per_day: int | None = None,
-                 max_likes_per_run: int | None = None,
-                 target_like_ratio: float | None = None):
+    def __init__(
+        self,
+        max_per_run: int | None = None,
+        max_per_day: int | None = None,
+        max_likes_per_run: int | None = None,
+        target_like_ratio: float | None = None,
+    ):
         for name, value in (
-                ("max_per_run", max_per_run),
-                ("max_per_day", max_per_day),
-                ("max_likes_per_run", max_likes_per_run)):
+            ("max_per_run", max_per_run),
+            ("max_per_day", max_per_day),
+            ("max_likes_per_run", max_likes_per_run),
+        ):
             if value is not None and (type(value) is not int or value <= 0):
                 raise ValueError(f"{name} must be a positive integer or None")
         ratio = (
             _finite_real_as_float(target_like_ratio)
-            if target_like_ratio is not None else None
+            if target_like_ratio is not None
+            else None
         )
         if target_like_ratio is not None and (ratio is None or not 0.0 < ratio < 1.0):
-            raise ValueError("target_like_ratio must be a finite number in (0, 1) or None")
+            raise ValueError(
+                "target_like_ratio must be a finite number in (0, 1) or None"
+            )
         self.max_per_run = max_per_run
         self.max_per_day = max_per_day
         self.max_likes_per_run = max_likes_per_run
@@ -91,12 +100,21 @@ class RateLimiter:
         run rather than mislabeling a wanted-like as a pass (which would corrupt
         the taste model)."""
         self._count("liked_this_run", liked_this_run)
-        if self.max_likes_per_run is not None and liked_this_run >= self.max_likes_per_run:
+        if (
+            self.max_likes_per_run is not None
+            and liked_this_run >= self.max_likes_per_run
+        ):
             return False
         return True
 
-    def allow_like_ratio(self, liked: int, acted: int, *, score: float | None = None,
-                          like_threshold: float | None = None) -> bool:
+    def allow_like_ratio(
+        self,
+        liked: int,
+        acted: int,
+        *,
+        score: float | None = None,
+        like_threshold: float | None = None,
+    ) -> bool:
         """False when the running like-rate is at/above target_like_ratio AND this
         specific like is only marginally over the ranker's own like threshold.
 

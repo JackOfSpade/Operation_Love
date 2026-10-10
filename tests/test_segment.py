@@ -19,6 +19,7 @@ rect, whose corner arc closes exactly `radius` rows in from the edge row. That i
 real captures measure and the shape segment.py's list-boundary handling keys on, so a fixture
 that only approximated it would quietly stop testing the thing these tests are about.
 """
+
 import math
 import sys
 from pathlib import Path
@@ -29,18 +30,19 @@ import pytest
 
 from operation_love.drivers import hinge, item_index, segment
 
-_W, _H = 1080, 2400                        # the calibrated Pixel 7a screencap size
+_W, _H = 1080, 2400  # the calibrated Pixel 7a screencap size
 _SEED = 7
-_CONTENT_BAND = hinge.HINGE_SPEC.content_band          # (0.125, 0.875) -> rows 300..2100
+_CONTENT_BAND = hinge.HINGE_SPEC.content_band  # (0.125, 0.875) -> rows 300..2100
 _BAND0, _BAND1 = 300, 2100
-_GUTTER = max(segment._GUTTER_PX)                      # 53, the canonical measured gutter
-_CARD_X0 = segment._CARD_MARGIN_PX                     # 53
-_CARD_X1 = _W - segment._CARD_MARGIN_PX                # 1027
-_CORNER_RADIUS_PX = 22                                 # doc 5.10: "~20-23px", and inside
-assert (min(segment._CARD_CORNER_PX) <= _CORNER_RADIUS_PX <= max(segment._CARD_CORNER_PX)), (
-    "the default fixture card must be a card segment.py would accept the corner of")
-_HEART_CX = 937                                        # bottom-right, well past _match_glyph's
-                                                       # 0.55*width side cutoff (594)
+_GUTTER = max(segment._GUTTER_PX)  # 53, the canonical measured gutter
+_CARD_X0 = segment._CARD_MARGIN_PX  # 53
+_CARD_X1 = _W - segment._CARD_MARGIN_PX  # 1027
+_CORNER_RADIUS_PX = 22  # doc 5.10: "~20-23px", and inside
+assert (
+    min(segment._CARD_CORNER_PX) <= _CORNER_RADIUS_PX <= max(segment._CARD_CORNER_PX)
+), "the default fixture card must be a card segment.py would accept the corner of"
+_HEART_CX = 937  # bottom-right, well past _match_glyph's
+# 0.55*width side cutoff (594)
 
 # The page background is a GRADIENT (doc 5.10: ~RGB(255,254,253) at y=300 down to ~(243,243,243)
 # at y=2100), which is the whole reason segment.py reads its reference off the page margins per
@@ -63,7 +65,16 @@ class _Frame:
         self.template = hinge._load_template(hinge.HINGE_SPEC.templates["like"])
         assert self.template is not None, "shipped like glyph must load"
 
-    def card(self, y0, y1, *, heart_y=None, radius=_CORNER_RADIUS_PX, x0=_CARD_X0, x1=_CARD_X1):
+    def card(
+        self,
+        y0,
+        y1,
+        *,
+        heart_y=None,
+        radius=_CORNER_RADIUS_PX,
+        x0=_CARD_X0,
+        x1=_CARD_X1,
+    ):
         """A textured rounded-rect card occupying rows [y0, y1). Optionally stamps its heart.
 
         The corner arc is carved with `ceil`, not `round`, and that is load-bearing rather than
@@ -75,20 +86,23 @@ class _Frame:
         early and make the fixture a shape Hinge never draws.
         """
         self.gray[y0:y1, x0:x1] = self.rng.integers(
-            60, 200, size=(y1 - y0, x1 - x0), dtype=np.uint8)
-        for i in range(radius):                        # carve the four corner arcs back to page
+            60, 200, size=(y1 - y0, x1 - x0), dtype=np.uint8
+        )
+        for i in range(radius):  # carve the four corner arcs back to page
             dy = radius - i
-            inset = int(math.ceil(radius - math.sqrt(max(0.0, radius ** 2 - dy ** 2))))
+            inset = int(math.ceil(radius - math.sqrt(max(0.0, radius**2 - dy**2))))
             if inset <= 0:
                 continue
             for y in (y0 + i, y1 - 1 - i):
-                self.gray[y, x0:x0 + inset] = self.col[y]
-                self.gray[y, x1 - inset:x1] = self.col[y]
+                self.gray[y, x0 : x0 + inset] = self.col[y]
+                self.gray[y, x1 - inset : x1] = self.col[y]
         if heart_y is not None:
             self.heart(heart_y)
         return self
 
-    def round_bottom_corners(self, y0, y1, *, radius=_CORNER_RADIUS_PX, x0=_CARD_X0, x1=_CARD_X1):
+    def round_bottom_corners(
+        self, y0, y1, *, radius=_CORNER_RADIUS_PX, x0=_CARD_X0, x1=_CARD_X1
+    ):
         """Carve only the BOTTOM two corners of an already-painted card rect, leaving its top
         edge flat full-width. Same arc math as `card()` above (see its docstring for why `ceil`
         is load-bearing), applied to one edge only, so a fixture can give a card a real rounded
@@ -96,18 +110,20 @@ class _Frame:
         also creating one at the edge that a test needs to stay a plain, non-corner boundary."""
         for i in range(radius):
             dy = radius - i
-            inset = int(math.ceil(radius - math.sqrt(max(0.0, radius ** 2 - dy ** 2))))
+            inset = int(math.ceil(radius - math.sqrt(max(0.0, radius**2 - dy**2))))
             if inset <= 0:
                 continue
             y = y1 - 1 - i
-            self.gray[y, x0:x0 + inset] = self.col[y]
-            self.gray[y, x1 - inset:x1] = self.col[y]
+            self.gray[y, x0 : x0 + inset] = self.col[y]
+            self.gray[y, x1 - inset : x1] = self.col[y]
         return self
 
     def heart(self, cy, cx=_HEART_CX):
         """Stamp the real shipped like glyph centred at (cx, cy)."""
         th, tw = self.template.shape
-        self.gray[cy - th // 2: cy - th // 2 + th, cx - tw // 2: cx - tw // 2 + tw] = self.template
+        self.gray[
+            cy - th // 2 : cy - th // 2 + th, cx - tw // 2 : cx - tw // 2 + tw
+        ] = self.template
         return self
 
     def fill(self, y0, y1, x0, x1, value):
@@ -128,8 +144,12 @@ class _Frame:
 
     def segment(self, content_band=_CONTENT_BAND, **kw):
         return segment.segment_frame(
-            self.png(), content_band=content_band, like_template=self.template,
-            like_threshold=hinge._LIKE_MATCH_THRESHOLD, **kw)
+            self.png(),
+            content_band=content_band,
+            like_template=self.template,
+            like_threshold=hinge._LIKE_MATCH_THRESHOLD,
+            **kw,
+        )
 
 
 def _kinds(result):
@@ -151,7 +171,7 @@ def _card_edge_runs(result):
 def _low_contrast_scroll_top(*, card_y1=1491, heart_y=1402, bottom_gutter=True):
     """The sanitized geometry of the reported first-photo failure, with no profile pixels."""
     f = _Frame()
-    f.fill(368, 411, 100, 900, 40)                    # name/header content
+    f.fill(368, 411, 100, 900, 40)  # name/header content
     f.card(517, card_y1, heart_y=heart_y)
     # Keep one pale edge indistinguishable from the page after the real corner. The initial
     # bilateral span still implies a 22px radius and expands like a corner, but never reaches
@@ -167,6 +187,7 @@ def _low_contrast_scroll_top(*, card_y1=1491, heart_y=1402, bottom_gutter=True):
 # The clean case
 # =====================================================================================
 
+
 def test_clean_multi_card_frame_segments_correctly():
     """Four cards, three canonical gutters. The two interior cards are bounded by gutters on
     BOTH sides so their extents are fully observed; the outer two are sliced mid-height by the
@@ -174,23 +195,27 @@ def test_clean_multi_card_frame_segments_correctly():
     end. Note the outer cards START outside the band — a card whose own corner happens to sit on
     the band's first row is a different case, covered by the corner tests below."""
     f = _Frame()
-    f.card(200, 700, heart_y=640)                       # sliced by the band's top edge
-    f.card(700 + _GUTTER, 1150, heart_y=1090)           # 753..1150, complete, one heart
-    f.card(1150 + _GUTTER, 1418)                        # 1203..1418, complete, NO heart
-    f.card(1418 + _GUTTER, 2300, heart_y=2000)          # sliced by the band's bottom edge
+    f.card(200, 700, heart_y=640)  # sliced by the band's top edge
+    f.card(700 + _GUTTER, 1150, heart_y=1090)  # 753..1150, complete, one heart
+    f.card(1150 + _GUTTER, 1418)  # 1203..1418, complete, NO heart
+    f.card(1418 + _GUTTER, 2300, heart_y=2000)  # sliced by the band's bottom edge
     r = f.segment()
 
     assert r.ok, r.failures
-    assert _kinds(r) == [segment.BLOCK_PARTIAL, segment.BLOCK_SELECTABLE,
-                         segment.BLOCK_CONTEXT, segment.BLOCK_PARTIAL]
+    assert _kinds(r) == [
+        segment.BLOCK_PARTIAL,
+        segment.BLOCK_SELECTABLE,
+        segment.BLOCK_CONTEXT,
+        segment.BLOCK_PARTIAL,
+    ]
     assert _extents(r) == [(_BAND0, 700), (753, 1150), (1203, 1418), (1471, _BAND1)]
     assert _gutters(r) == [(700, 753), (1150, 1203), (1418, 1471)]
     assert all(g.height == _GUTTER for g in r.runs if g.kind == segment.RUN_GUTTER)
     assert r.unassigned_hearts == ()
 
     selectable = r.selectable
-    assert len(selectable) == 1                          # PARTIAL blocks are never selectable,
-    assert selectable[0].y0 == 753                       # even when they do carry a heart
+    assert len(selectable) == 1  # PARTIAL blocks are never selectable,
+    assert selectable[0].y0 == 753  # even when they do carry a heart
     assert selectable[0].heart == (_HEART_CX, 1090)
     assert selectable[0].complete
 
@@ -200,8 +225,12 @@ def test_clean_multi_card_frame_segments_correctly():
     assert (context.x0, context.x1) == (_CARD_X0, _CARD_X1)
 
     # The two outer blocks say WHY they are partial, and which edge was the problem.
-    assert r.blocks[0].top.kind == segment.EDGE_BAND_EDGE and not r.blocks[0].top.observed
-    assert r.blocks[0].bottom.kind == segment.EDGE_GUTTER and r.blocks[0].bottom.observed
+    assert (
+        r.blocks[0].top.kind == segment.EDGE_BAND_EDGE and not r.blocks[0].top.observed
+    )
+    assert (
+        r.blocks[0].bottom.kind == segment.EDGE_GUTTER and r.blocks[0].bottom.observed
+    )
     assert r.blocks[-1].bottom.kind == segment.EDGE_BAND_EDGE
     assert "true extent unknown from this frame" in r.blocks[0].reason
 
@@ -218,16 +247,21 @@ def test_gradient_defeats_a_single_global_background():
 
     top_bg, bottom_bg = int(f.gray[430, 500]), int(f.gray[1960, 500])
     assert abs(top_bg - bottom_bg) > segment._BACKGROUND_TOLERANCE, (
-        "fixture is not actually a gradient, so this test proves nothing")
+        "fixture is not actually a gradient, so this test proves nothing"
+    )
 
     r = f.segment()
     assert r.ok, r.failures
-    assert _gutters(r) == [(420, 473), (1900, 1953)]     # both ends of the band, one tolerance
+    assert _gutters(r) == [
+        (420, 473),
+        (1900, 1953),
+    ]  # both ends of the band, one tolerance
 
 
 # =====================================================================================
 # Doc 5.4 amendment one: colour alone is not sufficient — a 192-row false span
 # =====================================================================================
+
 
 def test_bright_uniform_span_inside_a_card_does_not_split_it():
     """The measured hazard: 192 contiguous rows inside ONE card whose colour matches the page
@@ -236,7 +270,7 @@ def test_bright_uniform_span_inside_a_card_does_not_split_it():
     f = _Frame()
     f.card(_BAND0, 700, heart_y=640)
     f.card(753, 1800, heart_y=1740)
-    f.page(1000, 1192, _CARD_X0, _CARD_X1)               # 192 rows, exact page background
+    f.page(1000, 1192, _CARD_X0, _CARD_X1)  # 192 rows, exact page background
     f.card(1853, _BAND1, heart_y=2050)
     r = f.segment()
 
@@ -250,7 +284,7 @@ def test_bright_uniform_span_inside_a_card_does_not_split_it():
     false_run = [run for run in r.runs if (run.y0, run.y1) == (1000, 1192)]
     assert len(false_run) == 1
     assert false_run[0].kind == segment.RUN_TOO_LONG
-    assert false_run[0].widest_intruder_px == 0          # genuinely indistinguishable by colour
+    assert false_run[0].widest_intruder_px == 0  # genuinely indistinguishable by colour
 
 
 def test_caption_seam_that_is_card_white_does_not_split_one_compound_photo_card():
@@ -264,13 +298,14 @@ def test_caption_seam_that_is_card_white_does_not_split_one_compound_photo_card(
     the same layout still cuts normally immediately below it.
     """
     f = _Frame()
-    f.card(200, 379, heart_y=340)                       # top-clipped previous card
-    f.card(432, 1541, heart_y=1452)                    # caption + media, one outer card
-    seam_y0, seam_y1 = 567, 614                        # exact live 47px internal seam
-    card_white = np.minimum(
-        f.col[seam_y0:seam_y1].astype(np.int16) + 2, 255).astype(np.uint8)
+    f.card(200, 379, heart_y=340)  # top-clipped previous card
+    f.card(432, 1541, heart_y=1452)  # caption + media, one outer card
+    seam_y0, seam_y1 = 567, 614  # exact live 47px internal seam
+    card_white = np.minimum(f.col[seam_y0:seam_y1].astype(np.int16) + 2, 255).astype(
+        np.uint8
+    )
     f.gray[seam_y0:seam_y1, _CARD_X0:_CARD_X1] = card_white[:, None]
-    f.card(1594, 2300, heart_y=2050)                   # true 53px gutter above
+    f.card(1594, 2300, heart_y=2050)  # true 53px gutter above
 
     r = f.segment()
 
@@ -285,6 +320,7 @@ def test_caption_seam_that_is_card_white_does_not_split_one_compound_photo_card(
     assert seam.median_level_delta > segment._GUTTER_BACKGROUND_LEVEL_TOLERANCE
     assert (1541, 1594) in _gutters(r), "the real page-background gutter must still cut"
 
+
 def test_a_gutter_sized_background_span_does_split():
     """The negative control for the test above: same fixture, same colour, only the LENGTH
     changed from 192 rows to the canonical 53. Now it splits — which proves the previous test's
@@ -298,15 +334,19 @@ def test_a_gutter_sized_background_span_does_split():
 
     assert _extents(r) == [(_BAND0, 700), (753, 1000), (1053, 1800), (1853, _BAND1)]
     assert [run.kind for run in r.runs if run.y0 == 1000] == [segment.RUN_GUTTER]
-    assert r.blocks[1].kind == segment.BLOCK_CONTEXT      # the fragment above the false gutter
-    assert r.blocks[2].kind == segment.BLOCK_SELECTABLE   # the fragment carrying the heart
+    assert (
+        r.blocks[1].kind == segment.BLOCK_CONTEXT
+    )  # the fragment above the false gutter
+    assert (
+        r.blocks[2].kind == segment.BLOCK_SELECTABLE
+    )  # the fragment carrying the heart
 
 
 def test_heart_anchored_tall_media_gap_splits_without_widening_generic_gutters():
     """Rebecca's 98..101px photo gap ends exactly one normal heart inset below item 1."""
     f = _Frame()
-    f.card(200, 700, heart_y=611, radius=0)             # heart is 89px above the tall gap
-    f.card(801, 1400, heart_y=1311, radius=0)           # 101px page-coloured media gap
+    f.card(200, 700, heart_y=611, radius=0)  # heart is 89px above the tall gap
+    f.card(801, 1400, heart_y=1311, radius=0)  # 101px page-coloured media gap
     f.card(1453, _BAND1 + 100, heart_y=2000, radius=0)  # ordinary 53px control gutter
 
     r = f.segment()
@@ -328,7 +368,7 @@ def test_two_hearts_prove_a_low_contrast_near_gutter_is_a_card_boundary():
     """
     f = _Frame()
     f.card(200, 799, heart_y=710, radius=0)
-    f.card(859, 1826, heart_y=1737, radius=0)          # 60px low-contrast boundary
+    f.card(859, 1826, heart_y=1737, radius=0)  # 60px low-contrast boundary
     f.card(1879, _BAND1 + 100, heart_y=2000, radius=0)
 
     r = f.segment()
@@ -346,8 +386,10 @@ def test_two_hearts_prove_a_low_contrast_near_gutter_is_a_card_boundary():
     unproven.card(859, 1826, radius=0)
     unproven.card(1879, _BAND1 + 100, heart_y=2000, radius=0)
     unproven_result = unproven.segment()
-    assert next(run for run in unproven_result.runs if (run.y0, run.y1) == (799, 859)).kind \
+    assert (
+        next(run for run in unproven_result.runs if (run.y0, run.y1) == (799, 859)).kind
         == segment.RUN_TOO_LONG
+    )
 
 
 def test_heart_separated_near_gutter_refuses_past_an_unrelated_card_edge():
@@ -376,12 +418,14 @@ def test_heart_separated_near_gutter_refuses_past_an_unrelated_card_edge():
     reclassified to RUN_HEART_SEPARATED_NEAR_GUTTER and _extents(r) splits card A from card B.
     """
     f = _Frame()
-    f.card(_BAND0, 700, heart_y=610, radius=0)          # card A: heart 90px above the 61px gap
-    f.card(761, 900, radius=0)                          # card B: heartless, flat top
-    f.round_bottom_corners(761, 900, radius=_CORNER_RADIUS_PX)  # ...but a real rounded bottom
-    f.card(965, 1500, heart_y=1411, radius=0)            # card C: its own heart, square shape
+    f.card(_BAND0, 700, heart_y=610, radius=0)  # card A: heart 90px above the 61px gap
+    f.card(761, 900, radius=0)  # card B: heartless, flat top
+    f.round_bottom_corners(
+        761, 900, radius=_CORNER_RADIUS_PX
+    )  # ...but a real rounded bottom
+    f.card(965, 1500, heart_y=1411, radius=0)  # card C: its own heart, square shape
     # 1500..1553 is left as untouched page background: an exact 53px canonical gutter.
-    f.card(1553, 2000, radius=0)                        # card D: closes the gutter run; unused
+    f.card(1553, 2000, radius=0)  # card D: closes the gutter run; unused
 
     r = f.segment()
 
@@ -410,8 +454,8 @@ def test_a_rounded_card_bottom_proves_an_overlong_page_gap_is_a_boundary():
     crop or numbered item from this frame alone.
     """
     f = _Frame()
-    f.card(500, 1200)                                  # rounded, heartless details card
-    f.card(1265, 2300, radius=0)                       # 65px gap; square/pale-media shape
+    f.card(500, 1200)  # rounded, heartless details card
+    f.card(1265, 2300, radius=0)  # 65px gap; square/pale-media shape
 
     r = f.segment()
 
@@ -443,7 +487,7 @@ def test_an_overlong_page_gap_without_a_corner_or_heart_stays_unsplit():
 def test_tall_media_gap_without_a_heart_at_the_known_bottom_inset_stays_unsplit():
     """A generic 101px blank span remains conservative; it is not a relaxed gutter window."""
     f = _Frame()
-    f.card(200, 700, heart_y=560, radius=0)             # 140px from the gap, outside the guard
+    f.card(200, 700, heart_y=560, radius=0)  # 140px from the gap, outside the guard
     f.card(801, 1400, heart_y=1311, radius=0)
     f.card(1453, _BAND1 + 100, heart_y=2000, radius=0)
 
@@ -465,8 +509,13 @@ def test_strict_gutter_prefix_recovers_low_contrast_leading_card_surface():
     f = _Frame()
     f.card(200, 700, heart_y=611, radius=0)
     f.card(753, 1500, heart_y=1411, radius=0)
-    f.fill(753, 874, _CARD_X0, _CARD_X1,
-           np.minimum(f.col[753:874].astype(np.int16) + 4, 255).astype(np.uint8)[:, None])
+    f.fill(
+        753,
+        874,
+        _CARD_X0,
+        _CARD_X1,
+        np.minimum(f.col[753:874].astype(np.int16) + 4, 255).astype(np.uint8)[:, None],
+    )
     f.card(1553, _BAND1 + 100, heart_y=2000, radius=0)
 
     r = f.segment()
@@ -482,8 +531,15 @@ def test_strict_gutter_suffix_recovers_low_contrast_trailing_card_surface():
     """The mirror case keeps a heart in its card rather than inside a 174px cut."""
     f = _Frame()
     f.card(200, 1200, heart_y=1111, radius=0)
-    f.fill(1079, 1200, _CARD_X0, _CARD_X1,
-           np.minimum(f.col[1079:1200].astype(np.int16) + 4, 255).astype(np.uint8)[:, None])
+    f.fill(
+        1079,
+        1200,
+        _CARD_X0,
+        _CARD_X1,
+        np.minimum(f.col[1079:1200].astype(np.int16) + 4, 255).astype(np.uint8)[
+            :, None
+        ],
+    )
     f.heart(1111)
     f.card(1253, _BAND1 + 100, heart_y=2000, radius=0)
 
@@ -499,10 +555,15 @@ def test_strict_gutter_suffix_recovers_low_contrast_trailing_card_surface():
 def test_strict_gutter_rescue_requires_the_measured_heart_bottom_inset():
     """The same prefix shape without its anchoring heart stays a loud merged-card failure."""
     f = _Frame()
-    f.card(200, 700, heart_y=540, radius=0)             # 160px above the gutter, not 60..120
+    f.card(200, 700, heart_y=540, radius=0)  # 160px above the gutter, not 60..120
     f.card(753, 1500, heart_y=1411, radius=0)
-    f.fill(753, 874, _CARD_X0, _CARD_X1,
-           np.minimum(f.col[753:874].astype(np.int16) + 4, 255).astype(np.uint8)[:, None])
+    f.fill(
+        753,
+        874,
+        _CARD_X0,
+        _CARD_X1,
+        np.minimum(f.col[753:874].astype(np.int16) + 4, 255).astype(np.uint8)[:, None],
+    )
     f.card(1553, _BAND1 + 100, heart_y=2000, radius=0)
 
     r = f.segment()
@@ -519,7 +580,7 @@ def test_strict_page_span_inside_a_long_run_is_not_a_low_contrast_card_rescue():
     f.card(700, 1500, heart_y=1411, radius=0)
     low = np.minimum(f.col[700:720].astype(np.int16) + 4, 255).astype(np.uint8)
     f.fill(700, 720, _CARD_X0, _CARD_X1, low[:, None])
-    f.page(720, 773, _CARD_X0, _CARD_X1)                # strict 53px page span, but internal
+    f.page(720, 773, _CARD_X0, _CARD_X1)  # strict 53px page span, but internal
     low = np.minimum(f.col[773:894].astype(np.int16) + 4, 255).astype(np.uint8)
     f.fill(773, 894, _CARD_X0, _CARD_X1, low[:, None])
 
@@ -534,9 +595,12 @@ def test_strict_page_span_inside_a_long_run_is_not_a_low_contrast_card_rescue():
 def test_allison_low_contrast_gutter_frames_replay_when_available():
     """Regression replay of the saved diagnostics; CI may not carry private screenshots."""
     root = Path(__file__).resolve().parents[1]
-    frames = [root / "data/hinge_debug/5d79a2d45bfa"
-              / f"{number:05d}_enumeration_segmentation_fallback_before.png"
-              for number in (164, 165, 166, 167)]
+    frames = [
+        root
+        / "data/hinge_debug/5d79a2d45bfa"
+        / f"{number:05d}_enumeration_segmentation_fallback_before.png"
+        for number in (164, 165, 166, 167)
+    ]
     if not all(frame.exists() for frame in frames):
         pytest.skip("the Allison diagnostic screenshots are not on this machine")
 
@@ -544,8 +608,11 @@ def test_allison_low_contrast_gutter_frames_replay_when_available():
     assert template is not None
     for frame in frames:
         result = segment.segment_frame(
-            frame.read_bytes(), content_band=_CONTENT_BAND, like_template=template,
-            like_threshold=hinge._LIKE_MATCH_THRESHOLD)
+            frame.read_bytes(),
+            content_band=_CONTENT_BAND,
+            like_template=template,
+            like_threshold=hinge._LIKE_MATCH_THRESHOLD,
+        )
         assert result.ok, (frame.name, result.failures)
         assert result.unassigned_hearts == ()
 
@@ -553,6 +620,7 @@ def test_allison_low_contrast_gutter_frames_replay_when_available():
 # =====================================================================================
 # Doc 5.4 amendment two: a narrow element must not hide a gutter
 # =====================================================================================
+
 
 def test_narrow_element_in_a_gutter_does_not_hide_it():
     """The measured miss: a real gutter was lost to an "any pixel differs from background" test
@@ -562,7 +630,7 @@ def test_narrow_element_in_a_gutter_does_not_hide_it():
     f = _Frame()
     f.card(_BAND0, 700, heart_y=640)
     f.card(753, 1600, heart_y=1540)
-    f.fill(700, 753, 30, 217, 40)                        # dark, narrow, spans the whole gutter
+    f.fill(700, 753, 30, 217, 40)  # dark, narrow, spans the whole gutter
     f.card(1653, _BAND1, heart_y=2050)
     r = f.segment()
 
@@ -570,8 +638,12 @@ def test_narrow_element_in_a_gutter_does_not_hide_it():
     assert (700, 753) in _gutters(r)
     assert _extents(r) == [(_BAND0, 700), (753, 1600), (1653, _BAND1)]
     intruded = [run for run in r.runs if (run.y0, run.y1) == (700, 753)][0]
-    assert intruded.widest_intruder_px > 0, "the intruder must actually be in the fixture"
-    assert intruded.widest_intruder_px < segment._CARD_ROW_MIN_SPAN_FRAC * (_CARD_X1 - _CARD_X0)
+    assert intruded.widest_intruder_px > 0, (
+        "the intruder must actually be in the fixture"
+    )
+    assert intruded.widest_intruder_px < segment._CARD_ROW_MIN_SPAN_FRAC * (
+        _CARD_X1 - _CARD_X0
+    )
 
 
 def test_a_full_width_element_in_a_gutter_does_hide_it():
@@ -595,14 +667,18 @@ def test_a_full_width_element_in_a_gutter_does_hide_it():
 # Doc 5.3: hearts decide the class
 # =====================================================================================
 
+
 def test_heartless_block_is_context_and_the_same_block_with_a_heart_is_selectable():
     """The vitals block (doc 5.10: ~215px tall, carries no heart, tracked across 7 consecutive
     real frames) versus a photo/prompt card. Identical geometry, so the ONLY thing separating
     context from selectable is the heart."""
-    for heart_y, expected in ((None, segment.BLOCK_CONTEXT), (1360, segment.BLOCK_SELECTABLE)):
+    for heart_y, expected in (
+        (None, segment.BLOCK_CONTEXT),
+        (1360, segment.BLOCK_SELECTABLE),
+    ):
         f = _Frame()
         f.card(_BAND0, 1150, heart_y=1090)
-        f.card(1203, 1418, heart_y=heart_y)              # 215px, exactly the measured vitals size
+        f.card(1203, 1418, heart_y=heart_y)  # 215px, exactly the measured vitals size
         f.card(1471, _BAND1, heart_y=2050)
         r = f.segment()
 
@@ -620,7 +696,7 @@ def test_two_hearts_in_one_block_reports_a_failure_instead_of_guessing():
     wrong item."""
     f = _Frame()
     f.card(_BAND0, 700, heart_y=640)
-    f.card(753, 1800, heart_y=900).heart(1740)           # two hearts, one block
+    f.card(753, 1800, heart_y=900).heart(1740)  # two hearts, one block
     f.card(1853, _BAND1, heart_y=2050)
     r = f.segment()
 
@@ -637,15 +713,17 @@ def test_the_same_two_hearts_split_by_a_gutter_are_two_selectable_blocks():
     """Control for the test above: the hearts are not the problem, the missing boundary is.
     Put a canonical gutter between the identical pair and both become ordinary items."""
     f = _Frame()
-    f.card(200, 700, heart_y=640)                        # sliced by the band edges, so the two
-    f.card(753, 1150, heart_y=900)                       # interior cards are the only complete
-    f.card(1203, 1800, heart_y=1740)                     # ones and the count below is exact
+    f.card(200, 700, heart_y=640)  # sliced by the band edges, so the two
+    f.card(753, 1150, heart_y=900)  # interior cards are the only complete
+    f.card(1203, 1800, heart_y=1740)  # ones and the count below is exact
     f.card(1853, 2300, heart_y=2050)
     r = f.segment()
 
     assert r.ok, r.failures
-    assert [b.kind for b in r.blocks[1:3]] == [segment.BLOCK_SELECTABLE,
-                                               segment.BLOCK_SELECTABLE]
+    assert [b.kind for b in r.blocks[1:3]] == [
+        segment.BLOCK_SELECTABLE,
+        segment.BLOCK_SELECTABLE,
+    ]
     assert len(r.selectable) == 2
 
 
@@ -662,19 +740,21 @@ def test_a_heart_below_the_last_card_row_is_still_assigned_to_its_block():
     was measured at 1300."""
     f = _Frame()
     f.card(200, 700, heart_y=640)
-    f.card(753, 1300)                                    # dense card content stops at 1300
-    f.heart(1400)                                        # ...but its heart sits 100 rows lower
+    f.card(753, 1300)  # dense card content stops at 1300
+    f.heart(1400)  # ...but its heart sits 100 rows lower
     r = f.segment()
 
     assert r.unassigned_hearts == ()
     block = r.blocks[1]
     assert block.hearts == ((_HEART_CX, 1400),)
-    assert block.y1 >= 1400 + f.template.shape[0] // 2, "crop must contain the whole glyph"
+    assert block.y1 >= 1400 + f.template.shape[0] // 2, (
+        "crop must contain the whole glyph"
+    )
     assert block.y1 > 1300, "fixture must actually exercise the widening"
-    assert block.kind == segment.BLOCK_PARTIAL           # its bottom still runs off the band
+    assert block.kind == segment.BLOCK_PARTIAL  # its bottom still runs off the band
     assert block.bottom.kind == segment.EDGE_BACKGROUND_RUN
     assert not block.bottom.observed and block.bottom.corner_px is None
-    assert block.bottom.run_px > 0                       # background beyond it, length unknown
+    assert block.bottom.run_px > 0  # background beyond it, length unknown
 
 
 # =====================================================================================
@@ -685,6 +765,7 @@ def test_a_heart_below_the_last_card_row_is_still_assigned_to_its_block():
 # these tests passes a boundary row in: an earlier revision took `list_top_y`/`list_bottom_y`
 # as parameters and the calibration corpus proved no constant can serve two profiles.
 # =====================================================================================
+
 
 def _scroll_top_frame(*, header_y1=446, name_y0=497, name_y1=561, card_y0=700):
     """Scroll-top, rebuilt from the measured layout: a header strip spanning the card width, a
@@ -698,8 +779,10 @@ def _scroll_top_frame(*, header_y1=446, name_y0=497, name_y1=561, card_y0=700):
     may depend on that gap being rejected.
     """
     f = _Frame()
-    f.fill(_BAND0, header_y1, _CARD_X0, _CARD_X1, 90)    # header strip, card width, no corners
-    f.fill(name_y0, name_y1, 100, 800, 70)               # name row: wide, but not full width
+    f.fill(
+        _BAND0, header_y1, _CARD_X0, _CARD_X1, 90
+    )  # header strip, card width, no corners
+    f.fill(name_y0, name_y1, 100, 800, 70)  # name row: wide, but not full width
     f.card(card_y0, card_y0 + 974, heart_y=card_y0 + 914)
     f.card(card_y0 + 974 + _GUTTER, 2300, heart_y=card_y0 + 1200)
     return f
@@ -718,13 +801,15 @@ def test_the_first_card_of_the_list_is_bounded_by_its_own_corner():
     assert (first.y0, first.y1) == (700, 1674) and first.height == 974
     assert first.kind == segment.BLOCK_SELECTABLE and first.complete
     assert first.top.kind == segment.EDGE_CARD_CORNER and first.top.observed
-    assert first.top.corner_px == _CORNER_RADIUS_PX      # the radius it was measured at
+    assert first.top.corner_px == _CORNER_RADIUS_PX  # the radius it was measured at
     assert first.bottom.kind == segment.EDGE_GUTTER
 
     # The mechanism, spelled out: the 139-row chrome gap cut the block, and it cut it because of
     # the corner below it and not because of its length.
     assert (561, 700) in _card_edge_runs(r)
-    assert (446, 497) in _gutters(r), "fixture must keep the hostile gutter-length chrome gap"
+    assert (446, 497) in _gutters(r), (
+        "fixture must keep the hostile gutter-length chrome gap"
+    )
 
     # And the chrome itself never enters the model's view: neither strip is selectable, and
     # neither is a CONTEXT block either, because neither of their ends is gutter- or
@@ -748,7 +833,11 @@ def test_two_profiles_with_different_headers_both_recover_item_one():
     for f, top in ((tall, 700), (short, 480)):
         r = f.segment()
         assert r.ok, r.failures
-        card = [b for b in r.blocks if b.kind == segment.BLOCK_SELECTABLE and b.height == 974]
+        card = [
+            b
+            for b in r.blocks
+            if b.kind == segment.BLOCK_SELECTABLE and b.height == 974
+        ]
         assert len(card) == 1, _extents(r)
         assert (card[0].y0, card[0].y1) == (top, top + 974)
         assert card[0].top.kind == segment.EDGE_CARD_CORNER
@@ -761,15 +850,15 @@ def test_a_chrome_row_is_not_mistaken_for_a_card_top():
     a wide margin and not a near miss: Hinge's real header rows imply corner radii of 68.5px and
     up against an accepted window of 18..25."""
     f = _Frame()
-    f.fill(_BAND0, 446, _CARD_X0, _CARD_X1, 90)          # header strip
-    f.fill(600, 664, 100, 800, 70)                       # name row below a 154-row gap
-    f.card(753, 1727, heart_y=1667)                      # a real card, 974px
+    f.fill(_BAND0, 446, _CARD_X0, _CARD_X1, 90)  # header strip
+    f.fill(600, 664, 100, 800, 70)  # name row below a 154-row gap
+    f.card(753, 1727, heart_y=1667)  # a real card, 974px
     r = f.segment()
 
-    assert _card_edge_runs(r) == [(664, 753)]            # only the CARD's gap cut, not the name's
+    assert _card_edge_runs(r) == [(664, 753)]  # only the CARD's gap cut, not the name's
     assert (446, 600) not in _card_edge_runs(r)
     merged = [b for b in r.blocks if b.y0 == _BAND0]
-    assert len(merged) == 1 and merged[0].y1 == 664      # header + name stayed one block
+    assert len(merged) == 1 and merged[0].y1 == 664  # header + name stayed one block
     assert merged[0].kind == segment.BLOCK_PARTIAL
     assert merged[0].bottom.kind == segment.EDGE_BACKGROUND_RUN
 
@@ -780,7 +869,7 @@ def test_the_last_card_of_the_list_is_bounded_by_its_own_corner():
     selectable at all; before the corner test it was permanently PARTIAL."""
     f = _Frame()
     f.card(200, 700, heart_y=640)
-    f.card(753, 1700, heart_y=1640)                      # the last card; page background below
+    f.card(753, 1700, heart_y=1640)  # the last card; page background below
     r = f.segment()
 
     last = r.blocks[-1]
@@ -788,7 +877,7 @@ def test_the_last_card_of_the_list_is_bounded_by_its_own_corner():
     assert last.kind == segment.BLOCK_SELECTABLE and last.complete
     assert last.bottom.kind == segment.EDGE_CARD_CORNER and last.bottom.observed
     assert last.bottom.corner_px == _CORNER_RADIUS_PX
-    assert last.bottom.run_px == _BAND1 - 1700           # page background beyond it, reported
+    assert last.bottom.run_px == _BAND1 - 1700  # page background beyond it, reported
 
 
 def test_a_card_sliced_by_the_band_edge_is_still_partial():
@@ -798,7 +887,7 @@ def test_a_card_sliced_by_the_band_edge_is_still_partial():
     card extended past the band."""
     f = _Frame()
     f.card(200, 700, heart_y=640)
-    f.card(753, 2300, heart_y=1640)                      # runs off the bottom of the band
+    f.card(753, 2300, heart_y=1640)  # runs off the bottom of the band
     r = f.segment()
 
     last = r.blocks[-1]
@@ -815,7 +904,7 @@ def test_a_gutter_clipped_by_the_band_edge_is_recovered_from_the_corner():
     mid-scroll frames — not just at the two list boundaries."""
     f = _Frame()
     f.card(200, 700, heart_y=640)
-    f.card(753, 2080, heart_y=2020)                      # ends 20 rows above the band edge
+    f.card(753, 2080, heart_y=2020)  # ends 20 rows above the band edge
     r = f.segment()
 
     clipped = [run for run in r.runs if run.kind == segment.RUN_CLIPPED]
@@ -830,6 +919,7 @@ def test_a_gutter_clipped_by_the_band_edge_is_recovered_from_the_corner():
 # The corner test's two safety properties. Both are the difference between "trusted edge"
 # and "confidently wrong extent", so both get an explicit control.
 # =====================================================================================
+
 
 def test_confirmed_scroll_top_recovers_a_square_first_photo_with_one_pale_corner():
     """Regression: header chrome must not swallow a real first photo and shift every number.
@@ -851,8 +941,9 @@ def test_confirmed_scroll_top_recovers_a_square_first_photo_with_one_pale_corner
     assert (368, 1491) not in _extents(ordinary)
     assert (517, 1491) in _extents(ordinary)
     assert ordinary.blocks[0].kind == segment.BLOCK_UNANCHORED
-    unrecovered_photo = next(block for block in ordinary.blocks
-                             if (block.y0, block.y1) == (517, 1491))
+    unrecovered_photo = next(
+        block for block in ordinary.blocks if (block.y0, block.y1) == (517, 1491)
+    )
     assert unrecovered_photo.kind == segment.BLOCK_PARTIAL
     assert not unrecovered_photo.complete
     assert unrecovered_photo.top.kind == segment.EDGE_UNANCHORED_ISLAND
@@ -862,29 +953,38 @@ def test_confirmed_scroll_top_recovers_a_square_first_photo_with_one_pale_corner
 
     assert recovered.ok, recovered.failures
     assert (517, 1491) in _extents(recovered)
-    first_photo = next(block for block in recovered.blocks
-                       if (block.y0, block.y1) == (517, 1491))
+    first_photo = next(
+        block for block in recovered.blocks if (block.y0, block.y1) == (517, 1491)
+    )
     assert first_photo.kind == segment.BLOCK_SELECTABLE and first_photo.complete
     assert first_photo.top.kind == segment.EDGE_SCROLL_TOP_MEDIA
     assert first_photo.heart == (_HEART_CX, 1402)
     assert (411, 517) in [
-        (run.y0, run.y1) for run in recovered.runs
-        if run.kind == segment.RUN_SCROLL_TOP_MEDIA]
+        (run.y0, run.y1)
+        for run in recovered.runs
+        if run.kind == segment.RUN_SCROLL_TOP_MEDIA
+    ]
 
     # Production does not call the opt-in directly: the item indexer grants it only to frame 0
     # when its caller has already confirmed scroll-top. Pin that wiring and the recovered heart
     # ordinal, which is what prevents every later photo number shifting down by one.
     index = item_index.build_item_index(
-        [f.png()], content_band=_CONTENT_BAND, like_template=f.template,
-        like_threshold=hinge._LIKE_MATCH_THRESHOLD, at_scroll_top=True,
-        identity_band=None)
+        [f.png()],
+        content_band=_CONTENT_BAND,
+        like_template=f.template,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD,
+        at_scroll_top=True,
+        identity_band=None,
+    )
     assert index.usable, index.failures
     assert index.translation == (1,)
     assert index.selectable[0].page_y0 == 517
 
 
 @pytest.mark.parametrize("change", ["non_square", "missing_heart", "missing_gutter"])
-def test_scroll_top_media_recovery_refuses_when_any_independent_guard_is_missing(change):
+def test_scroll_top_media_recovery_refuses_when_any_independent_guard_is_missing(
+    change,
+):
     """The opt-in path is a conjunction, never a generic licence to split long blank spans."""
     if change == "non_square":
         frame = _low_contrast_scroll_top(card_y1=1450, heart_y=1361)
@@ -896,7 +996,9 @@ def test_scroll_top_media_recovery_refuses_when_any_independent_guard_is_missing
     result = frame.segment(recover_leading_low_contrast_media=True)
 
     assert not any(run.kind == segment.RUN_SCROLL_TOP_MEDIA for run in result.runs)
-    assert not any(block.top.kind == segment.EDGE_SCROLL_TOP_MEDIA for block in result.blocks)
+    assert not any(
+        block.top.kind == segment.EDGE_SCROLL_TOP_MEDIA for block in result.blocks
+    )
 
 
 def test_low_contrast_recovery_is_never_enabled_for_an_ordinary_frame():
@@ -911,9 +1013,12 @@ def test_low_contrast_recovery_is_never_enabled_for_an_ordinary_frame():
     result = _low_contrast_scroll_top().segment()
     assert not any(run.kind == segment.RUN_SCROLL_TOP_MEDIA for run in result.runs)
     assert result.blocks[0].kind == segment.BLOCK_UNANCHORED
-    assert not any(block.top.kind == segment.EDGE_SCROLL_TOP_MEDIA for block in result.blocks)
-    assert not any(block.complete for block in result.blocks
-                   if (block.y0, block.y1) == (517, 1491))
+    assert not any(
+        block.top.kind == segment.EDGE_SCROLL_TOP_MEDIA for block in result.blocks
+    )
+    assert not any(
+        block.complete for block in result.blocks if (block.y0, block.y1) == (517, 1491)
+    )
 
 
 def test_a_rounded_element_inside_a_card_cannot_forge_a_card_edge():
@@ -928,9 +1033,9 @@ def test_a_rounded_element_inside_a_card_cannot_forge_a_card_edge():
     f = _Frame()
     f.card(200, 700, heart_y=640)
     f.card(753, 1800, heart_y=1740)
-    f.page(1000, 1100, _CARD_X0, _CARD_X1)               # 100-row gap: too long to be a gutter
+    f.page(1000, 1100, _CARD_X0, _CARD_X1)  # 100-row gap: too long to be a gutter
     f.page(1100, 1500, _CARD_X0, _CARD_X1)
-    f.card(1100, 1500, x0=65, x1=1015, radius=10)        # 950px wide: span starts at 930...
+    f.card(1100, 1500, x0=65, x1=1015, radius=10)  # 950px wide: span starts at 930...
     r = f.segment()
 
     assert r.ok, r.failures
@@ -948,17 +1053,18 @@ def test_a_corner_is_rejected_when_the_two_radius_estimates_disagree():
 
     The second half is the control that proves it was the ramp and not the fixture: replace the
     chamfer with a genuine 22px arc, change nothing else, and the identical gap now cuts."""
+
     def frame(top_shape):
         f = _Frame()
         # Square bottom so this test isolates the candidate corner BELOW the long gap. A
         # valid rounded upper bottom now independently proves the gap is a boundary.
-        f.card(200, 700, heart_y=640, radius=0)           # sliced by the band's top edge
-        top_shape(f)                                      # ...300 rows of page background, then:
+        f.card(200, 700, heart_y=640, radius=0)  # sliced by the band's top edge
+        top_shape(f)  # ...300 rows of page background, then:
         return f
 
     def chamfer(f):
-        f.fill(1000, 1001, _CARD_X0 + 22, _CARD_X1 - 22, 40)   # one row at span 930...
-        f.card(1001, 1700, radius=0)                           # ...then full width immediately
+        f.fill(1000, 1001, _CARD_X0 + 22, _CARD_X1 - 22, 40)  # one row at span 930...
+        f.card(1001, 1700, radius=0)  # ...then full width immediately
 
     r = frame(chamfer).segment()
     assert _card_edge_runs(r) == []
@@ -982,10 +1088,12 @@ def test_a_corner_outside_the_measured_radius_window_is_rejected():
     f.card(1000, 1700, heart_y=1640, radius=40)
     r = f.segment()
 
-    assert 40 > max(segment._CARD_CORNER_PX), "fixture must sit outside the accepted window"
+    assert 40 > max(segment._CARD_CORNER_PX), (
+        "fixture must sit outside the accepted window"
+    )
     assert _card_edge_runs(r) == []
-    assert _extents(r) == [(_BAND0, 1700)]               # merged, because nothing cut
-    assert not r.ok                                      # ...and loudly: two hearts, one block
+    assert _extents(r) == [(_BAND0, 1700)]  # merged, because nothing cut
+    assert not r.ok  # ...and loudly: two hearts, one block
     assert r.blocks[0].kind == segment.BLOCK_AMBIGUOUS
 
 
@@ -1012,10 +1120,10 @@ def test_a_corner_outside_the_measured_radius_window_is_rejected():
 # and the card-corner rescue that already existed.
 # =====================================================================================
 
-_STRIP_Y0, _STRIP_Y1 = 368, 411          # the pinned header strip: frame rows 368..410, 43px
-_CONTENT_CLIP_Y = 517                    # first row of scrolling content; the run above is 106px
-_HEADER_WIDEST_SPAN_PX = 968             # of the card's 974 — the whole rule's 6px of margin
-_CARD_WIDTH_PX = _CARD_X1 - _CARD_X0     # 974
+_STRIP_Y0, _STRIP_Y1 = 368, 411  # the pinned header strip: frame rows 368..410, 43px
+_CONTENT_CLIP_Y = 517  # first row of scrolling content; the run above is 106px
+_HEADER_WIDEST_SPAN_PX = 968  # of the card's 974 — the whole rule's 6px of margin
+_CARD_WIDTH_PX = _CARD_X1 - _CARD_X0  # 974
 
 
 def _widest_span(f, y0, y1):
@@ -1026,7 +1134,10 @@ def _widest_span(f, y0, y1):
     standing hazard — a test that never reaches the branch it is named for.
     """
     band = f.gray[y0:y1, _CARD_X0:_CARD_X1].astype(np.int32)
-    nonbg = np.abs(band - f.col[y0:y1].astype(np.int32)[:, None]) > segment._BACKGROUND_TOLERANCE
+    nonbg = (
+        np.abs(band - f.col[y0:y1].astype(np.int32)[:, None])
+        > segment._BACKGROUND_TOLERANCE
+    )
     widest = 0
     for row in nonbg:
         hit = np.flatnonzero(row)
@@ -1034,8 +1145,15 @@ def _widest_span(f, y0, y1):
     return widest
 
 
-def _pinned_header_frame(*, strip_span=_HEADER_WIDEST_SPAN_PX, card_radius=0, card_y1=1491,
-                         heart_y=1402, strip_heart_y=None, run_heart_y=None):
+def _pinned_header_frame(
+    *,
+    strip_span=_HEADER_WIDEST_SPAN_PX,
+    card_radius=0,
+    card_y1=1491,
+    heart_y=1402,
+    strip_heart_y=None,
+    run_heart_y=None,
+):
     """The measured 10.1.0 mid-scroll shape: background, pinned strip, background, clipped card.
 
     The strip is drawn `strip_span` px wide and CENTRED in the card band, so the fixture's own
@@ -1081,27 +1199,32 @@ def test_a_screen_pinned_header_strip_is_split_off_and_reported_as_unplaceable()
     assert not strip.top.observed
     assert strip.bottom.kind == segment.EDGE_UNANCHORED_ISLAND
     assert not strip.bottom.observed
-    assert strip.bottom.run_px == 106                    # 411..517, the measured run
+    assert strip.bottom.run_px == 106  # 411..517, the measured run
     assert strip.content_digest is not None
     assert f"{_HEADER_WIDEST_SPAN_PX}px of {_CARD_WIDTH_PX}px" in strip.reason
 
     # The cut itself is a new CATEGORY of run, not a fifth flavour of gutter: it separates
     # without bounding, which is exactly what both unobserved edges above say.
-    island_runs = [(run.y0, run.y1) for run in r.runs
-                   if run.kind == segment.RUN_UNANCHORED_ISLAND]
+    island_runs = [
+        (run.y0, run.y1) for run in r.runs if run.kind == segment.RUN_UNANCHORED_ISLAND
+    ]
     assert island_runs == [(411, _CONTENT_CLIP_Y)]
     assert (411, _CONTENT_CLIP_Y) not in _gutters(r)
     assert (411, _CONTENT_CLIP_Y) not in _card_edge_runs(r)
 
     card = r.blocks[1]
-    assert card.y0 == _CONTENT_CLIP_Y, "the card must start at real content, not at the strip"
+    assert card.y0 == _CONTENT_CLIP_Y, (
+        "the card must start at real content, not at the strip"
+    )
     assert card.top.kind == segment.EDGE_UNANCHORED_ISLAND and not card.top.observed
-    assert not card.complete                             # unplaceable above => not croppable
+    assert not card.complete  # unplaceable above => not croppable
     assert card.hearts == ((_HEART_CX, 1402),)
 
     # The digest is the UNANCHORED block's alone. Anywhere else it would be an invitation to
     # compare block content across frames on a path whose decode equality is not guaranteed.
-    assert [b.content_digest for b in r.blocks if b.kind != segment.BLOCK_UNANCHORED] == [None]
+    assert [
+        b.content_digest for b in r.blocks if b.kind != segment.BLOCK_UNANCHORED
+    ] == [None]
 
 
 def test_a_leading_strip_reaching_the_full_card_width_is_a_card_slice_and_never_splits():
@@ -1133,7 +1256,8 @@ def test_a_leading_strip_reaching_the_full_card_width_is_a_card_slice_and_never_
     merged = full.segment()
     assert merged.ok, merged.failures
     assert _extents(merged) == [(_STRIP_Y0, 1491)], (
-        "a full-width slice must come back exactly as it did before the 10.1.0 fix: one block")
+        "a full-width slice must come back exactly as it did before the 10.1.0 fix: one block"
+    )
     assert _kinds(merged) == [segment.BLOCK_PARTIAL]
     assert merged.blocks[0].content_digest is None
     assert merged.blocks[0].top.kind == segment.EDGE_BACKGROUND_RUN
@@ -1166,7 +1290,9 @@ def test_a_leading_card_with_its_own_corners_is_a_card_and_never_an_unplaceable_
     its own — and the test would then prove nothing about corners at all.
     """
     f = _Frame()
-    f.card(_STRIP_Y0, 560, radius=_CORNER_RADIUS_PX)     # a whole 192px card, both corners on
+    f.card(
+        _STRIP_Y0, 560, radius=_CORNER_RADIUS_PX
+    )  # a whole 192px card, both corners on
     f.card(560 + _GUTTER, 1587, heart_y=1498, radius=_CORNER_RADIUS_PX)
     r = f.segment()
 
@@ -1176,9 +1302,14 @@ def test_a_leading_card_with_its_own_corners_is_a_card_and_never_an_unplaceable_
     assert r.runs[0].kind == segment.RUN_CLIPPED and r.runs[0].y0 == _BAND0
 
     assert r.ok, r.failures
-    unplaceable = [(block.y0, block.y1) for block in r.blocks
-                   if block.kind == segment.BLOCK_UNANCHORED]
-    assert unplaceable == [], f"a whole card was reported as unplaceable chrome: {unplaceable}"
+    unplaceable = [
+        (block.y0, block.y1)
+        for block in r.blocks
+        if block.kind == segment.BLOCK_UNANCHORED
+    ]
+    assert unplaceable == [], (
+        f"a whole card was reported as unplaceable chrome: {unplaceable}"
+    )
     assert not any(run.kind == segment.RUN_UNANCHORED_ISLAND for run in r.runs)
 
     leading = r.blocks[0]
@@ -1209,10 +1340,10 @@ def test_a_page_coloured_span_inside_a_band_clipped_card_never_becomes_an_unplac
     prove nothing about the one it is named for.
     """
     f = _Frame()
-    f.card(200, 1800, heart_y=1740)                      # top clipped by the band at 300
-    f.page(200, 1800, _CARD_X1 - 30, _CARD_X1)           # ragged-right text: never full width
-    f.page(700, 892, _CARD_X0, _CARD_X1)                 # the measured 192-row blank interior
-    f.page(1000, 1106, _CARD_X0, _CARD_X1)               # a second blank span, 106px
+    f.card(200, 1800, heart_y=1740)  # top clipped by the band at 300
+    f.page(200, 1800, _CARD_X1 - 30, _CARD_X1)  # ragged-right text: never full width
+    f.page(700, 892, _CARD_X0, _CARD_X1)  # the measured 192-row blank interior
+    f.page(1000, 1106, _CARD_X0, _CARD_X1)  # a second blank span, 106px
     r = f.segment()
 
     assert r.ok, r.failures
@@ -1224,18 +1355,25 @@ def test_a_page_coloured_span_inside_a_band_clipped_card_never_becomes_an_unplac
     # The controls, in the order of the clauses they stand for. The first is the precondition
     # under test; the other three are the clauses that must NOT be the reason this frame is safe.
     assert r.runs[0].y0 == 700 and r.runs[0].kind == segment.RUN_TOO_LONG, (
-        "the band must open on CARD rows, or clause (a) is not what rejected this frame")
+        "the band must open on CARD rows, or clause (a) is not what rejected this frame"
+    )
     assert [run.kind for run in r.runs if run.y0 == 1000] == [segment.RUN_TOO_LONG], (
-        "the second blank span must be a cuttable RUN_TOO_LONG, or a mutant has nothing to cut")
-    assert _widest_span(f, 892, 1000) == 944 < _CARD_WIDTH_PX      # clause (c) would pass
-    assert not any(892 <= y < 1106 for _, y in r.hearts)           # clause (e) would pass
+        "the second blank span must be a cuttable RUN_TOO_LONG, or a mutant has nothing to cut"
+    )
+    assert _widest_span(f, 892, 1000) == 944 < _CARD_WIDTH_PX  # clause (c) would pass
+    assert not any(892 <= y < 1106 for _, y in r.hearts)  # clause (e) would pass
 
 
-@pytest.mark.parametrize("place, merged_extent", [
-    (dict(strip_heart_y=389), (345, 1491)),
-    (dict(run_heart_y=460), (_STRIP_Y0, 1491)),
-])
-def test_a_heart_in_the_leading_strip_or_its_run_declines_the_split(place, merged_extent):
+@pytest.mark.parametrize(
+    "place, merged_extent",
+    [
+        (dict(strip_heart_y=389), (345, 1491)),
+        (dict(run_heart_y=460), (_STRIP_Y0, 1491)),
+    ],
+)
+def test_a_heart_in_the_leading_strip_or_its_run_declines_the_split(
+    place, merged_extent
+):
     """Clause (e): a like heart anywhere in the candidate means this rule does not fire.
 
     A heart is a likeable Hinge item, and this rule would rather report the old merged block
@@ -1296,7 +1434,9 @@ def test_a_card_corner_below_the_run_still_outranks_the_island_cut():
 
     strip = r.blocks[0]
     assert strip.kind == segment.BLOCK_UNANCHORED and strip.content_digest is not None
-    assert strip.bottom.kind == segment.EDGE_BACKGROUND_RUN and not strip.bottom.observed
+    assert (
+        strip.bottom.kind == segment.EDGE_BACKGROUND_RUN and not strip.bottom.observed
+    )
 
 
 def test_the_unanchored_content_digest_is_taken_from_the_strips_decoded_pixels():
@@ -1349,24 +1489,29 @@ def test_the_content_digest_may_only_be_compared_along_this_one_decode_path():
     assert ok
     reencoded = buf.tobytes()
     assert reencoded != png, (
-        "fixture must really be two different files, or it stands in for nothing")
+        "fixture must really be two different files, or it stands in for nothing"
+    )
 
     other = segment.segment_frame(
-        reencoded, content_band=_CONTENT_BAND,
+        reencoded,
+        content_band=_CONTENT_BAND,
         like_template=hinge._load_template(hinge.HINGE_SPEC.templates["like"]),
-        like_threshold=hinge._LIKE_MATCH_THRESHOLD)
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD,
+    )
 
-    assert other.frame_digest != direct.frame_digest      # different files...
-    assert _extents(other) == _extents(direct)            # ...identical pixels
+    assert other.frame_digest != direct.frame_digest  # different files...
+    assert _extents(other) == _extents(direct)  # ...identical pixels
     assert other.blocks[0].content_digest is not None
     assert direct.blocks[0].content_digest != direct.frame_digest, (
         "the content digest is the STRIP's pixels, never the frame's bytes — substituting one "
-        "for the other is the mistake this field's docstring forbids")
+        "for the other is the mistake this field's docstring forbids"
+    )
 
 
 # =====================================================================================
 # Fail loud, and the limits of what "loud" can mean from one frame
 # =====================================================================================
+
 
 def test_a_frame_with_no_cards_is_not_a_failure_and_not_a_screen_verdict():
     """Segmentation is not screen recognition. Fed something that is not a profile at all — here
@@ -1376,7 +1521,7 @@ def test_a_frame_with_no_cards_is_not_a_failure_and_not_a_screen_verdict():
     real captures 15 of 148 genuine profile frames also complete no block. The screen check is a
     separate, earlier decision."""
     f = _Frame()
-    f.fill(_BAND0, _BAND1, 0, _W, 120)                   # edge to edge: no page margin, no cards
+    f.fill(_BAND0, _BAND1, 0, _W, 120)  # edge to edge: no page margin, no cards
     r = f.segment()
 
     assert r.ok and r.failures == ()
@@ -1387,10 +1532,12 @@ def test_a_frame_with_no_cards_is_not_a_failure_and_not_a_screen_verdict():
 
 def test_undecodable_frame_raises_rather_than_returning_no_blocks():
     with pytest.raises(segment.SegmentationError, match="did not decode"):
-        segment.segment_frame(b"not an image", content_band=_CONTENT_BAND,
-                              like_template=hinge._load_template(
-                                  hinge.HINGE_SPEC.templates["like"]),
-                              like_threshold=hinge._LIKE_MATCH_THRESHOLD)
+        segment.segment_frame(
+            b"not an image",
+            content_band=_CONTENT_BAND,
+            like_template=hinge._load_template(hinge.HINGE_SPEC.templates["like"]),
+            like_threshold=hinge._LIKE_MATCH_THRESHOLD,
+        )
 
 
 def test_missing_like_template_raises_rather_than_calling_every_card_context():
@@ -1399,8 +1546,12 @@ def test_missing_like_template_raises_rather_than_calling_every_card_context():
     f = _Frame()
     f.card(_BAND0, 1150, heart_y=1090)
     with pytest.raises(segment.SegmentationError, match="no like-glyph template"):
-        segment.segment_frame(f.png(), content_band=_CONTENT_BAND, like_template=None,
-                              like_threshold=hinge._LIKE_MATCH_THRESHOLD)
+        segment.segment_frame(
+            f.png(),
+            content_band=_CONTENT_BAND,
+            like_template=None,
+            like_threshold=hinge._LIKE_MATCH_THRESHOLD,
+        )
 
 
 def test_degenerate_band_raises():
@@ -1428,8 +1579,12 @@ def test_missing_cv2_raises_instead_of_degrading(monkeypatch):
     absent. Segmentation must not: the thing it would have to invent is which items exist."""
     monkeypatch.setitem(sys.modules, "cv2", None)
     with pytest.raises(segment.SegmentationError, match="opencv-python"):
-        segment.segment_frame(b"", content_band=_CONTENT_BAND, like_template=object(),
-                              like_threshold=hinge._LIKE_MATCH_THRESHOLD)
+        segment.segment_frame(
+            b"",
+            content_band=_CONTENT_BAND,
+            like_template=object(),
+            like_threshold=hinge._LIKE_MATCH_THRESHOLD,
+        )
 
 
 def test_hitting_the_matcher_hit_cap_is_a_failure():

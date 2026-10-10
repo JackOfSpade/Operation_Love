@@ -14,6 +14,7 @@ already exercised bit-for-bit by test_hinge_observe.py:
                           hit; with no such template declared (Bumble's current, real state) it
                           is structurally unable to tap anything at all.
 """
+
 import re
 from pathlib import Path
 
@@ -71,6 +72,7 @@ def _drv(spec, adb, **overrides):
     # tests/test_hinge_observe.py).
     class C:
         apps = {spec.app: {"halt_on_error": False, **overrides}}
+
     d = AndroidDriver(C(), spec)
     d._adb = adb
     d._touch = adb
@@ -84,13 +86,17 @@ def _no_sleep(monkeypatch):
 
 # --- spec wiring ------------------------------------------------------------
 def test_android_app_spec_is_frozen():
-    with pytest.raises(Exception):  # dataclasses.FrozenInstanceError (an AttributeError)
+    with pytest.raises(
+        Exception
+    ):  # dataclasses.FrozenInstanceError (an AttributeError)
         HINGE_SPEC.calibrated = False
 
 
 def test_android_app_spec_rejects_an_unknown_like_flow():
     with pytest.raises(ValueError, match="like_flow"):
-        AndroidAppSpec(app="x", package="x.y", calibrated=False, like_flow="swipe_left_right")
+        AndroidAppSpec(
+            app="x", package="x.y", calibrated=False, like_flow="swipe_left_right"
+        )
 
 
 # --- coords / read_scroll_frac must be real fractions in 0..1 ---------------------------
@@ -102,25 +108,33 @@ def test_android_app_spec_rejects_an_unknown_like_flow():
 # config.py's _validate_android_fractions) -- it catches a bad literal baked into a spec
 # itself, at import time, not the first live tap.
 
+
 def test_coords_entry_out_of_range_fraction_is_rejected():
     with pytest.raises(ValueError, match=r"0\.\.1"):
-        AndroidAppSpec(app="x", package="x.y", calibrated=False,
-                       coords={"like_heart": (1.05, 0.5)})
+        AndroidAppSpec(
+            app="x", package="x.y", calibrated=False, coords={"like_heart": (1.05, 0.5)}
+        )
 
 
 def test_coords_entry_negative_fraction_is_rejected():
     with pytest.raises(ValueError, match=r"0\.\.1"):
-        AndroidAppSpec(app="x", package="x.y", calibrated=False,
-                       coords={"pass_x": (0.5, -0.01)})
+        AndroidAppSpec(
+            app="x", package="x.y", calibrated=False, coords={"pass_x": (0.5, -0.01)}
+        )
 
 
 def test_coords_entry_must_be_an_xy_pair_of_numbers():
     with pytest.raises(ValueError, match="coords"):
-        AndroidAppSpec(app="x", package="x.y", calibrated=False,
-                       coords={"like_heart": (0.5,)})       # wrong arity
+        AndroidAppSpec(
+            app="x", package="x.y", calibrated=False, coords={"like_heart": (0.5,)}
+        )  # wrong arity
     with pytest.raises(ValueError, match="coords"):
-        AndroidAppSpec(app="x", package="x.y", calibrated=False,
-                       coords={"like_heart": ("half", 0.5)})  # not numbers
+        AndroidAppSpec(
+            app="x",
+            package="x.y",
+            calibrated=False,
+            coords={"like_heart": ("half", 0.5)},
+        )  # not numbers
 
 
 def test_coords_entry_rejects_nan():
@@ -129,8 +143,12 @@ def test_coords_entry_rejects_nan():
     # (which Python evaluates as False anyway, but explicit isfinite() makes the intent --
     # and the failure mode for inf -- unambiguous).
     with pytest.raises(ValueError, match=r"0\.\.1"):
-        AndroidAppSpec(app="x", package="x.y", calibrated=False,
-                       coords={"like_heart": (float("nan"), 0.5)})
+        AndroidAppSpec(
+            app="x",
+            package="x.y",
+            calibrated=False,
+            coords={"like_heart": (float("nan"), 0.5)},
+        )
 
 
 def test_read_scroll_frac_out_of_range_is_rejected():
@@ -151,15 +169,18 @@ def test_read_scroll_frac_default_and_boundary_values_pass():
 # --- observe-mode fields: identity_band / content_band / observe_ignore_zones / -----------
 # --- observe_touch_watch, and their __post_init__ validation --------------------------------
 
+
 def test_malformed_identity_band_is_rejected():
     # Same normalised-rect shape as forbidden_zones / upsell_dismiss_zone -- a bad rect here
     # would silently defeat the identity anchor rather than raise.
     with pytest.raises(ValueError, match="identity_band"):
-        AndroidAppSpec(app="x", package="x.y", calibrated=False,
-                       identity_band=(0.8, 0.1, 0.2, 0.9))    # x0 > x1
+        AndroidAppSpec(
+            app="x", package="x.y", calibrated=False, identity_band=(0.8, 0.1, 0.2, 0.9)
+        )  # x0 > x1
     with pytest.raises(ValueError, match="identity_band"):
-        AndroidAppSpec(app="x", package="x.y", calibrated=False,
-                       identity_band=(0.1, 0.1, 1.5, 0.9))    # outside 0..1
+        AndroidAppSpec(
+            app="x", package="x.y", calibrated=False, identity_band=(0.1, 0.1, 1.5, 0.9)
+        )  # outside 0..1
 
 
 # --- identity_top_name_band: OCR-only refinement of identity_band's "top" verdict ---------
@@ -168,13 +189,18 @@ def test_malformed_identity_band_is_rejected():
 # alone cannot name a card at scroll-top (it shows Hinge's profile-independent filter chips
 # there instead), so the loose pixel content-match mistook qelix's card for a scroll.
 
+
 def test_identity_top_name_band_is_accepted_alongside_identity_band():
     """A valid identity_top_name_band, declared together with identity_band (its prerequisite,
     since the name check only ever runs when identity_band's own verdict is "top"), must
     construct cleanly -- this is the exact shape the real Hinge fix needs."""
-    spec = AndroidAppSpec(app="x", package="x.y", calibrated=False,
-                          identity_band=(0.10, 0.048, 0.80, 0.094),
-                          identity_top_name_band=(0.03, 0.130, 0.75, 0.250))
+    spec = AndroidAppSpec(
+        app="x",
+        package="x.y",
+        calibrated=False,
+        identity_band=(0.10, 0.048, 0.80, 0.094),
+        identity_top_name_band=(0.03, 0.130, 0.75, 0.250),
+    )
     assert spec.identity_top_name_band == (0.03, 0.130, 0.75, 0.250)
 
 
@@ -196,25 +222,41 @@ def test_malformed_identity_top_name_band_is_rejected():
     wrong region, or over garbage) rather than raise, which is worse than declaring no band at
     all."""
     with pytest.raises(ValueError, match="identity_top_name_band"):
-        AndroidAppSpec(app="x", package="x.y", calibrated=False,
-                       identity_band=(0.10, 0.048, 0.80, 0.094),
-                       identity_top_name_band=(0.8, 0.1, 0.2, 0.9))    # x0 > x1
+        AndroidAppSpec(
+            app="x",
+            package="x.y",
+            calibrated=False,
+            identity_band=(0.10, 0.048, 0.80, 0.094),
+            identity_top_name_band=(0.8, 0.1, 0.2, 0.9),
+        )  # x0 > x1
     with pytest.raises(ValueError, match="identity_top_name_band"):
-        AndroidAppSpec(app="x", package="x.y", calibrated=False,
-                       identity_band=(0.10, 0.048, 0.80, 0.094),
-                       identity_top_name_band=(0.1, 0.9, 0.5, 0.1))    # y0 > y1
+        AndroidAppSpec(
+            app="x",
+            package="x.y",
+            calibrated=False,
+            identity_band=(0.10, 0.048, 0.80, 0.094),
+            identity_top_name_band=(0.1, 0.9, 0.5, 0.1),
+        )  # y0 > y1
     with pytest.raises(ValueError, match="identity_top_name_band"):
-        AndroidAppSpec(app="x", package="x.y", calibrated=False,
-                       identity_band=(0.10, 0.048, 0.80, 0.094),
-                       identity_top_name_band=(0.1, 0.1, 1.5, 0.9))    # outside 0..1
+        AndroidAppSpec(
+            app="x",
+            package="x.y",
+            calibrated=False,
+            identity_band=(0.10, 0.048, 0.80, 0.094),
+            identity_top_name_band=(0.1, 0.1, 1.5, 0.9),
+        )  # outside 0..1
     # Wrong arity: __post_init__ mirrors identity_band's check exactly, which unpacks the rect
     # into 4 names rather than validating its length up front (identity_band's own test above
     # doesn't cover arity either, for the same reason) -- so this still raises ValueError, just
     # from the unpack itself rather than a message naming the field.
     with pytest.raises(ValueError):
-        AndroidAppSpec(app="x", package="x.y", calibrated=False,
-                       identity_band=(0.10, 0.048, 0.80, 0.094),
-                       identity_top_name_band=(0.1, 0.1, 0.5))
+        AndroidAppSpec(
+            app="x",
+            package="x.y",
+            calibrated=False,
+            identity_band=(0.10, 0.048, 0.80, 0.094),
+            identity_top_name_band=(0.1, 0.1, 0.5),
+        )
 
 
 def test_identity_top_name_band_without_identity_band_is_rejected():
@@ -224,36 +266,58 @@ def test_identity_top_name_band_without_identity_band_is_rejected():
     error, refused at construction the same way observe_touch_watch=True without identity_band
     is refused (test_observe_touch_watch_without_identity_band_is_rejected above)."""
     with pytest.raises(ValueError, match="identity_top_name_band"):
-        AndroidAppSpec(app="x", package="x.y", calibrated=False,
-                       identity_top_name_band=(0.03, 0.130, 0.75, 0.250))
+        AndroidAppSpec(
+            app="x",
+            package="x.y",
+            calibrated=False,
+            identity_top_name_band=(0.03, 0.130, 0.75, 0.250),
+        )
 
 
 def test_identity_top_name_fallback_band_requires_and_only_shrinks_primary_band_bottom():
     primary = (0.03, 0.130, 0.75, 0.250)
     fallback = (0.03, 0.130, 0.75, 0.235)
-    spec = AndroidAppSpec(app="x", package="x.y", calibrated=False,
-                          identity_band=(0.10, 0.048, 0.80, 0.094),
-                          identity_top_name_band=primary,
-                          identity_top_name_fallback_band=fallback)
+    spec = AndroidAppSpec(
+        app="x",
+        package="x.y",
+        calibrated=False,
+        identity_band=(0.10, 0.048, 0.80, 0.094),
+        identity_top_name_band=primary,
+        identity_top_name_fallback_band=fallback,
+    )
     assert spec.identity_top_name_fallback_band == fallback
     with pytest.raises(ValueError, match="identity_band and identity_top_name_band"):
-        AndroidAppSpec(app="x", package="x.y", calibrated=False,
-                       identity_top_name_fallback_band=fallback)
+        AndroidAppSpec(
+            app="x",
+            package="x.y",
+            calibrated=False,
+            identity_top_name_fallback_band=fallback,
+        )
     with pytest.raises(ValueError, match="only y1 allowed to shrink"):
-        AndroidAppSpec(app="x", package="x.y", calibrated=False,
-                       identity_band=(0.10, 0.048, 0.80, 0.094),
-                       identity_top_name_band=primary,
-                       identity_top_name_fallback_band=(0.02, 0.130, 0.75, 0.235))
+        AndroidAppSpec(
+            app="x",
+            package="x.y",
+            calibrated=False,
+            identity_band=(0.10, 0.048, 0.80, 0.094),
+            identity_top_name_band=primary,
+            identity_top_name_fallback_band=(0.02, 0.130, 0.75, 0.235),
+        )
     # These are geometrically contained, but still inspect pixels outside the one calibrated
     # compact retry.  Only the primary band's bottom edge may move upward.
-    for shifted in ((0.04, 0.130, 0.75, 0.235),
-                    (0.03, 0.131, 0.75, 0.235),
-                    (0.03, 0.130, 0.74, 0.235)):
+    for shifted in (
+        (0.04, 0.130, 0.75, 0.235),
+        (0.03, 0.131, 0.75, 0.235),
+        (0.03, 0.130, 0.74, 0.235),
+    ):
         with pytest.raises(ValueError, match="only y1 allowed to shrink"):
-            AndroidAppSpec(app="x", package="x.y", calibrated=False,
-                           identity_band=(0.10, 0.048, 0.80, 0.094),
-                           identity_top_name_band=primary,
-                           identity_top_name_fallback_band=shifted)
+            AndroidAppSpec(
+                app="x",
+                package="x.y",
+                calibrated=False,
+                identity_band=(0.10, 0.048, 0.80, 0.094),
+                identity_top_name_band=primary,
+                identity_top_name_fallback_band=shifted,
+            )
 
 
 def test_take_another_look_name_band_requires_the_canonical_name_path():
@@ -265,39 +329,57 @@ def test_take_another_look_name_band_requires_the_canonical_name_path():
     primary = (0.03, 0.130, 0.75, 0.250)
     shifted = (0.03, 0.215, 0.75, 0.285)
     spec = AndroidAppSpec(
-        app="hinge", package="x.y", calibrated=False,
+        app="hinge",
+        package="x.y",
+        calibrated=False,
         identity_band=(0.10, 0.048, 0.80, 0.094),
         identity_top_name_band=primary,
-        identity_top_name_take_another_look_band=shifted)
+        identity_top_name_take_another_look_band=shifted,
+    )
     assert spec.identity_top_name_take_another_look_band == shifted
     with pytest.raises(ValueError, match="identity_band and identity_top_name_band"):
         AndroidAppSpec(
-            app="hinge", package="x.y", calibrated=False,
-            identity_top_name_take_another_look_band=shifted)
+            app="hinge",
+            package="x.y",
+            calibrated=False,
+            identity_top_name_take_another_look_band=shifted,
+        )
     with pytest.raises(ValueError, match="take_another_look_band"):
         AndroidAppSpec(
-            app="hinge", package="x.y", calibrated=False,
+            app="hinge",
+            package="x.y",
+            calibrated=False,
             identity_band=(0.10, 0.048, 0.80, 0.094),
             identity_top_name_band=primary,
-            identity_top_name_take_another_look_band=(0.80, 0.215, 0.20, 0.285))
+            identity_top_name_take_another_look_band=(0.80, 0.215, 0.20, 0.285),
+        )
     with pytest.raises(ValueError, match="must keep the primary"):
         AndroidAppSpec(
-            app="hinge", package="x.y", calibrated=False,
+            app="hinge",
+            package="x.y",
+            calibrated=False,
             identity_band=(0.10, 0.048, 0.80, 0.094),
             identity_top_name_band=primary,
-            identity_top_name_take_another_look_band=(0.03, 0.251, 0.75, 0.285))
+            identity_top_name_take_another_look_band=(0.03, 0.251, 0.75, 0.285),
+        )
     with pytest.raises(ValueError, match="first-photo content"):
         AndroidAppSpec(
-            app="hinge", package="x.y", calibrated=False,
+            app="hinge",
+            package="x.y",
+            calibrated=False,
             identity_band=(0.10, 0.048, 0.80, 0.094),
             identity_top_name_band=primary,
-            identity_top_name_take_another_look_band=(0.03, 0.215, 0.75, 1.0))
+            identity_top_name_take_another_look_band=(0.03, 0.215, 0.75, 1.0),
+        )
     with pytest.raises(ValueError, match="Hinge-only"):
         AndroidAppSpec(
-            app="x", package="x.y", calibrated=False,
+            app="x",
+            package="x.y",
+            calibrated=False,
             identity_band=(0.10, 0.048, 0.80, 0.094),
             identity_top_name_band=primary,
-            identity_top_name_take_another_look_band=shifted)
+            identity_top_name_take_another_look_band=shifted,
+        )
 
 
 # --- paywall_headline_band: OCR-only REFINEMENT of the "paywall" template's verdict --------
@@ -308,40 +390,58 @@ def test_take_another_look_name_band_requires_the_canonical_name_path():
 # shape -- and the same __post_init__ idiom -- as identity_top_name_band requiring identity_band
 # just above.
 
+
 def test_paywall_headline_band_without_paywall_template_is_rejected():
     """Declaring paywall_headline_band with no "paywall" template to detect the screen it sits
     on is a mis-wiring: there is nothing for this OCR refinement to refine. Refused at
     construction the same way identity_top_name_band without identity_band is refused above
     (test_identity_top_name_band_without_identity_band_is_rejected)."""
     with pytest.raises(ValueError, match="paywall"):
-        AndroidAppSpec(app="x", package="x.y", calibrated=False,
-                       paywall_headline_band=(0.0556, 0.1958, 0.9537, 0.3000))
+        AndroidAppSpec(
+            app="x",
+            package="x.y",
+            calibrated=False,
+            paywall_headline_band=(0.0556, 0.1958, 0.9537, 0.3000),
+        )
 
 
 def test_malformed_observe_ignore_zones_entry_is_rejected():
     with pytest.raises(ValueError, match="observe_ignore_zones"):
-        AndroidAppSpec(app="x", package="x.y", calibrated=False,
-                       observe_ignore_zones=((0.7, 0.1, 0.3, 0.9),))   # x0 > x1
+        AndroidAppSpec(
+            app="x",
+            package="x.y",
+            calibrated=False,
+            observe_ignore_zones=((0.7, 0.1, 0.3, 0.9),),
+        )  # x0 > x1
     with pytest.raises(ValueError, match="observe_ignore_zones"):
-        AndroidAppSpec(app="x", package="x.y", calibrated=False,
-                       observe_ignore_zones=((0.1, 0.1, 1.5, 0.9),))   # outside 0..1
+        AndroidAppSpec(
+            app="x",
+            package="x.y",
+            calibrated=False,
+            observe_ignore_zones=((0.1, 0.1, 1.5, 0.9),),
+        )  # outside 0..1
 
 
 def test_malformed_content_band_is_rejected():
     with pytest.raises(ValueError, match="content_band"):
-        AndroidAppSpec(app="x", package="x.y", calibrated=False,
-                       content_band=(0.9, 0.1))               # y0 > y1
+        AndroidAppSpec(
+            app="x", package="x.y", calibrated=False, content_band=(0.9, 0.1)
+        )  # y0 > y1
     with pytest.raises(ValueError, match="content_band"):
-        AndroidAppSpec(app="x", package="x.y", calibrated=False,
-                       content_band=(0.1, 1.5))                # outside 0..1
+        AndroidAppSpec(
+            app="x", package="x.y", calibrated=False, content_band=(0.1, 1.5)
+        )  # outside 0..1
 
 
-@pytest.mark.parametrize("field,value", [
-    ("content_band", (0.1, 10 ** 400)),
-    ("read_scroll_frac", 10 ** 400),
-    ("safe_rewind_max_frac", 10 ** 400),
-    ("coords", {"like_heart": (10 ** 400, 0.5)}),
-])
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("content_band", (0.1, 10**400)),
+        ("read_scroll_frac", 10**400),
+        ("safe_rewind_max_frac", 10**400),
+        ("coords", {"like_heart": (10**400, 0.5)}),
+    ],
+)
 def test_an_oversized_int_is_refused_by_field_name_not_an_overflowerror(field, value):
     """A config typo with one extra zero is a perfectly valid Python int, and bare
     `math.isfinite` raises OverflowError on it rather than answering False. Every range check
@@ -357,12 +457,19 @@ def test_observe_touch_watch_without_identity_band_is_rejected():
     # The touch stream corroborates an identity-proven advance -- it is not a standalone
     # decision source, so declaring it without an identity anchor is refused at construction.
     with pytest.raises(ValueError, match="identity_band"):
-        AndroidAppSpec(app="x", package="x.y", calibrated=False, observe_touch_watch=True)
+        AndroidAppSpec(
+            app="x", package="x.y", calibrated=False, observe_touch_watch=True
+        )
 
 
 def test_observe_touch_watch_with_identity_band_is_accepted():
-    spec = AndroidAppSpec(app="x", package="x.y", calibrated=False,
-                          observe_touch_watch=True, identity_band=(0.1, 0.05, 0.8, 0.1))
+    spec = AndroidAppSpec(
+        app="x",
+        package="x.y",
+        calibrated=False,
+        observe_touch_watch=True,
+        identity_band=(0.1, 0.05, 0.8, 0.1),
+    )
     assert spec.observe_touch_watch is True
     assert spec.identity_band == (0.1, 0.05, 0.8, 0.1)
 
@@ -376,7 +483,9 @@ def test_observe_mode_fields_default_such_that_bumble_spec_is_unaffected():
     assert HINGE_SPEC.identity_band == (0.10, 0.048, 0.80, 0.094)
     assert HINGE_SPEC.content_band == (0.125, 0.875)
     assert HINGE_SPEC.observe_ignore_zones == (
-        (0.75, 0.030, 1.00, 0.115), (0.00, 0.900, 1.00, 1.000))
+        (0.75, 0.030, 1.00, 0.115),
+        (0.00, 0.900, 1.00, 1.000),
+    )
     # False deliberately, and this assertion is the guard against it being flipped back
     # without a measurement: gesture corroboration reads the phone's own touch stream, and on
     # the Pixel 7a / Android 17 that stream delivers NOTHING to the adb shell user (30s of
@@ -403,7 +512,13 @@ def test_hinge_spec_matches_the_original_hardcoded_defaults():
     # "paywall" (hinge_upgrade_tab.png) joined this set 2026-08-11 -- see
     # test_hinge_spec_carries_the_paywall_template_and_headline_band below for the dedicated
     # regression test against that specific addition being dropped.
-    assert set(HINGE_SPEC.templates) == {"like", "pass", "confirm", "upsell_dismiss", "paywall"}
+    assert set(HINGE_SPEC.templates) == {
+        "like",
+        "pass",
+        "confirm",
+        "upsell_dismiss",
+        "paywall",
+    }
     # Hinge's composer is vision-located after the selected-item heart tap.  Keeping either
     # legacy modal coordinate here would silently reintroduce a fallback that lands on the card
     # in Hinge 9.134.0's inline layout.  `_SHEET_SPEC` below deliberately retains fixed controls
@@ -437,9 +552,11 @@ def test_bumble_spec_keeps_training_and_auto_unlicensed():
     assert BUMBLE_SPEC.calibrated is False
     assert BUMBLE_SPEC.calibrated is False
     assert BUMBLE_SPEC.like_flow == "direct"
-    assert BUMBLE_SPEC.accepts_opener is False       # match-first-then-message: no swipe-time opener
+    assert (
+        BUMBLE_SPEC.accepts_opener is False
+    )  # match-first-then-message: no swipe-time opener
     assert BUMBLE_SPEC.think_time_calibrated is False
-    assert BUMBLE_SPEC.templates == {}               # no glyph assets exist yet
+    assert BUMBLE_SPEC.templates == {}  # no glyph assets exist yet
 
 
 def test_hinge_driver_binds_hinge_spec():
@@ -460,6 +577,7 @@ def test_bumble_android_driver_binds_bumble_spec():
 
 def test_bumble_mode_registration_derives_training_and_auto_and_fails_closed():
     from operation_love import platforms
+
     assert platforms.unavailable_reason("hinge") is None
     assert platforms.get("bumble").available is False
     for mode in ("training", "auto"):
@@ -477,6 +595,7 @@ def test_bumble_mode_registration_derives_training_and_auto_and_fails_closed():
 # below greps the actual source, and the two rewind tests exercise the resulting behaviour
 # through a live driver rather than through the spec object alone.
 
+
 def test_hinge_and_bumble_spec_declare_the_new_capability_fields():
     assert HINGE_SPEC.auto_policy_calibrated is True
     assert HINGE_SPEC.observe_input_serialized is True
@@ -488,9 +607,13 @@ def test_hinge_and_bumble_spec_declare_the_new_capability_fields():
 
 def test_safe_rewind_max_frac_out_of_range_is_rejected():
     with pytest.raises(ValueError, match="safe_rewind_max_frac"):
-        AndroidAppSpec(app="x", package="x.y", calibrated=False, safe_rewind_max_frac=1.30)
+        AndroidAppSpec(
+            app="x", package="x.y", calibrated=False, safe_rewind_max_frac=1.30
+        )
     with pytest.raises(ValueError, match="safe_rewind_max_frac"):
-        AndroidAppSpec(app="x", package="x.y", calibrated=False, safe_rewind_max_frac=-0.1)
+        AndroidAppSpec(
+            app="x", package="x.y", calibrated=False, safe_rewind_max_frac=-0.1
+        )
 
 
 def test_safe_rewind_max_frac_none_is_the_uncapped_default():
@@ -509,8 +632,9 @@ def test_no_spec_app_hinge_string_comparison_remains_in_hinge_py():
     source = Path(hinge.__file__).read_text()
     hits = re.findall(r'spec\.app\s*[=!]=\s*"hinge"', source)
     assert hits == [], (
-        f"hinge.py must not gate behaviour on spec.app == / != \"hinge\" ({len(hits)} hit(s) "
-        "found) -- drive it off an AndroidAppSpec capability field instead (android_spec.py)")
+        f'hinge.py must not gate behaviour on spec.app == / != "hinge" ({len(hits)} hit(s) '
+        "found) -- drive it off an AndroidAppSpec capability field instead (android_spec.py)"
+    )
 
 
 def test_bumble_rewind_keeps_the_generic_uncapped_undo_distance_and_lane(monkeypatch):
@@ -521,13 +645,15 @@ def test_bumble_rewind_keeps_the_generic_uncapped_undo_distance_and_lane(monkeyp
     gestures = []
     adb = FakeAdb([b"stable"])
     drv = _drv(BUMBLE_SPEC, adb, read_scroll_frac=0.55, rewind_scroll_frac=0.90)
-    monkeypatch.setattr(drv, "_changed", lambda a, b: False)   # settles on the first stroke
+    monkeypatch.setattr(
+        drv, "_changed", lambda a, b: False
+    )  # settles on the first stroke
     monkeypatch.setattr(drv, "_swipe", lambda *args: gestures.append(args))
 
     assert drv._scroll_to_top_unlocked() is True
 
     w, h = adb.screen_size()
-    undo_frac = max(0.55, 0.90)                     # legacy_frac: BUMBLE_SPEC declares no cap
+    undo_frac = max(0.55, 0.90)  # legacy_frac: BUMBLE_SPEC declares no cap
     y_near, y_far = int(h * (0.5 - undo_frac / 2)), int(h * (0.5 + undo_frac / 2))
     assert gestures == [(int(w * 0.5), y_near, int(w * 0.5), y_far)]
 
@@ -543,13 +669,15 @@ def test_hinge_rewind_stays_capped_to_the_declared_safe_corridor(monkeypatch):
     adb = FakeAdb([b"stable"])
     drv = _drv(HINGE_SPEC, adb, read_scroll_frac=0.55, rewind_scroll_frac=0.90)
     drv.identity_band = None
-    monkeypatch.setattr(drv, "_changed", lambda a, b: False)   # settles on the first stroke
+    monkeypatch.setattr(
+        drv, "_changed", lambda a, b: False
+    )  # settles on the first stroke
     monkeypatch.setattr(drv, "_swipe", lambda *args: gestures.append(args))
 
     assert drv._scroll_to_top_unlocked() is True
 
     w, h = adb.screen_size()
-    undo_frac = 0.55                     # min(read_scroll_frac=0.55, safe_rewind_max_frac=0.55)
+    undo_frac = 0.55  # min(read_scroll_frac=0.55, safe_rewind_max_frac=0.55)
     y_near, y_far = int(h * (0.5 - undo_frac / 2)), int(h * (0.5 + undo_frac / 2))
     assert gestures == [(int(w * 0.5), y_near, int(w * 0.5), y_far)]
 
@@ -595,12 +723,16 @@ def _sheet_frame(heart_xy, confirm_xy=(540, 1900)):
     heart_xy must sit right of the vision side-filter (x > 0.55 * screen width)."""
     import cv2
     import numpy as np
+
     rng = np.random.default_rng(11)
     canvas = rng.integers(60, 200, size=(2400, 1080), dtype=np.uint8)
-    for name, (cx, cy) in (("hinge_heart.png", heart_xy), ("hinge_send_like.png", confirm_xy)):
+    for name, (cx, cy) in (
+        ("hinge_heart.png", heart_xy),
+        ("hinge_send_like.png", confirm_xy),
+    ):
         t = hinge._load_template(name)
         th, tw = t.shape
-        canvas[cy - th // 2: cy - th // 2 + th, cx - tw // 2: cx - tw // 2 + tw] = t
+        canvas[cy - th // 2 : cy - th // 2 + th, cx - tw // 2 : cx - tw // 2 + tw] = t
     ok, buf = cv2.imencode(".png", canvas)
     return buf.tobytes()
 
@@ -610,18 +742,19 @@ def _direct_frame(like_xy):
     'like' tap is now vision-located rather than falling back to a fixed coordinate."""
     import cv2
     import numpy as np
+
     rng = np.random.default_rng(12)
     canvas = rng.integers(60, 200, size=(2400, 1080), dtype=np.uint8)
     t = hinge._load_template("hinge_heart.png")
     th, tw = t.shape
     cx, cy = like_xy
-    canvas[cy - th // 2: cy - th // 2 + th, cx - tw // 2: cx - tw // 2 + tw] = t
+    canvas[cy - th // 2 : cy - th // 2 + th, cx - tw // 2 : cx - tw // 2 + tw] = t
     ok, buf = cv2.imencode(".png", canvas)
     return buf.tobytes()
 
 
 def test_comment_sheet_flow_types_the_opener_between_heart_and_send(monkeypatch):
-    heart_pt = (900, 1200)      # right of the vision side-filter (x > 0.55 * 1080)
+    heart_pt = (900, 1200)  # right of the vision side-filter (x > 0.55 * 1080)
     adb = FakeAdb([_sheet_frame(heart_pt)])
     drv = _drv(_SHEET_SPEC, adb)
     # This test owns only the comment-sheet dispatch/text sequence, not the calibrated live
@@ -630,10 +763,12 @@ def test_comment_sheet_flow_types_the_opener_between_heart_and_send(monkeypatch)
     # and post-tap sheet verification.  Production never bypasses these methods.
     monkeypatch.setattr(drv, "_verifiable_payload", lambda index: object())
     monkeypatch.setattr(drv, "_confirm_payload_profile", lambda index: None)
-    monkeypatch.setattr(drv, "_navigate_to_model_item",
-                        lambda index, *, should_stop=None: heart_pt)
-    monkeypatch.setattr(drv, "_verify_sheet_shows",
-                        lambda sheet, payload, index, before: None)
+    monkeypatch.setattr(
+        drv, "_navigate_to_model_item", lambda index, *, should_stop=None: heart_pt
+    )
+    monkeypatch.setattr(
+        drv, "_verify_sheet_shows", lambda sheet, payload, index, before: None
+    )
     drv.like("great smile in photo 2", model_item_index=1)
 
     w, h = adb.screen_size()
@@ -643,7 +778,9 @@ def test_comment_sheet_flow_types_the_opener_between_heart_and_send(monkeypatch)
     assert adb.texts == ["great smile in photo 2"]
 
 
-def test_comment_sheet_flow_types_exactly_the_bare_opener_with_no_ui_chrome_attached(monkeypatch):
+def test_comment_sheet_flow_types_exactly_the_bare_opener_with_no_ui_chrome_attached(
+    monkeypatch,
+):
     """THE WYSIWYG headline regression test (typography.fold_to_ascii / Adb.text fail-loud
     fix): what reaches Adb.text() during a live like must be EXACTLY the opener string and
     nothing else -- no hub display chrome ever gets concatenated onto it before it's typed
@@ -665,15 +802,23 @@ def test_comment_sheet_flow_types_exactly_the_bare_opener_with_no_ui_chrome_atta
     # all four calibrated targeting checks.
     monkeypatch.setattr(drv, "_verifiable_payload", lambda index: object())
     monkeypatch.setattr(drv, "_confirm_payload_profile", lambda index: None)
-    monkeypatch.setattr(drv, "_navigate_to_model_item",
-                        lambda index, *, should_stop=None: heart_pt)
-    monkeypatch.setattr(drv, "_verify_sheet_shows",
-                        lambda sheet, payload, index, before: None)
+    monkeypatch.setattr(
+        drv, "_navigate_to_model_item", lambda index, *, should_stop=None: heart_pt
+    )
+    monkeypatch.setattr(
+        drv, "_verify_sheet_shows", lambda sheet, payload, index, before: None
+    )
     drv.like(opener, model_item_index=1)
 
-    assert adb.texts == [opener]      # exact match end to end, not merely "close enough"
+    assert adb.texts == [opener]  # exact match end to end, not merely "close enough"
     sent = adb.texts[0]
-    for ui_chrome in ("about:", " · ", "type this in Hinge", "\U0001f4ac", "referenced"):
+    for ui_chrome in (
+        "about:",
+        " · ",
+        "type this in Hinge",
+        "\U0001f4ac",
+        "referenced",
+    ):
         assert ui_chrome not in sent
 
 
@@ -685,7 +830,7 @@ def test_comment_sheet_flow_skips_comment_box_without_an_opener():
 
     w, h = adb.screen_size()
     send = (int(0.6 * w), int(0.6 * h))
-    assert adb.taps == [heart_pt, send]     # no comment_box tap
+    assert adb.taps == [heart_pt, send]  # no comment_box tap
     assert adb.texts == []
 
 
@@ -695,8 +840,8 @@ def test_direct_flow_taps_the_like_control_once_no_comment_box_no_text():
     drv = _drv(_DIRECT_SPEC, adb)
     drv.like("this opener must be ignored -- accepts_opener is False for direct flows")
 
-    assert adb.taps == [like_pt]         # exactly one tap: the like control itself
-    assert adb.texts == []               # a direct flow has no comment box to type into
+    assert adb.taps == [like_pt]  # exactly one tap: the like control itself
+    assert adb.texts == []  # a direct flow has no comment box to type into
 
 
 # --- templates are optional: missing role -> vision is skipped, not attempted --------------
@@ -704,7 +849,7 @@ def test_locate_button_skips_vision_entirely_when_spec_has_no_template():
     adb = FakeAdb([b"frame"])
     drv = _drv(BUMBLE_SPEC, adb)
     assert drv._locate_button("like") is None
-    assert adb.screencaps == 0           # never even captured a frame to look at
+    assert adb.screencaps == 0  # never even captured a frame to look at
 
 
 def test_await_button_refuses_when_no_template_exists():
@@ -713,14 +858,17 @@ def test_await_button_refuses_when_no_template_exists():
     # rather than tap the stale coordinate blind (it could now be a paid or irreversible
     # control by the time this runs).
     from operation_love.drivers.hinge import UnlocatedControlError
+
     adb = FakeAdb([b"frame"])
     drv = _drv(BUMBLE_SPEC, adb)
 
     with pytest.raises(UnlocatedControlError):
         drv._await_button("like", tries=2)
 
-    assert adb.screencaps == 0           # no template -> not even a frame was captured to look at
-    assert adb.taps == []                # and, above all, nothing was tapped
+    assert (
+        adb.screencaps == 0
+    )  # no template -> not even a frame was captured to look at
+    assert adb.taps == []  # and, above all, nothing was tapped
 
 
 # --- the paid-upsell rule: never tap the paid option, structurally -------------------------
@@ -741,11 +889,12 @@ def _frame_with_glyph_at(cx, cy, seed=3):
     behavior isn't special-cased to Hinge."""
     import cv2
     import numpy as np
+
     rng = np.random.default_rng(seed)
     canvas = rng.integers(60, 200, size=(2400, 1080), dtype=np.uint8)
     t = hinge._load_template("hinge_send_like_anyway.png")
     th, tw = t.shape
-    canvas[cy - th // 2: cy - th // 2 + th, cx - tw // 2: cx - tw // 2 + tw] = t
+    canvas[cy - th // 2 : cy - th // 2 + th, cx - tw // 2 : cx - tw // 2 + tw] = t
     ok, buf = cv2.imencode(".png", canvas)
     return buf.tobytes()
 
@@ -754,7 +903,9 @@ _UPSELL_SPEC = AndroidAppSpec(
     app="upsellapp",
     package="com.example.upsell",
     calibrated=False,
-    templates={"upsell_dismiss": "hinge_send_like_anyway.png"},   # reuses the shipped asset
+    templates={
+        "upsell_dismiss": "hinge_send_like_anyway.png"
+    },  # reuses the shipped asset
     like_flow="direct",
 )
 
@@ -765,7 +916,9 @@ def test_handle_upsell_taps_only_the_matched_dismiss_glyph_never_elsewhere():
     drv = _drv(_UPSELL_SPEC, adb)
 
     assert drv._handle_rose_upsell() is True
-    assert adb.taps == [(cx, cy)]        # the ONE thing tapped is the dismiss glyph, nothing else
+    assert adb.taps == [
+        (cx, cy)
+    ]  # the ONE thing tapped is the dismiss glyph, nothing else
 
 
 _DIRECT_WITH_UPSELL_SPEC = AndroidAppSpec(
@@ -775,7 +928,10 @@ _DIRECT_WITH_UPSELL_SPEC = AndroidAppSpec(
     coords={"like_heart": (0.5, 0.9), "pass_x": (0.5, 0.1)},
     # A real 'like' template is required now: the direct like tap is vision-located, with no
     # fixed-coordinate fallback left, so this spec needs a real glyph to tap anything at all.
-    templates={"like": "hinge_heart.png", "upsell_dismiss": "hinge_send_like_anyway.png"},
+    templates={
+        "like": "hinge_heart.png",
+        "upsell_dismiss": "hinge_send_like_anyway.png",
+    },
     like_flow="direct",
 )
 
@@ -786,6 +942,7 @@ def _direct_upsell_frame(like_xy, dismiss_xy, seed=4):
     drives the post-like upsell dismissal)."""
     import cv2
     import numpy as np
+
     rng = np.random.default_rng(seed)
     canvas = rng.integers(60, 200, size=(2400, 1080), dtype=np.uint8)
     for name, (cx, cy) in (
@@ -794,20 +951,23 @@ def _direct_upsell_frame(like_xy, dismiss_xy, seed=4):
     ):
         t = hinge._load_template(name)
         th, tw = t.shape
-        canvas[cy - th // 2: cy - th // 2 + th, cx - tw // 2: cx - tw // 2 + tw] = t
+        canvas[cy - th // 2 : cy - th // 2 + th, cx - tw // 2 : cx - tw // 2 + tw] = t
     ok, buf = cv2.imencode(".png", canvas)
     return buf.tobytes()
 
 
 def test_direct_like_dismisses_the_upsell_and_taps_nothing_else():
-    like_pt = (900, 1200)        # right of the vision side-filter (x > 0.55 * 1080)
+    like_pt = (900, 1200)  # right of the vision side-filter (x > 0.55 * 1080)
     dismiss_pt = (250, 2100)
     adb = FakeAdb([_direct_upsell_frame(like_pt, dismiss_pt)])
     drv = _drv(_DIRECT_WITH_UPSELL_SPEC, adb)
 
     drv.like()
 
-    assert adb.taps == [like_pt, dismiss_pt]   # like control, then the dismiss glyph -- never a 3rd tap
+    assert adb.taps == [
+        like_pt,
+        dismiss_pt,
+    ]  # like control, then the dismiss glyph -- never a 3rd tap
 
 
 # --- Bumble's capture-time "no_opener_consumer" stamp (2026-09-17) ---------------------
@@ -826,9 +986,11 @@ def test_direct_like_dismisses_the_upsell_and_taps_nothing_else():
 # silent mismatch. This is this repo's most-repeated defect shape (memory: "allow-lists must
 # not disagree"), so it is pinned here rather than trusted from the comments describing it.
 
+
 class _FakeDbg:
     """Local per-file fake debug log (this suite's convention -- see the module docstring):
     records every `.action(...)` call's name and fields without touching disk."""
+
     def __init__(self):
         self.calls = []
 

@@ -10,6 +10,7 @@ a text trail plus failure screenshots. Enabled via
 
 All methods are best-effort and never raise — debug logging must not break a live run.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -45,17 +46,32 @@ _EMPTY_RUN_RECLAIM_AGE_S = 3600.0
 
 
 class DebugLog:
-    def __init__(self, base_dir: str, *, keep_shots: int = 400, run_id: str | None = None,
-                 keep_runs: int | None = None, protect_runs=()):
+    def __init__(
+        self,
+        base_dir: str,
+        *,
+        keep_shots: int = 400,
+        run_id: str | None = None,
+        keep_runs: int | None = None,
+        protect_runs=(),
+    ):
         if type(keep_shots) is not int or not 1 <= keep_shots <= _MAX_KEEP_SHOTS:
             raise ValueError(
                 f"keep_shots must be an integer from 1 to {_MAX_KEEP_SHOTS} "
-                f"(got {keep_shots!r})")
+                f"(got {keep_shots!r})"
+            )
         if keep_runs is not None and (type(keep_runs) is not int or keep_runs < 1):
-            raise ValueError(f"keep_runs must be a positive integer or None (got {keep_runs!r})")
+            raise ValueError(
+                f"keep_runs must be a positive integer or None (got {keep_runs!r})"
+            )
         if run_id is not None and (
-                not isinstance(run_id, str) or not run_id or run_id in {".", ".."}
-                or "/" in run_id or "\\" in run_id or Path(run_id).name != run_id):
+            not isinstance(run_id, str)
+            or not run_id
+            or run_id in {".", ".."}
+            or "/" in run_id
+            or "\\" in run_id
+            or Path(run_id).name != run_id
+        ):
             raise ValueError("debug run_id must be one non-dot path component")
         stamp = run_id or datetime.now().strftime("run_%Y%m%d_%H%M%S")
         base_path = Path(base_dir)
@@ -104,7 +120,9 @@ class DebugLog:
         # filename counter, rotating-shot index and JSONL append as one operation.
         self._lock = threading.RLock()
 
-    def _save_shot(self, label: str, frame: bytes | None, *, rotate: bool = True) -> str | None:
+    def _save_shot(
+        self, label: str, frame: bytes | None, *, rotate: bool = True
+    ) -> str | None:
         if not frame:
             return None
         key = None
@@ -189,8 +207,9 @@ class DebugLog:
             self._shots.append((key, path))
         self._trim_normal_shots()
 
-    def _trim_old_runs(self, base: Path, keep_runs: int,
-                       protect_runs: frozenset[str] = frozenset()) -> None:
+    def _trim_old_runs(
+        self, base: Path, keep_runs: int, protect_runs: frozenset[str] = frozenset()
+    ) -> None:
         """Delete whole run directories beyond the newest ``keep_runs``, and reclaim empty ones.
 
         The per-run caps above bound ONE run's screenshots; nothing bounded the number of runs,
@@ -293,7 +312,7 @@ class DebugLog:
                     continue
                 if entry.name in protect_runs:
                     protected_kept += 1
-                    continue          # cited as evidence somewhere outside this directory
+                    continue  # cited as evidence somewhere outside this directory
                 if not (entry / "actions.jsonl").exists():
                     # Not one of ours -- UNLESS it holds nothing at all and has gone stale, in
                     # which case it is one of ours that never got to log (see the docstring).
@@ -358,8 +377,12 @@ class DebugLog:
             if reclaimed:
                 did.append(f"reclaimed {reclaimed} empty run directory(ies)")
             normal_remaining = 1 + len(candidates) - removed
-            protected_note = (f", plus {protected_kept} protected run directory(ies) retained "
-                              f"regardless of age" if protected_kept else "")
+            protected_note = (
+                f", plus {protected_kept} protected run directory(ies) retained "
+                f"regardless of age"
+                if protected_kept
+                else ""
+            )
             # The third clause, added later the same day after review. ``normal_remaining``
             # counts only the active run plus directories that HAVE an actions.jsonl, and
             # ``protected_kept`` only names from config -- so an EMPTY directory the age guard
@@ -379,11 +402,16 @@ class DebugLog:
             # directory non-empty between check and delete, or a permission error). The second
             # is rare, but excluding it would re-open the hole this clause exists to close.
             empty_kept = fresh_empty + (len(reclaimable_empty) - reclaimed)
-            empty_note = (f", plus {empty_kept} empty run directory(ies) left in place"
-                          if empty_kept else "")
-            print(f"Debug log: {' and '.join(did)} from {base}; "
-                  f"{normal_remaining} run directory(ies) remain, including the active run"
-                  f"{protected_note}{empty_note}.")
+            empty_note = (
+                f", plus {empty_kept} empty run directory(ies) left in place"
+                if empty_kept
+                else ""
+            )
+            print(
+                f"Debug log: {' and '.join(did)} from {base}; "
+                f"{normal_remaining} run directory(ies) remain, including the active run"
+                f"{protected_note}{empty_note}."
+            )
 
     def _trim_retained_shots(self) -> None:
         """Keep only the newest bounded error/recovery screenshots across restarts."""
@@ -457,9 +485,17 @@ class DebugLog:
         except Exception:  # noqa: BLE001 — a second failure must still never reach the caller
             pass
 
-    def action(self, name: str, *, before: bytes | None = None,
-               after: bytes | None = None, anchor: bytes | None = None,
-               keep_before: bool = False, keep_after: bool = False, **fields) -> None:
+    def action(
+        self,
+        name: str,
+        *,
+        before: bytes | None = None,
+        after: bytes | None = None,
+        anchor: bytes | None = None,
+        keep_before: bool = False,
+        keep_after: bool = False,
+        **fields,
+    ) -> None:
         """Record an action and its optional frames.
 
         ``keep_before`` is for a rare recoverable refusal whose raw frame is the evidence needed
@@ -467,7 +503,11 @@ class DebugLog:
         """
         with self._lock:
             # Reserved audit identity wins even if a direct caller passes colliding **fields.
-            rec = {**fields, "ts": datetime.now().isoformat(timespec="seconds"), "action": name}
+            rec = {
+                **fields,
+                "ts": datetime.now().isoformat(timespec="seconds"),
+                "action": name,
+            }
             b = self._save_shot(f"{name}_before", before, rotate=not keep_before)
             a = self._save_shot(f"{name}_after", after, rotate=not keep_after)
             anchor_name = self._save_shot(f"{name}_anchor", anchor)
@@ -487,15 +527,18 @@ class DebugLog:
 
     def error(self, name: str, frame: bytes | None, exc: BaseException) -> None:
         with self._lock:
-            rec = {"ts": datetime.now().isoformat(timespec="seconds"), "action": name,
-                   "error": f"{type(exc).__name__}: {exc}"}
+            rec = {
+                "ts": datetime.now().isoformat(timespec="seconds"),
+                "action": name,
+                "error": f"{type(exc).__name__}: {exc}",
+            }
             shot = self._save_shot(f"{name}_error", frame, rotate=False)
             if shot:
                 rec["screenshot"] = shot
             self._write(rec)
 
 
-HingeDebugLog = DebugLog          # backward-compat alias (older imports / tests)
+HingeDebugLog = DebugLog  # backward-compat alias (older imports / tests)
 
 
 def _empty_run_age_s(entry: Path, now: float) -> float | None:
@@ -573,7 +616,10 @@ def _shot_key(path: Path) -> tuple[str, str] | None:
     """Dedup key for a persisted normal shot, or None if it cannot be read."""
     try:
         _prefix, _separator, label = path.name.partition("_")
-        return (label.removesuffix(".png"), hashlib.sha256(path.read_bytes()).hexdigest())
+        return (
+            label.removesuffix(".png"),
+            hashlib.sha256(path.read_bytes()).hexdigest(),
+        )
     except Exception:  # noqa: BLE001 — restart recovery must remain best-effort
         return None
 

@@ -10,6 +10,7 @@ The public function is pure over image bytes and text.  Drivers own the lookup f
 model item number to the crop bytes; that keeps this module usable in synthetic tests
 and prevents the worker from learning about any concrete driver's crop storage.
 """
+
 from __future__ import annotations
 
 import re
@@ -31,10 +32,21 @@ UNKNOWN = "unknown"
 # in a bug report instead of silently changing what the policy means.
 CROP_CLASSIFIER_ID = "hinge_crop_type_v2"
 
-_PHOTO_WORDS = frozenset(("photo", "photos", "photograph", "photographs", "image",
-                          "images", "selfie", "selfies"))
-_WRITTEN_WORDS = frozenset(("prompt", "prompts", "answer", "answers", "response",
-                            "responses"))
+_PHOTO_WORDS = frozenset(
+    (
+        "photo",
+        "photos",
+        "photograph",
+        "photographs",
+        "image",
+        "images",
+        "selfie",
+        "selfies",
+    )
+)
+_WRITTEN_WORDS = frozenset(
+    ("prompt", "prompts", "answer", "answers", "response", "responses")
+)
 _WORDS = re.compile(r"[a-z]+")
 
 
@@ -111,9 +123,14 @@ def crop_type_evidence(image: bytes | None) -> dict[str, object]:
     max_side = max(rgb.shape[:2])
     if max_side > 256:
         scale = 256 / max_side
-        rgb = cv2.resize(rgb, (max(16, round(rgb.shape[1] * scale)),
-                               max(16, round(rgb.shape[0] * scale))),
-                         interpolation=cv2.INTER_AREA)
+        rgb = cv2.resize(
+            rgb,
+            (
+                max(16, round(rgb.shape[1] * scale)),
+                max(16, round(rgb.shape[0] * scale)),
+            ),
+            interpolation=cv2.INTER_AREA,
+        )
     height, width = rgb.shape[:2]
 
     # The black circular Hinge heart is UI chrome, not card content.  On a short white prompt it
@@ -121,8 +138,9 @@ def crop_type_evidence(image: bytes | None) -> dict[str, object]:
     # only its stable lower-right control region for aggregate statistics; the image sent to the
     # model and the stored verification signature remain completely untouched.
     yy, xx = np.ogrid[:height, :width]
-    heart_control = (((xx - 0.91 * width) / (0.13 * width)) ** 2
-                     + ((yy - 0.85 * height) / (0.19 * height)) ** 2 <= 1)
+    heart_control = ((xx - 0.91 * width) / (0.13 * width)) ** 2 + (
+        (yy - 0.85 * height) / (0.19 * height)
+    ) ** 2 <= 1
     content = ~heart_control
 
     rgb_f = rgb.astype(np.float32)
@@ -130,7 +148,8 @@ def crop_type_evidence(image: bytes | None) -> dict[str, object]:
     median = np.median(pixels, axis=0)
     colour_std = float(pixels.std(axis=0).mean())
     dominant_background = float(
-        (np.abs(rgb_f - median).max(axis=2)[content] <= 24).mean())
+        (np.abs(rgb_f - median).max(axis=2)[content] <= 24).mean()
+    )
 
     gray = cv2.cvtColor(rgb, cv2.COLOR_BGR2GRAY)
     gx = cv2.Sobel(gray, cv2.CV_16S, 1, 0, ksize=3)
@@ -153,18 +172,25 @@ def crop_type_evidence(image: bytes | None) -> dict[str, object]:
         # band but only 16% dominant-background pixels across the complete crop.
         if not (large_uniform_panel and dominant_background >= 0.45):
             classification = PHOTO
-    elif (dominant_background >= 0.78 and 0.008 <= edge_density <= 0.22
-          and (colour_std <= 52
-               or (dominant_background >= 0.84 and text_layout))):
+    elif (
+        dominant_background >= 0.78
+        and 0.008 <= edge_density <= 0.22
+        and (colour_std <= 52 or (dominant_background >= 0.84 and text_layout))
+    ):
         # The second branch closes a real false negative: large serif prompt text, an emoji and
         # the heart control can make a plainly white text card exceed the old global std limit.
         # It still requires an even stronger dominant background plus affirmative multi-row glyph
         # structure; a quiet wall/sky photograph therefore remains UNKNOWN rather than being
         # discarded because it happens to have low variation.
         classification = WRITTEN
-    elif (dominant_background < 0.78 and colour_std >= 18 and edge_density >= 0.02
-          and not (large_uniform_panel and dominant_background >= 0.45
-                   and colour_std >= 38)):
+    elif (
+        dominant_background < 0.78
+        and colour_std >= 18
+        and edge_density >= 0.02
+        and not (
+            large_uniform_panel and dominant_background >= 0.45 and colour_std >= 38
+        )
+    ):
         # Low-detail portraits and landscape cards need not clear the deliberately strong global
         # PHOTO gate above.  They are still affirmative photographs when the crop has real colour
         # and edge structure, lacks a dominant card background, and is not a high-variation mixed
@@ -210,18 +236,24 @@ def _has_text_layout(gray, content, background: float) -> bool:
     height, width = gray.shape[:2]
     if background < 160:
         return False
-    foreground = ((gray.astype(np.float32) <= background - 40) & content).astype(np.uint8)
+    foreground = ((gray.astype(np.float32) <= background - 40) & content).astype(
+        np.uint8
+    )
     count, _labels, stats, centres = cv2.connectedComponentsWithStats(
-        foreground, connectivity=8)
+        foreground, connectivity=8
+    )
     glyph_centres: list[float] = []
     crop_area = height * width
     for i in range(1, count):
         _x, _y, component_w, component_h, area = stats[i]
         box_area = int(component_w) * int(component_h)
-        if (2 <= area <= 0.025 * crop_area
-                and component_w <= 0.22 * width
-                and 2 <= component_h <= 0.22 * height
-                and box_area > 0 and area / box_area <= 0.92):
+        if (
+            2 <= area <= 0.025 * crop_area
+            and component_w <= 0.22 * width
+            and 2 <= component_h <= 0.22 * height
+            and box_area > 0
+            and area / box_area <= 0.92
+        ):
             glyph_centres.append(float(centres[i][1]))
     if len(glyph_centres) < 12:
         return False
@@ -236,9 +268,14 @@ def _has_text_layout(gray, content, background: float) -> bool:
         else:
             rows[-1].append(centre)
     substantial = [row for row in rows if len(row) >= 4]
-    return (len(substantial) >= 2
-            and (sum(substantial[-1]) / len(substantial[-1])
-                 - sum(substantial[0]) / len(substantial[0])) >= 0.08 * height)
+    return (
+        len(substantial) >= 2
+        and (
+            sum(substantial[-1]) / len(substantial[-1])
+            - sum(substantial[0]) / len(substantial[0])
+        )
+        >= 0.08 * height
+    )
 
 
 def _has_large_uniform_panel(gray) -> bool:
@@ -262,31 +299,47 @@ def _has_large_uniform_panel(gray) -> bool:
     flat = (local_std <= 12).astype(np.uint8)
     kernel = np.ones((7, 7), dtype=np.uint8)
     joined = cv2.morphologyEx(flat, cv2.MORPH_CLOSE, kernel)
-    count, _labels, stats, _centres = cv2.connectedComponentsWithStats(joined, connectivity=8)
+    count, _labels, stats, _centres = cv2.connectedComponentsWithStats(
+        joined, connectivity=8
+    )
     height, width = gray.shape[:2]
     crop_area = height * width
     for _x, _y, panel_w, panel_h, area in stats[1:count]:
         box_area = int(panel_w) * int(panel_h)
-        if (area >= 0.12 * crop_area
-                and panel_w >= 0.45 * width
-                and panel_h >= 0.25 * height
-                and box_area > 0
-                and area / box_area >= 0.72):
+        if (
+            area >= 0.12 * crop_area
+            and panel_w >= 0.45 * width
+            and panel_h >= 0.25 * height
+            and box_area > 0
+            and area / box_area >= 0.72
+        ):
             return True
     return False
 
 
-def preflight_item_type(item_description: str | None, image: bytes | None) -> ItemTypePreflight:
+def preflight_item_type(
+    item_description: str | None, image: bytes | None
+) -> ItemTypePreflight:
     """Compare the two coarse classes without I/O, model calls, or driver state."""
     description_type = classify_description(item_description)
     crop_type = classify_crop(image)
     if description_type == UNKNOWN or crop_type == UNKNOWN:
         return ItemTypePreflight(
-            INCONCLUSIVE, description_type, crop_type,
-            "the item description or crop did not unambiguously identify a photo or written item")
+            INCONCLUSIVE,
+            description_type,
+            crop_type,
+            "the item description or crop did not unambiguously identify a photo or written item",
+        )
     if description_type == crop_type:
-        return ItemTypePreflight(MATCH, description_type, crop_type,
-                                 f"both the description and crop classify the item as {crop_type}")
+        return ItemTypePreflight(
+            MATCH,
+            description_type,
+            crop_type,
+            f"both the description and crop classify the item as {crop_type}",
+        )
     return ItemTypePreflight(
-        MISMATCH, description_type, crop_type,
-        f"the model describes a {description_type}, but the numbered crop is confidently {crop_type}")
+        MISMATCH,
+        description_type,
+        crop_type,
+        f"the model describes a {description_type}, but the numbered crop is confidently {crop_type}",
+    )

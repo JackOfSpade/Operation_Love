@@ -1,4 +1,5 @@
 """Narrow startup warning filters."""
+
 from __future__ import annotations
 
 import threading
@@ -24,5 +25,7 @@ def configure_warnings() -> None:
         if _CONFIGURED:
             return
         for message, category, module in reversed(_FILTERS):
-            warnings.filterwarnings("ignore", message=message, category=category, module=module)
+            warnings.filterwarnings(
+                "ignore", message=message, category=category, module=module
+            )
         _CONFIGURED = True

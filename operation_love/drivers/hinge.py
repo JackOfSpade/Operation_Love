@@ -67,6 +67,7 @@ them are config-overridable under apps.hinge in config.yaml. The transport
 If the USB/ADB link drops mid-run, Adb raises DriverClosed (parity with Bumble's
 browser-closed path) so the worker stops cleanly and flushes buffered labels.
 """
+
 from __future__ import annotations
 
 from collections import Counter
@@ -99,52 +100,124 @@ from ..human import human_cooldown, human_delay
 from ..human_motion import tap_jitter_margin_px
 from ..perception.capture import Profile
 from ..targeting_policy import (
-    HINGE_SUPERSEDED_PHOTO_SELECTION_POLICY_IDS, STILL_PHOTO_DWELL_WINDOW_SAFETY_FACTOR,
-    hinge_targeting_unavailable_reason, installed_still_photo_licence)
+    HINGE_SUPERSEDED_PHOTO_SELECTION_POLICY_IDS,
+    STILL_PHOTO_DWELL_WINDOW_SAFETY_FACTOR,
+    hinge_targeting_unavailable_reason,
+    installed_still_photo_licence,
+)
 from .adb import (
-    SCROLL_X_JITTER_PX, Adb, AdbError, clamp_xy, quote_android_package_id, scroll_x,
-    validate_android_package_id)
+    SCROLL_X_JITTER_PX,
+    Adb,
+    AdbError,
+    clamp_xy,
+    quote_android_package_id,
+    scroll_x,
+    validate_android_package_id,
+)
 from .android_spec import AndroidAppSpec
-from .base import (ActionCancelled, DatingAppDriver, DeckBlockedError, DriverClosed,
-                   ItemTargetingError, OBSERVE_ITEM_INCONCLUSIVE, OBSERVE_ITEM_MATCH,
-                   OBSERVE_ITEM_MISMATCH, ObserveItemCheck, _time_bucket, open_debug_log,
-                   snapshot_failure_frame)
+from .base import (
+    ActionCancelled,
+    DatingAppDriver,
+    DeckBlockedError,
+    DriverClosed,
+    ItemTargetingError,
+    OBSERVE_ITEM_INCONCLUSIVE,
+    OBSERVE_ITEM_MATCH,
+    OBSERVE_ITEM_MISMATCH,
+    ObserveItemCheck,
+    _time_bucket,
+    open_debug_log,
+    snapshot_failure_frame,
+)
 from .frameshift import (
-    SHIFT_MEASURED, ShiftEstimationError, estimate_shift,
-    estimate_shift_with_reverse_recovery, trace_estimate)
+    SHIFT_MEASURED,
+    ShiftEstimationError,
+    estimate_shift,
+    estimate_shift_with_reverse_recovery,
+    trace_estimate,
+)
 from .item_crops import (
-    CROP_CONTEXT, CROP_EXCLUDED, CROP_ITEM, CROP_UNCROPPABLE, EXCLUSION_NEVER_DWELLED,
-    EXCLUSION_NON_PHOTO, NO_NUMBERED_ITEMS_REASON, PHOTO_ONLY_POLICY_ID,
-    STILL_PHOTO_AUTOPLAY_CENTER_BAND_FRAC, ItemCropError, ReattachProbe,
-    build_item_payload, card_center_offset_frac, confident_photo_heart_ordinals,
-    decoded_frame_height, dwell_card_rects, dwell_evidence_for_rect,
-    still_photo_dwell_evidence, still_photo_reattach_evidence, still_photo_reattach_legs,
+    CROP_CONTEXT,
+    CROP_EXCLUDED,
+    CROP_ITEM,
+    CROP_UNCROPPABLE,
+    EXCLUSION_NEVER_DWELLED,
+    EXCLUSION_NON_PHOTO,
+    NO_NUMBERED_ITEMS_REASON,
+    PHOTO_ONLY_POLICY_ID,
+    STILL_PHOTO_AUTOPLAY_CENTER_BAND_FRAC,
+    ItemCropError,
+    ReattachProbe,
+    build_item_payload,
+    card_center_offset_frac,
+    confident_photo_heart_ordinals,
+    decoded_frame_height,
+    dwell_card_rects,
+    dwell_evidence_for_rect,
+    still_photo_dwell_evidence,
+    still_photo_reattach_evidence,
+    still_photo_reattach_legs,
     unnumber_unless_confident_photo,
-    unnumber_without_still_photo_evidence)
+    unnumber_without_still_photo_evidence,
+)
 from .item_type_preflight import INCONCLUSIVE, ItemTypePreflight, preflight_item_type
 from .item_identity import IdentityError, compare_profile_identity
 from .item_index import (
-    ITEM_PARTIAL, ItemIndex, ItemIndexError, _UNCERTAIN_HEART_NOTE,
-    _edge_only_two_strip_shift, _exact_multi_strip_shift,
-    _layout_repaired_shift, _measured_layout_bridge, _pitch_relative_max_step,
-    _matched_delta_clusters, _observed_gutters, _structural_landmarks,
-    _project_to_exact_full_layout, _SCROLL_TOP_CORNER_FAILURE_PREFIX,
-    _structural_tail_shift, VideoMuteMarker, build_item_index, _video_track_deltas,
+    ITEM_PARTIAL,
+    ItemIndex,
+    ItemIndexError,
+    _UNCERTAIN_HEART_NOTE,
+    _edge_only_two_strip_shift,
+    _exact_multi_strip_shift,
+    _layout_repaired_shift,
+    _measured_layout_bridge,
+    _pitch_relative_max_step,
+    _matched_delta_clusters,
+    _observed_gutters,
+    _structural_landmarks,
+    _project_to_exact_full_layout,
+    _SCROLL_TOP_CORNER_FAILURE_PREFIX,
+    _structural_tail_shift,
+    VideoMuteMarker,
+    build_item_index,
+    _video_track_deltas,
 )
-from .item_nav import (NAV_IDENTITY_MISMATCH, NAV_IDENTITY_UNCONFIRMED, NAV_ITEM_BELOW_ENTRY,
-                       ItemNavigationError, navigate_to_item)
-from .item_verify import (VERIFY_MISMATCH, SheetVerificationError, verification_blocker,
-                          verify_sheet_item)
+from .item_nav import (
+    NAV_IDENTITY_MISMATCH,
+    NAV_IDENTITY_UNCONFIRMED,
+    NAV_ITEM_BELOW_ENTRY,
+    ItemNavigationError,
+    navigate_to_item,
+)
+from .item_verify import (
+    VERIFY_MISMATCH,
+    SheetVerificationError,
+    verification_blocker,
+    verify_sheet_item,
+)
 from .like_composer import (
-    ComposerDetectionError, ComposerSurface, locate_inline_composer)
-from .scroll_step import (COVERAGE_STEP_FALLBACK, COVERAGE_STEP_OPEN,
-                          COVERAGE_STEP_SEGMENTATION_FALLBACK, COVERAGE_STEP_THROTTLED,
-                          MAX_SEGMENTATION_FALLBACK_FRAMES,
-                          ScrollStepError,
-                          _scrolling_viewport_top,
-                          frac_for_step_px, plan_coverage_step, step_px_for_frac)
-from .scroll_top import (PinnedBandEvidence, ScrollTopError, band_pinned_evidence,
-                         confirm_scroll_top)
+    ComposerDetectionError,
+    ComposerSurface,
+    locate_inline_composer,
+)
+from .scroll_step import (
+    COVERAGE_STEP_FALLBACK,
+    COVERAGE_STEP_OPEN,
+    COVERAGE_STEP_SEGMENTATION_FALLBACK,
+    COVERAGE_STEP_THROTTLED,
+    MAX_SEGMENTATION_FALLBACK_FRAMES,
+    ScrollStepError,
+    _scrolling_viewport_top,
+    frac_for_step_px,
+    plan_coverage_step,
+    step_px_for_frac,
+)
+from .scroll_top import (
+    PinnedBandEvidence,
+    ScrollTopError,
+    band_pinned_evidence,
+    confirm_scroll_top,
+)
 from .segment import SegmentationError, segment_frame
 from .touchwatch import TouchWatcher, TouchWatchUnavailable
 from .uhid import PersistentUhidTouch, UhidTouch, UhidUnavailable
@@ -156,12 +229,21 @@ _ASSETS = Path(__file__).parent / "assets"
 # operator-supplied, evidence-backed value strictly below it.
 _TARGETING_IDENTITY_FALSE_MATCH_DISTANCE = 2.565
 _TARGETING_SHEET_FALSE_MATCH_DISTANCE = 14.91
-_TARGETING_CALIBRATION_KEYS = frozenset({
-    "schema_version", "hinge_version_name", "frame_size_px", "composer_layout_id",
-    "item_selection_policy_id",
-    "identity_match_max_dist", "inline_item_max_dist", "device", "calibrated_at",
-    "identity_band", "content_band",
-})
+_TARGETING_CALIBRATION_KEYS = frozenset(
+    {
+        "schema_version",
+        "hinge_version_name",
+        "frame_size_px",
+        "composer_layout_id",
+        "item_selection_policy_id",
+        "identity_match_max_dist",
+        "inline_item_max_dist",
+        "device",
+        "calibrated_at",
+        "identity_band",
+        "content_band",
+    }
+)
 
 
 def _item_index_runtime_provenance() -> dict[str, str | None]:
@@ -207,15 +289,29 @@ def _item_index_runtime_provenance() -> dict[str, str | None]:
         # otherwise decline to follow.
         callable_names = (
             "build_item_index",
-            "_matched_delta_clusters", "_structural_landmarks", "_layout_repaired_shift",
-            "_exact_multi_strip_shift", "_measured_layout_bridge",
+            "_matched_delta_clusters",
+            "_structural_landmarks",
+            "_layout_repaired_shift",
+            "_exact_multi_strip_shift",
+            "_measured_layout_bridge",
             "_project_to_exact_full_layout",
-            "_track_candidate_deltas", "_track_anchor_count", "_video_track_deltas",
+            "_track_candidate_deltas",
+            "_track_anchor_count",
+            "_video_track_deltas",
             "_repair_video_track_shifts",
-            "_repair_shifts_from_layout", "_frame_offsets", "_observations",
-            "_overlap_groups", "_heart_clusters", "_resolve_group",
-            "_scroll_top_evidence", "_split_on_bounded_cards", "_assemble", "_tail",
-            "segment_frame", "estimate_shift", "capture_profile_identity",
+            "_repair_shifts_from_layout",
+            "_frame_offsets",
+            "_observations",
+            "_overlap_groups",
+            "_heart_clusters",
+            "_resolve_group",
+            "_scroll_top_evidence",
+            "_split_on_bounded_cards",
+            "_assemble",
+            "_tail",
+            "segment_frame",
+            "estimate_shift",
+            "capture_profile_identity",
         )
 
         def nested_names(code) -> set[str]:
@@ -248,27 +344,39 @@ def _item_index_runtime_provenance() -> dict[str, str | None]:
                     return unsupported
                 return ("frozenset", tuple(sorted(values, key=marshal.dumps)))
             if isinstance(value, dict):
-                values = [(canonical_value(key, depth + 1), canonical_value(item, depth + 1))
-                          for key, item in value.items()]
+                values = [
+                    (canonical_value(key, depth + 1), canonical_value(item, depth + 1))
+                    for key, item in value.items()
+                ]
                 if any(unsupported in pair for pair in values):
                     return unsupported
-                return ("dict", tuple(sorted(values, key=lambda pair: marshal.dumps(pair[0]))))
+                return (
+                    "dict",
+                    tuple(sorted(values, key=lambda pair: marshal.dumps(pair[0]))),
+                )
             return unsupported
 
         project = __name__.split(".", 1)[0]
 
         def qualified(obj, fallback: str) -> str:
-            return (f"{getattr(obj, '__module__', '?')}."
-                    f"{getattr(obj, '__qualname__', getattr(obj, '__name__', fallback))}")
+            return (
+                f"{getattr(obj, '__module__', '?')}."
+                f"{getattr(obj, '__qualname__', getattr(obj, '__name__', fallback))}"
+            )
 
         def is_ours(obj) -> bool:
             module = getattr(obj, "__module__", None)
-            return isinstance(module, str) and (module == project
-                                                or module.startswith(project + "."))
+            return isinstance(module, str) and (
+                module == project or module.startswith(project + ".")
+            )
 
-        functions: dict[str, object] = {}   # qualified name -> loaded function, hashed in full
-        foreign: dict[str, str] = {}        # reading site -> identity of a function we do not own
-        missing: list[str] = []             # seed stages this namespace no longer has at all
+        functions: dict[
+            str, object
+        ] = {}  # qualified name -> loaded function, hashed in full
+        foreign: dict[
+            str, str
+        ] = {}  # reading site -> identity of a function we do not own
+        missing: list[str] = []  # seed stages this namespace no longer has at all
         pending: list[object] = []
 
         def consider(obj, *, seed: bool = False) -> bool:
@@ -327,39 +435,62 @@ def _item_index_runtime_provenance() -> dict[str, str | None]:
             digest.update(b"missing\0" + name.encode("utf-8", "replace") + b"\0")
         for key in sorted(functions):
             function = functions[key]
-            digest.update(b"code\0" + key.encode("utf-8", "replace") + b"\0"
-                          + marshal.dumps(function.__code__))
-            defaults = (getattr(function, "__defaults__", None),
-                        getattr(function, "__kwdefaults__", None))
+            digest.update(
+                b"code\0"
+                + key.encode("utf-8", "replace")
+                + b"\0"
+                + marshal.dumps(function.__code__)
+            )
+            defaults = (
+                getattr(function, "__defaults__", None),
+                getattr(function, "__kwdefaults__", None),
+            )
             encoded_defaults = canonical_value(defaults)
             if encoded_defaults is not unsupported:
                 digest.update(b"defaults\0" + marshal.dumps(encoded_defaults))
             else:
                 digest.update(b"defaults-unserializable\0")
         for key in sorted(foreign):
-            digest.update(b"foreign\0" + key.encode("utf-8", "replace") + b"\0"
-                          + foreign[key].encode("utf-8", "replace") + b"\0")
+            digest.update(
+                b"foreign\0"
+                + key.encode("utf-8", "replace")
+                + b"\0"
+                + foreign[key].encode("utf-8", "replace")
+                + b"\0"
+            )
         for key in sorted(seen_globals):
-            digest.update(b"global\0" + key.encode("utf-8", "replace") + b"\0"
-                          + marshal.dumps(seen_globals[key]))
+            digest.update(
+                b"global\0"
+                + key.encode("utf-8", "replace")
+                + b"\0"
+                + marshal.dumps(seen_globals[key])
+            )
 
         return {
             "algorithm_id": algorithm_id,
             "build_callable": (
                 f"{getattr(build, '__module__', '?')}."
-                f"{getattr(build, '__qualname__', getattr(build, '__name__', '?'))}"),
+                f"{getattr(build, '__qualname__', getattr(build, '__name__', '?'))}"
+            ),
             "module_path": source if isinstance(source, str) else None,
             "indexer_code_sha256": digest.hexdigest(),
             "splitter_code_sha256": (
-                hashlib.sha256(marshal.dumps(getattr(splitter, "__code__", None))).hexdigest()
-                if getattr(splitter, "__code__", None) is not None else None),
+                hashlib.sha256(
+                    marshal.dumps(getattr(splitter, "__code__", None))
+                ).hexdigest()
+                if getattr(splitter, "__code__", None) is not None
+                else None
+            ),
         }
     except Exception:  # noqa: BLE001 -- diagnostics must never alter a live refusal
         return {
-            "algorithm_id": None, "build_callable": None,
-            "module_path": None, "indexer_code_sha256": None,
+            "algorithm_id": None,
+            "build_callable": None,
+            "module_path": None,
+            "indexer_code_sha256": None,
             "splitter_code_sha256": None,
         }
+
 
 # A second controller must never turn an active OBSERVE wait into its own read-and-unwind
 # sequence.  The in-process map makes that refusal deterministic even when both drivers are
@@ -411,8 +542,12 @@ def _targeting_band(value, *, length: int) -> tuple[float, ...] | None:
     """Normalise a stored/effective geometry band, or return None when it is unsafe to use."""
     if not isinstance(value, (list, tuple)) or len(value) != length:
         return None
-    if any(isinstance(v, bool) or not isinstance(v, (int, float)) or not _targeting_finite(v)
-           for v in value):
+    if any(
+        isinstance(v, bool)
+        or not isinstance(v, (int, float))
+        or not _targeting_finite(v)
+        for v in value
+    ):
         return None
     band = tuple(float(v) for v in value)
     if length == 4:
@@ -426,8 +561,9 @@ def _targeting_band(value, *, length: int) -> tuple[float, ...] | None:
     return band
 
 
-def _parse_targeting_calibration(raw, serial: str | None, *, identity_band, content_band
-                                 ) -> tuple[TargetingCalibration | None, str | None]:
+def _parse_targeting_calibration(
+    raw, serial: str | None, *, identity_band, content_band
+) -> tuple[TargetingCalibration | None, str | None]:
     """Return a complete targeting calibration or the reason it cannot license a like.
 
     Config validation gives operators a precise error.  This second check is still necessary:
@@ -458,21 +594,27 @@ def _parse_targeting_calibration(raw, serial: str | None, *, identity_band, cont
     if raw["composer_layout_id"] != "hinge_inline_v1":
         return None, (
             "targeting_calibration.composer_layout_id must be the supported "
-            "'hinge_inline_v1' layout")
+            "'hinge_inline_v1' layout"
+        )
     policy_id = raw["item_selection_policy_id"]
     # A retired policy id gets its own refusal: v1 was measured against a selection contract
     # that no longer exists, so the fix is a recalibration campaign, not editing the id string.
     if policy_id in HINGE_SUPERSEDED_PHOTO_SELECTION_POLICY_IDS:
         return None, (
             f"targeting_calibration.item_selection_policy_id {policy_id} is superseded by "
-            f"{PHOTO_ONLY_POLICY_ID}; recalibrate under the current policy")
+            f"{PHOTO_ONLY_POLICY_ID}; recalibrate under the current policy"
+        )
     if policy_id != PHOTO_ONLY_POLICY_ID:
         return None, (
             "targeting_calibration.item_selection_policy_id must be the supported "
-            f"{PHOTO_ONLY_POLICY_ID!r} policy")
+            f"{PHOTO_ONLY_POLICY_ID!r} policy"
+        )
     frame_size = raw["frame_size_px"]
-    if (not isinstance(frame_size, (list, tuple)) or len(frame_size) != 2
-            or any(type(v) is not int or v <= 0 for v in frame_size)):
+    if (
+        not isinstance(frame_size, (list, tuple))
+        or len(frame_size) != 2
+        or any(type(v) is not int or v <= 0 for v in frame_size)
+    ):
         return None, "targeting_calibration.frame_size_px must be two positive integers"
     for key in ("identity_match_max_dist", "inline_item_max_dist"):
         value = raw[key]
@@ -483,12 +625,14 @@ def _parse_targeting_calibration(raw, serial: str | None, *, identity_band, cont
     if raw["identity_match_max_dist"] >= _TARGETING_IDENTITY_FALSE_MATCH_DISTANCE:
         return None, (
             "targeting_calibration.identity_match_max_dist is not strictly below "
-            f"the known {_TARGETING_IDENTITY_FALSE_MATCH_DISTANCE} false-match distance")
+            f"the known {_TARGETING_IDENTITY_FALSE_MATCH_DISTANCE} false-match distance"
+        )
     if raw["inline_item_max_dist"] >= _TARGETING_SHEET_FALSE_MATCH_DISTANCE:
         return None, (
             "targeting_calibration.inline_item_max_dist is not strictly below "
             f"the known {_TARGETING_SHEET_FALSE_MATCH_DISTANCE} foreign-card false-match "
-            "distance")
+            "distance"
+        )
     for key in ("device", "calibrated_at", "hinge_version_name"):
         if not isinstance(raw[key], str) or not raw[key].strip():
             return None, f"targeting_calibration.{key} is not nonempty evidence text"
@@ -497,23 +641,32 @@ def _parse_targeting_calibration(raw, serial: str | None, *, identity_band, cont
     if raw["device"] != serial:
         return None, (
             "targeting_calibration.device does not exactly match the configured ADB serial "
-            f"({raw['device']!r} != {serial!r})")
+            f"({raw['device']!r} != {serial!r})"
+        )
     calibrated_identity = _targeting_band(raw["identity_band"], length=4)
     calibrated_content = _targeting_band(raw["content_band"], length=2)
     effective_identity = _targeting_band(identity_band, length=4)
     effective_content = _targeting_band(content_band, length=2)
     if calibrated_identity is None or calibrated_content is None:
-        return None, "targeting_calibration geometry is not finite, normalised, and ordered"
+        return (
+            None,
+            "targeting_calibration geometry is not finite, normalised, and ordered",
+        )
     if effective_identity is None or effective_content is None:
-        return None, "the effective targeting geometry is not finite, normalised, and ordered"
+        return (
+            None,
+            "the effective targeting geometry is not finite, normalised, and ordered",
+        )
     if calibrated_identity != effective_identity:
         return None, (
             "targeting_calibration.identity_band does not exactly match the effective "
-            f"identity_band ({calibrated_identity!r} != {effective_identity!r})")
+            f"identity_band ({calibrated_identity!r} != {effective_identity!r})"
+        )
     if calibrated_content != effective_content:
         return None, (
             "targeting_calibration.content_band does not exactly match the effective "
-            f"content_band ({calibrated_content!r} != {effective_content!r})")
+            f"content_band ({calibrated_content!r} != {effective_content!r})"
+        )
     return TargetingCalibration(
         schema_version=3,
         hinge_version_name=raw["hinge_version_name"].strip(),
@@ -522,8 +675,10 @@ def _parse_targeting_calibration(raw, serial: str | None, *, identity_band, cont
         item_selection_policy_id=PHOTO_ONLY_POLICY_ID,
         identity_match_max_dist=float(raw["identity_match_max_dist"]),
         inline_item_max_dist=float(raw["inline_item_max_dist"]),
-        device=raw["device"].strip(), calibrated_at=raw["calibrated_at"].strip(),
-        identity_band=calibrated_identity, content_band=calibrated_content,
+        device=raw["device"].strip(),
+        calibrated_at=raw["calibrated_at"].strip(),
+        identity_band=calibrated_identity,
+        content_band=calibrated_content,
     ), None
 
 
@@ -681,7 +836,7 @@ class PaidUpsellStuckError(HingeActionError):
     debugging is always safer than one more guess at the same modal."""
 
 
-_OBSERVE_POLL_S = 0.35     # internal sampling cadence for your manual tap (not app-facing)
+_OBSERVE_POLL_S = 0.35  # internal sampling cadence for your manual tap (not app-facing)
 # The _note_observe_waiting reasons that describe a VERIFIED compose/send state rather than an
 # unclassifiable screen. They repeat on the slower _OBSERVE_LIKE_NOTICE_S cadence and get their
 # own wording -- see that method. ``like_candidate`` is deliberately NOT here: no composer was
@@ -692,6 +847,10 @@ _OBSERVE_LIKE_WAIT_REASONS = frozenset({"like_sheet", "like_sending"})
 # _note_observe_waiting.
 _OBSERVE_NOTICE_FLOOR_S = 2.0
 _UPSELL_DISMISS_MAX_ATTEMPTS = 3
+# Extra screencaps a RESUMED training checkpoint may settle through before one mid-animation frame
+# is treated as terminal.  Tiny on purpose: an input-free re-capture feeding the same full proof,
+# never a blind loop.  See _verify_training_checkpoint.
+_RESUME_SETTLE_ATTEMPTS = 2
 # Hinge animates the sticky profile header and floating controls while a read-scroll is still
 # resolving.  A capture taken immediately after the gesture can therefore lock an in-between
 # header as this profile's identity, then call the fully-rendered header a different person on
@@ -719,7 +878,11 @@ _READ_SCROLL_SETTLE_S = 0.4
 # the still-photo dwell burst's frame count -- they are distribution SHAPE constants, not the
 # observable output, which is redrawn fresh every read.
 _READ_PAUSE_COUNTS = (0, 1, 2)
-_READ_PAUSE_COUNT_WEIGHTS = (0.15, 0.75, 0.10)      # usually one pause, sometimes none, rarely two
+_READ_PAUSE_COUNT_WEIGHTS = (
+    0.15,
+    0.75,
+    0.10,
+)  # usually one pause, sometimes none, rarely two
 # Bounded retries for AndroidDriver._dismiss_via_zone before it gives up (PaidUpsellStuckError)
 # rather than tapping an already-detected modal again and again. See that error's docstring.
 
@@ -853,7 +1016,8 @@ _VIDEO_MUTE_TEMPLATE_B64 = (
     "LqOXx18ezPWNVGQhMFtwrY7DmE1DklzNS149oQbfBtN7m5RkITFh0Z6x6mLzinmW7+kGUgv1"
     "GKaF1heS9XAuBCSz9+YEJ85e8AUSZou07mJQziBJlmnluKeMGKogS5R+Jw0cLCT3dQ5Qo/yk"
     "7sx1+Nz4mSpQZNlTP6XrDLESJS5S4RIlLlLhEiUuUuESJ6w+BFL9vsnkW/AAAAABJRU5ErkJ"
-    "ggg==")
+    "ggg=="
+)
 
 
 @functools.lru_cache(maxsize=1)
@@ -873,9 +1037,11 @@ def _video_mute_template():
     """
     import cv2
     import numpy as np
+
     return cv2.imdecode(
         np.frombuffer(base64.b64decode(_VIDEO_MUTE_TEMPLATE_B64), dtype=np.uint8),
-        cv2.IMREAD_GRAYSCALE)
+        cv2.IMREAD_GRAYSCALE,
+    )
 
 
 # --- still-photo dwell (ops/STILL-PHOTO-DISCRIMINATOR.md C2/C3) ----------------------------
@@ -1143,12 +1309,14 @@ _RETURN_LEG_BACKOFF_SPAN = (2, 3)
 # modal flavour, not a corner: of the nine `entry_anchor_unmeasured` forensics under
 # ops/calibration/*/forensics/, EIGHT are measured (deltas -501..-701px, anchor_status
 # `measured`, unanimous strips) and one is the estimator refusal.
-_NAV_SCREEN_VERDICT_CODES = frozenset({NAV_IDENTITY_MISMATCH, NAV_IDENTITY_UNCONFIRMED,
-                                       IdentityError.__name__})
+_NAV_SCREEN_VERDICT_CODES = frozenset(
+    {NAV_IDENTITY_MISMATCH, NAV_IDENTITY_UNCONFIRMED, IdentityError.__name__}
+)
 
 
-def video_mute_screen_reason(frame: bytes, rect: tuple[int, int, int, int], *,
-                             match=None) -> str | None:
+def video_mute_screen_reason(
+    frame: bytes, rect: tuple[int, int, int, int], *, match=None
+) -> str | None:
     """Screen ONE card rect of one exact frame for Hinge's mute control.
 
     The vocabulary here is load-bearing and deliberately unchanged, for two independent
@@ -1198,16 +1366,20 @@ def video_mute_screen_reason(frame: bytes, rect: tuple[int, int, int, int], *,
     roi_x1 = x0 + round(_VIDEO_MUTE_X_BAND[1] * card_width)
     roi_y0 = y0 + round(_VIDEO_MUTE_Y_BAND[0] * block_height)
     roi_y1 = y0 + round(_VIDEO_MUTE_Y_BAND[1] * block_height)
-    if (roi_x1 - roi_x0 < _VIDEO_MUTE_TEMPLATE_SIDE_PX
-            or roi_y1 - roi_y0 < _VIDEO_MUTE_TEMPLATE_SIDE_PX):
+    if (
+        roi_x1 - roi_x0 < _VIDEO_MUTE_TEMPLATE_SIDE_PX
+        or roi_y1 - roi_y0 < _VIDEO_MUTE_TEMPLATE_SIDE_PX
+    ):
         return "target card does not expose a complete mute-control screening ROI"
     matcher = match if match is not None else HingeDriver._match_video_mute
     screened, score = matcher(frame, (roi_x0, roi_y0, roi_x1, roi_y1))
     if not screened or score is None:
         return "target card mute-control screening could not be completed"
     if score >= _VIDEO_MUTE_MATCH_THRESHOLD:
-        return ("target frame contains Hinge's mute control "
-                f"(score {score:.6f}); the selected media is a video")
+        return (
+            "target frame contains Hinge's mute control "
+            f"(score {score:.6f}); the selected media is a video"
+        )
     return None
 
 
@@ -1234,11 +1406,14 @@ def _video_mute_marker_in_block(block, markers: tuple[VideoMuteMarker, ...]):
     """
     for obs in block.observations:
         for marker in markers:
-            if (marker.frame_index == obs.frame_index
-                    and block.x0 <= marker.x < block.x1
-                    and obs.frame_y0 <= marker.y < obs.frame_y1):
+            if (
+                marker.frame_index == obs.frame_index
+                and block.x0 <= marker.x < block.x1
+                and obs.frame_y0 <= marker.y < obs.frame_y1
+            ):
                 return marker, obs
     return None
+
 
 # Hinge's spec: exactly today's values (formerly the module-level `DEFAULTS` dict + the
 # `apps.hinge` block in config.yaml). calibrated=True — coords/templates verified live on the
@@ -1252,8 +1427,14 @@ HINGE_SPEC = AndroidAppSpec(
         # VISION-located at runtime (template-matched glyph) — these are only the FALLBACK if
         # vision can't find the glyph. Inline composer controls are deliberately absent here:
         # HingeDriver locates them from every live frame and has no coordinate fallback.
-        "like_heart": (0.868, 0.667),   # FALLBACK only — heart vision-located on the first photo
-        "pass_x": (0.116, 0.848),       # FALLBACK only — X vision-located (floating, bottom-left)
+        "like_heart": (
+            0.868,
+            0.667,
+        ),  # FALLBACK only — heart vision-located on the first photo
+        "pass_x": (
+            0.116,
+            0.848,
+        ),  # FALLBACK only — X vision-located (floating, bottom-left)
     },
     templates={
         # "like" -> hinge_like_button.png, NOT hinge_heart.png. hinge_heart.png (still shipped,
@@ -1282,7 +1463,7 @@ HINGE_SPEC = AndroidAppSpec(
         # HingeX-subscribed account renders (recropped 2026-08-21). If the literal on-screen text
         # ever changes again (e.g. subscription lapses back to plain "Send Like"), detection fails
         # closed rather than silently matching the wrong button -- recrop, don't rename mid-lineage.
-        "confirm": "hinge_send_like.png",              # inline composer's send-confirmation glyph
+        "confirm": "hinge_send_like.png",  # inline composer's send-confirmation glyph
         "upsell_dismiss": "hinge_send_like_anyway.png",  # "Send Like anyway" — NEVER the Rose button
         # The "HingeX" tab wordmark of Hinge's full-screen upgrade paywall — the screen Hinge
         # shows INSTEAD of the deck once the account is out of free likes for the day. Cropped
@@ -1304,12 +1485,12 @@ HINGE_SPEC = AndroidAppSpec(
         "paywall": "hinge_upgrade_tab.png",
     },
     like_flow="comment_sheet",
-    accepts_opener=True,          # Hinge sends the opener as a comment at like-time
-    think_time_calibrated=True,   # human_motion._THINK was measured on this app
-    change_threshold=9.0,         # mean abs grayscale delta (0..255) on a 24x24 downsample
-    scroll_captures=8,            # max screencaps while reading one profile
-    dwell_s=1.1,                  # per-card read dwell (humanized) — Signals behavior #1
-    read_scroll_frac=0.55,        # how far each read-scroll advances the profile
+    accepts_opener=True,  # Hinge sends the opener as a comment at like-time
+    think_time_calibrated=True,  # human_motion._THINK was measured on this app
+    change_threshold=9.0,  # mean abs grayscale delta (0..255) on a 24x24 downsample
+    scroll_captures=8,  # max screencaps while reading one profile
+    dwell_s=1.1,  # per-card read dwell (humanized) — Signals behavior #1
+    read_scroll_frac=0.55,  # how far each read-scroll advances the profile
     # Hinge's own sticky profile header: the person's NAME, centred, appears here the moment
     # the card is scrolled at all, and stays pixel-identical for the whole profile. Measured
     # live on the Pixel 7a (1080x2400) 2026-08-10 over three frames of one profile at three
@@ -1360,8 +1541,8 @@ HINGE_SPEC = AndroidAppSpec(
     # the module comment on _vertical_shift_match).
     content_band=(0.125, 0.875),
     observe_ignore_zones=(
-        (0.75, 0.030, 1.00, 0.115),   # rewind arrow + "..." overflow, top-right
-        (0.00, 0.900, 1.00, 1.000),   # bottom nav bar (dark bar starts at y frac 0.906)
+        (0.75, 0.030, 1.00, 0.115),  # rewind arrow + "..." overflow, top-right
+        (0.00, 0.900, 1.00, 1.000),  # bottom nav bar (dark bar starts at y frac 0.906)
     ),
     # OFF, because it demonstrably cannot work on the target device. Gesture corroboration
     # (touchwatch.py) reads the phone's own touch stream to prove a human actually PRESSED
@@ -1408,20 +1589,25 @@ def _downsample(frame: bytes, size: int = 24):
 
         import numpy as np
         from PIL import Image
+
         im = Image.open(BytesIO(frame)).convert("L").resize((size, size))
         return np.asarray(im, dtype="int16")
     except Exception:  # noqa: BLE001 — any decode/dep failure -> caller falls back to exact bytes
         return None
 
 
-_IDENTITY_DS = (64, 16)   # identity-band downsample (w, h) -- see _band. Matches the crop's
+_IDENTITY_DS = (
+    64,
+    16,
+)  # identity-band downsample (w, h) -- see _band. Matches the crop's
 # roughly 5.6:1 aspect ratio (identity_band spans 0.70 of the width, 0.046 of the height) at
 # enough resolution for OCR (_ocr_band crops the SAME rect at full frame resolution, this
 # downsample is only for the pixel-distance comparison _identity_of makes on every poll).
 
 
-def _band_of_image(im, rect: tuple[float, float, float, float],
-                   size: tuple[int, int] = _IDENTITY_DS):
+def _band_of_image(
+    im, rect: tuple[float, float, float, float], size: tuple[int, int] = _IDENTITY_DS
+):
     """`_band`'s crop-and-resize step, on an ALREADY-DECODED grayscale PIL image `im`.
 
     Split out (2026-08-23 perf pass) so a caller that needs MANY crops of the SAME frame can
@@ -1443,14 +1629,18 @@ def _band_of_image(im, rect: tuple[float, float, float, float],
     need the "unreadable -> None" contract wrap this the way `_band` does below.
     """
     import numpy as np
+
     w, h = im.size
     x0, y0, x1, y1 = rect
     crop = im.crop((round(x0 * w), round(y0 * h), round(x1 * w), round(y1 * h)))
     return np.asarray(crop.resize(size), dtype="int16")
 
 
-def _band(frame: bytes, rect: tuple[float, float, float, float],
-          size: tuple[int, int] = _IDENTITY_DS):
+def _band(
+    frame: bytes,
+    rect: tuple[float, float, float, float],
+    size: tuple[int, int] = _IDENTITY_DS,
+):
     """Downsampled grayscale crop of the normalised rect `(x0, y0, x1, y1)` of `frame`, at
     _IDENTITY_DS resolution. None when the frame can't be decoded -- same contract as
     _downsample (every caller here already knows how to fall back to 'unknown' on None; a
@@ -1480,6 +1670,7 @@ def _band(frame: bytes, rect: tuple[float, float, float, float],
         from io import BytesIO
 
         from PIL import Image
+
         im = Image.open(BytesIO(frame)).convert("L")
         return _band_of_image(im, rect, size)
     except Exception:  # noqa: BLE001 — any decode/dep failure -> caller falls back to 'unknown'
@@ -1492,6 +1683,7 @@ def _band_dist(a, b) -> float:
     fallback, because there is no meaningful "distance" between a real band and "we couldn't
     decode anything"."""
     import numpy as np
+
     return float(np.mean(np.abs(a - b)))
 
 
@@ -1500,8 +1692,8 @@ def _band_dist(a, b) -> float:
 # (dark mode, a night photo) — but real content has text and edges, so its
 # peak-to-peak spread stays large even when its mean is low. A blank framebuffer
 # has essentially no spread at all.
-_BLANK_MEAN_MAX = 2.0      # 0..255 mean luminance
-_BLANK_SPREAD_MAX = 2.0    # 0..255 peak-to-peak
+_BLANK_MEAN_MAX = 2.0  # 0..255 mean luminance
+_BLANK_SPREAD_MAX = 2.0  # 0..255 peak-to-peak
 
 
 def _is_blank_frame(frame: bytes) -> bool:
@@ -1522,8 +1714,10 @@ def _is_blank_frame(frame: bytes) -> bool:
 
         import numpy as np
         from PIL import Image
+
         arr = np.asarray(
-            Image.open(BytesIO(frame)).convert("L").resize((24, 24)), dtype="int16")
+            Image.open(BytesIO(frame)).convert("L").resize((24, 24)), dtype="int16"
+        )
     except Exception:  # noqa: BLE001 — any decode/dep failure -> "can't tell", not "blank"
         return False
     return bool(np.mean(arr) <= _BLANK_MEAN_MAX and np.ptp(arr) <= _BLANK_SPREAD_MAX)
@@ -1540,9 +1734,10 @@ def _split_diff(a: bytes, b: bytes) -> tuple[float, float]:
     if da is None or db is None:
         return (0.0, 0.0) if a == b else (999.0, 999.0)
     import numpy as np
+
     d = np.abs(da - db)
     h = d.shape[0]
-    return float(np.mean(d[: h // 2])), float(np.mean(d[h // 2:]))
+    return float(np.mean(d[: h // 2])), float(np.mean(d[h // 2 :]))
 
 
 def _frame_sig(frame: bytes, *, ds=None) -> bytes:
@@ -1558,6 +1753,7 @@ def _frame_sig(frame: bytes, *, ds=None) -> bytes:
     if arr is not None:
         return arr.tobytes()
     import hashlib
+
     return hashlib.md5(frame, usedforsecurity=False).digest()
 
 
@@ -1585,9 +1781,14 @@ _STATIC_PAIRS_FOR_BOTTOM = 2
 _STATIC_PROBE_MAX_DIST = 36.0
 
 
-def _static_pair_is_the_bottom(before: bytes, after: bytes,
-                               content_band: tuple[float, float], *,
-                               before_ds=None, after_ds=None) -> bool:
+def _static_pair_is_the_bottom(
+    before: bytes,
+    after: bytes,
+    content_band: tuple[float, float],
+    *,
+    before_ds=None,
+    after_ds=None,
+) -> bool:
     """Whether frameshift AFFIRMATIVELY measured these two frames as the same page position.
 
     True only for a quorate `SHIFT_MEASURED` of exactly 0px. Every other outcome -- a refusal, a
@@ -1606,8 +1807,15 @@ def _static_pair_is_the_bottom(before: bytes, after: bytes,
     if before_ds is not None and after_ds is not None:
         try:
             import numpy as np
-            if float(np.abs(before_ds.astype("float32")
-                            - after_ds.astype("float32")).mean()) > _STATIC_PROBE_MAX_DIST:
+
+            if (
+                float(
+                    np.abs(
+                        before_ds.astype("float32") - after_ds.astype("float32")
+                    ).mean()
+                )
+                > _STATIC_PROBE_MAX_DIST
+            ):
                 return False
         except Exception:  # noqa: BLE001 — the gate is an optimisation; fall through and measure
             pass
@@ -1776,9 +1984,19 @@ class _EnumerationCoverageLedger:
     sampled rather than being an error.
     """
 
-    __slots__ = ("basis", "steps", "cap_px", "step_px", "trust_ceiling_px", "depth_px",
-                 "window_low_px", "window_high_px", "single_valued_windows",
-                 "viewport_offset_px", "refusals")
+    __slots__ = (
+        "basis",
+        "steps",
+        "cap_px",
+        "step_px",
+        "trust_ceiling_px",
+        "depth_px",
+        "window_low_px",
+        "window_high_px",
+        "single_valued_windows",
+        "viewport_offset_px",
+        "refusals",
+    )
 
     def __init__(self) -> None:
         # All four basis names are seeded to zero rather than created on first sight, so "this
@@ -1860,8 +2078,9 @@ class _EnumerationCoverageLedger:
         geometry left no legal step" (`ScrollStepError`) without having to pattern-match prose.
         """
         try:
-            self.refusals.append({"frame_index": int(frame_index),
-                                  "error": type(exc).__name__})
+            self.refusals.append(
+                {"frame_index": int(frame_index), "error": type(exc).__name__}
+            )
         except Exception:  # noqa: BLE001 -- diagnostics never alter a live capture
             pass
 
@@ -1884,8 +2103,12 @@ class _EnumerationCoverageLedger:
         if not values:
             return None
         ordered = sorted(values)
-        return {"n": len(ordered), "min": ordered[0],
-                "median": ordered[(len(ordered) - 1) // 2], "max": ordered[-1]}
+        return {
+            "n": len(ordered),
+            "min": ordered[0],
+            "median": ordered[(len(ordered) - 1) // 2],
+            "max": ordered[-1],
+        }
 
     def summary(self) -> dict | None:
         """The nested `coverage` value for the `capture` row, or None when this read planned no
@@ -1901,7 +2124,9 @@ class _EnumerationCoverageLedger:
                 return None
             viewport = self._span(self.viewport_offset_px)
             if viewport is not None:
-                viewport["nonzero"] = sum(1 for value in self.viewport_offset_px if value)
+                viewport["nonzero"] = sum(
+                    1 for value in self.viewport_offset_px if value
+                )
             return {
                 "steps": self.steps,
                 "basis": dict(self.basis),
@@ -1909,9 +2134,11 @@ class _EnumerationCoverageLedger:
                 "step_px": self._span(self.step_px),
                 "trust_ceiling_px": self._span(self.trust_ceiling_px),
                 "depth_px": self._span(self.depth_px),
-                "window_px": {"low": self._span(self.window_low_px),
-                              "high": self._span(self.window_high_px),
-                              "single_valued": self.single_valued_windows},
+                "window_px": {
+                    "low": self._span(self.window_low_px),
+                    "high": self._span(self.window_high_px),
+                    "single_valued": self.single_valued_windows,
+                },
                 "viewport_offset_px": viewport,
                 "refusals": [dict(refusal) for refusal in self.refusals],
             }
@@ -1952,9 +2179,14 @@ def _content_rows(content_band: tuple[float, float], size: int) -> tuple[int, in
     return r0, r1
 
 
-def _vertical_shift_match(cur, seen, *, threshold: float,
-                          rows: tuple[int, int] | None = None,
-                          min_overlap_rows: int = 4) -> tuple[bool, int, int]:
+def _vertical_shift_match(
+    cur,
+    seen,
+    *,
+    threshold: float,
+    rows: tuple[int, int] | None = None,
+    min_overlap_rows: int = 4,
+) -> tuple[bool, int, int]:
     """Whether downsampled frame `cur` could be a vertically-scrolled view of `seen`, at ANY
     vertical offset -- not just the one wait_for_decision's exact-position check already tried.
 
@@ -2017,6 +2249,7 @@ def _vertical_shift_match(cur, seen, *, threshold: float,
     only thing any caller's control flow may depend on.
     """
     import numpy as np
+
     size = cur.shape[0]
     r0, r1 = rows if rows is not None else (0, size)
     cur_c, seen_c = cur[r0:r1], seen[r0:r1]
@@ -2028,13 +2261,14 @@ def _vertical_shift_match(cur, seen, *, threshold: float,
     # that call site.
     min_overlap = max(1, min(band_h, int(min_overlap_rows)))
     max_shift = max(
-        0, min(band_h - min_overlap, math.ceil(_READ_SCROLL_FRAC_MAX * size)))
+        0, min(band_h - min_overlap, math.ceil(_READ_SCROLL_FRAC_MAX * size))
+    )
     best_shift, best_overlap, best_dist = 0, band_h, None
     for shift in range(-max_shift, max_shift + 1):
         if shift >= 0:
-            cur_band, seen_band = cur_c[shift:], seen_c[:band_h - shift]
+            cur_band, seen_band = cur_c[shift:], seen_c[: band_h - shift]
         else:
-            cur_band, seen_band = cur_c[:band_h + shift], seen_c[-shift:]
+            cur_band, seen_band = cur_c[: band_h + shift], seen_c[-shift:]
         if cur_band.size == 0:
             continue
         dist = float(np.mean(np.abs(cur_band - seen_band)))
@@ -2052,6 +2286,8 @@ def _vertical_shift_match(cur, seen, *, threshold: float,
 # two strings, independent of any driver state.
 
 _NAME_MATCH_RATIO = 0.7
+
+
 # How close a token OCR'd from identity_top_name_band must score against the stored profile
 # name (difflib.SequenceMatcher(None, a.casefold(), b.casefold()).ratio(), called via
 # _name_token_matches below with the OCR'd TOKEN first and the STORED name second -- this
@@ -2108,9 +2344,15 @@ def _name_token_matches(seen: str, stored: str) -> bool:
         Zorba(Zorva)=0.80, Zorna(Zorva)=0.80, Zorla(Zorva)=0.80, orva(Zorva)=0.89
     """
     seen_cf, stored_cf = seen.casefold(), stored.casefold()
-    if seen_cf and stored_cf and (seen_cf.startswith(stored_cf) or stored_cf.startswith(seen_cf)):
+    if (
+        seen_cf
+        and stored_cf
+        and (seen_cf.startswith(stored_cf) or stored_cf.startswith(seen_cf))
+    ):
         return True
-    return difflib.SequenceMatcher(None, seen_cf, stored_cf).ratio() >= _NAME_MATCH_RATIO
+    return (
+        difflib.SequenceMatcher(None, seen_cf, stored_cf).ratio() >= _NAME_MATCH_RATIO
+    )
 
 
 _TOP_NAME_TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z'-]+")
@@ -2123,10 +2365,30 @@ _TOP_NAME_TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z'-]+")
 # _identity_of's Layer 1b block applies its OWN, stricter length floor (>= 3 alphabetic
 # characters) on top of this regex, because a 1-2 character token is noise, never a usable
 # name, and must never by itself be the basis for recording a PASS.
-_TOP_NAME_CHROME_WORDS = frozenset({
-    "signals", "active", "today", "now", "shows", "thoughtful", "age", "height", "dating",
-    "intent", "she", "her", "hers", "he", "him", "his", "they", "them", "their", "theirs",
-})
+_TOP_NAME_CHROME_WORDS = frozenset(
+    {
+        "signals",
+        "active",
+        "today",
+        "now",
+        "shows",
+        "thoughtful",
+        "age",
+        "height",
+        "dating",
+        "intent",
+        "she",
+        "her",
+        "hers",
+        "he",
+        "him",
+        "his",
+        "they",
+        "them",
+        "their",
+        "theirs",
+    }
+)
 # Hinge's Signals banner repeats the profile name in a fixed sentence immediately above the
 # card header.  This is the one measured shape in which a one- or two-character displayed name
 # is not arbitrary OCR noise: the 2026-08-30 Aisha -> S Training Like produced exactly
@@ -2134,7 +2396,8 @@ _TOP_NAME_CHROME_WORDS = frozenset({
 # after its verified pass.  Keep this exact and anchored.  A bare short read (or a short token
 # beside any other words) retains no power to manufacture a different-profile verdict.
 _SHORT_SIGNALS_BANNER_RE = re.compile(
-    r"^([A-Za-z]{1,2}) shows thoughtful signals$", re.IGNORECASE)
+    r"^([A-Za-z]{1,2}) shows thoughtful signals$", re.IGNORECASE
+)
 # The lower card-header crop below is NOT a general shifted OCR detector.  Hinge 10.2.0's
 # ``Take another look`` panel is a distinct, measured layout which moves the name beneath the
 # usual card-header band.  Only TWO exact, cleaned OCR outputs from that normal band permit the
@@ -2195,7 +2458,8 @@ def _clean_first_line_name_candidate(text: str) -> str | None:
         return banner_match.group(1)
     first_line_tokens = _TOP_NAME_TOKEN_RE.findall(first_line)
     candidates = [
-        tok for tok in first_line_tokens
+        tok
+        for tok in first_line_tokens
         if tok.casefold() not in _TOP_NAME_CHROME_WORDS
         and sum(ch.isalpha() for ch in tok) >= 3
     ]
@@ -2214,6 +2478,7 @@ def _clean_first_line_name_candidate(text: str) -> str | None:
 # vision-location for it (AndroidDriver._template returns None, callers fall back to a fixed
 # coordinate, or — for upsell_dismiss, which has no safe fixed-coordinate fallback — no-op).
 
+
 @functools.lru_cache(maxsize=None)
 def _load_template(name: str):
     """Load a grayscale button-glyph template via cv2 (cached). None if cv2/asset missing."""
@@ -2221,11 +2486,17 @@ def _load_template(name: str):
         import cv2
     except Exception:  # noqa: BLE001 — cv2 absent -> caller falls back to fixed coords
         return None
-    return cv2.imread(str(_ASSETS / name), cv2.IMREAD_GRAYSCALE)   # None if file missing
+    return cv2.imread(str(_ASSETS / name), cv2.IMREAD_GRAYSCALE)  # None if file missing
 
 
-def _match_glyph(frame: bytes, template, *, side: str, threshold: float = 0.6,
-                 y_band: tuple[float, float] | None = None) -> list:
+def _match_glyph(
+    frame: bytes,
+    template,
+    *,
+    side: str,
+    threshold: float = 0.6,
+    y_band: tuple[float, float] | None = None,
+) -> list:
     """Locate a button glyph in a screencap by normalized cross-correlation. `side` keeps only
     matches on the right ('like' heart) or left ('pass' X) of the screen. Returns (x, y)
     centers sorted top->bottom (so [0] is the first photo's heart after scroll-to-top). Empty
@@ -2248,6 +2519,7 @@ def _match_glyph(frame: bytes, template, *, side: str, threshold: float = 0.6,
     try:
         import cv2
         import numpy as np
+
         img = cv2.imdecode(np.frombuffer(frame, dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
         if img is None:
             return []
@@ -2276,12 +2548,15 @@ def _match_glyph(frame: bytes, template, *, side: str, threshold: float = 0.6,
             work[:wr0, :] = -1.0
             work[wr1:, :] = -1.0
         centers: list = []
-        for _ in range(12):                                   # non-max suppression loop
+        for _ in range(12):  # non-max suppression loop
             _, maxv, _, loc = cv2.minMaxLoc(work)
             if maxv < threshold:
                 break
             cx, cy = loc[0] + tw // 2, loc[1] + th // 2
-            work[max(0, loc[1] - th // 2): loc[1] + th, max(0, loc[0] - tw // 2): loc[0] + tw] = -1.0
+            work[
+                max(0, loc[1] - th // 2) : loc[1] + th,
+                max(0, loc[0] - tw // 2) : loc[0] + tw,
+            ] = -1.0
             if side == "right" and cx < w * 0.55:
                 continue
             if side == "left" and cx > w * 0.45:
@@ -2406,11 +2681,13 @@ class AndroidDriver(DatingAppDriver):
         self.adb_path = app_cfg.get("adb_path", "adb")
         try:
             self.package = validate_android_package_id(
-                app_cfg.get("package", spec.package),
-                context=f"apps.{spec.app}.package")
+                app_cfg.get("package", spec.package), context=f"apps.{spec.app}.package"
+            )
         except ValueError as exc:
             raise DriverClosed(f"{spec.app}: {exc}") from exc
-        self.scroll_captures = max(1, int(app_cfg.get("scroll_captures", spec.scroll_captures)))
+        self.scroll_captures = max(
+            1, int(app_cfg.get("scroll_captures", spec.scroll_captures))
+        )
         # How many cards the still-photo dwell (C2/C3) walks a real navigation hop out to for
         # ONE capture, beyond the free card the read already left the phone parked on. 1
         # reproduces the driver's pre-2026-08-23 single-card behaviour exactly -- see
@@ -2419,22 +2696,28 @@ class AndroidDriver(DatingAppDriver):
         # scroll_captures; the `max(1, ...)` here is the same defensive floor scroll_captures
         # keeps, not a second copy of that validation.
         self.still_photo_dwell_candidates = max(
-            1, int(app_cfg.get("still_photo_dwell_candidates", 6)))
+            1, int(app_cfg.get("still_photo_dwell_candidates", 6))
+        )
         # Worker installs this only for the duration of one profile capture. It is a Hub
         # liveness cue, not a driver control channel: callback failures are ignored and it
         # cannot request, alter, or interrupt device input.
         self._capture_progress_callback = None
         self._capture_progress_detail: str | None = None
         self.dwell_s = float(app_cfg.get("dwell_s", spec.dwell_s))
-        self.read_scroll_frac = float(app_cfg.get("read_scroll_frac", spec.read_scroll_frac))
+        self.read_scroll_frac = float(
+            app_cfg.get("read_scroll_frac", spec.read_scroll_frac)
+        )
         # Returning to the top is navigation, not the measured content-reading cadence. Hinge
         # keeps this setting only for config compatibility: its recovery implementation caps
         # the actual stroke to the safe central read corridor, and config validation rejects a
         # larger Hinge value before a session opens. Other Android bindings retain their own
         # independent return behavior.
-        self.rewind_scroll_frac = float(app_cfg.get(
-            "rewind_scroll_frac", self.read_scroll_frac))
-        self.change_threshold = float(app_cfg.get("change_threshold", spec.change_threshold))
+        self.rewind_scroll_frac = float(
+            app_cfg.get("rewind_scroll_frac", self.read_scroll_frac)
+        )
+        self.change_threshold = float(
+            app_cfg.get("change_threshold", spec.change_threshold)
+        )
         self.coords = {**spec.coords, **(app_cfg.get("coords") or {})}
         # Observe-mode decision detection (see the module docstring's redesign notes): every
         # field here is config-overridable per app the SAME way change_threshold/coords are
@@ -2442,24 +2725,39 @@ class AndroidDriver(DatingAppDriver):
         # config.yaml rather than requiring a code change.
         identity_band = app_cfg.get("identity_band", spec.identity_band)
         self.identity_band = tuple(identity_band) if identity_band is not None else None
-        identity_top_name_band = app_cfg.get("identity_top_name_band", spec.identity_top_name_band)
+        identity_top_name_band = app_cfg.get(
+            "identity_top_name_band", spec.identity_top_name_band
+        )
         self.identity_top_name_band = (
-            tuple(identity_top_name_band) if identity_top_name_band is not None else None)
+            tuple(identity_top_name_band)
+            if identity_top_name_band is not None
+            else None
+        )
         identity_top_name_fallback_band = app_cfg.get(
-            "identity_top_name_fallback_band", spec.identity_top_name_fallback_band)
+            "identity_top_name_fallback_band", spec.identity_top_name_fallback_band
+        )
         self.identity_top_name_fallback_band = (
             tuple(identity_top_name_fallback_band)
-            if identity_top_name_fallback_band is not None else None)
+            if identity_top_name_fallback_band is not None
+            else None
+        )
         identity_top_name_take_another_look_band = app_cfg.get(
             "identity_top_name_take_another_look_band",
-            spec.identity_top_name_take_another_look_band)
+            spec.identity_top_name_take_another_look_band,
+        )
         self.identity_top_name_take_another_look_band = (
             tuple(identity_top_name_take_another_look_band)
-            if identity_top_name_take_another_look_band is not None else None)
+            if identity_top_name_take_another_look_band is not None
+            else None
+        )
         self.content_band = tuple(app_cfg.get("content_band", spec.content_band))
         self.observe_ignore_zones = tuple(
-            tuple(zone) for zone in app_cfg.get("observe_ignore_zones", spec.observe_ignore_zones))
-        self.observe_touch_watch = bool(app_cfg.get("observe_touch_watch", spec.observe_touch_watch))
+            tuple(zone)
+            for zone in app_cfg.get("observe_ignore_zones", spec.observe_ignore_zones)
+        )
+        self.observe_touch_watch = bool(
+            app_cfg.get("observe_touch_watch", spec.observe_touch_watch)
+        )
         # Re-run AndroidAppSpec.__post_init__'s rect/arity/pairing checks against these seven
         # fields' MERGED (config.yaml-overridden) values, not just spec's own hardcoded
         # literals. __post_init__ already validates identity_band/identity_top_name_band/
@@ -2501,7 +2799,8 @@ class AndroidDriver(DatingAppDriver):
                 identity_top_name_band=self.identity_top_name_band,
                 identity_top_name_fallback_band=self.identity_top_name_fallback_band,
                 identity_top_name_take_another_look_band=(
-                    self.identity_top_name_take_another_look_band),
+                    self.identity_top_name_take_another_look_band
+                ),
                 content_band=self.content_band,
                 observe_ignore_zones=self.observe_ignore_zones,
                 observe_touch_watch=self.observe_touch_watch,
@@ -2521,8 +2820,12 @@ class AndroidDriver(DatingAppDriver):
         # over one header/content crop cannot license targeting after either crop changes.
         self.targeting_calibration, self._targeting_calibration_unavailable = (
             _parse_targeting_calibration(
-                app_cfg.get("targeting_calibration"), self.serial,
-                identity_band=self.identity_band, content_band=self.content_band))
+                app_cfg.get("targeting_calibration"),
+                self.serial,
+                identity_band=self.identity_band,
+                content_band=self.content_band,
+            )
+        )
         self._targeting_runtime_version_name: str | None = None
         self._targeting_runtime_frame_size: tuple[int, int] | None = None
         self._targeting_binding_fetched = False
@@ -2534,8 +2837,12 @@ class AndroidDriver(DatingAppDriver):
         # item table (_index_captured_items, _invalidate_item_index), so a package update or
         # display-mode change between profiles is still caught on the very next read.
         self.observe_name_ocr = bool(app_cfg.get("observe_name_ocr", True))
-        self._touch_watcher: TouchWatcher | None = None   # started in open_session, closed in close()
-        self._touch_watch_health_warned = False   # print the event_count==0 warning at most once/run
+        self._touch_watcher: TouchWatcher | None = (
+            None  # started in open_session, closed in close()
+        )
+        self._touch_watch_health_warned = (
+            False  # print the event_count==0 warning at most once/run
+        )
         # Whether THIS session is autonomous (Worker._auto_loop) rather than observe. The
         # driver has no `mode` of its own -- Worker never passes one in (make_driver builds a
         # bare AndroidDriver; mode lives only on Worker itself) -- so this starts False
@@ -2646,7 +2953,9 @@ class AndroidDriver(DatingAppDriver):
         # into a different profile.
         self._ocr_band_cache: dict[tuple, str | None] = {}
         self._adb: Adb | None = None
-        self._capture_scrolls = 0     # read-scrolls the last _capture_current did; _scroll_to_top's ceiling
+        self._capture_scrolls = (
+            0  # read-scrolls the last _capture_current did; _scroll_to_top's ceiling
+        )
         # Exact geometry of every forward scroll since the last confirmed top.  A count alone
         # was enough while all read-scrolls had one fixed distance; auto-mode can now vary both
         # distance and lane per gesture, so undo must be based on what actually happened.
@@ -2757,12 +3066,19 @@ class AndroidDriver(DatingAppDriver):
         self._still_photo_passive_observation_s: float | None = None
         self._still_photo_dwell_timing_breakdown: dict[str, float] | None = None
         self._current_items_unavailable = (
-            "no profile has been read yet, so this driver has enumerated nothing")
+            "no profile has been read yet, so this driver has enumerated nothing"
+        )
         self._current_items_unnumbered = ""
         self._current_items_unavailable_kind = ""
-        self._touch = None            # touch transport: UhidTouch (genuine) or Adb (input fallback)
-        self.touch_backend = app_cfg.get("touch_backend", "auto")   # auto | uhid | adb | uhid_persistent
-        self._observe_ready = False   # True once open_session validated PIL/numpy + device
+        self._touch = (
+            None  # touch transport: UhidTouch (genuine) or Adb (input fallback)
+        )
+        self.touch_backend = app_cfg.get(
+            "touch_backend", "auto"
+        )  # auto | uhid | adb | uhid_persistent
+        self._observe_ready = (
+            False  # True once open_session validated PIL/numpy + device
+        )
         # Rate-limit state for _note_observe_waiting. Both are re-anchored at the top of every
         # wait_for_decision call (one call = one profile's wait); initialised here as well so
         # the notice helper is safe to call from anywhere -- including tools and tests that
@@ -2817,12 +3133,16 @@ class AndroidDriver(DatingAppDriver):
         # -- see DebugLog._trim_old_runs. The release-evidence run is derived rather than listed
         # twice, so the two can never drift apart.
         protect = set(app_cfg.get("debug_protect_runs") or ())
-        release_run = (app_cfg.get("observe_release_evidence") or {}).get("production_run_id")
+        release_run = (app_cfg.get("observe_release_evidence") or {}).get(
+            "production_run_id"
+        )
         if isinstance(release_run, str) and release_run:
             protect.add(release_run)
         self.debug_protect_runs = frozenset(protect)
-        self.halt_on_error = bool(app_cfg.get("halt_on_error", True))   # auto: STOP on unexpected (preserve logs)
-        self._dbg = None              # HingeDebugLog (set in open_session when debug_log is on)
+        self.halt_on_error = bool(
+            app_cfg.get("halt_on_error", True)
+        )  # auto: STOP on unexpected (preserve logs)
+        self._dbg = None  # HingeDebugLog (set in open_session when debug_log is on)
         # Assigned by Worker before open_session. A release verifier only accepts a debug
         # folder whose first production record binds it to this same Worker run id.
         self._debug_run_id: str | None = None
@@ -2858,8 +3178,11 @@ class AndroidDriver(DatingAppDriver):
 
         A spec declaring NO templates is fine here: it simply has no vision to lose, and
         _await_button refuses on its behalf if anything ever tries to aim at a control."""
-        missing = [name for role, name in self.spec.templates.items()
-                   if _load_template(name) is None]
+        missing = [
+            name
+            for role, name in self.spec.templates.items()
+            if _load_template(name) is None
+        ]
         if missing:
             raise DriverClosed(
                 f"{self.spec.app}: cannot load glyph template(s) {', '.join(sorted(missing))} "
@@ -2879,7 +3202,9 @@ class AndroidDriver(DatingAppDriver):
         if not isinstance(run_id, str) or not run_id.strip():
             raise ValueError("debug run id must be nonempty text")
         if self._debug_run_id is not None and self._debug_run_id != run_id:
-            raise ValueError("a Hinge driver cannot be rebound to a different Worker run id")
+            raise ValueError(
+                "a Hinge driver cannot be rebound to a different Worker run id"
+            )
         self._debug_run_id = run_id
 
     def set_opener_prompt_sha256(self, prompt_sha256: str | None) -> None:
@@ -2893,9 +3218,13 @@ class AndroidDriver(DatingAppDriver):
         below carry no era digest -- never raises, unlike bind_debug_run's run-id contract,
         because there is no cross-run identity claim here to protect.
         """
-        self._opener_prompt_sha256 = prompt_sha256 if isinstance(prompt_sha256, str) else None
+        self._opener_prompt_sha256 = (
+            prompt_sha256 if isinstance(prompt_sha256, str) else None
+        )
 
-    def set_staged_opener_generation_context(self, context: dict[str, object] | None) -> None:
+    def set_staged_opener_generation_context(
+        self, context: dict[str, object] | None
+    ) -> None:
         """Bind one generated draft's safe scalar metadata to its pre-send evidence row.
 
         This optional Worker-to-driver hook exists only for the short interval between a
@@ -2974,14 +3303,19 @@ class AndroidDriver(DatingAppDriver):
         # coordinates. supervisor.run() and HubState.start() check earlier and more loudly;
         # this one catches anything that reached a driver by another path.
         from .. import platforms
+
         reason = platforms.unavailable_reason(
-            self.spec.app, mode="auto" if self._auto_session else "observe")
+            self.spec.app, mode="auto" if self._auto_session else "observe"
+        )
         if reason:
             raise DriverClosed(reason)
 
         import importlib.util
+
         if not (importlib.util.find_spec("numpy") and importlib.util.find_spec("PIL")):
-            raise DriverClosed(f"{self.spec.app} driver requires PIL and numpy. Install them via `pip install -e '.[ml]'` or `pip install pillow numpy`.")
+            raise DriverClosed(
+                f"{self.spec.app} driver requires PIL and numpy. Install them via `pip install -e '.[ml]'` or `pip install pillow numpy`."
+            )
 
         self._require_vision()
 
@@ -2990,8 +3324,10 @@ class AndroidDriver(DatingAppDriver):
         if not ready:
             raise DriverClosed(f"No ADB device connected for {self.spec.app}")
         if self.serial and self.serial not in ready:
-            raise DriverClosed(f"{self.spec.app} device {self.serial} not connected (adb devices: {ready})")
-        self._adb.screen_size()                       # cache geometry for clamping/coords
+            raise DriverClosed(
+                f"{self.spec.app} device {self.serial} not connected (adb devices: {ready})"
+            )
+        self._adb.screen_size()  # cache geometry for clamping/coords
         # A new session must re-read the device even on a driver object that already ran one:
         # _refresh_targeting_calibration_binding memoizes its dumpsys/screen_size read for one
         # item-index lifetime, and close() leaves that flag set. Nothing in production reopens a
@@ -3001,19 +3337,22 @@ class AndroidDriver(DatingAppDriver):
         self._refresh_targeting_calibration_binding()
         self._adb.shell(
             f"monkey -p {quote_android_package_id(self.package)} "
-            "-c android.intent.category.LAUNCHER 1")
-        time.sleep(human_cooldown(1.5))               # let the app come to the foreground
-        self._touch = self._make_touch()              # genuine UHID touches; adb input fallback
+            "-c android.intent.category.LAUNCHER 1"
+        )
+        time.sleep(human_cooldown(1.5))  # let the app come to the foreground
+        self._touch = self._make_touch()  # genuine UHID touches; adb input fallback
         try:
-            self._observe_ready = True                # only True once fully open (touch ready too)
+            self._observe_ready = True  # only True once fully open (touch ready too)
             if self.observe_name_ocr and shutil.which("tesseract") is None:
                 # A missing OCR binary cannot weaken the false-PASS guarantee: unresolved identity
                 # stays waiting. It can reduce recall, however, because a real next card at scroll
                 # top has generic filter-chip pixels and needs two matching different-name reads to
                 # become a positive `new/new` decision. One line, once, so that conservative stall
                 # is diagnosable rather than looking like a silent detector failure.
-                print("profile-name OCR unavailable (tesseract not on PATH); identity safety "
-                      "still holds, but a scroll-top card advance may remain unresolved.")
+                print(
+                    "profile-name OCR unavailable (tesseract not on PATH); identity safety "
+                    "still holds, but a scroll-top card advance may remain unresolved."
+                )
             if self.observe_touch_watch and not self._auto_session:
                 # Gesture corroboration (layer 3), OBSERVE SESSIONS ONLY -- see self._auto_session
                 # in __init__. Its whole job is to prove a HUMAN pressed something, which only
@@ -3034,7 +3373,9 @@ class AndroidDriver(DatingAppDriver):
                 # _make_touch above) -- so this raises the same way, naming the config key that
                 # accepts the narrower proof deliberately. It propagates out to the enclosing
                 # guard below, which is what actually releases the touch transport/ADB link.
-                watcher = TouchWatcher(self.adb_path, self.serial, self._adb.screen_size())
+                watcher = TouchWatcher(
+                    self.adb_path, self.serial, self._adb.screen_size()
+                )
                 try:
                     watcher.start()
                 except TouchWatchUnavailable as exc:
@@ -3049,19 +3390,27 @@ class AndroidDriver(DatingAppDriver):
                         f"narrower proof on purpose."
                     ) from exc
                 self._touch_watcher = watcher
-                print(f"{self.spec.app}: touch watcher attached on {watcher.device_path} "
-                      f"({watcher.device_name!r}) — gesture corroboration is live for observe "
-                      f"mode.")
+                print(
+                    f"{self.spec.app}: touch watcher attached on {watcher.device_path} "
+                    f"({watcher.device_name!r}) — gesture corroboration is live for observe "
+                    f"mode."
+                )
             if self.debug_log:
-                self._dbg = open_debug_log(self.debug_dir, run_id=self._debug_run_id,
-                                           keep_runs=self.debug_keep_runs,
-                                           protect_runs=self.debug_protect_runs)
+                self._dbg = open_debug_log(
+                    self.debug_dir,
+                    run_id=self._debug_run_id,
+                    keep_runs=self.debug_keep_runs,
+                    protect_runs=self.debug_protect_runs,
+                )
                 if self._dbg is not None and self._debug_run_id is not None:
                     # This must remain the first production record: release verification uses
                     # it to bind every later fact in this immutable-named debug folder to the
                     # Worker/store run id, without logging profile data or touching the phone.
-                    self._dbg.action("observe_release_run_binding", run_id=self._debug_run_id,
-                                     app=self.spec.app)
+                    self._dbg.action(
+                        "observe_release_run_binding",
+                        run_id=self._debug_run_id,
+                        app=self.spec.app,
+                    )
         except BaseException:
             # Anything after the UHID touch transport registers (the line right above this
             # try) must hand it back if open_session() fails partway through -- open_session()
@@ -3139,10 +3488,16 @@ class AndroidDriver(DatingAppDriver):
         opt-in `touch_backend: adb` requires for the degraded transport above, and
         `touch_backend: uhid` remains the one-line revert to the per-gesture transport."""
         if self.touch_backend == "adb":
-            print(f"{self.spec.app}: touch_backend='adb' — using the DEGRADED input transport "
-                  f"(humanized paths, but constant pressure). Set 'auto' for genuine UHID touches.")
+            print(
+                f"{self.spec.app}: touch_backend='adb' — using the DEGRADED input transport "
+                f"(humanized paths, but constant pressure). Set 'auto' for genuine UHID touches."
+            )
             return self._adb
-        touch_cls = PersistentUhidTouch if self.touch_backend == "uhid_persistent" else UhidTouch
+        touch_cls = (
+            PersistentUhidTouch
+            if self.touch_backend == "uhid_persistent"
+            else UhidTouch
+        )
         try:
             t = touch_cls(self._adb)
             t.open()
@@ -3211,23 +3566,27 @@ class AndroidDriver(DatingAppDriver):
                 f"read_scroll_frac, or any other *_frac knob for this app for a typo, or a "
                 f"pixel value written where a fraction was expected. Refusing rather than "
                 f"letting the transport silently clamp it onto a screen edge, which can land "
-                f"inside a forbidden zone undetected.")
+                f"inside a forbidden zone undetected."
+            )
         zones = getattr(self.spec, "forbidden_zones", ())
         if not zones:
             return
-        cx, cy = clamp_xy(x, y, w, h)      # the point that will ACTUALLY be delivered
+        cx, cy = clamp_xy(x, y, w, h)  # the point that will ACTUALLY be delivered
         mfx = margin_px / w if w else 0.0
         mfy = margin_px / h if h else 0.0
         fx, fy = (cx / w if w else 0.0), (cy / h if h else 0.0)
         for zone in zones:
             x0, y0, x1, y1 = zone
             if x0 - mfx <= fx <= x1 + mfx and y0 - mfy <= fy <= y1 + mfy:
-                margin_note = f" (+/-{margin_px:.1f}px jitter envelope)" if margin_px else ""
+                margin_note = (
+                    f" (+/-{margin_px:.1f}px jitter envelope)" if margin_px else ""
+                )
                 raise ForbiddenTapError(
                     f"refused a tap at ({cx}, {cy}) = ({fx:.3f}, {fy:.3f}) of the "
                     f"screen{margin_note}: it lands inside, or could jitter into, "
                     f"{self.spec.app}'s forbidden zone {zone}, which guards a paid control. "
-                    f"Refusing rather than risking a paid action.")
+                    f"Refusing rather than risking a paid action."
+                )
 
     def _tap(self, x, y, *, should_stop=None) -> None:
         x, y = int(x), int(y)
@@ -3254,7 +3613,8 @@ class AndroidDriver(DatingAppDriver):
         self._require_foreground_owned_for_input()
         self.adb.text(value)
         self._audit_device_input(
-            "text", source=source, chars=len(value), transport=type(self.adb).__name__)
+            "text", source=source, chars=len(value), transport=type(self.adb).__name__
+        )
 
     def _require_foreground_owned_for_input(self) -> None:
         """Refuse input when a proven foreign package owns Android's focused window.
@@ -3269,14 +3629,17 @@ class AndroidDriver(DatingAppDriver):
             return
         reason = self._blocked_reason or (
             f"another Android surface owns the foreground instead of {self.spec.app}; "
-            "no input was sent")
+            "no input was sent"
+        )
         # A proven foreign foreground is an ordinary, operator-actionable blocked state, not an
         # unexplained gesture failure.  The dual-base error lets Worker publish that state when
         # the race is detected inside a like, while existing conservative Android-action callers
         # still stop on HingeActionError.
         raise HingeDeckBlockedError(reason)
 
-    def _audit_device_input(self, kind: str, *, transport: str | None = None, **fields) -> None:
+    def _audit_device_input(
+        self, kind: str, *, transport: str | None = None, **fields
+    ) -> None:
         """Append a screenshot-free record after a device input completed successfully.
 
         The action log historically recorded semantic outcomes (capture, like, pass) but not
@@ -3319,9 +3682,12 @@ class AndroidDriver(DatingAppDriver):
         try:
             session_mode = self._session_mode()
             self._dbg.action(
-                "device_input", kind=kind,
+                "device_input",
+                kind=kind,
                 session_mode=session_mode,
-                transport=transport or type(self.touch).__name__, **fields)
+                transport=transport or type(self.touch).__name__,
+                **fields,
+            )
         except Exception:  # noqa: BLE001 -- diagnostics must never change a live action
             pass
 
@@ -3344,8 +3710,17 @@ class AndroidDriver(DatingAppDriver):
         in `unattributed_s` rather than guessing at a shape it does not have."""
         return isinstance(self.touch, (UhidTouch, PersistentUhidTouch, Adb))
 
-    def _swipe(self, x1, y1, x2, y2, *, duration_ms: int = 450,
-              _timing: dict[str, float] | None = None, should_stop=None) -> None:
+    def _swipe(
+        self,
+        x1,
+        y1,
+        x2,
+        y2,
+        *,
+        duration_ms: int = 450,
+        _timing: dict[str, float] | None = None,
+        should_stop=None,
+    ) -> None:
         """Every explicit drag goes through here, for the same reason every tap goes
         through _tap(). Only the START point is zone-checked (margin_px=0: plan_swipe's
         first sample is pinned exactly to (x1, y1) with no jitter, so there is no drift to
@@ -3381,7 +3756,8 @@ class AndroidDriver(DatingAppDriver):
                 f"{self.spec.app}: refusing a downward swipe starting at y={y1} "
                 f"({y1 / h:.3f} of the screen), inside Android's top-system gesture guard "
                 f"(<= {_SYSTEM_SHADE_GUARD_Y_FRAC:.3f}); this could pull down the "
-                "notification shade instead of scrolling the profile")
+                "notification shade instead of scrolling the profile"
+            )
         source = sys._getframe(1).f_code.co_name
         with _time_bucket(_timing, "foreground_reassert_s"):
             self._require_foreground_owned_for_input()
@@ -3395,11 +3771,21 @@ class AndroidDriver(DatingAppDriver):
         timing_kwargs = {"_timing": _timing} if self._touch_supports_timing() else {}
         self.touch.swipe(x1, y1, x2, y2, duration_ms=duration_ms, **timing_kwargs)
         self._audit_device_input(
-            "swipe", source=source, start=[x1, y1], end=[x2, y2],
-            duration_ms=int(duration_ms))
+            "swipe",
+            source=source,
+            start=[x1, y1],
+            end=[x2, y2],
+            duration_ms=int(duration_ms),
+        )
 
-    def _scroll(self, frac: float, x_frac: float = 0.5, *, reverse: bool = False,
-               _timing: dict[str, float] | None = None) -> None:
+    def _scroll(
+        self,
+        frac: float,
+        x_frac: float = 0.5,
+        *,
+        reverse: bool = False,
+        _timing: dict[str, float] | None = None,
+    ) -> None:
         """touch.scroll_up() with the forbidden-zone guard every other gesture gets.
 
         scroll_up computes its geometry INSIDE the transport, so the driver cannot see
@@ -3452,8 +3838,10 @@ class AndroidDriver(DatingAppDriver):
         before this paragraph existed."""
         with _time_bucket(_timing, "screen_size_s"):
             w, h = self.adb.screen_size()
-        y_low = int(h * (0.5 + frac / 2))     # the FORWARD stroke's touch-down, low on screen
-        y_high = int(h * (0.5 - frac / 2))    # ...and its release, high on screen
+        y_low = int(
+            h * (0.5 + frac / 2)
+        )  # the FORWARD stroke's touch-down, low on screen
+        y_high = int(h * (0.5 - frac / 2))  # ...and its release, high on screen
         nominal = int(w * x_frac)
         with _time_bucket(_timing, "zone_check_s"):
             for x in (nominal - SCROLL_X_JITTER_PX, nominal + SCROLL_X_JITTER_PX):
@@ -3464,13 +3852,20 @@ class AndroidDriver(DatingAppDriver):
             with _time_bucket(_timing, "foreground_reassert_s"):
                 self._require_foreground_owned_for_input()
             # Exactly one textual call into the transport below -- see _swipe's matching comment.
-            timing_kwargs = {"_timing": _timing} if self._touch_supports_timing() else {}
+            timing_kwargs = (
+                {"_timing": _timing} if self._touch_supports_timing() else {}
+            )
             self.touch.scroll_up(frac, x_frac, **timing_kwargs)
             self._audit_device_input(
-                "scroll", source=sys._getframe(1).f_code.co_name, direction="forward",
-                start=[nominal, y_low], end=[nominal, y_high],
-                x_jitter_px=SCROLL_X_JITTER_PX, distance_frac=round(float(frac), 6),
-                x_frac=round(float(x_frac), 6))
+                "scroll",
+                source=sys._getframe(1).f_code.co_name,
+                direction="forward",
+                start=[nominal, y_low],
+                end=[nominal, y_high],
+                x_jitter_px=SCROLL_X_JITTER_PX,
+                distance_frac=round(float(frac), 6),
+                x_frac=round(float(x_frac), 6),
+            )
             return
         # scroll_x is the SHARED column jitter both transports' scroll_up() applies (HINGE-04),
         # called here rather than re-derived so a reverse read-scroll is not the one gesture in
@@ -3536,14 +3931,22 @@ class AndroidDriver(DatingAppDriver):
         # _match_glyph's generic 0.6 default either: see _PASS_MATCH_THRESHOLD for the measurement
         # that found only 0.016 of margin there, and _locate_training_pass, which this now matches.
         # Both pass consumers guard the same irreversible touch and must be proved alike.
-        kwargs = ({"threshold": _LIKE_MATCH_THRESHOLD, "y_band": self.content_band}
-                  if role == "like" else {"threshold": _PASS_MATCH_THRESHOLD})
-        centers = _match_glyph(self._screencap(), self._template(role),
-                               side="right" if which == "like" else "left", **kwargs)
+        kwargs = (
+            {"threshold": _LIKE_MATCH_THRESHOLD, "y_band": self.content_band}
+            if role == "like"
+            else {"threshold": _PASS_MATCH_THRESHOLD}
+        )
+        centers = _match_glyph(
+            self._screencap(),
+            self._template(role),
+            side="right" if which == "like" else "left",
+            **kwargs,
+        )
         if role == "pass" and len(centers) > 1:
             raise UnlocatedControlError(
                 f"{len(centers)} equally plausible Hinge pass controls were located at "
-                f"{centers!r}; refusing to guess which one is the real control")
+                f"{centers!r}; refusing to guess which one is the real control"
+            )
         return centers[0] if centers else None
 
     def _await_button(self, which: str, tries: int = 5, *, should_stop=None):
@@ -3562,27 +3965,36 @@ class AndroidDriver(DatingAppDriver):
         else:
             pt = None
             for _ in range(max(1, tries)):
-                self._raise_if_action_cancelled(should_stop, boundary="legacy button lookup")
+                self._raise_if_action_cancelled(
+                    should_stop, boundary="legacy button lookup"
+                )
                 pt = self._locate_button(which)
                 if pt is not None:
                     break
                 if not self._interruptible_sleep(human_delay(0.4), should_stop):
-                    self._raise_if_action_cancelled(should_stop,
-                                                    boundary="legacy button lookup")
+                    self._raise_if_action_cancelled(
+                        should_stop, boundary="legacy button lookup"
+                    )
         if pt is not None:
             return pt
 
         role = "like" if which == "like" else "pass"
         if role not in self.spec.templates:
-            why = (f"{self.spec.app} declares no '{role}' glyph template, so this control "
-                   f"cannot be vision-located at all")
+            why = (
+                f"{self.spec.app} declares no '{role}' glyph template, so this control "
+                f"cannot be vision-located at all"
+            )
         elif _load_template(self.spec.templates[role]) is None:
-            why = (f"the '{role}' template {self.spec.templates[role]!r} could not be loaded "
-                   f"— OpenCV is very likely missing (install the extra: "
-                   f"pip install -e '.[hinge]')")
+            why = (
+                f"the '{role}' template {self.spec.templates[role]!r} could not be loaded "
+                f"— OpenCV is very likely missing (install the extra: "
+                f"pip install -e '.[hinge]')"
+            )
         else:
-            why = (f"the '{role}' glyph was not found on screen after {tries} attempts — the "
-                   f"app UI may have changed, or the screen is not the swipe deck")
+            why = (
+                f"the '{role}' glyph was not found on screen after {tries} attempts — the "
+                f"app UI may have changed, or the screen is not the swipe deck"
+            )
         # .get(), not [] — a spec is allowed to omit these calibration-reference coords, and a
         # KeyError raised while BUILDING an error message would replace the real diagnosis
         # with a confusing one.
@@ -3590,7 +4002,8 @@ class AndroidDriver(DatingAppDriver):
         instead = f" Not falling back to the fixed coordinate {ref} —" if ref else " —"
         raise UnlocatedControlError(
             f"refusing to {which}: {why}.{instead} a blind tap at a stale point can hit a "
-            f"paid or irreversible control.")
+            f"paid or irreversible control."
+        )
 
     def _await_sheet_open(self, tries: int = 5) -> ComposerSurface | None:
         """Confirm the comment / "Send Like" sheet really opened, before tapping into it.
@@ -3614,25 +4027,37 @@ class AndroidDriver(DatingAppDriver):
             raise UnlocatedControlError(
                 f"{self.spec.app} uses the comment_sheet like flow but declares no 'confirm' "
                 f"template, so there is no way to tell the sheet opened. Refusing to tap the "
-                f"fixed comment box / send coordinates on an unverified screen.")
+                f"fixed comment box / send coordinates on an unverified screen."
+            )
         found = _retry_until(
-            lambda: _match_glyph(self._screencap(), self._template("confirm"),
-                                 side="any", threshold=0.6) or None,
-            tries, 0.4)
+            lambda: (
+                _match_glyph(
+                    self._screencap(),
+                    self._template("confirm"),
+                    side="any",
+                    threshold=0.6,
+                )
+                or None
+            ),
+            tries,
+            0.4,
+        )
         if not found:
             raise UnlocatedControlError(
                 f"refusing to continue the like: the '{self.spec.app}' comment sheet never "
                 f"appeared after tapping the heart ({tries} attempts). Not tapping the fixed "
                 f"comment box {self.coords.get('comment_box')} / send {self.coords.get('send_like')} "
                 f"coordinates — with no sheet up they land on the profile card underneath, "
-                f"where they can hit a per-item like.")
+                f"where they can hit a per-item like."
+            )
         # Generic comment-sheet apps retain their measured fractional controls.  Hinge overrides
         # this method and returns vision-located inline-composer geometry instead.
         return None
 
     # --- capture (blank-frame guard) -----------------------------------
-    def _screencap(self, *, on_blank: str = "raise",
-                   _timing: dict[str, float] | None = None) -> bytes | None:
+    def _screencap(
+        self, *, on_blank: str = "raise", _timing: dict[str, float] | None = None
+    ) -> bytes | None:
         """Every decision-making capture goes through here, never `self.adb.screencap()`.
 
         `adb exec-out screencap` on a device that is asleep or sitting on the
@@ -3673,6 +4098,7 @@ class AndroidDriver(DatingAppDriver):
         it into "screencap_s" would blame the transport for a wait that has nothing to do with
         it.
         """
+
         def _validated(nonblank: bytes) -> bytes:
             calibration = self.targeting_calibration
             if calibration is not None:
@@ -3680,17 +4106,20 @@ class AndroidDriver(DatingAppDriver):
                     from io import BytesIO
 
                     from PIL import Image
+
                     with Image.open(BytesIO(nonblank)) as image:
                         frame_size = image.size
                 except Exception as exc:  # noqa: BLE001 -- an undecodable safety frame must stop
                     raise HingeActionError(
                         f"targeted frame geometry could not be decoded for schema-v3 "
-                        f"calibration ({exc})") from exc
+                        f"calibration ({exc})"
+                    ) from exc
                 if frame_size != calibration.frame_size_px:
                     raise HingeActionError(
                         f"live frame {frame_size!r} does not match schema-v3 targeting "
                         f"calibration {calibration.frame_size_px!r}; refusing to use calibrated "
-                        "geometry")
+                        "geometry"
+                    )
             return nonblank
 
         with _time_bucket(_timing, "screencap_s"):
@@ -3706,14 +4135,19 @@ class AndroidDriver(DatingAppDriver):
             return None
         raise HingeActionError(
             f"screen is blank ({self._blank_reason()}) — every capture is solid black, so "
-            "the run would act blind; wake and unlock the device before continuing")
+            "the run would act blind; wake and unlock the device before continuing"
+        )
 
     def _blank_reason(self) -> str:
         """Best-effort one-line diagnosis for the blank-frame error. Never raises:
         it only ever decorates an error message that is already being raised."""
         try:
-            wake = self.adb.shell("dumpsys power | grep -m1 -o 'mWakefulness=[A-Za-z]*'").strip()
-            lock = self.adb.shell("dumpsys trust | grep -m1 -o 'deviceLocked=[01]'").strip()
+            wake = self.adb.shell(
+                "dumpsys power | grep -m1 -o 'mWakefulness=[A-Za-z]*'"
+            ).strip()
+            lock = self.adb.shell(
+                "dumpsys trust | grep -m1 -o 'deviceLocked=[01]'"
+            ).strip()
         except Exception:  # noqa: BLE001 — diagnosis is optional, the raise is not
             return "device state unreadable"
         parts = [p for p in (wake, lock) if p]
@@ -3742,11 +4176,11 @@ class AndroidDriver(DatingAppDriver):
         """Screencap for debug/verify, or None when neither is active (skips the overhead)."""
         if self._dbg is None and not self.halt_on_error:
             return None
-        for attempt in (1, 2):                         # retry once: a transient screencap blip must
-            try:                                       # not silently disable the _verify check below
+        for attempt in (1, 2):  # retry once: a transient screencap blip must
+            try:  # not silently disable the _verify check below
                 return self._screencap()
             except DriverClosed:
-                raise                                  # device truly gone -> let it propagate
+                raise  # device truly gone -> let it propagate
             except HingeActionError:
                 # Blank screen: _screencap already retried and already says exactly what
                 # is wrong ("screen is blank (mWakefulness=..., deviceLocked=...)").
@@ -3764,11 +4198,14 @@ class AndroidDriver(DatingAppDriver):
                         # screencap failures means the device/link is wedged, not a blip.
                         raise HingeActionError(
                             f"screencap failed twice in a row ({type(exc).__name__}: {exc}); "
-                            "halting rather than acting/verifying blind") from exc
+                            "halting rather than acting/verifying blind"
+                        ) from exc
                     return None
                 time.sleep(human_delay(0.3))
 
-    def _dbg_action(self, name: str, before, *, after=dataclasses.MISSING, **fields) -> None:
+    def _dbg_action(
+        self, name: str, before, *, after=dataclasses.MISSING, **fields
+    ) -> None:
         """Write a best-effort action pair without moving a critical UI boundary.
 
         Most callers want a fresh ``after`` capture, which remains the default.  A caller that
@@ -3781,7 +4218,9 @@ class AndroidDriver(DatingAppDriver):
             return
         if after is dataclasses.MISSING:
             try:
-                after = self.adb.screencap()  # RAW: best-effort debug capture, never gates run
+                after = (
+                    self.adb.screencap()
+                )  # RAW: best-effort debug capture, never gates run
             except Exception:  # noqa: BLE001
                 after = None
         self._dbg.action(name, before=before, after=after, **fields)
@@ -3801,7 +4240,9 @@ class AndroidDriver(DatingAppDriver):
             return
         if _retry_until(lambda: self._changed(before, self._screencap()), 2, 0.6):
             return
-        raise HingeActionError(f"{action} did not change the screen (stuck or unexpected state)")
+        raise HingeActionError(
+            f"{action} did not change the screen (stuck or unexpected state)"
+        )
 
     def _handle_rose_upsell(self, tries: int = 2) -> bool:
         """Dismiss a paid-upgrade interstitial — NEVER the paid option itself. Named for
@@ -3860,16 +4301,20 @@ class AndroidDriver(DatingAppDriver):
         def _probe():
             frame = self._screencap(on_blank="none")
             if frame is None:
-                return []                     # can't see -> assume no modal (see docstring)
+                return []  # can't see -> assume no modal (see docstring)
             return _match_glyph(frame, template, side="any", threshold=0.6)
 
-        hits = _retry_until(_probe, tries, 0.5)   # modal animates in (only when an upsell is offered)
+        hits = _retry_until(
+            _probe, tries, 0.5
+        )  # modal animates in (only when an upsell is offered)
         if not hits:
             return False
         if self.spec.upsell_dismiss_zone is not None:
-            self._dismiss_via_zone()          # random point in the safe band, verified, bounded
+            self._dismiss_via_zone()  # random point in the safe band, verified, bounded
         else:
-            self._tap(*hits[0])               # dismiss control — NEVER the paid button above/beside it
+            self._tap(
+                *hits[0]
+            )  # dismiss control — NEVER the paid button above/beside it
         return True
 
     def _dismiss_via_zone(self) -> None:
@@ -3893,18 +4338,23 @@ class AndroidDriver(DatingAppDriver):
         w, h = self.adb.screen_size()
         template = self._template("upsell_dismiss")
         for _attempt in range(_UPSELL_DISMISS_MAX_ATTEMPTS):
-            fx = random.uniform(x0, x1)       # fresh draw every attempt -- never a fixed point
+            fx = random.uniform(
+                x0, x1
+            )  # fresh draw every attempt -- never a fixed point
             fy = random.uniform(y0, y1)
-            self._tap(fx * w, fy * h)         # still runs through _assert_tap_allowed's guard
-            time.sleep(human_cooldown(0.6))   # let the dismiss animation resolve
+            self._tap(fx * w, fy * h)  # still runs through _assert_tap_allowed's guard
+            time.sleep(human_cooldown(0.6))  # let the dismiss animation resolve
             frame = self._screencap(on_blank="none")
-            if frame is not None and not _match_glyph(frame, template, side="any", threshold=0.6):
-                return                        # sheet glyph is gone -> dismissed
+            if frame is not None and not _match_glyph(
+                frame, template, side="any", threshold=0.6
+            ):
+                return  # sheet glyph is gone -> dismissed
         raise PaidUpsellStuckError(
             f"{self.spec.app}: a paid-upgrade sheet is still on screen after "
             f"{_UPSELL_DISMISS_MAX_ATTEMPTS} dismiss attempts inside its safe zone "
             f"{self.spec.upsell_dismiss_zone} — halting rather than tapping again blindly. "
-            f"Repeated taps near a modal like this one are how a purchase gets confirmed.")
+            f"Repeated taps near a modal like this one are how a purchase gets confirmed."
+        )
 
     def _require_deck_confirmed(self) -> None:
         """Refuse to issue a decide gesture (like/pass) unless the swipe deck is positively
@@ -3930,7 +4380,8 @@ class AndroidDriver(DatingAppDriver):
             f"not positively confirmed on screen. Something else may be up (a paid-upgrade "
             f"sheet, an ad, a dialog); firing a decide gesture at deck coordinates against an "
             f"unconfirmed screen is exactly how a like/pass tap lands on a different control "
-            f"instead.")
+            f"instead."
+        )
 
     def _changed(self, a: bytes, b: bytes) -> bool:
         top, bot = _split_diff(a, b)
@@ -4047,8 +4498,11 @@ class AndroidDriver(DatingAppDriver):
         text, profile identity, screenshot, or target index is needed to prove the control-flow
         transition, and the debug logger serializes the provider and device threads.
         """
-        if fact not in {"hub_pre_tap_published", "post_tap_item_verified",
-                        "refusal_or_paywall_logged"}:
+        if fact not in {
+            "hub_pre_tap_published",
+            "post_tap_item_verified",
+            "refusal_or_paywall_logged",
+        }:
             raise ValueError(f"unknown observe release fact {fact!r}")
         # This is intentionally *not* _dbg_action: that helper requires a ``before``
         # frame and takes a fresh ``after`` screencap.  Release facts originate on the
@@ -4074,28 +4528,43 @@ class AndroidDriver(DatingAppDriver):
                 dwell = float(step.dwell_s)
                 frac = float(step.fraction)
                 x_frac = float(step.x_frac)
-                if (math.isfinite(dwell) and dwell >= 0.0
-                        and math.isfinite(frac) and _READ_SCROLL_FRAC_MIN <= frac <= _READ_SCROLL_FRAC_MAX
-                        and math.isfinite(x_frac) and 0.10 <= x_frac <= 0.90):
+                if (
+                    math.isfinite(dwell)
+                    and dwell >= 0.0
+                    and math.isfinite(frac)
+                    and _READ_SCROLL_FRAC_MIN <= frac <= _READ_SCROLL_FRAC_MAX
+                    and math.isfinite(x_frac)
+                    and 0.10 <= x_frac <= 0.90
+                ):
                     return dwell, frac, x_frac
             except Exception:  # noqa: BLE001 — sampling may degrade, touching may not
                 pass
-        return (self._sample_read_dwell(depth, complexity_hint),
-                *self._sample_read_scroll())
+        return (
+            self._sample_read_dwell(depth, complexity_hint),
+            *self._sample_read_scroll(),
+        )
 
     def _sample_read_scroll(self) -> tuple[float, float]:
         """Choose one forward-scroll distance/lane, falling back to legacy geometry."""
         policy = self._auto_behavior_policy()
-        sampler = getattr(policy, "sample_read_scroll", None) if policy is not None else None
+        sampler = (
+            getattr(policy, "sample_read_scroll", None) if policy is not None else None
+        )
         if callable(sampler):
             try:
-                frac, x_frac = sampler(self.read_scroll_frac, len(self._capture_scroll_ledger))
+                frac, x_frac = sampler(
+                    self.read_scroll_frac, len(self._capture_scroll_ledger)
+                )
                 frac, x_frac = float(frac), float(x_frac)
                 # Reject malformed/extreme policy output before it can create an off-screen or
                 # near-edge gesture.  Paid-control intersections are still owned by _scroll's
                 # forbidden-zone guard; this is only geometry validation.
-                if (math.isfinite(frac) and math.isfinite(x_frac)
-                        and _READ_SCROLL_FRAC_MIN <= frac <= _READ_SCROLL_FRAC_MAX and 0.10 <= x_frac <= 0.90):
+                if (
+                    math.isfinite(frac)
+                    and math.isfinite(x_frac)
+                    and _READ_SCROLL_FRAC_MIN <= frac <= _READ_SCROLL_FRAC_MAX
+                    and 0.10 <= x_frac <= 0.90
+                ):
                     return frac, x_frac
             except Exception:  # noqa: BLE001 — behavior sampling may degrade, touching may not
                 pass
@@ -4171,7 +4640,9 @@ class AndroidDriver(DatingAppDriver):
         """Stable, non-identifying lock-file path for this app/device pair."""
         serial = self.serial or "unbound"
         digest = hashlib.sha256(f"{self.spec.app}:{serial}".encode()).hexdigest()[:24]
-        return str(Path(tempfile.gettempdir()) / f"operation-love-observe-{digest}.lock")
+        return str(
+            Path(tempfile.gettempdir()) / f"operation-love-observe-{digest}.lock"
+        )
 
     @contextmanager
     def _observe_input_lease(self, operation: str):
@@ -4192,7 +4663,8 @@ class AndroidDriver(DatingAppDriver):
         if self._observe_input_lease_depth:
             if self._observe_input_lease_thread != thread_id:
                 raise HingeActionError(
-                    f"Hinge OBSERVE input is already owned by another thread; refusing {operation}")
+                    f"Hinge OBSERVE input is already owned by another thread; refusing {operation}"
+                )
             self._observe_input_lease_depth += 1
             try:
                 yield
@@ -4206,7 +4678,8 @@ class AndroidDriver(DatingAppDriver):
             if owner is not None:
                 raise HingeActionError(
                     f"Hinge OBSERVE input is already owned by another controller; refusing {operation}. "
-                    "Use a read-only screenshot while the Worker is waiting.")
+                    "Use a read-only screenshot while the Worker is waiting."
+                )
             fd = None
             try:
                 fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
@@ -4219,7 +4692,8 @@ class AndroidDriver(DatingAppDriver):
                         pass
                 raise HingeActionError(
                     f"another process owns Hinge OBSERVE input for this device; refusing {operation}. "
-                    "Use a read-only screenshot while the Worker is waiting.") from exc
+                    "Use a read-only screenshot while the Worker is waiting."
+                ) from exc
             _OBSERVE_INPUT_LEASES[lock_path] = (id(self), thread_id)
             self._observe_input_lease_depth = 1
             self._observe_input_lease_thread = thread_id
@@ -4237,9 +4711,13 @@ class AndroidDriver(DatingAppDriver):
                 finally:
                     os.close(fd)
 
-    def _scroll_down_one(self, frac: float | None = None,
-                         x_frac: float | None = None, *,
-                         _iteration: int | None = None) -> None:
+    def _scroll_down_one(
+        self,
+        frac: float | None = None,
+        x_frac: float | None = None,
+        *,
+        _iteration: int | None = None,
+    ) -> None:
         """One humanized forward read-scroll, ALWAYS going through here (never a bare
         `touch.scroll_up()` call) so self._capture_scrolls stays the single source of truth
         for "how far down from the last confirmed top are we right now". Both
@@ -4272,11 +4750,13 @@ class AndroidDriver(DatingAppDriver):
         self._capture_scroll_ledger.append((frac, x_frac))
         self._capture_scrolls = len(self._capture_scroll_ledger)
         if gesture_stamps is not None:
-            self._emit_gesture_timing("down", gesture_start, gesture_stamps,
-                                      frame_index=_iteration)
+            self._emit_gesture_timing(
+                "down", gesture_start, gesture_stamps, frame_index=_iteration
+            )
 
-    def _scroll_up_one(self, frac: float, x_frac: float, *,
-                       _iteration: int | None = None) -> None:
+    def _scroll_up_one(
+        self, frac: float, x_frac: float, *, _iteration: int | None = None
+    ) -> None:
         """One humanized REVERSE read-scroll: the twin of `_scroll_down_one`, going back up.
 
         Doc 5.5's bottom-up navigation is what needs it. Until 2026-08-12 every backwards
@@ -4319,8 +4799,9 @@ class AndroidDriver(DatingAppDriver):
         self._capture_scroll_ledger.append((frac, x_frac))
         self._capture_scrolls = len(self._capture_scroll_ledger)
         if gesture_stamps is not None:
-            self._emit_gesture_timing("up", gesture_start, gesture_stamps,
-                                      frame_index=_iteration)
+            self._emit_gesture_timing(
+                "up", gesture_start, gesture_stamps, frame_index=_iteration
+            )
 
     def _interruptible_sleep(self, seconds: float, should_stop=None) -> bool:
         """Sleep `seconds`, but in slices, giving up early if `should_stop` fires.
@@ -4365,7 +4846,8 @@ class AndroidDriver(DatingAppDriver):
         if should_stop is not None and should_stop():
             raise ActionCancelled(
                 f"action cancelled because the run is stopping before {boundary}; no further "
-                "device input was issued")
+                "device input was issued"
+            )
 
     def _scroll_to_top(self, should_stop=None) -> bool:
         # This private helper is still called by operational controllers in practice. Guard it
@@ -4455,12 +4937,19 @@ class AndroidDriver(DatingAppDriver):
         # validation rejects a larger rewind fraction, and this runtime invariant also protects
         # direct/test construction from putting a recovery release back in fixed chrome. None
         # means this app declares no such cap -- the generic max(...) undo distance below.
-        safe_rewind_frac = (min(self.read_scroll_frac, self.spec.safe_rewind_max_frac)
-                             if self.spec.safe_rewind_max_frac is not None else None)
-        legacy_frac = (safe_rewind_frac if safe_rewind_frac is not None
-                       else max(self.read_scroll_frac, self.rewind_scroll_frac))
-        mean_forward = (sum(frac for frac, _lane in ledger) / len(ledger)
-                        if ledger else legacy_frac)
+        safe_rewind_frac = (
+            min(self.read_scroll_frac, self.spec.safe_rewind_max_frac)
+            if self.spec.safe_rewind_max_frac is not None
+            else None
+        )
+        legacy_frac = (
+            safe_rewind_frac
+            if safe_rewind_frac is not None
+            else max(self.read_scroll_frac, self.rewind_scroll_frac)
+        )
+        mean_forward = (
+            sum(frac for frac, _lane in ledger) / len(ledger) if ledger else legacy_frac
+        )
         settled = False
         # Keep a bounded account of a failed Hinge rewind. The old report had only its last
         # verdict, which proved the card was still scrolled but could not say whether any of the
@@ -4475,21 +4964,27 @@ class AndroidDriver(DatingAppDriver):
         def detector_fact(frame: bytes) -> tuple[bool, dict[str, object]]:
             try:
                 verdict = confirm_scroll_top(
-                    frame, identity_band=self.identity_band,
-                    pinned_evidence=self._pinned_band_evidence())
+                    frame,
+                    identity_band=self.identity_band,
+                    pinned_evidence=self._pinned_band_evidence(),
+                )
             except ScrollTopError as exc:
                 return False, {"scroll_top_error": str(exc) or type(exc).__name__}
             return bool(verdict.confirmed), {
                 "scroll_top_state": getattr(
-                    verdict, "state", "confirmed_top" if verdict.confirmed else "not recorded"),
+                    verdict,
+                    "state",
+                    "confirmed_top" if verdict.confirmed else "not recorded",
+                ),
                 "scroll_top_distance": getattr(verdict, "distance", None),
                 "scroll_top_alignment_offset_px": getattr(
-                    verdict, "alignment_offset_px", None),
+                    verdict, "alignment_offset_px", None
+                ),
             }
 
         for _ in range(max_swipes):
             if should_stop is not None and should_stop():
-                return False               # see STOP above: do NOT fall through to the reset
+                return False  # see STOP above: do NOT fall through to the reset
             if safe_rewind_frac is not None:
                 # Keep both endpoints and the lane inside the app's declared safe corridor
                 # (spec.safe_rewind_max_frac). A bounded loop, not a screen-spanning flick,
@@ -4502,7 +4997,9 @@ class AndroidDriver(DatingAppDriver):
                 # different hand motion/count, while the settle check below remains the source
                 # of truth.  Keep enough headroom from screen edges and paid-control zones.
                 target_frac = max(mean_forward, self.rewind_scroll_frac)
-                undo_frac = max(0.30, min(0.82, target_frac * random.uniform(1.10, 1.28)))
+                undo_frac = max(
+                    0.30, min(0.82, target_frac * random.uniform(1.10, 1.28))
+                )
                 x_frac = random.uniform(0.38, 0.62)
             else:
                 undo_frac = legacy_frac
@@ -4521,7 +5018,7 @@ class AndroidDriver(DatingAppDriver):
             # with an unsafe release point and was repeatedly swallowed by the live card.
             self._swipe(x, y_near, x, y_far)
             if not self._interruptible_sleep(human_delay(0.3), should_stop):
-                return False               # stop landed inside the settle wait; same rule as above
+                return False  # stop landed inside the settle wait; same rule as above
             after = self._screencap()
             failure_after = after
             # When Hinge supplies the calibrated identity band, only its affirmative filter-chip
@@ -4539,17 +5036,24 @@ class AndroidDriver(DatingAppDriver):
                         changed = self._changed(before, after)
                     except Exception:  # noqa: BLE001 -- diagnostics cannot alter recovery semantics
                         changed = None
-                rewind_attempts.append({
-                    "attempt": len(rewind_attempts) + 1,
-                    "start": [x, y_near], "end": [x, y_far],
-                    "duration_ms": 450,
-                    "frame_changed": changed,
-                    "detector": final_detector,
-                })
+                rewind_attempts.append(
+                    {
+                        "attempt": len(rewind_attempts) + 1,
+                        "start": [x, y_near],
+                        "end": [x, y_far],
+                        "duration_ms": 450,
+                        "frame_changed": changed,
+                        "detector": final_detector,
+                    }
+                )
                 self._last_scroll_top_diagnostic = dict(final_detector)
                 if initial_detector is not None:
-                    self._last_scroll_top_diagnostic["scroll_top_initial"] = initial_detector
-                self._last_scroll_top_diagnostic["scroll_top_attempts"] = rewind_attempts
+                    self._last_scroll_top_diagnostic["scroll_top_initial"] = (
+                        initial_detector
+                    )
+                self._last_scroll_top_diagnostic["scroll_top_attempts"] = (
+                    rewind_attempts
+                )
                 if confirmed:
                     settled = True
                     break
@@ -4559,7 +5063,7 @@ class AndroidDriver(DatingAppDriver):
                 break
         if settled:
             self._capture_scrolls = 0
-            self._capture_scroll_ledger = []   # affirmatively (or generically) confirmed top
+            self._capture_scroll_ledger = []  # affirmatively (or generically) confirmed top
             self._last_scroll_top_failure_frames = None
             self._clear_capture_entry_recovery()
         elif self.identity_band is not None:
@@ -4567,7 +5071,8 @@ class AndroidDriver(DatingAppDriver):
                 self._last_scroll_top_failure_frames = (failure_before, failure_after)
             self._spend_capture_entry_recovery(
                 "a bounded scroll-top rewind finished without affirmative filter-chip proof",
-                source="_scroll_to_top_unlocked")
+                source="_scroll_to_top_unlocked",
+            )
         return settled
 
     def _capture_entry_profile_evidence(self, frame: bytes) -> str | None:
@@ -4593,8 +5098,10 @@ class AndroidDriver(DatingAppDriver):
                 # evidence.  A refuted/unknown band is deliberately NOT promoted here: that is
                 # the ambiguity this helper exists to keep away from the rewind gesture.
                 if confirm_scroll_top(
-                        frame, identity_band=self.identity_band,
-                        pinned_evidence=self._pinned_band_evidence()).confirmed:
+                    frame,
+                    identity_band=self.identity_band,
+                    pinned_evidence=self._pinned_band_evidence(),
+                ).confirmed:
                     return "scroll_top_chrome"
             except ScrollTopError:
                 pass
@@ -4619,15 +5126,26 @@ class AndroidDriver(DatingAppDriver):
         self._capture_entry_recovery_reason = reason
         if self._dbg is not None:
             try:
-                detector = (self._last_scroll_top_diagnostic
-                            if source == "_scroll_to_top_unlocked" else None)
-                frames = (self._last_scroll_top_failure_frames
-                          if source == "_scroll_to_top_unlocked" else None)
-                self._dbg.action("capture_entry_recovery_spent", reason=reason, source=source,
-                                 before=frames[0] if frames is not None else None,
-                                 after=frames[1] if frames is not None else None,
-                                 keep_before=frames is not None, keep_after=frames is not None,
-                                 **(detector or {}))
+                detector = (
+                    self._last_scroll_top_diagnostic
+                    if source == "_scroll_to_top_unlocked"
+                    else None
+                )
+                frames = (
+                    self._last_scroll_top_failure_frames
+                    if source == "_scroll_to_top_unlocked"
+                    else None
+                )
+                self._dbg.action(
+                    "capture_entry_recovery_spent",
+                    reason=reason,
+                    source=source,
+                    before=frames[0] if frames is not None else None,
+                    after=frames[1] if frames is not None else None,
+                    keep_before=frames is not None,
+                    keep_after=frames is not None,
+                    **(detector or {}),
+                )
             except Exception:  # noqa: BLE001 — diagnostics must not change recovery safety
                 pass
 
@@ -4661,8 +5179,10 @@ class AndroidDriver(DatingAppDriver):
             return False
         try:
             confirmed = confirm_scroll_top(
-                frame, identity_band=self.identity_band,
-                pinned_evidence=self._pinned_band_evidence()).confirmed
+                frame,
+                identity_band=self.identity_band,
+                pinned_evidence=self._pinned_band_evidence(),
+            ).confirmed
         except ScrollTopError:
             confirmed = False
         if not confirmed:
@@ -4672,8 +5192,14 @@ class AndroidDriver(DatingAppDriver):
         self._clear_capture_entry_recovery()
         return True
 
-    def _refuse_actionable_capture_entry(self, frame: bytes, signal: str, reason: str, *,
-                                         rewind_settled: bool | None = None) -> bool:
+    def _refuse_actionable_capture_entry(
+        self,
+        frame: bytes,
+        signal: str,
+        reason: str,
+        *,
+        rewind_settled: bool | None = None,
+    ) -> bool:
         """Latch one no-input actionable-capture refusal and expose its terminal reason."""
         refusal_key = (signal, reason)
         already_refused = (
@@ -4684,7 +5210,8 @@ class AndroidDriver(DatingAppDriver):
         self._capture_entry_refusal_reason = reason
         self._invalidate_item_index(
             "the capture entry was refused before a profile read, so no item table may describe "
-            "the current screen: " + reason)
+            "the current screen: " + reason
+        )
         # Worker re-reads blocked_reason() immediately after a capture returns None in BOTH
         # modes. Latching this exact driver-owned sentence turns that otherwise ambiguous None
         # into the same visible graceful blocked state used for paywalls/foreground loss instead
@@ -4692,12 +5219,19 @@ class AndroidDriver(DatingAppDriver):
         self._blocked_reason = reason
         if already_refused:
             return False
-        print(f"{self.spec.app}: capture entry refused — {reason}. No profile read, opener, or "
-              "additional rewind will be attempted until scroll top is affirmatively confirmed.")
+        print(
+            f"{self.spec.app}: capture entry refused — {reason}. No profile read, opener, or "
+            "additional rewind will be attempted until scroll top is affirmatively confirmed."
+        )
         if self._dbg is not None:
             try:
-                self._dbg.action("capture_entry_refused", before=frame, reason=reason,
-                                 signal=signal, rewind_settled=rewind_settled)
+                self._dbg.action(
+                    "capture_entry_refused",
+                    before=frame,
+                    reason=reason,
+                    signal=signal,
+                    rewind_settled=rewind_settled,
+                )
             except Exception:  # noqa: BLE001 — diagnostics must not change capture safety
                 pass
         return False
@@ -4707,7 +5241,8 @@ class AndroidDriver(DatingAppDriver):
         frame = self._screencap(on_blank="none") or b""
         signal = self._session_top_failure_signal or "session_top_unconfirmed"
         reason = self._session_top_failure_reason or (
-            "the session-start rewind did not confirm a safe Hinge profile entry")
+            "the session-start rewind did not confirm a safe Hinge profile entry"
+        )
         return self._refuse_actionable_capture_entry(frame, signal, reason)
 
     def _ensure_session_top(self, should_stop=None) -> bool:
@@ -4754,18 +5289,19 @@ class AndroidDriver(DatingAppDriver):
         frame = self._screencap(on_blank="none")
         if frame is not None and self._observe_like_sheet_visible(frame):
             self._session_top_failure_signal = "compose_sheet"
-            self._session_top_failure_reason = (
-                "a Hinge compose sheet is open, so the card cannot be rewound or captured")
+            self._session_top_failure_reason = "a Hinge compose sheet is open, so the card cannot be rewound or captured"
             return False
         # Same-package foreground ownership is not profile evidence.  Do this before setting a
         # synthetic scroll ledger: an account/error/modal surface must not receive even the
         # first recovery swipe merely because its identity-band pixels differ from the chips.
-        if (self.identity_band is not None and
-                (frame is None or self._capture_entry_profile_evidence(frame) is None)):
+        if self.identity_band is not None and (
+            frame is None or self._capture_entry_profile_evidence(frame) is None
+        ):
             self._session_top_failure_signal = "ambiguous_in_package_surface"
             self._session_top_failure_reason = (
                 "Hinge's visible in-app screen is not positively confirmed as a swipe profile, "
-                "so no rewind or capture is safe")
+                "so no rewind or capture is safe"
+            )
             return False
         if self._capture_entry_recovery_spent:
             if self._recovery_spent_top_confirmed(frame):
@@ -4776,9 +5312,10 @@ class AndroidDriver(DatingAppDriver):
             self._session_top_failure_signal = "recovery_attempt_spent"
             self._session_top_failure_reason = (
                 "a previous bounded Hinge rewind did not confirm scroll top; return the card "
-                "to its filter-chip top manually before another capture")
+                "to its filter-chip top manually before another capture"
+            )
             return False
-        self._session_top_done = True     # one attempt per session, even if it fails below
+        self._session_top_done = True  # one attempt per session, even if it fails below
         self._capture_scrolls = self.scroll_captures
         self._capture_scroll_ledger = []
         if self._scroll_to_top(should_stop):
@@ -4786,21 +5323,28 @@ class AndroidDriver(DatingAppDriver):
             self._session_top_failure_signal = None
             return True
         if should_stop is not None and should_stop():
-            return False                  # interrupted, not failed -- the run is ending anyway
+            return False  # interrupted, not failed -- the run is ending anyway
         if not self._capture_entry_recovery_spent:
             self._spend_capture_entry_recovery(
                 "the session-start rewind did not affirmatively confirm scroll top",
-                source="_ensure_session_top")
+                source="_ensure_session_top",
+            )
         self._session_top_failure_signal = "session_rewind_unconfirmed"
         self._session_top_failure_reason = (
-            "the session-start rewind did not affirmatively confirm Hinge's scroll top")
-        print(f"{self.spec.app}: could not confirm the card's scroll top at "
-              f"session start; {self._last_scroll_top_detector_summary()}. No profile read or "
-              f"targeted action will be attempted.")
+            "the session-start rewind did not affirmatively confirm Hinge's scroll top"
+        )
+        print(
+            f"{self.spec.app}: could not confirm the card's scroll top at "
+            f"session start; {self._last_scroll_top_detector_summary()}. No profile read or "
+            f"targeted action will be attempted."
+        )
         if self._dbg is not None:
             try:
-                self._dbg.action("session_top_unconfirmed", swipe_ceiling=self.scroll_captures,
-                                 **(self._last_scroll_top_diagnostic or {}))
+                self._dbg.action(
+                    "session_top_unconfirmed",
+                    swipe_ceiling=self.scroll_captures,
+                    **(self._last_scroll_top_diagnostic or {}),
+                )
             except Exception:  # noqa: BLE001 — debug logging must never break a session
                 pass
         return False
@@ -4838,9 +5382,11 @@ class AndroidDriver(DatingAppDriver):
             if self._recovery_spent_top_confirmed(frame):
                 return True
             return self._refuse_actionable_capture_entry(
-                frame or b"", "recovery_attempt_spent",
+                frame or b"",
+                "recovery_attempt_spent",
                 "a previous bounded Hinge rewind did not confirm scroll top; return the card "
-                "to its filter-chip top manually before another capture")
+                "to its filter-chip top manually before another capture",
+            )
         if self._item_enumeration_blocker():
             return True
         if should_stop is not None and should_stop():
@@ -4848,17 +5394,23 @@ class AndroidDriver(DatingAppDriver):
         frame = self._screencap(on_blank="none")
         if frame is not None and self._observe_like_sheet_visible(frame):
             return self._refuse_actionable_capture_entry(
-                frame, "compose_sheet",
-                "a Hinge compose sheet is open, so the card cannot be rewound or captured")
+                frame,
+                "compose_sheet",
+                "a Hinge compose sheet is open, so the card cannot be rewound or captured",
+            )
         if frame is None:
             return self._refuse_actionable_capture_entry(
-                b"", "blank_entry_frame",
-                "the screen was blank before capture entry, so no Hinge profile can be confirmed")
+                b"",
+                "blank_entry_frame",
+                "the screen was blank before capture entry, so no Hinge profile can be confirmed",
+            )
         if self._capture_entry_profile_evidence(frame) is None:
             return self._refuse_actionable_capture_entry(
-                frame, "ambiguous_in_package_surface",
+                frame,
+                "ambiguous_in_package_surface",
                 "Hinge's visible in-app screen is not positively confirmed as a swipe profile, "
-                "so no rewind or capture is safe")
+                "so no rewind or capture is safe",
+            )
         if should_stop is not None and should_stop():
             return False
 
@@ -4884,11 +5436,15 @@ class AndroidDriver(DatingAppDriver):
         if not self._capture_entry_recovery_spent:
             self._spend_capture_entry_recovery(
                 "an entry rewind did not leave a second affirmative scroll-top proof",
-                source="_prepare_actionable_capture_entry")
+                source="_prepare_actionable_capture_entry",
+            )
         return self._refuse_actionable_capture_entry(
-            frame, "scroll_top_unconfirmed",
-            "the capture entry could not be proven at scroll top after a rewind: " + refusal,
-            rewind_settled=rewound)
+            frame,
+            "scroll_top_unconfirmed",
+            "the capture entry could not be proven at scroll top after a rewind: "
+            + refusal,
+            rewind_settled=rewound,
+        )
 
     def _note_capture_aborted(self, frames: int) -> None:
         """Record that a profile read was abandoned because Stop was requested.
@@ -4903,17 +5459,25 @@ class AndroidDriver(DatingAppDriver):
         far into the read the stop landed.
         """
         scrolled = len(self._capture_scroll_ledger)
-        where = (f" The card is left scrolled down {scrolled} screen(s) — that is deliberate "
-                 f"(a stop leaves the screen untouched); scroll it back to the top yourself "
-                 f"before the next run so the first capture starts from a known position."
-                 if scrolled else "")
-        print(f"{self.spec.app}: stop requested while reading this profile — abandoning the "
-              f"read after {frames} frame(s); nothing was recorded for it.{where}")
+        where = (
+            f" The card is left scrolled down {scrolled} screen(s) — that is deliberate "
+            f"(a stop leaves the screen untouched); scroll it back to the top yourself "
+            f"before the next run so the first capture starts from a known position."
+            if scrolled
+            else ""
+        )
+        print(
+            f"{self.spec.app}: stop requested while reading this profile — abandoning the "
+            f"read after {frames} frame(s); nothing was recorded for it.{where}"
+        )
         if self._dbg is not None:
             try:
-                self._dbg.action("capture_aborted", frames=frames,
-                                 read_scrolls=len(self._capture_scroll_ledger),
-                                 profile_name=self._identity_name)
+                self._dbg.action(
+                    "capture_aborted",
+                    frames=frames,
+                    read_scrolls=len(self._capture_scroll_ledger),
+                    profile_name=self._identity_name,
+                )
             except Exception:  # noqa: BLE001 — debug logging must never break a shutdown
                 pass
 
@@ -4947,9 +5511,11 @@ class AndroidDriver(DatingAppDriver):
         2026-09-16) -- and `_item_enumeration_unavailable_kind` is the single place the order
         between them is resolved, so this predicate never has to know about that one.
         """
-        return (getattr(self, "_openers_enabled", True)
-                and self.accepts_opener
-                and self.targeting_calibration is None)
+        return (
+            getattr(self, "_openers_enabled", True)
+            and self.accepts_opener
+            and self.targeting_calibration is None
+        )
 
     def _no_opener_consumer_blocks_enumeration(self) -> bool:
         """Whether "nothing downstream wants a numbered list" is why enumeration is unavailable.
@@ -5048,30 +5614,40 @@ class AndroidDriver(DatingAppDriver):
         reclassify every photo as unselectable context).
         """
         if not getattr(self, "_openers_enabled", True):
-            return ("openers are disabled for this run (opener.enabled: false), so nothing "
-                    "would consume a numbered item list -- reading a profile at the enumeration "
-                    "cadence for a run that only ever sends bare likes would waste device time "
-                    "and risk stopping a run over the absence of a payload nobody wanted")
+            return (
+                "openers are disabled for this run (opener.enabled: false), so nothing "
+                "would consume a numbered item list -- reading a profile at the enumeration "
+                "cadence for a run that only ever sends bare likes would waste device time "
+                "and risk stopping a run over the absence of a payload nobody wanted"
+            )
         if not self.accepts_opener:
-            return (f"{self.spec.app} cannot attach an opener to a like at swipe time, so there "
-                    "is no request for numbered items to answer")
+            return (
+                f"{self.spec.app} cannot attach an opener to a like at swipe time, so there "
+                "is no request for numbered items to answer"
+            )
         # A session can outlive either a Hinge update or a display-mode change.  Rebind before
         # granting the expensive enumeration read, rather than discovering the mismatch only
         # when a later dwell/navigation preflight needs the same calibration.  The refresh
         # latches a mismatch by clearing ``targeting_calibration`` for the rest of the session.
         binding_problem = self._refresh_targeting_calibration_binding()
         if self.targeting_calibration is None or binding_problem:
-            return (f"apps.{self.spec.app}.targeting_calibration is unavailable "
-                    f"({binding_problem or self._targeting_calibration_unavailable or 'no reason was recorded'}), "
-                    "so a model-selected item could not be verified or targeted and no "
-                    "numbered item list would have a usable consumer")
+            return (
+                f"apps.{self.spec.app}.targeting_calibration is unavailable "
+                f"({binding_problem or self._targeting_calibration_unavailable or 'no reason was recorded'}), "
+                "so a model-selected item could not be verified or targeted and no "
+                "numbered item list would have a usable consumer"
+            )
         if self.identity_band is None:
-            return (f"{self.spec.app} declares no identity_band, so doc 5.5's affirmative "
-                    "filter-chips scroll-top confirmation cannot be read at all, and counting "
-                    "items from an unconfirmed top gives a systematic off-by-N in every ordinal")
+            return (
+                f"{self.spec.app} declares no identity_band, so doc 5.5's affirmative "
+                "filter-chips scroll-top confirmation cannot be read at all, and counting "
+                "items from an unconfirmed top gives a systematic off-by-N in every ordinal"
+            )
         if self._template("like") is None:
-            return (f"{self.spec.app} declares no calibrated 'like' glyph template, so hearts "
-                    "cannot be located and every card would segment as unselectable context")
+            return (
+                f"{self.spec.app} declares no calibrated 'like' glyph template, so hearts "
+                "cannot be located and every card would segment as unselectable context"
+            )
         return ""
 
     # --- is doc 5.5's scroll-top signal usable in this captured toolbar state? ------------
@@ -5083,8 +5659,11 @@ class AndroidDriver(DatingAppDriver):
         the device (this reads them, it never asks the phone again); the third is the rect
         `confirm_scroll_top` would raise about anyway if the two disagreed.
         """
-        return (self._targeting_runtime_version_name, self._targeting_runtime_frame_size,
-                None if self.identity_band is None else tuple(self.identity_band))
+        return (
+            self._targeting_runtime_version_name,
+            self._targeting_runtime_frame_size,
+            None if self.identity_band is None else tuple(self.identity_band),
+        )
 
     def _pinned_band_evidence(self) -> PinnedBandEvidence | None:
         """This session's proof that the chips row is pinned to the SCREEN, or None.
@@ -5179,8 +5758,13 @@ class AndroidDriver(DatingAppDriver):
             offsets = tuple(getattr(index, "offsets", ()) or ())
             source_indices = tuple(getattr(index, "source_frame_indices", ()) or ())
             if source_indices:
-                if any(not isinstance(i, int) or isinstance(i, bool)
-                       or i < 0 or i >= len(photos) for i in source_indices):
+                if any(
+                    not isinstance(i, int)
+                    or isinstance(i, bool)
+                    or i < 0
+                    or i >= len(photos)
+                    for i in source_indices
+                ):
                     return
                 frames = [photos[i] for i in source_indices]
             else:
@@ -5191,7 +5775,8 @@ class AndroidDriver(DatingAppDriver):
                 # is the honest outcome and it is the status quo.
                 return
             evidence = band_pinned_evidence(
-                frames, identity_band=self.identity_band, page_offsets=offsets)
+                frames, identity_band=self.identity_band, page_offsets=offsets
+            )
         except Exception:  # noqa: BLE001 -- observational measurement must not abort capture
             # "Could not look" is not a finding. Leave the gate exactly as it was.  This is
             # deliberately broader than ScrollTopError: the pinning observation is made only
@@ -5206,19 +5791,24 @@ class AndroidDriver(DatingAppDriver):
         self._scroll_top_pinned = (self._scroll_top_signal_binding(), evidence)
         if not self._scroll_top_pinned_announced:
             self._scroll_top_pinned_announced = True
-            print(f"{self.spec.app}: doc 5.5's affirmative scroll-top check is UNAVAILABLE in "
-                  f"this observed toolbar state -- {evidence.reason}. Item enumeration will "
-                  f"refuse unless one bounded same-binding recapture independently proves the "
-                  f"normal non-pinned state, or the signal is recalibrated.")
+            print(
+                f"{self.spec.app}: doc 5.5's affirmative scroll-top check is UNAVAILABLE in "
+                f"this observed toolbar state -- {evidence.reason}. Item enumeration will "
+                f"refuse unless one bounded same-binding recapture independently proves the "
+                f"normal non-pinned state, or the signal is recalibrated."
+            )
             if self._dbg is not None:
                 try:
                     self._dbg.action(
-                        "scroll_top_signal_unavailable", reason=evidence.reason,
-                        offsets=list(evidence.offsets), offset_span=evidence.offset_span,
+                        "scroll_top_signal_unavailable",
+                        reason=evidence.reason,
+                        offsets=list(evidence.offsets),
+                        offset_span=evidence.offset_span,
                         band_height_px=evidence.band_height_px,
                         frames_compared=evidence.frames_compared,
                         distinct_bands=evidence.distinct_bands,
-                        max_chips_distance=evidence.max_chips_distance)
+                        max_chips_distance=evidence.max_chips_distance,
+                    )
                 except Exception:  # noqa: BLE001 -- diagnostics must not change gate safety
                     pass
 
@@ -5233,8 +5823,11 @@ class AndroidDriver(DatingAppDriver):
         """
         evidence = self._capture_scroll_top_pinning_evidence
         identity = getattr(index, "identity", None)
-        if (evidence is not None and not evidence.pinned
-                and bool(getattr(identity, "known", False))):
+        if (
+            evidence is not None
+            and not evidence.pinned
+            and bool(getattr(identity, "known", False))
+        ):
             self._scroll_top_signal_healthy_binding = self._scroll_top_signal_binding()
 
     def _confirm_enumeration_top(self) -> str:
@@ -5268,14 +5861,21 @@ class AndroidDriver(DatingAppDriver):
         """
         frame = self._screencap(on_blank="none")
         if frame is None:
-            return ("the screen was blank when the scroll-top gate looked, so the filter-chips "
-                    "row could not be read and the top could not be confirmed")
+            return (
+                "the screen was blank when the scroll-top gate looked, so the filter-chips "
+                "row could not be read and the top could not be confirmed"
+            )
         try:
-            verdict = confirm_scroll_top(frame, identity_band=self.identity_band,
-                                         pinned_evidence=self._pinned_band_evidence())
+            verdict = confirm_scroll_top(
+                frame,
+                identity_band=self.identity_band,
+                pinned_evidence=self._pinned_band_evidence(),
+            )
         except ScrollTopError as exc:
-            return (f"the scroll-top gate could not read the identity band ({exc}), so the top "
-                    "could not be confirmed")
+            return (
+                f"the scroll-top gate could not read the identity band ({exc}), so the top "
+                "could not be confirmed"
+            )
         if verdict.unavailable:
             # DIFFERENT PROSE, not a wording nicety. "not at top" is an instruction: it sends
             # whoever reads the hub's stop line to scroll the phone up. The evidence instead says
@@ -5284,15 +5884,19 @@ class AndroidDriver(DatingAppDriver):
             # act from the current capture, and do not promise that the build or a fresh capture
             # is permanently unusable. The verdict's own reason carries the narrowly permitted
             # fresh-capture/recalibration conditions, so quote it rather than paraphrasing them.
-            return (f"doc 5.5's affirmative filter-chips scroll-top check cannot answer from this "
-                    f"capture's current toolbar state ({verdict.state}), so the card's position is "
-                    f"unknown rather than wrong: {verdict.reason}. Do not number, target, or act "
-                    f"from this capture. Scrolling further within it cannot establish a safe top; "
-                    f"a fresh capture must independently prove a usable signal before any item is "
-                    f"numbered")
+            return (
+                f"doc 5.5's affirmative filter-chips scroll-top check cannot answer from this "
+                f"capture's current toolbar state ({verdict.state}), so the card's position is "
+                f"unknown rather than wrong: {verdict.reason}. Do not number, target, or act "
+                f"from this capture. Scrolling further within it cannot establish a safe top; "
+                f"a fresh capture must independently prove a usable signal before any item is "
+                f"numbered"
+            )
         if not verdict.confirmed:
-            return (f"the card is not confirmed to be at its scroll top ({verdict.state}): "
-                    f"{verdict.reason}")
+            return (
+                f"the card is not confirmed to be at its scroll top ({verdict.state}): "
+                f"{verdict.reason}"
+            )
         return ""
 
     def _capture_reconfirms_scroll_top(self, photos: list[bytes]) -> bool:
@@ -5311,8 +5915,11 @@ class AndroidDriver(DatingAppDriver):
         if not photos or self._pinned_band_evidence() is not None:
             return False
         try:
-            return bool(confirm_scroll_top(
-                photos[0], identity_band=self.identity_band).confirmed)
+            return bool(
+                confirm_scroll_top(
+                    photos[0], identity_band=self.identity_band
+                ).confirmed
+            )
         except ScrollTopError:
             return False
 
@@ -5343,36 +5950,49 @@ class AndroidDriver(DatingAppDriver):
             failures = tuple(getattr(index, "failures", ()) or ())
             blocks = tuple(index.blocks)
             first = blocks[0]
-            if (not index.at_scroll_top or not isinstance(first.page_y0, int)
-                    or not isinstance(first.page_y1, int)
-                    or first.page_y1 <= first.page_y0):
+            if (
+                not index.at_scroll_top
+                or not isinstance(first.page_y0, int)
+                or not isinstance(first.page_y1, int)
+                or first.page_y1 <= first.page_y0
+            ):
                 return False
         except (AttributeError, IndexError, TypeError):
             return False
         corner_failures = tuple(
-            failure for failure in failures
+            failure
+            for failure in failures
             if isinstance(failure, str)
-            and failure.startswith(_SCROLL_TOP_CORNER_FAILURE_PREFIX))
+            and failure.startswith(_SCROLL_TOP_CORNER_FAILURE_PREFIX)
+        )
         if len(failures) == 1:
             return len(corner_failures) == 1
         if len(failures) != 2 or len(corner_failures) != 1:
             return False
         try:
             leading = blocks[0]
-            if (len(blocks) <= 1
-                    or leading.kind != ITEM_PARTIAL or leading.hearts or leading.complete):
+            if (
+                len(blocks) <= 1
+                or leading.kind != ITEM_PARTIAL
+                or leading.hearts
+                or leading.complete
+            ):
                 return False
             dependent_uncertainty = (
                 f"the block at page rows {leading.page_y0}..{leading.page_y1} "
-                + _UNCERTAIN_HEART_NOTE)
+                + _UNCERTAIN_HEART_NOTE
+            )
         except (AttributeError, TypeError):
             return False
         return sum(failure == dependent_uncertainty for failure in failures) == 1
 
-    def _restart_index_from_confirmed_top(self, photos: list[bytes], index: ItemIndex,
-                                          animation_markers: tuple[bool, ...],
-                                          video_mute_markers: tuple[VideoMuteMarker, ...],
-                                          ) -> tuple[ItemIndex, int] | None:
+    def _restart_index_from_confirmed_top(
+        self,
+        photos: list[bytes],
+        index: ItemIndex,
+        animation_markers: tuple[bool, ...],
+        video_mute_markers: tuple[VideoMuteMarker, ...],
+    ) -> tuple[ItemIndex, int] | None:
         """Select one independently proved restarted top-to-bottom sweep, if there is one.
 
         A capture normally begins at Hinge's filter-chip scroll top exactly once.  The reported
@@ -5390,22 +6010,30 @@ class AndroidDriver(DatingAppDriver):
         so crops never accidentally use the suffix's local indices against the full frame list.
         """
         failed_pairs = tuple(
-            pair_index for pair_index, shift in enumerate(index.shifts)
-            if shift.delta_px is None)
-        if (len(photos) < 3 or len(failed_pairs) != 1 or not index.identity.known
-                or self._pinned_band_evidence() is not None):
+            pair_index
+            for pair_index, shift in enumerate(index.shifts)
+            if shift.delta_px is None
+        )
+        if (
+            len(photos) < 3
+            or len(failed_pairs) != 1
+            or not index.identity.known
+            or self._pinned_band_evidence() is not None
+        ):
             return None
-        if (len(animation_markers) != len(photos)
-                or any(not isinstance(marker, VideoMuteMarker)
-                       for marker in video_mute_markers)):
+        if len(animation_markers) != len(photos) or any(
+            not isinstance(marker, VideoMuteMarker) for marker in video_mute_markers
+        ):
             return None
         restart_at = failed_pairs[0] + 1
         if not 0 < restart_at < len(photos) - 2:
             return None
         try:
             top = confirm_scroll_top(
-                photos[restart_at], identity_band=self.identity_band,
-                pinned_evidence=self._pinned_band_evidence())
+                photos[restart_at],
+                identity_band=self.identity_band,
+                pinned_evidence=self._pinned_band_evidence(),
+            )
         except ScrollTopError:
             return None
         if not top.confirmed:
@@ -5419,8 +6047,10 @@ class AndroidDriver(DatingAppDriver):
                 continue
             try:
                 later_top = confirm_scroll_top(
-                    frame, identity_band=self.identity_band,
-                    pinned_evidence=self._pinned_band_evidence())
+                    frame,
+                    identity_band=self.identity_band,
+                    pinned_evidence=self._pinned_band_evidence(),
+                )
             except ScrollTopError:
                 return None
             if later_top.confirmed:
@@ -5431,36 +6061,57 @@ class AndroidDriver(DatingAppDriver):
         suffix_markers = tuple(
             VideoMuteMarker(
                 frame_index=marker.frame_index - restart_at,
-                x=marker.x, y=marker.y, score=marker.score)
-            for marker in video_mute_markers if marker.frame_index >= restart_at)
+                x=marker.x,
+                y=marker.y,
+                score=marker.score,
+            )
+            for marker in video_mute_markers
+            if marker.frame_index >= restart_at
+        )
         try:
             rebuilt = build_item_index(
-                suffix, content_band=self.content_band,
+                suffix,
+                content_band=self.content_band,
                 like_template=self._template("like"),
                 like_threshold=_LIKE_MATCH_THRESHOLD,
-                at_scroll_top=True, identity_band=self.identity_band,
+                at_scroll_top=True,
+                identity_band=self.identity_band,
                 animation_markers=suffix_animation,
-                video_mute_markers=suffix_markers)
+                video_mute_markers=suffix_markers,
+            )
         except (ItemIndexError, SegmentationError, ShiftEstimationError):
             return None
         local_source = tuple(rebuilt.source_frame_indices)
-        if (not rebuilt.usable or not rebuilt.reached_end or not rebuilt.identity.known
-                or index.identity.fingerprint != rebuilt.identity.fingerprint
-                or index.identity.band != rebuilt.identity.band
-                or index.identity.grid != rebuilt.identity.grid
-                or len(local_source) != len(rebuilt.frames)
-                or any(not isinstance(frame_index, int) or isinstance(frame_index, bool)
-                       or not 0 <= frame_index < len(suffix)
-                       for frame_index in local_source)):
+        if (
+            not rebuilt.usable
+            or not rebuilt.reached_end
+            or not rebuilt.identity.known
+            or index.identity.fingerprint != rebuilt.identity.fingerprint
+            or index.identity.band != rebuilt.identity.band
+            or index.identity.grid != rebuilt.identity.grid
+            or len(local_source) != len(rebuilt.frames)
+            or any(
+                not isinstance(frame_index, int)
+                or isinstance(frame_index, bool)
+                or not 0 <= frame_index < len(suffix)
+                for frame_index in local_source
+            )
+        ):
             return None
         return dataclasses.replace(
             rebuilt,
             source_frame_indices=tuple(
-                restart_at + frame_index for frame_index in local_source),
+                restart_at + frame_index for frame_index in local_source
+            ),
         ), restart_at
 
-    def _plan_enumeration_step(self, frame: bytes, x_frac: float,
-                               *, allow_segmentation_failure_fallback: bool = False):
+    def _plan_enumeration_step(
+        self,
+        frame: bytes,
+        x_frac: float,
+        *,
+        allow_segmentation_failure_fallback: bool = False,
+    ):
         """Size the next enumeration scroll against what THIS frame's own geometry needs for
         coverage (`scroll_step.plan_coverage_step`, 2026-08-24), replacing the tracking-safe
         ratio rule `plan_scroll_step` used for this read until this change -- see that module's
@@ -5499,20 +6150,27 @@ class AndroidDriver(DatingAppDriver):
         missed-gutter failure); item_index must independently reconcile or omit/rebuild them
         before they can ever produce an opener.
         """
-        segmentation = segment_frame(frame, content_band=self.content_band,
-                                     like_template=self._template("like"),
-                                     like_threshold=_LIKE_MATCH_THRESHOLD)
+        segmentation = segment_frame(
+            frame,
+            content_band=self.content_band,
+            like_template=self._template("like"),
+            like_threshold=_LIKE_MATCH_THRESHOLD,
+        )
         # BEFORE the plan, so a frame whose plan then refuses still contributes its geometry to
         # the capture row's `coverage` aggregate -- that frame is the interesting one. Records
         # nothing but numbers already in hand; never raises (see the ledger's own docstring).
         self._enum_coverage.note_frame(segmentation)
-        return plan_coverage_step(segmentation, x_frac=x_frac,
-                                  allow_segmentation_failure_fallback=
-                                  allow_segmentation_failure_fallback)
+        return plan_coverage_step(
+            segmentation,
+            x_frac=x_frac,
+            allow_segmentation_failure_fallback=allow_segmentation_failure_fallback,
+        )
 
     @staticmethod
-    def _match_video_mute(frame: bytes, rect: tuple[int, int, int, int],
-                          ) -> tuple[bool, float | None]:
+    def _match_video_mute(
+        frame: bytes,
+        rect: tuple[int, int, int, int],
+    ) -> tuple[bool, float | None]:
         """Return whether one card-local ROI contains the exact Hinge mute control.
 
         ``screened=False`` means decode/template/matcher failure, not "no video".  The control's
@@ -5524,7 +6182,9 @@ class AndroidDriver(DatingAppDriver):
             import cv2
             import numpy as np
 
-            image = cv2.imdecode(np.frombuffer(frame, dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
+            image = cv2.imdecode(
+                np.frombuffer(frame, dtype=np.uint8), cv2.IMREAD_GRAYSCALE
+            )
             template = _video_mute_template()
             if image is None or template is None:
                 return False, None
@@ -5534,15 +6194,17 @@ class AndroidDriver(DatingAppDriver):
             roi = image[y0:y1, x0:x1]
             if roi.shape[0] < template.shape[0] or roi.shape[1] < template.shape[1]:
                 return False, None
-            score = float(cv2.minMaxLoc(
-                cv2.matchTemplate(roi, template, cv2.TM_CCOEFF_NORMED))[1])
+            score = float(
+                cv2.minMaxLoc(cv2.matchTemplate(roi, template, cv2.TM_CCOEFF_NORMED))[1]
+            )
             return True, score
         except Exception:  # noqa: BLE001 — selection screening fails closed; it never raises
             return False, None
 
     @staticmethod
-    def _locate_video_mute(frame: bytes, rect: tuple[int, int, int, int], *,
-                           image=None) -> tuple[bool, float | None, tuple[int, int] | None]:
+    def _locate_video_mute(
+        frame: bytes, rect: tuple[int, int, int, int], *, image=None
+    ) -> tuple[bool, float | None, tuple[int, int] | None]:
         """Return the origin of the same exact mute match used by the selection screen.
 
         `image` lets a caller that already decoded this exact `frame` -- `_video_mute_marker_rows`
@@ -5556,7 +6218,9 @@ class AndroidDriver(DatingAppDriver):
             import numpy as np
 
             if image is None:
-                image = cv2.imdecode(np.frombuffer(frame, dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
+                image = cv2.imdecode(
+                    np.frombuffer(frame, dtype=np.uint8), cv2.IMREAD_GRAYSCALE
+                )
             template = _video_mute_template()
             if image is None or template is None:
                 return False, None, None
@@ -5567,7 +6231,8 @@ class AndroidDriver(DatingAppDriver):
             if roi.shape[0] < template.shape[0] or roi.shape[1] < template.shape[1]:
                 return False, None, None
             _min, score, _min_loc, max_loc = cv2.minMaxLoc(
-                cv2.matchTemplate(roi, template, cv2.TM_CCOEFF_NORMED))
+                cv2.matchTemplate(roi, template, cv2.TM_CCOEFF_NORMED)
+            )
             return True, float(score), (x0 + max_loc[0], y0 + max_loc[1])
         except Exception:  # noqa: BLE001 — no location is no repair authority
             return False, None, None
@@ -5592,7 +6257,9 @@ class AndroidDriver(DatingAppDriver):
         marked = {marker.frame_index for marker in self._video_mute_marker_rows(frames)}
         return tuple(frame_index in marked for frame_index in range(len(frames)))
 
-    def _video_mute_marker_rows(self, frames: list[bytes]) -> tuple[VideoMuteMarker, ...]:
+    def _video_mute_marker_rows(
+        self, frames: list[bytes]
+    ) -> tuple[VideoMuteMarker, ...]:
         """Positioned mute observations for v12's physical-card tracker.
 
         The one production reader of the mute glyph: a video can carry its identity after the
@@ -5606,19 +6273,36 @@ class AndroidDriver(DatingAppDriver):
                 import cv2
                 import numpy as np
 
-                image = cv2.imdecode(np.frombuffer(frame, dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
+                image = cv2.imdecode(
+                    np.frombuffer(frame, dtype=np.uint8), cv2.IMREAD_GRAYSCALE
+                )
                 if image is None:
                     continue
                 height, width = image.shape
-                rect = (0, round(self.content_band[0] * height), round(0.30 * width),
-                        round(self.content_band[1] * height))
+                rect = (
+                    0,
+                    round(self.content_band[0] * height),
+                    round(0.30 * width),
+                    round(self.content_band[1] * height),
+                )
                 # `image` is already this exact frame's decode (just above, for height/width) --
                 # hand it through so _locate_video_mute does not decode the same PNG a second
                 # time (2026-08-23 perf pass; see its own docstring).
                 ok, score, origin = self._locate_video_mute(frame, rect, image=image)
-                if ok and origin is not None and score is not None and score >= _VIDEO_MUTE_MATCH_THRESHOLD:
-                    markers.append(VideoMuteMarker(
-                        frame_index=frame_index, x=origin[0], y=origin[1], score=score))
+                if (
+                    ok
+                    and origin is not None
+                    and score is not None
+                    and score >= _VIDEO_MUTE_MATCH_THRESHOLD
+                ):
+                    markers.append(
+                        VideoMuteMarker(
+                            frame_index=frame_index,
+                            x=origin[0],
+                            y=origin[1],
+                            score=score,
+                        )
+                    )
             except Exception:  # noqa: BLE001 — no affirmative marker is no repair authority
                 continue
         return tuple(markers)
@@ -5667,12 +6351,15 @@ class AndroidDriver(DatingAppDriver):
             if ordinal is None:
                 continue
             top_sightings = tuple(
-                obs for obs in block.observations
-                if obs.top_observed and 0 <= obs.frame_index < len(frames))
+                obs
+                for obs in block.observations
+                if obs.top_observed and 0 <= obs.frame_index < len(frames)
+            )
             if not top_sightings:
                 excluded[ordinal] = (
                     "video_mute_v1: not targetable because no source frame observed the card "
-                    "top needed for mute-control screening")
+                    "top needed for mute-control screening"
+                )
                 continue
 
             screened = False
@@ -5685,35 +6372,56 @@ class AndroidDriver(DatingAppDriver):
                 x0 = block.x0 + round(_VIDEO_MUTE_X_BAND[0] * card_width)
                 x1 = block.x0 + round(_VIDEO_MUTE_X_BAND[1] * card_width)
                 y0 = obs.frame_y0 + round(_VIDEO_MUTE_Y_BAND[0] * block.height)
-                y1 = min(obs.frame_y1,
-                         obs.frame_y0 + round(_VIDEO_MUTE_Y_BAND[1] * block.height))
+                y1 = min(
+                    obs.frame_y1,
+                    obs.frame_y0 + round(_VIDEO_MUTE_Y_BAND[1] * block.height),
+                )
                 # A top grazing the analysed band's bottom can expose fewer rows than the
                 # 42x42 mute template. That is incomplete geometry, not matcher failure: skip
                 # it and use a later full sighting. With no full sighting, screening still
                 # fails closed below.
-                if (x1 - x0 < _VIDEO_MUTE_TEMPLATE_SIDE_PX
-                        or y1 - y0 < _VIDEO_MUTE_TEMPLATE_SIDE_PX):
+                if (
+                    x1 - x0 < _VIDEO_MUTE_TEMPLATE_SIDE_PX
+                    or y1 - y0 < _VIDEO_MUTE_TEMPLATE_SIDE_PX
+                ):
                     insufficient_frames.append(obs.frame_index)
-                    outcomes.append({"source_frame_index": obs.frame_index,
-                                     "roi": [x0, y0, x1, y1],
-                                     "outcome": "insufficient_visible_roi"})
+                    outcomes.append(
+                        {
+                            "source_frame_index": obs.frame_index,
+                            "roi": [x0, y0, x1, y1],
+                            "outcome": "insufficient_visible_roi",
+                        }
+                    )
                     continue
                 ok, score = self._match_video_mute(
-                    frames[obs.frame_index], (x0, y0, x1, y1))
+                    frames[obs.frame_index], (x0, y0, x1, y1)
+                )
                 if not ok:
                     failed = True
-                    outcomes.append({"source_frame_index": obs.frame_index,
-                                     "roi": [x0, y0, x1, y1],
-                                     "outcome": "matcher_failed"})
+                    outcomes.append(
+                        {
+                            "source_frame_index": obs.frame_index,
+                            "roi": [x0, y0, x1, y1],
+                            "outcome": "matcher_failed",
+                        }
+                    )
                     continue
                 screened = True
-                outcomes.append({"source_frame_index": obs.frame_index,
-                                 "roi": [x0, y0, x1, y1],
-                                 "outcome": ("mute_matched" if score is not None
-                                             and score >= _VIDEO_MUTE_MATCH_THRESHOLD
-                                             else "no_mute_match"),
-                                 "score": (round(float(score), 6)
-                                           if score is not None else None)})
+                outcomes.append(
+                    {
+                        "source_frame_index": obs.frame_index,
+                        "roi": [x0, y0, x1, y1],
+                        "outcome": (
+                            "mute_matched"
+                            if score is not None
+                            and score >= _VIDEO_MUTE_MATCH_THRESHOLD
+                            else "no_mute_match"
+                        ),
+                        "score": (
+                            round(float(score), 6) if score is not None else None
+                        ),
+                    }
+                )
                 if score is not None and score >= _VIDEO_MUTE_MATCH_THRESHOLD:
                     mute_frames.append(obs.frame_index)
 
@@ -5723,27 +6431,39 @@ class AndroidDriver(DatingAppDriver):
                 return "; ".join(
                     f"f{value['source_frame_index']}:{value['outcome']}@"
                     f"{value['roi']}"
-                    + (f" score={value['score']}" if value.get("score") is not None else "")
-                    for value in values[:12])
+                    + (
+                        f" score={value['score']}"
+                        if value.get("score") is not None
+                        else ""
+                    )
+                    for value in values[:12]
+                )
 
             if mute_frames:
                 excluded[ordinal] = (
                     "video_mute_v1: upper-left Hinge mute control matched in card source "
                     f"frame(s) {sorted(set(mute_frames))}; videos are retained for scroll "
                     "geometry but are never numbered or likeable; screen outcomes: "
-                    + outcome_summary(outcomes))
+                    + outcome_summary(outcomes)
+                )
             elif not screened:
-                failed_frames = [value["source_frame_index"] for value in outcomes
-                                 if value["outcome"] == "matcher_failed"]
+                failed_frames = [
+                    value["source_frame_index"]
+                    for value in outcomes
+                    if value["outcome"] == "matcher_failed"
+                ]
                 blocker = (
                     "upper-left mute-control screening failed in source frame(s) "
-                    f"{failed_frames}" if failed else
-                    f"no source frame exposed the {_VIDEO_MUTE_TEMPLATE_SIDE_PX}x"
+                    f"{failed_frames}"
+                    if failed
+                    else f"no source frame exposed the {_VIDEO_MUTE_TEMPLATE_SIDE_PX}x"
                     f"{_VIDEO_MUTE_TEMPLATE_SIDE_PX} upper-left mute-control template area; "
-                    f"clipped source frame(s) {insufficient_frames}")
+                    f"clipped source frame(s) {insufficient_frames}"
+                )
                 excluded[ordinal] = (
                     f"video_mute_v1: not targetable because {blocker}; screen outcomes: "
-                    + outcome_summary(outcomes))
+                    + outcome_summary(outcomes)
+                )
 
         # SECOND ROUTE: positioned markers, additive only (see the docstring's SECOND ROUTE
         # paragraph for why the screen above cannot see this on a compound card). Every block
@@ -5767,7 +6487,8 @@ class AndroidDriver(DatingAppDriver):
                     f"{marker.y - obs.frame_y0}) -- {marker.y - obs.frame_y0}px below this "
                     "sighting's own card top, which is outside the block-relative screen's "
                     "narrow window above and is exactly why that screen alone missed it; "
-                    "videos are retained for scroll geometry but are never numbered or likeable")
+                    "videos are retained for scroll geometry but are never numbered or likeable"
+                )
         return excluded
 
     def _target_frame_video_screen_reason(self, frame: bytes, block) -> str | None:
@@ -5783,7 +6504,10 @@ class AndroidDriver(DatingAppDriver):
         rect without inventing a driver.
         """
         return video_mute_screen_reason(
-            frame, (block.x0, block.y0, block.x1, block.y1), match=self._match_video_mute)
+            frame,
+            (block.x0, block.y0, block.x1, block.y1),
+            match=self._match_video_mute,
+        )
 
     def _still_photo_dwell_burst(self, should_stop=None) -> tuple[list[bytes], float]:
         """Take C2's observation: N screencaps over W seconds, with NO input of any kind.
@@ -5823,8 +6547,12 @@ class AndroidDriver(DatingAppDriver):
         # branching here rather than defaulting: the measured licence has a held-out worst-case
         # exact run to clear, and the assumption licence has no measurement at all, so it gets a
         # named accepted default instead of silently inheriting a number that would look like one.
-        anchor_s = (STILL_PHOTO_DWELL_WINDOW_SAFETY_FACTOR * licence.record.max_video_exact_run_s
-                    if licence.measured else _STILL_PHOTO_DWELL_ASSUMED_WINDOW_S)
+        anchor_s = (
+            STILL_PHOTO_DWELL_WINDOW_SAFETY_FACTOR
+            * licence.record.max_video_exact_run_s
+            if licence.measured
+            else _STILL_PHOTO_DWELL_ASSUMED_WINDOW_S
+        )
         window_s = human_cooldown(max(_STILL_PHOTO_DWELL_MIN_WINDOW_S, anchor_s))
         count = random.randint(*_STILL_PHOTO_DWELL_FRAMES)
         gap_s = window_s / (count - 1)
@@ -5842,8 +6570,9 @@ class AndroidDriver(DatingAppDriver):
                 # part of it; a slow capture can only lengthen the window, never shorten it.
                 due_at = first_at + position * gap_s
                 remaining_s = due_at - time.monotonic()
-                if (remaining_s > 0
-                        and not self._interruptible_sleep(remaining_s, should_stop)):
+                if remaining_s > 0 and not self._interruptible_sleep(
+                    remaining_s, should_stop
+                ):
                     return [], 0.0
             if should_stop is not None and should_stop():
                 # Checked again right before the screencap rather than folded into the sleep
@@ -5866,8 +6595,9 @@ class AndroidDriver(DatingAppDriver):
             self._still_photo_passive_observation_s += span_s
         return frames, span_s
 
-    def _return_leg_backoff_remeasure(self, anchor: bytes, *, forward: bool, leg_px: int,
-                                      height: int) -> tuple[int | None, bytes | None, list]:
+    def _return_leg_backoff_remeasure(
+        self, anchor: bytes, *, forward: bool, leg_px: int, height: int
+    ) -> tuple[int | None, bytes | None, list]:
         """Give part of a refused return leg back and re-measure against the SAME anchor.
 
         Returns `(shift_from_anchor, frame, attempts)`. `shift_from_anchor` is a real
@@ -5895,13 +6625,22 @@ class AndroidDriver(DatingAppDriver):
         """
         attempts: list[dict[str, object]] = []
         for _attempt in range(random.randint(*_RETURN_LEG_BACKOFF_SPAN)):
-            back_px = max(1, int(round(
-                random.uniform(*_RETURN_LEG_BACKOFF_FRAC_SPAN) * max(1, int(leg_px)))))
-            frac = min(_READ_SCROLL_FRAC_MAX,
-                       max(_READ_SCROLL_FRAC_MIN, frac_for_step_px(back_px, height)))
+            back_px = max(
+                1,
+                int(
+                    round(
+                        random.uniform(*_RETURN_LEG_BACKOFF_FRAC_SPAN)
+                        * max(1, int(leg_px))
+                    )
+                ),
+            )
+            frac = min(
+                _READ_SCROLL_FRAC_MAX,
+                max(_READ_SCROLL_FRAC_MIN, frac_for_step_px(back_px, height)),
+            )
             _dwell_s, _step_frac, x_frac = self._sample_read_step(0, None)
             if forward:
-                self._scroll_up_one(frac, x_frac)     # give back part of a forward leg
+                self._scroll_up_one(frac, x_frac)  # give back part of a forward leg
             else:
                 self._scroll_down_one(frac, x_frac)
             time.sleep(human_delay(_READ_SCROLL_SETTLE_S))
@@ -5919,7 +6658,9 @@ class AndroidDriver(DatingAppDriver):
             if moved is None:
                 attempts.append({**record, "outcome": "unmeasurable"})
                 continue
-            attempts.append({**record, "outcome": "measured", "measured_shift_px": moved})
+            attempts.append(
+                {**record, "outcome": "measured", "measured_shift_px": moved}
+            )
             return moved, seen, attempts
         return None, None, attempts
 
@@ -5948,11 +6689,15 @@ class AndroidDriver(DatingAppDriver):
         """
         try:
             _result, forward, reverse = estimate_shift_with_reverse_recovery(
-                before, after, content_band=self.content_band, estimator=estimate_shift)
+                before, after, content_band=self.content_band, estimator=estimate_shift
+            )
         except Exception as exc:  # noqa: BLE001 -- diagnostics never alter return safety
             return {"error": f"{type(exc).__name__}: {exc}"}
         try:
-            return {"forward": trace_estimate(forward), "reverse": trace_estimate(reverse)}
+            return {
+                "forward": trace_estimate(forward),
+                "reverse": trace_estimate(reverse),
+            }
         except Exception as exc:  # noqa: BLE001 -- same rule, for a non-production estimate double
             return {"error": f"{type(exc).__name__}: {exc}"}
 
@@ -5984,7 +6729,8 @@ class AndroidDriver(DatingAppDriver):
         """
         try:
             result, shift, reverse = estimate_shift_with_reverse_recovery(
-                before, after, content_band=self.content_band, estimator=estimate_shift)
+                before, after, content_band=self.content_band, estimator=estimate_shift
+            )
         except ShiftEstimationError:
             return None
         # READ `result`, NEVER RE-DERIVE IT (found 2026-09-04). This used to inspect `shift` and
@@ -6000,11 +6746,14 @@ class AndroidDriver(DatingAppDriver):
         if shift.status != SHIFT_MEASURED and self._dbg is not None:
             try:
                 self._dbg.action(
-                    "page_shift_reverse_measurement", delta_px=measured,
-                    forward_status=shift.status, forward_reason=shift.reason,
+                    "page_shift_reverse_measurement",
+                    delta_px=measured,
+                    forward_status=shift.status,
+                    forward_reason=shift.reason,
                     reverse_status=None if reverse is None else reverse.status,
                     reverse_reason=None if reverse is None else reverse.reason,
-                    recovered_reason=result.reason)
+                    recovered_reason=result.reason,
+                )
             except Exception:  # noqa: BLE001 -- diagnostics never alter shift authority
                 pass
         return measured
@@ -6024,8 +6773,9 @@ class AndroidDriver(DatingAppDriver):
         if not isinstance(index, ItemIndex):
             return None
         return dataclasses.replace(
-            index, offsets=tuple(int(offset) + int(page_shift_px)
-                                 for offset in index.offsets))
+            index,
+            offsets=tuple(int(offset) + int(page_shift_px) for offset in index.offsets),
+        )
 
     @staticmethod
     def _still_photo_reattach_candidate(evidence: dict) -> int | None:
@@ -6037,16 +6787,18 @@ class AndroidDriver(DatingAppDriver):
         probe restores ONE page position, and the card nearest the centre is the one that
         position seats.
         """
-        eligible = [(abs(dwell.center_offset_frac), ordinal)
-                    for ordinal, dwell in evidence.items()
-                    if dwell.dwell_exact is True and dwell.centered is True
-                    and dwell.center_offset_frac is not None]
+        eligible = [
+            (abs(dwell.center_offset_frac), ordinal)
+            for ordinal, dwell in evidence.items()
+            if dwell.dwell_exact is True
+            and dwell.centered is True
+            and dwell.center_offset_frac is not None
+        ]
         return min(eligible)[1] if eligible else None
 
-    def _still_photo_reattach_probe(self, anchor: bytes,
-                                    rect: tuple[int, int, int, int],
-                                    should_stop=None) -> (
-                                        ReattachProbe | _AbandonedReattachProbe | None):
+    def _still_photo_reattach_probe(
+        self, anchor: bytes, rect: tuple[int, int, int, int], should_stop=None
+    ) -> ReattachProbe | _AbandonedReattachProbe | None:
         """Scroll this card OUT of Hinge's autoplay band, bring it back, and dwell again.
 
         The residual it exists for is stated at `_REATTACH_EXIT_BAND_MULTIPLE_SPAN`: a centred
@@ -6123,8 +6875,9 @@ class AndroidDriver(DatingAppDriver):
         band_px = (float(self.content_band[1]) - float(self.content_band[0])) * height
         if height <= 0 or band_px <= 0:
             return None
-        offset = card_center_offset_frac(rect, frame_height=height,
-                                         content_band=self.content_band)
+        offset = card_center_offset_frac(
+            rect, frame_height=height, content_band=self.content_band
+        )
 
         # Whether the leg that just refused had already put a stroke on the phone. A refusal
         # BEFORE the stroke leaves the page exactly where the caller last measured it; one AFTER
@@ -6153,12 +6906,18 @@ class AndroidDriver(DatingAppDriver):
             # forward leg is the same derivation mirrored about the band centre, which is why it
             # negates the card's offset rather than inventing a second distance rule.
             target = STILL_PHOTO_AUTOPLAY_CENTER_BAND_FRAC * random.uniform(
-                *_REATTACH_EXIT_BAND_MULTIPLE_SPAN)
-            exit_px = min((target - (offset if backward else -offset)) * band_px,
-                          _REATTACH_MAX_EXIT_BAND_FRAC * band_px)
-            exit_frac = min(_READ_SCROLL_FRAC_MAX,
-                            max(_READ_SCROLL_FRAC_MIN,
-                                frac_for_step_px(int(round(exit_px)), height)))
+                *_REATTACH_EXIT_BAND_MULTIPLE_SPAN
+            )
+            exit_px = min(
+                (target - (offset if backward else -offset)) * band_px,
+                _REATTACH_MAX_EXIT_BAND_FRAC * band_px,
+            )
+            exit_frac = min(
+                _READ_SCROLL_FRAC_MAX,
+                max(
+                    _READ_SCROLL_FRAC_MIN, frac_for_step_px(int(round(exit_px)), height)
+                ),
+            )
             _dwell_s, _step_frac, x_frac = self._sample_read_step(0, None)
             # Backward is content DOWN, so the card slides off centre toward the bottom of the
             # screen; forward is content UP, so it leaves through the top instead.
@@ -6180,7 +6939,9 @@ class AndroidDriver(DatingAppDriver):
             return None if moved is None else (seen, moved)
 
         def inside_zone(moved: int) -> bool:
-            return abs(offset - moved / band_px) <= STILL_PHOTO_AUTOPLAY_CENTER_BAND_FRAC
+            return (
+                abs(offset - moved / band_px) <= STILL_PHOTO_AUTOPLAY_CENTER_BAND_FRAC
+            )
 
         quantum = step_px_for_frac(_READ_SCROLL_FRAC_MIN, height)
 
@@ -6197,12 +6958,18 @@ class AndroidDriver(DatingAppDriver):
                 remaining = -total
                 if abs(remaining) <= quantum // 2:
                     break
-                frac = min(_READ_SCROLL_FRAC_MAX,
-                           max(_READ_SCROLL_FRAC_MIN,
-                               frac_for_step_px(int(abs(remaining)), height)))
+                frac = min(
+                    _READ_SCROLL_FRAC_MAX,
+                    max(
+                        _READ_SCROLL_FRAC_MIN,
+                        frac_for_step_px(int(abs(remaining)), height),
+                    ),
+                )
                 _dwell_s, _step_frac, x_frac = self._sample_read_step(0, None)
                 if remaining > 0:
-                    self._scroll_down_one(frac, x_frac)   # content up: the card climbs back
+                    self._scroll_down_one(
+                        frac, x_frac
+                    )  # content up: the card climbs back
                 else:
                     self._scroll_up_one(frac, x_frac)
                 time.sleep(human_delay(_READ_SCROLL_SETTLE_S))
@@ -6218,9 +6985,13 @@ class AndroidDriver(DatingAppDriver):
 
         def abandon(repaid: tuple[bytes, int] | None) -> _AbandonedReattachProbe:
             """Hand back the residual a refusal still owes, or the lost-position marker."""
-            return (_REATTACH_POSITION_LOST if repaid is None
-                    else _AbandonedReattachProbe(frame=repaid[0],
-                                                 page_shift_px=int(repaid[1])))
+            return (
+                _REATTACH_POSITION_LOST
+                if repaid is None
+                else _AbandonedReattachProbe(
+                    frame=repaid[0], page_shift_px=int(repaid[1])
+                )
+            )
 
         exited = exit_leg(backward=True)
         if exited is None:
@@ -6271,11 +7042,17 @@ class AndroidDriver(DatingAppDriver):
         burst, span_s = self._still_photo_dwell_burst(should_stop)
         if not burst:
             return abandon((frame, total))
-        return ReattachProbe(anchor=frame, frames=tuple(burst), span_s=span_s,
-                             page_shift_px=int(total))
+        return ReattachProbe(
+            anchor=frame, frames=tuple(burst), span_s=span_s, page_shift_px=int(total)
+        )
 
-    def _record_still_photo_dwell(self, frames: list[bytes], span_s: float,
-                                  evidence: dict, probe: ReattachProbe | None = None) -> None:
+    def _record_still_photo_dwell(
+        self,
+        frames: list[bytes],
+        span_s: float,
+        evidence: dict,
+        probe: ReattachProbe | None = None,
+    ) -> None:
         """Keep every dwell frame and its digest in the run folder, best-effort as ever.
 
         One record per frame, with its ordinal and digest retained in JSONL.  Frames in the same
@@ -6296,39 +7073,65 @@ class AndroidDriver(DatingAppDriver):
                 # byte-identical PNGs while preserving all N JSONL observations.  Encoding the
                 # ordinal into the label defeated that dedupe and let one three-card proof consume
                 # ~100MiB / 50+ entries from the bounded screenshot ring.
-                self._dbg.action("still_photo_dwell_frame", before=frame,
-                                 dwell_frame_index=position, sha256=digests[position],
-                                 heart_ordinals=heart_ordinals)
+                self._dbg.action(
+                    "still_photo_dwell_frame",
+                    before=frame,
+                    dwell_frame_index=position,
+                    sha256=digests[position],
+                    heart_ordinals=heart_ordinals,
+                )
             probe_frames = [] if probe is None else [probe.anchor, *probe.frames]
-            probe_digests = [hashlib.sha256(frame).hexdigest() for frame in probe_frames]
+            probe_digests = [
+                hashlib.sha256(frame).hexdigest() for frame in probe_frames
+            ]
             for position, frame in enumerate(probe_frames):
-                self._dbg.action("still_photo_reattach_frame", before=frame,
-                                 reattach_frame_index=position, sha256=probe_digests[position],
-                                 heart_ordinals=heart_ordinals)
+                self._dbg.action(
+                    "still_photo_reattach_frame",
+                    before=frame,
+                    reattach_frame_index=position,
+                    sha256=probe_digests[position],
+                    heart_ordinals=heart_ordinals,
+                )
             self._dbg.action(
-                "still_photo_dwell", dwell_frames=len(frames),
+                "still_photo_dwell",
+                dwell_frames=len(frames),
                 heart_ordinals=heart_ordinals,
-                dwell_span_s=round(span_s, 6), dwell_frame_sha256s=digests,
+                dwell_span_s=round(span_s, 6),
+                dwell_frame_sha256s=digests,
                 reattach_probe_ran=probe is not None,
                 reattach_frames=len(probe_frames),
                 reattach_frame_sha256s=probe_digests,
-                reattach_span_s=(None if probe is None or probe.span_s is None
-                                 else round(float(probe.span_s), 6)),
+                reattach_span_s=(
+                    None
+                    if probe is None or probe.span_s is None
+                    else round(float(probe.span_s), 6)
+                ),
                 reattach_page_shift_px=(None if probe is None else probe.page_shift_px),
-                cards=[{"heart_ordinal": ordinal, "dwell_exact": dwell.dwell_exact,
+                cards=[
+                    {
+                        "heart_ordinal": ordinal,
+                        "dwell_exact": dwell.dwell_exact,
                         "mute_screens_complete": dwell.mute_screens_complete,
                         "center_offset_frac": dwell.center_offset_frac,
                         "reattach_probe_ran": dwell.reattach_probe_ran,
                         "reattach_dwell_exact": dwell.reattach_dwell_exact,
                         "reattach_mute_screens_complete": dwell.reattach_mute_screens_complete,
-                        "reattach_center_offset_frac": dwell.reattach_center_offset_frac}
-                       for ordinal, dwell in sorted(evidence.items())])
+                        "reattach_center_offset_frac": dwell.reattach_center_offset_frac,
+                    }
+                    for ordinal, dwell in sorted(evidence.items())
+                ],
+            )
         except Exception:  # noqa: BLE001 -- diagnostics must never alter a live-run result
             pass
 
-    def _still_photo_dwell(self, frames: list[bytes], index, should_stop=None, *,
-                           eligible_heart_ordinals=None) -> tuple[
-                               dict, _MeasuredItemAnchor | None]:
+    def _still_photo_dwell(
+        self,
+        frames: list[bytes],
+        index,
+        should_stop=None,
+        *,
+        eligible_heart_ordinals=None,
+    ) -> tuple[dict, _MeasuredItemAnchor | None]:
         """Return C2/C3 dwell evidence plus the measured frame currently on screen.
 
         With no verified bound installed there is no dwell at all: the payload can number nothing
@@ -6375,55 +7178,77 @@ class AndroidDriver(DatingAppDriver):
         # This is called once per capture.  Clear any direct/helper-call residue before a new
         # candidate walk has a chance to attach its own Stop diagnostic.
         self._current_dwell_walk_interruption = None
-        entry_anchor = (_MeasuredItemAnchor(frames[-1], 0) if frames else None)
+        entry_anchor = _MeasuredItemAnchor(frames[-1], 0) if frames else None
         if hinge_targeting_unavailable_reason() is not None:
             return {}, entry_anchor
 
         def mute_screen(frame: bytes, rect: tuple[int, int, int, int]) -> bool:
-            return video_mute_screen_reason(frame, rect, match=self._match_video_mute) is None
+            return (
+                video_mute_screen_reason(frame, rect, match=self._match_video_mute)
+                is None
+            )
 
         # If the cheap content pre-pass says the parked position contains no candidate the final
         # payload could ever number, do not spend even the "free" dwell there.  K>1 can use its
         # whole budget on eligible navigation hops; K=1 keeps the exact historical no-walk
         # behaviour.  This changes cost only: no filtered card could have survived `unnumber`.
-        eligible = (None if eligible_heart_ordinals is None
-                    else set(eligible_heart_ordinals))
-        parked_hearts = (set(dwell_card_rects(index, len(frames) - 1)) if frames else set())
-        parked_eligible = parked_hearts if eligible is None else parked_hearts & eligible
+        eligible = (
+            None if eligible_heart_ordinals is None else set(eligible_heart_ordinals)
+        )
+        parked_hearts = (
+            set(dwell_card_rects(index, len(frames) - 1)) if frames else set()
+        )
+        parked_eligible = (
+            parked_hearts if eligible is None else parked_hearts & eligible
+        )
         candidate_ordinals = tuple(
-            ordinal for ordinal in reversed(getattr(index, "translation", ()) or ())
-            if eligible is None or ordinal in eligible)
+            ordinal
+            for ordinal in reversed(getattr(index, "translation", ()) or ())
+            if eligible is None or ordinal in eligible
+        )
         if should_stop is not None and should_stop():
             next_heart = candidate_ordinals[0] if candidate_ordinals else None
             if next_heart is not None:
                 self._dbg_still_photo_walk_candidate(
-                    next_heart, "stop", phase="before_base_dwell")
+                    next_heart, "stop", phase="before_base_dwell"
+                )
             self._record_still_photo_dwell_walk_stop(
                 next_heart_ordinal=next_heart,
                 remaining_heart_ordinals=candidate_ordinals,
                 remaining_candidate_slots=self.still_photo_dwell_candidates,
-                phase="before_base_dwell")
+                phase="before_base_dwell",
+            )
             return {}, entry_anchor
         if self._dbg is not None:
             try:
                 self._dbg.action(
                     "still_photo_dwell_plan",
                     candidate_limit=self.still_photo_dwell_candidates,
-                    eligible_page_hearts=(None if eligible is None else sorted(eligible)),
+                    eligible_page_hearts=(
+                        None if eligible is None else sorted(eligible)
+                    ),
                     parked_page_hearts=sorted(parked_hearts),
-                    parked_eligible_page_hearts=sorted(parked_eligible))
+                    parked_eligible_page_hearts=sorted(parked_eligible),
+                )
             except Exception:  # noqa: BLE001 -- diagnostics must never alter capture policy
                 pass
         if eligible is not None and not parked_eligible:
             self._note_capture_progress(
-                f"verifying still-photo evidence for up to {self.still_photo_dwell_candidates} photo items")
+                f"verifying still-photo evidence for up to {self.still_photo_dwell_candidates} photo items"
+            )
             return self._still_photo_dwell_candidate_walk(
-                {}, frames=frames, index=index, mute_screen=mute_screen,
-                should_stop=should_stop, eligible_heart_ordinals=eligible,
-                entry_anchor=entry_anchor)
+                {},
+                frames=frames,
+                index=index,
+                mute_screen=mute_screen,
+                should_stop=should_stop,
+                eligible_heart_ordinals=eligible,
+                entry_anchor=entry_anchor,
+            )
 
         self._note_capture_progress(
-            f"verifying still-photo evidence for photo item 1 of {self.still_photo_dwell_candidates}")
+            f"verifying still-photo evidence for photo item 1 of {self.still_photo_dwell_candidates}"
+        )
         burst, span_s = self._still_photo_dwell_burst(should_stop)
         if not burst:
             # An empty burst means the passive observation was interrupted (Stop/blank frame) or
@@ -6434,20 +7259,24 @@ class AndroidDriver(DatingAppDriver):
             if should_stop is not None and should_stop():
                 interrupted_hearts = tuple(sorted(parked_eligible))
                 remaining_candidates = tuple(
-                    ordinal for ordinal in candidate_ordinals
-                    if ordinal not in interrupted_hearts)
-                next_heart = (remaining_candidates[0]
-                              if remaining_candidates else None)
+                    ordinal
+                    for ordinal in candidate_ordinals
+                    if ordinal not in interrupted_hearts
+                )
+                next_heart = remaining_candidates[0] if remaining_candidates else None
                 if next_heart is not None:
                     self._dbg_still_photo_walk_candidate(
-                        next_heart, "stop", phase="during_base_dwell")
+                        next_heart, "stop", phase="during_base_dwell"
+                    )
                 self._record_still_photo_dwell_walk_stop(
                     next_heart_ordinal=next_heart,
                     remaining_heart_ordinals=remaining_candidates,
-                    remaining_candidate_slots=(self.still_photo_dwell_candidates
-                                               - len(interrupted_hearts)),
+                    remaining_candidate_slots=(
+                        self.still_photo_dwell_candidates - len(interrupted_hearts)
+                    ),
                     phase="during_base_dwell",
-                    interrupted_heart_ordinals=interrupted_hearts)
+                    interrupted_heart_ordinals=interrupted_hearts,
+                )
             return {}, entry_anchor
 
         # `content_band` is what lets the shared helper measure Hinge's AUTOPLAY precondition
@@ -6457,11 +7286,19 @@ class AndroidDriver(DatingAppDriver):
         # the centre now demote at the new rung instead of being accepted -- fail closed, which
         # is the same direction every other rung here already fails.
         evidence = still_photo_dwell_evidence(
-            index, frames, burst, dwell_span_s=span_s, mute_screen=mute_screen,
-            content_band=self.content_band)
+            index,
+            frames,
+            burst,
+            dwell_span_s=span_s,
+            mute_screen=mute_screen,
+            content_band=self.content_band,
+        )
         if eligible is not None:
-            evidence = {ordinal: dwell for ordinal, dwell in evidence.items()
-                        if ordinal in eligible}
+            evidence = {
+                ordinal: dwell
+                for ordinal, dwell in evidence.items()
+                if ordinal in eligible
+            }
         # A centred byte-exact card is not accepted here, it is PROBED: the re-attach probe puts
         # it out of the autoplay band and back so a video that simply was not playing gets a
         # second chance to say so. Nothing is probed unless some card actually earned it, so an
@@ -6475,19 +7312,28 @@ class AndroidDriver(DatingAppDriver):
             rect = dwell_card_rects(index, len(frames) - 1).get(target)
             if rect is not None:
                 self._note_capture_progress(
-                    f"re-checking photo item 1 of {self.still_photo_dwell_candidates} for motion")
-                outcome = self._still_photo_reattach_probe(frames[-1], rect, should_stop)
+                    f"re-checking photo item 1 of {self.still_photo_dwell_candidates} for motion"
+                )
+                outcome = self._still_photo_reattach_probe(
+                    frames[-1], rect, should_stop
+                )
                 if isinstance(outcome, _AbandonedReattachProbe):
                     abandoned = outcome
                 else:
                     probe = outcome
         if probe is not None:
             evidence = still_photo_reattach_evidence(
-                evidence, index, frame_count=len(frames), probe=probe,
-                mute_screen=mute_screen, content_band=self.content_band)
+                evidence,
+                index,
+                frame_count=len(frames),
+                probe=probe,
+                mute_screen=mute_screen,
+                content_band=self.content_band,
+            )
             if probe.frames:
                 entry_anchor = _MeasuredItemAnchor(
-                    probe.frames[-1], int(probe.page_shift_px))
+                    probe.frames[-1], int(probe.page_shift_px)
+                )
         else:
             if abandoned is not None:
                 # The probe refused AFTER putting a real stroke on the phone (found 2026-09-15).
@@ -6501,27 +7347,44 @@ class AndroidDriver(DatingAppDriver):
                 # for the driver's own gesture at like time.
                 entry_anchor = (
                     _MeasuredItemAnchor(abandoned.frame, int(abandoned.page_shift_px))
-                    if abandoned.measured else None)
+                    if abandoned.measured
+                    else None
+                )
             if target is not None and should_stop is not None and should_stop():
                 remaining_candidates = tuple(
-                    ordinal for ordinal in candidate_ordinals if ordinal not in evidence)
+                    ordinal for ordinal in candidate_ordinals if ordinal not in evidence
+                )
                 next_heart = remaining_candidates[0] if remaining_candidates else None
                 self._record_still_photo_dwell_walk_stop(
                     next_heart_ordinal=next_heart,
                     remaining_heart_ordinals=remaining_candidates,
-                    remaining_candidate_slots=(self.still_photo_dwell_candidates - len(evidence)),
+                    remaining_candidate_slots=(
+                        self.still_photo_dwell_candidates - len(evidence)
+                    ),
                     phase="during_base_reattach_probe",
-                    interrupted_heart_ordinals=(target,))
+                    interrupted_heart_ordinals=(target,),
+                )
         self._record_still_photo_dwell(burst, span_s, evidence, probe)
         return self._still_photo_dwell_candidate_walk(
-            evidence, frames=frames, index=index, mute_screen=mute_screen,
-            should_stop=should_stop, eligible_heart_ordinals=eligible_heart_ordinals,
-            entry_anchor=entry_anchor)
+            evidence,
+            frames=frames,
+            index=index,
+            mute_screen=mute_screen,
+            should_stop=should_stop,
+            eligible_heart_ordinals=eligible_heart_ordinals,
+            entry_anchor=entry_anchor,
+        )
 
-    def _dbg_still_photo_walk_candidate(self, heart_ordinal: int, outcome: str, *,
-                                        frame: bytes | None = None,
-                                        after_frame: bytes | None = None,
-                                        keep_pair: bool = False, **fields) -> None:
+    def _dbg_still_photo_walk_candidate(
+        self,
+        heart_ordinal: int,
+        outcome: str,
+        *,
+        frame: bytes | None = None,
+        after_frame: bytes | None = None,
+        keep_pair: bool = False,
+        **fields,
+    ) -> None:
         """One best-effort debug row per candidate the K-candidate walk attempted.
 
         Same contract as `_record_still_photo_dwell`: diagnostics only, and a failure to write
@@ -6540,16 +7403,29 @@ class AndroidDriver(DatingAppDriver):
         if self._dbg is None:
             return
         try:
-            self._dbg.action("still_photo_dwell_walk_candidate", before=frame,
-                             after=after_frame, keep_before=keep_pair,
-                             keep_after=keep_pair,
-                             heart_ordinal=heart_ordinal, outcome=outcome, **fields)
+            self._dbg.action(
+                "still_photo_dwell_walk_candidate",
+                before=frame,
+                after=after_frame,
+                keep_before=keep_pair,
+                keep_after=keep_pair,
+                heart_ordinal=heart_ordinal,
+                outcome=outcome,
+                **fields,
+            )
         except Exception:  # noqa: BLE001 -- diagnostics must never alter a live-run result
             pass
 
     def _dbg_still_photo_walk_candidate_timing(
-            self, heart_ordinal: int, outcome: str, *, started_at: float,
-            navigation_s: float, proof_s: float, return_s: float) -> None:
+        self,
+        heart_ordinal: int,
+        outcome: str,
+        *,
+        started_at: float,
+        navigation_s: float,
+        proof_s: float,
+        return_s: float,
+    ) -> None:
         """Emit one arithmetic-complete timing row after a gesture-bearing candidate hop.
 
         This is deliberately a sibling of, not a replacement for,
@@ -6566,10 +7442,14 @@ class AndroidDriver(DatingAppDriver):
         try:
             self._dbg.action(
                 "still_photo_dwell_walk_candidate_timing",
-                heart_ordinal=heart_ordinal, outcome=outcome,
+                heart_ordinal=heart_ordinal,
+                outcome=outcome,
                 candidate_wall_s=round(candidate_wall_s, 6),
-                navigation_s=round(navigation_s, 6), proof_s=round(proof_s, 6),
-                return_s=round(return_s, 6), unattributed_s=round(unattributed_s, 6))
+                navigation_s=round(navigation_s, 6),
+                proof_s=round(proof_s, 6),
+                return_s=round(return_s, 6),
+                unattributed_s=round(unattributed_s, 6),
+            )
         except Exception:  # noqa: BLE001 -- diagnostics must never alter a live-run result
             pass
 
@@ -6578,7 +7458,9 @@ class AndroidDriver(DatingAppDriver):
         if self._dbg is None:
             return
         try:
-            self._dbg.action("still_photo_dwell_progressive_sweep", outcome=outcome, **fields)
+            self._dbg.action(
+                "still_photo_dwell_progressive_sweep", outcome=outcome, **fields
+            )
         except Exception:  # noqa: BLE001 -- diagnostics must never alter a live-run result
             pass
 
@@ -6593,9 +7475,14 @@ class AndroidDriver(DatingAppDriver):
         refusal.  C1 crop drift is evaluated later by ``build_item_payload``; every proof rung
         this walk itself can observe must be complete here before it uses that outcome.
         """
+
         def complete_span(value) -> bool:
-            return (isinstance(value, (int, float)) and not isinstance(value, bool)
-                    and math.isfinite(value) and value > 0)
+            return (
+                isinstance(value, (int, float))
+                and not isinstance(value, bool)
+                and math.isfinite(value)
+                and value > 0
+            )
 
         return (
             getattr(dwell, "dwell_exact", None) is True
@@ -6608,12 +7495,18 @@ class AndroidDriver(DatingAppDriver):
             and getattr(dwell, "reattach_dwell_exact", None) is True
             and getattr(dwell, "reattach_centered", None) is True
             and getattr(dwell, "reattach_mute_screens_complete", None) is True
-            and complete_span(getattr(dwell, "reattach_dwell_span_s", None)))
+            and complete_span(getattr(dwell, "reattach_dwell_span_s", None))
+        )
 
     def _record_still_photo_dwell_walk_stop(
-            self, *, next_heart_ordinal: int | None, remaining_heart_ordinals,
-            remaining_candidate_slots: int, phase: str,
-            interrupted_heart_ordinals=()) -> None:
+        self,
+        *,
+        next_heart_ordinal: int | None,
+        remaining_heart_ordinals,
+        remaining_candidate_slots: int,
+        phase: str,
+        interrupted_heart_ordinals=(),
+    ) -> None:
         """Attach a Stop-caused coverage shortfall to this capture's diagnostic state.
 
         The configured candidate limit is a maximum, not permission to issue another gesture
@@ -6625,10 +7518,16 @@ class AndroidDriver(DatingAppDriver):
         if self._current_dwell_walk_interruption is not None:
             return
         slots = max(0, int(remaining_candidate_slots))
-        remaining = [ordinal for ordinal in remaining_heart_ordinals
-                     if isinstance(ordinal, int) and not isinstance(ordinal, bool)]
-        interrupted = [ordinal for ordinal in interrupted_heart_ordinals
-                       if isinstance(ordinal, int) and not isinstance(ordinal, bool)]
+        remaining = [
+            ordinal
+            for ordinal in remaining_heart_ordinals
+            if isinstance(ordinal, int) and not isinstance(ordinal, bool)
+        ]
+        interrupted = [
+            ordinal
+            for ordinal in interrupted_heart_ordinals
+            if isinstance(ordinal, int) and not isinstance(ordinal, bool)
+        ]
         if not remaining and not interrupted:
             return
         interruption = {
@@ -6636,17 +7535,25 @@ class AndroidDriver(DatingAppDriver):
             "phase": phase,
             "unattempted_within_remaining_limit_page_hearts": remaining[:slots],
         }
-        if isinstance(next_heart_ordinal, int) and not isinstance(next_heart_ordinal, bool):
+        if isinstance(next_heart_ordinal, int) and not isinstance(
+            next_heart_ordinal, bool
+        ):
             interruption["next_page_heart"] = int(next_heart_ordinal)
         if interrupted:
             interruption["interrupted_page_hearts"] = interrupted
         self._current_dwell_walk_interruption = interruption
 
-    def _still_photo_dwell_candidate_walk(self, base_evidence: dict, *, frames: list[bytes],
-                                          index, mute_screen, should_stop=None,
-                                          eligible_heart_ordinals=None,
-                                          entry_anchor: _MeasuredItemAnchor | None = None) -> tuple[
-                                              dict, _MeasuredItemAnchor | None]:
+    def _still_photo_dwell_candidate_walk(
+        self,
+        base_evidence: dict,
+        *,
+        frames: list[bytes],
+        index,
+        mute_screen,
+        should_stop=None,
+        eligible_heart_ordinals=None,
+        entry_anchor: _MeasuredItemAnchor | None = None,
+    ) -> tuple[dict, _MeasuredItemAnchor | None]:
         """Fan the C2/C3 dwell out to the remaining configured confident-photo candidates.
 
         `base_evidence` is exactly what `_still_photo_dwell` already produced for the one free
@@ -6708,14 +7615,18 @@ class AndroidDriver(DatingAppDriver):
         if remaining <= 0:
             return base_evidence, entry_anchor
         covered = set(base_evidence)
-        eligible = (None if eligible_heart_ordinals is None
-                    else set(eligible_heart_ordinals))
+        eligible = (
+            None if eligible_heart_ordinals is None else set(eligible_heart_ordinals)
+        )
         # STRUCTURAL, not a preference (see the docstring above): descending heart ordinal is
         # "bottom-most first" on an at_scroll_top index, whose ordinals count top to bottom, and
         # bottom-most is nearest the entry the read left the phone at -- the shortest possible
         # climb for `navigate_to_item`'s ascending-only walk.
-        candidates = [ordinal for ordinal in reversed(index.translation)
-                     if ordinal not in covered and (eligible is None or ordinal in eligible)]
+        candidates = [
+            ordinal
+            for ordinal in reversed(index.translation)
+            if ordinal not in covered and (eligible is None or ordinal in eligible)
+        ]
         if not candidates:
             return base_evidence, entry_anchor
         # ATTEMPTS, not candidates, is what the slice above used to bound (found 2026-08-23,
@@ -6736,8 +7647,11 @@ class AndroidDriver(DatingAppDriver):
         # exists to collect. Both remain hard caps: the expensive path is separately limited to
         # `_STILL_PHOTO_WALK_RETURNED_REFUSAL_BUDGET` occurrences below, so the worst case is a
         # bounded, explicit number of each kind rather than an unbounded mix of both.
-        max_attempts = (remaining + _STILL_PHOTO_WALK_SKIP_SLACK
-                        + _STILL_PHOTO_WALK_RETURNED_REFUSAL_BUDGET)
+        max_attempts = (
+            remaining
+            + _STILL_PHOTO_WALK_SKIP_SLACK
+            + _STILL_PHOTO_WALK_RETURNED_REFUSAL_BUDGET
+        )
         hops_run = 0
         # Counted separately from `attempt` because these are the expensive refusals: each has
         # already paid for a climb and a measured return leg, while `max_attempts`' slack was
@@ -6767,10 +7681,12 @@ class AndroidDriver(DatingAppDriver):
                     next_heart_ordinal=heart_ordinal,
                     remaining_heart_ordinals=candidates[attempt:],
                     remaining_candidate_slots=remaining - hops_run,
-                    phase="before_candidate_navigation")
+                    phase="before_candidate_navigation",
+                )
                 break
             walk_index = self._rebase_item_index_for_anchor(
-                index, entry_anchor.page_shift_px)
+                index, entry_anchor.page_shift_px
+            )
             if walk_index is None:
                 # Nothing has moved on THIS iteration -- the rebase is arithmetic over an index
                 # this loop was handed, and it runs before any gesture -- so `entry_anchor` is
@@ -6783,9 +7699,11 @@ class AndroidDriver(DatingAppDriver):
             # performs it immediately because another navigation starts from this same entry;
             # the progressive path below instead carries a measured anchor between deep cards
             # and performs one cleanup for their whole monotonic sweep.
-            final_hop = (hops_run + 1 >= remaining
-                         or attempt + 1 >= len(candidates)
-                         or attempt + 1 >= max_attempts)
+            final_hop = (
+                hops_run + 1 >= remaining
+                or attempt + 1 >= len(candidates)
+                or attempt + 1 >= max_attempts
+            )
             # FINAL-HOP HISTORY (2026-09-04, run 1d84909bf1bb).  An empty walk's last chance has
             # always bypassed the old four-leg threshold: skipping it would make
             # `_index_captured_items` stop for zero dwell evidence anyway, while its dynamic,
@@ -6799,8 +7717,11 @@ class AndroidDriver(DatingAppDriver):
             # remains for the truly empty final hop and for untyped legacy doubles, which cannot
             # be safely rebased and therefore retain their historical bounded skip.
             budget_applies = (not final_hop) or bool(evidence)
-            return_budget = (self._still_photo_dwell_walk_return_budget(walk_index, nav_index)
-                             if budget_applies else None)
+            return_budget = (
+                self._still_photo_dwell_walk_return_budget(walk_index, nav_index)
+                if budget_applies
+                else None
+            )
             if return_budget is not None:
                 required_climb_px, return_cap_px, leg_cap_px = return_budget
                 if required_climb_px > return_cap_px:
@@ -6810,16 +7731,19 @@ class AndroidDriver(DatingAppDriver):
                     # duck-typed object.  Production enumeration always supplies ItemIndex.
                     if not isinstance(index, ItemIndex):
                         self._dbg_still_photo_walk_candidate(
-                            heart_ordinal, "skipped_return_budget",
+                            heart_ordinal,
+                            "skipped_return_budget",
                             reason=(
                                 f"the minimum {required_climb_px}px climb needed to bring this "
                                 f"card's top into the analysed band exceeds the optional return "
                                 f"budget of {return_cap_px}px, and this legacy index carries no "
-                                "typed page-offset provenance for a progressive sweep"),
+                                "typed page-offset provenance for a progressive sweep"
+                            ),
                             required_climb_px=required_climb_px,
                             return_cap_px=return_cap_px,
                             return_leg_cap_px=leg_cap_px,
-                            return_step_budget=_REATTACH_RETURN_STEPS_SPAN[1])
+                            return_step_budget=_REATTACH_RETURN_STEPS_SPAN[1],
+                        )
                         continue
                     # A deep card used to be dropped here solely because returning to the
                     # enumeration entry after *every* candidate would need more than the probe's
@@ -6835,20 +7759,28 @@ class AndroidDriver(DatingAppDriver):
                     # never-substitute gates remain the same ones used by the short-hop path.
                     sweep_candidates = candidates[attempt:max_attempts]
                     self._dbg_still_photo_progressive_sweep(
-                        "started", candidate_page_hearts=sweep_candidates,
+                        "started",
+                        candidate_page_hearts=sweep_candidates,
                         candidate_slots=remaining - hops_run,
                         triggering_page_heart=heart_ordinal,
                         triggering_required_climb_px=required_climb_px,
                         legacy_return_cap_px=return_cap_px,
-                        return_leg_cap_px=leg_cap_px)
+                        return_leg_cap_px=leg_cap_px,
+                    )
                     return self._still_photo_dwell_progressive_sweep(
-                        evidence, candidate_ordinals=sweep_candidates,
-                        candidate_slots=remaining - hops_run, index=index,
-                        mute_screen=mute_screen, should_stop=should_stop,
-                        entry_anchor=entry_anchor, calibration=calibration,
-                        returned_refusals_used=returned_refusals)
+                        evidence,
+                        candidate_ordinals=sweep_candidates,
+                        candidate_slots=remaining - hops_run,
+                        index=index,
+                        mute_screen=mute_screen,
+                        should_stop=should_stop,
+                        entry_anchor=entry_anchor,
+                        calibration=calibration,
+                        returned_refusals_used=returned_refusals,
+                    )
             self._note_capture_progress(
-                f"verifying photo item {hops_run + 1} of {limit}: moving to the next item")
+                f"verifying photo item {hops_run + 1} of {limit}: moving to the next item"
+            )
             candidate_started_at = time.monotonic() if self._dbg is not None else None
             navigation_started_at = candidate_started_at
             # Read BEFORE the call, so the two refusal handlers below can ask the only question
@@ -6857,12 +7789,19 @@ class AndroidDriver(DatingAppDriver):
             inputs_before_navigation = getattr(self, "_device_inputs_delivered", None)
             try:
                 target = navigate_to_item(
-                    self, walk_index, nav_index, entry_reference=entry_anchor.frame,
+                    self,
+                    walk_index,
+                    nav_index,
+                    entry_reference=entry_anchor.frame,
                     identity_match_max_dist=calibration.identity_match_max_dist,
-                    should_stop=should_stop)
+                    should_stop=should_stop,
+                )
             except ItemNavigationError as exc:
-                navigation_s = (time.monotonic() - navigation_started_at
-                                if navigation_started_at is not None else 0.0)
+                navigation_s = (
+                    time.monotonic() - navigation_started_at
+                    if navigation_started_at is not None
+                    else 0.0
+                )
                 # SKIP vs ABANDON turns on whether anything MOVED, and exactly one code says it
                 # did not. NAV_ITEM_BELOW_ENTRY is raised on the first frame, before a single
                 # gesture (`if not steps` in item_nav.py), and it means only "this card sits
@@ -6882,15 +7821,24 @@ class AndroidDriver(DatingAppDriver):
                     # the bounded returned-refusal allowance permits another candidate.  This is
                     # the additive walk contract: one rejected extra candidate must not erase the
                     # original capture or automatically strand every candidate after it.
-                    return_started_at = (time.monotonic()
-                                         if candidate_started_at is not None else None)
+                    return_started_at = (
+                        time.monotonic() if candidate_started_at is not None else None
+                    )
                     returned_anchor = self._return_to_entry_from_measured_position(
-                        entry_anchor, frame=recovery.frame,
-                        terminal_shift_px=recovery.page_shift_px)
-                    return_s = (time.monotonic() - return_started_at
-                                if return_started_at is not None else 0.0)
-                    return_outcome = ("restored" if returned_anchor is not None
-                                      else "return_unverified")
+                        entry_anchor,
+                        frame=recovery.frame,
+                        terminal_shift_px=recovery.page_shift_px,
+                    )
+                    return_s = (
+                        time.monotonic() - return_started_at
+                        if return_started_at is not None
+                        else 0.0
+                    )
+                    return_outcome = (
+                        "restored"
+                        if returned_anchor is not None
+                        else "return_unverified"
+                    )
                     navigation_refusal = {
                         "schema_version": 1,
                         "code": exc.code,
@@ -6898,8 +7846,10 @@ class AndroidDriver(DatingAppDriver):
                         "terminal_shift_px": recovery.page_shift_px,
                         "return_outcome": return_outcome,
                         "restored_page_shift_px": (
-                            None if returned_anchor is None
-                            else returned_anchor.page_shift_px),
+                            None
+                            if returned_anchor is None
+                            else returned_anchor.page_shift_px
+                        ),
                         "planned": {
                             "step_px": recovery.planned_step_px,
                             "bound_px": recovery.bound_px,
@@ -6911,7 +7861,9 @@ class AndroidDriver(DatingAppDriver):
                         },
                         "achieved": {
                             "climb_px": recovery.achieved_step_px,
-                            "overshoot_px": max(0, recovery.achieved_step_px - recovery.bound_px),
+                            "overshoot_px": max(
+                                0, recovery.achieved_step_px - recovery.bound_px
+                            ),
                             "measurement_delta_px": recovery.measurement_delta_px,
                             "measurement_status": recovery.measurement_status,
                             "measurement_confidence": recovery.measurement_confidence,
@@ -6931,33 +7883,48 @@ class AndroidDriver(DatingAppDriver):
                         returned_refusals += 1
                     spent_budget = (
                         returned_anchor is None
-                        or returned_refusals > _STILL_PHOTO_WALK_RETURNED_REFUSAL_BUDGET)
+                        or returned_refusals > _STILL_PHOTO_WALK_RETURNED_REFUSAL_BUDGET
+                    )
                     navigation_refusal["walk"] = {
-                        "outcome": ("abandoned_return_unverified" if returned_anchor is None
-                                    else "abandoned_budget_spent" if spent_budget
-                                    else "continued"),
+                        "outcome": (
+                            "abandoned_return_unverified"
+                            if returned_anchor is None
+                            else "abandoned_budget_spent"
+                            if spent_budget
+                            else "continued"
+                        ),
                         "returned_refusals_spent": returned_refusals,
-                        "returned_refusal_budget":
-                            _STILL_PHOTO_WALK_RETURNED_REFUSAL_BUDGET,
+                        "returned_refusal_budget": _STILL_PHOTO_WALK_RETURNED_REFUSAL_BUDGET,
                     }
                     self._dbg_still_photo_walk_candidate(
                         heart_ordinal,
-                        ("navigation_refused_returned" if returned_anchor is not None
-                         else "navigation_refused_return_unverified"),
-                        frame=recovery.frame, reason=exc.code,
+                        (
+                            "navigation_refused_returned"
+                            if returned_anchor is not None
+                            else "navigation_refused_return_unverified"
+                        ),
+                        frame=recovery.frame,
+                        reason=exc.code,
                         terminal_page_shift_px=recovery.page_shift_px,
                         planned_step_px=recovery.planned_step_px,
                         achieved_step_px=recovery.achieved_step_px,
                         step_bound_px=recovery.bound_px,
                         violation=recovery.violation,
-                        navigation_refusal=navigation_refusal)
+                        navigation_refusal=navigation_refusal,
+                    )
                     if candidate_started_at is not None:
                         self._dbg_still_photo_walk_candidate_timing(
                             heart_ordinal,
-                            ("navigation_refused_returned" if returned_anchor is not None
-                             else "navigation_refused_return_unverified"),
-                            started_at=candidate_started_at, navigation_s=navigation_s,
-                            proof_s=0.0, return_s=return_s)
+                            (
+                                "navigation_refused_returned"
+                                if returned_anchor is not None
+                                else "navigation_refused_return_unverified"
+                            ),
+                            started_at=candidate_started_at,
+                            navigation_s=navigation_s,
+                            proof_s=0.0,
+                            return_s=return_s,
+                        )
                     if spent_budget:
                         return evidence, returned_anchor
                     # Not optional, and the reason it is easy to get wrong: nothing else on this
@@ -6975,22 +7942,37 @@ class AndroidDriver(DatingAppDriver):
                 # gesture ends the capture instead, and labelling that as the harmless case
                 # would leave the operator's report empty for a run-stopping event.
                 moved = self._navigation_moved_the_phone(inputs_before_navigation)
-                outcome = ("below_entry_after_gesture" if below_entry and moved
-                           else "unreachable_below_entry" if below_entry
-                           else "navigation_refused")
+                outcome = (
+                    "below_entry_after_gesture"
+                    if below_entry and moved
+                    else "unreachable_below_entry"
+                    if below_entry
+                    else "navigation_refused"
+                )
                 self._dbg_still_photo_walk_candidate(
-                    heart_ordinal, outcome,
+                    heart_ordinal,
+                    outcome,
                     frame=pair_before if pair_before is not None else exc.frame,
                     after_frame=exc.frame if pair_before is not None else None,
                     keep_pair=pair_before is not None,
-                    reason=exc.code, detail=str(exc),
+                    reason=exc.code,
+                    detail=str(exc),
                     device_inputs_before=inputs_before_navigation,
-                    **({"navigation_refusal": navigation_refusal}
-                       if isinstance(navigation_refusal, dict) else {}))
+                    **(
+                        {"navigation_refusal": navigation_refusal}
+                        if isinstance(navigation_refusal, dict)
+                        else {}
+                    ),
+                )
                 if candidate_started_at is not None:
                     self._dbg_still_photo_walk_candidate_timing(
-                        heart_ordinal, outcome, started_at=candidate_started_at,
-                        navigation_s=navigation_s, proof_s=0.0, return_s=0.0)
+                        heart_ordinal,
+                        outcome,
+                        started_at=candidate_started_at,
+                        navigation_s=navigation_s,
+                        proof_s=0.0,
+                        return_s=0.0,
+                    )
                 if below_entry and not moved:
                     # `not steps` COUNTS ONLY THE ASCENDING GESTURES (found 2026-09-04). The
                     # paragraph above is right that NAV_ITEM_BELOW_ENTRY is raised before the
@@ -7009,10 +7991,19 @@ class AndroidDriver(DatingAppDriver):
                 # `_index_captured_items` refuse a whole profile whose page position was never
                 # in doubt. See `_navigation_moved_the_phone`.
                 return evidence, self._anchor_after_navigation_refusal(
-                    entry_anchor, inputs_before_navigation, heart_ordinal, exc.code,
-                    refusal_anchor=getattr(exc, "anchor", None))
-            except (ActionCancelled, ScrollStepError, SegmentationError, ShiftEstimationError,
-                    IdentityError) as exc:
+                    entry_anchor,
+                    inputs_before_navigation,
+                    heart_ordinal,
+                    exc.code,
+                    refusal_anchor=getattr(exc, "anchor", None),
+                )
+            except (
+                ActionCancelled,
+                ScrollStepError,
+                SegmentationError,
+                ShiftEstimationError,
+                IdentityError,
+            ) as exc:
                 # Uncoded refusals from the vision/should_stop layers underneath navigate_to_item
                 # (see its own docstring: "propagate ... unchanged"). The phone may be left
                 # PARTWAY through a climb here -- navigate_to_item's own counting walk can issue
@@ -7050,12 +8041,17 @@ class AndroidDriver(DatingAppDriver):
                 stopped = should_stop is not None and should_stop()
                 outcome = "navigation_cancelled" if stopped else "navigation_refused"
                 self._dbg_still_photo_walk_candidate(
-                    heart_ordinal, outcome, reason=type(exc).__name__)
+                    heart_ordinal, outcome, reason=type(exc).__name__
+                )
                 if candidate_started_at is not None:
                     self._dbg_still_photo_walk_candidate_timing(
-                        heart_ordinal, outcome, started_at=candidate_started_at,
+                        heart_ordinal,
+                        outcome,
+                        started_at=candidate_started_at,
                         navigation_s=time.monotonic() - navigation_started_at,
-                        proof_s=0.0, return_s=0.0)
+                        proof_s=0.0,
+                        return_s=0.0,
+                    )
                 if stopped:
                     # The cooperative stop sites above and below both record the shortfall; this
                     # one never did, so `_current_dwell_walk_interruption` stayed None. That
@@ -7081,79 +8077,138 @@ class AndroidDriver(DatingAppDriver):
                     # capture's coverage gaps, so the extra ordinal is a gap blamed on the
                     # operator's Stop that the K budget would have skipped regardless.
                     # Never negative: the loop breaks once `hops_run >= remaining`.
-                    remaining_candidates = candidates[attempt + 1:]
+                    remaining_candidates = candidates[attempt + 1 :]
                     self._record_still_photo_dwell_walk_stop(
-                        next_heart_ordinal=(remaining_candidates[0]
-                                            if remaining_candidates else None),
+                        next_heart_ordinal=(
+                            remaining_candidates[0] if remaining_candidates else None
+                        ),
                         remaining_heart_ordinals=remaining_candidates,
                         remaining_candidate_slots=remaining - hops_run - 1,
                         phase="during_candidate_navigation",
-                        interrupted_heart_ordinals=(heart_ordinal,))
+                        interrupted_heart_ordinals=(heart_ordinal,),
+                    )
                 return evidence, self._anchor_after_navigation_refusal(
-                    entry_anchor, inputs_before_navigation, heart_ordinal,
-                    type(exc).__name__)
-            navigation_s = (time.monotonic() - navigation_started_at
-                            if navigation_started_at is not None else 0.0)
+                    entry_anchor,
+                    inputs_before_navigation,
+                    heart_ordinal,
+                    type(exc).__name__,
+                )
+            navigation_s = (
+                time.monotonic() - navigation_started_at
+                if navigation_started_at is not None
+                else 0.0
+            )
             hops_run += 1
-            proof_started_at = time.monotonic() if candidate_started_at is not None else None
+            proof_started_at = (
+                time.monotonic() if candidate_started_at is not None else None
+            )
             self._note_capture_progress(
-                f"verifying photo item {hops_run} of {limit} for motion")
-            card_evidence, probe, correction = self._still_photo_dwell_over_navigated_target(
-                target, walk_index.block_for(nav_index), heart_ordinal=heart_ordinal,
-                mute_screen=mute_screen, should_stop=should_stop)
-            proof_s = (time.monotonic() - proof_started_at
-                       if proof_started_at is not None else 0.0)
+                f"verifying photo item {hops_run} of {limit} for motion"
+            )
+            card_evidence, probe, correction = (
+                self._still_photo_dwell_over_navigated_target(
+                    target,
+                    walk_index.block_for(nav_index),
+                    heart_ordinal=heart_ordinal,
+                    mute_screen=mute_screen,
+                    should_stop=should_stop,
+                )
+            )
+            proof_s = (
+                time.monotonic() - proof_started_at
+                if proof_started_at is not None
+                else 0.0
+            )
             if card_evidence is not None:
                 evidence[heart_ordinal] = card_evidence
-                outcome = ("proved" if self._still_photo_dwell_two_burst_proved(card_evidence)
-                           else "observed_unproved")
+                outcome = (
+                    "proved"
+                    if self._still_photo_dwell_two_burst_proved(card_evidence)
+                    else "observed_unproved"
+                )
                 self._dbg_still_photo_walk_candidate(
-                    heart_ordinal, outcome, frame=target.frame,
-                    climbed_px=target.climbed_px, dwell_exact=card_evidence.dwell_exact,
+                    heart_ordinal,
+                    outcome,
+                    frame=target.frame,
+                    climbed_px=target.climbed_px,
+                    dwell_exact=card_evidence.dwell_exact,
                     reattach_probe_ran=card_evidence.reattach_probe_ran,
-                    reattach_dwell_exact=getattr(card_evidence, "reattach_dwell_exact", None))
+                    reattach_dwell_exact=getattr(
+                        card_evidence, "reattach_dwell_exact", None
+                    ),
+                )
             else:
-                reason = ("centering or its measured displacement was unresolved"
-                          if correction is None
-                          else "the dwell/probe observation did not complete")
+                reason = (
+                    "centering or its measured displacement was unresolved"
+                    if correction is None
+                    else "the dwell/probe observation did not complete"
+                )
                 outcome = "parked_unproved"
                 self._dbg_still_photo_walk_candidate(
-                    heart_ordinal, outcome, frame=target.frame,
-                    climbed_px=target.climbed_px, reason=reason)
-            if (should_stop is not None and should_stop()
-                    and (card_evidence is None
-                         or not self._still_photo_dwell_two_burst_proved(card_evidence))):
-                remaining_candidates = candidates[attempt + 1:]
+                    heart_ordinal,
+                    outcome,
+                    frame=target.frame,
+                    climbed_px=target.climbed_px,
+                    reason=reason,
+                )
+            if (
+                should_stop is not None
+                and should_stop()
+                and (
+                    card_evidence is None
+                    or not self._still_photo_dwell_two_burst_proved(card_evidence)
+                )
+            ):
+                remaining_candidates = candidates[attempt + 1 :]
                 self._record_still_photo_dwell_walk_stop(
-                    next_heart_ordinal=(remaining_candidates[0]
-                                        if remaining_candidates else None),
+                    next_heart_ordinal=(
+                        remaining_candidates[0] if remaining_candidates else None
+                    ),
                     remaining_heart_ordinals=remaining_candidates,
                     remaining_candidate_slots=remaining - hops_run,
                     phase="during_candidate_proof",
-                    interrupted_heart_ordinals=(heart_ordinal,))
+                    interrupted_heart_ordinals=(heart_ordinal,),
+                )
             # Model-selected targeting follows the final dwell hop, even though no further dwell
             # hops do. Targeting starts bottom-up from the enumeration entry and may choose a
             # card below this upward-walked candidate, so restore that entry through the same
             # measured return path as an intermediate hop. An unverified return deliberately
             # yields no anchor, which the fold turns into a pre-opener refusal.
             if final_hop:
-                return_started_at = time.monotonic() if candidate_started_at is not None else None
+                return_started_at = (
+                    time.monotonic() if candidate_started_at is not None else None
+                )
                 returned_anchor = self._still_photo_dwell_walk_return_to_entry(
-                    target, probe, entry_anchor, correction)
-                return_s = (time.monotonic() - return_started_at
-                            if return_started_at is not None else 0.0)
+                    target, probe, entry_anchor, correction
+                )
+                return_s = (
+                    time.monotonic() - return_started_at
+                    if return_started_at is not None
+                    else 0.0
+                )
                 if returned_anchor is None:
-                    self._dbg_still_photo_walk_candidate(heart_ordinal, "return_unverified")
+                    self._dbg_still_photo_walk_candidate(
+                        heart_ordinal, "return_unverified"
+                    )
                     if candidate_started_at is not None:
                         self._dbg_still_photo_walk_candidate_timing(
-                            heart_ordinal, "return_unverified", started_at=candidate_started_at,
-                            navigation_s=navigation_s, proof_s=proof_s, return_s=return_s)
+                            heart_ordinal,
+                            "return_unverified",
+                            started_at=candidate_started_at,
+                            navigation_s=navigation_s,
+                            proof_s=proof_s,
+                            return_s=return_s,
+                        )
                     return evidence, None
                 if candidate_started_at is not None:
                     self._dbg_still_photo_walk_candidate_timing(
-                        heart_ordinal, outcome,
-                        started_at=candidate_started_at, navigation_s=navigation_s,
-                        proof_s=proof_s, return_s=return_s)
+                        heart_ordinal,
+                        outcome,
+                        started_at=candidate_started_at,
+                        navigation_s=navigation_s,
+                        proof_s=proof_s,
+                        return_s=return_s,
+                    )
                 entry_anchor = returned_anchor
                 break
             # UNCONDITIONAL INTERMEDIATE cleanup, on `_still_photo_reattach_probe`'s own
@@ -7171,31 +8226,54 @@ class AndroidDriver(DatingAppDriver):
             # (see `_still_photo_dwell_over_navigated_target`'s own CENTERING CORRECTION
             # paragraph) -- `None` means a corrective stroke's own displacement could not be
             # measured, which the return leg must refuse on rather than guess past.
-            return_started_at = time.monotonic() if candidate_started_at is not None else None
+            return_started_at = (
+                time.monotonic() if candidate_started_at is not None else None
+            )
             returned_anchor = self._still_photo_dwell_walk_return_to_entry(
-                target, probe, entry_anchor, correction)
-            return_s = (time.monotonic() - return_started_at
-                        if return_started_at is not None else 0.0)
+                target, probe, entry_anchor, correction
+            )
+            return_s = (
+                time.monotonic() - return_started_at
+                if return_started_at is not None
+                else 0.0
+            )
             if returned_anchor is None:
                 self._dbg_still_photo_walk_candidate(heart_ordinal, "return_unverified")
                 if candidate_started_at is not None:
                     self._dbg_still_photo_walk_candidate_timing(
-                        heart_ordinal, "return_unverified", started_at=candidate_started_at,
-                        navigation_s=navigation_s, proof_s=proof_s, return_s=return_s)
+                        heart_ordinal,
+                        "return_unverified",
+                        started_at=candidate_started_at,
+                        navigation_s=navigation_s,
+                        proof_s=proof_s,
+                        return_s=return_s,
+                    )
                 return evidence, None
             if candidate_started_at is not None:
                 self._dbg_still_photo_walk_candidate_timing(
-                    heart_ordinal, outcome,
-                    started_at=candidate_started_at, navigation_s=navigation_s,
-                    proof_s=proof_s, return_s=return_s)
+                    heart_ordinal,
+                    outcome,
+                    started_at=candidate_started_at,
+                    navigation_s=navigation_s,
+                    proof_s=proof_s,
+                    return_s=return_s,
+                )
             entry_anchor = returned_anchor
         return evidence, entry_anchor
 
     def _still_photo_dwell_progressive_sweep(
-            self, base_evidence: dict, *, candidate_ordinals, candidate_slots: int, index,
-            mute_screen, should_stop, entry_anchor: _MeasuredItemAnchor,
-            calibration, returned_refusals_used: int) -> tuple[
-                dict, _MeasuredItemAnchor | None]:
+        self,
+        base_evidence: dict,
+        *,
+        candidate_ordinals,
+        candidate_slots: int,
+        index,
+        mute_screen,
+        should_stop,
+        entry_anchor: _MeasuredItemAnchor,
+        calibration,
+        returned_refusals_used: int,
+    ) -> tuple[dict, _MeasuredItemAnchor | None]:
         """Visit deep photo candidates monotonically, then make one measured return.
 
         The short-hop walk above deliberately returns to the enumeration entry after each card.
@@ -7227,8 +8305,9 @@ class AndroidDriver(DatingAppDriver):
             original_reference_offset = index.offsets[-1]
         except (AttributeError, IndexError, TypeError):
             return evidence, entry_anchor
-        if (not isinstance(original_reference_offset, int)
-                or isinstance(original_reference_offset, bool)):
+        if not isinstance(original_reference_offset, int) or isinstance(
+            original_reference_offset, bool
+        ):
             return evidence, entry_anchor
 
         origin_anchor = entry_anchor
@@ -7238,8 +8317,10 @@ class AndroidDriver(DatingAppDriver):
         hops_run = 0
         returned_refusals = returned_refusals_used
         max_attempts = (
-            candidate_slots + _STILL_PHOTO_WALK_SKIP_SLACK
-            + max(0, _STILL_PHOTO_WALK_RETURNED_REFUSAL_BUDGET - returned_refusals))
+            candidate_slots
+            + _STILL_PHOTO_WALK_SKIP_SLACK
+            + max(0, _STILL_PHOTO_WALK_RETURNED_REFUSAL_BUDGET - returned_refusals)
+        )
 
         for attempt, heart_ordinal in enumerate(candidates[:max_attempts]):
             if hops_run >= candidate_slots:
@@ -7250,10 +8331,12 @@ class AndroidDriver(DatingAppDriver):
                     next_heart_ordinal=heart_ordinal,
                     remaining_heart_ordinals=candidates[attempt:],
                     remaining_candidate_slots=candidate_slots - hops_run,
-                    phase="before_candidate_navigation")
+                    phase="before_candidate_navigation",
+                )
                 break
             walk_index = self._rebase_item_index_for_anchor(
-                index, current_anchor.page_shift_px)
+                index, current_anchor.page_shift_px
+            )
             if walk_index is None:
                 break
             try:
@@ -7264,44 +8347,64 @@ class AndroidDriver(DatingAppDriver):
             attempted.append(heart_ordinal)
             self._note_capture_progress(
                 f"verifying photo item {len(base_evidence) + hops_run + 1} of "
-                f"{self.still_photo_dwell_candidates}: moving through the deep-item sweep")
+                f"{self.still_photo_dwell_candidates}: moving through the deep-item sweep"
+            )
             candidate_started_at = time.monotonic() if self._dbg is not None else None
             navigation_started_at = candidate_started_at
             inputs_before_navigation = getattr(self, "_device_inputs_delivered", None)
             try:
                 target = navigate_to_item(
-                    self, walk_index, nav_index, entry_reference=current_anchor.frame,
+                    self,
+                    walk_index,
+                    nav_index,
+                    entry_reference=current_anchor.frame,
                     identity_match_max_dist=calibration.identity_match_max_dist,
-                    should_stop=should_stop)
+                    should_stop=should_stop,
+                )
             except ItemNavigationError as exc:
-                navigation_s = (time.monotonic() - navigation_started_at
-                                if navigation_started_at is not None else 0.0)
+                navigation_s = (
+                    time.monotonic() - navigation_started_at
+                    if navigation_started_at is not None
+                    else 0.0
+                )
                 recovery = getattr(exc, "recovery", None)
                 if recovery is not None:
-                    return_started_at = (time.monotonic()
-                                         if candidate_started_at is not None else None)
+                    return_started_at = (
+                        time.monotonic() if candidate_started_at is not None else None
+                    )
                     restored = self._return_to_entry_from_measured_position(
-                        current_anchor, frame=recovery.frame,
-                        terminal_shift_px=recovery.page_shift_px)
-                    return_s = (time.monotonic() - return_started_at
-                                if return_started_at is not None else 0.0)
+                        current_anchor,
+                        frame=recovery.frame,
+                        terminal_shift_px=recovery.page_shift_px,
+                    )
+                    return_s = (
+                        time.monotonic() - return_started_at
+                        if return_started_at is not None
+                        else 0.0
+                    )
                     if restored is not None:
                         returned_refusals += 1
                     spent_budget = (
                         restored is not None
-                        and returned_refusals > _STILL_PHOTO_WALK_RETURNED_REFUSAL_BUDGET)
+                        and returned_refusals
+                        > _STILL_PHOTO_WALK_RETURNED_REFUSAL_BUDGET
+                    )
                     refusal_outcome = (
-                        "navigation_refused_returned" if restored is not None
-                        else "navigation_refused_return_unverified")
+                        "navigation_refused_returned"
+                        if restored is not None
+                        else "navigation_refused_return_unverified"
+                    )
                     navigation_refusal = {
                         "schema_version": 1,
                         "code": exc.code,
                         "frame_index": recovery.frame_index,
                         "terminal_shift_px": recovery.page_shift_px,
-                        "return_outcome": ("restored" if restored is not None
-                                           else "return_unverified"),
+                        "return_outcome": (
+                            "restored" if restored is not None else "return_unverified"
+                        ),
                         "restored_page_shift_px": (
-                            None if restored is None else restored.page_shift_px),
+                            None if restored is None else restored.page_shift_px
+                        ),
                         "planned": {
                             "step_px": recovery.planned_step_px,
                             "bound_px": recovery.bound_px,
@@ -7314,7 +8417,8 @@ class AndroidDriver(DatingAppDriver):
                         "achieved": {
                             "climb_px": recovery.achieved_step_px,
                             "overshoot_px": max(
-                                0, recovery.achieved_step_px - recovery.bound_px),
+                                0, recovery.achieved_step_px - recovery.bound_px
+                            ),
                             "measurement_delta_px": recovery.measurement_delta_px,
                             "measurement_status": recovery.measurement_status,
                             "measurement_confidence": recovery.measurement_confidence,
@@ -7324,32 +8428,43 @@ class AndroidDriver(DatingAppDriver):
                         },
                         "walk": {
                             "outcome": (
-                                "abandoned_return_unverified" if restored is None
-                                else "abandoned_budget_spent" if spent_budget
-                                else "continued"),
+                                "abandoned_return_unverified"
+                                if restored is None
+                                else "abandoned_budget_spent"
+                                if spent_budget
+                                else "continued"
+                            ),
                             "returned_refusals_spent": returned_refusals,
-                            "returned_refusal_budget":
-                                _STILL_PHOTO_WALK_RETURNED_REFUSAL_BUDGET,
+                            "returned_refusal_budget": _STILL_PHOTO_WALK_RETURNED_REFUSAL_BUDGET,
                         },
                     }
                     self._dbg_still_photo_walk_candidate(
-                        heart_ordinal, refusal_outcome,
-                        frame=recovery.frame, reason=exc.code,
+                        heart_ordinal,
+                        refusal_outcome,
+                        frame=recovery.frame,
+                        reason=exc.code,
                         terminal_page_shift_px=recovery.page_shift_px,
                         planned_step_px=recovery.planned_step_px,
                         achieved_step_px=recovery.achieved_step_px,
                         step_bound_px=recovery.bound_px,
                         violation=recovery.violation,
-                        navigation_refusal=navigation_refusal)
+                        navigation_refusal=navigation_refusal,
+                    )
                     if candidate_started_at is not None:
                         self._dbg_still_photo_walk_candidate_timing(
-                            heart_ordinal, refusal_outcome,
-                            started_at=candidate_started_at, navigation_s=navigation_s,
-                            proof_s=0.0, return_s=return_s)
+                            heart_ordinal,
+                            refusal_outcome,
+                            started_at=candidate_started_at,
+                            navigation_s=navigation_s,
+                            proof_s=0.0,
+                            return_s=return_s,
+                        )
                     if restored is None:
                         self._dbg_still_photo_progressive_sweep(
-                            "return_unverified", attempted_page_hearts=attempted,
-                            failed_page_heart=heart_ordinal)
+                            "return_unverified",
+                            attempted_page_hearts=attempted,
+                            failed_page_heart=heart_ordinal,
+                        )
                         return evidence, None
                     current_anchor = restored
                     if spent_budget:
@@ -7358,39 +8473,71 @@ class AndroidDriver(DatingAppDriver):
 
                 below_entry = exc.code == NAV_ITEM_BELOW_ENTRY
                 moved = self._navigation_moved_the_phone(inputs_before_navigation)
-                outcome = ("below_entry_after_gesture" if below_entry and moved
-                           else "unreachable_below_entry" if below_entry
-                           else "navigation_refused")
+                outcome = (
+                    "below_entry_after_gesture"
+                    if below_entry and moved
+                    else "unreachable_below_entry"
+                    if below_entry
+                    else "navigation_refused"
+                )
                 self._dbg_still_photo_walk_candidate(
-                    heart_ordinal, outcome,
+                    heart_ordinal,
+                    outcome,
                     frame=getattr(exc, "pair_before", None) or exc.frame,
-                    after_frame=(exc.frame if getattr(exc, "pair_before", None) is not None
-                                 else None),
+                    after_frame=(
+                        exc.frame
+                        if getattr(exc, "pair_before", None) is not None
+                        else None
+                    ),
                     keep_pair=getattr(exc, "pair_before", None) is not None,
-                    reason=exc.code, detail=str(exc),
+                    reason=exc.code,
+                    detail=str(exc),
                     device_inputs_before=inputs_before_navigation,
-                    **({"navigation_refusal": exc.measurement}
-                       if isinstance(getattr(exc, "measurement", None), dict) else {}))
+                    **(
+                        {"navigation_refusal": exc.measurement}
+                        if isinstance(getattr(exc, "measurement", None), dict)
+                        else {}
+                    ),
+                )
                 if candidate_started_at is not None:
                     self._dbg_still_photo_walk_candidate_timing(
-                        heart_ordinal, outcome, started_at=candidate_started_at,
-                        navigation_s=navigation_s, proof_s=0.0, return_s=0.0)
+                        heart_ordinal,
+                        outcome,
+                        started_at=candidate_started_at,
+                        navigation_s=navigation_s,
+                        proof_s=0.0,
+                        return_s=0.0,
+                    )
                 if below_entry and not moved:
                     continue
                 rescued = self._anchor_after_navigation_refusal(
-                    current_anchor, inputs_before_navigation, heart_ordinal, exc.code,
-                    refusal_anchor=getattr(exc, "anchor", None))
+                    current_anchor,
+                    inputs_before_navigation,
+                    heart_ordinal,
+                    exc.code,
+                    refusal_anchor=getattr(exc, "anchor", None),
+                )
                 if rescued is None:
                     self._dbg_still_photo_progressive_sweep(
-                        "position_unmeasured", attempted_page_hearts=attempted,
-                        failed_page_heart=heart_ordinal)
+                        "position_unmeasured",
+                        attempted_page_hearts=attempted,
+                        failed_page_heart=heart_ordinal,
+                    )
                     return evidence, None
                 current_anchor = rescued
                 break
-            except (ActionCancelled, ScrollStepError, SegmentationError, ShiftEstimationError,
-                    IdentityError) as exc:
-                navigation_s = (time.monotonic() - navigation_started_at
-                                if navigation_started_at is not None else 0.0)
+            except (
+                ActionCancelled,
+                ScrollStepError,
+                SegmentationError,
+                ShiftEstimationError,
+                IdentityError,
+            ) as exc:
+                navigation_s = (
+                    time.monotonic() - navigation_started_at
+                    if navigation_started_at is not None
+                    else 0.0
+                )
                 # Same reading, same place, same reasons as the short-hop walk's own uncoded
                 # handler above (2026-09-16): `should_stop` is observed HERE, in the handler that
                 # caught the cancellation, because the exception TYPE cannot tell an operator
@@ -7399,11 +8546,17 @@ class AndroidDriver(DatingAppDriver):
                 stopped = should_stop is not None and should_stop()
                 outcome = "navigation_cancelled" if stopped else "navigation_refused"
                 self._dbg_still_photo_walk_candidate(
-                    heart_ordinal, outcome, reason=type(exc).__name__)
+                    heart_ordinal, outcome, reason=type(exc).__name__
+                )
                 if candidate_started_at is not None:
                     self._dbg_still_photo_walk_candidate_timing(
-                        heart_ordinal, outcome, started_at=candidate_started_at,
-                        navigation_s=navigation_s, proof_s=0.0, return_s=0.0)
+                        heart_ordinal,
+                        outcome,
+                        started_at=candidate_started_at,
+                        navigation_s=navigation_s,
+                        proof_s=0.0,
+                        return_s=0.0,
+                    )
                 if stopped:
                     # See the short-hop handler: without this the interruption record is never
                     # written for a mid-navigation Stop, and a rescued anchor lets the capture
@@ -7412,65 +8565,109 @@ class AndroidDriver(DatingAppDriver):
                     # measured consequence stated there -- `hops_run` counts COMPLETED
                     # navigations, and this one did not complete. Never negative: the loop
                     # breaks once `hops_run >= candidate_slots`.
-                    remaining_candidates = candidates[attempt + 1:]
+                    remaining_candidates = candidates[attempt + 1 :]
                     self._record_still_photo_dwell_walk_stop(
-                        next_heart_ordinal=(remaining_candidates[0]
-                                            if remaining_candidates else None),
+                        next_heart_ordinal=(
+                            remaining_candidates[0] if remaining_candidates else None
+                        ),
                         remaining_heart_ordinals=remaining_candidates,
                         remaining_candidate_slots=candidate_slots - hops_run - 1,
                         phase="during_candidate_navigation",
-                        interrupted_heart_ordinals=(heart_ordinal,))
+                        interrupted_heart_ordinals=(heart_ordinal,),
+                    )
                 rescued = self._anchor_after_navigation_refusal(
-                    current_anchor, inputs_before_navigation, heart_ordinal,
-                    type(exc).__name__)
+                    current_anchor,
+                    inputs_before_navigation,
+                    heart_ordinal,
+                    type(exc).__name__,
+                )
                 if rescued is None:
                     self._dbg_still_photo_progressive_sweep(
-                        "position_unmeasured", attempted_page_hearts=attempted,
-                        failed_page_heart=heart_ordinal)
+                        "position_unmeasured",
+                        attempted_page_hearts=attempted,
+                        failed_page_heart=heart_ordinal,
+                    )
                     return evidence, None
                 current_anchor = rescued
                 break
 
-            navigation_s = (time.monotonic() - navigation_started_at
-                            if navigation_started_at is not None else 0.0)
+            navigation_s = (
+                time.monotonic() - navigation_started_at
+                if navigation_started_at is not None
+                else 0.0
+            )
             hops_run += 1
-            proof_started_at = time.monotonic() if candidate_started_at is not None else None
+            proof_started_at = (
+                time.monotonic() if candidate_started_at is not None else None
+            )
             self._note_capture_progress(
                 f"verifying photo item {len(base_evidence) + hops_run} of "
-                f"{self.still_photo_dwell_candidates} for motion")
-            card_evidence, probe, correction = self._still_photo_dwell_over_navigated_target(
-                target, walk_index.block_for(nav_index), heart_ordinal=heart_ordinal,
-                mute_screen=mute_screen, should_stop=should_stop)
-            proof_s = (time.monotonic() - proof_started_at
-                       if proof_started_at is not None else 0.0)
+                f"{self.still_photo_dwell_candidates} for motion"
+            )
+            card_evidence, probe, correction = (
+                self._still_photo_dwell_over_navigated_target(
+                    target,
+                    walk_index.block_for(nav_index),
+                    heart_ordinal=heart_ordinal,
+                    mute_screen=mute_screen,
+                    should_stop=should_stop,
+                )
+            )
+            proof_s = (
+                time.monotonic() - proof_started_at
+                if proof_started_at is not None
+                else 0.0
+            )
             if card_evidence is not None:
                 evidence[heart_ordinal] = card_evidence
-                outcome = ("proved" if self._still_photo_dwell_two_burst_proved(card_evidence)
-                           else "observed_unproved")
+                outcome = (
+                    "proved"
+                    if self._still_photo_dwell_two_burst_proved(card_evidence)
+                    else "observed_unproved"
+                )
                 self._dbg_still_photo_walk_candidate(
-                    heart_ordinal, outcome, frame=target.frame,
-                    climbed_px=target.climbed_px, dwell_exact=card_evidence.dwell_exact,
+                    heart_ordinal,
+                    outcome,
+                    frame=target.frame,
+                    climbed_px=target.climbed_px,
+                    dwell_exact=card_evidence.dwell_exact,
                     reattach_probe_ran=card_evidence.reattach_probe_ran,
-                    reattach_dwell_exact=getattr(card_evidence, "reattach_dwell_exact", None))
+                    reattach_dwell_exact=getattr(
+                        card_evidence, "reattach_dwell_exact", None
+                    ),
+                )
             else:
-                reason = ("centering or its measured displacement was unresolved"
-                          if correction is None
-                          else "the dwell/probe observation did not complete")
+                reason = (
+                    "centering or its measured displacement was unresolved"
+                    if correction is None
+                    else "the dwell/probe observation did not complete"
+                )
                 self._dbg_still_photo_walk_candidate(
-                    heart_ordinal, "parked_unproved", frame=target.frame,
-                    climbed_px=target.climbed_px, reason=reason)
+                    heart_ordinal,
+                    "parked_unproved",
+                    frame=target.frame,
+                    climbed_px=target.climbed_px,
+                    reason=reason,
+                )
                 outcome = "parked_unproved"
-            if (should_stop is not None and should_stop()
-                    and (card_evidence is None
-                         or not self._still_photo_dwell_two_burst_proved(card_evidence))):
-                remaining_candidates = candidates[attempt + 1:]
+            if (
+                should_stop is not None
+                and should_stop()
+                and (
+                    card_evidence is None
+                    or not self._still_photo_dwell_two_burst_proved(card_evidence)
+                )
+            ):
+                remaining_candidates = candidates[attempt + 1 :]
                 self._record_still_photo_dwell_walk_stop(
-                    next_heart_ordinal=(remaining_candidates[0]
-                                        if remaining_candidates else None),
+                    next_heart_ordinal=(
+                        remaining_candidates[0] if remaining_candidates else None
+                    ),
                     remaining_heart_ordinals=remaining_candidates,
                     remaining_candidate_slots=candidate_slots - hops_run,
                     phase="during_candidate_proof",
-                    interrupted_heart_ordinals=(heart_ordinal,))
+                    interrupted_heart_ordinals=(heart_ordinal,),
+                )
 
             # `target.page_offset` is item_nav's measured landing offset in the rebased index's
             # page space.  The blocks themselves never move when `_rebase_item_index_for_anchor`
@@ -7484,55 +8681,85 @@ class AndroidDriver(DatingAppDriver):
             # case; an UNMEASURABLE one carries `None` there, which this same type gate already
             # turns into the sweep's `position_unmeasured` refusal rather than an assumed zero.
             probe_px = 0 if probe is None else getattr(probe, "page_shift_px", None)
-            if (correction is None
-                    or any(isinstance(value, bool) or not isinstance(value, int)
-                           for value in (target_page_offset, correction_px, probe_px))):
+            if correction is None or any(
+                isinstance(value, bool) or not isinstance(value, int)
+                for value in (target_page_offset, correction_px, probe_px)
+            ):
                 if candidate_started_at is not None:
                     self._dbg_still_photo_walk_candidate_timing(
-                        heart_ordinal, "return_unverified", started_at=candidate_started_at,
-                        navigation_s=navigation_s, proof_s=proof_s, return_s=0.0)
+                        heart_ordinal,
+                        "return_unverified",
+                        started_at=candidate_started_at,
+                        navigation_s=navigation_s,
+                        proof_s=proof_s,
+                        return_s=0.0,
+                    )
                 self._dbg_still_photo_progressive_sweep(
-                    "position_unmeasured", attempted_page_hearts=attempted,
-                    failed_page_heart=heart_ordinal)
+                    "position_unmeasured",
+                    attempted_page_hearts=attempted,
+                    failed_page_heart=heart_ordinal,
+                )
                 return evidence, None
             terminal_frame = _reattach_terminal_frame(probe, correction.frame)
             current_anchor = _MeasuredItemAnchor(
                 terminal_frame,
-                int(target_page_offset) - int(original_reference_offset)
-                + int(correction_px) + int(probe_px))
+                int(target_page_offset)
+                - int(original_reference_offset)
+                + int(correction_px)
+                + int(probe_px),
+            )
             if candidate_started_at is not None:
                 # Cleanup is deferred once for the sweep, so this candidate's own row ends at its
                 # proof.  The enclosing fold still records the complete dwell wall clock, and the
                 # sweep row plus return-chain row below preserve the deferred cleanup separately.
                 self._dbg_still_photo_walk_candidate_timing(
-                    heart_ordinal, outcome, started_at=candidate_started_at,
-                    navigation_s=navigation_s, proof_s=proof_s, return_s=0.0)
+                    heart_ordinal,
+                    outcome,
+                    started_at=candidate_started_at,
+                    navigation_s=navigation_s,
+                    proof_s=proof_s,
+                    return_s=0.0,
+                )
 
         return_started_at = time.monotonic() if self._dbg is not None else None
         returned_anchor = self._return_to_entry_from_measured_position(
-            origin_anchor, frame=current_anchor.frame,
-            terminal_shift_px=current_anchor.page_shift_px - origin_anchor.page_shift_px)
-        return_s = (time.monotonic() - return_started_at
-                    if return_started_at is not None else None)
+            origin_anchor,
+            frame=current_anchor.frame,
+            terminal_shift_px=current_anchor.page_shift_px
+            - origin_anchor.page_shift_px,
+        )
+        return_s = (
+            time.monotonic() - return_started_at
+            if return_started_at is not None
+            else None
+        )
         if returned_anchor is None:
             self._dbg_still_photo_progressive_sweep(
-                "return_unverified", attempted_page_hearts=attempted,
+                "return_unverified",
+                attempted_page_hearts=attempted,
                 proved_page_hearts=sorted(
-                    ordinal for ordinal, dwell in evidence.items()
+                    ordinal
+                    for ordinal, dwell in evidence.items()
                     if ordinal not in base_evidence
-                    and self._still_photo_dwell_two_burst_proved(dwell)),
+                    and self._still_photo_dwell_two_burst_proved(dwell)
+                ),
                 returned_refusals_spent=returned_refusals,
-                **({"return_s": round(return_s, 6)} if return_s is not None else {}))
+                **({"return_s": round(return_s, 6)} if return_s is not None else {}),
+            )
             return evidence, None
         self._dbg_still_photo_progressive_sweep(
-            "returned", attempted_page_hearts=attempted,
+            "returned",
+            attempted_page_hearts=attempted,
             proved_page_hearts=sorted(
-                ordinal for ordinal, dwell in evidence.items()
+                ordinal
+                for ordinal, dwell in evidence.items()
                 if ordinal not in base_evidence
-                and self._still_photo_dwell_two_burst_proved(dwell)),
+                and self._still_photo_dwell_two_burst_proved(dwell)
+            ),
             terminal_page_shift_px=returned_anchor.page_shift_px,
             returned_refusals_spent=returned_refusals,
-            **({"return_s": round(return_s, 6)} if return_s is not None else {}))
+            **({"return_s": round(return_s, 6)} if return_s is not None else {}),
+        )
         return evidence, returned_anchor
 
     def _navigation_moved_the_phone(self, inputs_before: int | None) -> bool:
@@ -7573,8 +8800,14 @@ class AndroidDriver(DatingAppDriver):
             return True
         return now != inputs_before
 
-    def _anchor_after_navigation_refusal(self, entry_anchor, inputs_before: int | None,
-                                         heart_ordinal: int, reason: str, refusal_anchor=None):
+    def _anchor_after_navigation_refusal(
+        self,
+        entry_anchor,
+        inputs_before: int | None,
+        heart_ordinal: int,
+        reason: str,
+        refusal_anchor=None,
+    ):
         """The entry anchor a refused navigation may hand back, or None if it is not accountable.
 
         Returning `None` makes `_index_captured_items` refuse the whole capture, which
@@ -7631,12 +8864,16 @@ class AndroidDriver(DatingAppDriver):
         if self._navigation_moved_the_phone(inputs_before):
             return None
         self._dbg_still_photo_walk_candidate(
-            heart_ordinal, "navigation_refused_no_gesture", reason=reason,
-            device_inputs_before=inputs_before)
+            heart_ordinal,
+            "navigation_refused_no_gesture",
+            reason=reason,
+            device_inputs_before=inputs_before,
+        )
         return entry_anchor
 
-    def _still_photo_dwell_walk_return_budget(self, index, model_index: int) -> tuple[
-            int, int, int] | None:
+    def _still_photo_dwell_walk_return_budget(
+        self, index, model_index: int
+    ) -> tuple[int, int, int] | None:
         """The minimum climb and the short-hop/progressive-sweep crossover.
 
         Candidate walking may add still-photo evidence but must never make repeated deep hops
@@ -7663,16 +8900,24 @@ class AndroidDriver(DatingAppDriver):
                 return None
             entry_offset = index.offsets[-1]
             block = index.block_for(model_index)
-            if (not isinstance(entry_offset, int) or isinstance(entry_offset, bool)
-                    or not isinstance(block.page_y0, int) or isinstance(block.page_y0, bool)):
+            if (
+                not isinstance(entry_offset, int)
+                or isinstance(entry_offset, bool)
+                or not isinstance(block.page_y0, int)
+                or isinstance(block.page_y0, bool)
+            ):
                 return None
             band_top_px = int(round(float(self.content_band[0]) * height))
-            band_px = (float(self.content_band[1]) - float(self.content_band[0])) * height
+            band_px = (
+                float(self.content_band[1]) - float(self.content_band[0])
+            ) * height
             if band_px <= 0:
                 return None
             leg_cap_px = max(1, int(_REATTACH_MAX_EXIT_BAND_FRAC * band_px))
             return_cap_px = _REATTACH_RETURN_STEPS_SPAN[1] * leg_cap_px
-            required_climb_px = max(0, int(entry_offset) - (int(block.page_y0) - band_top_px))
+            required_climb_px = max(
+                0, int(entry_offset) - (int(block.page_y0) - band_top_px)
+            )
             return required_climb_px, return_cap_px, leg_cap_px
         except (AttributeError, ItemIndexError, TypeError, ValueError, OverflowError):
             # The pre-skip is an optimization/safety bound around an otherwise authoritative
@@ -7680,8 +8925,9 @@ class AndroidDriver(DatingAppDriver):
             # into an assumed page distance here.
             return None
 
-    def _still_photo_dwell_over_navigated_target(self, target, block, *, heart_ordinal: int,
-                                                  mute_screen, should_stop=None):
+    def _still_photo_dwell_over_navigated_target(
+        self, target, block, *, heart_ordinal: int, mute_screen, should_stop=None
+    ):
         """The same two-burst C2/C3 proof `_still_photo_dwell` runs for its free card, run here
         over a card `item_nav.navigate_to_item` just parked. Returns `(dwell, probe, correction)`:
         `dwell` is `None` if no observation could be made at all (an empty first burst, e.g.
@@ -7747,41 +8993,65 @@ class AndroidDriver(DatingAppDriver):
         can account for it, except when it is itself unmeasurable and there is nothing safe to
         report.
         """
-        rect = (block.x0, target.block_frame_rows[0], block.x1, target.block_frame_rows[1])
+        rect = (
+            block.x0,
+            target.block_frame_rows[0],
+            block.x1,
+            target.block_frame_rows[1],
+        )
         _w, height = self.adb.screen_size()
-        band_px = ((float(self.content_band[1]) - float(self.content_band[0])) * height
-                   if height > 0 else 0)
+        band_px = (
+            (float(self.content_band[1]) - float(self.content_band[0])) * height
+            if height > 0
+            else 0
+        )
         if height <= 0 or band_px <= 0:
             return None, None, None
         anchor = target.frame
         correction_total_px = 0
         corrections_used = 0
         while True:
-            offset = card_center_offset_frac(rect, frame_height=height,
-                                             content_band=self.content_band)
+            offset = card_center_offset_frac(
+                rect, frame_height=height, content_band=self.content_band
+            )
             if abs(offset) <= STILL_PHOTO_AUTOPLAY_CENTER_BAND_FRAC:
                 break
             if corrections_used >= _STILL_PHOTO_WALK_CENTERING_BUDGET:
-                return None, None, _CenteringCorrection(
-                    total_px=correction_total_px, frame=anchor)
+                return (
+                    None,
+                    None,
+                    _CenteringCorrection(total_px=correction_total_px, frame=anchor),
+                )
             if should_stop is not None and should_stop():
                 # Checked before the stroke, on the re-attach probe's exit_leg's own precedent:
                 # this is a real scroll gesture, not yet committed, and a Stop landing here must
                 # cost one dead poll, never one more humanized swipe the operator did not ask for.
-                return None, None, _CenteringCorrection(
-                    total_px=correction_total_px, frame=anchor)
+                return (
+                    None,
+                    None,
+                    _CenteringCorrection(total_px=correction_total_px, frame=anchor),
+                )
             # Sized to the distance actually owed -- never larger than needed -- floored at the
             # smallest legal read-scroll this driver can make, the same `_READ_SCROLL_FRAC_MIN`/
             # `_READ_SCROLL_FRAC_MAX` clamp `_still_photo_dwell_walk_return_to_entry` sizes its
             # own measured strokes with.
             needed_px = abs(offset) * band_px
-            frac = min(_READ_SCROLL_FRAC_MAX,
-                      max(_READ_SCROLL_FRAC_MIN, frac_for_step_px(int(round(needed_px)), height)))
+            frac = min(
+                _READ_SCROLL_FRAC_MAX,
+                max(
+                    _READ_SCROLL_FRAC_MIN,
+                    frac_for_step_px(int(round(needed_px)), height),
+                ),
+            )
             _dwell_s, _step_frac, x_frac = self._sample_read_step(0, None)
             if offset < 0:
-                self._scroll_up_one(frac, x_frac)     # card sits ABOVE centre: bring content DOWN
+                self._scroll_up_one(
+                    frac, x_frac
+                )  # card sits ABOVE centre: bring content DOWN
             else:
-                self._scroll_down_one(frac, x_frac)   # card sits BELOW centre: bring content UP
+                self._scroll_down_one(
+                    frac, x_frac
+                )  # card sits BELOW centre: bring content UP
             time.sleep(human_delay(_READ_SCROLL_SETTLE_S))
             following = self._screencap(on_blank="none")
             if following is None:
@@ -7804,8 +9074,14 @@ class AndroidDriver(DatingAppDriver):
         frame_height = decoded_frame_height(anchor)
         digests = tuple(hashlib.sha256(frame).hexdigest() for frame in sequence)
         dwell = dwell_evidence_for_rect(
-            rect, sequence, digests=digests, dwell_span_s=span_s, mute_screen=mute_screen,
-            frame_height=frame_height, content_band=self.content_band)
+            rect,
+            sequence,
+            digests=digests,
+            dwell_span_s=span_s,
+            mute_screen=mute_screen,
+            frame_height=frame_height,
+            content_band=self.content_band,
+        )
         # Same probe-eligibility rule as the free card's: only a byte-exact, centred first burst
         # ever earns the probe, decided by the SAME static method over a one-entry stand-in dict.
         probe = None
@@ -7819,27 +9095,42 @@ class AndroidDriver(DatingAppDriver):
         if probe is not None:
             probe_sequence = [probe.anchor, *probe.frames]
             probe_frame_height = decoded_frame_height(probe.anchor)
-            shifted_rect = (rect[0], rect[1] - probe.page_shift_px,
-                            rect[2], rect[3] - probe.page_shift_px)
-            dwell = dataclasses.replace(dwell, **still_photo_reattach_legs(
-                probe_sequence, shifted_rect, span_s=probe.span_s, mute_screen=mute_screen,
-                frame_height=probe_frame_height, content_band=self.content_band))
+            shifted_rect = (
+                rect[0],
+                rect[1] - probe.page_shift_px,
+                rect[2],
+                rect[3] - probe.page_shift_px,
+            )
+            dwell = dataclasses.replace(
+                dwell,
+                **still_photo_reattach_legs(
+                    probe_sequence,
+                    shifted_rect,
+                    span_s=probe.span_s,
+                    mute_screen=mute_screen,
+                    frame_height=probe_frame_height,
+                    content_band=self.content_band,
+                ),
+            )
         # The base card records this same finalized two-burst evidence in `_still_photo_dwell`.
         # Walked candidates used to return it without preserving any of their dwell/probe frames,
         # leaving a report able to prove only that navigation ran.  Keep the identical forensic
         # record here, keyed by this physical page-heart ordinal on every action.  Only a
         # COMPLETED probe is recorded: an abandonment took no second burst and has no frames of
         # its own, so reporting it as one would claim a re-attach that never happened.
-        self._record_still_photo_dwell(
-            burst, span_s, {heart_ordinal: dwell}, probe)
+        self._record_still_photo_dwell(burst, span_s, {heart_ordinal: dwell}, probe)
         # An abandonment travels in the probe slot because it answers the caller's one question
         # about it -- where did its gestures leave the phone -- and the cleanup step is the only
         # consumer.  It never reaches `still_photo_reattach_legs`, so no card can be proved by it.
         return dwell, probe if abandoned is None else abandoned, correction
 
     def _still_photo_dwell_walk_return_to_entry(
-            self, target, probe, entry_anchor: _MeasuredItemAnchor,
-            correction: _CenteringCorrection | None) -> _MeasuredItemAnchor | None:
+        self,
+        target,
+        probe,
+        entry_anchor: _MeasuredItemAnchor,
+        correction: _CenteringCorrection | None,
+    ) -> _MeasuredItemAnchor | None:
         """Drive the page back down to the entry after one candidate hop, and VERIFY it landed
         there -- never assume the climb (`target.climbed_px`) undoes itself just because an equal
         and opposite distance was requested.
@@ -7900,7 +9191,8 @@ class AndroidDriver(DatingAppDriver):
         frame = _reattach_terminal_frame(probe, correction.frame)
         total = -target.climbed_px + correction.total_px + probe_shift_px
         return self._return_to_entry_from_measured_position(
-            entry_anchor, frame=frame, terminal_shift_px=total)
+            entry_anchor, frame=frame, terminal_shift_px=total
+        )
 
     def _dbg_still_photo_return_chain(self, outcome: str, **fields) -> None:
         """Write one terminal, non-authoritative return-chain trace row when debugging.
@@ -7914,13 +9206,15 @@ class AndroidDriver(DatingAppDriver):
         if self._dbg is None:
             return
         try:
-            self._dbg.action("still_photo_dwell_return_chain", outcome=outcome, **fields)
+            self._dbg.action(
+                "still_photo_dwell_return_chain", outcome=outcome, **fields
+            )
         except Exception:  # noqa: BLE001 -- diagnostics must never alter return safety
             pass
 
     def _return_to_entry_from_measured_position(
-            self, entry_anchor: _MeasuredItemAnchor, *, frame: bytes,
-            terminal_shift_px: int) -> _MeasuredItemAnchor | None:
+        self, entry_anchor: _MeasuredItemAnchor, *, frame: bytes, terminal_shift_px: int
+    ) -> _MeasuredItemAnchor | None:
         """Return an optional walk from a fully measured terminal position.
 
         ``terminal_shift_px`` is the signed sum from ``entry_anchor.frame`` to ``frame``.  The
@@ -7933,8 +9227,11 @@ class AndroidDriver(DatingAppDriver):
         _w, height = self.adb.screen_size()
         if height <= 0:
             self._dbg_still_photo_return_chain(
-                "refused", reason="invalid_screen_height",
-                initial_terminal_shift_px=int(terminal_shift_px), attempts=0)
+                "refused",
+                reason="invalid_screen_height",
+                initial_terminal_shift_px=int(terminal_shift_px),
+                attempts=0,
+            )
             return None
         quantum = step_px_for_frac(_READ_SCROLL_FRAC_MIN, height)
         total = int(terminal_shift_px)
@@ -7954,8 +9251,13 @@ class AndroidDriver(DatingAppDriver):
         # The CAP, not the distance: each leg draws inside it (`_RETURN_LEG_DRAW_SPAN`, whose own
         # comment carries both reasons). The floor is the smallest draw this chain can make, and
         # it is what the attempt budget below has to be sized against.
-        min_drawn_step_px = max(1, min(max_measurable_step_px,
-                                       int(_RETURN_LEG_DRAW_SPAN[0] * max_measurable_step_px)))
+        min_drawn_step_px = max(
+            1,
+            min(
+                max_measurable_step_px,
+                int(_RETURN_LEG_DRAW_SPAN[0] * max_measurable_step_px),
+            ),
+        )
         # Derived from the distance actually owed, unlike the probe's own fixed
         # `_REATTACH_RETURN_STEPS_SPAN`: that span is sized for the probe's own single ~630px
         # exit, while a multi-card climb can owe several cap-sized strokes. Add two attempts for
@@ -7970,8 +9272,10 @@ class AndroidDriver(DatingAppDriver):
         # that was converging. The count remains a CEILING on attempts, never a plan: the loop
         # exits the moment the remaining distance is inside `quantum`, and a page that has
         # genuinely stopped moving is cut short by `_RETURN_LEG_STALL_LIMIT` long before this.
-        max_attempts = max(_REATTACH_RETURN_STEPS_SPAN[1],
-                           math.ceil(abs(total) / min_drawn_step_px) + 2)
+        max_attempts = max(
+            _REATTACH_RETURN_STEPS_SPAN[1],
+            math.ceil(abs(total) / min_drawn_step_px) + 2,
+        )
         attempts = 0
         stalled_legs = 0
         legs: list[dict[str, object]] = []
@@ -7981,10 +9285,22 @@ class AndroidDriver(DatingAppDriver):
                 break
             step_target_px = min(
                 abs(remaining),
-                max(min_drawn_step_px,
-                    int(round(random.uniform(*_RETURN_LEG_DRAW_SPAN) * max_measurable_step_px))))
-            frac = min(_READ_SCROLL_FRAC_MAX,
-                      max(_READ_SCROLL_FRAC_MIN, frac_for_step_px(int(step_target_px), height)))
+                max(
+                    min_drawn_step_px,
+                    int(
+                        round(
+                            random.uniform(*_RETURN_LEG_DRAW_SPAN)
+                            * max_measurable_step_px
+                        )
+                    ),
+                ),
+            )
+            frac = min(
+                _READ_SCROLL_FRAC_MAX,
+                max(
+                    _READ_SCROLL_FRAC_MIN, frac_for_step_px(int(step_target_px), height)
+                ),
+            )
             _dwell_s, _step_frac, x_frac = self._sample_read_step(0, None)
             leg = {
                 "attempt": attempts + 1,
@@ -7994,7 +9310,9 @@ class AndroidDriver(DatingAppDriver):
                 "requested_frac": frac,
             }
             if remaining > 0:
-                self._scroll_down_one(frac, x_frac)   # content up: climbing back down the page
+                self._scroll_down_one(
+                    frac, x_frac
+                )  # content up: climbing back down the page
             else:
                 self._scroll_up_one(frac, x_frac)
             attempts += 1
@@ -8002,12 +9320,18 @@ class AndroidDriver(DatingAppDriver):
             following = self._screencap(on_blank="none")
             if following is None:
                 self._dbg_still_photo_return_chain(
-                    "refused", reason="blank_return_frame", attempts=attempts,
-                    initial_terminal_shift_px=initial_total, terminal_shift_px=total,
-                    drift_bound_px=quantum, requested_step_px=step_target_px,
+                    "refused",
+                    reason="blank_return_frame",
+                    attempts=attempts,
+                    initial_terminal_shift_px=initial_total,
+                    terminal_shift_px=total,
+                    drift_bound_px=quantum,
+                    requested_step_px=step_target_px,
                     requested_frac=frac,
                     legs=[*legs, {**leg, "outcome": "blank_return_frame"}],
-                    before=frame, keep_before=True)
+                    before=frame,
+                    keep_before=True,
+                )
                 return None
             step = self._measured_page_shift(frame, following)
             backoff: list = []
@@ -8018,7 +9342,8 @@ class AndroidDriver(DatingAppDriver):
                 # re-measuring against it is a complete measured link -- the distance the refused
                 # gesture actually travelled is never estimated, it is discarded.
                 step, recovered, backoff = self._return_leg_backoff_remeasure(
-                    frame, forward=remaining > 0, leg_px=step_target_px, height=height)
+                    frame, forward=remaining > 0, leg_px=step_target_px, height=height
+                )
                 if step is not None:
                     following = recovered
             if step is None:
@@ -8029,20 +9354,33 @@ class AndroidDriver(DatingAppDriver):
                 # This branch is terminal, so the second estimator pass is paid once per lost
                 # chain and never on a healthy return.
                 self._dbg_still_photo_return_chain(
-                    "refused", reason="return_leg_unmeasurable", attempts=attempts,
-                    initial_terminal_shift_px=initial_total, terminal_shift_px=total,
-                    drift_bound_px=quantum, requested_step_px=step_target_px,
-                    requested_frac=frac, backoff=backoff,
+                    "refused",
+                    reason="return_leg_unmeasurable",
+                    attempts=attempts,
+                    initial_terminal_shift_px=initial_total,
+                    terminal_shift_px=total,
+                    drift_bound_px=quantum,
+                    requested_step_px=step_target_px,
+                    requested_frac=frac,
+                    backoff=backoff,
                     measurement=self._shift_refusal_trace(frame, following),
                     legs=[*legs, {**leg, "outcome": "unmeasurable"}],
-                    before=frame, after=following,
-                    keep_before=True, keep_after=True)
+                    before=frame,
+                    after=following,
+                    keep_before=True,
+                    keep_after=True,
+                )
                 return None
             total += step
-            legs.append({**leg,
-                         "outcome": "measured" if not backoff else "measured_after_backoff",
-                         "measured_shift_px": step, "terminal_shift_after_px": total,
-                         **({"backoff": backoff} if backoff else {})})
+            legs.append(
+                {
+                    **leg,
+                    "outcome": "measured" if not backoff else "measured_after_backoff",
+                    "measured_shift_px": step,
+                    "terminal_shift_after_px": total,
+                    **({"backoff": backoff} if backoff else {}),
+                }
+            )
             frame = following
             # A page that did not move is MEASURED 0 here, not a refusal -- which is the right
             # answer to "how far did it move" and the wrong thing to keep asking. Without this
@@ -8065,8 +9403,13 @@ class AndroidDriver(DatingAppDriver):
             # the chain spends its whole attempt budget flinging at a page it has already measured
             # as clamped and then blames `terminal_drift_exceeds_bound`, which is precisely the
             # misdiagnosis the paragraph above exists to prevent.
-            stalled_legs = (0 if abs(step) > quantum // 2
-                            else stalled_legs if backoff else stalled_legs + 1)
+            stalled_legs = (
+                0
+                if abs(step) > quantum // 2
+                else stalled_legs
+                if backoff
+                else stalled_legs + 1
+            )
             # GATED ON THE LOOP'S OWN CONVERGENCE TEST, because the break is at the TOP of the
             # loop and this check is at the bottom: two consecutive under-delivering legs that
             # nevertheless landed the chain inside the gate would otherwise be refused one
@@ -8076,12 +9419,21 @@ class AndroidDriver(DatingAppDriver):
             # `abs(total)` is nowhere near the gate and it refuses exactly as before.
             if stalled_legs >= _RETURN_LEG_STALL_LIMIT and abs(total) > quantum // 2:
                 self._dbg_still_photo_return_chain(
-                    "refused", reason="return_leg_no_progress", attempts=attempts,
-                    initial_terminal_shift_px=initial_total, terminal_shift_px=total,
-                    drift_bound_px=quantum, requested_step_px=step_target_px,
-                    requested_frac=frac, stalled_legs=stalled_legs, legs=legs,
-                    before=entry_anchor.frame, after=following,
-                    keep_before=True, keep_after=True)
+                    "refused",
+                    reason="return_leg_no_progress",
+                    attempts=attempts,
+                    initial_terminal_shift_px=initial_total,
+                    terminal_shift_px=total,
+                    drift_bound_px=quantum,
+                    requested_step_px=step_target_px,
+                    requested_frac=frac,
+                    stalled_legs=stalled_legs,
+                    legs=legs,
+                    before=entry_anchor.frame,
+                    after=following,
+                    keep_before=True,
+                    keep_after=True,
+                )
                 return None
         drift_bound = step_px_for_frac(_READ_SCROLL_FRAC_MIN, height)
         terminal_shift_px = total
@@ -8091,31 +9443,53 @@ class AndroidDriver(DatingAppDriver):
         # rather than a new arbitrary start only when it lands within the ordinary entry gate.
         if abs(terminal_shift_px) >= drift_bound:
             self._dbg_still_photo_return_chain(
-                "refused", reason="terminal_drift_exceeds_bound", attempts=attempts,
+                "refused",
+                reason="terminal_drift_exceeds_bound",
+                attempts=attempts,
                 initial_terminal_shift_px=initial_total,
-                terminal_shift_px=terminal_shift_px, drift_bound_px=drift_bound,
+                terminal_shift_px=terminal_shift_px,
+                drift_bound_px=drift_bound,
                 legs=legs,
-                before=entry_anchor.frame, after=frame,
-                keep_before=True, keep_after=True)
+                before=entry_anchor.frame,
+                after=frame,
+                keep_before=True,
+                keep_after=True,
+            )
             return None
         verified = self._measured_page_shift(entry_anchor.frame, frame)
         if verified is not None and abs(verified - terminal_shift_px) >= drift_bound:
             self._dbg_still_photo_return_chain(
-                "refused", reason="direct_remeasure_disagrees", attempts=attempts,
+                "refused",
+                reason="direct_remeasure_disagrees",
+                attempts=attempts,
                 initial_terminal_shift_px=initial_total,
-                terminal_shift_px=terminal_shift_px, direct_shift_px=verified,
-                drift_bound_px=drift_bound, legs=legs,
-                before=entry_anchor.frame, after=frame,
-                keep_before=True, keep_after=True)
+                terminal_shift_px=terminal_shift_px,
+                direct_shift_px=verified,
+                drift_bound_px=drift_bound,
+                legs=legs,
+                before=entry_anchor.frame,
+                after=frame,
+                keep_before=True,
+                keep_after=True,
+            )
             return None
         self._dbg_still_photo_return_chain(
-            "returned", reason=("direct_remeasure_matched" if verified is not None
-                                else "direct_remeasure_unavailable"), attempts=attempts,
+            "returned",
+            reason=(
+                "direct_remeasure_matched"
+                if verified is not None
+                else "direct_remeasure_unavailable"
+            ),
+            attempts=attempts,
             initial_terminal_shift_px=initial_total,
-            terminal_shift_px=terminal_shift_px, direct_shift_px=verified,
-            drift_bound_px=drift_bound, legs=legs)
+            terminal_shift_px=terminal_shift_px,
+            direct_shift_px=verified,
+            drift_bound_px=drift_bound,
+            legs=legs,
+        )
         return _MeasuredItemAnchor(
-            frame, entry_anchor.page_shift_px + int(terminal_shift_px))
+            frame, entry_anchor.page_shift_px + int(terminal_shift_px)
+        )
 
     def _index_captured_items(self, photos: list[bytes], should_stop=None) -> str:
         """Fold this capture's frames into doc 5.3's index and doc 5.2's crops.
@@ -8208,19 +9582,29 @@ class AndroidDriver(DatingAppDriver):
         outcome = "unknown"
         try:
             try:
-                self._note_capture_progress("building a safe item index for this profile")
+                self._note_capture_progress(
+                    "building a safe item index for this profile"
+                )
                 with _time_bucket(stamps, "video_mute_markers_s"):
                     video_mute_markers = self._video_mute_marker_rows(photos)
-                    animation_markers = tuple(any(marker.frame_index == frame_index
-                                                  for marker in video_mute_markers)
-                                              for frame_index in range(len(photos)))
+                    animation_markers = tuple(
+                        any(
+                            marker.frame_index == frame_index
+                            for marker in video_mute_markers
+                        )
+                        for frame_index in range(len(photos))
+                    )
                 with _time_bucket(stamps, "item_index_build_s"):
                     index = build_item_index(
-                        photos, content_band=self.content_band,
-                        like_template=self._template("like"), like_threshold=_LIKE_MATCH_THRESHOLD,
-                        at_scroll_top=True, identity_band=self.identity_band,
+                        photos,
+                        content_band=self.content_band,
+                        like_template=self._template("like"),
+                        like_threshold=_LIKE_MATCH_THRESHOLD,
+                        at_scroll_top=True,
+                        identity_band=self.identity_band,
                         animation_markers=animation_markers,
-                        video_mute_markers=video_mute_markers)
+                        video_mute_markers=video_mute_markers,
+                    )
                 # BEFORE the first refusal return, and for a usable index alike: these frames
                 # and the offsets just chained for them are the only pair in this driver that
                 # can answer whether doc 5.5's scroll-top signal was readable in this capture
@@ -8238,7 +9622,8 @@ class AndroidDriver(DatingAppDriver):
                 if not index.usable:
                     with _time_bucket(stamps, "item_index_confirmed_restart_s"):
                         restarted = self._restart_index_from_confirmed_top(
-                            photos, index, animation_markers, video_mute_markers)
+                            photos, index, animation_markers, video_mute_markers
+                        )
                     if restarted is not None:
                         index, restart_at = restarted
                         with _time_bucket(stamps, "scroll_top_pinning_s"):
@@ -8250,9 +9635,12 @@ class AndroidDriver(DatingAppDriver):
                                     restart_frame_index=restart_at,
                                     discarded_prefix_frames=restart_at,
                                     indexed_frames=len(index.frames),
-                                    reason=("a refused correspondence edge was followed by a "
-                                            "confirmed same-profile scroll top; only the rebuilt "
-                                            "later sweep was indexed"))
+                                    reason=(
+                                        "a refused correspondence edge was followed by a "
+                                        "confirmed same-profile scroll top; only the rebuilt "
+                                        "later sweep was indexed"
+                                    ),
+                                )
                             except Exception:  # noqa: BLE001 -- debug logging is observational
                                 pass
                 # A confirmed, non-pinned filter-chip signal is independent positive evidence
@@ -8261,32 +9649,44 @@ class AndroidDriver(DatingAppDriver):
                 # thing that refused. The retry still rejects every shift, segmentation, heart
                 # and card-boundary contradiction; it only lets the independently confirmed top
                 # class the leading name panel as chrome when its photo corner was not measurable.
-                if (not index.usable and self._index_needs_confirmed_top_retry(index)
-                        and self._capture_reconfirms_scroll_top(photos)):
+                if (
+                    not index.usable
+                    and self._index_needs_confirmed_top_retry(index)
+                    and self._capture_reconfirms_scroll_top(photos)
+                ):
                     with _time_bucket(stamps, "item_index_confirmed_top_retry_s"):
                         retried = build_item_index(
-                            photos, content_band=self.content_band,
+                            photos,
+                            content_band=self.content_band,
                             like_template=self._template("like"),
                             like_threshold=_LIKE_MATCH_THRESHOLD,
-                            at_scroll_top=True, identity_band=self.identity_band,
+                            at_scroll_top=True,
+                            identity_band=self.identity_band,
                             scroll_top_signal_confirmed=True,
                             animation_markers=animation_markers,
-                            video_mute_markers=video_mute_markers)
+                            video_mute_markers=video_mute_markers,
+                        )
                     if retried.usable:
                         index = retried
                         if self._dbg is not None:
                             try:
                                 self._dbg.action(
                                     "item_index_confirmed_top_retry",
-                                    reason=("the filter-chip scroll-top signal reconfirmed frame "
-                                            "0 after geometry could not see item 1's corner"))
+                                    reason=(
+                                        "the filter-chip scroll-top signal reconfirmed frame "
+                                        "0 after geometry could not see item 1's corner"
+                                    ),
+                                )
                             except Exception:  # noqa: BLE001 -- debug logging is observational
                                 pass
                 if not index.usable:
                     outcome = "refused_index"
                     return self._item_index_refused(
-                        photos, "the item index this capture produced contradicts itself, so its "
-                        "numbering cannot be trusted: " + "; ".join(index.failures), index)
+                        photos,
+                        "the item index this capture produced contradicts itself, so its "
+                        "numbering cannot be trusted: " + "; ".join(index.failures),
+                        index,
+                    )
                 if not index.identity.known:
                     # Refused HERE rather than left for navigation, and the difference is a billed
                     # call: an index that cannot say whose profile it describes is one
@@ -8296,27 +9696,42 @@ class AndroidDriver(DatingAppDriver):
                     # are untouched, and worker.py stops before the model is asked anything.
                     outcome = "refused_identity"
                     return self._item_index_refused(
-                        photos, "this capture could not be fingerprinted for identity, so a navigation "
+                        photos,
+                        "this capture could not be fingerprinted for identity, so a navigation "
                         "pass could never confirm the card it counts on is this profile's: "
-                        + index.identity.reason, index)
+                        + index.identity.reason,
+                        index,
+                    )
                 source_indices = tuple(getattr(index, "source_frame_indices", ()) or ())
                 if source_indices:
-                    if (len(source_indices) != len(index.frames)
-                            # bool is an int subclass, but ``photos[True]`` silently means
-                            # ``photos[1]``. Provenance must name a literal frame ordinal, never
-                            # accept truth values that can redirect crops to another source frame.
-                            or any(not isinstance(i, int) or isinstance(i, bool)
-                                   or i < 0 or i >= len(photos) for i in source_indices)):
+                    if (
+                        len(source_indices) != len(index.frames)
+                        # bool is an int subclass, but ``photos[True]`` silently means
+                        # ``photos[1]``. Provenance must name a literal frame ordinal, never
+                        # accept truth values that can redirect crops to another source frame.
+                        or any(
+                            not isinstance(i, int)
+                            or isinstance(i, bool)
+                            or i < 0
+                            or i >= len(photos)
+                            for i in source_indices
+                        )
+                    ):
                         outcome = "refused_provenance"
                         return self._item_index_refused(
-                            photos, "this capture's recovered item index has invalid frame provenance "
-                            "and cannot be cropped safely", index)
+                            photos,
+                            "this capture's recovered item index has invalid frame provenance "
+                            "and cannot be cropped safely",
+                            index,
+                        )
                     indexed_photos = [photos[i] for i in source_indices]
                 else:
                     # Compatibility with a legacy/index test double that predates frame provenance.
                     indexed_photos = photos
                 with _time_bucket(stamps, "video_selection_exclusions_s"):
-                    video_exclusions = self._video_selection_exclusions(indexed_photos, index)
+                    video_exclusions = self._video_selection_exclusions(
+                        indexed_photos, index
+                    )
                 # Content classification is much cheaper than one C2/C3 dwell+re-attach cycle.
                 # Do it before the bounded candidate walk so a written prompt cannot consume a
                 # K slot and ~50 seconds only to be discarded by this exact same gate moments
@@ -8328,25 +9743,36 @@ class AndroidDriver(DatingAppDriver):
                 if isinstance(index, ItemIndex):
                     with _time_bucket(stamps, "photo_candidate_preflight_s"):
                         eligible_heart_ordinals = confident_photo_heart_ordinals(
-                            indexed_photos, index,
-                            exclude=lambda block: video_exclusions.get(block.heart_ordinal),
-                            unnumber=unnumber_unless_confident_photo)
+                            indexed_photos,
+                            index,
+                            exclude=lambda block: video_exclusions.get(
+                                block.heart_ordinal
+                            ),
+                            unnumber=unnumber_unless_confident_photo,
+                        )
                         self._current_photo_candidate_hearts = tuple(
-                            eligible_heart_ordinals)
+                            eligible_heart_ordinals
+                        )
                 # The compatibility bucket below is deliberately the whole C2/C3 phase.  The
                 # candidate walk happens inside that method too, however, so accumulate the
                 # passive first-to-last screenshot spans independently and emit their exact
                 # complement as diagnostic detail on the fold row.  Keep this disabled without
                 # a debug log just like every other timing measurement in this method.
                 self._still_photo_dwell_timing_breakdown = None
-                self._still_photo_passive_observation_s = 0.0 if timing_enabled else None
+                self._still_photo_passive_observation_s = (
+                    0.0 if timing_enabled else None
+                )
                 try:
                     with _time_bucket(stamps, "still_photo_dwell_s"):
                         still_photo_dwell, dwell_anchor = self._still_photo_dwell(
-                            indexed_photos, index, should_stop,
-                            eligible_heart_ordinals=eligible_heart_ordinals)
+                            indexed_photos,
+                            index,
+                            should_stop,
+                            eligible_heart_ordinals=eligible_heart_ordinals,
+                        )
                         self._current_dwell_covered_hearts = tuple(
-                            sorted(still_photo_dwell))
+                            sorted(still_photo_dwell)
+                        )
                 finally:
                     passive_s = self._still_photo_passive_observation_s
                     self._still_photo_passive_observation_s = None
@@ -8364,11 +9790,13 @@ class AndroidDriver(DatingAppDriver):
                         }
                 with _time_bucket(stamps, "item_payload_build_s"):
                     payload = build_item_payload(
-                        indexed_photos, index,
+                        indexed_photos,
+                        index,
                         exclude=lambda block: video_exclusions.get(block.heart_ordinal),
                         unnumber=unnumber_unless_confident_photo,
                         unnumber_without_evidence=unnumber_without_still_photo_evidence,
-                        still_photo_dwell=still_photo_dwell)
+                        still_photo_dwell=still_photo_dwell,
+                    )
                 # `payload.usable` is False the instant zero cards survive to be numbered -- see
                 # `NO_NUMBERED_ITEMS_REASON`'s docstring in item_crops.py -- and that is the RIGHT
                 # default for a generic caller, but wrong for Hinge's own auto loop: worker.py treats
@@ -8388,35 +9816,54 @@ class AndroidDriver(DatingAppDriver):
                 numbered_nothing = (
                     not payload.usable
                     and len(payload.failures) == 1
-                    and payload.failures[0].startswith(NO_NUMBERED_ITEMS_REASON))
+                    and payload.failures[0].startswith(NO_NUMBERED_ITEMS_REASON)
+                )
                 if not payload.usable and not numbered_nothing:
                     outcome = "refused_payload"
                     return self._item_index_refused(
-                        photos, "the item crops this capture produced are not a request the model can "
-                        "be asked to answer: " + "; ".join(payload.failures), index)
+                        photos,
+                        "the item crops this capture produced are not a request the model can "
+                        "be asked to answer: " + "; ".join(payload.failures),
+                        index,
+                    )
                 if dwell_anchor is None:
                     outcome = "refused_dwell_anchor"
                     return self._item_index_refused(
-                        photos, "the still-photo dwell or re-attach walk moved the page without a "
+                        photos,
+                        "the still-photo dwell or re-attach walk moved the page without a "
                         "complete measured chain back to the item index, so targeted navigation is "
-                        "unsafe", index)
+                        "unsafe",
+                        index,
+                    )
                 anchored_index = self._rebase_item_index_for_anchor(
-                    index, dwell_anchor.page_shift_px)
+                    index, dwell_anchor.page_shift_px
+                )
                 if anchored_index is None:
                     outcome = "refused_dwell_anchor"
                     return self._item_index_refused(
-                        photos, "the still-photo dwell or re-attach walk has a measured terminal "
+                        photos,
+                        "the still-photo dwell or re-attach walk has a measured terminal "
                         "frame but its item index cannot be rebased to that page position safely",
-                        index)
-            except (ItemIndexError, ItemCropError, SegmentationError, ShiftEstimationError) as exc:
+                        index,
+                    )
+            except (
+                ItemIndexError,
+                ItemCropError,
+                SegmentationError,
+                ShiftEstimationError,
+            ) as exc:
                 outcome = "exception"
                 return self._item_index_refused(
-                    photos, f"this capture could not be indexed into items "
-                    f"({type(exc).__name__}: {exc})", index)
+                    photos,
+                    f"this capture could not be indexed into items "
+                    f"({type(exc).__name__}: {exc})",
+                    index,
+                )
             self._current_item_index = anchored_index
             self._current_item_payload = payload
             self._current_items_unnumbered = (
-                self._items_unnumbered_summary(payload) if numbered_nothing else "")
+                self._items_unnumbered_summary(payload) if numbered_nothing else ""
+            )
             with _time_bucket(stamps, "record_notes_s"):
                 self._record_item_index_recovery(photos, index)
                 self._record_item_index_notes(photos, index)
@@ -8430,10 +9877,18 @@ class AndroidDriver(DatingAppDriver):
             return ""
         finally:
             if timing_enabled:
-                self._emit_capture_fold_timing(fold_start, stamps, len(photos), outcome=outcome)
+                self._emit_capture_fold_timing(
+                    fold_start, stamps, len(photos), outcome=outcome
+                )
 
-    def _emit_capture_fold_timing(self, fold_start: float, stamps: dict[str, float],
-                                  photo_count: int, *, outcome: str) -> None:
+    def _emit_capture_fold_timing(
+        self,
+        fold_start: float,
+        stamps: dict[str, float],
+        photo_count: int,
+        *,
+        outcome: str,
+    ) -> None:
         """One best-effort actions.jsonl row for `_index_captured_items`' own timing ledger.
 
         Same discipline as `_emit_capture_iteration_timing`: `unattributed_s` is computed from
@@ -8447,13 +9902,16 @@ class AndroidDriver(DatingAppDriver):
         fold_wall_s = time.monotonic() - fold_start
         unattributed_s = fold_wall_s - sum(stamps.values())
         try:
-            fields = {
-                key: round(value, 6) for key, value in sorted(stamps.items())}
+            fields = {key: round(value, 6) for key, value in sorted(stamps.items())}
             breakdown = getattr(self, "_still_photo_dwell_timing_breakdown", None)
-            if (isinstance(breakdown, dict)
-                    and all(isinstance(breakdown.get(key), (int, float))
-                            for key in ("passive_observation_s", "navigation_and_overhead_s"))
-                    and "still_photo_dwell_s" in fields):
+            if (
+                isinstance(breakdown, dict)
+                and all(
+                    isinstance(breakdown.get(key), (int, float))
+                    for key in ("passive_observation_s", "navigation_and_overhead_s")
+                )
+                and "still_photo_dwell_s" in fields
+            ):
                 # Round the two detail values against the already-rounded compatibility total,
                 # so a JSONL consumer can rely on an exact reconstruction rather than losing a
                 # microsecond to independent rounding.
@@ -8464,9 +9922,13 @@ class AndroidDriver(DatingAppDriver):
                     "navigation_and_overhead_s": round(total_s - passive_s, 6),
                 }
             self._dbg.action(
-                "capture_fold_timing", photos=photo_count, outcome=outcome,
-                fold_wall_s=round(fold_wall_s, 6), unattributed_s=round(unattributed_s, 6),
-                **fields)
+                "capture_fold_timing",
+                photos=photo_count,
+                outcome=outcome,
+                fold_wall_s=round(fold_wall_s, 6),
+                unattributed_s=round(unattributed_s, 6),
+                **fields,
+            )
         except Exception:  # noqa: BLE001 -- diagnostics must never alter a live-run result
             pass
 
@@ -8493,26 +9955,41 @@ class AndroidDriver(DatingAppDriver):
         """
         selectable = [c for c in payload.crops if c.heart_ordinal is not None]
         if not selectable:
-            return ("this capture's item index carries no heart-bearing card at all, so there "
-                    "was nothing to number")
-        never_dwelled = sum(1 for c in selectable if c.reason == EXCLUSION_NEVER_DWELLED)
-        other_reasons = [c.reason for c in selectable
-                         if c.kind != CROP_ITEM and c.reason != EXCLUSION_NEVER_DWELLED]
+            return (
+                "this capture's item index carries no heart-bearing card at all, so there "
+                "was nothing to number"
+            )
+        never_dwelled = sum(
+            1 for c in selectable if c.reason == EXCLUSION_NEVER_DWELLED
+        )
+        other_reasons = [
+            c.reason
+            for c in selectable
+            if c.kind != CROP_ITEM and c.reason != EXCLUSION_NEVER_DWELLED
+        ]
         parts = [f"{len(selectable)} selectable card(s) were considered"]
         if never_dwelled:
             parts.append(
                 f"{never_dwelled} could not be judged because this capture's configured bounded "
-                "dwell walk did not cover them")
+                "dwell walk did not cover them"
+            )
         if other_reasons:
             reason, count = Counter(other_reasons).most_common(1)[0]
-            parts.append(f"the most common other reason ({count} of {len(other_reasons)}): "
-                        f"{reason}")
+            parts.append(
+                f"the most common other reason ({count} of {len(other_reasons)}): "
+                f"{reason}"
+            )
         return "; ".join(parts) + "."
 
     @staticmethod
-    def _item_coverage_diagnostics(payload, still_photo_dwell_candidates: int, *,
-                                   photo_candidate_hearts=(), dwell_covered_hearts=(),
-                                   dwell_walk_interruption=None) -> dict:
+    def _item_coverage_diagnostics(
+        payload,
+        still_photo_dwell_candidates: int,
+        *,
+        photo_candidate_hearts=(),
+        dwell_covered_hearts=(),
+        dwell_walk_interruption=None,
+    ) -> dict:
         """Compact, non-image explanation of why a capture numbered fewer page hearts.
 
         ``photos`` counts scroll screenshots, while ``items`` counts only selectable cards that
@@ -8528,21 +10005,35 @@ class AndroidDriver(DatingAppDriver):
         still-photo judgement that did not pass. ``other`` preserves the accounting if a future
         item class or exclusion grows a new path.
         """
-        heart_bearing = [crop for crop in payload.crops if crop.heart_ordinal is not None]
+        heart_bearing = [
+            crop for crop in payload.crops if crop.heart_ordinal is not None
+        ]
         numbered = [crop for crop in heart_bearing if crop.kind == CROP_ITEM]
-        no_dwell = [crop for crop in heart_bearing
-                    if crop.reason == EXCLUSION_NEVER_DWELLED]
+        no_dwell = [
+            crop for crop in heart_bearing if crop.reason == EXCLUSION_NEVER_DWELLED
+        ]
         classified_non_photo = [
-            crop for crop in heart_bearing
-            if str(crop.reason).startswith(f"{EXCLUSION_NON_PHOTO}: crop classified as ")]
+            crop
+            for crop in heart_bearing
+            if str(crop.reason).startswith(
+                f"{EXCLUSION_NON_PHOTO}: crop classified as "
+            )
+        ]
         still_photo_refused = [
-            crop for crop in heart_bearing
-            if (str(crop.reason).startswith(f"{EXCLUSION_NON_PHOTO}:")
+            crop
+            for crop in heart_bearing
+            if (
+                str(crop.reason).startswith(f"{EXCLUSION_NON_PHOTO}:")
                 and crop.reason != EXCLUSION_NEVER_DWELLED
                 and not str(crop.reason).startswith(
-                    f"{EXCLUSION_NON_PHOTO}: crop classified as "))]
-        classified = {crop.heart_ordinal for crop in numbered + no_dwell
-                      + classified_non_photo + still_photo_refused}
+                    f"{EXCLUSION_NON_PHOTO}: crop classified as "
+                )
+            )
+        ]
+        classified = {
+            crop.heart_ordinal
+            for crop in numbered + no_dwell + classified_non_photo + still_photo_refused
+        }
         other = [crop for crop in heart_bearing if crop.heart_ordinal not in classified]
         diagnostics = {
             "still_photo_dwell_candidate_limit": still_photo_dwell_candidates,
@@ -8551,10 +10042,12 @@ class AndroidDriver(DatingAppDriver):
             "heart_bearing_cards": len(heart_bearing),
             "numbered_page_hearts": [crop.heart_ordinal for crop in numbered],
             "no_dwell_coverage_page_hearts": [crop.heart_ordinal for crop in no_dwell],
-            "content_non_photo_page_hearts": [crop.heart_ordinal
-                                                for crop in classified_non_photo],
-            "still_photo_refused_page_hearts": [crop.heart_ordinal
-                                                  for crop in still_photo_refused],
+            "content_non_photo_page_hearts": [
+                crop.heart_ordinal for crop in classified_non_photo
+            ],
+            "still_photo_refused_page_hearts": [
+                crop.heart_ordinal for crop in still_photo_refused
+            ],
             "other_unnumbered_page_hearts": [crop.heart_ordinal for crop in other],
         }
         # Keep older successful records byte-for-byte compact.  A field only appears when the
@@ -8602,7 +10095,9 @@ class AndroidDriver(DatingAppDriver):
             for crop in payload.crops:
                 local_frame = crop.frame_index
                 source_frame = local_frame
-                if (isinstance(local_frame, int) and 0 <= local_frame < len(source_indices)):
+                if isinstance(local_frame, int) and 0 <= local_frame < len(
+                    source_indices
+                ):
                     source_frame = source_indices[local_frame]
                 classifier = None
                 if crop.image is not None and crop.heart_ordinal is not None:
@@ -8610,19 +10105,25 @@ class AndroidDriver(DatingAppDriver):
                     # is calculated through the classifier's own entry point so the manifest
                     # cannot drift from the verdict used by the policy.
                     from .item_type_preflight import crop_type_evidence
+
                     classifier = crop_type_evidence(crop.image)
-                manifest.append({
-                    "kind": crop.kind,
-                    "model_item": crop.number,
-                    "heart_ordinal": crop.heart_ordinal,
-                    "source_frame_index": source_frame,
-                    "page_rows": [crop.page_y0, crop.page_y1],
-                    "crop_size": [crop.width, crop.height],
-                    "crop_sha256": (hashlib.sha256(crop.image).hexdigest()[:16]
-                                    if crop.image is not None else None),
-                    "selection_evidence": classifier,
-                    "reason": crop.reason,
-                })
+                manifest.append(
+                    {
+                        "kind": crop.kind,
+                        "model_item": crop.number,
+                        "heart_ordinal": crop.heart_ordinal,
+                        "source_frame_index": source_frame,
+                        "page_rows": [crop.page_y0, crop.page_y1],
+                        "crop_size": [crop.width, crop.height],
+                        "crop_sha256": (
+                            hashlib.sha256(crop.image).hexdigest()[:16]
+                            if crop.image is not None
+                            else None
+                        ),
+                        "selection_evidence": classifier,
+                        "reason": crop.reason,
+                    }
+                )
             return manifest
         except Exception:  # noqa: BLE001 — diagnostics never alter a successful capture
             return []
@@ -8638,14 +10139,20 @@ class AndroidDriver(DatingAppDriver):
         pair = getattr(index, "recovered_from_pair", None)
         pairs = tuple(getattr(index, "recovered_from_pairs", ()) or ())
         segmentation_frames = tuple(
-            getattr(index, "recovered_from_segmentation_frames", ()) or ())
+            getattr(index, "recovered_from_segmentation_frames", ()) or ()
+        )
         bridge = getattr(index, "recovery_bridge", None)
         failed_shift = getattr(index, "recovery_failed_shift", None)
         failed_shifts = tuple(getattr(index, "recovery_failed_shifts", ()) or ())
         source = tuple(getattr(index, "source_frame_indices", ()) or ())
         omitted = [i for i in range(len(photos)) if i not in source]
-        if (self._dbg is None or not isinstance(bridge, tuple) or len(bridge) != 2
-                or not omitted or omitted != list(range(omitted[0], omitted[-1] + 1))):
+        if (
+            self._dbg is None
+            or not isinstance(bridge, tuple)
+            or len(bridge) != 2
+            or not omitted
+            or omitted != list(range(omitted[0], omitted[-1] + 1))
+        ):
             return
         left, right = bridge
         if not (0 <= left < omitted[0] <= omitted[-1] < right < len(photos)):
@@ -8667,22 +10174,32 @@ class AndroidDriver(DatingAppDriver):
                 fields["recovered_from_segmentation_frames"] = list(segmentation_frames)
             if len(pairs) > 1 and len(pairs) == len(failed_shifts):
                 fields["recovered_from_pairs"] = [list(item) for item in pairs]
-                fields["original_failures"] = [{
-                    "pair": list(failed_pair),
-                    "status": getattr(shift, "status", None),
-                    "reason": getattr(shift, "reason", None),
-                    "agreeing": getattr(shift, "agreeing", None),
-                    "dissenting": getattr(shift, "dissenting", None),
-                    "eligible": getattr(shift, "eligible", None),
-                } for failed_pair, shift in zip(pairs, failed_shifts, strict=True)]
-            self._dbg.action("item_index_recovered", before=photos[left],
-                             after=photos[right], anchor=photos[omitted[0]], **fields)
+                fields["original_failures"] = [
+                    {
+                        "pair": list(failed_pair),
+                        "status": getattr(shift, "status", None),
+                        "reason": getattr(shift, "reason", None),
+                        "agreeing": getattr(shift, "agreeing", None),
+                        "dissenting": getattr(shift, "dissenting", None),
+                        "eligible": getattr(shift, "eligible", None),
+                    }
+                    for failed_pair, shift in zip(pairs, failed_shifts, strict=True)
+                ]
+            self._dbg.action(
+                "item_index_recovered",
+                before=photos[left],
+                after=photos[right],
+                anchor=photos[omitted[0]],
+                **fields,
+            )
         except Exception:  # noqa: BLE001 -- diagnostics must never alter a live-run result
             pass
 
     @staticmethod
-    def _item_index_note_text(note: object, source: tuple[int, ...],
-                              ) -> tuple[str, dict[str, int] | None] | None:
+    def _item_index_note_text(
+        note: object,
+        source: tuple[int, ...],
+    ) -> tuple[str, dict[str, int] | None] | None:
         """Rewrite one raw ``ItemIndex`` note's leading ``frame N`` into source+index coords.
 
         Shared by ``notes`` and ``screen_fixed_notes`` in `_record_item_index_notes` below so the
@@ -8703,8 +10220,12 @@ class AndroidDriver(DatingAppDriver):
             return note[:800], None
         original = source[local]
         frame_info = {"local_frame_index": local, "source_frame_index": original}
-        text = re.sub(r"^frame\s+\d+\b", f"source frame {original} (index frame {local})",
-                      note, count=1)[:800]
+        text = re.sub(
+            r"^frame\s+\d+\b",
+            f"source frame {original} (index frame {local})",
+            note,
+            count=1,
+        )[:800]
         return text, frame_info
 
     def _record_item_index_notes(self, photos: list[bytes], index) -> None:
@@ -8729,7 +10250,9 @@ class AndroidDriver(DatingAppDriver):
 
             note_frames: list[dict[str, int]] = []
             notes: list[str] = []
-            for note in raw_notes[:16]:  # a corrupt producer must not make one JSONL line huge
+            for note in raw_notes[
+                :16
+            ]:  # a corrupt producer must not make one JSONL line huge
                 transformed = self._item_index_note_text(note, source)
                 if transformed is None:
                     continue
@@ -8763,22 +10286,33 @@ class AndroidDriver(DatingAppDriver):
                     continue
                 marker_frames = tuple(getattr(repair, "marker_frames", ()) or ())
                 marker_evidence = [
-                    {"local_frame_index": marker.frame_index,
-                     "source_frame_index": source[marker.frame_index],
-                     "x": marker.x, "y": marker.y, "score": marker.score}
+                    {
+                        "local_frame_index": marker.frame_index,
+                        "source_frame_index": source[marker.frame_index],
+                        "x": marker.x,
+                        "y": marker.y,
+                        "score": marker.score,
+                    }
                     for marker in mute_markers
                     if marker.frame_index in marker_frames
-                    and 0 <= marker.frame_index < len(source)]
-                repairs.append({
-                    "path": getattr(repair, "path", None),
-                    "local_pair": [local, local + 1],
-                    "source_pair": [source[local], source[local + 1]],
-                    "raw": {"status": getattr(repair, "raw_status", None),
-                            "delta_px": getattr(repair, "raw_delta_px", None)},
-                    "effective": {"status": getattr(repair, "effective_status", None),
-                                  "delta_px": getattr(repair, "effective_delta_px", None)},
-                    "mute_markers": marker_evidence,
-                })
+                    and 0 <= marker.frame_index < len(source)
+                ]
+                repairs.append(
+                    {
+                        "path": getattr(repair, "path", None),
+                        "local_pair": [local, local + 1],
+                        "source_pair": [source[local], source[local + 1]],
+                        "raw": {
+                            "status": getattr(repair, "raw_status", None),
+                            "delta_px": getattr(repair, "raw_delta_px", None),
+                        },
+                        "effective": {
+                            "status": getattr(repair, "effective_status", None),
+                            "delta_px": getattr(repair, "effective_delta_px", None),
+                        },
+                        "mute_markers": marker_evidence,
+                    }
+                )
             # (2026-09-17, corrected same day TWICE -- see the reverted "item_index_unresolved_
             # strip" name for the first correction) `repairs` mirrors `ItemIndex.repair_provenance`
             # (video-track/layout SHIFT repairs only) and `notes` is `repair_notes + fold_notes`
@@ -8810,11 +10344,16 @@ class AndroidDriver(DatingAppDriver):
                 action = "item_index_screen_fixed_notes"
             else:
                 action = "item_index_notes"
-            self._dbg.action(action,
-                             before=(photos[first] if first is not None else None),
-                             notes=notes, note_frames=note_frames,
-                             source_frame_indices=list(source), item_index_runtime=runtime,
-                             repairs=repairs, screen_fixed_notes=screen_fixed_notes)
+            self._dbg.action(
+                action,
+                before=(photos[first] if first is not None else None),
+                notes=notes,
+                note_frames=note_frames,
+                source_frame_indices=list(source),
+                item_index_runtime=runtime,
+                repairs=repairs,
+                screen_fixed_notes=screen_fixed_notes,
+            )
         except Exception:  # noqa: BLE001 -- diagnostics must never affect a usable capture
             pass
 
@@ -8823,18 +10362,32 @@ class AndroidDriver(DatingAppDriver):
         """Index-local -> original-capture frame positions, conservatively normalised."""
         frames = tuple(getattr(index, "frames", ()) or ())
         source = tuple(getattr(index, "source_frame_indices", ()) or ())
-        if (frames and len(source) == len(frames)
-                and all(isinstance(i, int) and not isinstance(i, bool)
-                        and 0 <= i < len(photos) for i in source)):
+        if (
+            frames
+            and len(source) == len(frames)
+            and all(
+                isinstance(i, int) and not isinstance(i, bool) and 0 <= i < len(photos)
+                for i in source
+            )
+        ):
             return source
         # An unrecovered / legacy index uses the original capture order.  Do not invent mapping
         # for a malformed index with more local frames than capture images.
-        return tuple(range(min(len(frames), len(photos)))) if frames else tuple(range(len(photos)))
+        return (
+            tuple(range(min(len(frames), len(photos))))
+            if frames
+            else tuple(range(len(photos)))
+        )
 
     def _save_item_index_refusal_evidence(
-            self, photos: list[bytes], reason: str, index, cited_local: list[int],
-            runtime_provenance: dict[str, str | None],
-            priority_local: tuple[int, ...] = ()) -> tuple[str | None, list[str]]:
+        self,
+        photos: list[bytes],
+        reason: str,
+        index,
+        cited_local: list[int],
+        runtime_provenance: dict[str, str | None],
+        priority_local: tuple[int, ...] = (),
+    ) -> tuple[str | None, list[str]]:
         """Persist a small, standalone refusal dossier when this is a real DebugLog.
 
         The regular action logger intentionally owns normal rotating screenshots.  These source
@@ -8851,14 +10404,22 @@ class AndroidDriver(DatingAppDriver):
             # filenames traceable from the JSONL record, rather than letting a later refusal
             # overwrite the evidence an earlier record points to.
             dossier_id = hashlib.sha256(
-                (photos[0] if photos else b"") + b"\0" + (photos[-1] if photos else b"")
-                + b"\0" + str(reason).encode("utf-8", "replace")).hexdigest()[:12]
+                (photos[0] if photos else b"")
+                + b"\0"
+                + (photos[-1] if photos else b"")
+                + b"\0"
+                + str(reason).encode("utf-8", "replace")
+            ).hexdigest()[:12]
             local_candidates = sorted({i for i in cited_local if 0 <= i < len(source)})
             if not local_candidates and source:
                 count = min(8, len(source))
-                local_candidates = ([0] if count == 1 else
-                                    [round(i * (len(source) - 1) / (count - 1))
-                                     for i in range(count)])
+                local_candidates = (
+                    [0]
+                    if count == 1
+                    else [
+                        round(i * (len(source) - 1) / (count - 1)) for i in range(count)
+                    ]
+                )
             # Preserve the breadth of a long cited run (including both endpoints), not merely
             # its first eight frames -- but never at the cost of the frames the refusal is ABOUT.
             #
@@ -8877,8 +10438,10 @@ class AndroidDriver(DatingAppDriver):
                 # The stride still spans the whole pool including both endpoints; it just runs
                 # over the slots the named frames left it.
                 if budget > 1:
-                    chosen.update(cited[round(i * (len(cited) - 1) / (budget - 1))]
-                                  for i in range(budget))
+                    chosen.update(
+                        cited[round(i * (len(cited) - 1) / (budget - 1))]
+                        for i in range(budget)
+                    )
                 elif budget == 1:
                     chosen.add(cited[0])
                 # A named frame that the stride would also have picked costs a slot rather than
@@ -8902,11 +10465,18 @@ class AndroidDriver(DatingAppDriver):
                 # exceptional path stand in for an ordinary index's profile-specific bound.
                 diagnostic_max_step_px = None
             try:
-                track_kwargs = ({"max_step_px": diagnostic_max_step_px}
-                                if diagnostic_max_step_px is not None else {})
+                track_kwargs = (
+                    {"max_step_px": diagnostic_max_step_px}
+                    if diagnostic_max_step_px is not None
+                    else {}
+                )
                 track_deltas = _video_track_deltas(
-                    frames, shifts, mute_markers, extent_tolerance_px=getattr(
-                        index, "extent_tolerance_px", 8), **track_kwargs)
+                    frames,
+                    shifts,
+                    mute_markers,
+                    extent_tolerance_px=getattr(index, "extent_tolerance_px", 8),
+                    **track_kwargs,
+                )
             except Exception:  # noqa: BLE001 -- optional track notes cannot erase the bound
                 track_deltas = {}
 
@@ -8919,39 +10489,62 @@ class AndroidDriver(DatingAppDriver):
                     offset = offsets[local] if local < len(offsets) else None
                     top = getattr(block, "top", None)
                     bottom = getattr(block, "bottom", None)
-                    blocks.append({
-                        "frame_rows": [y0, y1],
-                        "page_rows": ([y0 + offset, y1 + offset]
-                                      if isinstance(y0, int) and isinstance(y1, int)
-                                      and isinstance(offset, int) else None),
-                        "kind": getattr(block, "kind", None),
-                        "complete": bool(getattr(block, "complete", False)),
-                        "top_observed": bool(getattr(top, "observed", False)),
-                        "bottom_observed": bool(getattr(bottom, "observed", False)),
-                        "top_kind": getattr(top, "kind", None),
-                        "bottom_kind": getattr(bottom, "kind", None),
-                        "hearts": {
-                            "frame_rows": [list(h) for h in tuple(getattr(block, "hearts", ()) or ())[:12]],
-                            "page_rows": ([list((x, y + offset)) for x, y in
-                                           tuple(getattr(block, "hearts", ()) or ())[:12]]
-                                          if isinstance(offset, int) else None),
-                        },
-                        # Set only on a BLOCK_UNANCHORED strip. The digest is what proves a strip
-                        # is pinned to the SCREEN rather than to the page, so a replay cannot
-                        # re-derive the hold-out decision without it; the reason carries the
-                        # measured widest span against the card width, which is the 6px-margin
-                        # number the per-frame rule turns on. Recording it here is what makes
-                        # that margin's drift visible in a bug report BEFORE it silently stops
-                        # discriminating. Both are a hash and integers, so the sidecar's
-                        # no-pixels-and-no-text guarantee is unchanged.
-                        "content_digest": getattr(block, "content_digest", None),
-                        "unanchored_reason": (
-                            getattr(block, "reason", None)
-                            if getattr(block, "content_digest", None) else None),
-                    })
+                    blocks.append(
+                        {
+                            "frame_rows": [y0, y1],
+                            "page_rows": (
+                                [y0 + offset, y1 + offset]
+                                if isinstance(y0, int)
+                                and isinstance(y1, int)
+                                and isinstance(offset, int)
+                                else None
+                            ),
+                            "kind": getattr(block, "kind", None),
+                            "complete": bool(getattr(block, "complete", False)),
+                            "top_observed": bool(getattr(top, "observed", False)),
+                            "bottom_observed": bool(getattr(bottom, "observed", False)),
+                            "top_kind": getattr(top, "kind", None),
+                            "bottom_kind": getattr(bottom, "kind", None),
+                            "hearts": {
+                                "frame_rows": [
+                                    list(h)
+                                    for h in tuple(getattr(block, "hearts", ()) or ())[
+                                        :12
+                                    ]
+                                ],
+                                "page_rows": (
+                                    [
+                                        list((x, y + offset))
+                                        for x, y in tuple(
+                                            getattr(block, "hearts", ()) or ()
+                                        )[:12]
+                                    ]
+                                    if isinstance(offset, int)
+                                    else None
+                                ),
+                            },
+                            # Set only on a BLOCK_UNANCHORED strip. The digest is what proves a strip
+                            # is pinned to the SCREEN rather than to the page, so a replay cannot
+                            # re-derive the hold-out decision without it; the reason carries the
+                            # measured widest span against the card width, which is the 6px-margin
+                            # number the per-frame rule turns on. Recording it here is what makes
+                            # that margin's drift visible in a bug report BEFORE it silently stops
+                            # discriminating. Both are a hash and integers, so the sidecar's
+                            # no-pixels-and-no-text guarantee is unchanged.
+                            "content_digest": getattr(block, "content_digest", None),
+                            "unanchored_reason": (
+                                getattr(block, "reason", None)
+                                if getattr(block, "content_digest", None)
+                                else None
+                            ),
+                        }
+                    )
                 runs = [
                     {
-                        "frame_rows": [getattr(run, "y0", None), getattr(run, "y1", None)],
+                        "frame_rows": [
+                            getattr(run, "y0", None),
+                            getattr(run, "y1", None),
+                        ],
                         "kind": getattr(run, "kind", None),
                         "widest_intruder_px": getattr(run, "widest_intruder_px", None),
                         "median_level_delta": getattr(run, "median_level_delta", None),
@@ -8959,16 +10552,25 @@ class AndroidDriver(DatingAppDriver):
                     for run in tuple(getattr(segmentation, "runs", ()) or ())[:64]
                 ]
                 record = {
-                    "local_frame_index": local, "source_frame_index": original,
+                    "local_frame_index": local,
+                    "source_frame_index": original,
                     "offset_px": offsets[local] if local < len(offsets) else None,
-                    "animation_marker": (animation_markers[local]
-                                         if local < len(animation_markers) else None),
+                    "animation_marker": (
+                        animation_markers[local]
+                        if local < len(animation_markers)
+                        else None
+                    ),
                     "video_mute_markers": [
-                        {"x": getattr(marker, "x", None), "y": getattr(marker, "y", None),
-                         "score": getattr(marker, "score", None)}
+                        {
+                            "x": getattr(marker, "x", None),
+                            "y": getattr(marker, "y", None),
+                            "score": getattr(marker, "score", None),
+                        }
                         for marker in mute_markers
-                        if getattr(marker, "frame_index", None) == local],
-                    "blocks": blocks, "background_runs": runs,
+                        if getattr(marker, "frame_index", None) == local
+                    ],
+                    "blocks": blocks,
+                    "background_runs": runs,
                 }
                 if screenshot is not None:
                     record["screenshot"] = screenshot
@@ -8980,7 +10582,8 @@ class AndroidDriver(DatingAppDriver):
                 original = source[local]
                 filename = f"item_index_refused_{dossier_id}_frame_{original}.png"
                 atomic_write_private_bytes(
-                    debug_dir / filename, photos[original], parent=debug_dir)
+                    debug_dir / filename, photos[original], parent=debug_dir
+                )
                 saved.append(filename)
                 records.append(geometry_record(local, filename))
 
@@ -8988,7 +10591,9 @@ class AndroidDriver(DatingAppDriver):
             # replay actually needs.  Preserve every folded frame (bounded again per frame)
             # instead of silently omitting a non-cited fragment that made a repair back out.
             geometry_count = min(len(frames), len(source))
-            all_frame_geometry = [geometry_record(local) for local in range(geometry_count)]
+            all_frame_geometry = [
+                geometry_record(local) for local in range(geometry_count)
+            ]
 
             def pair_record(local: int) -> dict:
                 """Numeric raw evidence and local proposals for one adjacent frame pair."""
@@ -8996,7 +10601,10 @@ class AndroidDriver(DatingAppDriver):
                 before, after = frames[local], frames[local + 1]
                 strips = [
                     {
-                        "frame_rows": [getattr(strip, "y0", None), getattr(strip, "y1", None)],
+                        "frame_rows": [
+                            getattr(strip, "y0", None),
+                            getattr(strip, "y1", None),
+                        ],
                         "state": getattr(strip, "state", None),
                         "delta_px": getattr(strip, "delta_px", None),
                         "score": getattr(strip, "score", None),
@@ -9007,44 +10615,81 @@ class AndroidDriver(DatingAppDriver):
                     for strip in tuple(getattr(shift, "strips", ()) or ())[:32]
                 ]
                 proposals = []
-                proposal_kwargs = ({"max_step_px": diagnostic_max_step_px}
-                                   if diagnostic_max_step_px is not None else {})
+                proposal_kwargs = (
+                    {"max_step_px": diagnostic_max_step_px}
+                    if diagnostic_max_step_px is not None
+                    else {}
+                )
                 for kind, proposer in (
-                    ("layout", lambda: _layout_repaired_shift(
-                        local, before, after, shift, **proposal_kwargs)),
-                    ("edge", lambda: _edge_only_two_strip_shift(
-                        local, before, after, shift, **proposal_kwargs)),
-                    ("structural_tail", lambda: _structural_tail_shift(
-                        local, before, after, shift, **proposal_kwargs)),
-                    ("exact_multi", lambda: _exact_multi_strip_shift(
-                        local, before, after, shift, **proposal_kwargs)),
+                    (
+                        "layout",
+                        lambda: _layout_repaired_shift(
+                            local, before, after, shift, **proposal_kwargs
+                        ),
+                    ),
+                    (
+                        "edge",
+                        lambda: _edge_only_two_strip_shift(
+                            local, before, after, shift, **proposal_kwargs
+                        ),
+                    ),
+                    (
+                        "structural_tail",
+                        lambda: _structural_tail_shift(
+                            local, before, after, shift, **proposal_kwargs
+                        ),
+                    ),
+                    (
+                        "exact_multi",
+                        lambda: _exact_multi_strip_shift(
+                            local, before, after, shift, **proposal_kwargs
+                        ),
+                    ),
                 ):
                     proposed, note = proposer()
                     if note is not None:
-                        proposals.append({
-                            "kind": kind, "delta_px": getattr(proposed, "delta_px", None),
-                            "agreeing": getattr(proposed, "agreeing", None), "note": note[:1000],
-                        })
+                        proposals.append(
+                            {
+                                "kind": kind,
+                                "delta_px": getattr(proposed, "delta_px", None),
+                                "agreeing": getattr(proposed, "agreeing", None),
+                                "note": note[:1000],
+                            }
+                        )
                         if kind == "layout":
                             projected, projection_note = _project_to_exact_full_layout(
-                                local, before, after, shift, proposed, **proposal_kwargs)
+                                local, before, after, shift, proposed, **proposal_kwargs
+                            )
                             if projection_note is not None:
-                                proposals.append({
-                                    "kind": "measured_bridge_projection",
-                                    "delta_px": getattr(projected, "delta_px", None),
-                                    "agreeing": getattr(projected, "agreeing", None),
-                                    "note": projection_note[:1000],
-                                })
+                                proposals.append(
+                                    {
+                                        "kind": "measured_bridge_projection",
+                                        "delta_px": getattr(
+                                            projected, "delta_px", None
+                                        ),
+                                        "agreeing": getattr(
+                                            projected, "agreeing", None
+                                        ),
+                                        "note": projection_note[:1000],
+                                    }
+                                )
                 bridge_shift, bridge_note = _measured_layout_bridge(
-                    local, before, after, shift,
-                    allow_full_layout_projection=True, **proposal_kwargs)
+                    local,
+                    before,
+                    after,
+                    shift,
+                    allow_full_layout_projection=True,
+                    **proposal_kwargs,
+                )
                 if bridge_note is not None:
-                    proposals.append({
-                        "kind": "measured_bridge",
-                        "delta_px": getattr(bridge_shift, "delta_px", None),
-                        "agreeing": getattr(bridge_shift, "agreeing", None),
-                        "note": bridge_note[:1000],
-                    })
+                    proposals.append(
+                        {
+                            "kind": "measured_bridge",
+                            "delta_px": getattr(bridge_shift, "delta_px", None),
+                            "agreeing": getattr(bridge_shift, "agreeing", None),
+                            "note": bridge_note[:1000],
+                        }
+                    )
                 return {
                     "pair": [local, local + 1],
                     "source_pair": [source[local], source[local + 1]],
@@ -9062,9 +10707,12 @@ class AndroidDriver(DatingAppDriver):
                         {"delta_px": delta, "voters": list(voters)}
                         for delta, voters in _matched_delta_clusters(shift)
                     ],
-                    "structural_landmarks": [list(value)
-                                             for value in _structural_landmarks(
-                                                 before, after, **proposal_kwargs)],
+                    "structural_landmarks": [
+                        list(value)
+                        for value in _structural_landmarks(
+                            before, after, **proposal_kwargs
+                        )
+                    ],
                     "observed_gutters": {
                         "before": [list(value) for value in _observed_gutters(before)],
                         "after": [list(value) for value in _observed_gutters(after)],
@@ -9077,7 +10725,9 @@ class AndroidDriver(DatingAppDriver):
             # no profile pixels or text.  Keeping measured pairs is essential: the fifth saved
             # refusal's first broken chain hid a later +207px measured majority whose exact
             # top/bottom/heart geometry was +221px, and v2 had discarded its strip bank.
-            pair_count = min(len(shifts), max(0, len(frames) - 1), max(0, len(source) - 1))
+            pair_count = min(
+                len(shifts), max(0, len(frames) - 1), max(0, len(source) - 1)
+            )
             pair_evidence = [pair_record(local) for local in range(pair_count)]
             sidecar = f"item_index_refused_{dossier_id}_evidence.json"
             # The image payload is capped at eight frames; structured geometry is bounded by the
@@ -9085,11 +10735,17 @@ class AndroidDriver(DatingAppDriver):
             # short because the full prose is already in actions.jsonl.
             atomic_write_private_text(
                 debug_dir / sidecar,
-                json.dumps({
-                    "schema_version": 7, "reason": str(reason)[:2000],
-                    "runtime": runtime_provenance, "frames": records,
-                    "all_frame_geometry": all_frame_geometry,
-                    "pair_evidence": pair_evidence}, separators=(",", ":")),
+                json.dumps(
+                    {
+                        "schema_version": 7,
+                        "reason": str(reason)[:2000],
+                        "runtime": runtime_provenance,
+                        "frames": records,
+                        "all_frame_geometry": all_frame_geometry,
+                        "pair_evidence": pair_evidence,
+                    },
+                    separators=(",", ":"),
+                ),
                 parent=debug_dir,
             )
             return sidecar, saved
@@ -9124,22 +10780,26 @@ class AndroidDriver(DatingAppDriver):
                 state = getattr(strip, "state", None)
                 if isinstance(state, str):
                     states[state] = states.get(state, 0) + 1
-            refused_pairs.append({
-                "pair": [pair_index, pair_index + 1],
-                "status": getattr(shift, "status", None),
-                "consensus_px": getattr(shift, "consensus_px", None),
-                "confidence": getattr(shift, "confidence", None),
-                "agreeing": getattr(shift, "agreeing", None),
-                "dissenting": getattr(shift, "dissenting", None),
-                "eligible": getattr(shift, "eligible", None),
-                "strip_states": states,
-                "reason": getattr(shift, "reason", None),
-            })
+            refused_pairs.append(
+                {
+                    "pair": [pair_index, pair_index + 1],
+                    "status": getattr(shift, "status", None),
+                    "consensus_px": getattr(shift, "consensus_px", None),
+                    "confidence": getattr(shift, "confidence", None),
+                    "agreeing": getattr(shift, "agreeing", None),
+                    "dissenting": getattr(shift, "dissenting", None),
+                    "eligible": getattr(shift, "eligible", None),
+                    "strip_states": states,
+                    "reason": getattr(shift, "reason", None),
+                }
+            )
 
         # A malformed/legacy index can lack shifts but still carry the chain's first unknown
         # offset.  Offset j is reached by pair j-1, hence this conversion back to frame indices.
         if failing_pair is None:
-            for offset_index, offset in enumerate(tuple(getattr(index, "offsets", ()) or ())):
+            for offset_index, offset in enumerate(
+                tuple(getattr(index, "offsets", ()) or ())
+            ):
                 if offset is None and offset_index:
                     failing_pair = offset_index - 1
                     break
@@ -9150,8 +10810,12 @@ class AndroidDriver(DatingAppDriver):
         # ledger fields cover older/newer message wording that does not say "frame".
         for text in (reason, *tuple(getattr(index, "failures", ()) or ())):
             if isinstance(text, str):
-                for match in re.finditer(r"\bframe(?:s)?\s+(\d+)(?:\s+and\s+(\d+))?", text):
-                    named_in_reason.extend(int(v) for v in match.groups() if v is not None)
+                for match in re.finditer(
+                    r"\bframe(?:s)?\s+(\d+)(?:\s+and\s+(\d+))?", text
+                ):
+                    named_in_reason.extend(
+                        int(v) for v in match.groups() if v is not None
+                    )
         cited_local.extend(named_in_reason)
         if failing_pair is not None:
             cited_local.extend((failing_pair, failing_pair + 1))
@@ -9159,24 +10823,37 @@ class AndroidDriver(DatingAppDriver):
             pair = rec.get("pair")
             if isinstance(pair, list):
                 cited_local.extend(v for v in pair if isinstance(v, int))
-                if (len(pair) == 2 and all(isinstance(v, int) for v in pair)):
+                if len(pair) == 2 and all(isinstance(v, int) for v in pair):
                     # Preserve one anchor before and two frames after every refused pair.  The
                     # look-ahead is still subject to the existing eight-image cap, but catches a
                     # measured downstream contradiction: v2 stopped at frame 10 while frame 11
                     # was the first screenshot proving +207px should have been +221px.
-                    cited_local.extend(range(
-                        max(0, pair[0] - 1), min(len(photos), pair[1] + 3)))
+                    cited_local.extend(
+                        range(max(0, pair[0] - 1), min(len(photos), pair[1] + 3))
+                    )
         runtime_provenance = _item_index_runtime_provenance()
         sidecar, evidence_frames = self._save_item_index_refusal_evidence(
-            photos, reason, index, cited_local, runtime_provenance,
+            photos,
+            reason,
+            index,
+            cited_local,
+            runtime_provenance,
             # The pair the refusal is named after outranks breadth when the eight-image cap
             # has to drop something.  A malformed/legacy index that yields no failing pair still
             # has the frames its own prose names, which is the same evidence by a weaker route.
-            priority_local=((failing_pair, failing_pair + 1) if failing_pair is not None
-                            else tuple(named_in_reason[:2])))
+            priority_local=(
+                (failing_pair, failing_pair + 1)
+                if failing_pair is not None
+                else tuple(named_in_reason[:2])
+            ),
+        )
 
         before = after = None
-        if failing_pair is not None and 0 <= failing_pair and failing_pair + 1 < len(photos):
+        if (
+            failing_pair is not None
+            and 0 <= failing_pair
+            and failing_pair + 1 < len(photos)
+        ):
             before, after = photos[failing_pair], photos[failing_pair + 1]
         elif index is None and photos:
             # An exception has no pair ledger.  Save the capture boundaries rather than claiming
@@ -9226,26 +10903,35 @@ class AndroidDriver(DatingAppDriver):
         # bare constant misreports the read by up to two frames in the one message whose job is
         # to let the owner judge whether that constant is measured against the wrong profiles.
         applied = self._profile_capture_limit
-        ceiling = (f"the derived ceiling of {_ENUMERATION_CAPTURE_LIMIT}" if applied is None
-                   or applied == _ENUMERATION_CAPTURE_LIMIT else
-                   f"this read's ceiling of {applied}, jittered up from the derived "
-                   f"{_ENUMERATION_CAPTURE_LIMIT}")
-        print(f"{self.spec.app}: this profile is longer than the enumeration read could cover -- "
-              f"{frames} frame(s) at {ceiling} and the "
-              f"bottom was never reached, so the numbered item list stops part way down the "
-              f"profile and the model is told so. See _ENUMERATION_CAPTURE_LIMIT for the "
-              f"derivation; if this is not rare, that constant is measured against the wrong "
-              f"profiles.")
+        ceiling = (
+            f"the derived ceiling of {_ENUMERATION_CAPTURE_LIMIT}"
+            if applied is None or applied == _ENUMERATION_CAPTURE_LIMIT
+            else f"this read's ceiling of {applied}, jittered up from the derived "
+            f"{_ENUMERATION_CAPTURE_LIMIT}"
+        )
+        print(
+            f"{self.spec.app}: this profile is longer than the enumeration read could cover -- "
+            f"{frames} frame(s) at {ceiling} and the "
+            f"bottom was never reached, so the numbered item list stops part way down the "
+            f"profile and the model is told so. See _ENUMERATION_CAPTURE_LIMIT for the "
+            f"derivation; if this is not rare, that constant is measured against the wrong "
+            f"profiles."
+        )
         if self._dbg is not None:
             try:
-                self._dbg.action("capture_enumeration_truncated", frames=frames,
-                                 ceiling=_ENUMERATION_CAPTURE_LIMIT,
-                                 limit=self._profile_capture_limit,
-                                 profile_name=self._identity_name)
+                self._dbg.action(
+                    "capture_enumeration_truncated",
+                    frames=frames,
+                    ceiling=_ENUMERATION_CAPTURE_LIMIT,
+                    limit=self._profile_capture_limit,
+                    profile_name=self._identity_name,
+                )
             except Exception:  # noqa: BLE001 — debug logging must never break a capture
                 pass
 
-    def _invalidate_item_index(self, reason: str, *, unavailable_kind: str = "") -> None:
+    def _invalidate_item_index(
+        self, reason: str, *, unavailable_kind: str = ""
+    ) -> None:
         """Drop the driver-owned index, with the reason a later reader would need.
 
         Doc 5.3: the table's "lifetime is exactly one profile, and it must be invalidated
@@ -9280,9 +10966,14 @@ class AndroidDriver(DatingAppDriver):
         self._current_items_unavailable_kind = unavailable_kind
         self._targeting_binding_fetched = False
 
-    def _emit_gesture_timing(self, direction: str, gesture_start: float,
-                             stamps: dict[str, float], *,
-                             frame_index: int | None) -> None:
+    def _emit_gesture_timing(
+        self,
+        direction: str,
+        gesture_start: float,
+        stamps: dict[str, float],
+        *,
+        frame_index: int | None,
+    ) -> None:
         """One best-effort actions.jsonl row decomposing a single humanized read-scroll gesture
         (`_scroll_down_one`/`_scroll_up_one`) into the named costs `_scroll` and the touch
         transport it drives actually measured.
@@ -9314,15 +11005,24 @@ class AndroidDriver(DatingAppDriver):
         unattributed_s = gesture_wall_s - sum(stamps.values())
         try:
             self._dbg.action(
-                "capture_gesture_timing", direction=direction, frame_index=frame_index,
-                gesture_wall_s=round(gesture_wall_s, 6), unattributed_s=round(unattributed_s, 6),
-                **{key: round(value, 6) for key, value in sorted(stamps.items())})
+                "capture_gesture_timing",
+                direction=direction,
+                frame_index=frame_index,
+                gesture_wall_s=round(gesture_wall_s, 6),
+                unattributed_s=round(unattributed_s, 6),
+                **{key: round(value, 6) for key, value in sorted(stamps.items())},
+            )
         except Exception:  # noqa: BLE001 -- diagnostics must never alter a live-run result
             pass
 
-    def _emit_capture_iteration_timing(self, frame_index: int, iter_start: float,
-                                       stamps: dict[str, float], *,
-                                       exit_reason: str) -> tuple[float, float]:
+    def _emit_capture_iteration_timing(
+        self,
+        frame_index: int,
+        iter_start: float,
+        stamps: dict[str, float],
+        *,
+        exit_reason: str,
+    ) -> tuple[float, float]:
         """One best-effort actions.jsonl row for a single read-loop iteration's timing ledger.
 
         See `_capture_current`'s TIMING LEDGER paragraph for why this exists. `unattributed_s`
@@ -9346,16 +11046,24 @@ class AndroidDriver(DatingAppDriver):
         if self._dbg is not None:
             try:
                 self._dbg.action(
-                    "capture_iteration_timing", frame_index=frame_index, exit_reason=exit_reason,
-                    iter_wall_s=round(iter_wall_s, 6), unattributed_s=round(unattributed_s, 6),
-                    **{key: round(value, 6) for key, value in sorted(stamps.items())})
+                    "capture_iteration_timing",
+                    frame_index=frame_index,
+                    exit_reason=exit_reason,
+                    iter_wall_s=round(iter_wall_s, 6),
+                    unattributed_s=round(unattributed_s, 6),
+                    **{key: round(value, 6) for key, value in sorted(stamps.items())},
+                )
             except Exception:  # noqa: BLE001 -- diagnostics must never alter a live-run result
                 pass
         return iter_wall_s, unattributed_s
 
-    def _emit_capture_timing_summary(self, iterations: int, totals: dict[str, float],
-                                     iter_wall_s_total: float,
-                                     unattributed_s_total: float) -> None:
+    def _emit_capture_timing_summary(
+        self,
+        iterations: int,
+        totals: dict[str, float],
+        iter_wall_s_total: float,
+        unattributed_s_total: float,
+    ) -> None:
         """One best-effort actions.jsonl row rolling up every `capture_iteration_timing` row
         this capture's read loop wrote, per `_capture_current`'s TIMING LEDGER paragraph.
 
@@ -9370,10 +11078,12 @@ class AndroidDriver(DatingAppDriver):
             return
         try:
             self._dbg.action(
-                "capture_timing_summary", iterations=iterations,
+                "capture_timing_summary",
+                iterations=iterations,
                 iter_wall_s_total=round(iter_wall_s_total, 6),
                 unattributed_s_total=round(unattributed_s_total, 6),
-                **{key: round(value, 6) for key, value in sorted(totals.items())})
+                **{key: round(value, 6) for key, value in sorted(totals.items())},
+            )
         except Exception:  # noqa: BLE001 -- diagnostics must never alter a live-run result
             pass
 
@@ -9450,11 +11160,14 @@ class AndroidDriver(DatingAppDriver):
         # healthy profile from arbitrary earlier in a session.  A failed/intervening capture
         # consumes the predecessor fact rather than letting old evidence buy a new experiment.
         self._previous_capture_scroll_top_signal_healthy_binding = (
-            self._scroll_top_signal_healthy_binding)
+            self._scroll_top_signal_healthy_binding
+        )
         self._scroll_top_signal_healthy_binding = None
         self._current_sigs = []
-        self._current_capture_truncated = False   # reset: see the for/else below
-        self._capture_scrolls = 0     # reset: _scroll_to_top must undo THIS capture, not a stale one
+        self._current_capture_truncated = False  # reset: see the for/else below
+        self._capture_scrolls = (
+            0  # reset: _scroll_to_top must undo THIS capture, not a stale one
+        )
         self._capture_scroll_ledger = []
         # Identity anchor (see _identity_of): reset every capture, unconditionally, so a
         # profile with no identity_band declared or one that never scrolls far enough to
@@ -9472,19 +11185,24 @@ class AndroidDriver(DatingAppDriver):
         # profile (unlikely but not impossible for a mostly-blank band) could otherwise return
         # a stale answer. See _ocr_band_cache's own comment in __init__.
         self._ocr_band_cache = {}
-        self._current_capture_split = False   # set if the deck advanced mid-capture; see the loop
+        self._current_capture_split = (
+            False  # set if the deck advanced mid-capture; see the loop
+        )
         # Reset with the rest of the per-capture state and for the same reason: the coverage
         # aggregate on the `capture` row below must describe THIS read's own steps, and a ledger
         # surviving into the next profile would report another card's geometry.
         self._enum_coverage = _EnumerationCoverageLedger()
-        self._capture_split_frame = None      # rejected trigger frame; retained for debug evidence
-        self._capture_split_evidence = {}     # scalar-only evidence paired with that frame
+        self._capture_split_frame = (
+            None  # rejected trigger frame; retained for debug evidence
+        )
+        self._capture_split_evidence = {}  # scalar-only evidence paired with that frame
         # Doc 5.3's table dies with the profile it described. Reset HERE, alongside
         # _current_sigs and the identity anchors above and for exactly their reason: the frames
         # about to be read belong to a different person, so anything left over from the last
         # read is a table pointing at somebody else's card.
         self._invalidate_item_index(
-            "this profile's read has not finished, so nothing has been enumerated for it yet")
+            "this profile's read has not finished, so nothing has been enumerated for it yet"
+        )
         # A valid screencap can be Android System UI rather than Hinge (the notification shade
         # in the reported run is one example). Do this before the scroll-top gate: comparing a
         # System UI header to filter-chip pixels is not evidence that a Hinge card is scrolled.
@@ -9507,8 +11225,9 @@ class AndroidDriver(DatingAppDriver):
                 # The loop's own first check returns None one line below, so the gate's answer
                 # would be discarded -- and the gate costs a full ADB round-trip, which is
                 # exactly the latency a Stop is not supposed to wait through.
-                enumeration_reason = ("the run is stopping, so this profile was never "
-                                      "enumerated")
+                enumeration_reason = (
+                    "the run is stopping, so this profile was never enumerated"
+                )
             else:
                 enumeration_reason = self._confirm_enumeration_top()
         enumerating = not enumeration_reason
@@ -9524,7 +11243,8 @@ class AndroidDriver(DatingAppDriver):
         # ranker must not see all 48 of those either.
         enumeration_ceiling_raised = enumerating
         self._profile_capture_limit = self._capture_limit_for_profile(
-            _ENUMERATION_CAPTURE_LIMIT if enumerating else None)
+            _ENUMERATION_CAPTURE_LIMIT if enumerating else None
+        )
         # NOTE for anyone looking for a `enum_min_spacing_px`-shaped running minimum here: the
         # coverage-aimed rule (2026-08-24, scroll_step.plan_coverage_step) does not carry one.
         # Its throttle is read entirely off the CURRENT frame's own trailing card (see
@@ -9545,14 +11265,15 @@ class AndroidDriver(DatingAppDriver):
         # `_READ_PAUSE_COUNTS` module comment for the full reasoning (2026-08-24 dwell-shape
         # change, ops/ANTI-BOT-RESEARCH.md dated addendum).
         read_pause_iterations = self._plan_read_pause_iterations(
-            max(0, self._profile_capture_limit - 1))
+            max(0, self._profile_capture_limit - 1)
+        )
         read_dwell_s_total = 0.0
         seen = set()
         # Consecutive pairs frameshift has MEASURED as exactly 0px since the last frame that
         # actually moved. See _static_pair_is_the_bottom for why the byte-identical `seen` test
         # below cannot see this profile's bottom on its own.
         static_pairs = 0
-        prev_ds = None                  # last APPENDED frame's downsample, for that probe's gate
+        prev_ds = None  # last APPENDED frame's downsample, for that probe's gate
         # TIMING LEDGER (found+fixed 2026-08-23): this read loop is measured live at ~6.0s
         # gesture-to-gesture, but its own named primitives (screencap, dwell, gesture, settle,
         # segmentation) only account for ~4.1-4.6s of that, leaving ~1.4-1.9s per frame -- the
@@ -9609,7 +11330,9 @@ class AndroidDriver(DatingAppDriver):
                     exit_reason = "sheet_visible"
                     return None
                 with _time_bucket(stamps, "downsample_s"):
-                    ds = _downsample(frame)         # None if PIL/numpy unavailable or undecodable
+                    ds = _downsample(
+                        frame
+                    )  # None if PIL/numpy unavailable or undecodable
                 # Read ONCE per frame, not once per consumer (2026-08-23 perf pass). Both the
                 # mid-capture boundary check just below and the "lock the identity anchor inline"
                 # block near the end of this loop used to call `_band(frame, self.identity_band)`
@@ -9624,8 +11347,10 @@ class AndroidDriver(DatingAppDriver):
                 # exact condition every time regardless.
                 with _time_bucket(stamps, "identity_band_decode_s"):
                     identity_band_of_frame = (
-                        _band(frame, self.identity_band) if self.identity_band is not None
-                        else None)
+                        _band(frame, self.identity_band)
+                        if self.identity_band is not None
+                        else None
+                    )
                 # A profile boundary reached MID-CAPTURE. The deck can advance while this loop is
                 # still reading -- Hinge draws no on-screen busy overlay (worker.py's WAIT cue
                 # lives on the hub, not the phone), and the human's finger and the bot's own
@@ -9643,8 +11368,11 @@ class AndroidDriver(DatingAppDriver):
                         band = identity_band_of_frame
                         if band is not None:
                             identity_dist = _band_dist(band, self._identity_sig)
-                            top_dist = (None if self._identity_top_sig is None
-                                        else _band_dist(band, self._identity_top_sig))
+                            top_dist = (
+                                None
+                                if self._identity_top_sig is None
+                                else _band_dist(band, self._identity_top_sig)
+                            )
                             if identity_dist < self.change_threshold:
                                 # A second matching observation promotes the provisional first header
                                 # to an identity anchor. Keep the later, settled pixels and OCR read:
@@ -9653,7 +11381,9 @@ class AndroidDriver(DatingAppDriver):
                                 if not self._identity_anchor_confirmed:
                                     self._identity_anchor_confirmed = True
                                     self._identity_sig = band
-                                    self._identity_name = self._ocr_band(frame, self.identity_band)
+                                    self._identity_name = self._ocr_band(
+                                        frame, self.identity_band
+                                    )
                                     self._identity_anchor_frame = frame
                                     self._identity_anchor_frame_index = len(photos)
                             elif top_dist is None or top_dist >= self.change_threshold:
@@ -9667,15 +11397,26 @@ class AndroidDriver(DatingAppDriver):
                                 content_match = False
                                 content_shift = None
                                 content_overlap = None
-                                if (not self._identity_anchor_confirmed and ds is not None
-                                        and self._current_sigs and self._current_sigs[-1] is not None
-                                        and ds.shape == self._current_sigs[-1].shape):
+                                if (
+                                    not self._identity_anchor_confirmed
+                                    and ds is not None
+                                    and self._current_sigs
+                                    and self._current_sigs[-1] is not None
+                                    and ds.shape == self._current_sigs[-1].shape
+                                ):
                                     try:
-                                        content_match, content_shift, content_overlap = (
-                                            _vertical_shift_match(
-                                                ds, self._current_sigs[-1],
-                                                threshold=self.change_threshold,
-                                                rows=_content_rows(self.content_band, ds.shape[0])))
+                                        (
+                                            content_match,
+                                            content_shift,
+                                            content_overlap,
+                                        ) = _vertical_shift_match(
+                                            ds,
+                                            self._current_sigs[-1],
+                                            threshold=self.change_threshold,
+                                            rows=_content_rows(
+                                                self.content_band, ds.shape[0]
+                                            ),
+                                        )
                                     except Exception:  # noqa: BLE001 -- corroboration fails closed
                                         content_match = False
                                 if content_match:
@@ -9683,20 +11424,29 @@ class AndroidDriver(DatingAppDriver):
                                     old_index = self._identity_anchor_frame_index
                                     old_name = self._identity_name
                                     self._identity_sig = band
-                                    self._identity_name = self._ocr_band(frame, self.identity_band)
+                                    self._identity_name = self._ocr_band(
+                                        frame, self.identity_band
+                                    )
                                     self._identity_anchor_frame = frame
                                     self._identity_anchor_frame_index = len(photos)
                                     if self._dbg is not None:
                                         self._dbg.action(
-                                            "identity_anchor_replaced", before=old_anchor, after=frame,
+                                            "identity_anchor_replaced",
+                                            before=old_anchor,
+                                            after=frame,
                                             old_anchor_frame_index=old_index,
                                             new_anchor_frame_index=len(photos),
                                             old_profile_name=old_name,
                                             new_profile_name=self._identity_name,
                                             identity_dist=round(identity_dist, 3),
-                                            top_dist=(None if top_dist is None else round(top_dist, 3)),
+                                            top_dist=(
+                                                None
+                                                if top_dist is None
+                                                else round(top_dist, 3)
+                                            ),
                                             content_shift=content_shift,
-                                            content_overlap_rows=content_overlap)
+                                            content_overlap_rows=content_overlap,
+                                        )
                                     # This frame is still ordinary profile content. It is appended below,
                                     # and the next matching header observation will confirm the anchor.
                                 else:
@@ -9707,9 +11457,13 @@ class AndroidDriver(DatingAppDriver):
                                     evidence = {
                                         "trigger_frame_index": len(photos),
                                         "captured_frames": len(photos),
-                                        "read_scrolls": len(self._capture_scroll_ledger),
+                                        "read_scrolls": len(
+                                            self._capture_scroll_ledger
+                                        ),
                                         "identity_dist": round(identity_dist, 3),
-                                        "top_dist": None if top_dist is None else round(top_dist, 3),
+                                        "top_dist": None
+                                        if top_dist is None
+                                        else round(top_dist, 3),
                                         "identity_anchor_frame_index": self._identity_anchor_frame_index,
                                         "identity_anchor_confirmed": self._identity_anchor_confirmed,
                                         "identity_anchor_name": self._identity_name,
@@ -9719,16 +11473,21 @@ class AndroidDriver(DatingAppDriver):
                                     }
                                     try:
                                         top_verdict = confirm_scroll_top(
-                                            frame, identity_band=self.identity_band)
+                                            frame, identity_band=self.identity_band
+                                        )
                                     except ScrollTopError as exc:
                                         evidence["scroll_top_state"] = "unreadable"
                                         evidence["scroll_top_reason"] = str(exc)
                                     else:
                                         evidence["scroll_top_state"] = top_verdict.state
                                         evidence["scroll_top_distance"] = (
-                                            None if top_verdict.distance is None
-                                            else round(top_verdict.distance, 3))
-                                        evidence["scroll_top_reason"] = top_verdict.reason
+                                            None
+                                            if top_verdict.distance is None
+                                            else round(top_verdict.distance, 3)
+                                        )
+                                        evidence["scroll_top_reason"] = (
+                                            top_verdict.reason
+                                        )
                                     self._capture_split_frame = frame
                                     self._capture_split_evidence = evidence
                                     self._current_capture_split = True
@@ -9772,8 +11531,12 @@ class AndroidDriver(DatingAppDriver):
                 if photos:
                     with _time_bucket(stamps, "bottom_detect_s"):
                         is_bottom_pair = _static_pair_is_the_bottom(
-                            photos[-1], frame, self.content_band,
-                            before_ds=prev_ds, after_ds=ds)
+                            photos[-1],
+                            frame,
+                            self.content_band,
+                            before_ds=prev_ds,
+                            after_ds=ds,
+                        )
                 else:
                     is_bottom_pair = False
                 if is_bottom_pair:
@@ -9797,11 +11560,20 @@ class AndroidDriver(DatingAppDriver):
                         band = identity_band_of_frame
                         if band is not None:
                             if self._identity_top_sig is None:
-                                self._identity_top_sig = band     # frame 0: the app's scroll-top chrome
-                            elif (self._identity_sig is None
-                                    and _band_dist(band, self._identity_top_sig) >= self.change_threshold):
-                                self._identity_sig = band         # first frame showing the sticky header
-                                self._identity_name = self._ocr_band(frame, self.identity_band)
+                                self._identity_top_sig = (
+                                    band  # frame 0: the app's scroll-top chrome
+                                )
+                            elif (
+                                self._identity_sig is None
+                                and _band_dist(band, self._identity_top_sig)
+                                >= self.change_threshold
+                            ):
+                                self._identity_sig = (
+                                    band  # first frame showing the sticky header
+                                )
+                                self._identity_name = self._ocr_band(
+                                    frame, self.identity_band
+                                )
                                 self._identity_anchor_frame = frame
                                 self._identity_anchor_frame_index = len(photos) - 1
                 # Keep _current_sigs index-ALIGNED with photos: append ds even when None (an
@@ -9855,11 +11627,14 @@ class AndroidDriver(DatingAppDriver):
                         try:
                             with _time_bucket(stamps, "enumeration_step_s"):
                                 step = self._plan_enumeration_step(
-                                    frame, x_frac,
-                                    allow_segmentation_failure_fallback=
-                                    (not enum_segmentation_fallback_run_closed
-                                     and len(enum_segmentation_fallback_frames)
-                                     < MAX_SEGMENTATION_FALLBACK_FRAMES))
+                                    frame,
+                                    x_frac,
+                                    allow_segmentation_failure_fallback=(
+                                        not enum_segmentation_fallback_run_closed
+                                        and len(enum_segmentation_fallback_frames)
+                                        < MAX_SEGMENTATION_FALLBACK_FRAMES
+                                    ),
+                                )
                         except (ScrollStepError, SegmentationError) as exc:
                             enumerating = False
                             # THE REFUSAL BUCKET (see `_EnumerationCoverageLedger`): this exact
@@ -9871,12 +11646,17 @@ class AndroidDriver(DatingAppDriver):
                             self._enum_coverage.note_refusal(len(photos) - 1, exc)
                             enumeration_reason = (
                                 f"the enumeration scroll could not be sized against frame "
-                                f"{len(photos) - 1} of this profile ({type(exc).__name__}: {exc})")
+                                f"{len(photos) - 1} of this profile ({type(exc).__name__}: {exc})"
+                            )
                             if self._dbg is not None:
                                 self._dbg.action(
-                                    "enumeration_planning_refused", before=frame,
-                                    keep_before=True, frame_index=len(photos) - 1,
-                                    error=type(exc).__name__, reason=str(exc))
+                                    "enumeration_planning_refused",
+                                    before=frame,
+                                    keep_before=True,
+                                    frame_index=len(photos) - 1,
+                                    error=type(exc).__name__,
+                                    reason=str(exc),
+                                )
                             # Training has no ranker-only fallback consumer: its worker checks
                             # `items_unavailable` before embedding/scoring and stops the run. Once
                             # targeting is impossible, continuing at the ordinary 0.55 cadence
@@ -9896,13 +11676,15 @@ class AndroidDriver(DatingAppDriver):
                                 enum_segmentation_fallback_frames.append(fallback_frame)
                                 if self._dbg is not None:
                                     self._dbg.action(
-                                        "enumeration_segmentation_fallback", before=frame,
+                                        "enumeration_segmentation_fallback",
+                                        before=frame,
                                         keep_before=True,
                                         frame_index=fallback_frame,
                                         fallback_frame_indices=enum_segmentation_fallback_frames,
                                         reason=step.reason,
                                         step_px=step.step_px,
-                                        cap_px=step.cap_px)
+                                        cap_px=step.cap_px,
+                                    )
                             elif enum_segmentation_fallback_frames:
                                 # A normal plan proves the one recoverable bad-frame window is over.
                                 # Do not reopen it later: item_index deliberately has no two-window
@@ -9942,15 +11724,16 @@ class AndroidDriver(DatingAppDriver):
                         if completed:
                             read_dwell_s_total += pause_s
                             if timing_enabled:
-                                stamps["read_dwell_s"] = (
-                                    stamps.get("read_dwell_s", 0.0)
-                                    + (time.monotonic() - started))
+                                stamps["read_dwell_s"] = stamps.get(
+                                    "read_dwell_s", 0.0
+                                ) + (time.monotonic() - started)
                         else:
                             dwell_elapsed = max(0.0, time.monotonic() - started)
                             read_dwell_s_total += dwell_elapsed
                             if timing_enabled:
                                 stamps["read_dwell_s"] = (
-                                    stamps.get("read_dwell_s", 0.0) + dwell_elapsed)
+                                    stamps.get("read_dwell_s", 0.0) + dwell_elapsed
+                                )
                         if not completed:
                             exit_reason = "stopped_during_dwell"
                             self._note_capture_aborted(len(photos))
@@ -9964,7 +11747,8 @@ class AndroidDriver(DatingAppDriver):
                     # not included in read_dwell_s_total.
                     with _time_bucket(stamps, "settle_s"):
                         settle_completed = self._interruptible_sleep(
-                            human_delay(_READ_SCROLL_SETTLE_S), should_stop)
+                            human_delay(_READ_SCROLL_SETTLE_S), should_stop
+                        )
                     if not settle_completed:
                         exit_reason = "stopped_during_settle"
                         self._note_capture_aborted(len(photos))
@@ -9972,10 +11756,12 @@ class AndroidDriver(DatingAppDriver):
             finally:
                 if timing_enabled:
                     iter_wall_s, unattributed_s = self._emit_capture_iteration_timing(
-                        i, iter_start, stamps, exit_reason=exit_reason)
+                        i, iter_start, stamps, exit_reason=exit_reason
+                    )
                     for key, value in stamps.items():
                         capture_timing_totals[key] = (
-                            capture_timing_totals.get(key, 0.0) + value)
+                            capture_timing_totals.get(key, 0.0) + value
+                        )
                     capture_timing_iter_wall_total += iter_wall_s
                     capture_timing_unattributed_total += unattributed_s
                     capture_timing_iterations += 1
@@ -10001,17 +11787,25 @@ class AndroidDriver(DatingAppDriver):
         # deliberately (see that same paragraph for why that loses nothing but the summary row).
         if timing_enabled and capture_timing_iterations:
             self._emit_capture_timing_summary(
-                capture_timing_iterations, capture_timing_totals,
-                capture_timing_iter_wall_total, capture_timing_unattributed_total)
+                capture_timing_iterations,
+                capture_timing_totals,
+                capture_timing_iter_wall_total,
+                capture_timing_unattributed_total,
+            )
         # H1: in a real run (open_session validated PIL/numpy), every frame should
         # downsample. If none did, decode is broken at runtime (PIL/numpy failure OR a wedged
         # device returning empty/truncated screencap) — refuse to continue in a degraded mode
         # where scroll-detection is off and manual scrolls mislabel as PASS / the worker
         # silently no-ops forever. (The decodable-static case returned None above.)
-        if self._observe_ready and photos and not any(s is not None for s in self._current_sigs):
+        if (
+            self._observe_ready
+            and photos
+            and not any(s is not None for s in self._current_sigs)
+        ):
             raise DriverClosed(
                 "screencap frames could not be decoded (PIL/numpy runtime failure or wedged "
-                "device); refusing to run degraded — it would corrupt training labels")
+                "device); refusing to run degraded — it would corrupt training labels"
+            )
         # Identity anchor (layer 1 of the observe-mode redesign): current_profile()/next_profile()
         # both go through here, and _scroll_to_top() puts the PREVIOUS capture at the top before
         # this one starts reading -- so photos[0] is guaranteed to be at scroll-top, i.e. showing
@@ -10022,7 +11816,9 @@ class AndroidDriver(DatingAppDriver):
         # comment for the measured 0.00-vs-17.95 separation this relies on. Left None when the
         # profile was never scrolled far enough during THIS capture to reveal it; _identity_of
         # then reports 'unknown' rather than manufacturing a false 'same'/'new' from nothing.
-        identity_seen = self._identity_sig is not None    # locked inline in the loop above
+        identity_seen = (
+            self._identity_sig is not None
+        )  # locked inline in the loop above
         if self._current_capture_split:
             # This capture spans two profiles: the deck advanced part-way through the read.
             # Returning the frames anyway would hand worker.py a Profile whose photos are two
@@ -10032,14 +11828,20 @@ class AndroidDriver(DatingAppDriver):
             # here"; worker.py's _observe_loop treats it as `continue` and recaptures the card
             # that is actually on screen now (worker.py:215-216), which is exactly right.
             if self._dbg is not None and photos:
-                self._dbg.action("capture_split", before=photos[0],
-                                 after=self._capture_split_frame,
-                                 anchor=self._identity_anchor_frame, photos=len(photos),
-                                 profile_name=self._identity_name,
-                                 **self._capture_split_evidence)
-            print(f"{self.spec.app}: the deck advanced while reading this profile "
-                  f"(captured {len(photos)} frame(s) spanning two cards); discarding and "
-                  f"recapturing rather than mixing two people into one label.")
+                self._dbg.action(
+                    "capture_split",
+                    before=photos[0],
+                    after=self._capture_split_frame,
+                    anchor=self._identity_anchor_frame,
+                    photos=len(photos),
+                    profile_name=self._identity_name,
+                    **self._capture_split_evidence,
+                )
+            print(
+                f"{self.spec.app}: the deck advanced while reading this profile "
+                f"(captured {len(photos)} frame(s) spanning two cards); discarding and "
+                f"recapturing rather than mixing two people into one label."
+            )
             # THE DECK-ADVANCE PATH, named explicitly by doc 5.3 as a place the table must be
             # invalidated. Nothing was indexed on this path anyway (the build below never runs),
             # but the point is that the state must not be left describing whatever was here
@@ -10048,7 +11850,8 @@ class AndroidDriver(DatingAppDriver):
             # table doc 5.3 says a wrong like is built from.
             self._invalidate_item_index(
                 "the deck advanced while this profile was being read, so the capture spans two "
-                "cards and nothing about it can be enumerated")
+                "cards and nothing about it can be enumerated"
+            )
             return None
         # THE INDEX, from the frames that were actually kept (doc 5.2/5.3). Only when the whole
         # read was an enumeration read: a capture that stopped enumerating half way through has
@@ -10065,9 +11868,12 @@ class AndroidDriver(DatingAppDriver):
             # list, so bugreport.py's completion verdict can tell a run behaving exactly as
             # configured from one that hit a fault (see that predicate's docstring).
             self._invalidate_item_index(
-                enumeration_reason, unavailable_kind=enumeration_blocker_kind)
-            print(f"{self.spec.app}: no numbered item list for this profile -- "
-                  f"{enumeration_reason}")
+                enumeration_reason, unavailable_kind=enumeration_blocker_kind
+            )
+            print(
+                f"{self.spec.app}: no numbered item list for this profile -- "
+                f"{enumeration_reason}"
+            )
         else:
             self._current_items_unavailable = ""
             self._current_items_unavailable_kind = ""
@@ -10086,63 +11892,77 @@ class AndroidDriver(DatingAppDriver):
         # photos` in that case, so nothing about this file changes for it.
         ranker_photos = (
             _ranker_frames_from_enumeration(photos, self.scroll_captures)
-            if enumeration_ceiling_raised else photos)
+            if enumeration_ceiling_raised
+            else photos
+        )
         if self._dbg is not None and photos:
             # profile_name, not name: DebugLog.action's own first positional parameter IS
             # called `name` (the action-type string, "capture" here) -- a fields key of
             # literally `name` would collide with it (TypeError: multiple values for
             # argument 'name'). Same reason wait_for_decision's debug records below use
             # profile_name too.
-            self._dbg.action("capture", before=photos[0], photos=len(photos),   # first frame = who was scored
-                             capture_truncated=self._current_capture_truncated,
-                             identity_seen=identity_seen,
-                             identity_confirmed=self._identity_anchor_confirmed,
-                             profile_name=self._identity_name,
-                             # The enumeration's own verdict, so a debug replay can tell "this
-                             # profile was never enumerated" from "it was, and here is what it
-                             # found" without re-running any vision.
-                             items=(payload.item_count if payload is not None else 0),
-                             item_context=len(model_item_context),
-                             item_context_heart_bearing=(
-                                 sum(crop.heart_ordinal is not None for crop in payload.context)
-                                 if payload is not None else 0),
-                             item_translation=(list(payload.translation)
-                                               if payload is not None else []),
-                             item_coverage=(self._item_coverage_diagnostics(
-                                 payload, self.still_photo_dwell_candidates,
-                                 photo_candidate_hearts=self._current_photo_candidate_hearts,
-                                 dwell_covered_hearts=self._current_dwell_covered_hearts,
-                                 dwell_walk_interruption=
-                                 self._current_dwell_walk_interruption)
-                                            if payload is not None else None),
-                             item_manifest=(self._item_payload_debug_manifest(
-                                 payload, self._current_item_index)
-                                 if payload is not None and self._current_item_index is not None
-                                 else []),
-                             items_unavailable=self._current_items_unavailable or None,
-                             items_unavailable_kind=(
-                                 self._current_items_unavailable_kind or None),
-                             # WHAT SIZED THIS READ'S SCROLLS (see
-                             # `_EnumerationCoverageLedger`). Deliberately here rather than on
-                             # `capture_timing_summary`: this row already carries
-                             # `items_unavailable` and `item_manifest`, so a fire-rate or
-                             # run-stop query is a single-pass read of one row instead of a
-                             # join. A TOP-LEVEL kwarg, unlike `item_coverage` above, because
-                             # `item_coverage` is None whenever the payload is -- which is
-                             # exactly the refusal case this aggregate exists to explain. ONE
-                             # NESTED dict and never a `**` splat: a basis name is a token this
-                             # file does not own, and a splat would let a future one collide
-                             # with a key already on this row. None on any read that planned no
-                             # coverage step at all.
-                             coverage=self._enum_coverage.summary(),
-                             items_unnumbered=self._current_items_unnumbered or None,
-                             # "BUG 3" fix: only present (and only ever < photos) when this read
-                             # raised the enumeration ceiling and the ranker's copy was thinned
-                             # back down for it -- absent, not equal to photos, on every ordinary
-                             # (non-enumerating) read, so a debug replay can tell "this read never
-                             # needed thinning" from "it did, and here is what survived".
-                             ranker_photos=(len(ranker_photos)
-                                            if enumeration_ceiling_raised else None))
+            self._dbg.action(
+                "capture",
+                before=photos[0],
+                photos=len(photos),  # first frame = who was scored
+                capture_truncated=self._current_capture_truncated,
+                identity_seen=identity_seen,
+                identity_confirmed=self._identity_anchor_confirmed,
+                profile_name=self._identity_name,
+                # The enumeration's own verdict, so a debug replay can tell "this
+                # profile was never enumerated" from "it was, and here is what it
+                # found" without re-running any vision.
+                items=(payload.item_count if payload is not None else 0),
+                item_context=len(model_item_context),
+                item_context_heart_bearing=(
+                    sum(crop.heart_ordinal is not None for crop in payload.context)
+                    if payload is not None
+                    else 0
+                ),
+                item_translation=(
+                    list(payload.translation) if payload is not None else []
+                ),
+                item_coverage=(
+                    self._item_coverage_diagnostics(
+                        payload,
+                        self.still_photo_dwell_candidates,
+                        photo_candidate_hearts=self._current_photo_candidate_hearts,
+                        dwell_covered_hearts=self._current_dwell_covered_hearts,
+                        dwell_walk_interruption=self._current_dwell_walk_interruption,
+                    )
+                    if payload is not None
+                    else None
+                ),
+                item_manifest=(
+                    self._item_payload_debug_manifest(payload, self._current_item_index)
+                    if payload is not None and self._current_item_index is not None
+                    else []
+                ),
+                items_unavailable=self._current_items_unavailable or None,
+                items_unavailable_kind=(self._current_items_unavailable_kind or None),
+                # WHAT SIZED THIS READ'S SCROLLS (see
+                # `_EnumerationCoverageLedger`). Deliberately here rather than on
+                # `capture_timing_summary`: this row already carries
+                # `items_unavailable` and `item_manifest`, so a fire-rate or
+                # run-stop query is a single-pass read of one row instead of a
+                # join. A TOP-LEVEL kwarg, unlike `item_coverage` above, because
+                # `item_coverage` is None whenever the payload is -- which is
+                # exactly the refusal case this aggregate exists to explain. ONE
+                # NESTED dict and never a `**` splat: a basis name is a token this
+                # file does not own, and a splat would let a future one collide
+                # with a key already on this row. None on any read that planned no
+                # coverage step at all.
+                coverage=self._enum_coverage.summary(),
+                items_unnumbered=self._current_items_unnumbered or None,
+                # "BUG 3" fix: only present (and only ever < photos) when this read
+                # raised the enumeration ceiling and the ranker's copy was thinned
+                # back down for it -- absent, not equal to photos, on every ordinary
+                # (non-enumerating) read, so a debug replay can tell "this read never
+                # needed thinning" from "it did, and here is what survived".
+                ranker_photos=(
+                    len(ranker_photos) if enumeration_ceiling_raised else None
+                ),
+            )
         return Profile(
             photos=ranker_photos,
             prompts=[],
@@ -10177,7 +11997,8 @@ class AndroidDriver(DatingAppDriver):
         )
 
     def _recapture_after_transient_pinned_signal(
-            self, original: Profile | None, should_stop=None) -> Profile | None:
+        self, original: Profile | None, should_stop=None
+    ) -> Profile | None:
         """Try one fail-closed recapture after a *known transient* pinned-toolbar reading.
 
         The normal session latch is intentionally conservative: a chips row observed at deep
@@ -10214,17 +12035,19 @@ class AndroidDriver(DatingAppDriver):
         binding = self._scroll_top_signal_binding()
         pinned = self._capture_scroll_top_pinning_evidence
         if not (
-                original is not None
-                # A cold launch can legitimately resume a different card.  Training/AUTO have
-                # not yet exposed a decision for this refused capture, so that card can be
-                # explicitly skipped; manual Observe belongs to the person holding the phone
-                # and must never replace their visible card under them.
-                and self._auto_session
-                and pinned is not None and pinned.pinned
-                and self._pinned_band_evidence() is not None
-                and self._previous_capture_scroll_top_signal_healthy_binding == binding
-                and self._pinned_signal_recovery_spent_binding != binding
-                and self._capture_scroll_ledger):
+            original is not None
+            # A cold launch can legitimately resume a different card.  Training/AUTO have
+            # not yet exposed a decision for this refused capture, so that card can be
+            # explicitly skipped; manual Observe belongs to the person holding the phone
+            # and must never replace their visible card under them.
+            and self._auto_session
+            and pinned is not None
+            and pinned.pinned
+            and self._pinned_band_evidence() is not None
+            and self._previous_capture_scroll_top_signal_healthy_binding == binding
+            and self._pinned_signal_recovery_spent_binding != binding
+            and self._capture_scroll_ledger
+        ):
             return original
         if should_stop is not None and should_stop():
             return None
@@ -10232,8 +12055,9 @@ class AndroidDriver(DatingAppDriver):
         old_latch = self._scroll_top_pinned
         old_latch_announced = self._scroll_top_pinned_announced
 
-        def abandon_after_lifecycle(reason: str, *, raising: bool = False,
-                                    stopped: bool = False) -> None:
+        def abandon_after_lifecycle(
+            reason: str, *, raising: bool = False, stopped: bool = False
+        ) -> None:
             """Discard every old-card artifact after a cold launch may have changed the deck.
 
             AND SAY WHY, WHERE THE OPERATOR WILL SEE IT (found 2026-09-15). Every caller below
@@ -10304,8 +12128,11 @@ class AndroidDriver(DatingAppDriver):
                 try:
                     self._dbg.action(
                         "scroll_top_signal_cold_relaunch_abandoned",
-                        reason=reason, raising=raising, stopped=stopped,
-                        blocked_reason_published=published)
+                        reason=reason,
+                        raising=raising,
+                        stopped=stopped,
+                        blocked_reason_published=published,
+                    )
                 except Exception:  # noqa: BLE001 -- diagnostics cannot alter the recovery
                     pass
 
@@ -10315,11 +12142,15 @@ class AndroidDriver(DatingAppDriver):
         # is adequate for ordinary passive capture compatibility, but not for this recovery:
         # without a positive owner there is no safe subject to restart.
         before = self._screencap(on_blank="none")
-        if (self._foreground_package() != self.package or before is None
-                or self._capture_entry_profile_evidence(before) is None):
+        if (
+            self._foreground_package() != self.package
+            or before is None
+            or self._capture_entry_profile_evidence(before) is None
+        ):
             self._invalidate_item_index(
                 "the pinned-toolbar recovery could not positively establish Hinge's foreground "
-                "swipe profile before a cold relaunch")
+                "swipe profile before a cold relaunch"
+            )
             return original
         if should_stop is not None and should_stop():
             return None
@@ -10336,16 +12167,21 @@ class AndroidDriver(DatingAppDriver):
         original_name = (getattr(original, "name", "") or "").strip()
         self._invalidate_item_index(
             "Hinge is being cold-relaunched after a pinned toolbar, so the original profile is "
-            "skipped and its item index cannot describe the post-relaunch screen")
+            "skipped and its item index cannot describe the post-relaunch screen"
+        )
         if self._dbg is not None:
             try:
                 self._dbg.action(
                     "scroll_top_signal_cold_relaunch",
-                    reason=("a prior usable capture on this exact binding measured the chips "
-                            "signal non-pinned; one cold relaunch and provisional recapture is "
-                            "being tried"),
-                    offsets=list(pinned.offsets), offset_span=pinned.offset_span,
-                    frames_compared=pinned.frames_compared)
+                    reason=(
+                        "a prior usable capture on this exact binding measured the chips "
+                        "signal non-pinned; one cold relaunch and provisional recapture is "
+                        "being tried"
+                    ),
+                    offsets=list(pinned.offsets),
+                    offset_span=pinned.offset_span,
+                    frames_compared=pinned.frames_compared,
+                )
             except Exception:  # noqa: BLE001 -- diagnostics cannot alter the recovery
                 pass
 
@@ -10356,7 +12192,8 @@ class AndroidDriver(DatingAppDriver):
         # recovery's scope.
         launcher_command = (
             f"monkey -p {quote_android_package_id(self.package)} "
-            "-c android.intent.category.LAUNCHER 1")
+            "-c android.intent.category.LAUNCHER 1"
+        )
         try:
             self.adb.shell(f"am force-stop {quote_android_package_id(self.package)}")
         except DriverClosed:
@@ -10365,7 +12202,9 @@ class AndroidDriver(DatingAppDriver):
             # as a successful relaunch.
             abandon_after_lifecycle(
                 "the cold-relaunch transport closed after force-stop, so the visible card can "
-                "no longer be attributed to the refused capture", raising=True)
+                "no longer be attributed to the refused capture",
+                raising=True,
+            )
             raise
         except Exception:  # noqa: BLE001 -- it may have stopped before its response was lost
             try:
@@ -10376,13 +12215,16 @@ class AndroidDriver(DatingAppDriver):
             except DriverClosed:
                 abandon_after_lifecycle(
                     "the cold-relaunch compensating transport closed, so the visible card can "
-                    "no longer be attributed to the refused capture", raising=True)
+                    "no longer be attributed to the refused capture",
+                    raising=True,
+                )
                 raise
             except Exception:
                 pass
             abandon_after_lifecycle(
                 "the cold-relaunch force-stop response was ambiguous, so the visible card can no "
-                "longer be attributed to the refused capture")
+                "longer be attributed to the refused capture"
+            )
             return None
         try:
             self.adb.shell(launcher_command)
@@ -10393,7 +12235,9 @@ class AndroidDriver(DatingAppDriver):
             # silently treating it as an ordinary recoverable capture refusal.
             abandon_after_lifecycle(
                 "the cold-relaunch launcher transport closed, so the visible card can no "
-                "longer be attributed to the refused capture", raising=True)
+                "longer be attributed to the refused capture",
+                raising=True,
+            )
             raise
         except Exception:  # noqa: BLE001 -- compensate once, then always fail closed
             try:
@@ -10403,18 +12247,23 @@ class AndroidDriver(DatingAppDriver):
             except DriverClosed:
                 abandon_after_lifecycle(
                     "the cold-relaunch compensating launcher transport closed, so the visible "
-                    "card can no longer be attributed to the refused capture", raising=True)
+                    "card can no longer be attributed to the refused capture",
+                    raising=True,
+                )
                 raise
             except Exception:
                 pass
             abandon_after_lifecycle(
                 "the cold-relaunch launcher response was ambiguous, so the visible card can no "
-                "longer be attributed to the refused capture")
+                "longer be attributed to the refused capture"
+            )
             return None
         if not self._interruptible_sleep(human_cooldown(1.5), should_stop):
             abandon_after_lifecycle(
                 "the cold-relaunch recovery was stopped before the replacement card could be "
-                "captured and attributed", stopped=True)
+                "captured and attributed",
+                stopped=True,
+            )
             return None
 
         # Re-read the build/geometry after restart; the old healthy finding cannot authorize a
@@ -10426,11 +12275,14 @@ class AndroidDriver(DatingAppDriver):
         except DriverClosed:
             abandon_after_lifecycle(
                 "the cold-relaunched card's calibration transport closed before it could be "
-                "safely attributed", raising=True)
+                "safely attributed",
+                raising=True,
+            )
             raise
         except Exception:  # noqa: BLE001 -- binding probe cannot license a recovery on failure
             abandon_after_lifecycle(
-                "the cold-relaunched card could not be bound to the live build and geometry")
+                "the cold-relaunched card could not be bound to the live build and geometry"
+            )
             return None
         try:
             launch_frame = self._screencap(on_blank="none")
@@ -10438,19 +12290,23 @@ class AndroidDriver(DatingAppDriver):
                 self._scroll_top_signal_binding() == binding
                 and self._foreground_package() == self.package
                 and launch_frame is not None
-                and self._capture_entry_profile_evidence(launch_frame) is not None)
+                and self._capture_entry_profile_evidence(launch_frame) is not None
+            )
         except Exception:
             # These are all passive probes, but a transport/parser fault after force-stop still
             # leaves the old capture unpublishable.  Keep the original exception while retiring
             # every artifact that could otherwise be mistaken for the post-launch card.
             abandon_after_lifecycle(
                 "the cold-relaunch screen could not be safely inspected before the replacement "
-                "card was attributed", raising=True)
+                "card was attributed",
+                raising=True,
+            )
             raise
         if not launch_is_safe:
             abandon_after_lifecycle(
                 "the cold-relaunch screen could not be positively established as a safe Hinge "
-                "profile, so the old capture cannot be published")
+                "profile, so the old capture cannot be published"
+            )
             return None
 
         # The old positive remains the normal rule for every other caller.  This brief removal
@@ -10467,37 +12323,49 @@ class AndroidDriver(DatingAppDriver):
             # only recovery-specific work this branch does.
             abandon_after_lifecycle(
                 "the cold-relaunch provisional capture failed before the replacement card "
-                "could be safely attributed", raising=True)
+                "could be safely attributed",
+                raising=True,
+            )
             raise
 
         if should_stop is not None and should_stop():
             abandon_after_lifecycle(
                 "the cold-relaunch recovery was stopped after its provisional replacement "
-                "capture, so that capture is abandoned", stopped=True)
+                "capture, so that capture is abandoned",
+                stopped=True,
+            )
             return None
 
         evidence = self._capture_scroll_top_pinning_evidence
         index = self._current_item_index
-        first_frame = (recovered.photos[0]
-                       if recovered is not None and recovered.photos else None)
+        first_frame = (
+            recovered.photos[0] if recovered is not None and recovered.photos else None
+        )
         recapture_top = False
         if first_frame is not None and evidence is not None and not evidence.pinned:
             try:
-                recapture_top = bool(confirm_scroll_top(
-                    first_frame, identity_band=self.identity_band).confirmed)
+                recapture_top = bool(
+                    confirm_scroll_top(
+                        first_frame, identity_band=self.identity_band
+                    ).confirmed
+                )
             except ScrollTopError:
                 recapture_top = False
             except Exception:
                 abandon_after_lifecycle(
                     "the cold-relaunch provisional capture could not confirm its own scroll "
-                    "top before the replacement card was attributed", raising=True)
+                    "top before the replacement card was attributed",
+                    raising=True,
+                )
                 raise
         valid = bool(
             recovered is not None
             and not recovered.items_unavailable
-            and evidence is not None and not evidence.pinned
+            and evidence is not None
+            and not evidence.pinned
             and bool(getattr(getattr(index, "identity", None), "known", False))
-            and recapture_top)
+            and recapture_top
+        )
         if valid:
             # `_latch_scroll_top_pinning` did not set a positive latch.  The new negative is
             # capture-local evidence rather than a claim that the old capture was mistaken;
@@ -10508,26 +12376,39 @@ class AndroidDriver(DatingAppDriver):
                 try:
                     self._dbg.action(
                         "scroll_top_signal_cold_relaunch_accepted",
-                        offsets=list(evidence.offsets), offset_span=evidence.offset_span,
+                        offsets=list(evidence.offsets),
+                        offset_span=evidence.offset_span,
                         frames_compared=evidence.frames_compared,
                         original_profile_skipped=True,
                         recovered_profile_changed=(
-                            bool(original_name and recovered.name
-                                 and original_name.casefold() != recovered.name.casefold())))
+                            bool(
+                                original_name
+                                and recovered.name
+                                and original_name.casefold()
+                                != recovered.name.casefold()
+                            )
+                        ),
+                    )
                 except Exception:  # noqa: BLE001 -- diagnostics cannot alter the recovery
                     pass
             return recovered
 
         abandon_after_lifecycle(
-            original.items_unavailable or
-            "the provisional pinned-signal recapture did not re-establish a safe item index")
+            original.items_unavailable
+            or "the provisional pinned-signal recapture did not re-establish a safe item index"
+        )
         if self._dbg is not None:
             try:
                 self._dbg.action(
                     "scroll_top_signal_provisional_recapture_refused",
-                    measured_non_pinned=(None if evidence is None else not evidence.pinned),
-                    identity_known=bool(getattr(getattr(index, "identity", None), "known", False)),
-                    recapture_top_confirmed=recapture_top)
+                    measured_non_pinned=(
+                        None if evidence is None else not evidence.pinned
+                    ),
+                    identity_known=bool(
+                        getattr(getattr(index, "identity", None), "known", False)
+                    ),
+                    recapture_top_confirmed=recapture_top,
+                )
             except Exception:  # noqa: BLE001 -- diagnostics cannot alter the recovery
                 pass
         return None
@@ -10572,14 +12453,20 @@ class AndroidDriver(DatingAppDriver):
                 if not self._capture_entry_recovery_spent:
                     self._spend_capture_entry_recovery(
                         "the split-recovery rewind did not affirmatively confirm scroll top",
-                        source="_recover_capture_split")
-                frame = (getattr(self, "_capture_split_frame", None)
-                         or self._current_item_anchor or b"")
+                        source="_recover_capture_split",
+                    )
+                frame = (
+                    getattr(self, "_capture_split_frame", None)
+                    or self._current_item_anchor
+                    or b""
+                )
                 self._refuse_actionable_capture_entry(
-                    frame, "split_recovery_unconfirmed",
+                    frame,
+                    "split_recovery_unconfirmed",
                     "the deck advanced during capture and its bounded recovery rewind did not "
                     "affirmatively confirm scroll top",
-                    rewind_settled=False)
+                    rewind_settled=False,
+                )
 
     def current_profile(self, *, should_stop=None) -> Profile | None:
         # Observe mode's only capture path: worker.py prints "READY - swipe this profile"
@@ -10602,7 +12489,9 @@ class AndroidDriver(DatingAppDriver):
             if not self._prepare_actionable_capture_entry(should_stop):
                 return None
             profile = self._capture_current(should_stop)
-            profile = self._recapture_after_transient_pinned_signal(profile, should_stop)
+            profile = self._recapture_after_transient_pinned_signal(
+                profile, should_stop
+            )
             if profile is not None:
                 # Also stop-aware: this unwind is roughly half of the total per-profile dead time
                 # (11 undo-swipes, each with two settle screencaps), and it is the part the
@@ -10622,15 +12511,19 @@ class AndroidDriver(DatingAppDriver):
                     if not self._capture_entry_recovery_spent:
                         self._spend_capture_entry_recovery(
                             "the manual trailing rewind did not affirmatively confirm scroll top",
-                            source="current_profile")
+                            source="current_profile",
+                        )
                     profile_photos = getattr(profile, "photos", ())
                     frame = self._current_item_anchor or (
-                        profile_photos[-1] if profile_photos else b"")
+                        profile_photos[-1] if profile_photos else b""
+                    )
                     self._refuse_actionable_capture_entry(
-                        frame, "manual_trailing_rewind_unconfirmed",
+                        frame,
+                        "manual_trailing_rewind_unconfirmed",
                         "the completed manual capture could not be returned to a confirmed "
                         "scroll top, so it must not be published as READY",
-                        rewind_settled=False)
+                        rewind_settled=False,
+                    )
                     return None
             else:
                 self._recover_capture_split(should_stop)
@@ -10671,7 +12564,9 @@ class AndroidDriver(DatingAppDriver):
             if not self._prepare_actionable_capture_entry(should_stop):
                 return None
             profile = self._capture_current(should_stop)
-            profile = self._recapture_after_transient_pinned_signal(profile, should_stop)
+            profile = self._recapture_after_transient_pinned_signal(
+                profile, should_stop
+            )
             if profile is None:
                 self._recover_capture_split(should_stop)
             return profile
@@ -10717,13 +12612,20 @@ class AndroidDriver(DatingAppDriver):
         run 90s later with a vaguer message; the cost of raising would be a crashed run.
         """
         try:
-            hits = _match_glyph(frame, self._template("paywall"), side="any",
-                                threshold=_PAYWALL_MATCH_THRESHOLD)
+            hits = _match_glyph(
+                frame,
+                self._template("paywall"),
+                side="any",
+                threshold=_PAYWALL_MATCH_THRESHOLD,
+            )
             if not hits:
                 return False
             import cv2
             import numpy as np
-            image = cv2.imdecode(np.frombuffer(frame, dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
+
+            image = cv2.imdecode(
+                np.frombuffer(frame, dtype=np.uint8), cv2.IMREAD_GRAYSCALE
+            )
             if image is None:
                 return False
             height = image.shape[0]
@@ -10759,10 +12661,11 @@ class AndroidDriver(DatingAppDriver):
         Never raises: `_ocr_band` swallows every failure into None by contract.
         """
         band = self.spec.paywall_headline_band
-        if band is None:                       # this app declares no headline to refine with
+        if band is None:  # this app declares no headline to refine with
             return None
-        return self._ocr_band(frame, band, psm="6",
-                              white_text_threshold=_PAYWALL_OCR_WHITE_MIN)
+        return self._ocr_band(
+            frame, band, psm="6", white_text_threshold=_PAYWALL_OCR_WHITE_MIN
+        )
 
     def _deck_blocked_reason(self, frame: bytes) -> str | None:
         """`frame` -> an operator-facing sentence saying what is standing between us and the
@@ -10796,7 +12699,9 @@ class AndroidDriver(DatingAppDriver):
             return None
         headline = (self._paywall_headline(frame) or "").casefold()
         if "out of" in headline and "likes" in headline:
-            return "Hinge is out of free likes for today — the Hinge+ upgrade screen is up"
+            return (
+                "Hinge is out of free likes for today — the Hinge+ upgrade screen is up"
+            )
         return "Hinge's Hinge+ upgrade screen is up — the deck is not available"
 
     def _foreground_package(self) -> str | None:
@@ -10822,8 +12727,10 @@ class AndroidDriver(DatingAppDriver):
             surface = "Android's notification or quick-settings shade"
         else:
             surface = f"another Android app or system surface ({package})"
-        return (f"{surface} is covering {app_label}, so no {app_label} profile is currently on screen; "
-                "no profile was captured and no input was sent")
+        return (
+            f"{surface} is covering {app_label}, so no {app_label} profile is currently on screen; "
+            "no profile was captured and no input was sent"
+        )
 
     def _foreground_blocked_reason(self) -> str | None:
         """Return a precise no-touch refusal when another Android surface owns the screen.
@@ -10840,7 +12747,9 @@ class AndroidDriver(DatingAppDriver):
         """
         return self._foreground_reason(self._foreground_package())
 
-    def _await_observe_foreground_return(self, frame: bytes, deadline, should_stop) -> bool:
+    def _await_observe_foreground_return(
+        self, frame: bytes, deadline, should_stop
+    ) -> bool:
         """Pause a passive Observe wait while Android System UI/another app owns the screen.
 
         Returns True only after a foreign foreground was positively observed.  The caller
@@ -10854,10 +12763,16 @@ class AndroidDriver(DatingAppDriver):
         if reason is None:
             return False
         if self._dbg is not None:
-            self._dbg.action("observe_foreground_paused", before=frame,
-                             package=package, reason=reason)
-        print(f"{self.spec.app}: PAUSED — {reason}. Close that surface to resume; "
-              "nothing will be recorded or touched while it is open.")
+            self._dbg.action(
+                "observe_foreground_paused",
+                before=frame,
+                package=package,
+                reason=reason,
+            )
+        print(
+            f"{self.spec.app}: PAUSED — {reason}. Close that surface to resume; "
+            "nothing will be recorded or touched while it is open."
+        )
         while deadline is None or time.monotonic() < deadline:
             if should_stop and should_stop():
                 return True
@@ -10869,12 +12784,17 @@ class AndroidDriver(DatingAppDriver):
             if resumed is None:
                 continue
             if self._dbg is not None:
-                self._dbg.action("observe_foreground_resumed", before=resumed,
-                                 package=package,
-                                 result="recapture_without_decision")
-            print(f"{self.spec.app}: Android foreground returned to "
-                  f"{self.spec.app.capitalize()} — recapturing the "
-                  "visible card, with no decision recorded for the interrupted wait.")
+                self._dbg.action(
+                    "observe_foreground_resumed",
+                    before=resumed,
+                    package=package,
+                    result="recapture_without_decision",
+                )
+            print(
+                f"{self.spec.app}: Android foreground returned to "
+                f"{self.spec.app.capitalize()} — recapturing the "
+                "visible card, with no decision recorded for the interrupted wait."
+            )
             return True
         return True
 
@@ -10934,7 +12854,9 @@ class AndroidDriver(DatingAppDriver):
         """
         return self._blocked_stop_kind
 
-    def _locate_target_heart(self, item_index: int | None, *, should_stop=None) -> tuple[int, int]:
+    def _locate_target_heart(
+        self, item_index: int | None, *, should_stop=None
+    ) -> tuple[int, int]:
         """comment_sheet flow only. Locate the heart of the numbered photo the opener is about --
         or STOP. This method never returns a DIFFERENT item's heart than the one it was asked for.
 
@@ -10989,9 +12911,16 @@ class AndroidDriver(DatingAppDriver):
             # a bug report must be able to tell those apart (HINGE-05). Not an error HERE --
             # _like_comment_sheet already refused any call that carries an opener, so what is
             # left is a plain, itemless like with nothing to misplace.
-            self._raise_if_action_cancelled(should_stop, boundary="legacy target debug capture")
-            self._dbg_action("locate_target_heart", self._snap(), item_index=None,
-                             outcome="no_item_named", reason="no_target_index")
+            self._raise_if_action_cancelled(
+                should_stop, boundary="legacy target debug capture"
+            )
+            self._dbg_action(
+                "locate_target_heart",
+                self._snap(),
+                item_index=None,
+                outcome="no_item_named",
+                reason="no_target_index",
+            )
             return self._await_button("like", should_stop=should_stop)
         if item_index == 0:
             # At the scroll top the topmost heart is item 0's.
@@ -11006,28 +12935,47 @@ class AndroidDriver(DatingAppDriver):
         if item_index < 0:
             refusal = f"item {item_index} is not a valid capture-order index"
         elif not sigs:
-            refusal = ("this driver holds no captured frames for the profile on screen, so there "
-                       "is nothing to navigate back to")
+            refusal = (
+                "this driver holds no captured frames for the profile on screen, so there "
+                "is nothing to navigate back to"
+            )
         elif item_index >= len(sigs):
-            refusal = (f"item {item_index} is outside the {len(sigs)} frame(s) captured for this "
-                       f"profile")
+            refusal = (
+                f"item {item_index} is outside the {len(sigs)} frame(s) captured for this "
+                f"profile"
+            )
         elif sigs[item_index] is None:
-            refusal = (f"the captured frame for item {item_index} could not be decoded, so there "
-                       f"is no signature to navigate back to")
+            refusal = (
+                f"the captured frame for item {item_index} could not be decoded, so there "
+                f"is no signature to navigate back to"
+            )
         else:
             refusal = ""
         if refusal:
-            self._raise_if_action_cancelled(should_stop, boundary="legacy target debug capture")
-            self._dbg_action("locate_target_heart", self._snap(), item_index=item_index,
-                             outcome="stop", reason="unresolvable_target_index")
+            self._raise_if_action_cancelled(
+                should_stop, boundary="legacy target debug capture"
+            )
+            self._dbg_action(
+                "locate_target_heart",
+                self._snap(),
+                item_index=item_index,
+                outcome="stop",
+                reason="unresolvable_target_index",
+            )
             raise HingeTargetingError(
                 f"{self.spec.app}: cannot target the item the opener was written about -- "
                 f"{refusal}. Nothing was tapped and the like is NOT sent; liking a different "
                 f"item instead is never an option (ops/OPENER-REDESIGN.md 5.6).",
-                stage="navigate", intended=item_index, index_space="capture_order")
+                stage="navigate",
+                intended=item_index,
+                index_space="capture_order",
+            )
         import numpy as np
+
         target = sigs[item_index]
-        self._raise_if_action_cancelled(should_stop, boundary="legacy target debug capture")
+        self._raise_if_action_cancelled(
+            should_stop, boundary="legacy target debug capture"
+        )
         before = self._snap()
         # like() always _scroll_to_top()s right before calling this, so item_index (a capture-
         # order index counted down from the top) should need about that many scroll_up()s to
@@ -11045,41 +12993,74 @@ class AndroidDriver(DatingAppDriver):
                 # undoes exactly the tracked scrolls the previous attempt made.
                 self._scroll_to_top(should_stop)
                 if not self._interruptible_sleep(human_delay(0.3), should_stop):
-                    self._raise_if_action_cancelled(should_stop, boundary="legacy target retry")
+                    self._raise_if_action_cancelled(
+                        should_stop, boundary="legacy target retry"
+                    )
             matched_frame_no_heart = False
             for _ in range(tries):
-                self._raise_if_action_cancelled(should_stop, boundary="legacy target capture")
+                self._raise_if_action_cancelled(
+                    should_stop, boundary="legacy target capture"
+                )
                 frame = self._screencap()
                 ds = _downsample(frame)
-                if ds is not None and float(np.mean(np.abs(ds - target))) < self.change_threshold:
-                    hearts = _match_glyph(frame, self._template("like"), side="right",
-                                          threshold=_LIKE_MATCH_THRESHOLD, y_band=self.content_band)
+                if (
+                    ds is not None
+                    and float(np.mean(np.abs(ds - target))) < self.change_threshold
+                ):
+                    hearts = _match_glyph(
+                        frame,
+                        self._template("like"),
+                        side="right",
+                        threshold=_LIKE_MATCH_THRESHOLD,
+                        y_band=self.content_band,
+                    )
                     if hearts:
-                        return hearts[0]              # the referenced item's heart, now in view
+                        return hearts[0]  # the referenced item's heart, now in view
                     matched_frame_no_heart = True
                     break
-                self._raise_if_action_cancelled(should_stop, boundary="legacy target scroll")
-                self._scroll_down_one()          # tracked, so the retry's _scroll_to_top() above
-                if not self._interruptible_sleep(human_delay(self.dwell_s * 0.4), should_stop):
-                    self._raise_if_action_cancelled(should_stop, boundary="legacy target scroll")
-            reason = ("heart_not_visible_on_matched_frame" if matched_frame_no_heart
-                      else "target_frame_not_found")
-            self._dbg_action("locate_target_heart", before, item_index=item_index,
-                             outcome=("retry" if attempt < _TARGET_HEART_ATTEMPTS else "stop"),
-                             reason=reason, attempt=attempt,
-                             attempts=_TARGET_HEART_ATTEMPTS)
-        detail = ("its frame was found but no like heart was visible on it"
-                  if reason == "heart_not_visible_on_matched_frame"
-                  else "none of the frames read back matched the one it was captured on")
+                self._raise_if_action_cancelled(
+                    should_stop, boundary="legacy target scroll"
+                )
+                self._scroll_down_one()  # tracked, so the retry's _scroll_to_top() above
+                if not self._interruptible_sleep(
+                    human_delay(self.dwell_s * 0.4), should_stop
+                ):
+                    self._raise_if_action_cancelled(
+                        should_stop, boundary="legacy target scroll"
+                    )
+            reason = (
+                "heart_not_visible_on_matched_frame"
+                if matched_frame_no_heart
+                else "target_frame_not_found"
+            )
+            self._dbg_action(
+                "locate_target_heart",
+                before,
+                item_index=item_index,
+                outcome=("retry" if attempt < _TARGET_HEART_ATTEMPTS else "stop"),
+                reason=reason,
+                attempt=attempt,
+                attempts=_TARGET_HEART_ATTEMPTS,
+            )
+        detail = (
+            "its frame was found but no like heart was visible on it"
+            if reason == "heart_not_visible_on_matched_frame"
+            else "none of the frames read back matched the one it was captured on"
+        )
         raise HingeTargetingError(
             f"{self.spec.app}: could not reach item {item_index}, the item the opener was "
             f"written about, in {_TARGET_HEART_ATTEMPTS} attempts -- {detail}. Nothing was "
             f"tapped and the like is NOT sent; the profile is left scrolled where the search "
             f"ended, for debugging. Liking whichever item we could reach instead is never an "
             f"option (ops/OPENER-REDESIGN.md 5.6).",
-            stage="navigate", intended=item_index, index_space="capture_order")
+            stage="navigate",
+            intended=item_index,
+            index_space="capture_order",
+        )
 
-    def _navigate_to_model_item(self, model_item_index: int, *, should_stop=None) -> tuple[int, int]:
+    def _navigate_to_model_item(
+        self, model_item_index: int, *, should_stop=None
+    ) -> tuple[int, int]:
         """Doc 5.5's counting navigation, wired: put model item N's heart on screen and return
         the point to tap. Never taps, never substitutes, and never scrolls back to the top.
 
@@ -11123,15 +13104,23 @@ class AndroidDriver(DatingAppDriver):
         calibration = self._require_targeting_calibration(model_item_index)
         payload = self._current_item_payload
         if index is None or anchor is None or payload is None:
-            missing = ("index" if index is None else
-                       "entry anchor frame" if anchor is None else "numbered item payload")
+            missing = (
+                "index"
+                if index is None
+                else "entry anchor frame"
+                if anchor is None
+                else "numbered item payload"
+            )
             raise HingeTargetingError(
                 f"{self.spec.app}: the opener targets model item {model_item_index}, but this "
                 f"driver holds no item {missing} for the profile on screen "
                 f"({self._current_items_unavailable or 'it was cleared without a reason'}), so "
                 f"there is no way to count to that item. Nothing was tapped and the like is NOT "
                 f"sent (ops/OPENER-REDESIGN.md 5.3/5.5).",
-                stage="navigate", intended=model_item_index, index_space="model_items")
+                stage="navigate",
+                intended=model_item_index,
+                index_space="model_items",
+            )
         # `model_item_index` counts only the crops actually sent to the model.  The navigation
         # index counts selectable blocks in the full ItemIndex, including any excluded crop.
         # They coincide on the common all-photo profile, but treating that coincidence as an
@@ -11148,17 +13137,25 @@ class AndroidDriver(DatingAppDriver):
                 f"{self.spec.app}: model item {model_item_index} cannot be translated into the "
                 f"current item index ({exc}). Nothing was tapped and the like is NOT sent; "
                 "there is no safe substitute for a missing model-item-to-heart mapping.",
-                stage="navigate", intended=model_item_index, index_space="model_items") from exc
+                stage="navigate",
+                intended=model_item_index,
+                index_space="model_items",
+            ) from exc
         # No pre-capture. `navigate_to_item`'s own first act is a screencap of the entry frame,
         # and it hands that frame back on every refusal it decides (`ItemNavigationError.frame`)
         # and the LANDING frame on success -- both of which are the frame a reader of the debug
         # log actually wants. A `_snap()` here would be a second ADB round-trip for a worse
         # picture, on every navigation, whether or not debug logging is on.
         try:
-            target = navigate_to_item(self, index, navigation_index, entry_reference=anchor,
-                                      identity_match_max_dist=calibration.identity_match_max_dist,
-                                      selected_model_item_index=model_item_index,
-                                      should_stop=should_stop)
+            target = navigate_to_item(
+                self,
+                index,
+                navigation_index,
+                entry_reference=anchor,
+                identity_match_max_dist=calibration.identity_match_max_dist,
+                selected_model_item_index=model_item_index,
+                should_stop=should_stop,
+            )
         except ItemNavigationError as exc:
             # `pair_before` is set only on `NAV_CHAIN_BROKEN` and is the frame BEFORE the
             # ascending gesture whose shift could not be measured -- raw PNG bytes, which cannot
@@ -11174,35 +13171,65 @@ class AndroidDriver(DatingAppDriver):
             pair_before = getattr(exc, "pair_before", None)
             navigation_refusal = getattr(exc, "measurement", None)
             self._dbg_action(
-                "navigate_to_item", pair_before if pair_before is not None else exc.frame,
+                "navigate_to_item",
+                pair_before if pair_before is not None else exc.frame,
                 after=exc.frame if pair_before is not None else dataclasses.MISSING,
-                item=model_item_index, outcome="stop", reason=exc.code,
-                keep_before=pair_before is not None, keep_after=pair_before is not None,
-                **({"navigation_refusal": navigation_refusal}
-                   if isinstance(navigation_refusal, dict) else {}))
+                item=model_item_index,
+                outcome="stop",
+                reason=exc.code,
+                keep_before=pair_before is not None,
+                keep_after=pair_before is not None,
+                **(
+                    {"navigation_refusal": navigation_refusal}
+                    if isinstance(navigation_refusal, dict)
+                    else {}
+                ),
+            )
             raise HingeTargetingError(
                 f"{self.spec.app}: could not put the tap on model item {model_item_index}, the "
                 f"item the opener was written about -- {exc} [{exc.code}]. Nothing was tapped "
                 f"and the like is NOT sent; the profile is left where the walk stopped, for "
                 f"debugging. Liking whichever item we could reach instead is never an option "
                 f"(ops/OPENER-REDESIGN.md 5.6).",
-                stage="navigate", intended=model_item_index,
-                index_space="model_items") from exc
-        except (ScrollStepError, SegmentationError, ShiftEstimationError, IdentityError) as exc:
-            self._dbg_action("navigate_to_item", None, item=model_item_index,
-                             outcome="stop", reason=type(exc).__name__)
+                stage="navigate",
+                intended=model_item_index,
+                index_space="model_items",
+            ) from exc
+        except (
+            ScrollStepError,
+            SegmentationError,
+            ShiftEstimationError,
+            IdentityError,
+        ) as exc:
+            self._dbg_action(
+                "navigate_to_item",
+                None,
+                item=model_item_index,
+                outcome="stop",
+                reason=type(exc).__name__,
+            )
             raise HingeTargetingError(
                 f"{self.spec.app}: could not put the tap on model item {model_item_index} -- the "
                 f"navigation pass could not look at the screen at all ({type(exc).__name__}: "
                 f"{exc}). Nothing was tapped and the like is NOT sent "
                 f"(ops/OPENER-REDESIGN.md 5.6).",
-                stage="navigate", intended=model_item_index,
-                index_space="model_items") from exc
-        self._dbg_action("navigate_to_item", target.frame, item=model_item_index,
-                         outcome="located", heart_ordinal=target.heart_ordinal,
-                         point=list(target.point), scrolls=target.scrolls,
-                         climbed_px=target.climbed_px, agreement_px=target.agreement_px,
-                         hearts_counted=target.hearts_counted, reason=target.reason)
+                stage="navigate",
+                intended=model_item_index,
+                index_space="model_items",
+            ) from exc
+        self._dbg_action(
+            "navigate_to_item",
+            target.frame,
+            item=model_item_index,
+            outcome="located",
+            heart_ordinal=target.heart_ordinal,
+            point=list(target.point),
+            scrolls=target.scrolls,
+            climbed_px=target.climbed_px,
+            agreement_px=target.agreement_px,
+            hearts_counted=target.hearts_counted,
+            reason=target.reason,
+        )
         return target.point
 
     def model_item_media_ordinal(self, model_item_index: int) -> int | None:
@@ -11245,7 +13272,8 @@ class AndroidDriver(DatingAppDriver):
                 # A written prompt is not media. UNKNOWN must block the display number because
                 # it may be a photo the classifier could not safely select.
                 if crop.reason.startswith(
-                        f"{EXCLUSION_NON_PHOTO}: crop classified as written;"):
+                    f"{EXCLUSION_NON_PHOTO}: crop classified as written;"
+                ):
                     continue
                 return None
             if crop.kind == CROP_EXCLUDED:
@@ -11281,7 +13309,9 @@ class AndroidDriver(DatingAppDriver):
         there would let even a direct driver caller record a completed action that Hinge refused.
         Unlike a bare change-check, the scroll-to-top can't spoof this."""
         sheet_up = modal_up = landed_candidate = False
-        for attempt in range(3):  # extra passes tolerate late-animating modals and paywalls
+        for attempt in range(
+            3
+        ):  # extra passes tolerate late-animating modals and paywalls
             frame = self._screencap()
             # A recognised paywall is a purchase screen, so it wins over every other post-send
             # interpretation of this frame.  In particular, do this BEFORE the late-upsell
@@ -11300,10 +13330,14 @@ class AndroidDriver(DatingAppDriver):
                     time.sleep(human_delay(0.6))
                 continue
             sheet_up = self._observe_like_sheet_visible(frame)
-            modal_hits = _match_glyph(frame, self._template("upsell_dismiss"), side="any", threshold=0.6)
+            modal_hits = _match_glyph(
+                frame, self._template("upsell_dismiss"), side="any", threshold=0.6
+            )
             modal_up = bool(modal_hits)
             if modal_up:
-                self._tap(*modal_hits[0])             # late-animating upsell -> dismiss, never the paid option
+                self._tap(
+                    *modal_hits[0]
+                )  # late-animating upsell -> dismiss, never the paid option
             if sheet_up or modal_up:
                 time.sleep(human_delay(0.6))
                 continue
@@ -11313,23 +13347,34 @@ class AndroidDriver(DatingAppDriver):
             # Require the apparently-advanced deck to survive one more poll. A transition frame
             # can be both changed and free of sheet glyphs just before a paywall animates in.
             if landed_candidate or attempt == 2:
-                return                                # stable closed sheet + advanced deck -> sent
+                return  # stable closed sheet + advanced deck -> sent
             landed_candidate = True
             time.sleep(human_delay(0.6))
         if not self.halt_on_error:
             return
         if sheet_up and modal_up:
             raise HingeActionError(
-                "like did not complete — the like composer and upsell modal are still open")
+                "like did not complete — the like composer and upsell modal are still open"
+            )
         if sheet_up:
-            raise HingeActionError("like did not complete — the like composer is still open")
+            raise HingeActionError(
+                "like did not complete — the like composer is still open"
+            )
         if modal_up:
-            raise HingeActionError("like did not complete — the like upsell modal is still open")
+            raise HingeActionError(
+                "like did not complete — the like upsell modal is still open"
+            )
         raise HingeActionError("like did not change the screen (missed tap or stuck)")
 
     # --- actions (NORMAL like only — never a paid upgrade) ----------------------
-    def like(self, opener: str | None = None, item_index: int | None = None, *,
-             model_item_index: int | None = None, should_stop=None) -> str | None:
+    def like(
+        self,
+        opener: str | None = None,
+        item_index: int | None = None,
+        *,
+        model_item_index: int | None = None,
+        should_stop=None,
+    ) -> str | None:
         # item_index defaults to None ("nobody said which item"), NOT to 0 ("the first captured
         # frame"). See base.Driver.like and _locate_target_heart: the two are different inputs
         # and only one of them licenses attaching an opener to what gets tapped.
@@ -11349,12 +13394,18 @@ class AndroidDriver(DatingAppDriver):
                 f"{item_index} and model_item_index {model_item_index}. They name different "
                 "index spaces, so the target is ambiguous. Nothing was tapped and the like is "
                 "NOT sent; supply exactly one target index.",
-                stage="preflight", intended=model_item_index, index_space="model_items")
+                stage="preflight",
+                intended=model_item_index,
+                index_space="model_items",
+            )
         try:
             if self.spec.like_flow == "comment_sheet":
-                return self._like_comment_sheet(opener, item_index,
-                                                model_item_index=model_item_index,
-                                                should_stop=should_stop)
+                return self._like_comment_sheet(
+                    opener,
+                    item_index,
+                    model_item_index=model_item_index,
+                    should_stop=should_stop,
+                )
             else:
                 self._like_direct(opener, item_index, model_item_index=model_item_index)
                 return None
@@ -11367,9 +13418,12 @@ class AndroidDriver(DatingAppDriver):
             # is exactly when a stale table would survive longest.
             self._invalidate_item_index(
                 "the deck advanced after this like, so anything enumerated for the previous "
-                "profile no longer describes what is on screen")
+                "profile no longer describes what is on screen"
+            )
 
-    def _require_targeting_calibration(self, model_item_index: int) -> TargetingCalibration:
+    def _require_targeting_calibration(
+        self, model_item_index: int
+    ) -> TargetingCalibration:
         """Return the evidence-backed bounds or stop before a model-selected item is touched."""
         binding_problem = self._refresh_targeting_calibration_binding()
         calibration = self.targeting_calibration
@@ -11382,7 +13436,10 @@ class AndroidDriver(DatingAppDriver):
             f"was tapped and the like is NOT sent; provide measured identity and sheet-item "
             f"bounds, exact effective crop geometry, device, and calibrated_at evidence before "
             f"enabling targeted likes.",
-            stage="preflight", intended=model_item_index, index_space="model_items")
+            stage="preflight",
+            intended=model_item_index,
+            index_space="model_items",
+        )
 
     def _refresh_targeting_calibration_binding(self) -> str:
         """Re-check and latch the calibration's exact live build/frame binding.
@@ -11411,7 +13468,8 @@ class AndroidDriver(DatingAppDriver):
             return self._targeting_calibration_unavailable or "no reason was recorded"
         if self._adb is not None and not self._targeting_binding_fetched:
             package_dump = self.adb.shell(
-                f"dumpsys package {quote_android_package_id(self.package)}")
+                f"dumpsys package {quote_android_package_id(self.package)}"
+            )
             match = re.search(r"(?m)^\s*versionName=(\S+)\s*$", package_dump)
             self._targeting_runtime_version_name = match.group(1) if match else None
             self._targeting_runtime_frame_size = self.adb.screen_size()
@@ -11420,12 +13478,16 @@ class AndroidDriver(DatingAppDriver):
         size = self._targeting_runtime_frame_size
         if self._adb is None and version is None and size is None:
             return "the live app build/frame geometry has not been established for this session"
-        if version != calibration.hinge_version_name or size != calibration.frame_size_px:
+        if (
+            version != calibration.hinge_version_name
+            or size != calibration.frame_size_px
+        ):
             self.targeting_calibration = None
             self._targeting_calibration_unavailable = (
                 "the live app build/frame geometry does not exactly match schema-v3 "
                 f"calibration ({version!r}/{size!r} != "
-                f"{calibration.hinge_version_name!r}/{calibration.frame_size_px!r})")
+                f"{calibration.hinge_version_name!r}/{calibration.frame_size_px!r})"
+            )
         return self._targeting_calibration_unavailable or ""
 
     def targeted_suggestion_blocker(self) -> str:
@@ -11438,10 +13500,12 @@ class AndroidDriver(DatingAppDriver):
         binding_problem = self._refresh_targeting_calibration_binding()
         if self.targeting_calibration is not None and not binding_problem:
             return ""
-        return (f"targeted suggestion is unavailable because apps.{self.spec.app}."
-                f"targeting_calibration is unavailable "
-                f"({binding_problem or self._targeting_calibration_unavailable or 'no reason was recorded'}); "
-                "no opener text is offered")
+        return (
+            f"targeted suggestion is unavailable because apps.{self.spec.app}."
+            f"targeting_calibration is unavailable "
+            f"({binding_problem or self._targeting_calibration_unavailable or 'no reason was recorded'}); "
+            "no opener text is offered"
+        )
 
     def _verifiable_payload(self, model_item_index: int | None):
         """The crops doc 5.6 will verify the sheet against, or None when nobody named an item.
@@ -11479,22 +13543,33 @@ class AndroidDriver(DatingAppDriver):
                 f"{self._current_items_unavailable or 'no reason was recorded'}. Doc 5.3 treats a "
                 f"missing table as a hard stop, never as a reason to fall back to a fixed "
                 f"coordinate, so nothing is tapped and the like is NOT sent.",
-                stage="verify", intended=model_item_index, index_space="model_items")
+                stage="verify",
+                intended=model_item_index,
+                index_space="model_items",
+            )
         try:
             blocker = verification_blocker(payload, model_item_index)
         except SheetVerificationError as exc:
             raise HingeTargetingError(
                 f"{self.spec.app}: refusing to like model item {model_item_index} — {exc}. "
                 f"Nothing was tapped and the like is NOT sent.",
-                stage="verify", intended=model_item_index, index_space="model_items") from exc
+                stage="verify",
+                intended=model_item_index,
+                index_space="model_items",
+            ) from exc
         if blocker:
             raise HingeTargetingError(
                 f"{self.spec.app}: refusing to like model item {model_item_index} — {blocker}. "
                 f"Nothing was tapped and the like is NOT sent.",
-                stage="verify", intended=model_item_index, index_space="model_items")
+                stage="verify",
+                intended=model_item_index,
+                index_space="model_items",
+            )
         return payload
 
-    def item_type_preflight(self, item_description: str, model_item_index: int) -> ItemTypePreflight:
+    def item_type_preflight(
+        self, item_description: str, model_item_index: int
+    ) -> ItemTypePreflight:
         """Pure doc 5.8 check against the numbered crop the model was shown.
 
         Method presence is the optional driver capability: generic drivers deliberately do not
@@ -11505,14 +13580,20 @@ class AndroidDriver(DatingAppDriver):
         payload = self._current_item_payload
         if payload is None:
             return ItemTypePreflight(
-                INCONCLUSIVE, "unknown", "unknown",
-                "this driver has no numbered crop for the current profile")
+                INCONCLUSIVE,
+                "unknown",
+                "unknown",
+                "this driver has no numbered crop for the current profile",
+            )
         try:
             crop = payload.item(model_item_index)
         except ItemCropError as exc:
             return ItemTypePreflight(
-                INCONCLUSIVE, "unknown", "unknown",
-                f"model item {model_item_index} has no readable numbered crop ({exc})")
+                INCONCLUSIVE,
+                "unknown",
+                "unknown",
+                f"model item {model_item_index} has no readable numbered crop ({exc})",
+            )
         return preflight_item_type(item_description, crop.image)
 
     def _confirm_payload_profile(self, model_item_index: int) -> None:
@@ -11555,21 +13636,36 @@ class AndroidDriver(DatingAppDriver):
                 f"driver holds crops for it but no index behind them, so there is no fingerprint "
                 f"to check the profile on screen against. Nothing was tapped and the like is NOT "
                 f"sent.",
-                stage="navigate", intended=model_item_index, index_space="model_items")
+                stage="navigate",
+                intended=model_item_index,
+                index_space="model_items",
+            )
         frame = self._screencap()
         try:
             verdict = compare_profile_identity(
-                frame, index.identity, identity_band=self.identity_band,
+                frame,
+                index.identity,
+                identity_band=self.identity_band,
                 match_max_dist=self._require_targeting_calibration(
-                    model_item_index).identity_match_max_dist)
+                    model_item_index
+                ).identity_match_max_dist,
+            )
         except IdentityError as exc:
             raise HingeTargetingError(
                 f"{self.spec.app}: the profile on screen could not be checked against the one "
                 f"model item {model_item_index}'s crops were cut from ({exc}). Nothing was tapped "
                 f"and the like is NOT sent.",
-                stage="navigate", intended=model_item_index, index_space="model_items") from exc
-        self._dbg_action("confirm_payload_profile", frame, item=model_item_index,
-                         outcome=verdict.state, distance=verdict.distance)
+                stage="navigate",
+                intended=model_item_index,
+                index_space="model_items",
+            ) from exc
+        self._dbg_action(
+            "confirm_payload_profile",
+            frame,
+            item=model_item_index,
+            outcome=verdict.state,
+            distance=verdict.distance,
+        )
         if verdict.matched:
             return
         raise HingeTargetingError(
@@ -11577,13 +13673,23 @@ class AndroidDriver(DatingAppDriver):
             f"{model_item_index}'s crops were cut from, so the opener would be attached to a "
             f"card this driver has never seen. Nothing was tapped and the like is NOT sent. "
             f"{verdict.reason}",
-            stage="navigate", intended=model_item_index, index_space="model_items")
+            stage="navigate",
+            intended=model_item_index,
+            index_space="model_items",
+        )
 
-    def _verify_sheet_shows(self, sheet: bytes, payload, model_item_index: int, before, *,
-                            composer_surface: ComposerSurface | None = None,
-                            allow_top_identity: bool = False,
-                            opener_already_typed: bool = False,
-                            debug_after=dataclasses.MISSING) -> None:
+    def _verify_sheet_shows(
+        self,
+        sheet: bytes,
+        payload,
+        model_item_index: int,
+        before,
+        *,
+        composer_surface: ComposerSurface | None = None,
+        allow_top_identity: bool = False,
+        opener_already_typed: bool = False,
+        debug_after=dataclasses.MISSING,
+    ) -> None:
         """Doc 5.6's post-tap check. Returns only when the sheet IS showing item `model_item_index`.
 
         `sheet` is the screencap taken once `_await_sheet_open` confirmed the comment sheet is up
@@ -11615,8 +13721,9 @@ class AndroidDriver(DatingAppDriver):
         """
         unsent = (
             "No further text is typed and the like is NOT sent"
-            if opener_already_typed else
-            "The opener is NOT typed and the like is NOT sent")
+            if opener_already_typed
+            else "The opener is NOT typed and the like is NOT sent"
+        )
         unsent_clause = unsent[0].lower() + unsent[1:]
         # `before` is the PRE-TAP card and `_dbg_action` captures the screen as it is now, so one
         # debug entry holds both sides of the tap: what was under the heart and what the sheet
@@ -11628,58 +13735,110 @@ class AndroidDriver(DatingAppDriver):
             raise HingeTargetingError(
                 f"{self.spec.app}: the like sheet cannot be attributed to model item "
                 f"{model_item_index}'s profile because its identity index is missing. {unsent}.",
-                stage="verify", intended=model_item_index, index_space="model_items")
+                stage="verify",
+                intended=model_item_index,
+                index_space="model_items",
+            )
         # The deck can advance between the pre-tap identity check and the sheet arriving. Check
         # the sticky header again before the crop verifier: a closed-set item comparison may pass
         # for a foreign card, but it cannot license typing on another person's profile.
         try:
             identity = compare_profile_identity(
-                sheet, index.identity, identity_band=self.identity_band,
-                match_max_dist=calibration.identity_match_max_dist)
+                sheet,
+                index.identity,
+                identity_band=self.identity_band,
+                match_max_dist=calibration.identity_match_max_dist,
+            )
         except IdentityError as exc:
-            self._dbg_action("verify_sheet_identity", before, after=debug_after,
-                             item=model_item_index, outcome="unreadable", reason=str(exc))
+            self._dbg_action(
+                "verify_sheet_identity",
+                before,
+                after=debug_after,
+                item=model_item_index,
+                outcome="unreadable",
+                reason=str(exc),
+            )
             raise HingeTargetingError(
                 f"{self.spec.app}: the profile on the like sheet could not be checked against "
                 f"model item {model_item_index}'s profile ({exc}). {unsent}; the sheet is left "
                 "open for debugging.",
-                stage="verify", intended=model_item_index, index_space="model_items") from exc
-        self._dbg_action("verify_sheet_identity", before, after=debug_after,
-                         item=model_item_index, outcome=identity.state,
-                         distance=identity.distance, bound=identity.match_max)
+                stage="verify",
+                intended=model_item_index,
+                index_space="model_items",
+            ) from exc
+        self._dbg_action(
+            "verify_sheet_identity",
+            before,
+            after=debug_after,
+            item=model_item_index,
+            outcome=identity.state,
+            distance=identity.distance,
+            bound=identity.match_max,
+        )
         if identity.mismatched or (identity.unknown and not allow_top_identity):
             raise HingeTargetingError(
                 f"{self.spec.app}: the like sheet is not on the profile model item "
                 f"{model_item_index} was cropped from, so {unsent_clause}. {identity.reason}",
-                stage="verify", intended=model_item_index, index_space="model_items")
+                stage="verify",
+                intended=model_item_index,
+                index_space="model_items",
+            )
         try:
             verdict = verify_sheet_item(
-                sheet, payload, model_item_index,
+                sheet,
+                payload,
+                model_item_index,
                 absolute_max_dist=calibration.inline_item_max_dist,
-                composer_surface=composer_surface)
+                composer_surface=composer_surface,
+            )
         except SheetVerificationError as exc:
-            self._dbg_action("verify_sheet_item", before, after=debug_after,
-                             item=model_item_index, outcome="unreadable", reason=str(exc))
+            self._dbg_action(
+                "verify_sheet_item",
+                before,
+                after=debug_after,
+                item=model_item_index,
+                outcome="unreadable",
+                reason=str(exc),
+            )
             raise HingeTargetingError(
                 f"{self.spec.app}: the like sheet could not be checked against model item "
                 f"{model_item_index} ({exc}). {unsent}; the sheet is left open on screen for "
                 "debugging.",
-                stage="verify", intended=model_item_index, index_space="model_items") from exc
-        self._dbg_action("verify_sheet_item", before, after=debug_after,
-                         item=model_item_index, outcome=verdict.state,
-                         nearest=verdict.nearest_index, distance=verdict.distance,
-                         bound=verdict.bound, preview=[verdict.preview.y0, verdict.preview.y1,
-                                                       verdict.preview.x0, verdict.preview.x1],
-                         **self._sheet_verification_evidence(verdict, composer_surface))
+                stage="verify",
+                intended=model_item_index,
+                index_space="model_items",
+            ) from exc
+        self._dbg_action(
+            "verify_sheet_item",
+            before,
+            after=debug_after,
+            item=model_item_index,
+            outcome=verdict.state,
+            nearest=verdict.nearest_index,
+            distance=verdict.distance,
+            bound=verdict.bound,
+            preview=[
+                verdict.preview.y0,
+                verdict.preview.y1,
+                verdict.preview.x0,
+                verdict.preview.x1,
+            ],
+            **self._sheet_verification_evidence(verdict, composer_surface),
+        )
         if verdict.matched:
             return
         if verdict.distance is None:
-            intended = next(c for c in verdict.comparisons if c.number == model_item_index)
+            intended = next(
+                c for c in verdict.comparisons if c.number == model_item_index
+            )
             raise HingeTargetingError(
                 f"{self.spec.app}: the like sheet could not confirm model item "
                 f"{model_item_index}: {intended.reason}. {unsent}; the sheet is left open for "
                 "debugging.",
-                stage="verify", intended=model_item_index, index_space="model_items")
+                stage="verify",
+                intended=model_item_index,
+                index_space="model_items",
+            )
         # Never send a commentless like, never ship a comment attached to the wrong item, never
         # rewrite the opener to match whatever we hit (all three are owner rules, and the third is
         # why there is no anchored re-ask here -- that repair callback was removed outright on
@@ -11700,16 +13859,21 @@ class AndroidDriver(DatingAppDriver):
                 f"{self.spec.app}: the like sheet IS showing model item {model_item_index} — it is "
                 f"the nearest stored crop — but not closely enough to confirm it, so "
                 f"{unsent_clause}. This is a measurement/calibration refusal, NOT a different "
-                f"card: check the preview geometry and the bound before the targeting.")
+                f"card: check the preview geometry and the bound before the targeting."
+            )
         else:
             headline = (
                 f"{self.spec.app}: the like sheet is NOT showing the item the opener was written "
                 f"about — intended model item {model_item_index}, actual "
-                f"{verdict.nearest_index} — so {unsent_clause}.")
+                f"{verdict.nearest_index} — so {unsent_clause}."
+            )
         raise HingeTargetingError(
             f"{headline} {verdict.reason}",
-            stage="verify", intended=model_item_index, actual=verdict.nearest_index,
-            index_space="model_items")
+            stage="verify",
+            intended=model_item_index,
+            actual=verdict.nearest_index,
+            index_space="model_items",
+        )
 
     @staticmethod
     def _sheet_verification_evidence(verdict, composer_surface) -> dict:
@@ -11737,11 +13901,16 @@ class AndroidDriver(DatingAppDriver):
         field is read through `getattr` because this runs on the failure path, where a diagnostic
         that raises would destroy the evidence it exists to preserve.
         """
+
         def rect(value):
             if value is None:
                 return None
-            return [getattr(value, "x0", None), getattr(value, "y0", None),
-                    getattr(value, "x1", None), getattr(value, "y1", None)]
+            return [
+                getattr(value, "x0", None),
+                getattr(value, "y0", None),
+                getattr(value, "x1", None),
+                getattr(value, "y1", None),
+            ]
 
         evidence: dict = {"reason": str(getattr(verdict, "reason", ""))[:600]}
         preview = getattr(verdict, "preview", None)
@@ -11752,12 +13921,17 @@ class AndroidDriver(DatingAppDriver):
             evidence["grid"] = list(grid)
         comparisons = getattr(verdict, "comparisons", ()) or ()
         evidence["comparisons"] = [
-            {"item": getattr(c, "number", None), "distance": getattr(c, "distance", None),
-             "window_px": getattr(c, "window_px", None), "crop_px": getattr(c, "crop_px", None),
-             "nearest_other": getattr(c, "nearest_other", None),
-             "bound": getattr(c, "bound", None),
-             "why": str(getattr(c, "reason", ""))[:300]}
-            for c in comparisons[:24]]
+            {
+                "item": getattr(c, "number", None),
+                "distance": getattr(c, "distance", None),
+                "window_px": getattr(c, "window_px", None),
+                "crop_px": getattr(c, "crop_px", None),
+                "nearest_other": getattr(c, "nearest_other", None),
+                "bound": getattr(c, "bound", None),
+                "why": str(getattr(c, "reason", ""))[:300],
+            }
+            for c in comparisons[:24]
+        ]
         if len(comparisons) > 24:
             # Never silently truncate: a reader counting rows must be able to tell a short
             # payload from a clipped record.
@@ -11766,7 +13940,8 @@ class AndroidDriver(DatingAppDriver):
             evidence["composer"] = {
                 "layout_id": getattr(composer_surface, "layout_id", None),
                 "comment": rect(getattr(composer_surface, "comment_rect", None)),
-                "send": rect(getattr(composer_surface, "send_rect", None))}
+                "send": rect(getattr(composer_surface, "send_rect", None)),
+            }
         return evidence
 
     # --- doc 5.9's observe-side mismatch guard ---------------------------------------
@@ -11775,7 +13950,9 @@ class AndroidDriver(DatingAppDriver):
     # There is deliberately no `supports_*` capability flag beside it: the method's PRESENCE is
     # the capability, worker.py tests exactly that, and a second declaration of the same fact is
     # one more thing that can drift out of agreement with the first.
-    def observe_item_check(self, sheet: bytes, model_item_index: int) -> ObserveItemCheck:
+    def observe_item_check(
+        self, sheet: bytes, model_item_index: int
+    ) -> ObserveItemCheck:
         """Classify the open composer's selected item as match, mismatch, or inconclusive.
 
         DOC 5.9's MISMATCH GUARD, and the reason it exists is that the inversion removed a
@@ -11824,6 +14001,7 @@ class AndroidDriver(DatingAppDriver):
         because they cost nothing and are exactly what a revived caller would need again. The
         console line a caller prints is this check's record.
         """
+
         def result(state: str, reason: str = "") -> ObserveItemCheck:
             return ObserveItemCheck(state, reason)
 
@@ -11837,7 +14015,8 @@ class AndroidDriver(DatingAppDriver):
                 OBSERVE_ITEM_INCONCLUSIVE,
                 f"this driver holds no numbered items for the profile on screen, so there is "
                 f"no way to tell whether the sheet is showing item {model_item_index}: "
-                f"{self._current_items_unavailable or 'no reason was recorded'}")
+                f"{self._current_items_unavailable or 'no reason was recorded'}",
+            )
         # A normal Send Like surface is strict enough to be used by the action
         # path.  Observe is different: it only needs to prove that the human
         # has a real composer open before it can compare the selected item and
@@ -11850,37 +14029,51 @@ class AndroidDriver(DatingAppDriver):
             return result(
                 OBSERVE_ITEM_INCONCLUSIVE,
                 "the inline Send Like composer could not be structurally confirmed, "
-                "so the suggestion is not offered")
+                "so the suggestion is not offered",
+            )
         try:
             verdict = compare_profile_identity(
-                sheet, index.identity, identity_band=self.identity_band,
-                match_max_dist=calibration.identity_match_max_dist)
+                sheet,
+                index.identity,
+                identity_band=self.identity_band,
+                match_max_dist=calibration.identity_match_max_dist,
+            )
         except IdentityError as exc:
             return result(
                 OBSERVE_ITEM_INCONCLUSIVE,
                 f"the profile on the like sheet could not be checked against the one item "
                 f"{model_item_index} was cropped from ({exc}), so the suggestion is not "
-                f"offered")
+                f"offered",
+            )
         if not verdict.matched:
-            reason = (f"the like sheet is not on the profile item {model_item_index} was cropped "
-                      f"from, so this suggestion is about a card you are no longer looking at. "
-                      f"{verdict.reason}")
+            reason = (
+                f"the like sheet is not on the profile item {model_item_index} was cropped "
+                f"from, so this suggestion is about a card you are no longer looking at. "
+                f"{verdict.reason}"
+            )
             return result(
-                OBSERVE_ITEM_MISMATCH if verdict.mismatched else OBSERVE_ITEM_INCONCLUSIVE,
-                reason)
+                OBSERVE_ITEM_MISMATCH
+                if verdict.mismatched
+                else OBSERVE_ITEM_INCONCLUSIVE,
+                reason,
+            )
         try:
             blocker = verification_blocker(payload, model_item_index)
             if blocker:
                 return result(OBSERVE_ITEM_INCONCLUSIVE, blocker)
             sheet_verdict = verify_sheet_item(
-                sheet, payload, model_item_index,
+                sheet,
+                payload,
+                model_item_index,
                 absolute_max_dist=calibration.inline_item_max_dist,
-                composer_surface=composer)
+                composer_surface=composer,
+            )
         except (SheetVerificationError, ItemCropError) as exc:
             return result(
                 OBSERVE_ITEM_INCONCLUSIVE,
                 f"the like sheet could not be checked against model item "
-                f"{model_item_index} ({exc}), so the suggestion is not offered")
+                f"{model_item_index} ({exc}), so the suggestion is not offered",
+            )
         if sheet_verdict.matched:
             return result(OBSERVE_ITEM_MATCH)
         # A nearest *reachable* crop is not the item the human opened when the intended crop
@@ -11888,21 +14081,27 @@ class AndroidDriver(DatingAppDriver):
         # merely the closest remaining candidate.  Calling that a positive identification was
         # the Alex report's false "you opened item 6" while the sheet was actually item 3.
         if sheet_verdict.distance is None:
-            intended = next(c for c in sheet_verdict.comparisons
-                            if c.number == model_item_index)
+            intended = next(
+                c for c in sheet_verdict.comparisons if c.number == model_item_index
+            )
             return result(
                 OBSERVE_ITEM_INCONCLUSIVE,
                 f"the selected image could not yet be confirmed as model item "
                 f"{model_item_index}: {intended.reason}. The suggestion is withheld until "
-                f"the sheet can be checked again")
+                f"the sheet can be checked again",
+            )
         if sheet_verdict.state != VERIFY_MISMATCH:
             return result(OBSERVE_ITEM_INCONCLUSIVE, sheet_verdict.reason)
-        actual = ("nothing this profile was indexed with" if sheet_verdict.nearest_index is None
-                  else f"item {sheet_verdict.nearest_index}")
+        actual = (
+            "nothing this profile was indexed with"
+            if sheet_verdict.nearest_index is None
+            else f"item {sheet_verdict.nearest_index}"
+        )
         return result(
             OBSERVE_ITEM_MISMATCH,
             f"you opened {actual}, but this suggestion was written about item "
-            f"{model_item_index}. {sheet_verdict.reason}")
+            f"{model_item_index}. {sheet_verdict.reason}",
+        )
 
     def observe_item_mismatch(self, sheet: bytes, model_item_index: int) -> str:
         """Compatibility wrapper: empty on match, otherwise the operator-facing refusal.
@@ -11924,43 +14123,69 @@ class AndroidDriver(DatingAppDriver):
     # Part of the retained OBSERVE review-bridge API -- see note_observe_stopped's docstring
     # for what that means and why it is kept: worker.py's `_training_loop`/`_auto_loop` hold no
     # reference to anything below, so as of this writing nothing in production calls it.
-    def observe_open_targeted_like(self, model_item_index: int, *, should_stop=None) -> None:
+    def observe_open_targeted_like(
+        self, model_item_index: int, *, should_stop=None
+    ) -> None:
         """Lease-guarded wrapper that would exclude a second OBSERVE controller mid-action."""
         with self._observe_input_lease("observe_open_targeted_like"):
             return self._observe_open_targeted_like_unlocked(
-                model_item_index, should_stop=should_stop)
+                model_item_index, should_stop=should_stop
+            )
 
-    def _observe_open_targeted_like_unlocked(self, model_item_index: int, *, should_stop=None) -> None:
+    def _observe_open_targeted_like_unlocked(
+        self, model_item_index: int, *, should_stop=None
+    ) -> None:
         """Open and verify Hinge's comment sheet for ONE indexed model item.
 
         This is intentionally not a generic tap API.  It spends the current driver's own item
         index and entry anchor, then leaves the verified sheet open.  No character is typed and
         no like is sent here; ``observe_send_targeted_like`` is the separate irreversible step.
         """
-        self._raise_if_action_cancelled(should_stop, boundary="reviewed targeting preflight")
+        self._raise_if_action_cancelled(
+            should_stop, boundary="reviewed targeting preflight"
+        )
         payload = self._verifiable_payload(model_item_index)
         if payload is None:
-            raise HingeTargetingError("reviewed targeted like requires a verifiable indexed item",
-                                      stage="preflight", intended=model_item_index,
-                                      index_space="model_items")
+            raise HingeTargetingError(
+                "reviewed targeted like requires a verifiable indexed item",
+                stage="preflight",
+                intended=model_item_index,
+                index_space="model_items",
+            )
         self._confirm_payload_profile(model_item_index)
         heart = self._navigate_to_model_item(model_item_index, should_stop=should_stop)
-        self._raise_if_action_cancelled(should_stop, boundary="reviewed target heart tap")
+        self._raise_if_action_cancelled(
+            should_stop, boundary="reviewed target heart tap"
+        )
         before = self._snap()
         self._tap(*heart)
         if not self._interruptible_sleep(human_cooldown(0.8), should_stop):
-            self._raise_if_action_cancelled(should_stop, boundary="reviewed sheet confirmation")
+            self._raise_if_action_cancelled(
+                should_stop, boundary="reviewed sheet confirmation"
+            )
         composer = self._await_sheet_open()
         sheet = self._screencap()
         if composer is not None:
             try:
-                composer = locate_inline_composer(sheet, self._template("confirm"), threshold=0.8)
+                composer = locate_inline_composer(
+                    sheet, self._template("confirm"), threshold=0.8
+                )
             except ComposerDetectionError as exc:
-                raise HingeTargetingError("the reviewed like composer could not be verified; "
-                                          "nothing was typed or sent", stage="verify",
-                                          intended=model_item_index, index_space="model_items") from exc
-        self._verify_sheet_shows(sheet, payload, model_item_index, before,
-                                 composer_surface=composer, allow_top_identity=True)
+                raise HingeTargetingError(
+                    "the reviewed like composer could not be verified; "
+                    "nothing was typed or sent",
+                    stage="verify",
+                    intended=model_item_index,
+                    index_space="model_items",
+                ) from exc
+        self._verify_sheet_shows(
+            sheet,
+            payload,
+            model_item_index,
+            before,
+            composer_surface=composer,
+            allow_top_identity=True,
+        )
         # The action bridge has no passive wait in front of it to emit the usual
         # like-intent anchor.  Write the verified sheet before declaring the
         # post-tap fact, so release evidence has the same causal order as manual
@@ -11972,10 +14197,16 @@ class AndroidDriver(DatingAppDriver):
         # before the Worker advertised a verified, sendable sheet.
         self.observe_release_fact("post_tap_item_verified")
         self._observe_reviewed_sheet = (model_item_index, payload, before)
-        self._dbg_action("observe_reviewed_open", before, model_item_index=model_item_index,
-                         verified=True)
+        self._dbg_action(
+            "observe_reviewed_open",
+            before,
+            model_item_index=model_item_index,
+            verified=True,
+        )
 
-    def observe_send_targeted_like(self, opener: str, model_item_index: int, *, should_stop=None) -> None:
+    def observe_send_targeted_like(
+        self, opener: str, model_item_index: int, *, should_stop=None
+    ) -> None:
         """Lease-guarded wrapper that would exclude a second OBSERVE controller mid-send.
 
         Same retained-bridge status as observe_open_targeted_like just above -- see its comment
@@ -11983,34 +14214,64 @@ class AndroidDriver(DatingAppDriver):
         """
         with self._observe_input_lease("observe_send_targeted_like"):
             return self._observe_send_targeted_like_unlocked(
-                opener, model_item_index, should_stop=should_stop)
+                opener, model_item_index, should_stop=should_stop
+            )
 
-    def _observe_send_targeted_like_unlocked(self, opener: str, model_item_index: int, *, should_stop=None) -> None:
+    def _observe_send_targeted_like_unlocked(
+        self, opener: str, model_item_index: int, *, should_stop=None
+    ) -> None:
         """Re-verify the already-open reviewed sheet, then type and send its current opener."""
         pending = getattr(self, "_observe_reviewed_sheet", None)
         if not opener or pending is None or pending[0] != model_item_index:
-            raise HingeTargetingError("there is no matching reviewed, verified comment sheet open; "
-                                      "nothing was typed or sent", stage="verify",
-                                      intended=model_item_index, index_space="model_items")
+            raise HingeTargetingError(
+                "there is no matching reviewed, verified comment sheet open; "
+                "nothing was typed or sent",
+                stage="verify",
+                intended=model_item_index,
+                index_space="model_items",
+            )
         _item, payload, before = pending
         try:
-            self._raise_if_action_cancelled(should_stop, boundary="reviewed comment entry")
+            self._raise_if_action_cancelled(
+                should_stop, boundary="reviewed comment entry"
+            )
             composer = self._await_sheet_open(tries=3)
             if composer is None:
-                raise HingeTargetingError("the reviewed comment composer disappeared; nothing was typed or sent",
-                                          stage="verify", intended=model_item_index,
-                                          index_space="model_items")
+                raise HingeTargetingError(
+                    "the reviewed comment composer disappeared; nothing was typed or sent",
+                    stage="verify",
+                    intended=model_item_index,
+                    index_space="model_items",
+                )
             sheet = self._screencap()
-            composer = locate_inline_composer(sheet, self._template("confirm"), threshold=0.8)
-            self._verify_sheet_shows(sheet, payload, model_item_index, before,
-                                     composer_surface=composer, allow_top_identity=False)
+            composer = locate_inline_composer(
+                sheet, self._template("confirm"), threshold=0.8
+            )
+            self._verify_sheet_shows(
+                sheet,
+                payload,
+                model_item_index,
+                before,
+                composer_surface=composer,
+                allow_top_identity=False,
+            )
             self._tap(*composer.comment_rect.center)
             if not self._interruptible_sleep(human_delay(0.5), should_stop):
-                self._raise_if_action_cancelled(should_stop, boundary="reviewed comment entry")
+                self._raise_if_action_cancelled(
+                    should_stop, boundary="reviewed comment entry"
+                )
             focused = self._screencap()
-            focused_composer = locate_inline_composer(focused, self._template("confirm"), threshold=0.8)
-            self._verify_sheet_shows(focused, payload, model_item_index, before,
-                                     composer_surface=focused_composer, allow_top_identity=False)
+            focused_composer = locate_inline_composer(
+                focused, self._template("confirm"), threshold=0.8
+            )
+            self._verify_sheet_shows(
+                focused,
+                payload,
+                model_item_index,
+                before,
+                composer_surface=focused_composer,
+                allow_top_identity=False,
+            )
             self._raise_if_action_cancelled(should_stop, boundary="reviewed text entry")
             self._text(opener)
             if not self._interruptible_sleep(human_delay(0.6), should_stop):
@@ -12023,17 +14284,35 @@ class AndroidDriver(DatingAppDriver):
                 self._tap(*send_composer.confirm_point)
             time.sleep(human_cooldown(0.6))
             self._record_reviewed_like_sending_if_observed(before)
-            self._dbg_action("observe_reviewed_like_attempt", before,
-                             model_item_index=model_item_index, opener_chars=len(opener), verified=True)
+            self._dbg_action(
+                "observe_reviewed_like_attempt",
+                before,
+                model_item_index=model_item_index,
+                opener_chars=len(opener),
+                verified=True,
+            )
             self._handle_rose_upsell()
             self._verify_like_landed(before)
-            self._dbg_action("observe_decision", before, decision="like", reviewed=True,
-                             model_item_index=model_item_index, opener_chars=len(opener))
-            self._dbg_action("observe_reviewed_like", before,
-                             model_item_index=model_item_index, opener_chars=len(opener), verified=True)
+            self._dbg_action(
+                "observe_decision",
+                before,
+                decision="like",
+                reviewed=True,
+                model_item_index=model_item_index,
+                opener_chars=len(opener),
+            )
+            self._dbg_action(
+                "observe_reviewed_like",
+                before,
+                model_item_index=model_item_index,
+                opener_chars=len(opener),
+                verified=True,
+            )
         finally:
             self._observe_reviewed_sheet = None
-            self._invalidate_item_index("reviewed Observe like completed or stopped; indexed card is no longer current")
+            self._invalidate_item_index(
+                "reviewed Observe like completed or stopped; indexed card is no longer current"
+            )
 
     def _record_reviewed_like_sending_if_observed(self, before: bytes) -> bool:
         """Log a bridge send transition only when its captured frame actually proves one."""
@@ -12043,8 +14322,9 @@ class AndroidDriver(DatingAppDriver):
         # trace instead of fabricating it.
         post_send = self._screencap()
         sheet_still_open = self._observe_like_sheet_visible(post_send)
-        current_card = (post_send == before
-                        or self._is_current_profile_frame(post_send, require_content=True))
+        current_card = post_send == before or self._is_current_profile_frame(
+            post_send, require_content=True
+        )
         next_card_ready = not current_card and self._observe_deck_ready(post_send)
         if self._dbg is None or sheet_still_open or current_card or next_card_ready:
             return False
@@ -12105,13 +14385,20 @@ class AndroidDriver(DatingAppDriver):
         if x1 <= x0 or y1 <= y0:
             return None
         crop = image[y0:y1, x0:x1]
-        return {"sha256": hashlib.sha256(crop.tobytes()).hexdigest(),
-                "rect": [x0, y0, x1, y1]}
+        return {
+            "sha256": hashlib.sha256(crop.tobytes()).hexdigest(),
+            "rect": [x0, y0, x1, y1],
+        }
 
-    def _record_auto_opener_pre_send(self, frame: bytes | None, *, opener: str,
-                                     item_index: int | None,
-                                     model_item_index: int | None,
-                                     composer=None) -> dict[str, object] | None:
+    def _record_auto_opener_pre_send(
+        self,
+        frame: bytes | None,
+        *,
+        opener: str,
+        item_index: int | None,
+        model_item_index: int | None,
+        composer=None,
+    ) -> dict[str, object] | None:
         """Retain the typed, targeted Hinge composer at an AUTO or Training pre-send boundary.
 
         A normal ``like_attempt`` record is written only *after* the Send Like tap, so its
@@ -12143,11 +14430,19 @@ class AndroidDriver(DatingAppDriver):
         evidence_id = hashlib.sha256(frame + b"\0" + opener_bytes).hexdigest()
         # The reviewer approves what this frame SHOWS, so the draft's own pixels are part of
         # what was approved — not merely the opener string the model generated.
-        draft = self._comment_draft_digest(frame, composer) if composer is not None else None
+        draft = (
+            self._comment_draft_digest(frame, composer)
+            if composer is not None
+            else None
+        )
         evidence = {
-            "evidence_id": evidence_id, "frame": frame, "frame_sha256": frame_sha256,
-            "opener_sha256": opener_sha256, "item_index": item_index,
-            "model_item_index": model_item_index, "session_mode": session_mode,
+            "evidence_id": evidence_id,
+            "frame": frame,
+            "frame_sha256": frame_sha256,
+            "opener_sha256": opener_sha256,
+            "item_index": item_index,
+            "model_item_index": model_item_index,
+            "session_mode": session_mode,
             "draft": draft,
             # The prompt era this opener was generated under (Worker._bind_opener_prompt_stamp
             # -> set_opener_prompt_sha256), so this local record is era-attributable exactly
@@ -12158,12 +14453,19 @@ class AndroidDriver(DatingAppDriver):
         if generation_context:
             evidence["generation_context"] = dict(generation_context)
         if self._dbg is not None:
-            generation_fields = (dict(generation_context) if generation_context else {})
+            generation_fields = dict(generation_context) if generation_context else {}
             self._dbg.action(
-                "auto_opener_pre_send", before=frame, keep_before=True,
-                opener=opener, opener_chars=len(opener), opener_sha256=opener_sha256,
-                frame_sha256=frame_sha256, evidence_id=evidence_id, item_index=item_index,
-                model_item_index=model_item_index, session_mode=session_mode,
+                "auto_opener_pre_send",
+                before=frame,
+                keep_before=True,
+                opener=opener,
+                opener_chars=len(opener),
+                opener_sha256=opener_sha256,
+                frame_sha256=frame_sha256,
+                evidence_id=evidence_id,
+                item_index=item_index,
+                model_item_index=model_item_index,
+                session_mode=session_mode,
                 draft_sha256=(draft or {}).get("sha256"),
                 draft_rect=(draft or {}).get("rect"),
                 prompt_sha256=self._opener_prompt_sha256,
@@ -12171,10 +14473,15 @@ class AndroidDriver(DatingAppDriver):
             )
         return evidence
 
-    def _record_auto_opener_resumed_send(self, frame: bytes, *, opener: str,
-                                         item_index: int | None,
-                                         model_item_index: int | None,
-                                         approval_evidence: dict[str, object] | None) -> dict[str, object]:
+    def _record_auto_opener_resumed_send(
+        self,
+        frame: bytes,
+        *,
+        opener: str,
+        item_index: int | None,
+        model_item_index: int | None,
+        approval_evidence: dict[str, object] | None,
+    ) -> dict[str, object]:
         """Retain Training's re-verified frame immediately before the resumed Send tap.
 
         The approval snapshot must remain immutable: it is the image the reviewer saw. A human
@@ -12192,28 +14499,44 @@ class AndroidDriver(DatingAppDriver):
         session_mode = self._session_mode()
         approval_evidence_id = (approval_evidence or {}).get("evidence_id")
         evidence = {
-            "evidence_id": evidence_id, "frame": frame, "frame_sha256": frame_sha256,
-            "opener_sha256": opener_sha256, "item_index": item_index,
+            "evidence_id": evidence_id,
+            "frame": frame,
+            "frame_sha256": frame_sha256,
+            "opener_sha256": opener_sha256,
+            "item_index": item_index,
             "model_item_index": model_item_index,
             "session_mode": session_mode,
-            "approval_evidence_id": (approval_evidence_id
-                                     if isinstance(approval_evidence_id, str) else None),
+            "approval_evidence_id": (
+                approval_evidence_id if isinstance(approval_evidence_id, str) else None
+            ),
             # Same era digest as _record_auto_opener_pre_send's evidence -- see its comment.
             "prompt_sha256": self._opener_prompt_sha256,
         }
         if self._dbg is not None:
             self._dbg.action(
-                "auto_opener_resumed_send", before=frame, keep_before=True,
-                opener=opener, opener_chars=len(opener), opener_sha256=opener_sha256,
-                frame_sha256=frame_sha256, evidence_id=evidence_id,
-                approval_evidence_id=evidence["approval_evidence_id"], item_index=item_index,
-                model_item_index=model_item_index, session_mode=session_mode,
+                "auto_opener_resumed_send",
+                before=frame,
+                keep_before=True,
+                opener=opener,
+                opener_chars=len(opener),
+                opener_sha256=opener_sha256,
+                frame_sha256=frame_sha256,
+                evidence_id=evidence_id,
+                approval_evidence_id=evidence["approval_evidence_id"],
+                item_index=item_index,
+                model_item_index=model_item_index,
+                session_mode=session_mode,
                 prompt_sha256=self._opener_prompt_sha256,
             )
         return evidence
 
-    def _record_training_cancelled(self, pre_send_evidence: dict[str, object] | None, *,
-                                   model_item_index: int | None, reason: str) -> None:
+    def _record_training_cancelled(
+        self,
+        pre_send_evidence: dict[str, object] | None,
+        *,
+        model_item_index: int | None,
+        reason: str,
+    ) -> None:
         """Record a Training checkpoint that ended before a Send Like tap.
 
         This is deliberately a text-only debug action: the pre-send evidence already retains
@@ -12224,9 +14547,13 @@ class AndroidDriver(DatingAppDriver):
         evidence_id = (pre_send_evidence or {}).get("evidence_id")
         if self._dbg is None or not isinstance(evidence_id, str) or not evidence_id:
             return
-        self._dbg.action("training_cancelled", pre_send_evidence_id=evidence_id,
-                         model_item_index=model_item_index, reason=reason,
-                         prompt_sha256=self._opener_prompt_sha256)
+        self._dbg.action(
+            "training_cancelled",
+            pre_send_evidence_id=evidence_id,
+            model_item_index=model_item_index,
+            reason=reason,
+            prompt_sha256=self._opener_prompt_sha256,
+        )
 
     def landed_auto_opener_evidence(self) -> dict[str, object] | None:
         """Return the latest verified-landed AUTO or Training opener frame for storage."""
@@ -12252,20 +14579,31 @@ class AndroidDriver(DatingAppDriver):
         closes the composer or otherwise changes the screen is therefore a fail-closed refusal,
         never a silent fall-through to a stale send coordinate.
         """
-        self._raise_if_action_cancelled(should_stop, boundary="training keyboard dismissal")
+        self._raise_if_action_cancelled(
+            should_stop, boundary="training keyboard dismissal"
+        )
         source = sys._getframe(1).f_code.co_name
         self._require_foreground_owned_for_input()
         keyevent = getattr(self.adb, "keyevent", None)
         if not callable(keyevent):
             raise UnlocatedControlError(
                 "training cannot dismiss the Android keyboard because the active ADB transport "
-                "does not expose a guarded keyevent method; no Like or Dislike was sent")
-        keyevent(4)  # Android KEYCODE_BACK: dismisses the focused IME on Hinge's inline composer.
+                "does not expose a guarded keyevent method; no Like or Dislike was sent"
+            )
+        keyevent(
+            4
+        )  # Android KEYCODE_BACK: dismisses the focused IME on Hinge's inline composer.
         self._audit_device_input(
-            "key", source=source, keycode=4, purpose="dismiss_keyboard_for_training",
-            transport=type(self.adb).__name__)
+            "key",
+            source=source,
+            keycode=4,
+            purpose="dismiss_keyboard_for_training",
+            transport=type(self.adb).__name__,
+        )
         if not self._interruptible_sleep(human_delay(0.35), should_stop):
-            self._raise_if_action_cancelled(should_stop, boundary="training keyboard dismissal")
+            self._raise_if_action_cancelled(
+                should_stop, boundary="training keyboard dismissal"
+            )
         return self._screencap()
 
     def _locate_training_pass(self, frame: bytes):
@@ -12276,8 +14614,9 @@ class AndroidDriver(DatingAppDriver):
         composer and selected item.  A later human review can move the profile, so this helper is
         called again on a new frame immediately before a Dislike tap.
         """
-        hits = _match_glyph(frame, self._template("pass"), side="left",
-                            threshold=_PASS_MATCH_THRESHOLD)
+        hits = _match_glyph(
+            frame, self._template("pass"), side="left", threshold=_PASS_MATCH_THRESHOLD
+        )
         if not hits:
             return None
         if len(hits) > 1:
@@ -12287,7 +14626,8 @@ class AndroidDriver(DatingAppDriver):
             # one is a genuinely unrecognized screen, not a case to disambiguate by position.
             raise UnlocatedControlError(
                 f"{len(hits)} equally plausible Hinge pass controls were located on the training "
-                f"checkpoint at {hits!r}; no Like or Dislike was sent")
+                f"checkpoint at {hits!r}; no Like or Dislike was sent"
+            )
         return hits[0]
 
     def _ime_state(self) -> bool | None:
@@ -12300,7 +14640,8 @@ class AndroidDriver(DatingAppDriver):
         """
         try:
             shown = self.adb.shell(
-                "dumpsys input_method | grep -m1 -o 'mInputShown=[a-z]*'").strip()
+                "dumpsys input_method | grep -m1 -o 'mInputShown=[a-z]*'"
+            ).strip()
         except Exception:  # noqa: BLE001 — a diagnostic must never gate the checkpoint
             return None
         if shown.endswith("=true"):
@@ -12317,8 +14658,9 @@ class AndroidDriver(DatingAppDriver):
             return "Android reported the keyboard hidden"
         return "Android's keyboard state was unreadable"
 
-    def _training_checkpoint_geometry(self, frame: bytes, payload, model_item_index: int | None,
-                                      before: bytes):
+    def _training_checkpoint_geometry(
+        self, frame: bytes, payload, model_item_index: int | None, before: bytes
+    ):
         """Prove one training checkpoint frame end to end, or report a covered pass control.
 
         Returns ``(frame, composer, pass_point)`` when this exact frame shows the captured
@@ -12328,23 +14670,68 @@ class AndroidDriver(DatingAppDriver):
         """
         composer = self._locate_inline_composer(frame)
         if composer is None:
+            reason = getattr(self, "_last_composer_detection_failure", None)
             raise UnlocatedControlError(
                 "the keyboard-hidden training checkpoint has no strictly located inline Send "
-                "Like composer; no Like or Dislike was sent")
+                "Like composer; no Like or Dislike was sent"
+                + (f" (detector: {reason})" if reason else "")
+            )
         if payload is not None:
             self._verify_sheet_shows(
-                frame, payload, model_item_index, before, composer_surface=composer,
-                allow_top_identity=False, opener_already_typed=True, debug_after=frame)
+                frame,
+                payload,
+                model_item_index,
+                before,
+                composer_surface=composer,
+                allow_top_identity=False,
+                opener_already_typed=True,
+                debug_after=frame,
+            )
         pass_point = self._locate_training_pass(frame)
         if pass_point is None:
             return None
         return frame, composer, pass_point
 
-    def _verify_training_checkpoint(self, frame: bytes, payload, model_item_index: int | None,
-                                    before: bytes, *, should_stop=None,
-                                    keyboard_recovery: bool = False,
-                                    require_draft: bool = False,
-                                    approved_draft: dict[str, object] | None = None):
+    def _settle_resumed_checkpoint(self, frame: bytes, *, should_stop=None) -> bytes:
+        """Re-capture a resumed training checkpoint whose composer is not (yet) locatable.
+
+        2026-10-06: a Like resumed 3h12m after its opener was staged captured ONE frame
+        mid-animation (photo overlapping the comment box, grey scrim) and the whole run halted
+        on it.  Returns the first frame that locates the composer, or the last frame captured
+        once the attempts are spent, so the full proof in `_training_checkpoint_geometry` still
+        decides -- this relaxes no check and sends no input.
+        """
+        for attempt in range(1, _RESUME_SETTLE_ATTEMPTS + 1):
+            if self._locate_inline_composer(frame) is not None:
+                return frame
+            self._dbg_action(
+                "training_checkpoint_settle_retry",
+                frame,
+                attempt=attempt,
+                reason=(
+                    getattr(self, "_last_composer_detection_failure", None)
+                    or "composer not located"
+                ),
+            )
+            if not self._interruptible_sleep(human_delay(1.5), should_stop):
+                self._raise_if_action_cancelled(
+                    should_stop, boundary="training checkpoint settle"
+                )
+            frame = self._screencap()
+        return frame
+
+    def _verify_training_checkpoint(
+        self,
+        frame: bytes,
+        payload,
+        model_item_index: int | None,
+        before: bytes,
+        *,
+        should_stop=None,
+        keyboard_recovery: bool = False,
+        require_draft: bool = False,
+        approved_draft: dict[str, object] | None = None,
+    ):
         """Return the checkpoint frame plus fresh Send/Pass geometry for the selected surface.
 
         The RETURNED frame is authoritative and may not be the one passed in: callers must record
@@ -12395,8 +14782,18 @@ class AndroidDriver(DatingAppDriver):
         the captured profile, the selected item and an open composer -- so the only thing that can
         cover the pass control is an overlay this driver invited by typing.  If Back closes the
         composer instead, the second pass cannot locate it and refuses.
+
+        The two RESUME call sites (`keyboard_recovery=True`) first settle through up to
+        `_RESUME_SETTLE_ATTEMPTS` fresh screencaps when the composer is not locatable: they run
+        after a human review window of arbitrary length, where one frame can be mid-animation.
+        Every fresh frame faces the complete proof below.  The pre-send call site is excluded --
+        no human window has opened there, so a missing composer is an unknown screen.
         """
-        located = self._training_checkpoint_geometry(frame, payload, model_item_index, before)
+        if keyboard_recovery:
+            frame = self._settle_resumed_checkpoint(frame, should_stop=should_stop)
+        located = self._training_checkpoint_geometry(
+            frame, payload, model_item_index, before
+        )
         if located is not None:
             return located
         ime_shown = self._ime_state()
@@ -12405,43 +14802,65 @@ class AndroidDriver(DatingAppDriver):
                 "the training checkpoint does not show Hinge's pass control beside the verified "
                 f"Send Like composer ({self._describe_ime_state(ime_shown)}). A raised keyboard "
                 "means the comment field was focused, so the approved opener can no longer be "
-                "proved unedited; no Like or Dislike was sent")
+                "proved unedited; no Like or Dislike was sent"
+            )
         recovered = self._hide_keyboard_for_training(should_stop=should_stop)
         self._dbg_action(
-            "training_checkpoint_keyboard_recovery", frame, after=recovered,
-            model_item_index=model_item_index, ime_shown=ime_shown,
+            "training_checkpoint_keyboard_recovery",
+            frame,
+            after=recovered,
+            model_item_index=model_item_index,
+            ime_shown=ime_shown,
             draft_guarded=approved_draft is not None,
-            reason=("the floating pass control was covered on an otherwise fully verified "
-                    "training checkpoint, which is what a reviewer re-focusing Hinge's comment "
-                    "field does; re-dismissed the Android keyboard once before refusing"))
+            reason=(
+                "the floating pass control was covered on an otherwise fully verified "
+                "training checkpoint, which is what a reviewer re-focusing Hinge's comment "
+                "field does; re-dismissed the Android keyboard once before refusing"
+            ),
+        )
         located = self._training_checkpoint_geometry(
-            recovered, payload, model_item_index, before)
+            recovered, payload, model_item_index, before
+        )
         if located is None:
             raise UnlocatedControlError(
                 "the keyboard-hidden training checkpoint does not show Hinge's pass control "
                 "beside the verified Send Like composer, even after re-dismissing the Android "
                 f"keyboard ({self._describe_ime_state(ime_shown)} before that dismissal); no "
-                "Like or Dislike was sent")
+                "Like or Dislike was sent"
+            )
         if require_draft:
             # Rescue-only, never a gate: this branch was already refusing, so only an exact
             # match can change the outcome and it can only change it towards sending.  A MISSING
             # approved draft is therefore a refusal too, never a waiver -- otherwise a frame this
             # driver simply failed to digest would silently license an unproven send.
-            current = (None if approved_draft is None
-                       else self._comment_draft_digest(located[0], located[1]))
-            if (current is None or approved_draft is None
-                    or current.get("sha256") != approved_draft.get("sha256")
-                    or current.get("rect") != approved_draft.get("rect")):
+            current = (
+                None
+                if approved_draft is None
+                else self._comment_draft_digest(located[0], located[1])
+            )
+            if (
+                current is None
+                or approved_draft is None
+                or current.get("sha256") != approved_draft.get("sha256")
+                or current.get("rect") != approved_draft.get("rect")
+            ):
                 raise UnlocatedControlError(
                     "the reviewer's keyboard was covering Hinge's pass control, and after "
                     "dismissing it the comment field no longer matches the opener this "
                     "checkpoint approved, so the draft cannot be proved unedited; no Like was "
-                    "sent. Re-run the profile to send a freshly typed opener")
+                    "sent. Re-run the profile to send a freshly typed opener"
+                )
         return located
 
-    def _training_dislike_from_composer(self, payload, model_item_index: int | None,
-                                        before: bytes, *, should_stop=None,
-                                        pre_send_evidence: dict[str, object] | None = None) -> str:
+    def _training_dislike_from_composer(
+        self,
+        payload,
+        model_item_index: int | None,
+        before: bytes,
+        *,
+        should_stop=None,
+        pre_send_evidence: dict[str, object] | None = None,
+    ) -> str:
         """Pass the same profile from a typed, keyboard-hidden training composer.
 
         ``dislike()`` cannot be reused here: its deck preflight rejects an open composer before
@@ -12457,8 +14876,13 @@ class AndroidDriver(DatingAppDriver):
         # The checkpoint may re-dismiss a reviewer-raised keyboard and hand back a NEWER frame;
         # rebind so the tapped X and the retained record both belong to that same frame.
         current, _composer, pass_point = self._verify_training_checkpoint(
-            current, payload, model_item_index, before, should_stop=should_stop,
-            keyboard_recovery=True)          # a Dislike sends no text; see the verifier's docstring
+            current,
+            payload,
+            model_item_index,
+            before,
+            should_stop=should_stop,
+            keyboard_recovery=True,
+        )  # a Dislike sends no text; see the verifier's docstring
         self._raise_if_action_cancelled(should_stop, boundary="training Dislike tap")
         self._tap(*pass_point)
         # The X tap is irreversible. A Stop arriving after it cannot un-pass the profile, so it
@@ -12471,7 +14895,8 @@ class AndroidDriver(DatingAppDriver):
             # post-composer X tap.  The public verifier otherwise remains conservative for
             # direct callers, recovery tooling, and any future path lacking that provenance.
             advance_proof = self._verify_training_dislike_landed(
-                model_item_index, allow_same_name_successor=True)
+                model_item_index, allow_same_name_successor=True
+            )
         except Exception as exc:
             # The X tap has already been issued.  This is deliberately a distinct durable
             # outcome from both a verified training_dislike and the worker's later generic
@@ -12480,7 +14905,8 @@ class AndroidDriver(DatingAppDriver):
             # Do not turn an inconclusive landing into a label, and do not capture a later frame
             # here -- the checkpoint is the last screen positively attributed to this profile.
             fields = {
-                "x": list(pass_point), "model_item_index": model_item_index,
+                "x": list(pass_point),
+                "model_item_index": model_item_index,
                 "verified": payload is not None,
                 "error": f"{type(exc).__name__}: {exc}",
             }
@@ -12489,11 +14915,17 @@ class AndroidDriver(DatingAppDriver):
                 fields["pre_send_evidence_id"] = evidence_id
             if self._dbg is not None:
                 self._dbg.action(
-                    "training_dislike_unverified", before=current, keep_before=True, **fields)
+                    "training_dislike_unverified",
+                    before=current,
+                    keep_before=True,
+                    **fields,
+                )
             raise
         action_fields = {
-            "x": list(pass_point), "model_item_index": model_item_index,
-            "verified": payload is not None, "advance_proof": advance_proof,
+            "x": list(pass_point),
+            "model_item_index": model_item_index,
+            "verified": payload is not None,
+            "advance_proof": advance_proof,
         }
         evidence_id = (pre_send_evidence or {}).get("evidence_id")
         if isinstance(evidence_id, str) and evidence_id:
@@ -12502,8 +14934,8 @@ class AndroidDriver(DatingAppDriver):
         return "dislike"
 
     def _canonical_top_name_advance_candidate(
-            self, frame: bytes, *,
-            diagnostics: dict[str, object] | None = None) -> tuple[str, str] | None:
+        self, frame: bytes, *, diagnostics: dict[str, object] | None = None
+    ) -> tuple[str, str] | None:
         """Return ``(normalised_name, source)`` only on a canonically-top card.
 
         `_identity_of` also has a capture-local top signature, but Hinge 10.1.0 can pin that
@@ -12512,21 +14944,31 @@ class AndroidDriver(DatingAppDriver):
         advance. A local pixel match or an OCR candidate by itself remains diagnostic evidence.
         """
         candidate = self._identity_name_candidate
-        if (self._identity_top_name_verdict != "new"
-                or not isinstance(candidate, str) or not candidate
-                or self._identity_name_candidate_source not in {
-                    "top_card_header", "top_card_header_fallback",
-                    "top_card_header_take_another_look"}):
+        if (
+            self._identity_top_name_verdict != "new"
+            or not isinstance(candidate, str)
+            or not candidate
+            or self._identity_name_candidate_source
+            not in {
+                "top_card_header",
+                "top_card_header_fallback",
+                "top_card_header_take_another_look",
+            }
+        ):
             return None
         try:
             top = confirm_scroll_top(
-                frame, identity_band=self.identity_band,
-                pinned_evidence=self._pinned_band_evidence())
+                frame,
+                identity_band=self.identity_band,
+                pinned_evidence=self._pinned_band_evidence(),
+            )
         except ScrollTopError as exc:
             if diagnostics is not None:
                 diagnostics.update(
-                    name_top_state="error", name_top_confirmed=False,
-                    name_top_reason=str(exc))
+                    name_top_state="error",
+                    name_top_confirmed=False,
+                    name_top_reason=str(exc),
+                )
             return None
         if diagnostics is not None:
             diagnostics.update(
@@ -12540,8 +14982,12 @@ class AndroidDriver(DatingAppDriver):
         return candidate.casefold(), self._identity_name_candidate_source
 
     def _training_exact_top_name_conflict_candidate(
-            self, frame: bytes, *, current_profile: bool,
-            diagnostics: dict[str, object] | None = None) -> tuple[str, str] | None:
+        self,
+        frame: bytes,
+        *,
+        current_profile: bool,
+        diagnostics: dict[str, object] | None = None,
+    ) -> tuple[str, str] | None:
         """Return a Training-only next-card name when fuzzy identity and content disagree.
 
         The shared OCR matcher deliberately treats close spellings as the same name because in
@@ -12560,9 +15006,11 @@ class AndroidDriver(DatingAppDriver):
             return None
         if diagnostics is None:
             return None
-        if (diagnostics.get("current_profile_branch") != "identity_same_with_content"
-                or diagnostics.get("current_content_exact_matched") is not False
-                or diagnostics.get("current_content_shift_matched") is not False):
+        if (
+            diagnostics.get("current_profile_branch") != "identity_same_with_content"
+            or diagnostics.get("current_content_exact_matched") is not False
+            or diagnostics.get("current_content_shift_matched") is not False
+        ):
             return None
         source = self._identity_top_name_read_source
         # The Take-another-look crop can establish a direct NEW candidate through
@@ -12574,21 +15022,29 @@ class AndroidDriver(DatingAppDriver):
         if source not in {"top_card_header", "top_card_header_fallback"}:
             return None
         text = self._identity_top_name_read
-        candidate = (_clean_first_line_name_candidate(text)
-                     if isinstance(text, str) else None)
+        candidate = (
+            _clean_first_line_name_candidate(text) if isinstance(text, str) else None
+        )
         stored = (self._identity_name or "").strip()
-        if (candidate is None or not stored
-                or candidate.casefold() == stored.casefold()
-                or not _name_token_matches(candidate, stored)):
+        if (
+            candidate is None
+            or not stored
+            or candidate.casefold() == stored.casefold()
+            or not _name_token_matches(candidate, stored)
+        ):
             return None
         try:
             top = confirm_scroll_top(
-                frame, identity_band=self.identity_band,
-                pinned_evidence=self._pinned_band_evidence())
+                frame,
+                identity_band=self.identity_band,
+                pinned_evidence=self._pinned_band_evidence(),
+            )
         except ScrollTopError as exc:
             diagnostics.update(
-                name_top_state="error", name_top_confirmed=False,
-                name_top_reason=str(exc))
+                name_top_state="error",
+                name_top_confirmed=False,
+                name_top_reason=str(exc),
+            )
             return None
         diagnostics.update(
             name_top_state=top.state,
@@ -12606,8 +15062,12 @@ class AndroidDriver(DatingAppDriver):
         return candidate.casefold(), source
 
     def _training_same_name_content_disjoint_successor_proof(
-            self, frame: bytes, *, current_profile: bool,
-            diagnostics: dict[str, object] | None = None) -> tuple[str, str] | None:
+        self,
+        frame: bytes,
+        *,
+        current_profile: bool,
+        diagnostics: dict[str, object] | None = None,
+    ) -> tuple[str, str] | None:
         """Prove the narrow Hinge case of a different card with the same first name.
 
         Hinge can present consecutive profiles whose sticky identity band is visually and
@@ -12628,7 +15088,8 @@ class AndroidDriver(DatingAppDriver):
         diagnostics["same_name_successor_considered"] = True
         required_disjoint_content = (
             not current_profile
-            and diagnostics.get("current_profile_branch") == "identity_same_with_content"
+            and diagnostics.get("current_profile_branch")
+            == "identity_same_with_content"
             and diagnostics.get("current_content_exact_matched") is False
             and diagnostics.get("current_content_shift_matched") is False
         )
@@ -12641,14 +15102,17 @@ class AndroidDriver(DatingAppDriver):
         source = self._identity_top_name_read_source
         text = self._identity_top_name_read
         stored = (self._identity_name or "").strip()
-        candidate = (_clean_first_line_name_candidate(text)
-                     if isinstance(text, str) else None)
+        candidate = (
+            _clean_first_line_name_candidate(text) if isinstance(text, str) else None
+        )
         same_name_verdict = self._identity_top_name_verdict == "same"
         exact_stored_name = bool(
             same_name_verdict
             and source in {"top_card_header", "top_card_header_fallback"}
-            and candidate is not None and stored
-            and candidate.casefold() == stored.casefold())
+            and candidate is not None
+            and stored
+            and candidate.casefold() == stored.casefold()
+        )
         diagnostics.update(
             same_name_successor_source=source,
             same_name_successor_same_name_verdict=same_name_verdict,
@@ -12658,8 +15122,10 @@ class AndroidDriver(DatingAppDriver):
             return None
         try:
             top = confirm_scroll_top(
-                frame, identity_band=self.identity_band,
-                pinned_evidence=self._pinned_band_evidence())
+                frame,
+                identity_band=self.identity_band,
+                pinned_evidence=self._pinned_band_evidence(),
+            )
         except ScrollTopError as exc:
             diagnostics.update(
                 same_name_successor_top_state="error",
@@ -12697,34 +15163,43 @@ class AndroidDriver(DatingAppDriver):
             if not isinstance(attempt, dict):
                 continue
             candidate = attempt.get("candidate")
-            result.append({
-                "recipe": attempt.get("recipe"),
-                "digest": attempt.get("text_sha256"),
-                "verdict": attempt.get("verdict"),
-                "parser": attempt.get("parser"),
-                "upscale": attempt.get("upscale"),
-                "match_scope": attempt.get("match_scope"),
-                # A clean candidate is still OCR-derived profile text.  The full-text digest
-                # above proves the OCR input, while this separate normalised-token digest
-                # preserves enough information to tell whether two recorded attempts agreed
-                # without writing a person's name into durable debug evidence.
-                "candidate_sha256": AndroidDriver._identity_candidate_sha256(candidate),
-                "token_count": attempt.get("token_count", 0),
-            })
+            result.append(
+                {
+                    "recipe": attempt.get("recipe"),
+                    "digest": attempt.get("text_sha256"),
+                    "verdict": attempt.get("verdict"),
+                    "parser": attempt.get("parser"),
+                    "upscale": attempt.get("upscale"),
+                    "match_scope": attempt.get("match_scope"),
+                    # A clean candidate is still OCR-derived profile text.  The full-text digest
+                    # above proves the OCR input, while this separate normalised-token digest
+                    # preserves enough information to tell whether two recorded attempts agreed
+                    # without writing a person's name into durable debug evidence.
+                    "candidate_sha256": AndroidDriver._identity_candidate_sha256(
+                        candidate
+                    ),
+                    "token_count": attempt.get("token_count", 0),
+                }
+            )
         return result
 
     def _training_top_name_advance_proof(
-            self, frame: bytes, *,
-            diagnostics: dict[str, object] | None = None) -> tuple[str, str | None] | None:
+        self, frame: bytes, *, diagnostics: dict[str, object] | None = None
+    ) -> tuple[str, str | None] | None:
         """Adapt the shared canonically-top name proof to Training's proof protocol."""
         candidate = self._canonical_top_name_advance_candidate(
-            frame, diagnostics=diagnostics)
+            frame, diagnostics=diagnostics
+        )
         return None if candidate is None else ("name", candidate[0])
 
     def _training_profile_advance_proof(
-            self, frame: bytes, model_item_index: int | None, *,
-            diagnostics: dict[str, object] | None = None,
-            allow_same_name_successor: bool = False) -> tuple[str, str | None] | None:
+        self,
+        frame: bytes,
+        model_item_index: int | None,
+        *,
+        diagnostics: dict[str, object] | None = None,
+        allow_same_name_successor: bool = False,
+    ) -> tuple[str, str | None] | None:
         """Return affirmative evidence that ``frame`` is not this captured profile.
 
         The pass control can first close/reflow Hinge's inline composer rather than advance the
@@ -12743,7 +15218,8 @@ class AndroidDriver(DatingAppDriver):
         action unlabelled than to train on the wrong person.
         """
         current_profile = self._is_current_profile_frame(
-            frame, require_content=True, diagnostics=diagnostics)
+            frame, require_content=True, diagnostics=diagnostics
+        )
         # `_is_current_profile_frame` calls `_identity_of`, which may deliberately keep its
         # conservative pixel/content answer as "current" while also producing the stricter
         # OCR-only new-name candidate.  That is exactly what a scroll-top next card can look
@@ -12761,23 +15237,27 @@ class AndroidDriver(DatingAppDriver):
                 name_candidate=name_candidate,
                 name_source=name_source,
                 ocr_attempts=self._persisted_identity_ocr_attempts(
-                    self._identity_ocr_attempts),
+                    self._identity_ocr_attempts
+                ),
             )
         if current_profile:
-            return self._training_top_name_advance_proof(
-                frame, diagnostics=diagnostics)
+            return self._training_top_name_advance_proof(frame, diagnostics=diagnostics)
 
         # A same-name successor is intentionally narrower than the ordinary new-name route:
         # only the post-X Training Dislike verifier opts in.  Training Like and passive Observe
         # retain their fail-closed behaviour for a card whose first-name identity is unchanged.
         if allow_same_name_successor:
-            same_name_successor = self._training_same_name_content_disjoint_successor_proof(
-                frame, current_profile=current_profile, diagnostics=diagnostics)
+            same_name_successor = (
+                self._training_same_name_content_disjoint_successor_proof(
+                    frame, current_profile=current_profile, diagnostics=diagnostics
+                )
+            )
             if same_name_successor is not None:
                 return same_name_successor
 
         exact_name_conflict = self._training_exact_top_name_conflict_candidate(
-            frame, current_profile=current_profile, diagnostics=diagnostics)
+            frame, current_profile=current_profile, diagnostics=diagnostics
+        )
         if exact_name_conflict is not None:
             return "name", exact_name_conflict[0]
 
@@ -12785,9 +15265,13 @@ class AndroidDriver(DatingAppDriver):
         if index is not None and model_item_index is not None:
             try:
                 verdict = compare_profile_identity(
-                    frame, index.identity, identity_band=self.identity_band,
+                    frame,
+                    index.identity,
+                    identity_band=self.identity_band,
                     match_max_dist=self._require_targeting_calibration(
-                        model_item_index).identity_match_max_dist)
+                        model_item_index
+                    ).identity_match_max_dist,
+                )
             except (IdentityError, HingeTargetingError):
                 # The name route below can still prove a scroll-top next card. Never turn an
                 # unreadable identity crop into an assumed advance.
@@ -12816,15 +15300,19 @@ class AndroidDriver(DatingAppDriver):
                 name_candidate=self._identity_name_candidate,
                 name_source=self._identity_name_candidate_source,
                 ocr_attempts=self._persisted_identity_ocr_attempts(
-                    self._identity_ocr_attempts),
+                    self._identity_ocr_attempts
+                ),
             )
-        return self._training_top_name_advance_proof(
-            frame, diagnostics=diagnostics)
+        return self._training_top_name_advance_proof(frame, diagnostics=diagnostics)
 
     def _training_dislike_surface_proof(
-            self, frame: bytes, model_item_index: int | None, *,
-            diagnostics: dict[str, object] | None = None,
-            allow_same_name_successor: bool = False) -> tuple[str, str | None] | None:
+        self,
+        frame: bytes,
+        model_item_index: int | None,
+        *,
+        diagnostics: dict[str, object] | None = None,
+        allow_same_name_successor: bool = False,
+    ) -> tuple[str, str | None] | None:
         """Return affirmative advance evidence only for a closed, ready Hinge deck frame."""
         blocked = self._deck_blocked_reason(frame)
         if diagnostics is not None:
@@ -12843,8 +15331,11 @@ class AndroidDriver(DatingAppDriver):
         if not deck_ready:
             return None
         proof = self._training_profile_advance_proof(
-            frame, model_item_index, diagnostics=diagnostics,
-            allow_same_name_successor=allow_same_name_successor)
+            frame,
+            model_item_index,
+            diagnostics=diagnostics,
+            allow_same_name_successor=allow_same_name_successor,
+        )
         if diagnostics is not None:
             diagnostics.update(
                 proof=None if proof is None else proof[0],
@@ -12852,9 +15343,13 @@ class AndroidDriver(DatingAppDriver):
             )
         return proof
 
-    def _verify_training_deck_advanced(self, model_item_index: int | None, *,
-                                        should_stop=None,
-                                        allow_same_name_successor: bool = False) -> str:
+    def _verify_training_deck_advanced(
+        self,
+        model_item_index: int | None,
+        *,
+        should_stop=None,
+        allow_same_name_successor: bool = False,
+    ) -> str:
         """Prove a Training Like or Dislike reached a stable, semantically new deck card.
 
         This is intentionally stronger than ``_verify_progress``. The latter correctly catches
@@ -12868,13 +15363,17 @@ class AndroidDriver(DatingAppDriver):
         same-name/content-disjoint observation into a label.
         """
         for attempt in range(3):
-            self._raise_if_action_cancelled(should_stop, boundary="training Dislike verification")
+            self._raise_if_action_cancelled(
+                should_stop, boundary="training Dislike verification"
+            )
             first = self._screencap()
             first_diagnostics: dict[str, object] = {}
-            surface_kwargs = ({"allow_same_name_successor": True}
-                              if allow_same_name_successor else {})
+            surface_kwargs = (
+                {"allow_same_name_successor": True} if allow_same_name_successor else {}
+            )
             first_proof = self._training_dislike_surface_proof(
-                first, model_item_index, diagnostics=first_diagnostics, **surface_kwargs)
+                first, model_item_index, diagnostics=first_diagnostics, **surface_kwargs
+            )
             second_diagnostics: dict[str, object] | None = None
             second = None
             stable = None
@@ -12882,11 +15381,16 @@ class AndroidDriver(DatingAppDriver):
             if first_proof is not None:
                 if not self._interruptible_sleep(human_delay(0.5), should_stop):
                     self._raise_if_action_cancelled(
-                        should_stop, boundary="training Dislike verification")
+                        should_stop, boundary="training Dislike verification"
+                    )
                 second = self._screencap()
                 second_diagnostics = {}
                 second_proof = self._training_dislike_surface_proof(
-                    second, model_item_index, diagnostics=second_diagnostics, **surface_kwargs)
+                    second,
+                    model_item_index,
+                    diagnostics=second_diagnostics,
+                    **surface_kwargs,
+                )
                 # Two independently calibrated identity mismatches may agree, two scroll-top
                 # new-name reads may agree on the exact same candidate, or the Dislike-only
                 # same-name successor proof may repeat its exact stored-name/header source.
@@ -12896,14 +15400,18 @@ class AndroidDriver(DatingAppDriver):
                     second_proof is not None
                     and (
                         (first_proof[0] == second_proof[0] == "identity")
-                        or (first_proof[0] == second_proof[0] == "name"
+                        or (
+                            first_proof[0] == second_proof[0] == "name"
                             and first_proof[1] == second_proof[1]
                             and first_diagnostics.get("name_source")
-                            == second_diagnostics.get("name_source"))
-                        or (first_proof[0] == second_proof[0] == "same_name_successor"
+                            == second_diagnostics.get("name_source")
+                        )
+                        or (
+                            first_proof[0] == second_proof[0] == "same_name_successor"
                             and first_proof[1] == second_proof[1]
                             and first_diagnostics.get("same_name_successor_source")
-                            == second_diagnostics.get("same_name_successor_source"))
+                            == second_diagnostics.get("same_name_successor_source")
+                        )
                     )
                 )
                 stable = not self._changed(first, second)
@@ -12918,17 +15426,27 @@ class AndroidDriver(DatingAppDriver):
                         # cannot erase the one frame a disputed label would need. Earlier retries
                         # stay diagnostics-only; the final refused probe is retained below too.
                         self._dbg.action(
-                            "training_advance_probe", attempt=attempt + 1,
-                            before=first, after=second, keep_before=True,
-                            outcome="accepted", first=first_diagnostics,
-                            second=second_diagnostics, stable=stable,
+                            "training_advance_probe",
+                            attempt=attempt + 1,
+                            before=first,
+                            after=second,
+                            keep_before=True,
+                            outcome="accepted",
+                            first=first_diagnostics,
+                            second=second_diagnostics,
+                            stable=stable,
                             names_agree=names_agree,
-                            same_name_successor_enabled=allow_same_name_successor)
-                    return ("identity" if "identity" in {first_proof[0], second_proof[0]}
-                            else first_proof[0])
+                            same_name_successor_enabled=allow_same_name_successor,
+                        )
+                    return (
+                        "identity"
+                        if "identity" in {first_proof[0], second_proof[0]}
+                        else first_proof[0]
+                    )
             if self._dbg is not None:
                 self._dbg.action(
-                    "training_advance_probe", attempt=attempt + 1,
+                    "training_advance_probe",
+                    attempt=attempt + 1,
                     # Earlier retries are diagnostic noise.  Retain exactly the FINAL refused
                     # probe's available frame(s), so a semantic refusal can be replayed without
                     # turning every poll in a long run into permanent screenshot evidence.
@@ -12936,33 +15454,52 @@ class AndroidDriver(DatingAppDriver):
                     after=second if attempt == 2 else None,
                     keep_before=attempt == 2,
                     keep_after=attempt == 2 and second is not None,
-                    outcome="retry", first=first_diagnostics,
-                    second=second_diagnostics, stable=stable,
+                    outcome="retry",
+                    first=first_diagnostics,
+                    second=second_diagnostics,
+                    stable=stable,
                     names_agree=names_agree,
-                    same_name_successor_enabled=allow_same_name_successor)
+                    same_name_successor_enabled=allow_same_name_successor,
+                )
             if not self._interruptible_sleep(human_delay(0.4), should_stop):
                 self._raise_if_action_cancelled(
-                    should_stop, boundary="training Dislike verification")
+                    should_stop, boundary="training Dislike verification"
+                )
         raise HingeActionError(
             "training action did not reach a stable, semantically different ready deck card; "
-            "no training label was recorded")
+            "no training label was recorded"
+        )
 
-    def _verify_training_dislike_landed(self, model_item_index: int | None, *,
-                                         should_stop=None,
-                                         allow_same_name_successor: bool = False) -> str:
+    def _verify_training_dislike_landed(
+        self,
+        model_item_index: int | None,
+        *,
+        should_stop=None,
+        allow_same_name_successor: bool = False,
+    ) -> str:
         """Verify post-X; same-name successors need explicit tap-path provenance."""
         return self._verify_training_deck_advanced(
-            model_item_index, should_stop=should_stop,
-            allow_same_name_successor=allow_same_name_successor)
+            model_item_index,
+            should_stop=should_stop,
+            allow_same_name_successor=allow_same_name_successor,
+        )
 
-    def _verify_training_like_landed(self, model_item_index: int | None, *,
-                                      should_stop=None) -> str:
+    def _verify_training_like_landed(
+        self, model_item_index: int | None, *, should_stop=None
+    ) -> str:
         """Verify the post-Send branch through Training's semantic deck-advance proof."""
         return self._verify_training_deck_advanced(
-            model_item_index, should_stop=should_stop)
+            model_item_index, should_stop=should_stop
+        )
 
-    def _like_comment_sheet(self, opener: str | None, item_index: int | None, *,
-                            model_item_index: int | None = None, should_stop=None) -> str | None:
+    def _like_comment_sheet(
+        self,
+        opener: str | None,
+        item_index: int | None,
+        *,
+        model_item_index: int | None = None,
+        should_stop=None,
+    ) -> str | None:
         """Hinge's flow: heart -> inline "Send Like" composer appears -> optionally type the
         opener into its comment box (Signals #2: the opener is sent WITH the like) -> tap
         Send -> handle a paid-upsell interstitial (never tap the paid option) -> verify.
@@ -13024,8 +15561,13 @@ class AndroidDriver(DatingAppDriver):
                 "Capture-order targeting is retired because it cannot prove which selectable "
                 "item the sheet represents. Nothing was tapped and the like is NOT sent; a "
                 "model_item_index with calibrated identity and sheet verification is required.",
-                stage="preflight", intended=item_index, index_space="capture_order")
-        payload = self._verifiable_payload(model_item_index)   # raises before anything is touched
+                stage="preflight",
+                intended=item_index,
+                index_space="capture_order",
+            )
+        payload = self._verifiable_payload(
+            model_item_index
+        )  # raises before anything is touched
         if payload is not None:
             # Whose profile is this, before a finger moves and while the sticky header is still
             # readable. See _confirm_payload_profile for why the post-tap crop check does not
@@ -13052,7 +15594,9 @@ class AndroidDriver(DatingAppDriver):
             # anchor that is MEASURED rather than replayed, would put the identity strip on a
             # screen where it carries no identity at all, and would cost ~51 gestures to arrive
             # somewhere the read had already been.
-            heart = self._navigate_to_model_item(model_item_index, should_stop=should_stop)
+            heart = self._navigate_to_model_item(
+                model_item_index, should_stop=should_stop
+            )
         else:
             # Plain likes may still use the old generic heart lookup because no text is being
             # attached to a model-selected item.  An unusual dual-index caller keeps the model
@@ -13061,28 +15605,36 @@ class AndroidDriver(DatingAppDriver):
             self._scroll_to_top(should_stop)
             self._raise_if_action_cancelled(should_stop, boundary="legacy navigation")
             if not self._interruptible_sleep(human_delay(0.4), should_stop):
-                self._raise_if_action_cancelled(should_stop, boundary="legacy navigation")
+                self._raise_if_action_cancelled(
+                    should_stop, boundary="legacy navigation"
+                )
             # Raises HingeTargetingError rather than returning a different item's heart. Anything
             # below this line is therefore working with the heart of the item the opener is about
             # -- as far as the capture-order space can tell, see that method's stated residual.
             heart = self._locate_target_heart(item_index, should_stop=should_stop)
         self._raise_if_action_cancelled(should_stop, boundary="heart tap")
-        before = self._snap()                         # baseline AFTER navigation: the pre-tap card
+        before = self._snap()  # baseline AFTER navigation: the pre-tap card
         self._raise_if_action_cancelled(should_stop, boundary="heart tap")
-        self._tap(*heart)                             # opens the comment / "Send Like" sheet
+        self._tap(*heart)  # opens the comment / "Send Like" sheet
         if not self._interruptible_sleep(human_cooldown(0.8), should_stop):
-            self._raise_if_action_cancelled(should_stop, boundary="like-sheet confirmation")
+            self._raise_if_action_cancelled(
+                should_stop, boundary="like-sheet confirmation"
+            )
         composer = self._await_sheet_open()
         self._raise_if_action_cancelled(should_stop, boundary="comment entry")
-        sheet = self._screencap()           # the like screen: shows the item this comment attaches to
+        sheet = (
+            self._screencap()
+        )  # the like screen: shows the item this comment attaches to
         if composer is not None:
             try:
                 composer = locate_inline_composer(
-                    sheet, self._template("confirm"), threshold=0.8)
+                    sheet, self._template("confirm"), threshold=0.8
+                )
             except ComposerDetectionError as exc:
                 raise UnlocatedControlError(
                     "the Hinge inline composer changed between detection and verification; "
-                    "nothing was typed or sent") from exc
+                    "nothing was typed or sent"
+                ) from exc
         # DOC 5.6'S POST-TAP CHECK, AND IT IS THE FIRST THING THAT LOOKS AT THE OPEN SHEET.
         # Placed above every branch that can type: the ordering IS the guarantee ("verify, then
         # type"), and there is no path from here to `_text(...)` that does not pass
@@ -13096,16 +15648,26 @@ class AndroidDriver(DatingAppDriver):
                 self._verify_sheet_shows(sheet, payload, model_item_index, before)
             else:
                 self._verify_sheet_shows(
-                    sheet, payload, model_item_index, before, composer_surface=composer,
-                    allow_top_identity=bool(opener))
+                    sheet,
+                    payload,
+                    model_item_index,
+                    before,
+                    composer_surface=composer,
+                    allow_top_identity=bool(opener),
+                )
         if self._dbg is not None:
             # Best-effort, never raising (DebugLog.action swallows its own I/O failures) — a
             # broken debug log must never take down a like that would otherwise send cleanly.
             # Kept after the anchor mechanism itself went away: this frame is a picture of the
             # item a real comment is about to attach to, and doc 5.6's addendum records the
             # observe-side twin of it as the only corpus of open like sheets anyone has.
-            self._dbg.action("like_anchor", before=sheet, item_index=item_index,
-                             model_item_index=model_item_index, verified=payload is not None)
+            self._dbg.action(
+                "like_anchor",
+                before=sheet,
+                item_index=item_index,
+                model_item_index=model_item_index,
+                verified=payload is not None,
+            )
         if opener:
             self._raise_if_action_cancelled(should_stop, boundary="comment entry")
             if composer is None:
@@ -13118,18 +15680,27 @@ class AndroidDriver(DatingAppDriver):
                 focused = self._screencap()
                 try:
                     focused_composer = locate_inline_composer(
-                        focused, self._template("confirm"), threshold=0.8)
+                        focused, self._template("confirm"), threshold=0.8
+                    )
                 except ComposerDetectionError as exc:
                     raise HingeTargetingError(
                         f"{self.spec.app}: focusing the inline comment field did not leave a "
                         "structurally verified composer on screen. The opener is NOT typed and "
-                        "the like is NOT sent.", stage="verify", intended=model_item_index,
-                        index_space="model_items") from exc
+                        "the like is NOT sent.",
+                        stage="verify",
+                        intended=model_item_index,
+                        index_space="model_items",
+                    ) from exc
                 self._verify_sheet_shows(
-                    focused, payload, model_item_index, before,
-                    composer_surface=focused_composer, allow_top_identity=False)
+                    focused,
+                    payload,
+                    model_item_index,
+                    before,
+                    composer_surface=focused_composer,
+                    allow_top_identity=False,
+                )
             self._raise_if_action_cancelled(should_stop, boundary="text entry")
-            self._text(opener)                        # opener sent WITH the like (Signals #2)
+            self._text(opener)  # opener sent WITH the like (Signals #2)
             if not self._interruptible_sleep(human_delay(0.6), should_stop):
                 self._raise_if_action_cancelled(should_stop, boundary="send like")
         training_hook = self._training_decision
@@ -13146,8 +15717,11 @@ class AndroidDriver(DatingAppDriver):
             if not opener:
                 raise ActionCancelled(
                     "training requires a typed opener before presenting Like or Dislike; no "
-                    "device decision was sent")
-            training_post_type = self._hide_keyboard_for_training(should_stop=should_stop)
+                    "device decision was sent"
+                )
+            training_post_type = self._hide_keyboard_for_training(
+                should_stop=should_stop
+            )
         self._raise_if_action_cancelled(should_stop, boundary="send like")
         pre_send_evidence = None
         resumed_send_evidence = None
@@ -13158,19 +15732,33 @@ class AndroidDriver(DatingAppDriver):
             # while the touch coordinates belong to another layout.  HingeDriver's concrete
             # locator is intentionally required here: no fixed-coordinate fallback is allowed
             # once a targeted opener has been typed.
-            pre_send = training_post_type if training_post_type is not None else self._screencap()
+            pre_send = (
+                training_post_type
+                if training_post_type is not None
+                else self._screencap()
+            )
             locate_composer = getattr(self, "_locate_inline_composer", None)
-            pre_send_composer = locate_composer(pre_send) if callable(locate_composer) else None
+            pre_send_composer = (
+                locate_composer(pre_send) if callable(locate_composer) else None
+            )
             if pre_send_composer is None:
                 raise UnlocatedControlError(
                     "the Hinge inline composer could not be re-located on the exact post-type "
-                    "pre-send frame; nothing was sent")
+                    "pre-send frame; nothing was sent"
+                )
             if training_hook is not None:
                 # This returns the pass location as well, proving the Hub checkpoint presents
                 # both real Hinge actions on this exact keyboard-hidden frame.  The point is
                 # intentionally discarded: a reviewer may scroll before choosing Dislike.
-                pre_send, pre_send_composer, _training_pass = self._verify_training_checkpoint(
-                    pre_send, payload, model_item_index, before, should_stop=should_stop)
+                pre_send, pre_send_composer, _training_pass = (
+                    self._verify_training_checkpoint(
+                        pre_send,
+                        payload,
+                        model_item_index,
+                        before,
+                        should_stop=should_stop,
+                    )
+                )
             elif payload is not None:
                 # The pre-heart sheet and focused-field checks licensed typing.  Repeating the
                 # identity + selected-item proof on THIS frame licenses the send, so a keyboard
@@ -13180,42 +15768,73 @@ class AndroidDriver(DatingAppDriver):
                 # Record the retained evidence only after it returns, then tap this same frame's
                 # confirm point with no further screencap.
                 self._verify_sheet_shows(
-                    pre_send, payload, model_item_index, before,
-                    composer_surface=pre_send_composer, allow_top_identity=False,
-                    opener_already_typed=True, debug_after=pre_send)
+                    pre_send,
+                    payload,
+                    model_item_index,
+                    before,
+                    composer_surface=pre_send_composer,
+                    allow_top_identity=False,
+                    opener_already_typed=True,
+                    debug_after=pre_send,
+                )
             pre_send_evidence = self._record_auto_opener_pre_send(
-                pre_send, opener=opener, item_index=item_index,
-                model_item_index=model_item_index, composer=pre_send_composer)
+                pre_send,
+                opener=opener,
+                item_index=item_index,
+                model_item_index=model_item_index,
+                composer=pre_send_composer,
+            )
             send_composer = pre_send_composer
             if training_hook is not None:
                 decision = training_hook(pre_send, pre_send_evidence)
                 if decision not in {"like", "dislike"}:
                     stopped = should_stop is not None and should_stop()
                     self._record_training_cancelled(
-                        pre_send_evidence, model_item_index=model_item_index,
-                        reason="stop_requested" if stopped else "invalid_decision")
+                        pre_send_evidence,
+                        model_item_index=model_item_index,
+                        reason="stop_requested" if stopped else "invalid_decision",
+                    )
                     self._raise_if_action_cancelled(
-                        should_stop, boundary="training decision")
+                        should_stop, boundary="training decision"
+                    )
                     raise ActionCancelled(
                         "training did not return Like or Dislike for the current checkpoint; "
-                        "no device decision was sent")
-                self._raise_if_action_cancelled(should_stop, boundary="training decision resume")
+                        "no device decision was sent"
+                    )
+                self._raise_if_action_cancelled(
+                    should_stop, boundary="training decision resume"
+                )
                 if decision == "dislike":
                     return self._training_dislike_from_composer(
-                        payload, model_item_index, before, should_stop=should_stop,
-                        pre_send_evidence=pre_send_evidence)
+                        payload,
+                        model_item_index,
+                        before,
+                        should_stop=should_stop,
+                        pre_send_evidence=pre_send_evidence,
+                    )
 
                 # A Like decision authorizes only this exact profile target—not the pre-review
                 # frame or its coordinates.
                 resumed_send = self._screencap()
                 resumed_send, resumed_composer, _training_pass = (
                     self._verify_training_checkpoint(
-                        resumed_send, payload, model_item_index, before,
-                        should_stop=should_stop, keyboard_recovery=True, require_draft=True,
-                        approved_draft=(pre_send_evidence or {}).get("draft")))
+                        resumed_send,
+                        payload,
+                        model_item_index,
+                        before,
+                        should_stop=should_stop,
+                        keyboard_recovery=True,
+                        require_draft=True,
+                        approved_draft=(pre_send_evidence or {}).get("draft"),
+                    )
+                )
                 resumed_send_evidence = self._record_auto_opener_resumed_send(
-                    resumed_send, opener=opener, item_index=item_index,
-                    model_item_index=model_item_index, approval_evidence=pre_send_evidence)
+                    resumed_send,
+                    opener=opener,
+                    item_index=item_index,
+                    model_item_index=model_item_index,
+                    approval_evidence=pre_send_evidence,
+                )
                 send_composer = resumed_composer
         else:
             # Non-AUTO callers retain the established generic comment-sheet path.  Hinge's
@@ -13238,27 +15857,42 @@ class AndroidDriver(DatingAppDriver):
             self._tap_frac(self.coords["send_like"])
         else:
             self._tap(*send_composer.confirm_point)
-        time.sleep(human_cooldown(0.6))               # let the send register / upsell modal animate in
+        time.sleep(
+            human_cooldown(0.6)
+        )  # let the send register / upsell modal animate in
         # Sending is only an attempt until the post-send frame proves Hinge accepted it. Keep a
         # separate attempt record because a paywall can appear only AFTER the send tap; the
         # completed ``like`` record below must never claim that refused action landed.  This is
         # intentionally before the Rose-modal helper: that helper may refuse a stuck paid
         # interstitial, but the Send Like tap has already been issued and must remain diagnosable.
-        attempt_fields = dict(heart=list(heart), opener_chars=len(opener or ""),
-                              item_index=item_index, model_item_index=model_item_index,
-                              verified=payload is not None)
+        attempt_fields = dict(
+            heart=list(heart),
+            opener_chars=len(opener or ""),
+            item_index=item_index,
+            model_item_index=model_item_index,
+            verified=payload is not None,
+        )
         if pre_send_evidence is not None:
             attempt_fields["pre_send_evidence_id"] = pre_send_evidence["evidence_id"]
         if resumed_send_evidence is not None:
-            attempt_fields["resumed_send_evidence_id"] = resumed_send_evidence["evidence_id"]
+            attempt_fields["resumed_send_evidence_id"] = resumed_send_evidence[
+                "evidence_id"
+            ]
         self._dbg_action("like_attempt", before, **attempt_fields)
-        rose = self._handle_rose_upsell()             # paid-upsell interstitial: dismiss, NEVER pay
+        rose = (
+            self._handle_rose_upsell()
+        )  # paid-upsell interstitial: dismiss, NEVER pay
         action_fields = {**attempt_fields, "rose_modal": rose}
         try:
             self._verify_like_landed(before)
         except HingeDeckBlockedError as exc:
-            self._dbg_action("like_rejected", before, **action_fields,
-                             rejection="deck_blocked", reason=str(exc))
+            self._dbg_action(
+                "like_rejected",
+                before,
+                **action_fields,
+                rejection="deck_blocked",
+                reason=str(exc),
+            )
             raise
         if training_hook is not None:
             # `_verify_like_landed` keeps AUTO's established sheet/paywall handling, but its
@@ -13290,13 +15924,19 @@ class AndroidDriver(DatingAppDriver):
         if self.spec.decide_gesture == "card_swipe":
             self._decide_by_card_swipe(decision, should_stop=should_stop)
             return None
-        point = self._await_button("like" if decision == "like" else "pass",
-                                   should_stop=should_stop)
+        point = self._await_button(
+            "like" if decision == "like" else "pass", should_stop=should_stop
+        )
         self._tap(*point, should_stop=should_stop)
         return point
 
-    def _like_direct(self, opener: str | None, item_index: int | None, *,
-                     model_item_index: int | None = None) -> None:
+    def _like_direct(
+        self,
+        opener: str | None,
+        item_index: int | None,
+        *,
+        model_item_index: int | None = None,
+    ) -> None:
         """Bumble's flow: one like, no comment sheet, no per-item targeting.
         `model_item_index` joins the list of parameters accepted for parity and ignored: doc
         5.6's post-tap check verifies the COMMENT SHEET against a stored crop, and this flow has
@@ -13311,10 +15951,18 @@ class AndroidDriver(DatingAppDriver):
         miss, so the never-substitute rule has nothing to protect here."""
         before = self._snap()
         like_btn = self._deliver_decision("like")
-        time.sleep(human_cooldown(0.6))                # let it register / an upsell modal animate in
-        upsell = self._handle_rose_upsell()             # paid-upsell interstitial: dismiss, NEVER pay
-        self._dbg_action("like", before, like=list(like_btn) if like_btn else None,
-                         gesture=self.spec.decide_gesture, opener_chars=0, upsell_dismissed=upsell)
+        time.sleep(human_cooldown(0.6))  # let it register / an upsell modal animate in
+        upsell = (
+            self._handle_rose_upsell()
+        )  # paid-upsell interstitial: dismiss, NEVER pay
+        self._dbg_action(
+            "like",
+            before,
+            like=list(like_btn) if like_btn else None,
+            gesture=self.spec.decide_gesture,
+            opener_chars=0,
+            upsell_dismissed=upsell,
+        )
         self._verify_progress(before, "like")
 
     def dislike(self, *, should_stop=None) -> None:
@@ -13324,38 +15972,55 @@ class AndroidDriver(DatingAppDriver):
         # after `_deliver_decision` -- from that point the gesture may have landed
         # and the worker must record the real action.
         self._raise_if_action_cancelled(should_stop, boundary="pass preflight")
-        before = self._snap()                         # snapped immediately before acting (no scroll between)
+        before = self._snap()  # snapped immediately before acting (no scroll between)
         self._raise_if_action_cancelled(should_stop, boundary="pass input")
         try:
             x = self._deliver_decision(
-                "pass", should_stop=should_stop)      # vision-located X, or a card drag per spec
-            self._dbg_action("dislike", before, x=list(x) if x else None,
-                             gesture=self.spec.decide_gesture)
+                "pass", should_stop=should_stop
+            )  # vision-located X, or a card drag per spec
+            self._dbg_action(
+                "dislike",
+                before,
+                x=list(x) if x else None,
+                gesture=self.spec.decide_gesture,
+            )
             self._verify_progress(before, "dislike")
         finally:
             # Same rule as like(): the card on screen is no longer the card that was enumerated.
             # See _invalidate_item_index and doc 5.3.
             self._invalidate_item_index(
                 "the deck advanced after this pass, so anything enumerated for the previous "
-                "profile no longer describes what is on screen")
+                "profile no longer describes what is on screen"
+            )
 
     def observe_pass(self, *, should_stop=None) -> None:
         """Perform and verify a reviewed Observe pass with a frame-bound decision record."""
         with self._observe_input_lease("observe_pass"):
-            self._raise_if_action_cancelled(should_stop, boundary="reviewed pass preflight")
+            self._raise_if_action_cancelled(
+                should_stop, boundary="reviewed pass preflight"
+            )
             before = self._snap()
             self._raise_if_action_cancelled(should_stop, boundary="reviewed pass input")
             try:
                 x = self._deliver_decision("pass")
                 if not self._interruptible_sleep(human_cooldown(0.6), should_stop):
-                    self._raise_if_action_cancelled(should_stop, boundary="reviewed pass verification")
+                    self._raise_if_action_cancelled(
+                        should_stop, boundary="reviewed pass verification"
+                    )
                 self._verify_progress(before, "dislike")
-                self._dbg_action("observe_decision", before, decision="pass", reviewed=True,
-                                 x=list(x) if x else None, gesture=self.spec.decide_gesture)
+                self._dbg_action(
+                    "observe_decision",
+                    before,
+                    decision="pass",
+                    reviewed=True,
+                    x=list(x) if x else None,
+                    gesture=self.spec.decide_gesture,
+                )
             finally:
                 self._invalidate_item_index(
                     "the deck advanced after this reviewed Observe pass, so anything enumerated "
-                    "for the previous profile no longer describes what is on screen")
+                    "for the previous profile no longer describes what is on screen"
+                )
 
     # --- observe mode: identity anchor + gesture corroboration ---------
     # See the module docstring's redesign notes and HINGE_SPEC's identity_band/content_band/
@@ -13371,9 +16036,15 @@ class AndroidDriver(DatingAppDriver):
     _OCR_BAND_CACHE_MAX = 4
     _OCR_BAND_CACHE_MISS = object()
 
-    def _ocr_band(self, frame: bytes, rect: tuple[float, float, float, float], *,
-                  psm: str = "7", white_text_threshold: int | None = None,
-                  upscale: int = 3) -> str | None:
+    def _ocr_band(
+        self,
+        frame: bytes,
+        rect: tuple[float, float, float, float],
+        *,
+        psm: str = "7",
+        white_text_threshold: int | None = None,
+        upscale: int = 3,
+    ) -> str | None:
         """Best-effort OCR of `rect` via the host's `tesseract` binary (MEASURED reliable
         recipe on the Pixel 7a 2026-08-10: crop tightly -- a wider crop that includes photo
         content makes tesseract's page segmentation fail -- upscale 3x LANCZOS, `tesseract
@@ -13444,8 +16115,12 @@ class AndroidDriver(DatingAppDriver):
         if tesseract is None:
             return None
         cache_key = (
-            rect, psm, white_text_threshold, upscale,
-            hashlib.sha1(frame, usedforsecurity=False).digest())
+            rect,
+            psm,
+            white_text_threshold,
+            upscale,
+            hashlib.sha1(frame, usedforsecurity=False).digest(),
+        )
         cached = self._ocr_band_cache.get(cache_key, self._OCR_BAND_CACHE_MISS)
         if cached is not self._OCR_BAND_CACHE_MISS:
             return cached
@@ -13453,6 +16128,7 @@ class AndroidDriver(DatingAppDriver):
             from io import BytesIO
 
             from PIL import Image
+
             im = Image.open(BytesIO(frame)).convert("L")
             w, h = im.size
             x0, y0, x1, y1 = rect
@@ -13467,12 +16143,16 @@ class AndroidDriver(DatingAppDriver):
             if upscale != 1:
                 crop = crop.resize(
                     (max(1, crop.width * upscale), max(1, crop.height * upscale)),
-                    Image.LANCZOS)
+                    Image.LANCZOS,
+                )
             buf = BytesIO()
             crop.save(buf, format="PNG")
             result = subprocess.run(
                 [tesseract, "stdin", "stdout", "--psm", psm],
-                input=buf.getvalue(), capture_output=True, timeout=5.0, check=False,
+                input=buf.getvalue(),
+                capture_output=True,
+                timeout=5.0,
+                check=False,
             )
             # Preserve Tesseract's line segmentation.  The scroll-top card-header crop is a
             # small block, not a single line: line 1 is the profile name, while line 2 holds
@@ -13491,10 +16171,16 @@ class AndroidDriver(DatingAppDriver):
                 # particular, preserving this line boundary lets a visible ``Zoë`` become
                 # ``Zoe`` rather than the unsafe/truncated ``Zo``; applying a general text
                 # sanitizer here could rewrite hyphenated names or flatten the OCR layout.
-                " ".join(self._OCR_NAME_RE.sub(
-                    " ", "".join(
-                        ch for ch in unicodedata.normalize("NFKD", line)
-                        if not unicodedata.combining(ch))).split())
+                " ".join(
+                    self._OCR_NAME_RE.sub(
+                        " ",
+                        "".join(
+                            ch
+                            for ch in unicodedata.normalize("NFKD", line)
+                            if not unicodedata.combining(ch)
+                        ),
+                    ).split()
+                )
                 for line in raw_text.splitlines()
             ]
             cleaned = "\n".join(line for line in lines if line)
@@ -13503,7 +16189,9 @@ class AndroidDriver(DatingAppDriver):
             value = None
         self._ocr_band_cache[cache_key] = value
         if len(self._ocr_band_cache) > self._OCR_BAND_CACHE_MAX:
-            self._ocr_band_cache.pop(next(iter(self._ocr_band_cache)))   # evict oldest (FIFO)
+            self._ocr_band_cache.pop(
+                next(iter(self._ocr_band_cache))
+            )  # evict oldest (FIFO)
         return value
 
     def _identity_of(self, frame: bytes) -> tuple[str, float | None]:
@@ -13557,7 +16245,10 @@ class AndroidDriver(DatingAppDriver):
             dist = _band_dist(band, id_sig)
             if dist < self.change_threshold:
                 state = "same"
-            elif top_sig is not None and _band_dist(band, top_sig) < self.change_threshold:
+            elif (
+                top_sig is not None
+                and _band_dist(band, top_sig) < self.change_threshold
+            ):
                 state = "top"
             else:
                 state = "new"
@@ -13615,8 +16306,10 @@ class AndroidDriver(DatingAppDriver):
         if state == "new":
             try:
                 canonical_top = confirm_scroll_top(
-                    frame, identity_band=self.identity_band,
-                    pinned_evidence=self._pinned_band_evidence())
+                    frame,
+                    identity_band=self.identity_band,
+                    pinned_evidence=self._pinned_band_evidence(),
+                )
             except ScrollTopError:
                 pass
             else:
@@ -13644,12 +16337,19 @@ class AndroidDriver(DatingAppDriver):
         if self.observe_name_ocr and self._identity_name:
             seen_name = self._ocr_band(frame, self.identity_band)
             identity_attempt = {
-                "recipe": "identity_band_psm7_3x", "band": list(self.identity_band),
-                "psm": "7", "upscale": 3,
-                "text_sha256": (None if seen_name is None else hashlib.sha256(
-                    seen_name.encode()).hexdigest()),
-                "token_count": 0, "match_scope": "all_tokens",
-                "parser": "inconclusive", "verdict": None,
+                "recipe": "identity_band_psm7_3x",
+                "band": list(self.identity_band),
+                "psm": "7",
+                "upscale": 3,
+                "text_sha256": (
+                    None
+                    if seen_name is None
+                    else hashlib.sha256(seen_name.encode()).hexdigest()
+                ),
+                "token_count": 0,
+                "match_scope": "all_tokens",
+                "parser": "inconclusive",
+                "verdict": None,
             }
             self._identity_ocr_attempts.append(identity_attempt)
             if seen_name:
@@ -13674,8 +16374,11 @@ class AndroidDriver(DatingAppDriver):
                         self._identity_name_candidate = candidate
                         self._identity_name_candidate_source = "identity_band"
                         identity_band_named_candidate = True
-                        identity_attempt.update(parser="one_first_line_candidate", verdict="new",
-                                                candidate=candidate)
+                        identity_attempt.update(
+                            parser="one_first_line_candidate",
+                            verdict="new",
+                            candidate=candidate,
+                        )
                     else:
                         identity_attempt["parser"] = "no_clean_first_line_candidate"
                 else:
@@ -13705,26 +16408,44 @@ class AndroidDriver(DatingAppDriver):
         #   corroboration above already applies: no stored name means nothing to compare
         #   against, and no declared band means this app was never measured for one (None is
         #   the default -- see that field's docstring).
-        if (state in {"top", "new"} and not identity_band_named_candidate
-                and self.observe_name_ocr and self._identity_name
-                and self.identity_top_name_band is not None):
-            def read_top_name(*, band, recipe: str, source: str, upscale: int) -> str | None:
+        if (
+            state in {"top", "new"}
+            and not identity_band_named_candidate
+            and self.observe_name_ocr
+            and self._identity_name
+            and self.identity_top_name_band is not None
+        ):
+
+            def read_top_name(
+                *, band, recipe: str, source: str, upscale: int
+            ) -> str | None:
                 """Run one calibrated OCR recipe, retain its outcome, and return its text."""
                 nonlocal state
                 # Preserve the long-standing primary call shape at 3x.  Besides avoiding a
                 # needless explicit default, test/calibration doubles commonly expose the old
                 # ``(frame, rect, psm)`` boundary; only non-default native work needs a kwarg.
-                text = (self._ocr_band(frame, band, psm="6") if upscale == 3
-                        else self._ocr_band(frame, band, psm="6", upscale=upscale))
+                text = (
+                    self._ocr_band(frame, band, psm="6")
+                    if upscale == 3
+                    else self._ocr_band(frame, band, psm="6", upscale=upscale)
+                )
                 attempt: dict[str, object] = {
-                    "recipe": recipe, "band": list(band), "psm": "6", "upscale": upscale,
-                    "text_sha256": (None if text is None else hashlib.sha256(
-                        text.encode()).hexdigest()),
+                    "recipe": recipe,
+                    "band": list(band),
+                    "psm": "6",
+                    "upscale": upscale,
+                    "text_sha256": (
+                        None
+                        if text is None
+                        else hashlib.sha256(text.encode()).hexdigest()
+                    ),
                     # Card-header crops include metadata and may reach the top of a photo.
                     # Only the first nonempty line is the name slot; a later OCR-noise token
                     # cannot veto a card change or become its identity.
-                    "token_count": 0, "match_scope": "first_nonempty_line",
-                    "parser": "inconclusive", "verdict": None,
+                    "token_count": 0,
+                    "match_scope": "first_nonempty_line",
+                    "parser": "inconclusive",
+                    "verdict": None,
                 }
                 self._identity_ocr_attempts.append(attempt)
                 # Keep the actual last header read on the existing diagnostic field, including a
@@ -13739,14 +16460,18 @@ class AndroidDriver(DatingAppDriver):
                 stored = self._identity_name.strip()
                 candidate = _clean_first_line_name_candidate(text)
                 stored_name_tokens = _TOP_NAME_TOKEN_RE.findall(
-                    _first_nonempty_ocr_line(text))
+                    _first_nonempty_ocr_line(text)
+                )
                 # The ordinary tokenizer deliberately drops short names.  Check the
                 # structurally licensed banner candidate too, before considering it "new", so
                 # a current profile actually named S stays same (and a conservative prefix
                 # such as S/Samantha still costs only a wait rather than a false label).
-                if stored and (_ocr_tokens_match_stored_name(stored_name_tokens, stored)
-                               or (candidate is not None
-                                   and _name_token_matches(candidate, stored))):
+                if stored and (
+                    _ocr_tokens_match_stored_name(stored_name_tokens, stored)
+                    or (
+                        candidate is not None and _name_token_matches(candidate, stored)
+                    )
+                ):
                     state = "same"
                     self._identity_top_name_verdict = "same"
                     attempt.update(parser="stored_name_match", verdict="same")
@@ -13763,14 +16488,20 @@ class AndroidDriver(DatingAppDriver):
                 self._identity_top_name_verdict = "new"
                 self._identity_name_candidate = candidate
                 self._identity_name_candidate_source = source
-                attempt.update(parser="one_first_line_candidate", verdict="new",
-                               candidate=candidate)
+                attempt.update(
+                    parser="one_first_line_candidate",
+                    verdict="new",
+                    candidate=candidate,
+                )
                 return text
 
             # Primary broad band: captures both the banner and no-banner header layouts.
             primary_text = read_top_name(
                 band=self.identity_top_name_band,
-                recipe="top_card_header_psm6_3x", source="top_card_header", upscale=3)
+                recipe="top_card_header_psm6_3x",
+                source="top_card_header",
+                upscale=3,
+            )
             # The 2026-08-26 Kassie -> Christina and Zoey -> Maria Training Likes exposed a
             # preprocessing-specific miss: the configured header band was still correct, but
             # its lower portion contained the new card's photo. At 3x LANCZOS, psm 6 segmented
@@ -13783,7 +16514,10 @@ class AndroidDriver(DatingAppDriver):
             if self._identity_top_name_verdict is None:
                 primary_native_text = read_top_name(
                     band=self.identity_top_name_band,
-                    recipe="top_card_header_psm6_native", source="top_card_header", upscale=1)
+                    recipe="top_card_header_psm6_native",
+                    source="top_card_header",
+                    upscale=1,
+                )
             # Hinge 10.2.0's ``Take another look`` panel occupies the normal card-header band
             # and moves the actual name below it.  BOTH independently rendered OCR recipes must
             # read exactly that panel before the separately calibrated lower crop can run.  One
@@ -13792,23 +16526,38 @@ class AndroidDriver(DatingAppDriver):
             # two matching recipe outcomes before it may set a name verdict.  This is deliberately
             # tried before the compact no-banner retry, because the old crop cannot see the
             # displaced name at all.
-            take_another_look = (
-                _is_take_another_look_banner(primary_text)
-                and _is_take_another_look_banner(primary_native_text))
-            if (self._identity_top_name_verdict is None and state == "top"
-                    and take_another_look
-                    and self.identity_top_name_take_another_look_band is not None):
+            take_another_look = _is_take_another_look_banner(
+                primary_text
+            ) and _is_take_another_look_banner(primary_native_text)
+            if (
+                self._identity_top_name_verdict is None
+                and state == "top"
+                and take_another_look
+                and self.identity_top_name_take_another_look_band is not None
+            ):
+
                 def read_panel_name(*, recipe: str, upscale: int):
                     """Read one panel-layout name recipe without committing it alone."""
                     band = self.identity_top_name_take_another_look_band
-                    text = (self._ocr_band(frame, band, psm="6") if upscale == 3
-                            else self._ocr_band(frame, band, psm="6", upscale=upscale))
+                    text = (
+                        self._ocr_band(frame, band, psm="6")
+                        if upscale == 3
+                        else self._ocr_band(frame, band, psm="6", upscale=upscale)
+                    )
                     attempt: dict[str, object] = {
-                        "recipe": recipe, "band": list(band), "psm": "6", "upscale": upscale,
-                        "text_sha256": (None if text is None else hashlib.sha256(
-                            text.encode()).hexdigest()),
-                        "token_count": 0, "match_scope": "first_nonempty_line",
-                        "parser": "inconclusive", "verdict": None,
+                        "recipe": recipe,
+                        "band": list(band),
+                        "psm": "6",
+                        "upscale": upscale,
+                        "text_sha256": (
+                            None
+                            if text is None
+                            else hashlib.sha256(text.encode()).hexdigest()
+                        ),
+                        "token_count": 0,
+                        "match_scope": "first_nonempty_line",
+                        "parser": "inconclusive",
+                        "verdict": None,
                     }
                     self._identity_ocr_attempts.append(attempt)
                     if not text:
@@ -13831,56 +16580,87 @@ class AndroidDriver(DatingAppDriver):
                     if stored and _name_token_matches(candidate, stored):
                         attempt["parser"] = "stored_name_match_pending_2recipe"
                         return "same", candidate, text, attempt
-                    attempt.update(parser="one_first_line_candidate_pending_2recipe",
-                                   candidate=candidate)
+                    attempt.update(
+                        parser="one_first_line_candidate_pending_2recipe",
+                        candidate=candidate,
+                    )
                     return "new", candidate, text, attempt
 
-                first_kind, first_candidate, first_text, first_attempt = read_panel_name(
-                    recipe="top_card_header_take_another_look_psm6_3x", upscale=3)
-                second_kind, second_candidate, second_text, second_attempt = read_panel_name(
-                    recipe="top_card_header_take_another_look_psm6_native", upscale=1)
+                first_kind, first_candidate, first_text, first_attempt = (
+                    read_panel_name(
+                        recipe="top_card_header_take_another_look_psm6_3x", upscale=3
+                    )
+                )
+                second_kind, second_candidate, second_text, second_attempt = (
+                    read_panel_name(
+                        recipe="top_card_header_take_another_look_psm6_native",
+                        upscale=1,
+                    )
+                )
                 same_candidate = (
-                    first_candidate is not None and second_candidate is not None
-                    and first_candidate.casefold() == second_candidate.casefold())
-                same_stored_name = first_kind == second_kind == "same" and same_candidate
+                    first_candidate is not None
+                    and second_candidate is not None
+                    and first_candidate.casefold() == second_candidate.casefold()
+                )
+                same_stored_name = (
+                    first_kind == second_kind == "same" and same_candidate
+                )
                 same_new_name = first_kind == second_kind == "new" and same_candidate
                 if same_stored_name or same_new_name:
                     outcome = "same" if same_stored_name else "new"
                     candidate = first_candidate
-                    parser = ("two_recipe_stored_name_agreement" if same_stored_name
-                              else "two_recipe_candidate_agreement")
+                    parser = (
+                        "two_recipe_stored_name_agreement"
+                        if same_stored_name
+                        else "two_recipe_candidate_agreement"
+                    )
                     for attempt in (first_attempt, second_attempt):
                         attempt.update(parser=parser, verdict=outcome)
                         if candidate is not None:
                             attempt["candidate"] = candidate
                     self._identity_top_name_read = second_text or first_text
-                    self._identity_top_name_read_source = "top_card_header_take_another_look"
+                    self._identity_top_name_read_source = (
+                        "top_card_header_take_another_look"
+                    )
                     self._identity_top_name_verdict = outcome
                     if outcome == "same":
                         state = "same"
                     else:
                         state = "new"
                         self._identity_name_candidate = candidate
-                        self._identity_name_candidate_source = "top_card_header_take_another_look"
+                        self._identity_name_candidate_source = (
+                            "top_card_header_take_another_look"
+                        )
                 else:
                     for attempt in (first_attempt, second_attempt):
                         if attempt["parser"] not in {
-                                "no_text", "no_clean_first_line_candidate"}:
+                            "no_text",
+                            "no_clean_first_line_candidate",
+                        }:
                             attempt["parser"] = "no_two_recipe_agreement"
             # The broad crop can reach a prompt/title on the compact no-banner layout.  Only
             # after BOTH broad recipes are inconclusive, and only while canonical pixel state is
             # still top, retry the separately calibrated compact crop.  It does not relax the
             # stored-name veto, exact-one parser, canonical top, or repeated/stable-name gates.
-            if (self._identity_top_name_verdict is None and state == "top"
-                    and not take_another_look
-                    and self.identity_top_name_fallback_band is not None):
-                read_top_name(band=self.identity_top_name_fallback_band,
-                              recipe="top_card_header_fallback_psm6_3x",
-                              source="top_card_header_fallback", upscale=3)
+            if (
+                self._identity_top_name_verdict is None
+                and state == "top"
+                and not take_another_look
+                and self.identity_top_name_fallback_band is not None
+            ):
+                read_top_name(
+                    band=self.identity_top_name_fallback_band,
+                    recipe="top_card_header_fallback_psm6_3x",
+                    source="top_card_header_fallback",
+                    upscale=3,
+                )
                 if self._identity_top_name_verdict is None and state == "top":
-                    read_top_name(band=self.identity_top_name_fallback_band,
-                                  recipe="top_card_header_fallback_psm6_native",
-                                  source="top_card_header_fallback", upscale=1)
+                    read_top_name(
+                        band=self.identity_top_name_fallback_band,
+                        recipe="top_card_header_fallback_psm6_native",
+                        source="top_card_header_fallback",
+                        upscale=1,
+                    )
         # RESIDUAL LIMITATION, stated plainly: two consecutive profiles sharing one first name
         # still OCR to the same token here and still read as "same" -- this layer, like the
         # identity-band pixel check above it, only ever holds a FIRST name, so it cannot
@@ -13937,6 +16717,7 @@ class AndroidDriver(DatingAppDriver):
             return hits[0]
         try:
             import numpy as np
+
             inverted = np.bitwise_not(template)
         except Exception:  # noqa: BLE001 — no usable template -> no location to corroborate against
             return None
@@ -13975,13 +16756,15 @@ class AndroidDriver(DatingAppDriver):
             # the FIRST such run is worth a print; every subsequent poll would just repeat it.
             if not self._touch_watch_health_warned:
                 self._touch_watch_health_warned = True
-                print(f"{self.spec.app}: touch watcher has seen no events this run; falling "
-                      f"back to repeated next-profile name proof (check `adb shell getevent` "
-                      f"on this device).")
+                print(
+                    f"{self.spec.app}: touch watcher has seen no events this run; falling "
+                    f"back to repeated next-profile name proof (check `adb shell getevent` "
+                    f"on this device)."
+                )
             return "no_data"
 
-        radius = self._observe_tap_radius_px()      # "landed ON the control" -- generous
-        slop = self._observe_tap_slop_px()          # "was a press, not a scroll" -- tight
+        radius = self._observe_tap_radius_px()  # "landed ON the control" -- generous
+        slop = self._observe_tap_slop_px()  # "was a press, not a scroll" -- tight
         gestures = watcher.gestures_since(self._observe_since)
         w, h = self.adb.screen_size()
 
@@ -13989,7 +16772,9 @@ class AndroidDriver(DatingAppDriver):
             drags = [g for g in gestures if not g.is_tap(slop)]
             pass_end = self.coords.get("swipe_pass_end")
             if not drags or pass_end is None:
-                return "resync"          # nothing but taps (or nothing at all) can't drag a card
+                return (
+                    "resync"  # nothing but taps (or nothing at all) can't drag a card
+                )
             target = (pass_end[0] * w, pass_end[1] * h)
             last = drags[-1]
             dist = math.hypot(last.up[0] - target[0], last.up[1] - target[1])
@@ -13997,14 +16782,16 @@ class AndroidDriver(DatingAppDriver):
 
         taps = [g for g in gestures if g.is_tap(slop)]
         if not taps:
-            return "resync"              # only drags (or nothing) -- a tap deck can't advance from one
+            return (
+                "resync"  # only drags (or nothing) -- a tap deck can't advance from one
+            )
         last = taps[-1]
         for x0, y0, x1, y1 in self.observe_ignore_zones:
             if x0 * w <= last.up[0] <= x1 * w and y0 * h <= last.up[1] <= y1 * h:
-                return "resync"          # rewind / overflow / bottom nav -- a known non-decision tap
+                return "resync"  # rewind / overflow / bottom nav -- a known non-decision tap
         pass_point = self._observe_locate_pass_x(confirm_frame)
         if pass_point is None:
-            return "no_data"             # can't locate the control to corroborate against -- degrade, don't veto
+            return "no_data"  # can't locate the control to corroborate against -- degrade, don't veto
 
         # More than one tap landed ON the pass control during a single wait. The identity
         # anchor's one blind spot is that its band holds only a FIRST NAME, so two adjacent
@@ -14021,8 +16808,11 @@ class AndroidDriver(DatingAppDriver):
         # ordinary "opened the comment sheet, changed my mind, dismissed it, pressed pass"
         # sequence on ONE card -- two decisive taps, one decision -- and _await_like_resolved
         # has already resolved the sheet half of that before this ever runs.
-        on_pass = [g for g in taps
-                   if math.hypot(g.up[0] - pass_point[0], g.up[1] - pass_point[1]) <= radius]
+        on_pass = [
+            g
+            for g in taps
+            if math.hypot(g.up[0] - pass_point[0], g.up[1] - pass_point[1]) <= radius
+        ]
         if len(on_pass) > 1:
             return "resync"
 
@@ -14050,8 +16840,9 @@ class AndroidDriver(DatingAppDriver):
     # observe-mode deadline is None, i.e. forever. That is precisely the silence the sibling
     # notice was written to eliminate, left in place in the worst spot for it.
 
-    def _note_observe_waiting(self, reason: str, frame: bytes | None = None, *,
-                              should_stop=None, **fields) -> bool:
+    def _note_observe_waiting(
+        self, reason: str, frame: bytes | None = None, *, should_stop=None, **fields
+    ) -> bool:
         """Rate-limited operator print + matching debug record for wait_for_decision's "still
         waiting, nothing recorded yet" branches. `reason` is one of the plain, per-branch
         strings the call sites below pass -- `same` (identity says this is still the captured
@@ -14101,7 +16892,9 @@ class AndroidDriver(DatingAppDriver):
         # are present only when they carry a real observation rather than a null placeholder.
         fields = {key: value for key, value in fields.items() if value is not None}
         like_wait = reason in _OBSERVE_LIKE_WAIT_REASONS
-        interval = self._OBSERVE_LIKE_NOTICE_S if like_wait else self._OBSERVE_WAIT_NOTICE_S
+        interval = (
+            self._OBSERVE_LIKE_NOTICE_S if like_wait else self._OBSERVE_WAIT_NOTICE_S
+        )
         if reason != self._observe_last_reason:
             # A changed reason bypasses the full interval (the transition is the informative
             # part) but NOT this floor. Without it, two branches that disagree on a flapping
@@ -14116,22 +16909,29 @@ class AndroidDriver(DatingAppDriver):
         self._observe_last_notice = now
         self._observe_last_reason = reason
         if like_wait:
-            detail = ("your like sheet is still open -- take your time; I'm waiting for you to "
-                      "tap Send Like or dismiss it" if reason == "like_sheet"
-                      else "the sheet closed and Hinge hasn't shown the next card yet")
-            print(f"{self.spec.app}: still watching -- {detail} (reason={reason}). Nothing is "
-                  f"recorded until this resolves. If it stays like this with the phone showing "
-                  f"something else, check the phone, or press Stop.")
+            detail = (
+                "your like sheet is still open -- take your time; I'm waiting for you to "
+                "tap Send Like or dismiss it"
+                if reason == "like_sheet"
+                else "the sheet closed and Hinge hasn't shown the next card yet"
+            )
+            print(
+                f"{self.spec.app}: still watching -- {detail} (reason={reason}). Nothing is "
+                f"recorded until this resolves. If it stays like this with the phone showing "
+                f"something else, check the phone, or press Stop."
+            )
         elif reason == "like_candidate":
             # Do not borrow `like_sending`'s wording here.  This state is reached from a
             # bottom-only pixel delta before a structurally verified composer has ever been
             # observed; asserting that a sheet "closed" was the misleading diagnostic in the
             # Hayley false-LIKE report.  It uses the ordinary (15s) cadence above because it is
             # not a human-paced compose state and has no confirmed app send to wait for.
-            print(f"{self.spec.app}: still watching -- a bottom-only change looks like a possible "
-                  f"like, but no Send Like sheet has been observed (reason=like_candidate). "
-                  f"Nothing is recorded unless the sheet is actually seen and a new card is "
-                  f"proved. If it repeats, check the phone, or press Stop.")
+            print(
+                f"{self.spec.app}: still watching -- a bottom-only change looks like a possible "
+                f"like, but no Send Like sheet has been observed (reason=like_candidate). "
+                f"Nothing is recorded unless the sheet is actually seen and a new card is "
+                f"proved. If it repeats, check the phone, or press Stop."
+            )
         else:
             # "no_change" is the one reason that means the screen has NOT moved at all, so it
             # must not be announced as "the screen changed" -- an operator who just tapped X and
@@ -14140,18 +16940,25 @@ class AndroidDriver(DatingAppDriver):
             # and the tap is the thing to retry. Getting that backwards sends them debugging the
             # wrong half of the system, which is exactly how the incident this notice exists for
             # was misread.
-            observed = ("nothing has moved on screen yet" if reason == "no_change"
-                        else "the screen changed but nothing could yet be")
+            observed = (
+                "nothing has moved on screen yet"
+                if reason == "no_change"
+                else "the screen changed but nothing could yet be"
+            )
             verb = "" if reason == "no_change" else " classified as a like or a pass"
-            print(f"{self.spec.app}: still watching -- {observed}{verb} (reason={reason}). "
-                  f"Observation is continuing; if you already tapped X or the heart, this is "
-                  f"normal while the screen settles. If it repeats for a while, check the phone "
-                  f"matches what you expect, or press Stop.")
+            print(
+                f"{self.spec.app}: still watching -- {observed}{verb} (reason={reason}). "
+                f"Observation is continuing; if you already tapped X or the heart, this is "
+                f"normal while the screen settles. If it repeats for a while, check the phone "
+                f"matches what you expect, or press Stop."
+            )
         if frame is not None and self._dbg is not None:
             # Straight to DebugLog.action, bypassing _dbg_action: the whole point is to log the
             # frame already in hand rather than let _dbg_action grab a second, later one.
             try:
-                self._dbg.action("observe_waiting", before=frame, reason=reason, **fields)
+                self._dbg.action(
+                    "observe_waiting", before=frame, reason=reason, **fields
+                )
             except Exception:  # noqa: BLE001 — debug logging must never break the wait
                 pass
             return False
@@ -14180,13 +16987,23 @@ class AndroidDriver(DatingAppDriver):
         if self._dbg is None:
             return
         try:
-            self._dbg.action("observe_stopped", reason="stop_requested",
-                             profile_name=self._identity_name)
+            self._dbg.action(
+                "observe_stopped",
+                reason="stop_requested",
+                profile_name=self._identity_name,
+            )
         except Exception:  # noqa: BLE001 — diagnostics must never delay shutdown
             pass
 
-    def _note_observe_like_outcome(self, base: bytes, sent: bool, *, sheet_seen: bool = True,
-                                   top: float | None = None, bot: float | None = None) -> None:
+    def _note_observe_like_outcome(
+        self,
+        base: bytes,
+        sent: bool,
+        *,
+        sheet_seen: bool = True,
+        top: float | None = None,
+        bot: float | None = None,
+    ) -> None:
         """Record how an opened like sheet RESOLVED: sent (a LIKE) or dismissed.
 
         The PASS path has written a full `observe_decision` record since the observe redesign;
@@ -14220,7 +17037,8 @@ class AndroidDriver(DatingAppDriver):
         fields = {
             "capture_truncated": getattr(self, "_current_capture_truncated", None),
             "profile_name": self._identity_name,
-            "gesture": "not_checked", "watcher": self.observe_touch_watch,
+            "gesture": "not_checked",
+            "watcher": self.observe_touch_watch,
             # A bottom-only delta is only a candidate.  Keep the evidence that promoted it
             # (or did not) beside every resolution record so a later report can distinguish a
             # verified composer dismissal from a benign scroll/toast candidate.
@@ -14310,23 +17128,32 @@ class AndroidDriver(DatingAppDriver):
             f"Operation Love has not injected input, check what's on screen"
         )
         self._blocked_reason = reason
-        self._dbg_action("observe_blocked" if paywall_reason else "observe_stuck", frame,
-                         reason=reason, stuck_s=round(stuck_s, 1))
-        print(f"{self.spec.app}: STOPPING — {reason}. Nothing was recorded for this card: "
-              f"whatever you last tapped, this driver never saw it complete, so recording a "
-              f"decision here would be inventing one. Operation Love has not injected input.")
+        self._dbg_action(
+            "observe_blocked" if paywall_reason else "observe_stuck",
+            frame,
+            reason=reason,
+            stuck_s=round(stuck_s, 1),
+        )
+        print(
+            f"{self.spec.app}: STOPPING — {reason}. Nothing was recorded for this card: "
+            f"whatever you last tapped, this driver never saw it complete, so recording a "
+            f"decision here would be inventing one. Operation Love has not injected input."
+        )
         return reason
 
     # --- observe mode (shadow learning) --------------------------------
-    def wait_for_decision(self, timeout: float | None = 120.0, should_stop=None,
-                          on_like_intent=None) -> bool | None:
+    def wait_for_decision(
+        self, timeout: float | None = 120.0, should_stop=None, on_like_intent=None
+    ) -> bool | None:
         """Wait passively while holding the per-device OBSERVE input lease."""
         with self._observe_input_lease("wait_for_decision"):
             return self._wait_for_decision_unlocked(
-                timeout=timeout, should_stop=should_stop, on_like_intent=on_like_intent)
+                timeout=timeout, should_stop=should_stop, on_like_intent=on_like_intent
+            )
 
-    def _wait_for_decision_unlocked(self, timeout: float | None = 120.0, should_stop=None,
-                                    on_like_intent=None) -> bool | None:
+    def _wait_for_decision_unlocked(
+        self, timeout: float | None = 120.0, should_stop=None, on_like_intent=None
+    ) -> bool | None:
         """Block until you manually like/pass the current card, inferred from
         screencap deltas (no accessibility tree):
 
@@ -14387,15 +17214,16 @@ class AndroidDriver(DatingAppDriver):
             if should_stop and should_stop():
                 return None
             cur = self._screencap(on_blank="none")
-            if cur is None:                           # screen asleep: the owner stepped away.
-                time.sleep(_OBSERVE_POLL_S)           # keep watching — do NOT diff a black frame
-                continue                              # against `base` (that reads as a phantom pass)
+            if cur is None:  # screen asleep: the owner stepped away.
+                time.sleep(_OBSERVE_POLL_S)  # keep watching — do NOT diff a black frame
+                continue  # against `base` (that reads as a phantom pass)
 
             # Foreground ownership is independent evidence.  Probe only after pixels changed,
             # avoiding a dumpsys call on every passive poll while still catching the very first
             # notification-shade frame before identity/deck classifiers can call it a card.
             if cur != base and self._await_observe_foreground_return(
-                    cur, deadline, should_stop):
+                cur, deadline, should_stop
+            ):
                 return None
 
             # Checked here, at the top of the poll, against everything the PREVIOUS polls
@@ -14421,11 +17249,16 @@ class AndroidDriver(DatingAppDriver):
                 # already contains both the item the comment attaches to AND the composer
                 # itself. Re-capturing here would add ADB latency and an animation-timing
                 # race for zero gain over what's already in hand.
-                self._observe_recognized()            # an open like sheet is a screen we know
-                self._observe_like_evidence = cur     # freshest proof of the composer so far
+                self._observe_recognized()  # an open like sheet is a screen we know
+                self._observe_like_evidence = (
+                    cur  # freshest proof of the composer so far
+                )
                 self._notify_observe_like_intent(on_like_intent, True, cur)
                 sent, intent_notified = self._await_like_resolved(
-                    base, deadline, should_stop, on_like_intent=on_like_intent,
+                    base,
+                    deadline,
+                    should_stop,
+                    on_like_intent=on_like_intent,
                     intent_notified=True,
                 )
                 if sent is None:
@@ -14479,12 +17312,22 @@ class AndroidDriver(DatingAppDriver):
                 # bails. Deck-ready is tried FIRST because it is pure template matching, so the
                 # healthy case never reaches _identity_of's OCR at all.
                 now = time.monotonic()
-                if now - self._observe_stuck_probe_at >= self._observe_stuck_probe_interval_s:
+                if (
+                    now - self._observe_stuck_probe_at
+                    >= self._observe_stuck_probe_interval_s
+                ):
                     self._observe_stuck_probe_at = now
-                    self._observe_stuck_probe_interval_s = human_delay(_OBSERVE_STUCK_CHECK_S)
-                    if self._observe_deck_ready(cur) or self._identity_of(cur)[0] == "same":
+                    self._observe_stuck_probe_interval_s = human_delay(
+                        _OBSERVE_STUCK_CHECK_S
+                    )
+                    if (
+                        self._observe_deck_ready(cur)
+                        or self._identity_of(cur)[0] == "same"
+                    ):
                         self._observe_recognized()
-                if self._note_observe_waiting("no_change", cur, should_stop=should_stop):
+                if self._note_observe_waiting(
+                    "no_change", cur, should_stop=should_stop
+                ):
                     return None
                 time.sleep(_OBSERVE_POLL_S)
                 continue
@@ -14503,9 +17346,14 @@ class AndroidDriver(DatingAppDriver):
                     # Same reason as the sibling call site: record the proof now, in case the
                     # sheet closes before the resolver's first poll ever sees it.
                     self._observe_like_evidence = cur
-                    self._notify_observe_like_intent(on_like_intent, True, cur)   # cur already proves the sheet -- see the sibling call site above
+                    self._notify_observe_like_intent(
+                        on_like_intent, True, cur
+                    )  # cur already proves the sheet -- see the sibling call site above
                 sent, intent_notified = self._await_like_resolved(
-                    base, deadline, should_stop, on_like_intent=on_like_intent,
+                    base,
+                    deadline,
+                    should_stop,
+                    on_like_intent=on_like_intent,
                     intent_notified=sheet_visible,
                 )
                 if sent is None:
@@ -14516,17 +17364,20 @@ class AndroidDriver(DatingAppDriver):
                 # can also never match at all -- a snackbar or toast produces the same
                 # bottom-only delta with no sheet behind it. Only the resolver knows which
                 # happened across every poll it made.
-                self._note_observe_like_outcome(base, sent, sheet_seen=intent_notified,
-                                                top=top, bot=bot)
+                self._note_observe_like_outcome(
+                    base, sent, sheet_seen=intent_notified, top=top, bot=bot
+                )
                 if sent:
                     if intent_notified:
                         self._notify_observe_like_intent(on_like_intent, False)
-                    return True                       # like sheet resolved to a new card
+                    return True  # like sheet resolved to a new card
                 # Dismissal is not a pass. Clear the suggestion and continue waiting on
                 # the same profile for the operator's next X/heart decision.
                 if intent_notified:
                     self._notify_observe_like_intent(on_like_intent, False)
-                base = self._await_live_frame(deadline, should_stop)   # cancelled -> resync
+                base = self._await_live_frame(
+                    deadline, should_stop
+                )  # cancelled -> resync
                 if base is None:
                     return None
                 continue
@@ -14546,11 +17397,12 @@ class AndroidDriver(DatingAppDriver):
             identity_name_candidate = self._identity_name_candidate
             identity_name_source = self._identity_name_candidate_source
             identity_ocr_attempts = self._persisted_identity_ocr_attempts(
-                self._identity_ocr_attempts)
+                self._identity_ocr_attempts
+            )
             identity_name_proof = self._canonical_top_name_advance_candidate(cur)
             if identity_state == "same" and identity_name_candidate is None:
-                base = cur                            # scroll within the SAME profile -> keep waiting
-                self._observe_recognized()            # identity named this card: recognised
+                base = cur  # scroll within the SAME profile -> keep waiting
+                self._observe_recognized()  # identity named this card: recognised
                 if self._note_observe_waiting("same", cur, should_stop=should_stop):
                     return None
                 time.sleep(_OBSERVE_POLL_S)
@@ -14586,27 +17438,45 @@ class AndroidDriver(DatingAppDriver):
             # own comment on that), which a re-numbered filtered list would get wrong the
             # moment any earlier frame in the profile was undecodable (a None slot).
             current_sigs = getattr(self, "_current_sigs", None) or []
-            seen_pairs = [(idx, s) for idx, s in enumerate(current_sigs) if s is not None]
+            seen_pairs = [
+                (idx, s) for idx, s in enumerate(current_sigs) if s is not None
+            ]
             min_dist = None
             shift_matched = False
-            if (identity_state != "new" and identity_name_candidate is None
-                    and ds_cur is not None and seen_pairs):
+            if (
+                identity_state != "new"
+                and identity_name_candidate is None
+                and ds_cur is not None
+                and seen_pairs
+            ):
                 import numpy as np
-                dists = [(idx, float(np.mean(np.abs(ds_cur - ds_seen)))) for idx, ds_seen in seen_pairs]
+
+                dists = [
+                    (idx, float(np.mean(np.abs(ds_cur - ds_seen))))
+                    for idx, ds_seen in seen_pairs
+                ]
                 min_idx, min_dist = min(dists, key=lambda pair: pair[1])
                 if min_dist < self.change_threshold:
                     # Swallowing a screen change is exactly as consequential as concluding a
                     # PASS from one, and until now it was the only silent path left in this
                     # function -- the same absence of a paper trail that made the original
                     # bug so hard to diagnose from a debug log. Best-effort, never gates.
-                    self._dbg_action("observe_scroll", cur, reason="content_sig",
-                                     identity=identity_state, min_sig_dist=round(min_dist, 2),
-                                     sig_index=min_idx,
-                                     ocr_attempts=self._persisted_identity_ocr_attempts(
-                                         self._identity_ocr_attempts))
-                    base = cur                        # it's a scroll -> keep waiting
-                    self._observe_recognized()        # layer 2 recognised this frame
-                    if self._note_observe_waiting("scroll", cur, should_stop=should_stop):
+                    self._dbg_action(
+                        "observe_scroll",
+                        cur,
+                        reason="content_sig",
+                        identity=identity_state,
+                        min_sig_dist=round(min_dist, 2),
+                        sig_index=min_idx,
+                        ocr_attempts=self._persisted_identity_ocr_attempts(
+                            self._identity_ocr_attempts
+                        ),
+                    )
+                    base = cur  # it's a scroll -> keep waiting
+                    self._observe_recognized()  # layer 2 recognised this frame
+                    if self._note_observe_waiting(
+                        "scroll", cur, should_stop=should_stop
+                    ):
                         return None
                     time.sleep(_OBSERVE_POLL_S)
                     continue
@@ -14620,23 +17490,36 @@ class AndroidDriver(DatingAppDriver):
                 shift_hit = None
                 for idx, ds_seen in seen_pairs:
                     matched, shift, overlap_rows = _vertical_shift_match(
-                        ds_cur, ds_seen, threshold=self.change_threshold, rows=content_rows)
+                        ds_cur,
+                        ds_seen,
+                        threshold=self.change_threshold,
+                        rows=content_rows,
+                    )
                     if matched:
                         shift_hit = (idx, shift, overlap_rows)
                         break
                 shift_matched = shift_hit is not None
                 if shift_matched:
                     sig_index, shift, overlap_rows = shift_hit
-                    self._dbg_action("observe_scroll", cur, reason="shift_match",
-                                     identity=identity_state,
-                                     min_sig_dist=None if min_dist is None else round(min_dist, 2),
-                                     sig_index=sig_index, shift=shift, overlap_rows=overlap_rows,
-                                     band_rows=band_rows,
-                                     ocr_attempts=self._persisted_identity_ocr_attempts(
-                                         self._identity_ocr_attempts))
-                    base = cur                        # it's a scroll -> keep waiting
-                    self._observe_recognized()        # layer 2 recognised this frame
-                    if self._note_observe_waiting("scroll", cur, should_stop=should_stop):
+                    self._dbg_action(
+                        "observe_scroll",
+                        cur,
+                        reason="shift_match",
+                        identity=identity_state,
+                        min_sig_dist=None if min_dist is None else round(min_dist, 2),
+                        sig_index=sig_index,
+                        shift=shift,
+                        overlap_rows=overlap_rows,
+                        band_rows=band_rows,
+                        ocr_attempts=self._persisted_identity_ocr_attempts(
+                            self._identity_ocr_attempts
+                        ),
+                    )
+                    base = cur  # it's a scroll -> keep waiting
+                    self._observe_recognized()  # layer 2 recognised this frame
+                    if self._note_observe_waiting(
+                        "scroll", cur, should_stop=should_stop
+                    ):
                         return None
                     time.sleep(_OBSERVE_POLL_S)
                     continue
@@ -14652,8 +17535,12 @@ class AndroidDriver(DatingAppDriver):
             # profile either. Any single failure here means "not settled yet": keep watching,
             # conclude nothing, and do NOT advance `base` (a transient/animating frame is not
             # a safe anchor for the next diff).
-            if self._observe_like_sheet_visible(cur) or not self._observe_deck_ready(cur):
-                if self._note_observe_waiting("not_deck_ready", cur, should_stop=should_stop):
+            if self._observe_like_sheet_visible(cur) or not self._observe_deck_ready(
+                cur
+            ):
+                if self._note_observe_waiting(
+                    "not_deck_ready", cur, should_stop=should_stop
+                ):
                     return None
                 time.sleep(_OBSERVE_POLL_S)
                 continue
@@ -14667,14 +17554,17 @@ class AndroidDriver(DatingAppDriver):
             time.sleep(0.5)
             confirm = self._screencap(on_blank="none")
             if confirm is None:
-                continue                              # can't confirm blind -- re-poll
+                continue  # can't confirm blind -- re-poll
             confirm_identity_state, confirm_identity_dist = self._identity_of(confirm)
             confirm_identity_name_verdict = self._identity_top_name_verdict
             confirm_identity_name_candidate = self._identity_name_candidate
             confirm_identity_name_source = self._identity_name_candidate_source
             confirm_identity_ocr_attempts = self._persisted_identity_ocr_attempts(
-                self._identity_ocr_attempts)
-            confirm_identity_name_proof = self._canonical_top_name_advance_candidate(confirm)
+                self._identity_ocr_attempts
+            )
+            confirm_identity_name_proof = self._canonical_top_name_advance_candidate(
+                confirm
+            )
             # A PASS label demands a positive, stable different-profile identity, not merely
             # two frames that failed to match the captured profile. In particular, Hinge fades
             # the filter chips/sticky header during a manual scroll; that transient band can be
@@ -14695,10 +17585,12 @@ class AndroidDriver(DatingAppDriver):
                 and (confirm_identity_state == "new" or candidate_identity_advance)
             )
             if not stable_identity_advance:
-                if self._note_observe_waiting("not_settled", confirm, should_stop=should_stop):
+                if self._note_observe_waiting(
+                    "not_settled", confirm, should_stop=should_stop
+                ):
                     return None
                 time.sleep(_OBSERVE_POLL_S)
-                continue                              # still settling / reverted -- keep watching
+                continue  # still settling / reverted -- keep watching
 
             # LAYER 3: corroborate the now identity-and-deck-proven advance against the
             # human's OWN touch stream, when this app is configured to read one (read-only --
@@ -14716,26 +17608,36 @@ class AndroidDriver(DatingAppDriver):
             # a fields key of literally `name` collides with it (see _capture_current's
             # identical note above).
             fields = dict(
-                top=round(top, 2), bot=round(bot, 2),
+                top=round(top, 2),
+                bot=round(bot, 2),
                 min_sig_dist=None if min_dist is None else round(min_dist, 2),
                 shift_matched=shift_matched,
                 capture_truncated=getattr(self, "_current_capture_truncated", None),
                 identity=identity_state,
-                identity_dist=None if identity_dist is None else round(identity_dist, 2),
+                identity_dist=None
+                if identity_dist is None
+                else round(identity_dist, 2),
                 identity_name_verdict=identity_name_verdict,
                 identity_name_candidate_sha256=self._identity_candidate_sha256(
-                    identity_name_candidate),
+                    identity_name_candidate
+                ),
                 identity_name_source=identity_name_source,
                 identity_ocr_attempts=identity_ocr_attempts,
                 confirm_identity=confirm_identity_state,
-                confirm_identity_dist=(None if confirm_identity_dist is None
-                                       else round(confirm_identity_dist, 2)),
+                confirm_identity_dist=(
+                    None
+                    if confirm_identity_dist is None
+                    else round(confirm_identity_dist, 2)
+                ),
                 confirm_identity_name_verdict=confirm_identity_name_verdict,
                 confirm_identity_name_candidate_sha256=self._identity_candidate_sha256(
-                    confirm_identity_name_candidate),
+                    confirm_identity_name_candidate
+                ),
                 confirm_identity_name_source=confirm_identity_name_source,
                 confirm_identity_ocr_attempts=confirm_identity_ocr_attempts,
-                profile_name=self._identity_name, gesture=verdict, watcher=self.observe_touch_watch,
+                profile_name=self._identity_name,
+                gesture=verdict,
+                watcher=self.observe_touch_watch,
             )
             if verdict == "resync":
                 # The card DID change, but nothing corroborates a human decision causing it
@@ -14747,17 +17649,24 @@ class AndroidDriver(DatingAppDriver):
             name_advance_proven = candidate_identity_advance
             if verdict == "no_data" and not name_advance_proven:
                 self._dbg_action(
-                    "observe_resync", base,
+                    "observe_resync",
+                    base,
                     reason="pass_identity_name_unconfirmed",
                     **fields,
                 )
                 return None
             self._dbg_action("observe_decision", base, decision="pass", **fields)
-            return False                              # identity + deck-ready + settle + gesture/name -> pass
+            return False  # identity + deck-ready + settle + gesture/name -> pass
         return None
 
-    def _notify_observe_like_intent(self, callback, active: bool,
-                                    anchor: bytes | None = None, *, refresh: bool = False) -> None:
+    def _notify_observe_like_intent(
+        self,
+        callback,
+        active: bool,
+        anchor: bytes | None = None,
+        *,
+        refresh: bool = False,
+    ) -> None:
         """Best-effort notification for the passive Hinge observe flow.
 
         This helper intentionally performs no ADB input. If displaying or generating
@@ -14801,12 +17710,16 @@ class AndroidDriver(DatingAppDriver):
         # worker needs those later frames to correct a provisional item reading, but repeating
         # the provenance action on every 0.4 s poll would turn one human tap into a noisy log.
         if self._dbg is not None and active and anchor is not None and not refresh:
-            self._dbg.action("observe_like_anchor", before=anchor)   # best-effort; DebugLog.action never raises
+            self._dbg.action(
+                "observe_like_anchor", before=anchor
+            )  # best-effort; DebugLog.action never raises
         try:
             callback(active, anchor)
         except Exception as exc:  # noqa: BLE001 — non-input side channel must not break observation
-            print(f"{self.spec.app}: observe like-intent callback failed "
-                  f"({type(exc).__name__}: {exc}); continuing observation without the suggestion.")
+            print(
+                f"{self.spec.app}: observe like-intent callback failed "
+                f"({type(exc).__name__}: {exc}); continuing observation without the suggestion."
+            )
 
     def _observe_like_sheet_visible(self, frame: bytes) -> bool:
         """Whether Hinge's ``Send Like`` confirmation is still on screen.
@@ -14818,7 +17731,9 @@ class AndroidDriver(DatingAppDriver):
         if self.spec.like_flow != "comment_sheet":
             return False
         try:
-            hits = _match_glyph(frame, self._template("confirm"), side="any", threshold=0.6)
+            hits = _match_glyph(
+                frame, self._template("confirm"), side="any", threshold=0.6
+            )
             if not hits:
                 return False
             # cv2's normalized matcher can report a mathematically-perfect hit on a tiny
@@ -14827,7 +17742,10 @@ class AndroidDriver(DatingAppDriver):
             # or top-bar positions before allowing this guard to block capture/decision flow.
             import cv2
             import numpy as np
-            image = cv2.imdecode(np.frombuffer(frame, dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
+
+            image = cv2.imdecode(
+                np.frombuffer(frame, dtype=np.uint8), cv2.IMREAD_GRAYSCALE
+            )
             if image is None:
                 return False
             height = image.shape[0]
@@ -14885,14 +17803,21 @@ class AndroidDriver(DatingAppDriver):
             return False
         try:
             import numpy as np
+
             inverted = np.bitwise_not(template)
         except Exception:  # noqa: BLE001 — no usable template means no proof of a deck
             return False
         return bool(_match_glyph(frame, inverted, side=side, threshold=threshold))
 
-    def _await_like_resolved(self, base: bytes, deadline, should_stop,
-                             *, on_like_intent=None,
-                             intent_notified: bool = False) -> tuple[bool | None, bool]:
+    def _await_like_resolved(
+        self,
+        base: bytes,
+        deadline,
+        should_stop,
+        *,
+        on_like_intent=None,
+        intent_notified: bool = False,
+    ) -> tuple[bool | None, bool]:
         """After the like sheet appears, wait for a human send or dismissal.
 
         Do not use a top-region change alone as evidence of sending: focusing the
@@ -14924,11 +17849,12 @@ class AndroidDriver(DatingAppDriver):
             if should_stop and should_stop():
                 return None, intent_notified
             cur = self._screencap(on_blank="none")
-            if cur is None:                           # screen asleep mid-wait: keep watching
-                time.sleep(_OBSERVE_POLL_S)           # (never diff a black frame against base)
+            if cur is None:  # screen asleep mid-wait: keep watching
+                time.sleep(_OBSERVE_POLL_S)  # (never diff a black frame against base)
                 continue
             if cur != base and self._await_observe_foreground_return(
-                    cur, deadline, should_stop):
+                cur, deadline, should_stop
+            ):
                 return None, intent_notified
             # The screen that can make this resolver wait forever is recognisable now.  Do not
             # make a human wait for the generic stuck-screen budget just because the paywall
@@ -14951,7 +17877,9 @@ class AndroidDriver(DatingAppDriver):
                 # than the `base` anchor this resolver deliberately holds frozen.
                 self._observe_like_evidence = cur
                 if not intent_notified:
-                    self._notify_observe_like_intent(on_like_intent, True, cur)   # cur already proves the sheet -- see wait_for_decision's call sites
+                    self._notify_observe_like_intent(
+                        on_like_intent, True, cur
+                    )  # cur already proves the sheet -- see wait_for_decision's call sites
                     intent_notified = True
                 else:
                     # The first structurally-valid composer frame can still be mid-animation:
@@ -14960,7 +17888,9 @@ class AndroidDriver(DatingAppDriver):
                     # such frame cannot leave the hub claiming a different item until the human
                     # manually scrolls/reopens it.  This is a refresh of one tap, not another
                     # tap, hence no duplicate `observe_like_anchor` debug action.
-                    self._notify_observe_like_intent(on_like_intent, True, cur, refresh=True)
+                    self._notify_observe_like_intent(
+                        on_like_intent, True, cur, refresh=True
+                    )
                 # HALF of the watchdog's deliberate ASYMMETRY here (the other half is at the
                 # `like_sending` notice at the bottom of this loop). `like_sheet` means the sheet
                 # is OPEN and the HUMAN is composing a comment, which is human-paced and must
@@ -14972,8 +17902,11 @@ class AndroidDriver(DatingAppDriver):
                 # an unsent human draft while the Send Like control is visible.
                 evidence = getattr(self, "_observe_like_sheet_detection", "strict")
                 if self._note_observe_waiting(
-                        "like_sheet", cur, should_stop=should_stop,
-                        composer_detection=evidence if evidence != "strict" else None):
+                    "like_sheet",
+                    cur,
+                    should_stop=should_stop,
+                    composer_detection=evidence if evidence != "strict" else None,
+                ):
                     return None, intent_notified
                 time.sleep(_OBSERVE_POLL_S)
                 continue
@@ -14990,17 +17923,22 @@ class AndroidDriver(DatingAppDriver):
                 if confirm_sheet is None:
                     continue
                 if confirm_sheet != base and self._await_observe_foreground_return(
-                        confirm_sheet, deadline, should_stop):
+                    confirm_sheet, deadline, should_stop
+                ):
                     return None, intent_notified
                 if self._observe_like_sheet_visible(confirm_sheet):
                     self._observe_like_evidence = confirm_sheet
                     self._notify_observe_like_intent(
-                        on_like_intent, True, confirm_sheet, refresh=True)
+                        on_like_intent, True, confirm_sheet, refresh=True
+                    )
                     self._observe_recognized()
                     evidence = getattr(self, "_observe_like_sheet_detection", "strict")
                     if self._note_observe_waiting(
-                            "like_sheet", confirm_sheet, should_stop=should_stop,
-                            composer_detection=evidence if evidence != "strict" else None):
+                        "like_sheet",
+                        confirm_sheet,
+                        should_stop=should_stop,
+                        composer_detection=evidence if evidence != "strict" else None,
+                    ):
                         return None, intent_notified
                     time.sleep(_OBSERVE_POLL_S)
                     continue
@@ -15014,8 +17952,11 @@ class AndroidDriver(DatingAppDriver):
                 if self._focused_draft_composer_visible(cur):
                     self._observe_recognized()
                     if self._note_observe_waiting(
-                            "like_sheet", cur, should_stop=should_stop,
-                            composer_detection="focused_partial"):
+                        "like_sheet",
+                        cur,
+                        should_stop=should_stop,
+                        composer_detection="focused_partial",
+                    ):
                         return None, intent_notified
                     time.sleep(_OBSERVE_POLL_S)
                     continue
@@ -15047,28 +17988,38 @@ class AndroidDriver(DatingAppDriver):
             # keyboard transition all produce.
             require_content = intent_notified
             current = cur == base or self._is_current_profile_frame(
-                cur, require_content=require_content)
+                cur, require_content=require_content
+            )
             ready = not current and self._observe_deck_ready(cur)
             if current or ready:
-                self._observe_recognized()            # back on the known card, or on a ready deck
+                self._observe_recognized()  # back on the known card, or on a ready deck
                 # Both a dismissal and a ready deck must settle.  This rejects a single
                 # transition frame and, for the ready case, proves the deck controls remain
                 # present after Hinge's sending animation has completed.
                 time.sleep(0.5)
                 confirm = self._screencap(on_blank="none")
                 if confirm is None:
-                    continue                          # can't confirm blind -> re-poll
+                    continue  # can't confirm blind -> re-poll
                 if confirm != base and self._await_observe_foreground_return(
-                        confirm, deadline, should_stop):
+                    confirm, deadline, should_stop
+                ):
                     return None, intent_notified
                 if self._observe_like_sheet_visible(confirm):
-                    continue                          # sheet reappeared / animation still resolving
+                    continue  # sheet reappeared / animation still resolving
                 confirm_current = confirm == base or self._is_current_profile_frame(
-                    confirm, require_content=require_content)   # same asymmetry as `current`
+                    confirm, require_content=require_content
+                )  # same asymmetry as `current`
                 if current and confirm_current:
-                    return False, intent_notified     # genuinely back on the current profile
-                if (ready and not confirm_current and self._observe_deck_ready(confirm)
-                        and not self._changed(cur, confirm)):
+                    return (
+                        False,
+                        intent_notified,
+                    )  # genuinely back on the current profile
+                if (
+                    ready
+                    and not confirm_current
+                    and self._observe_deck_ready(confirm)
+                    and not self._changed(cur, confirm)
+                ):
                     # A bottom-only delta is deliberately only a *candidate*: a manual read
                     # scroll, snackbar, keyboard transition, or other bottom chrome movement
                     # can all satisfy it.  It may wake this resolver so a composer that is
@@ -15098,9 +18049,12 @@ class AndroidDriver(DatingAppDriver):
                     # sticky header still read the captured name -- was nowhere in it.
                     if not intent_notified:
                         identity_state, _identity_dist = self._identity_of(cur)
-                        confirm_identity_state, _confirm_dist = self._identity_of(confirm)
+                        confirm_identity_state, _confirm_dist = self._identity_of(
+                            confirm
+                        )
                         self._dbg_action(
-                            "observe_resync", base,
+                            "observe_resync",
+                            base,
                             reason="like_candidate_without_observed_sheet",
                             sheet_seen=False,
                             profile_name=self._identity_name,
@@ -15120,13 +18074,19 @@ class AndroidDriver(DatingAppDriver):
                     # dismissal-plus-scroll sequence, so fail closed there too.  A missed LIKE
                     # is recoverable; assigning it to the profile held before this wait is not.
                     identity_state, _identity_dist = self._identity_of(cur)
-                    confirm_identity_state, _confirm_identity_dist = self._identity_of(confirm)
+                    confirm_identity_state, _confirm_identity_dist = self._identity_of(
+                        confirm
+                    )
                     if identity_state == "new" and confirm_identity_state == "new":
-                        return True, True              # observed sheet -> stable, proven new deck
+                        return True, True  # observed sheet -> stable, proven new deck
                     self._dbg_action(
-                        "observe_resync", base,
-                        reason=("like_send_identity_unavailable" if self._identity_sig is None
-                                else "like_send_identity_unproven"),
+                        "observe_resync",
+                        base,
+                        reason=(
+                            "like_send_identity_unavailable"
+                            if self._identity_sig is None
+                            else "like_send_identity_unproven"
+                        ),
                         sheet_seen=True,
                         profile_name=self._identity_name,
                         identity=identity_state,
@@ -15146,8 +18106,11 @@ class AndroidDriver(DatingAppDriver):
             if intent_notified:
                 self._observe_recognized()
                 if self._note_observe_waiting(
-                        "like_sheet", cur, should_stop=should_stop,
-                        composer_detection="unconfirmed"):
+                    "like_sheet",
+                    cur,
+                    should_stop=should_stop,
+                    composer_detection="unconfirmed",
+                ):
                     return None, intent_notified
                 time.sleep(_OBSERVE_POLL_S)
                 continue
@@ -15165,14 +18128,21 @@ class AndroidDriver(DatingAppDriver):
             # for the out-of-free-likes paywall; this loop continued until the operator stopped
             # it.
             if self._note_observe_waiting(
-                    "like_sending" if intent_notified else "like_candidate", cur,
-                    should_stop=should_stop):
+                "like_sending" if intent_notified else "like_candidate",
+                cur,
+                should_stop=should_stop,
+            ):
                 return None, intent_notified
             time.sleep(_OBSERVE_POLL_S)
         return None, intent_notified
 
-    def _is_current_profile_frame(self, frame: bytes, *, require_content: bool = False,
-                                  diagnostics: dict[str, object] | None = None) -> bool:
+    def _is_current_profile_frame(
+        self,
+        frame: bytes,
+        *,
+        require_content: bool = False,
+        diagnostics: dict[str, object] | None = None,
+    ) -> bool:
         """True if `frame` matches a captured frame of the CURRENT profile — i.e. an
         'advance' that is really a scroll within the same profile, not a new card.
         Guards the C1 reorder against a uniform-top scroll reading as a LIKE (#6).
@@ -15225,15 +18195,20 @@ class AndroidDriver(DatingAppDriver):
         if state == "new":
             if diagnostics is not None:
                 diagnostics["current_profile_branch"] = "identity_new"
-            return False                              # the header proves it is NOT this card
+            return False  # the header proves it is NOT this card
         ds = _downsample(frame)
-        sigs = [(index, sig) for index, sig in enumerate(
-            getattr(self, "_current_sigs", None) or []) if sig is not None]
+        sigs = [
+            (index, sig)
+            for index, sig in enumerate(getattr(self, "_current_sigs", None) or [])
+            if sig is not None
+        ]
         content_match = False
         if ds is not None and sigs:
             import numpy as np
-            distances = [(index, float(np.mean(np.abs(ds - sig))))
-                         for index, sig in sigs]
+
+            distances = [
+                (index, float(np.mean(np.abs(ds - sig)))) for index, sig in sigs
+            ]
             min_index, min_distance = min(distances, key=lambda row: row[1])
             content_match = min_distance < self.change_threshold
             if diagnostics is not None:
@@ -15256,11 +18231,21 @@ class AndroidDriver(DatingAppDriver):
                 # different profiles collided at 4/18. Half-band is the measured boundary here.
                 min_overlap_rows = math.ceil((rows[1] - rows[0]) * 0.5)
                 matched = next(
-                    ((index, result) for index, sig in sigs
-                     if (result := _vertical_shift_match(
-                         ds, sig, threshold=self.change_threshold, rows=rows,
-                         min_overlap_rows=min_overlap_rows))[0]),
-                    None)
+                    (
+                        (index, result)
+                        for index, sig in sigs
+                        if (
+                            result := _vertical_shift_match(
+                                ds,
+                                sig,
+                                threshold=self.change_threshold,
+                                rows=rows,
+                                min_overlap_rows=min_overlap_rows,
+                            )
+                        )[0]
+                    ),
+                    None,
+                )
                 content_match = matched is not None
                 if diagnostics is not None:
                     diagnostics["current_content_shift_matched"] = content_match
@@ -15273,18 +18258,20 @@ class AndroidDriver(DatingAppDriver):
                         )
         elif diagnostics is not None:
             diagnostics["current_content_exact_unavailable"] = (
-                "frame_undecodable" if ds is None else "no_captured_signatures")
+                "frame_undecodable" if ds is None else "no_captured_signatures"
+            )
         if state == "same":
             result = content_match if require_content else True
             if diagnostics is not None:
                 diagnostics["current_profile_branch"] = (
-                    "identity_same_with_content" if require_content else "identity_same")
+                    "identity_same_with_content" if require_content else "identity_same"
+                )
                 diagnostics["current_profile_result"] = result
             return result
         if diagnostics is not None:
             diagnostics["current_profile_branch"] = "content_only"
             diagnostics["current_profile_result"] = content_match
-        return content_match                          # 'top'/'unknown': photos are all there is
+        return content_match  # 'top'/'unknown': photos are all there is
 
 
 class HingeDriver(AndroidDriver):
@@ -15303,21 +18290,33 @@ class HingeDriver(AndroidDriver):
         now land inside the selected card, so this override must never fall back to them.
         """
         surface = _retry_until(
-            lambda: self._locate_inline_composer(self._screencap()), tries, 0.4,
-            is_found=lambda value: value is not None)
+            lambda: self._locate_inline_composer(self._screencap()),
+            tries,
+            0.4,
+            is_found=lambda value: value is not None,
+        )
         if surface is None:
             raise UnlocatedControlError(
                 f"refusing to continue the like: the '{self.spec.app}' inline Send Like "
                 f"composer was not structurally confirmed after {tries} attempts. Nothing was "
-                "typed or sent, and the legacy fixed comment/send coordinates are not used.")
+                "typed or sent, and the legacy fixed comment/send coordinates are not used."
+            )
         return surface
 
-    def _locate_inline_composer(self, frame: bytes, *, image=None) -> ComposerSurface | None:
+    _last_composer_detection_failure: str | None = None
+
+    def _locate_inline_composer(
+        self, frame: bytes, *, image=None
+    ) -> ComposerSurface | None:
         try:
-            return locate_inline_composer(frame, self._template("confirm"), threshold=0.8,
-                                          image=image)
-        except ComposerDetectionError:
+            surface = locate_inline_composer(
+                frame, self._template("confirm"), threshold=0.8, image=image
+            )
+        except ComposerDetectionError as exc:
+            self._last_composer_detection_failure = str(exc)
             return None
+        self._last_composer_detection_failure = None
+        return surface
 
     def _locate_observed_inline_composer(self, frame: bytes) -> ComposerSurface | None:
         """Return passive-only composer geometry, including Priority Like's label variant.
@@ -15343,7 +18342,10 @@ class HingeDriver(AndroidDriver):
         try:
             import cv2
             import numpy as np
-            image = cv2.imdecode(np.frombuffer(frame, dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
+
+            image = cv2.imdecode(
+                np.frombuffer(frame, dtype=np.uint8), cv2.IMREAD_GRAYSCALE
+            )
         except Exception:  # noqa: BLE001 -- share nothing on a decode hiccup; each call below
             # still makes its own independent, unshared attempt, exactly as before this frame
             # was ever pre-decoded.
@@ -15353,8 +18355,9 @@ class HingeDriver(AndroidDriver):
             self._observe_like_sheet_detection = "strict"
             return surface
         try:
-            surface = locate_inline_composer(frame, self._template("confirm"), threshold=0.68,
-                                             image=image)
+            surface = locate_inline_composer(
+                frame, self._template("confirm"), threshold=0.68, image=image
+            )
         except ComposerDetectionError:
             self._observe_like_sheet_detection = "not_visible"
             return None
@@ -15384,7 +18387,9 @@ class HingeDriver(AndroidDriver):
             import cv2
             import numpy as np
 
-            image = cv2.imdecode(np.frombuffer(frame, dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
+            image = cv2.imdecode(
+                np.frombuffer(frame, dtype=np.uint8), cv2.IMREAD_GRAYSCALE
+            )
             if image is None:
                 return False
             height, width = image.shape
@@ -15392,30 +18397,58 @@ class HingeDriver(AndroidDriver):
                 return False
             # A sent-like transition removes the Android keyboard. Light keyboards retain the
             # strict-only path, while this catches the measured dark keyboard edit state.
-            if float(np.median(image[round(height * 0.65):round(height * 0.95), :])) > 100.0:
+            if (
+                float(np.median(image[round(height * 0.65) : round(height * 0.95), :]))
+                > 100.0
+            ):
                 return False
-            hits = _match_glyph(frame, self._template("confirm"), side="any", threshold=0.8)
+            hits = _match_glyph(
+                frame, self._template("confirm"), side="any", threshold=0.8
+            )
             for x, y in hits:
                 if not (round(height * 0.50) <= y <= round(height * 0.68)):
                     continue
-                background = float(np.median(image[
-                    max(0, y - round(height * 0.10)):min(height, y + round(height * 0.10)),
-                    round(width * 0.02):round(width * 0.08)]))
-                cta = image[max(0, y - round(height * 0.025)):min(height, y + round(height * 0.025)),
-                            max(0, x - round(width * 0.28)):min(width, x + round(width * 0.28))]
+                background = float(
+                    np.median(
+                        image[
+                            max(0, y - round(height * 0.10)) : min(
+                                height, y + round(height * 0.10)
+                            ),
+                            round(width * 0.02) : round(width * 0.08),
+                        ]
+                    )
+                )
+                cta = image[
+                    max(0, y - round(height * 0.025)) : min(
+                        height, y + round(height * 0.025)
+                    ),
+                    max(0, x - round(width * 0.28)) : min(
+                        width, x + round(width * 0.28)
+                    ),
+                ]
                 if not cta.size or float(np.median(cta)) > background - 10.0:
                     continue
                 # The lower outline is enough to prove a focused draft for observation, but
                 # deliberately not enough for the typing path's strict geometry requirement.
-                band = image[max(0, y - round(height * 0.050)):max(0, y - round(height * 0.028)), :]
+                band = image[
+                    max(0, y - round(height * 0.050)) : max(
+                        0, y - round(height * 0.028)
+                    ),
+                    :,
+                ]
                 darkness = max(5.0, min(20.0, background * 0.025))
                 dark = band < background - darkness
                 for row in dark:
                     padded = np.concatenate(([False], row, [False]))
                     changes = np.diff(padded.astype(np.int8))
-                    starts, ends = np.flatnonzero(changes == 1), np.flatnonzero(changes == -1)
-                    if any(end - start >= round(width * 0.72)
-                           for start, end in zip(starts, ends, strict=True)):
+                    starts, ends = (
+                        np.flatnonzero(changes == 1),
+                        np.flatnonzero(changes == -1),
+                    )
+                    if any(
+                        end - start >= round(width * 0.72)
+                        for start, end in zip(starts, ends, strict=True)
+                    ):
                         return True
         except Exception:  # noqa: BLE001 -- passive evidence must never block observation
             return False

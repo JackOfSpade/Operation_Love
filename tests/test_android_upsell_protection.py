@@ -30,6 +30,7 @@ Bumble itself stays uncalibrated and templateless (real, current state -- see BU
 so these are exercised here against purpose-built specs, the same pattern
 tests/test_android_spec.py already uses for '_UPSELL_SPEC' / '_DIRECT_WITH_UPSELL_SPEC'.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -101,6 +102,7 @@ def _drv(spec, adb, **overrides):
     # (like ForbiddenTapError), not about _verify_progress's separate halt_on_error-gated path.
     class C:
         apps = {spec.app: {"halt_on_error": False, **overrides}}
+
     d = AndroidDriver(C(), spec)
     d._adb = adb
     d._touch = adb
@@ -114,17 +116,22 @@ def _no_sleep(monkeypatch):
 
 # --- frame builders: real, template-detectable glyphs on synthetic screens ------------------
 
+
 def _deck_ready_frame(heart_xy=(930, 1600), pass_xy=(130, 2030), seed=41):
     """A decodable frame carrying BOTH the like-heart and pass-X glyphs -- a positively
     confirmed swipe deck, the thing _require_deck_confirmed exists to prove is on screen."""
     import cv2
     import numpy as np
+
     rng = np.random.default_rng(seed)
     canvas = rng.integers(60, 200, size=(2400, 1080), dtype=np.uint8)
-    for name, (cx, cy) in (("hinge_heart.png", heart_xy), ("hinge_pass_x.png", pass_xy)):
+    for name, (cx, cy) in (
+        ("hinge_heart.png", heart_xy),
+        ("hinge_pass_x.png", pass_xy),
+    ):
         t = hinge._load_template(name)
         th, tw = t.shape
-        canvas[cy - th // 2: cy - th // 2 + th, cx - tw // 2: cx - tw // 2 + tw] = t
+        canvas[cy - th // 2 : cy - th // 2 + th, cx - tw // 2 : cx - tw // 2 + tw] = t
     ok, buf = cv2.imencode(".png", canvas)
     return buf.tobytes()
 
@@ -134,6 +141,7 @@ def _no_deck_frame(seed=42):
     a dialog, or literally anything else that isn't the ordinary swipe deck."""
     import cv2
     import numpy as np
+
     rng = np.random.default_rng(seed)
     canvas = rng.integers(60, 200, size=(2400, 1080), dtype=np.uint8)
     ok, buf = cv2.imencode(".png", canvas)
@@ -146,12 +154,13 @@ def _modal_frame(glyph_xy=(540, 1350), seed=43):
     its heading), not a tap target; see AndroidAppSpec.upsell_dismiss_zone."""
     import cv2
     import numpy as np
+
     rng = np.random.default_rng(seed)
     canvas = rng.integers(60, 200, size=(2400, 1080), dtype=np.uint8)
     t = hinge._load_template("hinge_send_like_anyway.png")
     th, tw = t.shape
     cx, cy = glyph_xy
-    canvas[cy - th // 2: cy - th // 2 + th, cx - tw // 2: cx - tw // 2 + tw] = t
+    canvas[cy - th // 2 : cy - th // 2 + th, cx - tw // 2 : cx - tw // 2 + tw] = t
     ok, buf = cv2.imencode(".png", canvas)
     return buf.tobytes()
 
@@ -159,6 +168,7 @@ def _modal_frame(glyph_xy=(540, 1350), seed=43):
 def _no_modal_frame(seed=44):
     import cv2
     import numpy as np
+
     rng = np.random.default_rng(seed)
     canvas = rng.integers(60, 200, size=(2400, 1080), dtype=np.uint8)
     ok, buf = cv2.imencode(".png", canvas)
@@ -176,9 +186,13 @@ _DECK_CONFIRM_SWIPE_SPEC = AndroidAppSpec(
     package="com.example.deckswipe",
     calibrated=False,
     decide_gesture="card_swipe",
-    coords={"swipe_start": (0.50, 0.55), "swipe_like_end": (0.92, 0.52), "swipe_pass_end": (0.08, 0.52)},
+    coords={
+        "swipe_start": (0.50, 0.55),
+        "swipe_like_end": (0.92, 0.52),
+        "swipe_pass_end": (0.08, 0.52),
+    },
     templates={"like": "hinge_heart.png", "pass": "hinge_pass_x.png"},
-    forbidden_zones=BUMBLE_SPEC.forbidden_zones,   # the real Bumble no-go rect, unchanged
+    forbidden_zones=BUMBLE_SPEC.forbidden_zones,  # the real Bumble no-go rect, unchanged
     like_flow="direct",
 )
 
@@ -191,7 +205,9 @@ def test_card_swipe_decide_refused_and_screen_untouched_when_deck_not_confirmed(
     drv = _drv(_DECK_CONFIRM_SWIPE_SPEC, adb)
     with pytest.raises(UnconfirmedScreenError):
         drv.dislike()
-    assert adb.taps == [] and adb.swipes == [], "nothing may reach the phone while unconfirmed"
+    assert adb.taps == [] and adb.swipes == [], (
+        "nothing may reach the phone while unconfirmed"
+    )
 
 
 def test_card_swipe_decide_refused_for_like_too():
@@ -262,7 +278,7 @@ def test_measured_cta_fallback_coords_clear_forbidden_zones_on_their_own():
     w, h = drv.adb.screen_size()
     for name in ("like_heart", "pass_x"):
         fx, fy = _MEASURED_TAP_SPEC.coords[name]
-        drv._assert_tap_allowed(int(fx * w), int(fy * h))   # must not raise
+        drv._assert_tap_allowed(int(fx * w), int(fy * h))  # must not raise
 
 
 def test_decide_refused_while_upsell_state_active_even_though_measured_coords_clear_the_zone():
@@ -281,7 +297,9 @@ def test_decide_still_works_normally_on_a_confirmed_deck_with_the_same_spec():
     adb = FakeAdb([_deck_ready_frame(heart_pt, pass_pt)])
     drv = _drv(_MEASURED_TAP_SPEC, adb)
     drv.dislike()
-    assert adb.taps == [pass_pt]   # the vision-located pass-X, not the fallback coordinate
+    assert adb.taps == [
+        pass_pt
+    ]  # the vision-located pass-X, not the fallback coordinate
 
 
 # --- has_paid_upsell=True with no upsell_dismiss template still blocks calibration ----------
@@ -290,10 +308,16 @@ def test_decide_still_works_normally_on_a_confirmed_deck_with_the_same_spec():
 # this module's subject, so this file is self-contained proof the guarantee still holds
 # alongside the new upsell_dismiss_zone field.
 
+
 def test_has_paid_upsell_without_upsell_dismiss_template_still_blocks_calibration():
     with pytest.raises(ValueError, match="upsell_dismiss"):
-        AndroidAppSpec(app="pinned", package="x.y", calibrated=True, has_paid_upsell=True,
-                       templates={"like": "hinge_heart.png", "pass": "hinge_pass_x.png"})
+        AndroidAppSpec(
+            app="pinned",
+            package="x.y",
+            calibrated=True,
+            has_paid_upsell=True,
+            templates={"like": "hinge_heart.png", "pass": "hinge_pass_x.png"},
+        )
 
 
 def test_bumble_spec_still_cannot_be_marked_calibrated_without_the_template():
@@ -344,7 +368,9 @@ def test_handle_upsell_dismisses_via_zone_only_after_positive_detection():
     assert y0 * h <= ty <= y1 * h
 
 
-def test_dismiss_via_zone_point_stays_inside_the_measured_safe_band_across_many_draws(monkeypatch):
+def test_dismiss_via_zone_point_stays_inside_the_measured_safe_band_across_many_draws(
+    monkeypatch,
+):
     # "Randomize per attempt" pinned as an actual distribution property, not just one sample:
     # every draw across many independent dismiss attempts must land inside the declared band,
     # with the tap-jitter envelope accounted for on the boundary closest to danger (0.34, just
@@ -378,7 +404,9 @@ def test_dismiss_via_zone_point_stays_inside_the_measured_safe_band_across_many_
     # overlay boundary (0.394) and nowhere near the purchase CTA.
     assert all(fy + margin_frac_y < 0.394 for _fx, fy in fracs)
     cta_x0, cta_y0, cta_x1, cta_y1 = _CTA_RECT
-    assert not any(cta_x0 <= fx <= cta_x1 and cta_y0 <= fy <= cta_y1 for fx, fy in fracs)
+    assert not any(
+        cta_x0 <= fx <= cta_x1 and cta_y0 <= fy <= cta_y1 for fx, fy in fracs
+    )
     # Not a fixed point: a real spread of draws, not the same coordinate every time.
     assert len({round(fx, 4) for fx, _fy in fracs}) > 5
     assert len({round(fy, 4) for _fx, fy in fracs}) > 5

@@ -8,6 +8,7 @@ tail and never negative — more human than a flat uniform range.
 Works in SECONDS (for time.sleep / threading.Event.wait), unlike the JS source
 which used milliseconds.
 """
+
 from __future__ import annotations
 
 import math

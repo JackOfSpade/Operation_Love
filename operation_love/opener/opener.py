@@ -7,6 +7,7 @@ ChatGPT attempt). The provider is behind a small interface so it stays swappable
 Returns the parsed opener AND the token usage, so the caller can record spend
 and enforce the per-run budget (see operation_love.costing).
 """
+
 from __future__ import annotations
 
 import base64
@@ -113,179 +114,179 @@ _SCHEMA = {
         "item_index": {
             "type": "integer",
             "description": "The number of the item your opener is about. This is also the item "
-                           "that will be liked, so the message and the like always land on the "
-                           "same item. It must be the opener's clear primary subject: the "
-                           "message should feel natural directly under it, not as an excuse to "
-                           "talk about a different image. Your opener must justify why this "
-                           "selected item was liked; explicit profile text may sharpen a "
-                           "connection back to it but cannot replace it as the reason, subject, "
-                           "or payoff. "
-                           "Every other numbered item is an alternative for making this choice "
-                           "only. Once you choose, do not take facts, concepts, wordplay, or the "
-                           "payoff from another numbered item. "
-                           "The list it indexes is the numbered items in THIS "
-                           "request and nothing else: they are numbered from 1, in the order "
-                           "they are given, and you may only choose a number that was actually "
-                           "given to you.",
+            "that will be liked, so the message and the like always land on the "
+            "same item. It must be the opener's clear primary subject: the "
+            "message should feel natural directly under it, not as an excuse to "
+            "talk about a different image. Your opener must justify why this "
+            "selected item was liked; explicit profile text may sharpen a "
+            "connection back to it but cannot replace it as the reason, subject, "
+            "or payoff. "
+            "Every other numbered item is an alternative for making this choice "
+            "only. Once you choose, do not take facts, concepts, wordplay, or the "
+            "payoff from another numbered item. "
+            "The list it indexes is the numbered items in THIS "
+            "request and nothing else: they are numbered from 1, in the order "
+            "they are given, and you may only choose a number that was actually "
+            "given to you.",
         },
         "referenced": {
             "type": "string",
             "description": "What you are reacting to, described in full: the selected item's "
-                           "exact photo or prompt detail that is the opener's primary "
-                           "anchor. THIS FIELD IS NEVER SENT TO HER. Record only what is visibly "
-                           "shown or explicitly stated, not "
-                           "an action or backstory you inferred. Put the whole description "
-                           "here, including any header, caption, or prompt printed with a photo "
-                           "and how it frames the photo. Describe any other visible people "
-                           "neutrally unless her profile explicitly states their relationship; "
-                           "never infer friend, partner, or family from proximity, so the "
-                           "opener does not have to carry it. Keep the full literal inventory in "
-                           "this private field even when the opener uses an implicit reference. "
-                           "The opener may name only the visible detail whose exact identity is "
-                           "needed by its conversational move, and its final point must add "
-                           "something beyond that description.",
+            "exact photo or prompt detail that is the opener's primary "
+            "anchor. THIS FIELD IS NEVER SENT TO HER. Record only what is visibly "
+            "shown or explicitly stated, not "
+            "an action or backstory you inferred. Put the whole description "
+            "here, including any header, caption, or prompt printed with a photo "
+            "and how it frames the photo. Describe any other visible people "
+            "neutrally unless her profile explicitly states their relationship; "
+            "never infer friend, partner, or family from proximity, so the "
+            "opener does not have to carry it. Keep the full literal inventory in "
+            "this private field even when the opener uses an implicit reference. "
+            "The opener may name only the visible detail whose exact identity is "
+            "needed by its conversational move, and its final point must add "
+            "something beyond that description.",
         },
         "angle": {
             "type": "string",
             "description": "In your own words, what your opener is doing: what you are "
-                           "observing, asking, guessing, teasing about, or connecting. State "
-                           "the conversational payoff beyond merely identifying what is visible. "
-                           "The selected item must remain the angle's primary anchor and reason "
-                           "for the Like; explicit profile text may sharpen a connection but "
-                           "cannot replace the selected item as the subject or payoff. "
-                           "The angle must respect any header, caption, or prompt attached to "
-                           "the photo; that text defines the photo's intended context. "
-                           "A guess is optional. If you use one, choose the least speculative "
-                           "interpretation that fits ordinary explanations of the scene and do "
-                           "not invent a motive, purpose, cause, or unseen circumstance. The "
-                           "conclusion of a guess must not itself be directly visible or stated "
-                           "in the item, its text, a sign, or elsewhere in her profile. Visible "
-                           "and stated facts may be clues, not guessed conclusions. If the opener "
-                           "uses a guess, state how it leaves the conclusion unconfirmed and gives "
-                           "her room to confirm or correct it. Any second beat must not assume the "
-                           "guess is true or ask about an experience, preference, or consequence "
-                           "that only makes sense if it is true. If a location is inferred from "
-                           "an image rather than stated in her profile text, the location guess "
-                           "must be the whole conversational move: end after it or ask only "
-                           "whether that location itself is right. She was in the world the item "
-                           "shows and you were not, so confirm that the opener states any "
-                           "inference about it as your own uncertainty, never as an appearance "
-                           "she is asked to agree with, and never closes it with a tag whose "
-                           "only job is to collect her agreement. "
-                           "Before drafting the opener, perform the MINIMUM SUFFICIENT REFERENCE "
-                           "check while treating the selected item as visible: replace each "
-                           "literal visual description with the least explicit natural reference. "
-                           "If the meaning and conversational move survive, the opener must use "
-                           "that implicit version. Keep an exact visible identity only when it "
-                           "changes the point or distinguishes possible referents, never merely "
-                           "to prove grounding or identify the selected item. "
-                           "For every visible detail named in the opener, state how it is used "
-                           "by the conversational move. If it asks a question, name the one "
-                           "underlying question; alternatives must be parallel, contrasting "
-                           "answers to it, never unrelated dimensions joined by 'or'. Identify "
-                           "the question's subject and confirm that every pronoun or shorthand "
-                           "noun has one immediately obvious referent. Across beats, any change "
-                           "of referent must be explicit and immediately clear. "
-                           "Confirm the opener's conversational point is not a grade, rank, or "
-                           "verdict on how good the item is, and that its predicate would not fit "
-                           "unchanged under a different woman's different photo. "
-                           "Confirm that its "
-                           "most natural honest reply lets her share a preference, perspective, "
-                           "inspiration, or experience rather than defend or diminish herself. "
-                           "Confirm that the opener does not audition for a role described in "
-                           "her profile, promise how the sender will perform for her, or assume "
-                           "a match, date, relationship, or shared future before she replies. A "
-                           "direct invitation may propose a get-together, but it must leave her "
-                           "acceptance open rather than speak as though the plan already exists. "
-                           "Free text, not a fixed list of choices. Recorded for analysis only, "
-                           "never sent to her.",
+            "observing, asking, guessing, teasing about, or connecting. State "
+            "the conversational payoff beyond merely identifying what is visible. "
+            "The selected item must remain the angle's primary anchor and reason "
+            "for the Like; explicit profile text may sharpen a connection but "
+            "cannot replace the selected item as the subject or payoff. "
+            "The angle must respect any header, caption, or prompt attached to "
+            "the photo; that text defines the photo's intended context. "
+            "A guess is optional. If you use one, choose the least speculative "
+            "interpretation that fits ordinary explanations of the scene and do "
+            "not invent a motive, purpose, cause, or unseen circumstance. The "
+            "conclusion of a guess must not itself be directly visible or stated "
+            "in the item, its text, a sign, or elsewhere in her profile. Visible "
+            "and stated facts may be clues, not guessed conclusions. If the opener "
+            "uses a guess, state how it leaves the conclusion unconfirmed and gives "
+            "her room to confirm or correct it. Any second beat must not assume the "
+            "guess is true or ask about an experience, preference, or consequence "
+            "that only makes sense if it is true. If a location is inferred from "
+            "an image rather than stated in her profile text, the location guess "
+            "must be the whole conversational move: end after it or ask only "
+            "whether that location itself is right. She was in the world the item "
+            "shows and you were not, so confirm that the opener states any "
+            "inference about it as your own uncertainty, never as an appearance "
+            "she is asked to agree with, and never closes it with a tag whose "
+            "only job is to collect her agreement. "
+            "Before drafting the opener, perform the MINIMUM SUFFICIENT REFERENCE "
+            "check while treating the selected item as visible: replace each "
+            "literal visual description with the least explicit natural reference. "
+            "If the meaning and conversational move survive, the opener must use "
+            "that implicit version. Keep an exact visible identity only when it "
+            "changes the point or distinguishes possible referents, never merely "
+            "to prove grounding or identify the selected item. "
+            "For every visible detail named in the opener, state how it is used "
+            "by the conversational move. If it asks a question, name the one "
+            "underlying question; alternatives must be parallel, contrasting "
+            "answers to it, never unrelated dimensions joined by 'or'. Identify "
+            "the question's subject and confirm that every pronoun or shorthand "
+            "noun has one immediately obvious referent. Across beats, any change "
+            "of referent must be explicit and immediately clear. "
+            "Confirm the opener's conversational point is not a grade, rank, or "
+            "verdict on how good the item is, and that its predicate would not fit "
+            "unchanged under a different woman's different photo. "
+            "Confirm that its "
+            "most natural honest reply lets her share a preference, perspective, "
+            "inspiration, or experience rather than defend or diminish herself. "
+            "Confirm that the opener does not audition for a role described in "
+            "her profile, promise how the sender will perform for her, or assume "
+            "a match, date, relationship, or shared future before she replies. A "
+            "direct invitation may propose a get-together, but it must leave her "
+            "acceptance open rather than speak as though the plan already exists. "
+            "Free text, not a fixed list of choices. Recorded for analysis only, "
+            "never sent to her.",
         },
         "item_description": {
             "type": "string",
             "description": "A short description of the item you picked: say whether it is a "
-                           "photo or a written prompt, and in a few words what it shows or "
-                           "says. For a photo, include any header, caption, or prompt printed "
-                           "with it. Describe any other visible people neutrally unless her "
-                           "profile explicitly states their relationship; never infer friend, "
-                           "partner, or family from proximity. This is how we check that the "
-                           "item you numbered is the item "
-                           "we think it is. Never sent to her. Its literal wording belongs here; "
-                           "do not carry it into the opener unless the detail's exact identity is "
-                           "necessary to understand the conversational move.",
+            "photo or a written prompt, and in a few words what it shows or "
+            "says. For a photo, include any header, caption, or prompt printed "
+            "with it. Describe any other visible people neutrally unless her "
+            "profile explicitly states their relationship; never infer friend, "
+            "partner, or family from proximity. This is how we check that the "
+            "item you numbered is the item "
+            "we think it is. Never sent to her. Its literal wording belongs here; "
+            "do not carry it into the opener unless the detail's exact identity is "
+            "necessary to understand the conversational move.",
         },
         "opener": {
             "type": "string",
             "description": "The message to send, bare text only. She reads it while looking at "
-                           "the selected item, so it must feel natural directly under it and "
-                           "justify why it was liked. Explicit profile text may sharpen the "
-                           "message but cannot replace the selected item as its reason, subject, "
-                           "or payoff. MINIMUM SUFFICIENT REFERENCE: default to omission or the "
-                           "least explicit natural reference the attached item makes immediately "
-                           "clear. The attachment itself can supply both an obvious referent and "
-                           "the selected item anchor. Name a visible detail only when its exact "
-                           "identity changes the point or distinguishes possible referents, never "
-                           "merely to prove grounding or add textual specificity. Every named "
-                           "setup detail must be necessary to the move; if replacing it with an "
-                           "implicit reference preserves the meaning and conversational payoff, "
-                           "use the implicit version. Do not force it where real ambiguity would "
-                           "result. The final point must do something conversational beyond "
-                           "description. A question asks one coherent "
-                           "thing; use 'or' only for parallel, contrasting answers to it. Every "
-                           "pronoun, shorthand noun, and question subject must have one "
-                           "immediately obvious referent. Across two beats, any change of "
-                           "referent must be explicit and immediately clear. "
-                           "MODIFIER CLARITY: every modifying phrase must have only one natural "
-                           "attachment on first reading. If the phrase's placement permits a "
-                           "plausible unintended meaning, reorder or rephrase the line. "
-                           "Its most natural honest reply should let her share a preference, "
-                           "perspective, inspiration, or experience, never require self "
-                           "justification. "
-                           "She was in the world the item shows and you were not, so write any "
-                           "inference about it from your own not knowing: never ask her to agree "
-                           "about how something appears, and never close a claim about her own "
-                           "life with a tag whose only job is to collect her agreement. This is "
-                           "a stance, not a fact to state: never say where the sender has or has "
-                           "not been. "
-                           "A guess must remain unconfirmed until she replies; no later statement "
-                           "or question may assume it is correct. An image-derived location guess "
-                           "is the only conversational move before she replies: end after it or "
-                           "ask only whether the location itself is right, worded as your own "
-                           "guess rather than as an appearance she is asked to agree with. Her "
-                           "settling it is the payoff either way and neither ending is the "
-                           "default; do not ask about an activity, reason, preference, feeling, "
-                           "experience, or consequence there before she confirms it. "
-                           "Do not advertise the sender as "
-                           "the answer to a preference in her profile, promise what he will do "
-                           "for her, or assume a match, date, relationship, or shared future. A "
-                           "direct invitation may propose a get-together only while leaving her "
-                           "acceptance open. "
-                           "State the positive substance directly. Do not preface it by naming "
-                           "an insulting, judgmental, awkward, pressuring, creepy, or offensive "
-                           "interpretation and then denying that interpretation. "
-                           "Write it in the spoken register a person texts in, with natural "
-                           "contractions; deliver any compliment as an offhand remark about the "
-                           "thing rather than an earnest verdict on her; moving the praise onto "
-                           "the thing alone is not enough, it must also pass the SUBSTITUTION "
-                           "TEST below; never restate context "
-                           "the message itself already established, and never point at the photo "
-                           "or profile as an object. "
-                           "IDIOM FIT: use an idiom only when it is contemporary, everyday, "
-                           "immediately understandable on first reading in ordinary conversation, "
-                           "semantically apt to the item and point, and natural when spoken. Avoid "
-                           "idioms that are dated, literary, formal, obscure, forced, or tied to a "
-                           "passing trend. This does not license internet slang, memes, or borrowed "
-                           "caption wording that makes her stop to decode the point. "
-                           "never assign the thing a grade, rank, or verdict on how good it is; "
-                           "SUBSTITUTION TEST: if the predicate would fit unchanged under a "
-                           "different woman's photo it is a grade rather than an observation, "
-                           "except that an unmistakably nonliteral PLAYFUL HYPERBOLE stays "
-                           "playful framing rather than an assessment of quality even where its "
-                           "wording could transfer; "
-                           "when the best thing to say about an item is how good it is, cut that "
-                           "beat and let one specific question be the whole message rather than "
-                           "inventing a claim to fill it, itself still subject to VARY THE SHAPE so "
-                           "it does not become its own repeated template. "
-                           "Maximum two sentences. No em dash, no hyphen.",
+            "the selected item, so it must feel natural directly under it and "
+            "justify why it was liked. Explicit profile text may sharpen the "
+            "message but cannot replace the selected item as its reason, subject, "
+            "or payoff. MINIMUM SUFFICIENT REFERENCE: default to omission or the "
+            "least explicit natural reference the attached item makes immediately "
+            "clear. The attachment itself can supply both an obvious referent and "
+            "the selected item anchor. Name a visible detail only when its exact "
+            "identity changes the point or distinguishes possible referents, never "
+            "merely to prove grounding or add textual specificity. Every named "
+            "setup detail must be necessary to the move; if replacing it with an "
+            "implicit reference preserves the meaning and conversational payoff, "
+            "use the implicit version. Do not force it where real ambiguity would "
+            "result. The final point must do something conversational beyond "
+            "description. A question asks one coherent "
+            "thing; use 'or' only for parallel, contrasting answers to it. Every "
+            "pronoun, shorthand noun, and question subject must have one "
+            "immediately obvious referent. Across two beats, any change of "
+            "referent must be explicit and immediately clear. "
+            "MODIFIER CLARITY: every modifying phrase must have only one natural "
+            "attachment on first reading. If the phrase's placement permits a "
+            "plausible unintended meaning, reorder or rephrase the line. "
+            "Its most natural honest reply should let her share a preference, "
+            "perspective, inspiration, or experience, never require self "
+            "justification. "
+            "She was in the world the item shows and you were not, so write any "
+            "inference about it from your own not knowing: never ask her to agree "
+            "about how something appears, and never close a claim about her own "
+            "life with a tag whose only job is to collect her agreement. This is "
+            "a stance, not a fact to state: never say where the sender has or has "
+            "not been. "
+            "A guess must remain unconfirmed until she replies; no later statement "
+            "or question may assume it is correct. An image-derived location guess "
+            "is the only conversational move before she replies: end after it or "
+            "ask only whether the location itself is right, worded as your own "
+            "guess rather than as an appearance she is asked to agree with. Her "
+            "settling it is the payoff either way and neither ending is the "
+            "default; do not ask about an activity, reason, preference, feeling, "
+            "experience, or consequence there before she confirms it. "
+            "Do not advertise the sender as "
+            "the answer to a preference in her profile, promise what he will do "
+            "for her, or assume a match, date, relationship, or shared future. A "
+            "direct invitation may propose a get-together only while leaving her "
+            "acceptance open. "
+            "State the positive substance directly. Do not preface it by naming "
+            "an insulting, judgmental, awkward, pressuring, creepy, or offensive "
+            "interpretation and then denying that interpretation. "
+            "Write it in the spoken register a person texts in, with natural "
+            "contractions; deliver any compliment as an offhand remark about the "
+            "thing rather than an earnest verdict on her; moving the praise onto "
+            "the thing alone is not enough, it must also pass the SUBSTITUTION "
+            "TEST below; never restate context "
+            "the message itself already established, and never point at the photo "
+            "or profile as an object. "
+            "IDIOM FIT: use an idiom only when it is contemporary, everyday, "
+            "immediately understandable on first reading in ordinary conversation, "
+            "semantically apt to the item and point, and natural when spoken. Avoid "
+            "idioms that are dated, literary, formal, obscure, forced, or tied to a "
+            "passing trend. This does not license internet slang, memes, or borrowed "
+            "caption wording that makes her stop to decode the point. "
+            "never assign the thing a grade, rank, or verdict on how good it is; "
+            "SUBSTITUTION TEST: if the predicate would fit unchanged under a "
+            "different woman's photo it is a grade rather than an observation, "
+            "except that an unmistakably nonliteral PLAYFUL HYPERBOLE stays "
+            "playful framing rather than an assessment of quality even where its "
+            "wording could transfer; "
+            "when the best thing to say about an item is how good it is, cut that "
+            "beat and let one specific question be the whole message rather than "
+            "inventing a claim to fill it, itself still subject to VARY THE SHAPE so "
+            "it does not become its own repeated template. "
+            "Maximum two sentences. No em dash, no hyphen.",
         },
     },
     "required": ["item_index", "referenced", "angle", "item_description", "opener"],
@@ -1044,7 +1045,8 @@ class ItemRequest:
                 "ItemRequest requires at least one numbered item: the model's job on this "
                 "request shape is to CHOOSE an item (ops/OPENER-REDESIGN.md 5.1), and a "
                 "request carrying none can only be answered with ITEM_INDEX_ABSENT. Hard stop "
-                "upstream instead of paying for a call that cannot succeed.")
+                "upstream instead of paying for a call that cannot succeed."
+            )
         # Validate both tiers even though only `items` reaches Gemini: a malformed context crop
         # must not become a seemingly valid ItemRequest that later corrupts replay/debug output.
         for position, image in enumerate(self.items + self.context):
@@ -1054,7 +1056,8 @@ class ItemRequest:
                     f"({type(image).__name__}, {len(image) if hasattr(image, '__len__') else '?'} "
                     "bytes). Numbered item crops are positional, so a missing or empty item "
                     "would silently renumber every later item; retained context must likewise "
-                    "remain usable for replay and debugging.")
+                    "remain usable for replay and debugging."
+                )
 
     @classmethod
     def from_profile(cls, profile: Profile) -> "ItemRequest":
@@ -1116,7 +1119,8 @@ class ItemRequest:
         """
         if not 0 <= position < self.image_count:
             raise ValueError(
-                f"image position {position} is outside 0..{self.image_count - 1}")
+                f"image position {position} is outside 0..{self.image_count - 1}"
+            )
         return _ITEM_LABEL.format(number=position + FIRST_ITEM_INDEX)
 
     def describe_image(self, position: int) -> str:
@@ -1134,7 +1138,8 @@ class ItemRequest:
 
 
 _COMMON_ABBREVIATION_RE = re.compile(
-    r"\b(?:Mr|Mrs|Ms|Dr|Jr|Sr|vs|etc)\.", re.IGNORECASE)
+    r"\b(?:Mr|Mrs|Ms|Dr|Jr|Sr|vs|etc)\.", re.IGNORECASE
+)
 _PLACE_PREFIX_ABBREVIATION_RE = re.compile(
     r"\b(?:St|Mt)\.(?=\s+(?!(?:Am|Is|Are|Was|Were|Do|Does|Did|Have|Has|Had|"
     r"Can|Could|Would|Will|What|Where|When|Why|How|Which|Who)\b)[A-Z][A-Za-z'])"
@@ -1142,6 +1147,45 @@ _PLACE_PREFIX_ABBREVIATION_RE = re.compile(
 _DOTTED_ABBREVIATION_BEFORE_LOWER_RE = re.compile(r"\b(?:[A-Z]\.){2,}(?=\s+[a-z])")
 _SENTENCE_END_RE = re.compile(r"(?:[!?]+|\.+)(?=(?:[\"'”’)]*)?(?:\s+|$))")
 _COMMA_BEFORE_OR_RE = re.compile(r",(?=\s+or\b)", re.IGNORECASE)
+
+# A wrong terminal "." on a sentence the model wrote as an obvious question is the same class
+# of formatting artifact as the comma-before-or removal and the wrapping-quote repair below: an
+# unambiguous, silently-fixable punctuation slip (the model shipped "Is that Japan." and
+# "Where is the signup sheet." in live Training), not a semantic retry case. Precision is
+# favored over recall: a question left with a "." reads mildly flat, but a "?" wrongly put on a
+# statement or imperative is a visible error, so the pattern below only fires on an anchored
+# inversion shape. "Had" is deliberately absent ("Had it up to here." and "Had I known." are
+# statements), as is "don't" ("Don't you dare." is not a question), and a sentence-initial
+# "Which is ..." is a relative continuation, not a question. See _repair_question_periods.
+_QUESTION_AUX = (
+    r"(?:is|are|was|were|am|does|did|do|has|have|can|could|would|will|should|might|may)"
+)
+_QUESTION_SUBJECT = r"(?:that|this|those|these|there|it|you|she|he|they|we|i)"
+_INTERROGATIVE_RE = re.compile(
+    rf"(?!what\s+an?\b|how\s+a\b|which\s+{_QUESTION_AUX}\b)"
+    r"(?:"
+    # Yes/no inversion with a pronoun subject. "do" and "have" take only a person as the subject
+    # ("Do it."/"Do that."/"Have this."/"Have fun."/"Do tell." are imperatives, not questions),
+    # and the contracted negatives omit "don't".
+    r"(?:is|are|was|were|am|does|did|has|can|could|would|will|should|might|may)"
+    rf"\s+{_QUESTION_SUBJECT}\b"
+    r"|(?:do|have)\s+(?:you|she|he|they|we|i)\b"
+    r"|(?:isn't|aren't|wasn't|weren't|doesn't|didn't|hasn't|haven't"
+    r"|can't|couldn't|wouldn't|won't|shouldn't)"
+    rf"\s+{_QUESTION_SUBJECT}\b"
+    # Wh-inversion: a wh word, up to three intervening descriptive words, then the auxiliary. The
+    # per-word negative lookahead refuses a pronoun or "there" in the gap so embedded clauses
+    # ("What it is.", "Where there's a will.") are not mistaken for questions, and the leading
+    # guard refuses the exclamative "What a/an" / "How a" shapes ("What a day it was.").
+    r"|(?:what|where|when|why|how|which|who|whose|whom)"
+    r"(?:\s+(?!(?:it|that|this|he|she|they|we|i|you|there)\b)[A-Za-z']+){0,3}?"
+    rf"\s+{_QUESTION_AUX}\b"
+    # Contracted wh, restricted to a hand-picked forward word so "What's more." stays a statement.
+    r"|(?:what's|where's|who's|how's|when's|why's)"
+    r"\s+(?:that|this|it|the|your|she|he|there|up|going|with|her|his|their)\b"
+    r")",
+    re.IGNORECASE,
+)
 
 # A narrow, deterministic backstop for the reported harmful-inference shape. Prompt guidance
 # does the general semantic work because only the model sees the image and profile evidence;
@@ -1151,17 +1195,32 @@ _COMMA_BEFORE_OR_RE = re.compile(r",(?=\s+or\b)", re.IGNORECASE)
 # These patterns instead identify a direct, unsupported implication of jumping from a height or
 # self-harm, which should always be regenerated before it can reach the comment box.
 _SENSITIVE_INFERENCE_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
-    ("courage to jump", re.compile(
-        r"\b(?:work(?:ed)?\s+up|find|found|had)\s+(?:the\s+)?courage\s+to\s+jump\b",
-        re.IGNORECASE)),
-    ("asking whether she jumped", re.compile(
-        r"\b(?:did|do|would|were|are)\s+you\s+(?:ever\s+)?(?:going\s+to\s+)?jump\b",
-        re.IGNORECASE)),
-    ("jumping from a height", re.compile(
-        r"\bjump(?:ed|ing)?\s+(?:off|from)\s+(?:the\s+)?"
-        r"(?:bridge|cliff|ledge|balcony|roof|height)\b", re.IGNORECASE)),
-    ("self harm or suicide", re.compile(
-        r"\b(?:self[\s-]?harm|suicid(?:e|al))\b", re.IGNORECASE)),
+    (
+        "courage to jump",
+        re.compile(
+            r"\b(?:work(?:ed)?\s+up|find|found|had)\s+(?:the\s+)?courage\s+to\s+jump\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "asking whether she jumped",
+        re.compile(
+            r"\b(?:did|do|would|were|are)\s+you\s+(?:ever\s+)?(?:going\s+to\s+)?jump\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "jumping from a height",
+        re.compile(
+            r"\bjump(?:ed|ing)?\s+(?:off|from)\s+(?:the\s+)?"
+            r"(?:bridge|cliff|ledge|balcony|roof|height)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "self harm or suicide",
+        re.compile(r"\b(?:self[\s-]?harm|suicid(?:e|al))\b", re.IGNORECASE),
+    ),
 )
 
 # A location inferred from pixels is not established context. These deliberately case-aware
@@ -1279,26 +1338,36 @@ _LOCATION_CONFIRMATION_NOUN = (
 # constants, so a shape that opts out of them cannot ship green a fourth time.
 _LOCATION_CONFIRMATION_DET = r"(?:that|this|the|my)"
 _DIRECT_LOCATION_CONFIRMATION_PATTERNS: tuple[re.Pattern[str], ...] = (
-    re.compile(r"^(?:am|was)\s+i\s+(?:even\s+)?"
-               r"(?:close|right|correct|(?:way\s+)?off)"
-               rf"(?:\s+(?:about|on|with)\s+{_LOCATION_CONFIRMATION_DET}\s+"
-               rf"{_LOCATION_CONFIRMATION_NOUN})?\?+$",
-               re.IGNORECASE),
+    re.compile(
+        r"^(?:am|was)\s+i\s+(?:even\s+)?"
+        r"(?:close|right|correct|(?:way\s+)?off)"
+        rf"(?:\s+(?:about|on|with)\s+{_LOCATION_CONFIRMATION_DET}\s+"
+        rf"{_LOCATION_CONFIRMATION_NOUN})?\?+$",
+        re.IGNORECASE,
+    ),
     # "how close is that guess?" belongs here for the same reason "how close am I?" does. The
     # 2026-09-05 (d) PRECISION CHECK asserted the retained Portugal draft ending this way
     # "remain[ed] valid"; re-running the shipped detector on that exact string on 2026-09-14
     # showed it was rejected, so the claim was never true. See ops/OPENER-REDESIGN.md,
     # Addendum -- 2026-09-14 (a), CORRECTING THE RECORD.
-    re.compile(r"^how\s+(?:close|far\s+off)\s+"
-               rf"(?:(?:am|was)\s+i|(?:is|was)\s+(?:it|{_LOCATION_CONFIRMATION_DET})"
-               rf"(?:\s+{_LOCATION_CONFIRMATION_NOUN})?)\?+$", re.IGNORECASE),
-    re.compile(r"^did\s+i\s+(?:get|guess|call)\s+"
-               rf"(?:it|that|this|{_LOCATION_CONFIRMATION_DET}\s+"
-               rf"{_LOCATION_CONFIRMATION_NOUN})\s+"
-               r"(?:right|correctly)\?+$",
-               re.IGNORECASE),
-    re.compile(r"^(?:is|was|could)\s+(?:that|this|it)\s+(?:be\s+)?"
-               r"(?:right|correct|close|(?:way\s+)?off)\?+$", re.IGNORECASE),
+    re.compile(
+        r"^how\s+(?:close|far\s+off)\s+"
+        rf"(?:(?:am|was)\s+i|(?:is|was)\s+(?:it|{_LOCATION_CONFIRMATION_DET})"
+        rf"(?:\s+{_LOCATION_CONFIRMATION_NOUN})?)\?+$",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"^did\s+i\s+(?:get|guess|call)\s+"
+        rf"(?:it|that|this|{_LOCATION_CONFIRMATION_DET}\s+"
+        rf"{_LOCATION_CONFIRMATION_NOUN})\s+"
+        r"(?:right|correctly)\?+$",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"^(?:is|was|could)\s+(?:that|this|it)\s+(?:be\s+)?"
+        r"(?:right|correct|close|(?:way\s+)?off)\?+$",
+        re.IGNORECASE,
+    ),
     # THIRD recurrence of the allow-list-disagreement bug, found and fixed 2026-09-16. This
     # shape kept a hand-written determiner ("my") in front of a hand-written 2-member subset of
     # the place nouns ("(?:guess|call)") straight through BOTH hoists above -- the 2026-09-14
@@ -1316,10 +1385,16 @@ _DIRECT_LOCATION_CONFIRMATION_PATTERNS: tuple[re.Pattern[str], ...] = (
     # "is it right?" is already a full match of the demonstrative shape directly above, so the
     # bare pronoun is covered without putting a pronoun where a determiner belongs (see
     # _LOCATION_CONFIRMATION_DET's comment on why "it" stays out of the shared set).
-    re.compile(rf"^(?:is|was)\s+{_LOCATION_CONFIRMATION_DET}\s+{_LOCATION_CONFIRMATION_NOUN}"
-               r"\s+(?:right|correct|close|(?:way\s+)?off)\?+$", re.IGNORECASE),
-    re.compile(r"^where\s+(?:is|was)\s+(?:that|this|it)"
-               r"(?:\s+(?:taken|shot|filmed))?\?+$", re.IGNORECASE),
+    re.compile(
+        rf"^(?:is|was)\s+{_LOCATION_CONFIRMATION_DET}\s+{_LOCATION_CONFIRMATION_NOUN}"
+        r"\s+(?:right|correct|close|(?:way\s+)?off)\?+$",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"^where\s+(?:is|was)\s+(?:that|this|it)"
+        r"(?:\s+(?:taken|shot|filmed))?\?+$",
+        re.IGNORECASE,
+    ),
     # "Is that where you were?" / "Is that where this was taken?" -- the same direct place
     # confirmation as the shape directly above with the demonstrative fronted. It was missing
     # until 2026-09-15 even though this guard's own docstring ("A direct confirmation or
@@ -1336,11 +1411,14 @@ _DIRECT_LOCATION_CONFIRMATION_PATTERNS: tuple[re.Pattern[str], ...] = (
     # you were?") reuses the two shared constants rather than growing a fourth private list. As
     # everywhere in this table the match is anchored end to end, so no experience or activity
     # clause can ride along behind the confirmation.
-    re.compile(rf"^(?:is|was)\s+(?:that|this|it)"
-               rf"(?:\s+{_LOCATION_CONFIRMATION_DET}\s+{_LOCATION_CONFIRMATION_NOUN})?"
-               r"\s+where\s+"
-               r"(?:you\s+were|(?:that|this|it)\s+was(?:\s+(?:taken|shot|filmed))?)"
-               r"\?+$", re.IGNORECASE),
+    re.compile(
+        rf"^(?:is|was)\s+(?:that|this|it)"
+        rf"(?:\s+{_LOCATION_CONFIRMATION_DET}\s+{_LOCATION_CONFIRMATION_NOUN})?"
+        r"\s+where\s+"
+        r"(?:you\s+were|(?:that|this|it)\s+was(?:\s+(?:taken|shot|filmed))?)"
+        r"\?+$",
+        re.IGNORECASE,
+    ),
     re.compile(r"^(?:right|correct)\?+$", re.IGNORECASE),
 )
 # A confirmation has to be addressed to the right person. Every shape above asks HER to settle a
@@ -1457,8 +1535,10 @@ def _sanitize(text: str) -> str:
     """The single fold applied to every model-written opener before it becomes the recorded,
     sent OpenerResult.opener -- delegates character folding to
     operation_love.typography.fold_to_ascii, then removes a comma immediately before ``or``
-    so even formally correct model punctuation reads like casual texting. The text this
-    function returns is BYTE-FOR-BYTE what Adb.text() will actually type
+    so even formally correct model punctuation reads like casual texting, then turns a stray
+    terminal "." into "?" on a sentence that is unambiguously a question ("Is that Japan." is
+    a formatting artifact, repaired silently like the comma and wrapping-quote fixes). The text
+    this function returns is BYTE-FOR-BYTE what Adb.text() will actually type
     (fold_to_ascii is also what drivers.adb._clean_text_for_input calls; see typography.py's
     module docstring). This keeps the owner's no-dash rule intact (every dash-like codepoint
     -- em/en dash, hyphen, and their lookalikes -- folds to a comma or space via the
@@ -1470,7 +1550,60 @@ def _sanitize(text: str) -> str:
     after this call is what turns that into a loud, retried failure instead of a silent send
     of unrenderable text."""
     folded = fold_to_ascii(str(text))
-    return _COMMA_BEFORE_OR_RE.sub("", folded)
+    folded = _COMMA_BEFORE_OR_RE.sub("", folded)
+    return _repair_question_periods(folded)
+
+
+def _mask_abbreviation_periods(text: str) -> str:
+    """Replace every abbreviation period with a same-length one-dot leader (U+2024) so a later
+    sentence-boundary scan cannot mistake ``St.``/``Dr.``/``e.g.`` for a terminal period. Length
+    is preserved so every index still points into ``text`` unchanged."""
+    protected = _COMMON_ABBREVIATION_RE.sub(
+        lambda match: match.group(0).replace(".", "\u2024"), text
+    )
+    protected = _PLACE_PREFIX_ABBREVIATION_RE.sub(
+        lambda match: match.group(0).replace(".", "\u2024"), protected
+    )
+    protected = _DOTTED_ABBREVIATION_BEFORE_LOWER_RE.sub(
+        lambda match: match.group(0).replace(".", "\u2024"), protected
+    )
+    protected = re.sub(
+        r"\b(?:e\.g|i\.e)\.",
+        lambda match: match.group(0).replace(".", "\u2024"),
+        protected,
+        flags=re.IGNORECASE,
+    )
+    return protected
+
+
+def _repair_question_periods(text: str) -> str:
+    """Turn a terminal "." into "?" where the model unambiguously wrote an interrogative with a
+    stray period (the shipped "Is that Japan." artifact). This runs as the last _sanitize step,
+    after the comma-before-or removal and before _strip_wrapping_quotes, so the text here is the
+    folded, straight-ASCII form and whatever this returns is byte-for-byte what is typed.
+
+    Abbreviation periods are masked first (same-length, so offsets still index ``text``), then
+    each sentence boundary contributed by a lone "." is examined: only a single "." whose body --
+    the text since the previous boundary, minus leading whitespace and wrapping quotes/brackets --
+    matches _INTERROGATIVE_RE is repaired, one char for one char, so length and idempotence are
+    both preserved by construction. Everything else (ellipses, existing ?/!, non-matching bodies,
+    masked abbreviations) is left byte-identical."""
+    if not text:
+        return text
+    masked = _mask_abbreviation_periods(text)
+    repaired = text
+    prev_end = 0
+    for match in _SENTENCE_END_RE.finditer(masked):
+        if match.group(0) != ".":
+            prev_end = match.end()
+            continue
+        body = masked[prev_end : match.start()].lstrip(" \t\r\n\x0b\x0c\"'()[]")
+        if _INTERROGATIVE_RE.match(body) is None:
+            prev_end = match.end()
+            continue
+        repaired = repaired[: match.start()] + "?" + repaired[match.start() + 1 :]
+        prev_end = match.end()
+    return repaired
 
 
 def _strip_wrapping_quotes(text: str) -> str:
@@ -1512,7 +1645,7 @@ def _strip_wrapping_quotes(text: str) -> str:
     if len(text) < 2:
         return text
     first, last = text[0], text[-1]
-    if first != last or first not in ("\"", "'"):
+    if first != last or first not in ('"', "'"):
         return text
     inner = text[1:-1]
     if any(ch == first and not _is_intra_word(inner, i) for i, ch in enumerate(inner)):
@@ -1524,9 +1657,11 @@ def _is_intra_word(text: str, index: int) -> bool:
     """True when ``text[index]`` sits between two letters, i.e. it is punctuation inside a
     word (the apostrophe of a contraction) rather than a delimiter around one. Pure and
     deterministic; a position at either end of the string is never intra-word."""
-    return (0 < index < len(text) - 1
-            and text[index - 1].isalpha()
-            and text[index + 1].isalpha())
+    return (
+        0 < index < len(text) - 1
+        and text[index - 1].isalpha()
+        and text[index + 1].isalpha()
+    )
 
 
 # Keywords that make a leading "<clause>:" read as a self-describing label rather than
@@ -1549,7 +1684,12 @@ _SCAFFOLD_LABEL_KEYWORDS_RE = re.compile(
 # phrases are removed below; _SCAFFOLD_HERE_IS_OBJECT_RE narrows rule 2 to that object shape.
 # Leading interjections a model uses to preface its answer instead of just answering (rule 2).
 _SCAFFOLD_LEADING_PHRASES = (
-    "sure!", "sure,", "certainly", "of course,", "absolutely!", "got it",
+    "sure!",
+    "sure,",
+    "certainly",
+    "of course,",
+    "absolutely!",
+    "got it",
     "here you go",
 )
 
@@ -1632,14 +1772,14 @@ def _scaffolding_markers(text: str) -> list[str]:
             continue
         clause = stripped[:i]
         if _SCAFFOLD_LABEL_KEYWORDS_RE.search(clause):
-            markers.append(f'leading label clause "{stripped[:i + 1]}"')
+            markers.append(f'leading label clause "{stripped[: i + 1]}"')
             break
 
     # Rule 2: leading interjection.
     lowered = stripped.lower()
     for phrase in _SCAFFOLD_LEADING_PHRASES:
         if lowered.startswith(phrase):
-            markers.append(f'leading interjection "{stripped[:len(phrase)]}"')
+            markers.append(f'leading interjection "{stripped[: len(phrase)]}"')
             break
     here_is_match = _SCAFFOLD_HERE_IS_OBJECT_RE.match(stripped)
     if here_is_match:
@@ -1699,7 +1839,7 @@ _PREEMPTIVE_DISCLAIMER_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
         re.compile(
             _PREEMPTIVE_DISCLAIMER_PREFIX
             + r"(?:don't|do\s+not)\s+(?:judge\s+me|take\s+(?:this|it)\s+the\s+wrong\s+way|"
-              r"get\s+me\s+wrong|be\s+offended)\b\s*[,;:.!]",
+            r"get\s+me\s+wrong|be\s+offended)\b\s*[,;:.!]",
             re.IGNORECASE,
         ),
     ),
@@ -1708,10 +1848,10 @@ _PREEMPTIVE_DISCLAIMER_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
         re.compile(
             _PREEMPTIVE_DISCLAIMER_PREFIX
             + r"(?:(?:not\s+to|not\s+trying\s+to|i(?:'m|\s+am)\s+not\s+"
-              r"(?:trying|meaning)\s+to|i\s+(?:don't|do\s+not)\s+(?:want|mean)\s+to)\s+"
-              r"(?:be|sound|seem|come\s+across\s+as)\s+"
-              r"(?:weird|creepy|rude|judg(?:e?mental)|pushy|forward|awkward|offensive|nosy|"
-              r"shallow|mean|dramatic))\b\s*[,;:.!]",
+            r"(?:trying|meaning)\s+to|i\s+(?:don't|do\s+not)\s+(?:want|mean)\s+to)\s+"
+            r"(?:be|sound|seem|come\s+across\s+as)\s+"
+            r"(?:weird|creepy|rude|judg(?:e?mental)|pushy|forward|awkward|offensive|nosy|"
+            r"shallow|mean|dramatic))\b\s*[,;:.!]",
             re.IGNORECASE,
         ),
     ),
@@ -1720,8 +1860,8 @@ _PREEMPTIVE_DISCLAIMER_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
         re.compile(
             _PREEMPTIVE_DISCLAIMER_PREFIX
             + r"(?:this|that)\s+(?:(?:may|might|will)\s+sound|is\s+going\s+to\s+sound)\s+"
-              r"(?:weird|creepy|rude|judg(?:e?mental)|pushy|forward|awkward|offensive|nosy|"
-              r"shallow|mean|dramatic)\b\s*[,;:.!]",
+            r"(?:weird|creepy|rude|judg(?:e?mental)|pushy|forward|awkward|offensive|nosy|"
+            r"shallow|mean|dramatic)\b\s*[,;:.!]",
             re.IGNORECASE,
         ),
     ),
@@ -1737,8 +1877,11 @@ def _preemptive_disclaimer_markers(text: str) -> list[str]:
     beginning and requires narrow wording plus punctuation, so ordinary negation in the body of
     a message does not spend a retry.
     """
-    return [label for label, pattern in _PREEMPTIVE_DISCLAIMER_PATTERNS
-            if pattern.search(text)]
+    return [
+        label
+        for label, pattern in _PREEMPTIVE_DISCLAIMER_PATTERNS
+        if pattern.search(text)
+    ]
 
 
 _PREMATURE_SHARED_FUTURE_PATTERNS = (
@@ -1796,8 +1939,11 @@ def _premature_shared_future_markers(text: str) -> list[str]:
     service can recover. Broader calibration belongs in the prompt; this helper guarantees the
     reported failure shape cannot pass unchanged again.
     """
-    return [label for label, pattern in _PREMATURE_SHARED_FUTURE_PATTERNS
-            if pattern.search(text)]
+    return [
+        label
+        for label, pattern in _PREMATURE_SHARED_FUTURE_PATTERNS
+        if pattern.search(text)
+    ]
 
 
 def _sensitive_inference_markers(text: str) -> list[str]:
@@ -1809,7 +1955,11 @@ def _sensitive_inference_markers(text: str) -> list[str]:
     courage around danger, or self harm. An empty list means the text can continue through the
     ordinary parse path.
     """
-    return [label for label, pattern in _SENSITIVE_INFERENCE_PATTERNS if pattern.search(text)]
+    return [
+        label
+        for label, pattern in _SENSITIVE_INFERENCE_PATTERNS
+        if pattern.search(text)
+    ]
 
 
 def _is_location_confirmation_phrase(text: str) -> bool:
@@ -1836,7 +1986,9 @@ def _is_location_confirmation_phrase(text: str) -> bool:
     )
     if directional:
         other_place = directional.group(1)
-        return other_place is None or _PROPER_PLACE_RE.fullmatch(other_place) is not None
+        return (
+            other_place is None or _PROPER_PLACE_RE.fullmatch(other_place) is not None
+        )
 
     if re.fullmatch(r"(?i)somewhere(?:\s+else)?", phrase):
         return True
@@ -1872,9 +2024,11 @@ def _has_non_out_there_context(text: str) -> bool:
 
 def _has_location_context(text: str) -> bool:
     cleaned = " ".join(str(text).split())
-    return (_LOCATION_CONTEXT_NOUN_RE.search(cleaned) is not None
-            or _LOCATION_CONTEXT_TRAVEL_RE.search(cleaned) is not None
-            or _has_non_out_there_context(cleaned))
+    return (
+        _LOCATION_CONTEXT_NOUN_RE.search(cleaned) is not None
+        or _LOCATION_CONTEXT_TRAVEL_RE.search(cleaned) is not None
+        or _has_non_out_there_context(cleaned)
+    )
 
 
 def _unconfirmed_location_followup_markers(text: str) -> list[str]:
@@ -1895,9 +2049,11 @@ def _unconfirmed_location_followup_markers(text: str) -> list[str]:
     cleaned = " ".join(str(text).split())
     if not cleaned:
         return []
-    cue_matches = [(idx, match)
-                   for idx, pattern in enumerate(_UNCONFIRMED_LOCATION_CUE_PATTERNS)
-                   if (match := pattern.search(cleaned)) is not None]
+    cue_matches = [
+        (idx, match)
+        for idx, pattern in enumerate(_UNCONFIRMED_LOCATION_CUE_PATTERNS)
+        if (match := pattern.search(cleaned)) is not None
+    ]
     if not cue_matches:
         return []
     cue_idx, cue = min(cue_matches, key=lambda item: item[1].start())
@@ -1905,11 +2061,14 @@ def _unconfirmed_location_followup_markers(text: str) -> list[str]:
     # Protect abbreviations without changing string length, so a place such as St. Moritz does
     # not manufacture a sentence boundary and all match offsets still index ``cleaned``.
     protected = _COMMON_ABBREVIATION_RE.sub(
-        lambda match: match.group(0).replace(".", "\u2024"), cleaned)
+        lambda match: match.group(0).replace(".", "\u2024"), cleaned
+    )
     protected = _PLACE_PREFIX_ABBREVIATION_RE.sub(
-        lambda match: match.group(0).replace(".", "\u2024"), protected)
+        lambda match: match.group(0).replace(".", "\u2024"), protected
+    )
     protected = _DOTTED_ABBREVIATION_BEFORE_LOWER_RE.sub(
-        lambda match: match.group(0).replace(".", "\u2024"), protected)
+        lambda match: match.group(0).replace(".", "\u2024"), protected
+    )
     protected = re.sub(
         r"\b(?:e\.g|i\.e)\.",
         lambda match: match.group(0).replace(".", "\u2024"),
@@ -1928,7 +2087,7 @@ def _unconfirmed_location_followup_markers(text: str) -> list[str]:
     if not boundaries:
         return []
     boundary = min(boundaries, key=lambda match: match.start())
-    followup = cleaned[boundary.end():].strip()
+    followup = cleaned[boundary.end() :].strip()
     followup = re.sub(
         r"^[\"')\]]*\s*(?:(?:but|and|or|so|then)\s+)?",
         "",
@@ -1945,9 +2104,10 @@ def _unconfirmed_location_followup_markers(text: str) -> list[str]:
     # ANCHORED confirmation table. It is the wrong test only there: the free-form query branch
     # below still refuses her outright, because it has no literal words to be safe behind.
     misaddressed = _MISADDRESSED_CONFIRMATION_RE.search(confirmation) is not None
-    if (not misaddressed
-            and any(pattern.fullmatch(confirmation)
-                    for pattern in _DIRECT_LOCATION_CONFIRMATION_PATTERNS)):
+    if not misaddressed and any(
+        pattern.fullmatch(confirmation)
+        for pattern in _DIRECT_LOCATION_CONFIRMATION_PATTERNS
+    ):
         return []
     location_query_matches = [
         match
@@ -1959,17 +2119,18 @@ def _unconfirmed_location_followup_markers(text: str) -> list[str]:
     # branch additionally refuses a "place" she is standing inside -- "Is that Your Happy
     # Place?" is an experience question wearing a proper noun's clothes. See
     # _RECIPIENT_INSIDE_LOCATION_RE for the openers that came back the day this was dropped.
-    if (not misaddressed
-            and any(_is_location_confirmation_phrase(match.group("location"))
-                    and _RECIPIENT_INSIDE_LOCATION_RE.search(match.group("location")) is None
-                    for match in location_query_matches)):
+    if not misaddressed and any(
+        _is_location_confirmation_phrase(match.group("location"))
+        and _RECIPIENT_INSIDE_LOCATION_RE.search(match.group("location")) is None
+        for match in location_query_matches
+    ):
         return []
     if cue_idx == 0:
         sentence_start_candidates = [
             cleaned.rfind(ch, 0, cue.start()) for ch in [".", "!", "?", ";", ":"]
         ]
         sentence_start = max(sentence_start_candidates) + 1
-        context_window = cleaned[sentence_start:boundary.end()]
+        context_window = cleaned[sentence_start : boundary.end()]
         context_window = " ".join((context_window + " " + followup).split())
         if not _has_location_context(context_window):
             return []
@@ -1983,7 +2144,8 @@ def _unconfirmed_location_followup_markers(text: str) -> list[str]:
 # `referenced` value the model writes starts with one of them ("photo of her with a husky in
 # the arctic"), so counting them would swamp the real signal ("husky", "arctic") with a
 # constant that fires on almost every profile.
-_REDUNDANCY_STOPWORDS = frozenset("""
+_REDUNDANCY_STOPWORDS = frozenset(
+    """
     a an the this that these those there here
     i me my mine myself you your yours yourself we us our ours
     he him his she her hers it its they them their theirs
@@ -1995,7 +2157,8 @@ _REDUNDANCY_STOPWORDS = frozenset("""
     one two some any all both each few more most other such
     photo photos picture pictures pic pics image images shot shots
     prompt prompts card cards answer answers profile bio caption
-""".split())
+""".split()
+)
 
 # Tokenizer for the redundancy monitor: letters and digits only, so possessives and
 # contractions split ("husky's" -> "husky", "s") and the leftover fragment is dropped by the
@@ -2016,8 +2179,11 @@ def _redundancy_content_words(text: str) -> list[str]:
     """Lowercase content words of ``text`` in order of appearance, punctuation stripped and
     stopwords/short fragments dropped. Shared by both sides of the comparison in
     _redundant_description_markers so the two strings are always normalized identically."""
-    return [word for word in _REDUNDANCY_WORD_RE.findall(str(text).lower())
-            if len(word) >= _REDUNDANCY_MIN_WORD_LEN and word not in _REDUNDANCY_STOPWORDS]
+    return [
+        word
+        for word in _REDUNDANCY_WORD_RE.findall(str(text).lower())
+        if len(word) >= _REDUNDANCY_MIN_WORD_LEN and word not in _REDUNDANCY_STOPWORDS
+    ]
 
 
 def _redundant_description_markers(opener: str, referenced: str) -> list[str]:
@@ -2183,15 +2349,19 @@ def prompt_stamp(style: str) -> str:
     hashlib call rather than ranker.retractions.canonical_sha, which would add an
     opener->ranker package edge for one line of hashing.
     """
-    payload = "\x00".join((
-        str(style),
-        _SYSTEM,
-        json.dumps(_SCHEMA, sort_keys=True, separators=(",", ":"), ensure_ascii=True),
-        _ITEM_PREAMBLE,
-        _ITEM_PREAMBLE_CONTEXT,
-        _ITEM_LABEL,
-        _CONTEXT_LABEL,
-    ))
+    payload = "\x00".join(
+        (
+            str(style),
+            _SYSTEM,
+            json.dumps(
+                _SCHEMA, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+            ),
+            _ITEM_PREAMBLE,
+            _ITEM_PREAMBLE_CONTEXT,
+            _ITEM_LABEL,
+            _CONTEXT_LABEL,
+        )
+    )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
@@ -2206,10 +2376,14 @@ def _sentence_count(text: str) -> int:
     if not cleaned:
         return 0
     protected = _COMMON_ABBREVIATION_RE.sub(
-        lambda match: match.group(0).replace(".", "\u2024"), cleaned)
-    protected = re.sub(r"\b(?:e\.g|i\.e)\.",
-                       lambda match: match.group(0).replace(".", "\u2024"),
-                       protected, flags=re.IGNORECASE)
+        lambda match: match.group(0).replace(".", "\u2024"), cleaned
+    )
+    protected = re.sub(
+        r"\b(?:e\.g|i\.e)\.",
+        lambda match: match.group(0).replace(".", "\u2024"),
+        protected,
+        flags=re.IGNORECASE,
+    )
     endings = _SENTENCE_END_RE.findall(protected)
     return max(1, len(endings))
 
@@ -2338,15 +2512,17 @@ REASON_OPENER_ERROR = "opener_error"
 REASON_BAD_REQUEST = "bad_request"
 REASON_TRANSIENT_ERROR = "transient_error"
 
-_BLOCK_FINISH_REASONS = frozenset({
-    "SAFETY",
-    "RECITATION",
-    "BLOCKLIST",
-    "PROHIBITED_CONTENT",
-    "SPII",
-    "IMAGE_SAFETY",
-    "IMAGE_PROHIBITED_CONTENT",
-})
+_BLOCK_FINISH_REASONS = frozenset(
+    {
+        "SAFETY",
+        "RECITATION",
+        "BLOCKLIST",
+        "PROHIBITED_CONTENT",
+        "SPII",
+        "IMAGE_SAFETY",
+        "IMAGE_PROHIBITED_CONTENT",
+    }
+)
 
 
 class OpenerParseError(OpenerError):
@@ -2379,8 +2555,15 @@ class OpenerParseError(OpenerError):
     Defaults to None so existing raisers/tests that don't pass it keep working unchanged.
     """
 
-    def __init__(self, message: str, usage: Usage, model: str, *,
-                 reason_code: str | None = None, raw_opener: str | None = None):
+    def __init__(
+        self,
+        message: str,
+        usage: Usage,
+        model: str,
+        *,
+        reason_code: str | None = None,
+        raw_opener: str | None = None,
+    ):
         super().__init__(message)
         self.usage = usage
         self.model = model
@@ -2428,11 +2611,17 @@ class OpenerClient(Protocol):
     passing or not accepting it.
     """
 
-    def generate(self, profile: Profile, style: str, retry_hint: str = "", *,
-                 items: "ItemRequest | None" = None,
-                 should_stop: Callable[[], bool] | None = None,
-                 skip_models: frozenset[str] = frozenset(),
-                 run_id: str = "") -> OpenerResult: ...
+    def generate(
+        self,
+        profile: Profile,
+        style: str,
+        retry_hint: str = "",
+        *,
+        items: "ItemRequest | None" = None,
+        should_stop: Callable[[], bool] | None = None,
+        skip_models: frozenset[str] = frozenset(),
+        run_id: str = "",
+    ) -> OpenerResult: ...
 
 
 class GeminiAPIError(RuntimeError):
@@ -2450,8 +2639,15 @@ class GeminiAPIError(RuntimeError):
     actual per-day exhaustion instead of treating every 429 identically.
     """
 
-    def __init__(self, http_code: int, status: str | None, message: str, *,
-                 quota_id: str | None = None, quota_metric: str | None = None):
+    def __init__(
+        self,
+        http_code: int,
+        status: str | None,
+        message: str,
+        *,
+        quota_id: str | None = None,
+        quota_metric: str | None = None,
+    ):
         self.http_code = int(http_code)
         self.status = status or ""
         self.message = message
@@ -2557,9 +2753,15 @@ def _classify_quota_exhaustion(error: GeminiAPIError) -> str:
 # included, plus the generic "thinking config"/"thinkingConfig" phrasing in case a future
 # model family's rejection message names the object rather than the field it holds.
 _THINKING_REJECTION_TOKENS = (
-    "thinking level", "thinkinglevel", "thinking_level",
-    "thinkingbudget", "thinking budget", "thinking_budget",
-    "thinkingconfig", "thinking config", "thinking_config",
+    "thinking level",
+    "thinkinglevel",
+    "thinking_level",
+    "thinkingbudget",
+    "thinking budget",
+    "thinking_budget",
+    "thinkingconfig",
+    "thinking config",
+    "thinking_config",
 )
 
 
@@ -2579,10 +2781,15 @@ def _is_thinking_config_rejection(message: str) -> bool:
     return any(token in lowered for token in _THINKING_REJECTION_TOKENS)
 
 
-_QUOTA_SCOPE_LABELS = {"day": "per-day quota", "minute": "per-minute throttle",
-                       "unknown": "unclassified 429", "gone": "model unavailable",
-                       "busy": "provider 5xx", "transport": "network or timeout",
-                       "thinking": "thinking config rejected by model"}
+_QUOTA_SCOPE_LABELS = {
+    "day": "per-day quota",
+    "minute": "per-minute throttle",
+    "unknown": "unclassified 429",
+    "gone": "model unavailable",
+    "busy": "provider 5xx",
+    "transport": "network or timeout",
+    "thinking": "thinking config rejected by model",
+}
 
 # Scopes that clear on their own without any operator action. "busy" is a provider-side 5xx
 # (503 UNAVAILABLE "this model is currently experiencing high demand" is the common one, and
@@ -2607,10 +2814,14 @@ _TRANSIENT_SCOPES = frozenset({"minute", "unknown", "busy", "transport"})
 # _UNKNOWN_PERMANENT_REMEDY for why the fallback still refuses to promise that waiting helps.
 _PERMANENT_SCOPE_REMEDIES = {
     "day": "stays exhausted until the free-tier daily quota resets at midnight Pacific",
-    "gone": ("will not come back mid-run -- fix opener.models to name model ids this account "
-             "can actually use"),
-    "thinking": ("will not start accepting its configured thinking level or budget mid-run -- "
-                 "fix opener.thinking for that model id"),
+    "gone": (
+        "will not come back mid-run -- fix opener.models to name model ids this account "
+        "can actually use"
+    ),
+    "thinking": (
+        "will not start accepting its configured thinking level or budget mid-run -- "
+        "fix opener.thinking for that model id"
+    ),
 }
 # Fallback for a scope that is neither transient nor in the table above. Unreachable today
 # (generate() writes only the seven scopes _QUOTA_SCOPE_LABELS names), and deliberately
@@ -2643,7 +2854,8 @@ _UNKNOWN_PERMANENT_REMEDY = "will not clear on its own"
 # is not worth re-introducing it. "not merely after waiting" carries the same distinction.
 _TRANSPORT_MAY_BE_LOCAL = (
     "may be LOCAL to this host rather than the provider -- restarting helps only once the "
-    "connection itself is back, not merely after waiting")
+    "connection itself is back, not merely after waiting"
+)
 
 
 def _scope_listing(scopes: Mapping[str, str], models: list[str]) -> str:
@@ -2654,8 +2866,10 @@ def _scope_listing(scopes: Mapping[str, str], models: list[str]) -> str:
     splits them into what a restart can fix and what it cannot, and two spellings of one
     scope inside a single sentence would read as two different failures.
     """
-    return ", ".join(f"{model} ({_QUOTA_SCOPE_LABELS.get(scopes[model], scopes[model])})"
-                     for model in models)
+    return ", ".join(
+        f"{model} ({_QUOTA_SCOPE_LABELS.get(scopes[model], scopes[model])})"
+        for model in models
+    )
 
 
 def _permanent_scope_listing(scopes: Mapping[str, str], models: list[str]) -> str:
@@ -2670,7 +2884,8 @@ def _permanent_scope_listing(scopes: Mapping[str, str], models: list[str]) -> st
     return "; ".join(
         f"{model} ({_QUOTA_SCOPE_LABELS.get(scopes[model], scopes[model])}) "
         f"{_PERMANENT_SCOPE_REMEDIES.get(scopes[model], _UNKNOWN_PERMANENT_REMEDY)}"
-        for model in models)
+        for model in models
+    )
 
 
 def _exhaustion_reason(scopes: Mapping[str, str]) -> str:
@@ -2723,19 +2938,25 @@ def _exhaustion_reason(scopes: Mapping[str, str]) -> str:
     OpenerService), because sending a bare like with no opener is a worse outcome than
     halting; only the guidance differs.
     """
-    if not scopes:                      # unreachable today (__init__ requires >=1 model)
+    if not scopes:  # unreachable today (__init__ requires >=1 model)
         return "no configured Gemini model was available to serve the request"
-    listed = ", ".join(f"{model} ({_QUOTA_SCOPE_LABELS.get(scope, scope)})"
-                       for model, scope in scopes.items())
+    listed = ", ".join(
+        f"{model} ({_QUOTA_SCOPE_LABELS.get(scope, scope)})"
+        for model, scope in scopes.items()
+    )
     if all(scope == "day" for scope in scopes.values()):
-        return (f"every configured Gemini model has exhausted its per-day free-tier quota "
-                f"({', '.join(scopes)}); free-tier daily quota resets at midnight Pacific")
+        return (
+            f"every configured Gemini model has exhausted its per-day free-tier quota "
+            f"({', '.join(scopes)}); free-tier daily quota resets at midnight Pacific"
+        )
     if all(scope == "gone" for scope in scopes.values()):
         # Distinct from the per-day case on purpose: mentioning a reset time here would
         # imply waiting helps, and it never does for a retired model id.
-        return (f"every configured Gemini model is unavailable to this account (retired or "
-                f"not found: {', '.join(scopes)}); this will not resolve on its own -- fix "
-                "opener.models to name model ids this account can actually use")
+        return (
+            f"every configured Gemini model is unavailable to this account (retired or "
+            f"not found: {', '.join(scopes)}); this will not resolve on its own -- fix "
+            "opener.models to name model ids this account can actually use"
+        )
     if all(scope == "thinking" for scope in scopes.values()):
         # Distinct from "gone" on purpose, in the same direction: mentioning a reset time, or
         # telling the operator to just restart, would be wrong for the identical reason it's
@@ -2744,10 +2965,12 @@ def _exhaustion_reason(scopes: Mapping[str, str]) -> str:
         # gemini-3.7-flash 400s on thinkingLevel: minimal while every OTHER configured model
         # accepts the same value, so the fix is per-model-id thinking config, not the model
         # list.
-        return (f"every configured Gemini model rejected its configured thinking level or "
-                f"budget ({', '.join(scopes)}); this will not resolve on its own -- fix "
-                "opener.thinking for each named model id (it is sending a thinkingLevel or "
-                "thinkingBudget that model does not support)")
+        return (
+            f"every configured Gemini model rejected its configured thinking level or "
+            f"budget ({', '.join(scopes)}); this will not resolve on its own -- fix "
+            "opener.thinking for each named model id (it is sending a thinkingLevel or "
+            "thinkingBudget that model does not support)"
+        )
     if all(scope in _TRANSIENT_SCOPES for scope in scopes.values()):
         # Nothing here is a CONFIRMED dead end: every model was either momentarily throttled,
         # reported a provider-side 5xx, or failed at the transport level. Fixed (2026-09-17):
@@ -2766,26 +2989,34 @@ def _exhaustion_reason(scopes: Mapping[str, str]) -> str:
         # this host, a network or timeout failure may never clear on the provider side at all
         # because it is sitting on this end of the connection.
         if "transport" in scopes.values():
-            return (f"no configured Gemini model could serve the request right now: "
-                    f"{_scope_listing(scopes, list(scopes))}. This includes a network or "
-                    f"timeout failure, which {_TRANSPORT_MAY_BE_LOCAL}")
-        return (f"no configured Gemini model could serve the request right now: "
-                f"{_scope_listing(scopes, list(scopes))}. Every one of these is a transient "
-                "failure (a per-minute cap or a provider side outage), not an exhausted "
-                "daily quota, so simply restarting should succeed")
+            return (
+                f"no configured Gemini model could serve the request right now: "
+                f"{_scope_listing(scopes, list(scopes))}. This includes a network or "
+                f"timeout failure, which {_TRANSPORT_MAY_BE_LOCAL}"
+            )
+        return (
+            f"no configured Gemini model could serve the request right now: "
+            f"{_scope_listing(scopes, list(scopes))}. Every one of these is a transient "
+            "failure (a per-minute cap or a provider side outage), not an exhausted "
+            "daily quota, so simply restarting should succeed"
+        )
     # The fall-through: a NON-UNIFORM mix. Everything above returned on a uniform scope set,
     # so by construction at least one model here is permanent (a uniform transient set was
     # already answered by the branch directly above) and the split below can never produce an
     # empty permanent half.
     transient = [model for model, scope in scopes.items() if scope in _TRANSIENT_SCOPES]
-    permanent = [model for model, scope in scopes.items() if scope not in _TRANSIENT_SCOPES]
+    permanent = [
+        model for model, scope in scopes.items() if scope not in _TRANSIENT_SCOPES
+    ]
     if not transient:
         # day+gone, day+thinking, gone+thinking and their supersets: a mix, but not one
         # containing a single cause that clears itself. Naming a restart here would be the
         # same error the "gone" branch above refuses to make, one branch further down.
-        return ("no configured Gemini model could serve the request, and not one of these "
-                f"causes clears on its own: {_permanent_scope_listing(scopes, permanent)}. "
-                "Restarting in a minute fixes none of them")
+        return (
+            "no configured Gemini model could serve the request, and not one of these "
+            f"causes clears on its own: {_permanent_scope_listing(scopes, permanent)}. "
+            "Restarting in a minute fixes none of them"
+        )
     # At least one genuinely transient member, so the old sentence's ADVICE was right here --
     # but it is stated about the models it actually applies to, and labelled from
     # _QUOTA_SCOPE_LABELS, because "per-minute cap" was the wrong label for the "busy"
@@ -2798,13 +3029,18 @@ def _exhaustion_reason(scopes: Mapping[str, str]) -> str:
     # is why the caveat now lives in a single constant both branches read. Note the test is on
     # the TRANSIENT half only -- a permanent scope's remedy is already named per-model by
     # _permanent_scope_listing, and "transport" is never permanent.
-    restart_note = ("so restarting in a minute may well get that part of the cascade serving "
-                    "again")
+    restart_note = (
+        "so restarting in a minute may well get that part of the cascade serving again"
+    )
     if any(scopes[model] == "transport" for model in transient):
-        restart_note = f"though that network or timeout failure {_TRANSPORT_MAY_BE_LOCAL}"
-    return (f"no configured Gemini model could serve the request: {listed}. Of these, only "
-            f"{_scope_listing(scopes, transient)} failed transiently, {restart_note} -- but "
-            f"not the rest: {_permanent_scope_listing(scopes, permanent)}")
+        restart_note = (
+            f"though that network or timeout failure {_TRANSPORT_MAY_BE_LOCAL}"
+        )
+    return (
+        f"no configured Gemini model could serve the request: {listed}. Of these, only "
+        f"{_scope_listing(scopes, transient)} failed transiently, {restart_note} -- but "
+        f"not the rest: {_permanent_scope_listing(scopes, permanent)}"
+    )
 
 
 def _gemini_error(status_code: int, body: Any) -> GeminiAPIError:
@@ -2819,20 +3055,34 @@ def _gemini_error(status_code: int, body: Any) -> GeminiAPIError:
     # ``error.code``.  A proxy or malformed upstream body can disagree with the envelope;
     # allowing that untrusted duplicate to replace the real status could turn a retryable
     # 429/503 into a fatal 400, or (more dangerously) make a fatal 400 look retryable.
-    return GeminiAPIError(status_code, error.get("status"),
-                          str(error.get("message") or "unknown error"),
-                          quota_id=quota_id, quota_metric=quota_metric)
+    return GeminiAPIError(
+        status_code,
+        error.get("status"),
+        str(error.get("message") or "unknown error"),
+        quota_id=quota_id,
+        quota_metric=quota_metric,
+    )
 
 
-def _stdlib_gemini_transport(url: str, payload: dict[str, Any] | None, headers: dict[str, str],
-                             timeout: float, *, method: str = "POST") -> tuple[int, Any]:
+def _stdlib_gemini_transport(
+    url: str,
+    payload: dict[str, Any] | None,
+    headers: dict[str, str],
+    timeout: float,
+    *,
+    method: str = "POST",
+) -> tuple[int, Any]:
     """POST (the default, used by generate()) or GET (used by preflight()'s ListModels
     call) with the standard library; tests replace this whole transport.
 
     A GET must never carry a JSON body -- ListModels takes none, and some HTTP stacks
     reject a body on GET outright -- so ``data`` stays None whenever method isn't POST.
     """
-    data = json.dumps(payload).encode("utf-8") if method == "POST" and payload is not None else None
+    data = (
+        json.dumps(payload).encode("utf-8")
+        if method == "POST" and payload is not None
+        else None
+    )
     request = Request(url, data=data, headers=headers, method=method)
 
     def read_body(response) -> bytes:
@@ -2840,7 +3090,8 @@ def _stdlib_gemini_transport(url: str, payload: dict[str, Any] | None, headers: 
         if len(raw_body) > _MAX_GEMINI_RESPONSE_BYTES:
             raise RuntimeError(
                 "Gemini response exceeded the "
-                f"{_MAX_GEMINI_RESPONSE_BYTES}-byte safety limit")
+                f"{_MAX_GEMINI_RESPONSE_BYTES}-byte safety limit"
+            )
         return raw_body
 
     try:
@@ -2920,18 +3171,27 @@ class GeminiOpener:
     other.
     """
 
-    def __init__(self, models: list[str] | tuple[str, ...], max_tokens: int = 400,
-                 request_timeout_s: float = 30, *, api_key: str | None = None,
-                 env: Mapping[str, str] | None = None,
-                 transport: GeminiTransport | None = None,
-                 thinking: Mapping[str, Mapping[str, Any]] | None = None):
+    def __init__(
+        self,
+        models: list[str] | tuple[str, ...],
+        max_tokens: int = 400,
+        request_timeout_s: float = 30,
+        *,
+        api_key: str | None = None,
+        env: Mapping[str, str] | None = None,
+        transport: GeminiTransport | None = None,
+        thinking: Mapping[str, Mapping[str, Any]] | None = None,
+    ):
         if not isinstance(models, (list, tuple)):
             raise ValueError("GeminiOpener models must be a list or tuple of model ids")
-        if not models or any(not isinstance(model, str) or not model.strip()
-                             or model != model.strip() for model in models):
+        if not models or any(
+            not isinstance(model, str) or not model.strip() or model != model.strip()
+            for model in models
+        ):
             raise ValueError(
                 "GeminiOpener requires at least one configured model; model ids must be "
-                "nonempty strings without surrounding whitespace")
+                "nonempty strings without surrounding whitespace"
+            )
         if len(set(models)) != len(models):
             raise ValueError("GeminiOpener model ids must not contain duplicates")
         if type(max_tokens) is not int or max_tokens <= 0:
@@ -2945,21 +3205,31 @@ class GeminiOpener:
             )
         except (TypeError, ValueError, OverflowError):
             timeout = None
-        if (timeout is None or not math.isfinite(timeout)
-                or not 0 < timeout <= _MAX_REQUEST_TIMEOUT_S):
+        if (
+            timeout is None
+            or not math.isfinite(timeout)
+            or not 0 < timeout <= _MAX_REQUEST_TIMEOUT_S
+        ):
             raise ValueError(
                 "GeminiOpener request_timeout_s must be a finite number in "
-                f"(0, {_MAX_REQUEST_TIMEOUT_S:g}]")
+                f"(0, {_MAX_REQUEST_TIMEOUT_S:g}]"
+            )
 
         self.models = tuple(models)
         environment = os.environ if env is None else env
-        self.api_key = api_key if api_key is not None else environment.get("GEMINI_API_KEY")
+        self.api_key = (
+            api_key if api_key is not None else environment.get("GEMINI_API_KEY")
+        )
         if self.api_key is None:
             raise RuntimeError("GEMINI_API_KEY is not set")
-        if (not isinstance(self.api_key, str) or not self.api_key.strip()
-                or self.api_key != self.api_key.strip()):
+        if (
+            not isinstance(self.api_key, str)
+            or not self.api_key.strip()
+            or self.api_key != self.api_key.strip()
+        ):
             raise RuntimeError(
-                "GEMINI_API_KEY must be a nonempty string without surrounding whitespace")
+                "GEMINI_API_KEY must be a nonempty string without surrounding whitespace"
+            )
         self.max_tokens = max_tokens
         self.request_timeout_s = timeout
         self.transport = transport or _stdlib_gemini_transport
@@ -2969,38 +3239,50 @@ class GeminiOpener:
         if thinking is None:
             resolved_thinking: dict[str, dict[str, Any]] = {}
         elif not isinstance(thinking, Mapping):
-            raise ValueError("GeminiOpener thinking must map model ids to thinkingConfig mappings")
+            raise ValueError(
+                "GeminiOpener thinking must map model ids to thinkingConfig mappings"
+            )
         else:
             resolved_thinking = {}
             extra_models = set(thinking) - set(self.models)
             if extra_models:
                 raise ValueError(
                     "GeminiOpener thinking contains entries for unconfigured model id(s): "
-                    f"{sorted(extra_models, key=repr)}")
+                    f"{sorted(extra_models, key=repr)}"
+                )
             for model, entry in thinking.items():
-                if (not isinstance(model, str) or not model.strip()
-                        or model != model.strip()):
-                    raise ValueError("GeminiOpener thinking keys must be nonempty string model ids")
+                if (
+                    not isinstance(model, str)
+                    or not model.strip()
+                    or model != model.strip()
+                ):
+                    raise ValueError(
+                        "GeminiOpener thinking keys must be nonempty string model ids"
+                    )
                 if not isinstance(entry, Mapping):
                     raise ValueError(
-                        f"GeminiOpener thinking[{model!r}] must be a thinkingConfig mapping")
+                        f"GeminiOpener thinking[{model!r}] must be a thinkingConfig mapping"
+                    )
                 config = dict(entry)
                 unknown = set(config) - _THINKING_KEYS
                 if unknown:
                     raise ValueError(
                         f"GeminiOpener thinking[{model!r}] has unsupported key(s): "
-                        f"{sorted(unknown)}")
+                        f"{sorted(unknown)}"
+                    )
                 level = config.get("thinkingLevel")
                 if "thinkingLevel" in config and level not in _THINKING_LEVELS:
                     raise ValueError(
                         f"GeminiOpener thinking[{model!r}].thinkingLevel must be one of "
-                        f"{sorted(_THINKING_LEVELS)}")
+                        f"{sorted(_THINKING_LEVELS)}"
+                    )
                 if "thinkingBudget" in config:
                     budget = config["thinkingBudget"]
                     if type(budget) is not int or budget < 0:
                         raise ValueError(
                             f"GeminiOpener thinking[{model!r}].thinkingBudget must be a "
-                            "nonnegative integer")
+                            "nonnegative integer"
+                        )
                 resolved_thinking[model] = config
         # Copy both mapping levels so a caller cannot mutate the request shape while another
         # thread is inside generate().
@@ -3041,23 +3323,34 @@ class GeminiOpener:
         if len(images) > _MAX_REQUEST_IMAGES:
             raise OpenerError(
                 f"Gemini opener request has {len(images)} images; refusing more than "
-                f"{_MAX_REQUEST_IMAGES}")
+                f"{_MAX_REQUEST_IMAGES}"
+            )
         if any(not isinstance(image, bytes) for image in images):
             raise OpenerError("Gemini opener request images must be bytes")
         raw_bytes = sum(len(image) for image in images)
         if raw_bytes > _MAX_RAW_IMAGE_BYTES:
             raise OpenerError(
                 f"Gemini opener request has {raw_bytes} raw image bytes; refusing more than "
-                f"{_MAX_RAW_IMAGE_BYTES} before base64 encoding")
-        return [{
-            "inlineData": {
-                "mimeType": _image_media_type(image),
-                "data": base64.standard_b64encode(image).decode("ascii"),
-            },
-        } for image in images]
+                f"{_MAX_RAW_IMAGE_BYTES} before base64 encoding"
+            )
+        return [
+            {
+                "inlineData": {
+                    "mimeType": _image_media_type(image),
+                    "data": base64.standard_b64encode(image).decode("ascii"),
+                },
+            }
+            for image in images
+        ]
 
-    def _text_part(self, profile: Profile, style: str, retry_hint: str = "", *,
-                   items: ItemRequest | None = None) -> dict[str, Any]:
+    def _text_part(
+        self,
+        profile: Profile,
+        style: str,
+        retry_hint: str = "",
+        *,
+        items: ItemRequest | None = None,
+    ) -> dict[str, Any]:
         """Build the one part of the request that varies per attempt (see generate()'s "encode
         once, reuse across the cascade" note -- the image parts never depend on this).
 
@@ -3108,7 +3401,8 @@ class GeminiOpener:
                 # we did not see. Present ONLY when the capture really did hit its ceiling.
                 sentences.append(
                     "Her profile was longer than we could read, so these are only the items "
-                    "we saw. Choose from them anyway.")
+                    "we saw. Choose from them anyway."
+                )
             # Byte-identical to the frame branch's closing instruction on purpose: the field
             # being answered and what it means did not change with the payload, and keeping
             # one wording for it means the two shapes cannot drift into telling the model two
@@ -3118,7 +3412,8 @@ class GeminiOpener:
                 "would feel natural directly under, because it explains why that item was "
                 "liked. The other numbered images are alternatives for selection only: after "
                 "you choose, do not use another item's facts, concepts, wordplay, or payoff. "
-                "Write the opener now.")
+                "Write the opener now."
+            )
             closing = " ".join(sentences)
         elif photo_count > 0:
             # 1-BASED, and every number in this sentence is derived from photo_count rather
@@ -3152,8 +3447,11 @@ class GeminiOpener:
         # to restore what the frames already carried, not to introduce a new move. Telling the
         # model what to do with it here would be a voice change smuggled in as a payload
         # change, and Part A's wording rules are shipped and working (doc sections 2 and 3).
-        name_block = (f"HER NAME:\n{items.name or _NAME_UNAVAILABLE}\n\n"
-                      if items is not None else "")
+        name_block = (
+            f"HER NAME:\n{items.name or _NAME_UNAVAILABLE}\n\n"
+            if items is not None
+            else ""
+        )
         text = (
             f"STYLE GUIDE:\n{style}\n\n"
             f"{name_block}"
@@ -3165,8 +3463,9 @@ class GeminiOpener:
                 "ground the conversational move in the selected numbered item. Other numbered "
                 "items were alternatives for selection only: never take their facts, concepts, "
                 "wordplay, or payoff after choosing."
-                if items is not None else
-                "ground the conversational move in her profile.")
+                if items is not None
+                else "ground the conversational move in her profile."
+            )
             text += (
                 # The two lists below are deliberately kept apart. Everything under HARD
                 # REJECTION is a rule _parse() actually enforces by raising, so it is what a
@@ -3241,8 +3540,12 @@ class GeminiOpener:
         return {"text": text}
 
     @staticmethod
-    def _assemble_parts(image_parts: list[dict[str, Any]], text_part: dict[str, Any], *,
-                        items: ItemRequest | None = None) -> list[dict[str, Any]]:
+    def _assemble_parts(
+        image_parts: list[dict[str, Any]],
+        text_part: dict[str, Any],
+        *,
+        items: ItemRequest | None = None,
+    ) -> list[dict[str, Any]]:
         """Arrange the encoded image parts, the labels (when present), and the text part into
         the final ``contents[0].parts`` list Gemini receives, in the order the model reads them.
 
@@ -3271,7 +3574,8 @@ class GeminiOpener:
                 raise ValueError(
                     f"item-crop request has {items.item_count} numbered item image(s) but "
                     f"{len(image_parts)} encoded image part(s); the labels are positional, so "
-                    "a mismatch would number the wrong crops")
+                    "a mismatch would number the wrong crops"
+                )
             parts: list[dict[str, Any]] = [{"text": _ITEM_PREAMBLE}]
             for position, image_part in enumerate(image_parts):
                 parts.append({"text": items.label_for(position)})
@@ -3280,10 +3584,16 @@ class GeminiOpener:
             return parts
         return [*image_parts, text_part]
 
-    def _payload(self, profile: Profile, style: str, model: str, *,
-                 image_parts: list[dict[str, Any]] | None = None,
-                 retry_hint: str = "",
-                 items: ItemRequest | None = None) -> dict[str, Any]:
+    def _payload(
+        self,
+        profile: Profile,
+        style: str,
+        model: str,
+        *,
+        image_parts: list[dict[str, Any]] | None = None,
+        retry_hint: str = "",
+        items: ItemRequest | None = None,
+    ) -> dict[str, Any]:
         """Build one model's GenerateContent request. ``image_parts`` lets generate() pass in
         already-encoded images (the legacy frame shape's profile photos, or the item-crop
         shape's numbered crops only) so a cascade across N models doesn't
@@ -3311,7 +3621,9 @@ class GeminiOpener:
             resolved_image_parts = self._image_parts(profile.photos)
             resolved_items = None
         text_part = self._text_part(profile, style, retry_hint, items=resolved_items)
-        parts = self._assemble_parts(resolved_image_parts, text_part, items=resolved_items)
+        parts = self._assemble_parts(
+            resolved_image_parts, text_part, items=resolved_items
+        )
         generation_config: dict[str, Any] = {
             "maxOutputTokens": self.max_tokens,
             "responseMimeType": "application/json",
@@ -3351,9 +3663,15 @@ class GeminiOpener:
                 total += len(part["inlineData"]["data"])
         return total
 
-    def _fit_images_to_budget(self, images: list[bytes], image_parts: list[dict[str, Any]],
-                              text_part: dict[str, Any], system_text: str, *,
-                              items: ItemRequest | None = None) -> list[dict[str, Any]]:
+    def _fit_images_to_budget(
+        self,
+        images: list[bytes],
+        image_parts: list[dict[str, Any]],
+        text_part: dict[str, Any],
+        system_text: str,
+        *,
+        items: ItemRequest | None = None,
+    ) -> list[dict[str, Any]]:
         """Guarantee the request fits Gemini's 20MB inline-image cap, compressing only if
         it doesn't.
 
@@ -3381,9 +3699,11 @@ class GeminiOpener:
         if original_size <= _MAX_INLINE_REQUEST_BYTES:
             return image_parts
 
-        from PIL import Image  # lazy: PIL is a project dependency, imported this same lazy
-                                # way in operation_love/vision/quality.py so modules that
-                                # never hit this path don't pay the import cost.
+        from PIL import (
+            Image,
+        )  # lazy: PIL is a project dependency, imported this same lazy
+        # way in operation_love/vision/quality.py so modules that
+        # never hit this path don't pay the import cost.
 
         # Step 1 is quality-85 JPEG recompression with no resize -- often enough on its own
         # for PNG phone screenshots, which carry a lot of lossless overhead. If that's still
@@ -3399,7 +3719,10 @@ class GeminiOpener:
                     if max_side is not None and max(img.size) > max_side:
                         scale = max_side / max(img.size)
                         img = img.resize(
-                            (max(1, round(img.width * scale)), max(1, round(img.height * scale))),
+                            (
+                                max(1, round(img.width * scale)),
+                                max(1, round(img.height * scale)),
+                            ),
                             Image.LANCZOS,
                         )
                     buf = io.BytesIO()
@@ -3432,20 +3755,28 @@ class GeminiOpener:
                     raise OpenerError(
                         f"Gemini opener: {label} ({len(image)} bytes) could not be "
                         f"decoded/recompressed while fitting the request to the inline size "
-                        f"budget: {type(exc).__name__}: {exc}") from exc
+                        f"budget: {type(exc).__name__}: {exc}"
+                    ) from exc
                 recompressed.append(buf.getvalue())
-            fitted_parts = [{
-                "inlineData": {
-                    "mimeType": "image/jpeg",
-                    "data": base64.standard_b64encode(image).decode("ascii"),
-                },
-            } for image in recompressed]
-            fitted_assembled = self._assemble_parts(fitted_parts, text_part, items=items)
+            fitted_parts = [
+                {
+                    "inlineData": {
+                        "mimeType": "image/jpeg",
+                        "data": base64.standard_b64encode(image).decode("ascii"),
+                    },
+                }
+                for image in recompressed
+            ]
+            fitted_assembled = self._assemble_parts(
+                fitted_parts, text_part, items=items
+            )
             new_size = self._request_size_bytes(fitted_assembled, system_text)
             if new_size <= _MAX_INLINE_REQUEST_BYTES:
-                print(f"Gemini opener: compressed {len(images)} image(s) to fit the "
-                      f"inline request budget ({original_size} -> {new_size} bytes, cap "
-                      f"{_MAX_INLINE_REQUEST_BYTES}).")
+                print(
+                    f"Gemini opener: compressed {len(images)} image(s) to fit the "
+                    f"inline request budget ({original_size} -> {new_size} bytes, cap "
+                    f"{_MAX_INLINE_REQUEST_BYTES})."
+                )
                 return fitted_parts
         # BUG 4 (adversarial audit): this used to always say "reduce photo count or
         # resolution", blaming the photos unconditionally -- but the text part (style guide +
@@ -3476,7 +3807,8 @@ class GeminiOpener:
             f"including any retry hint), over the "
             f"{_MAX_INLINE_REQUEST_BYTES} byte budget; refusing to silently drop images. "
             "Reduce image count or resolution upstream if images dominate the total, or "
-            "shorten the profile text/retry hint if text does.")
+            "shorten the profile text/retry hint if text does."
+        )
 
     @staticmethod
     def _usage(response: Mapping[str, Any]) -> Usage:
@@ -3487,12 +3819,14 @@ class GeminiOpener:
         # Convert REST's camelCase field names to the provider-neutral normalizer.
         # In particular, cached content is a subset of prompt tokens, so the normalizer
         # prevents charging that same token count at both input and cache-read rates.
-        return Usage.from_gemini(SimpleNamespace(
-            prompt_token_count=metadata.get("promptTokenCount", 0),
-            candidates_token_count=metadata.get("candidatesTokenCount", 0),
-            thoughts_token_count=metadata.get("thoughtsTokenCount", 0),
-            cached_content_token_count=metadata.get("cachedContentTokenCount", 0),
-        ))
+        return Usage.from_gemini(
+            SimpleNamespace(
+                prompt_token_count=metadata.get("promptTokenCount", 0),
+                candidates_token_count=metadata.get("candidatesTokenCount", 0),
+                thoughts_token_count=metadata.get("thoughtsTokenCount", 0),
+                cached_content_token_count=metadata.get("cachedContentTokenCount", 0),
+            )
+        )
 
     @staticmethod
     def _text(response: Mapping[str, Any]) -> str | None:
@@ -3519,7 +3853,9 @@ class GeminiOpener:
         if not isinstance(candidates, list):
             return None
         for candidate in candidates:
-            if isinstance(candidate, Mapping) and isinstance(candidate.get("finishReason"), str):
+            if isinstance(candidate, Mapping) and isinstance(
+                candidate.get("finishReason"), str
+            ):
                 return candidate["finishReason"]
         return None
 
@@ -3529,7 +3865,11 @@ class GeminiOpener:
         if not isinstance(feedback, Mapping):
             return None
         reason = feedback.get("blockReason")
-        if not isinstance(reason, str) or not reason or reason == "BLOCK_REASON_UNSPECIFIED":
+        if (
+            not isinstance(reason, str)
+            or not reason
+            or reason == "BLOCK_REASON_UNSPECIFIED"
+        ):
             return None
         return reason
 
@@ -3543,8 +3883,14 @@ class GeminiOpener:
         except (TypeError, ValueError):
             return 0
 
-    def _parse(self, response: Mapping[str, Any], requested_model: str, *,
-               index_space: str, numbered_item_count: int) -> OpenerResult:
+    def _parse(
+        self,
+        response: Mapping[str, Any],
+        requested_model: str,
+        *,
+        index_space: str,
+        numbered_item_count: int,
+    ) -> OpenerResult:
         """Turn one billed provider response into an OpenerResult, or raise OpenerParseError.
 
         ``index_space`` and ``numbered_item_count`` describe the request this response is an
@@ -3573,7 +3919,10 @@ class GeminiOpener:
                 raise OpenerParseError(
                     "Gemini blocked the opener prompt before generating content "
                     f"(promptFeedback.blockReason={prompt_block_reason})",
-                    usage, model, reason_code=REASON_PROMPT_BLOCKED)
+                    usage,
+                    model,
+                    reason_code=REASON_PROMPT_BLOCKED,
+                )
             if finish_reason == "MAX_TOKENS":
                 # Thinking counts against maxOutputTokens for every model we use (all but
                 # gemini-2.5-flash-lite default it on). When thoughts + candidates exceed
@@ -3586,13 +3935,23 @@ class GeminiOpener:
                     f"(finishReason=MAX_TOKENS): thinking alone used {thoughts} of "
                     f"{self.max_tokens} configured max_tokens, leaving no room for the opener "
                     f"JSON. Raise opener.max_tokens, or lower {model!r}'s opener.thinking level.",
-                    usage, model, reason_code=REASON_MAX_TOKENS)
+                    usage,
+                    model,
+                    reason_code=REASON_MAX_TOKENS,
+                )
             if finish_reason in _BLOCK_FINISH_REASONS:
                 raise OpenerParseError(
                     f"Gemini withheld the generated opener (finishReason={finish_reason})",
-                    usage, model, reason_code=REASON_RESPONSE_BLOCKED)
-            raise OpenerParseError(f"Gemini returned no text content (finishReason={finish_reason!r})",
-                                   usage, model, reason_code=REASON_NO_TEXT)
+                    usage,
+                    model,
+                    reason_code=REASON_RESPONSE_BLOCKED,
+                )
+            raise OpenerParseError(
+                f"Gemini returned no text content (finishReason={finish_reason!r})",
+                usage,
+                model,
+                reason_code=REASON_NO_TEXT,
+            )
         try:
             data = json.loads(text)
         except json.JSONDecodeError as exc:
@@ -3603,12 +3962,21 @@ class GeminiOpener:
             # None, unlike no_text/max_tokens where there is no text of any kind.
             raise OpenerParseError(
                 f"Gemini's opener output wasn't valid JSON (finishReason={finish_reason!r}): {exc}",
-                usage, model, reason_code=REASON_BAD_JSON, raw_opener=text) from exc
+                usage,
+                model,
+                reason_code=REASON_BAD_JSON,
+                raw_opener=text,
+            ) from exc
         try:
             opener = data["opener"]
         except (KeyError, TypeError) as exc:
-            raise OpenerParseError(f"{type(exc).__name__}: {exc}", usage, model,
-                                   reason_code=REASON_MISSING_FIELD, raw_opener=text) from exc
+            raise OpenerParseError(
+                f"{type(exc).__name__}: {exc}",
+                usage,
+                model,
+                reason_code=REASON_MISSING_FIELD,
+                raw_opener=text,
+            ) from exc
         # _SCHEMA's "required": ["opener", ...] is a generation HINT sent to the model, not a
         # runtime guarantee the API enforces on the response -- Gemini can (and, per an
         # adversarial audit of this project, DOES in practice) still return {"opener": null}
@@ -3626,7 +3994,11 @@ class GeminiOpener:
             raise OpenerParseError(
                 f"Gemini's opener field was not a string: received {type(opener).__name__} "
                 f"{_truncated_repr(opener)}",
-                usage, model, reason_code=REASON_NOT_A_STRING, raw_opener=_truncated_repr(opener))
+                usage,
+                model,
+                reason_code=REASON_NOT_A_STRING,
+                raw_opener=_truncated_repr(opener),
+            )
         # WHICH ITEM THE MODEL PICKED (ops/OPENER-REDESIGN.md 5.1/5.7). Read exactly as
         # defensively as the old referenced_index was, and clamped the same way -- but the
         # clamp floor now MEANS something: item numbering starts at FIRST_ITEM_INDEX, so
@@ -3635,7 +4007,11 @@ class GeminiOpener:
         # Under the old 0-based contract that same coercion silently produced a confident,
         # perfectly legal "index 0", which is exactly the failure this constant exists to make
         # impossible to mistake.
-        raw_item_index = data.get("item_index", ITEM_INDEX_ABSENT) if isinstance(data, Mapping) else None
+        raw_item_index = (
+            data.get("item_index", ITEM_INDEX_ABSENT)
+            if isinstance(data, Mapping)
+            else None
+        )
         # ONLY A VALUE THAT UNAMBIGUOUSLY NAMES AN ITEM IS ACCEPTED. `int()` is happy to turn
         # things into a plausible item number that never meant one, and under 1-based numbering
         # a plausible number is worse than a rejected one because it names a REAL card:
@@ -3653,7 +4029,8 @@ class GeminiOpener:
         # closing under this one: the whole point of ITEM_INDEX_ABSENT is that a value we cannot
         # trust must not come out looking like a value we can.
         if isinstance(raw_item_index, bool) or (
-                isinstance(raw_item_index, float) and not raw_item_index.is_integer()):
+            isinstance(raw_item_index, float) and not raw_item_index.is_integer()
+        ):
             item_index = ITEM_INDEX_ABSENT
         else:
             try:
@@ -3677,23 +4054,30 @@ class GeminiOpener:
         # second failure mode. The print is what makes it visible; the ABSENT contract is what
         # makes it safe.
         if item_index > numbered_item_count:
-            print(f"Gemini opener: the model returned item_index={item_index} but only "
-                  f"{numbered_item_count} numbered item(s) were sent in the "
-                  f"{index_space} space, so it names an item that does not exist. Refusing "
-                  f"it: recorded as ITEM_INDEX_ABSENT ({ITEM_INDEX_ABSENT}), which means no "
-                  "item was chosen and nothing may be targeted from it. The opener text "
-                  "itself is unaffected.")
+            print(
+                f"Gemini opener: the model returned item_index={item_index} but only "
+                f"{numbered_item_count} numbered item(s) were sent in the "
+                f"{index_space} space, so it names an item that does not exist. Refusing "
+                f"it: recorded as ITEM_INDEX_ABSENT ({ITEM_INDEX_ABSENT}), which means no "
+                "item was chosen and nothing may be targeted from it. The opener text "
+                "itself is unaffected."
+            )
             item_index = ITEM_INDEX_ABSENT
-        elif item_index == ITEM_INDEX_ABSENT and raw_item_index not in (None, ITEM_INDEX_ABSENT):
+        elif item_index == ITEM_INDEX_ABSENT and raw_item_index not in (
+            None,
+            ITEM_INDEX_ABSENT,
+        ):
             # The coercion above already did the right thing; this only says so out loud, for
             # anything that HAD a value and lost it: a negative, a non-integral float, a
             # boolean, a list, an unparseable string. A missing field and a literal 0 are
             # excluded because they are not slips -- 0 is what the prompt itself asks for when
             # the model cannot pick, and a line for it would fire on every honest refusal.
-            print(f"Gemini opener: the model's item_index was not a usable item number "
-                  f"({_truncated_repr(raw_item_index)}); recorded as ITEM_INDEX_ABSENT "
-                  f"({ITEM_INDEX_ABSENT}), so nothing may be targeted from it. The opener "
-                  "text itself is unaffected.")
+            print(
+                f"Gemini opener: the model's item_index was not a usable item number "
+                f"({_truncated_repr(raw_item_index)}); recorded as ITEM_INDEX_ABSENT "
+                f"({ITEM_INDEX_ABSENT}), so nothing may be targeted from it. The opener "
+                "text itself is unaffected."
+            )
         # `angle` is read exactly as defensively as item_index above, and for the same
         # reason: _SCHEMA's "required" list is a generation HINT, not something the API
         # enforces on the response (the isinstance check on `opener` above is the same lesson,
@@ -3730,7 +4114,11 @@ class GeminiOpener:
             raise OpenerParseError(
                 f"Gemini's opener field was empty or whitespace only after sanitizing "
                 f"(received {_truncated_repr(opener)})",
-                usage, model, reason_code=REASON_EMPTY_AFTER_SANITIZE, raw_opener=sanitized)
+                usage,
+                model,
+                reason_code=REASON_EMPTY_AFTER_SANITIZE,
+                raw_opener=sanitized,
+            )
         # WYSIWYG guard: _sanitize already folded everything fold_to_ascii knows how to fold
         # (accents, curly quotes, dashes, ligatures, ...), so anything undeliverable_chars
         # still finds here is something no ASCII substitute exists for -- almost always an
@@ -3751,7 +4139,11 @@ class GeminiOpener:
             raise OpenerParseError(
                 f"Gemini's opener contains characters the phone keyboard cannot type: "
                 f"{names}. Rewrite it using plain ASCII letters only.",
-                usage, model, reason_code=REASON_UNDELIVERABLE_CHARS, raw_opener=sanitized)
+                usage,
+                model,
+                reason_code=REASON_UNDELIVERABLE_CHARS,
+                raw_opener=sanitized,
+            )
         # Second WYSIWYG guard, same rationale as the one directly above, for the one
         # collision undeliverable_chars structurally cannot see: a literal '%' immediately
         # followed by a lowercase 's' is a two-character SEQUENCE that eats itself in adb's
@@ -3772,12 +4164,20 @@ class GeminiOpener:
                 f"literal '%' directly against a following lowercase 's' cannot be typed. "
                 f"Reword that spot (e.g. spell out '50 percent' there, or rephrase so the "
                 f"'%' isn't immediately followed by 's').",
-                usage, model, reason_code=REASON_UNDELIVERABLE_SEQUENCE, raw_opener=sanitized)
+                usage,
+                model,
+                reason_code=REASON_UNDELIVERABLE_SEQUENCE,
+                raw_opener=sanitized,
+            )
         if _sentence_count(sanitized) > 2:
             # raw_opener=sanitized: _sentence_count() is likewise called on `sanitized`.
-            raise OpenerParseError("Gemini returned an opener longer than the two-sentence maximum",
-                                   usage, model, reason_code=REASON_TOO_MANY_SENTENCES,
-                                   raw_opener=sanitized)
+            raise OpenerParseError(
+                "Gemini returned an opener longer than the two-sentence maximum",
+                usage,
+                model,
+                reason_code=REASON_TOO_MANY_SENTENCES,
+                raw_opener=sanitized,
+            )
         # Deterministic (no second LLM call) guard against scaffolding/preamble text that
         # leaked INSIDE the opener string -- the JSON schema stops free text OUTSIDE the
         # field, but not a meta-clause like "Here's the response: ..." inside it. Named
@@ -3791,7 +4191,11 @@ class GeminiOpener:
                 f"(matched: {'; '.join(markers)}). Return ONLY the message itself in the "
                 f"opener field, with no preamble, no label, and no surrounding quotes "
                 f"(received {_truncated_repr(opener)})",
-                usage, model, reason_code=REASON_SCAFFOLDING, raw_opener=sanitized)
+                usage,
+                model,
+                reason_code=REASON_SCAFFOLDING,
+                raw_opener=sanitized,
+            )
         # Positive-social-framing backstop. The prompt carries the semantic rule; this guard
         # catches only unmistakable opening disclaimers that name a negative interpretation and
         # deny it before getting to the substance. Regeneration removes the unwanted frame rather
@@ -3803,8 +4207,11 @@ class GeminiOpener:
                 f"({'; '.join(disclaimer_markers)}). State the intended positive observation, "
                 "question, or invitation directly. Remove the opening disclaimer and make the "
                 "substantive thought stand on its own.",
-                usage, model, reason_code=REASON_PREEMPTIVE_DISCLAIMER,
-                raw_opener=sanitized)
+                usage,
+                model,
+                reason_code=REASON_PREEMPTIVE_DISCLAIMER,
+                raw_opener=sanitized,
+            )
         # High-precision backstop for the role-audition failure that produced "I will make
         # sure our first spot ..." on a real profile. The prompt owns the broad distinction
         # between a direct proposal and assumed reciprocity; this guard rejects only the
@@ -3817,8 +4224,11 @@ class GeminiOpener:
                 "for a role in her profile or promise what the sender will do for her. A "
                 "direct invitation may propose a get-together, but must leave her acceptance "
                 "open and must not call it an existing shared plan.",
-                usage, model, reason_code=REASON_PREMATURE_SHARED_FUTURE,
-                raw_opener=sanitized)
+                usage,
+                model,
+                reason_code=REASON_PREMATURE_SHARED_FUTURE,
+                raw_opener=sanitized,
+            )
         # The general confirmation boundary is semantic and remains in the multimodal prompt.
         # This narrow case-aware backstop covers the location shape that has now recurred in
         # live Training: an explicit proper-name visual guess followed by a new conversational
@@ -3832,8 +4242,11 @@ class GeminiOpener:
                 "place unconfirmed until she replies. End after the guess, or ask only whether "
                 "the location itself is right; do not ask what she did, felt, preferred, or "
                 "experienced there.",
-                usage, model, reason_code=REASON_UNCONFIRMED_LOCATION_FOLLOWUP,
-                raw_opener=sanitized)
+                usage,
+                model,
+                reason_code=REASON_UNCONFIRMED_LOCATION_FOLLOWUP,
+                raw_opener=sanitized,
+            )
         # Safety backstop for a harmful, unsupported inference such as asking someone at a
         # bridge whether she "worked up the courage to jump". The model prompt already bars
         # this class of angle; this deterministic check makes a prompt miss retryable instead
@@ -3847,7 +4260,11 @@ class GeminiOpener:
                 f"activity ({'; '.join(sensitive_markers)}). Do not speculate about jumping, "
                 "courage around danger, self harm, or suicide from a scene. Use a different, "
                 "grounded angle.",
-                usage, model, reason_code=REASON_SENSITIVE_INFERENCE, raw_opener=sanitized)
+                usage,
+                model,
+                reason_code=REASON_SENSITIVE_INFERENCE,
+                raw_opener=sanitized,
+            )
         # `or ""` for the same reason as `angle` and `item_description` above: _SCHEMA's
         # "required" list is a generation hint the API does not enforce, and Gemini does return
         # nulls for these fields in practice. Without it a null degrades to the literal string
@@ -3871,15 +4288,19 @@ class GeminiOpener:
         try:
             redundancy_markers = _redundant_description_markers(sanitized, referenced)
         except Exception as exc:  # noqa: BLE001 -- see the paragraph above.
-            print(f"Gemini opener: redundancy monitor failed with "
-                  f"{type(exc).__name__}: {exc}; the opener itself is unaffected (this check "
-                  "never rejects). This is a bug in _redundant_description_markers.")
+            print(
+                f"Gemini opener: redundancy monitor failed with "
+                f"{type(exc).__name__}: {exc}; the opener itself is unaffected (this check "
+                "never rejects). This is a bug in _redundant_description_markers."
+            )
             redundancy_markers = []
         if redundancy_markers:
-            print(f"Gemini opener: redundancy monitor: this opener restates "
-                  f"{len(redundancy_markers)} word(s) from its own `referenced` note "
-                  f"({'; '.join(redundancy_markers)}). Logged for offline calibration only; "
-                  "delivery has not been decided at this parsing stage.")
+            print(
+                f"Gemini opener: redundancy monitor: this opener restates "
+                f"{len(redundancy_markers)} word(s) from its own `referenced` note "
+                f"({'; '.join(redundancy_markers)}). Logged for offline calibration only; "
+                "delivery has not been decided at this parsing stage."
+            )
         return OpenerResult(
             opener=sanitized,
             referenced=referenced,
@@ -3895,11 +4316,17 @@ class GeminiOpener:
             redundancy_markers=redundancy_markers,
         )
 
-    def generate(self, profile: Profile, style: str, retry_hint: str = "", *,
-                 items: ItemRequest | None = None,
-                 should_stop: Callable[[], bool] | None = None,
-                 skip_models: frozenset[str] = frozenset(),
-                 run_id: str = "") -> OpenerResult:
+    def generate(
+        self,
+        profile: Profile,
+        style: str,
+        retry_hint: str = "",
+        *,
+        items: ItemRequest | None = None,
+        should_stop: Callable[[], bool] | None = None,
+        skip_models: frozenset[str] = frozenset(),
+        run_id: str = "",
+    ) -> OpenerResult:
         """Generate one opener for a profile, cascading across configured models on transient
         failures (see the cascade's comments below for what each failure mode does).
 
@@ -4027,7 +4454,8 @@ class GeminiOpener:
                 # post-preparation per-model stop check gets a chance to run.
                 raise OpenerAborted(
                     "Opener cascade aborted before preparing images: the run is stopping "
-                    "(should_stop signaled), not a provider failure")
+                    "(should_stop signaled), not a provider failure"
+                )
             # Encode once, reuse across every model tried in this call's cascade -- base64 and
             # (when a profile needs it) recompression are the expensive parts of building a
             # request, and neither depends on which model ends up serving it (nor on
@@ -4053,24 +4481,32 @@ class GeminiOpener:
             # Both travel to _parse, which needs the count for its range check and the space for
             # the result it returns.
             #
-            index_space = (INDEX_SPACE_MODEL_ITEMS if items is not None
-                           else INDEX_SPACE_PROFILE_PHOTOS)
-            numbered_item_count = (items.item_count if items is not None
-                                   else len(profile.photos))
+            index_space = (
+                INDEX_SPACE_MODEL_ITEMS
+                if items is not None
+                else INDEX_SPACE_PROFILE_PHOTOS
+            )
+            numbered_item_count = (
+                items.item_count if items is not None else len(profile.photos)
+            )
             image_parts = self._image_parts(images)
             text_part = self._text_part(profile, style, retry_hint, items=items)
             system_text = _SYSTEM
-            image_parts = self._fit_images_to_budget(images, image_parts, text_part, system_text,
-                                                      items=items)
+            image_parts = self._fit_images_to_budget(
+                images, image_parts, text_part, system_text, items=items
+            )
+
             def announce_safety_valve(trigger: str) -> None:
                 # ONE message for BOTH valve sites (entry-time below, point-of-use in the loop),
                 # so the log reads identically however the valve engages and `trigger` is the
                 # only part that says which. The operator reading this needs to know that a
                 # model is about to be re-asked despite the caller having asked to avoid it.
-                print("Gemini opener: the skip set would leave this call nothing to try "
-                      f"({trigger}) -- ignoring it and re-asking an already-failed model "
-                      "instead of reporting every configured model exhausted. Models retired "
-                      "earlier in this run stay retired.")
+                print(
+                    "Gemini opener: the skip set would leave this call nothing to try "
+                    f"({trigger}) -- ignoring it and re-asking an already-failed model "
+                    "instead of reporting every configured model exhausted. Models retired "
+                    "earlier in this run stay retired."
+                )
 
             # SAFETY VALVE (see this method's skip_models docstring paragraph above): if the
             # caller's skip set would leave literally nothing eligible, ignore it entirely
@@ -4095,11 +4531,18 @@ class GeminiOpener:
             # the last-resort pass after the loop (see the docstring's skip_models paragraph:
             # the point-of-use check can only look forward, so a model skipped BEFORE the
             # models that then retire needs the after-the-fact look to be reconsidered).
-            eligible = [m for m in self.models
-                        if m not in skip_models and m not in self._unavailable_models]
+            eligible = [
+                m
+                for m in self.models
+                if m not in skip_models and m not in self._unavailable_models
+            ]
             if skip_models and not eligible:
-                announce_safety_valve("no configured model was eligible when the call began")
-            effective_skip_models = skip_models if (skip_models and eligible) else frozenset()
+                announce_safety_valve(
+                    "no configured model was eligible when the call began"
+                )
+            effective_skip_models = (
+                skip_models if (skip_models and eligible) else frozenset()
+            )
             # Why each model declined to serve THIS call, so that if the whole cascade falls
             # through we can report an accurate stop reason instead of a generic one. The hub
             # shows this verbatim, and "wait until midnight Pacific" vs "retry in a minute" are
@@ -4128,14 +4571,26 @@ class GeminiOpener:
                 last-resort pass reports the scope it really failed under in the exhaustion
                 reason, exactly as it would have from the loop.
                 """
-                payload = self._payload(profile, style, model, image_parts=image_parts,
-                                        retry_hint=retry_hint, items=items)
-                url = ("https://generativelanguage.googleapis.com/v1beta/models/"
-                       f"{quote(model, safe='-_.')}:generateContent")
+                payload = self._payload(
+                    profile,
+                    style,
+                    model,
+                    image_parts=image_parts,
+                    retry_hint=retry_hint,
+                    items=items,
+                )
+                url = (
+                    "https://generativelanguage.googleapis.com/v1beta/models/"
+                    f"{quote(model, safe='-_.')}:generateContent"
+                )
                 try:
                     code, response = self.transport(
-                        url, payload,
-                        {"Content-Type": "application/json", "X-goog-api-key": self.api_key},
+                        url,
+                        payload,
+                        {
+                            "Content-Type": "application/json",
+                            "X-goog-api-key": self.api_key,
+                        },
                         self.request_timeout_s,
                     )
                 except (OSError, HTTPException) as exc:
@@ -4173,12 +4628,14 @@ class GeminiOpener:
                     # and reporting a connection timeout as a "provider 5xx" would point at
                     # Google when the problem may well be the local network.
                     scopes[model] = "transport"
-                    print(f"{run_prefix}Gemini opener: {model} failed at the transport level "
-                          f"({type(exc).__name__}: {exc}); NOT blacklisting -- trying the "
-                          "next configured model for this profile only (this model keeps its "
-                          "configured position, and the next profile starts this cascade at "
-                          "the top again, so it is requested again only if every model ahead "
-                          "of it fails again).")
+                    print(
+                        f"{run_prefix}Gemini opener: {model} failed at the transport level "
+                        f"({type(exc).__name__}: {exc}); NOT blacklisting -- trying the "
+                        "next configured model for this profile only (this model keeps its "
+                        "configured position, and the next profile starts this cascade at "
+                        "the top again, so it is requested again only if every model ahead "
+                        "of it fails again)."
+                    )
                     return None
                 if not 200 <= int(code) < 300:
                     error = _gemini_error(int(code), response)
@@ -4202,9 +4659,11 @@ class GeminiOpener:
                             # RPD (requests-per-day) resets only at midnight Pacific, so this
                             # model genuinely cannot serve the rest of THIS run.
                             self._unavailable_models[model] = "day"
-                            print(f"{run_prefix}Gemini opener: {model} hit its per-day quota (resets at "
-                                  "midnight Pacific); blacklisting it for the rest of this run "
-                                  "and trying the next configured model.")
+                            print(
+                                f"{run_prefix}Gemini opener: {model} hit its per-day quota (resets at "
+                                "midnight Pacific); blacklisting it for the rest of this run "
+                                "and trying the next configured model."
+                            )
                         else:
                             # Per-minute caps are transient (free-tier RPM can be as low as 5)
                             # and clear within a minute, so do NOT blacklist -- just cascade to
@@ -4223,11 +4682,13 @@ class GeminiOpener:
                             # regardless of classification, so the "stop automation when
                             # everything is used up" guarantee holds either way.
                             kind = "per-minute" if scope == "minute" else "unclassified"
-                            print(f"{run_prefix}Gemini opener: {model} hit a {kind} 429; NOT blacklisting -- "
-                                  "trying the next configured model for this profile only (this "
-                                  "model keeps its configured position, and the next profile "
-                                  "starts this cascade at the top again, so it is requested "
-                                  "again only if every model ahead of it fails again).")
+                            print(
+                                f"{run_prefix}Gemini opener: {model} hit a {kind} 429; NOT blacklisting -- "
+                                "trying the next configured model for this profile only (this "
+                                "model keeps its configured position, and the next profile "
+                                "starts this cascade at the top again, so it is requested "
+                                "again only if every model ahead of it fails again)."
+                            )
                         return None
                     if error.http_code == 404:
                         # NOT_FOUND: EMPIRICALLY MEASURED against the real API -- ListModels can
@@ -4244,10 +4705,12 @@ class GeminiOpener:
                         # model, exactly like a per-day 429.
                         scopes[model] = "gone"
                         self._unavailable_models[model] = "gone"
-                        print(f"{run_prefix}Gemini opener: {model} returned 404 NOT_FOUND ({error.message}); "
-                              "this model id is retired or unavailable to this account and will "
-                              "not come back mid-run -- dropping it from the cascade for the "
-                              "rest of this run and trying the next configured model.")
+                        print(
+                            f"{run_prefix}Gemini opener: {model} returned 404 NOT_FOUND ({error.message}); "
+                            "this model id is retired or unavailable to this account and will "
+                            "not come back mid-run -- dropping it from the cascade for the "
+                            "rest of this run and trying the next configured model."
+                        )
                         return None
                     if error.http_code >= 500:
                         # Provider-side failure (503 UNAVAILABLE "this model is currently
@@ -4264,14 +4727,18 @@ class GeminiOpener:
                         # line", because nothing reorders self.models (class docstring,
                         # 2026-09-16).
                         scopes[model] = "busy"
-                        print(f"{run_prefix}Gemini opener: {model} returned HTTP {error.http_code} "
-                              f"{error.status or 'server error'}; NOT blacklisting -- trying the "
-                              "next configured model for this profile only (this model keeps "
-                              "its configured position, and the next profile starts this "
-                              "cascade at the top again, so it is requested again only if "
-                              "every model ahead of it fails again).")
+                        print(
+                            f"{run_prefix}Gemini opener: {model} returned HTTP {error.http_code} "
+                            f"{error.status or 'server error'}; NOT blacklisting -- trying the "
+                            "next configured model for this profile only (this model keeps "
+                            "its configured position, and the next profile starts this "
+                            "cascade at the top again, so it is requested again only if "
+                            "every model ahead of it fails again)."
+                        )
                         return None
-                    if error.http_code == 400 and _is_thinking_config_rejection(error.message):
+                    if error.http_code == 400 and _is_thinking_config_rejection(
+                        error.message
+                    ):
                         # NARROW EXCEPTION to the "every other 4xx is a property of the request,
                         # not the model" rule stated in this class's docstring. MEASURED, live,
                         # 2026-08-13 (see _is_thinking_config_rejection): gemini-3.7-flash 400s
@@ -4296,18 +4763,24 @@ class GeminiOpener:
                         # firing exactly as they did before this branch existed.
                         scopes[model] = "thinking"
                         self._unavailable_models[model] = "thinking"
-                        print(f"{run_prefix}Gemini opener: {model} returned HTTP 400 rejecting its "
-                              f"configured thinking level or budget ({error.message}); this is "
-                              "a per-model capability limit, not a property of the request, and "
-                              "will not change mid-run -- dropping it from the cascade for the "
-                              "rest of this run and trying the next configured model. Fix "
-                              "opener.thinking for this model id.")
+                        print(
+                            f"{run_prefix}Gemini opener: {model} returned HTTP 400 rejecting its "
+                            f"configured thinking level or budget ({error.message}); this is "
+                            "a per-model capability limit, not a property of the request, and "
+                            "will not change mid-run -- dropping it from the cascade for the "
+                            "rest of this run and trying the next configured model. Fix "
+                            "opener.thinking for this model id."
+                        )
                         return None
                     raise error
                 if not isinstance(response, Mapping):
                     raise GeminiAPIError(int(code), None, "malformed success response")
-                return self._parse(response, model, index_space=index_space,
-                                   numbered_item_count=numbered_item_count)
+                return self._parse(
+                    response,
+                    model,
+                    index_space=index_space,
+                    numbered_item_count=numbered_item_count,
+                )
 
             # Every model this call ACTUALLY skip-honoured, in cascade order, recorded as each
             # decision is made rather than recomputed from skip_models afterwards. The two sets
@@ -4328,7 +4801,8 @@ class GeminiOpener:
                     # see this method's should_stop docstring paragraph for the full rationale.
                     raise OpenerAborted(
                         f"Opener cascade aborted before requesting {model!r}: the run is "
-                        "stopping (should_stop signaled), not a provider failure")
+                        "stopping (should_stop signaled), not a provider failure"
+                    )
                 if model in effective_skip_models:
                     # POINT OF USE for the safety valve above, and the half the entry-time
                     # snapshot cannot cover. Honouring a skip is only ever safe while something
@@ -4350,11 +4824,14 @@ class GeminiOpener:
                     # is unanswerable at this point and is closed instead by the last-resort
                     # pass below, which looks once the outcome is actually known. That is why
                     # the `else` branch records the model rather than merely announcing it.
-                    if not any(m not in effective_skip_models
-                               and m not in self._unavailable_models
-                               for m in self.models[position + 1:]):
+                    if not any(
+                        m not in effective_skip_models
+                        and m not in self._unavailable_models
+                        for m in self.models[position + 1 :]
+                    ):
                         announce_safety_valve(
-                            f"no model after {model} is still eligible")
+                            f"no model after {model} is still eligible"
+                        )
                         # Stop honouring the skip set from here on. ONLY the skip set is dropped:
                         # the retired check immediately below is untouched, so a model retired
                         # this run is still never re-tried -- the valve only ever un-skips models
@@ -4372,9 +4849,11 @@ class GeminiOpener:
                         # nothing, which is the only situation where re-asking it beats
                         # reporting models the caller never asked to avoid.
                         skip_honored.append(model)
-                        print(f"Gemini opener: skipping {model} for this retry -- it already "
-                              "produced an unusable response for this profile; trying the next "
-                              "configured model instead.")
+                        print(
+                            f"Gemini opener: skipping {model} for this retry -- it already "
+                            "produced an unusable response for this profile; trying the next "
+                            "configured model instead."
+                        )
                         continue
                 if model in self._unavailable_models:
                     # Retired earlier THIS run -- either a per-day 429 or a 404 NOT_FOUND (see
@@ -4411,10 +4890,14 @@ class GeminiOpener:
             #     than a request.
             # Cascade order is preserved because skip_honored was appended in loop order, so the
             # reconsidered models are still tried most-preferred first.
-            reconsidered = [m for m in skip_honored if m not in self._unavailable_models]
+            reconsidered = [
+                m for m in skip_honored if m not in self._unavailable_models
+            ]
             if reconsidered:
                 announce_safety_valve(
-                    "the cascade served nothing and never tried " + ", ".join(reconsidered))
+                    "the cascade served nothing and never tried "
+                    + ", ".join(reconsidered)
+                )
                 for model in reconsidered:
                     # The same pre-request obligation the loop above owes, for the same reason:
                     # Stop must be honoured before any further billed request goes out. The skip
@@ -4424,7 +4907,8 @@ class GeminiOpener:
                     if should_stop is not None and should_stop():
                         raise OpenerAborted(
                             f"Opener cascade aborted before reconsidering {model!r}: the run is "
-                            "stopping (should_stop signaled), not a provider failure")
+                            "stopping (should_stop signaled), not a provider failure"
+                        )
                     served = attempt(model)
                     if served is not None:
                         return served
@@ -4461,10 +4945,16 @@ class GeminiOpener:
         page_token: str | None = None
         seen_page_tokens: set[str] = set()
         for _page_number in range(1, _MAX_PREFLIGHT_PAGES + 1):
-            url = (_GEMINI_MODELS_LIST_URL if page_token is None else
-                   f"{_GEMINI_MODELS_LIST_URL}?pageToken={quote(page_token, safe='')}")
+            url = (
+                _GEMINI_MODELS_LIST_URL
+                if page_token is None
+                else f"{_GEMINI_MODELS_LIST_URL}?pageToken={quote(page_token, safe='')}"
+            )
             code, response = self.transport(
-                url, None, {"X-goog-api-key": self.api_key}, self.request_timeout_s,
+                url,
+                None,
+                {"X-goog-api-key": self.api_key},
+                self.request_timeout_s,
                 method="GET",
             )
             if not 200 <= int(code) < 300:
@@ -4472,13 +4962,21 @@ class GeminiOpener:
                 # An invalid key surfaces here as HTTP 400 INVALID_ARGUMENT with message
                 # "API key not valid...". Translate that into plain language instead of
                 # leaking Gemini's raw wording, and never echo the key itself.
-                if error.http_code == 400 and "api key not valid" in error.message.lower():
-                    raise RuntimeError("GEMINI_API_KEY is not valid (rejected by Gemini's "
-                                       "ListModels endpoint)")
+                if (
+                    error.http_code == 400
+                    and "api key not valid" in error.message.lower()
+                ):
+                    raise RuntimeError(
+                        "GEMINI_API_KEY is not valid (rejected by Gemini's "
+                        "ListModels endpoint)"
+                    )
                 raise RuntimeError(
-                    f"Gemini preflight failed: HTTP {error.http_code} {error.status}: {error.message}")
+                    f"Gemini preflight failed: HTTP {error.http_code} {error.status}: {error.message}"
+                )
             if not isinstance(response, Mapping):
-                raise RuntimeError("Gemini preflight failed: malformed ListModels response")
+                raise RuntimeError(
+                    "Gemini preflight failed: malformed ListModels response"
+                )
             for entry in response.get("models") or []:
                 if not isinstance(entry, Mapping):
                     continue
@@ -4487,24 +4985,31 @@ class GeminiOpener:
                     continue
                 model_id = name.split("/", 1)[1] if "/" in name else name
                 methods = entry.get("supportedGenerationMethods")
-                seen[model_id] = [str(m) for m in methods] if isinstance(methods, list) else []
+                seen[model_id] = (
+                    [str(m) for m in methods] if isinstance(methods, list) else []
+                )
             next_token = response.get("nextPageToken")
             if next_token in (None, ""):
                 break
             if not isinstance(next_token, str) or not next_token.strip():
                 raise RuntimeError(
-                    "Gemini preflight failed: ListModels returned a malformed nextPageToken")
+                    "Gemini preflight failed: ListModels returned a malformed nextPageToken"
+                )
             if next_token in seen_page_tokens:
                 raise RuntimeError(
-                    "Gemini preflight failed: ListModels repeated a pagination token")
+                    "Gemini preflight failed: ListModels repeated a pagination token"
+                )
             seen_page_tokens.add(next_token)
             page_token = next_token
         else:
             raise RuntimeError(
-                f"Gemini preflight failed: ListModels exceeded {_MAX_PREFLIGHT_PAGES} pages")
+                f"Gemini preflight failed: ListModels exceeded {_MAX_PREFLIGHT_PAGES} pages"
+            )
 
         missing = [m for m in self.models if m not in seen]
-        unusable = [m for m in self.models if m in seen and "generateContent" not in seen[m]]
+        unusable = [
+            m for m in self.models if m in seen and "generateContent" not in seen[m]
+        ]
         if missing or unusable:
             problems = []
             if missing:
@@ -4513,5 +5018,7 @@ class GeminiOpener:
                 problems.append(f"no generateContent support: {', '.join(unusable)}")
             available = ", ".join(sorted(seen)) or "(none returned)"
             raise RuntimeError(
-                "Gemini preflight failed -- " + "; ".join(problems) +
-                f". Available Gemini model ids: {available}")
+                "Gemini preflight failed -- "
+                + "; ".join(problems)
+                + f". Available Gemini model ids: {available}"
+            )

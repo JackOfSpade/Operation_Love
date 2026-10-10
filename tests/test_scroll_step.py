@@ -26,6 +26,7 @@ Every positive is paired with a negative plus a control that proves WHICH mechan
 excluding — the heartless-block rule in particular, which is asserted by giving the same block a
 heart and watching the plan refuse.
 """
+
 import math
 import random
 import subprocess
@@ -38,17 +39,17 @@ import pytest
 from operation_love.drivers import frameshift, hinge, scroll_step, segment
 from operation_love.drivers.hinge import HINGE_SPEC, AndroidDriver
 
-_W, _H = 1080, 2400                        # the calibrated Pixel 7a screencap size
+_W, _H = 1080, 2400  # the calibrated Pixel 7a screencap size
 _SEED = 11
-_CONTENT_BAND = HINGE_SPEC.content_band                # (0.125, 0.875) -> rows 300..2100
+_CONTENT_BAND = HINGE_SPEC.content_band  # (0.125, 0.875) -> rows 300..2100
 _BAND0, _BAND1 = 300, 2100
-_CARD_X0 = segment._CARD_MARGIN_PX                     # 53
-_CARD_X1 = _W - segment._CARD_MARGIN_PX                # 1027
-_GUTTER = max(segment._GUTTER_PX)                      # 53, the canonical measured gutter
-_CORNER_RADIUS_PX = 22                                 # doc 5.10: "~20-23px"
-_HEART_CX = 937                                        # bottom-right, as test_segment.py stamps it
-_HEART_ABOVE_BOTTOM = 90                               # a complete card's heart sits ~89px up
-_PAGE_TOP, _PAGE_BOTTOM = 254, 243                     # doc 5.10's background gradient
+_CARD_X0 = segment._CARD_MARGIN_PX  # 53
+_CARD_X1 = _W - segment._CARD_MARGIN_PX  # 1027
+_GUTTER = max(segment._GUTTER_PX)  # 53, the canonical measured gutter
+_CORNER_RADIUS_PX = 22  # doc 5.10: "~20-23px"
+_HEART_CX = 937  # bottom-right, as test_segment.py stamps it
+_HEART_ABOVE_BOTTOM = 90  # a complete card's heart sits ~89px up
+_PAGE_TOP, _PAGE_BOTTOM = 254, 243  # doc 5.10's background gradient
 
 _TEMPLATE = hinge._load_template(HINGE_SPEC.templates["like"])
 assert _TEMPLATE is not None, "the shipped like glyph must load"
@@ -84,17 +85,18 @@ class _Frame:
         v0, v1 = max(0, y0), min(_H, y1)
         if v1 > v0:
             self.gray[v0:v1, _CARD_X0:_CARD_X1] = self.rng.integers(
-                60, 200, size=(v1 - v0, _CARD_X1 - _CARD_X0), dtype=np.uint8)
-        for i in range(radius):                        # carve the four corner arcs back to page
+                60, 200, size=(v1 - v0, _CARD_X1 - _CARD_X0), dtype=np.uint8
+            )
+        for i in range(radius):  # carve the four corner arcs back to page
             dy = radius - i
-            inset = int(math.ceil(radius - math.sqrt(max(0.0, radius ** 2 - dy ** 2))))
+            inset = int(math.ceil(radius - math.sqrt(max(0.0, radius**2 - dy**2))))
             if inset <= 0:
                 continue
             for y in (y0 + i, y1 - 1 - i):
                 if not 0 <= y < _H:
                     continue
-                self.gray[y, _CARD_X0:_CARD_X0 + inset] = self.col[y]
-                self.gray[y, _CARD_X1 - inset:_CARD_X1] = self.col[y]
+                self.gray[y, _CARD_X0 : _CARD_X0 + inset] = self.col[y]
+                self.gray[y, _CARD_X1 - inset : _CARD_X1] = self.col[y]
         if heart:
             self.heart(y1 - _HEART_ABOVE_BOTTOM)
         return self
@@ -106,7 +108,7 @@ class _Frame:
         y0, x0 = cy - th // 2, cx - tw // 2
         if y0 < 0 or y0 + th > _H or x0 < 0 or x0 + tw > _W:
             return self
-        self.gray[y0:y0 + th, x0:x0 + tw] = _TEMPLATE
+        self.gray[y0 : y0 + th, x0 : x0 + tw] = _TEMPLATE
         return self
 
     def png(self):
@@ -116,8 +118,11 @@ class _Frame:
 
     def segment(self):
         return segment.segment_frame(
-            self.png(), content_band=_CONTENT_BAND, like_template=_TEMPLATE,
-            like_threshold=hinge._LIKE_MATCH_THRESHOLD)
+            self.png(),
+            content_band=_CONTENT_BAND,
+            like_template=_TEMPLATE,
+            like_threshold=hinge._LIKE_MATCH_THRESHOLD,
+        )
 
 
 def _stack(heights, *, hearts=None, top=500):
@@ -157,6 +162,7 @@ def _draws(seg, n=200, **kw):
 # The transport model: the one place a wrong number would silently mis-size every step
 # =====================================================================================
 
+
 def test_the_transport_model_reproduces_both_measured_cadences():
     """`frac -> px` is calibration, not arithmetic. Both corpus cadences must come back exactly.
 
@@ -174,7 +180,10 @@ def test_the_model_mirrors_the_transports_own_integer_truncation():
     for frac in (0.1037, 0.16, 0.2231, 0.3, 0.55):
         y1 = int(_H * (0.5 + frac / 2))
         y2 = int(_H * (0.5 - frac / 2))
-        assert scroll_step.step_px_for_frac(frac, _H) == y1 - y2 - scroll_step._TOUCH_SLOP_PX
+        assert (
+            scroll_step.step_px_for_frac(frac, _H)
+            == y1 - y2 - scroll_step._TOUCH_SLOP_PX
+        )
 
 
 def test_the_inverse_round_trips_within_the_truncation():
@@ -196,6 +205,7 @@ def test_a_degenerate_screen_raises_rather_than_dividing_by_it():
 # Local spacing: what is measured, and what is deliberately not
 # =====================================================================================
 
+
 def test_a_complete_card_gives_its_own_extent_plus_one_gutter():
     spacing = scroll_step.measure_local_spacing(_tall_frame().segment())
     assert spacing.measured
@@ -207,8 +217,9 @@ def test_two_hearts_on_one_frame_measure_the_pitch_directly():
     """The doc's own quantity, and it needs no block edge observed at all."""
     spacing = scroll_step.measure_local_spacing(_short_frame().segment())
     assert scroll_step.SPACING_HEART_PITCH in spacing.kinds
-    pitches = [px for kind, px in spacing.evidence
-               if kind == scroll_step.SPACING_HEART_PITCH]
+    pitches = [
+        px for kind, px in spacing.evidence if kind == scroll_step.SPACING_HEART_PITCH
+    ]
     assert pitches == [620 + _GUTTER] * len(pitches)
 
 
@@ -219,7 +230,9 @@ def test_two_adjacent_card_tops_measure_the_pitch_when_the_lower_heart_is_off_ba
     seg = _tall_frame().segment()
     assert len(seg.hearts) == 1, "the fixture's lower card must show no heart"
     spacing = scroll_step.measure_local_spacing(seg)
-    pitches = [px for kind, px in spacing.evidence if kind == scroll_step.SPACING_CARD_PITCH]
+    pitches = [
+        px for kind, px in spacing.evidence if kind == scroll_step.SPACING_CARD_PITCH
+    ]
     assert pitches == [974 + _GUTTER]
 
 
@@ -241,7 +254,9 @@ def test_a_heartless_block_does_not_shrink_the_step():
     and then a hard stop under the minimum legal gesture."""
     seg = _stack((974, 215, 974), hearts=(True, False, True)).segment()
     kinds = [b.kind for b in seg.blocks]
-    assert segment.BLOCK_CONTEXT in kinds, "the fixture's vitals block must really be heartless"
+    assert segment.BLOCK_CONTEXT in kinds, (
+        "the fixture's vitals block must really be heartless"
+    )
     spacing = scroll_step.measure_local_spacing(seg)
     assert spacing.px == 974 + min(segment._GUTTER_PX)
     assert all(px > 215 + _GUTTER for _kind, px in spacing.evidence)
@@ -261,7 +276,7 @@ def test_the_control_the_same_block_with_a_heart_does_shrink_it():
 def test_a_frame_that_offers_nothing_measurable_says_so_rather_than_guessing():
     """One card taller than the whole analysed band: no gutter, no corner, no heart in band."""
     frame = _Frame()
-    frame.card(200, 2300, heart=True)                  # heart at 2210, below the band
+    frame.card(200, 2300, heart=True)  # heart at 2210, below the band
     seg = frame.segment()
     assert not any(b.complete for b in seg.blocks)
     spacing = scroll_step.measure_local_spacing(seg)
@@ -271,6 +286,7 @@ def test_a_frame_that_offers_nothing_measurable_says_so_rather_than_guessing():
 # =====================================================================================
 # The headline: the step follows the content, and a short card forces a smaller one
 # =====================================================================================
+
 
 def test_a_short_card_profile_steps_smaller_than_the_fixed_cadence_that_would_realias():
     """doc 5.10.1's own worked example, made executable: "a short prompt card could space hearts
@@ -323,8 +339,12 @@ def test_every_ratio_lands_well_under_half_the_local_spacing():
     """The aliasing rule, over every fixture and many draws. 0.5 is where doc 5.10.1's failure
     begins; the ratio window's ceiling is `_STEP_RATIO_MAX` and nothing may exceed it."""
     assert scroll_step._STEP_RATIO_MAX < 0.4
-    for seg in (_tall_frame().segment(), _short_frame().segment(),
-                _stack((974, 620, 620)).segment(), _stack((1114, 1114)).segment()):
+    for seg in (
+        _tall_frame().segment(),
+        _short_frame().segment(),
+        _stack((974, 620, 620)).segment(),
+        _stack((1114, 1114)).segment(),
+    ):
         for plan in _draws(seg, n=100):
             assert plan.ratio is not None
             assert plan.ratio <= scroll_step._STEP_RATIO_MAX
@@ -379,14 +399,17 @@ def test_the_draw_window_is_the_ratio_rule_applied_to_the_local_spacing():
     spacing = scroll_step.measure_local_spacing(seg).px
     plan = _plan_on(seg)
     cap_px = min(int(scroll_step._STEP_RATIO_MAX * spacing), scroll_step._MAX_STEP_PX)
-    assert cap_px == plan.bound_px            # nothing else binds at this spacing
-    low_px = max(scroll_step.step_px_for_frac(hinge._READ_SCROLL_FRAC_MIN, _H),
-                int(scroll_step._STEP_RATIO_MIN * spacing))
+    assert cap_px == plan.bound_px  # nothing else binds at this spacing
+    low_px = max(
+        scroll_step.step_px_for_frac(hinge._READ_SCROLL_FRAC_MIN, _H),
+        int(scroll_step._STEP_RATIO_MIN * spacing),
+    )
     assert plan.window_px[0] == low_px
     margin = min(scroll_step._STEP_DELIVERY_JITTER_PX, (cap_px - low_px) // 2)
     assert plan.window_px[1] == cap_px - margin
     assert plan.window_px[1] < plan.bound_px, (
-        "the draw must leave headroom under the bound it is judged against")
+        "the draw must leave headroom under the bound it is judged against"
+    )
 
 
 def test_a_spacing_that_leaves_exactly_one_legal_step_says_so_instead_of_pretending_to_draw():
@@ -397,14 +420,14 @@ def test_a_spacing_that_leaves_exactly_one_legal_step_says_so_instead_of_pretend
     ratio rule — so what the plan owes the debug log is the fact.
 
     The control is 3px of extra spacing, which re-opens the window and drops the message."""
-    forced = _stack((557, 557, 557)).segment()           # 557 + the 52px gutter floor = 609px
+    forced = _stack((557, 557, 557)).segment()  # 557 + the 52px gutter floor = 609px
     assert scroll_step.measure_local_spacing(forced).px == 609
     plans = _draws(forced, n=50)
     assert {p.window_px for p in plans} == {(219, 219)}
     assert {p.step_px for p in plans} == {219}
     assert "no jitter left to draw" in plans[0].reason
 
-    opened = _stack((560, 560, 560)).segment()           # 612px spacing
+    opened = _stack((560, 560, 560)).segment()  # 612px spacing
     assert scroll_step.measure_local_spacing(opened).px == 612
     wider = _draws(opened, n=50)
     assert {p.window_px for p in wider} == {(219, 220)}
@@ -418,7 +441,7 @@ def test_a_spacing_taller_than_the_whole_ratio_window_does_not_collapse_onto_the
     draws. The ceiling still wins — it is the below-the-fold bound — but the window's LOW end
     drops back to the gesture floor rather than onto it, and every value in it is smaller than the
     ratio rule would have allowed, which is the safe direction."""
-    seg = _stack((1345, 1345)).segment()                 # 1397px spacing
+    seg = _stack((1345, 1345)).segment()  # 1397px spacing
     spacing = scroll_step.measure_local_spacing(seg).px
     assert int(scroll_step._STEP_RATIO_MIN * spacing) >= scroll_step._MAX_STEP_PX
 
@@ -438,19 +461,22 @@ def test_a_spacing_taller_than_the_whole_ratio_window_does_not_collapse_onto_the
 # `planned_step_px == bound_px`.
 # =====================================================================================
 
+
 def test_the_live_refusal_geometry_never_draws_the_bound_itself():
     """The exact case `_STEP_DELIVERY_JITTER_PX`'s own comment cites: a profile whose memory has
     tightened the sizing spacing to 646px, giving `bound_px` 232 and gesture floor 219. Both real
     on-device `scroll_overshot` refusals had `planned_step_px == bound_px == 232` — this is the
     geometry that produced them, run for real through the seeded planner: no draw may reach 232,
     the window is exactly `219..229`, and jitter still exists (more than one distinct value)."""
-    seg = _tall_frame().segment()                          # local spacing 1026px, well above 646
+    seg = _tall_frame().segment()  # local spacing 1026px, well above 646
     plans = _draws(seg, n=500, profile_min_spacing_px=646)
 
     assert plans[0].bound_px == 232
     assert {p.window_px for p in plans} == {(219, 229)}
     assert max(p.step_px for p in plans) <= plans[0].bound_px - 3
-    assert len({p.step_px for p in plans}) > 1, "the window must still have real jitter in it"
+    assert len({p.step_px for p in plans}) > 1, (
+        "the window must still have real jitter in it"
+    )
 
 
 def test_the_commanded_step_keeps_the_full_headroom_for_every_drawable_target():
@@ -478,13 +504,14 @@ def test_the_commanded_step_keeps_the_full_headroom_for_every_drawable_target():
         frac = scroll_step.frac_for_step_px(target_px, _H)
         commanded = scroll_step.step_px_for_frac(frac, _H)
         frac_lo = hinge._READ_SCROLL_FRAC_MIN
-        while commanded > draw_cap_px and frac > frac_lo:       # the planner's own walk-down
+        while commanded > draw_cap_px and frac > frac_lo:  # the planner's own walk-down
             frac = max(frac_lo, frac - 1.0 / _H)
             commanded = scroll_step.step_px_for_frac(frac, _H)
         assert commanded <= draw_cap_px, target_px
         assert plan.bound_px - commanded >= scroll_step._STEP_DELIVERY_JITTER_PX, (
             f"target {target_px} commands {commanded}px, leaving less than the reserved "
-            f"{scroll_step._STEP_DELIVERY_JITTER_PX}px under the {plan.bound_px}px bound")
+            f"{scroll_step._STEP_DELIVERY_JITTER_PX}px under the {plan.bound_px}px bound"
+        )
 
 
 def test_the_hard_bound_and_its_refusal_line_are_unchanged_by_the_headroom_reservation():
@@ -501,7 +528,8 @@ def test_the_hard_bound_and_its_refusal_line_are_unchanged_by_the_headroom_reser
     assert scroll_step.step_overshoot(plan, plan.bound_px) is None
     assert scroll_step.step_overshoot(plan, plan.bound_px + 1) is not None
     assert plan.window_px[1] < plan.bound_px, (
-        "the draw window itself now stops short of the bound")
+        "the draw window itself now stops short of the bound"
+    )
 
 
 def test_a_window_too_narrow_for_full_headroom_still_keeps_at_least_two_drawable_values():
@@ -510,14 +538,18 @@ def test_a_window_too_narrow_for_full_headroom_still_keeps_at_least_two_drawable
     615px spacing the window before headroom is only 2px wide (219..221), so the full 3px jitter
     margin does not fit; the planner must clip the margin rather than swallow the whole window,
     keep at least two distinct drawable values, and say so in `reason`."""
-    seg = _stack((563, 563, 563)).segment()                # 563 + 52 = 615px spacing
+    seg = _stack((563, 563, 563)).segment()  # 563 + 52 = 615px spacing
     assert scroll_step.measure_local_spacing(seg).px == 615
     plan = _plan_on(seg)
 
     assert plan.bound_px == 221
     assert plan.window_px == (219, 220)
-    assert plan.window_px[1] > plan.window_px[0], "must keep at least two distinct drawable values"
-    assert plan.window_px[1] < plan.bound_px, "headroom is still reserved here, just clipped"
+    assert plan.window_px[1] > plan.window_px[0], (
+        "must keep at least two distinct drawable values"
+    )
+    assert plan.window_px[1] < plan.bound_px, (
+        "headroom is still reserved here, just clipped"
+    )
     assert "only 1px of the 3px delivery headroom fits" in plan.reason
     assert "over-deliver past the aliasing bound" in plan.reason
 
@@ -532,22 +564,26 @@ def test_the_floor_meets_ceiling_degenerate_case_is_unchanged_by_the_headroom_re
     to reserve anything out of. `cap_px - low_px == 0` here, so `jitter_margin_px` is 0 and
     `draw_cap_px == cap_px` — byte-for-byte the pre-change behaviour and its "no jitter left to
     draw" message, with no partial-headroom clause appended alongside it."""
-    seg = _stack((557, 557, 557)).segment()                # 557 + 52 = 609px spacing
+    seg = _stack((557, 557, 557)).segment()  # 557 + 52 = 609px spacing
     assert scroll_step.measure_local_spacing(seg).px == 609
     plans = _draws(seg, n=50)
 
     assert {p.window_px for p in plans} == {(219, 219)}
     assert {p.step_px for p in plans} == {219}
     assert plans[0].bound_px == 219
-    assert plans[0].window_px[1] == plans[0].bound_px, "no headroom exists to reserve here"
+    assert plans[0].window_px[1] == plans[0].bound_px, (
+        "no headroom exists to reserve here"
+    )
     assert "no jitter left to draw" in plans[0].reason
     assert "delivery headroom" not in plans[0].reason, (
-        "the partial-headroom clause must not also fire alongside the zero-headroom one")
+        "the partial-headroom clause must not also fire alongside the zero-headroom one"
+    )
 
 
 # =====================================================================================
 # The bounds, and which one fails loud
 # =====================================================================================
+
 
 def test_the_ceiling_is_the_one_cadence_with_end_to_end_evidence():
     """`_MAX_STEP_PX` is not a chosen round number: it is exactly what read_scroll_frac 0.16
@@ -559,7 +595,7 @@ def test_the_ceiling_binds_before_a_very_tall_card_licenses_a_bigger_step():
     """`_MAX_STEP_PX` is what caps the window here, but the window's own top still sits
     `_STEP_DELIVERY_JITTER_PX` below it (2026-08-27) rather than at it — headroom reservation does
     not distinguish which ceiling (`bound_px` or `_MAX_STEP_PX`) produced `cap_px`."""
-    seg = _stack((1114, 1114)).segment()                # doc 5.10's tallest card observed
+    seg = _stack((1114, 1114)).segment()  # doc 5.10's tallest card observed
     spacing = scroll_step.measure_local_spacing(seg).px
     assert scroll_step._STEP_RATIO_MAX * spacing > scroll_step._MAX_STEP_PX
     plans = _draws(seg)
@@ -607,6 +643,7 @@ def test_the_control_just_above_that_boundary_still_plans():
 # The fallback: conservative, and never silent
 # =====================================================================================
 
+
 def test_an_unmeasurable_frame_falls_back_small_and_reports_it():
     frame = _Frame()
     frame.card(200, 2300, heart=True)
@@ -618,19 +655,22 @@ def test_an_unmeasurable_frame_falls_back_small_and_reports_it():
 
 
 def test_the_fallback_is_sized_against_the_smallest_spacing_ever_measured():
-    """"Conservative" has to mean something checkable: the blind step is the ratio rule applied
+    """ "Conservative" has to mean something checkable: the blind step is the ratio rule applied
     to `_FALLBACK_SPACING_PX`, the smallest heart-bearing spacing in the whole corpus, so it
     cannot alias against any spacing the corpus has ever seen."""
     frame = _Frame()
     frame.card(200, 2300, heart=True)
     seg = frame.segment()
     for plan in _draws(seg):
-        assert plan.step_px <= scroll_step._STEP_RATIO_MAX * scroll_step._FALLBACK_SPACING_PX
+        assert (
+            plan.step_px
+            <= scroll_step._STEP_RATIO_MAX * scroll_step._FALLBACK_SPACING_PX
+        )
         assert plan.step_px < scroll_step._MAX_STEP_PX
 
 
 def test_the_fallback_is_never_larger_than_a_measured_step_on_the_same_geometry():
-    """"Never fall back to a large step", asserted as an ordering rather than a constant."""
+    """ "Never fall back to a large step", asserted as an ordering rather than a constant."""
     frame = _Frame()
     frame.card(200, 2300, heart=True)
     blind = [p.step_px for p in _draws(frame.segment())]
@@ -641,6 +681,7 @@ def test_the_fallback_is_never_larger_than_a_measured_step_on_the_same_geometry(
 # =====================================================================================
 # What refuses outright
 # =====================================================================================
+
 
 def test_a_segmentation_that_contradicts_itself_is_refused():
     """Two hearts in one block is segment.py's own hard failure. Sizing a scroll off a frame
@@ -660,8 +701,9 @@ def test_one_explicit_segmentation_recovery_step_is_blind_and_marked():
     seg = frame.segment()
     assert not seg.ok
 
-    plan = scroll_step.plan_scroll_step(seg, rng=random.Random(3),
-                                        allow_segmentation_failure_fallback=True)
+    plan = scroll_step.plan_scroll_step(
+        seg, rng=random.Random(3), allow_segmentation_failure_fallback=True
+    )
 
     assert plan.basis == scroll_step.STEP_SEGMENTATION_FALLBACK
     assert plan.spacing_px is None and not plan.spacing.measured
@@ -694,6 +736,7 @@ def test_a_non_positive_profile_minimum_raises_rather_than_being_ignored():
 # The loop's memory: a short card keeps binding after it leaves the screen
 # =====================================================================================
 
+
 def test_a_short_card_seen_earlier_keeps_the_step_small_on_a_later_tall_frame():
     """The only defence against a card that is still BELOW the fold. Without the memory the tall
     frame licenses close to the full ceiling; with it, the step stays inside the ratio rule for
@@ -710,7 +753,8 @@ def test_a_short_card_seen_earlier_keeps_the_step_small_on_a_later_tall_frame():
 
     unaware_cap = unaware[0].window_px[1]
     assert unaware_cap < scroll_step._MAX_STEP_PX, (
-        "the top-of-window draw must leave delivery headroom")
+        "the top-of-window draw must leave delivery headroom"
+    )
     assert max(p.step_px for p in unaware) == unaware_cap
     assert max(p.step_px for p in aware) <= scroll_step._STEP_RATIO_MAX * short_spacing
     assert max(p.step_px for p in aware) < min(p.step_px for p in unaware)
@@ -739,6 +783,7 @@ def test_the_memory_also_binds_a_blind_frame():
 # =====================================================================================
 # Closing the loop: holding the gesture that was actually made to the plan's own bound
 # =====================================================================================
+
 
 def _plan_on(seg, **kw):
     return scroll_step.plan_scroll_step(seg, rng=random.Random(3), **kw)
@@ -781,6 +826,7 @@ def test_the_overshoot_bound_follows_a_callers_own_ratio_window():
 # The call site: the plan is only ever spent through the humanized path
 # =====================================================================================
 
+
 class _RecordingAdb:
     """Records the read-scrolls that actually reached the transport."""
 
@@ -811,6 +857,7 @@ class _RecordingAdb:
 def _drv(adb):
     class C:
         apps = {HINGE_SPEC.app: {"halt_on_error": False}}
+
     driver = AndroidDriver(C(), HINGE_SPEC)
     driver._adb = adb
     driver._touch = adb
@@ -867,6 +914,7 @@ def test_a_lane_outside_the_drivers_own_window_is_refused_here_not_at_the_zone_g
 # Provenance: constants shared rather than re-declared, and the leaf property
 # =====================================================================================
 
+
 def test_the_gutter_is_shared_with_segment_and_not_re_declared():
     """The pitch this module measures is a card's height plus the gutter that SEPARATED it, so a
     second copy of that window would be free to drift from the one that cut the block."""
@@ -878,11 +926,17 @@ def test_importing_this_module_does_not_pull_in_the_driver():
     driver. The read-scroll window is fetched at CALL time (the same deferred-import shape
     segment_frame uses for `_match_glyph`) so there is one source of truth without a cycle."""
     out = subprocess.run(
-        [sys.executable, "-c",
-         "import sys; import operation_love.drivers.scroll_step as m; "
-         "print('operation_love.drivers.hinge' in sys.modules); "
-         "print(m.plan_scroll_step.__name__)"],
-        capture_output=True, text=True, check=True)
+        [
+            sys.executable,
+            "-c",
+            "import sys; import operation_love.drivers.scroll_step as m; "
+            "print('operation_love.drivers.hinge' in sys.modules); "
+            "print(m.plan_scroll_step.__name__)",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
     assert out.stdout.split() == ["False", "plan_scroll_step"], out.stdout + out.stderr
 
 
@@ -919,14 +973,17 @@ def test_the_fallback_spacing_is_the_corpus_minimum_and_the_ratio_window_is_abou
 #   gesture floor   = 219                        (`step_px_for_frac(_READ_SCROLL_FRAC_MIN, _H)`)
 # =====================================================================================
 
-_BAND_H = _BAND1 - _BAND0                                                          # 1800
-_TRUST_CEILING_PX = round(scroll_step._ENUM_TRUST_CEILING_BAND_FRAC * _BAND_H)     # 540
-_BLIND_CAP_PX = round((frameshift._TRUST_WINDOW_BAND_FRAC
-                       - scroll_step._ENUM_TRUST_CEILING_BAND_FRAC) * _BAND_H)   # 360
+_BAND_H = _BAND1 - _BAND0  # 1800
+_TRUST_CEILING_PX = round(scroll_step._ENUM_TRUST_CEILING_BAND_FRAC * _BAND_H)  # 540
+_BLIND_CAP_PX = round(
+    (frameshift._TRUST_WINDOW_BAND_FRAC - scroll_step._ENUM_TRUST_CEILING_BAND_FRAC)
+    * _BAND_H
+)  # 360
 _GESTURE_FLOOR_PX = scroll_step.step_px_for_frac(hinge._READ_SCROLL_FRAC_MIN, _H)  # 219
 _SEGMENTATION_FALLBACK_CAP_PX = round(
     ((scroll_step._STEP_RATIO_MIN + scroll_step._STEP_RATIO_MAX) / 2)
-    * scroll_step._FALLBACK_SPACING_PX)                                             # 229
+    * scroll_step._FALLBACK_SPACING_PX
+)  # 229
 
 
 def _coverage_draws(seg, n=200, **kw):
@@ -945,12 +1002,18 @@ def test_the_two_bounds_match_the_derivation():
     # one, so the two together must fit inside frameshift's trust window. Capping the blind branch
     # at the bare trust ceiling instead would give 540 + 540 = 1080 against a 900px window and make
     # the recovery unreachable.
-    assert _BLIND_CAP_PX + _TRUST_CEILING_PX <= round(frameshift._TRUST_WINDOW_BAND_FRAC * _BAND_H)
-    assert _TRUST_CEILING_PX + _TRUST_CEILING_PX > round(frameshift._TRUST_WINDOW_BAND_FRAC * _BAND_H)
+    assert _BLIND_CAP_PX + _TRUST_CEILING_PX <= round(
+        frameshift._TRUST_WINDOW_BAND_FRAC * _BAND_H
+    )
+    assert _TRUST_CEILING_PX + _TRUST_CEILING_PX > round(
+        frameshift._TRUST_WINDOW_BAND_FRAC * _BAND_H
+    )
     # And it stays above the driver's own smallest sanctioned gesture, which a card-height margin
     # did not: the deleted `band_height - 1609` would have been 191px against this 219px floor.
     assert _BLIND_CAP_PX > _GESTURE_FLOOR_PX
-    assert _TRUST_CEILING_PX < round(0.5 * _BAND_H)          # meaningfully under frameshift's 900
+    assert _TRUST_CEILING_PX < round(
+        0.5 * _BAND_H
+    )  # meaningfully under frameshift's 900
     # A contradictory frame can be carried four times and then omitted as one run, so it must
     # use the corpus-minimum recovery cadence rather than this ordinary one-bad-frame budget.
     assert _SEGMENTATION_FALLBACK_CAP_PX == 229
@@ -1001,14 +1064,18 @@ def test_a_throttled_step_never_spends_the_open_cards_whole_depth():
     depth = scroll_step._open_trailing_block_depth(seg)
     assert depth == 500
     plans = _coverage_draws(seg, n=400)
-    assert {p.window_px[1] for p in plans} == {depth - scroll_step._STEP_DELIVERY_JITTER_PX}
+    assert {p.window_px[1] for p in plans} == {
+        depth - scroll_step._STEP_DELIVERY_JITTER_PX
+    }
     for plan in plans:
         assert plan.cap_px == depth, "the hard bound itself must not have been relaxed"
         assert plan.step_px <= depth - scroll_step._STEP_DELIVERY_JITTER_PX, plan.reason
         assert "over-deliver" not in plan.reason
     # ...and the window is genuinely exercised up to its new top, so this is the reservation
     # doing the work and not the draw never getting there.
-    assert max(p.step_px for p in plans) > depth - 2 * scroll_step._STEP_DELIVERY_JITTER_PX
+    assert (
+        max(p.step_px for p in plans) > depth - 2 * scroll_step._STEP_DELIVERY_JITTER_PX
+    )
 
 
 def test_a_coverage_window_too_narrow_to_reserve_the_headroom_says_so_rather_than_collapsing():
@@ -1031,7 +1098,9 @@ def test_a_coverage_window_too_narrow_to_reserve_the_headroom_says_so_rather_tha
     for plan in plans:
         assert plan.window_px == (_GESTURE_FLOOR_PX, depth - reserved)
         assert plan.step_px <= depth - reserved
-        assert f"only {reserved}px of the" in plan.reason and "over-deliver" in plan.reason
+        assert (
+            f"only {reserved}px of the" in plan.reason and "over-deliver" in plan.reason
+        )
     assert len({p.step_px for p in plans}) > 1, "the window must keep some jitter"
 
 
@@ -1083,12 +1152,18 @@ def test_the_adaptive_throttle_never_lets_a_step_scroll_past_an_open_cards_own_t
     cumulative_px = 0
     depths: list[int] = []
     for _ in range(20):
-        seg = _reseg_after_scroll(card1_h, card2_h, top=top, cumulative_px=cumulative_px)
+        seg = _reseg_after_scroll(
+            card1_h, card2_h, top=top, cumulative_px=cumulative_px
+        )
         depth = scroll_step._open_trailing_block_depth(seg)
         if depth is None:
-            assert seg.blocks[-1].complete, "the only way depth is None is a resolved trailing card"
+            assert seg.blocks[-1].complete, (
+                "the only way depth is None is a resolved trailing card"
+            )
             break
-        assert depth >= 0, "the simulated band top has scrolled past the open card's own top row"
+        assert depth >= 0, (
+            "the simulated band top has scrolled past the open card's own top row"
+        )
         depths.append(depth)
         plan = scroll_step.plan_coverage_step(seg, rng=rng)
         assert plan.step_px <= depth, "one step must not exceed what the proof allows"
@@ -1123,7 +1198,7 @@ def test_a_self_contradictory_frame_is_refused_without_the_opt_in():
     unless the caller explicitly opts in, on `MAX_SEGMENTATION_FALLBACK_FRAMES`'s bounded-run
     precedent."""
     frame = _Frame().card(500, 1474, heart=True)
-    frame.heart(1474 - 300)                    # a second heart inside the same card
+    frame.heart(1474 - 300)  # a second heart inside the same card
     seg = frame.segment()
     assert not seg.ok
     with pytest.raises(scroll_step.ScrollStepError):
@@ -1139,18 +1214,24 @@ def test_the_opted_in_segmentation_fallback_is_recovery_conservative_and_jittere
     seg = frame.segment()
     plans = _coverage_draws(seg, n=100, allow_segmentation_failure_fallback=True)
     assert {plan.basis for plan in plans} == {
-        scroll_step.COVERAGE_STEP_SEGMENTATION_FALLBACK}
+        scroll_step.COVERAGE_STEP_SEGMENTATION_FALLBACK
+    }
     assert {plan.cap_px for plan in plans} == {_SEGMENTATION_FALLBACK_CAP_PX}
     steps = {plan.step_px for plan in plans}
     assert min(steps) >= _GESTURE_FLOOR_PX
     assert max(steps) <= _SEGMENTATION_FALLBACK_CAP_PX
     assert len(steps) > 1, "the recovery cadence must retain a randomized legal window"
-    assert all("contradicted itself" in plan.reason
-               and "corpus-minimum recovery cadence" in plan.reason for plan in plans)
+    assert all(
+        "contradicted itself" in plan.reason
+        and "corpus-minimum recovery cadence" in plan.reason
+        for plan in plans
+    )
 
     ordinary = _Frame().segment()
     ordinary_plans = _coverage_draws(ordinary, n=20)
-    assert {plan.basis for plan in ordinary_plans} == {scroll_step.COVERAGE_STEP_FALLBACK}
+    assert {plan.basis for plan in ordinary_plans} == {
+        scroll_step.COVERAGE_STEP_FALLBACK
+    }
     assert {plan.cap_px for plan in ordinary_plans} == {_BLIND_CAP_PX}
     assert max(plan.step_px for plan in ordinary_plans) > _SEGMENTATION_FALLBACK_CAP_PX
 
@@ -1169,7 +1250,8 @@ def test_a_block_with_neither_edge_observed_requires_the_bounded_recovery_opt_in
     last = seg.blocks[-1]
     assert seg.ok and len(seg.blocks) == 1
     assert [(run.y0, run.y1, run.kind) for run in seg.runs] == [
-        (1425, 1490, segment.RUN_TOO_LONG)]
+        (1425, 1490, segment.RUN_TOO_LONG)
+    ]
     assert (last.y0, last.y1) == seg.band
     assert not last.top.observed and not last.bottom.observed
     with pytest.raises(scroll_step.ScrollStepError, match="neither edge observed"):
@@ -1185,16 +1267,18 @@ def test_a_block_with_neither_edge_observed_uses_the_omission_recovery_cadence()
     frame.card(100, 1425, heart=False, radius=0)
     frame.card(1490, 2300, heart=False, radius=0)
     seg = frame.segment()
-    plans = _coverage_draws(
-        seg, n=50, allow_segmentation_failure_fallback=True)
+    plans = _coverage_draws(seg, n=50, allow_segmentation_failure_fallback=True)
     assert {plan.basis for plan in plans} == {
-        scroll_step.COVERAGE_STEP_SEGMENTATION_FALLBACK}
+        scroll_step.COVERAGE_STEP_SEGMENTATION_FALLBACK
+    }
     assert {plan.cap_px for plan in plans} == {_SEGMENTATION_FALLBACK_CAP_PX}
     assert min(plan.step_px for plan in plans) >= _GESTURE_FLOOR_PX
     assert max(plan.step_px for plan in plans) <= _SEGMENTATION_FALLBACK_CAP_PX
     assert all(plan.depth_px is None for plan in plans)
-    assert all("neither edge observed" in plan.reason
-               and "omitted/rebuilt" in plan.reason for plan in plans)
+    assert all(
+        "neither edge observed" in plan.reason and "omitted/rebuilt" in plan.reason
+        for plan in plans
+    )
 
 
 def test_a_rounded_context_bottom_prevents_a_false_shallow_open_card_refusal():
@@ -1215,13 +1299,15 @@ def test_a_rounded_context_bottom_prevents_a_false_shallow_open_card_refusal():
         (1473, 1538, segment.RUN_CARD_EDGE),
     ]
     assert [(block.y0, block.y1) for block in seg.blocks] == [
-        (329, 1473), (1538, _BAND1)]
+        (329, 1473),
+        (1538, _BAND1),
+    ]
     trailing = seg.blocks[-1]
     assert not trailing.top.observed and not trailing.bottom.observed
-    plans = _coverage_draws(
-        seg, n=50, allow_segmentation_failure_fallback=True)
+    plans = _coverage_draws(seg, n=50, allow_segmentation_failure_fallback=True)
     assert {plan.basis for plan in plans} == {
-        scroll_step.COVERAGE_STEP_SEGMENTATION_FALLBACK}
+        scroll_step.COVERAGE_STEP_SEGMENTATION_FALLBACK
+    }
     assert min(plan.step_px for plan in plans) >= _GESTURE_FLOOR_PX
     assert max(plan.step_px for plan in plans) <= _SEGMENTATION_FALLBACK_CAP_PX
 
@@ -1250,9 +1336,12 @@ def test_a_trust_ceiling_that_swallows_the_whole_window_leaves_no_bridgeable_bli
     nothing left after the enumeration ceiling.
     """
     seg = _stack((600,), top=500).segment()
-    with pytest.raises(scroll_step.ScrollStepError, match="frame-omission recovery could still"):
+    with pytest.raises(
+        scroll_step.ScrollStepError, match="frame-omission recovery could still"
+    ):
         scroll_step.plan_coverage_step(
-            seg, trust_ceiling_band_frac=frameshift._TRUST_WINDOW_BAND_FRAC)
+            seg, trust_ceiling_band_frac=frameshift._TRUST_WINDOW_BAND_FRAC
+        )
 
 
 def test_the_step_is_hazard_drawn_not_a_fixed_content_locked_distance():
@@ -1263,7 +1352,9 @@ def test_the_step_is_hazard_drawn_not_a_fixed_content_locked_distance():
     plans = _coverage_draws(seg, n=200)
     distinct = {plan.step_px for plan in plans}
     assert len(distinct) > 20, "too many draws are landing on the same few pixel values"
-    most_common = max({v: sum(1 for p in plans if p.step_px == v) for v in distinct}.values())
+    most_common = max(
+        {v: sum(1 for p in plans if p.step_px == v) for v in distinct}.values()
+    )
     assert most_common / len(plans) < 0.10
 
 
@@ -1292,12 +1383,20 @@ def test_importing_the_coverage_rule_does_not_pull_in_the_driver():
     `plan_scroll_step`, run against the new function -- both share this module's deferred
     `_frac_window` import, so neither should ever import hinge.py at module load time."""
     out = subprocess.run(
-        [sys.executable, "-c",
-         "import sys; import operation_love.drivers.scroll_step as m; "
-         "print('operation_love.drivers.hinge' in sys.modules); "
-         "print(m.plan_coverage_step.__name__)"],
-        capture_output=True, text=True, check=True)
-    assert out.stdout.split() == ["False", "plan_coverage_step"], out.stdout + out.stderr
+        [
+            sys.executable,
+            "-c",
+            "import sys; import operation_love.drivers.scroll_step as m; "
+            "print('operation_love.drivers.hinge' in sys.modules); "
+            "print(m.plan_coverage_step.__name__)",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert out.stdout.split() == ["False", "plan_coverage_step"], (
+        out.stdout + out.stderr
+    )
 
 
 # =====================================================================================
@@ -1308,6 +1407,7 @@ def test_importing_the_coverage_rule_does_not_pull_in_the_driver():
 # module, which an adversarial review caught. That is exactly the shape of this repo's standing
 # "fixtures can miss the branch they name" rule, so these tests are written mutation-first.
 # =====================================================================================
+
 
 def _pinned_header_frame(strip=(368, 411), gap=106, card_h=974):
     """A frame shaped like a real 10.1.0 mid-scroll one: the band opens on page background, then a
@@ -1320,9 +1420,10 @@ def _pinned_header_frame(strip=(368, 411), gap=106, card_h=974):
     """
     f = _Frame()
     s0, s1 = strip
-    inset = 40                                   # keeps the strip's span under the card width
-    f.gray[s0:s1, _CARD_X0 + inset:_CARD_X1 - inset] = f.rng.integers(
-        60, 200, size=(s1 - s0, (_CARD_X1 - inset) - (_CARD_X0 + inset)), dtype=np.uint8)
+    inset = 40  # keeps the strip's span under the card width
+    f.gray[s0:s1, _CARD_X0 + inset : _CARD_X1 - inset] = f.rng.integers(
+        60, 200, size=(s1 - s0, (_CARD_X1 - inset) - (_CARD_X0 + inset)), dtype=np.uint8
+    )
     content_top = s1 + gap
     f.card(content_top, content_top + card_h, radius=0)
     return f, content_top
@@ -1339,11 +1440,13 @@ def test_the_scrolling_viewport_starts_below_a_screen_pinned_strip_not_at_the_ba
     """
     f, content_top = _pinned_header_frame()
     seg = f.segment()
-    assert seg.blocks and seg.blocks[0].kind == segment.BLOCK_UNANCHORED, \
+    assert seg.blocks and seg.blocks[0].kind == segment.BLOCK_UNANCHORED, (
         "the fixture must actually produce an unplaceable leading strip"
+    )
     assert scroll_step._scrolling_viewport_top(seg) == content_top
-    assert scroll_step._scrolling_viewport_top(seg) > seg.band[0], \
+    assert scroll_step._scrolling_viewport_top(seg) > seg.band[0], (
         "a viewport equal to the band top is the bug this function exists to fix"
+    )
 
 
 def test_an_ordinary_frame_keeps_the_band_top_as_its_viewport():
@@ -1367,14 +1470,17 @@ def test_the_open_card_depth_is_measured_from_the_viewport_not_the_band():
     strip, where its top edge is the island cut and therefore unobserved, so the assertions were
     comparing 0 to 0 and the mutation could not redden them.
     """
-    f, content_top = _pinned_header_frame(card_h=700)            # a bounded card under the strip
-    open_top = content_top + 700 + _GUTTER                       # then a gutter, then the open one
-    f.card(open_top, open_top + 2000, radius=_CORNER_RADIUS_PX)  # runs off the band: stays open
+    f, content_top = _pinned_header_frame(card_h=700)  # a bounded card under the strip
+    open_top = content_top + 700 + _GUTTER  # then a gutter, then the open one
+    f.card(
+        open_top, open_top + 2000, radius=_CORNER_RADIUS_PX
+    )  # runs off the band: stays open
     seg = f.segment()
     last = seg.blocks[-1]
-    assert last.top.observed and not last.complete, \
+    assert last.top.observed and not last.complete, (
         "the open trailing card must be gutter-bounded above, or depth short-circuits to 0"
+    )
     depth = scroll_step._open_trailing_block_depth(seg)
-    assert depth == max(0, last.y0 - content_top)                # honest
-    assert depth < max(0, last.y0 - seg.band[0])                 # what the pre-fix code returned
+    assert depth == max(0, last.y0 - content_top)  # honest
+    assert depth < max(0, last.y0 - seg.band[0])  # what the pre-fix code returned
     assert max(0, last.y0 - seg.band[0]) - depth == content_top - seg.band[0]

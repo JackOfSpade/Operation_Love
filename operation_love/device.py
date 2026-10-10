@@ -5,6 +5,7 @@ anywhere, GPU or not — fine at this project's volume). Override with the
 OPLOVE_DEVICE env var (cpu|cuda|mps) or the ``prefer`` arg. AMD/ROCm is not
 auto-selected; torch falls back to CPU there, intentionally.
 """
+
 from __future__ import annotations
 
 import os
@@ -21,7 +22,8 @@ def best_device(prefer: str | None = None) -> str:
         if forced not in _VALID:
             source = "prefer" if prefer is not None else "OPLOVE_DEVICE"
             raise ValueError(
-                f"invalid {source} device {requested!r}; expected one of {sorted(_VALID)}")
+                f"invalid {source} device {requested!r}; expected one of {sorted(_VALID)}"
+            )
         return forced
 
     try:

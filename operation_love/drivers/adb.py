@@ -26,6 +26,7 @@ which is permitted. The accepted no-root limitation: touch pressure can't be var
 Coordinates are screen pixels (the Pixel 7a touchscreen reports X/Y 1:1 with the
 1080x2400 framebuffer).
 """
+
 from __future__ import annotations
 
 import math
@@ -58,17 +59,21 @@ _DEVICE_LOST_PHRASES = (
 _SCREENCAP_ATTEMPTS = 2
 
 _TEXT_SHELL_SPECIALS = frozenset("\\'\"`$&|;<>(){}[]*?!#~")
-_ANDROID_PACKAGE_RE = re.compile(
-    r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+")
-_WM_SIZE_RE = re.compile(r"\b(?:physical|override)\s+size\s*:\s*(\d+)\s*x\s*(\d+)\b", re.IGNORECASE)
+_ANDROID_PACKAGE_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+")
+_WM_SIZE_RE = re.compile(
+    r"\b(?:physical|override)\s+size\s*:\s*(\d+)\s*x\s*(\d+)\b", re.IGNORECASE
+)
 
 
-def validate_android_package_id(value: object, *, context: str = "Android package") -> str:
+def validate_android_package_id(
+    value: object, *, context: str = "Android package"
+) -> str:
     """Return one conservative dotted Android/Java package id or raise before shell use."""
     if not isinstance(value, str) or _ANDROID_PACKAGE_RE.fullmatch(value) is None:
         raise ValueError(
             f"{context} must be a dotted Android identifier containing only letters, digits, "
-            f"and underscores (got {value!r})")
+            f"and underscores (got {value!r})"
+        )
     return value
 
 
@@ -89,8 +94,9 @@ class AdbError(RuntimeError):
         super().__init__(detail)
 
 
-def _bezier(s: tuple[float, float], c: tuple[float, float],
-            e: tuple[float, float], t: float) -> tuple[float, float]:
+def _bezier(
+    s: tuple[float, float], c: tuple[float, float], e: tuple[float, float], t: float
+) -> tuple[float, float]:
     mt = 1.0 - t
     x = mt * mt * s[0] + 2 * mt * t * c[0] + t * t * e[0]
     y = mt * mt * s[1] + 2 * mt * t * c[1] + t * t * e[1]
@@ -115,7 +121,9 @@ def clamp_xy(x: float, y: float, w: int, h: int) -> tuple[int, int]:
     return cx, cy
 
 
-SCROLL_X_JITTER_PX = 25   # scroll_up column jitter, shared by Adb and UhidTouch (HINGE-04)
+SCROLL_X_JITTER_PX = (
+    25  # scroll_up column jitter, shared by Adb and UhidTouch (HINGE-04)
+)
 
 
 def scroll_x(width: int, x_frac: float) -> int:
@@ -127,8 +135,15 @@ def scroll_x(width: int, x_frac: float) -> int:
     return int(width * x_frac) + random.randint(-SCROLL_X_JITTER_PX, SCROLL_X_JITTER_PX)
 
 
-def plan_path(x1: float, y1: float, x2: float, y2: float, steps: int,
-              curve: float = 0.12, jitter: float = 2.0) -> list[tuple[int, int]]:
+def plan_path(
+    x1: float,
+    y1: float,
+    x2: float,
+    y2: float,
+    steps: int,
+    curve: float = 0.12,
+    jitter: float = 2.0,
+) -> list[tuple[int, int]]:
     """Waypoints along a quadratic Bezier from (x1,y1) to (x2,y2).
 
     The control point is offset perpendicular to the straight line by a random
@@ -140,13 +155,13 @@ def plan_path(x1: float, y1: float, x2: float, y2: float, steps: int,
     mx, my = (x1 + x2) / 2.0, (y1 + y2) / 2.0
     dx, dy = x2 - x1, y2 - y1
     length = math.hypot(dx, dy) or 1.0
-    px, py = -dy / length, dx / length            # unit perpendicular
+    px, py = -dy / length, dx / length  # unit perpendicular
     offset = random.uniform(-curve, curve) * length
     cx, cy = mx + px * offset, my + py * offset
     pts: list[tuple[int, int]] = []
     for i in range(steps + 1):
         u = i / steps
-        t = 0.5 * (1.0 - math.cos(math.pi * u))   # ease-in-out
+        t = 0.5 * (1.0 - math.cos(math.pi * u))  # ease-in-out
         bx, by = _bezier((x1, y1), (cx, cy), (x2, y2), t)
         if 0 < i < steps:
             bx += random.uniform(-jitter, jitter)
@@ -178,8 +193,16 @@ class Adb:
         jx, jy = self._clamp(self._jit(x), self._jit(y))
         self._run_device(["shell", "input", "tap", str(jx), str(jy)])
 
-    def swipe(self, x1: int, y1: int, x2: int, y2: int, duration_ms: int = 450, *,
-             _timing: dict[str, float] | None = None) -> None:
+    def swipe(
+        self,
+        x1: int,
+        y1: int,
+        x2: int,
+        y2: int,
+        duration_ms: int = 450,
+        *,
+        _timing: dict[str, float] | None = None,
+    ) -> None:
         """A curved, variable-velocity drag from (x1,y1) to (x2,y2). `duration_ms`
         is the human-anchor for total gesture time (spread log-normally).
 
@@ -202,8 +225,10 @@ class Adb:
         with _time_bucket(_timing, "adb_plan_path_s"):
             dist = math.hypot(x2 - x1, y2 - y1)
             steps = max(8, min(22, int(dist / 60)))
-            pts = [self._clamp(px, py) for px, py in
-                   plan_path(x1, y1, x2, y2, steps, jitter=self.jitter_px)]
+            pts = [
+                self._clamp(px, py)
+                for px, py in plan_path(x1, y1, x2, y2, steps, jitter=self.jitter_px)
+            ]
         with _time_bucket(_timing, "adb_script_build_s"):
             per = duration / max(1, len(pts) - 1)
             lines = [f"input motionevent DOWN {pts[0][0]} {pts[0][1]}"]
@@ -214,8 +239,13 @@ class Adb:
         with _time_bucket(_timing, "adb_run_script_s"):
             self._run_script(lines)
 
-    def scroll_up(self, distance_frac: float = 0.55, x_frac: float = 0.5, *,
-                 _timing: dict[str, float] | None = None) -> None:
+    def scroll_up(
+        self,
+        distance_frac: float = 0.55,
+        x_frac: float = 0.5,
+        *,
+        _timing: dict[str, float] | None = None,
+    ) -> None:
         """Scroll content up (reveal what's below) — a humanized swipe low->high.
 
         `_timing`'s "screen_size_s" bucket is the SAME key hinge.py's `_scroll` and this
@@ -284,7 +314,7 @@ class Adb:
         driver, not a call site, remains responsible for foreground ownership and audit logging
         around that input.
         """
-        if type(keycode) is not int or keycode < 0 or keycode > 0xffff:
+        if type(keycode) is not int or keycode < 0 or keycode > 0xFFFF:
             raise ValueError("Android keycode must be an integer in 0..65535")
         self._run_device(["shell", "input", "keyevent", str(keycode)])
 
@@ -309,8 +339,9 @@ class Adb:
                 # _run chains the original TimeoutExpired, so do not classify arbitrary ADB
                 # failures from their text.  This is intentionally narrower than a generic
                 # "retry on AdbError" policy.
-                if (attempt + 1 < _SCREENCAP_ATTEMPTS
-                        and isinstance(error.__cause__, subprocess.TimeoutExpired)):
+                if attempt + 1 < _SCREENCAP_ATTEMPTS and isinstance(
+                    error.__cause__, subprocess.TimeoutExpired
+                ):
                     if first_error is None:
                         first_error = error
                     continue
@@ -324,11 +355,14 @@ class Adb:
                     )
                     terminal_error.add_note(
                         "Read-only screencap retry after initial timeout: "
-                        f"{first_error}")
+                        f"{first_error}"
+                    )
                     raise terminal_error from error
                 raise
 
-        raise AssertionError("screencap retry loop exhausted without returning or raising")
+        raise AssertionError(
+            "screencap retry loop exhausted without returning or raising"
+        )
 
     def screen_size(self) -> tuple[int, int]:
         if self._size is None:
@@ -341,7 +375,9 @@ class Adb:
                     # Android lists the optional override after the physical size, so the
                     # last matching line is the actual coordinate space for input.
             if not (w and h):
-                raise AdbError(["wm", "size"], f"could not parse screen size from {out!r}")
+                raise AdbError(
+                    ["wm", "size"], f"could not parse screen size from {out!r}"
+                )
             self._size = (w, h)
         return self._size
 
@@ -407,11 +443,15 @@ class Adb:
         """One ``dumpsys activity activities`` round trip: (either focus field present,
         package). See :func:`parse_foreground_activity_package` for the field names this
         checks and the LIVE-VERIFY caveat on this dump shape."""
-        activity_output = _decode(self._run_device(["shell", "dumpsys activity activities"]))
+        activity_output = _decode(
+            self._run_device(["shell", "dumpsys activity activities"])
+        )
         resumed_present, _ = _package_from_focus_lines(
-            activity_output, "mResumedActivity", separator=":")
+            activity_output, "mResumedActivity", separator=":"
+        )
         focused_present, _ = _package_from_focus_lines(
-            activity_output, "mFocusedActivity", separator=":")
+            activity_output, "mFocusedActivity", separator=":"
+        )
         if resumed_present or focused_present:
             return True, parse_foreground_activity_package(activity_output)
         return False, None
@@ -420,7 +460,11 @@ class Adb:
         """Write bytes to a device file via `cat` redirect. Works for regular files in
         shell-writable dirs (e.g. /data/local/tmp) — unlike `mkfifo`, which SELinux denies
         to the shell domain. Raises DriverClosed if the device drops."""
-        self._run(["shell", f"cat > {shlex.quote(path)}"], target_device=True, input_bytes=data)
+        self._run(
+            ["shell", f"cat > {shlex.quote(path)}"],
+            target_device=True,
+            input_bytes=data,
+        )
 
     # --- helpers -------------------------------------------------------
     def _clamp(self, x: int, y: int) -> tuple[int, int]:
@@ -438,8 +482,12 @@ class Adb:
         script = ("\n".join(lines) + "\n").encode()
         self._run(["shell"], target_device=True, input_bytes=script)
 
-    def _run(self, args: Sequence[str], target_device: bool = False,
-             input_bytes: bytes | None = None) -> bytes:
+    def _run(
+        self,
+        args: Sequence[str],
+        target_device: bool = False,
+        input_bytes: bytes | None = None,
+    ) -> bytes:
         argv = [self.adb_path]
         if target_device and self.serial:
             argv.extend(["-s", self.serial])
@@ -525,7 +573,8 @@ _FOREGROUND_COMPONENT_RE = re.compile(
 
 
 def _package_from_focus_lines(
-        stdout: str, label: str, *, separator: str = "=") -> tuple[bool, str | None]:
+    stdout: str, label: str, *, separator: str = "="
+) -> tuple[bool, str | None]:
     """Return ``(label_present, unambiguous_package)`` for one dumpsys focus field.
 
     ``separator`` distinguishes WindowManager's ``label=value`` shape (``dumpsys window
@@ -604,11 +653,13 @@ def parse_foreground_activity_package(stdout: str) -> str | None:
     focused activity.
     """
     resumed_present, package = _package_from_focus_lines(
-        stdout, "mResumedActivity", separator=":")
+        stdout, "mResumedActivity", separator=":"
+    )
     if resumed_present:
         return package
     _focused_present, package = _package_from_focus_lines(
-        stdout, "mFocusedActivity", separator=":")
+        stdout, "mFocusedActivity", separator=":"
+    )
     return package
 
 
@@ -639,9 +690,8 @@ def _escape_input_text(s: str) -> str:
 
 def _is_device_lost_message(message: str) -> bool:
     lowered = message.lower()
-    return (
-        any(phrase in lowered for phrase in _DEVICE_LOST_PHRASES)
-        or ("device" in lowered and "not found" in lowered)
+    return any(phrase in lowered for phrase in _DEVICE_LOST_PHRASES) or (
+        "device" in lowered and "not found" in lowered
     )
 
 

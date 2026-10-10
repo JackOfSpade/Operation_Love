@@ -1,4 +1,5 @@
 """The composer detector's fail-closed contract survives optimized Python."""
+
 from __future__ import annotations
 
 import subprocess
@@ -23,10 +24,12 @@ def test_empty_internal_candidate_set_raises_the_public_detection_error(monkeypa
     monkeypatch.setattr(like_composer, "_confirm_matches", lambda *_args, **_kwargs: [])
 
     with pytest.raises(
-            like_composer.ComposerDetectionError,
-            match="no actionable confirmation candidate"):
+        like_composer.ComposerDetectionError,
+        match="no actionable confirmation candidate",
+    ):
         like_composer.locate_inline_composer(
-            _blank_frame(), np.ones((2, 2), dtype=np.uint8))
+            _blank_frame(), np.ones((2, 2), dtype=np.uint8)
+        )
 
 
 def test_empty_internal_candidate_set_still_raises_composer_error_under_python_optimized():

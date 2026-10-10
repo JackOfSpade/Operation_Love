@@ -4,6 +4,7 @@ The browser is only the face: start/stop POST to this local server, which does
 the real work via HubState. UI choice (this being a plain http.server page) has
 no bearing on what the backend can do.
 """
+
 from __future__ import annotations
 
 import errno
@@ -19,12 +20,21 @@ from urllib.parse import urlsplit
 
 from ..config import _MAX_REQUEST_TIMEOUT_S
 from ..ranker.bigquery_store import _profile_upload_deadline_s
-from ..supervisor import (_WORKER_JOIN_TIMEOUT_MARGIN_S, _archive_join_grace_s,
-                          _store_archive_in_flight, _worker_join_timeout_s)
+from ..supervisor import (
+    _WORKER_JOIN_TIMEOUT_MARGIN_S,
+    _archive_join_grace_s,
+    _store_archive_in_flight,
+    _worker_join_timeout_s,
+)
 from ..training_actions import MAX_PROFILE_REVIEW_FRAMES
 from .page import _PAGE
-from .state import (HubState, validate_apps, validate_max_per_run,
-                    validate_browser_client_id, validate_stop_after_seconds)
+from .state import (
+    HubState,
+    validate_apps,
+    validate_max_per_run,
+    validate_browser_client_id,
+    validate_stop_after_seconds,
+)
 
 _BROWSER_SHUTDOWN_GRACE_S = 1.5
 _BROWSER_STALE_CHECK_S = 5.0
@@ -37,7 +47,12 @@ _POST_FIELDS = {
     "/api/start": {"mode", "apps", "max_per_run", "stop_after_seconds"},
     "/api/stop": set(),
     "/api/training/action": {
-        "command", "run_id", "app", "profile_token", "approval_token", "idempotency_token",
+        "command",
+        "run_id",
+        "app",
+        "profile_token",
+        "approval_token",
+        "idempotency_token",
     },
     "/api/training/alert": {"run_id", "app", "profile_token", "notification"},
     "/api/training/remove-latest": set(),
@@ -93,7 +108,8 @@ _SHUTDOWN_SAVE_HEADROOM_S = 45.0
 # price). Priced at the ceiling of what a Training review admits, which is what the whole
 # constant used to be.
 _SHUTDOWN_ARCHIVE_CEILING_FALLBACK_S = (
-    _MAX_REQUEST_TIMEOUT_S + _WORKER_JOIN_TIMEOUT_MARGIN_S
+    _MAX_REQUEST_TIMEOUT_S
+    + _WORKER_JOIN_TIMEOUT_MARGIN_S
     + _profile_upload_deadline_s(MAX_PROFILE_REVIEW_FRAMES)
     + _WORKER_JOIN_TIMEOUT_MARGIN_S
     + _SHUTDOWN_SAVE_HEADROOM_S
@@ -112,8 +128,12 @@ def _run_archive_ceiling_s(cfg) -> float:
     if cfg is None:
         return _SHUTDOWN_ARCHIVE_CEILING_FALLBACK_S
     try:
-        return (_worker_join_timeout_s(cfg) + _archive_join_grace_s(cfg)
-                + _WORKER_JOIN_TIMEOUT_MARGIN_S + _SHUTDOWN_SAVE_HEADROOM_S)
+        return (
+            _worker_join_timeout_s(cfg)
+            + _archive_join_grace_s(cfg)
+            + _WORKER_JOIN_TIMEOUT_MARGIN_S
+            + _SHUTDOWN_SAVE_HEADROOM_S
+        )
     except Exception:  # noqa: BLE001 -- a shutdown bound must never raise on its way out
         return _SHUTDOWN_ARCHIVE_CEILING_FALLBACK_S
 
@@ -134,8 +154,10 @@ def _wait_for_run_shutdown(state) -> bool:
     if not _store_archive_in_flight(state.live_store()):
         return False
     ceiling_s = _run_archive_ceiling_s(state.live_run_cfg())
-    print("Hub: run is still archiving a decision that already landed on the phone; waiting "
-          f"up to {ceiling_s:.0f}s more before exiting so its label is not abandoned.")
+    print(
+        "Hub: run is still archiving a decision that already landed on the phone; waiting "
+        f"up to {ceiling_s:.0f}s more before exiting so its label is not abandoned."
+    )
     deadline = time.monotonic() + ceiling_s
     while time.monotonic() < deadline:
         if state.wait_for_run(timeout=_SHUTDOWN_ARCHIVE_POLL_S):
@@ -164,7 +186,7 @@ def _json_object_without_duplicate_keys(pairs: list[tuple[str, object]]) -> dict
 
 
 class _Handler(BaseHTTPRequestHandler):
-    state: HubState | None = None           # set by serve()
+    state: HubState | None = None  # set by serve()
 
     def end_headers(self) -> None:
         """Attach browser hardening to every response, including empty/error responses.
@@ -185,7 +207,9 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
-        self.send_header("Cache-Control", "no-store")   # always serve the live build (no stale UI)
+        self.send_header(
+            "Cache-Control", "no-store"
+        )  # always serve the live build (no stale UI)
         self.end_headers()
         self.wfile.write(data)
 
@@ -222,11 +246,13 @@ class _Handler(BaseHTTPRequestHandler):
             f"[::1]:{port}": ("::1", port),
         }
         if port == 80:
-            authorities.update({
-                "127.0.0.1": ("127.0.0.1", port),
-                "localhost": ("localhost", port),
-                "[::1]": ("::1", port),
-            })
+            authorities.update(
+                {
+                    "127.0.0.1": ("127.0.0.1", port),
+                    "localhost": ("localhost", port),
+                    "[::1]": ("::1", port),
+                }
+            )
         return authorities.get(values[0].strip().lower())
 
     def _require_local_host(self) -> tuple[str, int] | None:
@@ -269,7 +295,9 @@ class _Handler(BaseHTTPRequestHandler):
     def _render_page(self) -> str:
         token = html.escape(str(getattr(self.server, "csrf_token", "")), quote=True)
         if _PAGE.count(_CSRF_TOKEN_PLACEHOLDER) != 1:
-            raise RuntimeError("hub page must contain exactly one CSRF token placeholder")
+            raise RuntimeError(
+                "hub page must contain exactly one CSRF token placeholder"
+            )
         return _PAGE.replace(_CSRF_TOKEN_PLACEHOLDER, token)
 
     def do_GET(self) -> None:
@@ -279,17 +307,23 @@ class _Handler(BaseHTTPRequestHandler):
         if path == "/":
             self._send(200, self._render_page(), "text/html; charset=utf-8")
         elif path == "/favicon.ico":
-            self.send_response(204)             # no icon; avoids a console 404
+            self.send_response(204)  # no icon; avoids a console 404
             self.end_headers()
         elif path == "/api/status":
             self._json(self.state.snapshot())
         elif path == "/api/training/checkpoint":
             from urllib.parse import parse_qs, urlparse
+
             query = parse_qs(urlparse(self.path).query)
-            self._json(self.state.training_action_snapshot(
-                run_id=query.get("run_id", [None])[0], app=query.get("app", [None])[0]))
+            self._json(
+                self.state.training_action_snapshot(
+                    run_id=query.get("run_id", [None])[0],
+                    app=query.get("app", [None])[0],
+                )
+            )
         elif path == "/api/training/image":
             from urllib.parse import parse_qs, urlparse
+
             query = parse_qs(urlparse(self.path).query)
             try:
                 index = int(query.get("index", [""])[0])
@@ -298,7 +332,9 @@ class _Handler(BaseHTTPRequestHandler):
             data = self.state.training_profile_review_image(
                 run_id=query.get("run_id", [""])[0],
                 app=query.get("app", [""])[0],
-                profile_token=query.get("profile_token", [""])[0], index=index)
+                profile_token=query.get("profile_token", [""])[0],
+                index=index,
+            )
             if data is None:
                 self._json({"error": "training profile image not found"}, 404)
             else:
@@ -308,15 +344,22 @@ class _Handler(BaseHTTPRequestHandler):
         elif path == "/api/eval":
             self._json(self.state.eval_snapshot())
         elif path == "/api/logs":
-            from ..bugreport import recent_logs   # tee'd stdout/stderr ring (install_log_capture)
+            from ..bugreport import (
+                recent_logs,
+            )  # tee'd stdout/stderr ring (install_log_capture)
+
             self._json({"lines": recent_logs(300)})
         elif path == "/api/bugreport":
             from ..bugreport import build_report
+
             desc = ""
             if "?" in self.path:
                 from urllib.parse import parse_qs, urlparse
-                desc = (parse_qs(urlparse(self.path).query).get("desc", [""])[0])
-            md = build_report(self.state, description=desc, config_path=self.state.config_path)
+
+                desc = parse_qs(urlparse(self.path).query).get("desc", [""])[0]
+            md = build_report(
+                self.state, description=desc, config_path=self.state.config_path
+            )
             self._send(200, md, "text/markdown; charset=utf-8")
         else:
             self._json({"error": "not found"}, 404)
@@ -326,18 +369,26 @@ class _Handler(BaseHTTPRequestHandler):
         server = self.server
 
         def _target():
-            time.sleep(_BROWSER_SHUTDOWN_GRACE_S)  # reload/new tab gets a moment to register
-            disposition = state.browser_close_shutdown_disposition() if state else "shutdown"
+            time.sleep(
+                _BROWSER_SHUTDOWN_GRACE_S
+            )  # reload/new tab gets a moment to register
+            disposition = (
+                state.browser_close_shutdown_disposition() if state else "shutdown"
+            )
             if disposition == "client_reopened":
                 return
             if disposition == "preserve_training_approval":
                 host, port = server.server_address[:2]
-                print("Hub: browser hub tab closed while a Training approval is waiting; "
-                      "keeping the run and verified checkpoint alive. Reopen "
-                      f"http://{host}:{port}/ to decide, or press Stop deliberately.")
+                print(
+                    "Hub: browser hub tab closed while a Training approval is waiting; "
+                    "keeping the run and verified checkpoint alive. Reopen "
+                    f"http://{host}:{port}/ to decide, or press Stop deliberately."
+                )
                 return
             if state and state.is_running():
-                print("Hub: browser hub tab closed; stopping active run before shutdown.")
+                print(
+                    "Hub: browser hub tab closed; stopping active run before shutdown."
+                )
                 state.stop()
                 # Bounded exactly like the Ctrl-C path, through the same helper: a wedged
                 # worker must not block this thread past the flat budget, or server.shutdown()
@@ -353,7 +404,9 @@ class _Handler(BaseHTTPRequestHandler):
                 print("Hub: browser hub tab closed; shutting down.")
             server.shutdown()
 
-        threading.Thread(target=_target, name="hub-tab-close-shutdown", daemon=True).start()
+        threading.Thread(
+            target=_target, name="hub-tab-close-shutdown", daemon=True
+        ).start()
 
     def _start_stale_browser_watch(self) -> None:
         state = self.state
@@ -366,7 +419,9 @@ class _Handler(BaseHTTPRequestHandler):
                     return
 
         try:
-            threading.Thread(target=_target, name="hub-tab-stale-watch", daemon=True).start()
+            threading.Thread(
+                target=_target, name="hub-tab-stale-watch", daemon=True
+            ).start()
         except RuntimeError as exc:
             # browser_client_opened() claimed the one active watcher before this allocation.
             # Release that claim so a later heartbeat can retry rather than making stale-tab
@@ -383,12 +438,19 @@ class _Handler(BaseHTTPRequestHandler):
             self._json({"ok": False, "msg": "Origin does not match the local hub"}, 403)
             return
         content_types = self.headers.get_all("Content-Type", [])
-        if len(content_types) != 1 or self.headers.get_content_type() != "application/json":
-            self._json({"ok": False, "msg": "Content-Type must be application/json"}, 415)
+        if (
+            len(content_types) != 1
+            or self.headers.get_content_type() != "application/json"
+        ):
+            self._json(
+                {"ok": False, "msg": "Content-Type must be application/json"}, 415
+            )
             return
         content_lengths = self.headers.get_all("Content-Length", [])
         if len(content_lengths) > 1:
-            self._json({"ok": False, "msg": "Content-Length must not be duplicated"}, 400)
+            self._json(
+                {"ok": False, "msg": "Content-Length must not be duplicated"}, 400
+            )
             return
         try:
             length = int(content_lengths[0] or 0) if content_lengths else 0
@@ -400,7 +462,11 @@ class _Handler(BaseHTTPRequestHandler):
             return
         raw = self.rfile.read(length) if length else b""
         try:
-            body = json.loads(raw, object_pairs_hook=_json_object_without_duplicate_keys) if raw else {}
+            body = (
+                json.loads(raw, object_pairs_hook=_json_object_without_duplicate_keys)
+                if raw
+                else {}
+            )
         except ValueError:
             body = None
         if not isinstance(body, dict):
@@ -417,8 +483,10 @@ class _Handler(BaseHTTPRequestHandler):
         if (
             not isinstance(supplied_token, str)
             or not expected_token
-            or not hmac.compare_digest(supplied_token.encode("utf-8", "surrogatepass"),
-                                       expected_token.encode("utf-8"))
+            or not hmac.compare_digest(
+                supplied_token.encode("utf-8", "surrogatepass"),
+                expected_token.encode("utf-8"),
+            )
         ):
             self._json({"ok": False, "msg": "invalid CSRF token"}, 403)
             return
@@ -426,15 +494,23 @@ class _Handler(BaseHTTPRequestHandler):
         if allowed_fields is not None:
             unknown_fields = set(body) - allowed_fields
             if unknown_fields:
-                self._json({
-                    "ok": False,
-                    "msg": f"unknown request field(s): {sorted(unknown_fields)}",
-                }, 400)
+                self._json(
+                    {
+                        "ok": False,
+                        "msg": f"unknown request field(s): {sorted(unknown_fields)}",
+                    },
+                    400,
+                )
                 return
         if self.path in {"/api/hub/open", "/api/hub/ping", "/api/hub/closed"}:
-            valid_client, client_id, client_error = validate_browser_client_id(body.get("id"))
+            valid_client, client_id, client_error = validate_browser_client_id(
+                body.get("id")
+            )
             if not valid_client or client_id is None:
-                self._json({"ok": False, "msg": client_error or "invalid browser client id"}, 400)
+                self._json(
+                    {"ok": False, "msg": client_error or "invalid browser client id"},
+                    400,
+                )
                 return
             body["id"] = client_id
         if self.path == "/api/start":
@@ -442,8 +518,9 @@ class _Handler(BaseHTTPRequestHandler):
             if not valid_cap:
                 self._json({"ok": False, "msg": cap_error}, 400)
                 return
-            valid_timeout, stop_after_seconds, timeout_error = validate_stop_after_seconds(
-                body.get("stop_after_seconds"))
+            valid_timeout, stop_after_seconds, timeout_error = (
+                validate_stop_after_seconds(body.get("stop_after_seconds"))
+            )
             if not valid_timeout:
                 self._json({"ok": False, "msg": timeout_error}, 400)
                 return
@@ -451,8 +528,7 @@ class _Handler(BaseHTTPRequestHandler):
             if not valid_apps:
                 self._json({"ok": False, "msg": apps_error}, 400)
                 return
-            ok, msg = self.state.start(body.get("mode"), apps, mpr,
-                                       stop_after_seconds)
+            ok, msg = self.state.start(body.get("mode"), apps, mpr, stop_after_seconds)
             self._json({"ok": ok, "msg": msg}, 200 if ok else 409)
         elif self.path == "/api/stop":
             # HubState.stop() now returns (False, "no run is active") instead of an
@@ -488,7 +564,7 @@ class _Handler(BaseHTTPRequestHandler):
         else:
             self._json({"error": "not found"}, 404)
 
-    def log_message(self, *_):              # silence default stderr request logging
+    def log_message(self, *_):  # silence default stderr request logging
         pass
 
 
@@ -498,7 +574,7 @@ def _bind(host: str, port: int) -> _HubHTTPServer:
     if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
         raise ValueError("Hub port must be an integer from 1 to 65535")
     last_port = min(port + 199, 65535)
-    for p in range(port, last_port + 1):       # find a free port near the default
+    for p in range(port, last_port + 1):  # find a free port near the default
         try:
             httpd = _HubHTTPServer((host, p), _Handler)
             httpd.csrf_token = secrets.token_urlsafe(32)
@@ -510,12 +586,17 @@ def _bind(host: str, port: int) -> _HubHTTPServer:
     raise SystemExit(f"Hub: no free port in {port}..{last_port}")
 
 
-def serve(config_path: str = "config.yaml", host: str = "127.0.0.1",
-          port: int = 8765, open_browser: bool = True) -> None:
+def serve(
+    config_path: str = "config.yaml",
+    host: str = "127.0.0.1",
+    port: int = 8765,
+    open_browser: bool = True,
+) -> None:
     from .._warnings import configure_warnings
     from ..bugreport import install_log_capture
+
     configure_warnings()
-    install_log_capture()                   # capture logs so bug reports include them
+    install_log_capture()  # capture logs so bug reports include them
     _Handler.state = HubState(config_path)
     httpd = _bind(host, port)
     url = f"http://{host}:{httpd.server_address[1]}/"
@@ -544,9 +625,11 @@ def serve(config_path: str = "config.yaml", host: str = "127.0.0.1",
             # _wait_for_run_shutdown for the two-stage bound: a flat budget everyone pays, then
             # an extension only while an archive for an already-landed decision is in flight.
             if not _wait_for_run_shutdown(_Handler.state):
-                print(f"Hub: run did not finish saving within its shutdown budget "
-                      f"({_SHUTDOWN_SAVE_TIMEOUT_S:.0f}s, extended only while an archive was "
-                      "still writing); exiting anyway (data may not be fully flushed).")
+                print(
+                    f"Hub: run did not finish saving within its shutdown budget "
+                    f"({_SHUTDOWN_SAVE_TIMEOUT_S:.0f}s, extended only while an archive was "
+                    "still writing); exiting anyway (data may not be fully flushed)."
+                )
         try:
             httpd.shutdown()
         finally:

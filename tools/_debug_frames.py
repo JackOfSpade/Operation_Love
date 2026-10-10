@@ -13,6 +13,7 @@ Kept as its own private module rather than imported across the two tools, becaus
 verifier is deliberately a separate evidence chain from the manual one; sharing a leaf
 containment predicate must not make either import the other's refusal vocabulary.
 """
+
 from __future__ import annotations
 
 from pathlib import Path

@@ -11,6 +11,7 @@ are supplementary coverage for the rest of this new module's public surface (sta
 lifecycle, the TouchWatchUnavailable failure modes, the gesture deque cap, and the
 "must never raise into the reader thread" contract).
 """
+
 import subprocess
 
 import pytest
@@ -141,20 +142,22 @@ add device 1: /dev/input/event1
                 003a  : value 0, min 0, max 255, fuzz 0, flat 0, resolution 0
   input props:
     INPUT_PROP_DIRECT
-""" + _GETEVENT_P_TRANSCRIPT[_GETEVENT_P_TRANSCRIPT.index("add device 3:"):]
+""" + _GETEVENT_P_TRANSCRIPT[_GETEVENT_P_TRANSCRIPT.index("add device 3:") :]
 
 # The first project UHID descriptor exposed the smaller four-axis profile that remains in
 # `_GETEVENT_P_TRANSCRIPT`'s event1 block. Its name must not become a bypass after an upgrade.
 _RENAMED_LEGACY_UHID_TRANSCRIPT = _GETEVENT_P_TRANSCRIPT.replace(
-    'name:     "og_touch_a1b2c3d4"', 'name:     "old-persistent-gesture"', 1)
+    'name:     "og_touch_a1b2c3d4"', 'name:     "old-persistent-gesture"', 1
+)
 
 # Android builds differ in whether getevent uses lowercase or uppercase hex in capability rows.
 # Uppercasing only codes keeps the transcript syntax/name labels realistic while exercising
 # normalized selection for both the virtual and physical candidates.
-_UPPERCASE_CAPABILITY_TRANSCRIPT = (_PERSISTENT_UHID_TRANSCRIPT
-    .replace("014a*", "014A*")
+_UPPERCASE_CAPABILITY_TRANSCRIPT = (
+    _PERSISTENT_UHID_TRANSCRIPT.replace("014a*", "014A*")
     .replace("014a", "014A")
-    .replace("003a", "003A"))
+    .replace("003a", "003A")
+)
 
 
 def _tap_lines(x: int, y: int, t: float, tracking_id: int) -> list[str]:
@@ -212,7 +215,9 @@ class _FakePopen:
 
 def _fake_run_ok(argv, capture_output=True, timeout=None, check=None):
     assert check is False
-    return subprocess.CompletedProcess(argv, 0, stdout=_GETEVENT_P_TRANSCRIPT.encode(), stderr=b"")
+    return subprocess.CompletedProcess(
+        argv, 0, stdout=_GETEVENT_P_TRANSCRIPT.encode(), stderr=b""
+    )
 
 
 # --- #9: getevent -lt parsing -----------------------------------------------------------
@@ -227,14 +232,14 @@ def test_feed_line_parses_lt_transcript_into_tap_and_drag_gestures():
     assert len(gestures) == 2
 
     tap, drag = gestures
-    assert tap.down == (500, 800)      # 0x1f4 -> 500, 0x320 -> 800
+    assert tap.down == (500, 800)  # 0x1f4 -> 500, 0x320 -> 800
     assert tap.up == (500, 800)
     assert tap.travel_px == 0.0
     assert tap.is_tap(12.0)
 
     assert drag.down == (500, 800)
-    assert drag.up == (500, 300)       # 0x12c -> 300
-    assert drag.travel_px == 500.0     # farthest point reached from the down point
+    assert drag.up == (500, 300)  # 0x12c -> 300
+    assert drag.travel_px == 500.0  # farthest point reached from the down point
     assert not drag.is_tap(12.0)
 
     # Every line in the transcript matches the getevent -lt shape (including the plain
@@ -263,13 +268,13 @@ def test_feed_line_parses_numeric_getevent_codes_when_toolbox_ignores_l_flag():
 
 def test_feed_line_ignores_unmatched_and_malformed_lines_without_raising():
     w = touchwatch.TouchWatcher("adb", "pixel", (1080, 2400))
-    w._feed_line("")                                     # blank
-    w._feed_line("this is not a getevent line at all")   # doesn't match the shape at all
+    w._feed_line("")  # blank
+    w._feed_line("this is not a getevent line at all")  # doesn't match the shape at all
     w._feed_line(
         "[   1.000000] /dev/input/event3: EV_ABS       ABS_MT_POSITION_X    zzzzzzzz"
-    )   # matches the shape, but the value isn't valid hex
+    )  # matches the shape, but the value isn't valid hex
 
-    assert w.event_count == 1              # only the shape-matching line counts
+    assert w.event_count == 1  # only the shape-matching line counts
     assert w.gestures_since(0) == []
 
 
@@ -291,15 +296,21 @@ def test_unparsed_lines_are_kept_as_a_redacted_capped_format_sample():
     """
     w = touchwatch.TouchWatcher("adb", "pixel", (1080, 2400))
     # A line that DOES parse must not leave a sample behind: this is a record of failures.
-    w._feed_line("[   1.000000] /dev/input/event3: EV_ABS       ABS_MT_POSITION_X    000001f4")
+    w._feed_line(
+        "[   1.000000] /dev/input/event3: EV_ABS       ABS_MT_POSITION_X    000001f4"
+    )
     assert w.unparsed_line_samples == ()
 
     # A raw-numeric spelling this parser does not accept. The SHAPE survives (that is what a
     # regex fix is made from); every value in it, including the 000001f4 = 500px x-coordinate,
     # does not.
     w._feed_line("/dev/input/event3: type 3 code 53   value 000001f4")
-    assert w.unparsed_line_samples == ("/dev/input/event3: type <n> code <n> value <n>",)
-    assert "000001f4" not in w.unparsed_line_samples[0], "a touch coordinate survived redaction"
+    assert w.unparsed_line_samples == (
+        "/dev/input/event3: type <n> code <n> value <n>",
+    )
+    assert "000001f4" not in w.unparsed_line_samples[0], (
+        "a touch coordinate survived redaction"
+    )
 
     # A hypothetical future spelling carrying a timestamp and a coordinate: same rule, and the
     # runs of whitespace are collapsed so the sample stays one short line.
@@ -402,19 +413,25 @@ def test_gestures_since_filters_by_host_monotonic_down_time():
     w = touchwatch.TouchWatcher("adb", "pixel", (1080, 2400))
     for line in _tap_lines(500, 800, t=1.0, tracking_id=1):
         w._feed_line(line)
-    cutoff = w.gestures_since(0)[0].t_up + 1000.0   # comfortably after this gesture ended
+    cutoff = (
+        w.gestures_since(0)[0].t_up + 1000.0
+    )  # comfortably after this gesture ended
     for line in _tap_lines(600, 800, t=2.0, tracking_id=2):
         w._feed_line(line)
 
     assert len(w.gestures_since(0)) == 2
-    assert w.gestures_since(cutoff) == []   # the first (and only pre-cutoff) tap is excluded
+    assert (
+        w.gestures_since(cutoff) == []
+    )  # the first (and only pre-cutoff) tap is excluded
 
 
 # --- #10: getevent -p device selection ---------------------------------------------------
 def test_select_touch_device_picks_pixel7a_touchscreen_and_skips_uhid():
     """Spec §4 test #10: a canned `getevent -p` transcript (the REAL Pixel 7a shape,
     spec §1) picks /dev/input/event3 and skips an og_touch_* entry."""
-    dev_path, name, x_max, y_max = touchwatch.select_touch_device(_GETEVENT_P_TRANSCRIPT)
+    dev_path, name, x_max, y_max = touchwatch.select_touch_device(
+        _GETEVENT_P_TRANSCRIPT
+    )
 
     assert dev_path == "/dev/input/event3"
     assert name == "goodix_ts0"
@@ -426,7 +443,8 @@ def test_select_touch_device_uhid_exclusion_is_load_bearing():
     # The legacy project descriptor is printed first. Even after disabling the ordinary
     # default-name prefix, its capability profile must keep it out of observation.
     dev_path, name, _, _ = touchwatch.select_touch_device(
-        _GETEVENT_P_TRANSCRIPT, exclude_name_prefixes=(),
+        _GETEVENT_P_TRANSCRIPT,
+        exclude_name_prefixes=(),
     )
     assert dev_path == "/dev/input/event3"
     assert name == "goodix_ts0"
@@ -437,9 +455,15 @@ def test_select_touch_device_skips_renamed_persistent_uhid_by_device_identity():
     Its exact descriptor profile, rather than an overfitted `persist-*` blacklist, keeps it
     out of observation."""
     dev_path, name, x_max, y_max = touchwatch.select_touch_device(
-        _PERSISTENT_UHID_TRANSCRIPT, exclude_name_prefixes=())
+        _PERSISTENT_UHID_TRANSCRIPT, exclude_name_prefixes=()
+    )
 
-    assert (dev_path, name, x_max, y_max) == ("/dev/input/event3", "goodix_ts0", 1079, 2399)
+    assert (dev_path, name, x_max, y_max) == (
+        "/dev/input/event3",
+        "goodix_ts0",
+        1079,
+        2399,
+    )
 
 
 def test_select_touch_device_rejects_indirect_multitouch_hardware():
@@ -457,15 +481,23 @@ add device 0: /dev/input/event0
 """
 
     dev_path, name, x_max, y_max = touchwatch.select_touch_device(
-        indirect + _GETEVENT_P_TRANSCRIPT[_GETEVENT_P_TRANSCRIPT.index("add device 3:"):])
+        indirect
+        + _GETEVENT_P_TRANSCRIPT[_GETEVENT_P_TRANSCRIPT.index("add device 3:") :]
+    )
 
-    assert (dev_path, name, x_max, y_max) == ("/dev/input/event3", "goodix_ts0", 1079, 2399)
+    assert (dev_path, name, x_max, y_max) == (
+        "/dev/input/event3",
+        "goodix_ts0",
+        1079,
+        2399,
+    )
 
 
 def test_select_touch_device_skips_renamed_legacy_uhid_by_capability_profile():
     """The older four-axis project descriptor is equally synthetic under an arbitrary name."""
     dev_path, name, _, _ = touchwatch.select_touch_device(
-        _RENAMED_LEGACY_UHID_TRANSCRIPT, exclude_name_prefixes=())
+        _RENAMED_LEGACY_UHID_TRANSCRIPT, exclude_name_prefixes=()
+    )
 
     assert (dev_path, name) == ("/dev/input/event3", "goodix_ts0")
 
@@ -473,9 +505,15 @@ def test_select_touch_device_skips_renamed_legacy_uhid_by_capability_profile():
 def test_select_touch_device_normalizes_uppercase_capability_codes():
     """A formatting-only casing change must not turn either UHID profile into human input."""
     dev_path, name, x_max, y_max = touchwatch.select_touch_device(
-        _UPPERCASE_CAPABILITY_TRANSCRIPT, exclude_name_prefixes=())
+        _UPPERCASE_CAPABILITY_TRANSCRIPT, exclude_name_prefixes=()
+    )
 
-    assert (dev_path, name, x_max, y_max) == ("/dev/input/event3", "goodix_ts0", 1079, 2399)
+    assert (dev_path, name, x_max, y_max) == (
+        "/dev/input/event3",
+        "goodix_ts0",
+        1079,
+        2399,
+    )
 
 
 def test_select_touch_device_raises_when_nothing_qualifies():
@@ -494,9 +532,11 @@ def test_select_touch_device_rejects_nonpositive_axis_ranges():
 
 # --- Gesture.is_tap --------------------------------------------------------------------
 def test_gesture_is_tap_boundary_is_inclusive():
-    g = touchwatch.Gesture(t_down=0.0, t_up=0.1, down=(0, 0), up=(10, 0), travel_px=10.0)
-    assert g.is_tap(10.0)          # exactly at the slop -> still a tap
-    assert not g.is_tap(9.999)     # a hair under -> a drag
+    g = touchwatch.Gesture(
+        t_down=0.0, t_up=0.1, down=(0, 0), up=(10, 0), travel_px=10.0
+    )
+    assert g.is_tap(10.0)  # exactly at the slop -> still a tap
+    assert not g.is_tap(9.999)  # a hair under -> a drag
 
 
 # --- start()/close() lifecycle, via a fake Popen (no real device) -----------------------
@@ -506,18 +546,20 @@ def test_start_streams_getevent_and_close_is_safe_after_eof(monkeypatch):
 
     w = touchwatch.TouchWatcher("adb", "pixel", (1080, 2400))
     w.start()
-    w._thread.join(timeout=_LIVENESS_TIMEOUT_S)   # the fake stream is finite: the reader hits EOF quickly
+    w._thread.join(
+        timeout=_LIVENESS_TIMEOUT_S
+    )  # the fake stream is finite: the reader hits EOF quickly
 
     assert w.device_path == "/dev/input/event3"
     assert w.device_name == "goodix_ts0"
-    assert w.alive is False       # EOF -> subprocess "death" -> alive flips off on its own
+    assert w.alive is False  # EOF -> subprocess "death" -> alive flips off on its own
     assert w.event_count == len(_LT_TRANSCRIPT.splitlines())
     gestures = w.gestures_since(0)
     assert len(gestures) == 2
     assert gestures[0].is_tap(5.0)
     assert not gestures[1].is_tap(5.0)
 
-    w.close()   # must not raise even though the process already finished on its own
+    w.close()  # must not raise even though the process already finished on its own
 
 
 def test_start_is_idempotent(monkeypatch):
@@ -527,7 +569,7 @@ def test_start_is_idempotent(monkeypatch):
     w = touchwatch.TouchWatcher("adb", "pixel", (1080, 2400))
     w.start()
     first_proc = w._proc
-    w.start()   # a second call must not launch a second getevent process
+    w.start()  # a second call must not launch a second getevent process
     assert w._proc is first_proc
     w.close()
 
@@ -538,7 +580,9 @@ def test_close_without_start_does_not_raise():
     assert w.alive is False
 
 
-def test_start_raises_touchwatch_unavailable_when_probe_process_cannot_start(monkeypatch):
+def test_start_raises_touchwatch_unavailable_when_probe_process_cannot_start(
+    monkeypatch,
+):
     def _boom(argv, capture_output=True, timeout=None, check=None):
         assert check is False
         raise FileNotFoundError("adb not on PATH")
@@ -554,7 +598,10 @@ def test_start_raises_touchwatch_unavailable_when_probe_exits_nonzero(monkeypatc
     def _fail_run(argv, capture_output=True, timeout=None, check=None):
         assert check is False
         return subprocess.CompletedProcess(
-            argv, 1, stdout=b"", stderr=b"error: no devices/emulators found",
+            argv,
+            1,
+            stdout=b"",
+            stderr=b"error: no devices/emulators found",
         )
 
     monkeypatch.setattr(touchwatch.subprocess, "run", _fail_run)
@@ -567,7 +614,9 @@ def test_start_raises_touchwatch_unavailable_when_probe_exits_nonzero(monkeypatc
 def test_start_raises_touchwatch_unavailable_when_no_touch_device_present(monkeypatch):
     def _no_touch_run(argv, capture_output=True, timeout=None, check=None):
         assert check is False
-        return subprocess.CompletedProcess(argv, 0, stdout=_NO_TOUCH_TRANSCRIPT.encode(), stderr=b"")
+        return subprocess.CompletedProcess(
+            argv, 0, stdout=_NO_TOUCH_TRANSCRIPT.encode(), stderr=b""
+        )
 
     monkeypatch.setattr(touchwatch.subprocess, "run", _no_touch_run)
     w = touchwatch.TouchWatcher("adb", "pixel", (1080, 2400))
@@ -620,15 +669,15 @@ def test_first_gesture_of_a_session_anchors_on_the_real_down_point_not_zero_zero
         w._feed_line(line)
 
     (g,) = w.gestures_since(0.0)
-    assert g.down == (500, 800)          # NOT (0, 0)
+    assert g.down == (500, 800)  # NOT (0, 0)
     assert g.up == (500, 800)
     assert g.travel_px == 0.0
-    assert g.is_tap(50.0)                # a stationary press is still a tap
+    assert g.is_tap(50.0)  # a stationary press is still a tap
 
 
 def test_down_before_coords_does_not_anchor_on_the_previous_gestures_release_point():
     w = touchwatch.TouchWatcher("adb", "pixel", (1080, 2400))
-    for line in _LT_TRANSCRIPT.splitlines():     # leaves _x/_y at the drag's release point
+    for line in _LT_TRANSCRIPT.splitlines():  # leaves _x/_y at the drag's release point
         w._feed_line(line)
     before = len(w.gestures_since(0.0))
     for line in _DOWN_BEFORE_COORDS.splitlines():
@@ -636,7 +685,10 @@ def test_down_before_coords_does_not_anchor_on_the_previous_gestures_release_poi
 
     fresh = w.gestures_since(0.0)[before:]
     assert len(fresh) == 1
-    assert fresh[0].down == (500, 800)   # this gesture's own first coordinate, not the last one's
+    assert fresh[0].down == (
+        500,
+        800,
+    )  # this gesture's own first coordinate, not the last one's
     assert fresh[0].travel_px == 0.0
 
 
@@ -645,8 +697,10 @@ def test_an_up_with_no_coordinate_at_all_emits_nothing_and_does_not_poison_the_n
     # emitted -- but it must also not leave the "adopt the next coordinate as my down point"
     # flag set, or the FOLLOWING gesture would silently inherit it.
     w = touchwatch.TouchWatcher("adb", "pixel", (1080, 2400))
-    for line in ("[ 1.0] /dev/input/event3: EV_KEY       BTN_TOUCH            DOWN",
-                 "[ 1.1] /dev/input/event3: EV_KEY       BTN_TOUCH            UP"):
+    for line in (
+        "[ 1.0] /dev/input/event3: EV_KEY       BTN_TOUCH            DOWN",
+        "[ 1.1] /dev/input/event3: EV_KEY       BTN_TOUCH            UP",
+    ):
         w._feed_line(line)
     assert w.gestures_since(0.0) == []
 

@@ -5,6 +5,7 @@ Playwright/emulator/BigQuery/ML is needed. Pins the two-way finally branch: a cl
 flush reports 'stopped'; a flush that RAISES must flip phase->'save_failed' + every app
 state->'error' AND re-raise, so a run that lost buffered labels never reports success.
 """
+
 import errno
 import math
 import os
@@ -45,12 +46,18 @@ def _isolated_android_lock_root(monkeypatch, tmp_path):
     # This file tests supervisor lifecycle and shutdown behavior with fake drivers.  The
     # released Hinge targeting artifact and live-device calibration are covered in their
     # focused suites; keep this synthetic baseline runnable without weakening production.
-    monkeypatch.setattr(sup.cfg_mod, "_validate_hinge_auto_release_evidence", lambda _cfg: None)
+    monkeypatch.setattr(
+        sup.cfg_mod, "_validate_hinge_auto_release_evidence", lambda _cfg: None
+    )
     original_reason = sup.platforms.unavailable_reason
     monkeypatch.setattr(
-        sup.platforms, "unavailable_reason",
-        lambda app, mode=None: None if app == "hinge" and mode == "auto"
-        else original_reason(app, mode))
+        sup.platforms,
+        "unavailable_reason",
+        lambda app, mode=None: (
+            None if app == "hinge" and mode == "auto" else original_reason(app, mode)
+        ),
+    )
+
 
 # enabled_apps: [hinge] -- hinge is the one platform the registry ships available/calibrated
 # by default (platforms.py); "bumble" is now an Android target that starts out UNCALIBRATED,
@@ -80,12 +87,16 @@ ranker:
 
 class _Caps:
     @classmethod
-    def detect(cls, android_adb_path=None):   # mirrors Capabilities.detect's real signature
+    def detect(
+        cls, android_adb_path=None
+    ):  # mirrors Capabilities.detect's real signature
         return cls()
+
     def banner(self):
         return ""
+
     def missing(self, *names):
-        return []                     # nothing missing -> no degrade/exit branches
+        return []  # nothing missing -> no degrade/exit branches
 
 
 def _patch_no_adb(monkeypatch):
@@ -116,7 +127,8 @@ def _write_cfg(tmp_path, text=_CONFIG):
 
 def test_training_refuses_a_per_app_auto_override_before_startup(tmp_path):
     cfg = _CONFIG.replace("mode: auto", "mode: training").replace(
-        "hinge: {}", "hinge:\n    mode: auto")
+        "hinge: {}", "hinge:\n    mode: auto"
+    )
     cfg_path = _write_cfg(tmp_path, cfg)
 
     with pytest.raises(ValueError, match="Training cannot run while apps override"):
@@ -132,7 +144,9 @@ def test_training_keeps_clean_shape_errors_for_malformed_app_overrides(tmp_path)
 
 def test_direct_training_run_refuses_before_model_or_device_setup(monkeypatch):
     cfg = SimpleNamespace(
-        enabled_apps=["hinge"], mode="training", apps={"hinge": {}},
+        enabled_apps=["hinge"],
+        mode="training",
+        apps={"hinge": {}},
     )
     monkeypatch.setattr(sup, "load_effective_config", lambda *_a, **_kw: cfg)
 
@@ -143,14 +157,19 @@ def test_direct_training_run_refuses_before_model_or_device_setup(monkeypatch):
 class _FakeDriver(DatingAppDriver):
     def open_session(self):
         pass
+
     def next_profile(self):
         return None
+
     def out_of_profiles(self):
-        return True                   # worker loop breaks immediately -> worker thread exits fast
+        return True  # worker loop breaks immediately -> worker thread exits fast
+
     def like(self, opener=None, item_index=None, *, model_item_index=None):
         pass
+
     def dislike(self):
         pass
+
     def close(self):
         pass
 
@@ -159,15 +178,20 @@ class _FakeStore:
     def __init__(self, flush_error=None):
         self.flush_error = flush_error
         self.closed = False
+
     def load_labels(self):
         return []
+
     def count_today(self, app):
-        return 0                      # auto mode's rate limiter reads this before anything else
+        return 0  # auto mode's rate limiter reads this before anything else
+
     def flush(self):
         if self.flush_error:
-            raise self.flush_error    # raises here = the save-failure branch under test
+            raise self.flush_error  # raises here = the save-failure branch under test
+
     def close(self):
         self.closed = True
+
     def saved_summary(self):
         return ""
 
@@ -185,11 +209,16 @@ def _run_with(monkeypatch, tmp_path, store, driver_factory=_FakeDriver):
     monkeypatch.setattr(sup, "QualityFilter", _FastQuality)
     monkeypatch.setattr(sup, "make_store", lambda cfg: store)
     monkeypatch.setattr(sup, "make_driver", lambda app, cfg: driver_factory())
-    monkeypatch.setattr(sup, "_install_signal_handlers", lambda stop: None)   # don't touch process signals
+    monkeypatch.setattr(
+        sup, "_install_signal_handlers", lambda stop: None
+    )  # don't touch process signals
     _patch_no_adb(monkeypatch)
     captured = {}
-    sup.run(str(cfg_path), on_status=lambda s: captured.__setitem__("status", s),
-            stop_event=threading.Event())
+    sup.run(
+        str(cfg_path),
+        on_status=lambda s: captured.__setitem__("status", s),
+        stop_event=threading.Event(),
+    )
     return captured["status"].snapshot()
 
 
@@ -217,7 +246,8 @@ class _DroppingStore(_FakeStore):
 
 
 def test_permanently_dropped_rows_are_never_reported_as_all_data_saved(
-        monkeypatch, tmp_path, capsys):
+    monkeypatch, tmp_path, capsys
+):
     """A successful flush proves the buffer is empty, not that every row landed.
 
     Every terminal signal in this run says success -- flush returned, save_err is None, phase is
@@ -233,15 +263,17 @@ def test_permanently_dropped_rows_are_never_reported_as_all_data_saved(
     snap = _run_with(monkeypatch, tmp_path, _DroppingStore())
     out = capsys.readouterr().out
 
-    assert snap["phase"] == "stopped"                 # the save itself really did succeed
+    assert snap["phase"] == "stopped"  # the save itself really did succeed
     assert "✅ all data saved" not in out
     assert "PERMANENTLY DROPPED" in out
-    assert "(openers=1)" in out                       # which table lost a row, not just "some"
+    assert "(openers=1)" in out  # which table lost a row, not just "some"
     assert "NOT an unqualified success" in out
-    assert "accounted_provider_results=" in out       # the usual run tail is still printed
+    assert "accounted_provider_results=" in out  # the usual run tail is still printed
 
     line = next(ln for ln in out.splitlines() if "PERMANENTLY DROPPED" in ln)
-    assert line.startswith(f"Run {snap['run_id']}: ")   # bugreport counts no tally without it
+    assert line.startswith(
+        f"Run {snap['run_id']}: "
+    )  # bugreport counts no tally without it
     assert bugreport._dropped_row_tallies([line]) == ["openers=1"]
 
 
@@ -250,20 +282,26 @@ class _HaltingDriver(DatingAppDriver):
 
     def open_session(self):
         raise RuntimeError("boom: simulated UnlocatedControlError-style halt")
+
     def next_profile(self):
         return None
+
     def out_of_profiles(self):
         return True
+
     def like(self, opener=None, item_index=None, *, model_item_index=None):
         pass
+
     def dislike(self):
         pass
+
     def close(self):
         pass
 
 
 def test_dropped_rows_are_still_reported_when_a_worker_also_errored(
-        monkeypatch, tmp_path, capsys):
+    monkeypatch, tmp_path, capsys
+):
     """A run that BOTH errored and permanently lost rows must report BOTH, not pick one.
 
     The loss notice used to be the third arm of the shutdown's if/elif chain, below wedged and
@@ -277,10 +315,14 @@ def test_dropped_rows_are_still_reported_when_a_worker_also_errored(
     """
     from operation_love import bugreport
 
-    snap = _run_with(monkeypatch, tmp_path, _DroppingStore(), driver_factory=_HaltingDriver)
+    snap = _run_with(
+        monkeypatch, tmp_path, _DroppingStore(), driver_factory=_HaltingDriver
+    )
     out = capsys.readouterr().out
 
-    assert snap["apps"]["hinge"]["state"] == "error"     # the errored headline really applies
+    assert (
+        snap["apps"]["hinge"]["state"] == "error"
+    )  # the errored headline really applies
     assert "worker(s) ended with errors (hinge)" in out  # ... and is still the headline
     assert "✅ all data saved" not in out
 
@@ -293,7 +335,8 @@ def test_dropped_rows_are_still_reported_when_a_worker_also_errored(
 
 
 def test_dropped_rows_are_still_reported_when_a_worker_also_wedged(
-        monkeypatch, tmp_path, capsys):
+    monkeypatch, tmp_path, capsys
+):
     """Same additive rule on the other qualified headline: wedged does not hide the loss either.
 
     A wedged worker is the one terminal state that ends with phase != 'stopped', so it reaches
@@ -313,18 +356,25 @@ def test_dropped_rows_are_still_reported_when_a_worker_also_wedged(
             # test_wedged_worker_is_not_reported_as_unqualified_success for the full rationale.
             stop_event.set()
             release.wait(timeout=_LIVENESS_TIMEOUT_S)
+
         def next_profile(self):
             return None
+
         def out_of_profiles(self):
             return True
+
         def like(self, opener=None, item_index=None, *, model_item_index=None):
             pass
+
         def dislike(self):
             pass
+
         def close(self):
             pass
 
-    monkeypatch.setattr(sup, "_worker_join_timeout_s", lambda cfg: 0.01)  # don't wait ~105s
+    monkeypatch.setattr(
+        sup, "_worker_join_timeout_s", lambda cfg: 0.01
+    )  # don't wait ~105s
     monkeypatch.setattr(sup, "Capabilities", _Caps)
     monkeypatch.setattr(sup, "Embedder", _FastEmbedder)
     monkeypatch.setattr(sup, "QualityFilter", _FastQuality)
@@ -335,14 +385,17 @@ def test_dropped_rows_are_still_reported_when_a_worker_also_wedged(
     cfg_path = _write_cfg(tmp_path)
 
     captured = {}
-    sup.run(str(cfg_path), on_status=lambda s: captured.__setitem__("status", s),
-            stop_event=stop_event)
-    release.set()                    # let the deliberately-wedged thread finish now
+    sup.run(
+        str(cfg_path),
+        on_status=lambda s: captured.__setitem__("status", s),
+        stop_event=stop_event,
+    )
+    release.set()  # let the deliberately-wedged thread finish now
     snap = captured["status"].snapshot()
     out = capsys.readouterr().out
 
     assert any(a["state"] == "wedged" for a in snap["apps"].values())
-    assert "did not stop within" in out                  # the wedged headline is still there
+    assert "did not stop within" in out  # the wedged headline is still there
     assert "✅ all data saved" not in out
 
     assert bugreport.DROPPED_ROWS_NOTICE in out, "the permanent loss went unreported"
@@ -352,7 +405,8 @@ def test_dropped_rows_are_still_reported_when_a_worker_also_wedged(
 
 
 def test_clean_shutdown_still_reports_all_data_saved_when_nothing_was_dropped(
-        monkeypatch, tmp_path, capsys):
+    monkeypatch, tmp_path, capsys
+):
     """The loss branch must not swallow the one line that reports a genuinely clean run."""
     _run_with(monkeypatch, tmp_path, _FakeStore())
     out = capsys.readouterr().out
@@ -382,16 +436,19 @@ def test_dropped_row_tally_survives_a_store_that_cannot_answer(capsys):
     """This runs AFTER the final flush: an exception raised over a diagnostic tally would turn a
     successful save into a crash. Report the failure, then behave like every store that never
     had the method at all."""
+
     class _Broken:
         def dropped_rows(self):
             raise RuntimeError("no tally for you")
 
     assert sup._dropped_row_tally(_Broken()) == {}
-    assert sup._dropped_row_tally(SimpleNamespace()) == {}      # a test double without it
+    assert sup._dropped_row_tally(SimpleNamespace()) == {}  # a test double without it
     assert "no tally for you" in capsys.readouterr().out
 
 
-def test_terminal_phase_is_published_only_after_app_states_are_terminal(monkeypatch, tmp_path):
+def test_terminal_phase_is_published_only_after_app_states_are_terminal(
+    monkeypatch, tmp_path
+):
     """A terminal global phase is the Hub/bug-report publication boundary."""
     terminal_publications = []
     real_status = sup.RunStatus
@@ -407,11 +464,14 @@ def test_terminal_phase_is_published_only_after_app_states_are_terminal(monkeypa
 
     assert snap["phase"] == "stopped"
     assert len(terminal_publications) == 1
-    assert all(row["state"] != "saving"
-               for row in terminal_publications[0]["apps"].values())
+    assert all(
+        row["state"] != "saving" for row in terminal_publications[0]["apps"].values()
+    )
 
 
-def test_startup_stop_reports_save_failed_when_store_cleanup_fails(monkeypatch, tmp_path):
+def test_startup_stop_reports_save_failed_when_store_cleanup_fails(
+    monkeypatch, tmp_path
+):
     stop = threading.Event()
 
     class _StopAfterLoadStore(_FakeStore):
@@ -424,13 +484,17 @@ def test_startup_stop_reports_save_failed_when_store_cleanup_fails(monkeypatch, 
     monkeypatch.setattr(sup, "Capabilities", _Caps)
     monkeypatch.setattr(sup, "make_store", lambda cfg: store)
     monkeypatch.setattr(
-        sup, "make_driver", lambda *_args: pytest.fail("worker must not be constructed"))
+        sup, "make_driver", lambda *_args: pytest.fail("worker must not be constructed")
+    )
     monkeypatch.setattr(sup, "_install_signal_handlers", lambda event: None)
     _patch_no_adb(monkeypatch)
     captured = {}
 
-    sup.run(str(cfg_path), on_status=lambda s: captured.__setitem__("status", s),
-            stop_event=stop)
+    sup.run(
+        str(cfg_path),
+        on_status=lambda s: captured.__setitem__("status", s),
+        stop_event=stop,
+    )
 
     snap = captured["status"].snapshot()
     assert store.closed is True
@@ -455,13 +519,17 @@ def test_startup_stop_reports_save_failed_when_store_close_fails(monkeypatch, tm
     monkeypatch.setattr(sup, "Capabilities", _Caps)
     monkeypatch.setattr(sup, "make_store", lambda cfg: store)
     monkeypatch.setattr(
-        sup, "make_driver", lambda *_args: pytest.fail("worker must not be constructed"))
+        sup, "make_driver", lambda *_args: pytest.fail("worker must not be constructed")
+    )
     monkeypatch.setattr(sup, "_install_signal_handlers", lambda event: None)
     _patch_no_adb(monkeypatch)
     captured = {}
 
-    sup.run(str(cfg_path), on_status=lambda s: captured.__setitem__("status", s),
-            stop_event=stop)
+    sup.run(
+        str(cfg_path),
+        on_status=lambda s: captured.__setitem__("status", s),
+        stop_event=stop,
+    )
 
     snap = captured["status"].snapshot()
     assert store.closed is True
@@ -470,7 +538,8 @@ def test_startup_stop_reports_save_failed_when_store_close_fails(monkeypatch, tm
 
 
 def test_worker_start_failure_preserves_cause_and_still_saves_and_closes(
-        monkeypatch, tmp_path, capsys):
+    monkeypatch, tmp_path, capsys
+):
     """An unstarted Thread must never enter the shutdown join list.
 
     ``Thread.join()`` raises for a thread whose ``start()`` failed.  Before this guard that
@@ -478,6 +547,7 @@ def test_worker_start_failure_preserves_cause_and_still_saves_and_closes(
     cleanup.  Driver cleanup is best-effort too: even its own failure must not replace the
     thread-start error.
     """
+
     class _TrackingStore(_FakeStore):
         def __init__(self):
             super().__init__()
@@ -540,8 +610,11 @@ def test_worker_start_failure_preserves_cause_and_still_saves_and_closes(
     assert "driver cleanup also failed" in capsys.readouterr().out
 
 
-def test_worker_binding_failure_releases_driver_and_registered_training_bridge(monkeypatch, tmp_path):
+def test_worker_binding_failure_releases_driver_and_registered_training_bridge(
+    monkeypatch, tmp_path
+):
     """A bridge can reject a replacement before Thread.start(); that is still a launch failure."""
+
     class _TrackingStore(_FakeStore):
         def __init__(self):
             super().__init__()
@@ -617,8 +690,11 @@ def test_null_per_app_limits_does_not_crash_worker_construction(monkeypatch, tmp
     _patch_no_adb(monkeypatch)
 
     captured = {}
-    sup.run(str(cfg_path), on_status=lambda s: captured.__setitem__("status", s),
-            stop_event=threading.Event())          # pre-fix: TypeError here, not a clean run
+    sup.run(
+        str(cfg_path),
+        on_status=lambda s: captured.__setitem__("status", s),
+        stop_event=threading.Event(),
+    )  # pre-fix: TypeError here, not a clean run
 
     snap = captured["status"].snapshot()
     assert snap["phase"] == "stopped"
@@ -635,10 +711,13 @@ def test_flush_failure_reports_save_failed_and_reraises(monkeypatch, tmp_path):
     _patch_no_adb(monkeypatch)
     captured = {}
     with pytest.raises(RuntimeError, match="BigQuery insert rejected"):
-        sup.run(str(cfg_path), on_status=lambda s: captured.__setitem__("status", s),
-                stop_event=threading.Event())
+        sup.run(
+            str(cfg_path),
+            on_status=lambda s: captured.__setitem__("status", s),
+            stop_event=threading.Event(),
+        )
     snap = captured["status"].snapshot()
-    assert snap["phase"] == "save_failed"                       # NOT a green "stopped"
+    assert snap["phase"] == "save_failed"  # NOT a green "stopped"
     assert all(a["state"] == "error" for a in snap["apps"].values())
     # A flush() failure must not skip close(): pre-fix, close() sat inside the same try as
     # flush(), so a raising flush() left store.close() unreached and (for SQLiteStore) its
@@ -650,16 +729,19 @@ class _CloseAlsoFailsStore(_FakeStore):
     """A store whose close() ALSO raises, on top of flush() -- proves close()'s own
     failure is reported but never allowed to replace the flush() error that's actually
     reraised (flush() is what determines whether buffered data made it out)."""
+
     def __init__(self, flush_error, close_error):
         super().__init__(flush_error=flush_error)
         self.close_error = close_error
 
     def close(self):
-        super().close()          # still marks .closed -- close() was at least ATTEMPTED
+        super().close()  # still marks .closed -- close() was at least ATTEMPTED
         raise self.close_error
 
 
-def test_close_failure_after_flush_failure_does_not_mask_the_flush_error(monkeypatch, tmp_path, capsys):
+def test_close_failure_after_flush_failure_does_not_mask_the_flush_error(
+    monkeypatch, tmp_path, capsys
+):
     store = _CloseAlsoFailsStore(
         flush_error=RuntimeError("BigQuery insert rejected"),
         close_error=OSError("connection already gone"),
@@ -671,14 +753,20 @@ def test_close_failure_after_flush_failure_does_not_mask_the_flush_error(monkeyp
     monkeypatch.setattr(sup, "_install_signal_handlers", lambda stop: None)
     _patch_no_adb(monkeypatch)
 
-    with pytest.raises(RuntimeError, match="BigQuery insert rejected"):   # NOT the OSError
+    with pytest.raises(
+        RuntimeError, match="BigQuery insert rejected"
+    ):  # NOT the OSError
         sup.run(str(cfg_path), stop_event=threading.Event())
 
-    assert store.closed is True                    # close() was attempted despite flush() failing
-    assert "connection already gone" in capsys.readouterr().out   # reported, not silently dropped
+    assert store.closed is True  # close() was attempted despite flush() failing
+    assert (
+        "connection already gone" in capsys.readouterr().out
+    )  # reported, not silently dropped
 
 
-def test_close_only_failure_is_a_save_failure_not_a_green_shutdown(monkeypatch, tmp_path):
+def test_close_only_failure_is_a_save_failure_not_a_green_shutdown(
+    monkeypatch, tmp_path
+):
     """The final close can flush rows that raced the supervisor's earlier flush.
 
     A close-only error must therefore set the same terminal failure state and propagate. The
@@ -697,8 +785,11 @@ def test_close_only_failure_is_a_save_failure_not_a_green_shutdown(monkeypatch, 
     captured = {}
 
     with pytest.raises(RuntimeError, match="final archive flush rejected"):
-        sup.run(str(cfg_path), on_status=lambda s: captured.__setitem__("status", s),
-                stop_event=threading.Event())
+        sup.run(
+            str(cfg_path),
+            on_status=lambda s: captured.__setitem__("status", s),
+            stop_event=threading.Event(),
+        )
 
     snap = captured["status"].snapshot()
     assert store.closed is True
@@ -707,7 +798,8 @@ def test_close_only_failure_is_a_save_failure_not_a_green_shutdown(monkeypatch, 
 
 
 def test_worker_error_state_survives_shutdown_not_overwritten_to_stopped(
-        monkeypatch, tmp_path, capsys):
+    monkeypatch, tmp_path, capsys
+):
     """Regression test for the bug this change fixes: worker.py's HALT-on-unexpected path
     (run()'s `except Exception:` branch, auto mode or halt_on_error) publishes
     state='error' on the app BEFORE it sets stop_event and returns. Pre-fix, run()'s
@@ -716,17 +808,23 @@ def test_worker_error_state_survives_shutdown_not_overwritten_to_stopped(
     the fact this run halted on an unexpected error and making it indistinguishable from a
     clean end-of-queue stop. The app's FINAL published state after run() returns must still
     say 'error'."""
+
     class _ErrorDriver(DatingAppDriver):
         def open_session(self):
             raise RuntimeError("boom: simulated UnlocatedControlError-style halt")
+
         def next_profile(self):
             return None
+
         def out_of_profiles(self):
             return True
+
         def like(self, opener=None, item_index=None, *, model_item_index=None):
             pass
+
         def dislike(self):
             pass
+
         def close(self):
             pass
 
@@ -741,26 +839,33 @@ def test_worker_error_state_survives_shutdown_not_overwritten_to_stopped(
     # This test deliberately drives the post-validation AUTO worker error path.  The Hinge
     # release gate has its own artifact/config coverage; bypass only that prerequisite here so
     # the synthetic driver can reach the shutdown-state behavior this fixture exists to test.
-    monkeypatch.setattr(sup.cfg_mod, "_validate_hinge_auto_release_evidence", lambda cfg: None)
+    monkeypatch.setattr(
+        sup.cfg_mod, "_validate_hinge_auto_release_evidence", lambda cfg: None
+    )
     _patch_hinge_auto_ready(monkeypatch)
     _patch_no_adb(monkeypatch)
 
     captured = {}
-    sup.run(str(cfg_path), on_status=lambda s: captured.__setitem__("status", s),
-            stop_event=threading.Event())
+    sup.run(
+        str(cfg_path),
+        on_status=lambda s: captured.__setitem__("status", s),
+        stop_event=threading.Event(),
+    )
 
     snap = captured["status"].snapshot()
-    assert snap["apps"]["hinge"]["state"] == "error"     # NOT overwritten to "stopped"
-    assert snap["apps"]["hinge"]["error"]                # the worker's own message survived too
-    assert snap["apps"]["hinge"]["mode"] == "auto"       # even though open_session failed
-    assert snap["phase"] == "stopped"                    # the save itself still succeeded
+    assert snap["apps"]["hinge"]["state"] == "error"  # NOT overwritten to "stopped"
+    assert snap["apps"]["hinge"]["error"]  # the worker's own message survived too
+    assert snap["apps"]["hinge"]["mode"] == "auto"  # even though open_session failed
+    assert snap["phase"] == "stopped"  # the save itself still succeeded
     output = capsys.readouterr().out
     assert "buffered rows saved" in output
     assert "does not prove every landed action" in output
     assert "✅ all data saved" not in output
 
 
-def test_status_callback_receives_effective_app_mode_before_workers_start(monkeypatch, tmp_path):
+def test_status_callback_receives_effective_app_mode_before_workers_start(
+    monkeypatch, tmp_path
+):
     """The Hub captures RunStatus before workers are constructed, so its first snapshot must
     already carry AUTO rather than AppStatus's training-shaped default."""
     cfg_path = _write_cfg(tmp_path)
@@ -773,24 +878,32 @@ def test_status_callback_receives_effective_app_mode_before_workers_start(monkey
     _patch_no_adb(monkeypatch)
 
     published = []
-    sup.run(str(cfg_path), on_status=lambda status: published.append(status.snapshot()),
-            stop_event=threading.Event())
+    sup.run(
+        str(cfg_path),
+        on_status=lambda status: published.append(status.snapshot()),
+        stop_event=threading.Event(),
+    )
 
     assert len(published) == 1
     assert published[0]["apps"]["hinge"]["mode"] == "auto"
 
 
 @pytest.mark.parametrize("terminal_state", ["out_of_profiles", "rate_limited"])
-def test_normal_terminal_reason_survives_successful_save(monkeypatch, tmp_path, terminal_state):
+def test_normal_terminal_reason_survives_successful_save(
+    monkeypatch, tmp_path, terminal_state
+):
     class _TerminalWorker:
         def __init__(self, app, *args, status=None, mode="auto", **kwargs):
             self.app = app
             self.status = status
             self.mode = mode
+
         def start(self):
             self.status.set_app(self.app, mode=self.mode, state=terminal_state)
+
         def join(self, timeout=None):
             pass
+
         def is_alive(self):
             return False
 
@@ -803,12 +916,17 @@ def test_normal_terminal_reason_survives_successful_save(monkeypatch, tmp_path, 
     monkeypatch.setattr(sup, "Worker", _TerminalWorker)
     monkeypatch.setattr(sup, "_install_signal_handlers", lambda stop: None)
     # This is a terminal-state preservation test, not a release-evidence integration test.
-    monkeypatch.setattr(sup.cfg_mod, "_validate_hinge_auto_release_evidence", lambda cfg: None)
+    monkeypatch.setattr(
+        sup.cfg_mod, "_validate_hinge_auto_release_evidence", lambda cfg: None
+    )
     _patch_hinge_auto_ready(monkeypatch)
     _patch_no_adb(monkeypatch)
     captured = {}
-    sup.run(str(cfg_path), on_status=lambda s: captured.__setitem__("status", s),
-            stop_event=threading.Event())
+    sup.run(
+        str(cfg_path),
+        on_status=lambda s: captured.__setitem__("status", s),
+        stop_event=threading.Event(),
+    )
     assert captured["status"].snapshot()["apps"]["hinge"]["state"] == terminal_state
 
 
@@ -831,19 +949,28 @@ def test_stop_reason_survives_both_shutdown_restamps(monkeypatch, tmp_path):
     instance wholesale, or resetting unspecified fields to their dataclass defaults) fails
     this test immediately instead of silently reintroducing the bug.
     """
+
     class _OpenerStopWorker:
         """Stand-in for a real Worker whose opener service exhausted mid-run: publishes
         exactly what worker.py's _finish_session(state="stopped", stop_reason=...) does,
         then exits -- before run()'s shutdown finally block ever touches the status."""
+
         def __init__(self, app, *args, status=None, mode="auto", **kwargs):
             self.app = app
             self.status = status
             self.mode = mode
+
         def start(self):
-            self.status.set_app(self.app, mode=self.mode, state="stopped",
-                                stop_reason="run budget reached")
+            self.status.set_app(
+                self.app,
+                mode=self.mode,
+                state="stopped",
+                stop_reason="run budget reached",
+            )
+
         def join(self, timeout=None):
             pass
+
         def is_alive(self):
             return False
 
@@ -858,17 +985,24 @@ def test_stop_reason_survives_both_shutdown_restamps(monkeypatch, tmp_path):
     _patch_no_adb(monkeypatch)
 
     captured = {}
-    sup.run(str(cfg_path), on_status=lambda s: captured.__setitem__("status", s),
-            stop_event=threading.Event())
+    sup.run(
+        str(cfg_path),
+        on_status=lambda s: captured.__setitem__("status", s),
+        stop_event=threading.Event(),
+    )
 
     snap = captured["status"].snapshot()
     app = snap["apps"]["hinge"]
     assert app["state"] == "stopped"
-    assert app["stop_reason"] == "run budget reached"   # survived BOTH shutdown re-stamps
-    assert snap["phase"] == "stopped"                    # the save itself still succeeded
+    assert (
+        app["stop_reason"] == "run budget reached"
+    )  # survived BOTH shutdown re-stamps
+    assert snap["phase"] == "stopped"  # the save itself still succeeded
 
 
-def test_blocked_terminal_state_and_reason_survive_successful_save(monkeypatch, tmp_path):
+def test_blocked_terminal_state_and_reason_survive_successful_save(
+    monkeypatch, tmp_path
+):
     """A driver-detected deck block is a terminal result, not a plain stopped run.
 
     Worker correctly publishes ``state='blocked'`` with a ``deck_blocked`` reason before
@@ -877,6 +1011,7 @@ def test_blocked_terminal_state_and_reason_survive_successful_save(monkeypatch, 
     completed run hides the actionable Hinge+ / foreground-block diagnosis from the hub and
     bug report.
     """
+
     class _BlockedWorker:
         def __init__(self, app, *args, status=None, mode="auto", **kwargs):
             self.app = app
@@ -885,7 +1020,9 @@ def test_blocked_terminal_state_and_reason_survive_successful_save(monkeypatch, 
 
         def start(self):
             self.status.set_app(
-                self.app, mode=self.mode, state="blocked",
+                self.app,
+                mode=self.mode,
+                state="blocked",
                 stop_reason="Hinge is out of free likes for today — the Hinge+ upgrade screen is up",
                 stop_kind="deck_blocked",
             )
@@ -907,18 +1044,26 @@ def test_blocked_terminal_state_and_reason_survive_successful_save(monkeypatch, 
     _patch_no_adb(monkeypatch)
 
     captured = {}
-    sup.run(str(cfg_path), on_status=lambda s: captured.__setitem__("status", s),
-            stop_event=threading.Event())
+    sup.run(
+        str(cfg_path),
+        on_status=lambda s: captured.__setitem__("status", s),
+        stop_event=threading.Event(),
+    )
 
     snap = captured["status"].snapshot()
     app = snap["apps"]["hinge"]
     assert snap["phase"] == "stopped"
     assert app["state"] == "blocked"
-    assert app["stop_reason"] == "Hinge is out of free likes for today — the Hinge+ upgrade screen is up"
+    assert (
+        app["stop_reason"]
+        == "Hinge is out of free likes for today — the Hinge+ upgrade screen is up"
+    )
     assert app["stop_kind"] == "deck_blocked"
 
 
-def test_plain_stop_mid_run_reports_stopped_not_a_stale_non_terminal_state(monkeypatch, tmp_path):
+def test_plain_stop_mid_run_reports_stopped_not_a_stale_non_terminal_state(
+    monkeypatch, tmp_path
+):
     """The other side of the rule the two tests above pin. A run the operator simply STOPS
     mid-swipe has NO distinct terminal reason (no error, no empty queue, no rate limit), so
     its durable per-app result must be a plain 'stopped'. Since shutdown now restores each
@@ -926,24 +1071,44 @@ def test_plain_stop_mid_run_reports_stopped_not_a_stale_non_terminal_state(monke
     a NON-terminal state left behind mid-run ('acting'/'scoring'/'capturing'/'saving') must
     not be resurrected as the run's final answer — the hub would then show a live-looking
     state for a run that has already ended."""
+
     class _StoppedMidRunWorker:
         """Publishes the mid-swipe state a real Worker publishes while acting, then exits
         as soon as Stop lands — without publishing any terminal reason of its own."""
-        def __init__(self, app, driver, decider, openers, store, run_id, pacing, stop_event,
-                     *args, status=None, mode="auto", **kwargs):
+
+        def __init__(
+            self,
+            app,
+            driver,
+            decider,
+            openers,
+            store,
+            run_id,
+            pacing,
+            stop_event,
+            *args,
+            status=None,
+            mode="auto",
+            **kwargs,
+        ):
             self.app = app
             self.status = status
             self.mode = mode
             self.stop_event = stop_event
+
         def start(self):
             self.status.set_app(self.app, mode=self.mode, state="acting")
             # Stop pressed mid-run: armed only now, so it can't land on one of run()'s
             # startup stop-checkpoints and abort before a worker was ever launched.
             threading.Timer(0.05, self.stop_event.set).start()
+
         def join(self, timeout=None):
             pass
+
         def is_alive(self):
-            return not self.stop_event.is_set()    # responsive: stops cleanly, never wedged
+            return (
+                not self.stop_event.is_set()
+            )  # responsive: stops cleanly, never wedged
 
     cfg_path = _write_cfg(tmp_path)
     monkeypatch.setattr(sup, "Capabilities", _Caps)
@@ -956,14 +1121,17 @@ def test_plain_stop_mid_run_reports_stopped_not_a_stale_non_terminal_state(monke
     _patch_no_adb(monkeypatch)
 
     captured = {}
-    sup.run(str(cfg_path), on_status=lambda s: captured.__setitem__("status", s),
-            stop_event=threading.Event())
+    sup.run(
+        str(cfg_path),
+        on_status=lambda s: captured.__setitem__("status", s),
+        stop_event=threading.Event(),
+    )
 
     snap = captured["status"].snapshot()
     assert snap["phase"] == "stopped" and snap["running"] is False
     app = snap["apps"]["hinge"]
-    assert app["state"] == "stopped"          # not the stale 'acting', not 'saving'
-    assert app["error"] is None               # a plain stop is not an error outcome
+    assert app["state"] == "stopped"  # not the stale 'acting', not 'saving'
+    assert app["error"] is None  # a plain stop is not an error outcome
 
 
 class _CapsMlMissing(_Caps):
@@ -1031,8 +1199,8 @@ def test_missing_ml_extra_aborts_before_store_and_device_lock(monkeypatch, tmp_p
     with pytest.raises(SystemExit, match="ML extra not installed"):
         sup.run(str(cfg_path), stop_event=threading.Event())
 
-    assert touched == []             # make_store() never reached
-    assert lock_instances == []      # device lock never even constructed
+    assert touched == []  # make_store() never reached
+    assert lock_instances == []  # device lock never even constructed
 
 
 def test_absent_adb_device_fails_early_and_actionably(monkeypatch, tmp_path):
@@ -1057,7 +1225,7 @@ def test_absent_adb_device_fails_early_and_actionably(monkeypatch, tmp_path):
     with pytest.raises(SystemExit, match="no connected device"):
         sup.run(str(cfg_path), stop_event=threading.Event())
 
-    assert touched == []                # make_store() never reached
+    assert touched == []  # make_store() never reached
 
 
 def test_adb_binary_missing_fails_early_with_install_guidance(monkeypatch, tmp_path):
@@ -1086,6 +1254,7 @@ def test_adb_binary_missing_fails_early_with_install_guidance(monkeypatch, tmp_p
 class _SpyWorker:
     """Stand-in for Worker that records construction without doing anything -- lets a test
     prove a worker was (or wasn't) ever launched, without touching drivers/threads."""
+
     instances: list = []
 
     def __init__(self, *a, **k):
@@ -1101,7 +1270,9 @@ class _SpyWorker:
         pass
 
 
-def test_stop_before_run_aborts_startup_without_launching_workers(monkeypatch, tmp_path):
+def test_stop_before_run_aborts_startup_without_launching_workers(
+    monkeypatch, tmp_path
+):
     """H-10: Stop must be honoured during startup (store load, ranker training, ML warmup,
     ADB preflight), not only after workers exist. Pre-fix, stop_event is never consulted
     before the worker-launch loop, so even a Stop requested before Start still lets
@@ -1116,13 +1287,16 @@ def test_stop_before_run_aborts_startup_without_launching_workers(monkeypatch, t
     monkeypatch.setattr(sup, "Worker", _SpyWorker)
 
     stop_event = threading.Event()
-    stop_event.set()                        # Stop requested before/at the very start of run()
+    stop_event.set()  # Stop requested before/at the very start of run()
 
     captured = {}
-    sup.run(str(cfg_path), on_status=lambda s: captured.__setitem__("status", s),
-            stop_event=stop_event)
+    sup.run(
+        str(cfg_path),
+        on_status=lambda s: captured.__setitem__("status", s),
+        stop_event=stop_event,
+    )
 
-    assert _SpyWorker.instances == []       # aborted during startup -- no worker ever built
+    assert _SpyWorker.instances == []  # aborted during startup -- no worker ever built
     snap = captured["status"].snapshot()
     assert snap["phase"] == "stopped" and snap["running"] is False
     assert all(a["state"] == "stopped" for a in snap["apps"].values())
@@ -1144,19 +1318,28 @@ def test_pre_requested_stop_skips_provider_and_device_preflight(monkeypatch, tmp
 
     monkeypatch.setattr(sup, "Capabilities", _NeverProbeCaps)
     monkeypatch.setattr(
-        sup, "_android_adb_preflight",
-        lambda *args: (_ for _ in ()).throw(AssertionError("adb preflight must not run after Stop")),
+        sup,
+        "_android_adb_preflight",
+        lambda *args: (_ for _ in ()).throw(
+            AssertionError("adb preflight must not run after Stop")
+        ),
     )
     monkeypatch.setattr(
-        sup, "make_store",
-        lambda *_args: (_ for _ in ()).throw(AssertionError("store must not open after Stop")),
+        sup,
+        "make_store",
+        lambda *_args: (_ for _ in ()).throw(
+            AssertionError("store must not open after Stop")
+        ),
     )
     stop_event = threading.Event()
     stop_event.set()
     captured = {}
 
-    sup.run(str(cfg_path), stop_event=stop_event,
-            on_status=lambda status: captured.__setitem__("status", status))
+    sup.run(
+        str(cfg_path),
+        stop_event=stop_event,
+        on_status=lambda status: captured.__setitem__("status", status),
+    )
 
     assert _SpyGeminiOpener.instances == []
     assert touched == []
@@ -1167,6 +1350,7 @@ class _FastEmbedder:
     """Skips real ArcFace/CLIP loading so warmup() is instant -- this test only needs
     startup to finish fast and deterministically so it can control exactly when Stop
     lands relative to worker launch, not exercise real embedding."""
+
     def warmup(self):
         pass
 
@@ -1179,7 +1363,9 @@ class _FastQuality:
         pass
 
 
-def test_startup_load_labels_failure_closes_store_before_propagating(monkeypatch, tmp_path):
+def test_startup_load_labels_failure_closes_store_before_propagating(
+    monkeypatch, tmp_path
+):
     class BrokenLoadStore(_FakeStore):
         def load_labels(self):
             raise RuntimeError("persisted labels unreadable")
@@ -1189,7 +1375,8 @@ def test_startup_load_labels_failure_closes_store_before_propagating(monkeypatch
     monkeypatch.setattr(sup, "Capabilities", _Caps)
     monkeypatch.setattr(sup, "make_store", lambda _cfg: store)
     monkeypatch.setattr(
-        sup, "make_driver", lambda *_args: pytest.fail("driver must not be constructed"))
+        sup, "make_driver", lambda *_args: pytest.fail("driver must not be constructed")
+    )
     _patch_no_adb(monkeypatch)
 
     with pytest.raises(RuntimeError, match="persisted labels unreadable"):
@@ -1198,21 +1385,24 @@ def test_startup_load_labels_failure_closes_store_before_propagating(monkeypatch
     assert store.closed is True
 
 
-@pytest.mark.parametrize("value", [-1, math.nan, math.inf, True, "1.0", 10 ** 1_000])
+@pytest.mark.parametrize("value", [-1, math.nan, math.inf, True, "1.0", 10**1_000])
 def test_invalid_persisted_daily_spend_closes_store_and_fails_startup(
-        monkeypatch, tmp_path, value):
+    monkeypatch, tmp_path, value
+):
     class LedgerStore(_FakeStore):
         def spend_today(self):
             return value
 
     store = LedgerStore()
     cfg_text = _CONFIG.replace(
-        "run_budget_usd: 5.0", "run_budget_usd: 5.0\n  day_budget_usd: 10.0")
+        "run_budget_usd: 5.0", "run_budget_usd: 5.0\n  day_budget_usd: 10.0"
+    )
     cfg_path = _write_cfg(tmp_path, cfg_text)
     monkeypatch.setattr(sup, "Capabilities", _Caps)
     monkeypatch.setattr(sup, "make_store", lambda _cfg: store)
     monkeypatch.setattr(
-        sup, "make_driver", lambda *_args: pytest.fail("driver must not be constructed"))
+        sup, "make_driver", lambda *_args: pytest.fail("driver must not be constructed")
+    )
     _patch_no_adb(monkeypatch)
 
     with pytest.raises(ValueError, match="spend_today"):
@@ -1221,7 +1411,9 @@ def test_invalid_persisted_daily_spend_closes_store_and_fails_startup(
     assert store.closed is True
 
 
-def test_startup_warmup_failure_closes_store_without_masking_cause(monkeypatch, tmp_path):
+def test_startup_warmup_failure_closes_store_without_masking_cause(
+    monkeypatch, tmp_path
+):
     class BrokenEmbedder:
         def warmup(self):
             raise RuntimeError("embedder warmup failed")
@@ -1233,7 +1425,8 @@ def test_startup_warmup_failure_closes_store_without_masking_cause(monkeypatch, 
     monkeypatch.setattr(sup, "Embedder", BrokenEmbedder)
     monkeypatch.setattr(sup, "QualityFilter", _FastQuality)
     monkeypatch.setattr(
-        sup, "make_driver", lambda *_args: pytest.fail("driver must not be constructed"))
+        sup, "make_driver", lambda *_args: pytest.fail("driver must not be constructed")
+    )
     _patch_no_adb(monkeypatch)
 
     with pytest.raises(RuntimeError, match="embedder warmup failed"):
@@ -1242,7 +1435,9 @@ def test_startup_warmup_failure_closes_store_without_masking_cause(monkeypatch, 
     assert store.closed is True
 
 
-def test_wedged_worker_is_not_reported_as_unqualified_success(monkeypatch, tmp_path, capsys):
+def test_wedged_worker_is_not_reported_as_unqualified_success(
+    monkeypatch, tmp_path, capsys
+):
     """WS-008: a worker still alive after its join timeout is WEDGED -- it may write to the
     store DURING or AFTER flush/close, so a clean flush is not an unqualified success. The
     join must still not block quit forever (timeout stays bounded), but the printed summary
@@ -1259,21 +1454,28 @@ def test_wedged_worker_is_not_reported_as_unqualified_success(monkeypatch, tmp_p
             # run() returns, so the wedge verdict cannot depend on machine speed either.
             stop_event.set()
             release.wait(timeout=_LIVENESS_TIMEOUT_S)
+
         def next_profile(self):
             return None
+
         def out_of_profiles(self):
             return True
+
         def like(self, opener=None, item_index=None, *, model_item_index=None):
             pass
+
         def dislike(self):
             pass
+
         def close(self):
             pass
 
     # don't actually wait ~30-105s in a test -- see _worker_join_timeout_s's own tests below for
     # the arithmetic this stands in for.
     monkeypatch.setattr(sup, "_worker_join_timeout_s", lambda cfg: 0.01)
-    monkeypatch.setattr(sup, "Embedder", _FastEmbedder)         # keep startup fast/deterministic
+    monkeypatch.setattr(
+        sup, "Embedder", _FastEmbedder
+    )  # keep startup fast/deterministic
     monkeypatch.setattr(sup, "QualityFilter", _FastQuality)
     store = _FakeStore()
     cfg_path = _write_cfg(tmp_path)
@@ -1283,17 +1485,22 @@ def test_wedged_worker_is_not_reported_as_unqualified_success(monkeypatch, tmp_p
     monkeypatch.setattr(sup, "_install_signal_handlers", lambda stop: None)
     _patch_no_adb(monkeypatch)
 
-    stop_event = threading.Event()   # set by _WedgedDriver.open_session, i.e. after launch
+    stop_event = (
+        threading.Event()
+    )  # set by _WedgedDriver.open_session, i.e. after launch
 
     captured = {}
-    sup.run(str(cfg_path), on_status=lambda s: captured.__setitem__("status", s),
-            stop_event=stop_event)
-    release.set()                    # let the deliberately-wedged thread finish now
+    sup.run(
+        str(cfg_path),
+        on_status=lambda s: captured.__setitem__("status", s),
+        stop_event=stop_event,
+    )
+    release.set()  # let the deliberately-wedged thread finish now
 
     snap = captured["status"].snapshot()
 
-    assert store.closed is True                  # a wedged worker must not block quit forever
-    assert snap["phase"] != "stopped"             # not the unqualified-success phase
+    assert store.closed is True  # a wedged worker must not block quit forever
+    assert snap["phase"] != "stopped"  # not the unqualified-success phase
     assert any(a["state"] == "wedged" for a in snap["apps"].values())
     out = capsys.readouterr().out
     assert "✅ all data saved" not in out
@@ -1324,7 +1531,9 @@ def test_wedged_worker_stack_snapshot_is_bounded_and_locals_free():
         release.wait()
         return private_request_body
 
-    worker = threading.Thread(target=stuck, args=(sup._WEDGED_WORKER_STACK_MAX_FRAMES + 3,))
+    worker = threading.Thread(
+        target=stuck, args=(sup._WEDGED_WORKER_STACK_MAX_FRAMES + 3,)
+    )
     worker.start()
     assert entered.wait(_LIVENESS_TIMEOUT_S)
     try:
@@ -1343,21 +1552,29 @@ def test_wedged_worker_stack_snapshot_is_bounded_and_locals_free():
 
 # --- registry guard: run() rejects an unrunnable platform selection up front ---------------
 
+
 @pytest.mark.parametrize("mode", ["training", "auto"])
 def test_run_rejects_uncalibrated_bumble_before_touching_anything(
-        monkeypatch, tmp_path, mode):
+    monkeypatch, tmp_path, mode
+):
     """The check_runnable() guard at the top of run() must fire BEFORE any driver is built,
     using cfg_mod.validate()'s message verbatim (this exercises the guard itself, not just
     validate() -- see test_config.py for validate()'s own coverage of the same rule)."""
     from operation_love import platforms
 
-    cfg_text = _CONFIG.replace("enabled_apps: [hinge]", "enabled_apps: [bumble]").replace(
-            "mode: auto", f"mode: {mode}").replace(
-        "apps:\n  hinge: {}", "apps:\n  bumble: {}")
+    cfg_text = (
+        _CONFIG.replace("enabled_apps: [hinge]", "enabled_apps: [bumble]")
+        .replace("mode: auto", f"mode: {mode}")
+        .replace("apps:\n  hinge: {}", "apps:\n  bumble: {}")
+    )
     if mode == "training":
         cfg_text = cfg_text.replace(
-            "opener:\n  enabled: false", "opener:\n  enabled: true\n  thinking:\n    gemini-3.6-flash: {}")
-        cfg_text = cfg_text.replace("pricing: {}", "pricing:\n    gemini-3.6-flash: {input: 0, output: 0}")
+            "opener:\n  enabled: false",
+            "opener:\n  enabled: true\n  thinking:\n    gemini-3.6-flash: {}",
+        )
+        cfg_text = cfg_text.replace(
+            "pricing: {}", "pricing:\n    gemini-3.6-flash: {input: 0, output: 0}"
+        )
     cfg_path = _write_cfg(tmp_path, cfg_text)
     monkeypatch.setattr(sup, "Capabilities", _Caps)
     built = []
@@ -1370,7 +1587,7 @@ def test_run_rejects_uncalibrated_bumble_before_touching_anything(
         sup.run(str(cfg_path), stop_event=threading.Event())
 
     assert str(exc_info.value) == platforms.unavailable_reason("bumble", mode)
-    assert built == []                            # no store, no driver -- rejected up front
+    assert built == []  # no store, no driver -- rejected up front
 
 
 def test_run_rejects_two_android_platforms_together(monkeypatch, tmp_path):
@@ -1385,14 +1602,17 @@ def test_run_rejects_two_android_platforms_together(monkeypatch, tmp_path):
 
 
 def test_effective_config_checks_the_per_app_mode_after_global_override(
-        monkeypatch, tmp_path):
+    monkeypatch, tmp_path
+):
     """An apps.<app>.mode override wins over the global run-mode override at the shared
     Hub/direct-supervisor gate, just as it does when constructing the Worker."""
     cfg_text = _CONFIG.replace("hinge: {}", "hinge:\n    mode: auto")
     cfg_path = _write_cfg(tmp_path, cfg_text)
 
     with pytest.raises(ValueError, match="Training cannot run while apps override"):
-        sup.load_effective_config(str(cfg_path), mode="training", enabled_apps=["hinge"])
+        sup.load_effective_config(
+            str(cfg_path), mode="training", enabled_apps=["hinge"]
+        )
 
 
 def test_effective_config_installs_hinge_auto_readiness_before_registry_check():
@@ -1407,7 +1627,8 @@ def test_effective_config_installs_hinge_auto_readiness_before_registry_check():
 
 @pytest.mark.parametrize("initial_is_licensed", [True, False])
 def test_effective_config_registry_check_uses_its_validation_snapshot_during_a_race(
-        monkeypatch, tmp_path, initial_is_licensed):
+    monkeypatch, tmp_path, initial_is_licensed
+):
     """Another validation cannot change the readiness answer after this config snapshots it."""
     from operation_love import targeting_policy as tp
 
@@ -1435,8 +1656,9 @@ def test_effective_config_registry_check_uses_its_validation_snapshot_during_a_r
         assert allow_registry.wait(_LIVENESS_TIMEOUT_S)
         return original_check(*args, **kwargs)
 
-    monkeypatch.setattr(sup.cfg_mod, "validate_and_snapshot_still_photo_licence",
-                        capture_snapshot)
+    monkeypatch.setattr(
+        sup.cfg_mod, "validate_and_snapshot_still_photo_licence", capture_snapshot
+    )
     # This file's autouse fixture masks the real Hinge AUTO policy gate for unrelated lifecycle
     # tests. Restore its exact policy dependency here so `check_runnable` is genuinely tested.
     monkeypatch.setattr(sup.platforms, "unavailable_reason", policy_reason)
@@ -1446,8 +1668,11 @@ def test_effective_config_registry_check_uses_its_validation_snapshot_during_a_r
     def load_initial():
         try:
             result["config"] = sup.load_effective_config(
-                initial_path, mode="auto", enabled_apps=["hinge"])
-        except BaseException as exc:  # the assertion below needs the exact registry result
+                initial_path, mode="auto", enabled_apps=["hinge"]
+            )
+        except (
+            BaseException
+        ) as exc:  # the assertion below needs the exact registry result
             result["error"] = exc
 
     loading = threading.Thread(target=load_initial)
@@ -1488,7 +1713,9 @@ def test_effective_config_rejects_explicit_falsy_overrides(tmp_path):
 
 
 @pytest.mark.parametrize("value", [[{}], ["hinge", {}], "hinge", 42, {"hinge"}])
-def test_effective_config_shape_checks_app_override_before_registry_lookup(tmp_path, value):
+def test_effective_config_shape_checks_app_override_before_registry_lookup(
+    tmp_path, value
+):
     cfg_path = _write_cfg(tmp_path)
     with pytest.raises(ValueError, match="enabled_apps"):
         sup.load_effective_config(str(cfg_path), enabled_apps=value)
@@ -1498,7 +1725,8 @@ def test_effective_config_shape_checks_app_override_before_registry_lookup(tmp_p
 def test_run_rejects_invalid_max_per_run_before_loading_config(monkeypatch, value):
     loaded = []
     monkeypatch.setattr(
-        sup, "load_effective_config", lambda *args, **kwargs: loaded.append(True))
+        sup, "load_effective_config", lambda *args, **kwargs: loaded.append(True)
+    )
 
     with pytest.raises(ValueError, match="max_per_run"):
         sup.run(max_per_run=value)
@@ -1512,10 +1740,10 @@ def test_resolve_run_cap_repeats_direct_caller_validation(value):
         sup._resolve_run_cap(12, value)
 
 
-@pytest.mark.parametrize(
-    ("override", "expected"), [(None, 12), (0, None), (7, 7)])
+@pytest.mark.parametrize(("override", "expected"), [(None, 12), (0, None), (7, 7)])
 def test_resolve_run_cap_preserves_config_unlimited_and_positive_semantics(
-        override, expected):
+    override, expected
+):
     assert sup._resolve_run_cap(12, override) == expected
 
 
@@ -1527,11 +1755,11 @@ def _gemini_cfg_text(extra_opener_yaml="", thinking_yaml="    gemini-test: {}\n"
     overrides the (4-space-indented) body of the `thinking:` mapping."""
     opener_yaml = (
         "enabled: true\n  provider: gemini\n  model: gemini-test\n  models: [gemini-test]\n"
-        "  thinking:\n" + thinking_yaml
-        + extra_opener_yaml
+        "  thinking:\n" + thinking_yaml + extra_opener_yaml
     )
     return _CONFIG.replace("enabled: false", opener_yaml).replace(
-        "pricing: {}", "pricing:\n    gemini-test: {input: 0, output: 0}")
+        "pricing: {}", "pricing:\n    gemini-test: {input: 0, output: 0}"
+    )
 
 
 class _SpyGeminiOpener:
@@ -1545,11 +1773,21 @@ class _SpyGeminiOpener:
     because supervisor.py constructs this with GeminiOpener's real positional/keyword
     signature, which a test must not need to change just to inject a failure.
     """
+
     instances: list = []
     next_preflight_error: Exception | None = None
 
-    def __init__(self, models, max_tokens, request_timeout_s, *, api_key=None, env=None,
-                 transport=None, thinking=None):
+    def __init__(
+        self,
+        models,
+        max_tokens,
+        request_timeout_s,
+        *,
+        api_key=None,
+        env=None,
+        transport=None,
+        thinking=None,
+    ):
         self.models = models
         self.max_tokens = max_tokens
         self.request_timeout_s = request_timeout_s
@@ -1564,7 +1802,9 @@ class _SpyGeminiOpener:
             raise _SpyGeminiOpener.next_preflight_error
 
     def generate(self, profile, style):
-        raise AssertionError("generate() should never be reached in these startup-only tests")
+        raise AssertionError(
+            "generate() should never be reached in these startup-only tests"
+        )
 
 
 def test_gemini_missing_key_fails_before_store_startup(monkeypatch, tmp_path):
@@ -1588,7 +1828,8 @@ def test_gemini_preflight_failure_aborts_before_store_startup(monkeypatch, tmp_p
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
     _SpyGeminiOpener.instances = []
     _SpyGeminiOpener.next_preflight_error = RuntimeError(
-        "Gemini preflight failed -- missing: gemini-test")
+        "Gemini preflight failed -- missing: gemini-test"
+    )
     monkeypatch.setattr(sup, "GeminiOpener", _SpyGeminiOpener)
     touched = []
     monkeypatch.setattr(sup, "make_store", lambda cfg: touched.append(True))
@@ -1597,9 +1838,9 @@ def test_gemini_preflight_failure_aborts_before_store_startup(monkeypatch, tmp_p
         with pytest.raises(RuntimeError, match="Gemini preflight failed"):
             sup.run(str(cfg_path), stop_event=threading.Event())
     finally:
-        _SpyGeminiOpener.next_preflight_error = None   # don't leak into later tests
+        _SpyGeminiOpener.next_preflight_error = None  # don't leak into later tests
 
-    assert touched == []                          # make_store() never reached
+    assert touched == []  # make_store() never reached
     assert len(_SpyGeminiOpener.instances) == 1
     assert _SpyGeminiOpener.instances[0].preflight_called is True
 
@@ -1632,7 +1873,9 @@ def test_gemini_thinking_config_reaches_the_constructed_opener(monkeypatch, tmp_
     only path that turns config.yaml's per-model thinkingConfig into what actually gets
     sent to Gemini (see GeminiOpener._payload)."""
     cfg_text = _gemini_cfg_text(
-        "  preflight: false\n", thinking_yaml="    gemini-test: {thinkingLevel: minimal}\n")
+        "  preflight: false\n",
+        thinking_yaml="    gemini-test: {thinkingLevel: minimal}\n",
+    )
     cfg_path = _write_cfg(tmp_path, cfg_text)
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
     _SpyGeminiOpener.instances = []
@@ -1648,7 +1891,9 @@ def test_gemini_thinking_config_reaches_the_constructed_opener(monkeypatch, tmp_
     sup.run(str(cfg_path), stop_event=threading.Event())
 
     assert len(_SpyGeminiOpener.instances) == 1
-    assert _SpyGeminiOpener.instances[0].thinking == {"gemini-test": {"thinkingLevel": "minimal"}}
+    assert _SpyGeminiOpener.instances[0].thinking == {
+        "gemini-test": {"thinkingLevel": "minimal"}
+    }
 
 
 def _wiring_cfg_text():
@@ -1674,10 +1919,13 @@ def _wiring_cfg_text():
     return _CONFIG.replace("enabled: false", opener_yaml).replace(
         "pricing: {}",
         "pricing:\n    gemini-wired-a: {input: 0, output: 0}\n"
-        "    gemini-wired-b: {input: 0, output: 0}")
+        "    gemini-wired-b: {input: 0, output: 0}",
+    )
 
 
-def test_gemini_constructor_args_wired_correctly_and_distinguishably(monkeypatch, tmp_path):
+def test_gemini_constructor_args_wired_correctly_and_distinguishably(
+    monkeypatch, tmp_path
+):
     """Pins supervisor.run()'s GeminiOpener(...) construction (~line 205-210) against every
     argument arriving in the wrong slot -- the mutation audit found this call is built from
     POSITIONAL args (models, max_tokens, request_timeout_s) plus keyword api_key/thinking,
@@ -1713,7 +1961,10 @@ def test_gemini_constructor_args_wired_correctly_and_distinguishably(monkeypatch
 
     assert len(_SpyGeminiOpener.instances) == 1
     spy = _SpyGeminiOpener.instances[0]
-    assert spy.models == ["gemini-wired-a", "gemini-wired-b"]   # effective_models, not .model
+    assert spy.models == [
+        "gemini-wired-a",
+        "gemini-wired-b",
+    ]  # effective_models, not .model
     assert spy.max_tokens == 777
     assert spy.request_timeout_s == 55
     assert spy.api_key == "distinctive-fake-test-key-88221"
@@ -1724,17 +1975,29 @@ def test_gemini_constructor_args_wired_correctly_and_distinguishably(monkeypatch
 # supervisor.py), so this doesn't need a Gemini-configured opener block at all; the base
 # _CONFIG (opener.enabled: false) is enough to exercise the wiring.
 
+
 class _SpyOpenerService:
     """Stand-in for OpenerService that records constructor args, without ever running a
     worker against it -- used to pin cfg.opener.max_attempts reaching the constructed
     service (contract: OpenerService(client, tracker, store, style, max_attempts=5,
     replay_corpus_dir=None, replay_corpus_max_captures=0, replay_corpus_max_age_days=0,
     deadletter_path=None))."""
+
     instances: list = []
 
-    def __init__(self, client, tracker, store, style, max_attempts=5, *,
-                 replay_corpus_dir=None, replay_corpus_max_captures=0,
-                 replay_corpus_max_age_days=0, deadletter_path=None):
+    def __init__(
+        self,
+        client,
+        tracker,
+        store,
+        style,
+        max_attempts=5,
+        *,
+        replay_corpus_dir=None,
+        replay_corpus_max_captures=0,
+        replay_corpus_max_age_days=0,
+        deadletter_path=None,
+    ):
         self.client = client
         self.tracker = tracker
         self.store = store
@@ -1748,7 +2011,8 @@ class _SpyOpenerService:
 
 
 def test_opener_rejection_deadletter_path_reaches_the_constructed_opener_service(
-        monkeypatch, tmp_path):
+    monkeypatch, tmp_path
+):
     """The rejection dead-letter must actually be WIRED, not merely available.
 
     `OpenerService(deadletter_path=...)` defaults to None, and a None path makes
@@ -1777,9 +2041,14 @@ def test_opener_rejection_deadletter_path_reaches_the_constructed_opener_service
 
     assert len(_SpyOpenerService.instances) == 1
     wired = _SpyOpenerService.instances[0].deadletter_path
-    assert wired, "supervisor must pass a deadletter_path; None leaves the diagnostic inert"
+    assert wired, (
+        "supervisor must pass a deadletter_path; None leaves the diagnostic inert"
+    )
     from operation_love import config as _cfg_mod
-    expected = _cfg_mod.load(str(cfg_path)).data_dir / "opener_rejection_deadletter.jsonl"
+
+    expected = (
+        _cfg_mod.load(str(cfg_path)).data_dir / "opener_rejection_deadletter.jsonl"
+    )
     assert Path(wired) == expected
 
 
@@ -1801,7 +2070,9 @@ class _StoreWithStrandedOpenerRejections(_FakeStore):
         return list(self._pending_rows)
 
 
-def test_shutdown_flush_failure_deadletters_stranded_opener_rejections(monkeypatch, tmp_path):
+def test_shutdown_flush_failure_deadletters_stranded_opener_rejections(
+    monkeypatch, tmp_path
+):
     """A wire failure at the FINAL shutdown flush must still dead-letter whatever
     opener_rejections rows the store was still holding -- not only rows that happened to raise
     synchronously inside maybe_opener's own try/except (that narrower case is already covered
@@ -1815,10 +2086,16 @@ def test_shutdown_flush_failure_deadletters_stranded_opener_rejections(monkeypat
     import json
 
     cfg_path = _write_cfg(tmp_path, _CONFIG)
-    flush_exc = RuntimeError("BigQuery insert errors for opener_rejections: [wire down]")
+    flush_exc = RuntimeError(
+        "BigQuery insert errors for opener_rejections: [wire down]"
+    )
     stranded_row = {
-        "run_id": "run-stranded-1", "app": "hinge", "created_at": 0, "model": "gemini-3-flash",
-        "attempt": 2, "reason_code": "unconfirmed_location_followup",
+        "run_id": "run-stranded-1",
+        "app": "hinge",
+        "created_at": 0,
+        "model": "gemini-3-flash",
+        "attempt": 2,
+        "reason_code": "unconfirmed_location_followup",
         "reason": "the model referenced a location detail that could not be confirmed",
         "raw_opener": "I noticed the mountain in your third photo...",
         "prompt_sha256": "deadbeef" * 8,
@@ -1836,11 +2113,19 @@ def test_shutdown_flush_failure_deadletters_stranded_opener_rejections(monkeypat
         sup.run(str(cfg_path), stop_event=threading.Event())
 
     from operation_love import config as _cfg_mod
-    deadletter_path = _cfg_mod.load(str(cfg_path)).data_dir / "opener_rejection_deadletter.jsonl"
+
+    deadletter_path = (
+        _cfg_mod.load(str(cfg_path)).data_dir / "opener_rejection_deadletter.jsonl"
+    )
     assert deadletter_path.exists(), (
         "a flush failure at shutdown must still dead-letter whatever opener_rejections rows "
-        "the store was still holding -- see supervisor._deadletter_stranded_opener_rejections")
-    entries = [json.loads(line) for line in deadletter_path.read_text().splitlines() if line.strip()]
+        "the store was still holding -- see supervisor._deadletter_stranded_opener_rejections"
+    )
+    entries = [
+        json.loads(line)
+        for line in deadletter_path.read_text().splitlines()
+        if line.strip()
+    ]
     assert len(entries) == 1
     entry = entries[0]
     assert entry["branch"] == "shutdown_flush"
@@ -1867,13 +2152,31 @@ class _StoreWithRejectionThatStaysBuffered:
     def __init__(self):
         self._buf: list[dict] = []
 
-    def record_opener_rejection(self, run_id, app, model, attempt, reason_code, reason,
-                                raw_opener, *, prompt_sha256=None):
-        self._buf.append({
-            "run_id": run_id, "app": app, "created_at": "2026-09-17T00:00:00+00:00",
-            "model": model, "attempt": int(attempt), "reason_code": reason_code,
-            "reason": reason, "raw_opener": raw_opener, "prompt_sha256": prompt_sha256,
-        })
+    def record_opener_rejection(
+        self,
+        run_id,
+        app,
+        model,
+        attempt,
+        reason_code,
+        reason,
+        raw_opener,
+        *,
+        prompt_sha256=None,
+    ):
+        self._buf.append(
+            {
+                "run_id": run_id,
+                "app": app,
+                "created_at": "2026-09-17T00:00:00+00:00",
+                "model": model,
+                "attempt": int(attempt),
+                "reason_code": reason_code,
+                "reason": reason,
+                "raw_opener": raw_opener,
+                "prompt_sha256": prompt_sha256,
+            }
+        )
         raise RuntimeError("BigQuery insert errors for opener_rejections: [wire down]")
 
     def pending_opener_rejections(self):
@@ -1902,10 +2205,13 @@ class _MinimalTracker:
 
 def _read_deadletter_jsonl(path):
     import json as _json
+
     return [_json.loads(line) for line in path.read_text().splitlines() if line.strip()]
 
 
-def test_shutdown_sweep_does_not_double_deadletter_a_row_already_recorded_per_call(tmp_path):
+def test_shutdown_sweep_does_not_double_deadletter_a_row_already_recorded_per_call(
+    tmp_path,
+):
     """Regression pin for the double-dead-lettering bug fixed 2026-09-17.
 
     The bug: `_deadletter_stranded_opener_rejections` asked the store what opener_rejections
@@ -1928,8 +2234,13 @@ def test_shutdown_sweep_does_not_double_deadletter_a_row_already_recorded_per_ca
     """
     deadletter_path = tmp_path / "deadletter.jsonl"
     store = _StoreWithRejectionThatStaysBuffered()
-    service = OpenerService(_OpenerErrorClient(), _MinimalTracker(), store, "casual",
-                            deadletter_path=str(deadletter_path))
+    service = OpenerService(
+        _OpenerErrorClient(),
+        _MinimalTracker(),
+        store,
+        "casual",
+        deadletter_path=str(deadletter_path),
+    )
 
     # One profile's opener call: OpenerError -> record_opener_rejection raises -> the
     # SERVICE's own per-call except already writes ONE dead-letter entry (branch=
@@ -1939,7 +2250,9 @@ def test_shutdown_sweep_does_not_double_deadletter_a_row_already_recorded_per_ca
     assert out is None
 
     after_percall = _read_deadletter_jsonl(deadletter_path)
-    assert len(after_percall) == 1, "the per-call path itself must write exactly one entry"
+    assert len(after_percall) == 1, (
+        "the per-call path itself must write exactly one entry"
+    )
     assert after_percall[0]["branch"] == "opener_error"
 
     # Shutdown: the SAME row is still buffered (a failed flush never clears it) and
@@ -1947,17 +2260,22 @@ def test_shutdown_sweep_does_not_double_deadletter_a_row_already_recorded_per_ca
     # handler calls _deadletter_stranded_opener_rejections. Pre-fix this wrote a SECOND
     # entry for the identical row; the fix must skip it.
     sup._deadletter_stranded_opener_rejections(
-        store, service,
-        RuntimeError("BigQuery insert errors for opener_rejections: [wire down]"))
+        store,
+        service,
+        RuntimeError("BigQuery insert errors for opener_rejections: [wire down]"),
+    )
 
     after_shutdown = _read_deadletter_jsonl(deadletter_path)
     assert len(after_shutdown) == 1, (
         "shutdown sweep wrote a duplicate dead-letter entry for a row the per-call path "
         "already recorded -- see supervisor._deadletter_stranded_opener_rejections and "
-        "OpenerService.is_rejection_row_deadlettered")
+        "OpenerService.is_rejection_row_deadlettered"
+    )
 
 
-def test_opener_max_attempts_reaches_the_constructed_opener_service(monkeypatch, tmp_path):
+def test_opener_max_attempts_reaches_the_constructed_opener_service(
+    monkeypatch, tmp_path
+):
     """cfg.opener.max_attempts must reach OpenerService's constructor as the keyword
     max_attempts -- this is the setting that controls how many times a rejected AI response
     is re-asked before the run stops (owner rule, 2026-08-10: no commentless likes). Uses a
@@ -1965,8 +2283,8 @@ def test_opener_max_attempts_reaches_the_constructed_opener_service(monkeypatch,
     kwarg entirely -- silently falling back to OpenerService's own default -- cannot pass
     unnoticed."""
     cfg_text = _CONFIG.replace(
-        "opener:\n  enabled: false",
-        "opener:\n  enabled: false\n  max_attempts: 7")
+        "opener:\n  enabled: false", "opener:\n  enabled: false\n  max_attempts: 7"
+    )
     cfg_path = _write_cfg(tmp_path, cfg_text)
     monkeypatch.setattr(sup, "Capabilities", _Caps)
     monkeypatch.setattr(sup, "Embedder", _FastEmbedder)
@@ -1984,10 +2302,12 @@ def test_opener_max_attempts_reaches_the_constructed_opener_service(monkeypatch,
     assert _SpyOpenerService.instances[0].max_attempts == 7
 
 
-def test_opener_max_attempts_default_reaches_the_constructed_opener_service(monkeypatch, tmp_path):
+def test_opener_max_attempts_default_reaches_the_constructed_opener_service(
+    monkeypatch, tmp_path
+):
     """The shipped default (5, from OpenerCfg) must also reach the constructor when
     config.yaml doesn't override it -- not just an explicitly-set value."""
-    cfg_path = _write_cfg(tmp_path)   # base _CONFIG sets no opener.max_attempts
+    cfg_path = _write_cfg(tmp_path)  # base _CONFIG sets no opener.max_attempts
     monkeypatch.setattr(sup, "Capabilities", _Caps)
     monkeypatch.setattr(sup, "Embedder", _FastEmbedder)
     monkeypatch.setattr(sup, "QualityFilter", _FastQuality)
@@ -2005,11 +2325,12 @@ def test_opener_max_attempts_default_reaches_the_constructed_opener_service(monk
 
 
 def test_opener_replay_corpus_disabled_by_default_reaches_the_constructed_opener_service(
-        monkeypatch, tmp_path):
+    monkeypatch, tmp_path
+):
     """The shipped default (opener.replay_corpus_enabled: false) must reach OpenerService's
     constructor as replay_corpus_dir=None -- this writes REAL PEOPLE'S PHOTOS to local disk, so
     the off-by-default contract must hold even when config.yaml never mentions the flag."""
-    cfg_path = _write_cfg(tmp_path)   # base _CONFIG sets no opener.replay_corpus_enabled
+    cfg_path = _write_cfg(tmp_path)  # base _CONFIG sets no opener.replay_corpus_enabled
     monkeypatch.setattr(sup, "Capabilities", _Caps)
     monkeypatch.setattr(sup, "Embedder", _FastEmbedder)
     monkeypatch.setattr(sup, "QualityFilter", _FastQuality)
@@ -2026,13 +2347,17 @@ def test_opener_replay_corpus_disabled_by_default_reaches_the_constructed_opener
     assert _SpyOpenerService.instances[0].replay_corpus_dir is None
 
 
-def test_opener_replay_corpus_enabled_reaches_the_constructed_opener_service(monkeypatch, tmp_path):
+def test_opener_replay_corpus_enabled_reaches_the_constructed_opener_service(
+    monkeypatch, tmp_path
+):
     """Turning the owner's flag on must reach OpenerService as a real directory (the module's
     own DEFAULT_CORPUS_DIR), not merely a truthy placeholder."""
     from operation_love.opener.replay_corpus import DEFAULT_CORPUS_DIR
+
     cfg_text = _CONFIG.replace(
         "opener:\n  enabled: false",
-        "opener:\n  enabled: false\n  replay_corpus_enabled: true")
+        "opener:\n  enabled: false\n  replay_corpus_enabled: true",
+    )
     cfg_path = _write_cfg(tmp_path, cfg_text)
     monkeypatch.setattr(sup, "Capabilities", _Caps)
     monkeypatch.setattr(sup, "Embedder", _FastEmbedder)
@@ -2056,11 +2381,13 @@ def test_opener_replay_corpus_enabled_reaches_the_constructed_opener_service(mon
 # early return) -- so both defaults and explicit overrides must be pinned, exactly like
 # max_attempts above. ------------------------------------------------------------------------
 
+
 def test_opener_replay_corpus_retention_defaults_reach_the_constructed_opener_service(
-        monkeypatch, tmp_path):
+    monkeypatch, tmp_path
+):
     """The shipped OpenerCfg defaults (400 captures / 180 days) must reach the constructor when
     config.yaml never mentions either knob -- not just when they are set explicitly."""
-    cfg_path = _write_cfg(tmp_path)   # base _CONFIG sets neither retention knob
+    cfg_path = _write_cfg(tmp_path)  # base _CONFIG sets neither retention knob
     monkeypatch.setattr(sup, "Capabilities", _Caps)
     monkeypatch.setattr(sup, "Embedder", _FastEmbedder)
     monkeypatch.setattr(sup, "QualityFilter", _FastQuality)
@@ -2079,7 +2406,8 @@ def test_opener_replay_corpus_retention_defaults_reach_the_constructed_opener_se
 
 
 def test_opener_replay_corpus_retention_overrides_reach_the_constructed_opener_service(
-        monkeypatch, tmp_path):
+    monkeypatch, tmp_path
+):
     """Explicit config.yaml overrides for both retention knobs must reach the constructor --
     distinctive values (11 / 22), neither of which is either knob's own class default, so a
     mutation that drops a kwarg (silently falling back to OpenerCfg's default) cannot pass
@@ -2087,7 +2415,8 @@ def test_opener_replay_corpus_retention_overrides_reach_the_constructed_opener_s
     cfg_text = _CONFIG.replace(
         "opener:\n  enabled: false",
         "opener:\n  enabled: false\n  replay_corpus_max_captures: 11"
-        "\n  replay_corpus_max_age_days: 22")
+        "\n  replay_corpus_max_age_days: 22",
+    )
     cfg_path = _write_cfg(tmp_path, cfg_text)
     monkeypatch.setattr(sup, "Capabilities", _Caps)
     monkeypatch.setattr(sup, "Embedder", _FastEmbedder)
@@ -2106,7 +2435,9 @@ def test_opener_replay_corpus_retention_overrides_reach_the_constructed_opener_s
     assert _SpyOpenerService.instances[0].replay_corpus_max_age_days == 22
 
 
-def test_on_opener_service_callback_receives_the_live_opener_service(monkeypatch, tmp_path):
+def test_on_opener_service_callback_receives_the_live_opener_service(
+    monkeypatch, tmp_path
+):
     """The hub's bug report needs the OpenerService this run actually built: only its own
     ring buffer (OpenerService.recent_openers_snapshot) records what each opener said and
     whether it was anchored to the live like screen -- RunStatus's raw `openers` counter
@@ -2125,14 +2456,18 @@ def test_on_opener_service_callback_receives_the_live_opener_service(monkeypatch
     monkeypatch.setattr(sup, "OpenerService", _SpyOpenerService)
     captured = {}
 
-    sup.run(str(cfg_path), on_opener_service=lambda svc: captured.__setitem__("svc", svc),
-            stop_event=threading.Event())
+    sup.run(
+        str(cfg_path),
+        on_opener_service=lambda svc: captured.__setitem__("svc", svc),
+        stop_event=threading.Event(),
+    )
 
     assert len(_SpyOpenerService.instances) == 1
     assert captured["svc"] is _SpyOpenerService.instances[0]
 
 
 # --- device lock: OS-backed cross-process exclusion so two Android runs can't overlap -------
+
 
 def test_android_device_lock_blocks_concurrent_acquire_and_releases_cleanly(tmp_path):
     if sup.fcntl is None:
@@ -2159,8 +2494,8 @@ def test_android_device_lock_blocks_concurrent_acquire_and_releases_cleanly(tmp_
 
 def test_android_device_lock_release_is_idempotent_and_safe_before_acquire(tmp_path):
     lock = sup._AndroidDeviceLock(tmp_path / ".android-never-acquired.lock")
-    lock.release()             # never acquired -- must be a safe no-op, not an error
-    lock.release()             # and idempotent
+    lock.release()  # never acquired -- must be a safe no-op, not an error
+    lock.release()  # and idempotent
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX permission bits")
@@ -2208,6 +2543,7 @@ def test_android_lock_path_is_one_file_across_serials_and_data_dirs(tmp_path):
     case the lock exists to prevent. Nothing kept the two blocks' serials in sync, and a
     blank serial cannot be compared against an explicit one without asking adb.
     """
+
     class _Explicit:
         data_dir = tmp_path / "first-data-root"
         apps = {"hinge": {"serial": "33111JEHN04475"}, "bumble": {"serial": ""}}
@@ -2220,13 +2556,16 @@ def test_android_lock_path_is_one_file_across_serials_and_data_dirs(tmp_path):
     bumble_lock = sup._android_lock_path(_Explicit(), "bumble")
     other_config_lock = sup._android_lock_path(_OtherDataRoot(), "hinge")
     assert hinge_lock == bumble_lock, "same phone, different lock files -> no exclusion"
-    assert hinge_lock == other_config_lock, "different data_dir values bypassed the device lock"
+    assert hinge_lock == other_config_lock, (
+        "different data_dir values bypassed the device lock"
+    )
 
-    class _Weird:                       # a hostile serial must not escape data_dir either
+    class _Weird:  # a hostile serial must not escape data_dir either
         data_dir = tmp_path / "third-data-root"
         apps = {"hinge": {"serial": "abc 123/weird:name"}}
+
     p = sup._android_lock_path(_Weird(), "hinge")
-    assert p == hinge_lock              # still the one shared lock, unaffected by the string
+    assert p == hinge_lock  # still the one shared lock, unaffected by the string
     assert p.parent == sup._ANDROID_LOCK_ROOT
     assert "/" not in p.name and ":" not in p.name and " " not in p.name
 
@@ -2256,11 +2595,17 @@ def test_android_lock_root_default_is_the_operators_real_home_directory():
     source = inspect.getsource(sup)
     tree = ast.parse(source)
     assignments = [
-        node for node in ast.walk(tree)
+        node
+        for node in ast.walk(tree)
         if isinstance(node, ast.Assign)
-        and any(isinstance(t, ast.Name) and t.id == "_ANDROID_LOCK_ROOT" for t in node.targets)
+        and any(
+            isinstance(t, ast.Name) and t.id == "_ANDROID_LOCK_ROOT"
+            for t in node.targets
+        )
     ]
-    assert len(assignments) == 1, "expected exactly one module-level _ANDROID_LOCK_ROOT default"
+    assert len(assignments) == 1, (
+        "expected exactly one module-level _ANDROID_LOCK_ROOT default"
+    )
 
     expected = ast.parse('Path.home() / ".operation-love" / "locks"', mode="eval").body
     assert ast.unparse(assignments[0].value) == ast.unparse(expected)
@@ -2296,7 +2641,10 @@ def test_android_lock_contends_across_processes_and_distinct_data_dirs(tmp_path)
         )
         child = subprocess.run(
             [sys.executable, "-c", script, str(second_path)],
-            capture_output=True, text=True, timeout=10, check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
         )
         assert child.returncode == 17
         assert "already in use" in child.stdout
@@ -2331,7 +2679,8 @@ def test_windows_lock_backend_locks_and_unlocks_the_same_byte(monkeypatch, tmp_p
 
 
 def test_windows_lock_contention_reports_holder_and_missing_backend_fails_closed(
-        monkeypatch, tmp_path):
+    monkeypatch, tmp_path
+):
     class _BusyMsvcrt:
         LK_NBLCK = 10
         LK_UNLCK = 11
@@ -2353,7 +2702,9 @@ def test_windows_lock_contention_reports_holder_and_missing_backend_fails_closed
         sup._AndroidDeviceLock(tmp_path / "unsupported.lock").acquire()
 
 
-def test_device_lock_prevents_overlapping_runs_even_within_one_process(monkeypatch, tmp_path):
+def test_device_lock_prevents_overlapping_runs_even_within_one_process(
+    monkeypatch, tmp_path
+):
     """Integration companion to the unit tests above: drives the real supervisor.run() twice
     with overlapping lifetimes. flock is scoped to the OPEN FILE DESCRIPTION, not the
     process, so a contention here also proves the lock would stop two SEPARATE processes
@@ -2362,16 +2713,21 @@ def test_device_lock_prevents_overlapping_runs_even_within_one_process(monkeypat
 
     class _BlockingDriver(DatingAppDriver):
         def open_session(self):
-            gate.set()            # signal: the first run has started -> device lock is held
+            gate.set()  # signal: the first run has started -> device lock is held
             time.sleep(0.5)
+
         def next_profile(self):
             return None
+
         def out_of_profiles(self):
             return True
+
         def like(self, opener=None, item_index=None, *, model_item_index=None):
             pass
+
         def dislike(self):
             pass
+
         def close(self):
             pass
 
@@ -2404,11 +2760,12 @@ def test_device_lock_prevents_overlapping_runs_even_within_one_process(monkeypat
 
     t.join(timeout=_LIVENESS_TIMEOUT_S)
     assert not t.is_alive()
-    assert "error" not in first_error               # the first run completed cleanly
+    assert "error" not in first_error  # the first run completed cleanly
 
 
 def test_wedged_android_worker_retains_device_lock_until_it_really_exits(
-        monkeypatch, tmp_path, capsys):
+    monkeypatch, tmp_path, capsys
+):
     if sup.fcntl is None:
         pytest.skip("flock is POSIX-only")
 
@@ -2471,7 +2828,9 @@ def test_wedged_android_worker_retains_device_lock_until_it_really_exits(
             break
         except RuntimeError as exc:
             if time.monotonic() >= deadline:
-                raise AssertionError("reaper did not release lock after worker exit") from exc
+                raise AssertionError(
+                    "reaper did not release lock after worker exit"
+                ) from exc
             time.sleep(0.01)
     contender.release()
     # A SECOND wait, not a bare read (found 2026-08-23, an intermittent under the parallel
@@ -2492,12 +2851,14 @@ def test_wedged_android_worker_retains_device_lock_until_it_really_exits(
             break
         if time.monotonic() >= deadline:
             raise AssertionError(
-                f"reaper released the lock but never cleared its registry entry: {retained}")
+                f"reaper released the lock but never cleared its registry entry: {retained}"
+            )
         time.sleep(0.01)
 
 
 def test_reaper_start_failure_keeps_lock_but_does_not_skip_store_shutdown(
-        monkeypatch, tmp_path, capsys):
+    monkeypatch, tmp_path, capsys
+):
     if sup.fcntl is None:
         pytest.skip("flock is POSIX-only")
 
@@ -2557,7 +2918,10 @@ def test_reaper_start_failure_keeps_lock_but_does_not_skip_store_shutdown(
 
     assert store.flushed is True
     assert store.closed is True
-    assert "retaining the device lock for this process's lifetime" in capsys.readouterr().out
+    assert (
+        "retaining the device lock for this process's lifetime"
+        in capsys.readouterr().out
+    )
     contender = sup._AndroidDeviceLock(sup._ANDROID_LOCK_ROOT / "android-device.lock")
     with pytest.raises(RuntimeError, match="already in use"):
         contender.acquire()
@@ -2574,9 +2938,11 @@ def test_reaper_start_failure_keeps_lock_but_does_not_skip_store_shutdown(
 # --- E: _worker_join_timeout_s must derive from opener.request_timeout_s, not a stale flat
 # constant -- see the constants' own comments in supervisor.py for the full arithmetic. -------
 
+
 class _JoinTimeoutCfg:
     """Bare stand-in carrying only the one field _worker_join_timeout_s actually reads --
     real Config/OpenerCfg objects carry a lot more than this function needs."""
+
     def __init__(self, opener):
         self.opener = opener
 
@@ -2589,7 +2955,9 @@ def test_join_timeout_exceeds_request_timeout_s_when_openers_enabled():
     cfg = _JoinTimeoutCfg(OpenerCfg(enabled=True, request_timeout_s=90))
     timeout = sup._worker_join_timeout_s(cfg)
     assert timeout > 90
-    assert timeout == 90 + sup._WORKER_JOIN_TIMEOUT_MARGIN_S    # exact arithmetic, not just ">"
+    assert (
+        timeout == 90 + sup._WORKER_JOIN_TIMEOUT_MARGIN_S
+    )  # exact arithmetic, not just ">"
 
 
 def test_join_timeout_scales_with_a_nondefault_request_timeout_s():
@@ -2610,6 +2978,7 @@ def test_join_timeout_falls_back_to_the_sane_floor_when_openers_disabled():
 # --- F: an already-landed decision's ARCHIVE is the other thing a healthy worker can be
 # inside when Stop arrives, and it outlasts the opener bound above. ------------------------
 
+
 def _archive_cfg(apps):
     return SimpleNamespace(enabled_apps=list(apps), apps=apps)
 
@@ -2623,31 +2992,55 @@ def test_archive_grace_is_read_off_the_stores_own_whole_archive_deadline():
     # Several times the 105s opener bound at the shipped capture budget -- the gap this whole
     # branch exists to cover. Compared against that bound rather than a literal so a retune of
     # either side keeps the relationship under test instead of pinning two numbers.
-    assert grace > sup._worker_join_timeout_s(
-        _JoinTimeoutCfg(OpenerCfg(enabled=True, request_timeout_s=90))) * 3
+    assert (
+        grace
+        > sup._worker_join_timeout_s(
+            _JoinTimeoutCfg(OpenerCfg(enabled=True, request_timeout_s=90))
+        )
+        * 3
+    )
     # A budget the config does not pin is priced at the Training review ceiling, which is also
     # the largest capture config validation admits for a Training run.
     assert sup._archive_join_grace_s(_archive_cfg({"hinge": {}})) == (
-        sup._profile_upload_deadline_s(sup.MAX_PROFILE_REVIEW_FRAMES))
+        sup._profile_upload_deadline_s(sup.MAX_PROFILE_REVIEW_FRAMES)
+    )
     # Never below the store's own floor, whatever the config says.
-    assert sup._archive_join_grace_s(_archive_cfg({"hinge": {"scroll_captures": 1}})) == 180.0
+    assert (
+        sup._archive_join_grace_s(_archive_cfg({"hinge": {"scroll_captures": 1}}))
+        == 180.0
+    )
 
 
 def test_only_a_store_reporting_a_registered_archive_can_extend_the_join():
     """A store with no such seam (sqlite, every test double here) keeps the flat bound, so a
     genuinely wedged worker stays exactly as quick to give up on as before."""
     assert sup._store_archive_in_flight(_FakeStore()) is False
-    assert sup._store_archive_in_flight(SimpleNamespace(_active_async_writes=0)) is False
+    assert (
+        sup._store_archive_in_flight(SimpleNamespace(_active_async_writes=0)) is False
+    )
     assert sup._store_archive_in_flight(SimpleNamespace(_active_async_writes=1)) is True
-    assert sup._store_archive_in_flight(
-        SimpleNamespace(archive_writes_in_flight=lambda: 2)) is True
+    assert (
+        sup._store_archive_in_flight(
+            SimpleNamespace(archive_writes_in_flight=lambda: 2)
+        )
+        is True
+    )
     # A probe that misbehaves must never take shutdown down with it.
-    assert sup._store_archive_in_flight(SimpleNamespace(
-        archive_writes_in_flight=lambda: (_ for _ in ()).throw(RuntimeError("boom")))) is False
+    assert (
+        sup._store_archive_in_flight(
+            SimpleNamespace(
+                archive_writes_in_flight=lambda: (_ for _ in ()).throw(
+                    RuntimeError("boom")
+                )
+            )
+        )
+        is False
+    )
 
 
 def test_worker_still_archiving_a_landed_decision_is_not_reported_wedged(
-        monkeypatch, tmp_path, capsys):
+    monkeypatch, tmp_path, capsys
+):
     """The consequence of the old flat bound was not a cosmetic label: the supervisor flushes
     and CLOSES the store on the far side of this join, and the decision/opener/label rows that
     follow an already-landed Like are then refused as late writes."""
@@ -2665,16 +3058,21 @@ def test_worker_still_archiving_a_landed_decision_is_not_reported_wedged(
             # and the store is uploading that profile's screenshots. Stop is requested from
             # here so run() must join a worker that is provably mid-archive.
             stop_event.set()
-            time.sleep(1.0)          # outlasts the 0.2s flat bound mocked below
+            time.sleep(1.0)  # outlasts the 0.2s flat bound mocked below
             archive_done.set()
+
         def next_profile(self):
             return None
+
         def out_of_profiles(self):
             return True
+
         def like(self, opener=None, item_index=None, *, model_item_index=None):
             pass
+
         def dislike(self):
             pass
+
         def close(self):
             driver_closed.set()
 
@@ -2691,8 +3089,11 @@ def test_worker_still_archiving_a_landed_decision_is_not_reported_wedged(
     captured = {}
 
     try:
-        sup.run(str(_write_cfg(tmp_path)),
-                on_status=lambda s: captured.__setitem__("status", s), stop_event=stop_event)
+        sup.run(
+            str(_write_cfg(tmp_path)),
+            on_status=lambda s: captured.__setitem__("status", s),
+            stop_event=stop_event,
+        )
 
         out = capsys.readouterr().out
         assert "is still archiving a decision that already landed on the phone" in out
@@ -2712,7 +3113,10 @@ def test_worker_still_archiving_a_landed_decision_is_not_reported_wedged(
 # any decision it recorded there would be silently discarded (worker.py re-checks
 # stop_event around every decision point). These tests pin the fixed ordering.
 
-def test_stopping_is_true_and_phase_is_stopping_before_saving_data_begins(monkeypatch, tmp_path):
+
+def test_stopping_is_true_and_phase_is_stopping_before_saving_data_begins(
+    monkeypatch, tmp_path
+):
     """Core ordering fix: while a still-live worker is inside the join wait (not yet
     joined/declared wedged), status must read phase='stopping' with stopping=True -- NOT
     'saving data'. Uses a worker driver that blocks in open_session() until released, so the
@@ -2731,14 +3135,19 @@ def test_stopping_is_true_and_phase_is_stopping_before_saving_data_begins(monkey
             # which IS an input to the production code under test and must stay as authored.
             stop_event.set()
             release.wait(timeout=_LIVENESS_TIMEOUT_S)
+
         def next_profile(self):
             return None
+
         def out_of_profiles(self):
             return True
+
         def like(self, opener=None, item_index=None, *, model_item_index=None):
             pass
+
         def dislike(self):
             pass
+
         def close(self):
             pass
 
@@ -2754,11 +3163,17 @@ def test_stopping_is_true_and_phase_is_stopping_before_saving_data_begins(monkey
     _patch_no_adb(monkeypatch)
 
     captured = {}
-    stop_event = threading.Event()   # set by _BlockedUntilReleased.open_session, after launch
+    stop_event = (
+        threading.Event()
+    )  # set by _BlockedUntilReleased.open_session, after launch
 
     run_thread = threading.Thread(
-        target=lambda: sup.run(str(cfg_path), on_status=lambda s: captured.__setitem__("status", s),
-                               stop_event=stop_event))
+        target=lambda: sup.run(
+            str(cfg_path),
+            on_status=lambda s: captured.__setitem__("status", s),
+            stop_event=stop_event,
+        )
+    )
     run_thread.start()
 
     # The worker set stop from open_session and is still blocked there (release not set), so
@@ -2772,14 +3187,14 @@ def test_stopping_is_true_and_phase_is_stopping_before_saving_data_begins(monkey
             break
         time.sleep(0.02)
     mid = captured["status"].snapshot()
-    release.set()                            # let the worker (and thus the join loop) finish
+    release.set()  # let the worker (and thus the join loop) finish
     run_thread.join(timeout=_LIVENESS_TIMEOUT_S)
 
     assert mid["phase"] == "stopping"
     assert mid["stopping"] is True
     final = captured["status"].snapshot()
     assert final["phase"] == "stopped"
-    assert final["stopping"] is False        # cleared once the terminal phase lands
+    assert final["stopping"] is False  # cleared once the terminal phase lands
 
 
 def test_saving_data_phase_and_flush_see_stopping_still_true(monkeypatch, tmp_path):
@@ -2805,8 +3220,11 @@ def test_saving_data_phase_and_flush_see_stopping_still_true(monkeypatch, tmp_pa
     monkeypatch.setattr(sup, "_install_signal_handlers", lambda stop: None)
     _patch_no_adb(monkeypatch)
 
-    sup.run(str(cfg_path), on_status=lambda s: captured.__setitem__("status", s),
-            stop_event=threading.Event())
+    sup.run(
+        str(cfg_path),
+        on_status=lambda s: captured.__setitem__("status", s),
+        stop_event=threading.Event(),
+    )
 
     assert captured["phase_at_flush"] == "saving data"
     assert captured["stopping_at_flush"] is True
@@ -2815,7 +3233,9 @@ def test_saving_data_phase_and_flush_see_stopping_still_true(monkeypatch, tmp_pa
     assert final["stopping"] is False
 
 
-def test_stopping_print_names_the_real_join_timeout_and_worker_count(monkeypatch, tmp_path, capsys):
+def test_stopping_print_names_the_real_join_timeout_and_worker_count(
+    monkeypatch, tmp_path, capsys
+):
     """The new operator-facing line printed before the join loop must name the ACTUAL
     computed bound (join_timeout_s), not a guess -- and how many workers it's waiting on."""
     monkeypatch.setattr(sup, "_worker_join_timeout_s", lambda cfg: 42.0)
@@ -2832,19 +3252,26 @@ def test_stopping_print_names_the_real_join_timeout_and_worker_count(monkeypatch
     sup.run(str(cfg_path), stop_event=threading.Event())
 
     out = capsys.readouterr().out
-    assert ("Supervisor: stopping — waiting up to 42s for 1 worker(s) to finish what they "
-            "are doing") in out
+    assert (
+        "Supervisor: stopping — waiting up to 42s for 1 worker(s) to finish what they "
+        "are doing"
+    ) in out
 
 
-def test_stopping_print_omitted_when_no_worker_was_ever_launched(monkeypatch, tmp_path, capsys):
+def test_stopping_print_omitted_when_no_worker_was_ever_launched(
+    monkeypatch, tmp_path, capsys
+):
     """The device-lock-contention path (and anything else that fails between `workers = []`
     and the launch loop) reaches this finally block with an empty worker list -- 'waiting
     for 0 worker(s)' would be nonsensical, so the print is skipped entirely."""
+
     class _AlwaysBusyLock:
         def __init__(self, path):
             pass
+
         def acquire(self):
             raise RuntimeError("Android device is already in use by another run")
+
         def release(self):
             pass
 
@@ -2865,7 +3292,9 @@ def test_stopping_print_omitted_when_no_worker_was_ever_launched(monkeypatch, tm
     assert "Supervisor: stopping — waiting up to" not in out
 
 
-def test_wedged_summary_uses_the_real_join_timeout_not_a_hardcoded_30s(monkeypatch, tmp_path, capsys):
+def test_wedged_summary_uses_the_real_join_timeout_not_a_hardcoded_30s(
+    monkeypatch, tmp_path, capsys
+):
     """Audit fix: the printed save summary used to hardcode 'did not stop within 30s'
     regardless of the run's ACTUAL bound (105s with the shipped opener config) -- a stale,
     wrong number in an operator-facing message. It must use join_timeout_s like the
@@ -2883,16 +3312,21 @@ def test_wedged_summary_uses_the_real_join_timeout_not_a_hardcoded_30s(monkeypat
             # shutdown from here so supervisor.run() must join this live worker for its full
             # mocked one-second bound.
             stop_event.set()
-            time.sleep(2.0)          # ignores stop_event -- simulates a wedged worker;
-                                      # must outlast the 1.0s join timeout below to actually wedge
+            time.sleep(2.0)  # ignores stop_event -- simulates a wedged worker;
+            # must outlast the 1.0s join timeout below to actually wedge
+
         def next_profile(self):
             return None
+
         def out_of_profiles(self):
             return True
+
         def like(self, opener=None, item_index=None, *, model_item_index=None):
             pass
+
         def dislike(self):
             pass
+
         def close(self):
             driver_closed.set()
 

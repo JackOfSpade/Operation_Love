@@ -5,6 +5,7 @@ notification permission.  On macOS this module also posts a native fallback and 
 independently: Notification Center is allowed to suppress a banner *and* its attached sound, so
 one deprecated API call cannot honestly prove either signal reached the operator.
 """
+
 from __future__ import annotations
 
 import subprocess
@@ -25,14 +26,14 @@ _MACOS_SOUND = Path("/System/Library/Sounds/Glass.aiff")
 # zero exit status as proof that the operator saw and heard an alert.
 _TRAINING_NOTIFICATION_JXA = (
     'ObjC.import("Foundation"); '
-    'const notification = $.NSUserNotification.alloc.init; '
+    "const notification = $.NSUserNotification.alloc.init; "
     'notification.title = "Operation Love"; '
     'notification.subtitle = "Training profile ready"; '
     'notification.informativeText = "Choose Like or Dislike in the Hub."; '
     'notification.identifier = "operation-love-training-" + Date.now(); '
-    'const center = $.NSUserNotificationCenter.defaultUserNotificationCenter; '
-    'center.deliverNotification(notification); '
-    '$.NSThread.sleepForTimeInterval(0.35); '
+    "const center = $.NSUserNotificationCenter.defaultUserNotificationCenter; "
+    "center.deliverNotification(notification); "
+    "$.NSThread.sleepForTimeInterval(0.35); "
     'notification.presented ? "presented" : "not-presented";'
 )
 
@@ -59,7 +60,13 @@ def record_training_browser_notification(outcome: str) -> bool:
     The HTTP boundary accepts only these fixed values, so neither browser-controlled prose nor
     checkpoint capability tokens can leak into logs or bug reports.
     """
-    if outcome not in {"requested", "denied", "permission-default", "unsupported", "error"}:
+    if outcome not in {
+        "requested",
+        "denied",
+        "permission-default",
+        "unsupported",
+        "error",
+    }:
         return False
     _record_alert("hub-browser", notification=outcome)
     print(f"Training alert: Hub browser notification={outcome}.")
@@ -69,7 +76,13 @@ def record_training_browser_notification(outcome: str) -> bool:
 def _macos_notification_outcome() -> str:
     try:
         result = subprocess.run(
-            ["/usr/bin/osascript", "-l", "JavaScript", "-e", _TRAINING_NOTIFICATION_JXA],
+            [
+                "/usr/bin/osascript",
+                "-l",
+                "JavaScript",
+                "-e",
+                _TRAINING_NOTIFICATION_JXA,
+            ],
             capture_output=True,
             text=True,
             check=False,

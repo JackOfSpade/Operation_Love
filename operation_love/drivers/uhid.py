@@ -36,6 +36,7 @@ through an explicit `touch_backend: uhid_persistent` (see hinge.py's `_make_touc
 see that class's own docstring for the live validation this rests on, and for the one
 edge case it does not directly prove.
 """
+
 from __future__ import annotations
 
 import json
@@ -70,16 +71,88 @@ def _build_descriptor(w: int, h: int) -> list[int]:
     """Single-finger multitouch touchscreen digitizer with X/Y logical maxima set to
     the live screen (w-1, h-1), so device coordinates map 1:1 to pixels."""
     return [
-        0x05, 0x0D, 0x09, 0x04, 0xA1, 0x01, 0x85, 0x01, 0x09, 0x22, 0xA1, 0x02,
-        0x09, 0x42, 0x15, 0x00, 0x25, 0x01, 0x75, 0x01, 0x95, 0x01, 0x81, 0x02,   # Tip Switch
-        0x09, 0x47, 0x81, 0x02,                                                    # Confidence
-        0x95, 0x06, 0x81, 0x03,                                                    # 6-bit pad
-        0x95, 0x01, 0x75, 0x08, 0x09, 0x51, 0x25, 0x7F, 0x81, 0x02,                # Contact ID
-        0x05, 0x01, 0x26, *_le16(w - 1), 0x75, 0x10, 0x09, 0x30, 0x81, 0x02,       # X 0..w-1
-        0x26, *_le16(h - 1), 0x09, 0x31, 0x81, 0x02,                               # Y 0..h-1
-        0x05, 0x0D, 0x26, 0xFF, 0x00, 0x75, 0x08, 0x09, 0x30, 0x81, 0x02,          # Tip Pressure 0..255
+        0x05,
+        0x0D,
+        0x09,
+        0x04,
+        0xA1,
+        0x01,
+        0x85,
+        0x01,
+        0x09,
+        0x22,
+        0xA1,
+        0x02,
+        0x09,
+        0x42,
+        0x15,
+        0x00,
+        0x25,
+        0x01,
+        0x75,
+        0x01,
+        0x95,
+        0x01,
+        0x81,
+        0x02,  # Tip Switch
+        0x09,
+        0x47,
+        0x81,
+        0x02,  # Confidence
+        0x95,
+        0x06,
+        0x81,
+        0x03,  # 6-bit pad
+        0x95,
+        0x01,
+        0x75,
+        0x08,
+        0x09,
+        0x51,
+        0x25,
+        0x7F,
+        0x81,
+        0x02,  # Contact ID
+        0x05,
+        0x01,
+        0x26,
+        *_le16(w - 1),
+        0x75,
+        0x10,
+        0x09,
+        0x30,
+        0x81,
+        0x02,  # X 0..w-1
+        0x26,
+        *_le16(h - 1),
+        0x09,
+        0x31,
+        0x81,
+        0x02,  # Y 0..h-1
+        0x05,
+        0x0D,
+        0x26,
+        0xFF,
+        0x00,
+        0x75,
+        0x08,
+        0x09,
+        0x30,
+        0x81,
+        0x02,  # Tip Pressure 0..255
         0xC0,
-        0x05, 0x0D, 0x09, 0x54, 0x95, 0x01, 0x75, 0x08, 0x25, 0x7F, 0x81, 0x02,    # Contact Count
+        0x05,
+        0x0D,
+        0x09,
+        0x54,
+        0x95,
+        0x01,
+        0x75,
+        0x08,
+        0x25,
+        0x7F,
+        0x81,
+        0x02,  # Contact Count
         0xC0,
     ]
 
@@ -90,9 +163,19 @@ def _report(sample, w: int, h: int) -> list[int]:
     pressure scaled from normalized 0..1 to raw 0..255 (contact-size dropped)."""
     x, y = clamp_xy(sample.x, sample.y, w, h)
     p = max(0, min(255, int(round(sample.pressure * 255))))
-    flags = 0x03 if sample.tip else 0x00          # bit0 Tip, bit1 Confidence
+    flags = 0x03 if sample.tip else 0x00  # bit0 Tip, bit1 Confidence
     count = 1 if sample.tip else 0
-    return [0x01, flags, 0x00, x & 0xFF, (x >> 8) & 0xFF, y & 0xFF, (y >> 8) & 0xFF, p, count]
+    return [
+        0x01,
+        flags,
+        0x00,
+        x & 0xFF,
+        (x >> 8) & 0xFF,
+        y & 0xFF,
+        (y >> 8) & 0xFF,
+        p,
+        count,
+    ]
 
 
 def _register_command(name: str, vid: int, pid: int, w: int, h: int) -> dict:
@@ -102,8 +185,15 @@ def _register_command(name: str, vid: int, pid: int, w: int, h: int) -> dict:
     below): the virtual device this dict describes to `/system/bin/hid` is the same either
     way, only how often it gets sent differs. Factored out so the two classes cannot drift
     apart on what "register" means."""
-    return {"id": 1, "command": "register", "name": name, "vid": vid, "pid": pid,
-            "bus": "usb", "descriptor": _build_descriptor(w, h)}
+    return {
+        "id": 1,
+        "command": "register",
+        "name": name,
+        "vid": vid,
+        "pid": pid,
+        "bus": "usb",
+        "descriptor": _build_descriptor(w, h),
+    }
 
 
 def _report_stream_commands(samples, w: int, h: int, flush_ms: int) -> list[dict]:
@@ -124,7 +214,9 @@ def _report_stream_commands(samples, w: int, h: int, flush_ms: int) -> list[dict
         if i < len(samples) - 1:
             dt_ms = max(1, int(round((samples[i + 1].t - s.t) * 1000.0)))
             cmds.append({"id": 1, "command": "delay", "duration": dt_ms})
-    cmds.append({"id": 1, "command": "delay", "duration": flush_ms})   # let the last event flush
+    cmds.append(
+        {"id": 1, "command": "delay", "duration": flush_ms}
+    )  # let the last event flush
     return cmds
 
 
@@ -150,9 +242,20 @@ class _UhidGestureBase:
     name them are untouched.
     """
 
-    def __init__(self, adb: Adb, *, hz: float = REPORT_HZ, rng=None, jitter_px: float = 2.2,
-                 width_px: float = 180.0, enumerate_ms: int = 700, flush_ms: int = 150,
-                 name: str | None = None, vid: int = 0x18D1, pid: int = 0x0C10):
+    def __init__(
+        self,
+        adb: Adb,
+        *,
+        hz: float = REPORT_HZ,
+        rng=None,
+        jitter_px: float = 2.2,
+        width_px: float = 180.0,
+        enumerate_ms: int = 700,
+        flush_ms: int = 150,
+        name: str | None = None,
+        vid: int = 0x18D1,
+        pid: int = 0x0C10,
+    ):
         self.adb = adb
         self.hz = float(hz)
         self._rng = rng if rng is not None else random
@@ -174,8 +277,16 @@ class _UhidGestureBase:
     def tap(self, x: int, y: int) -> None:
         self._run_gesture(plan_tap(x, y, hz=self.hz, rng=self._rng))
 
-    def swipe(self, x1: int, y1: int, x2: int, y2: int, duration_ms: int = 450, *,
-             _timing: dict[str, float] | None = None) -> None:
+    def swipe(
+        self,
+        x1: int,
+        y1: int,
+        x2: int,
+        y2: int,
+        duration_ms: int = 450,
+        *,
+        _timing: dict[str, float] | None = None,
+    ) -> None:
         # Keep interface parity with Adb.  450ms is this transport's ordinary Fitts-law
         # gesture class; a caller may explicitly request a shorter measured flick, which is
         # scaled in the pure planner without compromising curved endpoints or pressure data.
@@ -190,13 +301,26 @@ class _UhidGestureBase:
         # which is why both transports report it under the one bucket name.
         duration_scale = max(0.20, min(2.0, float(duration_ms) / 450.0))
         with _time_bucket(_timing, "uhid_plan_swipe_s"):
-            samples = plan_swipe(x1, y1, x2, y2, hz=self.hz, jitter_px=self.jitter_px,
-                                 width_px=self.width_px, duration_scale=duration_scale,
-                                 rng=self._rng)
+            samples = plan_swipe(
+                x1,
+                y1,
+                x2,
+                y2,
+                hz=self.hz,
+                jitter_px=self.jitter_px,
+                width_px=self.width_px,
+                duration_scale=duration_scale,
+                rng=self._rng,
+            )
         self._run_gesture(samples, _timing=_timing)
 
-    def scroll_up(self, distance_frac: float = 0.55, x_frac: float = 0.5, *,
-                 _timing: dict[str, float] | None = None) -> None:
+    def scroll_up(
+        self,
+        distance_frac: float = 0.55,
+        x_frac: float = 0.5,
+        *,
+        _timing: dict[str, float] | None = None,
+    ) -> None:
         # x jitter shared with Adb.scroll_up via adb.scroll_x() (HINGE-04): UHID is the
         # genuine, proven transport, so it must not be the one emitting a pixel-identical
         # column every scroll.
@@ -212,8 +336,13 @@ class _UhidGestureBase:
         with _time_bucket(_timing, "screen_size_s"):
             w, h = self.adb.screen_size()
         x = scroll_x(w, x_frac)
-        self.swipe(x, int(h * (0.5 + distance_frac / 2)), x, int(h * (0.5 - distance_frac / 2)),
-                  _timing=_timing)
+        self.swipe(
+            x,
+            int(h * (0.5 + distance_frac / 2)),
+            x,
+            int(h * (0.5 - distance_frac / 2)),
+            _timing=_timing,
+        )
 
 
 class UhidTouch(_UhidGestureBase):
@@ -221,14 +350,17 @@ class UhidTouch(_UhidGestureBase):
     driver can swap transports. Each gesture is delivered as its own `hid <file>` run
     (see module docstring). Uses the given Adb for device I/O."""
 
-    def __init__(self, adb: Adb, *, file_path: str = "/data/local/tmp/og_uhid_g.json",
-                 **kwargs):
+    def __init__(
+        self, adb: Adb, *, file_path: str = "/data/local/tmp/og_uhid_g.json", **kwargs
+    ):
         # Every other keyword (hz/rng/jitter_px/width_px/enumerate_ms/flush_ms/name/vid/pid)
         # belongs to the shared base and is forwarded unchanged, so the two transports cannot
         # be given different humanization defaults.  `file_path` is this delivery model's own.
         super().__init__(adb, **kwargs)
         self.file_path = file_path
-        self._lock = threading.Lock()   # serialize gestures: one `hid <file>` run at a time
+        self._lock = (
+            threading.Lock()
+        )  # serialize gestures: one `hid <file>` run at a time
 
     # --- lifecycle (no persistent device; just geometry/cleanup) --------
     def open(self) -> None:
@@ -238,8 +370,10 @@ class UhidTouch(_UhidGestureBase):
         # A genuine device loss still raises DriverClosed from the shell call; a real command
         # failure still raises AdbError. (test -e + && would exit 1 when absent -> AdbError.)
         if "yes" not in self.adb.shell("[ -e /system/bin/hid ] && echo yes || echo no"):
-            raise UhidUnavailable("/system/bin/hid not present")   # device-loss raises DriverClosed instead
-        self.adb.screen_size()                    # cache geometry
+            raise UhidUnavailable(
+                "/system/bin/hid not present"
+            )  # device-loss raises DriverClosed instead
+        self.adb.screen_size()  # cache geometry
 
     def close(self) -> None:
         try:
@@ -262,8 +396,10 @@ class UhidTouch(_UhidGestureBase):
         # are byte-for-byte identical, in the same order, to what this method built inline
         # before 2026-08-24 -- pinned by tests/test_uhid.py's existing structural assertions,
         # which were not touched by that extraction and still pass unchanged.
-        cmds = [_register_command(self.name, self.vid, self.pid, w, h),
-                {"id": 1, "command": "delay", "duration": enumerate_ms}]
+        cmds = [
+            _register_command(self.name, self.vid, self.pid, w, h),
+            {"id": 1, "command": "delay", "duration": enumerate_ms},
+        ]
         cmds.extend(_report_stream_commands(samples, w, h, flush_ms))
         return ("\n".join(json.dumps(c) for c in cmds) + "\n").encode()
 
@@ -341,7 +477,8 @@ class UhidTouch(_UhidGestureBase):
                     except AdbError as exc:
                         if attempt == 2:
                             raise DriverClosed(
-                                f"UHID gesture file write failed before delivery: {exc}") from exc
+                                f"UHID gesture file write failed before delivery: {exc}"
+                            ) from exc
                         time.sleep(0.3)
                         continue
                     break
@@ -354,7 +491,8 @@ class UhidTouch(_UhidGestureBase):
                 except AdbError as exc:
                     raise DriverClosed(
                         "UHID gesture delivery became uncertain after `hid` started; refusing "
-                        f"to replay the gesture: {exc}") from exc
+                        f"to replay the gesture: {exc}"
+                    ) from exc
             finally:
                 if not wrote_file:
                     try:
@@ -480,7 +618,9 @@ class PersistentUhidTouch(_UhidGestureBase):
     changing a DEFAULT. `auto` and `uhid` keep selecting UhidTouch, byte-for-byte unchanged.
     """
 
-    def __init__(self, adb: Adb, *, close_timeout: float = _DEFAULT_CLOSE_TIMEOUT_S, **kwargs):
+    def __init__(
+        self, adb: Adb, *, close_timeout: float = _DEFAULT_CLOSE_TIMEOUT_S, **kwargs
+    ):
         # Every other keyword (hz/rng/jitter_px/width_px/enumerate_ms/flush_ms/name/vid/pid)
         # belongs to `_UhidGestureBase` and is forwarded unchanged -- including the "a run keeps
         # one identity, unrelated sessions do not all collide on a single globally fixed name"
@@ -530,7 +670,9 @@ class PersistentUhidTouch(_UhidGestureBase):
         # being misread as "hid absent".
         if "yes" not in self.adb.shell("[ -e /system/bin/hid ] && echo yes || echo no"):
             raise UhidUnavailable("/system/bin/hid not present")
-        w, h = self.adb.screen_size()   # cache geometry; also needed to build the register descriptor
+        w, h = (
+            self.adb.screen_size()
+        )  # cache geometry; also needed to build the register descriptor
 
         # Everything from here on mutates self._proc (and, on failure, self._dead via
         # _kill_proc_best_effort) -- the same state _run_gesture and close() touch under
@@ -550,7 +692,8 @@ class PersistentUhidTouch(_UhidGestureBase):
                 raise RuntimeError(
                     "PersistentUhidTouch.open() called on a session that is already open; "
                     "close() it first -- calling open() again here would silently orphan "
-                    "the existing `adb shell hid` process and its registered virtual device")
+                    "the existing `adb shell hid` process and its registered virtual device"
+                )
 
             argv = [self.adb.adb_path]
             if self.adb.serial:
@@ -569,20 +712,27 @@ class PersistentUhidTouch(_UhidGestureBase):
                 # write forever, making Stop unable to reach the worker.  There is no output
                 # contract to preserve or parse here, so DEVNULL is safer than reader threads.
                 self._proc = subprocess.Popen(
-                    argv, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL, text=True, bufsize=1,
+                    argv,
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    text=True,
+                    bufsize=1,
                 )
             except OSError as exc:
                 raise UhidUnavailable(
-                    f"could not spawn persistent `adb shell hid`: {exc}") from exc
+                    f"could not spawn persistent `adb shell hid`: {exc}"
+                ) from exc
 
             # Same jittered enumerate range UhidTouch's per-gesture script uses
             # (self.enumerate_ms + rng.randint(0, 180)) -- this session validated
             # correctness with that range: no reason to assume a persistent connection
             # needs a different one.
             enumerate_ms = self.enumerate_ms + self._rng.randint(0, 180)
-            cmds = [_register_command(self.name, self.vid, self.pid, w, h),
-                    {"id": 1, "command": "delay", "duration": enumerate_ms}]
+            cmds = [
+                _register_command(self.name, self.vid, self.pid, w, h),
+                {"id": 1, "command": "delay", "duration": enumerate_ms},
+            ]
             try:
                 self._write_commands(cmds)
             except (OSError, ValueError) as exc:
@@ -592,7 +742,8 @@ class PersistentUhidTouch(_UhidGestureBase):
                 # UhidUnavailable clean-fallback verdict as every other failure path here.
                 self._kill_proc_best_effort()
                 raise UhidUnavailable(
-                    f"persistent `hid` process rejected registration: {exc}") from exc
+                    f"persistent `hid` process rejected registration: {exc}"
+                ) from exc
             time.sleep(enumerate_ms / 1000.0)
             if self._proc.poll() is not None:
                 # Confirmed dead during its OWN enumeration window: this device/PTY approach
@@ -605,7 +756,8 @@ class PersistentUhidTouch(_UhidGestureBase):
                 # leaving a zombie behind.
                 self._kill_proc_best_effort()
                 raise UhidUnavailable(
-                    "persistent `hid` process exited during registration/enumeration")
+                    "persistent `hid` process exited during registration/enumeration"
+                )
 
     def close(self) -> None:
         """Best-effort, idempotent teardown -- mirrors UhidTouch.close()'s
@@ -696,7 +848,8 @@ class PersistentUhidTouch(_UhidGestureBase):
                     "persistent UHID session is not open (or has already died); refusing "
                     "to silently reopen or resend -- a dead session must be recreated by "
                     "the caller, and a gesture already handed to this transport is never "
-                    "replayed against a new one")
+                    "replayed against a new one"
+                )
             with _time_bucket(_timing, "uhid_persistent_script_build_s"):
                 w, h = self.adb.screen_size()
                 # Same jittered flush range UhidTouch's per-gesture script uses -- this
@@ -704,7 +857,9 @@ class PersistentUhidTouch(_UhidGestureBase):
                 # shrinking it is unverified, so it stays exactly as it is upstream.
                 flush_ms = self.flush_ms + self._rng.randint(0, 90)
                 cmds = _report_stream_commands(samples, w, h, flush_ms)
-                wait_s = sum(c["duration"] for c in cmds if c["command"] == "delay") / 1000.0
+                wait_s = (
+                    sum(c["duration"] for c in cmds if c["command"] == "delay") / 1000.0
+                )
             try:
                 with _time_bucket(_timing, "uhid_persistent_write_s"):
                     self._write_commands(cmds)
@@ -718,7 +873,8 @@ class PersistentUhidTouch(_UhidGestureBase):
                 self._dead = True
                 raise DriverClosed(
                     "persistent UHID gesture delivery became uncertain (stdin write "
-                    f"failed); refusing to replay the gesture: {exc}") from exc
+                    f"failed); refusing to replay the gesture: {exc}"
+                ) from exc
             # Host-side equivalent of what the CURRENT blocking `adb.shell(f"hid {quoted}")`
             # call already does for the per-gesture-file transport: it blocks for exactly the
             # gesture's own encoded duration. Deliberately NOT a should_stop-aware
@@ -741,8 +897,8 @@ class PersistentUhidTouch(_UhidGestureBase):
                     time.sleep(step_s)
                     remaining_s -= step_s
                     if self._proc.poll() is not None:
-                        break   # confirmed dead already; the check just below re-observes
-                                # the same (idempotent) result and raises -- see that check
+                        break  # confirmed dead already; the check just below re-observes
+                        # the same (idempotent) result and raises -- see that check
             if self._proc.poll() is not None:
                 # Died during or immediately after this gesture: "delivery became uncertain"
                 # again, for the same never-replay reason (never-substitute: a half-delivered
@@ -754,7 +910,8 @@ class PersistentUhidTouch(_UhidGestureBase):
                 self._dead = True
                 raise DriverClosed(
                     "persistent UHID gesture delivery became uncertain (the `hid` process "
-                    "died during or after delivery); refusing to replay the gesture")
+                    "died during or after delivery); refusing to replay the gesture"
+                )
 
     # --- public surface: `_UhidGestureBase`'s, unmodified ------------------
     # tap/swipe/scroll_up are NOT overridden here, and that is the point (2026-09-04). They used

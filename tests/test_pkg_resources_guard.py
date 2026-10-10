@@ -23,6 +23,7 @@ the import chain that breaks in that scenario.
 Fast and offline: importing `clip` is pure Python (it only touches the network inside
 clip.load(), which this test never calls).
 """
+
 from __future__ import annotations
 
 import importlib

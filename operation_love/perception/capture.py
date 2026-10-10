@@ -1,4 +1,5 @@
 """The profile data structure passed between layers."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -25,6 +26,7 @@ class Profile:
     their defaults, and a consumer reads that as "this capture has no item space at all",
     which is a different thing from `items_unavailable` -- see that field.
     """
+
     photos: list[bytes] = field(default_factory=list)
     bio: str = ""
     prompts: list[tuple[str, str]] = field(default_factory=list)

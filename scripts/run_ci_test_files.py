@@ -38,7 +38,9 @@ def configured_modules() -> list[str]:
     for configured_root in roots:
         root = (REPO_ROOT / configured_root).resolve()
         if not root.is_dir():
-            raise SystemExit(f"Configured pytest test root is not a directory: {configured_root}")
+            raise SystemExit(
+                f"Configured pytest test root is not a directory: {configured_root}"
+            )
         for candidate in root.rglob("*.py"):
             if candidate.is_file() and any(
                 fnmatch.fnmatchcase(candidate.name, pattern) for pattern in patterns
@@ -71,7 +73,9 @@ def collected_nodeids(modules: list[str]) -> list[str]:
     )
     if result.returncode != 0:
         sys.stdout.write(result.stdout)
-        raise SystemExit(f"Full-suite pytest collection failed with exit {result.returncode}")
+        raise SystemExit(
+            f"Full-suite pytest collection failed with exit {result.returncode}"
+        )
 
     nodeids = [
         line.strip()
@@ -143,7 +147,10 @@ def main() -> int:
                     )
                     return node_result.returncode
         elif result.returncode != 0:
-            print(f"CI isolation failed in {module} (exit {result.returncode})", flush=True)
+            print(
+                f"CI isolation failed in {module} (exit {result.returncode})",
+                flush=True,
+            )
             return result.returncode
         completed_tests += counts[module]
 

@@ -23,6 +23,7 @@ Two fixture details are load-bearing enough to state up front:
 Following the house pattern, every positive is paired with a negative plus a control that proves
 WHICH mechanism did the excluding.
 """
+
 import math
 import dataclasses
 import subprocess
@@ -35,14 +36,14 @@ import pytest
 from operation_love.drivers import frameshift, segment
 from operation_love.drivers.hinge import HINGE_SPEC
 
-_W, _H = 1080, 2400                       # the calibrated Pixel 7a screencap size
-_WORLD_H = 6000                           # tall enough for a 2400px window plus any tested shift
-_CONTENT_BAND = HINGE_SPEC.content_band   # (0.125, 0.875) -> rows 300..2100
+_W, _H = 1080, 2400  # the calibrated Pixel 7a screencap size
+_WORLD_H = 6000  # tall enough for a 2400px window plus any tested shift
+_CONTENT_BAND = HINGE_SPEC.content_band  # (0.125, 0.875) -> rows 300..2100
 _BAND0, _BAND1 = 300, 2100
-_CARD_X0 = segment._CARD_MARGIN_PX                     # 53
-_CARD_X1 = _W - segment._CARD_MARGIN_PX                # 1027
-_GUTTER = max(segment._GUTTER_PX)                      # 53, the canonical measured gutter
-_CORNER_RADIUS_PX = 22                                 # doc 5.10: "~20-23px"
+_CARD_X0 = segment._CARD_MARGIN_PX  # 53
+_CARD_X1 = _W - segment._CARD_MARGIN_PX  # 1027
+_GUTTER = max(segment._GUTTER_PX)  # 53, the canonical measured gutter
+_CORNER_RADIUS_PX = 22  # doc 5.10: "~20-23px"
 _SEED = 11
 
 # The page background is a GRADIENT (doc 5.10: ~RGB(255,254,253) at y=300 down to ~(243,243,243)
@@ -72,21 +73,26 @@ def _build_world():
     while y + 200 < _WORLD_H:
         y1 = min(_WORLD_H - 1, y + _CARD_HEIGHTS[i % len(_CARD_HEIGHTS)])
         world[y:y1, _CARD_X0:_CARD_X1] = rng.integers(
-            60, 200, size=(y1 - y, _CARD_X1 - _CARD_X0), dtype=np.uint8)
-        for k in range(_CORNER_RADIUS_PX):             # carve the four corner arcs back to page
+            60, 200, size=(y1 - y, _CARD_X1 - _CARD_X0), dtype=np.uint8
+        )
+        for k in range(_CORNER_RADIUS_PX):  # carve the four corner arcs back to page
             dy = _CORNER_RADIUS_PX - k
-            inset = int(math.ceil(_CORNER_RADIUS_PX
-                                  - math.sqrt(max(0.0, _CORNER_RADIUS_PX ** 2 - dy ** 2))))
+            inset = int(
+                math.ceil(
+                    _CORNER_RADIUS_PX
+                    - math.sqrt(max(0.0, _CORNER_RADIUS_PX**2 - dy**2))
+                )
+            )
             if inset <= 0:
                 continue
             for yy in (y + k, y1 - 1 - k):
-                world[yy, _CARD_X0:_CARD_X0 + inset] = col[yy]
-                world[yy, _CARD_X1 - inset:_CARD_X1] = col[yy]
+                world[yy, _CARD_X0 : _CARD_X0 + inset] = col[yy]
+                world[yy, _CARD_X1 - inset : _CARD_X1] = col[yy]
         if i % len(_CARD_HEIGHTS) == 3:
             # A blank white card interior — the real thing a short prompt card looks like, and
             # the reason _MIN_STRIP_STDDEV exists. Without one of these the fixture would never
             # produce a STRIP_FLAT and the flat path would go untested by every other test here.
-            world[y + 30:y1 - 30, _CARD_X0 + 30:_CARD_X1 - 30] = 255
+            world[y + 30 : y1 - 30, _CARD_X0 + 30 : _CARD_X1 - 30] = 255
         y, i = y1 + _GUTTER, i + 1
     return world
 
@@ -94,8 +100,12 @@ def _build_world():
 _WORLD = _build_world()
 # Static chrome, textured so it is not itself flat, and IDENTICAL on every frame — the point is
 # that it does not translate when the content does.
-_CHROME_TOP = np.random.default_rng(3).integers(0, 60, size=(_BAND0, _W), dtype=np.uint8)
-_CHROME_BOTTOM = np.random.default_rng(4).integers(0, 60, size=(_H - _BAND1, _W), dtype=np.uint8)
+_CHROME_TOP = np.random.default_rng(3).integers(
+    0, 60, size=(_BAND0, _W), dtype=np.uint8
+)
+_CHROME_BOTTOM = np.random.default_rng(4).integers(
+    0, 60, size=(_H - _BAND1, _W), dtype=np.uint8
+)
 _FRAME_CACHE: dict[int, bytes] = {}
 
 
@@ -107,7 +117,7 @@ def _frame(scroll: int) -> bytes:
     `delta_px` by its stated sign convention.
     """
     if scroll not in _FRAME_CACHE:
-        gray = _WORLD[scroll:scroll + _H].copy()
+        gray = _WORLD[scroll : scroll + _H].copy()
         gray[:_BAND0] = _CHROME_TOP
         gray[_BAND1:] = _CHROME_BOTTOM
         ok, buf = cv2.imencode(".png", gray)
@@ -129,6 +139,7 @@ def _states(result):
 # The clean case: a known shift comes back exactly, with its sign
 # =====================================================================================
 
+
 @pytest.mark.parametrize("shift", [0, 1, 120, 363, 787, 900])
 def test_known_shift_is_measured_exactly(shift):
     """0 through the trust window's own edge, including the production 363px/step cadence
@@ -141,7 +152,7 @@ def test_known_shift_is_measured_exactly(shift):
     assert r.consensus_px == shift
     assert not r.saturated
     assert r.agreeing >= frameshift._MIN_AGREEING_STRIPS
-    assert r.dissenting < r.agreeing             # a stray strip may not outvote the bank
+    assert r.dissenting < r.agreeing  # a stray strip may not outvote the bank
     assert r.confidence >= frameshift._MIN_CONFIDENCE
     assert r.frame_size == (_W, _H) and r.band == (_BAND0, _BAND1)
     # Every non-zero shift here carries exactly one dissenter, and it is always the topmost
@@ -149,8 +160,11 @@ def test_known_shift_is_measured_exactly(shift):
     # nothing: its own search range cannot reach the consensus, so it never enters `eligible`
     # and the confidence stays at 1.0. That is the eligibility rule doing its job, not luck.
     assert r.confidence == 1.0
-    assert all(s.search[1] < shift for s in r.strips
-               if s.state == frameshift.STRIP_MATCHED and abs(s.delta_px - shift) > 3)
+    assert all(
+        s.search[1] < shift
+        for s in r.strips
+        if s.state == frameshift.STRIP_MATCHED and abs(s.delta_px - shift) > 3
+    )
 
 
 def test_the_sign_convention_is_content_moving_up():
@@ -161,13 +175,18 @@ def test_the_sign_convention_is_content_moving_up():
     assert forward.delta_px == 400
 
     # The same two frames in the other order: B first, so the content moved DOWN the screen.
-    backward = frameshift.estimate_shift(_frame(_BASE_SCROLL + 400), _frame(_BASE_SCROLL),
-                                         content_band=_CONTENT_BAND)
+    backward = frameshift.estimate_shift(
+        _frame(_BASE_SCROLL + 400), _frame(_BASE_SCROLL), content_band=_CONTENT_BAND
+    )
     assert backward.ok and backward.delta_px == -400
 
     # And the promise itself, on a row of real card texture picked from the middle of the band.
-    a = cv2.imdecode(np.frombuffer(_frame(_BASE_SCROLL), np.uint8), cv2.IMREAD_GRAYSCALE)
-    b = cv2.imdecode(np.frombuffer(_frame(_BASE_SCROLL + 400), np.uint8), cv2.IMREAD_GRAYSCALE)
+    a = cv2.imdecode(
+        np.frombuffer(_frame(_BASE_SCROLL), np.uint8), cv2.IMREAD_GRAYSCALE
+    )
+    b = cv2.imdecode(
+        np.frombuffer(_frame(_BASE_SCROLL + 400), np.uint8), cv2.IMREAD_GRAYSCALE
+    )
     y = 1500
     assert np.array_equal(a[y, _CARD_X0:_CARD_X1], b[y - 400, _CARD_X0:_CARD_X1])
 
@@ -189,6 +208,7 @@ def test_a_still_frame_measures_zero_and_is_not_called_saturated():
 # Saturation: a shift the method cannot resolve must never come back as a number
 # =====================================================================================
 
+
 @pytest.mark.parametrize("shift", [1200, 1500])
 def test_a_shift_past_the_trust_window_reports_saturation_not_a_number(shift):
     """THE regression this module exists for. ops/OPENER-REDESIGN.md 5.10.1 records a prior
@@ -205,7 +225,7 @@ def test_a_shift_past_the_trust_window_reports_saturation_not_a_number(shift):
     # near `trust_window_px`. That inequality is the whole point of searching past the window.
     assert r.consensus_px == shift
     assert r.consensus_px != r.trust_window_px
-    assert r.trust_window_px == 900              # 0.5 of the 1800-row band
+    assert r.trust_window_px == 900  # 0.5 of the 1800-row band
     assert str(shift) in r.reason
 
 
@@ -240,17 +260,22 @@ def test_a_shift_past_the_whole_band_returns_no_number_at_all():
 # Refusals: what "I do not know" looks like, and that it is never a number
 # =====================================================================================
 
+
 def test_unrelated_frames_are_refused():
     """Two frames of pure noise share no content. Nothing may be returned, and in particular no
     strip may clear the score floor by accident."""
     rng = np.random.default_rng(99)
-    junk = [cv2.imencode(".png", rng.integers(0, 255, size=(_H, _W), dtype=np.uint8))[1].tobytes()
-            for _ in range(2)]
+    junk = [
+        cv2.imencode(".png", rng.integers(0, 255, size=(_H, _W), dtype=np.uint8))[
+            1
+        ].tobytes()
+        for _ in range(2)
+    ]
     r = frameshift.estimate_shift(junk[0], junk[1], content_band=_CONTENT_BAND)
 
     assert not r.ok and r.delta_px is None and r.consensus_px is None
     assert r.status == frameshift.SHIFT_NO_EVIDENCE
-    assert not r.saturated                       # no evidence is not evidence of a big shift
+    assert not r.saturated  # no evidence is not evidence of a big shift
     assert r.confidence == 0.0
 
 
@@ -279,6 +304,7 @@ def test_ok_is_exactly_delta_px_being_present():
 # The band restriction, and why it is not cosmetic
 # =====================================================================================
 
+
 def test_static_chrome_outside_the_band_is_excluded_by_the_band_and_not_by_luck():
     """The status bar and bottom nav do NOT translate when the content scrolls. Strips cut
     across them vote for a shift of zero however far the content moved, so `content_band` has to
@@ -294,8 +320,11 @@ def test_static_chrome_outside_the_band_is_excluded_by_the_band_and_not_by_luck(
     assert whole_frame.confidence < banded.confidence
 
     # ...and the dissenters are specifically the chrome, sitting at a shift of zero.
-    stuck = [s for s in whole_frame.strips
-             if s.state == frameshift.STRIP_MATCHED and s.delta_px == 0]
+    stuck = [
+        s
+        for s in whole_frame.strips
+        if s.state == frameshift.STRIP_MATCHED and s.delta_px == 0
+    ]
     assert stuck, "the fixture's chrome did not stay put, so this proves nothing"
 
 
@@ -303,9 +332,20 @@ def test_static_chrome_outside_the_band_is_excluded_by_the_band_and_not_by_luck(
 # The decision surface, tested directly on hand-built strip banks (no images, no cv2)
 # =====================================================================================
 
-def _strip(y0, state, delta, *, search=(-1000, 1000), score=1.0, runner_up=0.0, stddev=50.0):
-    return frameshift.StripMatch(y0=y0, y1=y0 + 96, state=state, delta_px=delta, score=score,
-                                 runner_up=runner_up, stddev=stddev, search=search)
+
+def _strip(
+    y0, state, delta, *, search=(-1000, 1000), score=1.0, runner_up=0.0, stddev=50.0
+):
+    return frameshift.StripMatch(
+        y0=y0,
+        y1=y0 + 96,
+        state=state,
+        delta_px=delta,
+        score=score,
+        runner_up=runner_up,
+        stddev=stddev,
+        search=search,
+    )
 
 
 def _resolve(strips, **kw):
@@ -315,21 +355,26 @@ def _resolve(strips, **kw):
     kw.setdefault("min_saturation", frameshift._MIN_SATURATION_STRIPS)
     kw.setdefault("min_confidence", frameshift._MIN_CONFIDENCE)
     kw.setdefault("pin_margin", frameshift._PIN_MARGIN_PX)
-    return frameshift._resolve(tuple(strips), frame_size=(_W, _H), band=(_BAND0, _BAND1),
-                               np=np, **kw)
+    return frameshift._resolve(
+        tuple(strips), frame_size=(_W, _H), band=(_BAND0, _BAND1), np=np, **kw
+    )
 
 
 def test_pinned_strips_never_contribute_a_value():
     """A pinned offset is a LOWER BOUND on how far the content went, not a measurement of it.
     Five strips pinned at 400 plus two matched at 363 must not average, must not out-vote, and
     must not turn 400 into an answer."""
-    strips = [_strip(300 + i * 200, frameshift.STRIP_PINNED, 400, search=(-1000, 400))
-              for i in range(5)]
-    strips += [_strip(1400, frameshift.STRIP_MATCHED, 363),
-               _strip(1600, frameshift.STRIP_MATCHED, 363)]
+    strips = [
+        _strip(300 + i * 200, frameshift.STRIP_PINNED, 400, search=(-1000, 400))
+        for i in range(5)
+    ]
+    strips += [
+        _strip(1400, frameshift.STRIP_MATCHED, 363),
+        _strip(1600, frameshift.STRIP_MATCHED, 363),
+    ]
     r = _resolve(strips)
 
-    assert r.delta_px is None                    # two matched strips is under the quorum
+    assert r.delta_px is None  # two matched strips is under the quorum
     assert r.consensus_px is None
     assert 400 not in (r.delta_px, r.consensus_px)
     assert r.status == frameshift.SHIFT_NO_CONSENSUS
@@ -351,10 +396,14 @@ def test_weak_strips_are_silence_not_confidence_dissent_even_when_in_range():
     neither weak strip gets a vote or changes the denominator."""
     voters = [_strip(300 + i * 200, frameshift.STRIP_MATCHED, 363) for i in range(3)]
 
-    out_of_reach = _resolve(voters + [_strip(2000, frameshift.STRIP_WEAK, None,
-                                             search=(-1000, 100), score=0.2)])
-    in_reach = _resolve(voters + [_strip(2000, frameshift.STRIP_WEAK, None,
-                                         search=(-1000, 1000), score=0.2)])
+    out_of_reach = _resolve(
+        voters
+        + [_strip(2000, frameshift.STRIP_WEAK, None, search=(-1000, 100), score=0.2)]
+    )
+    in_reach = _resolve(
+        voters
+        + [_strip(2000, frameshift.STRIP_WEAK, None, search=(-1000, 1000), score=0.2)]
+    )
 
     assert out_of_reach.eligible == in_reach.eligible == 3
     assert out_of_reach.confidence == in_reach.confidence == 1.0
@@ -367,8 +416,9 @@ def test_unanimous_matched_strips_measure_despite_a_majority_of_weak_strips():
     frame B — silence, not an opposing measurement — so the unanimous matched strips measure.
     """
     matched = [_strip(300 + i * 200, frameshift.STRIP_MATCHED, 363) for i in range(3)]
-    weak = [_strip(1000 + i * 120, frameshift.STRIP_WEAK, None, score=0.2)
-            for i in range(4)]
+    weak = [
+        _strip(1000 + i * 120, frameshift.STRIP_WEAK, None, score=0.2) for i in range(4)
+    ]
 
     r = _resolve(matched + weak)
 
@@ -383,14 +433,18 @@ def test_saturation_is_measured_on_the_offset_and_not_on_pinnedness():
     """Pinnedness alone cannot mean "it moved too far": on a still frame the outermost strips
     are pinned at zero by construction. `saturated` therefore keys on strips putting the content
     OUTSIDE the window, and the pair below is the same bank with only the offsets moved."""
-    near = [_strip(300, frameshift.STRIP_PINNED, 0, search=(-1000, 0)),
-            _strip(2000, frameshift.STRIP_PINNED, 0, search=(0, 1000))]
-    far = [_strip(300, frameshift.STRIP_PINNED, 1400, search=(-1000, 1400)),
-           _strip(2000, frameshift.STRIP_PINNED, 1400, search=(0, 1400))]
+    near = [
+        _strip(300, frameshift.STRIP_PINNED, 0, search=(-1000, 0)),
+        _strip(2000, frameshift.STRIP_PINNED, 0, search=(0, 1000)),
+    ]
+    far = [
+        _strip(300, frameshift.STRIP_PINNED, 1400, search=(-1000, 1400)),
+        _strip(2000, frameshift.STRIP_PINNED, 1400, search=(0, 1400)),
+    ]
 
     assert not _resolve(near).saturated
     assert _resolve(far).saturated
-    assert _resolve(far).delta_px is None        # saturated is still never a number
+    assert _resolve(far).delta_px is None  # saturated is still never a number
     assert _resolve(near).status == _resolve(far).status == frameshift.SHIFT_NO_EVIDENCE
 
 
@@ -423,6 +477,7 @@ def test_dissenting_strips_are_outvoted_but_counted():
 # cannot silently loosen another without a test noticing.
 # =====================================================================================
 
+
 def test_regression_bimodal_video_bank_pair_36_37_now_measures_145():
     """THE failure this repair exists for, not a hypothetical: a 2026-08-16 Hinge profile
     whose last card was an autoplaying video, captured mid read-scroll at pair 36/37 of 64
@@ -442,32 +497,110 @@ def test_regression_bimodal_video_bank_pair_36_37_now_measures_145():
     driver's debug log, unedited.
     """
     strips = [
-        _strip(300, frameshift.STRIP_WEAK, None,
-              search=(-1704, 0), score=0.2611, runner_up=0.1994),
-        _strip(442, frameshift.STRIP_PINNED, 142,
-              search=(-1562, 142), score=0.8001, runner_up=0.6468),
-        _strip(584, frameshift.STRIP_MATCHED, 145,
-              search=(-1420, 284), score=1.0000, runner_up=0.3939),
-        _strip(726, frameshift.STRIP_MATCHED, 145,
-              search=(-1278, 426), score=1.0000, runner_up=0.4205),
-        _strip(868, frameshift.STRIP_MATCHED, 145,
-              search=(-1136, 568), score=1.0000, runner_up=0.8414),
-        _strip(1010, frameshift.STRIP_MATCHED, 145,
-              search=(-994, 710), score=0.9779, runner_up=0.3344),
-        _strip(1152, frameshift.STRIP_MATCHED, 78,
-              search=(-852, 852), score=0.9290, runner_up=0.8091),
-        _strip(1294, frameshift.STRIP_MATCHED, 81,
-              search=(-710, 994), score=0.9897, runner_up=0.8680),
-        _strip(1436, frameshift.STRIP_MATCHED, 80,
-              search=(-568, 1136), score=0.9169, runner_up=0.7147),
-        _strip(1578, frameshift.STRIP_MATCHED, 77,
-              search=(-426, 1278), score=0.8966, runner_up=0.7671),
-        _strip(1720, frameshift.STRIP_MATCHED, 73,
-              search=(-284, 1420), score=0.8952, runner_up=0.7354),
-        _strip(1862, frameshift.STRIP_WEAK, None,
-              search=(-142, 1562), score=0.7273, runner_up=0.4965),
-        _strip(2004, frameshift.STRIP_MATCHED, 145,
-              search=(0, 1704), score=0.7985, runner_up=0.7171),
+        _strip(
+            300,
+            frameshift.STRIP_WEAK,
+            None,
+            search=(-1704, 0),
+            score=0.2611,
+            runner_up=0.1994,
+        ),
+        _strip(
+            442,
+            frameshift.STRIP_PINNED,
+            142,
+            search=(-1562, 142),
+            score=0.8001,
+            runner_up=0.6468,
+        ),
+        _strip(
+            584,
+            frameshift.STRIP_MATCHED,
+            145,
+            search=(-1420, 284),
+            score=1.0000,
+            runner_up=0.3939,
+        ),
+        _strip(
+            726,
+            frameshift.STRIP_MATCHED,
+            145,
+            search=(-1278, 426),
+            score=1.0000,
+            runner_up=0.4205,
+        ),
+        _strip(
+            868,
+            frameshift.STRIP_MATCHED,
+            145,
+            search=(-1136, 568),
+            score=1.0000,
+            runner_up=0.8414,
+        ),
+        _strip(
+            1010,
+            frameshift.STRIP_MATCHED,
+            145,
+            search=(-994, 710),
+            score=0.9779,
+            runner_up=0.3344,
+        ),
+        _strip(
+            1152,
+            frameshift.STRIP_MATCHED,
+            78,
+            search=(-852, 852),
+            score=0.9290,
+            runner_up=0.8091,
+        ),
+        _strip(
+            1294,
+            frameshift.STRIP_MATCHED,
+            81,
+            search=(-710, 994),
+            score=0.9897,
+            runner_up=0.8680,
+        ),
+        _strip(
+            1436,
+            frameshift.STRIP_MATCHED,
+            80,
+            search=(-568, 1136),
+            score=0.9169,
+            runner_up=0.7147,
+        ),
+        _strip(
+            1578,
+            frameshift.STRIP_MATCHED,
+            77,
+            search=(-426, 1278),
+            score=0.8966,
+            runner_up=0.7671,
+        ),
+        _strip(
+            1720,
+            frameshift.STRIP_MATCHED,
+            73,
+            search=(-284, 1420),
+            score=0.8952,
+            runner_up=0.7354,
+        ),
+        _strip(
+            1862,
+            frameshift.STRIP_WEAK,
+            None,
+            search=(-142, 1562),
+            score=0.7273,
+            runner_up=0.4965,
+        ),
+        _strip(
+            2004,
+            frameshift.STRIP_MATCHED,
+            145,
+            search=(0, 1704),
+            score=0.7985,
+            runner_up=0.7171,
+        ),
     ]
     r = _resolve(strips)
 
@@ -504,32 +637,110 @@ def test_regression_bimodal_saturated_bank_pair_43_44_measures_zero():
     move, burning the rest of the run on a wall it could not detect.
     """
     strips = [
-        _strip(300, frameshift.STRIP_PINNED, 0,
-              search=(-1704, 0), score=1.0000, runner_up=0.6531),
-        _strip(442, frameshift.STRIP_MATCHED, 0,
-              search=(-1562, 142), score=1.0000, runner_up=0.3876),
-        _strip(584, frameshift.STRIP_MATCHED, 0,
-              search=(-1420, 284), score=1.0000, runner_up=0.4255),
-        _strip(726, frameshift.STRIP_MATCHED, 0,
-              search=(-1278, 426), score=1.0000, runner_up=0.8465),
-        _strip(868, frameshift.STRIP_MATCHED, 0,
-              search=(-1136, 568), score=0.9782, runner_up=0.3694),
-        _strip(1010, frameshift.STRIP_MATCHED, -57,
-              search=(-994, 710), score=0.8653, runner_up=0.7682),
-        _strip(1152, frameshift.STRIP_MATCHED, -54,
-              search=(-852, 852), score=0.9284, runner_up=0.8669),
-        _strip(1294, frameshift.STRIP_MATCHED, -54,
-              search=(-710, 994), score=0.9176, runner_up=0.6924),
-        _strip(1436, frameshift.STRIP_MATCHED, -56,
-              search=(-568, 1136), score=0.9102, runner_up=0.7931),
-        _strip(1578, frameshift.STRIP_MATCHED, -56,
-              search=(-426, 1278), score=0.8795, runner_up=0.7449),
-        _strip(1720, frameshift.STRIP_WEAK, None,
-              search=(-284, 1420), score=0.7408, runner_up=0.5247),
-        _strip(1862, frameshift.STRIP_MATCHED, 0,
-              search=(-142, 1562), score=0.9886, runner_up=0.8156),
-        _strip(2004, frameshift.STRIP_PINNED, 0,
-              search=(0, 1704), score=1.0000, runner_up=0.1848),
+        _strip(
+            300,
+            frameshift.STRIP_PINNED,
+            0,
+            search=(-1704, 0),
+            score=1.0000,
+            runner_up=0.6531,
+        ),
+        _strip(
+            442,
+            frameshift.STRIP_MATCHED,
+            0,
+            search=(-1562, 142),
+            score=1.0000,
+            runner_up=0.3876,
+        ),
+        _strip(
+            584,
+            frameshift.STRIP_MATCHED,
+            0,
+            search=(-1420, 284),
+            score=1.0000,
+            runner_up=0.4255,
+        ),
+        _strip(
+            726,
+            frameshift.STRIP_MATCHED,
+            0,
+            search=(-1278, 426),
+            score=1.0000,
+            runner_up=0.8465,
+        ),
+        _strip(
+            868,
+            frameshift.STRIP_MATCHED,
+            0,
+            search=(-1136, 568),
+            score=0.9782,
+            runner_up=0.3694,
+        ),
+        _strip(
+            1010,
+            frameshift.STRIP_MATCHED,
+            -57,
+            search=(-994, 710),
+            score=0.8653,
+            runner_up=0.7682,
+        ),
+        _strip(
+            1152,
+            frameshift.STRIP_MATCHED,
+            -54,
+            search=(-852, 852),
+            score=0.9284,
+            runner_up=0.8669,
+        ),
+        _strip(
+            1294,
+            frameshift.STRIP_MATCHED,
+            -54,
+            search=(-710, 994),
+            score=0.9176,
+            runner_up=0.6924,
+        ),
+        _strip(
+            1436,
+            frameshift.STRIP_MATCHED,
+            -56,
+            search=(-568, 1136),
+            score=0.9102,
+            runner_up=0.7931,
+        ),
+        _strip(
+            1578,
+            frameshift.STRIP_MATCHED,
+            -56,
+            search=(-426, 1278),
+            score=0.8795,
+            runner_up=0.7449,
+        ),
+        _strip(
+            1720,
+            frameshift.STRIP_WEAK,
+            None,
+            search=(-284, 1420),
+            score=0.7408,
+            runner_up=0.5247,
+        ),
+        _strip(
+            1862,
+            frameshift.STRIP_MATCHED,
+            0,
+            search=(-142, 1562),
+            score=0.9886,
+            runner_up=0.8156,
+        ),
+        _strip(
+            2004,
+            frameshift.STRIP_PINNED,
+            0,
+            search=(0, 1704),
+            score=1.0000,
+            runner_up=0.1848,
+        ),
     ]
     r = _resolve(strips)
 
@@ -576,15 +787,17 @@ def test_low_confidence_inexact_median_stays_refused():
     With all seven strips eligible its 3/7 confidence is below the ordinary floor, and no exact
     quorate cluster exists to override that refusal.
     """
-    r = _resolve([
-        _strip(442, frameshift.STRIP_MATCHED, -10),
-        _strip(726, frameshift.STRIP_MATCHED, 0),
-        _strip(868, frameshift.STRIP_MATCHED, 1),
-        _strip(1152, frameshift.STRIP_MATCHED, 2),
-        _strip(1294, frameshift.STRIP_MATCHED, 10),
-        _strip(1720, frameshift.STRIP_MATCHED, 11),
-        _strip(1862, frameshift.STRIP_MATCHED, 12),
-    ])
+    r = _resolve(
+        [
+            _strip(442, frameshift.STRIP_MATCHED, -10),
+            _strip(726, frameshift.STRIP_MATCHED, 0),
+            _strip(868, frameshift.STRIP_MATCHED, 1),
+            _strip(1152, frameshift.STRIP_MATCHED, 2),
+            _strip(1294, frameshift.STRIP_MATCHED, 10),
+            _strip(1720, frameshift.STRIP_MATCHED, 11),
+            _strip(1862, frameshift.STRIP_MATCHED, 12),
+        ]
+    )
 
     assert r.status == frameshift.SHIFT_NO_CONSENSUS, r.reason
     assert r.delta_px is None and r.consensus_px is None
@@ -640,8 +853,10 @@ def test_a_larger_inexact_group_does_not_win_or_block_the_exact_one():
     test is pinning.
     """
     exact = [_strip(300 + i * 200, frameshift.STRIP_MATCHED, 200) for i in range(3)]
-    spread = [_strip(1400 + i * 150, frameshift.STRIP_MATCHED, d, search=(-50, 150))
-              for i, d in enumerate((90, 94, 98, 102, 106, 110))]
+    spread = [
+        _strip(1400 + i * 150, frameshift.STRIP_MATCHED, d, search=(-50, 150))
+        for i, d in enumerate((90, 94, 98, 102, 106, 110))
+    ]
     r = _resolve(exact + spread)
 
     assert r.status == frameshift.SHIFT_MEASURED, r.reason
@@ -649,7 +864,7 @@ def test_a_larger_inexact_group_does_not_win_or_block_the_exact_one():
     assert r.consensus_px == 200
     assert r.agreeing == 3 and r.eligible == 3
     assert r.confidence == 1.0
-    assert r.dissenting == 6                      # counted, not silenced, just outvoted
+    assert r.dissenting == 6  # counted, not silenced, just outvoted
     assert "split into" in r.reason
 
 
@@ -667,8 +882,12 @@ def test_no_group_pixel_exact_stays_refused():
     are within tolerance of each other even though not pixel-identical) and the ordinary
     path would return a measurement before this test ever touched the rescue.
     """
-    group_a = [_strip(300 + i * 150, frameshift.STRIP_MATCHED, 199 + i) for i in range(3)]
-    group_b = [_strip(1400 + i * 150, frameshift.STRIP_MATCHED, 798 + i) for i in range(4)]
+    group_a = [
+        _strip(300 + i * 150, frameshift.STRIP_MATCHED, 199 + i) for i in range(3)
+    ]
+    group_b = [
+        _strip(1400 + i * 150, frameshift.STRIP_MATCHED, 798 + i) for i in range(4)
+    ]
     spoiler = [_strip(2200, frameshift.STRIP_MATCHED, -600)]
     r = _resolve(group_a + group_b + spoiler)
 
@@ -689,7 +908,9 @@ def test_the_only_exact_group_under_quorum_stays_refused():
     only unanimous evidence in the bank is too thin to trust.
     """
     group_a = [_strip(300 + i * 150, frameshift.STRIP_MATCHED, 300) for i in range(2)]
-    group_b = [_strip(1400 + i * 150, frameshift.STRIP_MATCHED, 700 + 3 * i) for i in range(5)]
+    group_b = [
+        _strip(1400 + i * 150, frameshift.STRIP_MATCHED, 700 + 3 * i) for i in range(5)
+    ]
     spoiler = [_strip(2200, frameshift.STRIP_MATCHED, -100)]
     r = _resolve(group_a + group_b + spoiler)
 
@@ -714,7 +935,10 @@ def test_the_rescue_cannot_touch_a_bank_the_median_already_resolves():
 
     assert r.status == frameshift.SHIFT_MEASURED, r.reason
     assert r.delta_px == 363
-    assert r.reason == "content moved +363px — 5 of 6 eligible strips agree within 3px (1 dissent, 6 matched)"
+    assert (
+        r.reason
+        == "content moved +363px — 5 of 6 eligible strips agree within 3px (1 dissent, 6 matched)"
+    )
     assert "split into" not in r.reason
 
 
@@ -732,8 +956,10 @@ def test_pins_allow_vetoes_a_rescue_that_contradicts_a_pinned_bound():
     of its own strips has already contradicted.
     """
     exact = [_strip(300 + i * 200, frameshift.STRIP_MATCHED, 200) for i in range(3)]
-    spread = [_strip(1400 + i * 150, frameshift.STRIP_MATCHED, d, search=(-50, 150))
-              for i, d in enumerate((90, 94, 98, 102, 106, 110))]
+    spread = [
+        _strip(1400 + i * 150, frameshift.STRIP_MATCHED, d, search=(-50, 150))
+        for i, d in enumerate((90, 94, 98, 102, 106, 110))
+    ]
     contradicting_pin = _strip(2600, frameshift.STRIP_PINNED, 500, search=(0, 500))
 
     # Control: without the pin, this exact bank measures +200 (proven above).
@@ -758,19 +984,26 @@ def test_a_pin_one_pixel_inside_its_bound_vetoes_just_as_hard():
     strip's bound produces exactly this.
     """
     exact = [_strip(300 + i * 200, frameshift.STRIP_MATCHED, 200) for i in range(3)]
-    spread = [_strip(1400 + i * 150, frameshift.STRIP_MATCHED, d, search=(-50, 150))
-              for i, d in enumerate((90, 94, 98, 102, 106, 110))]
+    spread = [
+        _strip(1400 + i * 150, frameshift.STRIP_MATCHED, d, search=(-50, 150))
+        for i, d in enumerate((90, 94, 98, 102, 106, 110))
+    ]
     near_bound_pin = _strip(2600, frameshift.STRIP_PINNED, 499, search=(0, 500))
 
     # The premise: `_search_strip` would have labelled this strip pinned, so `_pins_allow` is
     # being handed the same state the estimator really produces.
     assert 499 >= 500 - frameshift._PIN_MARGIN_PX
-    assert not frameshift._pins_allow([near_bound_pin], 200,
-                                      pin_margin=frameshift._PIN_MARGIN_PX)
+    assert not frameshift._pins_allow(
+        [near_bound_pin], 200, pin_margin=frameshift._PIN_MARGIN_PX
+    )
     # ...and the pin's own offset is never what it rejects: a candidate at or past the bound,
     # which is what the true shift looks like when a strip pins one pixel short of it, passes.
-    assert frameshift._pins_allow([near_bound_pin], 499, pin_margin=frameshift._PIN_MARGIN_PX)
-    assert frameshift._pins_allow([near_bound_pin], 700, pin_margin=frameshift._PIN_MARGIN_PX)
+    assert frameshift._pins_allow(
+        [near_bound_pin], 499, pin_margin=frameshift._PIN_MARGIN_PX
+    )
+    assert frameshift._pins_allow(
+        [near_bound_pin], 700, pin_margin=frameshift._PIN_MARGIN_PX
+    )
 
     r = _resolve(exact + spread + [near_bound_pin])
     assert r.status == frameshift.SHIFT_NO_CONSENSUS, r.reason
@@ -780,7 +1013,9 @@ def test_a_pin_one_pixel_inside_its_bound_vetoes_just_as_hard():
     # The low end is symmetric: a strip pinned one pixel above the bottom of its range says the
     # content went at most -499px, so a rescue at -200 is equally ruled out.
     low_pin = _strip(2600, frameshift.STRIP_PINNED, -499, search=(-500, 0))
-    assert not frameshift._pins_allow([low_pin], -200, pin_margin=frameshift._PIN_MARGIN_PX)
+    assert not frameshift._pins_allow(
+        [low_pin], -200, pin_margin=frameshift._PIN_MARGIN_PX
+    )
     assert frameshift._pins_allow([low_pin], -499, pin_margin=frameshift._PIN_MARGIN_PX)
 
 
@@ -793,9 +1028,9 @@ def test_vote_clusters_splits_on_gaps_over_tolerance_and_keeps_exact_ties_togeth
     """
     voters = [
         _strip(0, frameshift.STRIP_MATCHED, 100),
-        _strip(1, frameshift.STRIP_MATCHED, 103),   # exactly 3px from 100: same group
-        _strip(2, frameshift.STRIP_MATCHED, 107),   # 4px from 103: new group
-        _strip(3, frameshift.STRIP_WEAK, None),     # no vote at all
+        _strip(1, frameshift.STRIP_MATCHED, 103),  # exactly 3px from 100: same group
+        _strip(2, frameshift.STRIP_MATCHED, 107),  # 4px from 103: new group
+        _strip(3, frameshift.STRIP_WEAK, None),  # no vote at all
     ]
     groups = frameshift._vote_clusters(voters, tolerance=3)
 
@@ -806,25 +1041,34 @@ def test_vote_clusters_splits_on_gaps_over_tolerance_and_keeps_exact_ties_togeth
 # Fail loud: the cases where there is no result at all
 # =====================================================================================
 
+
 def test_undecodable_bytes_raise_rather_than_return_a_result():
     with pytest.raises(frameshift.ShiftEstimationError) as exc:
-        frameshift.estimate_shift(b"not a png", _frame(_BASE_SCROLL),
-                                  content_band=_CONTENT_BAND)
+        frameshift.estimate_shift(
+            b"not a png", _frame(_BASE_SCROLL), content_band=_CONTENT_BAND
+        )
     assert "first" in str(exc.value)
 
     with pytest.raises(frameshift.ShiftEstimationError) as exc:
-        frameshift.estimate_shift(_frame(_BASE_SCROLL), b"not a png",
-                                  content_band=_CONTENT_BAND)
+        frameshift.estimate_shift(
+            _frame(_BASE_SCROLL), b"not a png", content_band=_CONTENT_BAND
+        )
     assert "second" in str(exc.value)
 
 
 def test_mismatched_frame_sizes_raise_rather_than_resize():
     """Silently rescaling would return a number in the wrong units, which downstream is
     indistinguishable from a correct one."""
-    small = cv2.imencode(".png", np.random.default_rng(5).integers(
-        0, 255, size=(_H // 2, _W // 2), dtype=np.uint8))[1].tobytes()
+    small = cv2.imencode(
+        ".png",
+        np.random.default_rng(5).integers(
+            0, 255, size=(_H // 2, _W // 2), dtype=np.uint8
+        ),
+    )[1].tobytes()
     with pytest.raises(frameshift.ShiftEstimationError, match="different sizes"):
-        frameshift.estimate_shift(_frame(_BASE_SCROLL), small, content_band=_CONTENT_BAND)
+        frameshift.estimate_shift(
+            _frame(_BASE_SCROLL), small, content_band=_CONTENT_BAND
+        )
 
 
 def test_a_band_too_short_to_search_raises_rather_than_reporting_no_evidence():
@@ -832,8 +1076,9 @@ def test_a_band_too_short_to_search_raises_rather_than_reporting_no_evidence():
     for one strip plus a search span, every strip would be STRIP_NO_RANGE and the result would
     read as "the frames do not correspond"."""
     with pytest.raises(frameshift.ShiftEstimationError, match="too short to search"):
-        frameshift.estimate_shift(_frame(_BASE_SCROLL), _frame(_BASE_SCROLL + 100),
-                                  content_band=(0.50, 0.55))
+        frameshift.estimate_shift(
+            _frame(_BASE_SCROLL), _frame(_BASE_SCROLL + 100), content_band=(0.50, 0.55)
+        )
 
 
 def test_a_bank_too_small_to_reach_its_own_quorum_raises():
@@ -852,8 +1097,9 @@ def test_a_non_positive_trust_window_raises():
 
 
 def test_a_frame_narrower_than_its_own_margins_raises():
-    narrow = cv2.imencode(".png", np.random.default_rng(6).integers(
-        0, 255, size=(_H, 80), dtype=np.uint8))[1].tobytes()
+    narrow = cv2.imencode(
+        ".png", np.random.default_rng(6).integers(0, 255, size=(_H, 80), dtype=np.uint8)
+    )[1].tobytes()
     with pytest.raises(frameshift.ShiftEstimationError, match="no content columns"):
         frameshift.estimate_shift(narrow, narrow, content_band=_CONTENT_BAND)
 
@@ -862,16 +1108,23 @@ def test_a_frame_narrower_than_its_own_margins_raises():
 # Leaf-module property
 # =====================================================================================
 
+
 def test_the_module_is_a_leaf_and_does_not_pull_in_the_driver():
     """frameshift.py must stay importable without hinge.py, both because it is pure geometry and
     because hinge.py is the eventual IMPORTER. Unlike segment.py it does not even need
     `_match_glyph` at runtime, so nothing here should ever reach for it — checked in a fresh
     interpreter, since this test session has hinge.py loaded already."""
     out = subprocess.run(
-        [sys.executable, "-c",
-         "import sys; import operation_love.drivers.frameshift as f; "
-         "print('operation_love.drivers.hinge' in sys.modules); print(f.estimate_shift.__name__)"],
-        capture_output=True, text=True, check=True)
+        [
+            sys.executable,
+            "-c",
+            "import sys; import operation_love.drivers.frameshift as f; "
+            "print('operation_love.drivers.hinge' in sys.modules); print(f.estimate_shift.__name__)",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
     assert out.stdout.split() == ["False", "estimate_shift"], out.stdout + out.stderr
 
 
@@ -891,10 +1144,13 @@ def test_calibration_geometry_is_shared_with_segment_and_not_re_declared():
 # 2026-08-16 bimodal-video regressions above transcribe theirs. The frames themselves live under
 # the gitignored data/ tree, so the bank is the fixture.
 
+
 def _maja_forward():
     """Strips cut from the BEFORE frame, searched in the after frame. Median +630, 2 agree."""
     return (
-        _strip(300, frameshift.STRIP_FLAT, None, score=0.0, stddev=2.9, search=(-1704, 0)),
+        _strip(
+            300, frameshift.STRIP_FLAT, None, score=0.0, stddev=2.9, search=(-1704, 0)
+        ),
         _strip(442, frameshift.STRIP_WEAK, None, score=0.447, search=(-1562, 142)),
         _strip(584, frameshift.STRIP_WEAK, None, score=0.330, search=(-1420, 284)),
         _strip(726, frameshift.STRIP_MATCHED, -1178, score=0.961, search=(-1278, 426)),
@@ -924,7 +1180,8 @@ def _recovery(forward_strips, reverse_strips, **kwargs):
     """Drive `estimate_shift_with_reverse_recovery` over two hand-built banks."""
     banks = iter((_resolve(forward_strips), _resolve(reverse_strips)))
     return frameshift.estimate_shift_with_reverse_recovery(
-        b"before", b"after", estimator=lambda *_a, **_kw: next(banks), **kwargs)
+        b"before", b"after", estimator=lambda *_a, **_kw: next(banks), **kwargs
+    )
 
 
 def test_each_maja_direction_alone_is_still_refused():
@@ -934,7 +1191,9 @@ def test_each_maja_direction_alone_is_still_refused():
     assert reverse.status == frameshift.SHIFT_NO_CONSENSUS
     assert forward.delta_px is None and reverse.delta_px is None
     assert forward.agreeing == 2 and reverse.agreeing == 2
-    assert frameshift._MIN_AGREEING_STRIPS == 3, "the quorum itself must not have been lowered"
+    assert frameshift._MIN_AGREEING_STRIPS == 3, (
+        "the quorum itself must not have been lowered"
+    )
 
 
 def test_two_directions_that_both_centre_on_one_exact_shift_measure_it():
@@ -955,23 +1214,33 @@ def test_the_rescue_never_runs_when_either_direction_can_answer():
     measured = [_strip(300 + i * 200, frameshift.STRIP_MATCHED, 363) for i in range(5)]
     result, _f, reverse = _recovery(measured, _maja_reverse())
     assert result.status == frameshift.SHIFT_MEASURED and result.delta_px == 363
-    assert reverse is None, "a forward measurement must not even look at the other direction"
+    assert reverse is None, (
+        "a forward measurement must not even look at the other direction"
+    )
     # And an ordinary reverse measurement still wins by the pre-existing 2026-09-02 rule.
     result, _f, _r = _recovery(_maja_forward(), measured)
     assert result.delta_px == -363
     assert "reverse source strips measured the same pair" in result.reason
 
 
-@pytest.mark.parametrize("status_strips", [
-    # a saturation report must never be talked round by a cross-direction cluster...
-    [_strip(300 + i * 200, frameshift.STRIP_MATCHED, 1500, search=(-2000, 2000))
-     for i in range(5)],
-    # ...nor must silence.
-    [_strip(300 + i * 200, frameshift.STRIP_WEAK, None) for i in range(5)],
-])
+@pytest.mark.parametrize(
+    "status_strips",
+    [
+        # a saturation report must never be talked round by a cross-direction cluster...
+        [
+            _strip(300 + i * 200, frameshift.STRIP_MATCHED, 1500, search=(-2000, 2000))
+            for i in range(5)
+        ],
+        # ...nor must silence.
+        [_strip(300 + i * 200, frameshift.STRIP_WEAK, None) for i in range(5)],
+    ],
+)
 def test_the_rescue_never_overrules_saturation_or_silence(status_strips):
     forward = _resolve(status_strips)
-    assert forward.status in (frameshift.SHIFT_BEYOND_WINDOW, frameshift.SHIFT_NO_EVIDENCE)
+    assert forward.status in (
+        frameshift.SHIFT_BEYOND_WINDOW,
+        frameshift.SHIFT_NO_EVIDENCE,
+    )
     result, _f, reverse = _recovery(status_strips, _maja_reverse())
     assert result.delta_px is None
     assert reverse is None, "only SHIFT_NO_CONSENSUS earns a second direction at all"
@@ -985,15 +1254,21 @@ def _forced_no_consensus(strips):
     reason. Driving the helper directly, with the surrounding preconditions held fixed, is what
     makes each mutation test mean what its name says.
     """
-    return dataclasses.replace(_resolve(tuple(strips)),
-                               status=frameshift.SHIFT_NO_CONSENSUS, delta_px=None)
+    return dataclasses.replace(
+        _resolve(tuple(strips)), status=frameshift.SHIFT_NO_CONSENSUS, delta_px=None
+    )
 
 
 def _cross(forward, reverse, min_agreeing=None):
     return frameshift._cross_direction_quorum_shift(
-        forward, reverse, tolerance=frameshift._AGREEMENT_TOLERANCE_PX,
-        min_agreeing=frameshift._MIN_AGREEING_STRIPS if min_agreeing is None else min_agreeing,
-        pin_margin=frameshift._PIN_MARGIN_PX)
+        forward,
+        reverse,
+        tolerance=frameshift._AGREEMENT_TOLERANCE_PX,
+        min_agreeing=frameshift._MIN_AGREEING_STRIPS
+        if min_agreeing is None
+        else min_agreeing,
+        pin_margin=frameshift._PIN_MARGIN_PX,
+    )
 
 
 def test_a_cluster_neither_direction_centred_on_is_refused():
@@ -1004,16 +1279,20 @@ def test_a_cluster_neither_direction_centred_on_is_refused():
     either bank centred on -- which is precisely the shape of the Maja video's own +-1178
     correspondence.
     """
-    forward = _forced_no_consensus((
-        _strip(300, frameshift.STRIP_MATCHED, 200),
-        _strip(500, frameshift.STRIP_MATCHED, 200),
-        _strip(700, frameshift.STRIP_MATCHED, 700),
-        _strip(900, frameshift.STRIP_MATCHED, 800),
-    ))
-    reverse = _forced_no_consensus((
-        _strip(300, frameshift.STRIP_MATCHED, -200),
-        _strip(500, frameshift.STRIP_MATCHED, -700),
-    ))
+    forward = _forced_no_consensus(
+        (
+            _strip(300, frameshift.STRIP_MATCHED, 200),
+            _strip(500, frameshift.STRIP_MATCHED, 200),
+            _strip(700, frameshift.STRIP_MATCHED, 700),
+            _strip(900, frameshift.STRIP_MATCHED, 800),
+        )
+    )
+    reverse = _forced_no_consensus(
+        (
+            _strip(300, frameshift.STRIP_MATCHED, -200),
+            _strip(500, frameshift.STRIP_MATCHED, -700),
+        )
+    )
     # The mirror clause is satisfied, so ONLY "the candidate is the median" can be what refuses.
     assert frameshift._matched_median(forward) == 450
     assert frameshift._matched_median(reverse) == -450
@@ -1023,26 +1302,36 @@ def test_a_cluster_neither_direction_centred_on_is_refused():
 def test_both_banks_must_centre_on_the_same_translation():
     """The mirror clause. Here +400 IS the forward bank's median and is witnessed both ways, but
     the reverse bank centred somewhere else, so the two are not describing one page."""
-    forward = _forced_no_consensus((
-        _strip(300, frameshift.STRIP_MATCHED, 300),
-        _strip(500, frameshift.STRIP_MATCHED, 400),
-        _strip(700, frameshift.STRIP_MATCHED, 400),
-        _strip(900, frameshift.STRIP_MATCHED, 500),
-    ))
-    reverse = _forced_no_consensus((
-        _strip(300, frameshift.STRIP_MATCHED, -400),
-        _strip(500, frameshift.STRIP_MATCHED, -100),
-        _strip(700, frameshift.STRIP_MATCHED, 0),
-    ))
-    assert frameshift._matched_median(forward) == 400, "the candidate IS the forward median"
-    assert frameshift._matched_median(reverse) == -100, "but the reverse bank centred elsewhere"
+    forward = _forced_no_consensus(
+        (
+            _strip(300, frameshift.STRIP_MATCHED, 300),
+            _strip(500, frameshift.STRIP_MATCHED, 400),
+            _strip(700, frameshift.STRIP_MATCHED, 400),
+            _strip(900, frameshift.STRIP_MATCHED, 500),
+        )
+    )
+    reverse = _forced_no_consensus(
+        (
+            _strip(300, frameshift.STRIP_MATCHED, -400),
+            _strip(500, frameshift.STRIP_MATCHED, -100),
+            _strip(700, frameshift.STRIP_MATCHED, 0),
+        )
+    )
+    assert frameshift._matched_median(forward) == 400, (
+        "the candidate IS the forward median"
+    )
+    assert frameshift._matched_median(reverse) == -100, (
+        "but the reverse bank centred elsewhere"
+    )
     assert _cross(forward, reverse) is None
     # Move the reverse bank's own centre onto it and the same evidence measures.
-    agreeing_reverse = _forced_no_consensus((
-        _strip(300, frameshift.STRIP_MATCHED, -400),
-        _strip(500, frameshift.STRIP_MATCHED, -300),
-        _strip(700, frameshift.STRIP_MATCHED, -500),
-    ))
+    agreeing_reverse = _forced_no_consensus(
+        (
+            _strip(300, frameshift.STRIP_MATCHED, -400),
+            _strip(500, frameshift.STRIP_MATCHED, -300),
+            _strip(700, frameshift.STRIP_MATCHED, -500),
+        )
+    )
     assert _cross(forward, agreeing_reverse) == 400
 
 
@@ -1056,45 +1345,87 @@ def test_a_shift_only_one_direction_witnesses_is_refused():
     such.
     """
     forward = dataclasses.replace(
-        _resolve((_strip(300, frameshift.STRIP_MATCHED, 400),
-                  _strip(500, frameshift.STRIP_MATCHED, 400),
-                  _strip(700, frameshift.STRIP_MATCHED, 400))),
-        status=frameshift.SHIFT_NO_CONSENSUS, delta_px=None)
+        _resolve(
+            (
+                _strip(300, frameshift.STRIP_MATCHED, 400),
+                _strip(500, frameshift.STRIP_MATCHED, 400),
+                _strip(700, frameshift.STRIP_MATCHED, 400),
+            )
+        ),
+        status=frameshift.SHIFT_NO_CONSENSUS,
+        delta_px=None,
+    )
     reverse = dataclasses.replace(
-        _resolve((_strip(300, frameshift.STRIP_MATCHED, -300),
-                  _strip(500, frameshift.STRIP_MATCHED, -500))),
-        status=frameshift.SHIFT_NO_CONSENSUS, delta_px=None)
+        _resolve(
+            (
+                _strip(300, frameshift.STRIP_MATCHED, -300),
+                _strip(500, frameshift.STRIP_MATCHED, -500),
+            )
+        ),
+        status=frameshift.SHIFT_NO_CONSENSUS,
+        delta_px=None,
+    )
     # Both medians line up, so ONLY the missing reverse witness can be what refuses it.
     assert frameshift._matched_median(forward) == 400
     assert frameshift._matched_median(reverse) == -400
-    assert frameshift._cross_direction_quorum_shift(
-        forward, reverse, tolerance=frameshift._AGREEMENT_TOLERANCE_PX,
-        min_agreeing=frameshift._MIN_AGREEING_STRIPS,
-        pin_margin=frameshift._PIN_MARGIN_PX) is None
+    assert (
+        frameshift._cross_direction_quorum_shift(
+            forward,
+            reverse,
+            tolerance=frameshift._AGREEMENT_TOLERANCE_PX,
+            min_agreeing=frameshift._MIN_AGREEING_STRIPS,
+            pin_margin=frameshift._PIN_MARGIN_PX,
+        )
+        is None
+    )
     # ...and with one of those three votes coming from the other bank instead, it measures.
     shared_reverse = dataclasses.replace(
-        _resolve((_strip(300, frameshift.STRIP_MATCHED, -400),
-                  _strip(500, frameshift.STRIP_MATCHED, -300),
-                  _strip(700, frameshift.STRIP_MATCHED, -500))),
-        status=frameshift.SHIFT_NO_CONSENSUS, delta_px=None)
+        _resolve(
+            (
+                _strip(300, frameshift.STRIP_MATCHED, -400),
+                _strip(500, frameshift.STRIP_MATCHED, -300),
+                _strip(700, frameshift.STRIP_MATCHED, -500),
+            )
+        ),
+        status=frameshift.SHIFT_NO_CONSENSUS,
+        delta_px=None,
+    )
     two_forward = dataclasses.replace(
-        _resolve((_strip(300, frameshift.STRIP_MATCHED, 400),
-                  _strip(500, frameshift.STRIP_MATCHED, 400),
-                  _strip(700, frameshift.STRIP_MATCHED, 300),
-                  _strip(900, frameshift.STRIP_MATCHED, 500))),
-        status=frameshift.SHIFT_NO_CONSENSUS, delta_px=None)
-    assert frameshift._cross_direction_quorum_shift(
-        two_forward, shared_reverse, tolerance=frameshift._AGREEMENT_TOLERANCE_PX,
-        min_agreeing=frameshift._MIN_AGREEING_STRIPS,
-        pin_margin=frameshift._PIN_MARGIN_PX) == 400
+        _resolve(
+            (
+                _strip(300, frameshift.STRIP_MATCHED, 400),
+                _strip(500, frameshift.STRIP_MATCHED, 400),
+                _strip(700, frameshift.STRIP_MATCHED, 300),
+                _strip(900, frameshift.STRIP_MATCHED, 500),
+            )
+        ),
+        status=frameshift.SHIFT_NO_CONSENSUS,
+        delta_px=None,
+    )
+    assert (
+        frameshift._cross_direction_quorum_shift(
+            two_forward,
+            shared_reverse,
+            tolerance=frameshift._AGREEMENT_TOLERANCE_PX,
+            min_agreeing=frameshift._MIN_AGREEING_STRIPS,
+            pin_margin=frameshift._PIN_MARGIN_PX,
+        )
+        == 400
+    )
 
 
 def test_an_inexact_cross_direction_group_is_refused():
     """Spread, not size, is the discriminator: +630/+631 is not one rigid translation."""
     forward = tuple(
-        _strip(s.y0, s.state, 631 if s.delta_px == 630 and s.y0 == 1152 else s.delta_px,
-               score=s.score, search=s.search)
-        for s in _maja_forward())
+        _strip(
+            s.y0,
+            s.state,
+            631 if s.delta_px == 630 and s.y0 == 1152 else s.delta_px,
+            score=s.score,
+            search=s.search,
+        )
+        for s in _maja_forward()
+    )
     result, _f, _r = _recovery(forward, _maja_reverse())
     assert result.delta_px is None
 
@@ -1123,7 +1454,9 @@ def test_a_near_bound_pin_vetoes_the_cross_direction_rescue_too(delta):
     assert _recovery(_maja_forward(), _maja_reverse())[0].delta_px == 630
 
     result, _f, _r = _recovery(_maja_forward() + (veto,), _maja_reverse())
-    assert result.delta_px is None, "forward pins say the content went at least this far"
+    assert result.delta_px is None, (
+        "forward pins say the content went at least this far"
+    )
     result, _f, _r = _recovery(_maja_forward(), _maja_reverse() + (veto,))
     assert result.delta_px is None, "and the reverse bank's pins bind just as hard"
 
@@ -1134,27 +1467,35 @@ def test_the_rescue_cannot_answer_outside_the_trust_window():
     Every other clause admits +1500: it is exact, unique, cross-witnessed and the shared median.
     The window is the only thing that refuses it.
     """
-    forward = _forced_no_consensus((
-        _strip(300, frameshift.STRIP_MATCHED, 1500, search=(-3000, 3000)),
-        _strip(500, frameshift.STRIP_MATCHED, 1500, search=(-3000, 3000)),
-    ))
-    reverse = _forced_no_consensus((
-        _strip(300, frameshift.STRIP_MATCHED, -1500, search=(-3000, 3000)),
-        _strip(500, frameshift.STRIP_MATCHED, -1500, search=(-3000, 3000)),
-    ))
+    forward = _forced_no_consensus(
+        (
+            _strip(300, frameshift.STRIP_MATCHED, 1500, search=(-3000, 3000)),
+            _strip(500, frameshift.STRIP_MATCHED, 1500, search=(-3000, 3000)),
+        )
+    )
+    reverse = _forced_no_consensus(
+        (
+            _strip(300, frameshift.STRIP_MATCHED, -1500, search=(-3000, 3000)),
+            _strip(500, frameshift.STRIP_MATCHED, -1500, search=(-3000, 3000)),
+        )
+    )
     assert forward.trust_window_px == 900
     assert frameshift._matched_median(forward) == 1500
     assert frameshift._matched_median(reverse) == -1500
     assert _cross(forward, reverse) is None
     # The identical bank inside the window measures, so nothing else here is doing the work.
-    near = _forced_no_consensus((
-        _strip(300, frameshift.STRIP_MATCHED, 500, search=(-3000, 3000)),
-        _strip(500, frameshift.STRIP_MATCHED, 500, search=(-3000, 3000)),
-    ))
-    near_reverse = _forced_no_consensus((
-        _strip(300, frameshift.STRIP_MATCHED, -500, search=(-3000, 3000)),
-        _strip(500, frameshift.STRIP_MATCHED, -500, search=(-3000, 3000)),
-    ))
+    near = _forced_no_consensus(
+        (
+            _strip(300, frameshift.STRIP_MATCHED, 500, search=(-3000, 3000)),
+            _strip(500, frameshift.STRIP_MATCHED, 500, search=(-3000, 3000)),
+        )
+    )
+    near_reverse = _forced_no_consensus(
+        (
+            _strip(300, frameshift.STRIP_MATCHED, -500, search=(-3000, 3000)),
+            _strip(500, frameshift.STRIP_MATCHED, -500, search=(-3000, 3000)),
+        )
+    )
     assert _cross(near, near_reverse) == 500
 
 
@@ -1165,15 +1506,24 @@ def test_a_reverse_bank_that_is_not_merely_short_of_quorum_is_never_pooled(monke
     is a different statement from "two strips agreed and a third was missing", and its strips
     must never be pooled with the forward bank's, whatever they happen to say.
     """
+
     def unreachable(*_args, **_kwargs):
-        raise AssertionError("the cross-direction rule must not be consulted for this pair")
+        raise AssertionError(
+            "the cross-direction rule must not be consulted for this pair"
+        )
 
     monkeypatch.setattr(frameshift, "_cross_direction_quorum_shift", unreachable)
-    for other in ([_strip(300 + i * 200, frameshift.STRIP_MATCHED, 1500, search=(-2000, 2000))
-                   for i in range(5)],
-                  [_strip(300 + i * 200, frameshift.STRIP_WEAK, None) for i in range(5)]):
-        assert _resolve(other).status in (frameshift.SHIFT_BEYOND_WINDOW,
-                                          frameshift.SHIFT_NO_EVIDENCE)
+    for other in (
+        [
+            _strip(300 + i * 200, frameshift.STRIP_MATCHED, 1500, search=(-2000, 2000))
+            for i in range(5)
+        ],
+        [_strip(300 + i * 200, frameshift.STRIP_WEAK, None) for i in range(5)],
+    ):
+        assert _resolve(other).status in (
+            frameshift.SHIFT_BEYOND_WINDOW,
+            frameshift.SHIFT_NO_EVIDENCE,
+        )
         result, _f, _r = _recovery(_maja_forward(), other)
         assert result.delta_px is None
 
@@ -1188,33 +1538,41 @@ def test_two_exact_cross_direction_clusters_are_ambiguous_and_refused():
     # -400 is the SHARED median of both banks, so every other clause admits it: taking "the"
     # exact group instead of refusing an ambiguous bank would return it. Only uniqueness stands
     # between this bank and a wrong answer.
-    forward = _forced_no_consensus((
-        _strip(300, frameshift.STRIP_MATCHED, -400),
-        _strip(500, frameshift.STRIP_MATCHED, -400),
-        _strip(700, frameshift.STRIP_MATCHED, -400),
-        _strip(900, frameshift.STRIP_MATCHED, 400),
-        _strip(1100, frameshift.STRIP_MATCHED, 400),
-    ))
-    reverse = _forced_no_consensus((
-        _strip(300, frameshift.STRIP_MATCHED, -400),
-        _strip(500, frameshift.STRIP_MATCHED, 400),
-        _strip(700, frameshift.STRIP_MATCHED, 400),
-    ))
+    forward = _forced_no_consensus(
+        (
+            _strip(300, frameshift.STRIP_MATCHED, -400),
+            _strip(500, frameshift.STRIP_MATCHED, -400),
+            _strip(700, frameshift.STRIP_MATCHED, -400),
+            _strip(900, frameshift.STRIP_MATCHED, 400),
+            _strip(1100, frameshift.STRIP_MATCHED, 400),
+        )
+    )
+    reverse = _forced_no_consensus(
+        (
+            _strip(300, frameshift.STRIP_MATCHED, -400),
+            _strip(500, frameshift.STRIP_MATCHED, 400),
+            _strip(700, frameshift.STRIP_MATCHED, 400),
+        )
+    )
     assert frameshift._matched_median(forward) == -400
     assert frameshift._matched_median(reverse) == 400
     assert _cross(forward, reverse) is None
     # ...and with the +400 cluster dropped below quorum it is no longer a competing answer.
-    unambiguous = _forced_no_consensus((
-        _strip(300, frameshift.STRIP_MATCHED, -400),
-        _strip(500, frameshift.STRIP_MATCHED, -400),
-        _strip(700, frameshift.STRIP_MATCHED, -400),
-        _strip(900, frameshift.STRIP_MATCHED, 400),
-    ))
-    one_reverse = _forced_no_consensus((
-        _strip(300, frameshift.STRIP_MATCHED, 400),
-        _strip(500, frameshift.STRIP_MATCHED, 500),
-        _strip(700, frameshift.STRIP_MATCHED, 300),
-    ))
+    unambiguous = _forced_no_consensus(
+        (
+            _strip(300, frameshift.STRIP_MATCHED, -400),
+            _strip(500, frameshift.STRIP_MATCHED, -400),
+            _strip(700, frameshift.STRIP_MATCHED, -400),
+            _strip(900, frameshift.STRIP_MATCHED, 400),
+        )
+    )
+    one_reverse = _forced_no_consensus(
+        (
+            _strip(300, frameshift.STRIP_MATCHED, 400),
+            _strip(500, frameshift.STRIP_MATCHED, 500),
+            _strip(700, frameshift.STRIP_MATCHED, 300),
+        )
+    )
     assert frameshift._matched_median(unambiguous) == -400
     assert frameshift._matched_median(one_reverse) == 400
     assert _cross(unambiguous, one_reverse) == -400
@@ -1226,10 +1584,16 @@ def test_a_reverse_direction_that_refuses_for_any_other_reason_ends_it():
     A reverse bank that saturated or saw nothing is not a bank whose head-count merely fell
     short, and its strips must not be pooled with the forward bank's.
     """
-    saturated = [_strip(300 + i * 200, frameshift.STRIP_MATCHED, 1500, search=(-2000, 2000))
-                 for i in range(5)]
+    saturated = [
+        _strip(300 + i * 200, frameshift.STRIP_MATCHED, 1500, search=(-2000, 2000))
+        for i in range(5)
+    ]
     assert _resolve(saturated).status == frameshift.SHIFT_BEYOND_WINDOW
     result, forward, reverse = _recovery(_maja_forward(), saturated)
-    assert forward.status == frameshift.SHIFT_NO_CONSENSUS, "the forward side did open it"
+    assert forward.status == frameshift.SHIFT_NO_CONSENSUS, (
+        "the forward side did open it"
+    )
     assert reverse.status == frameshift.SHIFT_BEYOND_WINDOW
-    assert result.delta_px is None, "a saturated reverse bank ends the pair, it never pools"
+    assert result.delta_px is None, (
+        "a saturated reverse bank ends the pair, it never pools"
+    )

@@ -221,6 +221,7 @@ WHAT THIS MODULE DOES NOT DECIDE, AND WHICH LAYER HAS TO
   * SCREEN IDENTITY and the SCROLL, both inherited caveats: a usable index is not "this is a
     Hinge profile", and this module is handed frames it did not capture.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -229,10 +230,18 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 
 from operation_love.targeting_policy import (
-    HINGE_PHOTO_SELECTION_POLICY_ID, hinge_targeting_unavailable_reason)
+    HINGE_PHOTO_SELECTION_POLICY_ID,
+    hinge_targeting_unavailable_reason,
+)
 
 from .item_index import (
-    ITEM_CONTEXT, ITEM_LEADING_CHROME, ITEM_PARTIAL, ITEM_SELECTABLE, IndexedBlock, ItemIndex)
+    ITEM_CONTEXT,
+    ITEM_LEADING_CHROME,
+    ITEM_PARTIAL,
+    ITEM_SELECTABLE,
+    IndexedBlock,
+    ItemIndex,
+)
 
 
 # =====================================================================================
@@ -283,14 +292,18 @@ _SIGNATURE_GRID = (32, 32)
 # unchanged and still visible on the block.
 # =====================================================================================
 
-CROP_ITEM = "item"                # cropped, sent, and NUMBERED: the model may choose it
-CROP_CONTEXT = "context"          # cropped and sent, never numbered (doc 5.7: "context blocks,
-                                  # cropped, unnumbered") — the vitals block is the known instance
-CROP_EXCLUDED = "excluded"        # policy says do not show it; NO image is ever produced, so it
-                                  # cannot be sent by accident (doc 2.4's endorsement block)
-CROP_CHROME = "chrome"            # Hinge's scroll-top header, already outside both index spaces
-CROP_UNCROPPABLE = "uncroppable"  # no frame ever bounded it end to end, so there is no crop that
-                                  # is not a fragment: reported with its page position, not sent
+CROP_ITEM = "item"  # cropped, sent, and NUMBERED: the model may choose it
+CROP_CONTEXT = "context"  # cropped and sent, never numbered (doc 5.7: "context blocks,
+# cropped, unnumbered") — the vitals block is the known instance
+CROP_EXCLUDED = (
+    "excluded"  # policy says do not show it; NO image is ever produced, so it
+)
+# cannot be sent by accident (doc 2.4's endorsement block)
+CROP_CHROME = "chrome"  # Hinge's scroll-top header, already outside both index spaces
+CROP_UNCROPPABLE = (
+    "uncroppable"  # no frame ever bounded it end to end, so there is no crop that
+)
+# is not a fragment: reported with its page position, not sent
 
 # Hinge policy: the content classifier recognises photographic pixels, not still media. Neither
 # low drift nor absence of Hinge's auto-hiding mute control can distinguish a still photo from a
@@ -428,8 +441,9 @@ def content_band_center_row(frame_height: int, content_band: Sequence[float]) ->
     return frame_height / 2.0
 
 
-def card_center_offset_frac(rect: tuple[int, int, int, int], *, frame_height: int,
-                            content_band: Sequence[float]) -> float:
+def card_center_offset_frac(
+    rect: tuple[int, int, int, int], *, frame_height: int, content_band: Sequence[float]
+) -> float:
     """Signed (card centre - autoplay centre) as a fraction of the content band's height.
 
     Positive means the card sits BELOW the centre (a forward scroll brings it up).  Reported as a
@@ -454,17 +468,31 @@ def card_center_offset_frac(rect: tuple[int, int, int, int], *, frame_height: in
         raise ItemCropError(f"frame height must be positive (got {frame_height!r})")
     band_height = (float(content_band[1]) - float(content_band[0])) * frame_height
     if band_height <= 0:
-        raise ItemCropError(f"content_band must be an ordered band (got {content_band!r})")
+        raise ItemCropError(
+            f"content_band must be an ordered band (got {content_band!r})"
+        )
     card_center = (rect[1] + rect[3]) / 2.0
-    return (card_center - content_band_center_row(frame_height, content_band)) / band_height
+    return (
+        card_center - content_band_center_row(frame_height, content_band)
+    ) / band_height
 
 
-def card_is_centered(rect: tuple[int, int, int, int], *, frame_height: int,
-                     content_band: Sequence[float],
-                     band_frac: float = STILL_PHOTO_AUTOPLAY_CENTER_BAND_FRAC) -> bool:
+def card_is_centered(
+    rect: tuple[int, int, int, int],
+    *,
+    frame_height: int,
+    content_band: Sequence[float],
+    band_frac: float = STILL_PHOTO_AUTOPLAY_CENTER_BAND_FRAC,
+) -> bool:
     """Whether this card sat inside the conservative autoplay trigger zone."""
-    return abs(card_center_offset_frac(
-        rect, frame_height=frame_height, content_band=content_band)) <= band_frac
+    return (
+        abs(
+            card_center_offset_frac(
+                rect, frame_height=frame_height, content_band=content_band
+            )
+        )
+        <= band_frac
+    )
 
 
 # The reason string doc 2.4's block is dropped under, named so the eventual detector, the debug
@@ -492,7 +520,8 @@ NO_NUMBERED_ITEMS_REASON = "no policy-approved selectable item survived to be nu
 EXCLUSION_REATTACH_PROBE_MISSING = (
     f"{EXCLUSION_NON_PHOTO}: no re-attach probe scrolled this card out of Hinge's autoplay band "
     "and back into it, so a video that was stalled, buffering, unloaded or already ended during "
-    "the dwell would have held byte-exact and passed as a photograph")
+    "the dwell would have held byte-exact and passed as a photograph"
+)
 
 # The dwell rung's refusal for a card that was NEVER OBSERVED, as opposed to one that was
 # observed and measured moving (found+fixed 2026-08-22, ops/STILL-PHOTO-DISCRIMINATOR.md 5d).
@@ -508,7 +537,8 @@ EXCLUSION_REATTACH_PROBE_MISSING = (
 EXCLUSION_NEVER_DWELLED = (
     f"{EXCLUSION_NON_PHOTO}: no dwell ever covered this card -- the configured bounded dwell "
     "walk did not reach it, so it was never observed; that is a coverage gap, not a judgement, "
-    "and it still cannot be selected")
+    "and it still cannot be selected"
+)
 
 
 class ItemCropError(RuntimeError):
@@ -537,7 +567,8 @@ def _require_vision():
     except Exception as exc:  # noqa: BLE001 — surfaced as ItemCropError, never swallowed
         raise ItemCropError(
             "cropping needs opencv-python + numpy (extra: operation-love[hinge]); "
-            f"import failed: {exc}") from exc
+            f"import failed: {exc}"
+        ) from exc
     return cv2, np
 
 
@@ -555,6 +586,7 @@ class CropSignature:
     implemented over the bytes in pure Python on purpose: a stored signature is comparable in the
     hub, in a log replay or in a test, none of which have the vision extras installed.
     """
+
     width: int
     height: int
     grid: tuple[int, int]
@@ -577,7 +609,8 @@ class CropSignature:
             raise ItemCropError(
                 f"cannot compare a {self.grid[0]}x{self.grid[1]} signature with a "
                 f"{other.grid[0]}x{other.grid[1]} one — resampling one to the other would return "
-                "a number that is not a distance")
+                "a number that is not a distance"
+            )
         return sum(
             abs(a - b) for a, b in zip(self.cells, other.cells, strict=True)
         ) / len(self.cells)
@@ -631,6 +664,7 @@ class ItemCrop:
     this crop can serve as doc 5.6's reference at all; see `_signature_drift`, `separable`, and
     the module docstring's separability section.
     """
+
     kind: str
     number: int | None
     heart_ordinal: int | None
@@ -705,6 +739,7 @@ class ItemPayload:
     payload would throw away eight sound references to punish the ninth. Doc 5.6 is the layer
     that decides what an unverifiable item may be used for.
     """
+
     crops: tuple[ItemCrop, ...]
     truncated: bool
     at_scroll_top: bool
@@ -771,12 +806,14 @@ class ItemPayload:
         if not self.usable:
             raise ItemCropError(
                 "this payload is unusable and carries no valid item numbers: "
-                + "; ".join(self.failures))
+                + "; ".join(self.failures)
+            )
         items = self.items
         if not 1 <= number <= len(items):
             raise ItemCropError(
                 f"item number {number} is outside 1..{len(items)}; the model was shown "
-                f"{len(items)} item(s) and may not be answered with anything else")
+                f"{len(items)} item(s) and may not be answered with anything else"
+            )
         return items[number - 1]
 
     def signature_for(self, number: int) -> CropSignature:
@@ -805,15 +842,23 @@ class ItemPayload:
         governs, and the two answers differ — 25.0 against 6.27 inverts, 25.0 against item 9's
         own 47.9 does not.
         """
-        return min((c.nearest_item_distance for c in self.items
-                    if c.nearest_item_distance is not None), default=None)
+        return min(
+            (
+                c.nearest_item_distance
+                for c in self.items
+                if c.nearest_item_distance is not None
+            ),
+            default=None,
+        )
 
     @property
     def max_signature_drift(self) -> float | None:
         """The worst re-observation noise measured on any numbered item, in grey levels. None
         when no item could be measured at all — which is NOT zero drift, it is no evidence."""
-        return max((c.signature_drift for c in self.items
-                    if c.signature_drift is not None), default=None)
+        return max(
+            (c.signature_drift for c in self.items if c.signature_drift is not None),
+            default=None,
+        )
 
     @property
     def unseparable_items(self) -> tuple[int, ...]:
@@ -835,7 +880,7 @@ def _pairs(items: Sequence):
     """Every unordered pair, in a stable order. `itertools.combinations` in one place so the
     separability numbers are reproducible run to run rather than set-ordered."""
     for i, a in enumerate(items):
-        for b in items[i + 1:]:
+        for b in items[i + 1 :]:
             yield a, b
 
 
@@ -848,12 +893,22 @@ def _signature_from_gray(gray, *, grid: tuple[int, int], cv2, np) -> CropSignatu
     """
     cells = cv2.resize(gray, grid, interpolation=cv2.INTER_AREA)
     return CropSignature(
-        width=int(gray.shape[1]), height=int(gray.shape[0]), grid=grid,
-        cells=np.ascontiguousarray(cells, dtype=np.uint8).tobytes())
+        width=int(gray.shape[1]),
+        height=int(gray.shape[0]),
+        grid=grid,
+        cells=np.ascontiguousarray(cells, dtype=np.uint8).tobytes(),
+    )
 
 
-def signature_of(frame: bytes, *, y0: int, y1: int, x0: int, x1: int,
-                 grid: tuple[int, int] = _SIGNATURE_GRID) -> CropSignature:
+def signature_of(
+    frame: bytes,
+    *,
+    y0: int,
+    y1: int,
+    x0: int,
+    x1: int,
+    grid: tuple[int, int] = _SIGNATURE_GRID,
+) -> CropSignature:
     """The signature of rows `y0..y1`, columns `x0..x1` of `frame` — the OTHER half of doc 5.6.
 
     A stored crop signature is only useful against a signature computed the same way, and this is
@@ -872,17 +927,23 @@ def signature_of(frame: bytes, *, y0: int, y1: int, x0: int, x1: int,
     cv2, np = _require_vision()
     gray = cv2.imdecode(np.frombuffer(frame, dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
     if gray is None:
-        raise ItemCropError(f"frame bytes did not decode as an image ({len(frame)} bytes)")
+        raise ItemCropError(
+            f"frame bytes did not decode as an image ({len(frame)} bytes)"
+        )
     height, width = gray.shape
     if not (0 <= y0 < y1 <= height and 0 <= x0 < x1 <= width):
         raise ItemCropError(
             f"rect rows {y0}..{y1}, columns {x0}..{x1} does not fit inside the {width}x{height} "
-            "frame — clipping it would return the signature of a different region")
+            "frame — clipping it would return the signature of a different region"
+        )
     return _signature_from_gray(gray[y0:y1, x0:x1], grid=grid, cv2=cv2, np=np)
 
 
-def exclude_page_rows(spans: Sequence[tuple[int, int]], *, reason: str = EXCLUSION_ENDORSEMENT,
-                      ) -> Callable[[IndexedBlock], str | None]:
+def exclude_page_rows(
+    spans: Sequence[tuple[int, int]],
+    *,
+    reason: str = EXCLUSION_ENDORSEMENT,
+) -> Callable[[IndexedBlock], str | None]:
     """An `exclude` predicate that drops every block overlapping one of `spans` (page rows,
     half-open, in the index's page space).
 
@@ -897,8 +958,10 @@ def exclude_page_rows(spans: Sequence[tuple[int, int]], *, reason: str = EXCLUSI
     def _exclude(block: IndexedBlock) -> str | None:
         for y0, y1 in windows:
             if block.page_y0 < y1 and y0 < block.page_y1:
-                return (f"{reason}: the caller excluded page rows {y0}..{y1}, which this block "
-                        f"at {block.page_y0}..{block.page_y1} overlaps")
+                return (
+                    f"{reason}: the caller excluded page rows {y0}..{y1}, which this block "
+                    f"at {block.page_y0}..{block.page_y1} overlaps"
+                )
         return None
 
     return _exclude
@@ -923,16 +986,21 @@ def unnumber_unless_confident_photo(image: bytes) -> str | None:
     item_type = classify_crop(image)
     if item_type == PHOTO:
         return None
-    return (f"{EXCLUSION_NON_PHOTO}: crop classified as {item_type}; only confidently "
-            "photographic cards may be numbered, while ambiguous or written cards remain "
-            "readable context")
+    return (
+        f"{EXCLUSION_NON_PHOTO}: crop classified as {item_type}; only confidently "
+        "photographic cards may be numbered, while ambiguous or written cards remain "
+        "readable context"
+    )
 
 
 def confident_photo_heart_ordinals(
-        frames: Sequence[bytes], index: ItemIndex, *,
-        exclude: Callable[[IndexedBlock], str | None] | None = None,
-        unnumber: Callable[[bytes], str | None] = unnumber_unless_confident_photo,
-        image_format: str = _CROP_IMAGE_FORMAT) -> tuple[int, ...]:
+    frames: Sequence[bytes],
+    index: ItemIndex,
+    *,
+    exclude: Callable[[IndexedBlock], str | None] | None = None,
+    unnumber: Callable[[bytes], str | None] = unnumber_unless_confident_photo,
+    image_format: str = _CROP_IMAGE_FORMAT,
+) -> tuple[int, ...]:
     """Return heart ordinals whose complete crops pass Hinge's photo-content gate.
 
     This is the cheap, read-only pre-pass used to decide which cards are worth spending a
@@ -949,12 +1017,14 @@ def confident_photo_heart_ordinals(
     if not index.usable:
         raise ItemCropError(
             "refusing to classify crops from an unusable item index -- its numbering is not "
-            "trustworthy: " + "; ".join(index.failures))
+            "trustworthy: " + "; ".join(index.failures)
+        )
     if len(frames) != len(index.frames):
         raise ItemCropError(
             f"{len(frames)} frame(s) given for an index built from {len(index.frames)} -- the "
             "index's page coordinates only mean anything against the capture they were measured "
-            "on")
+            "on"
+        )
     _check_frames_are_the_indexed_frames(frames, index)
     if not frames:
         raise ItemCropError("no frames to classify for still-photo dwell candidates")
@@ -971,9 +1041,15 @@ def confident_photo_heart_ordinals(
         if obs is None:
             continue
         image, _verify_image, _signature = _crop_image(
-            decode(obs.frame_index, colour=False), decode(obs.frame_index, colour=True),
-            obs, block, image_format=image_format, signature_grid=_SIGNATURE_GRID,
-            cv2=cv2, np=np)
+            decode(obs.frame_index, colour=False),
+            decode(obs.frame_index, colour=True),
+            obs,
+            block,
+            image_format=image_format,
+            signature_grid=_SIGNATURE_GRID,
+            cv2=cv2,
+            np=np,
+        )
         if unnumber(image) is None:
             ordinals.append(block.heart_ordinal)
     return tuple(ordinals)
@@ -1072,9 +1148,11 @@ class StillPhotoEvidence:
 
 
 def still_photo_evidence_from_drift(
-        signature_drift: float | None, drift_frames: tuple[int, ...],
-        dwell: StillPhotoDwell | None = None,
-        drift_regime: str | None = None) -> StillPhotoEvidence:
+    signature_drift: float | None,
+    drift_frames: tuple[int, ...],
+    dwell: StillPhotoDwell | None = None,
+    drift_regime: str | None = None,
+) -> StillPhotoEvidence:
     """Build the gate's evidence object from a drift measurement and an optional dwell.
 
     Source compatibility for every caller that has enumeration frames but cannot dwell (offline
@@ -1091,20 +1169,28 @@ def still_photo_evidence_from_drift(
     """
     dwell = dwell or StillPhotoDwell()
     return StillPhotoEvidence(
-        signature_drift=signature_drift, drift_frames=drift_frames, drift_regime=drift_regime,
-        dwell_frame_sha256s=dwell.dwell_frame_sha256s, dwell_exact=dwell.dwell_exact,
-        dwell_span_s=dwell.dwell_span_s, mute_screens_complete=dwell.mute_screens_complete,
-        centered=dwell.centered, center_offset_frac=dwell.center_offset_frac,
+        signature_drift=signature_drift,
+        drift_frames=drift_frames,
+        drift_regime=drift_regime,
+        dwell_frame_sha256s=dwell.dwell_frame_sha256s,
+        dwell_exact=dwell.dwell_exact,
+        dwell_span_s=dwell.dwell_span_s,
+        mute_screens_complete=dwell.mute_screens_complete,
+        centered=dwell.centered,
+        center_offset_frac=dwell.center_offset_frac,
         reattach_probe_ran=dwell.reattach_probe_ran,
         reattach_dwell_frame_sha256s=dwell.reattach_dwell_frame_sha256s,
         reattach_dwell_exact=dwell.reattach_dwell_exact,
         reattach_dwell_span_s=dwell.reattach_dwell_span_s,
         reattach_mute_screens_complete=dwell.reattach_mute_screens_complete,
         reattach_centered=dwell.reattach_centered,
-        reattach_center_offset_frac=dwell.reattach_center_offset_frac)
+        reattach_center_offset_frac=dwell.reattach_center_offset_frac,
+    )
 
 
-def dwell_exact_over_rect(frames_rgb: Sequence, rect: tuple[int, int, int, int]) -> bool:
+def dwell_exact_over_rect(
+    frames_rgb: Sequence, rect: tuple[int, int, int, int]
+) -> bool:
     """True only if `rect` is byte-identical in EVERY consecutive pair of these frames.
 
     Zero tolerance, full resolution, no downsample and no distance metric: the whole point of
@@ -1119,11 +1205,18 @@ def dwell_exact_over_rect(frames_rgb: Sequence, rect: tuple[int, int, int, int])
     observation that could not be made is not a passing one. A structurally invalid `rect` is a
     CALLER bug rather than a failed observation and raises.
     """
-    if (not isinstance(rect, tuple) or len(rect) != 4
-            or any(isinstance(v, bool) or not isinstance(v, int) for v in rect)
-            or rect[2] <= rect[0] or rect[3] <= rect[1] or rect[0] < 0 or rect[1] < 0):
+    if (
+        not isinstance(rect, tuple)
+        or len(rect) != 4
+        or any(isinstance(v, bool) or not isinstance(v, int) for v in rect)
+        or rect[2] <= rect[0]
+        or rect[3] <= rect[1]
+        or rect[0] < 0
+        or rect[1] < 0
+    ):
         raise ItemCropError(
-            f"dwell rect must be a (x0, y0, x1, y1) tuple of ints with positive extent (got {rect!r})")
+            f"dwell rect must be a (x0, y0, x1, y1) tuple of ints with positive extent (got {rect!r})"
+        )
     frames = list(frames_rgb)
     if len(frames) < 2:
         return False
@@ -1132,7 +1225,9 @@ def dwell_exact_over_rect(frames_rgb: Sequence, rect: tuple[int, int, int, int])
     for frame in frames:
         if isinstance(frame, (bytes, bytearray)):
             cv2, np = _require_vision()
-            image = cv2.imdecode(np.frombuffer(bytes(frame), dtype=np.uint8), cv2.IMREAD_COLOR)
+            image = cv2.imdecode(
+                np.frombuffer(bytes(frame), dtype=np.uint8), cv2.IMREAD_COLOR
+            )
             if image is None:
                 return False
         else:
@@ -1147,12 +1242,16 @@ def dwell_exact_over_rect(frames_rgb: Sequence, rect: tuple[int, int, int, int])
     return True
 
 
-def dwell_evidence_for_rect(rect: tuple[int, int, int, int], sequence: Sequence[bytes], *,
-                            digests: tuple[str, ...], dwell_span_s: float | None,
-                            mute_screen: Callable[[bytes, tuple[int, int, int, int]], bool]
-                            | None = None,
-                            frame_height: int | None = None,
-                            content_band: Sequence[float] | None = None) -> StillPhotoDwell:
+def dwell_evidence_for_rect(
+    rect: tuple[int, int, int, int],
+    sequence: Sequence[bytes],
+    *,
+    digests: tuple[str, ...],
+    dwell_span_s: float | None,
+    mute_screen: Callable[[bytes, tuple[int, int, int, int]], bool] | None = None,
+    frame_height: int | None = None,
+    content_band: Sequence[float] | None = None,
+) -> StillPhotoDwell:
     """The C2/C3 first-burst verdict for ONE already-known card rect (2026-08-23).
 
     Factored out of `still_photo_dwell_evidence`'s per-block loop so a caller holding its OWN
@@ -1172,25 +1271,33 @@ def dwell_evidence_for_rect(rect: tuple[int, int, int, int], sequence: Sequence[
     offset = None
     centered = None
     if frame_height:
-        offset = card_center_offset_frac(rect, frame_height=frame_height,
-                                         content_band=content_band)
+        offset = card_center_offset_frac(
+            rect, frame_height=frame_height, content_band=content_band
+        )
         centered = abs(offset) <= STILL_PHOTO_AUTOPLAY_CENTER_BAND_FRAC
     return StillPhotoDwell(
         dwell_frame_sha256s=digests,
         dwell_exact=dwell_exact_over_rect(sequence, rect),
         dwell_span_s=dwell_span_s,
-        mute_screens_complete=(None if mute_screen is None
-                               else all(bool(mute_screen(frame, rect)) for frame in sequence)),
+        mute_screens_complete=(
+            None
+            if mute_screen is None
+            else all(bool(mute_screen(frame, rect)) for frame in sequence)
+        ),
         centered=centered,
-        center_offset_frac=(None if offset is None else float(offset)))
+        center_offset_frac=(None if offset is None else float(offset)),
+    )
 
 
-def still_photo_dwell_evidence(index: ItemIndex, frames: Sequence[bytes],
-                              dwell_frames: Sequence[bytes], *, dwell_span_s: float | None,
-                              mute_screen: Callable[[bytes, tuple[int, int, int, int]], bool]
-                              | None = None,
-                              content_band: Sequence[float] | None = None,
-                              ) -> dict[int, StillPhotoDwell]:
+def still_photo_dwell_evidence(
+    index: ItemIndex,
+    frames: Sequence[bytes],
+    dwell_frames: Sequence[bytes],
+    *,
+    dwell_span_s: float | None,
+    mute_screen: Callable[[bytes, tuple[int, int, int, int]], bool] | None = None,
+    content_band: Sequence[float] | None = None,
+) -> dict[int, StillPhotoDwell]:
     """Per-heart-ordinal dwell evidence for the candidates a no-input dwell could observe.
 
     Pure, so the live driver and an offline replay of persisted dwell PNGs derive the SAME rect
@@ -1223,10 +1330,18 @@ def still_photo_dwell_evidence(index: ItemIndex, frames: Sequence[bytes],
     sequence = [frames[anchor_position], *dwell_frames]
     frame_height = None if content_band is None else decoded_frame_height(sequence[0])
     digests = tuple(hashlib.sha256(frame).hexdigest() for frame in sequence)
-    return {heart_ordinal: dwell_evidence_for_rect(
-                rect, sequence, digests=digests, dwell_span_s=dwell_span_s,
-                mute_screen=mute_screen, frame_height=frame_height, content_band=content_band)
-            for heart_ordinal, rect in dwell_card_rects(index, anchor_position).items()}
+    return {
+        heart_ordinal: dwell_evidence_for_rect(
+            rect,
+            sequence,
+            digests=digests,
+            dwell_span_s=dwell_span_s,
+            mute_screen=mute_screen,
+            frame_height=frame_height,
+            content_band=content_band,
+        )
+        for heart_ordinal, rect in dwell_card_rects(index, anchor_position).items()
+    }
 
 
 @dataclass(frozen=True)
@@ -1265,8 +1380,9 @@ def decoded_frame_height(frame: bytes) -> int | None:
     return None if image is None else int(image.shape[0])
 
 
-def dwell_card_rects(index: ItemIndex,
-                     anchor_position: int) -> dict[int, tuple[int, int, int, int]]:
+def dwell_card_rects(
+    index: ItemIndex, anchor_position: int
+) -> dict[int, tuple[int, int, int, int]]:
     """Per heart ordinal, the card rect a dwell can observe in the anchor frame.
 
     Only cards with exactly ONE complete sighting in that frame qualify, for the reason
@@ -1279,7 +1395,9 @@ def dwell_card_rects(index: ItemIndex,
     for block in index.selectable:
         if block.heart_ordinal is None:
             continue
-        anchored = [obs for obs in block.croppable if obs.frame_index == anchor_position]
+        anchored = [
+            obs for obs in block.croppable if obs.frame_index == anchor_position
+        ]
         if len(anchored) != 1:
             continue
         obs = anchored[0]
@@ -1287,12 +1405,15 @@ def dwell_card_rects(index: ItemIndex,
     return rects
 
 
-def still_photo_reattach_legs(sequence: Sequence, rect: tuple[int, int, int, int], *,
-                              span_s: float | None,
-                              mute_screen: Callable[[bytes, tuple[int, int, int, int]], bool]
-                              | None = None,
-                              frame_height: int | None = None,
-                              content_band: Sequence[float] | None = None) -> dict:
+def still_photo_reattach_legs(
+    sequence: Sequence,
+    rect: tuple[int, int, int, int],
+    *,
+    span_s: float | None,
+    mute_screen: Callable[[bytes, tuple[int, int, int, int]], bool] | None = None,
+    frame_height: int | None = None,
+    content_band: Sequence[float] | None = None,
+) -> dict:
     """The seven `reattach_*` fields for ONE card, measured over the probe's own frames.
 
     Returned as a mapping keyed by the dataclass field names so the driver, the calibration
@@ -1307,37 +1428,52 @@ def still_photo_reattach_legs(sequence: Sequence, rect: tuple[int, int, int, int
     motion.
     """
     frames = list(sequence)
-    absent = {"reattach_probe_ran": False, "reattach_dwell_frame_sha256s": (),
-              "reattach_dwell_exact": None, "reattach_dwell_span_s": None,
-              "reattach_mute_screens_complete": None, "reattach_centered": None,
-              "reattach_center_offset_frac": None}
+    absent = {
+        "reattach_probe_ran": False,
+        "reattach_dwell_frame_sha256s": (),
+        "reattach_dwell_exact": None,
+        "reattach_dwell_span_s": None,
+        "reattach_mute_screens_complete": None,
+        "reattach_centered": None,
+        "reattach_center_offset_frac": None,
+    }
     if len(frames) < 2 or rect[1] < 0 or (frame_height and rect[3] > int(frame_height)):
         return absent
     offset = None
     if frame_height and content_band is not None:
-        offset = card_center_offset_frac(rect, frame_height=int(frame_height),
-                                         content_band=content_band)
+        offset = card_center_offset_frac(
+            rect, frame_height=int(frame_height), content_band=content_band
+        )
     return {
         "reattach_probe_ran": True,
         "reattach_dwell_frame_sha256s": tuple(
-            hashlib.sha256(bytes(frame)).hexdigest() for frame in frames),
+            hashlib.sha256(bytes(frame)).hexdigest() for frame in frames
+        ),
         "reattach_dwell_exact": dwell_exact_over_rect(frames, rect),
         "reattach_dwell_span_s": span_s,
         "reattach_mute_screens_complete": (
-            None if mute_screen is None
-            else all(bool(mute_screen(frame, rect)) for frame in frames)),
-        "reattach_centered": (None if offset is None
-                              else abs(offset) <= STILL_PHOTO_AUTOPLAY_CENTER_BAND_FRAC),
+            None
+            if mute_screen is None
+            else all(bool(mute_screen(frame, rect)) for frame in frames)
+        ),
+        "reattach_centered": (
+            None
+            if offset is None
+            else abs(offset) <= STILL_PHOTO_AUTOPLAY_CENTER_BAND_FRAC
+        ),
         "reattach_center_offset_frac": None if offset is None else float(offset),
     }
 
 
-def still_photo_reattach_evidence(evidence: dict[int, StillPhotoDwell], index: ItemIndex, *,
-                                  frame_count: int, probe: ReattachProbe,
-                                  mute_screen: Callable[[bytes, tuple[int, int, int, int]], bool]
-                                  | None = None,
-                                  content_band: Sequence[float] | None = None,
-                                  ) -> dict[int, StillPhotoDwell]:
+def still_photo_reattach_evidence(
+    evidence: dict[int, StillPhotoDwell],
+    index: ItemIndex,
+    *,
+    frame_count: int,
+    probe: ReattachProbe,
+    mute_screen: Callable[[bytes, tuple[int, int, int, int]], bool] | None = None,
+    content_band: Sequence[float] | None = None,
+) -> dict[int, StillPhotoDwell]:
     """Fold one probe's second burst into the first burst's evidence, per card.
 
     Pure, like its first-burst twin, so the live driver and an offline replay of persisted probe
@@ -1355,11 +1491,23 @@ def still_photo_reattach_evidence(evidence: dict[int, StillPhotoDwell], index: I
         if rect is None:
             folded[heart_ordinal] = dwell
             continue
-        shifted = (rect[0], rect[1] - probe.page_shift_px,
-                   rect[2], rect[3] - probe.page_shift_px)
-        folded[heart_ordinal] = replace(dwell, **still_photo_reattach_legs(
-            sequence, shifted, span_s=probe.span_s, mute_screen=mute_screen,
-            frame_height=frame_height, content_band=content_band))
+        shifted = (
+            rect[0],
+            rect[1] - probe.page_shift_px,
+            rect[2],
+            rect[3] - probe.page_shift_px,
+        )
+        folded[heart_ordinal] = replace(
+            dwell,
+            **still_photo_reattach_legs(
+                sequence,
+                shifted,
+                span_s=probe.span_s,
+                mute_screen=mute_screen,
+                frame_height=frame_height,
+                content_band=content_band,
+            ),
+        )
     return folded
 
 
@@ -1403,8 +1551,10 @@ def unnumber_without_still_photo_evidence(evidence: StillPhotoEvidence) -> str |
         # Fail closed on a caller that has not been ported: a bare drift number is not evidence,
         # and guessing which argument it was would resurrect exactly the "drift proves still"
         # reading this object exists to kill.
-        return (f"{EXCLUSION_NON_PHOTO}: no independent re-observation established that this "
-                "photographic-looking card is stable; an auto-hidden video cannot be ruled out")
+        return (
+            f"{EXCLUSION_NON_PHOTO}: no independent re-observation established that this "
+            "photographic-looking card is stable; an auto-hidden video cannot be ruled out"
+        )
     signature_drift = evidence.signature_drift
     # AN UNMEASURABLE DRIFT FALLS THROUGH; A MEASURED MOVING CARD STILL REFUSES.  This rung used
     # to refuse whenever `signature_drift`/`drift_frames` were absent, and that was asking a
@@ -1436,14 +1586,21 @@ def unnumber_without_still_photo_evidence(evidence: StillPhotoEvidence) -> str |
     # drift and forgets the frames behind it, this is the rung that stops the claim instead of
     # waving it through as ignorance.
     if (signature_drift is not None) != bool(evidence.drift_frames):
-        return (f"{EXCLUSION_NON_PHOTO}: no independent re-observation established that this "
-                "photographic-looking card is stable; an auto-hidden video cannot be ruled out")
+        return (
+            f"{EXCLUSION_NON_PHOTO}: no independent re-observation established that this "
+            "photographic-looking card is stable; an auto-hidden video cannot be ruled out"
+        )
     if signature_drift is not None:
-        if (isinstance(signature_drift, bool)
-                or not isinstance(signature_drift, (int, float))
-                or not math.isfinite(signature_drift) or signature_drift < 0):
-            return (f"{EXCLUSION_NON_PHOTO}: no independent re-observation established that this "
-                    "photographic-looking card is stable; an auto-hidden video cannot be ruled out")
+        if (
+            isinstance(signature_drift, bool)
+            or not isinstance(signature_drift, (int, float))
+            or not math.isfinite(signature_drift)
+            or signature_drift < 0
+        ):
+            return (
+                f"{EXCLUSION_NON_PHOTO}: no independent re-observation established that this "
+                "photographic-looking card is stable; an auto-hidden video cannot be ruled out"
+            )
         # THE CEILING IS PER REGIME, because the two regimes measure different things (see
         # `_max_signature_drift_for` and the constants it reads). A parked drift is motion in
         # the media and is judged at 0.24; a read-scroll drift is dominated by the resampling
@@ -1452,12 +1609,16 @@ def unnumber_without_still_photo_evidence(evidence: StillPhotoEvidence) -> str |
         # regime takes the parked number, so nothing gets the wider allowance by omission.
         ceiling, regime = _max_signature_drift_for(evidence.drift_regime)
         if signature_drift > ceiling:
-            return (f"{EXCLUSION_NON_PHOTO}: re-observation drift {signature_drift:.6g} exceeds "
-                    f"the measured static-photo ceiling {ceiling:.6g} for {regime} "
-                    "re-observation; animated or video media is not targetable")
+            return (
+                f"{EXCLUSION_NON_PHOTO}: re-observation drift {signature_drift:.6g} exceeds "
+                f"the measured static-photo ceiling {ceiling:.6g} for {regime} "
+                "re-observation; animated or video media is not targetable"
+            )
     policy_blocker = hinge_targeting_unavailable_reason()
     if policy_blocker is not None:
-        return f"{EXCLUSION_NON_PHOTO}: {policy_blocker}; numbered targeting is disabled"
+        return (
+            f"{EXCLUSION_NON_PHOTO}: {policy_blocker}; numbered targeting is disabled"
+        )
     # `is not True` rather than a truth test, here and below: an evidence object assembled with
     # a truthy placeholder must not be able to claim an observation nothing made. The digest
     # count is part of the same claim -- "byte-identical across every consecutive pair" is
@@ -1479,30 +1640,43 @@ def unnumber_without_still_photo_evidence(evidence: StillPhotoEvidence) -> str |
     if evidence.dwell_exact is None and not evidence.dwell_frame_sha256s:
         return EXCLUSION_NEVER_DWELLED
     if evidence.dwell_exact is not True or len(evidence.dwell_frame_sha256s) < 2:
-        return (f"{EXCLUSION_NON_PHOTO}: no un-interacted dwell proved this card's rect "
-                "byte-identical across consecutive captures; a video that emitted a single "
-                "frame, or a dwell that never ran, cannot be excluded")
+        return (
+            f"{EXCLUSION_NON_PHOTO}: no un-interacted dwell proved this card's rect "
+            "byte-identical across consecutive captures; a video that emitted a single "
+            "frame, or a dwell that never ran, cannot be excluded"
+        )
     if evidence.centered is not True:
         # Hinge autoplays a video only while the card is at or near the centre of the screen, so
         # an off-centre card that never moved has not been shown to be a photograph -- it has
         # been shown to be something nobody asked to play. Placed immediately after the
         # byte-exactness rung because it is that rung's precondition, not an extra opinion.
-        return (f"{EXCLUSION_NON_PHOTO}: the un-interacted dwell did not hold this card inside "
-                "Hinge's autoplay trigger zone (card centre offset "
-                f"{'unmeasured' if evidence.center_offset_frac is None else format(evidence.center_offset_frac, '.3f')}"
-                f", limit {STILL_PHOTO_AUTOPLAY_CENTER_BAND_FRAC:.3f}), so its stillness is "
-                "equally consistent with a video that was never near enough to the centre to "
-                "start playing")
+        return (
+            f"{EXCLUSION_NON_PHOTO}: the un-interacted dwell did not hold this card inside "
+            "Hinge's autoplay trigger zone (card centre offset "
+            f"{'unmeasured' if evidence.center_offset_frac is None else format(evidence.center_offset_frac, '.3f')}"
+            f", limit {STILL_PHOTO_AUTOPLAY_CENTER_BAND_FRAC:.3f}), so its stillness is "
+            "equally consistent with a video that was never near enough to the centre to "
+            "start playing"
+        )
     if evidence.mute_screens_complete is not True:
-        return (f"{EXCLUSION_NON_PHOTO}: mute-control screening did not complete over a full ROI "
-                "on every dwell frame, so a control that rendered during the dwell could have "
-                "gone unseen")
+        return (
+            f"{EXCLUSION_NON_PHOTO}: mute-control screening did not complete over a full ROI "
+            "on every dwell frame, so a control that rendered during the dwell could have "
+            "gone unseen"
+        )
     span = evidence.dwell_span_s
-    if (span is None or isinstance(span, bool) or not isinstance(span, (int, float))
-            or not math.isfinite(span) or span <= 0):
-        return (f"{EXCLUSION_NON_PHOTO}: the dwell window is missing or non-positive "
-                f"({span!r}), so the byte-exact run has no measured duration to hold against "
-                "the bound that licenses accepting it")
+    if (
+        span is None
+        or isinstance(span, bool)
+        or not isinstance(span, (int, float))
+        or not math.isfinite(span)
+        or span <= 0
+    ):
+        return (
+            f"{EXCLUSION_NON_PHOTO}: the dwell window is missing or non-positive "
+            f"({span!r}), so the byte-exact run has no measured duration to hold against "
+            "the bound that licenses accepting it"
+        )
     # (g) THE RE-ATTACH PROBE. Last because it is the most expensive observation and the newest:
     # everything above answers from frames the read already had, while this rung requires two
     # real gestures and a second burst. It exists for the one residual the rungs above cannot
@@ -1514,29 +1688,43 @@ def unnumber_without_still_photo_evidence(evidence: StillPhotoEvidence) -> str |
     # is a fresh chance for a non-playing video to say so.
     if evidence.reattach_probe_ran is not True:
         return EXCLUSION_REATTACH_PROBE_MISSING
-    if (evidence.reattach_dwell_exact is not True
-            or len(evidence.reattach_dwell_frame_sha256s) < 2):
-        return (f"{EXCLUSION_NON_PHOTO}: the second dwell burst, taken after this card "
-                "re-entered Hinge's autoplay band, did not prove its rect byte-identical "
-                "across consecutive captures; media that starts on re-attach is video, and a "
-                "second burst that never ran has not retired the stalled-video residual")
+    if (
+        evidence.reattach_dwell_exact is not True
+        or len(evidence.reattach_dwell_frame_sha256s) < 2
+    ):
+        return (
+            f"{EXCLUSION_NON_PHOTO}: the second dwell burst, taken after this card "
+            "re-entered Hinge's autoplay band, did not prove its rect byte-identical "
+            "across consecutive captures; media that starts on re-attach is video, and a "
+            "second burst that never ran has not retired the stalled-video residual"
+        )
     if evidence.reattach_centered is not True:
-        return (f"{EXCLUSION_NON_PHOTO}: the re-attach probe did not put this card back inside "
-                "Hinge's autoplay trigger zone (card centre offset "
-                f"{'unmeasured' if evidence.reattach_center_offset_frac is None else format(evidence.reattach_center_offset_frac, '.3f')}"
-                f", limit {STILL_PHOTO_AUTOPLAY_CENTER_BAND_FRAC:.3f}), so the second burst "
-                "never asked the media to restart and cannot exclude a stalled video")
+        return (
+            f"{EXCLUSION_NON_PHOTO}: the re-attach probe did not put this card back inside "
+            "Hinge's autoplay trigger zone (card centre offset "
+            f"{'unmeasured' if evidence.reattach_center_offset_frac is None else format(evidence.reattach_center_offset_frac, '.3f')}"
+            f", limit {STILL_PHOTO_AUTOPLAY_CENTER_BAND_FRAC:.3f}), so the second burst "
+            "never asked the media to restart and cannot exclude a stalled video"
+        )
     if evidence.reattach_mute_screens_complete is not True:
-        return (f"{EXCLUSION_NON_PHOTO}: mute-control screening did not complete over a full ROI "
-                "on every re-attach burst frame, so a control Hinge redrew when the card came "
-                "back into the autoplay band could have gone unseen")
+        return (
+            f"{EXCLUSION_NON_PHOTO}: mute-control screening did not complete over a full ROI "
+            "on every re-attach burst frame, so a control Hinge redrew when the card came "
+            "back into the autoplay band could have gone unseen"
+        )
     reattach_span = evidence.reattach_dwell_span_s
-    if (reattach_span is None or isinstance(reattach_span, bool)
-            or not isinstance(reattach_span, (int, float))
-            or not math.isfinite(reattach_span) or reattach_span <= 0):
-        return (f"{EXCLUSION_NON_PHOTO}: the re-attach dwell window is missing or non-positive "
-                f"({reattach_span!r}), so the second byte-exact run has no measured duration to "
-                "hold against the bound that licenses accepting it")
+    if (
+        reattach_span is None
+        or isinstance(reattach_span, bool)
+        or not isinstance(reattach_span, (int, float))
+        or not math.isfinite(reattach_span)
+        or reattach_span <= 0
+    ):
+        return (
+            f"{EXCLUSION_NON_PHOTO}: the re-attach dwell window is missing or non-positive "
+            f"({reattach_span!r}), so the second byte-exact run has no measured duration to "
+            "hold against the bound that licenses accepting it"
+        )
     return None
 
 
@@ -1581,7 +1769,8 @@ def _over_tall_failures(index: ItemIndex, band_height: int) -> list[str]:
             "— doc 5.10 measured the tallest card end to end at 1114px against an 1800px band "
             "and single-frame crops were sized on that; stitching two frames is deliberately not "
             "implemented, because the seam would go to the model and into the post-tap "
-            "verification reference")
+            "verification reference"
+        )
     return failures
 
 
@@ -1616,8 +1805,17 @@ def _choose_sighting(block: IndexedBlock, index: ItemIndex):
     return best
 
 
-def _crop_image(frame_gray, frame_bgr, obs, block: IndexedBlock, *, image_format: str,
-                signature_grid: tuple[int, int], cv2, np) -> tuple[bytes, CropSignature]:
+def _crop_image(
+    frame_gray,
+    frame_bgr,
+    obs,
+    block: IndexedBlock,
+    *,
+    image_format: str,
+    signature_grid: tuple[int, int],
+    cv2,
+    np,
+) -> tuple[bytes, CropSignature]:
     """The encoded crop, its verification reference and its signature, from one frame and one
     sighting.
 
@@ -1641,18 +1839,23 @@ def _crop_image(frame_gray, frame_bgr, obs, block: IndexedBlock, *, image_format
     if not ok:
         raise ItemCropError(
             f"cv2 could not encode the {x1 - x0}x{y1 - y0} crop of frame {obs.frame_index} as "
-            f"'{image_format}'")
+            f"'{image_format}'"
+        )
     grey_ok, grey_buf = cv2.imencode(".png", frame_gray[y0:y1, x0:x1])
     if not grey_ok:
         raise ItemCropError(
             f"cv2 could not encode the {x1 - x0}x{y1 - y0} greyscale verification reference for "
-            f"the crop of frame {obs.frame_index} as '.png'")
+            f"the crop of frame {obs.frame_index} as '.png'"
+        )
     signature = _signature_from_gray(
-        frame_gray[y0:y1, x0:x1], grid=signature_grid, cv2=cv2, np=np)
+        frame_gray[y0:y1, x0:x1], grid=signature_grid, cv2=cv2, np=np
+    )
     return buf.tobytes(), grey_buf.tobytes(), signature
 
 
-def _check_frames_are_the_indexed_frames(frames: Sequence[bytes], index: ItemIndex) -> None:
+def _check_frames_are_the_indexed_frames(
+    frames: Sequence[bytes], index: ItemIndex
+) -> None:
     """Refuse a frame list that is not, byte for byte, the one the index was measured on.
 
     THIS IS THE GUARD, and it is exact rather than nearly useless. It replaces a decoded-size
@@ -1677,12 +1880,21 @@ def _check_frames_are_the_indexed_frames(frames: Sequence[bytes], index: ItemInd
                 f"frame {i} is not the frame the index was built from (sha256 {digest[:12]} "
                 f"against {seg.frame_digest[:12]}) — the index's page coordinates only mean "
                 "anything against the exact capture they were measured on, and cropping another "
-                "one at them would produce well-formed crops of the wrong profile")
+                "one at them would produce well-formed crops of the wrong profile"
+            )
 
 
-def _signature_drift(obs, block: IndexedBlock, index: ItemIndex, reference: CropSignature, *,
-                     decode, signature_grid: tuple[int, int], cv2, np,
-                     ) -> tuple[float | None, tuple[int, ...]]:
+def _signature_drift(
+    obs,
+    block: IndexedBlock,
+    index: ItemIndex,
+    reference: CropSignature,
+    *,
+    decode,
+    signature_grid: tuple[int, int],
+    cv2,
+    np,
+) -> tuple[float | None, tuple[int, ...]]:
     """How much this crop's OWN pixels move when the same page rows are looked at again.
 
     THE MEASUREMENT DOC 5.6 CANNOT BE SET WITHOUT, and the one this module previously got wrong.
@@ -1729,8 +1941,11 @@ def _signature_drift(obs, block: IndexedBlock, index: ItemIndex, reference: Crop
         if y0 < band0 or y1 > band1:
             continue
         other = _signature_from_gray(
-            decode(i, colour=False)[y0:y1, block.x0:block.x1],
-            grid=signature_grid, cv2=cv2, np=np)
+            decode(i, colour=False)[y0:y1, block.x0 : block.x1],
+            grid=signature_grid,
+            cv2=cv2,
+            np=np,
+        )
         distance = reference.distance(other)
         worst = distance if worst is None else max(worst, distance)
         sampled.append(i)
@@ -1756,25 +1971,30 @@ def _decoder(frames: Sequence[bytes], cv2, np):
         if key not in cache:
             img = cv2.imdecode(
                 np.frombuffer(frames[frame_index], dtype=np.uint8),
-                cv2.IMREAD_COLOR if colour else cv2.IMREAD_GRAYSCALE)
+                cv2.IMREAD_COLOR if colour else cv2.IMREAD_GRAYSCALE,
+            )
             if img is None:
                 raise ItemCropError(
                     f"frame {frame_index} did not decode as an image "
-                    f"({len(frames[frame_index])} bytes)")
+                    f"({len(frames[frame_index])} bytes)"
+                )
             cache[key] = img
         return cache[key]
 
     return _decode
 
 
-def build_item_payload(frames: Sequence[bytes], index: ItemIndex, *,
-                       exclude: Callable[[IndexedBlock], str | None] | None = None,
-                       unnumber: Callable[[bytes], str | None] | None = None,
-                       unnumber_without_evidence: Callable[
-                           [StillPhotoEvidence], str | None] | None = None,
-                       still_photo_dwell: dict[int, StillPhotoDwell] | None = None,
-                       image_format: str = _CROP_IMAGE_FORMAT,
-                       signature_grid: tuple[int, int] = _SIGNATURE_GRID) -> ItemPayload:
+def build_item_payload(
+    frames: Sequence[bytes],
+    index: ItemIndex,
+    *,
+    exclude: Callable[[IndexedBlock], str | None] | None = None,
+    unnumber: Callable[[bytes], str | None] | None = None,
+    unnumber_without_evidence: Callable[[StillPhotoEvidence], str | None] | None = None,
+    still_photo_dwell: dict[int, StillPhotoDwell] | None = None,
+    image_format: str = _CROP_IMAGE_FORMAT,
+    signature_grid: tuple[int, int] = _SIGNATURE_GRID,
+) -> ItemPayload:
     """Turn an item index and the frames it was built from into the model's numbered image list.
 
     `frames` MUST be the very sequence `index` was built from, same order and same length — the
@@ -1813,12 +2033,14 @@ def build_item_payload(frames: Sequence[bytes], index: ItemIndex, *,
         raise ItemCropError(
             "refusing to crop an unusable item index — its numbering is not trustworthy, and "
             "doc 5.3 treats a missing table as a hard stop rather than a reason to fall back: "
-            + "; ".join(index.failures))
+            + "; ".join(index.failures)
+        )
     if len(frames) != len(index.frames):
         raise ItemCropError(
             f"{len(frames)} frame(s) given for an index built from {len(index.frames)} — the "
             "index's page coordinates only mean anything against the capture they were measured "
-            "on")
+            "on"
+        )
     _check_frames_are_the_indexed_frames(frames, index)
     if not frames:
         # `build_item_index` refuses an empty capture, so this only catches a hand-assembled
@@ -1826,7 +2048,8 @@ def build_item_payload(frames: Sequence[bytes], index: ItemIndex, *,
         # every measurement below is taken against is read off frame 0.
         raise ItemCropError(
             "no frames to crop from: an empty capture is a capture failure, and an empty item "
-            "list for it would read as 'this profile has no items'")
+            "list for it would read as 'this profile has no items'"
+        )
 
     cv2, np = _require_vision()
     decode = _decoder(frames, cv2, np)
@@ -1836,17 +2059,30 @@ def build_item_payload(frames: Sequence[bytes], index: ItemIndex, *,
     crops: list[ItemCrop] = []
     number = 0
     for block in index.blocks:
-        common = dict(heart_ordinal=block.heart_ordinal, page_y0=block.page_y0,
-                      page_y1=block.page_y1, x0=block.x0, x1=block.x1,
-                      frame_index=None, frame_y0=None, frame_y1=None,
-                      image=None, verify_image=None, signature=None, signature_drift=None,
-                      drift_frames=(), nearest_item_distance=None)
+        common = dict(
+            heart_ordinal=block.heart_ordinal,
+            page_y0=block.page_y0,
+            page_y1=block.page_y1,
+            x0=block.x0,
+            x1=block.x1,
+            frame_index=None,
+            frame_y0=None,
+            frame_y1=None,
+            image=None,
+            verify_image=None,
+            signature=None,
+            signature_drift=None,
+            drift_frames=(),
+            nearest_item_distance=None,
+        )
 
         # Hinge's scroll-top header, already outside both index spaces (item_index.py classes it
         # only at a caller-confirmed scroll-top). Recorded so the payload accounts for every
         # block, never cropped.
         if block.kind == ITEM_LEADING_CHROME:
-            crops.append(ItemCrop(kind=CROP_CHROME, number=None, reason=block.reason, **common))
+            crops.append(
+                ItemCrop(kind=CROP_CHROME, number=None, reason=block.reason, **common)
+            )
             continue
 
         # Policy first, before the class dispatch, because doc 2.4's block may land in either
@@ -1855,18 +2091,26 @@ def build_item_payload(frames: Sequence[bytes], index: ItemIndex, *,
         # not be offered. Both are dropped here, and neither renumbers the heart ordinals.
         reason = exclude(block) if exclude is not None else None
         if reason is not None:
-            crops.append(ItemCrop(kind=CROP_EXCLUDED, number=None, reason=reason, **common))
+            crops.append(
+                ItemCrop(kind=CROP_EXCLUDED, number=None, reason=reason, **common)
+            )
             continue
 
         if block.kind == ITEM_PARTIAL:
             # Rule one: a crop is never a fragment. The block's own extent is a lower bound (its
             # sightings' hull), so there is no honest image to make here — only a half card that
             # would be sent to the model and stored as the verification reference.
-            crops.append(ItemCrop(
-                kind=CROP_UNCROPPABLE, number=None,
-                reason=("no frame observed both of this block's edges, so any crop of it would "
-                        "be a fragment of unknown extent; " + block.reason),
-                **common))
+            crops.append(
+                ItemCrop(
+                    kind=CROP_UNCROPPABLE,
+                    number=None,
+                    reason=(
+                        "no frame observed both of this block's edges, so any crop of it would "
+                        "be a fragment of unknown extent; " + block.reason
+                    ),
+                    **common,
+                )
+            )
             continue
 
         if block.kind not in (ITEM_SELECTABLE, ITEM_CONTEXT):
@@ -1878,7 +2122,8 @@ def build_item_payload(frames: Sequence[bytes], index: ItemIndex, *,
             # block we are about to refuse.
             raise ItemCropError(
                 f"the block at page rows {block.page_y0}..{block.page_y1} has page class "
-                f"'{block.kind}', which this module has no crop policy for")
+                f"'{block.kind}', which this module has no crop policy for"
+            )
 
         obs = _choose_sighting(block, index)
         if obs is None:
@@ -1888,29 +2133,57 @@ def build_item_payload(frames: Sequence[bytes], index: ItemIndex, *,
             failures.append(
                 f"the block at page rows {block.page_y0}..{block.page_y1} is classed "
                 f"'{block.kind}', which means some frame bounded it end to end, yet it offers no "
-                "croppable sighting")
-            crops.append(ItemCrop(
-                kind=CROP_UNCROPPABLE, number=None,
-                reason="classed as resolved but carries no complete sighting to crop from",
-                **common))
+                "croppable sighting"
+            )
+            crops.append(
+                ItemCrop(
+                    kind=CROP_UNCROPPABLE,
+                    number=None,
+                    reason="classed as resolved but carries no complete sighting to crop from",
+                    **common,
+                )
+            )
             continue
 
         image, verify_image, signature = _crop_image(
-            decode(obs.frame_index, colour=False), decode(obs.frame_index, colour=True),
-            obs, block, image_format=image_format, signature_grid=signature_grid,
-            cv2=cv2, np=np)
+            decode(obs.frame_index, colour=False),
+            decode(obs.frame_index, colour=True),
+            obs,
+            block,
+            image_format=image_format,
+            signature_grid=signature_grid,
+            cv2=cv2,
+            np=np,
+        )
         drift, drift_frames = _signature_drift(
-            obs, block, index, signature, decode=decode, signature_grid=signature_grid,
-            cv2=cv2, np=np)
-        common.update(page_y0=obs.page_y0, page_y1=obs.page_y1, frame_index=obs.frame_index,
-                      frame_y0=obs.frame_y0, frame_y1=obs.frame_y1,
-                      image=image, verify_image=verify_image, signature=signature,
-                      signature_drift=drift, drift_frames=drift_frames)
+            obs,
+            block,
+            index,
+            signature,
+            decode=decode,
+            signature_grid=signature_grid,
+            cv2=cv2,
+            np=np,
+        )
+        common.update(
+            page_y0=obs.page_y0,
+            page_y1=obs.page_y1,
+            frame_index=obs.frame_index,
+            frame_y0=obs.frame_y0,
+            frame_y1=obs.frame_y1,
+            image=image,
+            verify_image=verify_image,
+            signature=signature,
+            signature_drift=drift,
+            drift_frames=drift_frames,
+        )
 
         if block.kind == ITEM_SELECTABLE and unnumber is not None:
             reason = unnumber(image)
             if reason is not None:
-                crops.append(ItemCrop(kind=CROP_CONTEXT, number=None, reason=reason, **common))
+                crops.append(
+                    ItemCrop(kind=CROP_CONTEXT, number=None, reason=reason, **common)
+                )
                 continue
         if block.kind == ITEM_SELECTABLE and unnumber_without_evidence is not None:
             # The dwell is looked up by heart ordinal because that is the one identity a block
@@ -1921,28 +2194,46 @@ def build_item_payload(frames: Sequence[bytes], index: ItemIndex, *,
             # frames, which were taken at other scroll positions, so the number it produced is a
             # resampling difference and has to be judged against the ceiling measured on that.
             # Saying so here is what keeps the parked ceiling parked for everyone else.
-            reason = unnumber_without_evidence(still_photo_evidence_from_drift(
-                drift, drift_frames,
-                (still_photo_dwell or {}).get(block.heart_ordinal),
-                drift_regime=DRIFT_REGIME_READ_SCROLL))
+            reason = unnumber_without_evidence(
+                still_photo_evidence_from_drift(
+                    drift,
+                    drift_frames,
+                    (still_photo_dwell or {}).get(block.heart_ordinal),
+                    drift_regime=DRIFT_REGIME_READ_SCROLL,
+                )
+            )
             if reason is not None:
-                crops.append(ItemCrop(kind=CROP_CONTEXT, number=None, reason=reason, **common))
+                crops.append(
+                    ItemCrop(kind=CROP_CONTEXT, number=None, reason=reason, **common)
+                )
                 continue
 
         if block.kind == ITEM_SELECTABLE:
             number += 1
-            crops.append(ItemCrop(
-                kind=CROP_ITEM, number=number,
-                reason=(f"item {number} (heart {block.heart_ordinal} on the page), cropped from "
-                        f"frame {obs.frame_index} rows {obs.frame_y0}..{obs.frame_y1}"),
-                **common))
+            crops.append(
+                ItemCrop(
+                    kind=CROP_ITEM,
+                    number=number,
+                    reason=(
+                        f"item {number} (heart {block.heart_ordinal} on the page), cropped from "
+                        f"frame {obs.frame_index} rows {obs.frame_y0}..{obs.frame_y1}"
+                    ),
+                    **common,
+                )
+            )
         else:
-            crops.append(ItemCrop(
-                kind=CROP_CONTEXT, number=None,
-                reason=(f"context, cropped from frame {obs.frame_index} rows {obs.frame_y0}.."
+            crops.append(
+                ItemCrop(
+                    kind=CROP_CONTEXT,
+                    number=None,
+                    reason=(
+                        f"context, cropped from frame {obs.frame_index} rows {obs.frame_y0}.."
                         f"{obs.frame_y1}: sent unnumbered, so it can be read and referenced but "
-                        "never chosen"),
-                **common))
+                        "never chosen"
+                    ),
+                    **common,
+                )
+            )
 
     if not number:
         # Rule four. An empty numbered list is not a request the model can answer, and shipping
@@ -1952,12 +2243,17 @@ def build_item_payload(frames: Sequence[bytes], index: ItemIndex, *,
         failures.append(
             f"{NO_NUMBERED_ITEMS_REASON}, from "
             f"{len(index.blocks)} indexed block(s) — there is nothing for the model to choose "
-            "between")
+            "between"
+        )
 
     _fill_nearest_item_distance(crops)
     return ItemPayload(
-        crops=tuple(crops), truncated=index.truncated, at_scroll_top=index.at_scroll_top,
-        signature_grid=signature_grid, failures=tuple(failures))
+        crops=tuple(crops),
+        truncated=index.truncated,
+        at_scroll_top=index.at_scroll_top,
+        signature_grid=signature_grid,
+        failures=tuple(failures),
+    )
 
 
 def _fill_nearest_item_distance(crops: list[ItemCrop]) -> None:
@@ -1976,8 +2272,11 @@ def _fill_nearest_item_distance(crops: list[ItemCrop]) -> None:
     # Positions, not the records themselves: `ItemCrop` is a frozen dataclass and compares by
     # value, so looking one up by identity in the list would silently find the wrong entry if two
     # crops ever came out equal.
-    items = [(i, c) for i, c in enumerate(crops)
-             if c.kind == CROP_ITEM and c.signature is not None]
+    items = [
+        (i, c)
+        for i, c in enumerate(crops)
+        if c.kind == CROP_ITEM and c.signature is not None
+    ]
     nearest: dict[int, float] = {}
     for (i, a), (j, b) in _pairs(items):
         distance = a.signature.distance(b.signature)

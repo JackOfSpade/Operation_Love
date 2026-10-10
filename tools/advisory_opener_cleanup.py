@@ -1,4 +1,5 @@
 """Dry-run first cleanup for advisory opener rows that predate decision gating."""
+
 from __future__ import annotations
 
 import argparse
@@ -11,7 +12,11 @@ from pathlib import Path
 from operation_love import config as cfg_mod
 from operation_love.private_files import atomic_write_private_text, ensure_private_dir
 from operation_love.ranker import make_store
-from operation_love.ranker.opener_retractions import make_plan, tombstone_rows, verify_plan
+from operation_love.ranker.opener_retractions import (
+    make_plan,
+    tombstone_rows,
+    verify_plan,
+)
 from operation_love.ranker.retractions import RetractionRefused
 
 CONFIRM_PREFIX = "I_CONFIRM_APPEND_ONLY_ADVISORY_OPENER_CLEANUP:"
@@ -19,7 +24,8 @@ _LEGACY_712_RUN = "712bead758d5"
 _LEGACY_712_ACTIONS = "data/hinge_debug/run_20260810_173631/actions.jsonl"
 _LEGACY_712_SHA256 = "af1d71fab2e4e0c182c2333869fa467097e473bf6c8bf36d24c0028ecbefc2f3"
 _LEGACY_712_OPENER = {
-    "created_at": "2026-08-10T21:40:52.136804+00:00", "model": "gemini-3.6-flash",
+    "created_at": "2026-08-10T21:40:52.136804+00:00",
+    "model": "gemini-3.6-flash",
     "opener_fingerprint": "04839c778f19c74cd1158afec4fc76a32ae41d34abbe8ffb4bb91c3161d2180b",
 }
 
@@ -37,9 +43,13 @@ def _debug_evidence(actions: Path, *, run_id: str, app: str) -> tuple[str, dict]
         relative = lexical.relative_to(repo)
         resolved.relative_to(repo)
     except ValueError as exc:
-        raise RetractionRefused("debug actions must be a repository-local artifact") from exc
+        raise RetractionRefused(
+            "debug actions must be a repository-local artifact"
+        ) from exc
     if lexical != resolved:
-        raise RetractionRefused("debug actions must be a non-symlinked repository-local artifact")
+        raise RetractionRefused(
+            "debug actions must be a non-symlinked repository-local artifact"
+        )
     raw = lexical.read_bytes()
     try:
         rows = [json.loads(line) for line in raw.splitlines() if line.strip()]
@@ -50,13 +60,21 @@ def _debug_evidence(actions: Path, *, run_id: str, app: str) -> tuple[str, dict]
     legacy = run_id == _LEGACY_712_RUN and app == "hinge"
     if legacy:
         if relative_text != _LEGACY_712_ACTIONS or digest != _LEGACY_712_SHA256:
-            raise RetractionRefused("legacy 712 evidence must be the exact approved path and SHA-256")
+            raise RetractionRefused(
+                "legacy 712 evidence must be the exact approved path and SHA-256"
+            )
     else:
         binding = rows[0] if rows else None
-        if (lexical.parent.name != run_id or not isinstance(binding, dict)
-                or binding.get("action") != "observe_release_run_binding"
-                or binding.get("run_id") != run_id or binding.get("app") != app):
-            raise RetractionRefused("debug actions lacks required first run/app binding")
+        if (
+            lexical.parent.name != run_id
+            or not isinstance(binding, dict)
+            or binding.get("action") != "observe_release_run_binding"
+            or binding.get("run_id") != run_id
+            or binding.get("app") != app
+        ):
+            raise RetractionRefused(
+                "debug actions lacks required first run/app binding"
+            )
     outcomes = []
     for row in rows:
         if not isinstance(row, dict) or row.get("action") != "observe_decision":
@@ -66,10 +84,18 @@ def _debug_evidence(actions: Path, *, run_id: str, app: str) -> tuple[str, dict]
             raise RetractionRefused("debug observe decision is malformed")
         outcomes.append(outcome)
     if "like" in outcomes:
-        raise RetractionRefused("debug log contains an observed Like; cleanup is refused")
-    return (f"{relative_text};actions_sha256={digest}",
-            {"debug_actions_sha256": digest, "debug_decision_outcomes": outcomes,
-             "debug_action_rows": len(rows), "legacy_712_evidence": legacy})
+        raise RetractionRefused(
+            "debug log contains an observed Like; cleanup is refused"
+        )
+    return (
+        f"{relative_text};actions_sha256={digest}",
+        {
+            "debug_actions_sha256": digest,
+            "debug_decision_outcomes": outcomes,
+            "debug_action_rows": len(rows),
+            "legacy_712_evidence": legacy,
+        },
+    )
 
 
 def dry_run(*, store, run_id: str, app: str, reason: str, debug_actions: Path) -> dict:
@@ -77,9 +103,17 @@ def dry_run(*, store, run_id: str, app: str, reason: str, debug_actions: Path) -
     rows = store.advisory_opener_run_rows(run_id, app)
     if run_id == _LEGACY_712_RUN:
         if app != "hinge" or rows.get("openers") != [_LEGACY_712_OPENER]:
-            raise RetractionRefused("legacy 712 BigQuery opener snapshot is not the exact approved row")
-    return make_plan(rows=rows, run_id=run_id, app=app,
-                     reason=reason, evidence_ref=evidence_ref, evidence_metadata=metadata)
+            raise RetractionRefused(
+                "legacy 712 BigQuery opener snapshot is not the exact approved row"
+            )
+    return make_plan(
+        rows=rows,
+        run_id=run_id,
+        app=app,
+        reason=reason,
+        evidence_ref=evidence_ref,
+        evidence_metadata=metadata,
+    )
 
 
 def apply(*, store, document: dict, confirmation: str) -> bool:
@@ -88,21 +122,45 @@ def apply(*, store, document: dict, confirmation: str) -> bool:
         raise RetractionRefused("exact confirmation must bind this plan hash")
     rows = store.advisory_opener_run_rows(plan["run_id"], plan["app"])
     expected = {item["opener_created_at"]: item for item in tombstone_rows(plan)}
-    existing = {item.get("opener_created_at"): item for item in rows.get("retractions", [])}
-    if len(existing) != len(rows.get("retractions", [])) or any(key not in expected for key in existing):
-        raise RetractionRefused("run/app has an unknown or duplicate opener cleanup tombstone")
-    exact_keys = ("correction_id", "opener_created_at", "model", "opener_fingerprint", "reason", "evidence_ref")
+    existing = {
+        item.get("opener_created_at"): item for item in rows.get("retractions", [])
+    }
+    if len(existing) != len(rows.get("retractions", [])) or any(
+        key not in expected for key in existing
+    ):
+        raise RetractionRefused(
+            "run/app has an unknown or duplicate opener cleanup tombstone"
+        )
+    exact_keys = (
+        "correction_id",
+        "opener_created_at",
+        "model",
+        "opener_fingerprint",
+        "reason",
+        "evidence_ref",
+    )
     for timestamp, item in existing.items():
-        if {key: item.get(key) for key in exact_keys} != {key: expected[timestamp][key] for key in exact_keys}:
-            raise RetractionRefused("run/app has a competing or mismatched opener cleanup tombstone")
+        if {key: item.get(key) for key in exact_keys} != {
+            key: expected[timestamp][key] for key in exact_keys
+        }:
+            raise RetractionRefused(
+                "run/app has a competing or mismatched opener cleanup tombstone"
+            )
     # A partial failure is safely resumable only if the pre-tombstone snapshot remains exactly
     # the reviewed plan.  Normalize the append-only rows away before re-hashing that snapshot.
-    current = make_plan(rows={**rows, "retractions": []},
-                        run_id=plan["run_id"], app=plan["app"], reason=plan["reason"],
-                        evidence_ref=plan["evidence_ref"], evidence_metadata=plan["evidence_metadata"],
-                        allow_existing=True)
+    current = make_plan(
+        rows={**rows, "retractions": []},
+        run_id=plan["run_id"],
+        app=plan["app"],
+        reason=plan["reason"],
+        evidence_ref=plan["evidence_ref"],
+        evidence_metadata=plan["evidence_metadata"],
+        allow_existing=True,
+    )
     if current != plan:
-        raise RetractionRefused("run rows changed since planning; create and review a new plan")
+        raise RetractionRefused(
+            "run rows changed since planning; create and review a new plan"
+        )
     changed = False
     for timestamp, row in expected.items():
         if timestamp in existing:
@@ -130,24 +188,43 @@ def main(argv: list[str] | None = None) -> None:
         if args.command == "dry-run":
             output = Path(args.out)
             if output.exists():
-                raise RetractionRefused("plan output already exists; refusing to overwrite it")
+                raise RetractionRefused(
+                    "plan output already exists; refusing to overwrite it"
+                )
             store = make_store(cfg_mod.load(args.config), ensure=False)
             try:
-                plan = dry_run(store=store, run_id=args.run_id, app=args.app, reason=args.reason,
-                               debug_actions=Path(args.debug_actions))
+                plan = dry_run(
+                    store=store,
+                    run_id=args.run_id,
+                    app=args.app,
+                    reason=args.reason,
+                    debug_actions=Path(args.debug_actions),
+                )
             finally:
                 store.close()
             if not output.parent.exists():
                 ensure_private_dir(output.parent)
             atomic_write_private_text(
-                output, json.dumps(plan, indent=2, sort_keys=True) + "\n", parent=output.parent)
-            print(json.dumps({"plan": str(output), "plan_sha256": plan["plan_sha256"],
-                              "confirmation": CONFIRM_PREFIX + plan["plan_sha256"]}))
+                output,
+                json.dumps(plan, indent=2, sort_keys=True) + "\n",
+                parent=output.parent,
+            )
+            print(
+                json.dumps(
+                    {
+                        "plan": str(output),
+                        "plan_sha256": plan["plan_sha256"],
+                        "confirmation": CONFIRM_PREFIX + plan["plan_sha256"],
+                    }
+                )
+            )
         else:
             plan = json.loads(Path(args.plan).read_text())
             store = make_store(cfg_mod.load(args.config), ensure=True)
             try:
-                changed = apply(store=store, document=plan, confirmation=args.confirmation)
+                changed = apply(
+                    store=store, document=plan, confirmation=args.confirmation
+                )
             finally:
                 store.close()
             print("appended" if changed else "already appended (idempotent no-op)")

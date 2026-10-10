@@ -12,6 +12,7 @@ contract:
   3. `main()` exits non-zero (never retries) when the driver raises, whether that happens at
      `open_session()` or at `current_profile()`.
 """
+
 from __future__ import annotations
 
 import json
@@ -29,6 +30,7 @@ class _Cfg:
 
 
 # --- 1. the tap-neutralising guard --------------------------------------------------------
+
 
 class _FakeTransport:
     """Records calls that get through; `keyevent` is deliberately absent, so the guard's
@@ -61,7 +63,7 @@ def _drv_with_transports(adb, touch):
 
 def test_neutralize_raises_for_every_claimed_method_and_lists_them():
     adb = _FakeTransport()
-    touch = _FakeTransport()   # a DIFFERENT object from adb (UhidTouch case)
+    touch = _FakeTransport()  # a DIFFERENT object from adb (UhidTouch case)
     drv = _drv_with_transports(adb, touch)
 
     neutralized = probe.neutralize_unsafe_methods(drv)
@@ -69,9 +71,12 @@ def test_neutralize_raises_for_every_claimed_method_and_lists_them():
     # Exactly the surfaces the docstring promises: driver decisions + both transports' tap/text
     # (keyevent absent on both fakes, same as production Adb/UhidTouch today).
     assert set(neutralized) == {
-        "driver.like()", "driver.dislike()",
-        "driver.adb.tap()", "driver.adb.text()",
-        "driver.touch.tap()", "driver.touch.text()",
+        "driver.like()",
+        "driver.dislike()",
+        "driver.adb.tap()",
+        "driver.adb.text()",
+        "driver.touch.tap()",
+        "driver.touch.text()",
     }
 
     with pytest.raises(probe.ScrollProbeGuardTripped):
@@ -106,23 +111,32 @@ def test_neutralize_does_not_double_report_when_touch_is_the_same_object_as_adb(
     assert neutralized.count("driver.adb.tap()") == 1
     assert not any(n.startswith("driver.touch.") for n in neutralized)
     with pytest.raises(probe.ScrollProbeGuardTripped):
-        drv.touch.tap(1, 1)   # still guarded -- it's the same object as adb
+        drv.touch.tap(1, 1)  # still guarded -- it's the same object as adb
 
 
 # --- 2. tracking/chaining analysis, known deltas + known heart positions -----------------
 
-_BAND_PX = (300, 2100)          # content_band_px used throughout
+_BAND_PX = (300, 2100)  # content_band_px used throughout
 _TOL = 15.0
 _MIN_RESPONSE = 0.5
-_MAX_DELTA = 1800.0             # == band height, same derivation analyze_frames uses
+_MAX_DELTA = 1800.0  # == band height, same derivation analyze_frames uses
 
 
 def test_build_pair_result_matches_within_tolerance_and_flags_all_matched():
     hearts_a = [(500, 1000)]
-    hearts_b = [(500, 850)]     # exactly at the predicted position (delta 150)
-    pr = probe.build_pair_result(0, 1, hearts_a, hearts_b, delta_px=150.0, response=0.9,
-                                 content_band_px=_BAND_PX, tolerance_px=_TOL,
-                                 min_response=_MIN_RESPONSE, max_delta_px=_MAX_DELTA)
+    hearts_b = [(500, 850)]  # exactly at the predicted position (delta 150)
+    pr = probe.build_pair_result(
+        0,
+        1,
+        hearts_a,
+        hearts_b,
+        delta_px=150.0,
+        response=0.9,
+        content_band_px=_BAND_PX,
+        tolerance_px=_TOL,
+        min_response=_MIN_RESPONSE,
+        max_delta_px=_MAX_DELTA,
+    )
     assert pr.reliable is True
     assert pr.matched == [(0, 0)]
     assert pr.unmatched_a == []
@@ -134,34 +148,63 @@ def test_build_pair_result_distinguishes_left_band_from_a_genuine_miss():
     # heart 0 predicted off the top of the band (scrolled away -- expected, not a failure);
     # heart 1 predicted still in-band but nothing in frame B lands near it (a real miss).
     hearts_a = [(500, 310), (500, 1200)]
-    hearts_b = [(500, 9999)]    # nowhere near either prediction
-    pr = probe.build_pair_result(0, 1, hearts_a, hearts_b, delta_px=100.0, response=0.9,
-                                 content_band_px=_BAND_PX, tolerance_px=_TOL,
-                                 min_response=_MIN_RESPONSE, max_delta_px=_MAX_DELTA)
+    hearts_b = [(500, 9999)]  # nowhere near either prediction
+    pr = probe.build_pair_result(
+        0,
+        1,
+        hearts_a,
+        hearts_b,
+        delta_px=100.0,
+        response=0.9,
+        content_band_px=_BAND_PX,
+        tolerance_px=_TOL,
+        min_response=_MIN_RESPONSE,
+        max_delta_px=_MAX_DELTA,
+    )
     assert pr.reliable is True
     assert pr.matched == []
-    assert pr.left_band_a == [0]     # 310 - 100 = 210 < r0 (300)
-    assert pr.unmatched_a == [1]     # 1200 - 100 = 1100, well inside the band, but no match
+    assert pr.left_band_a == [0]  # 310 - 100 = 210 < r0 (300)
+    assert pr.unmatched_a == [
+        1
+    ]  # 1200 - 100 = 1100, well inside the band, but no match
     assert pr.all_matched is False
 
 
 def test_build_pair_result_unreliable_on_low_response_alone():
     hearts_a = [(500, 1000)]
     hearts_b = [(500, 850)]
-    pr = probe.build_pair_result(0, 1, hearts_a, hearts_b, delta_px=150.0, response=0.1,
-                                 content_band_px=_BAND_PX, tolerance_px=_TOL,
-                                 min_response=_MIN_RESPONSE, max_delta_px=_MAX_DELTA)
+    pr = probe.build_pair_result(
+        0,
+        1,
+        hearts_a,
+        hearts_b,
+        delta_px=150.0,
+        response=0.1,
+        content_band_px=_BAND_PX,
+        tolerance_px=_TOL,
+        min_response=_MIN_RESPONSE,
+        max_delta_px=_MAX_DELTA,
+    )
     assert pr.reliable is False
-    assert pr.matched == []          # refuses to match at all under a distrusted delta
+    assert pr.matched == []  # refuses to match at all under a distrusted delta
     assert pr.all_matched is False
 
 
 def test_build_pair_result_unreliable_on_implausible_delta_magnitude_alone():
     hearts_a = [(500, 1000)]
     hearts_b = [(500, 850)]
-    pr = probe.build_pair_result(0, 1, hearts_a, hearts_b, delta_px=5000.0, response=0.95,
-                                 content_band_px=_BAND_PX, tolerance_px=_TOL,
-                                 min_response=_MIN_RESPONSE, max_delta_px=_MAX_DELTA)
+    pr = probe.build_pair_result(
+        0,
+        1,
+        hearts_a,
+        hearts_b,
+        delta_px=5000.0,
+        response=0.95,
+        content_band_px=_BAND_PX,
+        tolerance_px=_TOL,
+        min_response=_MIN_RESPONSE,
+        max_delta_px=_MAX_DELTA,
+    )
     assert pr.reliable is False
     assert pr.matched == []
 
@@ -171,13 +214,29 @@ def test_chain_items_recovers_distinct_items_across_a_clean_bounded_scroll():
     a second item entering at frame 1 -- both should chain cleanly to 2 distinct items, with
     no ambiguity and no tracking failures."""
     pair0 = probe.build_pair_result(
-        0, 1, hearts_a=[(500, 1000)], hearts_b=[(500, 850), (500, 1900)],
-        delta_px=150.0, response=0.9, content_band_px=_BAND_PX, tolerance_px=_TOL,
-        min_response=_MIN_RESPONSE, max_delta_px=_MAX_DELTA)
+        0,
+        1,
+        hearts_a=[(500, 1000)],
+        hearts_b=[(500, 850), (500, 1900)],
+        delta_px=150.0,
+        response=0.9,
+        content_band_px=_BAND_PX,
+        tolerance_px=_TOL,
+        min_response=_MIN_RESPONSE,
+        max_delta_px=_MAX_DELTA,
+    )
     pair1 = probe.build_pair_result(
-        1, 2, hearts_a=[(500, 850), (500, 1900)], hearts_b=[(500, 700), (500, 1750)],
-        delta_px=150.0, response=0.9, content_band_px=_BAND_PX, tolerance_px=_TOL,
-        min_response=_MIN_RESPONSE, max_delta_px=_MAX_DELTA)
+        1,
+        2,
+        hearts_a=[(500, 850), (500, 1900)],
+        hearts_b=[(500, 700), (500, 1750)],
+        delta_px=150.0,
+        response=0.9,
+        content_band_px=_BAND_PX,
+        tolerance_px=_TOL,
+        min_response=_MIN_RESPONSE,
+        max_delta_px=_MAX_DELTA,
+    )
 
     result = probe.chain_items([pair0, pair1])
 
@@ -195,23 +254,39 @@ def test_chain_items_reports_a_large_jump_as_a_tracking_failure_not_a_phantom():
     must report the jump as a tracking failure and hold the total at 1 confirmed item plus an
     explicitly ambiguous one -- never confidently 2."""
     pair0 = probe.build_pair_result(
-        0, 1, hearts_a=[(500, 1000)], hearts_b=[(500, 850)],
-        delta_px=150.0, response=0.9, content_band_px=_BAND_PX, tolerance_px=_TOL,
-        min_response=_MIN_RESPONSE, max_delta_px=_MAX_DELTA)
+        0,
+        1,
+        hearts_a=[(500, 1000)],
+        hearts_b=[(500, 850)],
+        delta_px=150.0,
+        response=0.9,
+        content_band_px=_BAND_PX,
+        tolerance_px=_TOL,
+        min_response=_MIN_RESPONSE,
+        max_delta_px=_MAX_DELTA,
+    )
     # A jump far beyond anything a bounded bot read-scroll could produce (or, equivalently, a
     # very low phase-correlation response) -- either alone is enough to distrust this pair.
     pair1 = probe.build_pair_result(
-        1, 2, hearts_a=[(500, 850)], hearts_b=[(500, 700)],
-        delta_px=5000.0, response=0.9, content_band_px=_BAND_PX, tolerance_px=_TOL,
-        min_response=_MIN_RESPONSE, max_delta_px=_MAX_DELTA)
-    assert pair1.reliable is False   # sanity: this IS the scenario under test
+        1,
+        2,
+        hearts_a=[(500, 850)],
+        hearts_b=[(500, 700)],
+        delta_px=5000.0,
+        response=0.9,
+        content_band_px=_BAND_PX,
+        tolerance_px=_TOL,
+        min_response=_MIN_RESPONSE,
+        max_delta_px=_MAX_DELTA,
+    )
+    assert pair1.reliable is False  # sanity: this IS the scenario under test
 
     result = probe.chain_items([pair0, pair1])
 
     assert result.tracking_failures == [(1, 2)]
-    assert result.distinct_confirmed == 1     # NOT 2 -- no phantom silently added
-    assert result.ambiguous_new == 1          # the frame-2 heart is flagged, not counted
-    assert result.orphaned_tracks == 1        # the frame-1 track's fate is left unresolved
+    assert result.distinct_confirmed == 1  # NOT 2 -- no phantom silently added
+    assert result.ambiguous_new == 1  # the frame-2 heart is flagged, not counted
+    assert result.orphaned_tracks == 1  # the frame-1 track's fate is left unresolved
 
 
 def test_chain_items_does_not_promote_a_heart_born_behind_an_unreliable_pair():
@@ -237,31 +312,59 @@ def test_chain_items_does_not_promote_a_heart_born_behind_an_unreliable_pair():
         also misses is simply dropped (see the loop's own comment) -- orphaned stays at 1.
     """
     pair0 = probe.build_pair_result(
-        0, 1, hearts_a=[(500, 1000)], hearts_b=[(500, 850)],
-        delta_px=5000.0, response=0.9, content_band_px=_BAND_PX, tolerance_px=_TOL,
-        min_response=_MIN_RESPONSE, max_delta_px=_MAX_DELTA)
-    assert pair0.reliable is False   # sanity: this IS the unreliable pair under test
+        0,
+        1,
+        hearts_a=[(500, 1000)],
+        hearts_b=[(500, 850)],
+        delta_px=5000.0,
+        response=0.9,
+        content_band_px=_BAND_PX,
+        tolerance_px=_TOL,
+        min_response=_MIN_RESPONSE,
+        max_delta_px=_MAX_DELTA,
+    )
+    assert pair0.reliable is False  # sanity: this IS the unreliable pair under test
 
     pair1 = probe.build_pair_result(
-        1, 2, hearts_a=[(500, 850)], hearts_b=[(500, 700)],
-        delta_px=150.0, response=0.9, content_band_px=_BAND_PX, tolerance_px=_TOL,
-        min_response=_MIN_RESPONSE, max_delta_px=_MAX_DELTA)
-    assert pair1.reliable is True and pair1.matched == [(0, 0)]   # Y tracks forward to Z
+        1,
+        2,
+        hearts_a=[(500, 850)],
+        hearts_b=[(500, 700)],
+        delta_px=150.0,
+        response=0.9,
+        content_band_px=_BAND_PX,
+        tolerance_px=_TOL,
+        min_response=_MIN_RESPONSE,
+        max_delta_px=_MAX_DELTA,
+    )
+    assert pair1.reliable is True and pair1.matched == [(0, 0)]  # Y tracks forward to Z
 
     # predicted_y = 700 - 150 = 550, still well inside the band (r0=300) -- a genuine miss,
     # not a left-band exit -- and hearts_b is empty so nothing can match it.
     pair2 = probe.build_pair_result(
-        2, 3, hearts_a=[(500, 700)], hearts_b=[],
-        delta_px=150.0, response=0.9, content_band_px=_BAND_PX, tolerance_px=_TOL,
-        min_response=_MIN_RESPONSE, max_delta_px=_MAX_DELTA)
-    assert pair2.reliable is True and pair2.unmatched_a == [0] and pair2.left_band_a == []
+        2,
+        3,
+        hearts_a=[(500, 700)],
+        hearts_b=[],
+        delta_px=150.0,
+        response=0.9,
+        content_band_px=_BAND_PX,
+        tolerance_px=_TOL,
+        min_response=_MIN_RESPONSE,
+        max_delta_px=_MAX_DELTA,
+    )
+    assert (
+        pair2.reliable is True and pair2.unmatched_a == [0] and pair2.left_band_a == []
+    )
 
     result = probe.chain_items([pair0, pair1, pair2])
 
     assert result.tracking_failures == [(0, 1)]
-    assert result.distinct_confirmed == 1   # only frame-0's X ever confirmed
-    assert result.ambiguous_new == 1        # Y, born behind the unreliable pair
-    assert result.orphaned_tracks == 1      # X only -- NOT 2 (Z's miss must not be re-counted)
+    assert result.distinct_confirmed == 1  # only frame-0's X ever confirmed
+    assert result.ambiguous_new == 1  # Y, born behind the unreliable pair
+    assert (
+        result.orphaned_tracks == 1
+    )  # X only -- NOT 2 (Z's miss must not be re-counted)
 
 
 def test_estimate_vertical_delta_sign_and_magnitude(monkeypatch):
@@ -283,7 +386,8 @@ def test_estimate_vertical_delta_sign_and_magnitude(monkeypatch):
     assert ok_a and ok_b
 
     delta_px, response = probe.estimate_vertical_delta(
-        buf_a.tobytes(), buf_b.tobytes(), content_band=(0.0, 1.0))
+        buf_a.tobytes(), buf_b.tobytes(), content_band=(0.0, 1.0)
+    )
 
     assert delta_px == pytest.approx(shift, abs=2.0)
     assert response > 0.5
@@ -291,12 +395,15 @@ def test_estimate_vertical_delta_sign_and_magnitude(monkeypatch):
 
 # --- 3. main() exits non-zero when the driver raises, and never retries ------------------
 
+
 class _OpenRaisesDriver:
     def open_session(self):
         raise RuntimeError("no ADB device connected")
 
     def close(self):  # pragma: no cover -- must not even be reached
-        raise AssertionError("close() must not be called when open_session() itself raised")
+        raise AssertionError(
+            "close() must not be called when open_session() itself raised"
+        )
 
 
 def test_main_exits_nonzero_when_open_session_raises(monkeypatch, tmp_path):
@@ -355,7 +462,9 @@ class _CaptureRaisesDriver:
     def current_profile(self, **kw):
         self.observed_read_scroll_frac = self.read_scroll_frac
         self.observed_scroll_captures = self.scroll_captures
-        raise RuntimeError("UnlocatedControlError-style stand-in: the deck is unreadable")
+        raise RuntimeError(
+            "UnlocatedControlError-style stand-in: the deck is unreadable"
+        )
 
 
 def test_main_exits_nonzero_when_current_profile_raises(monkeypatch, tmp_path, capsys):
@@ -367,7 +476,7 @@ def test_main_exits_nonzero_when_current_profile_raises(monkeypatch, tmp_path, c
     with pytest.raises(SystemExit) as exc:
         probe.main(["--out", str(tmp_path / "out")])
     assert exc.value.code != 0
-    assert drv.closed is True   # cleanup still ran even though the read failed
+    assert drv.closed is True  # cleanup still ran even though the read failed
 
     out = capsys.readouterr()
     combined = out.out + out.err
@@ -377,14 +486,19 @@ def test_main_exits_nonzero_when_current_profile_raises(monkeypatch, tmp_path, c
 
 # --- 4. --read-scroll-frac / --scroll-captures: validated, and honoured on the driver ------
 
+
 def _load_must_not_be_called(_path):
-    raise AssertionError("cfg_mod.load must not run once flag validation has already failed "
-                          "-- a bad flag must never get far enough to touch config.yaml or "
-                          "the device")
+    raise AssertionError(
+        "cfg_mod.load must not run once flag validation has already failed "
+        "-- a bad flag must never get far enough to touch config.yaml or "
+        "the device"
+    )
 
 
 @pytest.mark.parametrize("bad_frac", ["0.05", "0.80", "nan", "inf", "-1"])
-def test_main_rejects_read_scroll_frac_outside_hinge_pys_own_bounds(monkeypatch, tmp_path, bad_frac):
+def test_main_rejects_read_scroll_frac_outside_hinge_pys_own_bounds(
+    monkeypatch, tmp_path, bad_frac
+):
     # hinge._READ_SCROLL_FRAC_MIN/MAX are 0.10/0.75 -- 0.05 and 0.80 sit just outside either
     # edge, nan/inf/-1 are the "not even a sane fraction" cases math.isfinite exists to catch.
     monkeypatch.setattr(probe.cfg_mod, "load", _load_must_not_be_called)
@@ -395,7 +509,9 @@ def test_main_rejects_read_scroll_frac_outside_hinge_pys_own_bounds(monkeypatch,
 
 
 @pytest.mark.parametrize("bad_n", ["0", "-1", str(probe._MAX_SCROLL_CAPTURES + 1)])
-def test_main_rejects_scroll_captures_outside_its_sanity_ceiling(monkeypatch, tmp_path, bad_n):
+def test_main_rejects_scroll_captures_outside_its_sanity_ceiling(
+    monkeypatch, tmp_path, bad_n
+):
     monkeypatch.setattr(probe.cfg_mod, "load", _load_must_not_be_called)
 
     with pytest.raises(SystemExit) as exc:
@@ -411,30 +527,44 @@ def test_main_rejects_scroll_captures_non_integer(tmp_path):
     assert exc.value.code != 0
 
 
-@pytest.mark.parametrize("frac", [probe.hinge._READ_SCROLL_FRAC_MIN, 0.16,
-                                  probe.hinge._READ_SCROLL_FRAC_MAX])
-def test_main_accepts_read_scroll_frac_at_and_inside_the_bounds(monkeypatch, tmp_path, frac):
+@pytest.mark.parametrize(
+    "frac", [probe.hinge._READ_SCROLL_FRAC_MIN, 0.16, probe.hinge._READ_SCROLL_FRAC_MAX]
+)
+def test_main_accepts_read_scroll_frac_at_and_inside_the_bounds(
+    monkeypatch, tmp_path, frac
+):
     drv = _CaptureRaisesDriver()
     monkeypatch.setattr(probe.cfg_mod, "load", lambda path: _Cfg())
     monkeypatch.setattr(probe, "HingeDriver", lambda cfg: drv)
     monkeypatch.setattr("builtins.input", lambda *_a: "")
 
-    with pytest.raises(SystemExit):   # current_profile() still raises -- that's fine, expected
+    with pytest.raises(
+        SystemExit
+    ):  # current_profile() still raises -- that's fine, expected
         probe.main(["--out", str(tmp_path / "out"), "--read-scroll-frac", str(frac)])
 
     assert drv.observed_read_scroll_frac == pytest.approx(frac)
 
 
 def test_main_applies_both_overrides_to_the_drivers_own_attributes_before_capturing(
-        monkeypatch, tmp_path, capsys):
+    monkeypatch, tmp_path, capsys
+):
     drv = _CaptureRaisesDriver()
     monkeypatch.setattr(probe.cfg_mod, "load", lambda path: _Cfg())
     monkeypatch.setattr(probe, "HingeDriver", lambda cfg: drv)
     monkeypatch.setattr("builtins.input", lambda *_a: "")
 
     with pytest.raises(SystemExit):
-        probe.main(["--out", str(tmp_path / "out"), "--read-scroll-frac", "0.16",
-                    "--scroll-captures", "48"])
+        probe.main(
+            [
+                "--out",
+                str(tmp_path / "out"),
+                "--read-scroll-frac",
+                "0.16",
+                "--scroll-captures",
+                "48",
+            ]
+        )
 
     # The fake driver's current_profile() recorded self.read_scroll_frac/self.scroll_captures
     # at call time -- i.e. AFTER main() applied the override and BEFORE the (fake) capture
@@ -448,7 +578,9 @@ def test_main_applies_both_overrides_to_the_drivers_own_attributes_before_captur
     assert "Effective scroll_captures: 48 (--scroll-captures override)" in out
 
 
-def test_main_leaves_driver_defaults_untouched_when_flags_omitted(monkeypatch, tmp_path, capsys):
+def test_main_leaves_driver_defaults_untouched_when_flags_omitted(
+    monkeypatch, tmp_path, capsys
+):
     drv = _CaptureRaisesDriver()
     monkeypatch.setattr(probe.cfg_mod, "load", lambda path: _Cfg())
     monkeypatch.setattr(probe, "HingeDriver", lambda cfg: drv)
@@ -470,6 +602,7 @@ def test_main_leaves_driver_defaults_untouched_when_flags_omitted(monkeypatch, t
 
 # --- 5. install_ledger_capture: snapshot happens BEFORE _scroll_to_top's own reset ---------
 
+
 class _LedgerDriver:
     """A minimal stand-in for the one thing install_ledger_capture touches:
     `_capture_scroll_ledger` and a `_scroll_to_top` method. The fake `_scroll_to_top` mimics
@@ -482,26 +615,27 @@ class _LedgerDriver:
 
     def _scroll_to_top(self, should_stop=None):
         self.calls.append(should_stop)
-        self._capture_scroll_ledger = []   # the real method's own trailing reset
+        self._capture_scroll_ledger = []  # the real method's own trailing reset
         return True
 
 
 def test_install_ledger_capture_snapshots_before_the_wrapped_reset():
     drv = _LedgerDriver([(0.55, 0.5), (0.55, 0.5)])
     snapshots = probe.install_ledger_capture(drv)
-    assert snapshots == []   # nothing captured yet -- only installed, not yet called
+    assert snapshots == []  # nothing captured yet -- only installed, not yet called
 
     result = drv._scroll_to_top()
 
-    assert result is True                              # delegates through unchanged
-    assert drv.calls == [None]                          # original still ran, same arguments
-    assert snapshots == [[(0.55, 0.5), (0.55, 0.5)]]     # captured BEFORE the reset ran
-    assert drv._capture_scroll_ledger == []              # the real reset still happened
+    assert result is True  # delegates through unchanged
+    assert drv.calls == [None]  # original still ran, same arguments
+    assert snapshots == [[(0.55, 0.5), (0.55, 0.5)]]  # captured BEFORE the reset ran
+    assert drv._capture_scroll_ledger == []  # the real reset still happened
 
 
 def test_install_ledger_capture_passes_should_stop_through():
     drv = _LedgerDriver([(0.16, 0.5)])
     probe.install_ledger_capture(drv)
+
     def sentinel():
         return False
 
@@ -517,9 +651,9 @@ def test_install_ledger_capture_last_snapshot_is_the_post_capture_one():
     drv = _LedgerDriver([])
     snapshots = probe.install_ledger_capture(drv)
 
-    drv._scroll_to_top()                                    # pre-capture: ledger already []
-    drv._capture_scroll_ledger = [(0.16, 0.5)] * 40          # the real per-profile ledger
-    drv._scroll_to_top()                                    # post-capture
+    drv._scroll_to_top()  # pre-capture: ledger already []
+    drv._capture_scroll_ledger = [(0.16, 0.5)] * 40  # the real per-profile ledger
+    drv._scroll_to_top()  # post-capture
 
     assert len(snapshots) == 2
     assert snapshots[0] == []
@@ -528,11 +662,12 @@ def test_install_ledger_capture_last_snapshot_is_the_post_capture_one():
 
 # --- 6. compute_heart_spacings_px / _step_spacing_stats: pure geometry, no cv2 needed -------
 
+
 def test_compute_heart_spacings_px_only_counts_gaps_within_one_frame():
     hearts_per_frame = [
-        [(500, 300), (500, 1400)],                 # one frame, two hearts -> one gap
-        [(500, 900)],                               # single heart -> no gap
-        [(500, 200), (500, 1300), (500, 2400)],      # two hearts -> two gaps
+        [(500, 300), (500, 1400)],  # one frame, two hearts -> one gap
+        [(500, 900)],  # single heart -> no gap
+        [(500, 200), (500, 1300), (500, 2400)],  # two hearts -> two gaps
     ]
     assert probe.compute_heart_spacings_px(hearts_per_frame) == [1100, 1100, 1100]
 
@@ -551,8 +686,9 @@ def test_compute_heart_spacings_px_empty_when_no_frame_ever_shows_two_hearts():
 
 def test_step_spacing_stats_computes_ratio_from_unfiltered_deltas():
     median_step, median_spacing, ratio = probe._step_spacing_stats(
-        [1100.0, 1200.0, -1150.0], [1100.0, 1150.0])
-    assert median_step == pytest.approx(1150.0)      # median(|1100|,|1200|,|-1150|)
+        [1100.0, 1200.0, -1150.0], [1100.0, 1150.0]
+    )
+    assert median_step == pytest.approx(1150.0)  # median(|1100|,|1200|,|-1150|)
     assert median_spacing == pytest.approx(1125.0)
     assert ratio == pytest.approx(1150.0 / 1125.0)
 
@@ -567,23 +703,49 @@ def test_step_spacing_stats_none_when_either_input_is_missing():
 
 # --- 7. render_verdict: names ALIASING as root cause when step ~= spacing, not otherwise ----
 
-def _report(*, frame_count=5, median_step, median_spacing, ratio,
-            tracking_failures=(), orphaned_tracks=0, ambiguous_new=0, match_rate=1.0):
-    chain = probe.ChainResult(distinct_confirmed=1, ambiguous_new=ambiguous_new,
-                              orphaned_tracks=orphaned_tracks,
-                              tracking_failures=list(tracking_failures))
+
+def _report(
+    *,
+    frame_count=5,
+    median_step,
+    median_spacing,
+    ratio,
+    tracking_failures=(),
+    orphaned_tracks=0,
+    ambiguous_new=0,
+    match_rate=1.0,
+):
+    chain = probe.ChainResult(
+        distinct_confirmed=1,
+        ambiguous_new=ambiguous_new,
+        orphaned_tracks=orphaned_tracks,
+        tracking_failures=list(tracking_failures),
+    )
     return probe.AnalysisReport(
-        frame_count=frame_count, hearts_per_frame=[], pair_results=[], scroll_deltas_px=[],
-        match_rate=match_rate, chain=chain, heart_spacings_px=[],
-        median_scroll_step_px=median_step, median_heart_spacing_px=median_spacing,
-        step_spacing_ratio=ratio)
+        frame_count=frame_count,
+        hearts_per_frame=[],
+        pair_results=[],
+        scroll_deltas_px=[],
+        match_rate=match_rate,
+        chain=chain,
+        heart_spacings_px=[],
+        median_scroll_step_px=median_step,
+        median_heart_spacing_px=median_spacing,
+        step_spacing_ratio=ratio,
+    )
 
 
 def test_render_verdict_names_aliasing_as_root_cause_when_ratio_near_one():
     # The measured real-world regime this flag exists to move away from: step ~1150px against
     # spacing ~1100px, ratio ~1.05 -- squarely inside _ALIASING_RATIO_LOW.._ALIASING_RATIO_HIGH.
-    report = _report(median_step=1150.0, median_spacing=1100.0, ratio=1150.0 / 1100.0,
-                     tracking_failures=[(3, 4)], orphaned_tracks=1, match_rate=0.8)
+    report = _report(
+        median_step=1150.0,
+        median_spacing=1100.0,
+        ratio=1150.0 / 1100.0,
+        tracking_failures=[(3, 4)],
+        orphaned_tracks=1,
+        match_rate=0.8,
+    )
 
     verdict = probe.render_verdict(report)
 
@@ -599,13 +761,21 @@ def test_render_verdict_does_not_call_it_aliasing_when_step_much_smaller_than_sp
     # The hypothesis this tool's flags exist to test: read_scroll_frac ~0.16 against the
     # shipped 0.55 baseline scales the step down by roughly the same factor, landing well
     # outside the aliasing band (ratio ~0.3 here, vs. the ~1.05 case above).
-    report = _report(median_step=350.0, median_spacing=1100.0, ratio=350.0 / 1100.0,
-                     tracking_failures=[(3, 4)], orphaned_tracks=1, match_rate=0.8)
+    report = _report(
+        median_step=350.0,
+        median_spacing=1100.0,
+        ratio=350.0 / 1100.0,
+        tracking_failures=[(3, 4)],
+        orphaned_tracks=1,
+        match_rate=0.8,
+    )
 
     verdict = probe.render_verdict(report)
 
     assert "ALIASING" not in verdict
-    assert "flagged as tracking" in verdict   # the ordinary symptom reporting still fires
+    assert (
+        "flagged as tracking" in verdict
+    )  # the ordinary symptom reporting still fires
 
 
 def test_render_verdict_reliable_run_still_states_the_measured_ratio():
@@ -618,8 +788,13 @@ def test_render_verdict_reliable_run_still_states_the_measured_ratio():
 
 
 def test_render_verdict_reports_ratio_unmeasurable_without_calling_it_aliasing():
-    report = _report(median_step=1150.0, median_spacing=None, ratio=None,
-                     tracking_failures=[(3, 4)], match_rate=0.8)
+    report = _report(
+        median_step=1150.0,
+        median_spacing=None,
+        ratio=None,
+        tracking_failures=[(3, 4)],
+        match_rate=0.8,
+    )
 
     verdict = probe.render_verdict(report)
 
@@ -628,6 +803,7 @@ def test_render_verdict_reports_ratio_unmeasurable_without_calling_it_aliasing()
 
 
 # --- 8. save_capture / print_report: the pre-reset ledger, reported honestly ----------------
+
 
 class _FakeAdbForSave:
     def screen_size(self):
@@ -646,11 +822,18 @@ def test_save_capture_records_the_given_pre_reset_ledger(tmp_path):
     drv = _FakeDriverForSave()
     ledger = [(0.16, 0.51), (0.17, 0.49)]
 
-    manifest = probe.save_capture([b"frame1", b"frame2"], {"app": "hinge"}, drv,
-                                  tmp_path / "out", driver_scroll_ledger=ledger)
+    manifest = probe.save_capture(
+        [b"frame1", b"frame2"],
+        {"app": "hinge"},
+        drv,
+        tmp_path / "out",
+        driver_scroll_ledger=ledger,
+    )
 
-    assert manifest["driver_scroll_ledger"] == [{"frac": 0.16, "x_frac": 0.51},
-                                                 {"frac": 0.17, "x_frac": 0.49}]
+    assert manifest["driver_scroll_ledger"] == [
+        {"frac": 0.16, "x_frac": 0.51},
+        {"frac": 0.17, "x_frac": 0.49},
+    ]
     assert manifest["driver_scroll_ledger_note"] is None
     assert manifest["read_scroll_frac"] == 0.16
     assert manifest["scroll_captures"] == 48
@@ -658,29 +841,35 @@ def test_save_capture_records_the_given_pre_reset_ledger(tmp_path):
     assert on_disk == manifest
     if os.name == "posix":
         assert stat.S_IMODE((tmp_path / "out").stat().st_mode) == 0o700
-        assert all(stat.S_IMODE(path.stat().st_mode) == 0o600
-                   for path in (tmp_path / "out").iterdir())
+        assert all(
+            stat.S_IMODE(path.stat().st_mode) == 0o600
+            for path in (tmp_path / "out").iterdir()
+        )
 
 
 def test_save_capture_notes_honestly_when_the_ledger_could_not_be_captured(tmp_path):
     drv = _FakeDriverForSave()
 
-    manifest = probe.save_capture([b"frame1"], {}, drv, tmp_path / "out",
-                                  driver_scroll_ledger=None)
+    manifest = probe.save_capture(
+        [b"frame1"], {}, drv, tmp_path / "out", driver_scroll_ledger=None
+    )
 
     assert manifest["driver_scroll_ledger"] is None
     assert manifest["driver_scroll_ledger_note"] is not None
     assert "NOT CAPTURED" in manifest["driver_scroll_ledger_note"]
 
 
-def test_save_capture_distinguishes_a_genuinely_empty_ledger_from_not_captured(tmp_path):
+def test_save_capture_distinguishes_a_genuinely_empty_ledger_from_not_captured(
+    tmp_path,
+):
     drv = _FakeDriverForSave()
 
-    manifest = probe.save_capture([b"frame1"], {}, drv, tmp_path / "out",
-                                  driver_scroll_ledger=[])
+    manifest = probe.save_capture(
+        [b"frame1"], {}, drv, tmp_path / "out", driver_scroll_ledger=[]
+    )
 
-    assert manifest["driver_scroll_ledger"] == []          # recorded, and genuinely empty
-    assert manifest["driver_scroll_ledger_note"] is None    # NOT the "not captured" case
+    assert manifest["driver_scroll_ledger"] == []  # recorded, and genuinely empty
+    assert manifest["driver_scroll_ledger_note"] is None  # NOT the "not captured" case
 
 
 def test_print_report_flags_a_missing_ledger_as_a_measurement_gap_not_zero(capsys):

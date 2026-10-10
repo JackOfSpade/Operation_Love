@@ -28,6 +28,7 @@ What to look for:
 If nothing prints at all while you are touching, the corroboration signal is dead on this
 device and observe mode is running on the identity anchor alone; say so in a bug report.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -47,28 +48,39 @@ def _unparsed_stream_verdict_lines(watcher) -> list[str]:
     spelling can be fixed straight from a bug report, instead of asking the operator to
     reproduce the failure in a terminal and transcribe raw lines that DO carry coordinates.
     """
-    head = (f"VERDICT: {watcher.raw_line_count} line(s) arrived but NONE parsed — the stream "
-            "works and this parser does not understand its format. That IS a bug here: "
-            "compare the spelling against _LT_LINE_RE in "
-            "operation_love/drivers/touchwatch.py.")
+    head = (
+        f"VERDICT: {watcher.raw_line_count} line(s) arrived but NONE parsed — the stream "
+        "works and this parser does not understand its format. That IS a bug here: "
+        "compare the spelling against _LT_LINE_RE in "
+        "operation_love/drivers/touchwatch.py."
+    )
     samples = watcher.unparsed_line_samples
     if not samples:
         # A line whose every token redacts to nothing is dropped rather than stored, so the
         # deque can still be empty here. Only then is the manual round-trip worth asking for.
-        return [head, "  No sample was retained. Capture one by hand with "
-                      "`adb shell getevent -lt <device>`."]
-    return [head,
-            f"  {len(samples)} rejected line(s) below, redacted (every number replaced with "
-            "<n>) and safe to paste into an incident report as-is:"
-            ] + [f"    {sample}" for sample in samples]
+        return [
+            head,
+            "  No sample was retained. Capture one by hand with "
+            "`adb shell getevent -lt <device>`.",
+        ]
+    return [
+        head,
+        f"  {len(samples)} rejected line(s) below, redacted (every number replaced with "
+        "<n>) and safe to paste into an incident report as-is:",
+    ] + [f"    {sample}" for sample in samples]
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     ap.add_argument("--config", default="config.yaml")
-    ap.add_argument("--seconds", type=float, default=30.0, help="how long to watch (default 30)")
-    ap.add_argument("--app", default=HINGE_SPEC.app, help="which apps.<app> block to read")
+    ap.add_argument(
+        "--seconds", type=float, default=30.0, help="how long to watch (default 30)"
+    )
+    ap.add_argument(
+        "--app", default=HINGE_SPEC.app, help="which apps.<app> block to read"
+    )
     args = ap.parse_args()
 
     cfg = cfg_mod.load(args.config)
@@ -79,6 +91,7 @@ def main() -> int:
     # Screen geometry: ask the device rather than assuming, so the printed pixel
     # coordinates mean the same thing they will mean inside the driver.
     from operation_love.drivers.adb import Adb
+
     adb = Adb(serial, adb_path=adb_path)
     if not adb.devices():
         print("No ADB device connected. Plug the phone in and enable USB debugging.")
@@ -92,12 +105,16 @@ def main() -> int:
         print(f"Touch watcher unavailable: {exc}")
         return 2
 
-    slop = max(12.0, min(0.02 * size[1], 90.0))     # mirrors AndroidDriver._observe_tap_slop_px
+    slop = max(
+        12.0, min(0.02 * size[1], 90.0)
+    )  # mirrors AndroidDriver._observe_tap_slop_px
     print(f"screen         : {size[0]}x{size[1]}")
     print(f"selected device: {watcher.device_path} {watcher.device_name!r}")
     print(f"tap slop       : {slop:.0f}px (travel at or below this counts as a tap)")
     print()
-    print(f">>> Touch the screen now — tap a few times, then scroll. Watching {args.seconds:.0f}s. <<<")
+    print(
+        f">>> Touch the screen now — tap a few times, then scroll. Watching {args.seconds:.0f}s. <<<"
+    )
     print()
 
     start = time.monotonic()
@@ -108,8 +125,10 @@ def main() -> int:
             gestures = watcher.gestures_since(start)
             for g in gestures[seen:]:
                 kind = "TAP " if g.is_tap(slop) else "DRAG"
-                print(f"  {kind} down={g.down} up={g.up} "
-                      f"travel={g.travel_px:7.1f}px  held={g.t_up - g.t_down:.3f}s")
+                print(
+                    f"  {kind} down={g.down} up={g.up} "
+                    f"travel={g.travel_px:7.1f}px  held={g.t_up - g.t_down:.3f}s"
+                )
             seen = len(gestures)
             if not watcher.alive:
                 print("  !! the getevent stream died mid-watch")
@@ -122,21 +141,25 @@ def main() -> int:
     print(f"events parsed    : {watcher.event_count}")
     print(f"gestures         : {seen}")
     if watcher.raw_line_count == 0:
-        print("VERDICT: the device sent NOTHING. `getevent` opens the touchscreen (it can read "
-              "its capabilities) but delivers no events to the adb shell user — Android "
-              "withholds the input stream from unprivileged readers on this build. This is a "
-              "platform restriction, not a bug in this code, and no amount of parsing fixes "
-              "it. Observe mode runs on the identity anchor alone, which is what actually "
-              "fixes the scroll-recorded-as-PASS bug; gesture corroboration is the optional "
-              "extra layer. Keep apps.<app>.observe_touch_watch: false.")
+        print(
+            "VERDICT: the device sent NOTHING. `getevent` opens the touchscreen (it can read "
+            "its capabilities) but delivers no events to the adb shell user — Android "
+            "withholds the input stream from unprivileged readers on this build. This is a "
+            "platform restriction, not a bug in this code, and no amount of parsing fixes "
+            "it. Observe mode runs on the identity anchor alone, which is what actually "
+            "fixes the scroll-recorded-as-PASS bug; gesture corroboration is the optional "
+            "extra layer. Keep apps.<app>.observe_touch_watch: false."
+        )
         return 1
     if watcher.event_count == 0:
         for line in _unparsed_stream_verdict_lines(watcher):
             print(line)
         return 1
     if seen == 0:
-        print("VERDICT: the stream is alive (raw events arrived) but no complete DOWN..UP "
-              "gesture was assembled. If you were touching, the parser needs a look.")
+        print(
+            "VERDICT: the stream is alive (raw events arrived) but no complete DOWN..UP "
+            "gesture was assembled. If you were touching, the parser needs a look."
+        )
         return 1
     print("VERDICT: gesture corroboration is working.")
     return 0

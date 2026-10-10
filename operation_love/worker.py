@@ -7,6 +7,7 @@ auto     — Autonomous scoring and actions with targeting safety checks before 
 Multiple workers may share a ranker, store, and global budget. Unexpected errors halt
 the affected worker so its failure state and diagnostics remain visible.
 """
+
 from __future__ import annotations
 
 import random
@@ -18,13 +19,19 @@ import uuid
 from datetime import date
 
 from .config import PacingCfg, normalize_swipe_delay_s
-from .drivers.base import (ActionCancelled, DatingAppDriver, DeckBlockedError, DriverClosed,
-                           ItemTargetingError)
+from .drivers.base import (
+    ActionCancelled,
+    DatingAppDriver,
+    DeckBlockedError,
+    DriverClosed,
+    ItemTargetingError,
+)
 from .human import human_delay
 from .human_motion import think_time_s
 from .interaction import AutoSessionPolicy
 from .notifications import notify_training_decision_ready
 from .opener.opener import INDEX_SPACE_MODEL_ITEMS, ITEM_INDEX_ABSENT, ItemRequest
+
 # The two `openers.decision` values a discard may carry, imported rather than spelled here so
 # this module, OpenerService.discard_opener, and tools/opener_corpus_report.py's buckets can
 # never drift into three copies of one vocabulary -- see the constants' own comments in
@@ -33,8 +40,11 @@ from .opener.service import DECISION_NEVER_SENT, DECISION_SEND_UNVERIFIED
 from .ranker.decider import Decider, Decision
 from .ranker.profile_key import profile_key_from_identity
 from .targeting_policy import (
-    installed_still_photo_licence, still_photo_licence_operator_notice,
-    still_photo_licence_provenance, use_run_still_photo_licence)
+    installed_still_photo_licence,
+    still_photo_licence_operator_notice,
+    still_photo_licence_provenance,
+    use_run_still_photo_licence,
+)
 
 _NO_PHOTO_RETRY_S = 0.5
 # think_time_s() is calibrated to real measured Hinge dwell data around this many
@@ -63,12 +73,14 @@ def _terminal_error_summary(exc: BaseException) -> str:
         summary += f": {message}"
     notes = getattr(exc, "__notes__", ())
     if isinstance(notes, (list, tuple)):
-        rendered_notes = [" ".join(note.split()) for note in notes if isinstance(note, str)]
+        rendered_notes = [
+            " ".join(note.split()) for note in notes if isinstance(note, str)
+        ]
         rendered_notes = [note for note in rendered_notes if note]
         if rendered_notes:
             summary += " [notes: " + "; ".join(rendered_notes) + "]"
     if len(summary) > _STATUS_ERROR_MAX_CHARS:
-        summary = summary[:_STATUS_ERROR_MAX_CHARS - 1].rstrip() + "…"
+        summary = summary[: _STATUS_ERROR_MAX_CHARS - 1].rstrip() + "…"
     return summary
 
 
@@ -86,8 +98,9 @@ def _accepts_keywords(callback, *names: str) -> bool:
         # Opaque callables (C extensions/proxies) cannot be inspected.  Prefer the modern
         # protocol; their own call error is then truthful rather than silently discarding lineage.
         return True
-    return (any(p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters)
-            or all(name in {p.name for p in parameters} for name in names))
+    return any(p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters) or all(
+        name in {p.name for p in parameters} for name in names
+    )
 
 
 def _explicitly_accepts_keyword(callback, name: str) -> bool:
@@ -103,13 +116,29 @@ def _explicitly_accepts_keyword(callback, name: str) -> bool:
         return False
 
 
-def _record_decision_with_lineage(store, run_id: str, app: str, decision: str, score: float,
-                                  *, source: str, profile_id: str, created_at: float) -> None:
+def _record_decision_with_lineage(
+    store,
+    run_id: str,
+    app: str,
+    decision: str,
+    score: float,
+    *,
+    source: str,
+    profile_id: str,
+    created_at: float,
+) -> None:
     """Record a landed action, carrying lineage when its store supports the modern protocol."""
     record = store.record_decision
     if _accepts_keywords(record, "profile_id", "created_at"):
-        record(run_id, app, decision, score, source=source,
-               profile_id=profile_id, created_at=created_at)
+        record(
+            run_id,
+            app,
+            decision,
+            score,
+            source=source,
+            profile_id=profile_id,
+            created_at=created_at,
+        )
     else:
         record(run_id, app, decision, score, source=source)
 
@@ -137,7 +166,9 @@ def _item_type_preflight_mismatch(driver, pick) -> str:
     except Exception:  # noqa: BLE001 — optional early check must fail open to 5.6's verifier
         return ""
     if getattr(result, "mismatch", False):
-        return str(getattr(result, "reason", "the crop and description disagree on item type"))
+        return str(
+            getattr(result, "reason", "the crop and description disagree on item type")
+        )
     return ""
 
 
@@ -199,11 +230,26 @@ def _model_item_media_ordinal(driver, pick) -> int | None:
         return None
     return ordinal
 
+
 class Worker(threading.Thread):
-    def __init__(self, app, driver: DatingAppDriver, decider: Decider, opener_service,
-                 store, run_id, pacing, stop_event: threading.Event, mode: str = "training",
-                 retrain_every: int = 1, limiter=None, max_restarts: int = 5, status=None,
-                 training_action_bridge=None, targeting_licence=_TARGETING_LICENCE_UNSET):
+    def __init__(
+        self,
+        app,
+        driver: DatingAppDriver,
+        decider: Decider,
+        opener_service,
+        store,
+        run_id,
+        pacing,
+        stop_event: threading.Event,
+        mode: str = "training",
+        retrain_every: int = 1,
+        limiter=None,
+        max_restarts: int = 5,
+        status=None,
+        training_action_bridge=None,
+        targeting_licence=_TARGETING_LICENCE_UNSET,
+    ):
         super().__init__(name=f"worker-{app}", daemon=True)
         self.app = app
         self.driver = driver
@@ -215,7 +261,9 @@ class Worker(threading.Thread):
         self.stop_event = stop_event
         if mode not in {"training", "auto"}:
             if mode == "auto_testing":
-                raise ValueError("Worker mode 'auto_testing' was retired; use 'training' or 'auto'")
+                raise ValueError(
+                    "Worker mode 'auto_testing' was retired; use 'training' or 'auto'"
+                )
             raise ValueError("Worker mode must be 'training' or 'auto'")
         self.mode = mode
         self.retrain_every = max(1, int(retrain_every))
@@ -226,8 +274,10 @@ class Worker(threading.Thread):
         self.status = status
         self.training_action_bridge = training_action_bridge
         self.training_action_supported = bool(
-            mode == "training" and app == "hinge"
-            and getattr(driver, "supports_training_decision", False))
+            mode == "training"
+            and app == "hinge"
+            and getattr(driver, "supports_training_decision", False)
+        )
         self._training_claimed_action = None
         # Set only after open_session() returns.  The normal loop finalizers
         # clear it via _finish_session(); the outer finally owns the narrow
@@ -238,7 +288,9 @@ class Worker(threading.Thread):
         # never replace (or briefly clear) this session's safety basis.
         self._targeting_licence = (
             installed_still_photo_licence()
-            if targeting_licence is _TARGETING_LICENCE_UNSET else targeting_licence)
+            if targeting_licence is _TARGETING_LICENCE_UNSET
+            else targeting_licence
+        )
 
     # --- live status (overlay + hub); no-ops when status is unset ---------
     def _stat(self, **fields) -> None:
@@ -259,8 +311,12 @@ class Worker(threading.Thread):
         """Tell the driver whether this Training or AUTO session can request an opener."""
         install = getattr(self.driver, "set_opener_enabled", None)
         if callable(install):
-            install(bool(self.opener_service is not None
-                         and not getattr(self.opener_service, "disabled", True)))
+            install(
+                bool(
+                    self.opener_service is not None
+                    and not getattr(self.opener_service, "disabled", True)
+                )
+            )
 
     def _bind_debug_run(self) -> None:
         """Give an opt-in driver the immutable Worker id before it opens a debug session.
@@ -321,8 +377,13 @@ class Worker(threading.Thread):
         if not isinstance(exc, DriverClosed):
             self._capture_failure(exc)
 
-    def _finish_session(self, state: str = "stopped", *, stop_reason: str | None = None,
-                        stop_kind: str | None = None) -> None:
+    def _finish_session(
+        self,
+        state: str = "stopped",
+        *,
+        stop_reason: str | None = None,
+        stop_kind: str | None = None,
+    ) -> None:
         """Publish a terminal active-mode state, close the driver, and release Training actions."""
         # ``detail`` describes only in-flight work.  In particular, a long Hinge capture can
         # publish photo-item progress just before an opener failure; never leave that old
@@ -338,8 +399,10 @@ class Worker(threading.Thread):
         # rather than at each preflight/capture call site, so every safe refusal is visible to
         # the operator alongside the exact live-build mismatch that caused it.
         if stop_kind == "targeting_calibration" and stop_reason:
-            print(f"{self.app.title()}: stopped — targeting calibration must be renewed: "
-                  f"{stop_reason}")
+            print(
+                f"{self.app.title()}: stopped — targeting calibration must be renewed: "
+                f"{stop_reason}"
+            )
         try:
             self.driver.close()
         finally:
@@ -359,8 +422,14 @@ class Worker(threading.Thread):
         cause -- not whichever symptom that particular worker's own opener call hit."""
         return getattr(self.opener_service, "exhausted_reason", None)
 
-    def _discard_staged_opener(self, pick, *, decision_source: str, profile_key: str = "",
-                               decision: str = DECISION_NEVER_SENT) -> None:
+    def _discard_staged_opener(
+        self,
+        pick,
+        *,
+        decision_source: str,
+        profile_key: str = "",
+        decision: str = DECISION_NEVER_SENT,
+    ) -> None:
         """Best-effort telemetry for a staged AUTO/Training opener draft that will never be
         committed: an explicit Dislike, a Stop, a targeting refusal, or a driver exception -- see
         OpenerService.discard_opener's docstring for why this is the other half of commit_opener
@@ -392,8 +461,11 @@ class Worker(threading.Thread):
         """
         discard = getattr(self.opener_service, "discard_opener", None)
         if pick is not None and callable(discard):
-            discard_kwargs = {"decision": decision, "decision_source": decision_source,
-                              "decision_created_at": time.time()}
+            discard_kwargs = {
+                "decision": decision,
+                "decision_source": decision_source,
+                "decision_created_at": time.time(),
+            }
             if _accepts_keywords(discard, "profile_key"):
                 discard_kwargs["profile_key"] = profile_key
             discard(pick, **discard_kwargs)
@@ -482,16 +554,21 @@ class Worker(threading.Thread):
 
     def _targeting_calibration_stop_reason(self, details: str) -> str:
         mode = "Training" if self.mode == "training" else "AUTO"
-        outcome = ("No opener, action, or label was produced."
-                   if self.mode == "training" else "No opener or like was sent.")
+        outcome = (
+            "No opener, action, or label was produced."
+            if self.mode == "training"
+            else "No opener or like was sent."
+        )
         return (
             f"{mode} cannot prepare a verifiable targeted opener because the live Hinge "
             "session has no valid schema-v3 targeting calibration. Capture and validate a "
             f"fresh targeting calibration for the live Hinge build/frame before resuming "
-            f"{mode}. Details: {details}. {outcome}")
+            f"{mode}. Details: {details}. {outcome}"
+        )
 
-    def _request_training_decision(self, profile, pick, pre_send_frame: bytes,
-                                   evidence=None) -> str:
+    def _request_training_decision(
+        self, profile, pick, pre_send_frame: bytes, evidence=None
+    ) -> str:
         """Publish one typed, verified composer and wait for its human decision.
 
         The driver invokes this only after its keyboard-hide/re-verification boundary.  The
@@ -517,18 +594,31 @@ class Worker(threading.Thread):
             {"item_media_ordinal": media_ordinal}
             if media_ordinal is not None
             and _explicitly_accepts_keyword(
-                bridge.publish_checkpoint, "item_media_ordinal") else {})
+                bridge.publish_checkpoint, "item_media_ordinal"
+            )
+            else {}
+        )
         try:
             # Profile.photos is the capture's existing top-to-bottom phone-scroll sequence.
             # The verified post-type frame remains the approval image; these additional frames
             # let the reviewer inspect the rest of the same profile without touching the phone.
             card = bridge.publish_checkpoint(
-                self, pre_send_frame, pick, evidence,
-                profile_frames=getattr(profile, "photos", ()) or (), **ordinal_kwargs)
+                self,
+                pre_send_frame,
+                pick,
+                evidence,
+                profile_frames=getattr(profile, "photos", ()) or (),
+                **ordinal_kwargs,
+            )
         except (RuntimeError, ValueError) as exc:
-            self._stat(state="stopped", stop_reason=(
-                "Training checkpoint could not be published; no action was issued: "
-                f"{exc}"), stop_kind="approval")
+            self._stat(
+                state="stopped",
+                stop_reason=(
+                    "Training checkpoint could not be published; no action was issued: "
+                    f"{exc}"
+                ),
+                stop_kind="approval",
+            )
             self.stop_event.set()
             return "stop"
         self._stat(state="waiting_approval", detail=None)
@@ -545,9 +635,13 @@ class Worker(threading.Thread):
         self._stat(state="acting", detail=None)
         return action["command"]
 
-    def _training_persistence_status(self, outcome: str, stage: str,
-                                     completed: int | None = None,
-                                     total: int | None = None) -> None:
+    def _training_persistence_status(
+        self,
+        outcome: str,
+        stage: str,
+        completed: int | None = None,
+        total: int | None = None,
+    ) -> None:
         """Show durable-write progress after the phone has already accepted a choice.
 
         The Hinge decision is irreversible before profile archival begins.  Keeping that fact in
@@ -557,10 +651,15 @@ class Worker(threading.Thread):
         """
         landed = f"{outcome.title()} landed in {self.app.title()}"
         if stage == "profile_upload":
-            if (type(completed) is int and type(total) is int and total > 0
-                    and 0 <= completed <= total):
-                detail = (f"{landed}; archiving profile screenshots "
-                          f"({completed}/{total})")
+            if (
+                type(completed) is int
+                and type(total) is int
+                and total > 0
+                and 0 <= completed <= total
+            ):
+                detail = (
+                    f"{landed}; archiving profile screenshots ({completed}/{total})"
+                )
             else:
                 detail = f"{landed}; archiving profile screenshots"
         elif stage == "profile_uploaded":
@@ -570,7 +669,9 @@ class Worker(threading.Thread):
         elif stage == "label":
             detail = f"{landed}; recording the decision and training label"
         elif stage == "flush":
-            detail = f"{landed}; archive complete—flushing the label and evidence to storage"
+            detail = (
+                f"{landed}; archive complete—flushing the label and evidence to storage"
+            )
         else:
             detail = f"{landed}; archiving the reviewed profile and training data"
         self._publish_status(mode="training", state="acting", detail=detail)
@@ -594,17 +695,26 @@ class Worker(threading.Thread):
         The driver's own message is appended whole. It names the app, the stage, and what the
         screen was left showing, and it is written to be read by the person walking over to the
         phone."""
-        stage = {"preflight": "checking", "navigate": "reaching", "verify": "confirming"}.get(
-            exc.stage, "targeting")
+        stage = {
+            "preflight": "checking",
+            "navigate": "reaching",
+            "verify": "confirming",
+        }.get(exc.stage, "targeting")
         space = f" ({exc.index_space})" if exc.index_space else ""
-        intended = "none was named" if exc.intended is None else f"item {exc.intended}{space}"
-        actual = ("the run never got far enough to see what it would have hit"
-                  if exc.actual is None else f"item {exc.actual}{space}")
-        return (f"the like was NOT sent: {stage} the item the opener was written about failed. "
-                f"Intended: {intended}. Actual: {actual}. Liking a different item instead is "
-                f"never an option (ops/OPENER-REDESIGN.md 5.6), so the run stops with the screen "
-                f"left exactly as it is for debugging. {exc}")
-
+        intended = (
+            "none was named" if exc.intended is None else f"item {exc.intended}{space}"
+        )
+        actual = (
+            "the run never got far enough to see what it would have hit"
+            if exc.actual is None
+            else f"item {exc.actual}{space}"
+        )
+        return (
+            f"the like was NOT sent: {stage} the item the opener was written about failed. "
+            f"Intended: {intended}. Actual: {actual}. Liking a different item instead is "
+            f"never an option (ops/OPENER-REDESIGN.md 5.6), so the run stops with the screen "
+            f"left exactly as it is for debugging. {exc}"
+        )
 
     def _capture_profile(self, method: str):
         """Capture a profile, passing stop/progress callbacks only to opt-in drivers."""
@@ -629,8 +739,11 @@ class Worker(threading.Thread):
                 progress_installed = True
             except Exception:  # noqa: BLE001 -- optional status hook must not block capture
                 pass
-        self._publish_status(mode=self.mode, state="scoring",
-                             detail="reading this profile and verifying its photo items")
+        self._publish_status(
+            mode=self.mode,
+            state="scoring",
+            detail="reading this profile and verifying its photo items",
+        )
         try:
             if getattr(self.driver, "supports_interruptible_capture", False):
                 return capture(should_stop=self.stop_event.is_set)
@@ -646,9 +759,6 @@ class Worker(threading.Thread):
             # potentially slow Gemini model cascade, rather than letting a completed capture
             # look alive while the Hub's timestamp goes stale.
             self._publish_status(mode=self.mode, state="scoring", detail=None)
-
-
-
 
     def run(self) -> None:
         """Run under the targeting licence captured before this thread started."""
@@ -678,11 +788,12 @@ class Worker(threading.Thread):
             print(f"{exc}; Stopping run so buffered data can be saved.")
             self.stop_event.set()
         except Exception as exc:  # noqa: BLE001
-            print(f"{self.app.title()} unexpected error in {self.mode} mode; HALTING "
-                  f"(no restart) so nothing swipes blindly and the debug logs survive:")
+            print(
+                f"{self.app.title()} unexpected error in {self.mode} mode; HALTING "
+                f"(no restart) so nothing swipes blindly and the debug logs survive:"
+            )
             traceback.print_exc()
-            self._stat(state="error", detail=None,
-                       error=_terminal_error_summary(exc))
+            self._stat(state="error", detail=None, error=_terminal_error_summary(exc))
             self.stop_event.set()
         finally:
             try:
@@ -714,22 +825,40 @@ class Worker(threading.Thread):
         method owns the durable decision/profile/embedding transaction afterwards.
         """
         if self.training_action_bridge is None:
-            self._stat(state="stopped", stop_reason=(
-                "Training requires the local Hub decision bridge; no automation was started"))
+            self._stat(
+                state="stopped",
+                stop_reason=(
+                    "Training requires the local Hub decision bridge; no automation was started"
+                ),
+            )
             self.stop_event.set()
             return
-        if (not self.training_action_supported
-                or not callable(getattr(self.driver, "set_training_decision", None))):
-            self._stat(state="stopped", stop_reason=(
-                "Training requires Hinge's verified Hub Like/Dislike decision hook; "
-                "no automation was started"), stop_kind="targeting")
+        if not self.training_action_supported or not callable(
+            getattr(self.driver, "set_training_decision", None)
+        ):
+            self._stat(
+                state="stopped",
+                stop_reason=(
+                    "Training requires Hinge's verified Hub Like/Dislike decision hook; "
+                    "no automation was started"
+                ),
+                stop_kind="targeting",
+            )
             self.stop_event.set()
             return
-        if (self.opener_service is None or getattr(self.opener_service, "disabled", True)
-                or not getattr(self.driver, "accepts_opener", False)):
-            self._stat(state="stopped", stop_reason=(
-                "Training requires an enabled opener service and an opener-capable driver; "
-                "no automation was started"), stop_kind="opener")
+        if (
+            self.opener_service is None
+            or getattr(self.opener_service, "disabled", True)
+            or not getattr(self.driver, "accepts_opener", False)
+        ):
+            self._stat(
+                state="stopped",
+                stop_reason=(
+                    "Training requires an enabled opener service and an opener-capable driver; "
+                    "no automation was started"
+                ),
+                stop_kind="opener",
+            )
             self.stop_event.set()
             return
 
@@ -752,7 +881,8 @@ class Worker(threading.Thread):
             stop_reason = self._targeting_calibration_stop_reason(targeting_blocker)
             self.stop_event.set()
             self._finish_session(
-                "stopped", stop_reason=stop_reason, stop_kind="targeting_calibration")
+                "stopped", stop_reason=stop_reason, stop_kind="targeting_calibration"
+            )
             return
         self._stat(mode="training", state="scoring")
         self._actions_since_break = 0
@@ -762,11 +892,14 @@ class Worker(threading.Thread):
         labels_added = 0
         last_retrained = 0
         pending_error = False
-        has_daily_limit = self.limiter is not None and self.limiter.max_per_day is not None
+        has_daily_limit = (
+            self.limiter is not None and self.limiter.max_per_day is not None
+        )
         # Training decisions carry ``source=manual``.  Do not ask the historical AUTO-only
         # counter here: that would make a daily cap silently reset between Training runs.
-        today0 = (self.store.count_today(self.app, source="manual")
-                  if has_daily_limit else 0)
+        today0 = (
+            self.store.count_today(self.app, source="manual") if has_daily_limit else 0
+        )
         today_acted = 0
         today_date = date.today()
         terminal_state, stop_reason, stop_kind = "stopped", None, None
@@ -775,21 +908,37 @@ class Worker(threading.Thread):
                 targeting_blocker = self._live_targeting_calibration_blocker()
                 if targeting_blocker:
                     terminal_state = "stopped"
-                    stop_reason = self._targeting_calibration_stop_reason(targeting_blocker)
+                    stop_reason = self._targeting_calibration_stop_reason(
+                        targeting_blocker
+                    )
                     stop_kind = "targeting_calibration"
-                    self._stat(state=terminal_state, stop_reason=stop_reason,
-                               stop_kind=stop_kind)
+                    self._stat(
+                        state=terminal_state,
+                        stop_reason=stop_reason,
+                        stop_kind=stop_kind,
+                    )
                     self.stop_event.set()
                     break
                 if has_daily_limit:
                     today = date.today()
                     if today != today_date:
                         today0, today_acted, today_date = (
-                            self.store.count_today(self.app, source="manual"), 0, today)
+                            self.store.count_today(self.app, source="manual"),
+                            0,
+                            today,
+                        )
                 blocked = self.driver.blocked_reason()
                 if blocked is not None:
-                    terminal_state, stop_reason, stop_kind = "blocked", blocked, "deck_blocked"
-                    self._stat(state=terminal_state, stop_reason=stop_reason, stop_kind=stop_kind)
+                    terminal_state, stop_reason, stop_kind = (
+                        "blocked",
+                        blocked,
+                        "deck_blocked",
+                    )
+                    self._stat(
+                        state=terminal_state,
+                        stop_reason=stop_reason,
+                        stop_kind=stop_kind,
+                    )
                     self.stop_event.set()
                     break
                 if self.driver.out_of_profiles():
@@ -818,10 +967,16 @@ class Worker(threading.Thread):
                         # driver hook in this module: a driver without the method (every
                         # non-Hinge driver today) keeps the historical "deck_blocked" answer,
                         # and so does one that latched a reason without classifying it.
-                        stop_kind = getattr(
-                            self.driver, "blocked_stop_kind", lambda: None)() or "deck_blocked"
+                        stop_kind = (
+                            getattr(self.driver, "blocked_stop_kind", lambda: None)()
+                            or "deck_blocked"
+                        )
                         terminal_state, stop_reason = "blocked", blocked
-                        self._stat(state=terminal_state, stop_reason=stop_reason, stop_kind=stop_kind)
+                        self._stat(
+                            state=terminal_state,
+                            stop_reason=stop_reason,
+                            stop_kind=stop_kind,
+                        )
                         self.stop_event.set()
                     break
                 # Captured HERE, before anything else touches this profile: the driver's item
@@ -830,8 +985,10 @@ class Worker(threading.Thread):
                 # is the last point this profile's attribution key can be read at all.
                 profile_key = self._current_profile_key()
                 self._publish_status(
-                    mode="training", state="scoring",
-                    detail="checking the captured profile for a safe target")
+                    mode="training",
+                    state="scoring",
+                    detail="checking the captured profile for a safe target",
+                )
                 if not profile.photos:
                     self._stat(last_decision="no_photos", state="scoring", detail=None)
                     self.stop_event.wait(_NO_PHOTO_RETRY_S)
@@ -864,43 +1021,65 @@ class Worker(threading.Thread):
                 if unavailable_kind == "targeting_calibration":
                     stop_reason = self._targeting_calibration_stop_reason(unavailable)
                     stop_kind = "targeting_calibration"
-                    self._stat(state="stopped", stop_reason=stop_reason, stop_kind=stop_kind)
+                    self._stat(
+                        state="stopped", stop_reason=stop_reason, stop_kind=stop_kind
+                    )
                     self.stop_event.set()
                     break
                 if unavailable or unnumbered:
                     stop_reason = (
                         "Training could not prepare a verifiable targeted opener for this profile: "
-                        f"{unavailable or unnumbered}. No action or label was recorded.")
+                        f"{unavailable or unnumbered}. No action or label was recorded."
+                    )
                     stop_kind = "opener"
-                    self._stat(state="stopped", stop_reason=stop_reason, stop_kind=stop_kind)
+                    self._stat(
+                        state="stopped", stop_reason=stop_reason, stop_kind=stop_kind
+                    )
                     self.stop_event.set()
                     break
-                items = ItemRequest.from_profile(profile) if getattr(profile, "items", ()) else None
+                items = (
+                    ItemRequest.from_profile(profile)
+                    if getattr(profile, "items", ())
+                    else None
+                )
                 # The loop-top probe protects the whole capture. Recheck at the provider
                 # boundary too: Hinge can update or the display mode can change while the
                 # profile is being read, and an opener must never be requested from crops whose
                 # calibration became invalid during that read.
                 targeting_blocker = self._live_targeting_calibration_blocker()
                 if targeting_blocker:
-                    stop_reason = self._targeting_calibration_stop_reason(targeting_blocker)
+                    stop_reason = self._targeting_calibration_stop_reason(
+                        targeting_blocker
+                    )
                     stop_kind = "targeting_calibration"
-                    self._stat(state="stopped", stop_reason=stop_reason, stop_kind=stop_kind)
+                    self._stat(
+                        state="stopped", stop_reason=stop_reason, stop_kind=stop_kind
+                    )
                     self.stop_event.set()
                     break
                 opener_kwargs = {"items": items, "should_stop": self.stop_event.is_set}
-                if (callable(getattr(self.opener_service, "commit_opener", None))
-                        and _accepts_keywords(self.opener_service.maybe_opener, "stage")):
+                if callable(
+                    getattr(self.opener_service, "commit_opener", None)
+                ) and _accepts_keywords(self.opener_service.maybe_opener, "stage"):
                     opener_kwargs["stage"] = True
                 # This status deliberately covers the whole configured Gemini cascade,
                 # including a timeout or model fallback.  It is observational only: no request
                 # shape, retry policy, timing, or model selection changes here.
                 self._publish_status(
-                    mode="training", state="scoring", detail="generating a targeted opener")
+                    mode="training",
+                    state="scoring",
+                    detail="generating a targeted opener",
+                )
                 pick = self.opener_service.maybe_opener(
-                    self.run_id, self.app, profile, **opener_kwargs)
-                if self.stop_event.is_set() or getattr(self.opener_service, "stop_requested", False):
+                    self.run_id, self.app, profile, **opener_kwargs
+                )
+                if self.stop_event.is_set() or getattr(
+                    self.opener_service, "stop_requested", False
+                ):
                     stop_reason, stop_kind = self._opener_stop_reason(), "opener"
-                    self._stat(state="stopped", stop_reason=stop_reason, stop_kind=stop_kind)
+                    self._stat(
+                        state="stopped", stop_reason=stop_reason, stop_kind=stop_kind
+                    )
                     self.stop_event.set()
                     # EVERY post-generation exit in this loop discards the staged draft, for the
                     # reason the Dislike branch below spells out at length: the provider call
@@ -921,37 +1100,54 @@ class Worker(threading.Thread):
                     # docstring: `pick is None` and an already-spent staged record are both
                     # no-ops, and it never raises into this loop.
                     self._discard_staged_opener(
-                        pick, decision_source="manual", profile_key=profile_key)
+                        pick, decision_source="manual", profile_key=profile_key
+                    )
                     break
                 text = getattr(pick, "text", None)
                 if not isinstance(text, str) or not text.strip():
-                    stop_reason = ("Training requires a complete generated opener before a profile "
-                                   "can be reviewed; no action or label was recorded")
-                    self._stat(state="stopped", stop_reason=stop_reason, stop_kind="opener")
+                    stop_reason = (
+                        "Training requires a complete generated opener before a profile "
+                        "can be reviewed; no action or label was recorded"
+                    )
+                    self._stat(
+                        state="stopped", stop_reason=stop_reason, stop_kind="opener"
+                    )
                     self.stop_event.set()
                     # A malformed pick is still a real billed attempt, and a draft whose TEXT is
                     # unusable is exactly the kind of row the corpus report most needs to see.
                     # A no-pick/unstaged `pick` degrades to a no-op here (see the first exit).
                     self._discard_staged_opener(
-                        pick, decision_source="manual", profile_key=profile_key)
+                        pick, decision_source="manual", profile_key=profile_key
+                    )
                     break
                 targeted = {}
-                if (getattr(pick, "index", ITEM_INDEX_ABSENT) != ITEM_INDEX_ABSENT
-                        and getattr(pick, "index_space", None) == INDEX_SPACE_MODEL_ITEMS):
+                if (
+                    getattr(pick, "index", ITEM_INDEX_ABSENT) != ITEM_INDEX_ABSENT
+                    and getattr(pick, "index_space", None) == INDEX_SPACE_MODEL_ITEMS
+                ):
                     targeted = {"item_index": None, "model_item_index": pick.index}
-                elif (getattr(self.driver, "supports_capture_order_training_target", False)
-                      and getattr(pick, "capture_order_index", None) is not None):
+                elif (
+                    getattr(
+                        self.driver, "supports_capture_order_training_target", False
+                    )
+                    and getattr(pick, "capture_order_index", None) is not None
+                ):
                     targeted = {"item_index": pick.capture_order_index}
                 if not targeted:
-                    stop_reason = ("Training opener did not name a target the driver can verify; "
-                                   "no action or label was recorded")
-                    self._stat(state="stopped", stop_reason=stop_reason, stop_kind="opener")
+                    stop_reason = (
+                        "Training opener did not name a target the driver can verify; "
+                        "no action or label was recorded"
+                    )
+                    self._stat(
+                        state="stopped", stop_reason=stop_reason, stop_kind="opener"
+                    )
                     self.stop_event.set()
                     # The opener itself generated fine; only its target could not be resolved, so
                     # no review checkpoint was ever prepared for this profile. AUTO discards its
                     # identical "not targeted" refusal for the same reason (see _auto_loop).
                     self._discard_staged_opener(
-                        pick, decision_source="manual", profile_key=profile_key)
+                        pick, decision_source="manual", profile_key=profile_key
+                    )
                     break
                 if self.limiter and not self.limiter.allow_like(liked):
                     terminal_state = "rate_limited"
@@ -960,7 +1156,8 @@ class Worker(threading.Thread):
                     # billed, so the draft is abandoned with the card exactly like the refusals
                     # above -- a rate-limited run must not be a hole in the opener corpus.
                     self._discard_staged_opener(
-                        pick, decision_source="manual", profile_key=profile_key)
+                        pick, decision_source="manual", profile_key=profile_key
+                    )
                     break
 
                 self._training_claimed_action = None
@@ -968,7 +1165,8 @@ class Worker(threading.Thread):
                 # Give an opt-in driver its private generation notes only for this checkpoint so
                 # an unacted draft remains diagnosable without pretending it is an opener row.
                 generation_context_hook = getattr(
-                    self.driver, "set_staged_opener_generation_context", None)
+                    self.driver, "set_staged_opener_generation_context", None
+                )
                 if callable(generation_context_hook):
                     try:
                         generation_context_hook(_staged_opener_generation_context(pick))
@@ -977,14 +1175,22 @@ class Worker(threading.Thread):
                 training_decision_installed = False
                 try:
                     self.driver.set_training_decision(
-                        lambda frame, evidence, profile=profile, pick=pick: self._request_training_decision(
-                            profile, pick, frame, evidence))
+                        lambda frame, evidence, profile=profile, pick=pick: (
+                            self._request_training_decision(
+                                profile, pick, frame, evidence
+                            )
+                        )
+                    )
                     training_decision_installed = True
                     self._publish_status(
-                        mode="training", state="acting",
-                        detail="preparing the review checkpoint")
+                        mode="training",
+                        state="acting",
+                        detail="preparing the review checkpoint",
+                    )
                     like_kwargs = dict(targeted)
-                    if getattr(self.driver, "supports_interruptible_like_navigation", False):
+                    if getattr(
+                        self.driver, "supports_interruptible_like_navigation", False
+                    ):
                         like_kwargs["should_stop"] = self.stop_event.is_set
                     outcome = self.driver.like(text, **like_kwargs)
                 except ActionCancelled:
@@ -1008,12 +1214,18 @@ class Worker(threading.Thread):
                     # decision, opener, label and flush have all landed). An abandoned draft is
                     # the same kind of record, just a different `decision`.
                     self._discard_staged_opener(
-                        pick, decision_source="manual", profile_key=profile_key,
-                        decision=self._post_like_discard_decision())
+                        pick,
+                        decision_source="manual",
+                        profile_key=profile_key,
+                        decision=self._post_like_discard_decision(),
+                    )
                     action = self._training_claimed_action
                     if action is not None:
                         self.training_action_bridge.complete(
-                            action, status="aborted", reason="training decision was cancelled")
+                            action,
+                            status="aborted",
+                            reason="training decision was cancelled",
+                        )
                     raise
                 except Exception:
                     # Same reasoning as AUTO's generic like() handler: anything raised while
@@ -1031,12 +1243,18 @@ class Worker(threading.Thread):
                     # boundary this exception came from instead of filing every one of them as
                     # a draft nobody ever received.
                     self._discard_staged_opener(
-                        pick, decision_source="manual", profile_key=profile_key,
-                        decision=self._post_like_discard_decision())
+                        pick,
+                        decision_source="manual",
+                        profile_key=profile_key,
+                        decision=self._post_like_discard_decision(),
+                    )
                     action = self._training_claimed_action
                     if action is not None:
                         self.training_action_bridge.complete(
-                            action, status="failed", reason="the device action did not complete")
+                            action,
+                            status="failed",
+                            reason="the device action did not complete",
+                        )
                     raise
                 finally:
                     # Keep the established callback semantics: if installation itself raised,
@@ -1075,17 +1293,28 @@ class Worker(threading.Thread):
                     # never sent is not.
                     if outcome not in {"like", "dislike"}:
                         self._discard_staged_opener(
-                            pick, decision_source="manual", profile_key=profile_key)
+                            pick, decision_source="manual", profile_key=profile_key
+                        )
                     if action is not None:
                         self.training_action_bridge.complete(
-                            action, status="aborted", reason="training decision was cancelled")
+                            action,
+                            status="aborted",
+                            reason="training decision was cancelled",
+                        )
                     if self.stop_event.is_set():
                         break
-                    raise RuntimeError("training driver returned no verified Like/Dislike outcome")
+                    raise RuntimeError(
+                        "training driver returned no verified Like/Dislike outcome"
+                    )
                 if outcome != action.get("command"):
                     self.training_action_bridge.complete(
-                        action, status="failed", reason="driver outcome disagreed with the Hub decision")
-                    raise RuntimeError("training driver outcome disagreed with the Hub decision")
+                        action,
+                        status="failed",
+                        reason="driver outcome disagreed with the Hub decision",
+                    )
+                    raise RuntimeError(
+                        "training driver outcome disagreed with the Hub decision"
+                    )
 
                 # The verified Hinge action has now physically landed.  All following work is
                 # durable archival, not device input; publish that boundary before a potentially
@@ -1101,40 +1330,59 @@ class Worker(threading.Thread):
                     vec = self.decider.embed(profile)
                     if vec is None:
                         raise RuntimeError(
-                            "the training profile could not be embedded; no label was saved")
+                            "the training profile could not be embedded; no label was saved"
+                        )
                     record_profile = self.store.record_profile
-                    profile_kwargs = dict(source="manual", photos=profile.photos, **metadata)
+                    profile_kwargs = dict(
+                        source="manual", photos=profile.photos, **metadata
+                    )
                     # BigQuery can report each image upload.  Local/legacy stores deliberately
                     # do not receive this optional UI-only callback through ``**metadata``.
                     if _explicitly_accepts_keyword(record_profile, "progress"):
                         profile_kwargs["progress"] = (
-                            lambda stage, completed=None, total=None, outcome=outcome:
-                            self._training_persistence_status(
-                                outcome, stage, completed, total))
+                            lambda stage, completed=None, total=None, outcome=outcome: (
+                                self._training_persistence_status(
+                                    outcome, stage, completed, total
+                                )
+                            )
+                        )
                     archived = record_profile(
-                        self.run_id, self.app, profile_id, outcome == "like", **profile_kwargs)
+                        self.run_id,
+                        self.app,
+                        profile_id,
+                        outcome == "like",
+                        **profile_kwargs,
+                    )
                     if archived is False:
                         raise RuntimeError(
-                            "the training profile could not be archived; no label was saved")
+                            "the training profile could not be archived; no label was saved"
+                        )
                     if outcome == "like":
                         self._training_persistence_status(outcome, "opener_evidence")
                         commit = getattr(self.opener_service, "commit_opener", None)
                         if callable(commit):
                             landed_evidence = None
                             evidence_hook = getattr(
-                                self.driver, "landed_auto_opener_evidence", None)
+                                self.driver, "landed_auto_opener_evidence", None
+                            )
                             if callable(evidence_hook):
                                 landed_evidence = evidence_hook()
-                            if _accepts_keywords(commit, "profile_id", "decision", "decision_source",
-                                                 "decision_created_at"):
+                            if _accepts_keywords(
+                                commit,
+                                "profile_id",
+                                "decision",
+                                "decision_source",
+                                "decision_created_at",
+                            ):
                                 commit_kwargs = {
                                     "profile_id": profile_id,
                                     "decision": "like",
                                     "decision_source": "manual",
                                     "decision_created_at": decided_at,
                                 }
-                                if (landed_evidence is not None
-                                        and _accepts_keywords(commit, "pre_send_evidence")):
+                                if landed_evidence is not None and _accepts_keywords(
+                                    commit, "pre_send_evidence"
+                                ):
                                     commit_kwargs["pre_send_evidence"] = landed_evidence
                                 if _accepts_keywords(commit, "profile_key"):
                                     commit_kwargs["profile_key"] = profile_key
@@ -1147,7 +1395,8 @@ class Worker(threading.Thread):
                             # completed when its typed opener/evidence was not persisted.
                             if committed is False:
                                 raise RuntimeError(
-                                    "the landed training opener could not be persisted")
+                                    "the landed training opener could not be persisted"
+                                )
                     else:
                         # The reviewer chose Dislike. Until now this staged draft was simply
                         # dropped with the card: the durable `openers` table only ever recorded
@@ -1162,24 +1411,40 @@ class Worker(threading.Thread):
                         discard = getattr(self.opener_service, "discard_opener", None)
                         if callable(discard):
                             discard_kwargs = {
-                                "profile_id": profile_id, "decision": "dislike",
-                                "decision_source": "manual", "decision_created_at": decided_at,
+                                "profile_id": profile_id,
+                                "decision": "dislike",
+                                "decision_source": "manual",
+                                "decision_created_at": decided_at,
                             }
                             if _accepts_keywords(discard, "profile_key"):
                                 discard_kwargs["profile_key"] = profile_key
                             discard(pick, **discard_kwargs)
                     self._training_persistence_status(outcome, "label")
                     _record_decision_with_lineage(
-                        self.store, self.run_id, self.app, outcome,
-                        1.0 if outcome == "like" else 0.0, source="manual",
-                        profile_id=profile_id, created_at=decided_at)
+                        self.store,
+                        self.run_id,
+                        self.app,
+                        outcome,
+                        1.0 if outcome == "like" else 0.0,
+                        source="manual",
+                        profile_id=profile_id,
+                        created_at=decided_at,
+                    )
                     self.store.add_label(
-                        self.run_id, self.app, outcome == "like", vec, source="manual",
-                        profile_id=profile_id, profile_name=profile.name, **metadata)
+                        self.run_id,
+                        self.app,
+                        outcome == "like",
+                        vec,
+                        source="manual",
+                        profile_id=profile_id,
+                        profile_name=profile.name,
+                        **metadata,
+                    )
                     flush = getattr(self.store, "flush", None)
                     if not callable(flush):
                         raise RuntimeError(
-                            "Training requires a store with a durable flush operation")
+                            "Training requires a store with a durable flush operation"
+                        )
                     # BigQuery deliberately buffers each table independently.  A Hub action is
                     # not completed until its decision, opener/evidence, archive, and label have
                     # crossed that boundary; otherwise a process loss can turn a green Hub
@@ -1189,7 +1454,10 @@ class Worker(threading.Thread):
                     self.training_action_bridge.complete(action, status="completed")
                 except Exception:
                     self.training_action_bridge.complete(
-                        action, status="failed", reason="training action could not be persisted")
+                        action,
+                        status="failed",
+                        reason="training action could not be persisted",
+                    )
                     raise
                 # Completion means durable action data exists.  Training/repainting is useful
                 # follow-up work, but a retrain/status failure must never rewrite that fact as a
@@ -1205,8 +1473,10 @@ class Worker(threading.Thread):
                 # ``detail`` alone, so a clear placed before it would leave the Hub asserting an
                 # unfinished device action for the whole pacing window instead of a finished one.
                 self._publish_status(
-                    mode="training", state="scoring",
-                    detail=f"{outcome.title()} recorded and saved; pacing before the next profile")
+                    mode="training",
+                    state="scoring",
+                    detail=f"{outcome.title()} recorded and saved; pacing before the next profile",
+                )
                 if labels_added % self.retrain_every == 0:
                     self._retrain_after_labels(labels_added)
                     last_retrained = labels_added
@@ -1214,8 +1484,9 @@ class Worker(threading.Thread):
                 today_acted += 1
                 if outcome == "like":
                     liked += 1
-                self._pace(outcome, profile=profile,
-                            score=1.0 if outcome == "like" else 0.0)
+                self._pace(
+                    outcome, profile=profile, score=1.0 if outcome == "like" else 0.0
+                )
                 self._maybe_session_break()
         except ActionCancelled:
             # Stop can arrive while the driver is waiting for the Hub's Training
@@ -1225,7 +1496,9 @@ class Worker(threading.Thread):
             raise
         except DeckBlockedError as exc:
             terminal_state, stop_reason, stop_kind = "blocked", str(exc), "deck_blocked"
-            self._stat(state=terminal_state, stop_reason=stop_reason, stop_kind=stop_kind)
+            self._stat(
+                state=terminal_state, stop_reason=stop_reason, stop_kind=stop_kind
+            )
             self.stop_event.set()
         except Exception as exc:
             pending_error = True
@@ -1241,10 +1514,14 @@ class Worker(threading.Thread):
                     except Exception:
                         if not pending_error:
                             raise
-                        print(f"{self.app.title()} final training retrain skipped after shutdown error:")
+                        print(
+                            f"{self.app.title()} final training retrain skipped after shutdown error:"
+                        )
                         traceback.print_exc()
             finally:
-                self._finish_session(terminal_state, stop_reason=stop_reason, stop_kind=stop_kind)
+                self._finish_session(
+                    terminal_state, stop_reason=stop_reason, stop_kind=stop_kind
+                )
 
     # --- autonomous: the bot swipes ------------------------------------
     def _auto_loop(self) -> None:
@@ -1260,7 +1537,9 @@ class Worker(threading.Thread):
         # only make a marginal model like more conservative; it never manufactures a like.
         # Fakes/third-party deciders need not expose the underlying model, hence the guarded
         # configured-threshold lookup.
-        configured_threshold = getattr(getattr(self.decider, "model", None), "threshold", 0.5)
+        configured_threshold = getattr(
+            getattr(self.decider, "model", None), "threshold", 0.5
+        )
         try:
             configured_threshold = float(configured_threshold)
         except (TypeError, ValueError):
@@ -1297,32 +1576,47 @@ class Worker(threading.Thread):
         # A no-op RateLimiter (all fields None, the shipped default) is still truthy.
         # Daily history is needed only for max_per_day; querying it for an uncapped run
         # adds startup latency and can turn an irrelevant store read failure into a halt.
-        has_daily_limit = (self.limiter is not None
-                           and self.limiter.max_per_day is not None)
+        has_daily_limit = (
+            self.limiter is not None and self.limiter.max_per_day is not None
+        )
         today0 = self.store.count_today(self.app) if has_daily_limit else 0
-        today_acted = 0            # actions this worker made since today0 was last measured
-        today_date = date.today()  # LOCAL day — matches the store's count_today() day boundary
+        today_acted = 0  # actions this worker made since today0 was last measured
+        today_date = (
+            date.today()
+        )  # LOCAL day — matches the store's count_today() day boundary
         self._open_session()
         targeting_blocker = self._live_targeting_calibration_blocker()
         if targeting_blocker:
             stop_reason = self._targeting_calibration_stop_reason(targeting_blocker)
             self.stop_event.set()
             self._finish_session(
-                "stopped", stop_reason=stop_reason, stop_kind="targeting_calibration")
+                "stopped", stop_reason=stop_reason, stop_kind="targeting_calibration"
+            )
             return
         self._stat(mode=self.mode, state="scoring")
-        terminal_state = "stopped"            # overwritten below when the loop ends for a known reason
-        stop_reason = None                    # set for an OpenerService- or deck-blocked stop; see _finish_session
-        stop_kind = None                      # disambiguates stop_reason's source; see _finish_session/status.py
+        terminal_state = (
+            "stopped"  # overwritten below when the loop ends for a known reason
+        )
+        stop_reason = (
+            None  # set for an OpenerService- or deck-blocked stop; see _finish_session
+        )
+        stop_kind = (
+            None  # disambiguates stop_reason's source; see _finish_session/status.py
+        )
         try:
             while not self.stop_event.is_set():
                 targeting_blocker = self._live_targeting_calibration_blocker()
                 if targeting_blocker:
                     terminal_state = "stopped"
-                    stop_reason = self._targeting_calibration_stop_reason(targeting_blocker)
+                    stop_reason = self._targeting_calibration_stop_reason(
+                        targeting_blocker
+                    )
                     stop_kind = "targeting_calibration"
-                    self._stat(state=terminal_state, stop_reason=stop_reason,
-                               stop_kind=stop_kind)
+                    self._stat(
+                        state=terminal_state,
+                        stop_reason=stop_reason,
+                        stop_kind=stop_kind,
+                    )
                     self.stop_event.set()
                     break
                 if has_daily_limit:
@@ -1355,7 +1649,11 @@ class Worker(threading.Thread):
                     terminal_state = "blocked"
                     stop_reason = blocked
                     stop_kind = "deck_blocked"
-                    self._stat(state=terminal_state, stop_reason=stop_reason, stop_kind=stop_kind)
+                    self._stat(
+                        state=terminal_state,
+                        stop_reason=stop_reason,
+                        stop_kind=stop_kind,
+                    )
                     self.stop_event.set()
                     break
                 if self.driver.out_of_profiles():
@@ -1365,8 +1663,10 @@ class Worker(threading.Thread):
                 if self.limiter and not self.limiter.allow(acted, today0 + today_acted):
                     terminal_state = "rate_limited"
                     self._stat(state=terminal_state)
-                    print(f"{self.app.title()} rate limit reached ({self.limiter.describe()}); "
-                          f"stopping {self.app}.")
+                    print(
+                        f"{self.app.title()} rate limit reached ({self.limiter.describe()}); "
+                        f"stopping {self.app}."
+                    )
                     break
                 profile = self._capture_profile("next_profile")
                 if self.stop_event.is_set():
@@ -1385,10 +1685,15 @@ class Worker(threading.Thread):
                         # branch, for the same reason spelled out there: a latched reason is not
                         # proof of a blocked deck, and a failed cold relaunch must not be
                         # headlined as one. Absent hook -> the historical "deck_blocked".
-                        stop_kind = getattr(
-                            self.driver, "blocked_stop_kind", lambda: None)() or "deck_blocked"
-                        self._stat(state=terminal_state, stop_reason=stop_reason,
-                                   stop_kind=stop_kind)
+                        stop_kind = (
+                            getattr(self.driver, "blocked_stop_kind", lambda: None)()
+                            or "deck_blocked"
+                        )
+                        self._stat(
+                            state=terminal_state,
+                            stop_reason=stop_reason,
+                            stop_kind=stop_kind,
+                        )
                         self.stop_event.set()
                     break
 
@@ -1404,8 +1709,10 @@ class Worker(threading.Thread):
                     break
                 if d.decision == "defer":
                     self._stat(last_decision="defer", state="stopped")
-                    print(f"{self.app.title()} ranker not ready (cold-start) — run training "
-                          f"mode and make Hub decisions manually to seed it. Stopping {self.app}.")
+                    print(
+                        f"{self.app.title()} ranker not ready (cold-start) — run training "
+                        f"mode and make Hub decisions manually to seed it. Stopping {self.app}."
+                    )
                     break
 
                 # A session can decline a marginal model like according to its bounded
@@ -1416,11 +1723,17 @@ class Worker(threading.Thread):
 
                 # Per-run like budget: stop the run rather than mislabel a wanted like as a
                 # pass (keeps the right-swipe ratio human; see limits.py).
-                if d.decision == "like" and self.limiter and not self.limiter.allow_like(liked):
+                if (
+                    d.decision == "like"
+                    and self.limiter
+                    and not self.limiter.allow_like(liked)
+                ):
                     terminal_state = "rate_limited"
                     self._stat(state=terminal_state)
-                    print(f"{self.app.title()} per-run like budget reached "
-                          f"({self.limiter.describe()}); stopping {self.app}.")
+                    print(
+                        f"{self.app.title()} per-run like budget reached "
+                        f"({self.limiter.describe()}); stopping {self.app}."
+                    )
                     break
 
                 # Ratio shape: demote this like to a pass when the running like-rate
@@ -1442,14 +1755,21 @@ class Worker(threading.Thread):
                 # division by zero, and an `assert` alone would vanish under `python -O`.
                 # Repeating the guard here, in the condition itself, makes the division
                 # provably safe at its own call site regardless of either of those.
-                if d.decision == "like" and self.limiter and acted > 0 \
-                        and not self.limiter.allow_like_ratio(
-                            liked, acted, score=d.score, like_threshold=configured_threshold):
+                if (
+                    d.decision == "like"
+                    and self.limiter
+                    and acted > 0
+                    and not self.limiter.allow_like_ratio(
+                        liked, acted, score=d.score, like_threshold=configured_threshold
+                    )
+                ):
                     ratio_pct = f"{liked / acted:.0%}"
-                    print(f"{self.app.title()} like-ratio ceiling "
-                          f"({ratio_pct} ≥ {self.limiter.target_like_ratio:.0%}, score "
-                          f"{d.score:.3f} marginal vs threshold {configured_threshold:.3f}) "
-                          f"— demoting to pass")
+                    print(
+                        f"{self.app.title()} like-ratio ceiling "
+                        f"({ratio_pct} ≥ {self.limiter.target_like_ratio:.0%}, score "
+                        f"{d.score:.3f} marginal vs threshold {configured_threshold:.3f}) "
+                        f"— demoting to pass"
+                    )
                     # Tagged like interaction.py's own contextual demotion
                     # (f"{source}_contextual") rather than left as the raw ranker source,
                     # so a future consumer of Decision.source can tell a shaped decision
@@ -1457,7 +1777,9 @@ class Worker(threading.Thread):
                     # Decision.source isn't read anywhere downstream and the stored row
                     # hardcodes source="auto" (see record_decision below) — this is
                     # forward-looking consistency, not a behavior change.
-                    d = Decision("dislike", d.score, d.embedding, f"{d.source}_ratio_ceiling")
+                    d = Decision(
+                        "dislike", d.score, d.embedding, f"{d.source}_ratio_ceiling"
+                    )
 
                 if self.stop_event.is_set():
                     break
@@ -1529,22 +1851,33 @@ class Worker(threading.Thread):
                     # the identical `not disabled` guard a few lines below this block already uses
                     # for the "pick is None" case.
                     items = None
-                    if accepts_opener and self.opener_service is not None \
-                            and not getattr(self.opener_service, "disabled", True):
+                    if (
+                        accepts_opener
+                        and self.opener_service is not None
+                        and not getattr(self.opener_service, "disabled", True)
+                    ):
                         targeting_blocker = self._live_targeting_calibration_blocker()
                         if targeting_blocker:
                             stop_reason = self._targeting_calibration_stop_reason(
-                                targeting_blocker)
+                                targeting_blocker
+                            )
                             stop_kind = "targeting_calibration"
-                            self._stat(state="stopped", stop_reason=stop_reason,
-                                       stop_kind=stop_kind)
+                            self._stat(
+                                state="stopped",
+                                stop_reason=stop_reason,
+                                stop_kind=stop_kind,
+                            )
                             self.stop_event.set()
                             break
                         unavailable = getattr(profile, "items_unavailable", "")
                         if unavailable:
-                            unavailable_kind = getattr(profile, "items_unavailable_kind", "")
+                            unavailable_kind = getattr(
+                                profile, "items_unavailable_kind", ""
+                            )
                             if unavailable_kind == "targeting_calibration":
-                                stop_reason = self._targeting_calibration_stop_reason(unavailable)
+                                stop_reason = self._targeting_calibration_stop_reason(
+                                    unavailable
+                                )
                                 stop_kind = "targeting_calibration"
                             else:
                                 stop_reason = (
@@ -1555,8 +1888,11 @@ class Worker(threading.Thread):
                                     f"nothing can act on, so this stops rather than degrades.)"
                                 )
                                 stop_kind = "opener"
-                            self._stat(state="stopped", stop_reason=stop_reason,
-                                       stop_kind=stop_kind)
+                            self._stat(
+                                state="stopped",
+                                stop_reason=stop_reason,
+                                stop_kind=stop_kind,
+                            )
                             self.stop_event.set()
                             break
                         unnumbered = getattr(profile, "items_unnumbered", "")
@@ -1581,26 +1917,37 @@ class Worker(threading.Thread):
                                 f"frames -- ops/OPENER-REDESIGN.md 5.2.)"
                             )
                             stop_kind = "opener"
-                            self._stat(state="stopped", stop_reason=stop_reason,
-                                       stop_kind=stop_kind)
+                            self._stat(
+                                state="stopped",
+                                stop_reason=stop_reason,
+                                stop_kind=stop_kind,
+                            )
                             self.stop_event.set()
                             break
                         if getattr(profile, "items", ()):
                             # Raises if the payload is somehow empty-but-not-refused; that is a
                             # driver contract violation, not a condition to handle here.
                             items = ItemRequest.from_profile(profile)
-                    opener_kwargs = {"items": items, "should_stop": self.stop_event.is_set}
+                    opener_kwargs = {
+                        "items": items,
+                        "should_stop": self.stop_event.is_set,
+                    }
                     # Stage only when both halves of the modern protocol are present.  This
                     # preserves old third-party/test opener services whose maybe_opener method
                     # predates the keyword (rather than crashing a landed-action loop with an
                     # unexpected ``stage`` kwarg); OpenerService itself has both and is the only
                     # production implementation that persists opener rows.
-                    if (callable(getattr(self.opener_service, "commit_opener", None))
-                            and _accepts_keywords(self.opener_service.maybe_opener, "stage")):
+                    if callable(
+                        getattr(self.opener_service, "commit_opener", None)
+                    ) and _accepts_keywords(self.opener_service.maybe_opener, "stage"):
                         opener_kwargs["stage"] = True
-                    pick = (self.opener_service.maybe_opener(
-                                self.run_id, self.app, profile, **opener_kwargs)
-                            if accepts_opener and self.opener_service is not None else None)
+                    pick = (
+                        self.opener_service.maybe_opener(
+                            self.run_id, self.app, profile, **opener_kwargs
+                        )
+                        if accepts_opener and self.opener_service is not None
+                        else None
+                    )
                     # A Stop can land while a single already-started provider request is on the
                     # wire.  The opener service cannot abort that request synchronously, so it
                     # may hand back a valid staged draft after the flag has won.  Do not let that
@@ -1616,7 +1963,8 @@ class Worker(threading.Thread):
                         # _discard_staged_opener's docstring for why this is safe even though a
                         # legacy/fake opener service may not implement discard_opener at all.
                         self._discard_staged_opener(
-                            pick, decision_source="auto", profile_key=profile_key)
+                            pick, decision_source="auto", profile_key=profile_key
+                        )
                         break
                     # An opener call can discover that every configured provider/model is
                     # exhausted. In AUTO mode, honour its global stop BEFORE calling
@@ -1625,14 +1973,19 @@ class Worker(threading.Thread):
                     if getattr(self.opener_service, "stop_requested", False):
                         stop_reason = self._opener_stop_reason()
                         stop_kind = "opener"
-                        self._stat(state="stopped", stop_reason=stop_reason, stop_kind=stop_kind)
+                        self._stat(
+                            state="stopped",
+                            stop_reason=stop_reason,
+                            stop_kind=stop_kind,
+                        )
                         self.stop_event.set()
                         # Exhaustion (e.g. the run budget, see maybe_opener's docstring) can fire
                         # on the SAME call that produced this profile's staged draft -- the
                         # generation itself succeeded, only the service now refuses to let AUTO
                         # act on it. Same reasoning as the stop_event branch above.
                         self._discard_staged_opener(
-                            pick, decision_source="auto", profile_key=profile_key)
+                            pick, decision_source="auto", profile_key=profile_key
+                        )
                         break
                     # COMPLETED RULE: on an opener-capable app, an AUTO like is normally sent
                     # WITH its opener or not sent at all. The one narrow exception is a Gemini
@@ -1663,17 +2016,32 @@ class Worker(threading.Thread):
                     # that do not accept openers (Bumble) are untouched: accepts_opener is False
                     # for them, so pick is always None by construction and this condition never
                     # evaluates true.
-                    allows_commentless_like = bool(getattr(
-                        self.opener_service, "last_skip_allows_commentless_like", False))
-                    if accepts_opener and pick is None and self.opener_service is not None \
-                            and not getattr(self.opener_service, "disabled", True) \
-                            and not allows_commentless_like:
-                        stop_reason = getattr(self.opener_service, "last_skip_reason", None) or (
+                    allows_commentless_like = bool(
+                        getattr(
+                            self.opener_service,
+                            "last_skip_allows_commentless_like",
+                            False,
+                        )
+                    )
+                    if (
+                        accepts_opener
+                        and pick is None
+                        and self.opener_service is not None
+                        and not getattr(self.opener_service, "disabled", True)
+                        and not allows_commentless_like
+                    ):
+                        stop_reason = getattr(
+                            self.opener_service, "last_skip_reason", None
+                        ) or (
                             "opener service returned no opener for this profile and no "
                             "specific reason was recorded"
                         )
                         stop_kind = "opener"
-                        self._stat(state="stopped", stop_reason=stop_reason, stop_kind=stop_kind)
+                        self._stat(
+                            state="stopped",
+                            stop_reason=stop_reason,
+                            stop_kind=stop_kind,
+                        )
                         self.stop_event.set()
                         break
                     # A pick CAN exist (an opener was generated for this profile) and still
@@ -1720,9 +2088,14 @@ class Worker(threading.Thread):
                     # exactly one of the two index arguments, never both, never neither.
                     targeted: dict = {}
                     if accepts_opener and pick is not None:
-                        if pick.index != ITEM_INDEX_ABSENT \
-                                and pick.index_space == INDEX_SPACE_MODEL_ITEMS:
-                            targeted = {"item_index": None, "model_item_index": pick.index}
+                        if (
+                            pick.index != ITEM_INDEX_ABSENT
+                            and pick.index_space == INDEX_SPACE_MODEL_ITEMS
+                        ):
+                            targeted = {
+                                "item_index": None,
+                                "model_item_index": pick.index,
+                            }
                         elif pick.capture_order_index is not None:
                             targeted = {"item_index": pick.capture_order_index}
                     if accepts_opener and pick is not None and not targeted:
@@ -1742,12 +2115,17 @@ class Worker(threading.Thread):
                                 f"and this pick is in neither, so the like is not sent"
                             )
                         stop_kind = "opener"
-                        self._stat(state="stopped", stop_reason=stop_reason, stop_kind=stop_kind)
+                        self._stat(
+                            state="stopped",
+                            stop_reason=stop_reason,
+                            stop_kind=stop_kind,
+                        )
                         self.stop_event.set()
                         # The opener itself generated fine; only its target could not be
                         # resolved, so no like was ever attempted for this profile.
                         self._discard_staged_opener(
-                            pick, decision_source="auto", profile_key=profile_key)
+                            pick, decision_source="auto", profile_key=profile_key
+                        )
                         break
                     # item_index lets the driver attach the comment to the numbered photo the
                     # opener is actually about, not blindly the first one.
@@ -1807,21 +2185,28 @@ class Worker(threading.Thread):
                         # the same never-substitute stop as a targeting miss, just discovered
                         # while the phone is still untouched.  Drivers that do not own numbered
                         # crops simply have no optional method and pass through unchanged.
-                        mismatch = (_item_type_preflight_mismatch(self.driver, pick)
-                                    if pick is not None else "")
+                        mismatch = (
+                            _item_type_preflight_mismatch(self.driver, pick)
+                            if pick is not None
+                            else ""
+                        )
                         if mismatch:
                             raise ItemTargetingError(
                                 f"the model's chosen item failed the pre-flight type check: "
                                 f"{mismatch}. Nothing was tapped and the like is NOT sent.",
-                                stage="preflight", intended=pick.index,
-                                index_space=pick.index_space)
+                                stage="preflight",
+                                intended=pick.index,
+                                index_space=pick.index_space,
+                            )
                         # `**targeted` is empty when there is no pick at all, which leaves BOTH
                         # index arguments at their `None` default -- "nobody said which item",
                         # which is legal precisely because there is no opener to misplace. It is
                         # deliberately not `item_index=0`: 0 is a legal first frame in the
                         # driver's space and would read as "the opener is about item 1".
                         like_kwargs = dict(targeted)
-                        if getattr(self.driver, "supports_interruptible_like_navigation", False):
+                        if getattr(
+                            self.driver, "supports_interruptible_like_navigation", False
+                        ):
                             like_kwargs["should_stop"] = self.stop_event.is_set
                         # The stop check above covers a completed provider request; repeat it
                         # at the physical-action boundary because target preflight may itself
@@ -1831,7 +2216,8 @@ class Worker(threading.Thread):
                         # Stop was already observed before the call.
                         if self.stop_event.is_set():
                             self._discard_staged_opener(
-                                pick, decision_source="auto", profile_key=profile_key)
+                                pick, decision_source="auto", profile_key=profile_key
+                            )
                             break
                         self.driver.like(pick.text if pick else None, **like_kwargs)
                     except ItemTargetingError as exc:
@@ -1861,10 +2247,15 @@ class Worker(threading.Thread):
                         self._capture_failure(exc)
                         stop_reason = self._targeting_stop_reason(exc)
                         stop_kind = "targeting"
-                        self._stat(state="stopped", stop_reason=stop_reason, stop_kind=stop_kind)
+                        self._stat(
+                            state="stopped",
+                            stop_reason=stop_reason,
+                            stop_kind=stop_kind,
+                        )
                         self.stop_event.set()
                         self._discard_staged_opener(
-                            pick, decision_source="auto", profile_key=profile_key)
+                            pick, decision_source="auto", profile_key=profile_key
+                        )
                         break
                     except Exception:
                         # Anything else raised while attempting the physical action -- a paywall
@@ -1892,20 +2283,27 @@ class Worker(threading.Thread):
                         # physically landed, and must never be able to make a landed action look
                         # abandoned merely because that OPTIONAL diagnostic read raised.
                         self._discard_staged_opener(
-                            pick, decision_source="auto", profile_key=profile_key,
-                            decision=self._post_like_discard_decision())
+                            pick,
+                            decision_source="auto",
+                            profile_key=profile_key,
+                            decision=self._post_like_discard_decision(),
+                        )
                         raise
-                    evidence_hook = getattr(self.driver, "landed_auto_opener_evidence", None)
+                    evidence_hook = getattr(
+                        self.driver, "landed_auto_opener_evidence", None
+                    )
                     if pick is not None and callable(evidence_hook):
                         pre_send_evidence = evidence_hook()
                     liked += 1
                 else:
                     dislike = self.driver.dislike
-                    if (not getattr(self.driver, "supports_interruptible_dislike", False)
-                            or not _accepts_keywords(dislike, "should_stop")):
+                    if not getattr(
+                        self.driver, "supports_interruptible_dislike", False
+                    ) or not _accepts_keywords(dislike, "should_stop"):
                         raise RuntimeError(
                             f"{self.app} driver cannot perform a Stop-safe AUTO pass: it must "
-                            "declare supports_interruptible_dislike and accept should_stop")
+                            "declare supports_interruptible_dislike and accept should_stop"
+                        )
                     # The driver owns the final check immediately before physical
                     # input.  A second worker-side `is_set()` check cannot close
                     # the race this capability exists to prevent.
@@ -1922,8 +2320,15 @@ class Worker(threading.Thread):
                 lineage_profile_id = uuid.uuid4().hex
                 lineage_decision_at = time.time()
                 _record_decision_with_lineage(
-                    self.store, self.run_id, self.app, d.decision, d.score, source="auto",
-                    profile_id=lineage_profile_id, created_at=lineage_decision_at)
+                    self.store,
+                    self.run_id,
+                    self.app,
+                    d.decision,
+                    d.score,
+                    source="auto",
+                    profile_id=lineage_profile_id,
+                    created_at=lineage_decision_at,
+                )
                 if d.decision == "like":
                     # The physical like returned successfully above, and its action row is now
                     # durable.  Commit the staged opener only after that row: a storage failure
@@ -1934,15 +2339,22 @@ class Worker(threading.Thread):
                     # decision or this commit.
                     commit = getattr(self.opener_service, "commit_opener", None)
                     if pick is not None and callable(commit):
-                        if _accepts_keywords(commit, "profile_id", "decision", "decision_source",
-                                             "decision_created_at"):
+                        if _accepts_keywords(
+                            commit,
+                            "profile_id",
+                            "decision",
+                            "decision_source",
+                            "decision_created_at",
+                        ):
                             commit_kwargs = {
-                                "profile_id": lineage_profile_id, "decision": "like",
+                                "profile_id": lineage_profile_id,
+                                "decision": "like",
                                 "decision_source": "auto",
                                 "decision_created_at": lineage_decision_at,
                             }
-                            if (pre_send_evidence is not None
-                                    and _accepts_keywords(commit, "pre_send_evidence")):
+                            if pre_send_evidence is not None and _accepts_keywords(
+                                commit, "pre_send_evidence"
+                            ):
                                 commit_kwargs["pre_send_evidence"] = pre_send_evidence
                             if _accepts_keywords(commit, "profile_key"):
                                 commit_kwargs["profile_key"] = profile_key
@@ -1973,7 +2385,9 @@ class Worker(threading.Thread):
                 if getattr(self.opener_service, "stop_requested", False):
                     stop_reason = self._opener_stop_reason()
                     stop_kind = "opener"
-                    self._stat(state="stopped", stop_reason=stop_reason, stop_kind=stop_kind)
+                    self._stat(
+                        state="stopped", stop_reason=stop_reason, stop_kind=stop_kind
+                    )
                     self.stop_event.set()
                 self._pace(landed_action, profile=profile, score=d.score)
                 self._maybe_session_break()
@@ -1991,13 +2405,19 @@ class Worker(threading.Thread):
             terminal_state = "blocked"
             stop_reason = str(exc)
             stop_kind = "deck_blocked"
-            self._stat(state=terminal_state, stop_reason=stop_reason, stop_kind=stop_kind)
+            self._stat(
+                state=terminal_state, stop_reason=stop_reason, stop_kind=stop_kind
+            )
             self.stop_event.set()
         except Exception as exc:  # noqa: BLE001
-            self._capture_failure_if_unexpected(exc)          # snapshot WHILE the transport is live
-            raise                                             # (the finally below closes it)
+            self._capture_failure_if_unexpected(
+                exc
+            )  # snapshot WHILE the transport is live
+            raise  # (the finally below closes it)
         finally:
-            self._finish_session(terminal_state, stop_reason=stop_reason, stop_kind=stop_kind)
+            self._finish_session(
+                terminal_state, stop_reason=stop_reason, stop_kind=stop_kind
+            )
 
     def _pace(self, decision: str, *, profile=None, score: float | None = None) -> None:
         # Worker is public and can be constructed without config.validate(). Reuse the exact
@@ -2023,12 +2443,14 @@ class Worker(threading.Thread):
         if policy is not None and profile is not None:
             # Keep the old direct-call behavior for diagnostics and legacy tests;
             # actual auto-loop calls carry the real captured profile and score.
-            delay = policy.post_action_delay_s(decision, profile,
-                                                0.5 if score is None else score,
-                                                scale=scale)
+            delay = policy.post_action_delay_s(
+                decision, profile, 0.5 if score is None else score, scale=scale
+            )
             self.stop_event.wait(delay)
             return
-        self.stop_event.wait(think_time_s("like" if decision == "like" else "pass") * scale)
+        self.stop_event.wait(
+            think_time_s("like" if decision == "like" else "pass") * scale
+        )
 
     def _maybe_session_break(self) -> None:
         """Randomized micro-break between profiles — mimics stepping away.
@@ -2069,5 +2491,7 @@ class Worker(threading.Thread):
         mean "not truncated as far as anyone knows", never a KeyError in the label path.
         """
         meta = getattr(profile, "meta", None) or {}
-        return {"photo_count": len(profile.photos),
-                "capture_truncated": bool(meta.get("capture_truncated", False))}
+        return {
+            "photo_count": len(profile.photos),
+            "capture_truncated": bool(meta.get("capture_truncated", False)),
+        }

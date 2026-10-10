@@ -4,6 +4,7 @@ Pure offline: the status object is plain Python; the Bumble overlay is exercised
 with a fake page that records the evaluate() call (the real HUD render is visual,
 seen live in the browser). The Hinge driver inherits the base no-op.
 """
+
 import math
 import threading
 
@@ -18,7 +19,9 @@ class _Cfg:
 
 
 def _mk(**kw):
-    return RunStatus("run123", ["bumble", "hinge"], min_labels=40, mode="training", **kw)
+    return RunStatus(
+        "run123", ["bumble", "hinge"], min_labels=40, mode="training", **kw
+    )
 
 
 # --- RunStatus -------------------------------------------------------------
@@ -44,43 +47,68 @@ def test_record_swipe_and_inc_labels():
     assert snap["labels"] == 2
 
 
-@pytest.mark.parametrize(("field", "value"), [
-    ("min_labels", True),
-    ("min_labels", 1.9),
-    ("min_labels", -1),
-    ("labels", True),
-    ("labels", 1.9),
-    ("labels", -1),
-    ("ranker_ready", 1),
-])
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("min_labels", True),
+        ("min_labels", 1.9),
+        ("min_labels", -1),
+        ("labels", True),
+        ("labels", 1.9),
+        ("labels", -1),
+        ("ranker_ready", 1),
+    ],
+)
 def test_constructor_rejects_lossy_or_invalid_counter_state(field, value):
     kwargs = {"min_labels": 40, "mode": "training", field: value}
     with pytest.raises(ValueError, match=field):
         RunStatus("run123", ["hinge"], **kwargs)
 
 
-@pytest.mark.parametrize(("args", "kwargs", "message"), [
-    (("", ["hinge"]), {"min_labels": 1, "mode": "training"}, "run_id"),
-    ((" run ", ["hinge"]), {"min_labels": 1, "mode": "training"}, "run_id"),
-    (("run", ["hinge"]), {"min_labels": 1, "mode": "mixed"}, "mode"),
-    (("run", "hinge"), {"min_labels": 1, "mode": "training"}, "apps"),
-    (("run", (app for app in ["hinge"])),
-     {"min_labels": 1, "mode": "training"}, "apps"),
-    (("run", ["hinge", "hinge"]), {"min_labels": 1, "mode": "training"}, "duplicate"),
-    (("run", [" hinge "]), {"min_labels": 1, "mode": "training"}, "app names"),
-])
+@pytest.mark.parametrize(
+    ("args", "kwargs", "message"),
+    [
+        (("", ["hinge"]), {"min_labels": 1, "mode": "training"}, "run_id"),
+        ((" run ", ["hinge"]), {"min_labels": 1, "mode": "training"}, "run_id"),
+        (("run", ["hinge"]), {"min_labels": 1, "mode": "mixed"}, "mode"),
+        (("run", "hinge"), {"min_labels": 1, "mode": "training"}, "apps"),
+        (
+            ("run", (app for app in ["hinge"])),
+            {"min_labels": 1, "mode": "training"},
+            "apps",
+        ),
+        (
+            ("run", ["hinge", "hinge"]),
+            {"min_labels": 1, "mode": "training"},
+            "duplicate",
+        ),
+        (("run", [" hinge "]), {"min_labels": 1, "mode": "training"}, "app names"),
+    ],
+)
 def test_constructor_rejects_malformed_run_identity_and_apps(args, kwargs, message):
     with pytest.raises(ValueError, match=message):
         RunStatus(*args, **kwargs)
 
 
-@pytest.mark.parametrize("budget_cap", [
-    True, -1, math.nan, math.inf, pytest.param(10 ** 10_000, id="huge_int"), "5",
-])
+@pytest.mark.parametrize(
+    "budget_cap",
+    [
+        True,
+        -1,
+        math.nan,
+        math.inf,
+        pytest.param(10**10_000, id="huge_int"),
+        "5",
+    ],
+)
 def test_constructor_rejects_invalid_budget_cap(budget_cap):
     with pytest.raises(ValueError, match="budget_cap"):
         RunStatus(
-            "run123", ["hinge"], min_labels=1, mode="training", budget_cap=budget_cap,
+            "run123",
+            ["hinge"],
+            min_labels=1,
+            mode="training",
+            budget_cap=budget_cap,
         )
 
 
@@ -105,11 +133,19 @@ def test_set_global():
     assert snap["running"] is False
 
 
-@pytest.mark.parametrize(("field", "value"), [
-    ("labels", -1), ("labels", True), ("openers", 1.5),
-    ("budget_spent", math.nan), ("budget_cap", math.inf),
-    ("ranker_ready", 1), ("running", "false"), ("phase", " "),
-])
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("labels", -1),
+        ("labels", True),
+        ("openers", 1.5),
+        ("budget_spent", math.nan),
+        ("budget_cap", math.inf),
+        ("ranker_ready", 1),
+        ("running", "false"),
+        ("phase", " "),
+    ],
+)
 def test_set_global_rejects_invalid_snapshot_values(field, value):
     status = _mk()
     with pytest.raises(ValueError, match=field):
@@ -138,11 +174,20 @@ def test_status_updates_reject_unknown_fields_atomically():
     assert not hasattr(status, "phaze")
 
 
-@pytest.mark.parametrize(("field", "value"), [
-    ("last_score", math.nan), ("last_score", True), ("swipes_run", -1),
-    ("swipes_run", 1.5), ("state", ["acting"]), ("mode", "observe"),
-    ("last_decision", "maybe"), ("stop_kind", "unknown"), ("error", 1),
-])
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("last_score", math.nan),
+        ("last_score", True),
+        ("swipes_run", -1),
+        ("swipes_run", 1.5),
+        ("state", ["acting"]),
+        ("mode", "observe"),
+        ("last_decision", "maybe"),
+        ("stop_kind", "unknown"),
+        ("error", 1),
+    ],
+)
 def test_set_app_rejects_invalid_snapshot_values_atomically(field, value):
     status = _mk()
     with pytest.raises(ValueError, match=field):
@@ -182,7 +227,7 @@ def test_stop_reason_defaults_to_none_and_survives_serialization():
     # asdict(AppStatus) is the only path there (see status.snapshot()/app_view()), so
     # pinning it here catches any future field-list drift that would silently drop it.
     s = _mk()
-    assert s.snapshot()["apps"]["bumble"]["stop_reason"] is None   # untouched app
+    assert s.snapshot()["apps"]["bumble"]["stop_reason"] is None  # untouched app
 
     s.set_app("bumble", state="stopped", stop_reason="run budget reached")
     snap = s.snapshot()
@@ -204,8 +249,12 @@ def test_app_detail_is_validated_and_serialized():
 
 def test_targeting_calibration_stop_kind_is_valid_and_serialized():
     s = _mk()
-    s.set_app("hinge", state="stopped", stop_reason="fresh calibration required",
-              stop_kind="targeting_calibration")
+    s.set_app(
+        "hinge",
+        state="stopped",
+        stop_reason="fresh calibration required",
+        stop_kind="targeting_calibration",
+    )
     app = s.app_view("hinge")["app"]
     assert app["stop_kind"] == "targeting_calibration"
     assert app["stop_reason"] == "fresh calibration required"
@@ -217,7 +266,7 @@ def test_app_view_includes_app_slice_and_global():
     view = s.app_view("bumble")
     assert view["app"]["last_decision"] == "like"
     assert view["app"]["last_score"] == 0.91
-    assert view["labels"] == 7                # global slice present too
+    assert view["labels"] == 7  # global slice present too
 
 
 def test_app_view_unknown_app_is_none():
@@ -245,5 +294,6 @@ def test_concurrent_updates_are_consistent():
 def test_hinge_render_status_is_noop():
     HingeDriver(_Cfg()).render_status({"any": "thing"})  # base no-op; no page to inject
 
+
 def test_hinge_render_busy_is_noop():
-    HingeDriver(_Cfg()).render_busy("x")     # base no-op
+    HingeDriver(_Cfg()).render_busy("x")  # base no-op

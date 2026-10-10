@@ -150,6 +150,7 @@ WHAT THIS MODULE DOES NOT DECIDE, AND WHICH LAYER HAS TO
   * ITEM identity. Knowing the frame moved 363px does not say which heart is which; it is the
     input to that decision, not the decision.
 """
+
 from __future__ import annotations
 
 from collections.abc import Sequence
@@ -340,20 +341,24 @@ _RUNNER_UP_EXCLUSION_PX = 32
 # =====================================================================================
 
 # --- what one strip's search produced -----------------------------------------------
-STRIP_MATCHED = "matched"      # an interior peak above the score floor: a usable vote
-STRIP_PINNED = "pinned"        # peak on the edge of the strip's own range: a LOWER BOUND, not a
-                               # value, so it never enters the consensus
-STRIP_WEAK = "weak"            # best peak under the score floor: this strip's content is not
-                               # anywhere in frame B's band
-STRIP_FLAT = "flat"            # too little texture to locate anything (blank card interior)
-STRIP_NO_RANGE = "no_range"    # too little of the band left to search: not run at all
+STRIP_MATCHED = "matched"  # an interior peak above the score floor: a usable vote
+STRIP_PINNED = (
+    "pinned"  # peak on the edge of the strip's own range: a LOWER BOUND, not a
+)
+# value, so it never enters the consensus
+STRIP_WEAK = "weak"  # best peak under the score floor: this strip's content is not
+# anywhere in frame B's band
+STRIP_FLAT = "flat"  # too little texture to locate anything (blank card interior)
+STRIP_NO_RANGE = "no_range"  # too little of the band left to search: not run at all
 
 # --- what the whole pair produced ---------------------------------------------------
-SHIFT_MEASURED = "measured"          # `delta_px` is a number and is trustworthy
-SHIFT_BEYOND_WINDOW = "beyond_window"  # the strips agree, on a shift outside `trust_window_px`;
-                                     # the magnitude is in `consensus_px`, `delta_px` is None
+SHIFT_MEASURED = "measured"  # `delta_px` is a number and is trustworthy
+SHIFT_BEYOND_WINDOW = (
+    "beyond_window"  # the strips agree, on a shift outside `trust_window_px`;
+)
+# the magnitude is in `consensus_px`, `delta_px` is None
 SHIFT_NO_CONSENSUS = "no_consensus"  # the strips did not agree, or too few could vote
-SHIFT_NO_EVIDENCE = "no_evidence"    # no strip produced a usable peak at all
+SHIFT_NO_EVIDENCE = "no_evidence"  # no strip produced a usable peak at all
 
 
 class ShiftEstimationError(RuntimeError):
@@ -381,6 +386,7 @@ class StripMatch:
     strip it is a LOWER bound on the magnitude, never a measurement, and no consumer may average
     it in. `score` and `runner_up` are TM_CCOEFF_NORMED correlations in [-1, 1].
     """
+
     y0: int
     y1: int
     state: str
@@ -416,6 +422,7 @@ class ShiftEstimate:
     that could not have seen it are excluded from the denominator; strips that could have and
     did not are counted against it.
     """
+
     delta_px: int | None
     confidence: float
     status: str
@@ -451,7 +458,8 @@ def _require_vision():
     except Exception as exc:  # noqa: BLE001 — surfaced as ShiftEstimationError, never swallowed
         raise ShiftEstimationError(
             "shift estimation needs opencv-python + numpy (extra: operation-love[hinge]); "
-            f"import failed: {exc}") from exc
+            f"import failed: {exc}"
+        ) from exc
     return cv2, np
 
 
@@ -470,12 +478,14 @@ def _decode_pair(frame_a: bytes, frame_b: bytes, cv2, np):
         which = "first" if img_a is None else "second"
         raise ShiftEstimationError(
             f"the {which} frame's bytes did not decode as an image "
-            f"({len(frame_a)} and {len(frame_b)} bytes)")
+            f"({len(frame_a)} and {len(frame_b)} bytes)"
+        )
     if img_a.shape != img_b.shape:
         raise ShiftEstimationError(
             f"frames are different sizes ({img_a.shape[1]}x{img_a.shape[0]} vs "
             f"{img_b.shape[1]}x{img_b.shape[0]}): a shift measured across a resize would be in "
-            "the wrong units")
+            "the wrong units"
+        )
     return img_a, img_b
 
 
@@ -511,8 +521,22 @@ def _strip_search_range(y0: int, height: int, r0: int, r1: int) -> tuple[int, in
     return y0 + height - r1, y0 - r0
 
 
-def _search_strip(img_b, template, *, y0: int, height: int, lo: int, hi: int, card_x0: int,
-                  card_x1: int, min_peak: float, pin_margin: int, exclusion: int, cv2, np):
+def _search_strip(
+    img_b,
+    template,
+    *,
+    y0: int,
+    height: int,
+    lo: int,
+    hi: int,
+    card_x0: int,
+    card_x1: int,
+    min_peak: float,
+    pin_margin: int,
+    exclusion: int,
+    cv2,
+    np,
+):
     """Locate one strip of frame A inside frame B. Returns `(state, delta, score, runner_up)`.
 
     The slab handed to `matchTemplate` is exactly as wide as the template, so the correlation
@@ -520,8 +544,8 @@ def _search_strip(img_b, template, *, y0: int, height: int, lo: int, hi: int, ca
     a list that only scrolls vertically. Result row `k` corresponds to the template's top-left
     landing at frame-B row `lo_row + k`, hence a shift of `y0 - (lo_row + k)`.
     """
-    lo_row = y0 - hi                      # destination top row at the LARGEST tested shift
-    slab = img_b[lo_row: y0 - lo + height, card_x0:card_x1].astype(np.float32)
+    lo_row = y0 - hi  # destination top row at the LARGEST tested shift
+    slab = img_b[lo_row : y0 - lo + height, card_x0:card_x1].astype(np.float32)
     scores = cv2.matchTemplate(slab, template, cv2.TM_CCOEFF_NORMED)[:, 0]
 
     k = int(np.argmax(scores))
@@ -533,7 +557,7 @@ def _search_strip(img_b, template, *, y0: int, height: int, lo: int, hi: int, ca
     # when the exclusion swallows the whole surface, which only happens on a search range barely
     # wider than _MIN_SEARCH_SPAN_PX.
     masked = scores.copy()
-    masked[max(0, k - exclusion): k + exclusion + 1] = -1.0
+    masked[max(0, k - exclusion) : k + exclusion + 1] = -1.0
     runner_up = float(masked.max())
 
     if score < min_peak:
@@ -545,23 +569,26 @@ def _search_strip(img_b, template, *, y0: int, height: int, lo: int, hi: int, ca
     return STRIP_MATCHED, delta, score, runner_up
 
 
-def estimate_shift(frame_a: bytes, frame_b: bytes, *,
-                   content_band: tuple[float, float],
-                   trust_window_px: int | None = None,
-                   card_margin_px: int = _CARD_MARGIN_PX,
-                   strip_count: int = _STRIP_COUNT,
-                   strip_height_px: int = _STRIP_HEIGHT_PX,
-                   trust_window_band_frac: float = _TRUST_WINDOW_BAND_FRAC,
-                   min_strip_stddev: float = _MIN_STRIP_STDDEV,
-                   min_peak_score: float = _MIN_PEAK_SCORE,
-                   pin_margin_px: int = _PIN_MARGIN_PX,
-                   min_search_span_px: int = _MIN_SEARCH_SPAN_PX,
-                   agreement_tolerance_px: int = _AGREEMENT_TOLERANCE_PX,
-                   min_agreeing_strips: int = _MIN_AGREEING_STRIPS,
-                   min_saturation_strips: int = _MIN_SATURATION_STRIPS,
-                   min_confidence: float = _MIN_CONFIDENCE,
-                   runner_up_exclusion_px: int = _RUNNER_UP_EXCLUSION_PX,
-                   ) -> ShiftEstimate:
+def estimate_shift(
+    frame_a: bytes,
+    frame_b: bytes,
+    *,
+    content_band: tuple[float, float],
+    trust_window_px: int | None = None,
+    card_margin_px: int = _CARD_MARGIN_PX,
+    strip_count: int = _STRIP_COUNT,
+    strip_height_px: int = _STRIP_HEIGHT_PX,
+    trust_window_band_frac: float = _TRUST_WINDOW_BAND_FRAC,
+    min_strip_stddev: float = _MIN_STRIP_STDDEV,
+    min_peak_score: float = _MIN_PEAK_SCORE,
+    pin_margin_px: int = _PIN_MARGIN_PX,
+    min_search_span_px: int = _MIN_SEARCH_SPAN_PX,
+    agreement_tolerance_px: int = _AGREEMENT_TOLERANCE_PX,
+    min_agreeing_strips: int = _MIN_AGREEING_STRIPS,
+    min_saturation_strips: int = _MIN_SATURATION_STRIPS,
+    min_confidence: float = _MIN_CONFIDENCE,
+    runner_up_exclusion_px: int = _RUNNER_UP_EXCLUSION_PX,
+) -> ShiftEstimate:
     """How far frame A's content moved to reach frame B, or an explicit "unknown".
 
     `frame_a` is the EARLIER frame. Positive `delta_px` means the content moved UP the screen,
@@ -612,7 +639,8 @@ def estimate_shift(frame_a: bytes, frame_b: bytes, *,
     if card_x1 - card_x0 < 1:
         raise ShiftEstimationError(
             f"frame is {width}px wide with a {card_margin_px}px card margin per side — no "
-            "content columns left to correlate")
+            "content columns left to correlate"
+        )
 
     r0, r1 = _band_rows(content_band, height)
     if r1 - r0 < strip_height_px + min_search_span_px:
@@ -622,7 +650,8 @@ def estimate_shift(frame_a: bytes, frame_b: bytes, *,
         raise ShiftEstimationError(
             f"analysed band is too short to search: content_band {content_band} on a "
             f"{height}-row frame -> rows [{r0}, {r1}), which is under a {strip_height_px}px "
-            f"strip plus the {min_search_span_px}px minimum search span")
+            f"strip plus the {min_search_span_px}px minimum search span"
+        )
 
     if strip_count < min_agreeing_strips:
         # Same reasoning as the band check: a bank too small to reach its own quorum would refuse
@@ -630,14 +659,19 @@ def estimate_shift(frame_a: bytes, frame_b: bytes, *,
         # rather than "this call was configured to be unable to answer".
         raise ShiftEstimationError(
             f"strip_count={strip_count} is below min_agreeing_strips={min_agreeing_strips}, so "
-            "no bank could ever reach a quorum and every pair would be refused")
+            "no bank could ever reach a quorum and every pair would be refused"
+        )
 
-    window = (int(round((r1 - r0) * trust_window_band_frac)) if trust_window_px is None
-              else int(trust_window_px))
+    window = (
+        int(round((r1 - r0) * trust_window_band_frac))
+        if trust_window_px is None
+        else int(trust_window_px)
+    )
     if window < 1:
         raise ShiftEstimationError(
             f"trust window resolved to {window}px: nothing could ever be inside it, so every "
-            "pair would come back as SHIFT_BEYOND_WINDOW regardless of what the frames did")
+            "pair would come back as SHIFT_BEYOND_WINDOW regardless of what the frames did"
+        )
 
     strips: list[StripMatch] = []
     for y0 in _strip_tops(r0, r1, strip_count, strip_height_px):
@@ -646,31 +680,78 @@ def estimate_shift(frame_a: bytes, frame_b: bytes, *,
         template = img_a[y0:y1, card_x0:card_x1].astype(np.float32)
         stddev = float(template.std())
         if stddev < min_strip_stddev:
-            strips.append(StripMatch(y0=y0, y1=y1, state=STRIP_FLAT, delta_px=None, score=0.0,
-                                     runner_up=0.0, stddev=stddev, search=(lo, hi)))
+            strips.append(
+                StripMatch(
+                    y0=y0,
+                    y1=y1,
+                    state=STRIP_FLAT,
+                    delta_px=None,
+                    score=0.0,
+                    runner_up=0.0,
+                    stddev=stddev,
+                    search=(lo, hi),
+                )
+            )
             continue
         if hi - lo < min_search_span_px:
-            strips.append(StripMatch(y0=y0, y1=y1, state=STRIP_NO_RANGE, delta_px=None,
-                                     score=0.0, runner_up=0.0, stddev=stddev, search=(lo, hi)))
+            strips.append(
+                StripMatch(
+                    y0=y0,
+                    y1=y1,
+                    state=STRIP_NO_RANGE,
+                    delta_px=None,
+                    score=0.0,
+                    runner_up=0.0,
+                    stddev=stddev,
+                    search=(lo, hi),
+                )
+            )
             continue
         state, delta, score, runner_up = _search_strip(
-            img_b, template, y0=y0, height=strip_height_px, lo=lo, hi=hi, card_x0=card_x0,
-            card_x1=card_x1, min_peak=min_peak_score, pin_margin=pin_margin_px,
-            exclusion=runner_up_exclusion_px, cv2=cv2, np=np)
-        strips.append(StripMatch(y0=y0, y1=y1, state=state, delta_px=delta, score=score,
-                                 runner_up=runner_up, stddev=stddev, search=(lo, hi)))
+            img_b,
+            template,
+            y0=y0,
+            height=strip_height_px,
+            lo=lo,
+            hi=hi,
+            card_x0=card_x0,
+            card_x1=card_x1,
+            min_peak=min_peak_score,
+            pin_margin=pin_margin_px,
+            exclusion=runner_up_exclusion_px,
+            cv2=cv2,
+            np=np,
+        )
+        strips.append(
+            StripMatch(
+                y0=y0,
+                y1=y1,
+                state=state,
+                delta_px=delta,
+                score=score,
+                runner_up=runner_up,
+                stddev=stddev,
+                search=(lo, hi),
+            )
+        )
 
-    return _resolve(tuple(strips), frame_size=(width, height), band=(r0, r1), window=window,
-                    tolerance=agreement_tolerance_px, min_agreeing=min_agreeing_strips,
-                    min_saturation=min_saturation_strips, min_confidence=min_confidence,
-                    pin_margin=pin_margin_px, np=np)
+    return _resolve(
+        tuple(strips),
+        frame_size=(width, height),
+        band=(r0, r1),
+        window=window,
+        tolerance=agreement_tolerance_px,
+        min_agreeing=min_agreeing_strips,
+        min_saturation=min_saturation_strips,
+        min_confidence=min_confidence,
+        pin_margin=pin_margin_px,
+        np=np,
+    )
 
 
-def estimate_shift_with_reverse_recovery(before: bytes, after: bytes, *,
-                                         estimator=estimate_shift,
-                                         **kwargs
-                                         ) -> tuple[ShiftEstimate, ShiftEstimate,
-                                                    ShiftEstimate | None]:
+def estimate_shift_with_reverse_recovery(
+    before: bytes, after: bytes, *, estimator=estimate_shift, **kwargs
+) -> tuple[ShiftEstimate, ShiftEstimate, ShiftEstimate | None]:
     """`estimate_shift(before, after)`, with the one safe DIRECTIONAL recovery two callers need.
 
     THE DUPLICATION THIS CLOSES (found 2026-09-02). `hinge.HingeDriver._measured_page_shift`
@@ -724,29 +805,46 @@ def estimate_shift_with_reverse_recovery(before: bytes, after: bytes, *,
             result = replace(
                 reverse,
                 delta_px=-int(reverse.delta_px),
-                consensus_px=(None if reverse.consensus_px is None
-                              else -int(reverse.consensus_px)),
-                reason=("forward source strips did not reach consensus; reverse source strips "
-                        f"measured the same pair: {reverse.reason}"))
+                consensus_px=(
+                    None if reverse.consensus_px is None else -int(reverse.consensus_px)
+                ),
+                reason=(
+                    "forward source strips did not reach consensus; reverse source strips "
+                    f"measured the same pair: {reverse.reason}"
+                ),
+            )
         elif reverse.status == SHIFT_NO_CONSENSUS:
             rescued = _cross_direction_quorum_shift(
-                forward, reverse,
+                forward,
+                reverse,
                 tolerance=kwargs.get("agreement_tolerance_px", _AGREEMENT_TOLERANCE_PX),
                 min_agreeing=kwargs.get("min_agreeing_strips", _MIN_AGREEING_STRIPS),
-                pin_margin=kwargs.get("pin_margin_px", _PIN_MARGIN_PX))
+                pin_margin=kwargs.get("pin_margin_px", _PIN_MARGIN_PX),
+            )
             if rescued is not None:
                 result = replace(
-                    forward, delta_px=rescued, status=SHIFT_MEASURED, consensus_px=rescued,
-                    reason=(f"content moved {rescued:+d}px — neither direction's strips reached "
-                            f"quorum alone, but both independently made {rescued:+d}px their own "
-                            f"median and together {_MIN_AGREEING_STRIPS} or more located it to "
-                            f"the pixel: {forward.reason}"))
+                    forward,
+                    delta_px=rescued,
+                    status=SHIFT_MEASURED,
+                    consensus_px=rescued,
+                    reason=(
+                        f"content moved {rescued:+d}px — neither direction's strips reached "
+                        f"quorum alone, but both independently made {rescued:+d}px their own "
+                        f"median and together {_MIN_AGREEING_STRIPS} or more located it to "
+                        f"the pixel: {forward.reason}"
+                    ),
+                )
     return result, forward, reverse
 
 
-def _cross_direction_quorum_shift(forward: ShiftEstimate, reverse: ShiftEstimate, *,
-                                  tolerance: int, min_agreeing: int,
-                                  pin_margin: int) -> int | None:
+def _cross_direction_quorum_shift(
+    forward: ShiftEstimate,
+    reverse: ShiftEstimate,
+    *,
+    tolerance: int,
+    min_agreeing: int,
+    pin_margin: int,
+) -> int | None:
     """The one translation BOTH directions centred on and together located to the pixel.
 
     THE FAILURE THIS EXISTS FOR (Maja, 2026-09-04, run 1d84909bf1bb, still-photo return leg 5 of
@@ -819,10 +917,16 @@ def _cross_direction_quorum_shift(forward: ShiftEstimate, reverse: ShiftEstimate
         return None
     if forward_median != -reverse_median:
         return None
-    votes = [(int(s.delta_px), False) for s in forward.strips
-             if s.state == STRIP_MATCHED and s.delta_px is not None]
-    votes += [(-int(s.delta_px), True) for s in reverse.strips
-              if s.state == STRIP_MATCHED and s.delta_px is not None]
+    votes = [
+        (int(s.delta_px), False)
+        for s in forward.strips
+        if s.state == STRIP_MATCHED and s.delta_px is not None
+    ]
+    votes += [
+        (-int(s.delta_px), True)
+        for s in reverse.strips
+        if s.state == STRIP_MATCHED and s.delta_px is not None
+    ]
     votes.sort()
     groups: list[list[tuple[int, bool]]] = [[votes[0]]] if votes else []
     for vote in votes[1:]:
@@ -830,11 +934,14 @@ def _cross_direction_quorum_shift(forward: ShiftEstimate, reverse: ShiftEstimate
             groups.append([vote])
         else:
             groups[-1].append(vote)
-    exact = [group for group in groups
-             if len(group) >= min_agreeing
-             and group[0][0] == group[-1][0]
-             and any(reversed_ for _v, reversed_ in group)
-             and not all(reversed_ for _v, reversed_ in group)]
+    exact = [
+        group
+        for group in groups
+        if len(group) >= min_agreeing
+        and group[0][0] == group[-1][0]
+        and any(reversed_ for _v, reversed_ in group)
+        and not all(reversed_ for _v, reversed_ in group)
+    ]
     if len(exact) != 1:
         return None
     candidate = exact[0][0][0]
@@ -857,8 +964,11 @@ def _matched_median(est: ShiftEstimate) -> int | None:
     recomputes it by exactly `_resolve`'s own arithmetic, over exactly `_resolve`'s own voters,
     rather than parsing it back out of the prose.
     """
-    voters = [int(s.delta_px) for s in est.strips
-              if s.state == STRIP_MATCHED and s.delta_px is not None]
+    voters = [
+        int(s.delta_px)
+        for s in est.strips
+        if s.state == STRIP_MATCHED and s.delta_px is not None
+    ]
     if not voters:
         return None
     voters.sort()
@@ -868,8 +978,9 @@ def _matched_median(est: ShiftEstimate) -> int | None:
     return int(round((voters[middle - 1] + voters[middle]) / 2))
 
 
-def trace_estimate(est: ShiftEstimate | None, *, include_strips: bool = True,
-                   max_strips: int = 32) -> dict | None:
+def trace_estimate(
+    est: ShiftEstimate | None, *, include_strips: bool = True, max_strips: int = 32
+) -> dict | None:
     """A JSON-safe record of what one estimate SAW, for a debug row read long after the run.
 
     WHY THIS EXISTS (found 2026-09-04, run 1d84909bf1bb). `ShiftEstimate` carries the entire
@@ -901,8 +1012,17 @@ def trace_estimate(est: ShiftEstimate | None, *, include_strips: bool = True,
     if est is None:
         return None
     trace: dict = {}
-    for key in ("status", "reason", "delta_px", "consensus_px", "agreeing", "dissenting",
-                "eligible", "saturated", "trust_window_px"):
+    for key in (
+        "status",
+        "reason",
+        "delta_px",
+        "consensus_px",
+        "agreeing",
+        "dissenting",
+        "eligible",
+        "saturated",
+        "trust_window_px",
+    ):
         value = getattr(est, key, None)
         if value is not None:
             trace[key] = value
@@ -918,12 +1038,19 @@ def trace_estimate(est: ShiftEstimate | None, *, include_strips: bool = True,
     bank = []
     for strip in tuple(strips)[:max_strips]:
         score = getattr(strip, "score", None)
-        bank.append([
-            getattr(strip, "y0", None), getattr(strip, "y1", None),
-            getattr(strip, "state", None), getattr(strip, "delta_px", None),
-            (round(float(score), 3)
-             if isinstance(score, (int, float)) and not isinstance(score, bool) else None),
-        ])
+        bank.append(
+            [
+                getattr(strip, "y0", None),
+                getattr(strip, "y1", None),
+                getattr(strip, "state", None),
+                getattr(strip, "delta_px", None),
+                (
+                    round(float(score), 3)
+                    if isinstance(score, (int, float)) and not isinstance(score, bool)
+                    else None
+                ),
+            ]
+        )
     trace["strips"] = bank
     return trace
 
@@ -948,7 +1075,9 @@ def _vote_clusters(voters: Sequence[StripMatch], *, tolerance: int) -> list[list
     return groups
 
 
-def _pins_allow(strips: Sequence[StripMatch], candidate: int, *, pin_margin: int) -> bool:
+def _pins_allow(
+    strips: Sequence[StripMatch], candidate: int, *, pin_margin: int
+) -> bool:
     """Whether every pinned strip's LOWER BOUND is consistent with `candidate`.
 
     A pinned strip's peak sits on the edge of its own search range, so it says "the content went
@@ -990,8 +1119,14 @@ def _pins_allow(strips: Sequence[StripMatch], candidate: int, *, pin_margin: int
     return True
 
 
-def _exact_cluster_shift(strips: Sequence[StripMatch], voters: Sequence[StripMatch], *,
-                         tolerance: int, min_agreeing: int, pin_margin: int) -> int | None:
+def _exact_cluster_shift(
+    strips: Sequence[StripMatch],
+    voters: Sequence[StripMatch],
+    *,
+    tolerance: int,
+    min_agreeing: int,
+    pin_margin: int,
+) -> int | None:
     """The one pixel-exact group in a SPLIT strip bank, or None if that is not unambiguous.
 
     THE FAILURE THIS EXISTS FOR (Grace, 2026-08-16, frames 36/37 and 26 more pairs). A profile
@@ -1022,17 +1157,30 @@ def _exact_cluster_shift(strips: Sequence[StripMatch], voters: Sequence[StripMat
     """
     groups = _vote_clusters(voters, tolerance=tolerance)
     if len(groups) < 2:
-        return None                       # unimodal: the ordinary median path owns this bank
-    exact = [group[0] for group in groups
-             if len(group) >= min_agreeing and group[0] == group[-1]]
+        return None  # unimodal: the ordinary median path owns this bank
+    exact = [
+        group[0]
+        for group in groups
+        if len(group) >= min_agreeing and group[0] == group[-1]
+    ]
     if len(exact) != 1 or not _pins_allow(strips, exact[0], pin_margin=pin_margin):
         return None
     return exact[0]
 
 
-def _resolve(strips: tuple[StripMatch, ...], *, frame_size, band, window: int, tolerance: int,
-             min_agreeing: int, min_saturation: int, min_confidence: float, pin_margin: int,
-             np) -> ShiftEstimate:
+def _resolve(
+    strips: tuple[StripMatch, ...],
+    *,
+    frame_size,
+    band,
+    window: int,
+    tolerance: int,
+    min_agreeing: int,
+    min_saturation: int,
+    min_confidence: float,
+    pin_margin: int,
+    np,
+) -> ShiftEstimate:
     """Turn the strip bank's independent answers into one estimate, or into a refusal.
 
     Split out from `estimate_shift` because it is pure arithmetic over `StripMatch` records —
@@ -1052,19 +1200,32 @@ def _resolve(strips: tuple[StripMatch, ...], *, frame_size, band, window: int, t
     # [corpus: counting pinned strips instead would have flagged 29 of the hand-scrolled
     # capture's near-static frames as saturated — the exact opposite of what they are.]
     beyond = [s for s in strips if s.delta_px is not None and abs(s.delta_px) > window]
-    common = dict(strips=strips, frame_size=frame_size, band=band, trust_window_px=window)
+    common = dict(
+        strips=strips, frame_size=frame_size, band=band, trust_window_px=window
+    )
 
     if not voters:
         saturated = len(beyond) >= min_saturation
         return ShiftEstimate(
-            delta_px=None, confidence=0.0, status=SHIFT_NO_EVIDENCE, saturated=saturated,
-            consensus_px=None, agreeing=0, dissenting=0, eligible=0,
+            delta_px=None,
+            confidence=0.0,
+            status=SHIFT_NO_EVIDENCE,
+            saturated=saturated,
+            consensus_px=None,
+            agreeing=0,
+            dissenting=0,
+            eligible=0,
             reason=(
                 f"no strip found an interior match: {_state_tally(strips)}"
-                + (f" — but {len(beyond)} strips put the content past the {window}px trust "
-                   "window, so it most likely moved further than this band can follow"
-                   if saturated else "")),
-            **common)
+                + (
+                    f" — but {len(beyond)} strips put the content past the {window}px trust "
+                    "window, so it most likely moved further than this band can follow"
+                    if saturated
+                    else ""
+                )
+            ),
+            **common,
+        )
 
     consensus = int(round(float(np.median([s.delta_px for s in voters]))))
     # THE BIMODAL CORRECTION (2026-08-16). The median above is the right statistic for one
@@ -1082,16 +1243,24 @@ def _resolve(strips: tuple[StripMatch, ...], *, frame_size, band, window: int, t
     # unanimity-or-nothing evidence bar.
     split_note = ""
     ordinary_agreeing = [s for s in voters if abs(s.delta_px - consensus) <= tolerance]
-    ordinary_eligible = [s for s in strips
-                         if s.state in (STRIP_MATCHED, STRIP_PINNED)
-                         and s.search[0] + pin_margin < consensus < s.search[1] - pin_margin]
-    ordinary_confidence = (len(ordinary_agreeing) / len(ordinary_eligible)
-                           if ordinary_eligible else 0.0)
+    ordinary_eligible = [
+        s
+        for s in strips
+        if s.state in (STRIP_MATCHED, STRIP_PINNED)
+        and s.search[0] + pin_margin < consensus < s.search[1] - pin_margin
+    ]
+    ordinary_confidence = (
+        len(ordinary_agreeing) / len(ordinary_eligible) if ordinary_eligible else 0.0
+    )
     exact_rescued = False
-    if (len(ordinary_agreeing) < min_agreeing
-            or ordinary_confidence < min_confidence):
-        rescued = _exact_cluster_shift(strips, voters, tolerance=tolerance,
-                                       min_agreeing=min_agreeing, pin_margin=pin_margin)
+    if len(ordinary_agreeing) < min_agreeing or ordinary_confidence < min_confidence:
+        rescued = _exact_cluster_shift(
+            strips,
+            voters,
+            tolerance=tolerance,
+            min_agreeing=min_agreeing,
+            pin_margin=pin_margin,
+        )
         if rescued is not None:
             groups = _vote_clusters(voters, tolerance=tolerance)
             split_note = (
@@ -1099,7 +1268,8 @@ def _resolve(strips: tuple[StripMatch, ...], *, frame_size, band, window: int, t
                 f"({', '.join('/'.join(f'{v:+d}' for v in g) for g in groups)}); the "
                 f"{consensus:+d}px median failed the ordinary "
                 f"{'quorum' if len(ordinary_agreeing) < min_agreeing else 'confidence'} gate, "
-                f"and only {rescued:+d}px is reported by strips that agree to the pixel")
+                f"and only {rescued:+d}px is reported by strips that agree to the pixel"
+            )
             consensus = rescued
             exact_rescued = True
     agreeing = [s for s in voters if abs(s.delta_px - consensus) <= tolerance]
@@ -1135,14 +1305,23 @@ def _resolve(strips: tuple[StripMatch, ...], *, frame_size, band, window: int, t
     # And the deck ADVANCING mid-capture, the other way a bank goes mostly-weak, is not this
     # module's to catch and never was (see "WHAT THIS MODULE DOES NOT DECIDE"): hinge.py's
     # per-frame identity-band guard settles screen identity before these frames are ever paired.
-    eligible = [s for s in strips
-                if s.state in (STRIP_MATCHED, STRIP_PINNED)
-                and s.search[0] + pin_margin < consensus < s.search[1] - pin_margin]
+    eligible = [
+        s
+        for s in strips
+        if s.state in (STRIP_MATCHED, STRIP_PINNED)
+        and s.search[0] + pin_margin < consensus < s.search[1] - pin_margin
+    ]
     confidence = len(agreeing) / len(eligible) if eligible else 0.0
-    counts = (f"{len(agreeing)} of {len(eligible)} eligible strips agree within {tolerance}px "
-              f"({len(dissenting)} dissent, {_state_tally(strips)})")
-    common_counts = dict(confidence=confidence, agreeing=len(agreeing),
-                         dissenting=len(dissenting), eligible=len(eligible))
+    counts = (
+        f"{len(agreeing)} of {len(eligible)} eligible strips agree within {tolerance}px "
+        f"({len(dissenting)} dissent, {_state_tally(strips)})"
+    )
+    common_counts = dict(
+        confidence=confidence,
+        agreeing=len(agreeing),
+        dissenting=len(dissenting),
+        eligible=len(eligible),
+    )
 
     if abs(consensus) > window:
         # The saturation report. The strips agree, and they agree on something outside the range
@@ -1150,34 +1329,59 @@ def _resolve(strips: tuple[StripMatch, ...], *, frame_size, band, window: int, t
         # and `delta_px` stays None. Requiring only `min_saturation` witnesses here is
         # deliberate: see that constant's comment for why a refusal is held to a lower bar than
         # a measurement.
-        if (len(agreeing) >= min_saturation
-                and (confidence >= min_confidence or exact_rescued)):
+        if len(agreeing) >= min_saturation and (
+            confidence >= min_confidence or exact_rescued
+        ):
             return ShiftEstimate(
-                delta_px=None, status=SHIFT_BEYOND_WINDOW, saturated=True,
+                delta_px=None,
+                status=SHIFT_BEYOND_WINDOW,
+                saturated=True,
                 consensus_px=consensus,
-                reason=(f"content moved {consensus:+d}px, beyond the {window}px window this "
-                        f"estimate is trusted within — {counts}"),
-                **common, **common_counts)
+                reason=(
+                    f"content moved {consensus:+d}px, beyond the {window}px window this "
+                    f"estimate is trusted within — {counts}"
+                ),
+                **common,
+                **common_counts,
+            )
         return ShiftEstimate(
-            delta_px=None, status=SHIFT_NO_CONSENSUS,
-            saturated=len(beyond) >= min_saturation, consensus_px=None,
-            reason=(f"the strips point past the {window}px trust window (median "
-                    f"{consensus:+d}px) but do not corroborate each other — {counts}"),
-            **common, **common_counts)
+            delta_px=None,
+            status=SHIFT_NO_CONSENSUS,
+            saturated=len(beyond) >= min_saturation,
+            consensus_px=None,
+            reason=(
+                f"the strips point past the {window}px trust window (median "
+                f"{consensus:+d}px) but do not corroborate each other — {counts}"
+            ),
+            **common,
+            **common_counts,
+        )
 
-    if (len(agreeing) >= min_agreeing
-            and (confidence >= min_confidence or exact_rescued)):
+    if len(agreeing) >= min_agreeing and (
+        confidence >= min_confidence or exact_rescued
+    ):
         return ShiftEstimate(
-            delta_px=consensus, status=SHIFT_MEASURED, saturated=False, consensus_px=consensus,
+            delta_px=consensus,
+            status=SHIFT_MEASURED,
+            saturated=False,
+            consensus_px=consensus,
             reason=f"content moved {consensus:+d}px — {counts}{split_note}",
-            **common, **common_counts)
+            **common,
+            **common_counts,
+        )
 
     return ShiftEstimate(
-        delta_px=None, status=SHIFT_NO_CONSENSUS, saturated=len(beyond) >= min_saturation,
+        delta_px=None,
+        status=SHIFT_NO_CONSENSUS,
+        saturated=len(beyond) >= min_saturation,
         consensus_px=None,
-        reason=(f"no trustworthy shift: median {consensus:+d}px, but {counts} — needs "
-                f"{min_agreeing} agreeing strips at confidence {min_confidence:.2f}"),
-        **common, **common_counts)
+        reason=(
+            f"no trustworthy shift: median {consensus:+d}px, but {counts} — needs "
+            f"{min_agreeing} agreeing strips at confidence {min_confidence:.2f}"
+        ),
+        **common,
+        **common_counts,
+    )
 
 
 def _state_tally(strips: tuple[StripMatch, ...]) -> str:

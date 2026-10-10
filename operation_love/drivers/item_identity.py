@@ -139,14 +139,19 @@ WHAT THIS DOES NOT DO
     `hinge._invalidate_item_index` owns that (doc 5.3). This is the guard for the case where
     invalidation was missed, which is exactly the case that has no other guard before the tap.
 """
+
 from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
 
 from .scroll_top import (
-    ScrollTopError, band_fingerprint, band_pinned_evidence, confirm_scroll_top,
-    fingerprint_distance)
+    ScrollTopError,
+    band_fingerprint,
+    band_pinned_evidence,
+    confirm_scroll_top,
+    fingerprint_distance,
+)
 
 
 # =====================================================================================
@@ -247,9 +252,11 @@ _IDENTITY_MATCH_MAX_DIST = 3.0
 
 
 # --- the three outcomes ---------------------------------------------------------------
-IDENTITY_MATCH = "identity_match"            # the screen is the profile the index describes
-IDENTITY_MISMATCH = "identity_mismatch"      # it is not the header this index was built from
-IDENTITY_UNKNOWN = "identity_unknown"        # cannot tell -- and never to be read as a match
+IDENTITY_MATCH = "identity_match"  # the screen is the profile the index describes
+IDENTITY_MISMATCH = (
+    "identity_mismatch"  # it is not the header this index was built from
+)
+IDENTITY_UNKNOWN = "identity_unknown"  # cannot tell -- and never to be read as a match
 
 
 class IdentityError(RuntimeError):
@@ -284,6 +291,7 @@ class ProfileIdentity:
     how many frames of the capture corroborated it, and `outlier_frames` /
     `outlier_max_distance` how many did not and by how much.
     """
+
     fingerprint: tuple[int, ...] | None
     band: tuple[float, float, float, float] | None
     grid: tuple[int, int]
@@ -316,6 +324,7 @@ class IdentityVerdict:
     `reason` is always populated, including on a match, so a debug record or a hub stop line can
     quote why without re-deriving anything.
     """
+
     state: str
     distance: float | None
     reason: str
@@ -343,19 +352,29 @@ class IdentityVerdict:
         raise TypeError(
             "IdentityVerdict has no truth value: 'cannot tell' is not 'same profile'. Test "
             "`.matched` explicitly. This verdict was "
-            f"{self.state!r}: {self.reason}")
+            f"{self.state!r}: {self.reason}"
+        )
 
 
 def _unknown(reason: str, *, band=None, grid=_IDENTITY_GRID) -> ProfileIdentity:
-    return ProfileIdentity(fingerprint=None, band=band, grid=grid, frame_index=None,
-                           scroll_top_distance=None, reason=reason)
+    return ProfileIdentity(
+        fingerprint=None,
+        band=band,
+        grid=grid,
+        frame_index=None,
+        scroll_top_distance=None,
+        reason=reason,
+    )
 
 
-def capture_profile_identity(frames: Sequence[bytes], *,
-                             identity_band: tuple[float, float, float, float] | None,
-                             page_offsets: Sequence[int | None] | None = None,
-                             grid: tuple[int, int] = _IDENTITY_GRID,
-                             match_max_dist: float = _IDENTITY_MATCH_MAX_DIST) -> ProfileIdentity:
+def capture_profile_identity(
+    frames: Sequence[bytes],
+    *,
+    identity_band: tuple[float, float, float, float] | None,
+    page_offsets: Sequence[int | None] | None = None,
+    grid: tuple[int, int] = _IDENTITY_GRID,
+    match_max_dist: float = _IDENTITY_MATCH_MAX_DIST,
+) -> ProfileIdentity:
     """The sticky-header fingerprint of the profile `frames` were captured from.
 
     `frames` are the capture's frames in order — the same ones the index is built from, so the
@@ -425,17 +444,23 @@ def capture_profile_identity(frames: Sequence[bytes], *,
         raise IdentityError(
             f"{len(frames)} frame(s) against {len(page_offsets)} page offset(s): these describe "
             "different captures, and pairing them would attribute one frame's band to another "
-            "frame's scroll position")
+            "frame's scroll position"
+        )
     if identity_band is None:
         return _unknown(
             "no identity_band is declared for this app, so there is no strip that carries the "
             "person's sticky header and no fingerprint can be taken. Navigation against this "
-            "index cannot be checked for identity and must refuse", grid=grid)
+            "index cannot be checked for identity and must refuse",
+            grid=grid,
+        )
 
     band = tuple(identity_band)
     if not frames:
-        return _unknown("this capture has no frames, so there was nothing to fingerprint",
-                        band=band, grid=grid)
+        return _unknown(
+            "this capture has no frames, so there was nothing to fingerprint",
+            band=band,
+            grid=grid,
+        )
 
     confirmed_at: int | None = None
     unreadable: list[str] = []
@@ -452,27 +477,42 @@ def capture_profile_identity(frames: Sequence[bytes], *,
                 # refuting frame BEFORE any confirmation proves nothing about the rect — static
                 # chrome refutes on every frame of every profile. Keep looking.
                 continue
-            seen.append((i, band_fingerprint(frame, identity_band=identity_band, grid=grid),
-                         verdict.distance))
+            seen.append(
+                (
+                    i,
+                    band_fingerprint(frame, identity_band=identity_band, grid=grid),
+                    verdict.distance,
+                )
+            )
         except ScrollTopError as exc:
             unreadable.append(f"frame {i} ({exc})")
 
-    trailer = (f" ({len(unreadable)} frame(s) could not be read: {'; '.join(unreadable)})"
-               if unreadable else "")
+    trailer = (
+        f" ({len(unreadable)} frame(s) could not be read: {'; '.join(unreadable)})"
+        if unreadable
+        else ""
+    )
     if confirmed_at is None:
         return _unknown(
             f"no frame of this capture showed the profile-independent filter-chips row in "
             f"{band}, so nothing proves that rect is the strip Hinge draws its sticky header "
             f"over. A fingerprint taken off some other rect could be identical on every profile, "
-            f"which would pass an identity check for everybody{trailer}", band=band, grid=grid)
+            f"which would pass an identity check for everybody{trailer}",
+            band=band,
+            grid=grid,
+        )
     if not seen:
         # TWO causes, opposite fixes, and the reason must derive from which one this capture has.
         # `band_pinned_evidence` is only consulted here, where the alternative is to blame a
         # capture that may be blameless; everywhere else in this function the chips row reading as
         # the chips row is ordinary and expected.
-        pinned = (band_pinned_evidence(frames, identity_band=identity_band,
-                                       page_offsets=page_offsets)
-                  if page_offsets is not None else None)
+        pinned = (
+            band_pinned_evidence(
+                frames, identity_band=identity_band, page_offsets=page_offsets
+            )
+            if page_offsets is not None
+            else None
+        )
         if pinned is not None and pinned.pinned:
             return _unknown(
                 f"the identity band {band} is PINNED to the screen in this capture's current "
@@ -485,12 +525,17 @@ def capture_profile_identity(frames: Sequence[bytes], *,
                 f"may be considered only if it independently proves a usable scroll-top and "
                 f"profile-identity signal; otherwise the rect and its signals need "
                 f"recalibration with the owner and a device{trailer}",
-                band=band, grid=grid)
+                band=band,
+                grid=grid,
+            )
         return _unknown(
             f"every frame of this capture reads as the filter-chips row in {band}, so the sticky "
             f"per-profile header never appeared and there is nothing that distinguishes this "
             f"person from any other. A capture that never scrolled far enough to reveal the "
-            f"header cannot be checked for identity{trailer}", band=band, grid=grid)
+            f"header cannot be checked for identity{trailer}",
+            band=band,
+            grid=grid,
+        )
 
     # Group the header readings by mutual agreement, earliest-first, and take the largest group.
     groups: list[list[int]] = []
@@ -503,8 +548,10 @@ def capture_profile_identity(frames: Sequence[bytes], *,
             groups.append([position])
     best = max(groups, key=lambda g: (len(g), -g[0]))
     outliers = [p for group in groups if group is not best for p in group]
-    outlier_max = max((fingerprint_distance(seen[p][1], seen[best[0]][1]) for p in outliers),
-                      default=None)
+    outlier_max = max(
+        (fingerprint_distance(seen[p][1], seen[best[0]][1]) for p in outliers),
+        default=None,
+    )
 
     if len(best) < 2:
         return _unknown(
@@ -512,32 +559,53 @@ def capture_profile_identity(frames: Sequence[bytes], *,
             f"{len(seen)} frame(s) showed one, and no two of them are within {match_max_dist} "
             f"grey levels of each other. One uncorroborated reading is how a frame caught "
             f"mid-slide-in becomes the fingerprint, which then refuses its own profile at every "
-            f"later frame{trailer}", band=band, grid=grid)
+            f"later frame{trailer}",
+            band=band,
+            grid=grid,
+        )
     if len(best) * 2 <= len(seen):
         return _unknown(
             f"this capture's header readings do not agree on one person: the largest group of "
             f"{len(best)} agreeing frame(s) is not a majority of the {len(seen)} that showed a "
             f"header, and the nearest disagreeing reading is {outlier_max:.3f} grey levels away. "
             f"A capture that may span two profiles cannot be fingerprinted as one{trailer}",
-            band=band, grid=grid)
+            band=band,
+            grid=grid,
+        )
 
     index, fingerprint, top_distance = seen[best[0]]
-    note = (f"; {len(outliers)} frame(s) disagreed, the furthest by {outlier_max:.3f} grey "
-            "levels, which is what a frame caught mid-slide-in looks like" if outliers else "")
+    note = (
+        f"; {len(outliers)} frame(s) disagreed, the furthest by {outlier_max:.3f} grey "
+        "levels, which is what a frame caught mid-slide-in looks like"
+        if outliers
+        else ""
+    )
     return ProfileIdentity(
-        fingerprint=fingerprint, band=band, grid=grid, frame_index=index,
-        scroll_top_distance=top_distance, agreeing_frames=len(best),
-        outlier_frames=len(outliers), outlier_max_distance=outlier_max,
-        reason=(f"frame {index} of this capture shows the app's sticky per-profile header in the "
-                f"identity band — {top_distance:.3f} grey levels from the profile-independent "
-                f"filter-chips row frame {confirmed_at} confirmed — and {len(best)} of the "
-                f"{len(seen)} frames that showed a header agree with it to within "
-                f"{match_max_dist}{note}{trailer}"))
+        fingerprint=fingerprint,
+        band=band,
+        grid=grid,
+        frame_index=index,
+        scroll_top_distance=top_distance,
+        agreeing_frames=len(best),
+        outlier_frames=len(outliers),
+        outlier_max_distance=outlier_max,
+        reason=(
+            f"frame {index} of this capture shows the app's sticky per-profile header in the "
+            f"identity band — {top_distance:.3f} grey levels from the profile-independent "
+            f"filter-chips row frame {confirmed_at} confirmed — and {len(best)} of the "
+            f"{len(seen)} frames that showed a header agree with it to within "
+            f"{match_max_dist}{note}{trailer}"
+        ),
+    )
 
 
-def compare_profile_identity(frame: bytes, identity: ProfileIdentity | None, *,
-                             identity_band: tuple[float, float, float, float] | None,
-                             match_max_dist: float = _IDENTITY_MATCH_MAX_DIST) -> IdentityVerdict:
+def compare_profile_identity(
+    frame: bytes,
+    identity: ProfileIdentity | None,
+    *,
+    identity_band: tuple[float, float, float, float] | None,
+    match_max_dist: float = _IDENTITY_MATCH_MAX_DIST,
+) -> IdentityVerdict:
     """Is `frame` showing the profile `identity` was captured from? Match, mismatch, or neither.
 
     `identity` is `ItemIndex.identity`. `identity_band` is the driver's config-merged rect, and it
@@ -558,24 +626,39 @@ def compare_profile_identity(frame: bytes, identity: ProfileIdentity | None, *,
     """
     if identity is None or not identity.known:
         return IdentityVerdict(
-            state=IDENTITY_UNKNOWN, distance=None, identity=identity,
+            state=IDENTITY_UNKNOWN,
+            distance=None,
+            identity=identity,
             match_max=match_max_dist,
-            reason=("this item index carries no identity fingerprint, so there is nothing to "
-                    "check the screen against: "
-                    + (identity.reason if identity is not None else "no identity was captured")))
+            reason=(
+                "this item index carries no identity fingerprint, so there is nothing to "
+                "check the screen against: "
+                + (
+                    identity.reason
+                    if identity is not None
+                    else "no identity was captured"
+                )
+            ),
+        )
     if identity_band is None:
         return IdentityVerdict(
-            state=IDENTITY_UNKNOWN, distance=None, identity=identity,
+            state=IDENTITY_UNKNOWN,
+            distance=None,
+            identity=identity,
             match_max=match_max_dist,
-            reason=("no identity_band is declared for this app now, though this index carries a "
-                    f"fingerprint taken through {identity.band} — the strip that would answer "
-                    "cannot be read"))
+            reason=(
+                "no identity_band is declared for this app now, though this index carries a "
+                f"fingerprint taken through {identity.band} — the strip that would answer "
+                "cannot be read"
+            ),
+        )
     if tuple(identity_band) != identity.band:
         raise IdentityError(
             f"this index's identity fingerprint was taken through band {identity.band} but the "
             f"driver now declares {tuple(identity_band)}. Those are different crops of the "
             "screen and no distance between them measures anything — re-index the profile "
-            "rather than comparing across a changed calibration")
+            "rather than comparing across a changed calibration"
+        )
 
     try:
         seen = band_fingerprint(frame, identity_band=identity_band, grid=identity.grid)
@@ -583,37 +666,55 @@ def compare_profile_identity(frame: bytes, identity: ProfileIdentity | None, *,
     except ScrollTopError as exc:
         raise IdentityError(
             f"the identity band {tuple(identity_band)} could not be read from this frame "
-            f"({exc}), so whose profile is on screen cannot be established") from exc
+            f"({exc}), so whose profile is on screen cannot be established"
+        ) from exc
 
     if top.confirmed:
         return IdentityVerdict(
-            state=IDENTITY_UNKNOWN, distance=None, identity=identity,
+            state=IDENTITY_UNKNOWN,
+            distance=None,
+            identity=identity,
             match_max=match_max_dist,
-            reason=("the screen is at a card's scroll top, where the identity band shows Hinge's "
-                    f"profile-independent filter-chips row ({top.distance:.3f} from it). That "
-                    "strip is byte-identical across two different people in the calibration "
-                    "corpus, so identity is simply not visible here — this is 'cannot tell', "
-                    "never 'same profile'. Navigation must be entered from where the read left "
-                    "the card, scrolled, with the sticky header showing"))
+            reason=(
+                "the screen is at a card's scroll top, where the identity band shows Hinge's "
+                f"profile-independent filter-chips row ({top.distance:.3f} from it). That "
+                "strip is byte-identical across two different people in the calibration "
+                "corpus, so identity is simply not visible here — this is 'cannot tell', "
+                "never 'same profile'. Navigation must be entered from where the read left "
+                "the card, scrolled, with the sticky header showing"
+            ),
+        )
 
     dist = fingerprint_distance(seen, identity.fingerprint)
     if dist <= match_max_dist:
         return IdentityVerdict(
-            state=IDENTITY_MATCH, distance=dist, identity=identity, match_max=match_max_dist,
-            reason=(f"the sticky per-profile header matches the one this index was built from at "
-                    f"{dist:.3f} <= {match_max_dist} (frame {identity.frame_index} of that "
-                    f"capture, agreed on by {identity.agreeing_frames} of its frames); the "
-                    "header stays pixel-identical for a whole profile and changes with the "
-                    "person"))
+            state=IDENTITY_MATCH,
+            distance=dist,
+            identity=identity,
+            match_max=match_max_dist,
+            reason=(
+                f"the sticky per-profile header matches the one this index was built from at "
+                f"{dist:.3f} <= {match_max_dist} (frame {identity.frame_index} of that "
+                f"capture, agreed on by {identity.agreeing_frames} of its frames); the "
+                "header stays pixel-identical for a whole profile and changes with the "
+                "person"
+            ),
+        )
     return IdentityVerdict(
-        state=IDENTITY_MISMATCH, distance=dist, identity=identity, match_max=match_max_dist,
-        reason=(f"the identity band is {dist:.3f} grey levels from the sticky header this index "
-                f"was built from, past the {match_max_dist} bound. Two frames of ONE profile "
-                "measured exactly 0.000 apart on all 143 frames of the calibration corpus, so "
-                "anything above the bound is a different draw of that strip: a different person "
-                "(measured 7.287 between the two corpus profiles), a header redrawn a few pixels "
-                "over, or another screen entirely (the paywall measured 4.289). None of the "
-                "three is a card this index may be counted against, and geometry cannot tell any "
-                "of them apart — Hinge's cards are stereotyped, and a foreign profile's item 1 "
-                "measured the same card height, the same heart inset and the same x as the "
-                "indexed one"))
+        state=IDENTITY_MISMATCH,
+        distance=dist,
+        identity=identity,
+        match_max=match_max_dist,
+        reason=(
+            f"the identity band is {dist:.3f} grey levels from the sticky header this index "
+            f"was built from, past the {match_max_dist} bound. Two frames of ONE profile "
+            "measured exactly 0.000 apart on all 143 frames of the calibration corpus, so "
+            "anything above the bound is a different draw of that strip: a different person "
+            "(measured 7.287 between the two corpus profiles), a header redrawn a few pixels "
+            "over, or another screen entirely (the paywall measured 4.289). None of the "
+            "three is a card this index may be counted against, and geometry cannot tell any "
+            "of them apart — Hinge's cards are stereotyped, and a foreign profile's item 1 "
+            "measured the same card height, the same heart inset and the same x as the "
+            "indexed one"
+        ),
+    )

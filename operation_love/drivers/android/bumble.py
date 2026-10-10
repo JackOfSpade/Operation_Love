@@ -4,6 +4,7 @@ The future Auto path uses direct card-body drags, whose pure mechanics remain un
 No real session may start while ``BUMBLE_SPEC.calibrated`` is false;
 the paid-upsell detection template is intentionally absent until it is measured live.
 """
+
 from __future__ import annotations
 
 from ..android_spec import AndroidAppSpec
@@ -81,19 +82,34 @@ class BumbleAndroidDriver(AndroidDriver):
         # list" a true CAPABILITY fact, not a policy guess, so it must stamp the same kind
         # hinge.py's own `_no_opener_consumer_blocks_enumeration` half stamps, or every Bumble
         # capture would degrade the verdict to WITH LIMITATIONS for behaving exactly as designed.
-        self._invalidate_item_index("bumble has no swipe-time opener items",
-                                    unavailable_kind="no_opener_consumer")
+        self._invalidate_item_index(
+            "bumble has no swipe-time opener items",
+            unavailable_kind="no_opener_consumer",
+        )
         if self._dbg is not None:
             self._dbg.action(
-                "capture", before=frame, photos=1, capture_truncated=False,
-                items=0, item_context=0, item_translation=[], item_manifest=[],
+                "capture",
+                before=frame,
+                photos=1,
+                capture_truncated=False,
+                items=0,
+                item_context=0,
+                item_translation=[],
+                item_manifest=[],
                 items_unavailable="bumble has no swipe-time opener items",
-                items_unavailable_kind="no_opener_consumer", ranker_photos=None,
+                items_unavailable_kind="no_opener_consumer",
+                ranker_photos=None,
             )
         return Profile(
-            photos=[frame], prompts=[],
-            meta={"app": self.spec.app, "capture_frames": 1, "read_scrolls": 0,
-                  "read_dwell_s_total": 0.0, "capture_truncated": False},
+            photos=[frame],
+            prompts=[],
+            meta={
+                "app": self.spec.app,
+                "capture_frames": 1,
+                "read_scrolls": 0,
+                "read_dwell_s_total": 0.0,
+                "capture_truncated": False,
+            },
             items_unavailable="bumble has no swipe-time opener items",
             # Mirrors the debug-log action's own kind a few lines up (and hinge.py's own
             # capture return, which always sets the two fields together -- see

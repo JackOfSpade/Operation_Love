@@ -1,4 +1,5 @@
 """Unit tests for the pure autonomous-session interaction policy."""
+
 import math
 import random
 
@@ -46,7 +47,9 @@ def test_post_action_delay_uses_profile_context_time_and_landed_history():
         late.record_landed_action("like")
 
     # Same seed means the difference is context rather than an accidental draw.
-    assert late.post_action_delay_s("like", rich, 0.51) > early.post_action_delay_s("like", simple, 0.90)
+    assert late.post_action_delay_s("like", rich, 0.51) > early.post_action_delay_s(
+        "like", simple, 0.90
+    )
 
 
 def test_post_action_delay_has_session_correlated_variation_and_validates_scale():
@@ -72,18 +75,32 @@ def test_post_action_delay_rejects_zero_scale_too():
         policy.post_action_delay_s("like", p, 0.5, scale=0)
 
 
-@pytest.mark.parametrize("scale", [
-    True, math.nan, math.inf, pytest.param(10 ** 10_000, id="huge_int"), "1",
-])
+@pytest.mark.parametrize(
+    "scale",
+    [
+        True,
+        math.nan,
+        math.inf,
+        pytest.param(10**10_000, id="huge_int"),
+        "1",
+    ],
+)
 def test_post_action_delay_rejects_nonfinite_or_nonnumeric_scales(scale):
     policy = AutoSessionPolicy(rng=random.Random(1), local_hour=lambda: 12)
     with pytest.raises(ValueError, match="scale"):
         policy.post_action_delay_s("like", _profile(), 0.5, scale=scale)
 
 
-@pytest.mark.parametrize("score", [
-    True, math.nan, math.inf, pytest.param(10 ** 10_000, id="huge_int"), "0.5",
-])
+@pytest.mark.parametrize(
+    "score",
+    [
+        True,
+        math.nan,
+        math.inf,
+        pytest.param(10**10_000, id="huge_int"),
+        "0.5",
+    ],
+)
 def test_policy_rejects_invalid_model_scores(score):
     policy = AutoSessionPolicy(rng=random.Random(1), local_hour=lambda: 12)
     with pytest.raises(ValueError, match="score"):
@@ -106,14 +123,17 @@ def test_read_and_capture_counts_reject_lossy_numeric_coercion():
         policy.capture_limit("8")
 
 
-@pytest.mark.parametrize("bad_value", [
-    "not-a-number",     # non-numeric string
-    None,                # explicit None (present but unset -- distinct from key absent)
-    -7,                  # negative
-    float("inf"),        # huge / unbounded
-    float("nan"),        # not-a-number float
-    object(),             # arbitrary non-numeric type
-])
+@pytest.mark.parametrize(
+    "bad_value",
+    [
+        "not-a-number",  # non-numeric string
+        None,  # explicit None (present but unset -- distinct from key absent)
+        -7,  # negative
+        float("inf"),  # huge / unbounded
+        float("nan"),  # not-a-number float
+        object(),  # arbitrary non-numeric type
+    ],
+)
 def test_post_action_delay_tolerates_malformed_capture_frames_metadata(bad_value):
     """Confirmed-live bug from the audit: a non-numeric meta['capture_frames'] raised a
     bare ValueError out of _profile_complexity, and worker.py's auto loop has no
@@ -123,16 +143,18 @@ def test_post_action_delay_tolerates_malformed_capture_frames_metadata(bad_value
     degrade to sane, bounded pacing instead of raising."""
     p = Profile(photos=[b"x"] * 3, bio="", meta={"capture_frames": bad_value})
     policy = AutoSessionPolicy(rng=random.Random(5), local_hour=lambda: 12)
-    delay = policy.post_action_delay_s("like", p, 0.6)   # must not raise
+    delay = policy.post_action_delay_s("like", p, 0.6)  # must not raise
     assert 0.35 <= delay <= 45.0
 
 
 @pytest.mark.parametrize("bad_value", ["nope", None, -3, float("inf"), float("nan")])
 def test_post_action_delay_tolerates_malformed_read_scrolls_metadata(bad_value):
     """Same guard, the other malformed pacing field -- meta['read_scrolls']."""
-    p = Profile(photos=[b"x"] * 2, bio="", meta={"capture_frames": 2, "read_scrolls": bad_value})
+    p = Profile(
+        photos=[b"x"] * 2, bio="", meta={"capture_frames": 2, "read_scrolls": bad_value}
+    )
     policy = AutoSessionPolicy(rng=random.Random(6), local_hour=lambda: 12)
-    delay = policy.post_action_delay_s("dislike", p, 0.4)   # must not raise
+    delay = policy.post_action_delay_s("dislike", p, 0.4)  # must not raise
     assert 0.35 <= delay <= 45.0
 
 
@@ -149,14 +171,14 @@ def test_safe_meta_int_falls_back_on_malformed_values_and_clamps_negative():
     not just the fact that the larger call doesn't raise -- pins the exact fallback
     value for each malformed shape."""
     meta_int = AutoSessionPolicy._safe_meta_int
-    assert meta_int({"k": "garbage"}, "k", 9) == 9      # non-numeric string -> default
-    assert meta_int({"k": None}, "k", 9) == 9            # explicit None -> default
-    assert meta_int({"k": float("inf")}, "k", 9) == 9    # OverflowError -> default
-    assert meta_int({"k": float("nan")}, "k", 9) == 9    # ValueError -> default
-    assert meta_int({"k": -5}, "k", 9) == 0               # negative -> clamped to 0, not default
-    assert meta_int({"k": "4"}, "k", 9) == 4              # numeric string still parses normally
-    assert meta_int({}, "k", 9) == 9                      # key absent -> default
-    assert meta_int({"k": 0}, "k", 9) == 9                # explicit 0 -> "not provided", matches
+    assert meta_int({"k": "garbage"}, "k", 9) == 9  # non-numeric string -> default
+    assert meta_int({"k": None}, "k", 9) == 9  # explicit None -> default
+    assert meta_int({"k": float("inf")}, "k", 9) == 9  # OverflowError -> default
+    assert meta_int({"k": float("nan")}, "k", 9) == 9  # ValueError -> default
+    assert meta_int({"k": -5}, "k", 9) == 0  # negative -> clamped to 0, not default
+    assert meta_int({"k": "4"}, "k", 9) == 4  # numeric string still parses normally
+    assert meta_int({}, "k", 9) == 9  # key absent -> default
+    assert meta_int({"k": 0}, "k", 9) == 9  # explicit 0 -> "not provided", matches
     # the pre-existing `or default` semantics this replaced.
 
 
@@ -198,15 +220,19 @@ def test_confident_likes_and_non_ranker_terminal_decisions_keep_semantics():
     p = _profile(photos=5, frames=5, scrolls=4)
     confident = Decision("like", 0.9, [1.0], "ranker")
     assert policy.apply_decision(confident, p).decision is confident
-    for terminal in (Decision("defer", 0.0, [], "cold_start"), Decision("no_face", 0.0, [], "ranker")):
+    for terminal in (
+        Decision("defer", 0.0, [], "cold_start"),
+        Decision("no_face", 0.0, [], "ranker"),
+    ):
         result = policy.apply_decision(terminal, p)
         assert result.decision is terminal
         assert result.effective_threshold is None
 
 
 def test_zero_threshold_lift_is_exact_legacy_decision_boundary():
-    policy = AutoSessionPolicy(rng=random.Random(1), local_hour=lambda: 1,
-                               max_threshold_lift=0.0)
+    policy = AutoSessionPolicy(
+        rng=random.Random(1), local_hour=lambda: 1, max_threshold_lift=0.0
+    )
     d = Decision("like", 0.5, [1.0], "ranker")
     result = policy.apply_decision(d, _profile())
     assert result.decision is d

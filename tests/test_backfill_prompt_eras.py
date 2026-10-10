@@ -28,6 +28,7 @@ Two kinds of test live here, deliberately kept apart:
 No network, no BigQuery, no imported opener.py module anywhere in these tests except the two
 places that explicitly need the real, live prompt_stamp() to compare against.
 """
+
 from __future__ import annotations
 
 import json
@@ -48,9 +49,11 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # only consumer of a throwaway git repo in the whole suite).
 # ---------------------------------------------------------------------------------------
 
+
 def _git(repo: Path, *args: str) -> str:
-    result = subprocess.run(["git", *args], cwd=repo, capture_output=True, text=True,
-                            check=False)  # returncode asserted on the next line
+    result = subprocess.run(
+        ["git", *args], cwd=repo, capture_output=True, text=True, check=False
+    )  # returncode asserted on the next line
     assert result.returncode == 0, f"git {args} failed: {result.stderr}"
     return result.stdout
 
@@ -71,9 +74,14 @@ def _commit(repo: Path, files: dict[str, str], message: str, when: str) -> str:
         full.write_text(content, encoding="utf-8")
     env = dict(os.environ, GIT_AUTHOR_DATE=when, GIT_COMMITTER_DATE=when)
     _git(repo, "add", "-A")
-    result = subprocess.run(["git", "commit", "-q", "-m", message], cwd=repo,
-                            capture_output=True, text=True, env=env,
-                            check=False)  # returncode asserted on the next line
+    result = subprocess.run(
+        ["git", "commit", "-q", "-m", message],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )  # returncode asserted on the next line
     assert result.returncode == 0, result.stderr
     return _git(repo, "rev-parse", "HEAD").strip()
 
@@ -81,9 +89,15 @@ def _commit(repo: Path, files: dict[str, str], message: str, when: str) -> str:
 # A minimal but structurally real opener.py: module docstring, an unrelated import (so a test
 # that accidentally tried to exec/import this would fail loudly rather than silently working),
 # and the six constants in the exact literal shapes prompt_stamp() covers.
-def _opener_py(system: str, schema: dict, item_preamble="P", item_preamble_context="PC",
-              item_label="=== ITEM {number} ===", context_label="=== CONTEXT ===",
-              extra: str = "") -> str:
+def _opener_py(
+    system: str,
+    schema: dict,
+    item_preamble="P",
+    item_preamble_context="PC",
+    item_label="=== ITEM {number} ===",
+    context_label="=== CONTEXT ===",
+    extra: str = "",
+) -> str:
     return textwrap.dedent(f'''\
         """A fixture opener module."""
         import os  # unrelated import; must never be exec'd or imported by this tool
@@ -111,6 +125,7 @@ FIXTURE_PATHS = ("config.yaml", "opener.py")
 # extract_constants -- AST literal_eval, no exec, no import
 # ---------------------------------------------------------------------------------------
 
+
 def test_extract_constants_reads_every_named_constant():
     src = _opener_py("RULE ONE: text.", {"type": "object"})
     values, failures = m.extract_constants(src)
@@ -125,17 +140,17 @@ def test_extract_constants_reports_a_missing_constant_as_simply_absent():
     # No _ITEM_PREAMBLE/_ITEM_PREAMBLE_CONTEXT/_ITEM_LABEL/_CONTEXT_LABEL at all -- simulates a
     # pre-item-crop-redesign revision. Absent, not a failure: evaluate_revision is the one that
     # turns "absent" into a reason.
-    src = textwrap.dedent('''\
+    src = textwrap.dedent("""\
         _SYSTEM = "RULE ONE: text."
         _SCHEMA = {"type": "object"}
-        ''')
+        """)
     values, failures = m.extract_constants(src)
     assert failures == {}
     assert set(values) == {"_SYSTEM", "_SCHEMA"}
 
 
 def test_extract_constants_records_a_non_literal_assignment_as_a_failure_not_a_crash():
-    src = textwrap.dedent('''\
+    src = textwrap.dedent("""\
         _HELPER = "x"
         _SYSTEM = "RULE ONE: " + _HELPER  # not a literal -- BinOp, literal_eval must reject it
         _SCHEMA = {"type": "object"}
@@ -143,7 +158,7 @@ def test_extract_constants_records_a_non_literal_assignment_as_a_failure_not_a_c
         _ITEM_PREAMBLE_CONTEXT = "PC"
         _ITEM_LABEL = "L"
         _CONTEXT_LABEL = "C"
-        ''')
+        """)
     values, failures = m.extract_constants(src)
     assert "_SYSTEM" not in values
     assert "_SYSTEM" in failures
@@ -162,7 +177,7 @@ def test_extract_constants_last_top_level_assignment_wins():
     # really does overwrite the first when the module is actually imported. Getting this
     # backwards would silently reconstruct the wrong (stale) value for any revision that ever
     # reassigns one of these names.
-    src = textwrap.dedent('''\
+    src = textwrap.dedent("""\
         _SYSTEM = "OLD RULE: stale."
         _SCHEMA = {"type": "object"}
         _ITEM_PREAMBLE = "P"
@@ -170,14 +185,14 @@ def test_extract_constants_last_top_level_assignment_wins():
         _ITEM_LABEL = "L"
         _CONTEXT_LABEL = "C"
         _SYSTEM = "NEW RULE: current."
-        ''')
+        """)
     values, failures = m.extract_constants(src)
     assert failures == {}
     assert values["_SYSTEM"] == "NEW RULE: current."
 
 
 def test_extract_constants_ignores_a_same_named_local_variable_inside_a_function():
-    src = textwrap.dedent('''\
+    src = textwrap.dedent("""\
         _SYSTEM = "MODULE RULE: real."
         _SCHEMA = {"type": "object"}
         _ITEM_PREAMBLE = "P"
@@ -188,7 +203,7 @@ def test_extract_constants_ignores_a_same_named_local_variable_inside_a_function
         def build():
             _SYSTEM = "LOCAL: should never be picked up"
             return _SYSTEM
-        ''')
+        """)
     values, failures = m.extract_constants(src)
     assert values["_SYSTEM"] == "MODULE RULE: real."
 
@@ -196,6 +211,7 @@ def test_extract_constants_ignores_a_same_named_local_variable_inside_a_function
 # ---------------------------------------------------------------------------------------
 # extract_style -- plain yaml.safe_load, matching config.py's real loader
 # ---------------------------------------------------------------------------------------
+
 
 def test_extract_style_reads_the_style_string():
     style, reason = m.extract_style("opener:\n  style: |\n    Be kind.\n")
@@ -238,18 +254,29 @@ def test_extract_style_reports_a_non_mapping_document():
 # exactly: NUL-joined, canonical _SCHEMA, sha256 hex.
 # ---------------------------------------------------------------------------------------
 
+
 def test_compute_prompt_stamp_matches_a_hand_built_reference_digest():
     import hashlib
+
     style, system = "STYLE", "SYSTEM"
     schema = {"b": 1, "a": 2}
-    payload = "\x00".join((
-        style, system,
-        json.dumps(schema, sort_keys=True, separators=(",", ":"), ensure_ascii=True),
-        "PREAMBLE", "PREAMBLE_CTX", "LABEL", "CTX_LABEL",
-    ))
+    payload = "\x00".join(
+        (
+            style,
+            system,
+            json.dumps(
+                schema, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+            ),
+            "PREAMBLE",
+            "PREAMBLE_CTX",
+            "LABEL",
+            "CTX_LABEL",
+        )
+    )
     expected = hashlib.sha256(payload.encode("utf-8")).hexdigest()
-    actual = m.compute_prompt_stamp(style, system, schema, "PREAMBLE", "PREAMBLE_CTX",
-                                    "LABEL", "CTX_LABEL")
+    actual = m.compute_prompt_stamp(
+        style, system, schema, "PREAMBLE", "PREAMBLE_CTX", "LABEL", "CTX_LABEL"
+    )
     assert actual == expected
 
 
@@ -263,12 +290,22 @@ def test_compute_prompt_stamp_is_sensitive_to_schema_key_order_being_a_non_issue
 
 
 def test_compute_prompt_stamp_changes_when_any_single_component_changes():
-    base = ("style", "system", {"a": 1}, "preamble", "preamble_ctx", "label", "ctx_label")
+    base = (
+        "style",
+        "system",
+        {"a": 1},
+        "preamble",
+        "preamble_ctx",
+        "label",
+        "ctx_label",
+    )
     baseline = m.compute_prompt_stamp(*base)
     for i in range(len(base)):
         mutated = list(base)
         mutated[i] = {"a": 2} if i == 2 else str(mutated[i]) + "!"
-        assert m.compute_prompt_stamp(*mutated) != baseline, f"component {i} did not move the digest"
+        assert m.compute_prompt_stamp(*mutated) != baseline, (
+            f"component {i} did not move the digest"
+        )
 
 
 def test_reconstruction_matches_live_prompt_stamp_for_the_current_working_tree():
@@ -282,7 +319,9 @@ def test_reconstruction_matches_live_prompt_stamp_for_the_current_working_tree()
     from operation_love import config as cfg_mod
     from operation_love.opener.opener import prompt_stamp
 
-    opener_src = (REPO_ROOT / "operation_love" / "opener" / "opener.py").read_text(encoding="utf-8")
+    opener_src = (REPO_ROOT / "operation_love" / "opener" / "opener.py").read_text(
+        encoding="utf-8"
+    )
     config_src = (REPO_ROOT / "config.yaml").read_text(encoding="utf-8")
 
     values, failures = m.extract_constants(opener_src)
@@ -293,8 +332,14 @@ def test_reconstruction_matches_live_prompt_stamp_for_the_current_working_tree()
     assert style_reason is None, style_reason
 
     reconstructed = m.compute_prompt_stamp(
-        style, values["_SYSTEM"], values["_SCHEMA"], values["_ITEM_PREAMBLE"],
-        values["_ITEM_PREAMBLE_CONTEXT"], values["_ITEM_LABEL"], values["_CONTEXT_LABEL"])
+        style,
+        values["_SYSTEM"],
+        values["_SCHEMA"],
+        values["_ITEM_PREAMBLE"],
+        values["_ITEM_PREAMBLE_CONTEXT"],
+        values["_ITEM_LABEL"],
+        values["_CONTEXT_LABEL"],
+    )
 
     cfg = cfg_mod.load(str(REPO_ROOT / "config.yaml"))
     live_digest = prompt_stamp(cfg.opener.style)
@@ -305,6 +350,7 @@ def test_reconstruction_matches_live_prompt_stamp_for_the_current_working_tree()
 # ---------------------------------------------------------------------------------------
 # extract_rule_names
 # ---------------------------------------------------------------------------------------
+
 
 def test_extract_rule_names_finds_multi_word_all_caps_names():
     text = "SHARED CONTEXT RULE: do this. Also NO GRADING: never that."
@@ -321,7 +367,10 @@ def test_extract_rule_names_rejects_a_single_all_caps_word():
 
 
 def test_extract_rule_names_ignores_prose_with_no_colon():
-    assert m.extract_rule_names("NO GRADING is mentioned here but never as a header.") == []
+    assert (
+        m.extract_rule_names("NO GRADING is mentioned here but never as a header.")
+        == []
+    )
 
 
 def test_extract_rule_names_dedupes_keeping_first_appearance_order():
@@ -338,18 +387,25 @@ def test_extract_rule_names_preserves_appearance_order_not_alphabetical():
 # evaluate_revision -- BE HONEST reasons for every kind of historical gap
 # ---------------------------------------------------------------------------------------
 
+
 def _ref(sha="deadbeef", date="2026-01-01T00:00:00-00:00", subject="a commit"):
     return m.CommitRef(sha=sha, date=date, subject=subject)
 
 
 def test_evaluate_revision_computes_a_digest_when_everything_is_present(tmp_path):
     _init_repo(tmp_path)
-    sha = _commit(tmp_path, {
-        "config.yaml": _config_yaml("RULE TWO: base style."),
-        "opener.py": _opener_py("RULE ONE: base system.", {"type": "object"}),
-    }, "initial", "2026-01-01T00:00:00")
-    ev = m.evaluate_revision(tmp_path, _ref(sha=sha, date="2026-01-01T00:00:00-00:00"),
-                             FIXTURE_PATHS)
+    sha = _commit(
+        tmp_path,
+        {
+            "config.yaml": _config_yaml("RULE TWO: base style."),
+            "opener.py": _opener_py("RULE ONE: base system.", {"type": "object"}),
+        },
+        "initial",
+        "2026-01-01T00:00:00",
+    )
+    ev = m.evaluate_revision(
+        tmp_path, _ref(sha=sha, date="2026-01-01T00:00:00-00:00"), FIXTURE_PATHS
+    )
     assert ev.digest is not None
     assert ev.reasons == []
     # rule order is _SYSTEM's own text first, then style's (evaluate_revision joins
@@ -359,10 +415,15 @@ def test_evaluate_revision_computes_a_digest_when_everything_is_present(tmp_path
 
 def test_evaluate_revision_reports_missing_constants_by_name(tmp_path):
     _init_repo(tmp_path)
-    sha = _commit(tmp_path, {
-        "config.yaml": _config_yaml("RULE TWO: base style."),
-        "opener.py": '_SYSTEM = "RULE ONE: base."\n_SCHEMA = {"type": "object"}\n',
-    }, "no item constants yet", "2026-01-01T00:00:00")
+    sha = _commit(
+        tmp_path,
+        {
+            "config.yaml": _config_yaml("RULE TWO: base style."),
+            "opener.py": '_SYSTEM = "RULE ONE: base."\n_SCHEMA = {"type": "object"}\n',
+        },
+        "no item constants yet",
+        "2026-01-01T00:00:00",
+    )
     ev = m.evaluate_revision(tmp_path, _ref(sha=sha), FIXTURE_PATHS)
     assert ev.digest is None
     assert any("missing constant(s)" in r and "_ITEM_PREAMBLE" in r for r in ev.reasons)
@@ -370,8 +431,12 @@ def test_evaluate_revision_reports_missing_constants_by_name(tmp_path):
 
 def test_evaluate_revision_reports_a_missing_file(tmp_path):
     _init_repo(tmp_path)
-    sha = _commit(tmp_path, {"config.yaml": _config_yaml("x")}, "no opener.py at all",
-                  "2026-01-01T00:00:00")
+    sha = _commit(
+        tmp_path,
+        {"config.yaml": _config_yaml("x")},
+        "no opener.py at all",
+        "2026-01-01T00:00:00",
+    )
     ev = m.evaluate_revision(tmp_path, _ref(sha=sha), FIXTURE_PATHS)
     assert ev.digest is None
     assert any("opener.py does not exist" in r for r in ev.reasons)
@@ -379,10 +444,15 @@ def test_evaluate_revision_reports_a_missing_file(tmp_path):
 
 def test_evaluate_revision_reports_a_missing_style_key(tmp_path):
     _init_repo(tmp_path)
-    sha = _commit(tmp_path, {
-        "config.yaml": _config_yaml(None),
-        "opener.py": _opener_py("RULE ONE: base.", {"type": "object"}),
-    }, "no style key", "2026-01-01T00:00:00")
+    sha = _commit(
+        tmp_path,
+        {
+            "config.yaml": _config_yaml(None),
+            "opener.py": _opener_py("RULE ONE: base.", {"type": "object"}),
+        },
+        "no style key",
+        "2026-01-01T00:00:00",
+    )
     ev = m.evaluate_revision(tmp_path, _ref(sha=sha), FIXTURE_PATHS)
     assert ev.digest is None
     assert any("no 'style' key" in r for r in ev.reasons)
@@ -396,10 +466,14 @@ def test_evaluate_revision_reports_a_missing_style_key(tmp_path):
 # bytes that are not (and may never be) in git history at all.
 # ---------------------------------------------------------------------------------------
 
+
 def test_evaluate_working_tree_computes_a_digest_from_uncommitted_disk_files(tmp_path):
-    (tmp_path / "config.yaml").write_text(_config_yaml("RULE TWO: base style."), encoding="utf-8")
+    (tmp_path / "config.yaml").write_text(
+        _config_yaml("RULE TWO: base style."), encoding="utf-8"
+    )
     (tmp_path / "opener.py").write_text(
-        _opener_py("RULE ONE: base system.", {"type": "object"}), encoding="utf-8")
+        _opener_py("RULE ONE: base system.", {"type": "object"}), encoding="utf-8"
+    )
     ev = m.evaluate_working_tree(tmp_path, FIXTURE_PATHS)
     assert ev.digest is not None
     assert ev.reasons == []
@@ -415,25 +489,37 @@ def test_evaluate_working_tree_reports_a_missing_file_without_touching_git(tmp_p
     assert any("opener.py does not exist" in r for r in ev.reasons)
 
 
-def test_evaluate_working_tree_reports_missing_constants_the_same_way_as_evaluate_revision(tmp_path):
-    (tmp_path / "config.yaml").write_text(_config_yaml("RULE TWO: base."), encoding="utf-8")
+def test_evaluate_working_tree_reports_missing_constants_the_same_way_as_evaluate_revision(
+    tmp_path,
+):
+    (tmp_path / "config.yaml").write_text(
+        _config_yaml("RULE TWO: base."), encoding="utf-8"
+    )
     (tmp_path / "opener.py").write_text(
-        '_SYSTEM = "RULE ONE: base."\n_SCHEMA = {"type": "object"}\n', encoding="utf-8")
+        '_SYSTEM = "RULE ONE: base."\n_SCHEMA = {"type": "object"}\n', encoding="utf-8"
+    )
     ev = m.evaluate_working_tree(tmp_path, FIXTURE_PATHS)
     assert ev.digest is None
     assert any("missing constant(s)" in r and "_ITEM_PREAMBLE" in r for r in ev.reasons)
 
 
-def test_evaluate_working_tree_agrees_with_evaluate_revision_for_identical_bytes(tmp_path):
+def test_evaluate_working_tree_agrees_with_evaluate_revision_for_identical_bytes(
+    tmp_path,
+):
     """The whole premise of _evaluate_sources() being shared: pointed at the SAME bytes (here,
     a clean checkout with nothing uncommitted), evaluate_working_tree() and evaluate_revision()
     must compute the IDENTICAL digest -- proving evaluate_working_tree is not a second,
     independently maintained copy of the algorithm that could silently drift."""
     _init_repo(tmp_path)
-    sha = _commit(tmp_path, {
-        "config.yaml": _config_yaml("RULE ONE: base."),
-        "opener.py": _opener_py("RULE ONE: base.", {"type": "object"}),
-    }, "initial", "2026-01-01T00:00:00")
+    sha = _commit(
+        tmp_path,
+        {
+            "config.yaml": _config_yaml("RULE ONE: base."),
+            "opener.py": _opener_py("RULE ONE: base.", {"type": "object"}),
+        },
+        "initial",
+        "2026-01-01T00:00:00",
+    )
     rev_eval = m.evaluate_revision(tmp_path, _ref(sha=sha), FIXTURE_PATHS)
     wt_eval = m.evaluate_working_tree(tmp_path, FIXTURE_PATHS)
     assert rev_eval.digest is not None
@@ -464,6 +550,7 @@ def test_evaluate_working_tree_matches_live_prompt_stamp_for_the_real_repo():
 # build_registry -- grouping, labeling, rule diffing, determinism
 # ---------------------------------------------------------------------------------------
 
+
 def _make_evals(*rows):
     """rows: (commit, date, subject, digest_or_None, rules) -> list[RevisionEval]."""
     out = []
@@ -476,7 +563,13 @@ def _make_evals(*rows):
 def test_build_registry_groups_identical_digests_into_one_era():
     evals = _make_evals(
         ("c1", "2026-01-01T00:00:00", "first", "digestA", ["RULE ONE"]),
-        ("c2", "2026-01-02T00:00:00", "second, no prompt change", "digestA", ["RULE ONE"]),
+        (
+            "c2",
+            "2026-01-02T00:00:00",
+            "second, no prompt change",
+            "digestA",
+            ["RULE ONE"],
+        ),
     )
     doc = m.build_registry(evals)
     assert len(doc["eras"]) == 1
@@ -489,7 +582,9 @@ def test_build_registry_groups_identical_digests_into_one_era():
 
 
 def test_build_registry_baseline_era_label_names_the_rule_count():
-    evals = _make_evals(("c1", "2026-01-01T00:00:00", "first", "digestA", ["A", "B", "C"]))
+    evals = _make_evals(
+        ("c1", "2026-01-01T00:00:00", "first", "digestA", ["A", "B", "C"])
+    )
     doc = m.build_registry(evals)
     assert "baseline: 3 rule(s) on wire" in doc["eras"][0]["label"]
 
@@ -521,11 +616,17 @@ def test_build_registry_reports_unevaluable_revisions_with_their_reasons():
     )
     doc = m.build_registry(evals)
     assert doc["generated_from"] == {
-        "total_revisions": 2, "evaluated_revisions": 1, "unevaluable_revisions": 1,
+        "total_revisions": 2,
+        "evaluated_revisions": 1,
+        "unevaluable_revisions": 1,
     }
     assert doc["unevaluable_revisions"] == [
-        {"commit": "c1", "date": "2026-01-01T00:00:00", "subject": "unevaluable",
-         "reasons": ["synthetic gap"]},
+        {
+            "commit": "c1",
+            "date": "2026-01-01T00:00:00",
+            "subject": "unevaluable",
+            "reasons": ["synthetic gap"],
+        },
     ]
 
 
@@ -536,7 +637,11 @@ def test_build_registry_eras_are_oldest_first():
         ("c3", "2026-03-01T00:00:00", "third", "digestC", ["RULE TWO"]),
     )
     doc = m.build_registry(evals)
-    assert [era["prompt_sha256"] for era in doc["eras"]] == ["digestA", "digestB", "digestC"]
+    assert [era["prompt_sha256"] for era in doc["eras"]] == [
+        "digestA",
+        "digestB",
+        "digestC",
+    ]
 
 
 def test_build_registry_is_deterministic_across_repeated_runs():
@@ -563,10 +668,13 @@ def test_build_registry_omits_working_tree_key_when_not_given():
 # section for why this is a separate top level key, never appended to `eras`.
 # ---------------------------------------------------------------------------------------
 
+
 def test_build_working_tree_entry_is_unmistakably_provisional_with_no_commit():
     doc = m.build_registry(
         _make_evals(("c1", "2026-01-01T00:00:00", "first", "digestA", ["RULE ONE"])),
-        working_tree=m.WorkingTreeEval(digest="digestB", reasons=[], rules=["RULE ONE", "RULE TWO"]),
+        working_tree=m.WorkingTreeEval(
+            digest="digestB", reasons=[], rules=["RULE ONE", "RULE TWO"]
+        ),
     )
     entry = doc["working_tree"]
     assert entry["provisional"] is True
@@ -579,15 +687,24 @@ def test_build_working_tree_entry_diffs_against_the_most_recent_known_committed_
     doc = m.build_registry(
         _make_evals(
             ("c1", "2026-01-01T00:00:00", "first", "digestA", ["RULE ONE"]),
-            ("c2", "2026-01-02T00:00:00", "second", "digestB", ["RULE ONE", "RULE TWO"]),
+            (
+                "c2",
+                "2026-01-02T00:00:00",
+                "second",
+                "digestB",
+                ["RULE ONE", "RULE TWO"],
+            ),
         ),
-        working_tree=m.WorkingTreeEval(digest="digestC", reasons=[],
-                                       rules=["RULE ONE", "RULE THREE"]),
+        working_tree=m.WorkingTreeEval(
+            digest="digestC", reasons=[], rules=["RULE ONE", "RULE THREE"]
+        ),
     )
     entry = doc["working_tree"]
     assert entry["matches_known_committed_era"] is None
     assert "+RULE THREE" in entry["label"]
-    assert "-RULE TWO" in entry["label"]  # diffed against digestB (the LAST known era), not digestA
+    assert (
+        "-RULE TWO" in entry["label"]
+    )  # diffed against digestB (the LAST known era), not digestA
 
 
 def test_build_working_tree_entry_flags_when_it_matches_a_known_committed_era():
@@ -595,7 +712,9 @@ def test_build_working_tree_entry_flags_when_it_matches_a_known_committed_era():
     # i.e. no uncommitted prompt changes at all.
     doc = m.build_registry(
         _make_evals(("c1", "2026-01-01T00:00:00", "first", "digestA", ["RULE ONE"])),
-        working_tree=m.WorkingTreeEval(digest="digestA", reasons=[], rules=["RULE ONE"]),
+        working_tree=m.WorkingTreeEval(
+            digest="digestA", reasons=[], rules=["RULE ONE"]
+        ),
     )
     entry = doc["working_tree"]
     assert entry["matches_known_committed_era"] == "digestA"
@@ -605,7 +724,9 @@ def test_build_working_tree_entry_flags_when_it_matches_a_known_committed_era():
 def test_build_working_tree_entry_reports_unevaluable_with_reasons_and_no_digest():
     doc = m.build_registry(
         _make_evals(("c1", "2026-01-01T00:00:00", "first", "digestA", ["RULE ONE"])),
-        working_tree=m.WorkingTreeEval(digest=None, reasons=["opener.py does not parse"], rules=[]),
+        working_tree=m.WorkingTreeEval(
+            digest=None, reasons=["opener.py does not parse"], rules=[]
+        ),
     )
     entry = doc["working_tree"]
     assert entry["prompt_sha256"] is None
@@ -619,7 +740,9 @@ def test_build_working_tree_entry_never_claims_measured_metrics():
     # otherwise for the provisional entry specifically.
     doc = m.build_registry(
         _make_evals(("c1", "2026-01-01T00:00:00", "first", "digestA", ["RULE ONE"])),
-        working_tree=m.WorkingTreeEval(digest="digestB", reasons=[], rules=["RULE ONE"]),
+        working_tree=m.WorkingTreeEval(
+            digest="digestB", reasons=[], rules=["RULE ONE"]
+        ),
     )
     assert doc["working_tree"]["no_metrics_recorded_here"] is True
 
@@ -630,39 +753,67 @@ def test_build_working_tree_entry_never_claims_measured_metrics():
 # RevisionEval rows.
 # ---------------------------------------------------------------------------------------
 
+
 def test_backfill_end_to_end_against_a_synthetic_repo(tmp_path):
     _init_repo(tmp_path)
 
     # Commit 1: pre-redesign shape -- no item-crop constants at all. Unevaluable.
-    c1 = _commit(tmp_path, {
-        "config.yaml": _config_yaml("RULE ONE: base."),
-        "opener.py": '_SYSTEM = "RULE ONE: base."\n_SCHEMA = {"type": "object"}\n',
-    }, "pre redesign", "2026-01-01T00:00:00")
+    c1 = _commit(
+        tmp_path,
+        {
+            "config.yaml": _config_yaml("RULE ONE: base."),
+            "opener.py": '_SYSTEM = "RULE ONE: base."\n_SCHEMA = {"type": "object"}\n',
+        },
+        "pre redesign",
+        "2026-01-01T00:00:00",
+    )
 
     # Commit 2: redesign lands -- all six constants now present. First evaluable era.
-    c2 = _commit(tmp_path, {
-        "config.yaml": _config_yaml("RULE ONE: base."),
-        "opener.py": _opener_py("RULE ONE: base.", {"type": "object"}),
-    }, "redesign lands", "2026-01-02T00:00:00")
+    c2 = _commit(
+        tmp_path,
+        {
+            "config.yaml": _config_yaml("RULE ONE: base."),
+            "opener.py": _opener_py("RULE ONE: base.", {"type": "object"}),
+        },
+        "redesign lands",
+        "2026-01-02T00:00:00",
+    )
 
     # Commit 3: unrelated whitespace-only opener.py comment change -- SAME digest as c2 (tests
     # multi-commit grouping into one era).
-    c3 = _commit(tmp_path, {
-        "config.yaml": _config_yaml("RULE ONE: base."),
-        "opener.py": _opener_py("RULE ONE: base.", {"type": "object"}, extra="# a harmless comment"),
-    }, "harmless comment", "2026-01-03T00:00:00")
+    c3 = _commit(
+        tmp_path,
+        {
+            "config.yaml": _config_yaml("RULE ONE: base."),
+            "opener.py": _opener_py(
+                "RULE ONE: base.", {"type": "object"}, extra="# a harmless comment"
+            ),
+        },
+        "harmless comment",
+        "2026-01-03T00:00:00",
+    )
 
     # Commit 4: a real rule addition -- new era.
-    c4 = _commit(tmp_path, {
-        "config.yaml": _config_yaml("RULE ONE: base.\n\nRULE TWO: new."),
-        "opener.py": _opener_py("RULE ONE: base.", {"type": "object"}),
-    }, "add rule two", "2026-01-04T00:00:00")
+    c4 = _commit(
+        tmp_path,
+        {
+            "config.yaml": _config_yaml("RULE ONE: base.\n\nRULE TWO: new."),
+            "opener.py": _opener_py("RULE ONE: base.", {"type": "object"}),
+        },
+        "add rule two",
+        "2026-01-04T00:00:00",
+    )
 
     # Commit 5: opener.py fails to parse at all -- unevaluable with a syntax-error reason.
-    c5 = _commit(tmp_path, {
-        "config.yaml": _config_yaml("RULE ONE: base.\n\nRULE TWO: new."),
-        "opener.py": "def broken(:\n    pass\n",
-    }, "broken syntax", "2026-01-05T00:00:00")
+    c5 = _commit(
+        tmp_path,
+        {
+            "config.yaml": _config_yaml("RULE ONE: base.\n\nRULE TWO: new."),
+            "opener.py": "def broken(:\n    pass\n",
+        },
+        "broken syntax",
+        "2026-01-05T00:00:00",
+    )
 
     # include_working_tree=False: this test is about the committed-history pipeline only (see
     # this test module's own docstring's "kept apart" rule) -- the working tree's own behavior
@@ -670,7 +821,9 @@ def test_backfill_end_to_end_against_a_synthetic_repo(tmp_path):
     doc, evaluations = m.backfill(tmp_path, FIXTURE_PATHS, include_working_tree=False)
 
     assert doc["generated_from"] == {
-        "total_revisions": 5, "evaluated_revisions": 3, "unevaluable_revisions": 2,
+        "total_revisions": 5,
+        "evaluated_revisions": 3,
+        "unevaluable_revisions": 2,
     }
     assert [ev.commit for ev in evaluations] == [c1, c2, c3, c4, c5]  # oldest first
 
@@ -700,14 +853,24 @@ def test_discover_revisions_raises_a_clear_error_outside_a_git_checkout(tmp_path
 # evaluate_working_tree() through the full pipeline rather than calling it directly.
 # ---------------------------------------------------------------------------------------
 
-def test_backfill_working_tree_defaults_to_included_and_matches_a_clean_checkout(tmp_path):
-    _init_repo(tmp_path)
-    _commit(tmp_path, {
-        "config.yaml": _config_yaml("RULE ONE: base."),
-        "opener.py": _opener_py("RULE ONE: base.", {"type": "object"}),
-    }, "initial", "2026-01-01T00:00:00")
 
-    doc, _ = m.backfill(tmp_path, FIXTURE_PATHS)  # include_working_tree defaults to True
+def test_backfill_working_tree_defaults_to_included_and_matches_a_clean_checkout(
+    tmp_path,
+):
+    _init_repo(tmp_path)
+    _commit(
+        tmp_path,
+        {
+            "config.yaml": _config_yaml("RULE ONE: base."),
+            "opener.py": _opener_py("RULE ONE: base.", {"type": "object"}),
+        },
+        "initial",
+        "2026-01-01T00:00:00",
+    )
+
+    doc, _ = m.backfill(
+        tmp_path, FIXTURE_PATHS
+    )  # include_working_tree defaults to True
 
     assert "working_tree" in doc
     entry = doc["working_tree"]
@@ -718,14 +881,20 @@ def test_backfill_working_tree_defaults_to_included_and_matches_a_clean_checkout
 
 def test_backfill_working_tree_reflects_an_uncommitted_edit(tmp_path):
     _init_repo(tmp_path)
-    _commit(tmp_path, {
-        "config.yaml": _config_yaml("RULE ONE: base."),
-        "opener.py": _opener_py("RULE ONE: base.", {"type": "object"}),
-    }, "initial", "2026-01-01T00:00:00")
+    _commit(
+        tmp_path,
+        {
+            "config.yaml": _config_yaml("RULE ONE: base."),
+            "opener.py": _opener_py("RULE ONE: base.", {"type": "object"}),
+        },
+        "initial",
+        "2026-01-01T00:00:00",
+    )
 
     # Dirty the tree WITHOUT committing -- exactly the gap this feature closes.
     (tmp_path / "config.yaml").write_text(
-        _config_yaml("RULE ONE: base.\n\nNO GRADING: never grade."), encoding="utf-8")
+        _config_yaml("RULE ONE: base.\n\nNO GRADING: never grade."), encoding="utf-8"
+    )
 
     doc, _ = m.backfill(tmp_path, FIXTURE_PATHS)
 
@@ -739,10 +908,15 @@ def test_backfill_working_tree_reflects_an_uncommitted_edit(tmp_path):
 
 def test_backfill_no_working_tree_omits_the_key(tmp_path):
     _init_repo(tmp_path)
-    _commit(tmp_path, {
-        "config.yaml": _config_yaml("RULE ONE: base."),
-        "opener.py": _opener_py("RULE ONE: base.", {"type": "object"}),
-    }, "initial", "2026-01-01T00:00:00")
+    _commit(
+        tmp_path,
+        {
+            "config.yaml": _config_yaml("RULE ONE: base."),
+            "opener.py": _opener_py("RULE ONE: base.", {"type": "object"}),
+        },
+        "initial",
+        "2026-01-01T00:00:00",
+    )
     doc, _ = m.backfill(tmp_path, FIXTURE_PATHS, include_working_tree=False)
     assert "working_tree" not in doc
 
@@ -751,16 +925,31 @@ def test_backfill_no_working_tree_omits_the_key(tmp_path):
 # CLI: main() -- write, --check
 # ---------------------------------------------------------------------------------------
 
+
 def test_main_writes_the_registry_file(tmp_path, capsys):
     _init_repo(tmp_path)
-    _commit(tmp_path, {
-        "config.yaml": _config_yaml("RULE ONE: base."),
-        "opener.py": _opener_py("RULE ONE: base.", {"type": "object"}),
-    }, "initial", "2026-01-01T00:00:00")
+    _commit(
+        tmp_path,
+        {
+            "config.yaml": _config_yaml("RULE ONE: base."),
+            "opener.py": _opener_py("RULE ONE: base.", {"type": "object"}),
+        },
+        "initial",
+        "2026-01-01T00:00:00",
+    )
     out_path = tmp_path / "eras.json"
 
-    code = m.main(["--repo-root", str(tmp_path), "--out", str(out_path),
-                  "--paths", "config.yaml", "opener.py"])
+    code = m.main(
+        [
+            "--repo-root",
+            str(tmp_path),
+            "--out",
+            str(out_path),
+            "--paths",
+            "config.yaml",
+            "opener.py",
+        ]
+    )
     assert code == 0
     doc = json.loads(out_path.read_text())
     assert doc["generated_from"]["evaluated_revisions"] == 1
@@ -770,33 +959,91 @@ def test_main_writes_the_registry_file(tmp_path, capsys):
 
 def test_main_check_mode_passes_when_up_to_date(tmp_path):
     _init_repo(tmp_path)
-    _commit(tmp_path, {
-        "config.yaml": _config_yaml("RULE ONE: base."),
-        "opener.py": _opener_py("RULE ONE: base.", {"type": "object"}),
-    }, "initial", "2026-01-01T00:00:00")
+    _commit(
+        tmp_path,
+        {
+            "config.yaml": _config_yaml("RULE ONE: base."),
+            "opener.py": _opener_py("RULE ONE: base.", {"type": "object"}),
+        },
+        "initial",
+        "2026-01-01T00:00:00",
+    )
     out_path = tmp_path / "eras.json"
-    assert m.main(["--repo-root", str(tmp_path), "--out", str(out_path),
-                  "--paths", "config.yaml", "opener.py"]) == 0
-    assert m.main(["--repo-root", str(tmp_path), "--out", str(out_path),
-                  "--paths", "config.yaml", "opener.py", "--check"]) == 0
+    assert (
+        m.main(
+            [
+                "--repo-root",
+                str(tmp_path),
+                "--out",
+                str(out_path),
+                "--paths",
+                "config.yaml",
+                "opener.py",
+            ]
+        )
+        == 0
+    )
+    assert (
+        m.main(
+            [
+                "--repo-root",
+                str(tmp_path),
+                "--out",
+                str(out_path),
+                "--paths",
+                "config.yaml",
+                "opener.py",
+                "--check",
+            ]
+        )
+        == 0
+    )
     # --check must never write: content is untouched by the check-mode run.
     before = out_path.read_text()
-    assert m.main(["--repo-root", str(tmp_path), "--out", str(out_path),
-                  "--paths", "config.yaml", "opener.py", "--check"]) == 0
+    assert (
+        m.main(
+            [
+                "--repo-root",
+                str(tmp_path),
+                "--out",
+                str(out_path),
+                "--paths",
+                "config.yaml",
+                "opener.py",
+                "--check",
+            ]
+        )
+        == 0
+    )
     assert out_path.read_text() == before
 
 
 def test_main_check_mode_fails_loudly_on_a_stale_file(tmp_path, capsys):
     _init_repo(tmp_path)
-    _commit(tmp_path, {
-        "config.yaml": _config_yaml("RULE ONE: base."),
-        "opener.py": _opener_py("RULE ONE: base.", {"type": "object"}),
-    }, "initial", "2026-01-01T00:00:00")
+    _commit(
+        tmp_path,
+        {
+            "config.yaml": _config_yaml("RULE ONE: base."),
+            "opener.py": _opener_py("RULE ONE: base.", {"type": "object"}),
+        },
+        "initial",
+        "2026-01-01T00:00:00",
+    )
     out_path = tmp_path / "eras.json"
     out_path.write_text("{}")
 
-    code = m.main(["--repo-root", str(tmp_path), "--out", str(out_path),
-                  "--paths", "config.yaml", "opener.py", "--check"])
+    code = m.main(
+        [
+            "--repo-root",
+            str(tmp_path),
+            "--out",
+            str(out_path),
+            "--paths",
+            "config.yaml",
+            "opener.py",
+            "--check",
+        ]
+    )
     assert code == 1
     assert "is stale" in capsys.readouterr().err
     assert out_path.read_text() == "{}"  # --check never writes even on a mismatch
@@ -807,93 +1054,225 @@ def test_main_check_mode_fails_loudly_on_a_stale_file(tmp_path, capsys):
 # "make --check tolerate it so a dirty tree does not spuriously fail an up-to-date check").
 # ---------------------------------------------------------------------------------------
 
+
 def test_main_writes_a_working_tree_entry_by_default(tmp_path):
     _init_repo(tmp_path)
-    _commit(tmp_path, {
-        "config.yaml": _config_yaml("RULE ONE: base."),
-        "opener.py": _opener_py("RULE ONE: base.", {"type": "object"}),
-    }, "initial", "2026-01-01T00:00:00")
+    _commit(
+        tmp_path,
+        {
+            "config.yaml": _config_yaml("RULE ONE: base."),
+            "opener.py": _opener_py("RULE ONE: base.", {"type": "object"}),
+        },
+        "initial",
+        "2026-01-01T00:00:00",
+    )
     out_path = tmp_path / "eras.json"
-    assert m.main(["--repo-root", str(tmp_path), "--out", str(out_path),
-                  "--paths", "config.yaml", "opener.py"]) == 0
+    assert (
+        m.main(
+            [
+                "--repo-root",
+                str(tmp_path),
+                "--out",
+                str(out_path),
+                "--paths",
+                "config.yaml",
+                "opener.py",
+            ]
+        )
+        == 0
+    )
     doc = json.loads(out_path.read_text())
     assert "working_tree" in doc
 
 
 def test_main_no_working_tree_flag_omits_the_key(tmp_path):
     _init_repo(tmp_path)
-    _commit(tmp_path, {
-        "config.yaml": _config_yaml("RULE ONE: base."),
-        "opener.py": _opener_py("RULE ONE: base.", {"type": "object"}),
-    }, "initial", "2026-01-01T00:00:00")
+    _commit(
+        tmp_path,
+        {
+            "config.yaml": _config_yaml("RULE ONE: base."),
+            "opener.py": _opener_py("RULE ONE: base.", {"type": "object"}),
+        },
+        "initial",
+        "2026-01-01T00:00:00",
+    )
     out_path = tmp_path / "eras.json"
-    assert m.main(["--repo-root", str(tmp_path), "--out", str(out_path),
-                  "--paths", "config.yaml", "opener.py", "--no-working-tree"]) == 0
+    assert (
+        m.main(
+            [
+                "--repo-root",
+                str(tmp_path),
+                "--out",
+                str(out_path),
+                "--paths",
+                "config.yaml",
+                "opener.py",
+                "--no-working-tree",
+            ]
+        )
+        == 0
+    )
     doc = json.loads(out_path.read_text())
     assert "working_tree" not in doc
 
 
 def test_main_check_mode_tolerates_a_dirty_working_tree(tmp_path, capsys):
     _init_repo(tmp_path)
-    _commit(tmp_path, {
-        "config.yaml": _config_yaml("RULE ONE: base."),
-        "opener.py": _opener_py("RULE ONE: base.", {"type": "object"}),
-    }, "initial", "2026-01-01T00:00:00")
+    _commit(
+        tmp_path,
+        {
+            "config.yaml": _config_yaml("RULE ONE: base."),
+            "opener.py": _opener_py("RULE ONE: base.", {"type": "object"}),
+        },
+        "initial",
+        "2026-01-01T00:00:00",
+    )
     out_path = tmp_path / "eras.json"
-    assert m.main(["--repo-root", str(tmp_path), "--out", str(out_path),
-                  "--paths", "config.yaml", "opener.py"]) == 0
+    assert (
+        m.main(
+            [
+                "--repo-root",
+                str(tmp_path),
+                "--out",
+                str(out_path),
+                "--paths",
+                "config.yaml",
+                "opener.py",
+            ]
+        )
+        == 0
+    )
     before = out_path.read_text()
 
     # Dirty the tree WITHOUT committing -- the exact scenario --check must not treat as
     # staleness (only the provisional 'working_tree' entry can possibly differ here, since
     # nothing was committed).
     (tmp_path / "config.yaml").write_text(
-        _config_yaml("RULE ONE: base.\n\nNO GRADING: never grade."), encoding="utf-8")
+        _config_yaml("RULE ONE: base.\n\nNO GRADING: never grade."), encoding="utf-8"
+    )
 
-    code = m.main(["--repo-root", str(tmp_path), "--out", str(out_path),
-                  "--paths", "config.yaml", "opener.py", "--check"])
+    code = m.main(
+        [
+            "--repo-root",
+            str(tmp_path),
+            "--out",
+            str(out_path),
+            "--paths",
+            "config.yaml",
+            "opener.py",
+            "--check",
+        ]
+    )
     err = capsys.readouterr().err
     assert code == 0
     assert "up to date" in err
     assert out_path.read_text() == before  # --check never writes, dirty tree or not
 
 
-def test_main_check_mode_still_fails_when_committed_history_actually_changed(tmp_path, capsys):
+def test_main_check_mode_still_fails_when_committed_history_actually_changed(
+    tmp_path, capsys
+):
     _init_repo(tmp_path)
-    _commit(tmp_path, {
-        "config.yaml": _config_yaml("RULE ONE: base."),
-        "opener.py": _opener_py("RULE ONE: base.", {"type": "object"}),
-    }, "initial", "2026-01-01T00:00:00")
+    _commit(
+        tmp_path,
+        {
+            "config.yaml": _config_yaml("RULE ONE: base."),
+            "opener.py": _opener_py("RULE ONE: base.", {"type": "object"}),
+        },
+        "initial",
+        "2026-01-01T00:00:00",
+    )
     out_path = tmp_path / "eras.json"
-    assert m.main(["--repo-root", str(tmp_path), "--out", str(out_path),
-                  "--paths", "config.yaml", "opener.py"]) == 0
+    assert (
+        m.main(
+            [
+                "--repo-root",
+                str(tmp_path),
+                "--out",
+                str(out_path),
+                "--paths",
+                "config.yaml",
+                "opener.py",
+            ]
+        )
+        == 0
+    )
 
     # A REAL new commit lands (not just an uncommitted edit) -- the registry is now genuinely
     # stale relative to git history, and --check must still catch that even though the working
     # tree feature now also drifts the 'working_tree' entry with the very same edit.
-    _commit(tmp_path, {
-        "config.yaml": _config_yaml("RULE ONE: base.\n\nNO GRADING: never grade."),
-        "opener.py": _opener_py("RULE ONE: base.", {"type": "object"}),
-    }, "add NO GRADING", "2026-01-02T00:00:00")
+    _commit(
+        tmp_path,
+        {
+            "config.yaml": _config_yaml("RULE ONE: base.\n\nNO GRADING: never grade."),
+            "opener.py": _opener_py("RULE ONE: base.", {"type": "object"}),
+        },
+        "add NO GRADING",
+        "2026-01-02T00:00:00",
+    )
 
-    code = m.main(["--repo-root", str(tmp_path), "--out", str(out_path),
-                  "--paths", "config.yaml", "opener.py", "--check"])
+    code = m.main(
+        [
+            "--repo-root",
+            str(tmp_path),
+            "--out",
+            str(out_path),
+            "--paths",
+            "config.yaml",
+            "opener.py",
+            "--check",
+        ]
+    )
     err = capsys.readouterr().err
     assert code == 1
     assert "is stale" in err
 
 
-def test_main_check_mode_with_no_working_tree_behaves_like_before_the_feature(tmp_path, capsys):
+def test_main_check_mode_with_no_working_tree_behaves_like_before_the_feature(
+    tmp_path, capsys
+):
     _init_repo(tmp_path)
-    _commit(tmp_path, {
-        "config.yaml": _config_yaml("RULE ONE: base."),
-        "opener.py": _opener_py("RULE ONE: base.", {"type": "object"}),
-    }, "initial", "2026-01-01T00:00:00")
+    _commit(
+        tmp_path,
+        {
+            "config.yaml": _config_yaml("RULE ONE: base."),
+            "opener.py": _opener_py("RULE ONE: base.", {"type": "object"}),
+        },
+        "initial",
+        "2026-01-01T00:00:00",
+    )
     out_path = tmp_path / "eras.json"
-    assert m.main(["--repo-root", str(tmp_path), "--out", str(out_path),
-                  "--paths", "config.yaml", "opener.py", "--no-working-tree"]) == 0
-    assert m.main(["--repo-root", str(tmp_path), "--out", str(out_path),
-                  "--paths", "config.yaml", "opener.py", "--no-working-tree", "--check"]) == 0
+    assert (
+        m.main(
+            [
+                "--repo-root",
+                str(tmp_path),
+                "--out",
+                str(out_path),
+                "--paths",
+                "config.yaml",
+                "opener.py",
+                "--no-working-tree",
+            ]
+        )
+        == 0
+    )
+    assert (
+        m.main(
+            [
+                "--repo-root",
+                str(tmp_path),
+                "--out",
+                str(out_path),
+                "--paths",
+                "config.yaml",
+                "opener.py",
+                "--no-working-tree",
+                "--check",
+            ]
+        )
+        == 0
+    )
     err = capsys.readouterr().err
     assert "up to date" in err
 
@@ -935,16 +1314,26 @@ def test_shipped_prompt_era_registry_is_in_sync_with_this_repos_git_history(caps
     except (RuntimeError, OSError) as exc:
         # RuntimeError: git ran and said this is not a checkout. OSError: no git binary at all.
         # Both mean the reconstruction is impossible here, which is a skip, never a failure.
-        pytest.skip(f"no usable git history here, so the registry cannot be reconstructed: {exc}")
+        pytest.skip(
+            f"no usable git history here, so the registry cannot be reconstructed: {exc}"
+        )
 
     try:
         shallow = subprocess.run(
             ["git", "rev-parse", "--is-shallow-repository"],
-            cwd=REPO_ROOT, capture_output=True, text=True, check=False)
-    except OSError:  # unreachable if discover_revisions just succeeded, but cheap to be safe
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except (
+        OSError
+    ):  # unreachable if discover_revisions just succeeded, but cheap to be safe
         pytest.skip("git binary unavailable")
     if shallow.stdout.strip() == "true":
-        pytest.skip("shallow clone: reconstruction needs full history (CI uses fetch-depth: 0)")
+        pytest.skip(
+            "shallow clone: reconstruction needs full history (CI uses fetch-depth: 0)"
+        )
 
     registry = REPO_ROOT / "ops" / "prompt-eras.json"
     rc = m.main(["--check", "--repo-root", str(REPO_ROOT), "--out", str(registry)])
@@ -958,7 +1347,8 @@ def test_shipped_prompt_era_registry_is_in_sync_with_this_repos_git_history(caps
         "Note it must be its own commit: the tool stamps each era with the commit that "
         "introduced it, so folding the regenerated registry into the prompt commit changes the "
         "SHA and cannot converge.\n"
-        f"--check said:\n{captured.err}")
+        f"--check said:\n{captured.err}"
+    )
 
 
 def _prompt_surfaces_are_dirty() -> bool:
@@ -972,7 +1362,11 @@ def _prompt_surfaces_are_dirty() -> bool:
     try:
         result = subprocess.run(
             ["git", "status", "--porcelain", "--", *m.REPO_PATHS],
-            cwd=REPO_ROOT, capture_output=True, text=True, check=False)
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
     except OSError:
         # No git BINARY at all (a slim container, a source export). subprocess raises here
         # rather than returning nonzero, so catching only a bad returncode would turn the
@@ -1006,8 +1400,12 @@ def test_current_prompt_digest_is_recorded_for_this_checkout():
     from operation_love import config as cfg_mod
     from operation_love.opener import opener as opener_mod
 
-    digest = opener_mod.prompt_stamp(cfg_mod.load(str(REPO_ROOT / "config.yaml")).opener.style)
-    registry = json.loads((REPO_ROOT / "ops" / "prompt-eras.json").read_text(encoding="utf-8"))
+    digest = opener_mod.prompt_stamp(
+        cfg_mod.load(str(REPO_ROOT / "config.yaml")).opener.style
+    )
+    registry = json.loads(
+        (REPO_ROOT / "ops" / "prompt-eras.json").read_text(encoding="utf-8")
+    )
     shipped = {era["prompt_sha256"] for era in registry["eras"]}
     working_tree = registry.get("working_tree") or {}
 
@@ -1016,17 +1414,20 @@ def test_current_prompt_digest_is_recorded_for_this_checkout():
             "config.yaml or opener.py has uncommitted prompt edits whose digest "
             f"({digest[:12]}...) is not the registry's provisional working_tree entry "
             f"({str(working_tree.get('prompt_sha256'))[:12]}...).\n"
-            "Fix: python tools/backfill_prompt_eras.py")
+            "Fix: python tools/backfill_prompt_eras.py"
+        )
         return
 
     assert digest in shipped, (
         f"the prompt on disk digests to {digest[:12]}... and this checkout is CLEAN, so that "
         "digest is committed content and must be a shipped era in ops/prompt-eras.json.\n"
-        + ("It is currently recorded ONLY as the provisional `working_tree` entry, which is the "
-           "exact 2026-09-14 failure: every consumer that resolves it -- the bug report's "
-           "prompt-era line, tools/opener_corpus_report.py --rule -- will call a COMMITTED "
-           "prompt uncommitted.\n"
-           if working_tree.get("prompt_sha256") == digest
-           else "It is not in the registry at all.\n")
-        + "Fix: python tools/backfill_prompt_eras.py, as its own commit.")
-
+        + (
+            "It is currently recorded ONLY as the provisional `working_tree` entry, which is the "
+            "exact 2026-09-14 failure: every consumer that resolves it -- the bug report's "
+            "prompt-era line, tools/opener_corpus_report.py --rule -- will call a COMMITTED "
+            "prompt uncommitted.\n"
+            if working_tree.get("prompt_sha256") == digest
+            else "It is not in the registry at all.\n"
+        )
+        + "Fix: python tools/backfill_prompt_eras.py, as its own commit."
+    )

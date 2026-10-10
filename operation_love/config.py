@@ -1,4 +1,5 @@
 """Load and validate config.yaml into typed objects."""
+
 from __future__ import annotations
 
 import hashlib
@@ -12,19 +13,30 @@ from pathlib import Path
 import yaml
 
 from .targeting_policy import (
-    HINGE_PHOTO_SELECTION_POLICY_ID, HINGE_SUPERSEDED_PHOTO_SELECTION_POLICY_IDS,
-    STILL_PHOTO_BOUND_CIRCULAR_ACCEPTANCE, STILL_PHOTO_BOUND_CIRCULAR_CHANNEL,
-    STILL_PHOTO_BOUND_GROUND_TRUTH_CHANNEL, STILL_PHOTO_CENTERED_AUTOPLAY_ASSUMPTION,
+    HINGE_PHOTO_SELECTION_POLICY_ID,
+    HINGE_SUPERSEDED_PHOTO_SELECTION_POLICY_IDS,
+    STILL_PHOTO_BOUND_CIRCULAR_ACCEPTANCE,
+    STILL_PHOTO_BOUND_CIRCULAR_CHANNEL,
+    STILL_PHOTO_BOUND_GROUND_TRUTH_CHANNEL,
+    STILL_PHOTO_CENTERED_AUTOPLAY_ASSUMPTION,
     STILL_PHOTO_DWELL_WINDOW_SAFETY_FACTOR,
-    StillPhotoAssumptionAcceptance, StillPhotoBoundSummary,
-    clear_installed_still_photo_bound, hinge_targeting_unavailable_reason,
-    install_accepted_still_photo_assumption, install_verified_still_photo_bound,
-    installed_still_photo_licence, _installed_process_default_still_photo_licence,
-    still_photo_licence_validation_transaction)
+    StillPhotoAssumptionAcceptance,
+    StillPhotoBoundSummary,
+    clear_installed_still_photo_bound,
+    hinge_targeting_unavailable_reason,
+    install_accepted_still_photo_assumption,
+    install_verified_still_photo_bound,
+    installed_still_photo_licence,
+    _installed_process_default_still_photo_licence,
+    still_photo_licence_validation_transaction,
+)
 
 from . import platforms
 from .costing import ModelPricing
-from .bigquery_validation import BIGQUERY_IDENTIFIER_PATTERNS, validate_bigquery_photo_bucket
+from .bigquery_validation import (
+    BIGQUERY_IDENTIFIER_PATTERNS,
+    validate_bigquery_photo_bucket,
+)
 from .training_actions import MAX_PROFILE_REVIEW_FRAMES
 
 
@@ -32,8 +44,8 @@ from .training_actions import MAX_PROFILE_REVIEW_FRAMES
 class RankerCfg:
     like_threshold: float = 0.5
     min_labels_to_engage: int = 40
-    retrain_every: int = 1           # retrain live after each new observe label
-    min_per_class: int = 5           # each class needs at least this many examples to train
+    retrain_every: int = 1  # retrain live after each new observe label
+    min_per_class: int = 5  # each class needs at least this many examples to train
 
 
 @dataclass
@@ -142,16 +154,18 @@ class PacingCfg:
 
 @dataclass
 class StorageCfg:
-    backend: str = "bigquery"   # bigquery | sqlite
+    backend: str = "bigquery"  # bigquery | sqlite
     bigquery: dict = field(default_factory=dict)
 
 
 @dataclass
 class Config:
-    enabled_apps: list[str]          # requested targets; registry enforces coexistence/readiness
-    mode: str                        # training | auto
-    apps: dict                       # per-app device, perception, and action options
-    limits: dict                     # auto-mode caps: {max_per_run, max_per_day}
+    enabled_apps: list[
+        str
+    ]  # requested targets; registry enforces coexistence/readiness
+    mode: str  # training | auto
+    apps: dict  # per-app device, perception, and action options
+    limits: dict  # auto-mode caps: {max_per_run, max_per_day}
     data_dir: Path
     db_file: Path
     ranker: RankerCfg
@@ -163,8 +177,18 @@ class Config:
 
 
 _TOP_LEVEL_KEYS = {
-    "enabled_apps", "app", "mode", "apps", "paths", "storage", "ranker",
-    "quality_filter", "opener", "budget", "pacing", "limits",
+    "enabled_apps",
+    "app",
+    "mode",
+    "apps",
+    "paths",
+    "storage",
+    "ranker",
+    "quality_filter",
+    "opener",
+    "budget",
+    "pacing",
+    "limits",
 }
 _PATHS_KEYS = {"data_dir", "db_file"}
 _STORAGE_KEYS = {"backend", "bigquery"}
@@ -178,15 +202,34 @@ _PRICING_REQUIRED_KEYS = {"input", "output"}
 # targeting_calibration: a numeric bound is a perception license, not evidence that the full
 # operational pipeline behaved correctly.
 _OBSERVE_RELEASE_EVIDENCE_KEYS = {
-    "schema_version", "calibration_calibrated_at", "calibration_sha256", "device",
-    "hinge_version_name", "frame_size_px", "production_run_reference", "production_run_id",
-    "verification_file", "verification_sha256", "verified_at",
+    "schema_version",
+    "calibration_calibrated_at",
+    "calibration_sha256",
+    "device",
+    "hinge_version_name",
+    "frame_size_px",
+    "production_run_reference",
+    "production_run_id",
+    "verification_file",
+    "verification_sha256",
+    "verified_at",
 }
 _OBSERVE_RELEASE_ARTIFACT_KEYS = {
-    "schema_version", "kind", "completed", "calibration_calibrated_at",
-    "calibration_sha256", "device", "hinge_version_name", "frame_size_px",
-    "production_run_reference", "production_run_id", "debug_actions_sha256", "store_persistence_evidence_sha256",
-    "provider_store_evidence_sha256", "observe_control_evidence_sha256", "verified_at",
+    "schema_version",
+    "kind",
+    "completed",
+    "calibration_calibrated_at",
+    "calibration_sha256",
+    "device",
+    "hinge_version_name",
+    "frame_size_px",
+    "production_run_reference",
+    "production_run_id",
+    "debug_actions_sha256",
+    "store_persistence_evidence_sha256",
+    "provider_store_evidence_sha256",
+    "observe_control_evidence_sha256",
+    "verified_at",
 }
 
 # This is intentionally a *different* config/artifact namespace from the long-standing
@@ -194,16 +237,39 @@ _OBSERVE_RELEASE_ARTIFACT_KEYS = {
 # owner has explicitly accepted that mode's circular-risk tradeoff, but it must never look like
 # a completed human cycle (or silently broaden the manual artifact's meaning).
 _AI_OBSERVE_RELEASE_EVIDENCE_KEYS = {
-    "schema_version", "acceptance", "calibration_calibrated_at", "calibration_sha256",
-    "device", "hinge_version_name", "frame_size_px", "production_run_reference",
-    "production_run_id", "verification_file", "verification_sha256", "verified_at",
+    "schema_version",
+    "acceptance",
+    "calibration_calibrated_at",
+    "calibration_sha256",
+    "device",
+    "hinge_version_name",
+    "frame_size_px",
+    "production_run_reference",
+    "production_run_id",
+    "verification_file",
+    "verification_sha256",
+    "verified_at",
 }
 _AI_OBSERVE_RELEASE_ARTIFACT_KEYS = {
-    "schema_version", "kind", "completed", "human_ground_truth", "source", "acceptance",
-    "calibration_calibrated_at", "calibration_sha256", "device", "hinge_version_name",
-    "frame_size_px", "production_run_reference", "production_run_id", "debug_actions_sha256",
-    "store_persistence_evidence_sha256", "provider_store_evidence_sha256",
-    "automation_provenance_sha256", "independent_review_sha256", "verified_at",
+    "schema_version",
+    "kind",
+    "completed",
+    "human_ground_truth",
+    "source",
+    "acceptance",
+    "calibration_calibrated_at",
+    "calibration_sha256",
+    "device",
+    "hinge_version_name",
+    "frame_size_px",
+    "production_run_reference",
+    "production_run_id",
+    "debug_actions_sha256",
+    "store_persistence_evidence_sha256",
+    "provider_store_evidence_sha256",
+    "automation_provenance_sha256",
+    "independent_review_sha256",
+    "verified_at",
 }
 _AI_OBSERVE_RELEASE_ACCEPTANCE = "I_ACCEPT_AI_REVIEWED_OBSERVE_RELEASE_RISK"
 
@@ -226,8 +292,10 @@ def _section(cls, name: str, raw_section):
     if raw_section is None:
         raw_section = {}
     if not isinstance(raw_section, dict):
-        raise ValueError(f"Config: '{name}' section must be a mapping "
-                         f"(got {type(raw_section).__name__})")
+        raise ValueError(
+            f"Config: '{name}' section must be a mapping "
+            f"(got {type(raw_section).__name__})"
+        )
     try:
         return cls(**raw_section)
     except TypeError as exc:
@@ -239,8 +307,9 @@ def _mapping_or_empty(value, name: str) -> dict:
     if value is None:
         return {}
     if not isinstance(value, Mapping):
-        raise ValueError(f"Config: '{name}' section must be a mapping "
-                         f"(got {type(value).__name__})")
+        raise ValueError(
+            f"Config: '{name}' section must be a mapping (got {type(value).__name__})"
+        )
     return dict(value)
 
 
@@ -248,8 +317,9 @@ def _path_from_raw(paths: Mapping, key: str, default: str) -> Path:
     """Construct one YAML path with a clean error for null/collection/bool values."""
     value = paths.get(key, default)
     if not isinstance(value, str) or not value.strip():
-        raise ValueError(f"Config: paths.{key} must be a non-empty path string "
-                         f"(got {value!r})")
+        raise ValueError(
+            f"Config: paths.{key} must be a non-empty path string (got {value!r})"
+        )
     return Path(value)
 
 
@@ -257,8 +327,10 @@ def _reject_unknown_keys(section: Mapping, allowed: set[str], name: str) -> None
     unknown = set(section) - allowed
     if unknown:
         rendered = sorted(repr(key) for key in unknown)
-        raise ValueError(f"Config: unknown key(s) under {name}: {rendered}; "
-                         f"supported: {sorted(allowed)}")
+        raise ValueError(
+            f"Config: unknown key(s) under {name}: {rendered}; "
+            f"supported: {sorted(allowed)}"
+        )
 
 
 def _pricing_from_raw(raw_pricing) -> dict[str, ModelPricing]:
@@ -266,7 +338,9 @@ def _pricing_from_raw(raw_pricing) -> dict[str, ModelPricing]:
     result: dict[str, ModelPricing] = {}
     for model, record in pricing.items():
         if not isinstance(model, str) or not model.strip():
-            raise ValueError("Config: budget.pricing model ids must be non-empty strings")
+            raise ValueError(
+                "Config: budget.pricing model ids must be non-empty strings"
+            )
         values = _mapping_or_empty(record, f"budget.pricing[{model!r}]")
         unknown = set(values) - _PRICING_KEYS
         missing = _PRICING_REQUIRED_KEYS - set(values)
@@ -278,7 +352,8 @@ def _pricing_from_raw(raw_pricing) -> dict[str, ModelPricing]:
                 details.append(f"unknown {sorted(unknown)}")
             raise ValueError(
                 f"Config: budget.pricing[{model!r}] must contain input/output and only "
-                f"supported keys {sorted(_PRICING_KEYS)} ({'; '.join(details)})")
+                f"supported keys {sorted(_PRICING_KEYS)} ({'; '.join(details)})"
+            )
         try:
             result[model] = ModelPricing.from_dict(values)
         except ValueError as exc:
@@ -288,11 +363,13 @@ def _pricing_from_raw(raw_pricing) -> dict[str, ModelPricing]:
 
 def load(path: str | Path = "config.yaml") -> Config:
     raw = yaml.safe_load(Path(path).read_text())
-    if raw is None:                 # empty / comment-only YAML -> defaults everywhere
+    if raw is None:  # empty / comment-only YAML -> defaults everywhere
         raw = {}
     if not isinstance(raw, dict):
-        raise ValueError(f"Config: {path} must be a YAML mapping at the top level "
-                         f"(got {type(raw).__name__})")
+        raise ValueError(
+            f"Config: {path} must be a YAML mapping at the top level "
+            f"(got {type(raw).__name__})"
+        )
     _reject_unknown_keys(raw, _TOP_LEVEL_KEYS, "the top level")
 
     paths = _mapping_or_empty(raw.get("paths"), "paths")
@@ -310,14 +387,15 @@ def load(path: str | Path = "config.yaml") -> Config:
         # controls something; deleting the line changes nothing about how the run behaves.
         raise ValueError(
             "Config: budget.on_exhausted was removed and must be deleted from config.yaml. "
-            "A configurable openerless (\"commentless\") fallback is no longer supported "
+            'A configurable openerless ("commentless") fallback is no longer supported '
             "on an opener-capable app: ordinary opener failures stop instead of falling back "
             "to a bare like. Provider safety blocks are handled separately. If your config had "
             "'on_exhausted: stop', nothing about your run's behavior changes -- that was "
             "already the only real outcome; just remove the line. If it had "
             "'on_exhausted: swipe_without_opener', that mode has been removed entirely: "
             "delete the line, and see opener.max_attempts for how many times a rejected "
-            "AI response is re-asked before the run stops instead.")
+            "AI response is re-asked before the run stops instead."
+        )
     _reject_unknown_keys(b, _BUDGET_KEYS, "budget")
     pricing = _pricing_from_raw(b.get("pricing"))
     # Legacy singular `app:` key is still honoured. The old "nothing configured" default of
@@ -361,8 +439,9 @@ def load(path: str | Path = "config.yaml") -> Config:
         if not isinstance(app, str) or not app.strip():
             raise ValueError("Config: apps keys must be non-empty app id strings")
         if not isinstance(app_cfg, Mapping):
-            raise ValueError(f"Config: apps.{app} must be a mapping "
-                             f"(got {type(app_cfg).__name__})")
+            raise ValueError(
+                f"Config: apps.{app} must be a mapping (got {type(app_cfg).__name__})"
+            )
     storage_raw = _mapping_or_empty(raw.get("storage"), "storage")
     _reject_unknown_keys(storage_raw, _STORAGE_KEYS, "storage")
     bigquery_raw = _mapping_or_empty(storage_raw.get("bigquery"), "storage.bigquery")
@@ -389,7 +468,9 @@ def load(path: str | Path = "config.yaml") -> Config:
         # this key.
         db_file=_path_from_raw(paths, "db_file", str(data_dir / "operation_love.db")),
         ranker=_section(RankerCfg, "ranker", raw.get("ranker", {})),
-        quality_filter=_section(QualityCfg, "quality_filter", raw.get("quality_filter", {})),
+        quality_filter=_section(
+            QualityCfg, "quality_filter", raw.get("quality_filter", {})
+        ),
         opener=_section(OpenerCfg, "opener", raw.get("opener", {})),
         budget=BudgetCfg(
             # Absence keeps BudgetCfg's safe $5 default. Explicit null still means unlimited,
@@ -422,10 +503,17 @@ _TARGETING_SHEET_FALSE_MATCH_DISTANCE = 14.91
 _TARGETING_HINGE_IDENTITY_BAND = (0.10, 0.048, 0.80, 0.094)
 _TARGETING_HINGE_CONTENT_BAND = (0.125, 0.875)
 _TARGETING_CALIBRATION_KEYS = {
-    "schema_version", "hinge_version_name", "frame_size_px", "composer_layout_id",
+    "schema_version",
+    "hinge_version_name",
+    "frame_size_px",
+    "composer_layout_id",
     "item_selection_policy_id",
-    "identity_match_max_dist", "inline_item_max_dist", "device", "calibrated_at",
-    "identity_band", "content_band",
+    "identity_match_max_dist",
+    "inline_item_max_dist",
+    "device",
+    "calibrated_at",
+    "identity_band",
+    "content_band",
 }
 # The optional mapping that binds the measured still-photo bound artifact (see
 # ops/STILL-PHOTO-DISCRIMINATOR.md section 5).  Its presence, and only its presence, installs
@@ -433,8 +521,16 @@ _TARGETING_CALIBRATION_KEYS = {
 # a missing key is an incomplete claim and an unknown key is a claim we are not checking, and
 # both must fail loudly rather than be ignored.
 _STILL_PHOTO_BOUND_EVIDENCE_KEYS = {
-    "artifact_path", "artifact_sha256", "ground_truth_channel", "video_cards", "video_accepts",
-    "photo_cards", "photo_false_refusals", "max_video_exact_run_s", "captured_at", "device",
+    "artifact_path",
+    "artifact_sha256",
+    "ground_truth_channel",
+    "video_cards",
+    "video_accepts",
+    "photo_cards",
+    "photo_false_refusals",
+    "max_video_exact_run_s",
+    "captured_at",
+    "device",
     "hinge_version_name",
 }
 # Config keys the artifact itself must also carry, with equal values.  artifact_path is a
@@ -442,9 +538,17 @@ _STILL_PHOTO_BOUND_EVIDENCE_KEYS = {
 # inside it; everything else is a measurement claim, and the mapping may not claim a number the
 # artifact does not carry.
 _STILL_PHOTO_BOUND_MIRRORED_INT_KEYS = (
-    "video_cards", "video_accepts", "photo_cards", "photo_false_refusals")
+    "video_cards",
+    "video_accepts",
+    "photo_cards",
+    "photo_false_refusals",
+)
 _STILL_PHOTO_BOUND_MIRRORED_TEXT_KEYS = (
-    "ground_truth_channel", "captured_at", "device", "hinge_version_name")
+    "ground_truth_channel",
+    "captured_at",
+    "device",
+    "hinge_version_name",
+)
 # Optional, and optional in one direction only: it is REQUIRED on the circular AI-labelled
 # channel and FORBIDDEN on the owner-labelled one (see _validate_hinge_still_photo_bound_evidence).
 # It is not in the exact key set above because that set is what every bound must carry, and an
@@ -457,7 +561,11 @@ _STILL_PHOTO_BOUND_OPTIONAL_EVIDENCE_KEYS = {"accepted_circular_risk"}
 # does demand is that the decision be attributable: which phone, which Hinge build, when, and
 # why, so a reader months later can tell an accepted risk from an accident.
 _STILL_PHOTO_ASSUMPTION_KEYS = {
-    "acceptance", "accepted_at", "device", "hinge_version_name", "rationale",
+    "acceptance",
+    "accepted_at",
+    "device",
+    "hinge_version_name",
+    "rationale",
 }
 
 
@@ -483,9 +591,15 @@ def _targeting_band(value, *, key: str, length: int) -> tuple[float, ...]:
     """Return one normalised geometry record or reject an unusable calibration input."""
     rendered = _safe_value_repr(value)
     if not isinstance(value, (list, tuple)) or len(value) != length:
-        raise ValueError(f"{key} must be a {length}-number array/tuple (got {rendered})")
-    if any(isinstance(v, bool) or not isinstance(v, (int, float)) or not _is_finite_number(v)
-           for v in value):
+        raise ValueError(
+            f"{key} must be a {length}-number array/tuple (got {rendered})"
+        )
+    if any(
+        isinstance(v, bool)
+        or not isinstance(v, (int, float))
+        or not _is_finite_number(v)
+        for v in value
+    ):
         raise ValueError(f"{key} must contain only finite numbers (got {rendered})")
     result = tuple(float(v) for v in value)
     if length == 4:
@@ -499,8 +613,9 @@ def _targeting_band(value, *, key: str, length: int) -> tuple[float, ...]:
     return result
 
 
-def _effective_targeting_geometry(app: str, app_cfg: dict) -> tuple[tuple[float, ...],
-                                                                       tuple[float, ...]]:
+def _effective_targeting_geometry(
+    app: str, app_cfg: dict
+) -> tuple[tuple[float, ...], tuple[float, ...]]:
     """The bands the Android driver will actually use for a calibrated targeted action."""
     if app == "hinge":
         identity = app_cfg.get("identity_band", _TARGETING_HINGE_IDENTITY_BAND)
@@ -532,7 +647,8 @@ def _validate_targeting_calibration(cfg: Config) -> None:
         if not isinstance(calibration, dict):
             raise ValueError(
                 f"Config: apps.{app}.targeting_calibration must be a mapping "
-                f"(got {type(calibration).__name__})")
+                f"(got {type(calibration).__name__})"
+            )
         unknown = set(calibration) - _TARGETING_CALIBRATION_KEYS
         missing = _TARGETING_CALIBRATION_KEYS - set(calibration)
         if unknown or missing:
@@ -543,15 +659,21 @@ def _validate_targeting_calibration(cfg: Config) -> None:
                 parts.append(f"unknown {sorted(unknown)}")
             raise ValueError(
                 f"Config: apps.{app}.targeting_calibration must carry "
-                f"{sorted(_TARGETING_CALIBRATION_KEYS)} ({'; '.join(parts)})")
-        if type(calibration["schema_version"]) is not int or calibration["schema_version"] != 3:
+                f"{sorted(_TARGETING_CALIBRATION_KEYS)} ({'; '.join(parts)})"
+            )
+        if (
+            type(calibration["schema_version"]) is not int
+            or calibration["schema_version"] != 3
+        ):
             raise ValueError(
                 f"Config: apps.{app}.targeting_calibration.schema_version must be the exact "
-                f"integer 3 (got {_safe_value_repr(calibration['schema_version'])})")
+                f"integer 3 (got {_safe_value_repr(calibration['schema_version'])})"
+            )
         if calibration["composer_layout_id"] != "hinge_inline_v1":
             raise ValueError(
                 f"Config: apps.{app}.targeting_calibration.composer_layout_id must be "
-                f"'hinge_inline_v1' (got {calibration['composer_layout_id']!r})")
+                f"'hinge_inline_v1' (got {calibration['composer_layout_id']!r})"
+            )
         policy_id = calibration["item_selection_policy_id"]
         # A retired id gets its own message: it is not a typo, and re-typing the new id over an
         # old mapping would be exactly the wrong fix.  v1 was measured against a selection
@@ -560,46 +682,57 @@ def _validate_targeting_calibration(cfg: Config) -> None:
             raise ValueError(
                 f"Config: apps.{app}.targeting_calibration.item_selection_policy_id {policy_id} "
                 f"is superseded by {HINGE_PHOTO_SELECTION_POLICY_ID}; recalibrate under the "
-                f"current policy")
+                f"current policy"
+            )
         if policy_id != HINGE_PHOTO_SELECTION_POLICY_ID:
             raise ValueError(
                 f"Config: apps.{app}.targeting_calibration.item_selection_policy_id must be "
                 f"{HINGE_PHOTO_SELECTION_POLICY_ID!r} "
-                f"(got {policy_id!r})")
+                f"(got {policy_id!r})"
+            )
         frame_size = calibration["frame_size_px"]
-        if (not isinstance(frame_size, (list, tuple)) or len(frame_size) != 2
-                or any(type(v) is not int or v <= 0 for v in frame_size)):
+        if (
+            not isinstance(frame_size, (list, tuple))
+            or len(frame_size) != 2
+            or any(type(v) is not int or v <= 0 for v in frame_size)
+        ):
             raise ValueError(
                 f"Config: apps.{app}.targeting_calibration.frame_size_px must be two positive "
-                f"integers (got {_safe_value_repr(frame_size)})")
+                f"integers (got {_safe_value_repr(frame_size)})"
+            )
         for key in ("identity_match_max_dist", "inline_item_max_dist"):
             value = calibration[key]
             if isinstance(value, bool) or not isinstance(value, (int, float)):
                 raise ValueError(
                     f"Config: apps.{app}.targeting_calibration.{key} must be a number "
-                    f"(got {_safe_value_repr(value)})")
+                    f"(got {_safe_value_repr(value)})"
+                )
             if not _is_finite_number(value) or value <= 0:
                 raise ValueError(
                     f"Config: apps.{app}.targeting_calibration.{key} must be finite and > 0 "
-                    f"(got {_safe_value_repr(value)})")
+                    f"(got {_safe_value_repr(value)})"
+                )
         identity_max = calibration["identity_match_max_dist"]
         if identity_max >= _TARGETING_IDENTITY_FALSE_MATCH_DISTANCE:
             raise ValueError(
                 f"Config: apps.{app}.targeting_calibration.identity_match_max_dist must be "
                 f"strictly below {_TARGETING_IDENTITY_FALSE_MATCH_DISTANCE}, the known "
-                f"different-profile false-match distance (got {_safe_value_repr(identity_max)})")
+                f"different-profile false-match distance (got {_safe_value_repr(identity_max)})"
+            )
         sheet_max = calibration["inline_item_max_dist"]
         if sheet_max >= _TARGETING_SHEET_FALSE_MATCH_DISTANCE:
             raise ValueError(
                 f"Config: apps.{app}.targeting_calibration.inline_item_max_dist must be "
                 f"strictly below {_TARGETING_SHEET_FALSE_MATCH_DISTANCE}, the nearest known "
-                f"foreign-card false-match distance (got {_safe_value_repr(sheet_max)})")
+                f"foreign-card false-match distance (got {_safe_value_repr(sheet_max)})"
+            )
         for key in ("device", "calibrated_at", "hinge_version_name"):
             value = calibration[key]
             if not isinstance(value, str) or not value.strip():
                 raise ValueError(
                     f"Config: apps.{app}.targeting_calibration.{key} must be nonempty evidence "
-                    f"text (got {value!r})")
+                    f"text (got {value!r})"
+                )
         # The measured bounds are only valid for the device that produced them.  `device` is
         # deliberately the exact ADB serial, not a free-form handset description: a description
         # cannot stop a copied calibration from licensing gestures on another phone.  Do not
@@ -609,31 +742,41 @@ def _validate_targeting_calibration(cfg: Config) -> None:
         if not isinstance(serial, str) or not serial:
             raise ValueError(
                 f"Config: apps.{app}.targeting_calibration requires a nonempty "
-                f"apps.{app}.serial exact ADB device serial")
+                f"apps.{app}.serial exact ADB device serial"
+            )
         if calibration["device"] != serial:
             raise ValueError(
                 f"Config: apps.{app}.targeting_calibration.device must exactly equal "
-                f"apps.{app}.serial (got {calibration['device']!r} != {serial!r})")
+                f"apps.{app}.serial (got {calibration['device']!r} != {serial!r})"
+            )
         try:
             calibrated_identity = _targeting_band(
                 calibration["identity_band"],
-                key=f"apps.{app}.targeting_calibration.identity_band", length=4)
+                key=f"apps.{app}.targeting_calibration.identity_band",
+                length=4,
+            )
             calibrated_content = _targeting_band(
                 calibration["content_band"],
-                key=f"apps.{app}.targeting_calibration.content_band", length=2)
-            effective_identity, effective_content = _effective_targeting_geometry(app, app_cfg)
+                key=f"apps.{app}.targeting_calibration.content_band",
+                length=2,
+            )
+            effective_identity, effective_content = _effective_targeting_geometry(
+                app, app_cfg
+            )
         except ValueError as exc:
             raise ValueError(f"Config: {exc}") from exc
         if calibrated_identity != effective_identity:
             raise ValueError(
                 f"Config: apps.{app}.targeting_calibration.identity_band must exactly equal "
                 f"the effective apps.{app}.identity_band ({calibrated_identity!r} != "
-                f"{effective_identity!r})")
+                f"{effective_identity!r})"
+            )
         if calibrated_content != effective_content:
             raise ValueError(
                 f"Config: apps.{app}.targeting_calibration.content_band must exactly equal "
                 f"the effective apps.{app}.content_band ({calibrated_content!r} != "
-                f"{effective_content!r})")
+                f"{effective_content!r})"
+            )
         # An unselected Hinge mapping must remain intrinsically well-formed, but its runtime
         # still-photo policy is only relevant when Hinge is selected for this run. Otherwise a
         # Bumble-only start deliberately clears Hinge's process-global readiness then rejects
@@ -644,7 +787,8 @@ def _validate_targeting_calibration(cfg: Config) -> None:
                 raise ValueError(
                     "Config: apps.hinge.targeting_calibration cannot license numbered "
                     f"targeting because {policy_blocker}. Remove the optional mapping; Hinge "
-                    "Observe remains available without targeted suggestions")
+                    "Observe remains available without targeted suggestions"
+                )
             licence = installed_still_photo_licence()
             # Both licence channels describe a visual property of one app build on one phone.
             # Validating each block independently is not enough: a freshly captured calibration
@@ -655,7 +799,8 @@ def _validate_targeting_calibration(cfg: Config) -> None:
             if licence is None:
                 raise ValueError(
                     "Config: apps.hinge.targeting_calibration cannot license numbered targeting "
-                    "because no installed still-photo licence record is available")
+                    "because no installed still-photo licence record is available"
+                )
             for key in ("device", "hinge_version_name"):
                 licence_value = getattr(licence.record, key, None)
                 calibration_value = calibration[key]
@@ -665,7 +810,8 @@ def _validate_targeting_calibration(cfg: Config) -> None:
                         f"apps.hinge.targeting_calibration must exactly match on {key} "
                         f"({licence_value!r} != {calibration_value!r}). Recapture measured "
                         "still-photo evidence or explicitly re-accept the unmeasured assumption "
-                        "for this exact Hinge build/device; do not relabel old evidence")
+                        "for this exact Hinge build/device; do not relabel old evidence"
+                    )
 
 
 def _validate_hinge_still_photo_bound_evidence(cfg: Config) -> None:
@@ -688,9 +834,13 @@ def _validate_hinge_still_photo_bound_evidence(cfg: Config) -> None:
     if not isinstance(raw, dict):
         raise ValueError(
             "Config: apps.hinge.still_photo_bound_evidence must be a mapping "
-            f"(got {type(raw).__name__})")
-    unknown = (set(raw) - _STILL_PHOTO_BOUND_EVIDENCE_KEYS
-               - _STILL_PHOTO_BOUND_OPTIONAL_EVIDENCE_KEYS)
+            f"(got {type(raw).__name__})"
+        )
+    unknown = (
+        set(raw)
+        - _STILL_PHOTO_BOUND_EVIDENCE_KEYS
+        - _STILL_PHOTO_BOUND_OPTIONAL_EVIDENCE_KEYS
+    )
     missing = _STILL_PHOTO_BOUND_EVIDENCE_KEYS - set(raw)
     if unknown or missing:
         raise ValueError(
@@ -698,24 +848,35 @@ def _validate_hinge_still_photo_bound_evidence(cfg: Config) -> None:
             f"{sorted(_STILL_PHOTO_BOUND_EVIDENCE_KEYS)} (missing {sorted(missing)}, "
             f"unknown {sorted(unknown)}), plus "
             f"{sorted(_STILL_PHOTO_BOUND_OPTIONAL_EVIDENCE_KEYS)} on the circular AI-labelled "
-            f"{STILL_PHOTO_BOUND_CIRCULAR_CHANNEL} channel only")
-    for key in _STILL_PHOTO_BOUND_MIRRORED_TEXT_KEYS + ("artifact_path", "artifact_sha256"):
+            f"{STILL_PHOTO_BOUND_CIRCULAR_CHANNEL} channel only"
+        )
+    for key in _STILL_PHOTO_BOUND_MIRRORED_TEXT_KEYS + (
+        "artifact_path",
+        "artifact_sha256",
+    ):
         if not isinstance(raw[key], str) or not raw[key].strip():
             raise ValueError(
                 f"Config: apps.hinge.still_photo_bound_evidence.{key} must be nonempty text "
-                f"(got {_safe_value_repr(raw[key])})")
+                f"(got {_safe_value_repr(raw[key])})"
+            )
     for key in _STILL_PHOTO_BOUND_MIRRORED_INT_KEYS:
         # `type(...) is not int` rather than isinstance: bool is an int subclass, so a stray
         # `video_accepts: true` would otherwise validate as one accept.
         if type(raw[key]) is not int:
             raise ValueError(
                 f"Config: apps.hinge.still_photo_bound_evidence.{key} must be an exact integer "
-                f"card count (got {_safe_value_repr(raw[key])})")
+                f"card count (got {_safe_value_repr(raw[key])})"
+            )
     run_s = raw["max_video_exact_run_s"]
-    if isinstance(run_s, bool) or not isinstance(run_s, Real) or not _is_finite_number(run_s):
+    if (
+        isinstance(run_s, bool)
+        or not isinstance(run_s, Real)
+        or not _is_finite_number(run_s)
+    ):
         raise ValueError(
             "Config: apps.hinge.still_photo_bound_evidence.max_video_exact_run_s must be a "
-            f"finite number of seconds (got {_safe_value_repr(run_s)})")
+            f"finite number of seconds (got {_safe_value_repr(run_s)})"
+        )
     # See _MAX_STILL_PHOTO_VIDEO_EXACT_RUN_S: this value becomes a live-device dwell-window
     # FLOOR (x STILL_PHOTO_DWELL_WINDOW_SAFETY_FACTOR), not merely a recorded measurement, so an
     # unbounded/typo'd number is an operational mistake -- the bot going motionless on one card
@@ -726,7 +887,8 @@ def _validate_hinge_still_photo_bound_evidence(cfg: Config) -> None:
         raise ValueError(
             "Config: apps.hinge.still_photo_bound_evidence.max_video_exact_run_s must not "
             f"exceed {_MAX_STILL_PHOTO_VIDEO_EXACT_RUN_S} seconds "
-            f"(got {_safe_value_repr(run_s)})")
+            f"(got {_safe_value_repr(run_s)})"
+        )
     # The circular AI-labelled channel (owner decision 2026-08-21) labels its videos with the
     # same mute-glyph matcher whose blind spot the bound is meant to quantify, so it can never
     # claim human ground truth and is licensed only by the owner's recorded acceptance.  The
@@ -744,13 +906,15 @@ def _validate_hinge_still_photo_bound_evidence(cfg: Config) -> None:
                 f"exactly {STILL_PHOTO_BOUND_CIRCULAR_ACCEPTANCE!r} because ground_truth_channel "
                 f"is {STILL_PHOTO_BOUND_CIRCULAR_CHANNEL!r}, the circular AI-labelled channel "
                 "whose video labels come from the same mute-glyph matcher the bound measures "
-                f"(got {_safe_value_repr(acceptance)})")
+                f"(got {_safe_value_repr(acceptance)})"
+            )
     elif "accepted_circular_risk" in raw:
         raise ValueError(
             "Config: apps.hinge.still_photo_bound_evidence.accepted_circular_risk accepts the "
             f"circular AI-labelled channel {STILL_PHOTO_BOUND_CIRCULAR_CHANNEL!r} and is valid "
             f"only there; this bound declares ground_truth_channel "
-            f"{raw['ground_truth_channel']!r}, so remove the key")
+            f"{raw['ground_truth_channel']!r}, so remove the key"
+        )
     # The measured bound is only valid for the phone it was measured on.  Same reasoning as
     # targeting_calibration.device above: an exact ADB serial, compared byte for byte, is the
     # only thing that stops a copied artifact from licensing numbering on another handset.
@@ -758,17 +922,20 @@ def _validate_hinge_still_photo_bound_evidence(cfg: Config) -> None:
     if not isinstance(serial, str) or not serial:
         raise ValueError(
             "Config: apps.hinge.still_photo_bound_evidence requires a nonempty apps.hinge.serial "
-            "exact ADB device serial")
+            "exact ADB device serial"
+        )
     if raw["device"] != serial:
         raise ValueError(
             "Config: apps.hinge.still_photo_bound_evidence.device must exactly equal "
-            f"apps.hinge.serial (got {raw['device']!r} != {serial!r})")
+            f"apps.hinge.serial (got {raw['device']!r} != {serial!r})"
+        )
 
     artifact_path = Path(raw["artifact_path"])
     if artifact_path.is_absolute():
         raise ValueError(
             "Config: apps.hinge.still_photo_bound_evidence.artifact_path must be a "
-            "repo-relative local path")
+            "repo-relative local path"
+        )
     root = Path.cwd().resolve()
     resolved = (root / artifact_path).resolve()
     try:
@@ -786,15 +953,18 @@ def _validate_hinge_still_photo_bound_evidence(cfg: Config) -> None:
     if hashlib.sha256(content).hexdigest() != raw["artifact_sha256"]:
         raise ValueError(
             "Config: apps.hinge.still_photo_bound_evidence.artifact_sha256 does not match its "
-            "artifact")
+            "artifact"
+        )
     try:
         artifact = json.loads(content)
     except json.JSONDecodeError as exc:
         raise ValueError(
-            "Config: apps.hinge.still_photo_bound_evidence artifact is not JSON") from exc
+            "Config: apps.hinge.still_photo_bound_evidence artifact is not JSON"
+        ) from exc
     if not isinstance(artifact, dict):
         raise ValueError(
-            "Config: apps.hinge.still_photo_bound_evidence artifact must be a JSON object")
+            "Config: apps.hinge.still_photo_bound_evidence artifact must be a JSON object"
+        )
     # Deliberately NOT an exact artifact key set: the measurement tool also records per-card
     # verdicts, frame digests and geometry, and pinning its full schema here would make config
     # validation the thing that has to change every time the tool records more evidence.  What
@@ -803,20 +973,26 @@ def _validate_hinge_still_photo_bound_evidence(cfg: Config) -> None:
         if artifact.get(key) != raw[key]:
             raise ValueError(
                 f"Config: apps.hinge.still_photo_bound_evidence artifact disagrees on {key} "
-                f"({_safe_value_repr(artifact.get(key))} != {raw[key]!r})")
+                f"({_safe_value_repr(artifact.get(key))} != {raw[key]!r})"
+            )
     for key in _STILL_PHOTO_BOUND_MIRRORED_INT_KEYS:
         if type(artifact.get(key)) is not int or artifact[key] != raw[key]:
             raise ValueError(
                 f"Config: apps.hinge.still_photo_bound_evidence artifact disagrees on {key} "
-                f"({_safe_value_repr(artifact.get(key))} != {raw[key]!r})")
+                f"({_safe_value_repr(artifact.get(key))} != {raw[key]!r})"
+            )
     artifact_run_s = artifact.get("max_video_exact_run_s")
-    if (isinstance(artifact_run_s, bool) or not isinstance(artifact_run_s, Real)
-            or not _is_finite_number(artifact_run_s)
-            or float(artifact_run_s) != float(run_s)):
+    if (
+        isinstance(artifact_run_s, bool)
+        or not isinstance(artifact_run_s, Real)
+        or not _is_finite_number(artifact_run_s)
+        or float(artifact_run_s) != float(run_s)
+    ):
         raise ValueError(
             "Config: apps.hinge.still_photo_bound_evidence artifact disagrees on "
             f"max_video_exact_run_s ({_safe_value_repr(artifact_run_s)} != "
-            f"{_safe_value_repr(run_s)})")
+            f"{_safe_value_repr(run_s)})"
+        )
     # human_ground_truth is deliberately read only from the artifact and is not a config key:
     # it is the one claim nothing downstream can re-derive, so the measurement run has to make
     # it, not the person pasting the mapping.  Which value is demanded is decided by the channel,
@@ -828,7 +1004,8 @@ def _validate_hinge_still_photo_bound_evidence(cfg: Config) -> None:
                 "Config: apps.hinge.still_photo_bound_evidence artifact must declare "
                 f"human_ground_truth=false on {STILL_PHOTO_BOUND_CIRCULAR_CHANNEL!r}, the "
                 "circular AI-labelled channel; claiming human ground truth there is a lie "
-                f"(got {_safe_value_repr(human_ground_truth)})")
+                f"(got {_safe_value_repr(human_ground_truth)})"
+            )
         artifact_acceptance = artifact.get("accepted_circular_risk")
         if artifact_acceptance != acceptance:
             raise ValueError(
@@ -836,34 +1013,41 @@ def _validate_hinge_still_photo_bound_evidence(cfg: Config) -> None:
                 f"accepted_circular_risk ({_safe_value_repr(artifact_acceptance)} != "
                 f"{acceptance!r}); the circular AI-labelled channel "
                 f"{STILL_PHOTO_BOUND_CIRCULAR_CHANNEL!r} must be accepted in the measurement "
-                "artifact itself, not only in the pasted mapping")
+                "artifact itself, not only in the pasted mapping"
+            )
     elif human_ground_truth is not True:
         raise ValueError(
             "Config: apps.hinge.still_photo_bound_evidence artifact must declare "
-            f"human_ground_truth=true (got {_safe_value_repr(human_ground_truth)})")
+            f"human_ground_truth=true (got {_safe_value_repr(human_ground_truth)})"
+        )
     if artifact.get("ground_truth_channel") not in (
-            STILL_PHOTO_BOUND_GROUND_TRUTH_CHANNEL, STILL_PHOTO_BOUND_CIRCULAR_CHANNEL):
+        STILL_PHOTO_BOUND_GROUND_TRUTH_CHANNEL,
+        STILL_PHOTO_BOUND_CIRCULAR_CHANNEL,
+    ):
         raise ValueError(
             "Config: apps.hinge.still_photo_bound_evidence artifact must record "
             f"ground_truth_channel {STILL_PHOTO_BOUND_GROUND_TRUTH_CHANNEL!r} (owner labelled) "
             f"or {STILL_PHOTO_BOUND_CIRCULAR_CHANNEL!r} (circular AI labelled, opted in through "
-            "accepted_circular_risk)")
+            "accepted_circular_risk)"
+        )
     try:
-        install_verified_still_photo_bound(StillPhotoBoundSummary(
-            ground_truth_channel=raw["ground_truth_channel"],
-            # The artifact's own value, proven exactly True or exactly False just above; never a
-            # constant, so the summary records which channel actually produced the labels.
-            human_ground_truth=human_ground_truth,
-            video_cards=raw["video_cards"],
-            video_accepts=raw["video_accepts"],
-            photo_cards=raw["photo_cards"],
-            photo_false_refusals=raw["photo_false_refusals"],
-            max_video_exact_run_s=float(run_s),
-            artifact_sha256=raw["artifact_sha256"],
-            device=raw["device"],
-            hinge_version_name=raw["hinge_version_name"],
-            accepted_circular_risk=acceptance if is_circular else None,
-        ))
+        install_verified_still_photo_bound(
+            StillPhotoBoundSummary(
+                ground_truth_channel=raw["ground_truth_channel"],
+                # The artifact's own value, proven exactly True or exactly False just above; never a
+                # constant, so the summary records which channel actually produced the labels.
+                human_ground_truth=human_ground_truth,
+                video_cards=raw["video_cards"],
+                video_accepts=raw["video_accepts"],
+                photo_cards=raw["photo_cards"],
+                photo_false_refusals=raw["photo_false_refusals"],
+                max_video_exact_run_s=float(run_s),
+                artifact_sha256=raw["artifact_sha256"],
+                device=raw["device"],
+                hinge_version_name=raw["hinge_version_name"],
+                accepted_circular_risk=acceptance if is_circular else None,
+            )
+        )
     except ValueError as exc:
         raise ValueError(
             f"Config: apps.hinge.still_photo_bound_evidence is not a shippable bound: {exc}"
@@ -887,19 +1071,22 @@ def _validate_hinge_still_photo_assumption_acceptance(cfg: Config) -> None:
     if not isinstance(raw, dict):
         raise ValueError(
             "Config: apps.hinge.still_photo_assumption_acceptance must be a mapping "
-            f"(got {type(raw).__name__})")
+            f"(got {type(raw).__name__})"
+        )
     unknown = set(raw) - _STILL_PHOTO_ASSUMPTION_KEYS
     missing = _STILL_PHOTO_ASSUMPTION_KEYS - set(raw)
     if unknown or missing:
         raise ValueError(
             "Config: apps.hinge.still_photo_assumption_acceptance must carry exactly "
             f"{sorted(_STILL_PHOTO_ASSUMPTION_KEYS)} (missing {sorted(missing)}, "
-            f"unknown {sorted(unknown)})")
+            f"unknown {sorted(unknown)})"
+        )
     for key in sorted(_STILL_PHOTO_ASSUMPTION_KEYS):
         if not isinstance(raw[key], str) or not raw[key].strip():
             raise ValueError(
                 f"Config: apps.hinge.still_photo_assumption_acceptance.{key} must be nonempty "
-                f"text (got {_safe_value_repr(raw[key])})")
+                f"text (got {_safe_value_repr(raw[key])})"
+            )
     if raw["acceptance"] != STILL_PHOTO_CENTERED_AUTOPLAY_ASSUMPTION:
         # Byte-equal, same reasoning as the circular acceptance above: a sentence naming what is
         # being accepted cannot be typed by mistake, and a near-miss must not half-license it.
@@ -907,7 +1094,8 @@ def _validate_hinge_still_photo_assumption_acceptance(cfg: Config) -> None:
             "Config: apps.hinge.still_photo_assumption_acceptance.acceptance must be exactly "
             f"{STILL_PHOTO_CENTERED_AUTOPLAY_ASSUMPTION!r}; this channel ships numbering with NO "
             "measured video false-accept rate, so the acceptance is the whole licence "
-            f"(got {_safe_value_repr(raw['acceptance'])})")
+            f"(got {_safe_value_repr(raw['acceptance'])})"
+        )
     # An assumption about how Hinge autoplays is an assumption about ONE app build on ONE phone.
     # Same exact-serial rule as the measured bound: a copied config block must not silently
     # license numbering on a handset the owner never looked at.
@@ -915,19 +1103,23 @@ def _validate_hinge_still_photo_assumption_acceptance(cfg: Config) -> None:
     if not isinstance(serial, str) or not serial:
         raise ValueError(
             "Config: apps.hinge.still_photo_assumption_acceptance requires a nonempty "
-            "apps.hinge.serial exact ADB device serial")
+            "apps.hinge.serial exact ADB device serial"
+        )
     if raw["device"] != serial:
         raise ValueError(
             "Config: apps.hinge.still_photo_assumption_acceptance.device must exactly equal "
-            f"apps.hinge.serial (got {raw['device']!r} != {serial!r})")
+            f"apps.hinge.serial (got {raw['device']!r} != {serial!r})"
+        )
     try:
-        install_accepted_still_photo_assumption(StillPhotoAssumptionAcceptance(
-            acceptance=raw["acceptance"],
-            accepted_at=raw["accepted_at"],
-            device=raw["device"],
-            hinge_version_name=raw["hinge_version_name"],
-            rationale=raw["rationale"],
-        ))
+        install_accepted_still_photo_assumption(
+            StillPhotoAssumptionAcceptance(
+                acceptance=raw["acceptance"],
+                accepted_at=raw["accepted_at"],
+                device=raw["device"],
+                hinge_version_name=raw["hinge_version_name"],
+                rationale=raw["rationale"],
+            )
+        )
     except ValueError as exc:
         raise ValueError(
             f"Config: apps.hinge.still_photo_assumption_acceptance is not installable: {exc}"
@@ -948,15 +1140,18 @@ def _validate_hinge_still_photo_readiness(cfg: Config) -> None:
     # Hinge calibration as if it had no still-photo evidence before Bumble's own availability
     # gate can run. This is still config-bound and is reset above on every validation.
     app_cfg = (cfg.apps or {}).get("hinge", {}) or {}
-    if ("still_photo_bound_evidence" in app_cfg
-            and "still_photo_assumption_acceptance" in app_cfg):
+    if (
+        "still_photo_bound_evidence" in app_cfg
+        and "still_photo_assumption_acceptance" in app_cfg
+    ):
         raise ValueError(
             "Config: apps.hinge.still_photo_bound_evidence and "
             "apps.hinge.still_photo_assumption_acceptance are mutually exclusive; numbering "
             "accepts exactly one licence. A measured held-out bound must not be shadowed by "
             "an unmeasured assumption, and an assumption must not be dressed up as a "
             "measurement: keep the evidence and delete the acceptance, or delete the "
-            "evidence to ship on the assumption alone")
+            "evidence to ship on the assumption alone"
+        )
     # Order matters only in that the measured pass also performs the reset for a direct caller
     # (the measurement tool's own tests call it standalone); it is idempotent here.
     _validate_hinge_still_photo_bound_evidence(cfg)
@@ -964,8 +1159,11 @@ def _validate_hinge_still_photo_readiness(cfg: Config) -> None:
 
 
 def _canonical_sha256(value) -> str:
-    return hashlib.sha256(json.dumps(
-        value, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")).hexdigest()
+    return hashlib.sha256(
+        json.dumps(
+            value, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+        ).encode("utf-8")
+    ).hexdigest()
 
 
 def _validate_hinge_auto_release_evidence(cfg: Config) -> None:
@@ -985,77 +1183,139 @@ def _validate_hinge_auto_release_evidence(cfg: Config) -> None:
         raise ValueError(
             "Config: Hinge AUTO is blocked because numbered still-photo targeting cannot "
             f"be licensed: {policy_blocker}. Observe remains available without targeted "
-            "suggestions")
+            "suggestions"
+        )
     calibration = app_cfg.get("targeting_calibration")
     if not isinstance(calibration, dict):
         raise ValueError(
             "Config: Hinge AUTO requires apps.hinge.targeting_calibration and separately "
-            "verified apps.hinge.observe_release_evidence; run production OBSERVE first")
+            "verified apps.hinge.observe_release_evidence; run production OBSERVE first"
+        )
     raw = app_cfg.get("observe_release_evidence")
     if not isinstance(raw, dict):
         raise ValueError(
             "Config: Hinge AUTO is blocked until apps.hinge.observe_release_evidence is an "
-            "exact verified production-OBSERVE mapping")
+            "exact verified production-OBSERVE mapping"
+        )
     unknown = set(raw) - _OBSERVE_RELEASE_EVIDENCE_KEYS
     missing = _OBSERVE_RELEASE_EVIDENCE_KEYS - set(raw)
     if unknown or missing:
         raise ValueError(
             "Config: apps.hinge.observe_release_evidence must carry exactly "
             f"{sorted(_OBSERVE_RELEASE_EVIDENCE_KEYS)} (missing {sorted(missing)}, "
-            f"unknown {sorted(unknown)})")
+            f"unknown {sorted(unknown)})"
+        )
     if type(raw["schema_version"]) is not int or raw["schema_version"] != 1:
-        raise ValueError("Config: apps.hinge.observe_release_evidence.schema_version must be integer 1")
+        raise ValueError(
+            "Config: apps.hinge.observe_release_evidence.schema_version must be integer 1"
+        )
     expected_sha = _canonical_sha256(calibration)
     if raw["calibration_calibrated_at"] != calibration.get("calibrated_at"):
-        raise ValueError("Config: observe_release_evidence.calibration_calibrated_at does not bind this calibration")
+        raise ValueError(
+            "Config: observe_release_evidence.calibration_calibrated_at does not bind this calibration"
+        )
     if raw["calibration_sha256"] != expected_sha:
-        raise ValueError("Config: observe_release_evidence.calibration_sha256 does not bind this calibration")
+        raise ValueError(
+            "Config: observe_release_evidence.calibration_sha256 does not bind this calibration"
+        )
     for key in ("device", "hinge_version_name"):
         if raw[key] != calibration.get(key):
-            raise ValueError(f"Config: observe_release_evidence.{key} does not bind this calibration")
+            raise ValueError(
+                f"Config: observe_release_evidence.{key} does not bind this calibration"
+            )
     if raw["frame_size_px"] != calibration.get("frame_size_px"):
-        raise ValueError("Config: observe_release_evidence.frame_size_px does not bind this calibration")
-    for key in ("production_run_reference", "production_run_id", "verification_file", "verification_sha256", "verified_at"):
+        raise ValueError(
+            "Config: observe_release_evidence.frame_size_px does not bind this calibration"
+        )
+    for key in (
+        "production_run_reference",
+        "production_run_id",
+        "verification_file",
+        "verification_sha256",
+        "verified_at",
+    ):
         if not isinstance(raw[key], str) or not raw[key].strip():
-            raise ValueError(f"Config: observe_release_evidence.{key} must be nonempty text")
+            raise ValueError(
+                f"Config: observe_release_evidence.{key} must be nonempty text"
+            )
     if Path(raw["production_run_reference"]).name != raw["production_run_id"]:
-        raise ValueError("Config: observe_release_evidence production_run_reference does not bind production_run_id")
+        raise ValueError(
+            "Config: observe_release_evidence production_run_reference does not bind production_run_id"
+        )
     evidence_path = Path(raw["verification_file"])
     if evidence_path.is_absolute():
-        raise ValueError("Config: observe_release_evidence.verification_file must be a repo-relative local path")
+        raise ValueError(
+            "Config: observe_release_evidence.verification_file must be a repo-relative local path"
+        )
     root = Path.cwd().resolve()
     resolved = (root / evidence_path).resolve()
     try:
         resolved.relative_to(root)
     except ValueError as exc:
-        raise ValueError("Config: observe_release_evidence.verification_file escapes the repository") from exc
+        raise ValueError(
+            "Config: observe_release_evidence.verification_file escapes the repository"
+        ) from exc
     try:
         content = resolved.read_bytes()
     except OSError as exc:
         raise ValueError(
-            f"Config: observe_release_evidence verification artifact is unreadable: {resolved}") from exc
+            f"Config: observe_release_evidence verification artifact is unreadable: {resolved}"
+        ) from exc
     if hashlib.sha256(content).hexdigest() != raw["verification_sha256"]:
-        raise ValueError("Config: observe_release_evidence.verification_sha256 does not match its artifact")
+        raise ValueError(
+            "Config: observe_release_evidence.verification_sha256 does not match its artifact"
+        )
     try:
         artifact = json.loads(content)
     except json.JSONDecodeError as exc:
-        raise ValueError("Config: observe_release_evidence artifact is not JSON") from exc
-    if not isinstance(artifact, dict) or set(artifact) != _OBSERVE_RELEASE_ARTIFACT_KEYS:
-        raise ValueError("Config: observe_release_evidence artifact has an invalid exact schema")
-    if artifact["schema_version"] != 1 or artifact["kind"] != "hinge_production_observe_release":
-        raise ValueError("Config: observe_release_evidence artifact has unsupported schema/kind")
+        raise ValueError(
+            "Config: observe_release_evidence artifact is not JSON"
+        ) from exc
+    if (
+        not isinstance(artifact, dict)
+        or set(artifact) != _OBSERVE_RELEASE_ARTIFACT_KEYS
+    ):
+        raise ValueError(
+            "Config: observe_release_evidence artifact has an invalid exact schema"
+        )
+    if (
+        artifact["schema_version"] != 1
+        or artifact["kind"] != "hinge_production_observe_release"
+    ):
+        raise ValueError(
+            "Config: observe_release_evidence artifact has unsupported schema/kind"
+        )
     if artifact["completed"] is not True:
         raise ValueError("Config: observe_release_evidence artifact is incomplete")
-    for key in ("calibration_calibrated_at", "calibration_sha256", "device",
-                "hinge_version_name", "frame_size_px", "production_run_reference",
-                "production_run_id", "verified_at"):
+    for key in (
+        "calibration_calibrated_at",
+        "calibration_sha256",
+        "device",
+        "hinge_version_name",
+        "frame_size_px",
+        "production_run_reference",
+        "production_run_id",
+        "verified_at",
+    ):
         if artifact[key] != raw[key]:
-            raise ValueError(f"Config: observe_release_evidence artifact disagrees on {key}")
-    for key in ("debug_actions_sha256", "store_persistence_evidence_sha256",
-                "provider_store_evidence_sha256", "observe_control_evidence_sha256"):
+            raise ValueError(
+                f"Config: observe_release_evidence artifact disagrees on {key}"
+            )
+    for key in (
+        "debug_actions_sha256",
+        "store_persistence_evidence_sha256",
+        "provider_store_evidence_sha256",
+        "observe_control_evidence_sha256",
+    ):
         value = artifact[key]
-        if not isinstance(value, str) or len(value) != 64 or any(c not in "0123456789abcdef" for c in value):
-            raise ValueError(f"Config: observe_release_evidence artifact {key} is not a SHA-256 digest")
+        if (
+            not isinstance(value, str)
+            or len(value) != 64
+            or any(c not in "0123456789abcdef" for c in value)
+        ):
+            raise ValueError(
+                f"Config: observe_release_evidence artifact {key} is not a SHA-256 digest"
+            )
 
 
 def _validate_hinge_ai_reviewed_auto_release_evidence(cfg: Config) -> None:
@@ -1070,74 +1330,137 @@ def _validate_hinge_ai_reviewed_auto_release_evidence(cfg: Config) -> None:
     if not isinstance(raw, dict):
         raise ValueError(
             "Config: Hinge AUTO is blocked until ai_reviewed_observe_release_evidence is an "
-            "exact explicitly accepted AI-reviewed production-OBSERVE mapping")
+            "exact explicitly accepted AI-reviewed production-OBSERVE mapping"
+        )
     unknown = set(raw) - _AI_OBSERVE_RELEASE_EVIDENCE_KEYS
     missing = _AI_OBSERVE_RELEASE_EVIDENCE_KEYS - set(raw)
     if unknown or missing:
         raise ValueError(
             "Config: apps.hinge.ai_reviewed_observe_release_evidence must carry exactly "
             f"{sorted(_AI_OBSERVE_RELEASE_EVIDENCE_KEYS)} (missing {sorted(missing)}, "
-            f"unknown {sorted(unknown)})")
+            f"unknown {sorted(unknown)})"
+        )
     if raw["schema_version"] != 1:
-        raise ValueError("Config: ai_reviewed_observe_release_evidence.schema_version must be integer 1")
+        raise ValueError(
+            "Config: ai_reviewed_observe_release_evidence.schema_version must be integer 1"
+        )
     if raw["acceptance"] != _AI_OBSERVE_RELEASE_ACCEPTANCE:
-        raise ValueError("Config: AI-reviewed Hinge AUTO release requires the exact explicit acceptance token")
+        raise ValueError(
+            "Config: AI-reviewed Hinge AUTO release requires the exact explicit acceptance token"
+        )
     calibration = app_cfg.get("targeting_calibration")
     if not isinstance(calibration, dict):
-        raise ValueError("Config: Hinge AUTO requires apps.hinge.targeting_calibration before release evidence")
+        raise ValueError(
+            "Config: Hinge AUTO requires apps.hinge.targeting_calibration before release evidence"
+        )
     if raw["calibration_calibrated_at"] != calibration.get("calibrated_at"):
-        raise ValueError("Config: AI-reviewed release evidence does not bind this calibration timestamp")
+        raise ValueError(
+            "Config: AI-reviewed release evidence does not bind this calibration timestamp"
+        )
     if raw["calibration_sha256"] != _canonical_sha256(calibration):
-        raise ValueError("Config: AI-reviewed release evidence does not bind this calibration hash")
+        raise ValueError(
+            "Config: AI-reviewed release evidence does not bind this calibration hash"
+        )
     for key in ("device", "hinge_version_name", "frame_size_px"):
         if raw[key] != calibration.get(key):
-            raise ValueError(f"Config: AI-reviewed release evidence {key} does not bind this calibration")
-    for key in ("production_run_reference", "production_run_id", "verification_file",
-                "verification_sha256", "verified_at"):
+            raise ValueError(
+                f"Config: AI-reviewed release evidence {key} does not bind this calibration"
+            )
+    for key in (
+        "production_run_reference",
+        "production_run_id",
+        "verification_file",
+        "verification_sha256",
+        "verified_at",
+    ):
         if not isinstance(raw[key], str) or not raw[key].strip():
-            raise ValueError(f"Config: ai_reviewed_observe_release_evidence.{key} must be nonempty text")
+            raise ValueError(
+                f"Config: ai_reviewed_observe_release_evidence.{key} must be nonempty text"
+            )
     if Path(raw["production_run_reference"]).name != raw["production_run_id"]:
-        raise ValueError("Config: AI-reviewed release production_run_reference does not bind production_run_id")
+        raise ValueError(
+            "Config: AI-reviewed release production_run_reference does not bind production_run_id"
+        )
     evidence_path = Path(raw["verification_file"])
     if evidence_path.is_absolute():
-        raise ValueError("Config: AI-reviewed release verification_file must be a repo-relative local path")
+        raise ValueError(
+            "Config: AI-reviewed release verification_file must be a repo-relative local path"
+        )
     root = Path.cwd().resolve()
     resolved = (root / evidence_path).resolve()
     try:
         resolved.relative_to(root)
     except ValueError as exc:
-        raise ValueError("Config: AI-reviewed release verification_file escapes the repository") from exc
+        raise ValueError(
+            "Config: AI-reviewed release verification_file escapes the repository"
+        ) from exc
     try:
         content = resolved.read_bytes()
     except OSError as exc:
-        raise ValueError("Config: AI-reviewed release verification artifact is unreadable") from exc
+        raise ValueError(
+            "Config: AI-reviewed release verification artifact is unreadable"
+        ) from exc
     if hashlib.sha256(content).hexdigest() != raw["verification_sha256"]:
-        raise ValueError("Config: AI-reviewed release verification_sha256 does not match its artifact")
+        raise ValueError(
+            "Config: AI-reviewed release verification_sha256 does not match its artifact"
+        )
     try:
         artifact = json.loads(content)
     except json.JSONDecodeError as exc:
         raise ValueError("Config: AI-reviewed release artifact is not JSON") from exc
-    if not isinstance(artifact, dict) or set(artifact) != _AI_OBSERVE_RELEASE_ARTIFACT_KEYS:
-        raise ValueError("Config: AI-reviewed release artifact has an invalid exact schema")
-    if artifact["schema_version"] != 1 or artifact["kind"] != "hinge_ai_reviewed_production_observe_release":
-        raise ValueError("Config: AI-reviewed release artifact has unsupported schema/kind")
+    if (
+        not isinstance(artifact, dict)
+        or set(artifact) != _AI_OBSERVE_RELEASE_ARTIFACT_KEYS
+    ):
+        raise ValueError(
+            "Config: AI-reviewed release artifact has an invalid exact schema"
+        )
+    if (
+        artifact["schema_version"] != 1
+        or artifact["kind"] != "hinge_ai_reviewed_production_observe_release"
+    ):
+        raise ValueError(
+            "Config: AI-reviewed release artifact has unsupported schema/kind"
+        )
     if artifact["completed"] is not True:
         raise ValueError("Config: AI-reviewed release artifact is incomplete")
     if artifact["human_ground_truth"] is not False:
-        raise ValueError("Config: AI-reviewed release artifact must honestly declare human_ground_truth=false")
+        raise ValueError(
+            "Config: AI-reviewed release artifact must honestly declare human_ground_truth=false"
+        )
     if artifact["source"] not in {"external_ai_review", "automation"}:
-        raise ValueError("Config: AI-reviewed release artifact source must be external_ai_review or automation")
-    for key in ("acceptance", "calibration_calibrated_at", "calibration_sha256", "device",
-                "hinge_version_name", "frame_size_px", "production_run_reference",
-                "production_run_id", "verified_at"):
+        raise ValueError(
+            "Config: AI-reviewed release artifact source must be external_ai_review or automation"
+        )
+    for key in (
+        "acceptance",
+        "calibration_calibrated_at",
+        "calibration_sha256",
+        "device",
+        "hinge_version_name",
+        "frame_size_px",
+        "production_run_reference",
+        "production_run_id",
+        "verified_at",
+    ):
         if artifact[key] != raw[key]:
             raise ValueError(f"Config: AI-reviewed release artifact disagrees on {key}")
-    for key in ("debug_actions_sha256", "store_persistence_evidence_sha256",
-                "provider_store_evidence_sha256", "automation_provenance_sha256",
-                "independent_review_sha256"):
+    for key in (
+        "debug_actions_sha256",
+        "store_persistence_evidence_sha256",
+        "provider_store_evidence_sha256",
+        "automation_provenance_sha256",
+        "independent_review_sha256",
+    ):
         value = artifact[key]
-        if not isinstance(value, str) or len(value) != 64 or any(c not in "0123456789abcdef" for c in value):
-            raise ValueError(f"Config: AI-reviewed release artifact {key} is not a SHA-256 digest")
+        if (
+            not isinstance(value, str)
+            or len(value) != 64
+            or any(c not in "0123456789abcdef" for c in value)
+        ):
+            raise ValueError(
+                f"Config: AI-reviewed release artifact {key} is not a SHA-256 digest"
+            )
 
 
 def _validate_hinge_auto_release_gate(cfg: Config) -> None:
@@ -1152,7 +1475,8 @@ def _validate_hinge_auto_release_gate(cfg: Config) -> None:
     if manual is not None and ai_reviewed is not None:
         raise ValueError(
             "Config: Hinge AUTO requires exactly one release gate: manual observe_release_evidence "
-            "or explicitly accepted ai_reviewed_observe_release_evidence, never both")
+            "or explicitly accepted ai_reviewed_observe_release_evidence, never both"
+        )
     if ai_reviewed is not None:
         _validate_hinge_ai_reviewed_auto_release_evidence(cfg)
     else:
@@ -1174,7 +1498,9 @@ def _validate_hinge_ai_observe_controller(cfg: Config) -> None:
         return
     raise ValueError(
         "Config: apps.hinge.observe_evidence_source is retired with observe mode; remove it. "
-        "Training records only the Hub user's manual Like/Dislike decision.")
+        "Training records only the Hub user's manual Like/Dislike decision."
+    )
+
 
 # worker.py's _pace() scales human_motion.think_time_s()'s WHOLE draw (including its
 # shifted-lognormal floor: shift=1.2s for "like"/1.8s for "pass", means ~3.2s/~6.5s) by
@@ -1209,7 +1535,9 @@ _MAX_STILL_PHOTO_DWELL_CANDIDATES = 20
 # applied to a directly-configured dwell_s) divided by the safety factor, rather than a second
 # hardcoded number, so the two bounds cannot drift apart if the safety factor is ever retuned:
 # at this ceiling the resulting anchor is exactly _MAX_ANDROID_DWELL_S, never more.
-_MAX_STILL_PHOTO_VIDEO_EXACT_RUN_S = _MAX_ANDROID_DWELL_S / STILL_PHOTO_DWELL_WINDOW_SAFETY_FACTOR
+_MAX_STILL_PHOTO_VIDEO_EXACT_RUN_S = (
+    _MAX_ANDROID_DWELL_S / STILL_PHOTO_DWELL_WINDOW_SAFETY_FACTOR
+)
 
 
 def _require_bool(value, label: str) -> None:
@@ -1225,7 +1553,8 @@ def _require_nonempty_text(value, label: str) -> None:
 def _require_positive_int(value, label: str) -> None:
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         raise ValueError(
-            f"Config: {label} must be a positive integer (got {_safe_value_repr(value)})")
+            f"Config: {label} must be a positive integer (got {_safe_value_repr(value)})"
+        )
 
 
 def _require_nonnegative_int(value, label: str, *, zero_meaning: str) -> None:
@@ -1236,13 +1565,19 @@ def _require_nonnegative_int(value, label: str, *, zero_meaning: str) -> None:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise ValueError(
             f"Config: {label} must be a non-negative integer (0 = {zero_meaning}), "
-            f"got {_safe_value_repr(value)}")
+            f"got {_safe_value_repr(value)}"
+        )
 
 
-def _require_finite_real(value, label: str, *, minimum: float | None = None,
-                         maximum: float | None = None) -> None:
+def _require_finite_real(
+    value, label: str, *, minimum: float | None = None, maximum: float | None = None
+) -> None:
     rendered = _safe_value_repr(value)
-    if isinstance(value, bool) or not isinstance(value, Real) or not _is_finite_number(value):
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, Real)
+        or not _is_finite_number(value)
+    ):
         raise ValueError(f"Config: {label} must be a finite number (got {rendered})")
     if minimum is not None and value < minimum:
         raise ValueError(f"Config: {label} must be >= {minimum} (got {rendered})")
@@ -1254,10 +1589,12 @@ def normalize_swipe_delay_s(value: object) -> float:
     """Return the validated pacing anchor shared by config and direct Workers."""
     _require_finite_real(value, "pacing.swipe_delay_s", maximum=_MAX_SWIPE_DELAY_S)
     if value != 0 and value < _MIN_SWIPE_DELAY_S:
-        raise ValueError(f"Config: pacing.swipe_delay_s must be 0 (pacing off) or "
-                         f">= {_MIN_SWIPE_DELAY_S} (got {value}); smaller values scale "
-                         "worker._pace's human-pause distribution down to machine-speed "
-                         "swiping")
+        raise ValueError(
+            f"Config: pacing.swipe_delay_s must be 0 (pacing off) or "
+            f">= {_MIN_SWIPE_DELAY_S} (got {value}); smaller values scale "
+            "worker._pace's human-pause distribution down to machine-speed "
+            "swiping"
+        )
     return float(value)
 
 
@@ -1265,47 +1602,57 @@ def _validate_config_shape(cfg: Config) -> None:
     if not isinstance(cfg.enabled_apps, list):
         raise ValueError("Config: enabled_apps must be a YAML list of app ids")
     if any(not isinstance(app, str) or not app.strip() for app in cfg.enabled_apps):
-        raise ValueError("Config: enabled_apps must contain only non-empty app id strings")
+        raise ValueError(
+            "Config: enabled_apps must contain only non-empty app id strings"
+        )
     if len(set(cfg.enabled_apps)) != len(cfg.enabled_apps):
         raise ValueError("Config: enabled_apps must not contain duplicate app ids")
     if not isinstance(cfg.mode, str):
         raise ValueError(f"Config: mode must be a string (got {cfg.mode!r})")
     if not isinstance(cfg.apps, Mapping):
-        raise ValueError(f"Config: apps must be a mapping (got {type(cfg.apps).__name__})")
+        raise ValueError(
+            f"Config: apps must be a mapping (got {type(cfg.apps).__name__})"
+        )
     for app, app_cfg in cfg.apps.items():
         if not isinstance(app, str) or not app.strip():
             raise ValueError("Config: apps keys must be non-empty app id strings")
         if app not in platforms.KNOWN_APPS:
             raise ValueError(
                 f"Config: unknown app block apps.{app}; supported: "
-                f"{sorted(platforms.KNOWN_APPS)}")
+                f"{sorted(platforms.KNOWN_APPS)}"
+            )
         if not isinstance(app_cfg, Mapping):
-            raise ValueError(f"Config: apps.{app} must be a mapping "
-                             f"(got {type(app_cfg).__name__})")
+            raise ValueError(
+                f"Config: apps.{app} must be a mapping (got {type(app_cfg).__name__})"
+            )
         if "mode" in app_cfg and not isinstance(app_cfg["mode"], str):
-            raise ValueError(f"Config: apps.{app}.mode must be a string "
-                             f"(got {app_cfg['mode']!r})")
+            raise ValueError(
+                f"Config: apps.{app}.mode must be a string (got {app_cfg['mode']!r})"
+            )
         if "mode" in app_cfg and app_cfg["mode"] not in {"training", "auto"}:
             legacy = app_cfg["mode"]
             if legacy in {"observe", "auto_testing"}:
                 raise ValueError(
                     f"Config: apps.{app}.mode={legacy!r} was retired; use 'training' "
-                    "for Hub-reviewed Like/Dislike training or 'auto' for ranker decisions")
+                    "for Hub-reviewed Like/Dislike training or 'auto' for ranker decisions"
+                )
             raise ValueError(
-                f"Config: apps.{app}.mode must be 'training' or 'auto' "
-                f"(got {legacy!r})")
+                f"Config: apps.{app}.mode must be 'training' or 'auto' (got {legacy!r})"
+            )
 
 
 def _validate_core_scalars(cfg: Config) -> None:
-    _require_finite_real(cfg.ranker.like_threshold, "ranker.like_threshold",
-                         minimum=0, maximum=1)
+    _require_finite_real(
+        cfg.ranker.like_threshold, "ranker.like_threshold", minimum=0, maximum=1
+    )
     for name in ("min_labels_to_engage", "retrain_every", "min_per_class"):
         _require_positive_int(getattr(cfg.ranker, name), f"ranker.{name}")
 
     _require_bool(cfg.quality_filter.enabled, "quality_filter.enabled")
     _require_nonempty_text(cfg.quality_filter.metric, "quality_filter.metric")
-    _require_finite_real(cfg.quality_filter.min_score, "quality_filter.min_score",
-                         minimum=0, maximum=1)
+    _require_finite_real(
+        cfg.quality_filter.min_score, "quality_filter.min_score", minimum=0, maximum=1
+    )
 
     normalize_swipe_delay_s(cfg.pacing.swipe_delay_s)
 
@@ -1314,18 +1661,27 @@ def _validate_opener_scalars(opener: OpenerCfg) -> None:
     _require_bool(opener.enabled, "opener.enabled")
     _require_bool(opener.preflight, "opener.preflight")
     _require_bool(opener.replay_corpus_enabled, "opener.replay_corpus_enabled")
-    _require_nonnegative_int(opener.replay_corpus_max_captures,
-                             "opener.replay_corpus_max_captures", zero_meaning="unlimited")
-    _require_nonnegative_int(opener.replay_corpus_max_age_days,
-                             "opener.replay_corpus_max_age_days", zero_meaning="unlimited")
+    _require_nonnegative_int(
+        opener.replay_corpus_max_captures,
+        "opener.replay_corpus_max_captures",
+        zero_meaning="unlimited",
+    )
+    _require_nonnegative_int(
+        opener.replay_corpus_max_age_days,
+        "opener.replay_corpus_max_age_days",
+        zero_meaning="unlimited",
+    )
     _require_nonempty_text(opener.provider, "opener.provider")
     _require_nonempty_text(opener.model, "opener.model")
     if opener.model != opener.model.strip():
         raise ValueError(
             f"Config: opener.model must not contain surrounding whitespace "
-            f"(got {opener.model!r})")
+            f"(got {opener.model!r})"
+        )
     if not isinstance(opener.style, str):
-        raise ValueError(f"Config: opener.style must be a string (got {opener.style!r})")
+        raise ValueError(
+            f"Config: opener.style must be a string (got {opener.style!r})"
+        )
     _require_positive_int(opener.max_tokens, "opener.max_tokens")
     if not isinstance(opener.models, list):
         raise ValueError("Config: opener.models must be a YAML list of model ids")
@@ -1333,7 +1689,8 @@ def _validate_opener_scalars(opener: OpenerCfg) -> None:
         raise ValueError("Config: opener.models must contain only non-empty model ids")
     if any(model != model.strip() for model in opener.models):
         raise ValueError(
-            "Config: opener.models model ids must not contain surrounding whitespace")
+            "Config: opener.models model ids must not contain surrounding whitespace"
+        )
     if len(set(opener.models)) != len(opener.models):
         raise ValueError("Config: opener.models must not contain duplicate model ids")
 
@@ -1341,7 +1698,8 @@ def _validate_opener_scalars(opener: OpenerCfg) -> None:
 def _validate_training_checkpoint_requirements(cfg: Config) -> None:
     """Reject Training configurations that can never reach the Hub checkpoint."""
     training_apps = [
-        app for app in cfg.enabled_apps
+        app
+        for app in cfg.enabled_apps
         if ((cfg.apps.get(app, {}) or {}).get("mode", cfg.mode) == "training")
     ]
     if not training_apps:
@@ -1349,21 +1707,26 @@ def _validate_training_checkpoint_requirements(cfg: Config) -> None:
     if not cfg.opener.enabled:
         raise ValueError(
             "Config: Training requires opener.enabled=true because every Hub checkpoint "
-            "must contain a typed opener")
+            "must contain a typed opener"
+        )
     # Hinge hands its captured profile frames to the Hub review carousel in Training. The bridge
     # caps that capability-bound payload, so accepting a larger Hinge capture budget here would
     # defer an inevitable checkpoint refusal until an opener has already been typed on a live
     # profile. AUTO does not publish Hub review frames and keeps the broader diagnostic ceiling.
-    hinge_cfg = (cfg.apps.get("hinge", {}) or {})
+    hinge_cfg = cfg.apps.get("hinge", {}) or {}
     hinge_captures = hinge_cfg.get("scroll_captures")
-    if ("hinge" in training_apps and isinstance(hinge_captures, int)
-            and not isinstance(hinge_captures, bool)
-            and hinge_captures > MAX_PROFILE_REVIEW_FRAMES):
+    if (
+        "hinge" in training_apps
+        and isinstance(hinge_captures, int)
+        and not isinstance(hinge_captures, bool)
+        and hinge_captures > MAX_PROFILE_REVIEW_FRAMES
+    ):
         raise ValueError(
             "Config: apps.hinge.scroll_captures must not exceed "
             f"{MAX_PROFILE_REVIEW_FRAMES} in Training because the Hub checkpoint can review "
             f"at most {MAX_PROFILE_REVIEW_FRAMES} ordered profile frames "
-            f"(got {hinge_captures})")
+            f"(got {hinge_captures})"
+        )
 
 
 def _validate_budget(cfg: Config) -> None:
@@ -1376,29 +1739,39 @@ def _validate_budget(cfg: Config) -> None:
     for model, pricing in cfg.budget.pricing.items():
         _require_nonempty_text(model, "budget.pricing model id")
         if not isinstance(pricing, ModelPricing):
-            raise ValueError(f"Config: budget.pricing[{model!r}] must be a pricing mapping")
+            raise ValueError(
+                f"Config: budget.pricing[{model!r}] must be a pricing mapping"
+            )
 
 
 def _validate_storage(cfg: Config) -> None:
     if not isinstance(cfg.storage.backend, str):
-        raise ValueError(f"Config: storage.backend must be a string "
-                         f"(got {cfg.storage.backend!r})")
+        raise ValueError(
+            f"Config: storage.backend must be a string (got {cfg.storage.backend!r})"
+        )
     if cfg.storage.backend not in {"bigquery", "sqlite"}:
-        raise ValueError(f"Config: storage.backend must be 'bigquery' or 'sqlite' "
-                         f"(got {cfg.storage.backend})")
+        raise ValueError(
+            f"Config: storage.backend must be 'bigquery' or 'sqlite' "
+            f"(got {cfg.storage.backend})"
+        )
     if not isinstance(cfg.storage.bigquery, Mapping):
         raise ValueError("Config: storage.bigquery must be a mapping")
     _reject_unknown_keys(cfg.storage.bigquery, _BIGQUERY_KEYS, "storage.bigquery")
     if "flush_every" in cfg.storage.bigquery:
-        _require_positive_int(cfg.storage.bigquery["flush_every"],
-                              "storage.bigquery.flush_every")
+        _require_positive_int(
+            cfg.storage.bigquery["flush_every"], "storage.bigquery.flush_every"
+        )
     if cfg.storage.backend == "bigquery":
         for key in ("project_id", "photo_bucket"):
-            _require_nonempty_text(cfg.storage.bigquery.get(key), f"storage.bigquery.{key}")
+            _require_nonempty_text(
+                cfg.storage.bigquery.get(key), f"storage.bigquery.{key}"
+            )
         try:
             validate_bigquery_photo_bucket(cfg.storage.bigquery["photo_bucket"])
         except ValueError as exc:
-            raise ValueError(f"Config: storage.bigquery.photo_bucket is invalid: {exc}") from exc
+            raise ValueError(
+                f"Config: storage.bigquery.photo_bucket is invalid: {exc}"
+            ) from exc
         # BigQueryStore's long-standing public defaults remain valid when omitted. Validate
         # the values that will actually be interpolated into SQL, including those defaults.
         effective = {
@@ -1413,7 +1786,8 @@ def _validate_storage(cfg: Config) -> None:
             if pattern.fullmatch(value) is None:
                 raise ValueError(
                     f"Config: storage.bigquery.{key} contains unsupported characters "
-                    f"(got {value!r})")
+                    f"(got {value!r})"
+                )
 
 
 def _validate_limits(label: str, lim: Mapping) -> None:
@@ -1421,12 +1795,15 @@ def _validate_limits(label: str, lim: Mapping) -> None:
     override (supervisor.py merges them: `{**cfg.limits, **app_cfg.get("limits", {})}`) —
     factored so the two paths can never drift out of sync."""
     if not isinstance(lim, Mapping):
-        raise ValueError(f"Config: {label} must be a mapping "
-                         f"(got {type(lim).__name__})")
+        raise ValueError(
+            f"Config: {label} must be a mapping (got {type(lim).__name__})"
+        )
     unknown = set(lim) - _LIMITS_KEYS
     if unknown:
-        raise ValueError(f"Config: unknown key(s) under {label}: {sorted(unknown)}; "
-                         f"supported: {sorted(_LIMITS_KEYS)}")
+        raise ValueError(
+            f"Config: unknown key(s) under {label}: {sorted(unknown)}; "
+            f"supported: {sorted(_LIMITS_KEYS)}"
+        )
     for key in ("max_per_run", "max_per_day", "max_likes_per_run"):
         val = lim.get(key)
         if val is not None:
@@ -1436,7 +1813,8 @@ def _validate_limits(label: str, lim: Mapping) -> None:
         _require_finite_real(ratio, f"{label}.target_like_ratio")
         if not 0 < ratio < 1:
             raise ValueError(
-                f"Config: {label}.target_like_ratio must be in (0, 1) (got {ratio})")
+                f"Config: {label}.target_like_ratio must be in (0, 1) (got {ratio})"
+            )
 
 
 def _reject_retired_auto_trial(cfg: Config) -> None:
@@ -1446,7 +1824,8 @@ def _reject_retired_auto_trial(cfg: Config) -> None:
         if "auto_trial" in app_cfg:
             raise ValueError(
                 f"Config: apps.{app}.auto_trial is retired; AUTO must use the learned model "
-                "and ordinary limits")
+                "and ordinary limits"
+            )
 
 
 # Gemini's generationConfig.thinkingConfig recognizes exactly these two keys -- the field
@@ -1482,7 +1861,8 @@ def _validate_gemini_thinking(opener: OpenerCfg) -> None:
     if not isinstance(thinking, dict):
         raise ValueError(
             f"Config: opener.thinking must be a mapping of model id -> thinkingConfig "
-            f"(got {type(opener.thinking).__name__})")
+            f"(got {type(opener.thinking).__name__})"
+        )
     missing = [m for m in opener.effective_models if m not in thinking]
     if missing:
         raise ValueError(
@@ -1491,29 +1871,34 @@ def _validate_gemini_thinking(opener: OpenerCfg) -> None:
             "deliberately use that model's server-default thinking level, or a "
             "{thinkingLevel: ...} / {thinkingBudget: ...} mapping to override it. Thinking "
             "is on by default for nearly every free-tier model and is billed against "
-            "opener.max_tokens, so an unset entry risks silently truncating every opener.")
+            "opener.max_tokens, so an unset entry risks silently truncating every opener."
+        )
     configured_models = set(opener.effective_models)
     unknown_models = set(thinking) - configured_models
     if unknown_models:
         raise ValueError(
             f"Config: opener.thinking contains unconfigured model id(s) "
             f"{sorted(unknown_models, key=repr)!r}; entries must exactly match "
-            "opener.models (or the legacy opener.model).")
+            "opener.models (or the legacy opener.model)."
+        )
     for model, entry in thinking.items():
         if not isinstance(entry, dict):
             raise ValueError(
                 f"Config: opener.thinking[{model!r}] must be a mapping (got "
-                f"{type(entry).__name__})")
+                f"{type(entry).__name__})"
+            )
         unknown = set(entry) - _THINKING_KEYS
         if unknown:
             raise ValueError(
                 f"Config: opener.thinking[{model!r}] has unknown key(s) {sorted(unknown)}; "
                 f"Gemini's generationConfig.thinkingConfig only recognizes "
-                f"{sorted(_THINKING_KEYS)} -- a typo here is a 400 on every opener call.")
+                f"{sorted(_THINKING_KEYS)} -- a typo here is a 400 on every opener call."
+            )
         if "thinkingLevel" in entry and entry["thinkingLevel"] not in _THINKING_LEVELS:
             raise ValueError(
                 f"Config: opener.thinking[{model!r}].thinkingLevel must be one of "
-                f"{sorted(_THINKING_LEVELS)} (got {entry['thinkingLevel']!r})")
+                f"{sorted(_THINKING_LEVELS)} (got {entry['thinkingLevel']!r})"
+            )
         if "thinkingBudget" in entry:
             budget = entry["thinkingBudget"]
             # bool is a subclass of int in Python, so a bare `isinstance(budget, int)` would
@@ -1524,11 +1909,13 @@ def _validate_gemini_thinking(opener: OpenerCfg) -> None:
             if isinstance(budget, bool) or not isinstance(budget, int):
                 raise ValueError(
                     f"Config: opener.thinking[{model!r}].thinkingBudget must be an integer "
-                    f"(got {_safe_value_repr(budget)})")
+                    f"(got {_safe_value_repr(budget)})"
+                )
             if budget < 0:
                 raise ValueError(
                     f"Config: opener.thinking[{model!r}].thinkingBudget must be >= 0 "
-                    f"(0 disables thinking; got {_safe_value_repr(budget)})")
+                    f"(0 disables thinking; got {_safe_value_repr(budget)})"
+                )
 
 
 def _validate_verification(cfg: Config) -> None:
@@ -1555,14 +1942,16 @@ def _validate_verification(cfg: Config) -> None:
         value = app_cfg["halt_on_error"]
         if not isinstance(value, bool):
             raise ValueError(
-                f"Config: apps.{app}.halt_on_error must be true or false (got {value!r})")
+                f"Config: apps.{app}.halt_on_error must be true or false (got {value!r})"
+            )
         mode = app_cfg.get("mode", cfg.mode)
         if value is False and mode in {"auto", "training"}:
             raise ValueError(
                 f"Config: apps.{app}.halt_on_error=false is not allowed with mode={mode!r}. "
                 f"It disables the post-action checks that confirm a like or pass actually "
                 f"landed, so unsent actions would be recorded as sent and the run would "
-                f"keep swiping. Set it true.")
+                f"keep swiping. Set it true."
+            )
 
 
 # Every Android app's config block (apps.<app>) may set a `coords` mapping (each entry an
@@ -1582,13 +1971,17 @@ def _validate_android_fractions(cfg: Config) -> None:
     from .drivers.adb import validate_android_package_id
 
     for app, app_cfg in (cfg.apps or {}).items():
-        if app not in platforms.KNOWN_APPS or platforms.get(app).kind != platforms.KIND_ANDROID:
-            continue          # not a known Android app -- nothing here to validate
+        if (
+            app not in platforms.KNOWN_APPS
+            or platforms.get(app).kind != platforms.KIND_ANDROID
+        ):
+            continue  # not a known Android app -- nothing here to validate
         app_cfg = app_cfg or {}
         if "package" in app_cfg:
             try:
                 validate_android_package_id(
-                    app_cfg["package"], context=f"apps.{app}.package")
+                    app_cfg["package"], context=f"apps.{app}.package"
+                )
             except ValueError as exc:
                 raise ValueError(f"Config: {exc}") from exc
         for key in ("adb_path", "debug_dir"):
@@ -1606,35 +1999,50 @@ def _validate_android_fractions(cfg: Config) -> None:
             if not isinstance(protected, list):
                 raise ValueError(
                     f"Config: apps.{app}.debug_protect_runs must be a list of run-id directory "
-                    f"names (got {_safe_value_repr(protected)})")
+                    f"names (got {_safe_value_repr(protected)})"
+                )
             for entry in protected:
                 # One plain path component: these are matched against directory NAMES, so a
                 # separator or a dot entry could otherwise reach outside debug_dir.
-                if (not isinstance(entry, str) or not entry or entry in {".", ".."}
-                        or "/" in entry or "\\" in entry):
+                if (
+                    not isinstance(entry, str)
+                    or not entry
+                    or entry in {".", ".."}
+                    or "/" in entry
+                    or "\\" in entry
+                ):
                     raise ValueError(
                         f"Config: apps.{app}.debug_protect_runs entries must each be one "
-                        f"non-dot path component (got {_safe_value_repr(entry)})")
+                        f"non-dot path component (got {_safe_value_repr(entry)})"
+                    )
         if app_cfg.get("debug_keep_runs") is not None:
             # Bounds the number of RUN DIRECTORIES kept, not screenshots within one run.
             # Omitting it (or null) keeps every run forever, the pre-2026-08-28 behaviour.
-            _require_positive_int(app_cfg["debug_keep_runs"],
-                                  f"apps.{app}.debug_keep_runs")
+            _require_positive_int(
+                app_cfg["debug_keep_runs"], f"apps.{app}.debug_keep_runs"
+            )
         if "touch_backend" in app_cfg:
             backend = app_cfg["touch_backend"]
             if not isinstance(backend, str) or backend not in {
-                    "auto", "uhid", "adb", "uhid_persistent"}:
+                "auto",
+                "uhid",
+                "adb",
+                "uhid_persistent",
+            }:
                 raise ValueError(
                     f"Config: apps.{app}.touch_backend must be auto, uhid, adb, or "
-                    f"uhid_persistent (got {backend!r})")
+                    f"uhid_persistent (got {backend!r})"
+                )
         if "scroll_captures" in app_cfg:
-            _require_positive_int(app_cfg["scroll_captures"],
-                                  f"apps.{app}.scroll_captures")
+            _require_positive_int(
+                app_cfg["scroll_captures"], f"apps.{app}.scroll_captures"
+            )
             if app_cfg["scroll_captures"] > _MAX_ANDROID_SCROLL_CAPTURES:
                 raise ValueError(
                     f"Config: apps.{app}.scroll_captures must not exceed "
                     f"{_MAX_ANDROID_SCROLL_CAPTURES} "
-                    f"(got {_safe_value_repr(app_cfg['scroll_captures'])})")
+                    f"(got {_safe_value_repr(app_cfg['scroll_captures'])})"
+                )
         # 2026-08-23: how many cards ONE capture's still-photo dwell (C2/C3) walks a real
         # navigation hop out to, beyond the free card the read already left the phone parked on.
         # 1 reproduces the pre-walk driver exactly. Each extra candidate spends a live
@@ -1642,24 +2050,35 @@ def _validate_android_fractions(cfg: Config) -> None:
         # so -- same reasoning as scroll_captures -- an unbounded value is an operational mistake
         # rather than useful tuning.
         if "still_photo_dwell_candidates" in app_cfg:
-            _require_positive_int(app_cfg["still_photo_dwell_candidates"],
-                                  f"apps.{app}.still_photo_dwell_candidates")
-            if app_cfg["still_photo_dwell_candidates"] > _MAX_STILL_PHOTO_DWELL_CANDIDATES:
+            _require_positive_int(
+                app_cfg["still_photo_dwell_candidates"],
+                f"apps.{app}.still_photo_dwell_candidates",
+            )
+            if (
+                app_cfg["still_photo_dwell_candidates"]
+                > _MAX_STILL_PHOTO_DWELL_CANDIDATES
+            ):
                 raise ValueError(
                     f"Config: apps.{app}.still_photo_dwell_candidates must not exceed "
                     f"{_MAX_STILL_PHOTO_DWELL_CANDIDATES} "
-                    f"(got {_safe_value_repr(app_cfg['still_photo_dwell_candidates'])})")
+                    f"(got {_safe_value_repr(app_cfg['still_photo_dwell_candidates'])})"
+                )
         if "dwell_s" in app_cfg:
-            _require_finite_real(app_cfg["dwell_s"], f"apps.{app}.dwell_s",
-                                 minimum=_MIN_ANDROID_DWELL_S,
-                                 maximum=_MAX_ANDROID_DWELL_S)
+            _require_finite_real(
+                app_cfg["dwell_s"],
+                f"apps.{app}.dwell_s",
+                minimum=_MIN_ANDROID_DWELL_S,
+                maximum=_MAX_ANDROID_DWELL_S,
+            )
         if "change_threshold" in app_cfg:
-            _require_finite_real(app_cfg["change_threshold"],
-                                 f"apps.{app}.change_threshold")
+            _require_finite_real(
+                app_cfg["change_threshold"], f"apps.{app}.change_threshold"
+            )
             if not 0 < app_cfg["change_threshold"] <= 255:
                 raise ValueError(
                     f"Config: apps.{app}.change_threshold must be in (0, 255] "
-                    f"(got {app_cfg['change_threshold']!r})")
+                    f"(got {app_cfg['change_threshold']!r})"
+                )
         # A missing/null block means "no coordinate overrides". Other falsy values are
         # supplied malformed configuration, not an alternate spelling of an empty mapping.
         coords = app_cfg.get("coords")
@@ -1668,13 +2087,21 @@ def _validate_android_fractions(cfg: Config) -> None:
         if not isinstance(coords, dict):
             raise ValueError(
                 f"Config: apps.{app}.coords must be a mapping of name -> [x, y] "
-                f"(got {type(coords).__name__})")
+                f"(got {type(coords).__name__})"
+            )
         for key, value in coords.items():
-            if (not isinstance(value, (list, tuple)) or len(value) != 2
-                    or any(isinstance(v, bool) or not isinstance(v, (int, float)) for v in value)):
+            if (
+                not isinstance(value, (list, tuple))
+                or len(value) != 2
+                or any(
+                    isinstance(v, bool) or not isinstance(v, (int, float))
+                    for v in value
+                )
+            ):
                 raise ValueError(
                     f"Config: apps.{app}.coords.{key} must be a [x, y] pair of numbers "
-                    f"(got {_safe_value_repr(value)})")
+                    f"(got {_safe_value_repr(value)})"
+                )
             for axis, v in zip("xy", value, strict=True):
                 if not (_is_finite_number(v) and 0.0 <= v <= 1.0):
                     raise ValueError(
@@ -1684,14 +2111,16 @@ def _validate_android_fractions(cfg: Config) -> None:
                         f"value is never a legitimate tap target: the real touch transport "
                         f"clamps it onto a screen edge instead of failing, which can land "
                         f"inside a forbidden zone undetected (see hinge.py's "
-                        f"_assert_tap_allowed).")
+                        f"_assert_tap_allowed)."
+                    )
         for key, value in app_cfg.items():
             if not key.endswith("_frac"):
                 continue
             if isinstance(value, bool) or not isinstance(value, (int, float)):
                 raise ValueError(
                     f"Config: apps.{app}.{key} must be a number "
-                    f"(got {_safe_value_repr(value)})")
+                    f"(got {_safe_value_repr(value)})"
+                )
             if not (_is_finite_number(value) and 0.0 <= value <= 1.0):
                 raise ValueError(
                     f"Config: apps.{app}.{key} must be in 0..1 (a fraction of the screen) -- "
@@ -1699,7 +2128,8 @@ def _validate_android_fractions(cfg: Config) -> None:
                     "computation "
                     f"(operation_love/drivers/hinge.py's AndroidDriver); an out-of-range "
                     f"value clamps onto a screen edge on a real device instead of failing, "
-                    f"which can land inside a forbidden zone undetected.")
+                    f"which can land inside a forbidden zone undetected."
+                )
         if app == "hinge":
             for key in ("read_scroll_frac", "rewind_scroll_frac"):
                 if key not in app_cfg:
@@ -1711,7 +2141,8 @@ def _validate_android_fractions(cfg: Config) -> None:
                         f"Config: apps.hinge.{key} must be in (0, "
                         f"{_MAX_HINGE_SAFE_SCROLL_FRAC}] so Hinge recovery stays in its "
                         "central scrollable corridor rather than releasing in fixed bottom "
-                        f"navigation (got {_safe_value_repr(value)})")
+                        f"navigation (got {_safe_value_repr(value)})"
+                    )
 
 
 # opener.max_attempts and opener.request_timeout_s sanity ceilings. Both bound the SAME
@@ -1779,7 +2210,9 @@ def _validate(cfg: Config) -> None:
         raise ValueError("Config: enabled_apps is empty")
     unknown = [a for a in cfg.enabled_apps if a not in platforms.KNOWN_APPS]
     if unknown:
-        raise ValueError(f"Config: unknown app(s) {unknown}; supported: {sorted(platforms.KNOWN_APPS)}")
+        raise ValueError(
+            f"Config: unknown app(s) {unknown}; supported: {sorted(platforms.KNOWN_APPS)}"
+        )
     # Registry-level guard: STRUCTURAL only (check_selection, not check_runnable) -- two
     # Android platforms requested together (one physical phone, one foreground app at a
     # time). Deliberately does NOT reject an unavailable platform (uncalibrated Android
@@ -1793,18 +2226,18 @@ def _validate(cfg: Config) -> None:
     if incoherent:
         raise ValueError(incoherent)
     modes = [cfg.mode]
-    modes.extend((cfg.apps.get(a, {}) or {}).get("mode", cfg.mode)
-                 for a in cfg.enabled_apps)
+    modes.extend(
+        (cfg.apps.get(a, {}) or {}).get("mode", cfg.mode) for a in cfg.enabled_apps
+    )
     bad_modes = [mode for mode in modes if mode not in {"training", "auto"}]
     if bad_modes:
         legacy = [mode for mode in bad_modes if mode in {"observe", "auto_testing"}]
         if legacy:
             raise ValueError(
                 "Config: modes 'observe' and 'auto_testing' were retired; use 'training' "
-                "for Hub-reviewed Like/Dislike training or 'auto' for ranker decisions")
-        raise ValueError(
-            "Config: mode must be 'training' or 'auto' "
-            f"(got {bad_modes})")
+                "for Hub-reviewed Like/Dislike training or 'auto' for ranker decisions"
+            )
+        raise ValueError(f"Config: mode must be 'training' or 'auto' (got {bad_modes})")
     _validate_core_scalars(cfg)
     _validate_opener_scalars(cfg.opener)
     _validate_budget(cfg)
@@ -1832,14 +2265,19 @@ def _validate(cfg: Config) -> None:
         raise ValueError(
             "Config: opener.provider must be 'gemini' -- the Anthropic/Claude opener path "
             "has been removed entirely; openers run on Gemini or the run fails loudly "
-            f"(got {cfg.opener.provider!r})")
+            f"(got {cfg.opener.provider!r})"
+        )
     if cfg.opener.enabled:
-        missing_pricing = [m for m in cfg.opener.effective_models if m not in cfg.budget.pricing]
+        missing_pricing = [
+            m for m in cfg.opener.effective_models if m not in cfg.budget.pricing
+        ]
         if missing_pricing:
             # Mention the original field too: callers with legacy single-model configs
             # receive the same useful diagnostic they did before the fallback chain.
             label = "opener.model" if not cfg.opener.models else "opener.models"
-            raise ValueError(f"Config: {label} {missing_pricing!r} has no entry in budget.pricing")
+            raise ValueError(
+                f"Config: {label} {missing_pricing!r} has no entry in budget.pricing"
+            )
     if cfg.opener.enabled:
         # provider is unconditionally "gemini" by this point -- the check above already
         # raised for any other value -- so this is Gemini's thinking-config validation,
@@ -1851,18 +2289,22 @@ def _validate(cfg: Config) -> None:
     # through as 1 attempt with no warning -- the same trap opener.thinking's thinkingBudget
     # guards against above. Must be >= 1: a 0-or-negative value would mean "never even try",
     # silently skipping the opener on every profile without ever asking Gemini once.
-    if isinstance(cfg.opener.max_attempts, bool) or not isinstance(cfg.opener.max_attempts, int):
+    if isinstance(cfg.opener.max_attempts, bool) or not isinstance(
+        cfg.opener.max_attempts, int
+    ):
         raise ValueError(
             f"Config: opener.max_attempts must be an integer "
             f"(got {_safe_value_repr(cfg.opener.max_attempts)}). "
             "This is how many times a rejected AI response is re-asked (with a correction "
-            "hint) before the run stops rather than send a commentless like.")
+            "hint) before the run stops rather than send a commentless like."
+        )
     if cfg.opener.max_attempts < 1:
         raise ValueError(
             f"Config: opener.max_attempts must be >= 1 "
             f"(got {_safe_value_repr(cfg.opener.max_attempts)}). "
             "It must allow at least one real attempt at generating an opener before the "
-            "run can decide the response is unusable and stop.")
+            "run can decide the response is unusable and stop."
+        )
     if cfg.opener.max_attempts > _MAX_ATTEMPTS_CEILING:
         # An audit found max_attempts had NO upper bound: `max_attempts: 10000` passed this
         # function cleanly. Every attempt is a real, billed API call, and a rejected-content
@@ -1880,12 +2322,13 @@ def _validate(cfg: Config) -> None:
             "the SAME model rather than advancing through the fallback chain, so an uncapped "
             f"value can exhaust a whole model's day on a single stubborn profile. "
             f"{_MAX_ATTEMPTS_CEILING} already triples the owner's own reference point of 5 "
-            "(\"if after 5 attempts it's still a bad response, stop the automation\"). If you "
+            '("if after 5 attempts it\'s still a bad response, stop the automation"). If you '
             "genuinely need more resilience than that, raising this further just re-asks a "
             "setup that has already shown it's systemically broken -- instead, find out WHY "
             "so many consecutive attempts are being rejected (check the run's debug log for "
             "the rejection reasons, and reconsider opener.style or the model's opener.thinking "
-            "level) rather than spend more of the daily quota re-asking the same broken setup.")
+            "level) rather than spend more of the daily quota re-asking the same broken setup."
+        )
     # opener.request_timeout_s: the only bound on how long a single opener API call can run
     # (see GeminiOpener.generate()'s transport call). bool-before-numeric for the same reason
     # as max_attempts above (bool is an int subclass; `request_timeout_s: true` must not
@@ -1896,10 +2339,13 @@ def _validate(cfg: Config) -> None:
     # -- an unbounded request_timeout_s would undo opener.max_attempts' own ceiling, since a
     # single stuck call could still hang a profile indefinitely regardless of how few retries
     # are allowed.
-    if isinstance(cfg.opener.request_timeout_s, bool) or not isinstance(cfg.opener.request_timeout_s, (int, float)):
+    if isinstance(cfg.opener.request_timeout_s, bool) or not isinstance(
+        cfg.opener.request_timeout_s, (int, float)
+    ):
         raise ValueError(
             f"Config: opener.request_timeout_s must be a number of seconds (got "
-            f"{_safe_value_repr(cfg.opener.request_timeout_s)}).")
+            f"{_safe_value_repr(cfg.opener.request_timeout_s)})."
+        )
     if not (0 < cfg.opener.request_timeout_s <= _MAX_REQUEST_TIMEOUT_S):
         raise ValueError(
             f"Config: opener.request_timeout_s must be > 0 and <= {_MAX_REQUEST_TIMEOUT_S} "
@@ -1910,7 +2356,8 @@ def _validate(cfg: Config) -> None:
             f"indefinitely no matter how few retries are allowed. {_MAX_REQUEST_TIMEOUT_S} is "
             "2x the MEASURED (not guessed) 90s worst case for a real request -- generous "
             "headroom for a slow network or a large payload, without allowing an effectively "
-            "unbounded stall.")
+            "unbounded stall."
+        )
     # opener.max_tokens deliberately has NO ceiling here, unlike the two settings above.
     # Checked and rejected as a candidate during the same audit that added the bounds above:
     # (1) output tokens (which this budgets, including thought tokens -- see

@@ -5,6 +5,7 @@ launches one Worker per enabled app, and supervises them: clean shutdown on
 Ctrl-C / SIGTERM (so it runs as an always-on service on any OS), flush + close
 on exit. This replaces the single-app loop.
 """
+
 from __future__ import annotations
 
 import errno
@@ -20,16 +21,17 @@ from numbers import Real
 from pathlib import Path
 
 try:
-    import fcntl                 # POSIX advisory file locking
-except ImportError:               # pragma: no cover — exercised only on Windows
+    import fcntl  # POSIX advisory file locking
+except ImportError:  # pragma: no cover — exercised only on Windows
     fcntl = None
 try:
-    import msvcrt                # Windows byte-range file locking
-except ImportError:               # pragma: no cover — exercised on POSIX
+    import msvcrt  # Windows byte-range file locking
+except ImportError:  # pragma: no cover — exercised on POSIX
     msvcrt = None
 
 from . import config as cfg_mod
 from . import platforms
+
 # One literal, imported rather than retyped: the shutdown line below is the ONLY channel the
 # bug report has for permanently dropped rows (the tally lives on the store, which never
 # reaches RunStatus), so the printer and the reader must not be able to drift apart. bugreport
@@ -127,9 +129,12 @@ def _archive_join_grace_s(cfg) -> float:
     budget = 0
     for app in cfg.enabled_apps:
         captures = ((cfg.apps or {}).get(app, {}) or {}).get("scroll_captures")
-        budget = max(budget, captures
-                     if isinstance(captures, int) and not isinstance(captures, bool)
-                     else MAX_PROFILE_REVIEW_FRAMES)
+        budget = max(
+            budget,
+            captures
+            if isinstance(captures, int) and not isinstance(captures, bool)
+            else MAX_PROFILE_REVIEW_FRAMES,
+        )
     return _profile_upload_deadline_s(budget)
 
 
@@ -153,8 +158,9 @@ def _store_archive_in_flight(store) -> bool:
         return False
 
 
-def _join_worker_for_shutdown(worker, store, *, timeout_s: float,
-                              archive_grace_s: float) -> float:
+def _join_worker_for_shutdown(
+    worker, store, *, timeout_s: float, archive_grace_s: float
+) -> float:
     """Join one worker for shutdown and return the wait it was actually granted.
 
     Past the flat bound the wait continues only while the store still reports a registered
@@ -168,15 +174,23 @@ def _join_worker_for_shutdown(worker, store, *, timeout_s: float,
     """
     started = time.monotonic()
     worker.join(timeout=timeout_s)
-    if (not worker.is_alive() or archive_grace_s <= 0
-            or not _store_archive_in_flight(store)):
+    if (
+        not worker.is_alive()
+        or archive_grace_s <= 0
+        or not _store_archive_in_flight(store)
+    ):
         return timeout_s
-    print(f"Supervisor: worker '{getattr(worker, 'app', 'unknown')}' is still archiving a "
-          f"decision that already landed on the phone; waiting up to {archive_grace_s:.0f}s "
-          "more so its label is not abandoned.")
+    print(
+        f"Supervisor: worker '{getattr(worker, 'app', 'unknown')}' is still archiving a "
+        f"decision that already landed on the phone; waiting up to {archive_grace_s:.0f}s "
+        "more so its label is not abandoned."
+    )
     deadline = time.monotonic() + archive_grace_s
-    while (worker.is_alive() and time.monotonic() < deadline
-           and _store_archive_in_flight(store)):
+    while (
+        worker.is_alive()
+        and time.monotonic() < deadline
+        and _store_archive_in_flight(store)
+    ):
         worker.join(timeout=_ARCHIVE_JOIN_POLL_S)
     if worker.is_alive():
         worker.join(timeout=_WORKER_JOIN_TIMEOUT_MARGIN_S)
@@ -201,13 +215,17 @@ def _wedged_worker_stack_lines(worker) -> list[str]:
     except BaseException:  # noqa: BLE001 -- diagnostics must never disrupt shutdown
         return [f"Supervisor: worker '{app}' stack unavailable."]
     if frame is None:
-        return [f"Supervisor: worker '{app}' stack unavailable (thread frame not found)."]
+        return [
+            f"Supervisor: worker '{app}' stack unavailable (thread frame not found)."
+        ]
 
     frames: list[tuple[str, int, str]] = []
     while frame is not None and len(frames) < _WEDGED_WORKER_STACK_MAX_FRAMES:
         code = frame.f_code
         # A basename preserves the useful file signal while avoiding an absolute local path.
-        filename = os.path.basename(code.co_filename).replace("\n", "\\n").replace("\r", "\\r")
+        filename = (
+            os.path.basename(code.co_filename).replace("\n", "\\n").replace("\r", "\\r")
+        )
         function = code.co_name.replace("\n", "\\n").replace("\r", "\\r")
         frames.append((filename, frame.f_lineno, function))
         frame = frame.f_back
@@ -217,7 +235,9 @@ def _wedged_worker_stack_lines(worker) -> list[str]:
         f"Supervisor: worker '{app}' Python stack at wedge "
         f"({len(frames)} frame(s), newest first{omitted}):"
     ]
-    lines.extend(f"  {filename}:{lineno} in {function}" for filename, lineno, function in frames)
+    lines.extend(
+        f"  {filename}:{lineno} in {function}" for filename, lineno, function in frames
+    )
     return lines
 
 
@@ -225,7 +245,10 @@ def _android_app(enabled_apps: list[str]) -> str | None:
     """The (at most one — platforms.check_runnable enforces this) enabled Android-kind app,
     or None. Shared by the ADB preflight, the Capabilities probe, and the device lock so
     all three agree on which app's config block to read."""
-    return next((a for a in enabled_apps if platforms.get(a).kind == platforms.KIND_ANDROID), None)
+    return next(
+        (a for a in enabled_apps if platforms.get(a).kind == platforms.KIND_ANDROID),
+        None,
+    )
 
 
 def _android_lock_path(cfg, app: str) -> Path:
@@ -261,9 +284,11 @@ def _android_lock_path(cfg, app: str) -> Path:
 
 
 def _lock_contention(exc: OSError) -> bool:
-    return (isinstance(exc, BlockingIOError)
-            or exc.errno in {errno.EACCES, errno.EAGAIN}
-            or getattr(exc, "winerror", None) in {33, 36})
+    return (
+        isinstance(exc, BlockingIOError)
+        or exc.errno in {errno.EACCES, errno.EAGAIN}
+        or getattr(exc, "winerror", None) in {33, 36}
+    )
 
 
 def _acquire_platform_file_lock(fh) -> str:
@@ -278,13 +303,16 @@ def _acquire_platform_file_lock(fh) -> str:
         msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
         return "msvcrt"
     raise RuntimeError(
-        "Android device locking is unavailable: this platform has neither fcntl nor msvcrt")
+        "Android device locking is unavailable: this platform has neither fcntl nor msvcrt"
+    )
 
 
 def _release_platform_file_lock(fh, backend: str) -> None:
     fh.seek(0)
     if backend == "fcntl":
-        if fcntl is None:  # defensive: backend availability cannot change during a real run
+        if (
+            fcntl is None
+        ):  # defensive: backend availability cannot change during a real run
             raise RuntimeError("fcntl disappeared while releasing Android device lock")
         fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
         return
@@ -332,16 +360,21 @@ class _AndroidDeviceLock:
             backend = _acquire_platform_file_lock(fh)
         except OSError as exc:
             fh.seek(0)
-            holder = fh.read(128).decode("ascii", errors="replace").strip() or "an unknown process"
+            holder = (
+                fh.read(128).decode("ascii", errors="replace").strip()
+                or "an unknown process"
+            )
             fh.close()
             if not _lock_contention(exc):
                 raise RuntimeError(
-                    f"Could not acquire Android device lock at {self.path}: {exc}") from exc
+                    f"Could not acquire Android device lock at {self.path}: {exc}"
+                ) from exc
             raise RuntimeError(
                 f"Android device is already in use by another Operation Love run (lock held "
                 f"by pid {holder}, {self.path}). Android shows one app in the foreground at "
                 "a time, so two Android runs can never share the phone -- stop that run "
-                "first.") from None
+                "first."
+            ) from None
         except BaseException:
             fh.close()
             raise
@@ -391,7 +424,7 @@ def exclusive_android_device(cfg, app: str = "hinge"):
     context manager cannot express.
     """
     lock = _AndroidDeviceLock(_android_lock_path(cfg, app))
-    lock.acquire()      # raises RuntimeError naming the holding pid if contended
+    lock.acquire()  # raises RuntimeError naming the holding pid if contended
     try:
         yield lock
     finally:
@@ -403,7 +436,8 @@ _RETAINED_DEVICE_LOCKS_GUARD = threading.Lock()
 
 
 def _retain_device_lock_until_worker_exits(
-        device_lock: _AndroidDeviceLock, worker: Worker) -> threading.Thread | None:
+    device_lock: _AndroidDeviceLock, worker: Worker
+) -> threading.Thread | None:
     """Transfer a wedged Android worker's lock to a daemon reaper.
 
     Releasing merely because the bounded shutdown wait expired reopens the exact overlapping
@@ -434,7 +468,8 @@ def _retain_device_lock_until_worker_exits(
         print(
             "Supervisor: CRITICAL — could not start the Android-lock reaper "
             f"({type(exc).__name__}: {exc}); retaining the device lock for this process's "
-            "lifetime. Restart Operation Love only after the wedged worker/device action ends.")
+            "lifetime. Restart Operation Love only after the wedged worker/device action ends."
+        )
         return None
     return reaper
 
@@ -484,7 +519,9 @@ def _abort_startup(run_id: str, status: RunStatus, cfg, store=None) -> None:
     opened, then publish either a clean ``stopped`` result or ``save_failed`` if that cleanup
     boundary failed. Nothing has been swiped yet, but a failed flush/close still must not be
     misrepresented as proven durable completion."""
-    print(f"Run {run_id}: stop requested during startup; aborting before launching workers.")
+    print(
+        f"Run {run_id}: stop requested during startup; aborting before launching workers."
+    )
     save_err = None
     if store is not None:
         try:
@@ -502,7 +539,9 @@ def _abort_startup(run_id: str, status: RunStatus, cfg, store=None) -> None:
         status.set_app(app, state="error" if save_err is not None else "stopped")
     # Publish the global terminal phase last.  A snapshot that sees ``stopped`` or
     # ``save_failed`` must never still see the transient per-app startup/saving state.
-    status.set_global(running=False, phase="save_failed" if save_err is not None else "stopped")
+    status.set_global(
+        running=False, phase="save_failed" if save_err is not None else "stopped"
+    )
 
 
 def _validated_daily_spend(value: object) -> float:
@@ -511,10 +550,16 @@ def _validated_daily_spend(value: object) -> float:
         finite = math.isfinite(value)
     except (TypeError, OverflowError):
         finite = False
-    if isinstance(value, bool) or not isinstance(value, Real) or not finite or value < 0:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, Real)
+        or not finite
+        or value < 0
+    ):
         raise ValueError(
             "Store spend_today() must return a finite nonnegative number; the daily budget "
-            "cannot be enforced from malformed persisted spend")
+            "cannot be enforced from malformed persisted spend"
+        )
     return float(value)
 
 
@@ -523,11 +568,15 @@ def _close_store_after_startup_failure(store, run_id: str) -> None:
     try:
         store.close()
     except BaseException as close_exc:  # noqa: BLE001 — original startup error owns propagation
-        print(f"Run {run_id}: warning closing store after startup failure: "
-              f"{type(close_exc).__name__}: {close_exc}")
+        print(
+            f"Run {run_id}: warning closing store after startup failure: "
+            f"{type(close_exc).__name__}: {close_exc}"
+        )
 
 
-def _deadletter_stranded_opener_rejections(store, opener_service, exc: Exception) -> None:
+def _deadletter_stranded_opener_rejections(
+    store, opener_service, exc: Exception
+) -> None:
     """(2026-09-17) Extend the opener-rejection dead-letter to the FINAL shutdown flush.
 
     maybe_opener()'s own dead-letter (opener/service.py's _write_opener_rejection_deadletter)
@@ -612,16 +661,24 @@ def _deadletter_stranded_opener_rejections(store, opener_service, exc: Exception
         if already_covered:
             continue
         _write_opener_rejection_deadletter(
-            deadletter_path, "shutdown_flush", store,
-            run_id=row.get("run_id", ""), app=row.get("app", ""),
-            model=row.get("model", ""), attempt=row.get("attempt", 0),
-            reason_code=row.get("reason_code", ""), reason=row.get("reason", ""),
-            raw_opener=row.get("raw_opener"), prompt_sha256=row.get("prompt_sha256"),
-            exc=exc)
+            deadletter_path,
+            "shutdown_flush",
+            store,
+            run_id=row.get("run_id", ""),
+            app=row.get("app", ""),
+            model=row.get("model", ""),
+            attempt=row.get("attempt", 0),
+            reason_code=row.get("reason_code", ""),
+            reason=row.get("reason", ""),
+            raw_opener=row.get("raw_opener"),
+            prompt_sha256=row.get("prompt_sha256"),
+            exc=exc,
+        )
 
 
-def load_effective_config(config_path: str = "config.yaml", *, mode: str | None = None,
-                          enabled_apps=None) -> cfg_mod.Config:
+def load_effective_config(
+    config_path: str = "config.yaml", *, mode: str | None = None, enabled_apps=None
+) -> cfg_mod.Config:
     """Load the exact config a run would use and enforce every start-time gate.
 
     Hub starts need the same answer synchronously, before they create a worker thread or
@@ -632,7 +689,7 @@ def load_effective_config(config_path: str = "config.yaml", *, mode: str | None 
     explicit empty app selection a friendlier message before calling this helper.
     """
     cfg = cfg_mod.load(config_path)
-    if mode is not None:                      # explicit hub/CLI override of config.yaml
+    if mode is not None:  # explicit hub/CLI override of config.yaml
         cfg.mode = mode
     if enabled_apps is not None:
         cfg.enabled_apps = enabled_apps
@@ -649,14 +706,17 @@ def load_effective_config(config_path: str = "config.yaml", *, mode: str | None 
     # ValueError rather than leaking a mapping/list TypeError from this special-case scan.
     if cfg.mode == "training":
         overridden = [
-            app for app in cfg.enabled_apps
-            if ((cfg.apps or {}).get(app, {}) or {}).get("mode") not in (None, "training")
+            app
+            for app in cfg.enabled_apps
+            if ((cfg.apps or {}).get(app, {}) or {}).get("mode")
+            not in (None, "training")
         ]
         if overridden:
             raise ValueError(
                 "Training cannot run while apps override its mode for "
                 f"{sorted(overridden)}; remove the per-app mode override or set it to "
-                "training")
+                "training"
+            )
 
     # Validate before consulting dynamic platform readiness. Config validation installs the
     # still-photo licence and verifies Hinge AUTO's exact release artifact; checking the
@@ -685,9 +745,18 @@ def load_effective_config(config_path: str = "config.yaml", *, mode: str | None 
     return cfg
 
 
-def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None = None,
-        on_status=None, on_store=None, on_opener_service=None, mode: str | None = None,
-        enabled_apps=None, max_per_run: int | None = None, on_worker=None) -> None:
+def run(
+    config_path: str = "config.yaml",
+    *,
+    stop_event: threading.Event | None = None,
+    on_status=None,
+    on_store=None,
+    on_opener_service=None,
+    mode: str | None = None,
+    enabled_apps=None,
+    max_per_run: int | None = None,
+    on_worker=None,
+) -> None:
     """Run every enabled app until stop_event is set (or the queue/rate-limit/error runs out
     the run on its own), then flush + close the store.
 
@@ -702,6 +771,7 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
     call site below for why that distinction matters).
     """
     from ._warnings import configure_warnings
+
     configure_warnings()
 
     # Validate the public override before loading providers, stores, models, or device state.
@@ -718,7 +788,8 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
     if "training" in effective_modes.values() and on_worker is None:
         raise ValueError(
             "Training requires the local Hub decision bridge; start it from the Hub rather "
-            "than a direct CLI/supervisor run")
+            "than a direct CLI/supervisor run"
+        )
 
     # Publish a cancellable startup state before any credential, provider, capability, or
     # device preflight.  A Stop can arrive immediately after the Hub starts this background
@@ -727,8 +798,13 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
     # Config validation above still runs first so malformed input remains a clear refusal rather
     # than looking like a successful cancelled run.
     run_id = uuid.uuid4().hex[:12]
-    status = RunStatus(run_id, cfg.enabled_apps, min_labels=cfg.ranker.min_labels_to_engage,
-                       mode=cfg.mode, budget_cap=cfg.budget.run_budget_usd)
+    status = RunStatus(
+        run_id,
+        cfg.enabled_apps,
+        min_labels=cfg.ranker.min_labels_to_engage,
+        mode=cfg.mode,
+        budget_cap=cfg.budget.run_budget_usd,
+    )
     # AppStatus defaults to training so legacy/direct callers have a safe shape, but the Hub
     # reads this snapshot before any Worker exists. Publish the already-resolved per-app mode
     # first: otherwise an AUTO app briefly renders as Training until its worker thread starts.
@@ -743,9 +819,14 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
     # Gemini uses the stdlib REST transport, so there is no SDK capability gate. Check
     # credentials here, before status/store/model setup, to avoid an expensive startup
     # followed by an inevitable provider failure.
-    if (cfg.opener.enabled and cfg.opener.provider == "gemini"
-            and not os.environ.get("GEMINI_API_KEY")):
-        raise RuntimeError("GEMINI_API_KEY is required when opener.provider is 'gemini'")
+    if (
+        cfg.opener.enabled
+        and cfg.opener.provider == "gemini"
+        and not os.environ.get("GEMINI_API_KEY")
+    ):
+        raise RuntimeError(
+            "GEMINI_API_KEY is required when opener.provider is 'gemini'"
+        )
 
     # Constructed here -- right after the key-presence check above, before make_store()'s
     # slow BigQuery/embedder warmup and before any device/ADB setup -- and preflighted
@@ -759,16 +840,21 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
     # on every remaining profile. Reused unchanged below; never constructed twice.
     opener_client = None
     if cfg.opener.enabled and cfg.opener.provider == "gemini":
-        opener_client = GeminiOpener(cfg.opener.effective_models, cfg.opener.max_tokens,
-                                     cfg.opener.request_timeout_s,
-                                     api_key=os.environ.get("GEMINI_API_KEY"),
-                                     thinking=cfg.opener.thinking)
+        opener_client = GeminiOpener(
+            cfg.opener.effective_models,
+            cfg.opener.max_tokens,
+            cfg.opener.request_timeout_s,
+            api_key=os.environ.get("GEMINI_API_KEY"),
+            thinking=cfg.opener.thinking,
+        )
         if cfg.opener.preflight:
-            opener_client.preflight()   # RuntimeError propagates as-is, aborting the run
+            opener_client.preflight()  # RuntimeError propagates as-is, aborting the run
         else:
-            print("Gemini opener: opener.preflight is false -- configured model ids are "
-                  "UNVALIDATED; a typo or an invalid key will only surface as a failure "
-                  "once a real profile is processed.")
+            print(
+                "Gemini opener: opener.preflight is false -- configured model ids are "
+                "UNVALIDATED; a typo or an invalid key will only surface as a failure "
+                "once a real profile is processed."
+            )
 
     # At most one enabled app is Android-kind (check_runnable guarantees it above).
     android_app = _android_app(cfg.enabled_apps)
@@ -776,14 +862,24 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
     # Pass the configured adb path: the android_driver capability resolves `adb` via PATH, so a
     # machine that sets apps.<app>.adb_path (adb not on PATH) would otherwise get a false
     # "not installed" warning even though the driver and the preflight both honour it.
-    android_adb_path = ((cfg.apps or {}).get(android_app, {}) or {}).get("adb_path") if android_app else None
+    android_adb_path = (
+        ((cfg.apps or {}).get(android_app, {}) or {}).get("adb_path")
+        if android_app
+        else None
+    )
     caps = Capabilities.detect(android_adb_path=android_adb_path)
     print(caps.banner())
-    missing_cloud = caps.missing("bigquery", "cloud_storage") if cfg.storage.backend == "bigquery" else []
+    missing_cloud = (
+        caps.missing("bigquery", "cloud_storage")
+        if cfg.storage.backend == "bigquery"
+        else []
+    )
     if missing_cloud:
-        raise SystemExit("Storage.backend=bigquery but cloud storage dependencies are missing "
-                         f"({', '.join(missing_cloud)}). Install `pip install -e '.[bq]'`, "
-                         "or set storage.backend: sqlite.")
+        raise SystemExit(
+            "Storage.backend=bigquery but cloud storage dependencies are missing "
+            f"({', '.join(missing_cloud)}). Install `pip install -e '.[bq]'`, "
+            "or set storage.backend: sqlite."
+        )
 
     missing_ml = caps.missing("arcface", "clip")
     if missing_ml:
@@ -821,7 +917,7 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
         _abort_startup(run_id, status, cfg)
         return
 
-    status.set_global(phase="loading saved data")     # BigQuery ensure-tables + label load
+    status.set_global(phase="loading saved data")  # BigQuery ensure-tables + label load
     store = make_store(cfg)
 
     def _prepare_runtime():
@@ -830,8 +926,10 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
             on_store(store)
         labels = store.load_labels()
         status.set_global(labels=len(labels))
-        print(f"Store: backend={cfg.storage.backend} labels={len(labels)}  "
-              f"apps={cfg.enabled_apps}")
+        print(
+            f"Store: backend={cfg.storage.backend} labels={len(labels)}  "
+            f"apps={cfg.enabled_apps}"
+        )
 
         if _stop_requested(stop_event):
             _abort_startup(run_id, status, cfg, store)
@@ -844,8 +942,10 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
             # below still owns (and closes) the store.
             today_spend = _validated_daily_spend(store.spend_today())
             remaining_today = max(0.0, cfg.budget.day_budget_usd - today_spend)
-            print(f"Daily budget: ${cfg.budget.day_budget_usd:.2f}  "
-                  f"spent today: ${today_spend:.4f}  remaining: ${remaining_today:.4f}")
+            print(
+                f"Daily budget: ${cfg.budget.day_budget_usd:.2f}  "
+                f"spent today: ${today_spend:.4f}  remaining: ${remaining_today:.4f}"
+            )
             if effective_budget is None:
                 effective_budget = remaining_today
             else:
@@ -856,12 +956,17 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
         # opener_client was constructed/preflighted before the store. It is either a working
         # Gemini client or None (opener.enabled=false); no legacy provider branch remains.
         opener_service = OpenerService(
-            opener_client, tracker, store, cfg.opener.style,
+            opener_client,
+            tracker,
+            store,
+            cfg.opener.style,
             max_attempts=cfg.opener.max_attempts,
             # DEFAULT DISABLED (None): only config.yaml's opener.replay_corpus_enabled turns
             # this on -- see OpenerCfg.replay_corpus_enabled's own comment for why it is never
             # implied by opener.enabled alone (real people's photos to local disk).
-            replay_corpus_dir=(DEFAULT_CORPUS_DIR if cfg.opener.replay_corpus_enabled else None),
+            replay_corpus_dir=(
+                DEFAULT_CORPUS_DIR if cfg.opener.replay_corpus_enabled else None
+            ),
             # Retention bounds threaded through unconditionally -- inert when replay_corpus_dir
             # is None above (OpenerService._capture_replay_corpus returns before ever pruning),
             # so there is no need to gate these on replay_corpus_enabled too.
@@ -876,7 +981,8 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
             # diagnostic that happens to be off on the run where the incident occurs. Path is
             # derived from Config.data_dir, the same attribute db_file derives from, so an
             # operator who relocates the data directory takes this with it.
-            deadletter_path=str(cfg.data_dir / "opener_rejection_deadletter.jsonl"))
+            deadletter_path=str(cfg.data_dir / "opener_rejection_deadletter.jsonl"),
+        )
         if on_opener_service:
             # Publish the same live service workers receive, for run-scoped bug telemetry.
             on_opener_service(opener_service)
@@ -889,16 +995,23 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
         model = PreferenceModel(
             min_labels=cfg.ranker.min_labels_to_engage,
             threshold=cfg.ranker.like_threshold,
-            min_per_class=cfg.ranker.min_per_class)
+            min_per_class=cfg.ranker.min_per_class,
+        )
         ready = model.train(labels)
-        print(f"Ranker: labels={len(labels)} ready={ready} "
-              f"(min={cfg.ranker.min_labels_to_engage}, "
-              f"threshold={cfg.ranker.like_threshold})")
+        print(
+            f"Ranker: labels={len(labels)} ready={ready} "
+            f"(min={cfg.ranker.min_labels_to_engage}, "
+            f"threshold={cfg.ranker.like_threshold})"
+        )
         quality = QualityFilter(
-            cfg.quality_filter.enabled, cfg.quality_filter.min_score,
-            cfg.quality_filter.metric)
+            cfg.quality_filter.enabled,
+            cfg.quality_filter.min_score,
+            cfg.quality_filter.metric,
+        )
         if not cfg.quality_filter.enabled:
-            print("Quality filter: DISABLED — all photos are scored as passing quality threshold")
+            print(
+                "Quality filter: DISABLED — all photos are scored as passing quality threshold"
+            )
         embedder = Embedder()
         decider = RankerDecider(quality, embedder, model)
 
@@ -907,8 +1020,10 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
             return None
 
         status.set_global(ranker_ready=ready, phase="loading ML models")
-        print("Warming up embedder and quality filter "
-              "(avoids first-profile delay and init races)…")
+        print(
+            "Warming up embedder and quality filter "
+            "(avoids first-profile delay and init races)…"
+        )
         embedder.warmup()
         quality.warmup()
 
@@ -925,7 +1040,9 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
     except BaseException:
         _close_store_after_startup_failure(store, run_id)
         raise
-    if prepared is None:  # stop was requested and _abort_startup already closed the store
+    if (
+        prepared is None
+    ):  # stop was requested and _abort_startup already closed the store
         return
     tracker, opener_service, decider, stop_event = prepared
 
@@ -944,11 +1061,11 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
     try:
         if android_app is not None:
             device_lock = _AndroidDeviceLock(_android_lock_path(cfg, android_app))
-            device_lock.acquire()      # raises RuntimeError naming the holder if contended
+            device_lock.acquire()  # raises RuntimeError naming the holder if contended
 
         for app in cfg.enabled_apps:
             app_cfg = (cfg.apps or {}).get(app, {}) or {}
-            mode = app_cfg.get("mode", cfg.mode)                          # per-app override
+            mode = app_cfg.get("mode", cfg.mode)  # per-app override
             # Defended the same way config.validate() defends the equivalent read (and must
             # stay in lockstep with it — see _validate_limits' docstring): a bare `limits:`
             # (top-level or per-app) is valid YAML null, and validate() blesses it as an
@@ -957,21 +1074,37 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
             # have given false confidence that this exact config was safe to run.
             lim = {**(cfg.limits or {}), **(app_cfg.get("limits", {}) or {})}
             run_cap = _resolve_run_cap(lim.get("max_per_run"), max_per_run)
-            limiter = RateLimiter(run_cap, lim.get("max_per_day"),
-                                  lim.get("max_likes_per_run"),
-                                  target_like_ratio=lim.get("target_like_ratio"))
+            limiter = RateLimiter(
+                run_cap,
+                lim.get("max_per_day"),
+                lim.get("max_likes_per_run"),
+                target_like_ratio=lim.get("target_like_ratio"),
+            )
             driver = make_driver(app, cfg)
-            w = Worker(app, driver, decider, opener_service, store, run_id, cfg.pacing,
-                       stop_event, mode=mode, retrain_every=cfg.ranker.retrain_every,
-                       limiter=limiter, status=status,
-                       targeting_licence=getattr(cfg, "_run_still_photo_licence", None))
+            w = Worker(
+                app,
+                driver,
+                decider,
+                opener_service,
+                store,
+                run_id,
+                cfg.pacing,
+                stop_event,
+                mode=mode,
+                retrain_every=cfg.ranker.retrain_every,
+                limiter=limiter,
+                status=status,
+                targeting_licence=getattr(cfg, "_run_still_photo_licence", None),
+            )
             try:
                 # Hub binding is part of launching a worker, not a precondition outside its
                 # cleanup boundary.  A bridge may reject a replacement while registering; the
                 # driver already exists then and must be released exactly like a failed
                 # Thread.start().
                 if on_worker:
-                    on_worker(w)  # hub-only binding; must happen before this Worker thread starts
+                    on_worker(
+                        w
+                    )  # hub-only binding; must happen before this Worker thread starts
                 print(f"{app.title()} worker mode={mode} limits={limiter.describe()}")
                 w.start()
             except BaseException:
@@ -986,13 +1119,15 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
                     except BaseException as bridge_exc:  # noqa: BLE001 — preserve start error
                         print(
                             f"Run {run_id}: warning unregistering {app} worker after launch "
-                            f"failed: {type(bridge_exc).__name__}: {bridge_exc}")
+                            f"failed: {type(bridge_exc).__name__}: {bridge_exc}"
+                        )
                 try:
                     driver.close()
                 except BaseException as close_exc:  # noqa: BLE001 — never mask start failure
                     print(
                         f"Run {run_id}: warning closing {app} driver after worker launch "
-                        f"failed: {type(close_exc).__name__}: {close_exc}")
+                        f"failed: {type(close_exc).__name__}: {close_exc}"
+                    )
                 raise
             workers.append(w)
 
@@ -1014,8 +1149,12 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
         # while a worker could still be mid-profile-read -- and kept rendering a live run cue
         # even though no new decision should begin after stop_event is set. See status.py's
         # `stopping` docstring.
-        status.set_global(stopping=True, phase="stopping",
-                          budget_spent=tracker.run_spend_usd, openers=tracker.calls)
+        status.set_global(
+            stopping=True,
+            phase="stopping",
+            budget_spent=tracker.run_spend_usd,
+            openers=tracker.calls,
+        )
         stop_event.set()
         # A worker still alive after its join timeout is WEDGED, not stopped: it may write
         # to the store DURING or AFTER the flush/close below, so a clean flush here is not
@@ -1033,20 +1172,25 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
             # so an operator watching the terminal or the hub's live-log panel (which tees
             # this same stdout -- see bugreport.install_log_capture) sees WHY nothing else
             # happens for a while, instead of the silent gap this whole fix addresses.
-            print(f"Supervisor: stopping — waiting up to {join_timeout_s:.0f}s for "
-                  f"{len(workers)} worker(s) to finish what they are doing…")
+            print(
+                f"Supervisor: stopping — waiting up to {join_timeout_s:.0f}s for "
+                f"{len(workers)} worker(s) to finish what they are doing…"
+            )
         for w in workers:
             waited_s[w.app] = _join_worker_for_shutdown(
-                w, store, timeout_s=join_timeout_s, archive_grace_s=archive_grace_s)
+                w, store, timeout_s=join_timeout_s, archive_grace_s=archive_grace_s
+            )
             if w.is_alive():
                 # Proceeding anyway (below) rather than blocking forever: the worker's
                 # own stop_event is set, but it's still stuck mid-capture/embed/API-call.
                 # It may call store.add_label()/record_decision() after store.close()
                 # runs — a store write racing a closed store is the tradeoff for not
                 # hanging shutdown indefinitely on one wedged app.
-                print(f"Supervisor: worker '{w.app}' did not stop within "
-                      f"{waited_s[w.app]:.0f}s; proceeding to save without it "
-                      "(it may still be running in the background).")
+                print(
+                    f"Supervisor: worker '{w.app}' did not stop within "
+                    f"{waited_s[w.app]:.0f}s; proceeding to save without it "
+                    "(it may still be running in the background)."
+                )
                 # Capture its precise Python location while it is still known alive. These
                 # lines flow through the hub's stdout tee into bugreport's Recent logs.
                 for line in _wedged_worker_stack_lines(w):
@@ -1054,22 +1198,25 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
         wedged = [w for w in workers if w.is_alive()]
         if device_lock is not None:
             wedged_android = next(
-                (worker for worker in wedged if worker.app == android_app), None)
+                (worker for worker in wedged if worker.app == android_app), None
+            )
             if wedged_android is None:
                 device_lock.release()
             else:
-                reaper = _retain_device_lock_until_worker_exits(device_lock, wedged_android)
+                reaper = _retain_device_lock_until_worker_exits(
+                    device_lock, wedged_android
+                )
                 if reaper is not None:
                     print(
                         f"Supervisor: retaining Android device lock until wedged worker "
-                        f"'{wedged_android.app}' actually exits; a daemon reaper will release it.")
+                        f"'{wedged_android.app}' actually exits; a daemon reaper will release it."
+                    )
         # Capture every terminal reason atomically BEFORE the transient "saving" stamp.
         # Error is not the only durable result: out_of_profiles and rate_limited are exactly
         # the explanations a person returning to the hub later needs to see.
         before_save = status.snapshot()["apps"]
         terminal_states = {
-            app: before_save.get(app, {}).get("state")
-            for app in cfg.enabled_apps
+            app: before_save.get(app, {}).get("state") for app in cfg.enabled_apps
         }
         for app in cfg.enabled_apps:
             status.set_app(app, state="saving")
@@ -1080,7 +1227,7 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
         status.set_global(phase="saving data")
         save_err = None
         try:
-            store.flush()                 # raises if any buffered insert was rejected
+            store.flush()  # raises if any buffered insert was rejected
         except Exception as exc:  # noqa: BLE001 — report a clear save outcome, then re-raise
             save_err = exc
             # (2026-09-17) This flush failure is the ONLY chance a row buffered below
@@ -1098,8 +1245,10 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
         try:
             store.close()
         except Exception as close_exc:  # noqa: BLE001 — logged, never replaces save_err
-            print(f"Run {run_id}: warning closing store during shutdown: "
-                  f"{type(close_exc).__name__}: {close_exc}")
+            print(
+                f"Run {run_id}: warning closing store during shutdown: "
+                f"{type(close_exc).__name__}: {close_exc}"
+            )
             # Preserve the earlier flush failure when present, but a close-only failure is also
             # a failed final persistence boundary (for example, an image archive that completed
             # after the first flush and failed during close's drain). Reporting success in that
@@ -1120,27 +1269,45 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
                 app_state = "wedged"
             else:
                 prior = terminal_states.get(app)
-                app_state = prior if prior in {
-                    "error", "out_of_profiles", "rate_limited", "stopped", "blocked"
-                } else "stopped"
+                app_state = (
+                    prior
+                    if prior
+                    in {
+                        "error",
+                        "out_of_profiles",
+                        "rate_limited",
+                        "stopped",
+                        "blocked",
+                    }
+                    else "stopped"
+                )
             status.set_app(app, state=app_state)
         # The terminal global phase is the publication boundary consumed by the Hub and bug
         # report.  Stamp it only after every app has its terminal state; the reverse order left
         # a small but real window where phase='stopped' coexisted with app.state='saving', and a
         # report generated in that window could claim all workers had completed cleanly from a
         # self-contradictory snapshot.
-        status.set_global(running=False, phase=phase, stopping=False,
-                          budget_spent=tracker.run_spend_usd, openers=tracker.calls)
+        status.set_global(
+            running=False,
+            phase=phase,
+            stopping=False,
+            budget_spent=tracker.run_spend_usd,
+            openers=tracker.calls,
+        )
         # ``tracker.calls`` is a compatibility name for model results whose usage reached the
         # billing tracker, including a Training draft that may be passed or abandoned. It is NOT
         # an HTTP-attempt count: Gemini's internal 503/429/404/transport fallbacks do not carry
         # usage into CostTracker and are logged separately at the point of failure.
-        tail = (f"accounted_provider_results={tracker.calls} "
-                f"(HTTP fallback failures logged separately and excluded) "
-                f"provider_spend=${tracker.run_spend_usd:.4f}")
+        tail = (
+            f"accounted_provider_results={tracker.calls} "
+            f"(HTTP fallback failures logged separately and excluded) "
+            f"provider_spend=${tracker.run_spend_usd:.4f}"
+        )
         if save_err is not None:
-            print(f"Run {run_id}: ❌ SAVE FAILED to {cfg.storage.backend} "
-                  f"({type(save_err).__name__}: {save_err}) — buffered data may be incomplete; {tail}")
+            print(
+                f"Run {run_id}: ❌ SAVE FAILED to {cfg.storage.backend} "
+                f"({type(save_err).__name__}: {save_err}) — buffered data may be incomplete; {tail}"
+            )
             raise save_err
         saved = getattr(store, "saved_summary", lambda: "")()
         detail = f" [{saved}]" if saved else ""
@@ -1153,7 +1320,8 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
         # ranker/__init__.py's Store.dropped_rows.
         dropped = _dropped_row_tally(store)
         errored_apps = {
-            app for app, terminal_state in terminal_states.items()
+            app
+            for app, terminal_state in terminal_states.items()
             if terminal_state == "error"
         }
         # Two independent facts, not one slot to fight over: wedged/errored describe what the
@@ -1174,10 +1342,12 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
             # worker whose archive earned the conditional extension waited longer still, so
             # read the granted wait back per worker rather than reprinting the flat bound.
             longest_s = max(waited_s.get(w.app, join_timeout_s) for w in wedged)
-            print(f"Run {run_id}: saved to {cfg.storage.backend}{detail}, but {len(wedged)} "
-                  f"worker(s) did not stop within {longest_s:.0f}s ({names}) — NOT an "
-                  f"unqualified success, a late write from a wedged worker could still land "
-                  f"after this save; {tail}")
+            print(
+                f"Run {run_id}: saved to {cfg.storage.backend}{detail}, but {len(wedged)} "
+                f"worker(s) did not stop within {longest_s:.0f}s ({names}) — NOT an "
+                f"unqualified success, a late write from a wedged worker could still land "
+                f"after this save; {tail}"
+            )
         elif errored_apps:
             names = ", ".join(sorted(errored_apps))
             print(
@@ -1188,20 +1358,26 @@ def run(config_path: str = "config.yaml", *, stop_event: threading.Event | None 
         elif not dropped:
             # The ✅ is the one headline a permanent loss flatly contradicts, so it is the only
             # one the notice below REPLACES rather than accompanies.
-            print(f"Run {run_id}: ✅ all data saved to {cfg.storage.backend}{detail}; {tail}")
+            print(
+                f"Run {run_id}: ✅ all data saved to {cfg.storage.backend}{detail}; {tail}"
+            )
         if dropped:
             # Last, so the permanent fact is the operator's final word, and self-contained
             # (own `tail`, own "Run {run_id}: " prefix) because the report reads single lines
             # out of a bounded ring and bugreport's matcher requires that prefix before it
             # counts a tally. Names the tables and says the data is gone: alone among the three
             # outcomes here, no retry recovers this one.
-            names = ", ".join(f"{table}={count}" for table, count in sorted(dropped.items()))
+            names = ", ".join(
+                f"{table}={count}" for table, count in sorted(dropped.items())
+            )
             total = sum(dropped.values())
-            print(f"Run {run_id}: saved to {cfg.storage.backend}{detail}, but {total} "
-                  f"{DROPPED_ROWS_NOTICE} {cfg.storage.backend} ({names}) — NOT an "
-                  f"unqualified success, that data is LOST and no retry will recover it; the "
-                  f"flush above succeeded only because a permanently rejected row is dropped "
-                  f"so the rest of the buffer can drain; {tail}")
+            print(
+                f"Run {run_id}: saved to {cfg.storage.backend}{detail}, but {total} "
+                f"{DROPPED_ROWS_NOTICE} {cfg.storage.backend} ({names}) — NOT an "
+                f"unqualified success, that data is LOST and no retry will recover it; the "
+                f"flush above succeeded only because a permanently rejected row is dropped "
+                f"so the rest of the buffer can drain; {tail}"
+            )
 
 
 def _dropped_row_tally(store) -> dict[str, int]:
@@ -1221,15 +1397,20 @@ def _dropped_row_tally(store) -> dict[str, int]:
     try:
         tally = getattr(store, "dropped_rows", dict)()
     except Exception as exc:  # noqa: BLE001 — a diagnostic tally must not break shutdown
-        print(f"Supervisor: warning reading the store's dropped-row tally: "
-              f"{type(exc).__name__}: {exc}")
+        print(
+            f"Supervisor: warning reading the store's dropped-row tally: "
+            f"{type(exc).__name__}: {exc}"
+        )
         return {}
     if not isinstance(tally, dict):
-        print(f"Supervisor: warning: the store's dropped-row tally is not a mapping "
-              f"({type(tally).__name__}); treating it as no dropped rows.")
+        print(
+            f"Supervisor: warning: the store's dropped-row tally is not a mapping "
+            f"({type(tally).__name__}); treating it as no dropped rows."
+        )
         return {}
     return {
-        str(table): int(count) for table, count in tally.items()
+        str(table): int(count)
+        for table, count in tally.items()
         if isinstance(count, int) and not isinstance(count, bool) and count > 0
     }
 
@@ -1270,7 +1451,8 @@ def _android_adb_preflight(app: str, cfg) -> None:
     adb = (app_cfg.get("adb_path") or "adb").strip() or "adb"
     try:
         result = subprocess.run(
-            [adb, "devices"], capture_output=True, text=True, timeout=5, check=False)
+            [adb, "devices"], capture_output=True, text=True, timeout=5, check=False
+        )
     except FileNotFoundError:
         raise SystemExit(
             f"{label} is enabled but `{adb}` was not found. Install Android platform-tools "
@@ -1279,9 +1461,11 @@ def _android_adb_preflight(app: str, cfg) -> None:
     except Exception as exc:  # noqa: BLE001 — e.g. a hung/misbehaving adb server; still fatal,
         # since there's no way to confirm a phone is reachable, and re-running this 5s
         # check is cheap next to the BigQuery/ML startup it would otherwise gate.
-        raise SystemExit(f"{label} ADB preflight failed: {type(exc).__name__}: {exc}") from exc
+        raise SystemExit(
+            f"{label} ADB preflight failed: {type(exc).__name__}: {exc}"
+        ) from exc
 
-    visible = parse_devices_output(result.stdout)   # X8: the ONE canonical parser
+    visible = parse_devices_output(result.stdout)  # X8: the ONE canonical parser
     if not visible:
         raise SystemExit(
             f"{label} is enabled but `adb devices` shows no connected device. Connect the "
@@ -1300,6 +1484,7 @@ def _install_signal_handlers(stop_event: threading.Event) -> None:
     def _stop(*_):
         print("\nSupervisor: shutdown requested; stopping workers...")
         stop_event.set()
+
     for sig in (signal.SIGINT, getattr(signal, "SIGTERM", signal.SIGINT)):
         try:
             signal.signal(sig, _stop)

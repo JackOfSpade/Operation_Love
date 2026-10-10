@@ -9,6 +9,7 @@ Every frame is SYNTHESISED. The captures the constants were measured against are
 profiles and are gitignored, so only geometry and grey levels from them appear here: two painted
 "cards" and a painted comment sheet at the sheet geometry item_verify's docstring records.
 """
+
 import dataclasses
 
 import cv2
@@ -16,11 +17,25 @@ import numpy as np
 import pytest
 
 from operation_love.drivers import (
-    hinge, item_crops, item_identity, item_nav, item_verify, scroll_step)
+    hinge,
+    item_crops,
+    item_identity,
+    item_nav,
+    item_verify,
+    scroll_step,
+)
 from operation_love.drivers.frameshift import ShiftEstimationError
-from operation_love.drivers.base import (ActionCancelled, OBSERVE_ITEM_INCONCLUSIVE,
-                                         OBSERVE_ITEM_MATCH, OBSERVE_ITEM_MISMATCH)
-from operation_love.drivers.hinge import HingeActionError, HingeDriver, HingeTargetingError
+from operation_love.drivers.base import (
+    ActionCancelled,
+    OBSERVE_ITEM_INCONCLUSIVE,
+    OBSERVE_ITEM_MATCH,
+    OBSERVE_ITEM_MISMATCH,
+)
+from operation_love.drivers.hinge import (
+    HingeActionError,
+    HingeDriver,
+    HingeTargetingError,
+)
 from operation_love.drivers.like_composer import ComposerSurface, Rect
 from operation_love.drivers.scroll_top import band_fingerprint
 from operation_love.drivers.segment import SegmentationError
@@ -32,10 +47,15 @@ _COMMENT_RECT = Rect(95, 1597, 985, 1775)
 _SEND_RECT = Rect(390, 1807, 985, 1916)
 _CONFIRM_POINT = (695, 1856)
 _COMPOSER_SURFACE = ComposerSurface(
-    layout_id="hinge_inline_v1", comment_rect=_COMMENT_RECT, send_rect=_SEND_RECT,
-    confirm_point=_CONFIRM_POINT)
+    layout_id="hinge_inline_v1",
+    comment_rect=_COMMENT_RECT,
+    send_rect=_SEND_RECT,
+    confirm_point=_CONFIRM_POINT,
+)
 _CONFIRM_TEMPLATE = hinge._load_template("hinge_send_like.png")
-assert _CONFIRM_TEMPLATE is not None, "the inline-composer fixture needs Hinge's shipped glyph"
+assert _CONFIRM_TEMPLATE is not None, (
+    "the inline-composer fixture needs Hinge's shipped glyph"
+)
 
 
 def _calibration(**overrides):
@@ -59,11 +79,19 @@ def _calibration(**overrides):
 def _card(seed: int) -> bytes:
     """One painted card, as the PNG bytes an `ItemCrop` carries."""
     rows, cols = np.mgrid[0:_CARD_H, 0:_CARD_W]
-    pattern = (55 * np.sin(2 * np.pi * rows / (70 + 30 * seed))
-               * np.cos(2 * np.pi * cols / (110 + 50 * seed)))
-    gray = np.clip(100 + pattern + np.linspace(-30, 30, _CARD_H)[:, None]
-                   + np.random.default_rng(seed).integers(-20, 21, size=(_CARD_H, _CARD_W)),
-                   0, 210).astype(np.uint8)
+    pattern = (
+        55
+        * np.sin(2 * np.pi * rows / (70 + 30 * seed))
+        * np.cos(2 * np.pi * cols / (110 + 50 * seed))
+    )
+    gray = np.clip(
+        100
+        + pattern
+        + np.linspace(-30, 30, _CARD_H)[:, None]
+        + np.random.default_rng(seed).integers(-20, 21, size=(_CARD_H, _CARD_W)),
+        0,
+        210,
+    ).astype(np.uint8)
     ok, buf = cv2.imencode(".png", cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR))
     assert ok
     return buf.tobytes()
@@ -78,18 +106,22 @@ def _sheet(card: bytes) -> bytes:
     image = cv2.imdecode(np.frombuffer(card, np.uint8), cv2.IMREAD_COLOR)
     height = int(round(image.shape[0] * _PREVIEW_W / image.shape[1]))
     canvas = np.full((_H, _W, 3), _SHEET_BG, dtype=np.uint8)
-    canvas[_PREVIEW_Y0:_PREVIEW_Y0 + height, _PREVIEW_X0:_PREVIEW_X0 + _PREVIEW_W] = cv2.resize(
-        image, (_PREVIEW_W, height), interpolation=cv2.INTER_AREA)
-    canvas[_COMMENT_RECT.y0:_COMMENT_RECT.y0 + 2,
-           _COMMENT_RECT.x0:_COMMENT_RECT.x1] = 222
-    canvas[_COMMENT_RECT.y1 - 2:_COMMENT_RECT.y1,
-           _COMMENT_RECT.x0:_COMMENT_RECT.x1] = 222
-    canvas[_SEND_RECT.y0:_SEND_RECT.y1, _SEND_RECT.x0:_SEND_RECT.x1] = 228
+    canvas[
+        _PREVIEW_Y0 : _PREVIEW_Y0 + height, _PREVIEW_X0 : _PREVIEW_X0 + _PREVIEW_W
+    ] = cv2.resize(image, (_PREVIEW_W, height), interpolation=cv2.INTER_AREA)
+    canvas[
+        _COMMENT_RECT.y0 : _COMMENT_RECT.y0 + 2, _COMMENT_RECT.x0 : _COMMENT_RECT.x1
+    ] = 222
+    canvas[
+        _COMMENT_RECT.y1 - 2 : _COMMENT_RECT.y1, _COMMENT_RECT.x0 : _COMMENT_RECT.x1
+    ] = 222
+    canvas[_SEND_RECT.y0 : _SEND_RECT.y1, _SEND_RECT.x0 : _SEND_RECT.x1] = 228
     glyph_h, glyph_w = _CONFIRM_TEMPLATE.shape
     x, y = _CONFIRM_POINT
-    canvas[y - glyph_h // 2:y - glyph_h // 2 + glyph_h,
-           x - glyph_w // 2:x - glyph_w // 2 + glyph_w] = cv2.cvtColor(
-               _CONFIRM_TEMPLATE, cv2.COLOR_GRAY2BGR)
+    canvas[
+        y - glyph_h // 2 : y - glyph_h // 2 + glyph_h,
+        x - glyph_w // 2 : x - glyph_w // 2 + glyph_w,
+    ] = cv2.cvtColor(_CONFIRM_TEMPLATE, cv2.COLOR_GRAY2BGR)
     ok, buf = cv2.imencode(".png", canvas)
     assert ok
     return buf.tobytes()
@@ -121,16 +153,34 @@ def _payload(drift: float = 0.0) -> item_crops.ItemPayload:
     """
     crops = [
         item_crops.ItemCrop(
-            kind=item_crops.CROP_ITEM, number=i + 1, heart_ordinal=i + 1, page_y0=0,
-            page_y1=_CARD_H, x0=53, x1=53 + _CARD_W, frame_index=i, frame_y0=0,
-            frame_y1=_CARD_H, image=card, verify_image=_reference(card),
+            kind=item_crops.CROP_ITEM,
+            number=i + 1,
+            heart_ordinal=i + 1,
+            page_y0=0,
+            page_y1=_CARD_H,
+            x0=53,
+            x1=53 + _CARD_W,
+            frame_index=i,
+            frame_y0=0,
+            frame_y1=_CARD_H,
+            image=card,
+            verify_image=_reference(card),
             signature=item_crops.signature_of(card, y0=0, y1=_CARD_H, x0=0, x1=_CARD_W),
-            signature_drift=drift, drift_frames=(i,), nearest_item_distance=None,
-            reason="painted")
-        for i, card in enumerate(_CARDS)]
+            signature_drift=drift,
+            drift_frames=(i,),
+            nearest_item_distance=None,
+            reason="painted",
+        )
+        for i, card in enumerate(_CARDS)
+    ]
     item_crops._fill_nearest_item_distance(crops)
-    return item_crops.ItemPayload(crops=tuple(crops), truncated=False, at_scroll_top=True,
-                                  signature_grid=(32, 32), failures=())
+    return item_crops.ItemPayload(
+        crops=tuple(crops),
+        truncated=False,
+        at_scroll_top=True,
+        signature_grid=(32, 32),
+        failures=(),
+    )
 
 
 class SheetAdb:
@@ -196,7 +246,9 @@ class _FakeIndex:
         self.translation = tuple(translation)
 
 
-def _identity_of(frame: bytes, *, foreign: bool = False) -> item_identity.ProfileIdentity:
+def _identity_of(
+    frame: bytes, *, foreign: bool = False
+) -> item_identity.ProfileIdentity:
     """The identity an index built from `frame`'s profile would carry.
 
     `foreign=True` shifts every cell instead, which is what an index belonging to a DIFFERENT
@@ -211,8 +263,14 @@ def _identity_of(frame: bytes, *, foreign: bool = False) -> item_identity.Profil
     if foreign:
         fingerprint = tuple(max(0, value - 40) for value in fingerprint)
     return item_identity.ProfileIdentity(
-        fingerprint=fingerprint, band=tuple(band), grid=grid, frame_index=0,
-        scroll_top_distance=99.0, reason="painted", agreeing_frames=3)
+        fingerprint=fingerprint,
+        band=tuple(band),
+        grid=grid,
+        frame_index=0,
+        scroll_top_distance=99.0,
+        reason="painted",
+        agreeing_frames=3,
+    )
 
 
 def _fake_navigate(recorder, *, point):
@@ -221,6 +279,7 @@ def _fake_navigate(recorder, *, point):
     Only `.point` and `.reason` are read by the driver, so only those are supplied: this file is
     about the ORDER of the driver's steps, and navigation itself has a closed synthetic loop of
     its own in tests/test_item_nav.py."""
+
     class _Target:
         def __init__(self):
             self.point = point
@@ -235,16 +294,33 @@ def _fake_navigate(recorder, *, point):
     def navigate(driver, index, model_index, *, entry_reference, **_kw):
         recorder.append((driver, index, model_index, entry_reference, _kw))
         return _Target()
+
     return navigate
 
 
-def _driver(adb, monkeypatch, *, payload=None, unavailable="", identity_frame=None,
-            foreign_identity=False, anchor=None, targeting_calibration=True):
+def _driver(
+    adb,
+    monkeypatch,
+    *,
+    payload=None,
+    unavailable="",
+    identity_frame=None,
+    foreign_identity=False,
+    anchor=None,
+    targeting_calibration=True,
+):
     class C:
-        apps = {"hinge": {
-            "serial": "pixel", "halt_on_error": False,
-            **({"targeting_calibration": _calibration()} if targeting_calibration else {}),
-        }}
+        apps = {
+            "hinge": {
+                "serial": "pixel",
+                "halt_on_error": False,
+                **(
+                    {"targeting_calibration": _calibration()}
+                    if targeting_calibration
+                    else {}
+                ),
+            }
+        }
 
     driver = HingeDriver(C())
     driver._adb = adb
@@ -256,9 +332,16 @@ def _driver(adb, monkeypatch, *, payload=None, unavailable="", identity_frame=No
     # The index behind the crops, carrying whose profile they came from. Fingerprinted off the
     # very screen the fake phone will show, because in the ordinary case the like starts on the
     # profile that was just enumerated -- see `_confirm_payload_profile`.
-    driver._current_item_index = None if payload is None else _FakeIndex(
-        _identity_of(identity_frame if identity_frame is not None else adb.sheet,
-                     foreign=foreign_identity))
+    driver._current_item_index = (
+        None
+        if payload is None
+        else _FakeIndex(
+            _identity_of(
+                identity_frame if identity_frame is not None else adb.sheet,
+                foreign=foreign_identity,
+            )
+        )
+    )
     # The entry anchor bottom-up navigation measures its page offset against. Left None by
     # default so the "half a table is a missing table" refusal stays the DEFAULT shape for a
     # fixture that never opted into navigation, and set explicitly by the tests that do.
@@ -266,28 +349,39 @@ def _driver(adb, monkeypatch, *, payload=None, unavailable="", identity_frame=No
     # Everything the like flow does BESIDE verification, stubbed: this file is about the order of
     # the remaining two steps, not about scrolling, glyph matching or the upsell modal, each of
     # which has its own tests.
-    monkeypatch.setattr(HingeDriver, "_scroll_to_top",
-                        lambda self, should_stop=None: adb.calls.append("scroll_to_top"))
+    monkeypatch.setattr(
+        HingeDriver,
+        "_scroll_to_top",
+        lambda self, should_stop=None: adb.calls.append("scroll_to_top"),
+    )
     # Returns a bare point since 2026-08-12: _locate_target_heart either lands on the item it was
     # asked for or raises, so there is no second "and this is actually the wrong one" flag left.
-    monkeypatch.setattr(HingeDriver, "_locate_target_heart",
-                        lambda self, index, should_stop=None: (540, 1200))
+    monkeypatch.setattr(
+        HingeDriver,
+        "_locate_target_heart",
+        lambda self, index, should_stop=None: (540, 1200),
+    )
+
     def await_composer(self, tries=5):
         adb.calls.append("await_sheet")
         return _COMPOSER_SURFACE
+
     monkeypatch.setattr(HingeDriver, "_await_sheet_open", await_composer)
     monkeypatch.setattr(HingeDriver, "_handle_rose_upsell", lambda self, tries=2: False)
     # Model-item tests in this file exercise verification/order rather than the closed-loop
     # navigator (which has its own synthetic suite).  Supplying an anchor opts into this simple
     # successful navigation seam; tests that need a navigation failure override it afterwards.
     if anchor is not None:
-        monkeypatch.setattr(hinge, "navigate_to_item", _fake_navigate([], point=(540, 1200)))
+        monkeypatch.setattr(
+            hinge, "navigate_to_item", _fake_navigate([], point=(540, 1200))
+        )
     return driver
 
 
 # =====================================================================================
 # THE HEADLINE: verify, then type
 # =====================================================================================
+
 
 def test_a_matching_sheet_is_verified_before_the_opener_is_typed():
     """Order is the guarantee. The tap opens the sheet, the sheet is checked, and only then does
@@ -336,25 +430,37 @@ def test_one_like_action_issues_exactly_one_targeting_calibration_dumpsys_call()
         driver.like("two sentences, no dashes", model_item_index=1)
         assert adb.dumpsys_calls == 1, (
             f"expected exactly one dumpsys package round trip for one Like action, got "
-            f"{adb.dumpsys_calls}")
+            f"{adb.dumpsys_calls}"
+        )
 
         with pytest.raises(HingeTargetingError):
-            driver.like("second opener, no item table survives the first like", model_item_index=1)
+            driver.like(
+                "second opener, no item table survives the first like",
+                model_item_index=1,
+            )
     assert adb.dumpsys_calls == 2, (
         "invalidating the item index (like()'s own post-action invalidation, the same "
         "boundary a new profile crosses) must force the next targeting check to read the "
-        f"device again rather than reuse the stale binding, got {adb.dumpsys_calls}")
+        f"device again rather than reuse the stale binding, got {adb.dumpsys_calls}"
+    )
 
 
 def test_missing_targeting_calibration_refuses_a_model_item_before_any_gesture():
     adb = SheetAdb(_SHEETS[0])
     with pytest.MonkeyPatch.context() as mp:
-        driver = _driver(adb, mp, payload=_payload(), anchor=b"fixture anchor",
-                         targeting_calibration=False)
+        driver = _driver(
+            adb,
+            mp,
+            payload=_payload(),
+            anchor=b"fixture anchor",
+            targeting_calibration=False,
+        )
         # The absent-mapping reason is operator-facing (hub banner, startup notice, bug
         # reports): plain prose only, never the RUNBOOK's literal `apps.<app>.…` schema
         # notation, which renders as a failed-interpolation bug (reported 2026-08-21).
-        assert driver._targeting_calibration_unavailable == "not configured in config.yaml"
+        assert (
+            driver._targeting_calibration_unavailable == "not configured in config.yaml"
+        )
         assert "<app>" not in driver._targeting_calibration_unavailable
         with pytest.raises(HingeTargetingError, match="targeting_calibration"):
             driver.like("an opener", model_item_index=1)
@@ -374,15 +480,22 @@ def test_absent_calibration_reasons_match_the_hub_banner_trim_byte_for_byte():
     """
     adb = SheetAdb(_SHEETS[0])
     with pytest.MonkeyPatch.context() as mp:
-        driver = _driver(adb, mp, payload=_payload(), anchor=b"fixture anchor",
-                         targeting_calibration=False)
+        driver = _driver(
+            adb,
+            mp,
+            payload=_payload(),
+            anchor=b"fixture anchor",
+            targeting_calibration=False,
+        )
         assert driver._item_enumeration_blocker() == (
             "apps.hinge.targeting_calibration is unavailable (not configured in config.yaml), "
             "so a model-selected item could not be verified or targeted and no numbered item "
-            "list would have a usable consumer")
+            "list would have a usable consumer"
+        )
         assert driver.targeted_suggestion_blocker() == (
             "targeted suggestion is unavailable because apps.hinge.targeting_calibration is "
-            "unavailable (not configured in config.yaml); no opener text is offered")
+            "unavailable (not configured in config.yaml); no opener text is offered"
+        )
 
 
 def test_targeting_calibration_is_parsed_and_used_for_model_item_likes():
@@ -410,8 +523,9 @@ def test_stop_after_navigation_prevents_the_heart_tap():
 
         mp.setattr(HingeDriver, "_navigate_to_model_item", navigate)
         with pytest.raises(ActionCancelled):
-            driver.like("an opener", model_item_index=1,
-                        should_stop=lambda: stopped["now"])
+            driver.like(
+                "an opener", model_item_index=1, should_stop=lambda: stopped["now"]
+            )
     assert adb.taps == [] and adb.texts == []
 
 
@@ -448,8 +562,9 @@ def test_stop_after_the_sheet_opens_prevents_text_and_send():
 
         mp.setattr(HingeDriver, "_await_sheet_open", sheet_opened)
         with pytest.raises(ActionCancelled):
-            driver.like("an opener", model_item_index=1,
-                        should_stop=lambda: stopped["now"])
+            driver.like(
+                "an opener", model_item_index=1, should_stop=lambda: stopped["now"]
+            )
     # The only tap is the pre-stop heart; no comment-box or Send Like input follows it.
     assert len(adb.taps) == 1 and adb.texts == []
 
@@ -468,12 +583,27 @@ def test_navigation_translates_model_item_through_the_payload_heart_ordinal():
         driver._current_item_index.translation = (1, 2)
 
         def navigate(_driver, _index, navigation_index, *, entry_reference, **_kw):
-            seen.append((navigation_index, entry_reference, _kw.get("selected_model_item_index")))
-            return type("Target", (), {
-                "point": (540, 1200), "heart_ordinal": 2, "scrolls": 0,
-                "climbed_px": 0, "agreement_px": 0, "hearts_counted": 2,
-                "frame": b"landing", "reason": "synthetic",
-            })()
+            seen.append(
+                (
+                    navigation_index,
+                    entry_reference,
+                    _kw.get("selected_model_item_index"),
+                )
+            )
+            return type(
+                "Target",
+                (),
+                {
+                    "point": (540, 1200),
+                    "heart_ordinal": 2,
+                    "scrolls": 0,
+                    "climbed_px": 0,
+                    "agreement_px": 0,
+                    "hearts_counted": 2,
+                    "frame": b"landing",
+                    "reason": "synthetic",
+                },
+            )()
 
         mp.setattr(hinge, "navigate_to_item", navigate)
         assert driver._navigate_to_model_item(1) == (540, 1200)
@@ -487,30 +617,74 @@ def test_shannon_style_photo_and_video_policy_translation_targets_heart_seven():
     1/7/9, written-or-unknown cards are readable context, and confirmed or unscreenable video
     cards are withheld entirely.  The navigator still counts every physical selectable heart.
     """
+
     def crop(kind, heart, *, number=None, image=None, reason):
-        signature = (item_crops.signature_of(
-            image, y0=0, y1=_CARD_H, x0=0, x1=_CARD_W)
-                     if kind == item_crops.CROP_ITEM else None)
+        signature = (
+            item_crops.signature_of(image, y0=0, y1=_CARD_H, x0=0, x1=_CARD_W)
+            if kind == item_crops.CROP_ITEM
+            else None
+        )
         return item_crops.ItemCrop(
-            kind=kind, number=number, heart_ordinal=heart,
-            page_y0=heart * 1000, page_y1=heart * 1000 + _CARD_H,
-            x0=53, x1=53 + _CARD_W, frame_index=heart, frame_y0=0, frame_y1=_CARD_H,
-            image=image, verify_image=_reference(image) if image is not None else None,
-            signature=signature, signature_drift=None, drift_frames=(),
-            nearest_item_distance=None, reason=reason)
+            kind=kind,
+            number=number,
+            heart_ordinal=heart,
+            page_y0=heart * 1000,
+            page_y1=heart * 1000 + _CARD_H,
+            x0=53,
+            x1=53 + _CARD_W,
+            frame_index=heart,
+            frame_y0=0,
+            frame_y1=_CARD_H,
+            image=image,
+            verify_image=_reference(image) if image is not None else None,
+            signature=signature,
+            signature_drift=None,
+            drift_frames=(),
+            nearest_item_distance=None,
+            reason=reason,
+        )
 
     photo_1, photo_7, photo_9 = _card(21), _card(22), _card(23)
-    payload = item_crops.ItemPayload(crops=(
-        crop(item_crops.CROP_ITEM, 1, number=1, image=photo_1, reason="photo"),
-        crop(item_crops.CROP_CONTEXT, 2, image=_card(24), reason="photo_only: written"),
-        crop(item_crops.CROP_EXCLUDED, 3, reason="video_mute_v1: exact mute match"),
-        crop(item_crops.CROP_EXCLUDED, 4, reason="video_mute_v1: screen failed closed"),
-        crop(item_crops.CROP_CONTEXT, 5, image=_card(25), reason="photo_only: written"),
-        crop(item_crops.CROP_EXCLUDED, 6, reason="video_mute_v1: screen failed closed"),
-        crop(item_crops.CROP_ITEM, 7, number=2, image=photo_7, reason="photo"),
-        crop(item_crops.CROP_CONTEXT, 8, image=_card(26), reason="photo_only: unknown"),
-        crop(item_crops.CROP_ITEM, 9, number=3, image=photo_9, reason="photo"),
-    ), truncated=False, at_scroll_top=True, signature_grid=(32, 32), failures=())
+    payload = item_crops.ItemPayload(
+        crops=(
+            crop(item_crops.CROP_ITEM, 1, number=1, image=photo_1, reason="photo"),
+            crop(
+                item_crops.CROP_CONTEXT,
+                2,
+                image=_card(24),
+                reason="photo_only: written",
+            ),
+            crop(item_crops.CROP_EXCLUDED, 3, reason="video_mute_v1: exact mute match"),
+            crop(
+                item_crops.CROP_EXCLUDED,
+                4,
+                reason="video_mute_v1: screen failed closed",
+            ),
+            crop(
+                item_crops.CROP_CONTEXT,
+                5,
+                image=_card(25),
+                reason="photo_only: written",
+            ),
+            crop(
+                item_crops.CROP_EXCLUDED,
+                6,
+                reason="video_mute_v1: screen failed closed",
+            ),
+            crop(item_crops.CROP_ITEM, 7, number=2, image=photo_7, reason="photo"),
+            crop(
+                item_crops.CROP_CONTEXT,
+                8,
+                image=_card(26),
+                reason="photo_only: unknown",
+            ),
+            crop(item_crops.CROP_ITEM, 9, number=3, image=photo_9, reason="photo"),
+        ),
+        truncated=False,
+        at_scroll_top=True,
+        signature_grid=(32, 32),
+        failures=(),
+    )
     assert payload.usable and payload.translation == (1, 7, 9)
     assert [crop.heart_ordinal for crop in payload.excluded] == [3, 4, 6]
     assert [crop.heart_ordinal for crop in payload.context] == [2, 5, 8]
@@ -522,12 +696,27 @@ def test_shannon_style_photo_and_video_policy_translation_targets_heart_seven():
         driver._current_item_index.translation = tuple(range(1, 10))
 
         def navigate(_driver, _index, navigation_index, *, entry_reference, **_kw):
-            seen.append((navigation_index, entry_reference, _kw.get("selected_model_item_index")))
-            return type("Target", (), {
-                "point": (540, 1200), "heart_ordinal": 7, "scrolls": 0,
-                "climbed_px": 0, "agreement_px": 0, "hearts_counted": 7,
-                "frame": b"landing", "reason": "synthetic",
-            })()
+            seen.append(
+                (
+                    navigation_index,
+                    entry_reference,
+                    _kw.get("selected_model_item_index"),
+                )
+            )
+            return type(
+                "Target",
+                (),
+                {
+                    "point": (540, 1200),
+                    "heart_ordinal": 7,
+                    "scrolls": 0,
+                    "climbed_px": 0,
+                    "agreement_px": 0,
+                    "hearts_counted": 7,
+                    "frame": b"landing",
+                    "reason": "synthetic",
+                },
+            )()
 
         mp.setattr(hinge, "navigate_to_item", navigate)
         assert driver._navigate_to_model_item(2) == (540, 1200)
@@ -540,9 +729,14 @@ def test_shannon_style_photo_and_video_policy_translation_targets_heart_seven():
 def test_runtime_parser_rejects_a_known_unsafe_sheet_ceiling_even_without_config_validation():
     """Embedding callers can construct a Config-like object directly; the gesture gate repeats
     the known false-accept caps rather than trusting that config.validate ran elsewhere."""
+
     class C:
-        apps = {"hinge": {"serial": "pixel", "targeting_calibration": _calibration(
-            inline_item_max_dist=14.91)}}
+        apps = {
+            "hinge": {
+                "serial": "pixel",
+                "targeting_calibration": _calibration(inline_item_max_dist=14.91),
+            }
+        }
 
     driver = HingeDriver(C())
     assert driver.targeting_calibration is None
@@ -551,7 +745,9 @@ def test_runtime_parser_rejects_a_known_unsafe_sheet_ceiling_even_without_config
 
 def test_runtime_parser_refuses_a_calibration_for_another_adb_serial():
     class C:
-        apps = {"hinge": {"serial": "other-pixel", "targeting_calibration": _calibration()}}
+        apps = {
+            "hinge": {"serial": "other-pixel", "targeting_calibration": _calibration()}
+        }
 
     driver = HingeDriver(C())
     assert driver.targeting_calibration is None
@@ -560,27 +756,36 @@ def test_runtime_parser_refuses_a_calibration_for_another_adb_serial():
 
 def test_runtime_parser_refuses_calibration_when_effective_geometry_changes():
     """Direct construction must not retain bounds after a crop override changes."""
+
     class C:
-        apps = {"hinge": {
-            "serial": "pixel",
-            "identity_band": [0.11, 0.048, 0.80, 0.094],
-            "targeting_calibration": _calibration(),
-        }}
+        apps = {
+            "hinge": {
+                "serial": "pixel",
+                "identity_band": [0.11, 0.048, 0.80, 0.094],
+                "targeting_calibration": _calibration(),
+            }
+        }
 
     driver = HingeDriver(C())
     assert driver.targeting_calibration is None
-    assert "identity_band does not exactly match" in driver._targeting_calibration_unavailable
+    assert (
+        "identity_band does not exactly match"
+        in driver._targeting_calibration_unavailable
+    )
 
 
 def test_runtime_parser_accepts_calibration_bound_to_effective_geometry_override():
     class C:
-        apps = {"hinge": {
-            "serial": "pixel",
-            "identity_band": [0.11, 0.048, 0.80, 0.094],
-            "content_band": [0.13, 0.87],
-            "targeting_calibration": _calibration(
-                identity_band=[0.11, 0.048, 0.80, 0.094], content_band=[0.13, 0.87]),
-        }}
+        apps = {
+            "hinge": {
+                "serial": "pixel",
+                "identity_band": [0.11, 0.048, 0.80, 0.094],
+                "content_band": [0.13, 0.87],
+                "targeting_calibration": _calibration(
+                    identity_band=[0.11, 0.048, 0.80, 0.094], content_band=[0.13, 0.87]
+                ),
+            }
+        }
 
     driver = HingeDriver(C())
     assert driver.targeting_calibration is not None
@@ -592,7 +797,7 @@ def test_post_tap_foreign_identity_stops_even_when_the_item_verifier_would_match
     """A deck race must not attach text to a lookalike preview on another profile's sheet."""
     foreign = cv2.imdecode(np.frombuffer(_SHEETS[0], np.uint8), cv2.IMREAD_COLOR)
     x0, y0, x1, y1 = hinge.HINGE_SPEC.identity_band
-    foreign[int(y0 * _H):int(y1 * _H), int(x0 * _W):int(x1 * _W)] = 0
+    foreign[int(y0 * _H) : int(y1 * _H), int(x0 * _W) : int(x1 * _W)] = 0
     ok, foreign_png = cv2.imencode(".png", foreign)
     assert ok
     foreign_sheet = foreign_png.tobytes()
@@ -601,9 +806,16 @@ def test_post_tap_foreign_identity_stops_even_when_the_item_verifier_would_match
     # _confirm_payload_profile and _snap see the indexed profile; only the post-tap sheet races.
     adb = SwitchingSheetAdb([_SHEETS[0], foreign_sheet])
     with pytest.MonkeyPatch.context() as mp:
-        driver = _driver(adb, mp, payload=_payload(), identity_frame=_SHEETS[0],
-                         anchor=b"fixture anchor")
-        with pytest.raises(HingeTargetingError, match="like sheet is not on the profile"):
+        driver = _driver(
+            adb,
+            mp,
+            payload=_payload(),
+            identity_frame=_SHEETS[0],
+            anchor=b"fixture anchor",
+        )
+        with pytest.raises(
+            HingeTargetingError, match="like sheet is not on the profile"
+        ):
             driver.like("an opener", model_item_index=1)
     assert adb.texts == [] and "text" not in adb.calls
 
@@ -612,17 +824,21 @@ def test_a_sheet_showing_a_different_item_stops_the_run_with_nothing_typed():
     """The failure this whole redesign exists to stop: the opener was written about item 1 and
     the sheet that opened is item 2. Doc 5.6 -- do not type, do not send, never a commentless
     like, record intended and actual, leave the screen for debugging."""
-    adb = SheetAdb(_SHEETS[1])                       # the sheet shows item 2...
+    adb = SheetAdb(_SHEETS[1])  # the sheet shows item 2...
     with pytest.MonkeyPatch.context() as mp:
         driver = _driver(adb, mp, payload=_payload(), anchor=b"fixture anchor")
         with pytest.raises(HingeActionError) as exc:
-            driver.like("an opener about item one", model_item_index=1)   # ...we asked for 1
-    assert adb.texts == []                           # nothing typed
+            driver.like(
+                "an opener about item one", model_item_index=1
+            )  # ...we asked for 1
+    assert adb.texts == []  # nothing typed
     assert "text" not in adb.calls
     message = str(exc.value)
     assert "intended model item 1" in message and "actual 2" in message
     assert "NOT typed" in message and "NOT sent" in message
-    assert "\n" not in message, "the hub shows the last line of the traceback, so keep it to one"
+    assert "\n" not in message, (
+        "the hub shows the last line of the traceback, so keep it to one"
+    )
 
 
 def test_a_sheet_that_is_not_any_indexed_item_stops_the_run_too():
@@ -638,7 +854,7 @@ def test_a_sheet_that_is_not_any_indexed_item_stops_the_run_too():
 
 
 def test_a_sheet_that_cannot_be_read_at_all_stops_the_run_rather_than_typing():
-    """"Could not look" and "looked and it is wrong" call for the same action one tap away from
+    """ "Could not look" and "looked and it is wrong" call for the same action one tap away from
     typing; only the diagnosis differs."""
     flat = np.full((_H, _W), _SHEET_BG, dtype=np.uint8)
     ok, buf = cv2.imencode(".png", flat)
@@ -656,14 +872,20 @@ def test_a_sheet_that_cannot_be_read_at_all_stops_the_run_rather_than_typing():
 # Refused BEFORE the tap
 # =====================================================================================
 
+
 def test_a_model_item_with_no_crops_behind_it_is_refused_without_touching_the_screen():
     """Doc 5.3: treat a missing table as a hard stop, never as a reason to fall back to a fixed
     coordinate. The invalidation reason is quoted, because "the deck advanced" and "this capture
     could not be indexed" call for different next moves."""
     adb = SheetAdb(_SHEETS[0])
     with pytest.MonkeyPatch.context() as mp:
-        driver = _driver(adb, mp, payload=None, anchor=b"fixture anchor",
-                         unavailable="the deck advanced after this like")
+        driver = _driver(
+            adb,
+            mp,
+            payload=None,
+            anchor=b"fixture anchor",
+            unavailable="the deck advanced after this like",
+        )
         with pytest.raises(HingeActionError) as exc:
             driver.like("an opener", model_item_index=1)
     assert adb.calls == [] and adb.taps == [] and adb.texts == []
@@ -698,8 +920,9 @@ def test_crops_belonging_to_a_different_profile_are_refused_before_any_gesture()
     """
     adb = SheetAdb(_SHEETS[0])
     with pytest.MonkeyPatch.context() as mp:
-        driver = _driver(adb, mp, payload=_payload(), foreign_identity=True,
-                         anchor=b"fixture anchor")
+        driver = _driver(
+            adb, mp, payload=_payload(), foreign_identity=True, anchor=b"fixture anchor"
+        )
         with pytest.raises(HingeTargetingError) as exc:
             driver.like("an opener about item one", model_item_index=1)
     assert adb.calls == [] and adb.taps == [] and adb.texts == []
@@ -716,16 +939,22 @@ def test_crops_belonging_to_a_different_profile_are_refused_before_any_gesture()
 
 
 def test_a_screen_whose_identity_cannot_be_read_stops_rather_than_passing():
-    """"Cannot tell" is never "yes". At a scroll top the identity strip is Hinge's own
+    """ "Cannot tell" is never "yes". At a scroll top the identity strip is Hinge's own
     filter-chips row -- byte-identical for two different people -- so there is nothing there to
     tell anyone apart, and a gate that read silence as agreement would pass for everybody."""
     adb = SheetAdb(_SHEETS[0])
     with pytest.MonkeyPatch.context() as mp:
         driver = _driver(adb, mp, payload=_payload(), anchor=b"fixture anchor")
-        driver._current_item_index = _FakeIndex(item_identity.ProfileIdentity(
-            fingerprint=None, band=tuple(hinge.HINGE_SPEC.identity_band),
-            grid=item_identity._IDENTITY_GRID, frame_index=None, scroll_top_distance=None,
-            reason="this capture never showed a sticky header"))
+        driver._current_item_index = _FakeIndex(
+            item_identity.ProfileIdentity(
+                fingerprint=None,
+                band=tuple(hinge.HINGE_SPEC.identity_band),
+                grid=item_identity._IDENTITY_GRID,
+                frame_index=None,
+                scroll_top_distance=None,
+                reason="this capture never showed a sticky header",
+            )
+        )
         with pytest.raises(HingeTargetingError) as exc:
             driver.like("an opener", model_item_index=1)
     assert adb.calls == [] and adb.taps == [] and adb.texts == []
@@ -748,14 +977,21 @@ def test_a_model_item_number_now_routes_to_counting_navigation_and_never_rewinds
         strip on a screen where it carries no identity;
       * and the point it taps is the one navigation returned, not a fallback.
     """
-    adb = SheetAdb(_SHEETS[1])                # the sheet really is showing item 2
+    adb = SheetAdb(_SHEETS[1])  # the sheet really is showing item 2
     located, navigated = [], []
     with pytest.MonkeyPatch.context() as mp:
         driver = _driver(adb, mp, payload=_payload(), anchor=b"the read's last frame")
-        mp.setattr(HingeDriver, "_locate_target_heart",
-                   lambda self, index, should_stop=None: (located.append(index), (540, 1200))[1])
-        mp.setattr(hinge, "navigate_to_item", _fake_navigate(navigated, point=(931, 1477)))
-        index = driver._current_item_index        # `like()` clears it in a finally, by design
+        mp.setattr(
+            HingeDriver,
+            "_locate_target_heart",
+            lambda self, index, should_stop=None: (located.append(index), (540, 1200))[
+                1
+            ],
+        )
+        mp.setattr(
+            hinge, "navigate_to_item", _fake_navigate(navigated, point=(931, 1477))
+        )
+        index = driver._current_item_index  # `like()` clears it in a finally, by design
         driver.like("an opener about item two", model_item_index=2)
 
     assert located == [], "the capture-order heart search must not be entered"
@@ -763,7 +999,9 @@ def test_a_model_item_number_now_routes_to_counting_navigation_and_never_rewinds
     assert adb.taps[0] == (931, 1477), "the tap is the point navigation returned"
     assert adb.texts == ["an opener about item two"]
     # ...and navigation got the driver, the index, the model's number and the anchor frame.
-    (driver_arg, index_arg, model_index_arg, reference_arg, navigation_kwargs), = navigated
+    ((driver_arg, index_arg, model_index_arg, reference_arg, navigation_kwargs),) = (
+        navigated
+    )
     assert driver_arg is driver and index_arg is index
     assert (model_index_arg, reference_arg) == (2, b"the read's last frame")
     assert navigation_kwargs["identity_match_max_dist"] == 2.0
@@ -778,8 +1016,11 @@ def test_half_a_translation_table_is_a_missing_one_and_is_refused_before_any_ges
     page origin nobody measured."""
     adb = SheetAdb(_SHEETS[0])
     with pytest.MonkeyPatch.context() as mp:
-        driver = _driver(adb, mp, payload=_payload())     # index set, anchor NOT set
-        assert driver._current_item_index is not None and driver._current_item_anchor is None
+        driver = _driver(adb, mp, payload=_payload())  # index set, anchor NOT set
+        assert (
+            driver._current_item_index is not None
+            and driver._current_item_anchor is None
+        )
         with pytest.raises(HingeTargetingError) as exc:
             driver.like("an opener about item two", model_item_index=2)
     assert adb.calls == [] and adb.taps == [] and adb.texts == []
@@ -795,7 +1036,9 @@ def test_a_navigation_refusal_becomes_a_targeting_stop_with_nothing_typed():
     item the opener was written about, so it was not put anywhere -- so all of them become
     `HingeTargetingError`, which is the one type the worker routes to a stop."""
     failures = [
-        item_nav.ItemNavigationError(item_nav.NAV_COUNT_DISAGREES, "the count disagrees"),
+        item_nav.ItemNavigationError(
+            item_nav.NAV_COUNT_DISAGREES, "the count disagrees"
+        ),
         scroll_step.ScrollStepError("no legal gesture respects this spacing"),
         SegmentationError("the frame will not segment"),
         ShiftEstimationError("no page space spans these frames"),
@@ -808,6 +1051,7 @@ def test_a_navigation_refusal_becomes_a_targeting_stop_with_nothing_typed():
 
             def _raise(*_a, failure=failure, **_kw):
                 raise failure
+
             mp.setattr(hinge, "navigate_to_item", _raise)
             with pytest.raises(HingeTargetingError) as exc:
                 driver.like("an opener about item two", model_item_index=2)
@@ -860,12 +1104,15 @@ def test_an_item_whose_crop_cannot_serve_as_a_reference_is_refused_before_the_ta
 # The legacy path, and the boundary between them
 # =====================================================================================
 
+
 def test_capture_order_opener_is_retired_before_any_gesture():
     """A frame index cannot license text: it bypasses the calibrated model-item verifier."""
     adb = SheetAdb(_SHEETS[0])
     with pytest.MonkeyPatch.context() as mp:
         driver = _driver(adb, mp, payload=_payload())
-        with pytest.raises(HingeTargetingError, match="Capture-order targeting is retired"):
+        with pytest.raises(
+            HingeTargetingError, match="Capture-order targeting is retired"
+        ):
             driver.like("an opener", 3)
     assert adb.calls == [] and adb.taps == [] and adb.texts == []
 
@@ -875,8 +1122,11 @@ def test_capture_order_opener_does_not_enter_legacy_target_lookup():
     adb = SheetAdb(_SHEETS[0])
     with pytest.MonkeyPatch.context() as mp:
         driver = _driver(adb, mp, payload=_payload())
-        mp.setattr(HingeDriver, "_locate_target_heart",
-                   lambda *_a, **_k: pytest.fail("retired lookup was called"))
+        mp.setattr(
+            HingeDriver,
+            "_locate_target_heart",
+            lambda *_a, **_k: pytest.fail("retired lookup was called"),
+        )
         with pytest.raises(HingeTargetingError, match="model item index"):
             driver.like("an opener", 3)
     assert adb.texts == []
@@ -891,8 +1141,9 @@ def test_the_anchored_reask_parameter_is_gone_from_the_driver_entirely():
     with pytest.MonkeyPatch.context() as mp:
         driver = _driver(adb, mp, payload=_payload())
         with pytest.raises(TypeError):
-            driver.like("an opener", 0, anchored_opener=lambda a: "repaired",
-                        model_item_index=1)
+            driver.like(
+                "an opener", 0, anchored_opener=lambda a: "repaired", model_item_index=1
+            )
     assert adb.texts == []
 
 
@@ -942,13 +1193,14 @@ def test_the_verifier_and_the_driver_agree_on_which_item_the_painted_sheet_shows
 # ones above, asserting a SENTENCE where those assert an exception.
 # =====================================================================================
 
+
 def _observing(adb, monkeypatch, **kwargs):
     """The driver as observe holds it: crops for the profile on screen, no like in flight."""
     return _driver(adb, monkeypatch, payload=_payload(), **kwargs)
 
 
 def test_the_item_the_human_opened_matching_the_suggestion_is_confirmed_with_no_reason():
-    """"" is the ONLY value that lets the hub show text, so it is the only value a match may
+    """ "" is the ONLY value that lets the hub show text, so it is the only value a match may
     produce -- an empty-ish sentence would read as a warning and cost a real suggestion."""
     adb = SheetAdb(_SHEETS[0])
     with pytest.MonkeyPatch.context() as mp:
@@ -957,7 +1209,9 @@ def test_the_item_the_human_opened_matching_the_suggestion_is_confirmed_with_no_
         assert driver.observe_item_mismatch(_SHEETS[0], 1) == ""
 
 
-def test_observe_check_allows_a_structurally_confirmed_priority_like_surface(monkeypatch):
+def test_observe_check_allows_a_structurally_confirmed_priority_like_surface(
+    monkeypatch,
+):
     """Priority Like changes only the CTA label, never the passive item-check contract.
 
     The lower template threshold is deliberately reached only after strict
@@ -976,7 +1230,9 @@ def test_observe_check_allows_a_structurally_confirmed_priority_like_surface(mon
         def priority_surface(_frame, _template, *, threshold, **_kw):
             calls.append(threshold)
             if threshold == 0.8:
-                raise hinge.ComposerDetectionError("literal Send Like glyph is a Priority Like")
+                raise hinge.ComposerDetectionError(
+                    "literal Send Like glyph is a Priority Like"
+                )
             assert threshold == 0.68
             return _COMPOSER_SURFACE
 
@@ -1010,17 +1266,30 @@ def test_observe_does_not_name_a_reachable_neighbour_when_the_intended_item_was_
     with pytest.MonkeyPatch.context() as mp:
         driver = _observing(adb, mp)
         baseline = item_verify.verify_sheet_item(
-            _SHEETS[0], driver._current_item_payload, 1, composer_surface=_COMPOSER_SURFACE,
-            absolute_max_dist=10.0)
+            _SHEETS[0],
+            driver._current_item_payload,
+            1,
+            composer_surface=_COMPOSER_SURFACE,
+            absolute_max_dist=10.0,
+        )
         unavailable = dataclasses.replace(
-            baseline, state=item_verify.VERIFY_MISMATCH, nearest_index=2, distance=None,
+            baseline,
+            state=item_verify.VERIFY_MISMATCH,
+            nearest_index=2,
+            distance=None,
             comparisons=tuple(
-                dataclasses.replace(c, distance=None,
-                                  reason="inline composer preview is still settling")
-                if c.number == 1 else c
-                for c in baseline.comparisons))
+                dataclasses.replace(
+                    c, distance=None, reason="inline composer preview is still settling"
+                )
+                if c.number == 1
+                else c
+                for c in baseline.comparisons
+            ),
+        )
         mp.setattr(hinge, "verify_sheet_item", lambda *_a, **_k: unavailable)
-        assert driver.observe_item_check(_SHEETS[0], 1).state == OBSERVE_ITEM_INCONCLUSIVE
+        assert (
+            driver.observe_item_check(_SHEETS[0], 1).state == OBSERVE_ITEM_INCONCLUSIVE
+        )
         reason = driver.observe_item_mismatch(_SHEETS[0], 1)
     assert "could not yet be confirmed as model item 1" in reason
     assert "settling" in reason
@@ -1046,7 +1315,10 @@ def test_a_sheet_on_a_different_profile_is_refused_on_IDENTITY_not_on_card_pixel
     # The control: the identical call with the identity agreeing is a confirmation, so the
     # refusal above is the gate doing its job rather than a blanket no.
     with pytest.MonkeyPatch.context() as mp:
-        assert _observing(SheetAdb(_SHEETS[0]), mp).observe_item_mismatch(_SHEETS[0], 1) == ""
+        assert (
+            _observing(SheetAdb(_SHEETS[0]), mp).observe_item_mismatch(_SHEETS[0], 1)
+            == ""
+        )
 
 
 def test_no_crops_for_the_profile_on_screen_is_a_reason_and_never_a_confirmation():
@@ -1055,8 +1327,9 @@ def test_no_crops_for_the_profile_on_screen_is_a_reason_and_never_a_confirmation
     fine" -- the operator gets the driver's own recorded sentence."""
     adb = SheetAdb(_SHEETS[0])
     with pytest.MonkeyPatch.context() as mp:
-        driver = _driver(adb, mp, payload=None,
-                         unavailable="the scroll top was never confirmed")
+        driver = _driver(
+            adb, mp, payload=None, unavailable="the scroll top was never confirmed"
+        )
         reason = driver.observe_item_mismatch(_SHEETS[0], 1)
     assert "the scroll top was never confirmed" in reason
 
@@ -1103,8 +1376,13 @@ def test_the_guard_never_touches_the_transport_or_the_debug_log():
     written = []
     with pytest.MonkeyPatch.context() as mp:
         driver = _observing(adb, mp)
-        driver._dbg = type("Dbg", (), {"action": lambda self, *a, **k: written.append(a)})()
-        mp.setattr(HingeDriver, "_screencap",
-                   lambda self, **_k: pytest.fail("observe_item_mismatch took a screencap"))
+        driver._dbg = type(
+            "Dbg", (), {"action": lambda self, *a, **k: written.append(a)}
+        )()
+        mp.setattr(
+            HingeDriver,
+            "_screencap",
+            lambda self, **_k: pytest.fail("observe_item_mismatch took a screencap"),
+        )
         assert driver.observe_item_mismatch(_SHEETS[0], 1) == ""
     assert adb.calls == [] and written == []

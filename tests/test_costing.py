@@ -1,4 +1,5 @@
 """Unit tests for the budget / cost-control feature (runs without the SDK or a GPU)."""
+
 import math
 
 import pytest
@@ -55,11 +56,15 @@ def test_record_raises_keyerror_for_a_model_with_no_pricing_entry():
     t = CostTracker(pricing, run_budget_usd=None)
     t.record("gemini-3.6-flash", Usage(input_tokens=1_000_000))  # exact match: fine
     try:
-        t.record("gemini-3.6-flash-20251001", Usage(input_tokens=1_000_000))  # no stripping
+        t.record(
+            "gemini-3.6-flash-20251001", Usage(input_tokens=1_000_000)
+        )  # no stripping
     except KeyError:
         pass
     else:
-        raise AssertionError("expected KeyError for a model id with no exact pricing entry")
+        raise AssertionError(
+            "expected KeyError for a model id with no exact pricing entry"
+        )
 
 
 def test_usage_from_gemini_separates_cached_prompt_and_thought_tokens():
@@ -75,13 +80,16 @@ def test_usage_from_gemini_separates_cached_prompt_and_thought_tokens():
     assert usage.output_tokens == 200
 
 
-@pytest.mark.parametrize("field,value", [
-    ("input", -1),
-    ("output", math.nan),
-    ("cache_read", math.inf),
-    ("cache_write", True),
-    ("input", "5"),
-])
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("input", -1),
+        ("output", math.nan),
+        ("cache_read", math.inf),
+        ("cache_write", True),
+        ("input", "5"),
+    ],
+)
 def test_model_pricing_rejects_values_that_can_poison_or_reduce_spend(field, value):
     values = {"input": 0.0, "output": 0.0, "cache_read": 0.0, "cache_write": 0.0}
     values[field] = value
@@ -94,7 +102,7 @@ def test_model_pricing_allows_exact_zero_free_tier_rates():
 
 
 def test_cost_boundaries_reject_enormous_integers_without_overflow_leaks():
-    huge = 10 ** 10_000
+    huge = 10**10_000
     with pytest.raises(ValueError, match="finite"):
         ModelPricing(input=huge, output=0)
     with pytest.raises(ValueError, match="finite"):
@@ -104,14 +112,20 @@ def test_cost_boundaries_reject_enormous_integers_without_overflow_leaks():
 
 
 def test_zero_price_avoids_overflow_for_a_mathematically_zero_component():
-    assert cost_usd(
-        Usage(input_tokens=10 ** 10_000), ModelPricing(input=0, output=0)) == 0
+    assert (
+        cost_usd(Usage(input_tokens=10**10_000), ModelPricing(input=0, output=0)) == 0
+    )
 
 
-@pytest.mark.parametrize("field", [
-    "prompt_token_count", "cached_content_token_count",
-    "candidates_token_count", "thoughts_token_count",
-])
+@pytest.mark.parametrize(
+    "field",
+    [
+        "prompt_token_count",
+        "cached_content_token_count",
+        "candidates_token_count",
+        "thoughts_token_count",
+    ],
+)
 def test_usage_from_gemini_rejects_negative_counters(field):
     metadata = type("Metadata", (), {field: -1})()
     with pytest.raises(ValueError, match=field):
@@ -143,15 +157,22 @@ def test_usage_from_gemini_rejects_malformed_nonnumeric_counters(value):
         Usage.from_gemini(Metadata())
 
 
-@pytest.mark.parametrize("field,value", [
-    ("input_tokens", -1),
-    ("output_tokens", True),
-    ("cache_read_input_tokens", 1.5),
-    ("cache_creation_input_tokens", "2"),
-])
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("input_tokens", -1),
+        ("output_tokens", True),
+        ("cache_read_input_tokens", 1.5),
+        ("cache_creation_input_tokens", "2"),
+    ],
+)
 def test_usage_direct_construction_requires_exact_nonnegative_integers(field, value):
-    values = {"input_tokens": 0, "output_tokens": 0,
-              "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}
+    values = {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 0,
+    }
     values[field] = value
     with pytest.raises(ValueError, match=field):
         Usage(**values)
@@ -175,27 +196,35 @@ def test_model_pricing_from_dict_rejects_nonmapping_inputs(value):
         ModelPricing.from_dict(value)
 
 
-@pytest.mark.parametrize("values", [
-    {"output": 1},
-    {"input": 1},
-    {"input": 1, "output": 1, "cache": 0},
-])
+@pytest.mark.parametrize(
+    "values",
+    [
+        {"output": 1},
+        {"input": 1},
+        {"input": 1, "output": 1, "cache": 0},
+    ],
+)
 def test_model_pricing_from_dict_rejects_missing_or_unknown_fields(values):
     with pytest.raises(ValueError, match="ModelPricing mapping"):
         ModelPricing.from_dict(values)
 
 
-@pytest.mark.parametrize("values", [
-    {1: 0, "input": 1, "output": 1},
-    {"": 0, "input": 1, "output": 1},
-])
+@pytest.mark.parametrize(
+    "values",
+    [
+        {1: 0, "input": 1, "output": 1},
+        {"": 0, "input": 1, "output": 1},
+    ],
+)
 def test_model_pricing_from_dict_rejects_nonstring_or_empty_keys(values):
     with pytest.raises(ValueError, match="keys"):
         ModelPricing.from_dict(values)
 
 
-@pytest.mark.parametrize("pricing", [None, [], {"m": 1}, {"": ModelPricing(0, 0)},
-                                     {True: ModelPricing(0, 0)}])
+@pytest.mark.parametrize(
+    "pricing",
+    [None, [], {"m": 1}, {"": ModelPricing(0, 0)}, {True: ModelPricing(0, 0)}],
+)
 def test_cost_tracker_rejects_malformed_pricing_mapping(pricing):
     with pytest.raises(ValueError, match="pricing"):
         CostTracker(pricing, None)

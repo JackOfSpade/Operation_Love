@@ -323,6 +323,7 @@ tests/test_item_nav.py and has not been near a device (doc 9, blocker 7).
     gate now reads the entry frame instead of a post-rewind one, which is the same comparison on
     a frame that is MORE favourable to it (identity is unreadable at a scroll top).
 """
+
 from __future__ import annotations
 
 import math
@@ -331,17 +332,32 @@ from dataclasses import dataclass
 
 from .base import ActionCancelled
 from .frameshift import (
-    ShiftEstimate, estimate_shift, estimate_shift_with_reverse_recovery, trace_estimate)
+    ShiftEstimate,
+    estimate_shift,
+    estimate_shift_with_reverse_recovery,
+    trace_estimate,
+)
 from .item_identity import IdentityError, IdentityVerdict, compare_profile_identity
+
 # The private helpers are imported rather than re-implemented, on `scroll_step.py`'s and
 # `item_index.py`'s own precedent for importing `segment._GUTTER_PX`: this pass must fold hearts
 # by EXACTLY the rule the index it is checked against folded them by, and a second copy of that
 # rule would be free to drift into disagreeing with the thing it exists to agree with.
 from .item_index import (
-    _EXTENT_TOLERANCE_PX, ItemIndex, ItemIndexError, _heart_clusters, _observations)
+    _EXTENT_TOLERANCE_PX,
+    ItemIndex,
+    ItemIndexError,
+    _heart_clusters,
+    _observations,
+)
 from .scroll_step import (
-    _FALLBACK_SPACING_PX, ScrollStep, _frac_window, plan_scroll_step, step_overshoot,
-    step_px_for_frac)
+    _FALLBACK_SPACING_PX,
+    ScrollStep,
+    _frac_window,
+    plan_scroll_step,
+    step_overshoot,
+    step_px_for_frac,
+)
 from .scroll_top import ScrollTopError, confirm_scroll_top
 from .segment import Block, FrameSegmentation, segment_frame
 
@@ -436,11 +452,15 @@ _ENTRY_ANCHOR_RESIDUAL_PX = _CROSSCHECK_TOLERANCE_PX
 # can actually be handed.
 _MAX_ENTRY_ANCHOR_RESIDUAL_PX = _FALLBACK_SPACING_PX // 4 - 1
 
-if max(_ENTRY_ANCHOR_RESIDUAL_PX, _MAX_ENTRY_ANCHOR_RESIDUAL_PX) * 2 >= _FALLBACK_SPACING_PX // 2:
+if (
+    max(_ENTRY_ANCHOR_RESIDUAL_PX, _MAX_ENTRY_ANCHOR_RESIDUAL_PX) * 2
+    >= _FALLBACK_SPACING_PX // 2
+):
     # Import-time safety invariant: unlike `assert`, this must remain active under `python -O`.
     raise RuntimeError(
         "the ascending anchor bound must stay far under half the smallest measured heart pitch, "
-        "or the nearest-index-heart match could choose a neighbour")
+        "or the nearest-index-heart match could choose a neighbour"
+    )
 
 # How far two independently confirmed scroll tops may sit apart in page rows. An EXCLUSIVE bound:
 # a gap of exactly this much (plus the comparison's own tolerance) is already outside what two
@@ -479,30 +499,44 @@ _FRAME_BUDGET_SLACK = 4
 # --- refusal codes -------------------------------------------------------------------
 # Plain strings rather than an Enum, matching the house style in `segment.py` / `scroll_step.py`,
 # and directly loggable to the JSONL debug log without a serializer.
-NAV_INDEX_UNUSABLE = "index_unusable"                  # the index contradicts itself
-NAV_INDEX_RELATIVE = "index_not_at_scroll_top"         # ordinals are relative: blocker 3
-NAV_ORDINAL_OUT_OF_RANGE = "ordinal_out_of_range"      # no such model item
-NAV_CALIBRATION_INVALID = "identity_calibration_invalid"  # a caller supplied no safe identity bound
-NAV_IDENTITY_MISMATCH = "identity_mismatch"            # this index describes a DIFFERENT profile
-NAV_IDENTITY_UNCONFIRMED = "identity_unconfirmed"      # whose card this is cannot be established
-NAV_ANCHOR_UNMEASURED = "entry_anchor_unmeasured"      # the screen could not be put in the index's
-                                                       # page space: bottom-up's zero point
-NAV_ENTRY_STEP_UNMEASURED = "entry_step_unmeasured"    # the ONE scroll-top recovery step's own
-                                                       # displacement could not be measured
-                                                       # (2026-08-22, blocker 12)
-NAV_ENTRY_POSITION_UNRESOLVED = "entry_position_unresolved"  # a one-shot forward positioning
-                                                               # recovery could not be measured or
-                                                               # did not leave the chosen card whole
-NAV_ITEM_BELOW_ENTRY = "item_below_entry"              # the target is BELOW where the read ended,
-                                                       # and walking up only moves it further away
-NAV_FRAME_CONTRADICTS = "frame_contradicts_itself"     # segment.py failed on a frame
-NAV_CHAIN_BROKEN = "chain_broken"                      # frameshift refused a pair
-NAV_SCROLL_STALLED = "scroll_stalled"                  # the gesture moved nothing (or backwards)
-NAV_SCROLL_OVERSHOT = "scroll_overshot"                # past the plan's own aliasing bound
-NAV_HEART_MISSED = "heart_missed"                      # a heart was on screen and not counted
-NAV_COUNT_DISAGREES = "count_disagrees_with_index"     # two measurements, one page, two answers
-NAV_ITEM_NOT_FULLY_VISIBLE = "item_never_fully_visible"  # scrolled past it, or it never bounded
-NAV_BUDGET_EXHAUSTED = "budget_exhausted"              # never reached the target ordinal
+NAV_INDEX_UNUSABLE = "index_unusable"  # the index contradicts itself
+NAV_INDEX_RELATIVE = "index_not_at_scroll_top"  # ordinals are relative: blocker 3
+NAV_ORDINAL_OUT_OF_RANGE = "ordinal_out_of_range"  # no such model item
+NAV_CALIBRATION_INVALID = (
+    "identity_calibration_invalid"  # a caller supplied no safe identity bound
+)
+NAV_IDENTITY_MISMATCH = "identity_mismatch"  # this index describes a DIFFERENT profile
+NAV_IDENTITY_UNCONFIRMED = (
+    "identity_unconfirmed"  # whose card this is cannot be established
+)
+NAV_ANCHOR_UNMEASURED = (
+    "entry_anchor_unmeasured"  # the screen could not be put in the index's
+)
+# page space: bottom-up's zero point
+NAV_ENTRY_STEP_UNMEASURED = (
+    "entry_step_unmeasured"  # the ONE scroll-top recovery step's own
+)
+# displacement could not be measured
+# (2026-08-22, blocker 12)
+NAV_ENTRY_POSITION_UNRESOLVED = (
+    "entry_position_unresolved"  # a one-shot forward positioning
+)
+# recovery could not be measured or
+# did not leave the chosen card whole
+NAV_ITEM_BELOW_ENTRY = "item_below_entry"  # the target is BELOW where the read ended,
+# and walking up only moves it further away
+NAV_FRAME_CONTRADICTS = "frame_contradicts_itself"  # segment.py failed on a frame
+NAV_CHAIN_BROKEN = "chain_broken"  # frameshift refused a pair
+NAV_SCROLL_STALLED = "scroll_stalled"  # the gesture moved nothing (or backwards)
+NAV_SCROLL_OVERSHOT = "scroll_overshot"  # past the plan's own aliasing bound
+NAV_HEART_MISSED = "heart_missed"  # a heart was on screen and not counted
+NAV_COUNT_DISAGREES = (
+    "count_disagrees_with_index"  # two measurements, one page, two answers
+)
+NAV_ITEM_NOT_FULLY_VISIBLE = (
+    "item_never_fully_visible"  # scrolled past it, or it never bounded
+)
+NAV_BUDGET_EXHAUSTED = "budget_exhausted"  # never reached the target ordinal
 
 
 @dataclass(frozen=True)
@@ -513,8 +547,10 @@ class NavigationRecovery:
     the still-photo candidate walk, whose navigation is optional but whose real gestures still
     owe the profile a measured return to its entry anchor.  ``page_shift_px`` is the complete
     signed displacement from this navigation's entry frame to ``frame`` in frameshift's
-    convention (positive is content up).  It is present only when every leg, including the
-    refusing one, was measured.
+    convention (positive is content up).  It is present only when every leg was measured, and
+    only to pay back the walk's displacement: a refusal reached after at least one accepted,
+    measured step -- including ``NAV_HEART_MISSED`` -- may carry it for cleanup, while a
+    zero-gesture or unmeasured/failed-step refusal never does.
     """
 
     frame: bytes
@@ -553,11 +589,18 @@ class ItemNavigationError(RuntimeError):
     'closest reachable item'." This class exists so that rule has exactly one shape.
     """
 
-    def __init__(self, code: str, message: str, *, frame: bytes | None = None,
-                 frame_index: int | None = None, anchor: "ShiftEstimate | None" = None,
-                 recovery: NavigationRecovery | None = None,
-                 pair_before: bytes | None = None,
-                 measurement: dict | None = None):
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        frame: bytes | None = None,
+        frame_index: int | None = None,
+        anchor: "ShiftEstimate | None" = None,
+        recovery: NavigationRecovery | None = None,
+        pair_before: bytes | None = None,
+        measurement: dict | None = None,
+    ):
         super().__init__(message)
         self.code = code
         self.frame = frame
@@ -572,8 +615,9 @@ class ItemNavigationError(RuntimeError):
         self.measurement = measurement
 
 
-def _navigation_step_shift(before: bytes, after: bytes, *, content_band,
-                           trust_window_px: int) -> tuple[ShiftEstimate, dict]:
+def _navigation_step_shift(
+    before: bytes, after: bytes, *, content_band, trust_window_px: int
+) -> tuple[ShiftEstimate, dict]:
     """Measure one navigation leg, through frameshift's shared reverse-quorum recovery.
 
     The strip bank is directional: it cuts source strips from ``before`` and searches for them
@@ -595,8 +639,12 @@ def _navigation_step_shift(before: bytes, after: bytes, *, content_band,
     callers continue to authorize page coordinates solely from ``ShiftEstimate.delta_px``.
     """
     result, forward, reverse = estimate_shift_with_reverse_recovery(
-        before, after, content_band=content_band, trust_window_px=trust_window_px,
-        estimator=estimate_shift)
+        before,
+        after,
+        content_band=content_band,
+        trust_window_px=trust_window_px,
+        estimator=estimate_shift,
+    )
 
     # `trace_estimate` is frameshift's own serialiser, shared with `hinge._measured_page_shift_
     # traced` for the same reason the recovery policy above is shared: two hand-written copies of
@@ -606,7 +654,10 @@ def _navigation_step_shift(before: bytes, after: bytes, *, content_band,
     # consumer reads it with `.get()`, so no reader needs changing. The strip bank is what
     # distinguishes "the strips disagreed" from "the bank split into a page cluster and a video
     # cluster", which is exactly the question a chain refusal over an autoplaying card raises.
-    return result, {"forward": trace_estimate(forward), "reverse": trace_estimate(reverse)}
+    return result, {
+        "forward": trace_estimate(forward),
+        "reverse": trace_estimate(reverse),
+    }
 
 
 @dataclass(frozen=True)
@@ -640,6 +691,7 @@ class ItemTarget:
     entry_reference-vs-first-frame measurement either way. `page_offset` is the offset of the
     LANDING frame; the two differ by exactly the sum of `shifts`, which are all negative.
     """
+
     point: tuple[int, int]
     model_index: int
     heart_ordinal: int
@@ -685,6 +737,7 @@ def _like_threshold() -> float:
     `build_item_index` state by refusing to default it at all.
     """
     from .hinge import _LIKE_MATCH_THRESHOLD
+
     return float(_LIKE_MATCH_THRESHOLD)
 
 
@@ -720,14 +773,17 @@ def _min_heart_pitch(hearts: dict[int, tuple[int, int]]) -> int | None:
     the index has already met every card on the page.
     """
     ordinals = sorted(hearts)
-    gaps = [hearts[b][1] - hearts[a][1]
-            for a, b in zip(ordinals, ordinals[1:], strict=False)
-            if hearts[b][1] > hearts[a][1]]
+    gaps = [
+        hearts[b][1] - hearts[a][1]
+        for a, b in zip(ordinals, ordinals[1:], strict=False)
+        if hearts[b][1] > hearts[a][1]
+    ]
     return min(gaps) if gaps else None
 
 
-def _frame_budget(entry_offset: int, target_page_y0: int, band_y0: int,
-                  screen_height: int) -> int:
+def _frame_budget(
+    entry_offset: int, target_page_y0: int, band_y0: int, screen_height: int
+) -> int:
     """How many frames this navigation may capture before it is a refusal.
 
     Derived rather than declared, and deliberately NOT `scroll_captures`: that constant sizes the
@@ -754,13 +810,21 @@ def _frame_budget(entry_offset: int, target_page_y0: int, band_y0: int,
         raise ItemNavigationError(
             NAV_BUDGET_EXHAUSTED,
             f"the smallest read-scroll this driver may make moves {floor_px}px on a "
-            f"{screen_height}px screen, so no number of them reaches anything")
+            f"{screen_height}px screen, so no number of them reaches anything",
+        )
     distance = max(0, (entry_offset + band_y0) - target_page_y0)
     return math.ceil(distance / floor_px) + _FRAME_BUDGET_SLACK
 
 
-def _no_heart_was_missed(clusters, observations, offsets, band: tuple[int, int], tolerance: int,
-                         *, ascending: bool) -> str | None:
+def _no_heart_was_missed(
+    clusters,
+    observations,
+    offsets,
+    band: tuple[int, int],
+    tolerance: int,
+    *,
+    ascending: bool,
+) -> str | None:
     """Why this pass's heart count cannot be trusted, or None.
 
     The count's silent failure mode is a heart the glyph matcher did not find while it was on
@@ -809,18 +873,25 @@ def _no_heart_was_missed(clusters, observations, offsets, band: tuple[int, int],
             covered = page_y <= previous_edge - tolerance
             where = f"down to page row {previous_edge}"
         if covered:
-            return (f"the heart at page row {page_y} was first seen in frame {frame_index}, but "
-                    f"frame {frame_index - 1}'s analysed band already covered that row ({where}) "
-                    "and did not report it. A heart that was on screen and not counted shifts "
-                    "every ordinal counted past it, which is an off-by-one tap and not a missing "
-                    "item")
+            return (
+                f"the heart at page row {page_y} was first seen in frame {frame_index}, but "
+                f"frame {frame_index - 1}'s analysed band already covered that row ({where}) "
+                "and did not report it. A heart that was on screen and not counted shifts "
+                "every ordinal counted past it, which is an off-by-one tap and not a missing "
+                "item"
+            )
     return None
 
 
-def _count_disagrees(clusters, hearts: dict[int, tuple[int, int]], *,
-                     heart_count: int, tolerance: int, ascending: bool,
-                     anchor_residual_px: int | None = None
-                     ) -> tuple[str | None, int, dict[int, tuple[int, int]]]:
+def _count_disagrees(
+    clusters,
+    hearts: dict[int, tuple[int, int]],
+    *,
+    heart_count: int,
+    tolerance: int,
+    ascending: bool,
+    anchor_residual_px: int | None = None,
+) -> tuple[str | None, int, dict[int, tuple[int, int]]]:
     """Compare this pass's count against the reference index.
 
     Returns `(reason, worst_px, counted)`, where `counted` maps each heart ordinal this pass has
@@ -864,22 +935,41 @@ def _count_disagrees(clusters, hearts: dict[int, tuple[int, int]], *,
     if not clusters:
         return None, 0, {}
     if len(clusters) > heart_count:
-        return (f"this pass has counted {len(clusters)} distinct hearts but the index recorded "
+        return (
+            (
+                f"this pass has counted {len(clusters)} distinct hearts but the index recorded "
                 f"{heart_count} on the whole profile — one of the two is seeing an item that is "
-                "not there, and neither can be preferred over the other"), 0, {}
+                "not there, and neither can be preferred over the other"
+            ),
+            0,
+            {},
+        )
     if not hearts:
-        return ("the index holds no hearts at all, so there is nothing to anchor this pass's "
-                "count against"), 0, {}
+        return (
+            (
+                "the index holds no hearts at all, so there is nothing to anchor this pass's "
+                "count against"
+            ),
+            0,
+            {},
+        )
 
     if ascending:
         anchor_position = len(clusters) - 1
-        anchor_bound = ((_ENTRY_ANCHOR_RESIDUAL_PX if anchor_residual_px is None
-                         else int(anchor_residual_px)) + tolerance)
-        anchor_ordinal = min(hearts, key=lambda k: (abs(hearts[k][1] - clusters[-1][1]), k))
-        why = ("This pass shares the index's page space through one measured shift against the "
-               "frame the index's last offset was taken on, which bounds the two origins well "
-               "inside half a card pitch, so either that anchor measurement is wrong or this "
-               "index describes a different profile than the one on screen")
+        anchor_bound = (
+            _ENTRY_ANCHOR_RESIDUAL_PX
+            if anchor_residual_px is None
+            else int(anchor_residual_px)
+        ) + tolerance
+        anchor_ordinal = min(
+            hearts, key=lambda k: (abs(hearts[k][1] - clusters[-1][1]), k)
+        )
+        why = (
+            "This pass shares the index's page space through one measured shift against the "
+            "frame the index's last offset was taken on, which bounds the two origins well "
+            "inside half a card pitch, so either that anchor measurement is wrong or this "
+            "index describes a different profile than the one on screen"
+        )
     else:
         anchor_position = 0
         # `>=`, not `>`, and the difference is not cosmetic: `_TOP_ORIGIN_RESIDUAL_PX` is the
@@ -890,43 +980,70 @@ def _count_disagrees(clusters, hearts: dict[int, tuple[int, int]], *,
         # strict `>` admitted it by 0px.
         anchor_bound = _TOP_ORIGIN_RESIDUAL_PX + tolerance
         if 1 not in hearts:
-            return ("the index holds no heart with ordinal 1, so there is nothing to anchor this "
-                    "pass's count against"), 0, {}
+            return (
+                (
+                    "the index holds no heart with ordinal 1, so there is nothing to anchor this "
+                    "pass's count against"
+                ),
+                0,
+                {},
+            )
         anchor_ordinal = 1
-        why = ("Both passes began at an affirmatively confirmed scroll top, which bounds their "
-               "page origins under that much apart, so either the first heart counted here is "
-               "not the first heart of the profile — and every ordinal counted from it is "
-               "shifted — or this index describes a different profile than the one on screen")
+        why = (
+            "Both passes began at an affirmatively confirmed scroll top, which bounds their "
+            "page origins under that much apart, so either the first heart counted here is "
+            "not the first heart of the profile — and every ordinal counted from it is "
+            "shifted — or this index describes a different profile than the one on screen"
+        )
 
     anchor_page_y = clusters[anchor_position][1]
     anchor_gap = abs(anchor_page_y - hearts[anchor_ordinal][1])
     if anchor_gap >= anchor_bound:
-        return (f"this pass's anchor heart is at page row {anchor_page_y} but the index's nearest "
+        return (
+            (
+                f"this pass's anchor heart is at page row {anchor_page_y} but the index's nearest "
                 f"heart (ordinal {anchor_ordinal}) is at {hearts[anchor_ordinal][1]}, "
-                f"{anchor_gap}px apart against a {anchor_bound}px bound. {why}"), 0, {}
+                f"{anchor_gap}px apart against a {anchor_bound}px bound. {why}"
+            ),
+            0,
+            {},
+        )
 
     worst = 0
     counted_hearts: dict[int, tuple[int, int]] = {}
     for j, cluster in enumerate(clusters):
         k = anchor_ordinal + (j - anchor_position)
         if k not in hearts:
-            return (f"this pass has counted a heart the index has no ordinal {k} for, so the two "
-                    "disagree about how many hearts sit above or below the anchor"), worst, {}
+            return (
+                (
+                    f"this pass has counted a heart the index has no ordinal {k} for, so the two "
+                    "disagree about how many hearts sit above or below the anchor"
+                ),
+                worst,
+                {},
+            )
         counted = cluster[1] - anchor_page_y
         indexed = hearts[k][1] - hearts[anchor_ordinal][1]
         worst = max(worst, abs(counted - indexed))
         if abs(counted - indexed) > tolerance:
-            return (f"heart {k} sits {counted}px from the anchor heart {anchor_ordinal} in this "
+            return (
+                (
+                    f"heart {k} sits {counted}px from the anchor heart {anchor_ordinal} in this "
                     f"pass but {indexed}px from it in the index, a disagreement of "
                     f"{abs(counted - indexed)}px against a {tolerance}px tolerance. Two "
                     "measurements of one page do not agree, so the count may be off by an item "
-                    "and there is no basis for choosing between them"), worst, {}
+                    "and there is no basis for choosing between them"
+                ),
+                worst,
+                {},
+            )
         counted_hearts[k] = cluster
     return None, worst, counted_hearts
 
 
-def _heart_in_frame(seg: FrameSegmentation, frame_y: int, tolerance: int
-                    ) -> tuple[tuple[int, int], Block] | None:
+def _heart_in_frame(
+    seg: FrameSegmentation, frame_y: int, tolerance: int
+) -> tuple[tuple[int, int], Block] | None:
     """This frame's own detection of the heart at frame row `frame_y`, with its block.
 
     The row comes from a cluster representative, which is a MEDIAN over every frame that saw
@@ -943,17 +1060,22 @@ def _heart_in_frame(seg: FrameSegmentation, frame_y: int, tolerance: int
     return best
 
 
-def navigate_to_item(driver, index: ItemIndex, model_index: int, *,
-                     entry_reference: bytes,
-                     identity_match_max_dist: float,
-                     selected_model_item_index: int | None = None,
-                     should_stop=None,
-                     max_frames: int | None = None,
-                     crosscheck_tolerance_px: int | None = None,
-                     extent_tolerance_px: int = _EXTENT_TOLERANCE_PX,
-                     anchor_residual_px: int = _ENTRY_ANCHOR_RESIDUAL_PX,
-                     trust_window_px: int | None = None,
-                     **plan_kwargs) -> ItemTarget:
+def navigate_to_item(
+    driver,
+    index: ItemIndex,
+    model_index: int,
+    *,
+    entry_reference: bytes,
+    identity_match_max_dist: float,
+    selected_model_item_index: int | None = None,
+    should_stop=None,
+    max_frames: int | None = None,
+    crosscheck_tolerance_px: int | None = None,
+    extent_tolerance_px: int = _EXTENT_TOLERANCE_PX,
+    anchor_residual_px: int = _ENTRY_ANCHOR_RESIDUAL_PX,
+    trust_window_px: int | None = None,
+    **plan_kwargs,
+) -> ItemTarget:
     """Walk UP from where the profile read left the card to the model's item `model_index`, and
     report where its heart is. Never taps, and never substitutes a different item.
 
@@ -1043,24 +1165,28 @@ def navigate_to_item(driver, index: ItemIndex, model_index: int, *,
     # Hinge supplies its device-bound calibration, while offline callers must make their own
     # measured bound explicit.  Validate before even a screencap so a malformed direct call has
     # no device side effects.
-    if (isinstance(identity_match_max_dist, bool)
-            or not isinstance(identity_match_max_dist, (int, float))
-            or not math.isfinite(identity_match_max_dist)
-            or identity_match_max_dist <= 0
-            or identity_match_max_dist >= _IDENTITY_FALSE_MATCH_DISTANCE):
+    if (
+        isinstance(identity_match_max_dist, bool)
+        or not isinstance(identity_match_max_dist, (int, float))
+        or not math.isfinite(identity_match_max_dist)
+        or identity_match_max_dist <= 0
+        or identity_match_max_dist >= _IDENTITY_FALSE_MATCH_DISTANCE
+    ):
         raise ItemNavigationError(
             NAV_CALIBRATION_INVALID,
             "refusing to navigate without a finite, positive identity_match_max_dist strictly "
             f"below the known {_IDENTITY_FALSE_MATCH_DISTANCE} different-profile false-match "
             "distance; a generic or "
-            "unsafe bound could turn a foreign card into a target")
+            "unsafe bound could turn a foreign card into a target",
+        )
 
     def cancelled() -> None:
         """Stop before a capture or gesture, leaving the card untouched from this point."""
         if should_stop is not None and should_stop():
             raise ActionCancelled(
                 "navigation cancelled because the run is stopping; no further screencap or "
-                "scroll gesture was issued, and nothing was tapped")
+                "scroll gesture was issued, and nothing was tapped"
+            )
 
     # The bound is the SUM of the two chains' slack (see `_CROSSCHECK_TOLERANCE_PX`), and only
     # one of those two is this module's own. The other belongs to the index in hand, which the
@@ -1070,7 +1196,9 @@ def navigate_to_item(driver, index: ItemIndex, model_index: int, *,
     # explicit argument still wins, for the calibration passes that vary one bound at a time.
     if crosscheck_tolerance_px is None:
         crosscheck_tolerance_px = (
-            getattr(index, "extent_tolerance_px", _EXTENT_TOLERANCE_PX) + _EXTENT_TOLERANCE_PX)
+            getattr(index, "extent_tolerance_px", _EXTENT_TOLERANCE_PX)
+            + _EXTENT_TOLERANCE_PX
+        )
 
     # --- the index, before a finger moves ------------------------------------------
     if not index.usable:
@@ -1079,7 +1207,8 @@ def navigate_to_item(driver, index: ItemIndex, model_index: int, *,
             "refusing to navigate against an item index that contradicts itself: "
             + "; ".join(index.failures)
             + ". Doc 5.3: treat a missing table as a hard stop, never as a reason to fall back "
-              "to a fixed coordinate")
+            "to a fixed coordinate",
+        )
     if not index.at_scroll_top:
         raise ItemNavigationError(
             NAV_INDEX_RELATIVE,
@@ -1088,7 +1217,8 @@ def navigate_to_item(driver, index: ItemIndex, model_index: int, *,
             "mid-profile window returns translation (2, 3, 4, 5, 6) for what are really items "
             "5..9 — so counting hearts from a real scroll top towards one of them lands a fixed "
             "number of cards away from the item the model chose. Re-index from a confirmed top "
-            "(ops/OPENER-REDESIGN.md 5.3, addendum 2026-08-12)")
+            "(ops/OPENER-REDESIGN.md 5.3, addendum 2026-08-12)",
+        )
     try:
         target_block = index.block_for(model_index)
         ordinal = index.heart_ordinal_for(model_index)
@@ -1101,7 +1231,8 @@ def navigate_to_item(driver, index: ItemIndex, model_index: int, *,
             NAV_INDEX_UNUSABLE,
             f"the index's heart ordinals are {sorted(hearts)}, which is not a gapless 1.."
             f"{index.heart_count}; a count cannot be checked against a table that skips a "
-            "number")
+            "number",
+        )
     target_heart = hearts[ordinal]
     index_selection = f"full-index selectable item {model_index}"
     if selected_model_item_index is not None:
@@ -1115,7 +1246,8 @@ def navigate_to_item(driver, index: ItemIndex, model_index: int, *,
         raise ItemNavigationError(
             NAV_INDEX_UNUSABLE,
             "the index's last frame has no page offset, so there is no page row for the entry "
-            "anchor to be measured against")
+            "anchor to be measured against",
+        )
     reference_offset = int(index.offsets[-1])
 
     like_template = driver._template("like")
@@ -1138,8 +1270,11 @@ def navigate_to_item(driver, index: ItemIndex, model_index: int, *,
     entry_frame = driver._screencap()
     try:
         identity = compare_profile_identity(
-            entry_frame, index.identity, identity_band=driver.identity_band,
-            match_max_dist=identity_match_max_dist)
+            entry_frame,
+            index.identity,
+            identity_band=driver.identity_band,
+            match_max_dist=identity_match_max_dist,
+        )
     except IdentityError as exc:
         # "Could not look" is kept distinct in the message and collapsed into one code, because
         # to a caller about to tap a heart it calls for exactly the action "cannot tell" does.
@@ -1149,7 +1284,8 @@ def navigate_to_item(driver, index: ItemIndex, model_index: int, *,
             f"all ({type(exc).__name__}: {exc}). An index may only be navigated against the "
             "profile it was built from, and that cannot be established here "
             "(ops/OPENER-REDESIGN.md 5.7, carried-forward requirement 1)",
-            frame=entry_frame) from exc
+            frame=entry_frame,
+        ) from exc
 
     # Bottom-up's zero point is measured against the frame captured ABOVE, before anything below
     # gets a chance to move the phone — so `entry_step_delta`/`identity_recovered_frame` default
@@ -1167,8 +1303,10 @@ def navigate_to_item(driver, index: ItemIndex, model_index: int, *,
         if identity.unknown:
             try:
                 still_at_top = confirm_scroll_top(
-                    entry_frame, identity_band=driver.identity_band,
-                    pinned_evidence=_driver_pinned_evidence(driver))
+                    entry_frame,
+                    identity_band=driver.identity_band,
+                    pinned_evidence=_driver_pinned_evidence(driver),
+                )
             except ScrollTopError:
                 still_at_top = None
             if still_at_top is not None and still_at_top.confirmed:
@@ -1185,7 +1323,9 @@ def navigate_to_item(driver, index: ItemIndex, model_index: int, *,
                 # ~1299px on the calibrated 2400px screen, past the 900px window this estimate is
                 # trusted within). `_sample_read_step` still owns the dwell and the LANE.
                 cancelled()
-                dwell, _discarded_policy_frac, x_frac = driver._sample_read_step(0, None)
+                dwell, _discarded_policy_frac, x_frac = driver._sample_read_step(
+                    0, None
+                )
                 frac = _frac_window()[0]
                 driver._scroll_down_one(frac, x_frac)
                 if dwell and dwell > 0:
@@ -1195,9 +1335,12 @@ def navigate_to_item(driver, index: ItemIndex, model_index: int, *,
                 # MEASURED like every other leg in this module: the displacement this one gesture
                 # produced, never assumed. `entry_frame` (before the step) and `recovered_frame`
                 # (after it) are exactly the shift estimator's ordinary pair.
-                entry_step = estimate_shift(entry_frame, recovered_frame,
-                                            content_band=content_band,
-                                            trust_window_px=trust_window_px)
+                entry_step = estimate_shift(
+                    entry_frame,
+                    recovered_frame,
+                    content_band=content_band,
+                    trust_window_px=trust_window_px,
+                )
                 if entry_step.delta_px is None:
                     raise ItemNavigationError(
                         NAV_ENTRY_STEP_UNMEASURED,
@@ -1207,11 +1350,16 @@ def navigate_to_item(driver, index: ItemIndex, model_index: int, *,
                         f"{entry_step.reason}). Guessing the displacement here is exactly how "
                         "doc 5.10's phantom item was fabricated, so this stops rather than "
                         "assumes a distance (2026-08-22)",
-                        frame=recovered_frame, frame_index=0)
+                        frame=recovered_frame,
+                        frame_index=0,
+                    )
                 try:
                     retried_identity = compare_profile_identity(
-                        recovered_frame, index.identity, identity_band=driver.identity_band,
-                        match_max_dist=identity_match_max_dist)
+                        recovered_frame,
+                        index.identity,
+                        identity_band=driver.identity_band,
+                        match_max_dist=identity_match_max_dist,
+                    )
                 except IdentityError:
                     retried_identity = None
                 if retried_identity is not None and retried_identity.matched:
@@ -1222,17 +1370,21 @@ def navigate_to_item(driver, index: ItemIndex, model_index: int, *,
                     recovery_note = (
                         " A bounded entry read-scroll was already taken to try to reveal the "
                         "sticky header (2026-08-22), and identity still could not be confirmed "
-                        "on the frame it produced, so this refusal stands")
+                        "on the frame it produced, so this refusal stands"
+                    )
         if not identity.matched:
             raise ItemNavigationError(
-                NAV_IDENTITY_MISMATCH if identity.mismatched else NAV_IDENTITY_UNCONFIRMED,
+                NAV_IDENTITY_MISMATCH
+                if identity.mismatched
+                else NAV_IDENTITY_UNCONFIRMED,
                 f"refusing to navigate an item index against a profile it may not describe: "
                 f"{identity.reason}. Doc 5.6's owner rule is that we never substitute a different "
                 "item, and counting hearts on somebody else's card would do exactly that with full "
                 "confidence — every geometric check this module makes passed identically on the one "
                 "measured cross-profile pair, because Hinge's cards are stereotyped. Re-read the "
                 "profile rather than navigating this index" + recovery_note,
-                frame=entry_frame)
+                frame=entry_frame,
+            )
 
     # --- the entry anchor: put this screen into the INDEX's page space ---------------
     # BOTTOM-UP'S ZERO POINT, and the whole of what replaced the rewind. `entry_reference` is the
@@ -1254,8 +1406,12 @@ def navigate_to_item(driver, index: ItemIndex, model_index: int, *,
     # `estimate_shift`'s own trust window (900px on the calibrated band) bounds a screen that has
     # been moved wholesale, and on real frames it is also what refuses a foreign profile: two
     # different people's cards do not correlate.
-    anchor = estimate_shift(entry_reference, entry_frame, content_band=content_band,
-                            trust_window_px=trust_window_px)
+    anchor = estimate_shift(
+        entry_reference,
+        entry_frame,
+        content_band=content_band,
+        trust_window_px=trust_window_px,
+    )
     if anchor.delta_px is None:
         raise ItemNavigationError(
             NAV_ANCHOR_UNMEASURED,
@@ -1264,7 +1420,10 @@ def navigate_to_item(driver, index: ItemIndex, model_index: int, *,
             "profile read left the card, so its zero point is one measured shift against the "
             "read's own last frame; without it there is no page row to count from and no "
             "substitute is invented (ops/OPENER-REDESIGN.md 5.5)",
-            frame=entry_frame, frame_index=0, anchor=anchor)
+            frame=entry_frame,
+            frame_index=0,
+            anchor=anchor,
+        )
     # `entry_step_delta` is 0 unless the scroll-top recovery branch above actually ran and
     # identity was confirmed on the frame it produced (blocker 12, 2026-08-22) — in which case it
     # is that step's OWN separately measured displacement, folded on top of the ordinary anchor
@@ -1283,8 +1442,11 @@ def navigate_to_item(driver, index: ItemIndex, model_index: int, *,
     # the ordinary case, or the frame the recovery step produced when that step is what got
     # identity confirmed. `offsets[0]` (below) is `entry_offset`, which already folds in the same
     # step's measured displacement, so the two stay in the same page space either way.
-    frames: list[bytes] = [identity_recovered_frame
-                           if identity_recovered_frame is not None else entry_frame]
+    frames: list[bytes] = [
+        identity_recovered_frame
+        if identity_recovered_frame is not None
+        else entry_frame
+    ]
     segmentations: list[FrameSegmentation] = []
     offsets: list[int] = [entry_offset]
     steps: list[ScrollStep] = []
@@ -1296,14 +1458,21 @@ def navigate_to_item(driver, index: ItemIndex, model_index: int, *,
 
     while True:
         i = len(segmentations)
-        seg = segment_frame(frames[i], content_band=content_band, like_template=like_template,
-                            like_threshold=like_threshold)
+        seg = segment_frame(
+            frames[i],
+            content_band=content_band,
+            like_template=like_template,
+            like_threshold=like_threshold,
+        )
         if not seg.ok:
             raise ItemNavigationError(
                 NAV_FRAME_CONTRADICTS,
                 f"frame {i} of this navigation contradicts itself and cannot be counted from: "
                 + "; ".join(seg.failures),
-                frame=frames[i], frame_index=i, anchor=anchor)
+                frame=frames[i],
+                frame_index=i,
+                anchor=anchor,
+            )
         segmentations.append(seg)
         band_y0, band_y1 = seg.band
         if i == 0:
@@ -1335,9 +1504,17 @@ def navigate_to_item(driver, index: ItemIndex, model_index: int, *,
                     "where its last kept frame was, so a drift this large means something else "
                     "scrolled the profile between the read and the like, and where the count "
                     "would be starting from is no longer accounted for",
-                    frame=frames[i], frame_index=i, anchor=anchor)
-            budget = _frame_budget(entry_offset, target_block.page_y0, band_y0,
-                                   seg.frame_size[1]) if budget is None else budget
+                    frame=frames[i],
+                    frame_index=i,
+                    anchor=anchor,
+                )
+            budget = (
+                _frame_budget(
+                    entry_offset, target_block.page_y0, band_y0, seg.frame_size[1]
+                )
+                if budget is None
+                else budget
+            )
 
         # A target already visible in a lower-edge-*unresolved* block is the one entry geometry
         # where an ascending gesture is provably the wrong direction. The lower edge can run into
@@ -1351,15 +1528,19 @@ def navigate_to_item(driver, index: ItemIndex, model_index: int, *,
             indexed_frame_y = target_heart[1] - offsets[0]
             target_top = target_block.page_y0 - offsets[0]
             target_bottom = target_block.page_y1 - offsets[0]
-            found_entry = (_heart_in_frame(seg, indexed_frame_y, extent_tolerance_px)
-                           if band_y0 <= indexed_frame_y < band_y1 else None)
+            found_entry = (
+                _heart_in_frame(seg, indexed_frame_y, extent_tolerance_px)
+                if band_y0 <= indexed_frame_y < band_y1
+                else None
+            )
             entry_block = None if found_entry is None else found_entry[1]
             lower_edge_unresolved = (
                 entry_block is not None
                 and not entry_block.complete
                 and entry_block.top.observed
                 and not entry_block.bottom.observed
-                and target_block.page_y1 - target_block.page_y0 <= band_y1 - band_y0)
+                and target_block.page_y1 - target_block.page_y0 <= band_y1 - band_y0
+            )
             if lower_edge_unresolved:
                 # The scroll-top identity recovery above already spent this function's one
                 # sanctioned forward entry gesture. Do not turn a pair of independently bounded
@@ -1373,22 +1554,36 @@ def navigate_to_item(driver, index: ItemIndex, model_index: int, *,
                         "identity. A second forward positioning gesture is not permitted before "
                         "the ascending count, and walking up would make this lower-edge evidence "
                         "worse",
-                        frame=frames[0], frame_index=0, anchor=anchor)
-                dwell, _discarded_policy_frac, x_frac = driver._sample_read_step(0, None)
+                        frame=frames[0],
+                        frame_index=0,
+                        anchor=anchor,
+                    )
+                dwell, _discarded_policy_frac, x_frac = driver._sample_read_step(
+                    0, None
+                )
                 position_step = plan_scroll_step(
-                    seg, x_frac=x_frac, profile_min_spacing_px=seen_spacing, **plan_kwargs)
+                    seg,
+                    x_frac=x_frac,
+                    profile_min_spacing_px=seen_spacing,
+                    **plan_kwargs,
+                )
                 # The planned (not merely hoped-for) displacement must leave every indexed card
                 # edge inside the band. A gesture too short or too long is not a reason to probe
                 # in a second direction.
-                if not (target_top - position_step.step_px >= band_y0
-                        and target_bottom - position_step.step_px <= band_y1):
+                if not (
+                    target_top - position_step.step_px >= band_y0
+                    and target_bottom - position_step.step_px <= band_y1
+                ):
                     raise ItemNavigationError(
                         NAV_ITEM_NOT_FULLY_VISIBLE,
                         f"heart {ordinal} ({index_selection}) is visible in a card with an "
                         "unresolved lower edge, but even one sanctioned forward positioning "
                         "step would leave an edge outside the band. Walking up would make the same "
                         "edge worse, so no gesture can safely seat this item",
-                        frame=frames[0], frame_index=0, anchor=anchor)
+                        frame=frames[0],
+                        frame_index=0,
+                        anchor=anchor,
+                    )
                 else:
                     entry_position_attempted = True
                     cancelled()
@@ -1398,8 +1593,11 @@ def navigate_to_item(driver, index: ItemIndex, model_index: int, *,
                     cancelled()
                     positioned_frame = driver._screencap()
                     positioned_shift = estimate_shift(
-                        frames[0], positioned_frame, content_band=content_band,
-                        trust_window_px=trust_window_px)
+                        frames[0],
+                        positioned_frame,
+                        content_band=content_band,
+                        trust_window_px=trust_window_px,
+                    )
                     if positioned_shift.delta_px is None:
                         raise ItemNavigationError(
                             NAV_ENTRY_POSITION_UNRESOLVED,
@@ -1408,7 +1606,10 @@ def navigate_to_item(driver, index: ItemIndex, model_index: int, *,
                             f"not be measured ({positioned_shift.status} — {positioned_shift.reason}). "
                             "No count had started, but guessing the new page row could tap a "
                             "different item",
-                            frame=positioned_frame, frame_index=0, anchor=anchor)
+                            frame=positioned_frame,
+                            frame_index=0,
+                            anchor=anchor,
+                        )
                     violation = step_overshoot(position_step, positioned_shift.delta_px)
                     if violation is not None:
                         raise ItemNavigationError(
@@ -1416,15 +1617,25 @@ def navigate_to_item(driver, index: ItemIndex, model_index: int, *,
                             "refusing to navigate: the one bounded forward entry-positioning scroll "
                             f"did not respect its plan ({violation}). The target is not pursued by "
                             "a second forward or reverse gesture",
-                            frame=positioned_frame, frame_index=0, anchor=anchor)
+                            frame=positioned_frame,
+                            frame_index=0,
+                            anchor=anchor,
+                        )
                     positioned_offset = offsets[0] + positioned_shift.delta_px
                     positioned_seg = segment_frame(
-                        positioned_frame, content_band=content_band, like_template=like_template,
-                        like_threshold=like_threshold)
+                        positioned_frame,
+                        content_band=content_band,
+                        like_template=like_template,
+                        like_threshold=like_threshold,
+                    )
                     positioned_y = target_heart[1] - positioned_offset
                     positioned_found = (
-                        _heart_in_frame(positioned_seg, positioned_y, extent_tolerance_px)
-                        if positioned_seg.ok and band_y0 <= positioned_y < band_y1 else None)
+                        _heart_in_frame(
+                            positioned_seg, positioned_y, extent_tolerance_px
+                        )
+                        if positioned_seg.ok and band_y0 <= positioned_y < band_y1
+                        else None
+                    )
                     if positioned_found is None or not positioned_found[1].complete:
                         raise ItemNavigationError(
                             NAV_ENTRY_POSITION_UNRESOLVED,
@@ -1432,7 +1643,10 @@ def navigate_to_item(driver, index: ItemIndex, model_index: int, *,
                             f"moved page heart {ordinal} ({index_selection}), but its card still was "
                             "not bounded end to end. No count has been reused and no second gesture "
                             "is justified",
-                            frame=positioned_frame, frame_index=0, anchor=anchor)
+                            frame=positioned_frame,
+                            frame_index=0,
+                            anchor=anchor,
+                        )
                     # Restart the normal ascending pass at this measured origin. Nothing from the
                     # clipped frame was folded into a count, and this positioning gesture is not
                     # one of the returned reverse-walk `steps`.
@@ -1446,11 +1660,57 @@ def navigate_to_item(driver, index: ItemIndex, model_index: int, *,
         observations = _observations(segmentations, offsets)
         clusters = _heart_clusters(observations, tolerance=extent_tolerance_px)
 
-        missed = _no_heart_was_missed(clusters, observations, offsets, seg.band,
-                                      extent_tolerance_px, ascending=True)
+        missed = _no_heart_was_missed(
+            clusters,
+            observations,
+            offsets,
+            seg.band,
+            extent_tolerance_px,
+            ascending=True,
+        )
         if missed is not None:
-            raise ItemNavigationError(NAV_HEART_MISSED, missed, frame=frames[i], frame_index=i,
-                                      anchor=anchor)
+            # NAV_HEART_MISSED is a hard refusal: it never authorizes a tap, retry,
+            # substitution, or dwell of the refused ordinal.  After at least one normal
+            # navigation step has completed, the terminal frame is exactly this pass's accepted
+            # `offsets[i]` -- which folds its own measured shifts -- so a strictly-cleanup-only
+            # NavigationRecovery can be supplied for the optional still-photo walk's existing
+            # measured return-to-entry gate.  A zero-gesture refusal (no `steps`) has no final
+            # accepted step to name and stays without recovery, exactly as the unmeasured /
+            # failed-step paths (NAV_CHAIN_BROKEN and friends) already do.
+            recovery = None
+            if steps and len(shifts) == len(steps) and shifts[-1].delta_px is not None:
+                final_step = steps[-1]
+                final_shift = shifts[-1]
+                final_delta_px = int(final_shift.delta_px)
+                recovery = NavigationRecovery(
+                    frame=frames[i],
+                    page_shift_px=offsets[i] - entry_offset,
+                    step_index=len(steps) - 1,
+                    frame_index=i,
+                    planned_step_px=final_step.step_px,
+                    achieved_step_px=-final_delta_px,
+                    bound_px=final_step.bound_px,
+                    frac=final_step.frac,
+                    window_px=final_step.window_px,
+                    basis=final_step.basis,
+                    spacing_px=final_step.spacing_px,
+                    sized_against_px=final_step.sized_against_px,
+                    measurement_delta_px=final_delta_px,
+                    measurement_status=final_shift.status,
+                    measurement_confidence=final_shift.confidence,
+                    measurement_agreeing=final_shift.agreeing,
+                    measurement_dissenting=final_shift.dissenting,
+                    measurement_eligible=final_shift.eligible,
+                    violation=f"{NAV_HEART_MISSED}: {missed}",
+                )
+            raise ItemNavigationError(
+                NAV_HEART_MISSED,
+                missed,
+                frame=frames[i],
+                frame_index=i,
+                anchor=anchor,
+                recovery=recovery,
+            )
 
         measured_anchor_residual = anchor_residual_px
         if anchor.delta_px is not None:
@@ -1465,16 +1725,26 @@ def navigate_to_item(driver, index: ItemIndex, model_index: int, *,
             # rather than growing into the range where a neighbouring heart is nearer.
             measured_anchor_residual = max(
                 measured_anchor_residual,
-                min(abs(int(anchor.delta_px)), _MAX_ENTRY_ANCHOR_RESIDUAL_PX))
+                min(abs(int(anchor.delta_px)), _MAX_ENTRY_ANCHOR_RESIDUAL_PX),
+            )
 
         disagreement, worst, counted = _count_disagrees(
-            clusters, hearts, heart_count=index.heart_count,
-            tolerance=crosscheck_tolerance_px, ascending=True,
-            anchor_residual_px=measured_anchor_residual)
+            clusters,
+            hearts,
+            heart_count=index.heart_count,
+            tolerance=crosscheck_tolerance_px,
+            ascending=True,
+            anchor_residual_px=measured_anchor_residual,
+        )
         agreement = max(agreement, worst)
         if disagreement is not None:
-            raise ItemNavigationError(NAV_COUNT_DISAGREES, disagreement, frame=frames[i],
-                                      frame_index=i, anchor=anchor)
+            raise ItemNavigationError(
+                NAV_COUNT_DISAGREES,
+                disagreement,
+                frame=frames[i],
+                frame_index=i,
+                anchor=anchor,
+            )
 
         # --- have we gone PAST it? --------------------------------------------------
         # Walking UP, content moves DOWN the screen: the target enters the band at its TOP edge
@@ -1497,7 +1767,10 @@ def navigate_to_item(driver, index: ItemIndex, model_index: int, *,
                 f"against a band ending at {band_y1} — after {len(steps)} upward gesture(s). "
                 "Walking up moves it further down, and scrolling back down would re-run a count "
                 "that has already been spent, so there is no safe way to reach it from here",
-                frame=frames[i], frame_index=i, anchor=anchor)
+                frame=frames[i],
+                frame_index=i,
+                anchor=anchor,
+            )
 
         # --- have we arrived? -------------------------------------------------------
         # From here on the COUNT is the authority, not the index: `counted[ordinal]` is this
@@ -1517,27 +1790,47 @@ def navigate_to_item(driver, index: ItemIndex, model_index: int, *,
             if found is not None and found[1].complete:
                 heart, block = found
                 landed = _confirm_landing(
-                    heart=heart, block=block, index_block=target_block,
-                    index_heart=target_heart, extent_tolerance_px=extent_tolerance_px,
-                    crosscheck_tolerance_px=crosscheck_tolerance_px)
+                    heart=heart,
+                    block=block,
+                    index_block=target_block,
+                    index_heart=target_heart,
+                    extent_tolerance_px=extent_tolerance_px,
+                    crosscheck_tolerance_px=crosscheck_tolerance_px,
+                )
                 if landed is not None:
-                    raise ItemNavigationError(NAV_COUNT_DISAGREES, landed, frame=frames[i],
-                                              frame_index=i, anchor=anchor)
+                    raise ItemNavigationError(
+                        NAV_COUNT_DISAGREES,
+                        landed,
+                        frame=frames[i],
+                        frame_index=i,
+                        anchor=anchor,
+                    )
                 climbed = entry_offset - offsets[i]
                 return ItemTarget(
-                    point=(int(heart[0]), int(heart[1])), model_index=model_index,
-                    heart_ordinal=ordinal, frame=frames[i], frame_index=i,
+                    point=(int(heart[0]), int(heart[1])),
+                    model_index=model_index,
+                    heart_ordinal=ordinal,
+                    frame=frames[i],
+                    frame_index=i,
                     block_frame_rows=(block.y0, block.y1),
                     block_page_rows=(block.y0 + offsets[i], block.y1 + offsets[i]),
-                    page_offset=offsets[i], hearts_counted=len(clusters),
-                    agreement_px=agreement, identity=identity,
-                    anchor=anchor, entry_offset=entry_offset,
-                    steps=tuple(steps), shifts=tuple(shifts), offsets=tuple(offsets),
-                    reason=(f"walked {climbed}px up from where the profile read ended in "
-                            f"{len(steps)} gesture(s), counting {len(clusters)} heart(s) back in "
-                            f"reverse; page heart {ordinal} is {index_selection}; its card is "
-                            f"bounded end to end at frame rows {block.y0}..{block.y1}, and the "
-                            f"count agrees with the index to {agreement}px"))
+                    page_offset=offsets[i],
+                    hearts_counted=len(clusters),
+                    agreement_px=agreement,
+                    identity=identity,
+                    anchor=anchor,
+                    entry_offset=entry_offset,
+                    steps=tuple(steps),
+                    shifts=tuple(shifts),
+                    offsets=tuple(offsets),
+                    reason=(
+                        f"walked {climbed}px up from where the profile read ended in "
+                        f"{len(steps)} gesture(s), counting {len(clusters)} heart(s) back in "
+                        f"reverse; page heart {ordinal} is {index_selection}; its card is "
+                        f"bounded end to end at frame rows {block.y0}..{block.y1}, and the "
+                        f"count agrees with the index to {agreement}px"
+                    ),
+                )
 
         # --- not yet: plan one more step --------------------------------------------
         # The budget is counted in FRAMES, which is what `_frame_budget` derives and what
@@ -1550,14 +1843,20 @@ def navigate_to_item(driver, index: ItemIndex, model_index: int, *,
                     f"heart {ordinal} ({index_selection}) has been on screen but its "
                     f"card was never bounded end to end in any of {len(frames)} frames, so "
                     "there is no frame in which the item is fully visible to tap from",
-                    frame=frames[i], frame_index=i, anchor=anchor)
+                    frame=frames[i],
+                    frame_index=i,
+                    anchor=anchor,
+                )
             raise ItemNavigationError(
                 NAV_BUDGET_EXHAUSTED,
                 f"counted {len(clusters)} heart(s) back in {len(frames)} frames and never "
                 f"brought heart {ordinal} ({index_selection}) into view, against a budget "
                 f"of {budget} frames derived from the index's own geometry and the smallest "
                 "gesture this driver may make. Something other than slow progress is wrong",
-                frame=frames[i], frame_index=i, anchor=anchor)
+                frame=frames[i],
+                frame_index=i,
+                anchor=anchor,
+            )
 
         # The behaviour policy owns the dwell and the LANE; the closed loop owns the DISTANCE.
         # The policy's own frac is discarded on purpose — it is production's read cadence, which
@@ -1565,12 +1864,18 @@ def navigate_to_item(driver, index: ItemIndex, model_index: int, *,
         # whole pass exists to replace. Aliasing is a property of step-against-spacing and does
         # not care which way the finger went, so the ratio rule is applied to the reverse gesture
         # exactly as the enumeration read applies it to the forward one.
-        dwell, _discarded_policy_frac, x_frac = driver._sample_read_step(len(steps), None)
-        step = plan_scroll_step(seg, x_frac=x_frac, profile_min_spacing_px=seen_spacing,
-                                **plan_kwargs)
+        dwell, _discarded_policy_frac, x_frac = driver._sample_read_step(
+            len(steps), None
+        )
+        step = plan_scroll_step(
+            seg, x_frac=x_frac, profile_min_spacing_px=seen_spacing, **plan_kwargs
+        )
         if step.spacing_px is not None:
-            seen_spacing = (step.spacing_px if seen_spacing is None
-                            else min(seen_spacing, step.spacing_px))
+            seen_spacing = (
+                step.spacing_px
+                if seen_spacing is None
+                else min(seen_spacing, step.spacing_px)
+            )
         # THE ONLY GESTURE. `_scroll_up_one` requires both arguments, which is what makes the
         # `_scroll_down_one(frac)` trap — re-sampling BOTH from the behaviour policy when either
         # is None, and so silently issuing production's cadence — impossible to reach from here.
@@ -1583,8 +1888,8 @@ def navigate_to_item(driver, index: ItemIndex, model_index: int, *,
         cancelled()
         nxt = driver._screencap()
         est, measurement_trace = _navigation_step_shift(
-            frames[i], nxt, content_band=content_band,
-            trust_window_px=trust_window_px)
+            frames[i], nxt, content_band=content_band, trust_window_px=trust_window_px
+        )
         shifts.append(est)
         if est.delta_px is None:
             forward_trace = measurement_trace["forward"] or {}
@@ -1639,8 +1944,12 @@ def navigate_to_item(driver, index: ItemIndex, model_index: int, *,
                 f"space: {est.status} — {est.reason}. Without the shift there is no way to tell "
                 "a heart that moved from a heart that arrived, which is exactly how doc 5.10's "
                 "phantom item was fabricated, so the count stops here",
-                frame=nxt, frame_index=i + 1, anchor=anchor,
-                pair_before=frames[i], measurement=navigation_refusal)
+                frame=nxt,
+                frame_index=i + 1,
+                anchor=anchor,
+                pair_before=frames[i],
+                measurement=navigation_refusal,
+            )
         # THE SIGN FLIP, and it is one line. `estimate_shift` is positive when content moves UP,
         # i.e. for a forward scroll; an upward gesture must therefore measure NEGATIVE, and how
         # far it climbed is the negation. `step_overshoot` is handed that magnitude, so its own
@@ -1677,22 +1986,34 @@ def navigate_to_item(driver, index: ItemIndex, model_index: int, *,
                 measurement_agreeing=est.agreeing,
                 measurement_dissenting=est.dissenting,
                 measurement_eligible=est.eligible,
-                violation=violation)
+                violation=violation,
+            )
             raise ItemNavigationError(
                 NAV_SCROLL_STALLED if climb_px <= 0 else NAV_SCROLL_OVERSHOT,
                 f"the upward gesture at frame {i} did not respect the step it was planned as: "
                 f"{violation} (measured {est.delta_px:+d}px, i.e. {climb_px}px of climb). A "
                 "stalled loop would re-count the same frame forever and an over-large one "
                 "aliases the count against the card spacing; neither is a step to take again",
-                frame=nxt, frame_index=i + 1, anchor=anchor, recovery=recovery)
+                frame=nxt,
+                frame_index=i + 1,
+                anchor=anchor,
+                recovery=recovery,
+            )
         # UNCHANGED, deliberately: the page-space recurrence needs no flip because the sign is in
         # the measurement. An upward gesture produces a negative delta, so the offset decreases.
         offsets.append(offsets[-1] + est.delta_px)
         frames.append(nxt)
 
 
-def _confirm_landing(*, heart: tuple[int, int], block: Block, index_block, index_heart,
-                     extent_tolerance_px: int, crosscheck_tolerance_px: int) -> str | None:
+def _confirm_landing(
+    *,
+    heart: tuple[int, int],
+    block: Block,
+    index_block,
+    index_heart,
+    extent_tolerance_px: int,
+    crosscheck_tolerance_px: int,
+) -> str | None:
     """Why the card under the counted heart is not the card the index calls this item, or None.
 
     The ordinal cross-check answers "is this the k-th heart"; this answers "is the k-th heart on a
@@ -1732,19 +2053,25 @@ def _confirm_landing(*, heart: tuple[int, int], block: Block, index_block, index
     profile identity.
     """
     if abs(block.height - index_block.height) > extent_tolerance_px:
-        return (f"the card under heart {index_block.heart_ordinal} is {block.height}px tall in "
-                f"this frame but {index_block.height}px in the index, a disagreement of "
-                f"{abs(block.height - index_block.height)}px against a {extent_tolerance_px}px "
-                "tolerance. Two frames that both bounded one card are two measurements of one "
-                "fixed quantity, so exactly one of them is wrong")
+        return (
+            f"the card under heart {index_block.heart_ordinal} is {block.height}px tall in "
+            f"this frame but {index_block.height}px in the index, a disagreement of "
+            f"{abs(block.height - index_block.height)}px against a {extent_tolerance_px}px "
+            "tolerance. Two frames that both bounded one card are two measurements of one "
+            "fixed quantity, so exactly one of them is wrong"
+        )
     inset = heart[1] - block.y0
     index_inset = index_heart[1] - index_block.page_y0
     if abs(inset - index_inset) > extent_tolerance_px:
-        return (f"the heart sits {inset}px below its card's top edge in this frame but "
-                f"{index_inset}px below it in the index — the count reached the right ordinal "
-                "on a card that is not laid out like the one the index recorded")
+        return (
+            f"the heart sits {inset}px below its card's top edge in this frame but "
+            f"{index_inset}px below it in the index — the count reached the right ordinal "
+            "on a card that is not laid out like the one the index recorded"
+        )
     if abs(heart[0] - index_heart[0]) > crosscheck_tolerance_px:
-        return (f"the heart is at x={heart[0]} in this frame but x={index_heart[0]} in the "
-                "index, and a list scroll has no horizontal component, so these are not the "
-                "same glyph")
+        return (
+            f"the heart is at x={heart[0]} in this frame but x={index_heart[0]} in the "
+            "index, and a list scroll has no horizontal component, so these are not the "
+            "same glyph"
+        )
     return None

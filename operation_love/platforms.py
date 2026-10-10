@@ -3,6 +3,7 @@
 Availability is checked before any driver is constructed or any touch reaches the
 phone. An uncalibrated target fails closed rather than acting at guessed coordinates.
 """
+
 from __future__ import annotations
 
 import threading
@@ -23,15 +24,16 @@ KIND_LABELS = {KIND_ANDROID: "App-based"}
 # can never run at once -- see _EXCLUSIVE below and supervisor's device lock.
 RESOURCE_ANDROID_DEVICE = "android-device"
 
+
 @dataclass(frozen=True)
 class Platform:
     """One thing we can (or cannot yet) drive."""
 
-    app: str                      # registry id; also the config key under `apps:`
-    label: str                    # what the hub shows
-    kind: str                     # KIND_ANDROID
-    available: bool               # False => refuse to start, with `reason`
-    reason: str | None = None     # why it cannot run; shown verbatim in the hub
+    app: str  # registry id; also the config key under `apps:`
+    label: str  # what the hub shows
+    kind: str  # KIND_ANDROID
+    available: bool  # False => refuse to start, with `reason`
+    reason: str | None = None  # why it cannot run; shown verbatim in the hub
 
     @property
     def exclusive_resource(self) -> str | None:
@@ -127,8 +129,10 @@ def unavailable_reason(app: str, mode: str | None = None) -> str | None:
     if mode is not None:
         if mode not in {"training", "auto"}:
             if mode in {"observe", "auto_testing"}:
-                return (f"Mode {mode!r} was retired; choose 'training' for Hub-reviewed "
-                        "Like/Dislike labels or 'auto' for ranker decisions.")
+                return (
+                    f"Mode {mode!r} was retired; choose 'training' for Hub-reviewed "
+                    "Like/Dislike labels or 'auto' for ranker decisions."
+                )
             return f"Unsupported mode {mode!r}; choose 'training' or 'auto'."
         if app == "hinge" and mode in {"auto", "training"}:
             blocker = hinge_targeting_unavailable_reason()
@@ -142,8 +146,11 @@ def unavailable_reason(app: str, mode: str | None = None) -> str | None:
         if mode in available_modes:
             return None
         if p.available:
-            supported = " and ".join(m.replace("_", " ").title() for m in ("training", "auto")
-                                     if m in available_modes)
+            supported = " and ".join(
+                m.replace("_", " ").title()
+                for m in ("training", "auto")
+                if m in available_modes
+            )
             if supported:
                 return f"{p.label} supports {supported} only; {mode.title()} is not available."
             return f"{p.label} does not support {mode.title()}."
@@ -190,7 +197,9 @@ def check_selection(apps: list[str]) -> str | None:
     return None
 
 
-def check_runnable(apps: list[str], modes: dict[str, str] | str | None = None) -> str | None:
+def check_runnable(
+    apps: list[str], modes: dict[str, str] | str | None = None
+) -> str | None:
     """Everything check_selection() checks, PLUS whether each platform can run right now.
 
     This is the start-time gate -- the last thing between a selection and a driver that
@@ -201,7 +210,7 @@ def check_runnable(apps: list[str], modes: dict[str, str] | str | None = None) -
     """
     for app in apps:
         if app not in _BY_APP:
-            continue          # let check_selection own the wording for unknown ids
+            continue  # let check_selection own the wording for unknown ids
         mode = modes.get(app) if isinstance(modes, dict) else modes
         reason = unavailable_reason(app, mode=mode)
         if reason:
@@ -297,15 +306,16 @@ def _apply_calibration(calibrated: Mapping[str, bool | Mapping[str, bool]]) -> N
             if unexpected_modes:
                 raise ValueError(
                     f"Calibration for {app!r} named unsupported mode(s): "
-                    f"{', '.join(sorted(map(repr, unexpected_modes)))}")
+                    f"{', '.join(sorted(map(repr, unexpected_modes)))}"
+                )
             malformed = {
-                mode: value for mode, value in state.items()
-                if type(value) is not bool
+                mode: value for mode, value in state.items() if type(value) is not bool
             }
             if malformed:
                 raise ValueError(
                     f"Calibration readiness for {app!r} must use exact booleans; "
-                    f"got {malformed!r}")
+                    f"got {malformed!r}"
+                )
             # Training opens a targeted composer, types an opener, then performs a verified
             # Like or Dislike.  It therefore needs the same mechanical calibration as AUTO.
             # Existing specs predate this key, so it inherits explicit AUTO readiness.
@@ -313,8 +323,8 @@ def _apply_calibration(calibrated: Mapping[str, bool | Mapping[str, bool]]) -> N
             if "training" not in effective:
                 effective["training"] = effective.get("auto", False)
             modes = frozenset(
-                mode for mode in ("training", "auto")
-                if effective.get(mode) is True)
+                mode for mode in ("training", "auto") if effective.get(mode) is True
+            )
         elif type(state) is bool:
             # Backwards-compatible test/tool API: the historic single flag licensed both
             # modes. Production Android registration now supplies the explicit mapping.
@@ -322,7 +332,8 @@ def _apply_calibration(calibrated: Mapping[str, bool | Mapping[str, bool]]) -> N
         else:
             raise ValueError(
                 f"Calibration for {app!r} must be an exact boolean or a mapping of "
-                f"training/auto to exact booleans (got {state!r})")
+                f"training/auto to exact booleans (got {state!r})"
+            )
         mode_updates[app] = modes
 
     updated = []
@@ -331,13 +342,15 @@ def _apply_calibration(calibrated: Mapping[str, bool | Mapping[str, bool]]) -> N
         if p.kind == KIND_ANDROID and p.app in mode_updates:
             modes = mode_updates[p.app]
             is_cal = bool(modes)
-            updated.append(Platform(
-                app=pristine.app,
-                label=pristine.label,
-                kind=pristine.kind,
-                available=is_cal,
-                reason=None if is_cal else pristine.reason,
-            ))
+            updated.append(
+                Platform(
+                    app=pristine.app,
+                    label=pristine.label,
+                    kind=pristine.kind,
+                    available=is_cal,
+                    reason=None if is_cal else pristine.reason,
+                )
+            )
         else:
             updated.append(p)
     _AVAILABLE_MODES.update(mode_updates)
@@ -348,5 +361,5 @@ def _apply_calibration(calibrated: Mapping[str, bool | Mapping[str, bool]]) -> N
     # it with the packaged defaults before it can be observed.
     _calibration_loaded = True
     # KNOWN_APPS is intentionally NOT reassigned -- see its definition above.
-    if set(_BY_APP) != set(KNOWN_APPS):     # not an assert: must survive `python -O`
+    if set(_BY_APP) != set(KNOWN_APPS):  # not an assert: must survive `python -O`
         raise AssertionError("calibration must not change the platform set")

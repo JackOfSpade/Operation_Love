@@ -1,4 +1,5 @@
 """Runtime/device detection tests — run on any OS, no torch/GPU required."""
+
 import os
 
 import pytest
@@ -55,7 +56,9 @@ def test_banner_is_str():
 
 def test_banner_omits_reference_web_driver_and_legacy_alias_noise():
     caps = Capabilities(
-        os_name="TestOS", machine="test", python="3.11",
+        os_name="TestOS",
+        machine="test",
+        python="3.11",
         available={
             "web_driver": False,
             "android_driver": False,
@@ -79,7 +82,9 @@ def test_capabilities_detect_honours_android_adb_path(tmp_path, monkeypatch):
     monkeypatch.setenv("PATH", str(empty_dir))
     caps = Capabilities.detect()
     assert caps.available["android_driver"] is False
-    assert caps.available["hinge_driver"] is False   # pre-rename alias mirrors the new key
+    assert (
+        caps.available["hinge_driver"] is False
+    )  # pre-rename alias mirrors the new key
 
     # But a configured apps.<app>.adb_path pointing at a real binary must be honoured,
     # even though it's still not on PATH -- for Hinge OR a future calibrated Bumble.
@@ -91,7 +96,9 @@ def test_capabilities_detect_honours_android_adb_path(tmp_path, monkeypatch):
     assert caps.available["hinge_driver"] is True
 
 
-def test_capabilities_detect_still_accepts_legacy_hinge_adb_path_kwarg(tmp_path, monkeypatch):
+def test_capabilities_detect_still_accepts_legacy_hinge_adb_path_kwarg(
+    tmp_path, monkeypatch
+):
     # Backwards compatibility: callers that haven't migrated off the pre-rename kwarg name
     # must keep working.
     empty_dir = tmp_path / "empty_path"
@@ -119,8 +126,11 @@ def test_capabilities_detect_does_not_import_torch():
     other test's state."""
     import sys
 
-    saved = {name: mod for name, mod in sys.modules.items()
-              if name == "torch" or name.startswith("torch.")}
+    saved = {
+        name: mod
+        for name, mod in sys.modules.items()
+        if name == "torch" or name.startswith("torch.")
+    }
     for name in saved:
         del sys.modules[name]
     try:
@@ -139,7 +149,7 @@ def test_capabilities_device_still_resolves_correctly_when_accessed():
     # only WHEN best_device() runs, not what it returns or how many times.
     caps = Capabilities.detect()
     assert caps.device in {"cpu", "cuda", "mps"}
-    assert caps.device == caps.device      # cached, not re-derived differently per read
+    assert caps.device == caps.device  # cached, not re-derived differently per read
 
 
 def test_capabilities_available_exposes_transport_shaped_keys():

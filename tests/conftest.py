@@ -48,12 +48,17 @@ from operation_love import targeting_policy as _targeting_policy
 # numpy and onnxruntime are imported by test modules, i.e. AFTER this conftest but BEFORE the
 # first test.  Setting them here is early enough; calling a runtime setter would not be.
 if os.environ.get("PYTEST_XDIST_WORKER"):
-    for _var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
-                 "NUMEXPR_NUM_THREADS", "VECLIB_MAXIMUM_THREADS"):
+    for _var in (
+        "OMP_NUM_THREADS",
+        "OPENBLAS_NUM_THREADS",
+        "MKL_NUM_THREADS",
+        "NUMEXPR_NUM_THREADS",
+        "VECLIB_MAXIMUM_THREADS",
+    ):
         os.environ.setdefault(_var, "1")
     try:
         import cv2
-    except ImportError:      # the cv2-free install still runs the non-vision tests
+    except ImportError:  # the cv2-free install still runs the non-vision tests
         pass
     else:
         cv2.setNumThreads(1)
@@ -135,7 +140,9 @@ def _machine_global_state_is_never_the_operators(tmp_path_factory):
     attribute back for the one assertion that needs it and let mp.undo() here restore the
     redirected value afterwards, same as any other monkeypatch layering.
     """
-    base = tmp_path_factory.getbasetemp()      # resolve pytest's OWN basetemp FIRST -- see above
+    base = (
+        tmp_path_factory.getbasetemp()
+    )  # resolve pytest's OWN basetemp FIRST -- see above
     root = base / "machine-global"
     (root / "locks").mkdir(parents=True, exist_ok=True)
     mp = pytest.MonkeyPatch()

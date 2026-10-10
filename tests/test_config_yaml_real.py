@@ -12,6 +12,7 @@ the pacing floor, opener.max_attempts' bounds, ranker.retrain_every) was exercis
 against inline YAML in other test files, never against the file we actually ship. A
 config.yaml that could not start was therefore fully CI-green.
 """
+
 import pytest
 
 from operation_love.config import load, validate
@@ -24,14 +25,14 @@ def cfg():
 
 def test_config_yaml_loads_without_error(cfg):
     """The shipped file parses and passes every offline startup validation."""
-    assert cfg.enabled_apps                        # at least one app
+    assert cfg.enabled_apps  # at least one app
     assert cfg.mode in {"training", "auto"}
-    assert cfg.budget.run_budget_usd is not None   # a run budget is set
+    assert cfg.budget.run_budget_usd is not None  # a run budget is set
     validate(cfg)
 
 
 def test_the_shipped_targeting_calibration_is_a_complete_bound_calibration(cfg):
-    """The shipped 10.4.0 config carries a complete, exact-build calibration.
+    """The shipped 10.6.0 config carries a complete, exact-build calibration.
 
     This assertion used to be its inverse — the file deliberately shipped WITHOUT one, and
     pinning that absence was how we proved an uncalibrated config was still a loadable,
@@ -49,8 +50,10 @@ def test_the_shipped_targeting_calibration_is_a_complete_bound_calibration(cfg):
     cal = cfg.apps["hinge"]["targeting_calibration"]
     assert cal["schema_version"] == 3
     assert cal["device"] == "33111JEHN04475"
-    assert cal["device"] == cfg.apps["hinge"]["serial"], "calibration must bind the exact serial"
-    assert cal["hinge_version_name"] == "10.4.0"
+    assert cal["device"] == cfg.apps["hinge"]["serial"], (
+        "calibration must bind the exact serial"
+    )
+    assert cal["hinge_version_name"] == "10.6.0"
     assert list(cal["frame_size_px"]) == [1080, 2400]
     assert cal["item_selection_policy_id"] == "hinge_photos_only_v2"
     assert cal["composer_layout_id"] == "hinge_inline_v1"
@@ -77,10 +80,13 @@ def test_shipped_config_uses_training_until_live_auto_release_is_renewed(cfg):
     evidence = cfg.apps["hinge"]["observe_release_evidence"]
     assert evidence["production_run_id"] == "d8547ff144b4"
     assert evidence["hinge_version_name"] == "10.0.1"
-    assert evidence["hinge_version_name"] != cfg.apps["hinge"]["targeting_calibration"][
-        "hinge_version_name"]
+    assert (
+        evidence["hinge_version_name"]
+        != cfg.apps["hinge"]["targeting_calibration"]["hinge_version_name"]
+    )
     assert evidence["verification_file"] == (
-        "ops/release/d8547ff144b4/manual-release/hinge_observe_release.json")
+        "ops/release/d8547ff144b4/manual-release/hinge_observe_release.json"
+    )
     coords = cfg.apps["bumble"].get("coords", {})
     assert set(coords) == {"swipe_start", "swipe_like_end", "swipe_pass_end"}
     assert "like_heart" not in coords and "pass_x" not in coords
@@ -142,57 +148,108 @@ def test_shipped_opener_style_requires_value_without_forcing_a_claim(cfg):
     assert "primary item rule" in style
     assert "clear main subject of the referenced note, angle, and opener" in style
     assert "other numbered images are selection only" in style
-    assert "do not borrow one for the selected opener's premise, predicate, joke, question" in style
-    assert "explicit profile text may support a complete natural connection back to the selected item" in style
+    assert (
+        "do not borrow one for the selected opener's premise, predicate, joke, question"
+        in style
+    )
+    assert (
+        "explicit profile text may support a complete natural connection back to the selected item"
+        in style
+    )
     assert "justify why the selected item was liked" in style
     assert "reason, subject, or payoff" in style
     assert "unnumbered context image as supporting context" not in style
     assert "photo header rule" in style
-    assert "title, caption, or prompt printed with a photo is part of that same item" in style
+    assert (
+        "title, caption, or prompt printed with a photo is part of that same item"
+        in style
+    )
     assert "defines how the photo is meant to be read" in style
-    assert "interpret the visible scene through that text before choosing an angle" in style
+    assert (
+        "interpret the visible scene through that text before choosing an angle"
+        in style
+    )
     assert "never contradict, reverse, or ignore the header's framing" in style
     assert "conversational value rule" in style
-    assert "a visible detail may be named and may be the subject, premise, or setup" in style
+    assert (
+        "a visible detail may be named and may be the subject, premise, or setup"
+        in style
+    )
     assert "final conversational point is merely that description" in style
-    assert "perspective, grounded interpretation, playful framing, connection, or natural question" in style
+    assert (
+        "perspective, grounded interpretation, playful framing, connection, or natural question"
+        in style
+    )
     assert "does not have to contain a guess or a claim that could be wrong" in style
     assert "claims only when natural" in style
     assert "a correctable inference is one available move, not a requirement" in style
-    assert "prefer a grounded observation or specific question over a forced guess" in style
+    assert (
+        "prefer a grounded observation or specific question over a forced guess"
+        in style
+    )
     assert "write the whole proposition rather than a shorthand answer" in style
     assert "choose the least speculative interpretation" in style
     assert "minimum invention" in style
-    assert "never invent a purpose, motive, cause, plan, sequence, action, route" in style
-    assert "do not assign why she chose or did something unless her profile states it" in style
-    assert "any literal premise must be plainly visible in the item or explicitly stated" in style
+    assert (
+        "never invent a purpose, motive, cause, plan, sequence, action, route" in style
+    )
+    assert (
+        "do not assign why she chose or did something unless her profile states it"
+        in style
+    )
+    assert (
+        "any literal premise must be plainly visible in the item or explicitly stated"
+        in style
+    )
     assert "never use one invented fact as the premise for another" in style
     assert "a setting or destination does not establish how she arrived" in style
     assert "what effort it took, or whether she pursued a goal" in style
     assert "a hedge does not rescue a far fetched premise" in style
-    assert "ownership, employment, a routine, a responsibility, or a relationship" in style
+    assert (
+        "ownership, employment, a routine, a responsibility, or a relationship" in style
+    )
     assert "safety and dignity" in style
-    assert "never infer, tease, or pose a forced choice about self harm, suicide" in style
-    assert "a bridge, height, water, travel scene, or recognized location is never evidence" in style
+    assert (
+        "never infer, tease, or pose a forced choice about self harm, suicide" in style
+    )
+    assert (
+        "a bridge, height, water, travel scene, or recognized location is never evidence"
+        in style
+    )
     assert "that she jumped or considered jumping" in style
     assert "traceability test" in style
-    assert "for any inference, she should instantly see which visible or stated clue" in style
+    assert (
+        "for any inference, she should instantly see which visible or stated clue"
+        in style
+    )
     assert "if the path from clue to inference needs an explanation" in style
     assert "playful hyperbole" in style
     assert "unmistakably nonliteral exaggeration is allowed" in style
     assert "does not license presenting an invented motive" in style
-    assert "a natural claim she can correct can be effective, but it is not mandatory" in style
-    assert "question may be the whole message when that is the strongest natural angle" in style
+    assert (
+        "a natural claim she can correct can be effective, but it is not mandatory"
+        in style
+    )
+    assert (
+        "question may be the whole message when that is the strongest natural angle"
+        in style
+    )
     assert "never as the whole message" not in style
     assert "setup payoff continuity" in style
     assert "every visible detail you name must be necessary to, and used by" in style
-    assert "necessary means its exact identity changes how that move is understood" in style
+    assert (
+        "necessary means its exact identity changes how that move is understood"
+        in style
+    )
     assert "not merely that it anchors the reaction" in style
     assert "removing a descriptive clause or replacing it" in style
     assert "use the shorter implicit version" in style
     assert "question coherence" in style
     assert "ask one coherent thing at a time" in style
-    assert "parallel, genuinely contrasting answers to that same underlying question" in style
+    assert (
+        "parallel, genuinely contrasting answers to that same underlying question"
+        in style
+    )
     assert "never to join unrelated dimensions" in style
     assert "casual or punctuation" in style
     assert "never put a comma immediately before 'or'" in style
@@ -200,7 +257,9 @@ def test_shipped_opener_style_requires_value_without_forcing_a_claim(cfg):
     assert "referent clarity" in style
     assert "every pronoun, shorthand noun, and question subject" in style
     assert "must have one immediately obvious referent" in style
-    assert "keep the same referent unless the transition to a new one is explicit" in style
+    assert (
+        "keep the same referent unless the transition to a new one is explicit" in style
+    )
     assert "different ordinary meanings of the same word" in style
     assert "role consistency" in style
     assert "preserve that role across every beat" in style
@@ -208,44 +267,86 @@ def test_shipped_opener_style_requires_value_without_forcing_a_claim(cfg):
     assert "different subject, name it explicitly" in style
     assert "reply comfort" in style
     assert "most natural honest reply feel good to give" in style
-    assert "preference, perspective, inspiration, or experience, not self justification" in style
+    assert (
+        "preference, perspective, inspiration, or experience, not self justification"
+        in style
+    )
     assert "intelligence, sincerity, knowledge, effort" in style
-    assert "forced choice whose honest answers make her defend, diminish, or embarrass herself" in style
+    assert (
+        "forced choice whose honest answers make her defend, diminish, or embarrass herself"
+        in style
+    )
     assert "rather than asking her to verify its status" in style
     assert "positive social framing" in style
-    assert "state the intended positive observation, question, or invitation directly" in style
-    assert ("naming an insulting, judgmental, awkward, pressuring, creepy, or offensive "
-            "interpretation") in style
+    assert (
+        "state the intended positive observation, question, or invitation directly"
+        in style
+    )
+    assert (
+        "naming an insulting, judgmental, awkward, pressuring, creepy, or offensive "
+        "interpretation"
+    ) in style
     assert "that denial introduces the negative interpretation" in style
     assert "remove the disclaimer" in style
-    assert "rewrite the substantive thought so it sounds confident and stands on its own" in style
+    assert (
+        "rewrite the substantive thought so it sounds confident and stands on its own"
+        in style
+    )
     assert "reciprocity before future" in style
     assert "not an audition for a role described in her profile" in style
     assert "never answer one of her preferences by advertising the sender" in style
     assert "promising what he will do for her" in style
-    assert "do not assume that a match, date, relationship, or shared future already exists" in style
-    assert "possessive language about a first date, place, trip, or other future together" in style
+    assert (
+        "do not assume that a match, date, relationship, or shared future already exists"
+        in style
+    )
+    assert (
+        "possessive language about a first date, place, trip, or other future together"
+        in style
+    )
     assert "a proposal is not an established shared plan" in style
     assert "information gain test" in style
-    assert "conclusion of a guess must not itself be directly visible or explicitly stated" in style
+    assert (
+        "conclusion of a guess must not itself be directly visible or explicitly stated"
+        in style
+    )
     assert "its header, a sign, or elsewhere in her profile" in style
     assert "they are clues, not guessed conclusions" in style
-    assert "ordinary viewer can read or see the conclusion directly without inference" in style
+    assert (
+        "ordinary viewer can read or see the conclusion directly without inference"
+        in style
+    )
     assert "confirmation boundary" in style
     assert "a guess remains unconfirmed until she replies" in style
-    assert "statement, question, compliment, or invitation that assumes it is correct" in style
+    assert (
+        "statement, question, compliment, or invitation that assumes it is correct"
+        in style
+    )
     assert "natural next move is to confirm or correct it" in style
-    assert "only invite that confirmation or correction without presupposing the answer" in style
-    assert "experience, preference, or consequence that only makes sense if the guess is true" in style
+    assert (
+        "only invite that confirmation or correction without presupposing the answer"
+        in style
+    )
+    assert (
+        "experience, preference, or consequence that only makes sense if the guess is true"
+        in style
+    )
     assert "confirmation boundary overrides this inheritance rule" in style
     assert "never let a later beat inherit an unconfirmed claim as fact" in style
     assert "asking only whether an inferred location itself is right" in style
     assert "visual location turn boundary" in style
-    assert "that location guess is the only conversational move before she replies" in style
-    assert "end after the guess, or ask only whether the location itself is right" in style
+    assert (
+        "that location guess is the only conversational move before she replies"
+        in style
+    )
+    assert (
+        "end after the guess, or ask only whether the location itself is right" in style
+    )
     assert "her settling it is the whole payoff either way" in style
-    assert ("activity, reason, preference, feeling, experience, or consequence at that place"
-            in style)
+    assert (
+        "activity, reason, preference, feeling, experience, or consequence at that place"
+        in style
+    )
     assert "subject to confirmation boundary, a second sentence may be" in style
     assert "must accept x as its working premise" not in style
     assert "your opener must contain a claim that could be wrong" not in style
@@ -281,22 +382,40 @@ def test_shipped_opener_style_ships_the_she_is_the_one_who_knows_rule(cfg):
     first_sentence = style.split("she is the one who knows:", 1)[1].split(". ", 1)[0]
     assert "write any inference about it from your own not knowing" in first_sentence
     assert "never ask her to agree about how something appears" in first_sentence
-    assert ("never close a claim about her own life with a tag whose only job is to collect "
-            "her agreement") in first_sentence
-    assert "the shared looking covers the item on the screen, never the world behind it" in style
-    assert "she is not working that world out from a picture, because she was in it" in style
+    assert (
+        "never close a claim about her own life with a tag whose only job is to collect "
+        "her agreement"
+    ) in first_sentence
+    assert (
+        "the shared looking covers the item on the screen, never the world behind it"
+        in style
+    )
+    assert (
+        "she is not working that world out from a picture, because she was in it"
+        in style
+    )
     assert "is news to you and old news to her" in style
     assert "write any inference about it from your own not knowing" in style
     assert "never ask her to agree about how something appears" in style
-    assert ("never close a claim about her own life with a tag whose only job is to collect "
-            "her agreement") in style
+    assert (
+        "never close a claim about her own life with a tag whose only job is to collect "
+        "her agreement"
+    ) in style
     assert "this narrows the shared context rule rather than competing with it" in style
-    assert "put the uncertainty in how sure you are, never in how clear the item is" in style
+    assert (
+        "put the uncertainty in how sure you are, never in how clear the item is"
+        in style
+    )
     assert "asking her outright stays welcome" in style
-    assert "never invent the sender still forbids saying where he has or has not been" in style
+    assert (
+        "never invent the sender still forbids saying where he has or has not been"
+        in style
+    )
 
 
-def test_shipped_opener_style_amends_visual_location_turn_boundary_and_reply_comfort(cfg):
+def test_shipped_opener_style_amends_visual_location_turn_boundary_and_reply_comfort(
+    cfg,
+):
     """SHE IS THE ONE WHO KNOWS reaches into its two neighbour rules rather than merely sitting
     beside them (see test_shipped_opener_style_ships_the_she_is_the_one_who_knows_rule for the
     motivating incident). VISUAL LOCATION TURN BOUNDARY's old payoff line ("the confirmation is
@@ -310,7 +429,10 @@ def test_shipped_opener_style_amends_visual_location_turn_boundary_and_reply_com
     # VISUAL LOCATION TURN BOUNDARY amendment.
     assert "her settling it is the whole payoff either way" in style
     assert "the confirmation is the conversational payoff" not in style
-    assert "neither ending is the default and vary the shape still chooses between the two" in style
+    assert (
+        "neither ending is the default and vary the shape still chooses between the two"
+        in style
+    )
     assert "she settles the place because she was standing in it" in style
     assert "never an appearance she is asked to agree with" in style
     # REPLY COMFORT amendment.
@@ -322,6 +444,7 @@ def test_shipped_opener_style_amends_visual_location_turn_boundary_and_reply_com
     # move" incident both demonstrated. Word-boundary regex on "rome" because a bare substring
     # match could collide with an ordinary word.
     import re
+
     assert "looks like rome" not in style
     assert not re.search(r"\brome\b", style)
     assert "right?" not in style
@@ -337,13 +460,25 @@ def test_shipped_opener_style_defaults_to_minimum_sufficient_visual_reference(cf
     style = " ".join(cfg.opener.style.lower().split())
     assert "minimum sufficient reference" in style
     assert "default to omission or the least explicit natural reference" in style
-    assert "replace each literal description of visible content with an implicit reference" in style
-    assert "if the meaning, rhythm, and conversational move survive, use the implicit version" in style
-    assert "exact identity changes the point or is needed to distinguish possible referents" in style
+    assert (
+        "replace each literal description of visible content with an implicit reference"
+        in style
+    )
+    assert (
+        "if the meaning, rhythm, and conversational move survive, use the implicit version"
+        in style
+    )
+    assert (
+        "exact identity changes the point or is needed to distinguish possible referents"
+        in style
+    )
     assert "never merely to prove grounding, identify the selected item" in style
     assert "attachment itself can make a referent immediately obvious" in style
     assert "counts as the selected item anchor" in style
-    assert "full literal inventory in the private referenced and item_description fields" in style
+    assert (
+        "full literal inventory in the private referenced and item_description fields"
+        in style
+    )
     assert "do not force implicit wording when it would create real ambiguity" in style
     assert "specificity may come from how the message fits the attached item" in style
     assert "subject to minimum sufficient reference" in style
@@ -354,9 +489,15 @@ def test_shipped_opener_style_defaults_to_minimum_sufficient_visual_reference(cf
 def test_shipped_opener_style_derives_the_move_without_an_example_menu(cfg):
     """The selected item and profile text determine the move without a stock taxonomy."""
     style = " ".join(cfg.opener.style.lower().split())
-    assert "derive the conversational move from the selected item and explicit profile text" in style
+    assert (
+        "derive the conversational move from the selected item and explicit profile text"
+        in style
+    )
     assert "rather than choosing from a fixed taxonomy" in style
-    assert "profile text connection is specific only when the selected item supplies an essential part of the thought" in style
+    assert (
+        "profile text connection is specific only when the selected item supplies an essential part of the thought"
+        in style
+    )
     assert "different image supplies its concept, predicate, joke, or payoff" in style
     assert "ways this tends to look" not in style
     assert "examples, not a checklist" not in style
@@ -366,7 +507,9 @@ def test_shipped_opener_style_contains_no_concrete_opener_examples(cfg):
     raw = cfg.opener.style
     lowered = raw.lower()
     assert "examples of the edit" not in lowered
-    assert not any(line.strip().startswith(("No:", "Yes:")) for line in raw.splitlines())
+    assert not any(
+        line.strip().startswith(("No:", "Yes:")) for line in raw.splitlines()
+    )
     for copied_phrase in (
         "froze your butt off",
         "hot chocolate afterwards",
@@ -406,10 +549,19 @@ def test_shipped_opener_style_does_not_ship_the_item_selection_rule(cfg):
     # The item rule remains one instruction in the payload, but context candidates cannot
     # provide a selected opener's thought after the choice has been made.
     assert "other numbered images are selection only" in style
-    assert "do not borrow one for the selected opener's premise, predicate, joke, question" in style
-    assert "explicit profile text may support a complete natural connection back to the selected item" in style
+    assert (
+        "do not borrow one for the selected opener's premise, predicate, joke, question"
+        in style
+    )
+    assert (
+        "explicit profile text may support a complete natural connection back to the selected item"
+        in style
+    )
     assert "unnumbered context image as supporting context" not in style
-    assert "a natural claim she can correct can be effective, but it is not mandatory" in style
+    assert (
+        "a natural claim she can correct can be effective, but it is not mandatory"
+        in style
+    )
 
 
 def test_shipped_opener_style_ships_the_redesign_guardrails(cfg):
@@ -430,8 +582,14 @@ def test_shipped_opener_style_ships_the_redesign_guardrails(cfg):
     assert "guess the world, not her identity" in style
     assert "never a street, a neighbourhood, a hotel, a specific venue" in style
     assert "the way a well travelled friend would" in style
-    assert "when a place comes from recognizing the image rather than from her profile text" in style
-    assert "present it only as an inference and obey visual location turn boundary" in style
+    assert (
+        "when a place comes from recognizing the image rather than from her profile text"
+        in style
+    )
+    assert (
+        "present it only as an inference and obey visual location turn boundary"
+        in style
+    )
     assert "do not build on an inferred location as though it were correct" in style
     assert "do not state an inferred location as shared experience" in style
     assert "do not turn it into a generic compliment" in style
@@ -453,7 +611,10 @@ def test_shipped_opener_style_hedge_forms_are_wide_and_openings_are_varied(cfg):
     assert "the goal is calibrated uncertainty, not a particular lead in" in style
     assert "this is not a phrase menu" in style
     assert "choose the construction from context" in style
-    assert "never use a hedge as a substitute for the complete self contained claim" in style
+    assert (
+        "never use a hedge as a substitute for the complete self contained claim"
+        in style
+    )
     assert "my money is on" not in style
     assert "vary the opening" in style
     assert "let the specific item and angle determine the wording" in style
@@ -485,20 +646,34 @@ def test_shipped_opener_style_ships_the_spoken_register_rules(cfg):
     assert "no chat abbreviations" in style
     assert "idiom fit" in style
     assert "idiom only when it is contemporary" in style
-    assert "everyday, immediately understandable on first reading in ordinary conversation" in style
+    assert (
+        "everyday, immediately understandable on first reading in ordinary conversation"
+        in style
+    )
     assert "semantically apt to the item and point" in style
     assert "natural when spoken" in style
-    assert "idioms that are dated, literary, formal, obscure, forced, or tied to a passing trend" in style
-    assert "does not license internet slang, memes, or borrowed caption wording" in style
+    assert (
+        "idioms that are dated, literary, formal, obscure, forced, or tied to a passing trend"
+        in style
+    )
+    assert (
+        "does not license internet slang, memes, or borrowed caption wording" in style
+    )
     assert "makes her stop to decode the point" in style
     assert "say it once" in style
-    assert "never restate a connection or context the message itself already established" in style
+    assert (
+        "never restate a connection or context the message itself already established"
+        in style
+    )
     assert "compliment as remark" in style
     assert "rather than a verdict pronounced on her" in style
     assert "it never requires one" in style
     assert "vary the shape" in style
     assert "never because it is the easy mold" in style
-    assert "specific item determine the whole message's sentence count, clause pattern" in style
+    assert (
+        "specific item determine the whole message's sentence count, clause pattern"
+        in style
+    )
     assert "no structure is the default" in style
     assert "never point at the medium" in style
     assert "rephrase the sentence so no hyphen is needed" in style
@@ -538,7 +713,10 @@ def test_shipped_opener_style_ships_the_no_grading_rule(cfg):
     # 2026-09-06 (b): the one-question fallback is still subject to VARY THE SHAPE, not a
     # standing template of its own.
     assert "that fallback remains subject to vary the shape" in style
-    assert "is itself a template, so its construction must still come from the item" in style
+    assert (
+        "is itself a template, so its construction must still come from the item"
+        in style
+    )
     # De-templating (2026-08-16): naming the banned verdict vocabulary on the wire would hand a
     # minimal-thinking model salient wording to imitate -- the same mechanism that produced the
     # 2026-08-11 "I bet" incident. These words belong only in code comments, the design doc, and
@@ -615,7 +793,9 @@ def test_shipped_opener_style_folds_qualification_into_compliment_as_remark(cfg)
     # supplemented -- proving there is no longer a second, exception-free test that could
     # contradict NO GRADING's SUBSTITUTION TEST (whose PLAYFUL HYPERBOLE exception is pinned in
     # test_shipped_opener_style_ships_the_no_grading_rule).
-    assert "remains inseparable from a specific observation about that item" not in style
+    assert (
+        "remains inseparable from a specific observation about that item" not in style
+    )
     assert "cannot survive being detached from what was actually noticed" not in style
     # Distinct properties already on wire must survive the fold (narrow, not retire).
     assert "lands sideways the way a friend would mention it in passing" in style
@@ -691,15 +871,19 @@ def test_hinge_identity_top_name_band_matches_the_measured_ocr_band(cfg):
     dropped value here would silently defeat the scroll-top name check on the one platform
     that actually runs (Hinge; see live-bringup-status)."""
     band = cfg.apps["hinge"].get("identity_top_name_band")
-    assert band is not None, "apps.hinge.identity_top_name_band is missing from config.yaml"
+    assert band is not None, (
+        "apps.hinge.identity_top_name_band is missing from config.yaml"
+    )
     assert tuple(band) == (0.03, 0.130, 0.75, 0.250)
     fallback = cfg.apps["hinge"].get("identity_top_name_fallback_band")
     assert fallback is not None, "apps.hinge.identity_top_name_fallback_band is missing"
     assert tuple(fallback) == (0.03, 0.130, 0.75, 0.235)
     take_another_look = cfg.apps["hinge"].get(
-        "identity_top_name_take_another_look_band")
+        "identity_top_name_take_another_look_band"
+    )
     assert take_another_look is not None, (
-        "apps.hinge.identity_top_name_take_another_look_band is missing")
+        "apps.hinge.identity_top_name_take_another_look_band is missing"
+    )
     assert tuple(take_another_look) == (0.03, 0.215, 0.75, 0.285)
 
 
@@ -720,7 +904,8 @@ def test_shipped_config_actually_passes_validate():
     app at all, yet nothing here checked. It needs no network and no credentials.
     """
     from operation_love.config import validate
-    validate(load("config.yaml"))          # must not raise
+
+    validate(load("config.yaml"))  # must not raise
 
 
 def test_shipped_config_selects_something_the_registry_can_actually_run():
@@ -731,6 +916,7 @@ def test_shipped_config_selects_something_the_registry_can_actually_run():
     config that parses, validates, and then refuses to start. That gap is what this covers.
     """
     from operation_love import platforms
+
     cfg = load("config.yaml")
     assert platforms.check_runnable(cfg.enabled_apps) is None, (
         f"config.yaml ships enabled_apps={cfg.enabled_apps}, which cannot start: "

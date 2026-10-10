@@ -90,6 +90,7 @@ directly (`python tools/backfill_prompt_eras.py`) to regenerate it, or with `--c
 the checked-in file is still current without writing anything (useful in CI once this tool's
 output is expected to track ongoing prompt edits).
 """
+
 from __future__ import annotations
 
 import argparse
@@ -115,38 +116,57 @@ REPO_PATHS: tuple[str, str] = ("config.yaml", "operation_love/opener/opener.py")
 # docstring and payload tuple -- kept as a tuple (not re-derived from the live module) because
 # deriving it FROM the module we are explicitly not importing would defeat the point.
 CONST_NAMES: tuple[str, ...] = (
-    "_SYSTEM", "_SCHEMA", "_ITEM_PREAMBLE", "_ITEM_PREAMBLE_CONTEXT", "_ITEM_LABEL",
+    "_SYSTEM",
+    "_SCHEMA",
+    "_ITEM_PREAMBLE",
+    "_ITEM_PREAMBLE_CONTEXT",
+    "_ITEM_LABEL",
     "_CONTEXT_LABEL",
 )
 
 DEFAULT_OUT = Path("ops/prompt-eras.json")
 
-_FIELD_SEP = "\x1f"  # ASCII unit separator; never appears in a commit subject line in practice.
+_FIELD_SEP = (
+    "\x1f"  # ASCII unit separator; never appears in a commit subject line in practice.
+)
 
 
 # =========================================================================================
 # git plumbing
 # =========================================================================================
 
+
 @dataclass(frozen=True)
 class CommitRef:
     sha: str
-    date: str       # ISO 8601, from `git log --date=iso-strict`
+    date: str  # ISO 8601, from `git log --date=iso-strict`
     subject: str
 
 
-def discover_revisions(repo_root: Path, paths: Sequence[str] = REPO_PATHS) -> list[CommitRef]:
+def discover_revisions(
+    repo_root: Path, paths: Sequence[str] = REPO_PATHS
+) -> list[CommitRef]:
     """Every commit that touched any of `paths`, OLDEST FIRST (git log itself prints newest
     first; this reverses it, since every downstream consumer -- era grouping, label diffing --
     wants to walk history forward)."""
     result = subprocess.run(
-        ["git", "log", f"--format=%H{_FIELD_SEP}%ad{_FIELD_SEP}%s", "--date=iso-strict",
-         "--", *paths],
-        cwd=repo_root, capture_output=True, text=True,
-        check=False)  # a nonzero exit is reported below, not raised
+        [
+            "git",
+            "log",
+            f"--format=%H{_FIELD_SEP}%ad{_FIELD_SEP}%s",
+            "--date=iso-strict",
+            "--",
+            *paths,
+        ],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )  # a nonzero exit is reported below, not raised
     if result.returncode != 0:
         raise RuntimeError(
-            f"git log failed (is {repo_root} a git checkout?): {result.stderr.strip()}")
+            f"git log failed (is {repo_root} a git checkout?): {result.stderr.strip()}"
+        )
     refs: list[CommitRef] = []
     for line in result.stdout.splitlines():
         if not line.strip():
@@ -162,9 +182,12 @@ def git_show(repo_root: Path, rev: str, path: str) -> str | None:
     nonzero exit from `git show` -- e.g. the path was added later -- is reported this way rather
     than raising, since a missing historical file is exactly the kind of thing this tool's BE
     HONEST reasons are for, not a crash)."""
-    result = subprocess.run(["git", "show", f"{rev}:{path}"], cwd=repo_root,
-                            capture_output=True,
-                            check=False)  # a missing historical path returns None below
+    result = subprocess.run(
+        ["git", "show", f"{rev}:{path}"],
+        cwd=repo_root,
+        capture_output=True,
+        check=False,
+    )  # a missing historical path returns None below
     if result.returncode != 0:
         return None
     return result.stdout.decode("utf-8", errors="replace")
@@ -173,6 +196,7 @@ def git_show(repo_root: Path, rev: str, path: str) -> str | None:
 # =========================================================================================
 # Historical constant / style extraction -- AST literal_eval only, no exec, no import.
 # =========================================================================================
+
 
 def extract_constants(source: str) -> tuple[dict[str, Any], dict[str, str]]:
     """AST-parse `source` (a historical opener.py revision's full text) and literal_eval() the
@@ -206,21 +230,32 @@ def extract_constants(source: str) -> tuple[dict[str, Any], dict[str, str]]:
         # cares about so evaluate_revision's per-name reasons stay uniform rather than needing a
         # separate "whole file unparseable" code path.
         for name in CONST_NAMES:
-            failures[name] = f"opener.py at this revision does not parse: {type(exc).__name__}: {exc}"
+            failures[name] = (
+                f"opener.py at this revision does not parse: {type(exc).__name__}: {exc}"
+            )
         return values, failures
     for node in tree.body:
-        if not (isinstance(node, ast.Assign) and len(node.targets) == 1
-                and isinstance(node.targets[0], ast.Name)):
+        if not (
+            isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+        ):
             continue
         name = node.targets[0].id
         if name not in CONST_NAMES:
             continue
         try:
             values[name] = ast.literal_eval(node.value)
-            failures.pop(name, None)  # a later successful assignment clears an earlier failure
+            failures.pop(
+                name, None
+            )  # a later successful assignment clears an earlier failure
         except (ValueError, TypeError, SyntaxError, MemoryError, RecursionError) as exc:
-            failures[name] = f"{name} is not a plain literal at this revision: {type(exc).__name__}: {exc}"
-            values.pop(name, None)  # a later failing assignment shadows an earlier good value
+            failures[name] = (
+                f"{name} is not a plain literal at this revision: {type(exc).__name__}: {exc}"
+            )
+            values.pop(
+                name, None
+            )  # a later failing assignment shadows an earlier good value
     return values, failures
 
 
@@ -238,25 +273,46 @@ def extract_style(source: str) -> tuple[str | None, str | None]:
     try:
         doc = yaml.safe_load(source)
     except yaml.YAMLError as exc:
-        return None, f"config.yaml does not parse as YAML at this revision: {type(exc).__name__}: {exc}"
+        return (
+            None,
+            f"config.yaml does not parse as YAML at this revision: {type(exc).__name__}: {exc}",
+        )
     if not isinstance(doc, dict):
-        return None, f"config.yaml did not parse to a mapping at this revision (got {type(doc).__name__})"
+        return (
+            None,
+            f"config.yaml did not parse to a mapping at this revision (got {type(doc).__name__})",
+        )
     opener_section = doc.get("opener")
     if opener_section is None:
         return None, "config.yaml has no top level 'opener:' section at this revision"
     if not isinstance(opener_section, dict):
-        return None, (f"config.yaml's 'opener' section is not a mapping at this revision "
-                      f"(got {type(opener_section).__name__})")
+        return None, (
+            f"config.yaml's 'opener' section is not a mapping at this revision "
+            f"(got {type(opener_section).__name__})"
+        )
     style = opener_section.get("style")
     if style is None:
-        return None, "config.yaml's 'opener' section has no 'style' key at this revision"
+        return (
+            None,
+            "config.yaml's 'opener' section has no 'style' key at this revision",
+        )
     if not isinstance(style, str):
-        return None, f"config.yaml's opener.style is not a string at this revision (got {type(style).__name__})"
+        return (
+            None,
+            f"config.yaml's opener.style is not a string at this revision (got {type(style).__name__})",
+        )
     return style, None
 
 
-def compute_prompt_stamp(style: str, system: str, schema: dict, item_preamble: str,
-                          item_preamble_context: str, item_label: str, context_label: str) -> str:
+def compute_prompt_stamp(
+    style: str,
+    system: str,
+    schema: dict,
+    item_preamble: str,
+    item_preamble_context: str,
+    item_label: str,
+    context_label: str,
+) -> str:
     """Byte-for-byte the SAME algorithm as operation_love.opener.opener.prompt_stamp(): a NUL
     join of the seven components in the SAME order, canonicalized the SAME way, sha256 hex
     digested. Deliberately re-implemented here rather than imported (see this module's docstring
@@ -265,11 +321,19 @@ def compute_prompt_stamp(style: str, system: str, schema: dict, item_preamble: s
     agree on the CURRENT working tree, the one case where both can be computed and compared
     directly.
     """
-    payload = "\x00".join((
-        str(style), system,
-        json.dumps(schema, sort_keys=True, separators=(",", ":"), ensure_ascii=True),
-        item_preamble, item_preamble_context, item_label, context_label,
-    ))
+    payload = "\x00".join(
+        (
+            str(style),
+            system,
+            json.dumps(
+                schema, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+            ),
+            item_preamble,
+            item_preamble_context,
+            item_label,
+            context_label,
+        )
+    )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
@@ -312,14 +376,15 @@ def extract_rule_names(text: str) -> list[str]:
 # Per-revision evaluation
 # =========================================================================================
 
+
 @dataclass
 class RevisionEval:
     commit: str
     date: str
     subject: str
-    digest: str | None          # None means unevaluable -- see `reasons`
+    digest: str | None  # None means unevaluable -- see `reasons`
     reasons: list[str] = field(default_factory=list)
-    rules: list[str] = field(default_factory=list)   # empty when digest is None
+    rules: list[str] = field(default_factory=list)  # empty when digest is None
 
 
 @dataclass
@@ -329,14 +394,20 @@ class WorkingTreeEval:
     subject behind these bytes -- a distinct shape makes "this has no commit" a type level fact
     rather than a None smuggled into a field that means something else for every other caller.
     """
-    digest: str | None          # None means unevaluable -- see `reasons`
+
+    digest: str | None  # None means unevaluable -- see `reasons`
     reasons: list[str] = field(default_factory=list)
-    rules: list[str] = field(default_factory=list)   # empty when digest is None
+    rules: list[str] = field(default_factory=list)  # empty when digest is None
 
 
-def _evaluate_sources(opener_path: str, config_path: str, opener_src: str | None,
-                       config_src: str | None, *,
-                       context: str = "this revision") -> tuple[str | None, list[str], list[str]]:
+def _evaluate_sources(
+    opener_path: str,
+    config_path: str,
+    opener_src: str | None,
+    config_src: str | None,
+    *,
+    context: str = "this revision",
+) -> tuple[str | None, list[str], list[str]]:
     """The reasons/digest/rules core shared by evaluate_revision() (bytes from `git show`) and
     evaluate_working_tree() (bytes read straight off disk) -- factored out so the two can never
     silently drift into computing the digest two different ways. `context` names what "does not
@@ -357,7 +428,9 @@ def _evaluate_sources(opener_path: str, config_path: str, opener_src: str | None
     if opener_src is not None:
         values, failures = extract_constants(opener_src)
         reasons.extend(f"{name}: {reason}" for name, reason in sorted(failures.items()))
-        missing = [name for name in CONST_NAMES if name not in values and name not in failures]
+        missing = [
+            name for name in CONST_NAMES if name not in values and name not in failures
+        ]
         if missing:
             reasons.append(f"missing constant(s) at {context}: {missing}")
 
@@ -371,14 +444,21 @@ def _evaluate_sources(opener_path: str, config_path: str, opener_src: str | None
         return None, reasons, []
 
     digest = compute_prompt_stamp(
-        style, values["_SYSTEM"], values["_SCHEMA"], values["_ITEM_PREAMBLE"],
-        values["_ITEM_PREAMBLE_CONTEXT"], values["_ITEM_LABEL"], values["_CONTEXT_LABEL"])
+        style,
+        values["_SYSTEM"],
+        values["_SCHEMA"],
+        values["_ITEM_PREAMBLE"],
+        values["_ITEM_PREAMBLE_CONTEXT"],
+        values["_ITEM_LABEL"],
+        values["_CONTEXT_LABEL"],
+    )
     rules = extract_rule_names(values["_SYSTEM"] + "\n" + style)
     return digest, [], rules
 
 
-def evaluate_revision(repo_root: Path, ref: CommitRef,
-                       paths: tuple[str, str] = REPO_PATHS) -> RevisionEval:
+def evaluate_revision(
+    repo_root: Path, ref: CommitRef, paths: tuple[str, str] = REPO_PATHS
+) -> RevisionEval:
     """Evaluate one commit: read both historical files, extract every needed constant, and
     either compute its digest (recording the named rules on the wire) or record every concrete
     reason it could not be computed. Never raises for an ordinary historical gap (missing file,
@@ -389,12 +469,15 @@ def evaluate_revision(repo_root: Path, ref: CommitRef,
     config_path, opener_path = paths
     opener_src = git_show(repo_root, ref.sha, opener_path)
     config_src = git_show(repo_root, ref.sha, config_path)
-    digest, reasons, rules = _evaluate_sources(opener_path, config_path, opener_src, config_src)
+    digest, reasons, rules = _evaluate_sources(
+        opener_path, config_path, opener_src, config_src
+    )
     return RevisionEval(ref.sha, ref.date, ref.subject, digest, reasons, rules)
 
 
-def evaluate_working_tree(repo_root: Path,
-                          paths: tuple[str, str] = REPO_PATHS) -> WorkingTreeEval:
+def evaluate_working_tree(
+    repo_root: Path, paths: tuple[str, str] = REPO_PATHS
+) -> WorkingTreeEval:
     """Evaluate the CURRENT files on disk at `repo_root` -- the uncommitted working tree -- using
     the exact same extraction/digest pipeline as evaluate_revision() (see _evaluate_sources()),
     the only difference being that bytes come from Path.read_text() rather than `git show
@@ -409,16 +492,26 @@ def evaluate_working_tree(repo_root: Path,
     config_path, opener_path = paths
     opener_file = repo_root / opener_path
     config_file = repo_root / config_path
-    opener_src = opener_file.read_text(encoding="utf-8") if opener_file.is_file() else None
-    config_src = config_file.read_text(encoding="utf-8") if config_file.is_file() else None
+    opener_src = (
+        opener_file.read_text(encoding="utf-8") if opener_file.is_file() else None
+    )
+    config_src = (
+        config_file.read_text(encoding="utf-8") if config_file.is_file() else None
+    )
     digest, reasons, rules = _evaluate_sources(
-        opener_path, config_path, opener_src, config_src, context="the current working tree")
+        opener_path,
+        config_path,
+        opener_src,
+        config_src,
+        context="the current working tree",
+    )
     return WorkingTreeEval(digest=digest, reasons=reasons, rules=rules)
 
 
 # =========================================================================================
 # Era grouping, labeling, and registry assembly
 # =========================================================================================
+
 
 def _rule_diff_descriptor(rules: list[str], previous_rules: list[str] | None) -> str:
     """The "what changed in the named rule set" half of a label -- e.g. "+RULE_ADDED;
@@ -444,8 +537,12 @@ def _rule_diff_descriptor(rules: list[str], previous_rules: list[str] | None) ->
     return descriptor
 
 
-def _label_for_era(rules: list[str], previous_rules: list[str] | None,
-                    first_date: str, first_commit: str) -> str:
+def _label_for_era(
+    rules: list[str],
+    previous_rules: list[str] | None,
+    first_date: str,
+    first_commit: str,
+) -> str:
     """A short, deterministic, unique-by-construction label: the era's first commit's date and
     short SHA (unique -- two eras never share a first commit) followed by a short digest of what
     changed in the named-rule set versus the era immediately before it in history. See this
@@ -458,7 +555,9 @@ def _label_for_era(rules: list[str], previous_rules: list[str] | None,
 # The label prefix every provisional working-tree entry starts with -- deliberately loud and
 # repeated in both words ("UNCOMMITTED" and "PROVISIONAL") so truncated or out-of-context display
 # (a log line, a narrow terminal) still can't be mistaken for a shipped era's date-and-sha label.
-_WORKING_TREE_LABEL_PREFIX = "UNCOMMITTED WORKING TREE -- PROVISIONAL, not a shipped era"
+_WORKING_TREE_LABEL_PREFIX = (
+    "UNCOMMITTED WORKING TREE -- PROVISIONAL, not a shipped era"
+)
 
 _WORKING_TREE_NOTE = (
     "Computed from the files on disk right now (Path.read_text), not from git history -- there "
@@ -471,8 +570,9 @@ _WORKING_TREE_NOTE = (
 )
 
 
-def build_working_tree_entry(evaluation: WorkingTreeEval, era_order: list[str],
-                              eras: dict[str, dict[str, Any]]) -> dict[str, Any]:
+def build_working_tree_entry(
+    evaluation: WorkingTreeEval, era_order: list[str], eras: dict[str, dict[str, Any]]
+) -> dict[str, Any]:
     """Build the JSON-serializable `working_tree` registry entry from a WorkingTreeEval. This is
     a SEPARATE top level key from `eras` (see build_registry()), never appended to that list:
     mixing an uncommitted, possibly-transient digest into the same list as immutable committed
@@ -520,9 +620,11 @@ def build_working_tree_entry(evaluation: WorkingTreeEval, era_order: list[str],
     }
 
 
-def build_registry(evaluations: Sequence[RevisionEval],
-                   paths: tuple[str, str] = REPO_PATHS,
-                   working_tree: WorkingTreeEval | None = None) -> dict[str, Any]:
+def build_registry(
+    evaluations: Sequence[RevisionEval],
+    paths: tuple[str, str] = REPO_PATHS,
+    working_tree: WorkingTreeEval | None = None,
+) -> dict[str, Any]:
     """Assemble the full JSON-serializable registry document from every revision's evaluation
     (oldest first, as discover_revisions/evaluate_revision produce them). Pure and deterministic
     with respect to `evaluations`: the same sequence always produces a byte-identical `eras` /
@@ -545,8 +647,12 @@ def build_registry(evaluations: Sequence[RevisionEval],
             entry = {
                 "prompt_sha256": ev.digest,
                 "label": "",  # filled in below, once every era's rule list is known
-                "first_commit": ev.commit, "first_date": ev.date, "first_subject": ev.subject,
-                "last_commit": ev.commit, "last_date": ev.date, "last_subject": ev.subject,
+                "first_commit": ev.commit,
+                "first_date": ev.date,
+                "first_subject": ev.subject,
+                "last_commit": ev.commit,
+                "last_date": ev.date,
+                "last_subject": ev.subject,
                 "commit_count": 0,
                 "commits": [],
                 "rules": ev.rules,
@@ -554,15 +660,19 @@ def build_registry(evaluations: Sequence[RevisionEval],
             eras[ev.digest] = entry
             era_order.append(ev.digest)
         entry["last_commit"], entry["last_date"], entry["last_subject"] = (
-            ev.commit, ev.date, ev.subject)
+            ev.commit,
+            ev.date,
+            ev.subject,
+        )
         entry["commits"].append(ev.commit)
         entry["commit_count"] += 1
 
     previous_rules: list[str] | None = None
     for digest in era_order:
         entry = eras[digest]
-        entry["label"] = _label_for_era(entry["rules"], previous_rules,
-                                        entry["first_date"], entry["first_commit"])
+        entry["label"] = _label_for_era(
+            entry["rules"], previous_rules, entry["first_date"], entry["first_commit"]
+        )
         previous_rules = entry["rules"]
 
     doc: dict[str, Any] = {
@@ -578,8 +688,8 @@ def build_registry(evaluations: Sequence[RevisionEval],
             "_CONTEXT_LABEL (operation_love/opener/opener.py)",
         ],
         "digest_algorithm": "sha256(NUL.join(digest_components), utf-8); must match "
-                            "operation_love.opener.opener.prompt_stamp() exactly -- see "
-                            "tests/test_backfill_prompt_eras.py",
+        "operation_love.opener.opener.prompt_stamp() exactly -- see "
+        "tests/test_backfill_prompt_eras.py",
         "source_paths": list(paths),
         "generated_from": {
             "total_revisions": len(evaluations),
@@ -588,7 +698,12 @@ def build_registry(evaluations: Sequence[RevisionEval],
         },
         "eras": [eras[digest] for digest in era_order],
         "unevaluable_revisions": [
-            {"commit": ev.commit, "date": ev.date, "subject": ev.subject, "reasons": ev.reasons}
+            {
+                "commit": ev.commit,
+                "date": ev.date,
+                "subject": ev.subject,
+                "reasons": ev.reasons,
+            }
             for ev in unevaluated
         ],
     }
@@ -606,9 +721,12 @@ def render_registry(doc: dict[str, Any]) -> str:
     return json.dumps(doc, indent=2, sort_keys=False) + "\n"
 
 
-def backfill(repo_root: Path, paths: tuple[str, str] = REPO_PATHS, *,
-            include_working_tree: bool = True
-            ) -> tuple[dict[str, Any], list[RevisionEval]]:
+def backfill(
+    repo_root: Path,
+    paths: tuple[str, str] = REPO_PATHS,
+    *,
+    include_working_tree: bool = True,
+) -> tuple[dict[str, Any], list[RevisionEval]]:
     """Run the full pipeline against a real (or test-fixture) git checkout at `repo_root`:
     discover every touching commit, evaluate each one, and build the registry document. Returns
     (doc, evaluations) so a caller (main(), or a test) can report on the evaluations directly
@@ -621,7 +739,9 @@ def backfill(repo_root: Path, paths: tuple[str, str] = REPO_PATHS, *,
     """
     revisions = discover_revisions(repo_root, paths)
     evaluations = [evaluate_revision(repo_root, ref, paths) for ref in revisions]
-    working_tree = evaluate_working_tree(repo_root, paths) if include_working_tree else None
+    working_tree = (
+        evaluate_working_tree(repo_root, paths) if include_working_tree else None
+    )
     doc = build_registry(evaluations, paths, working_tree=working_tree)
     return doc, evaluations
 
@@ -630,31 +750,49 @@ def backfill(repo_root: Path, paths: tuple[str, str] = REPO_PATHS, *,
 # CLI
 # =========================================================================================
 
+
 def _build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python tools/backfill_prompt_eras.py",
         description="Reconstruct every historical opener prompt era from git history and write "
-                    "the ops/prompt-eras.json registry tools/opener_corpus_report.py reads.")
-    parser.add_argument("--repo-root", default=".",
-                        help="git checkout to read history from (default: current directory)")
-    parser.add_argument("--out", default=str(DEFAULT_OUT),
-                        help=f"registry file to write (default {DEFAULT_OUT})")
-    parser.add_argument("--paths", nargs=2, metavar=("CONFIG_YAML", "OPENER_PY"),
-                        default=list(REPO_PATHS),
-                        help="override the two tracked paths (default: this repo's real ones; "
-                             "tests use this to point at a fixture repo's own file names)")
-    parser.add_argument("--check", action="store_true",
-                        help="do not write --out; exit 1 if regenerating it would change its "
-                             "committed-history contents (prints a diff-free staleness verdict "
-                             "only; a dirty working tree changing only the provisional "
-                             "'working_tree' entry is NOT staleness -- see --no-working-tree)")
-    parser.add_argument("--no-working-tree", action="store_true",
-                        help="omit the provisional 'working_tree' entry (the CURRENT files on "
-                             "disk, evaluated the same way as history but with no commit behind "
-                             "them) from the output. By default it IS included, unmistakably "
-                             "marked provisional, so this registry answers 'have we tried this' "
-                             "correctly even for a rule that only exists in the working tree so "
-                             "far -- see this module's docstring's WORKING TREE section")
+        "the ops/prompt-eras.json registry tools/opener_corpus_report.py reads.",
+    )
+    parser.add_argument(
+        "--repo-root",
+        default=".",
+        help="git checkout to read history from (default: current directory)",
+    )
+    parser.add_argument(
+        "--out",
+        default=str(DEFAULT_OUT),
+        help=f"registry file to write (default {DEFAULT_OUT})",
+    )
+    parser.add_argument(
+        "--paths",
+        nargs=2,
+        metavar=("CONFIG_YAML", "OPENER_PY"),
+        default=list(REPO_PATHS),
+        help="override the two tracked paths (default: this repo's real ones; "
+        "tests use this to point at a fixture repo's own file names)",
+    )
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="do not write --out; exit 1 if regenerating it would change its "
+        "committed-history contents (prints a diff-free staleness verdict "
+        "only; a dirty working tree changing only the provisional "
+        "'working_tree' entry is NOT staleness -- see --no-working-tree)",
+    )
+    parser.add_argument(
+        "--no-working-tree",
+        action="store_true",
+        help="omit the provisional 'working_tree' entry (the CURRENT files on "
+        "disk, evaluated the same way as history but with no commit behind "
+        "them) from the output. By default it IS included, unmistakably "
+        "marked provisional, so this registry answers 'have we tried this' "
+        "correctly even for a rule that only exists in the working tree so "
+        "far -- see this module's docstring's WORKING TREE section",
+    )
     return parser
 
 
@@ -665,7 +803,9 @@ def main(argv: list[str] | None = None) -> int:
     include_working_tree = not args.no_working_tree
 
     try:
-        doc, evaluations = backfill(repo_root, paths, include_working_tree=include_working_tree)
+        doc, evaluations = backfill(
+            repo_root, paths, include_working_tree=include_working_tree
+        )
     except RuntimeError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
@@ -673,26 +813,38 @@ def main(argv: list[str] | None = None) -> int:
     total = doc["generated_from"]["total_revisions"]
     evaluated_n = doc["generated_from"]["evaluated_revisions"]
     unevaluable_n = doc["generated_from"]["unevaluable_revisions"]
-    print(f"Evaluated {evaluated_n}/{total} revision(s) touching {' and '.join(paths)}; "
-         f"{unevaluable_n} unevaluable (see the registry's 'unevaluable_revisions').",
-         file=sys.stderr)
-    print(f"Found {len(doc['eras'])} distinct prompt era(s) among the evaluated revisions.",
-         file=sys.stderr)
+    print(
+        f"Evaluated {evaluated_n}/{total} revision(s) touching {' and '.join(paths)}; "
+        f"{unevaluable_n} unevaluable (see the registry's 'unevaluable_revisions').",
+        file=sys.stderr,
+    )
+    print(
+        f"Found {len(doc['eras'])} distinct prompt era(s) among the evaluated revisions.",
+        file=sys.stderr,
+    )
 
     working_tree = doc.get("working_tree")
     if working_tree is None:
         print("Working tree: not evaluated (--no-working-tree).", file=sys.stderr)
     elif working_tree["prompt_sha256"] is None:
-        print("Working tree: UNEVALUABLE -- see doc['working_tree']['reasons']: "
-             f"{working_tree['reasons']}", file=sys.stderr)
+        print(
+            "Working tree: UNEVALUABLE -- see doc['working_tree']['reasons']: "
+            f"{working_tree['reasons']}",
+            file=sys.stderr,
+        )
     elif working_tree["matches_known_committed_era"] is not None:
-        print(f"Working tree: matches already-known committed era "
-             f"{working_tree['matches_known_committed_era'][:12]}... (no uncommitted prompt "
-             "changes).", file=sys.stderr)
+        print(
+            f"Working tree: matches already-known committed era "
+            f"{working_tree['matches_known_committed_era'][:12]}... (no uncommitted prompt "
+            "changes).",
+            file=sys.stderr,
+        )
     else:
-        print(f"Working tree: NEW provisional era, digest "
-             f"{working_tree['prompt_sha256'][:12]}... (uncommitted -- see doc['working_tree']).",
-             file=sys.stderr)
+        print(
+            f"Working tree: NEW provisional era, digest "
+            f"{working_tree['prompt_sha256'][:12]}... (uncommitted -- see doc['working_tree']).",
+            file=sys.stderr,
+        )
 
     rendered = render_registry(doc)
     out_path = Path(args.out)
@@ -702,8 +854,10 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{out_path} is up to date.", file=sys.stderr)
             return 0
         if existing is None:
-            print(f"ERROR: {out_path} does not exist; run without --check to create it.",
-                 file=sys.stderr)
+            print(
+                f"ERROR: {out_path} does not exist; run without --check to create it.",
+                file=sys.stderr,
+            )
             return 1
         # An exact match failed, but the provisional 'working_tree' entry is EXPECTED to drift on
         # every uncommitted edit -- that must never count as the registry being stale. Retry the
@@ -713,18 +867,27 @@ def main(argv: list[str] | None = None) -> int:
         try:
             existing_doc = json.loads(existing)
         except json.JSONDecodeError as exc:
-            print(f"ERROR: {out_path} is stale relative to git history (and does not even parse "
-                 f"as JSON: {exc}); re-run without --check to regenerate it.", file=sys.stderr)
+            print(
+                f"ERROR: {out_path} is stale relative to git history (and does not even parse "
+                f"as JSON: {exc}); re-run without --check to regenerate it.",
+                file=sys.stderr,
+            )
             return 1
         existing_hist = {k: v for k, v in existing_doc.items() if k != "working_tree"}
         fresh_hist = {k: v for k, v in doc.items() if k != "working_tree"}
         if existing_hist == fresh_hist:
-            print(f"{out_path} is up to date (committed-history portion matches; only the "
-                 "provisional 'working_tree' entry differs, which is expected in a dirty "
-                 "checkout and is NOT treated as staleness).", file=sys.stderr)
+            print(
+                f"{out_path} is up to date (committed-history portion matches; only the "
+                "provisional 'working_tree' entry differs, which is expected in a dirty "
+                "checkout and is NOT treated as staleness).",
+                file=sys.stderr,
+            )
             return 0
-        print(f"ERROR: {out_path} is stale relative to git history; re-run without --check "
-             "to regenerate it.", file=sys.stderr)
+        print(
+            f"ERROR: {out_path} is stale relative to git history; re-run without --check "
+            "to regenerate it.",
+            file=sys.stderr,
+        )
         return 1
 
     out_path.write_text(rendered, encoding="utf-8")

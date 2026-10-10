@@ -37,6 +37,7 @@ run logged -- captures, likes, passes, refusals) are silently skipped: this tool
 about the four record types named above and is best-effort about everything else, matching the
 rest of this diagnostic's own philosophy of never being the thing that breaks a read of a run.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -55,20 +56,51 @@ _GESTURE_ACTION = "capture_gesture_timing"
 # Keys on a raw JSONL record that are bookkeeping, not a timing bucket. Anything else numeric
 # left on the record IS a bucket -- this is deliberate: a bucket added to hinge.py's ledger
 # later shows up here automatically, with no matching change needed in this reader.
-_ITERATION_META_KEYS = frozenset({
-    "ts", "action", "frame_index", "exit_reason", "iter_wall_s",
-    "before", "after", "anchor", "kept_before"})
-_FOLD_META_KEYS = frozenset({
-    "ts", "action", "photos", "outcome", "fold_wall_s",
-    "before", "after", "anchor", "kept_before"})
-_GESTURE_META_KEYS = frozenset({
-    "ts", "action", "direction", "frame_index", "gesture_wall_s",
-    "before", "after", "anchor", "kept_before"})
+_ITERATION_META_KEYS = frozenset(
+    {
+        "ts",
+        "action",
+        "frame_index",
+        "exit_reason",
+        "iter_wall_s",
+        "before",
+        "after",
+        "anchor",
+        "kept_before",
+    }
+)
+_FOLD_META_KEYS = frozenset(
+    {
+        "ts",
+        "action",
+        "photos",
+        "outcome",
+        "fold_wall_s",
+        "before",
+        "after",
+        "anchor",
+        "kept_before",
+    }
+)
+_GESTURE_META_KEYS = frozenset(
+    {
+        "ts",
+        "action",
+        "direction",
+        "frame_index",
+        "gesture_wall_s",
+        "before",
+        "after",
+        "anchor",
+        "kept_before",
+    }
+)
 
 
 @dataclass
 class BucketStats:
     """One named cost's contribution across every record it was seen in."""
+
     total_s: float
     mean_s: float
     median_s: float
@@ -78,8 +110,9 @@ class BucketStats:
 @dataclass
 class TimingAttribution:
     """The full per-bucket breakdown for one phase (the read loop, or the fold)."""
-    records: int                       # how many rows this was built from
-    wall_s_total: float                # sum of every record's own total (iter_wall_s/fold_wall_s)
+
+    records: int  # how many rows this was built from
+    wall_s_total: float  # sum of every record's own total (iter_wall_s/fold_wall_s)
     buckets: dict[str, BucketStats] = field(default_factory=dict)
 
     @property
@@ -142,8 +175,9 @@ def _finite_timing_value(value: object) -> float | None:
     return numeric if math.isfinite(numeric) else None
 
 
-def _summarize(records: list[dict], *, wall_key: str, meta_keys: frozenset[str],
-              action: str) -> TimingAttribution:
+def _summarize(
+    records: list[dict], *, wall_key: str, meta_keys: frozenset[str], action: str
+) -> TimingAttribution:
     rows = [r for r in records if r.get("action") == action]
     wall_s_total = 0.0
     bucket_values: dict[str, list[float]] = {}
@@ -158,22 +192,33 @@ def _summarize(records: list[dict], *, wall_key: str, meta_keys: frozenset[str],
             bucket_values.setdefault(key, []).append(numeric)
     buckets = {
         key: BucketStats(
-            total_s=sum(values), mean_s=statistics.fmean(values),
-            median_s=statistics.median(values), n=len(values))
-        for key, values in bucket_values.items()}
-    return TimingAttribution(records=len(rows), wall_s_total=wall_s_total, buckets=buckets)
+            total_s=sum(values),
+            mean_s=statistics.fmean(values),
+            median_s=statistics.median(values),
+            n=len(values),
+        )
+        for key, values in bucket_values.items()
+    }
+    return TimingAttribution(
+        records=len(rows), wall_s_total=wall_s_total, buckets=buckets
+    )
 
 
 def summarize_iteration_timing(records: list[dict]) -> TimingAttribution:
     """Attribution over every `capture_iteration_timing` row (the read loop, per-frame)."""
-    return _summarize(records, wall_key="iter_wall_s", meta_keys=_ITERATION_META_KEYS,
-                      action=_ITERATION_ACTION)
+    return _summarize(
+        records,
+        wall_key="iter_wall_s",
+        meta_keys=_ITERATION_META_KEYS,
+        action=_ITERATION_ACTION,
+    )
 
 
 def summarize_fold_timing(records: list[dict]) -> TimingAttribution:
     """Attribution over every `capture_fold_timing` row (the post-loop item-index fold)."""
-    return _summarize(records, wall_key="fold_wall_s", meta_keys=_FOLD_META_KEYS,
-                      action=_FOLD_ACTION)
+    return _summarize(
+        records, wall_key="fold_wall_s", meta_keys=_FOLD_META_KEYS, action=_FOLD_ACTION
+    )
 
 
 def summarize_gesture_timing(records: list[dict]) -> TimingAttribution:
@@ -181,8 +226,12 @@ def summarize_gesture_timing(records: list[dict]) -> TimingAttribution:
     loop's own "gesture_s" bucket, decomposing each humanized read-scroll into the named costs
     `_scroll`/`_swipe` and the touch transport (UHID, or the ADB fallback) actually measured.
     """
-    return _summarize(records, wall_key="gesture_wall_s", meta_keys=_GESTURE_META_KEYS,
-                      action=_GESTURE_ACTION)
+    return _summarize(
+        records,
+        wall_key="gesture_wall_s",
+        meta_keys=_GESTURE_META_KEYS,
+        action=_GESTURE_ACTION,
+    )
 
 
 def _capture_count(records: list[dict]) -> int:
@@ -202,7 +251,9 @@ def _bucket_rows(attribution: TimingAttribution) -> list[tuple[str, BucketStats]
     it is the admission that everything else did not add up to the whole."""
     named = sorted(
         ((k, v) for k, v in attribution.buckets.items() if k != "unattributed_s"),
-        key=lambda kv: kv[1].total_s, reverse=True)
+        key=lambda kv: kv[1].total_s,
+        reverse=True,
+    )
     if "unattributed_s" in attribution.buckets:
         named.append(("unattributed_s", attribution.buckets["unattributed_s"]))
     return named
@@ -217,21 +268,31 @@ def _format_section(title: str, attribution: TimingAttribution, *, per: str) -> 
     lines.append(header)
     lines.append("  " + "-" * (len(header) - 2))
     for key, stats in _bucket_rows(attribution):
-        share = (100.0 * stats.total_s / attribution.wall_s_total
-                 if attribution.wall_s_total > 0 else 0.0)
+        share = (
+            100.0 * stats.total_s / attribution.wall_s_total
+            if attribution.wall_s_total > 0
+            else 0.0
+        )
         lines.append(
             f"  {key:<28}{stats.total_s:>10.3f}{stats.mean_s:>10.3f}"
-            f"{stats.median_s:>10.3f}{stats.n:>6d}{share:>7.1f}%")
+            f"{stats.median_s:>10.3f}{stats.n:>6d}{share:>7.1f}%"
+        )
     lines.append("  " + "-" * (len(header) - 2))
     lines.append(
         f"  {attribution.records} {per}, {attribution.wall_s_total:.3f}s total wall clock, "
-        f"unattributed = {attribution.unattributed_share_pct:.1f}%")
+        f"unattributed = {attribution.unattributed_share_pct:.1f}%"
+    )
     return "\n".join(lines)
 
 
-def format_report(iteration_records: list[dict], fold_records: list[dict],
-                  all_records: list[dict], *, source: str,
-                  gesture_records: list[dict] | None = None) -> str:
+def format_report(
+    iteration_records: list[dict],
+    fold_records: list[dict],
+    all_records: list[dict],
+    *,
+    source: str,
+    gesture_records: list[dict] | None = None,
+) -> str:
     iter_attr = summarize_iteration_timing(iteration_records)
     fold_attr = summarize_fold_timing(fold_records)
     gesture_attr = summarize_gesture_timing(gesture_records or [])
@@ -254,8 +315,13 @@ def format_report(iteration_records: list[dict], fold_records: list[dict],
     return "\n".join(lines)
 
 
-def _as_json(iteration_records: list[dict], fold_records: list[dict],
-            all_records: list[dict], *, gesture_records: list[dict] | None = None) -> dict:
+def _as_json(
+    iteration_records: list[dict],
+    fold_records: list[dict],
+    all_records: list[dict],
+    *,
+    gesture_records: list[dict] | None = None,
+) -> dict:
     iter_attr = summarize_iteration_timing(iteration_records)
     fold_attr = summarize_fold_timing(fold_records)
     gesture_attr = summarize_gesture_timing(gesture_records or [])
@@ -266,9 +332,14 @@ def _as_json(iteration_records: list[dict], fold_records: list[dict],
             "wall_s_total": round(attribution.wall_s_total, 6),
             "unattributed_share_pct": round(attribution.unattributed_share_pct, 3),
             "buckets": {
-                key: {"total_s": round(stats.total_s, 6), "mean_s": round(stats.mean_s, 6),
-                      "median_s": round(stats.median_s, 6), "n": stats.n}
-                for key, stats in attribution.buckets.items()},
+                key: {
+                    "total_s": round(stats.total_s, 6),
+                    "mean_s": round(stats.mean_s, 6),
+                    "median_s": round(stats.median_s, 6),
+                    "n": stats.n,
+                }
+                for key, stats in attribution.buckets.items()
+            },
         }
 
     return {
@@ -282,11 +353,15 @@ def _as_json(iteration_records: list[dict], fold_records: list[dict],
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
-        "path", type=Path,
-        help="a run's actions.jsonl, or the run directory containing it")
+        "path",
+        type=Path,
+        help="a run's actions.jsonl, or the run directory containing it",
+    )
     parser.add_argument(
-        "--json", action="store_true",
-        help="print the attribution as JSON instead of the terminal table")
+        "--json",
+        action="store_true",
+        help="print the attribution as JSON instead of the terminal table",
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -301,13 +376,27 @@ def main(argv: list[str] | None = None) -> None:
     gesture_records = [r for r in records if r.get("action") == _GESTURE_ACTION]
 
     if args.json:
-        print(json.dumps(
-            _as_json(iteration_records, fold_records, records,
-                    gesture_records=gesture_records),
-            indent=2))
+        print(
+            json.dumps(
+                _as_json(
+                    iteration_records,
+                    fold_records,
+                    records,
+                    gesture_records=gesture_records,
+                ),
+                indent=2,
+            )
+        )
     else:
-        print(format_report(iteration_records, fold_records, records, source=str(actions_path),
-                            gesture_records=gesture_records))
+        print(
+            format_report(
+                iteration_records,
+                fold_records,
+                records,
+                source=str(actions_path),
+                gesture_records=gesture_records,
+            )
+        )
 
 
 if __name__ == "__main__":

@@ -1,4 +1,5 @@
 """Focused tests for privacy-sensitive artifact filesystem primitives."""
+
 from __future__ import annotations
 
 import os
@@ -55,7 +56,9 @@ def test_existing_directory_and_regular_file_are_tightened(tmp_path):
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX permission bits")
-def test_private_rw_open_tightens_existing_file_and_supports_descriptor_lifetime(tmp_path):
+def test_private_rw_open_tightens_existing_file_and_supports_descriptor_lifetime(
+    tmp_path,
+):
     leaf = ensure_private_dir(tmp_path / "locks")
     lock_path = leaf / "android.lock"
     lock_path.write_text("old")
@@ -89,7 +92,9 @@ def test_private_rw_open_refuses_hardlink_without_mutating_shared_target(tmp_pat
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX permission and link semantics")
-def test_private_dotenv_tightens_regular_file_and_refuses_link_leaves(tmp_path, monkeypatch):
+def test_private_dotenv_tightens_regular_file_and_refuses_link_leaves(
+    tmp_path, monkeypatch
+):
     dotenv = tmp_path / ".env"
     dotenv.write_text("OPLOVE_DOTENV_TEST=loaded\n")
     dotenv.chmod(0o644)
@@ -159,7 +164,9 @@ def test_directory_and_file_helpers_reject_symlinks_without_touching_targets(tmp
 
 
 @pytest.mark.skipif(os.name != "posix", reason="symlink semantics")
-def test_atomic_private_replace_preserves_mode_and_refuses_symlink_destination(tmp_path):
+def test_atomic_private_replace_preserves_mode_and_refuses_symlink_destination(
+    tmp_path,
+):
     leaf = ensure_private_dir(tmp_path / "artifacts")
     artifact = leaf / "manifest.json"
     write_private_bytes(artifact, b"old", parent=leaf)

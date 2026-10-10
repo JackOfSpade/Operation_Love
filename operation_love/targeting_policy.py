@@ -19,6 +19,7 @@ was never measured at all.  All three make numbering behave identically, which i
 ``still_photo_licence_provenance()`` exists: the difference can only survive to a human in
 words, so consumers print it.
 """
+
 from __future__ import annotations
 
 from contextlib import contextmanager
@@ -86,7 +87,9 @@ STILL_PHOTO_DWELL_WINDOW_SAFETY_FACTOR = 3.0
 # ever be able to read an assumption as a measurement.  Same shape as the circular acceptance
 # above -- a sentence that names what is being accepted, because a boolean would be flippable by
 # accident and unreadable in a diff.
-STILL_PHOTO_CENTERED_AUTOPLAY_ASSUMPTION = "I_ACCEPT_UNMEASURED_CENTERED_AUTOPLAY_ASSUMPTION"
+STILL_PHOTO_CENTERED_AUTOPLAY_ASSUMPTION = (
+    "I_ACCEPT_UNMEASURED_CENTERED_AUTOPLAY_ASSUMPTION"
+)
 # The two channel tags a licence can carry.  Consumers branch on these rather than on the type of
 # the underlying record, so "which channel licensed this run" stays one explicit string.
 STILL_PHOTO_LICENCE_MEASURED = "measured"
@@ -95,13 +98,15 @@ STILL_PHOTO_LICENCE_ASSUMPTION = "assumption"
 # wording and the licence that produces it can never drift apart across worker/hub/tooling.
 STILL_PHOTO_ASSUMPTION_PROVENANCE = (
     "UNMEASURED: centered-autoplay assumption accepted by the owner; no video false-accept "
-    "rate has been measured")
+    "rate has been measured"
+)
 # What the operator sees at the top of every run that is licensed this way.  Deliberately states
 # the enabled capability AND the missing measurement in one sentence: a reader who skims the
 # first half must not come away thinking a bound exists.
 STILL_PHOTO_ASSUMPTION_OPERATOR_NOTICE = (
     "targeted suggestions enabled under an UNMEASURED assumption (centered autoplay); "
-    "no video false-accept rate has been measured")
+    "no video false-accept rate has been measured"
+)
 
 _SHA256_HEX_DIGITS = frozenset("0123456789abcdef")
 
@@ -193,11 +198,14 @@ def still_photo_licence_validation_transaction():
 
 def _serialise_still_photo_licence_mutation(function):
     """Keep direct installer/reset callers out of a config snapshot transaction too."""
+
     @wraps(function)
     def locked(*args, **kwargs):
         with _still_photo_licence_validation_lock:
             return function(*args, **kwargs)
+
     return locked
+
 
 # A configuration check is allowed to replace the process-default licence: that is how a new
 # run becomes licensed. It must not, however, rewrite the answer for a worker which already
@@ -208,7 +216,8 @@ def _serialise_still_photo_licence_mutation(function):
 # their own startup; ordinary callers continue to see the current process default.
 _NO_RUN_LICENCE = object()
 _run_still_photo_licence: ContextVar[object] = ContextVar(
-    "operation_love_run_still_photo_licence", default=_NO_RUN_LICENCE)
+    "operation_love_run_still_photo_licence", default=_NO_RUN_LICENCE
+)
 
 
 def _effective_still_photo_licence() -> StillPhotoLicence | None:
@@ -258,7 +267,8 @@ def _refuse_second_licence_channel(installed: StillPhotoLicence, incoming: str) 
     raise ValueError(
         f"a still-photo readiness licence from the {installed.channel!r} channel is already "
         f"installed in this process and the {incoming!r} channel cannot be installed beside it; "
-        "numbering accepts exactly one licence at a time, so clear the installed one first")
+        "numbering accepts exactly one licence at a time, so clear the installed one first"
+    )
 
 
 def _exact_int(value: object) -> bool:
@@ -291,14 +301,19 @@ def install_verified_still_photo_bound(summary: StillPhotoBoundSummary) -> None:
     global _installed_still_photo_licence
     if not isinstance(summary, StillPhotoBoundSummary):
         raise ValueError(
-            f"still-photo bound must be a StillPhotoBoundSummary (got {type(summary).__name__})")
+            f"still-photo bound must be a StillPhotoBoundSummary (got {type(summary).__name__})"
+        )
     circular = summary.ground_truth_channel == STILL_PHOTO_BOUND_CIRCULAR_CHANNEL
-    if not circular and summary.ground_truth_channel != STILL_PHOTO_BOUND_GROUND_TRUTH_CHANNEL:
+    if (
+        not circular
+        and summary.ground_truth_channel != STILL_PHOTO_BOUND_GROUND_TRUTH_CHANNEL
+    ):
         raise ValueError(
             f"ground_truth_channel must be {STILL_PHOTO_BOUND_GROUND_TRUTH_CHANNEL!r}, the owner "
             f"tap-to-play label channel, or {STILL_PHOTO_BOUND_CIRCULAR_CHANNEL!r}, the "
             f"explicitly opted-in circular AI-labelled channel (got "
-            f"{summary.ground_truth_channel!r})")
+            f"{summary.ground_truth_channel!r})"
+        )
     if circular:
         # The circular channel is licensed by the owner's acceptance, never by a ground-truth
         # claim.  `is not False` rather than `not ...` for the same reason the owner branch uses
@@ -307,12 +322,14 @@ def install_verified_still_photo_bound(summary: StillPhotoBoundSummary) -> None:
             raise ValueError(
                 f"human_ground_truth must be exactly False on {STILL_PHOTO_BOUND_CIRCULAR_CHANNEL!r}; "
                 "its labels come from the mute-glyph matcher, so claiming human ground truth "
-                f"there is a lie (got {summary.human_ground_truth!r})")
+                f"there is a lie (got {summary.human_ground_truth!r})"
+            )
         if summary.accepted_circular_risk != STILL_PHOTO_BOUND_CIRCULAR_ACCEPTANCE:
             raise ValueError(
                 f"accepted_circular_risk must be exactly {STILL_PHOTO_BOUND_CIRCULAR_ACCEPTANCE!r} "
                 f"to install the circular AI-labelled channel {STILL_PHOTO_BOUND_CIRCULAR_CHANNEL!r} "
-                f"(got {summary.accepted_circular_risk!r})")
+                f"(got {summary.accepted_circular_risk!r})"
+            )
     else:
         # `is not True` rather than `not ...`: a truthy string or 1 would otherwise let an artifact
         # claim human ground truth it does not have, which is the one claim nothing downstream can
@@ -320,7 +337,8 @@ def install_verified_still_photo_bound(summary: StillPhotoBoundSummary) -> None:
         if summary.human_ground_truth is not True:
             raise ValueError(
                 "human_ground_truth must be exactly True; a bound labelled by the mute matcher "
-                f"cannot license numbering (got {summary.human_ground_truth!r})")
+                f"cannot license numbering (got {summary.human_ground_truth!r})"
+            )
         # An owner-labelled bound accepted nothing, so it must not carry an acceptance that a
         # later reader could mistake for one.
         if summary.accepted_circular_risk is not None:
@@ -328,44 +346,70 @@ def install_verified_still_photo_bound(summary: StillPhotoBoundSummary) -> None:
                 "accepted_circular_risk must be None on the owner channel "
                 f"{STILL_PHOTO_BOUND_GROUND_TRUTH_CHANNEL!r}; only "
                 f"{STILL_PHOTO_BOUND_CIRCULAR_CHANNEL!r} accepts circular AI labels "
-                f"(got {summary.accepted_circular_risk!r})")
-    if not _exact_int(summary.video_cards) or summary.video_cards < STILL_PHOTO_BOUND_MIN_VIDEO_CARDS:
+                f"(got {summary.accepted_circular_risk!r})"
+            )
+    if (
+        not _exact_int(summary.video_cards)
+        or summary.video_cards < STILL_PHOTO_BOUND_MIN_VIDEO_CARDS
+    ):
         raise ValueError(
             f"video_cards must be an integer >= {STILL_PHOTO_BOUND_MIN_VIDEO_CARDS} owner-labelled "
-            f"video cards (got {summary.video_cards!r})")
+            f"video cards (got {summary.video_cards!r})"
+        )
     if not _exact_int(summary.video_accepts) or summary.video_accepts < 0:
-        raise ValueError(f"video_accepts must be a non-negative integer (got {summary.video_accepts!r})")
+        raise ValueError(
+            f"video_accepts must be a non-negative integer (got {summary.video_accepts!r})"
+        )
     if summary.video_accepts != STILL_PHOTO_BOUND_REQUIRED_VIDEO_ACCEPTS:
         raise ValueError(
             f"video_accepts must be exactly {STILL_PHOTO_BOUND_REQUIRED_VIDEO_ACCEPTS}; a single "
-            f"held-out video accept means the bound is not licensed (got {summary.video_accepts!r})")
-    if not _exact_int(summary.photo_cards) or summary.photo_cards < STILL_PHOTO_BOUND_MIN_PHOTO_CARDS:
+            f"held-out video accept means the bound is not licensed (got {summary.video_accepts!r})"
+        )
+    if (
+        not _exact_int(summary.photo_cards)
+        or summary.photo_cards < STILL_PHOTO_BOUND_MIN_PHOTO_CARDS
+    ):
         raise ValueError(
             f"photo_cards must be an integer >= {STILL_PHOTO_BOUND_MIN_PHOTO_CARDS} owner-labelled "
-            f"still photos (got {summary.photo_cards!r})")
+            f"still photos (got {summary.photo_cards!r})"
+        )
     if not _exact_int(summary.photo_false_refusals) or summary.photo_false_refusals < 0:
         raise ValueError(
-            f"photo_false_refusals must be a non-negative integer (got {summary.photo_false_refusals!r})")
+            f"photo_false_refusals must be a non-negative integer (got {summary.photo_false_refusals!r})"
+        )
     ceiling = STILL_PHOTO_BOUND_MAX_PHOTO_FALSE_REFUSAL_FRAC * summary.photo_cards
     if summary.photo_false_refusals > ceiling:
         raise ValueError(
             f"photo_false_refusals {summary.photo_false_refusals} exceeds "
             f"{STILL_PHOTO_BOUND_MAX_PHOTO_FALSE_REFUSAL_FRAC:.0%} of {summary.photo_cards} "
-            f"owner-labelled still photos ({ceiling:g})")
-    if not _finite_real(summary.max_video_exact_run_s) or summary.max_video_exact_run_s < 0:
+            f"owner-labelled still photos ({ceiling:g})"
+        )
+    if (
+        not _finite_real(summary.max_video_exact_run_s)
+        or summary.max_video_exact_run_s < 0
+    ):
         raise ValueError(
             "max_video_exact_run_s must be a finite number of seconds >= 0 "
-            f"(got {summary.max_video_exact_run_s!r})")
+            f"(got {summary.max_video_exact_run_s!r})"
+        )
     digest = summary.artifact_sha256
-    if (not isinstance(digest, str) or len(digest) != 64
-            or any(c not in _SHA256_HEX_DIGITS for c in digest)):
-        raise ValueError(f"artifact_sha256 must be 64 lowercase hex digits (got {digest!r})")
+    if (
+        not isinstance(digest, str)
+        or len(digest) != 64
+        or any(c not in _SHA256_HEX_DIGITS for c in digest)
+    ):
+        raise ValueError(
+            f"artifact_sha256 must be 64 lowercase hex digits (got {digest!r})"
+        )
     if not _nonempty_text(summary.device):
-        raise ValueError(f"device must be the nonempty ADB serial the bound was measured on (got {summary.device!r})")
+        raise ValueError(
+            f"device must be the nonempty ADB serial the bound was measured on (got {summary.device!r})"
+        )
     if not _nonempty_text(summary.hinge_version_name):
         raise ValueError(
             f"hinge_version_name must be the nonempty Hinge build the bound was measured on "
-            f"(got {summary.hinge_version_name!r})")
+            f"(got {summary.hinge_version_name!r})"
+        )
 
     installed = _installed_still_photo_licence
     if installed is not None:
@@ -378,13 +422,17 @@ def install_verified_still_photo_bound(summary: StillPhotoBoundSummary) -> None:
             # which artifact is live would then depend on validation order.
             raise ValueError(
                 "a different verified still-photo bound is already installed in this process; "
-                "clear it before installing another")
+                "clear it before installing another"
+            )
     _installed_still_photo_licence = StillPhotoLicence(
-        channel=STILL_PHOTO_LICENCE_MEASURED, record=summary)
+        channel=STILL_PHOTO_LICENCE_MEASURED, record=summary
+    )
 
 
 @_serialise_still_photo_licence_mutation
-def install_accepted_still_photo_assumption(acceptance: StillPhotoAssumptionAcceptance) -> None:
+def install_accepted_still_photo_assumption(
+    acceptance: StillPhotoAssumptionAcceptance,
+) -> None:
     """Install the owner's centered-autoplay assumption as the numbering licence.
 
     Validated at the install boundary for the same reason the measured installer is: every
@@ -399,31 +447,37 @@ def install_accepted_still_photo_assumption(acceptance: StillPhotoAssumptionAcce
     if not isinstance(acceptance, StillPhotoAssumptionAcceptance):
         raise ValueError(
             "still-photo assumption must be a StillPhotoAssumptionAcceptance "
-            f"(got {type(acceptance).__name__})")
+            f"(got {type(acceptance).__name__})"
+        )
     if acceptance.acceptance != STILL_PHOTO_CENTERED_AUTOPLAY_ASSUMPTION:
         raise ValueError(
             f"acceptance must be exactly {STILL_PHOTO_CENTERED_AUTOPLAY_ASSUMPTION!r} to license "
             "numbering on the unmeasured centered-autoplay assumption "
-            f"(got {acceptance.acceptance!r})")
+            f"(got {acceptance.acceptance!r})"
+        )
     if not _nonempty_text(acceptance.accepted_at):
         raise ValueError(
             "accepted_at must be nonempty text recording when the owner accepted the assumption "
-            f"(got {acceptance.accepted_at!r})")
+            f"(got {acceptance.accepted_at!r})"
+        )
     if not _nonempty_text(acceptance.device):
         raise ValueError(
             "device must be the nonempty ADB serial the assumption was accepted for "
-            f"(got {acceptance.device!r})")
+            f"(got {acceptance.device!r})"
+        )
     if not _nonempty_text(acceptance.hinge_version_name):
         raise ValueError(
             "hinge_version_name must be the nonempty Hinge build the assumption was accepted for "
-            f"(got {acceptance.hinge_version_name!r})")
+            f"(got {acceptance.hinge_version_name!r})"
+        )
     if not _nonempty_text(acceptance.rationale):
         # The whole value of an assumption channel is that the reason is on record.  An empty
         # rationale would leave a licence nobody can audit, which is indistinguishable from a
         # wished-for one -- the same failure the hand-editable boolean had.
         raise ValueError(
             "rationale must be the nonempty reason the owner accepted this assumption; an "
-            f"unexplained assumption is not auditable (got {acceptance.rationale!r})")
+            f"unexplained assumption is not auditable (got {acceptance.rationale!r})"
+        )
 
     installed = _installed_still_photo_licence
     if installed is not None:
@@ -433,9 +487,11 @@ def install_accepted_still_photo_assumption(acceptance: StillPhotoAssumptionAcce
             # one process means two different decisions claim the same gate.
             raise ValueError(
                 "a different accepted still-photo assumption is already installed in this "
-                "process; clear it before installing another")
+                "process; clear it before installing another"
+            )
     _installed_still_photo_licence = StillPhotoLicence(
-        channel=STILL_PHOTO_LICENCE_ASSUMPTION, record=acceptance)
+        channel=STILL_PHOTO_LICENCE_ASSUMPTION, record=acceptance
+    )
 
 
 def installed_still_photo_bound() -> StillPhotoBoundSummary | None:
@@ -493,14 +549,18 @@ def still_photo_licence_provenance() -> str | None:
     if licence.assumed:
         return STILL_PHOTO_ASSUMPTION_PROVENANCE
     bound = licence.record
-    text = (f"measured held-out bound ({bound.video_cards} video cards, "
-            f"{bound.video_accepts} accepts)")
+    text = (
+        f"measured held-out bound ({bound.video_cards} video cards, "
+        f"{bound.video_accepts} accepts)"
+    )
     if bound.ground_truth_channel == STILL_PHOTO_BOUND_CIRCULAR_CHANNEL:
         # Section 5a of the design doc, said out loud rather than left to the channel id: on the
         # circular channel the label and the accept rule read the same pixels, so quoting the
         # accept count without that clause overstates what the campaign measured.
-        text += (" on the circular AI-labelled channel, where the accept count is zero by "
-                 "construction")
+        text += (
+            " on the circular AI-labelled channel, where the accept count is zero by "
+            "construction"
+        )
     return text
 
 
@@ -540,11 +600,13 @@ def hinge_targeting_unavailable_reason() -> str | None:
 # not at all if a future branch omitted it -- the pointer belongs to the step, not to the surface.
 TARGETING_SETUP_NEXT_STEP_BLOCKED = (
     "per ops/RUNBOOK.md section 2, positive still-photo proof must exist before a fresh "
-    "calibration can enable suggestions")
+    "calibration can enable suggestions"
+)
 TARGETING_SETUP_NEXT_STEP_CALIBRATE = (
     "still-photo numbering is licensed, so the one remaining step is the per-device targeting "
     "calibration campaign in ops/RUNBOOK.md section 2: capture both splits, measure them, and "
-    "paste the emitted apps.hinge.targeting_calibration block into config.yaml")
+    "paste the emitted apps.hinge.targeting_calibration block into config.yaml"
+)
 
 
 def targeting_setup_next_step() -> str:

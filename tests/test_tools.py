@@ -16,6 +16,7 @@ optional-dependency drivers, so plain imports here are safe even on a machine wi
 of the optional extras installed. The CLI-surface tests only ever request --help, which
 argparse answers with a clean SystemExit before any real device or BigQuery work runs.
 """
+
 from __future__ import annotations
 
 import ast
@@ -58,11 +59,14 @@ def _operation_love_imports(py_file: Path):
         if isinstance(node, ast.ImportFrom):
             if node.module and node.module.split(".")[0] == "operation_love":
                 from_pairs.extend(
-                    (node.module, alias.name) for alias in node.names if alias.name != "*"
+                    (node.module, alias.name)
+                    for alias in node.names
+                    if alias.name != "*"
                 )
         elif isinstance(node, ast.Import):
             plain_modules.extend(
-                alias.name for alias in node.names
+                alias.name
+                for alias in node.names
                 if alias.name.split(".")[0] == "operation_love"
             )
     return from_pairs, plain_modules
@@ -160,7 +164,11 @@ class _FakeWatchDriver:
         self._identity_sig = b"anchor-band"
         self._identity_top_sig = b"top-chrome-band"
         self._identity_name = "Alex"
-        self._current_sigs = [object(), None, object()]   # 2 non-None, like a real capture
+        self._current_sigs = [
+            object(),
+            None,
+            object(),
+        ]  # 2 non-None, like a real capture
         self.capture_calls = 0
         self._decisions = list(decisions)
         self.decision_calls = 0
@@ -227,7 +235,9 @@ def test_hinge_inspect_watch_stops_cleanly_when_capture_fails(capsys):
             return None
 
         def wait_for_decision(self, timeout=None):
-            raise AssertionError("wait_for_decision must not run without a capture first")
+            raise AssertionError(
+                "wait_for_decision must not run without a capture first"
+            )
 
     hinge_inspect._watch(_FailToCaptureDriver(), 3)
 

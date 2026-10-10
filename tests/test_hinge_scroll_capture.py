@@ -8,6 +8,7 @@ below use a FakeAdb that never shells out. The CLI-level tests (`_resolve_serial
 `main()`) monkeypatch `subprocess.run` and/or the module's own `Adb` name -- nothing here
 spawns a real `adb` process or opens a real connection.
 """
+
 from __future__ import annotations
 
 import json
@@ -47,10 +48,12 @@ class FakeAdb:
 
 def _sha256(b: bytes) -> str:
     import hashlib
+
     return hashlib.sha256(b).hexdigest()
 
 
 # --- dedupe -----------------------------------------------------------------------------
+
 
 def test_capture_dedupes_byte_identical_consecutive_frames_keeps_changed_ones(tmp_path):
     # AAA repeats, then BBB repeats, then CCC once, then AAA again (not adjacent to the
@@ -60,8 +63,14 @@ def test_capture_dedupes_byte_identical_consecutive_frames_keeps_changed_ones(tm
     adb = FakeAdb(frames)
     out_dir = tmp_path / "out"
 
-    manifest = hsc.capture(adb=adb, seconds=1000.0, interval=0.0, out_dir=out_dir,
-                            serial="SER1", progress=False)
+    manifest = hsc.capture(
+        adb=adb,
+        seconds=1000.0,
+        interval=0.0,
+        out_dir=out_dir,
+        serial="SER1",
+        progress=False,
+    )
 
     assert manifest["frame_count"] == 4
     saved = sorted(p.name for p in out_dir.glob("*.png"))
@@ -77,8 +86,14 @@ def test_capture_skips_a_fully_static_run_and_saves_only_the_first_frame(tmp_pat
     adb = FakeAdb(frames)
     out_dir = tmp_path / "out"
 
-    manifest = hsc.capture(adb=adb, seconds=1000.0, interval=0.0, out_dir=out_dir,
-                            serial="SER1", progress=False)
+    manifest = hsc.capture(
+        adb=adb,
+        seconds=1000.0,
+        interval=0.0,
+        out_dir=out_dir,
+        serial="SER1",
+        progress=False,
+    )
 
     assert manifest["frame_count"] == 1
     assert list(out_dir.glob("*.png")) == [out_dir / "00001.png"]
@@ -86,23 +101,43 @@ def test_capture_skips_a_fully_static_run_and_saves_only_the_first_frame(tmp_pat
 
 # --- manifest shape -----------------------------------------------------------------------
 
+
 def test_manifest_well_formed_and_frame_numbering_sequential_with_no_gaps(tmp_path):
     frames = [b"one", b"two", b"two", b"three"]
     adb = FakeAdb(frames)
     out_dir = tmp_path / "out"
 
-    manifest = hsc.capture(adb=adb, seconds=1000.0, interval=0.0, out_dir=out_dir,
-                            serial="MY-SERIAL", progress=False)
+    manifest = hsc.capture(
+        adb=adb,
+        seconds=1000.0,
+        interval=0.0,
+        out_dir=out_dir,
+        serial="MY-SERIAL",
+        progress=False,
+    )
 
-    for key in ("tool_version", "device_serial", "interval_s", "seconds_requested",
-                "start_utc", "end_utc", "interrupted", "frame_count", "frames"):
+    for key in (
+        "tool_version",
+        "device_serial",
+        "interval_s",
+        "seconds_requested",
+        "start_utc",
+        "end_utc",
+        "interrupted",
+        "frame_count",
+        "frames",
+    ):
         assert key in manifest, f"manifest missing {key!r}"
 
     assert manifest["device_serial"] == "MY-SERIAL"
     assert manifest["frame_count"] == len(manifest["frames"]) == 3
 
     # sequential, zero-padded, no gaps
-    assert [f["file"] for f in manifest["frames"]] == ["00001.png", "00002.png", "00003.png"]
+    assert [f["file"] for f in manifest["frames"]] == [
+        "00001.png",
+        "00002.png",
+        "00003.png",
+    ]
     # every named file actually exists on disk
     for f in manifest["frames"]:
         assert (out_dir / f["file"]).exists()
@@ -118,11 +153,15 @@ def test_manifest_well_formed_and_frame_numbering_sequential_with_no_gaps(tmp_pa
     assert on_disk == manifest
     if os.name == "posix":
         assert stat.S_IMODE(out_dir.stat().st_mode) == 0o700
-        assert all(stat.S_IMODE(path.stat().st_mode) == 0o600
-                   for path in out_dir.iterdir() if path.is_file())
+        assert all(
+            stat.S_IMODE(path.stat().st_mode) == 0o600
+            for path in out_dir.iterdir()
+            if path.is_file()
+        )
 
 
 # --- Ctrl-C / early termination ------------------------------------------------------------
+
 
 class _InterruptingAdb:
     """Like FakeAdb, but raises KeyboardInterrupt (simulating Ctrl-C) after N frames instead
@@ -146,8 +185,14 @@ def test_ctrl_c_during_capture_still_writes_a_valid_manifest(tmp_path):
     adb = _InterruptingAdb([b"a", b"b", b"c"], interrupt_after=2)
     out_dir = tmp_path / "out"
 
-    manifest = hsc.capture(adb=adb, seconds=1000.0, interval=0.0, out_dir=out_dir,
-                            serial="SER1", progress=False)
+    manifest = hsc.capture(
+        adb=adb,
+        seconds=1000.0,
+        interval=0.0,
+        out_dir=out_dir,
+        serial="SER1",
+        progress=False,
+    )
 
     assert manifest["interrupted"] is True
     assert manifest["frame_count"] == 2
@@ -161,8 +206,14 @@ def test_ctrl_c_before_any_frame_still_writes_an_empty_but_valid_manifest(tmp_pa
     adb = _InterruptingAdb([], interrupt_after=0)
     out_dir = tmp_path / "out"
 
-    manifest = hsc.capture(adb=adb, seconds=1000.0, interval=0.0, out_dir=out_dir,
-                            serial="SER1", progress=False)
+    manifest = hsc.capture(
+        adb=adb,
+        seconds=1000.0,
+        interval=0.0,
+        out_dir=out_dir,
+        serial="SER1",
+        progress=False,
+    )
 
     assert manifest["interrupted"] is True
     assert manifest["frame_count"] == 0
@@ -170,13 +221,21 @@ def test_ctrl_c_before_any_frame_still_writes_an_empty_but_valid_manifest(tmp_pa
     assert (out_dir / "manifest.json").exists()
 
 
-def test_capture_error_is_marked_in_the_manifest_not_reported_as_a_completed_scroll(tmp_path, capsys):
+def test_capture_error_is_marked_in_the_manifest_not_reported_as_a_completed_scroll(
+    tmp_path, capsys
+):
     """A device/capture failure preserves prior frames but must not look like normal completion."""
     adb = FakeAdb([b"first"])
     out_dir = tmp_path / "out"
 
-    manifest = hsc.capture(adb=adb, seconds=1000.0, interval=0.0, out_dir=out_dir,
-                           serial="SER1", progress=False)
+    manifest = hsc.capture(
+        adb=adb,
+        seconds=1000.0,
+        interval=0.0,
+        out_dir=out_dir,
+        serial="SER1",
+        progress=False,
+    )
 
     assert manifest["interrupted"] is False
     assert manifest["capture_error"] == "_StopCapture"
@@ -187,6 +246,7 @@ def test_capture_error_is_marked_in_the_manifest_not_reported_as_a_completed_scr
 
 # --- --serial / device resolution ----------------------------------------------------------
 
+
 def _devices_output(*serials_and_states):
     lines = ["List of devices attached"]
     for serial, state in serials_and_states:
@@ -196,26 +256,37 @@ def _devices_output(*serials_and_states):
 
 def test_resolve_serial_picks_the_single_connected_device(monkeypatch):
     monkeypatch.setattr(
-        hsc.subprocess, "run",
-        lambda argv, **kw: subprocess.CompletedProcess(argv, 0,
-                                                         stdout=_devices_output(("33111JEHN04475", "device")),
-                                                         stderr=b""))
+        hsc.subprocess,
+        "run",
+        lambda argv, **kw: subprocess.CompletedProcess(
+            argv, 0, stdout=_devices_output(("33111JEHN04475", "device")), stderr=b""
+        ),
+    )
     assert hsc._resolve_serial(None) == "33111JEHN04475"
 
 
 def test_resolve_serial_honors_explicit_serial_when_connected(monkeypatch):
     monkeypatch.setattr(
-        hsc.subprocess, "run",
+        hsc.subprocess,
+        "run",
         lambda argv, **kw: subprocess.CompletedProcess(
-            argv, 0,
-            stdout=_devices_output(("AAA", "device"), ("BBB", "device")), stderr=b""))
+            argv,
+            0,
+            stdout=_devices_output(("AAA", "device"), ("BBB", "device")),
+            stderr=b"",
+        ),
+    )
     assert hsc._resolve_serial("BBB") == "BBB"
 
 
 def test_resolve_serial_exits_nonzero_when_no_device_connected(monkeypatch, capsys):
     monkeypatch.setattr(
-        hsc.subprocess, "run",
-        lambda argv, **kw: subprocess.CompletedProcess(argv, 0, stdout=_devices_output(), stderr=b""))
+        hsc.subprocess,
+        "run",
+        lambda argv, **kw: subprocess.CompletedProcess(
+            argv, 0, stdout=_devices_output(), stderr=b""
+        ),
+    )
 
     with pytest.raises(SystemExit) as exc:
         hsc._resolve_serial(None)
@@ -223,12 +294,19 @@ def test_resolve_serial_exits_nonzero_when_no_device_connected(monkeypatch, caps
     assert "no ADB device" in capsys.readouterr().err.lower() or True
 
 
-def test_resolve_serial_exits_nonzero_on_multiple_devices_without_serial_flag(monkeypatch, capsys):
+def test_resolve_serial_exits_nonzero_on_multiple_devices_without_serial_flag(
+    monkeypatch, capsys
+):
     monkeypatch.setattr(
-        hsc.subprocess, "run",
+        hsc.subprocess,
+        "run",
         lambda argv, **kw: subprocess.CompletedProcess(
-            argv, 0,
-            stdout=_devices_output(("AAA", "device"), ("BBB", "device")), stderr=b""))
+            argv,
+            0,
+            stdout=_devices_output(("AAA", "device"), ("BBB", "device")),
+            stderr=b"",
+        ),
+    )
 
     with pytest.raises(SystemExit) as exc:
         hsc._resolve_serial(None)
@@ -237,12 +315,16 @@ def test_resolve_serial_exits_nonzero_on_multiple_devices_without_serial_flag(mo
     assert "multiple" in err and "--serial" in err
 
 
-def test_resolve_serial_exits_nonzero_when_requested_serial_not_connected(monkeypatch, capsys):
+def test_resolve_serial_exits_nonzero_when_requested_serial_not_connected(
+    monkeypatch, capsys
+):
     monkeypatch.setattr(
-        hsc.subprocess, "run",
-        lambda argv, **kw: subprocess.CompletedProcess(argv, 0,
-                                                         stdout=_devices_output(("AAA", "device")),
-                                                         stderr=b""))
+        hsc.subprocess,
+        "run",
+        lambda argv, **kw: subprocess.CompletedProcess(
+            argv, 0, stdout=_devices_output(("AAA", "device")), stderr=b""
+        ),
+    )
 
     with pytest.raises(SystemExit) as exc:
         hsc._resolve_serial("ZZZ")
@@ -252,16 +334,22 @@ def test_resolve_serial_exits_nonzero_when_requested_serial_not_connected(monkey
 
 def test_resolve_serial_excludes_unauthorized_and_offline_devices(monkeypatch):
     monkeypatch.setattr(
-        hsc.subprocess, "run",
+        hsc.subprocess,
+        "run",
         lambda argv, **kw: subprocess.CompletedProcess(
-            argv, 0,
-            stdout=_devices_output(("AAA", "unauthorized"), ("BBB", "device")), stderr=b""))
+            argv,
+            0,
+            stdout=_devices_output(("AAA", "unauthorized"), ("BBB", "device")),
+            stderr=b"",
+        ),
+    )
     assert hsc._resolve_serial(None) == "BBB"
 
 
 def test_list_ready_devices_exits_nonzero_when_adb_binary_missing(monkeypatch, capsys):
     def _raise(*a, **k):
         raise FileNotFoundError()
+
     monkeypatch.setattr(hsc.subprocess, "run", _raise)
 
     with pytest.raises(SystemExit) as exc:
@@ -270,9 +358,12 @@ def test_list_ready_devices_exits_nonzero_when_adb_binary_missing(monkeypatch, c
     assert "not found" in capsys.readouterr().err.lower()
 
 
-def test_list_ready_devices_exits_cleanly_when_adb_cannot_be_executed(monkeypatch, capsys):
+def test_list_ready_devices_exits_cleanly_when_adb_cannot_be_executed(
+    monkeypatch, capsys
+):
     def _raise(*a, **k):
         raise PermissionError("operation not permitted")
+
     monkeypatch.setattr(hsc.subprocess, "run", _raise)
 
     with pytest.raises(SystemExit) as exc:
@@ -284,9 +375,12 @@ def test_list_ready_devices_exits_cleanly_when_adb_cannot_be_executed(monkeypatc
 
 def test_list_ready_devices_exits_nonzero_when_adb_command_fails(monkeypatch, capsys):
     monkeypatch.setattr(
-        hsc.subprocess, "run",
+        hsc.subprocess,
+        "run",
         lambda argv, **kw: subprocess.CompletedProcess(
-            argv, 1, stdout=b"", stderr=b"adb server is unavailable"))
+            argv, 1, stdout=b"", stderr=b"adb server is unavailable"
+        ),
+    )
 
     with pytest.raises(SystemExit) as exc:
         hsc._list_ready_devices("adb")
@@ -295,24 +389,40 @@ def test_list_ready_devices_exits_nonzero_when_adb_command_fails(monkeypatch, ca
     assert "exit code 1" in err and "server is unavailable" in err
 
 
-@pytest.mark.parametrize("seconds, interval", [
-    (0.0, 0.0), (-1.0, 0.0), (float("nan"), 0.0),
-    (1.0, -0.1), (1.0, float("inf")),
-])
-def test_capture_rejects_invalid_timing_before_creating_output(tmp_path, seconds, interval):
+@pytest.mark.parametrize(
+    "seconds, interval",
+    [
+        (0.0, 0.0),
+        (-1.0, 0.0),
+        (float("nan"), 0.0),
+        (1.0, -0.1),
+        (1.0, float("inf")),
+    ],
+)
+def test_capture_rejects_invalid_timing_before_creating_output(
+    tmp_path, seconds, interval
+):
     out_dir = tmp_path / "out"
 
     with pytest.raises(ValueError, match="finite value"):
-        hsc.capture(adb=FakeAdb([b"frame"]), seconds=seconds, interval=interval,
-                    out_dir=out_dir, serial="SER1", progress=False)
+        hsc.capture(
+            adb=FakeAdb([b"frame"]),
+            seconds=seconds,
+            interval=interval,
+            out_dir=out_dir,
+            serial="SER1",
+            progress=False,
+        )
     assert not out_dir.exists()
 
 
 # --- main() wiring, --help, and end-to-end with a fake device -----------------------------
 
+
 def test_main_help_exits_cleanly_without_touching_device(monkeypatch):
     def _boom(*a, **k):
         raise AssertionError("--help must not touch the device")
+
     monkeypatch.setattr(hsc, "_resolve_serial", _boom)
     monkeypatch.setattr(hsc, "_list_ready_devices", _boom)
 
@@ -321,7 +431,9 @@ def test_main_help_exits_cleanly_without_touching_device(monkeypatch):
     assert exc.value.code == 0
 
 
-def test_main_end_to_end_single_device_writes_frames_and_manifest(monkeypatch, tmp_path, capsys):
+def test_main_end_to_end_single_device_writes_frames_and_manifest(
+    monkeypatch, tmp_path, capsys
+):
     # Run from a directory with no config.yaml in it. This tool reads no setting from a config
     # and its device lock is config-independent (supervisor._android_lock_path), so a capture
     # must not depend on the repo's live config.yaml being present -- let alone VALIDATING.
@@ -331,9 +443,12 @@ def test_main_end_to_end_single_device_writes_frames_and_manifest(monkeypatch, t
     monkeypatch.chdir(tmp_path)
     out_dir = tmp_path / "scroll_out"
     monkeypatch.setattr(
-        hsc.subprocess, "run",
+        hsc.subprocess,
+        "run",
         lambda argv, **kw: subprocess.CompletedProcess(
-            argv, 0, stdout=_devices_output(("SER1", "device")), stderr=b""))
+            argv, 0, stdout=_devices_output(("SER1", "device")), stderr=b""
+        ),
+    )
 
     fake = FakeAdb([b"f1", b"f1", b"f2", b"f3"])
     monkeypatch.setattr(hsc, "Adb", lambda serial: fake)
@@ -344,7 +459,9 @@ def test_main_end_to_end_single_device_writes_frames_and_manifest(monkeypatch, t
     assert manifest["device_serial"] == "SER1"
     assert manifest["frame_count"] == 3
     assert sorted(p.name for p in out_dir.glob("*.png")) == [
-        "00001.png", "00002.png", "00003.png",
+        "00001.png",
+        "00002.png",
+        "00003.png",
     ]
 
     out = capsys.readouterr().out
@@ -360,8 +477,12 @@ def test_main_exits_nonzero_when_no_device_connected(monkeypatch, tmp_path, caps
     # from the tool tripping over something else on its way to the phone.
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(
-        hsc.subprocess, "run",
-        lambda argv, **kw: subprocess.CompletedProcess(argv, 0, stdout=_devices_output(), stderr=b""))
+        hsc.subprocess,
+        "run",
+        lambda argv, **kw: subprocess.CompletedProcess(
+            argv, 0, stdout=_devices_output(), stderr=b""
+        ),
+    )
 
     with pytest.raises(SystemExit) as exc:
         hsc.main(["--out", str(tmp_path / "out")])
@@ -370,6 +491,7 @@ def test_main_exits_nonzero_when_no_device_connected(monkeypatch, tmp_path, caps
 
 
 # --- the device lock (tools/_devicelock.py) ------------------------------------------------
+
 
 def _lockable_config(tmp_path) -> str:
     path = tmp_path / "config.yaml"
@@ -392,6 +514,7 @@ class _LockProbingAdb(FakeAdb):
     def screencap(self) -> bytes:
         if self.lock_held_during_capture is None:
             from operation_love import supervisor as sup
+
             second = sup._AndroidDeviceLock(sup._android_lock_path(None, "hinge"))
             try:
                 second.acquire()
@@ -404,7 +527,8 @@ class _LockProbingAdb(FakeAdb):
 
 
 def test_a_half_repaired_explicit_config_warns_but_still_captures_under_the_lock(
-        monkeypatch, tmp_path, capsys):
+    monkeypatch, tmp_path, capsys
+):
     """A config error the LOCK never consults must not disarm the calibration instrument.
 
     main() used to load --config first and exit non-zero on any failure, which made a fully
@@ -424,30 +548,47 @@ def test_a_half_repaired_explicit_config_warns_but_still_captures_under_the_lock
     half_repaired = tmp_path / "half-repaired.yaml"
     # Loads as YAML, fails validation on one unrelated key -- the exact shape of a config
     # caught mid-edit, and the reproduction that showed this tool refusing to run.
-    half_repaired.write_text("enabled_apps: [hinge]\napps: {hinge: {serial: synthetic-pixel}}\n"
-                             "opener: {max_chars: 200}\n")
+    half_repaired.write_text(
+        "enabled_apps: [hinge]\napps: {hinge: {serial: synthetic-pixel}}\n"
+        "opener: {max_chars: 200}\n"
+    )
     monkeypatch.setattr(
-        hsc.subprocess, "run",
+        hsc.subprocess,
+        "run",
         lambda argv, **kw: subprocess.CompletedProcess(
-            argv, 0, stdout=_devices_output(("SER1", "device")), stderr=b""))
+            argv, 0, stdout=_devices_output(("SER1", "device")), stderr=b""
+        ),
+    )
     fake = _LockProbingAdb([b"f1", b"f2"])
     monkeypatch.setattr(hsc, "Adb", lambda serial: fake)
     out_dir = tmp_path / "out"
 
-    hsc.main(["--config", str(half_repaired), "--out", str(out_dir),
-              "--interval", "0", "--seconds", "1000"])
+    hsc.main(
+        [
+            "--config",
+            str(half_repaired),
+            "--out",
+            str(out_dir),
+            "--interval",
+            "0",
+            "--seconds",
+            "1000",
+        ]
+    )
 
     err = capsys.readouterr().err
     # Said out loud (the operator expected that file to matter) but not fatal.
     assert "WARNING: could not load" in err and "max_chars" in err
     assert "ERROR: could not load" not in err
     assert json.loads((out_dir / "manifest.json").read_text())["frame_count"] == 2
-    assert fake.lock_held_during_capture is True, \
+    assert fake.lock_held_during_capture is True, (
         "the capture ran WITHOUT the device lock a production run takes"
+    )
 
 
-def test_main_yields_the_phone_to_a_run_that_already_holds_the_device_lock(monkeypatch,
-                                                                          tmp_path, capsys):
+def test_main_yields_the_phone_to_a_run_that_already_holds_the_device_lock(
+    monkeypatch, tmp_path, capsys
+):
     """A 120s capture beside a live hub run is exactly the collision the lock exists to end
     (run a01fbcd1e9a0's false Pass was two drivers on one phone), so contention must exit
     without taking a single screencap.
@@ -458,8 +599,11 @@ def test_main_yields_the_phone_to_a_run_that_already_holds_the_device_lock(monke
     from operation_love import supervisor as sup
 
     monkeypatch.setattr(sup, "_ANDROID_LOCK_ROOT", tmp_path / "locks")
-    monkeypatch.setattr(hsc, "_resolve_serial",
-                        lambda *a, **k: pytest.fail("captured while another run held the phone"))
+    monkeypatch.setattr(
+        hsc,
+        "_resolve_serial",
+        lambda *a, **k: pytest.fail("captured while another run held the phone"),
+    )
     config_path = _lockable_config(tmp_path)
 
     with sup.exclusive_android_device(hsc.cfg_mod.load(config_path), "hinge"):
@@ -492,6 +636,7 @@ _FORBIDDEN_INPUT_SUBSTRINGS = (
 
 def test_source_contains_no_input_sending_call():
     import tools.hinge_scroll_capture as mod
+
     source = Path(mod.__file__).read_text()
     hits = [s for s in _FORBIDDEN_INPUT_SUBSTRINGS if s in source]
     assert not hits, (
@@ -507,6 +652,7 @@ def test_source_never_imports_a_driver_or_the_touch_transport():
     # "HingeDriver" in text) -- so this checks realistic import/construction forms rather
     # than the bare words.
     import tools.hinge_scroll_capture as mod
+
     source = Path(mod.__file__).read_text()
     forbidden = (
         "HingeDriver(",

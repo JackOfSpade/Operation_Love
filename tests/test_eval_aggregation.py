@@ -1,4 +1,5 @@
 """Identity grouping + result shape for leakage-free evaluation. Needs sklearn."""
+
 import importlib
 import math
 
@@ -18,13 +19,13 @@ def test_identity_groups_merges_same_face_separates_others():
     # Identity A appears 3x (near [1,0]), identity B twice (near [0,1]).
     faces = [[1.0, 0.0], [0.99, 0.02], [0.98, 0.0], [0.0, 1.0], [0.03, 0.99]]
     g = identity_groups(faces, eps=0.5)
-    assert g[0] == g[1] == g[2]          # all three A photos share one identity group
-    assert g[3] == g[4]                  # both B photos share one group
-    assert g[0] != g[3]                  # A and B are different identities
+    assert g[0] == g[1] == g[2]  # all three A photos share one identity group
+    assert g[3] == g[4]  # both B photos share one group
+    assert g[0] != g[3]  # A and B are different identities
 
 
 def test_identity_groups_singletons_get_own_group():
-    faces = [[1.0, 0.0], [0.0, 1.0], [-1.0, 0.0]]   # three distinct, orthogonal/opposite
+    faces = [[1.0, 0.0], [0.0, 1.0], [-1.0, 0.0]]  # three distinct, orthogonal/opposite
     assert len(set(identity_groups(faces, eps=0.5))) == 3
 
 
@@ -33,31 +34,34 @@ def test_identity_groups_validates_eps_even_without_faces():
         identity_groups([], eps=0.0)
 
 
-@pytest.mark.parametrize(("faces", "eps"), [
-    ([[0.0, 0.0]], 0.5),
-    ([[1.0, math.nan]], 0.5),
-    ([[1.0, 0.0]], -0.1),
-    ([[1.0, 0.0]], 0.0),
-    ([[1.0, 0.0]], 2.1),
-    ([[1.0, 0.0]], math.inf),
-])
+@pytest.mark.parametrize(
+    ("faces", "eps"),
+    [
+        ([[0.0, 0.0]], 0.5),
+        ([[1.0, math.nan]], 0.5),
+        ([[1.0, 0.0]], -0.1),
+        ([[1.0, 0.0]], 0.0),
+        ([[1.0, 0.0]], 2.1),
+        ([[1.0, 0.0]], math.inf),
+    ],
+)
 def test_identity_groups_rejects_inputs_that_make_cosine_grouping_undefined(faces, eps):
     with pytest.raises(ValueError):
         identity_groups(faces, eps=eps)
 
 
 def test_evaluate_too_few_labels_returns_status_not_metrics():
-    r = evaluate([(True, [0.0] * 1280), (False, [1.0] * 1280)])   # 2 labels
+    r = evaluate([(True, [0.0] * 1280), (False, [1.0] * 1280)])  # 2 labels
     assert r["status"] == "insufficient_data"
     assert r["roc_auc"] is None and r["labels"] == 2
-    assert "Need" in format_report(r)                # renders the message, not numbers
+    assert "Need" in format_report(r)  # renders the message, not numbers
 
 
 def test_evaluate_never_raises_on_malformed_embeddings():
     # ragged embeddings (mixed lengths), enough labels with both classes -> must NOT raise.
     samples = [(i % 2 == 0, [0.0] * (1280 if i % 3 else 8)) for i in range(12)]
     r = evaluate(samples)
-    assert r["status"] == "error"                    # handled gracefully, no traceback
+    assert r["status"] == "error"  # handled gracefully, no traceback
 
 
 @pytest.mark.parametrize("samples", [None, ["junk"] * 12, [(1, [0.0])] * 12])
@@ -67,13 +71,25 @@ def test_evaluate_never_raises_on_malformed_top_level_rows_or_labels(samples):
     assert "malformed" in r["message"]
 
 
-@pytest.mark.parametrize("kwargs", [
-    {"n_splits": True}, {"n_splits": 1}, {"n_splits": "5"},
-    {"eps": True}, {"eps": -0.1}, {"eps": 0.0}, {"eps": 2.1},
-    {"eps": math.inf}, {"eps": math.nan},
-    {"like_threshold": True}, {"like_threshold": -0.1}, {"like_threshold": 1.1},
-    {"like_threshold": None}, {"like_threshold": math.nan},
-])
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"n_splits": True},
+        {"n_splits": 1},
+        {"n_splits": "5"},
+        {"eps": True},
+        {"eps": -0.1},
+        {"eps": 0.0},
+        {"eps": 2.1},
+        {"eps": math.inf},
+        {"eps": math.nan},
+        {"like_threshold": True},
+        {"like_threshold": -0.1},
+        {"like_threshold": 1.1},
+        {"like_threshold": None},
+        {"like_threshold": math.nan},
+    ],
+)
 def test_evaluate_reports_invalid_controls_without_misdiagnosing_stored_labels(kwargs):
     r = evaluate(_identity_samples(12), **kwargs)
     assert r["status"] == "error"
@@ -85,6 +101,7 @@ def test_evaluate_reports_no_sklearn_when_sklearn_is_unavailable(monkeypatch):
     # exercised despite the "no_sklearn" status existing precisely for a machine
     # without the `ml` extra. Force the import to fail the way it would there.
     import sys
+
     for name in ("sklearn", "sklearn.metrics", "sklearn.model_selection"):
         monkeypatch.setitem(sys.modules, name, None)
     samples = [(i % 2 == 0, [0.0] * 8) for i in range(12)]
@@ -97,17 +114,24 @@ def _identity_samples(n):
     samples = []
     for i in range(n):
         emb = [0.0] * 1280
-        emb[i % 512] = 1.0                           # one distinct identity per row
-        emb[512] = (i % 17) / 17.0                   # harmless ranker feature variation
+        emb[i % 512] = 1.0  # one distinct identity per row
+        emb[512] = (i % 17) / 17.0  # harmless ranker feature variation
         samples.append((i % 4 == 0, emb))
     return samples
 
 
 def test_format_report_shows_accuracy_brier_and_base_rate():
     r = {
-        "status": "ok", "labels": 80, "likes": 20, "passes": 60,
-        "identities": 80, "folds": 5, "roc_auc": [0.83, 0.04],
-        "pr_auc": [0.42, 0.03], "brier": [0.20, 0.01], "base_rate": 0.25,
+        "status": "ok",
+        "labels": 80,
+        "likes": 20,
+        "passes": 60,
+        "identities": 80,
+        "folds": 5,
+        "roc_auc": [0.83, 0.04],
+        "pr_auc": [0.42, 0.03],
+        "brier": [0.20, 0.01],
+        "base_rate": 0.25,
     }
     out = format_report(r)
     assert "Accuracy: 83.000% +/- 4.000%" in out
@@ -130,11 +154,11 @@ def _grouped_cv_samples(n_identities=10, per_identity=4):
     samples = []
     for ident in range(n_identities):
         face = [0.0] * 512
-        face[ident] = 1.0                            # unit-norm face prefix unique to this identity
+        face[ident] = 1.0  # unit-norm face prefix unique to this identity
         for k in range(per_identity):
             emb = list(face) + [0.0] * 768
-            liked = (k % 2 == 0)
-            emb[512] = 1.0 if liked else -1.0        # non-face dim separates like/pass
+            liked = k % 2 == 0
+            emb[512] = 1.0 if liked else -1.0  # non-face dim separates like/pass
             samples.append((liked, emb))
     return samples
 
@@ -144,14 +168,16 @@ def test_evaluate_real_grouped_cv_ok_path():
     samples = _grouped_cv_samples(n_identities=10, per_identity=4)
     r = evaluate(samples)
     assert r["status"] == "ok"
-    assert r["identities"] == 10                      # exactly the number of distinct faces built
+    assert r["identities"] == 10  # exactly the number of distinct faces built
     assert r["folds"] >= 2
     for key in ("roc_auc", "pr_auc", "brier"):
-        mean, std = r[key]                            # each metric is a [mean, std] 2-list
+        mean, std = r[key]  # each metric is a [mean, std] 2-list
         assert 0.0 <= mean <= 1.0 and 0.0 <= std <= 1.0
     assert 0.0 <= r["accepted_recall"] <= 1.0
     assert r["false_dislike_rate"] == pytest.approx(1.0 - r["accepted_recall"])
-    assert sum(r["confusion"].values()) == len(samples)  # every out-of-fold decision counted
+    assert sum(r["confusion"].values()) == len(
+        samples
+    )  # every out-of-fold decision counted
     assert r["like_threshold"] == 0.5
 
 
@@ -160,24 +186,44 @@ def test_lower_like_threshold_cannot_create_more_false_dislikes():
     conservative = evaluate(samples, like_threshold=0.1)
     strict = evaluate(samples, like_threshold=0.9)
     assert conservative["status"] == strict["status"] == "ok"
-    assert conservative["confusion"]["false_dislikes"] <= strict["confusion"]["false_dislikes"]
+    assert (
+        conservative["confusion"]["false_dislikes"]
+        <= strict["confusion"]["false_dislikes"]
+    )
     assert conservative["accepted_recall"] >= strict["accepted_recall"]
 
 
-@pytest.mark.parametrize(("like_threshold", "expected"), [
-    pytest.param(0.0, {
-        "true_accepted": 20, "false_dislikes": 0,
-        "false_likes": 20, "true_dislikes": 0,
-    }, id="always-like"),
-    pytest.param(1.0, {
-        "true_accepted": 0, "false_dislikes": 20,
-        "false_likes": 0, "true_dislikes": 20,
-    }, id="always-pass"),
-])
+@pytest.mark.parametrize(
+    ("like_threshold", "expected"),
+    [
+        pytest.param(
+            0.0,
+            {
+                "true_accepted": 20,
+                "false_dislikes": 0,
+                "false_likes": 20,
+                "true_dislikes": 0,
+            },
+            id="always-like",
+        ),
+        pytest.param(
+            1.0,
+            {
+                "true_accepted": 0,
+                "false_dislikes": 20,
+                "false_likes": 0,
+                "true_dislikes": 20,
+            },
+            id="always-pass",
+        ),
+    ],
+)
 def test_evaluate_honors_config_valid_threshold_endpoints(like_threshold, expected):
     """Config permits both endpoints, so Hub evaluation must report their true decisions."""
-    result = evaluate(_grouped_cv_samples(n_identities=10, per_identity=4),
-                      like_threshold=like_threshold)
+    result = evaluate(
+        _grouped_cv_samples(n_identities=10, per_identity=4),
+        like_threshold=like_threshold,
+    )
 
     assert result["status"] == "ok"
     assert result["like_threshold"] == like_threshold
@@ -189,7 +235,7 @@ def test_evaluate_real_grouped_cv_too_few_identities():
     samples = []
     for i in range(12):
         emb = [0.0] * 1280
-        emb[0] = 1.0                                  # identical face prefix => single identity group
+        emb[0] = 1.0  # identical face prefix => single identity group
         emb[512] = 1.0 if i % 2 == 0 else -1.0
         samples.append((i % 2 == 0, emb))
     r = evaluate(samples)

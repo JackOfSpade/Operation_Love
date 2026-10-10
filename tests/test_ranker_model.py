@@ -1,4 +1,5 @@
 """PreferenceModel tests — exercises the pure-Python LR fallback (no sklearn)."""
+
 import math
 
 import pytest
@@ -77,28 +78,36 @@ def test_genuine_fit_failure_surfaces_and_stays_not_ready():
     assert not m.ready
 
 
-@pytest.mark.parametrize(("kwargs", "message"), [
-    ({"min_labels": True}, "min_labels"),
-    ({"min_labels": 0}, "min_labels"),
-    ({"min_labels": 2, "min_per_class": 0}, "min_per_class"),
-    ({"min_labels": 2, "threshold": math.nan}, "threshold"),
-    ({"min_labels": 2, "threshold": 10 ** 10_000}, "threshold"),
-    ({"min_labels": 2, "threshold": True}, "threshold"),
-])
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"min_labels": True}, "min_labels"),
+        ({"min_labels": 0}, "min_labels"),
+        ({"min_labels": 2, "min_per_class": 0}, "min_per_class"),
+        ({"min_labels": 2, "threshold": math.nan}, "threshold"),
+        ({"min_labels": 2, "threshold": 10**10_000}, "threshold"),
+        ({"min_labels": 2, "threshold": True}, "threshold"),
+    ],
+)
 def test_constructor_rejects_invalid_direct_configuration(kwargs, message):
     with pytest.raises(ValueError, match=message):
         PreferenceModel(**kwargs)
 
 
-@pytest.mark.parametrize("samples", [
-    [(1, [1.0]), (False, [-1.0])],
-    [(True, []), (False, [])],
-    [(True, [1.0, 2.0]), (False, [-1.0])],
-    [(True, [1.0, "2"]), (False, [-1.0, -2.0])],
-    [(True, [1.0, math.nan]), (False, [-1.0, -2.0])],
-    [(True, [1.0, 10 ** 10_000]), (False, [-1.0, -2.0])],
-])
-def test_training_rejects_malformed_labels_and_vectors_before_backend_selection(samples):
+@pytest.mark.parametrize(
+    "samples",
+    [
+        [(1, [1.0]), (False, [-1.0])],
+        [(True, []), (False, [])],
+        [(True, [1.0, 2.0]), (False, [-1.0])],
+        [(True, [1.0, "2"]), (False, [-1.0, -2.0])],
+        [(True, [1.0, math.nan]), (False, [-1.0, -2.0])],
+        [(True, [1.0, 10**10_000]), (False, [-1.0, -2.0])],
+    ],
+)
+def test_training_rejects_malformed_labels_and_vectors_before_backend_selection(
+    samples,
+):
     model = PreferenceModel(min_labels=2, min_per_class=1)
     with pytest.raises(ValueError):
         model.train(samples)
@@ -108,21 +117,27 @@ def test_training_rejects_malformed_labels_and_vectors_before_backend_selection(
 def test_pure_python_fallback_rejects_nonfinite_training_data(monkeypatch):
     import operation_love.ranker.model as model_mod
 
-    monkeypatch.setattr(model_mod, "new_classifier",
-                        lambda: (_ for _ in ()).throw(ImportError("no sklearn")))
+    monkeypatch.setattr(
+        model_mod,
+        "new_classifier",
+        lambda: (_ for _ in ()).throw(ImportError("no sklearn")),
+    )
     model = PreferenceModel(min_labels=2, min_per_class=1)
     with pytest.raises(ValueError, match="finite real"):
         model.train([(True, [math.nan]), (False, [-1.0])])
     assert not model.ready
 
 
-@pytest.mark.parametrize("vector", [
-    [1.0],
-    [1.0, 2.0, 3.0],
-    [1.0, math.inf],
-    [1.0, True],
-    [1.0, 10 ** 10_000],
-])
+@pytest.mark.parametrize(
+    "vector",
+    [
+        [1.0],
+        [1.0, 2.0, 3.0],
+        [1.0, math.inf],
+        [1.0, True],
+        [1.0, 10**10_000],
+    ],
+)
 def test_prediction_requires_the_trained_finite_feature_shape(vector):
     model = PreferenceModel(min_labels=2, min_per_class=1)
     assert model.train(_separable())
@@ -134,8 +149,12 @@ def test_train_falls_back_to_purepy_when_sklearn_unavailable(monkeypatch):
     # sklearn IS installed in CI/this sandbox, so despite this file's docstring,
     # the pure-Python fallback is otherwise never actually exercised here.
     import operation_love.ranker.model as model_mod
-    monkeypatch.setattr(model_mod, "new_classifier",
-                        lambda: (_ for _ in ()).throw(ImportError("no sklearn")))
+
+    monkeypatch.setattr(
+        model_mod,
+        "new_classifier",
+        lambda: (_ for _ in ()).throw(ImportError("no sklearn")),
+    )
     m = PreferenceModel(min_labels=2)
     assert m.train(_separable()) is True
     assert m._impl == "purepy"
@@ -176,6 +195,7 @@ def test_failed_retrain_clears_a_previously_ready_classifier(monkeypatch):
 
     monkeypatch.setattr(model_mod, "new_classifier", lambda: _BoomClf())
     import pytest
+
     with pytest.raises(ValueError, match="bad refreshed labels"):
         model.train(_separable())
     assert not model.ready
@@ -242,8 +262,9 @@ def test_readers_wait_for_a_gated_retrain_then_see_the_published_model(monkeypat
     prediction_reader = threading.Thread(target=predict)
     ready_reader.start()
     prediction_reader.start()
-    assert (ready_entered.wait(timeout=_LIVENESS_TIMEOUT_S)
-            and predict_entered.wait(timeout=_LIVENESS_TIMEOUT_S))
+    assert ready_entered.wait(timeout=_LIVENESS_TIMEOUT_S) and predict_entered.wait(
+        timeout=_LIVENESS_TIMEOUT_S
+    )
 
     try:
         assert not ready_done.wait(timeout=0.1)

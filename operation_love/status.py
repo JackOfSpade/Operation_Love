@@ -5,6 +5,7 @@ supervisor/decider set the global slice (labels, ranker readiness, budget). Pure
 Python, no deps, so it imports anywhere and is unit-testable. Read the whole run
 with snapshot(), or one app's view (global + that app) with app_view(app).
 """
+
 from __future__ import annotations
 
 import math
@@ -33,9 +34,11 @@ class AppStatus:
     # observational: it tells the Hub which bounded capture/checkpoint step is in progress;
     # it never changes the worker's decision or device-input policy.
     detail: str | None = None
-    last_decision: str | None = None       # like | pass | dislike | defer | no_face | no_photos
+    last_decision: str | None = (
+        None  # like | pass | dislike | defer | no_face | no_photos
+    )
     last_score: float | None = None
-    swipes_run: int = 0                     # decisions recorded this run
+    swipes_run: int = 0  # decisions recorded this run
     # Run-level provenance for Hinge numbered targeting, published once at the start of a run and
     # never cleared per card (it is a property of the RUN, not of one profile). Set only when
     # readiness was licensed
@@ -105,27 +108,58 @@ class AppStatus:
 
 
 _APP_MUTABLE_FIELDS = frozenset(AppStatus.__dataclass_fields__) - {"app", "updated_at"}
-_GLOBAL_MUTABLE_FIELDS = frozenset({
-    "mode", "min_labels", "budget_cap", "phase", "labels", "ranker_ready",
-    "budget_spent", "openers", "running", "stopping",
-})
+_GLOBAL_MUTABLE_FIELDS = frozenset(
+    {
+        "mode",
+        "min_labels",
+        "budget_cap",
+        "phase",
+        "labels",
+        "ranker_ready",
+        "budget_spent",
+        "openers",
+        "running",
+        "stopping",
+    }
+)
 _RUN_MODES = frozenset({"training", "auto"})
-_APP_STATES = frozenset({
-    "starting", "waiting_approval", "scoring", "acting", "out_of_profiles",
-    "rate_limited", "saving", "stopped", "error", "wedged", "blocked",
-})
+_APP_STATES = frozenset(
+    {
+        "starting",
+        "waiting_approval",
+        "scoring",
+        "acting",
+        "out_of_profiles",
+        "rate_limited",
+        "saving",
+        "stopped",
+        "error",
+        "wedged",
+        "blocked",
+    }
+)
 _DECISIONS = frozenset({"like", "pass", "dislike", "defer", "no_face", "no_photos"})
-_STOP_KINDS = frozenset({
-    "approval", "opener", "deck_blocked", "targeting", "targeting_calibration",
-    "cold_relaunch_recovery",
-})
+_STOP_KINDS = frozenset(
+    {
+        "approval",
+        "opener",
+        "deck_blocked",
+        "targeting",
+        "targeting_calibration",
+        "cold_relaunch_recovery",
+    }
+)
 
 
-def _finite_nonnegative_float(name: str, value: object, *, none_ok: bool = False) -> float | None:
+def _finite_nonnegative_float(
+    name: str, value: object, *, none_ok: bool = False
+) -> float | None:
     """Validate a status value before it reaches the JSON-facing snapshot."""
     if value is None and none_ok:
         return None
-    requirement = f"{name} must be a finite nonnegative number" + (" or None" if none_ok else "")
+    requirement = f"{name} must be a finite nonnegative number" + (
+        " or None" if none_ok else ""
+    )
     if isinstance(value, bool) or not isinstance(value, Real):
         raise ValueError(requirement)
     try:
@@ -152,7 +186,9 @@ def _exact_bool(name: str, value: object) -> bool:
 def _run_mode(value: object) -> str:
     if not isinstance(value, str) or value not in _RUN_MODES:
         if value == "auto_testing":
-            raise ValueError("mode 'auto_testing' was retired; use 'training' or 'auto'")
+            raise ValueError(
+                "mode 'auto_testing' was retired; use 'training' or 'auto'"
+            )
         raise ValueError("mode must be exactly 'training' or 'auto'")
     return value
 
@@ -166,23 +202,40 @@ def _optional_text(name: str, value: object) -> str | None:
 class RunStatus:
     """Mutable, lock-guarded run state shared across worker threads + readers."""
 
-    def __init__(self, run_id: str, apps, *, min_labels: int, mode: str,
-                 budget_cap: float | None = None, labels: int = 0, ranker_ready: bool = False):
+    def __init__(
+        self,
+        run_id: str,
+        apps,
+        *,
+        min_labels: int,
+        mode: str,
+        budget_cap: float | None = None,
+        labels: int = 0,
+        ranker_ready: bool = False,
+    ):
         if not isinstance(run_id, str) or not run_id or run_id != run_id.strip():
-            raise ValueError("run_id must be a nonempty string without surrounding whitespace")
+            raise ValueError(
+                "run_id must be a nonempty string without surrounding whitespace"
+            )
         mode = _run_mode(mode)
         if isinstance(apps, (str, bytes)) or not isinstance(apps, Collection):
             raise ValueError("apps must be a finite collection of app-name strings")
         app_names = list(apps)
-        if any(not isinstance(app, str) or not app or app != app.strip() for app in app_names):
+        if any(
+            not isinstance(app, str) or not app or app != app.strip()
+            for app in app_names
+        ):
             raise ValueError(
-                "app names must be nonempty strings without surrounding whitespace")
+                "app names must be nonempty strings without surrounding whitespace"
+            )
         if len(set(app_names)) != len(app_names):
             raise ValueError("app names must not contain duplicates")
         min_labels = _nonnegative_int("min_labels", min_labels)
         labels = _nonnegative_int("labels", labels)
         ranker_ready = _exact_bool("ranker_ready", ranker_ready)
-        resolved_budget_cap = _finite_nonnegative_float("budget_cap", budget_cap, none_ok=True)
+        resolved_budget_cap = _finite_nonnegative_float(
+            "budget_cap", budget_cap, none_ok=True
+        )
         self._lock = threading.RLock()
         self.run_id = run_id
         self.started_at = time.time()
@@ -190,7 +243,7 @@ class RunStatus:
         self.min_labels = min_labels
         self.budget_cap = resolved_budget_cap
         # global slice
-        self.phase = "starting"             # starting | loading saved data | training ranker | loading ML models | live | stopping | saving data | stopped | wedged | save_failed
+        self.phase = "starting"  # starting | loading saved data | training ranker | loading ML models | live | stopping | saving data | stopped | wedged | save_failed
         self.labels = labels
         self.ranker_ready = ranker_ready
         self.budget_spent = 0.0
@@ -216,7 +269,9 @@ class RunStatus:
     # --- per-app updates (workers) -------------------------------------
     def set_app(self, app: str, **fields) -> None:
         if not isinstance(app, str) or not app or app != app.strip():
-            raise ValueError("app must be a nonempty string without surrounding whitespace")
+            raise ValueError(
+                "app must be a nonempty string without surrounding whitespace"
+            )
         unknown = set(fields) - _APP_MUTABLE_FIELDS
         if unknown:
             raise ValueError(f"unknown AppStatus field(s): {sorted(unknown)}")
@@ -224,26 +279,35 @@ class RunStatus:
         if "mode" in normalized:
             normalized["mode"] = _run_mode(normalized["mode"])
         if "state" in normalized and (
-                not isinstance(normalized["state"], str)
-                or normalized["state"] not in _APP_STATES):
+            not isinstance(normalized["state"], str)
+            or normalized["state"] not in _APP_STATES
+        ):
             raise ValueError(f"state must be one of {sorted(_APP_STATES)}")
         if "last_decision" in normalized:
             decision = normalized["last_decision"]
             if decision is not None and (
-                    not isinstance(decision, str) or decision not in _DECISIONS):
-                raise ValueError(f"last_decision must be one of {sorted(_DECISIONS)} or None")
+                not isinstance(decision, str) or decision not in _DECISIONS
+            ):
+                raise ValueError(
+                    f"last_decision must be one of {sorted(_DECISIONS)} or None"
+                )
         if "last_score" in normalized:
             normalized["last_score"] = _finite_nonnegative_float(
-                "last_score", normalized["last_score"], none_ok=True)
+                "last_score", normalized["last_score"], none_ok=True
+            )
         if "swipes_run" in normalized:
-            normalized["swipes_run"] = _nonnegative_int("swipes_run", normalized["swipes_run"])
+            normalized["swipes_run"] = _nonnegative_int(
+                "swipes_run", normalized["swipes_run"]
+            )
         for name in ("detail", "targeting_licence_notice", "error", "stop_reason"):
             if name in normalized:
                 normalized[name] = _optional_text(name, normalized[name])
         if "stop_kind" in normalized:
             stop_kind = normalized["stop_kind"]
             if stop_kind is not None and stop_kind not in _STOP_KINDS:
-                raise ValueError(f"stop_kind must be one of {sorted(_STOP_KINDS)} or None")
+                raise ValueError(
+                    f"stop_kind must be one of {sorted(_STOP_KINDS)} or None"
+                )
         with self._lock:
             s = self._apps.setdefault(app, AppStatus(app=app))
             for k, v in normalized.items():
@@ -252,7 +316,9 @@ class RunStatus:
 
     def record_swipe(self, app: str, decision: str, score: float | None = None) -> None:
         if not isinstance(app, str) or not app or app != app.strip():
-            raise ValueError("app must be a nonempty string without surrounding whitespace")
+            raise ValueError(
+                "app must be a nonempty string without surrounding whitespace"
+            )
         if not isinstance(decision, str) or not decision.strip():
             raise ValueError("decision must be nonempty text")
         resolved_score = _finite_nonnegative_float("score", score, none_ok=True)
@@ -281,14 +347,18 @@ class RunStatus:
         for name in ("budget_cap", "budget_spent"):
             if name in normalized:
                 normalized[name] = _finite_nonnegative_float(
-                    name, normalized[name], none_ok=name == "budget_cap")
+                    name, normalized[name], none_ok=name == "budget_cap"
+                )
         for name in ("ranker_ready", "running", "stopping"):
             if name in normalized:
                 normalized[name] = _exact_bool(name, normalized[name])
         if "mode" in normalized:
             normalized["mode"] = _run_mode(normalized["mode"])
         if "phase" in normalized:
-            if not isinstance(normalized["phase"], str) or not normalized["phase"].strip():
+            if (
+                not isinstance(normalized["phase"], str)
+                or not normalized["phase"].strip()
+            ):
                 raise ValueError("phase must be nonempty text")
         with self._lock:
             for k, v in normalized.items():

@@ -24,6 +24,7 @@ follows tests/test_hinge_observe.py / tests/test_android_upsell_protection.py's 
 synthetic-frame conventions: paste the shipped glyph templates onto a noise canvas so
 _paywall_visible genuinely finds them via cv2, rather than mocking the driver itself.
 """
+
 from __future__ import annotations
 
 import json
@@ -33,8 +34,13 @@ import pytest
 
 from operation_love.drivers import hinge
 from operation_love.drivers.debuglog import DebugLog
-from operation_love.drivers.hinge import AndroidDriver, HingeDeckBlockedError, HINGE_SPEC
+from operation_love.drivers.hinge import (
+    AndroidDriver,
+    HingeDeckBlockedError,
+    HINGE_SPEC,
+)
 from operation_love.drivers.like_composer import ComposerSurface, Rect
+
 
 class FakeAdb:
     """Records what actually reached the phone. Same shape every other driver test file in
@@ -80,6 +86,7 @@ def _drv(adb, **overrides):
     # halt_on_error-gated path.
     class C:
         apps = {"hinge": {"halt_on_error": False, **overrides}}
+
     d = AndroidDriver(C(), HINGE_SPEC)
     d._adb = adb
     d._touch = adb
@@ -93,6 +100,7 @@ def _no_sleep(monkeypatch):
 
 # --- frame builders: real, template-detectable glyphs on synthetic screens -------------------
 
+
 def _paywall_frame(cx=810, cy=292, seed=7):
     """A decodable frame carrying the real "HingeX" tab-wordmark glyph pasted at (cx, cy).
 
@@ -102,11 +110,12 @@ def _paywall_frame(cx=810, cy=292, seed=7):
     """
     import cv2
     import numpy as np
+
     rng = np.random.default_rng(seed)
     canvas = rng.integers(60, 200, size=(2400, 1080), dtype=np.uint8)
     t = hinge._load_template("hinge_upgrade_tab.png")
     th, tw = t.shape
-    canvas[cy - th // 2: cy - th // 2 + th, cx - tw // 2: cx - tw // 2 + tw] = t
+    canvas[cy - th // 2 : cy - th // 2 + th, cx - tw // 2 : cx - tw // 2 + tw] = t
     ok, buf = cv2.imencode(".png", canvas)
     return buf.tobytes()
 
@@ -117,6 +126,7 @@ def _no_paywall_frame(seed=8):
     never seen before)."""
     import cv2
     import numpy as np
+
     rng = np.random.default_rng(seed)
     canvas = rng.integers(60, 200, size=(2400, 1080), dtype=np.uint8)
     ok, buf = cv2.imencode(".png", canvas)
@@ -133,12 +143,16 @@ def _deck_ready_frame(heart_xy=(930, 1600), pass_xy=(130, 2030), seed=41):
     non-like control) would be the wrong stand-in here."""
     import cv2
     import numpy as np
+
     rng = np.random.default_rng(seed)
     canvas = rng.integers(60, 200, size=(2400, 1080), dtype=np.uint8)
-    for name, (cx, cy) in ((HINGE_SPEC.templates["like"], heart_xy), ("hinge_pass_x.png", pass_xy)):
+    for name, (cx, cy) in (
+        (HINGE_SPEC.templates["like"], heart_xy),
+        ("hinge_pass_x.png", pass_xy),
+    ):
         t = hinge._load_template(name)
         th, tw = t.shape
-        canvas[cy - th // 2: cy - th // 2 + th, cx - tw // 2: cx - tw // 2 + tw] = t
+        canvas[cy - th // 2 : cy - th // 2 + th, cx - tw // 2 : cx - tw // 2 + tw] = t
     ok, buf = cv2.imencode(".png", canvas)
     return buf.tobytes()
 
@@ -154,12 +168,13 @@ def _pass_only_frame(pass_xy=(130, 2030), seed=53):
     test_identity_recognised_static_screen_never_bails_without_visible_deck_glyphs."""
     import cv2
     import numpy as np
+
     rng = np.random.default_rng(seed)
     canvas = rng.integers(60, 200, size=(2400, 1080), dtype=np.uint8)
     t = hinge._load_template("hinge_pass_x.png")
     th, tw = t.shape
     cx, cy = pass_xy
-    canvas[cy - th // 2: cy - th // 2 + th, cx - tw // 2: cx - tw // 2 + tw] = t
+    canvas[cy - th // 2 : cy - th // 2 + th, cx - tw // 2 : cx - tw // 2 + tw] = t
     ok, buf = cv2.imencode(".png", canvas)
     return buf.tobytes()
 
@@ -178,10 +193,13 @@ def _profile_header_frame(header_value=250, seed=61):
     reproduce that separation rather than accidentally defeat it."""
     import cv2
     import numpy as np
+
     rng = np.random.default_rng(seed)
     canvas = rng.integers(60, 200, size=(2400, 1080), dtype=np.uint8)
     x0, y0, x1, y1 = HINGE_SPEC.identity_band
-    canvas[int(y0 * 2400):int(y1 * 2400), int(x0 * 1080):int(x1 * 1080)] = header_value
+    canvas[int(y0 * 2400) : int(y1 * 2400), int(x0 * 1080) : int(x1 * 1080)] = (
+        header_value
+    )
     ok, buf = cv2.imencode(".png", canvas)
     return buf.tobytes()
 
@@ -191,6 +209,7 @@ def _blank_frame():
     definition: near-black AND near-uniform)."""
     import cv2
     import numpy as np
+
     canvas = np.zeros((2400, 1080), dtype=np.uint8)
     ok, buf = cv2.imencode(".png", canvas)
     return buf.tobytes()
@@ -199,6 +218,7 @@ def _blank_frame():
 # ===============================================================================================
 # 1. _paywall_visible: glyph AND position both have to be right.
 # ===============================================================================================
+
 
 def test_paywall_visible_true_at_the_real_tab_position():
     """Pins the positive case: the real template, pasted at the real measured tab geometry,
@@ -224,7 +244,9 @@ def test_paywall_visible_false_when_glyph_sits_below_the_y_gate():
     screen that happens to carry Hinge's tab-bar-shaped chrome anywhere in its lower two-thirds
     would misfire as the paywall."""
     drv = _drv(FakeAdb([b""]))
-    frame = _paywall_frame(cx=810, cy=1200)     # 1200 / 2400 = 0.50, well past the 0.30 gate
+    frame = _paywall_frame(
+        cx=810, cy=1200
+    )  # 1200 / 2400 = 0.50, well past the 0.30 gate
     assert drv._paywall_visible(frame) is False
 
 
@@ -235,6 +257,7 @@ def test_paywall_visible_false_when_glyph_sits_below_the_y_gate():
 # Its measured geometry is encoded above, while the committed UI-chrome template is the only
 # image fixture used here. This keeps the detection test unconditional and privacy-safe.
 # ===============================================================================================
+
 
 def test_paywall_visible_true_on_the_measured_synthetic_fixture():
     """The shipped paywall glyph at its measured Pixel 7a tab location is detectable.
@@ -253,7 +276,9 @@ def test_local_calibration_paywall_is_detected_when_the_ignored_capture_is_avail
     who has the ignored calibration corpus gets this extra detector check automatically; a fresh
     clone skips it rather than replacing real pixels with an embedded copy.
     """
-    frame_path = Path(__file__).parents[1] / "ops/calibration/hinge_out_of_likes_20260811.png"
+    frame_path = (
+        Path(__file__).parents[1] / "ops/calibration/hinge_out_of_likes_20260811.png"
+    )
     if not frame_path.is_file():
         pytest.skip("local Hinge paywall calibration capture is intentionally ignored")
     assert _drv(FakeAdb([b""]))._paywall_visible(frame_path.read_bytes()) is True
@@ -263,6 +288,7 @@ def test_local_calibration_paywall_is_detected_when_the_ignored_capture_is_avail
 # 3. Template discrimination as a MEASURED property (not just a location count).
 # ===============================================================================================
 
+
 def test_measured_synthetic_paywall_fixture_scores_well_above_threshold():
     """The synthetic fixture's unmodified committed glyph must score near-perfectly.
 
@@ -270,11 +296,14 @@ def test_measured_synthetic_paywall_fixture_scores_well_above_threshold():
     not a borderline threshold test; the separate noise test pins the negative margin."""
     import cv2
     import numpy as np
+
     frame = _paywall_frame(cx=810, cy=292, seed=19)
     image = cv2.imdecode(np.frombuffer(frame, dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
     template = hinge._load_template("hinge_upgrade_tab.png")
     score = float(cv2.matchTemplate(image, template, cv2.TM_CCOEFF_NORMED).max())
-    assert score > 0.99, f"synthetic paywall fixture only scored {score}, expected near-perfect"
+    assert score > 0.99, (
+        f"synthetic paywall fixture only scored {score}, expected near-perfect"
+    )
 
 
 def test_plain_noise_frame_scores_well_below_threshold():
@@ -284,7 +313,10 @@ def test_plain_noise_frame_scores_well_below_threshold():
     other side of the threshold, not just a bare pass/fail."""
     import cv2
     import numpy as np
-    image = cv2.imdecode(np.frombuffer(_no_paywall_frame(), dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
+
+    image = cv2.imdecode(
+        np.frombuffer(_no_paywall_frame(), dtype=np.uint8), cv2.IMREAD_GRAYSCALE
+    )
     template = hinge._load_template("hinge_upgrade_tab.png")
     score = float(cv2.matchTemplate(image, template, cv2.TM_CCOEFF_NORMED).max())
     assert score < 0.5, f"noise frame scored {score}, too close to the 0.75 threshold"
@@ -294,7 +326,10 @@ def test_plain_noise_frame_scores_well_below_threshold():
 # 4. blocked_reason(): the memoized, worker-facing, never-raising entry point.
 # ===============================================================================================
 
-def test_blocked_reason_uses_the_ocr_refined_likes_message_on_the_synthetic_paywall(monkeypatch):
+
+def test_blocked_reason_uses_the_ocr_refined_likes_message_on_the_synthetic_paywall(
+    monkeypatch,
+):
     """A template-detected synthetic paywall uses the specific OCR-refined operator message.
 
     OCR itself is intentionally best-effort and host-dependent, so this fixture supplies its
@@ -316,7 +351,10 @@ def test_blocked_reason_uses_the_ocr_refined_likes_message_on_the_synthetic_payw
         "band": HINGE_SPEC.paywall_headline_band,
         "kwargs": {"psm": "6", "white_text_threshold": hinge._PAYWALL_OCR_WHITE_MIN},
     }
-    assert reason == "Hinge is out of free likes for today — the Hinge+ upgrade screen is up"
+    assert (
+        reason
+        == "Hinge is out of free likes for today — the Hinge+ upgrade screen is up"
+    )
 
 
 def test_blocked_reason_none_on_an_ordinary_deck_frame():
@@ -349,6 +387,7 @@ def test_blocked_reason_never_raises_on_undecodable_bytes():
 # 5. PASSIVITY: the paywall is a PURCHASE screen. Detecting it must never touch the phone.
 # ===============================================================================================
 
+
 def test_detecting_the_paywall_issues_zero_taps_swipes_or_text():
     """The assertion that stops a future "helpfully dismiss the paywall" change. Observe mode
     is strictly passive, and this screen doubly so -- it is Hinge's own purchase flow, and the
@@ -360,7 +399,7 @@ def test_detecting_the_paywall_issues_zero_taps_swipes_or_text():
 
     def should_stop():
         calls["n"] += 1
-        return calls["n"] > 5      # a few polls, then end the wait deterministically
+        return calls["n"] > 5  # a few polls, then end the wait deterministically
 
     drv.wait_for_decision(timeout=None, should_stop=should_stop)
 
@@ -372,6 +411,7 @@ def test_detecting_the_paywall_issues_zero_taps_swipes_or_text():
 # ===============================================================================================
 # 6. wait_for_decision returns None -- never True, never False -- while the paywall is up.
 # ===============================================================================================
+
 
 def test_wait_for_decision_never_returns_true_or_false_on_a_persistent_paywall():
     """Pins the exact bug this fix targets: in the incident, the like Hinge REFUSED must never
@@ -395,7 +435,10 @@ def test_wait_for_decision_never_returns_true_or_false_on_a_persistent_paywall()
 # hinge.time.monotonic -- never via real sleeping.
 # ===============================================================================================
 
-def test_unrecognized_static_screen_bails_out_once_the_stuck_budget_is_exceeded(monkeypatch):
+
+def test_unrecognized_static_screen_bails_out_once_the_stuck_budget_is_exceeded(
+    monkeypatch,
+):
     """The fix for the deeper defect: before _observe_stuck_bail existed, worker.py's
     wait_for_decision(timeout=None) meant ANY screen the driver could not classify -- a
     paywall, a system dialog, an app update prompt, a crash to the launcher -- hung the run
@@ -445,7 +488,9 @@ def test_unrecognized_static_screen_bails_out_once_the_stuck_budget_is_exceeded(
     assert reason and hinge.format_duration(elapsed_since_arm) in reason
 
 
-def test_deck_ready_static_screen_never_bails_even_well_past_the_stuck_budget(monkeypatch):
+def test_deck_ready_static_screen_never_bails_even_well_past_the_stuck_budget(
+    monkeypatch,
+):
     """The regression test that protects normal use. The incident run had a legitimate ~5
     minute deliberation on one profile before anything went wrong; the watchdog must not
     interrupt a human doing exactly that. A STATIC frame that positively shows a ready deck
@@ -473,14 +518,19 @@ def test_deck_ready_static_screen_never_bails_even_well_past_the_stuck_budget(mo
         return clock[0] - 20_000.0 > _survive_past
 
     result = drv.wait_for_decision(timeout=None, should_stop=should_stop)
-    assert result is None                 # ended by should_stop, not by any decision
+    assert result is None  # ended by should_stop, not by any decision
     assert clock[0] - 20_000.0 > _survive_past, (
-        "the wait must have survived multiple stuck-budgets for this to prove anything")
-    assert drv.blocked_reason() is None   # the watchdog never fired at any point in the wait
+        "the wait must have survived multiple stuck-budgets for this to prove anything"
+    )
+    assert (
+        drv.blocked_reason() is None
+    )  # the watchdog never fired at any point in the wait
     assert adb.taps == [] and adb.swipes == []
 
 
-def test_identity_recognised_static_screen_never_bails_without_visible_deck_glyphs(monkeypatch):
+def test_identity_recognised_static_screen_never_bails_without_visible_deck_glyphs(
+    monkeypatch,
+):
     """The same protection for the OTHER way a human legitimately sits still, found while
     investigating the 2026-08-15 report.
 
@@ -497,7 +547,9 @@ def test_identity_recognised_static_screen_never_bails_without_visible_deck_glyp
     frame = _pass_only_frame()
     adb = FakeAdb([frame])
     drv = _drv(adb)
-    assert drv._observe_deck_ready(frame) is False        # the precondition this test exists for
+    assert (
+        drv._observe_deck_ready(frame) is False
+    )  # the precondition this test exists for
     # A real band read off this real frame: the anchor genuinely matches, it is not stubbed.
     drv._identity_sig = hinge._band(frame, drv.identity_band)
     assert drv._identity_of(frame)[0] == "same"
@@ -508,13 +560,15 @@ def test_identity_recognised_static_screen_never_bails_without_visible_deck_glyp
         return clock[0] - 40_000.0 > _survive_past
 
     result = drv.wait_for_decision(timeout=None, should_stop=should_stop)
-    assert result is None                 # ended by should_stop, not by the watchdog
+    assert result is None  # ended by should_stop, not by the watchdog
     assert clock[0] - 40_000.0 > _survive_past
     assert drv.blocked_reason() is None
     assert adb.taps == [] and adb.swipes == []
 
 
-def test_unrecognised_static_screen_still_bails_even_with_an_identity_anchor_armed(monkeypatch):
+def test_unrecognised_static_screen_still_bails_even_with_an_identity_anchor_armed(
+    monkeypatch,
+):
     """The paywall guard must survive the re-arm above. A profile that HAS a locked identity
     anchor does not make every later screen recognisable: a paywall (or any unknown screen)
     matches no captured header, so it must still count down and still bail. Without this the
@@ -529,12 +583,12 @@ def test_unrecognised_static_screen_still_bails_even_with_an_identity_anchor_arm
     # An anchor locked from a DIFFERENT screen -- the profile the run was watching before this
     # one appeared. It must not launder the unknown screen into a recognised one.
     drv._identity_sig = hinge._band(_profile_header_frame(), drv.identity_band)
-    assert drv._identity_of(unknown)[0] != "same"          # the precondition, not an assumption
+    assert drv._identity_of(unknown)[0] != "same"  # the precondition, not an assumption
     assert drv._observe_deck_ready(unknown) is False
 
     def should_stop():
         clock[0] += stuck_budget / 3
-        return False                      # only the watchdog may end this wait
+        return False  # only the watchdog may end this wait
 
     assert drv.wait_for_decision(timeout=None, should_stop=should_stop) is None
     assert drv.blocked_reason() is not None
@@ -545,6 +599,7 @@ def test_unrecognised_static_screen_still_bails_even_with_an_identity_anchor_arm
 # out; like_sending (Hinge's own network/animation state) does. This is exactly where the
 # 2026-08-11 incident hung.
 # ===============================================================================================
+
 
 def test_like_sheet_wait_does_not_time_out_while_the_human_is_composing(monkeypatch):
     """A persistent open like sheet (the human writing a comment) must re-arm the stuck-screen
@@ -568,12 +623,15 @@ def test_like_sheet_wait_does_not_time_out_while_the_human_is_composing(monkeypa
         return clock[0] - 30_000.0 > 3 * hinge._OBSERVE_STUCK_S
 
     sent, _notified = drv._await_like_resolved(b"base", None, should_stop)
-    assert sent is None                   # ended by should_stop, never fabricated True/False
+    assert sent is None  # ended by should_stop, never fabricated True/False
     assert clock[0] - 30_000.0 > 3 * hinge._OBSERVE_STUCK_S, (
-        "must have survived past 3x the stuck budget floor with the sheet open the whole time")
+        "must have survived past 3x the stuck budget floor with the sheet open the whole time"
+    )
 
 
-def test_like_sending_wait_times_out_and_returns_none_not_a_fabricated_like(monkeypatch):
+def test_like_sending_wait_times_out_and_returns_none_not_a_fabricated_like(
+    monkeypatch,
+):
     """The exact state the incident hung in: the sheet has closed but Hinge has neither
     returned to the current card nor shown a ready next deck -- 'like_sending' -- and this is
     the APP working, not a human, so it must NOT re-arm the budget the way like_sheet does (no
@@ -629,7 +687,9 @@ def test_like_sending_paywall_stops_immediately_and_memoizes_the_reason(monkeypa
     drv._observe_stuck_budget_s = stuck_budget
     # Preserve the real template/position detector while making the optional OCR refinement
     # deterministic; absence of host tesseract must never decide whether the paywall stops us.
-    monkeypatch.setattr(drv, "_paywall_headline", lambda _frame: "You're out of free likes today")
+    monkeypatch.setattr(
+        drv, "_paywall_headline", lambda _frame: "You're out of free likes today"
+    )
     calls = {"n": 0}
 
     def should_stop():
@@ -641,7 +701,8 @@ def test_like_sending_paywall_stops_immediately_and_memoizes_the_reason(monkeypa
     assert calls["n"] == 1
     assert clock[0] - 50_000.0 < stuck_budget
     assert drv.blocked_reason() == (
-        "Hinge is out of free likes for today — the Hinge+ upgrade screen is up")
+        "Hinge is out of free likes for today — the Hinge+ upgrade screen is up"
+    )
     assert drv._blocked_reason
     assert drv._touch.taps == [] and drv._touch.swipes == [] and drv._touch.texts == []
 
@@ -658,7 +719,10 @@ def test_auto_like_rejects_a_post_send_paywall_before_it_can_be_counted():
     drv = _drv(FakeAdb([frame]), halt_on_error=True)
     with pytest.raises(DeckBlockedError) as exc:
         drv._verify_like_landed(b"pre-send-card")
-    assert str(exc.value) == "Hinge's Hinge+ upgrade screen is up — the deck is not available"
+    assert (
+        str(exc.value)
+        == "Hinge's Hinge+ upgrade screen is up — the deck is not available"
+    )
     assert drv.blocked_reason() == str(exc.value)
 
 
@@ -680,17 +744,22 @@ def test_auto_paywall_is_checked_before_a_late_upsell_dismiss_can_tap_it(monkeyp
     assert taps == []
 
 
-def test_post_send_paywall_is_rejected_even_when_generic_verification_is_opted_out(monkeypatch):
+def test_post_send_paywall_is_rejected_even_when_generic_verification_is_opted_out(
+    monkeypatch,
+):
     """Known refusal evidence is not an optional halt_on_error verification check."""
     frame = _paywall_frame()
     drv = _drv(FakeAdb([frame]), halt_on_error=False)
-    monkeypatch.setattr(drv, "_paywall_headline", lambda _frame: "You're out of free likes today")
+    monkeypatch.setattr(
+        drv, "_paywall_headline", lambda _frame: "You're out of free likes today"
+    )
 
     with pytest.raises(HingeDeckBlockedError):
         drv._verify_like_landed(b"pre-send-card")
 
     assert drv.blocked_reason() == (
-        "Hinge is out of free likes for today — the Hinge+ upgrade screen is up")
+        "Hinge is out of free likes for today — the Hinge+ upgrade screen is up"
+    )
 
 
 def test_opted_out_generic_verification_still_catches_a_late_paywall(monkeypatch):
@@ -699,21 +768,29 @@ def test_opted_out_generic_verification_still_catches_a_late_paywall(monkeypatch
     drv = _drv(FakeAdb([b"unused"]), halt_on_error=False)
     frames = iter([b"settling", paywall])
     monkeypatch.setattr(drv, "_screencap", lambda: next(frames))
-    monkeypatch.setattr(drv, "_paywall_headline",
-                        lambda frame: "You're out of free likes today" if frame is paywall else "")
+    monkeypatch.setattr(
+        drv,
+        "_paywall_headline",
+        lambda frame: "You're out of free likes today" if frame is paywall else "",
+    )
 
     with pytest.raises(HingeDeckBlockedError):
         drv._verify_like_landed(b"pre-send-card")
 
 
-def test_auto_verification_does_not_accept_a_transition_frame_before_a_late_paywall(monkeypatch):
+def test_auto_verification_does_not_accept_a_transition_frame_before_a_late_paywall(
+    monkeypatch,
+):
     paywall = _paywall_frame()
     drv = _drv(FakeAdb([b"unused"]), halt_on_error=True)
     frames = iter([b"changed transition", paywall])
     monkeypatch.setattr(drv, "_screencap", lambda: next(frames))
     monkeypatch.setattr(drv, "_changed", lambda _before, _after: True)
-    monkeypatch.setattr(drv, "_paywall_headline",
-                        lambda frame: "You're out of free likes today" if frame is paywall else "")
+    monkeypatch.setattr(
+        drv,
+        "_paywall_headline",
+        lambda frame: "You're out of free likes today" if frame is paywall else "",
+    )
 
     with pytest.raises(HingeDeckBlockedError):
         drv._verify_like_landed(b"pre-send-card")
@@ -724,43 +801,61 @@ def _run_logged_like(monkeypatch, tmp_path, verifier):
     drv = _drv(FakeAdb([b"sheet"]), halt_on_error=False)
     drv._dbg = DebugLog(str(tmp_path), run_id="paywall-order")
     monkeypatch.setattr(drv, "_scroll_to_top", lambda _should_stop=None: None)
-    monkeypatch.setattr(drv, "_locate_target_heart",
-                        lambda _item, should_stop=None: (100, 200))
+    monkeypatch.setattr(
+        drv, "_locate_target_heart", lambda _item, should_stop=None: (100, 200)
+    )
     monkeypatch.setattr(drv, "_snap", lambda: b"before")
-    composer_checks = iter([
-        None,
-        ComposerSurface(
-            layout_id="hinge_inline_v1",
-            comment_rect=Rect(95, 1597, 985, 1775),
-            send_rect=Rect(390, 1807, 985, 1916),
-            confirm_point=(695, 1856),
-        ),
-    ])
-    monkeypatch.setattr(drv, "_await_sheet_open", lambda **_kwargs: next(composer_checks))
+    composer_checks = iter(
+        [
+            None,
+            ComposerSurface(
+                layout_id="hinge_inline_v1",
+                comment_rect=Rect(95, 1597, 985, 1775),
+                send_rect=Rect(390, 1807, 985, 1916),
+                confirm_point=(695, 1856),
+            ),
+        ]
+    )
+    monkeypatch.setattr(
+        drv, "_await_sheet_open", lambda **_kwargs: next(composer_checks)
+    )
     monkeypatch.setattr(drv, "_screencap", lambda **_kwargs: b"sheet")
     monkeypatch.setattr(drv, "_handle_rose_upsell", lambda: False)
     monkeypatch.setattr(drv, "_verify_like_landed", verifier)
     return drv
 
 
-def test_like_debug_records_attempt_then_completed_like_only_after_verification(monkeypatch, tmp_path):
+def test_like_debug_records_attempt_then_completed_like_only_after_verification(
+    monkeypatch, tmp_path
+):
     drv = _run_logged_like(monkeypatch, tmp_path, lambda _before: None)
 
     drv.like()
 
-    records = [json.loads(line) for line in (drv._dbg.dir / "actions.jsonl").read_text().splitlines()]
+    records = [
+        json.loads(line)
+        for line in (drv._dbg.dir / "actions.jsonl").read_text().splitlines()
+    ]
     assert [record["action"] for record in records][-2:] == ["like_attempt", "like"]
 
 
-def test_paywall_debug_records_attempt_then_rejection_never_a_completed_like(monkeypatch, tmp_path):
+def test_paywall_debug_records_attempt_then_rejection_never_a_completed_like(
+    monkeypatch, tmp_path
+):
     reason = "Hinge's Hinge+ upgrade screen is up — the deck is not available"
     drv = _run_logged_like(
-        monkeypatch, tmp_path, lambda _before: (_ for _ in ()).throw(HingeDeckBlockedError(reason)))
+        monkeypatch,
+        tmp_path,
+        lambda _before: (_ for _ in ()).throw(HingeDeckBlockedError(reason)),
+    )
 
     with pytest.raises(HingeDeckBlockedError, match="upgrade screen"):
         drv.like()
 
-    records = [json.loads(line) for line in (drv._dbg.dir / "actions.jsonl").read_text().splitlines()]
+    records = [
+        json.loads(line)
+        for line in (drv._dbg.dir / "actions.jsonl").read_text().splitlines()
+    ]
     actions = [record["action"] for record in records]
     assert actions[-2:] == ["like_attempt", "like_rejected"]
     assert "like" not in actions
@@ -772,13 +867,20 @@ def test_stuck_post_send_upsell_still_records_the_send_attempt(monkeypatch, tmp_
     """A modal failure follows Send Like, so it cannot erase the attempted-action record."""
     drv = _run_logged_like(monkeypatch, tmp_path, lambda _before: None)
     monkeypatch.setattr(
-        drv, "_handle_rose_upsell",
-        lambda: (_ for _ in ()).throw(hinge.PaidUpsellStuckError("upsell would not dismiss")))
+        drv,
+        "_handle_rose_upsell",
+        lambda: (_ for _ in ()).throw(
+            hinge.PaidUpsellStuckError("upsell would not dismiss")
+        ),
+    )
 
     with pytest.raises(hinge.PaidUpsellStuckError, match="would not dismiss"):
         drv.like()
 
-    records = [json.loads(line) for line in (drv._dbg.dir / "actions.jsonl").read_text().splitlines()]
+    records = [
+        json.loads(line)
+        for line in (drv._dbg.dir / "actions.jsonl").read_text().splitlines()
+    ]
     actions = [record["action"] for record in records]
     assert actions[-1] == "like_attempt"
     assert "like" not in actions
@@ -792,6 +894,7 @@ def test_stuck_post_send_upsell_still_records_the_send_attempt(monkeypatch, tmp_
 # test_dismiss_via_zone_point_stays_inside_the_measured_safe_band_across_many_draws in
 # tests/test_android_upsell_protection.py.
 # ===============================================================================================
+
 
 def test_observe_stuck_budget_never_below_the_floor_and_genuinely_spread():
     """The floor guarantee is the ENTIRE safety argument for humanizing this particular budget

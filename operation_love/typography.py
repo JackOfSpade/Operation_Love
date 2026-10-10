@@ -18,6 +18,7 @@ happening again.
 Lives at the operation_love top level, not inside either ``opener/`` or ``drivers/``, so
 neither subpackage has to import the other -- the same pattern as ``human.py``.
 """
+
 from __future__ import annotations
 
 import re
@@ -27,9 +28,9 @@ import unicodedata
 # by what a real ASCII dash in that position means: a long, sentence-level dash reads as a
 # pause and becomes a comma; a short, word-joining hyphen becomes a plain space. Newly
 # encountered dash lookalikes are a one-line addition to one of these two strings.
-EM_DASH_CHARS = "—–―﹘"      # — em, – en, ― horizontal bar, ﹘ small em dash
+EM_DASH_CHARS = "—–―﹘"  # — em, – en, ― horizontal bar, ﹘ small em dash
 HYPHEN_CHARS = "-‐‑‒−﹣－"  # - hyphen-minus, ‐ hyphen, ‑ non-breaking hyphen, ‒ figure
-                            # dash, − minus sign, ﹣ small hyphen-minus, － fullwidth hyphen
+# dash, − minus sign, ﹣ small hyphen-minus, － fullwidth hyphen
 
 # str.translate()-ready mapping (codepoint -> replacement string), for callers that fold
 # with one .translate() call (opener.py).
@@ -56,9 +57,13 @@ def tidy_punctuation_spacing(text: str) -> str:
     # plain-text smiley in an opener and is conventionally separated from the preceding
     # word. Keep that one pair intact while retaining normal colon cleanup everywhere else.
     t = re.sub(r"\s+([,.!?;]|:(?!\)))", r"\1", t)  # no space before punctuation
-    t = re.sub(r"([,;:])(\s*[,;:])+", r"\1", t)   # collapse runs created by dash->comma
-    t = re.sub(r",\s*([.!?;:])", r"\1", t)        # drop a comma stranded before terminal punctuation
-    t = re.sub(r"^[\s,;:]+|[\s,;:]+$", "", t)     # strip leading/trailing connective punct from a boundary dash
+    t = re.sub(r"([,;:])(\s*[,;:])+", r"\1", t)  # collapse runs created by dash->comma
+    t = re.sub(
+        r",\s*([.!?;:])", r"\1", t
+    )  # drop a comma stranded before terminal punctuation
+    t = re.sub(
+        r"^[\s,;:]+|[\s,;:]+$", "", t
+    )  # strip leading/trailing connective punct from a boundary dash
     return t
 
 
@@ -66,8 +71,14 @@ def tidy_punctuation_spacing(text: str) -> str:
 # (BigQuery, the hub) only need to compare/display straight ASCII quotes; a curly one is
 # just as much a "reads like it came from a word processor, not a person" tell as a dash.
 QUOTE_FOLD: dict[str, str] = {
-    "’": "'", "‘": "'", "‚": "'", "‛": "'",   # curly single: ' ' , '
-    "“": '"', "”": '"', "„": '"', "‟": '"',   # curly double: " " „ ‟
+    "’": "'",
+    "‘": "'",
+    "‚": "'",
+    "‛": "'",  # curly single: ' ' , '
+    "“": '"',
+    "”": '"',
+    "„": '"',
+    "‟": '"',  # curly double: " " „ ‟
 }
 # nbsp, narrow no-break space, thin space -> a normal ASCII space. `adb shell input text`
 # only recognizes an ordinary space (encoded as %s -- see adb.py's _escape_input_text); any
@@ -86,9 +97,21 @@ SPACE_FOLD: dict[str, str] = {" ": " ", " ": " ", " ": " "}
 # (Nordic o/oe, German ss, Icelandic thorn/eth, Polish l) come through as readable ASCII on
 # the first pass, the same way an accented e already does via NFKD.
 LIGATURE_FOLD: dict[str, str] = {
-    "ß": "ss", "æ": "ae", "Æ": "AE", "œ": "oe", "Œ": "OE",
-    "ø": "o", "Ø": "O", "đ": "d", "Đ": "D", "ł": "l", "Ł": "L",
-    "þ": "th", "Þ": "Th", "ð": "d", "Ð": "D",
+    "ß": "ss",
+    "æ": "ae",
+    "Æ": "AE",
+    "œ": "oe",
+    "Œ": "OE",
+    "ø": "o",
+    "Ø": "O",
+    "đ": "d",
+    "Đ": "D",
+    "ł": "l",
+    "Ł": "L",
+    "þ": "th",
+    "Þ": "Th",
+    "ð": "d",
+    "Ð": "D",
 }
 
 
@@ -266,7 +289,7 @@ def describe_char(ch: str) -> str:
 
 
 def format_duration(seconds: float | None) -> str:
-    """"1m37s" / "45s" / "1h02m03s" style compact wall-clock duration, or "unknown duration"
+    """ "1m37s" / "45s" / "1h02m03s" style compact wall-clock duration, or "unknown duration"
     for the None a malformed/missing timestamp pair produces — never raises, never fabricates
     a number for data that isn't there.
 

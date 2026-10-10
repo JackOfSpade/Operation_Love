@@ -4,6 +4,7 @@ replay corpus (ops/OPENER-REDESIGN.md 5.2/5.7), added alongside enabling the cor
 This corpus stores REAL PEOPLE'S PHOTOS locally -- see replay_corpus.py's own module docstring
 PRIVACY section. Every test here operates against a fresh tmp_path, never data/.
 """
+
 from __future__ import annotations
 
 import json
@@ -22,18 +23,23 @@ from operation_love.opener import replay_corpus as rc
 # local helpers (no conftest.py in this repo, matching tests/test_opener_replay.py)
 # ---------------------------------------------------------------------------------------
 
+
 def _capture(root, name, captured_at, *, extra_bytes=b""):
     """Write one real capture (via the real writer, so its manifest/id shape is exactly what
     write_replay_capture produces) and return its replay_id."""
     result = rc.write_replay_capture(
-        root, items=[f"item-{name}".encode() + extra_bytes], name=name,
-        captured_at=captured_at)
+        root,
+        items=[f"item-{name}".encode() + extra_bytes],
+        name=name,
+        captured_at=captured_at,
+    )
     assert result.ok, result.error
     return result.replay_id
 
 
-def _manual_capture_dir(root, replay_id, *, manifest_text=None, manifest_obj=None,
-                        with_manifest=True):
+def _manual_capture_dir(
+    root, replay_id, *, manifest_text=None, manifest_obj=None, with_manifest=True
+):
     """Hand-build a capture-shaped directory under root, bypassing write_replay_capture, for
     the corrupt/missing-manifest edge cases the writer itself would never produce."""
     directory = os.path.join(str(root), replay_id)
@@ -57,6 +63,7 @@ _HEX64_C = "c" * 64
 # ---------------------------------------------------------------------------------------
 # basic contract: unlimited, empty/missing root
 # ---------------------------------------------------------------------------------------
+
 
 def test_both_bounds_zero_is_a_documented_no_op(tmp_path):
     now = time.time()
@@ -83,17 +90,21 @@ def test_nonexistent_root_is_a_no_op_not_an_error(tmp_path):
 # pruning by count, oldest-first
 # ---------------------------------------------------------------------------------------
 
+
 def test_prune_by_count_removes_oldest_first(tmp_path):
     now = time.time()
-    ids_oldest_to_newest = [_capture(tmp_path, f"n{i}", now - (10 - i) * 86400)
-                            for i in range(5)]
+    ids_oldest_to_newest = [
+        _capture(tmp_path, f"n{i}", now - (10 - i) * 86400) for i in range(5)
+    ]
 
     result = rc.prune_replay_corpus(tmp_path, max_captures=3)
 
     assert result.ok is True
     assert result.kept == 3
     removed_ids = {r.replay_id for r in result.removed}
-    assert removed_ids == set(ids_oldest_to_newest[:2])   # the two OLDEST, not any others
+    assert removed_ids == set(
+        ids_oldest_to_newest[:2]
+    )  # the two OLDEST, not any others
     assert all(r.reason == rc.PRUNE_REASON_MAX_CAPTURES for r in result.removed)
     survivors = set(rc.list_replay_ids(tmp_path))
     assert survivors == set(ids_oldest_to_newest[2:])
@@ -114,6 +125,7 @@ def test_prune_by_count_is_a_no_op_when_under_the_cap(tmp_path):
 # ---------------------------------------------------------------------------------------
 # pruning by age
 # ---------------------------------------------------------------------------------------
+
 
 def test_prune_by_age_removes_only_captures_older_than_the_cutoff(tmp_path):
     now = time.time()
@@ -146,6 +158,7 @@ def test_prune_by_age_is_a_no_op_when_nothing_is_old_enough(tmp_path):
 # both bounds together
 # ---------------------------------------------------------------------------------------
 
+
 def test_prune_both_bounds_together_age_first_then_count(tmp_path):
     """Age removal runs first; count removal then trims whatever survives it. With 2 captures
     older than the age cutoff and 3 within it, and max_captures=2, the two old ones must be
@@ -165,7 +178,7 @@ def test_prune_both_bounds_together_age_first_then_count(tmp_path):
     reasons = {r.replay_id: r.reason for r in result.removed}
     assert reasons[ids[0]] == rc.PRUNE_REASON_MAX_AGE_DAYS
     assert reasons[ids[1]] == rc.PRUNE_REASON_MAX_AGE_DAYS
-    assert reasons[ids[2]] == rc.PRUNE_REASON_MAX_CAPTURES   # oldest of the 3 survivors
+    assert reasons[ids[2]] == rc.PRUNE_REASON_MAX_CAPTURES  # oldest of the 3 survivors
     assert set(reasons) == {ids[0], ids[1], ids[2]}
     assert result.kept == 2
     assert set(rc.list_replay_ids(tmp_path)) == {ids[3], ids[4]}
@@ -176,10 +189,13 @@ def test_prune_both_bounds_together_age_first_then_count(tmp_path):
 # toward either bound (see prune_replay_corpus's own docstring for the full justification).
 # ---------------------------------------------------------------------------------------
 
+
 def test_corrupt_manifest_is_kept_not_deleted_and_not_counted(tmp_path):
     # Comfortably inside the max_age_days=1 cutoff used below, with margin for test runtime.
     good_id = _capture(tmp_path, "good", time.time() - 3600)
-    corrupt_dir = _manual_capture_dir(tmp_path, _HEX64_A, manifest_text="{not valid json at all")
+    corrupt_dir = _manual_capture_dir(
+        tmp_path, _HEX64_A, manifest_text="{not valid json at all"
+    )
 
     # Force pruning as aggressively as possible on every axis a corrupt entry might otherwise
     # be swept up by: a tiny count cap AND a tiny age cutoff.
@@ -187,13 +203,15 @@ def test_corrupt_manifest_is_kept_not_deleted_and_not_counted(tmp_path):
 
     assert result.ok is True
     assert result.skipped_unparseable == 1
-    assert result.kept == 1                      # only "good" counted; corrupt is invisible
+    assert result.kept == 1  # only "good" counted; corrupt is invisible
     assert all(r.replay_id != _HEX64_A for r in result.removed)
-    assert os.path.isdir(corrupt_dir)             # never deleted
+    assert os.path.isdir(corrupt_dir)  # never deleted
     assert good_id in rc.list_replay_ids(tmp_path)
 
 
-def test_manifest_that_is_valid_json_but_not_an_object_is_treated_the_same_as_corrupt(tmp_path):
+def test_manifest_that_is_valid_json_but_not_an_object_is_treated_the_same_as_corrupt(
+    tmp_path,
+):
     _manual_capture_dir(tmp_path, _HEX64_B, manifest_obj=["not", "an", "object"])
 
     result = rc.prune_replay_corpus(tmp_path, max_captures=0, max_age_days=1)
@@ -208,9 +226,18 @@ def _manual_ageless_capture(root, replay_id):
     """A manifest that PARSES (unlike the corrupt-manifest tests above) but whose captured_at
     is not a usable number -- e.g. hand-edited or written by a future format variant."""
     directory = _manual_capture_dir(
-        root, replay_id,
-        manifest_obj={"format_version": 1, "replay_id": replay_id, "captured_at": "not-a-number",
-                      "name": "", "truncated": False, "items": ["item_001.png"], "context": []})
+        root,
+        replay_id,
+        manifest_obj={
+            "format_version": 1,
+            "replay_id": replay_id,
+            "captured_at": "not-a-number",
+            "name": "",
+            "truncated": False,
+            "items": ["item_001.png"],
+            "context": [],
+        },
+    )
     with open(os.path.join(directory, "item_001.png"), "wb") as f:
         f.write(b"x")
     return directory
@@ -229,7 +256,9 @@ def test_manifest_with_unusable_captured_at_is_never_removed_for_age(tmp_path):
     assert _HEX64_C in rc.list_replay_ids(tmp_path)
 
 
-def test_manifest_with_unusable_captured_at_sorts_last_for_count_based_removal(tmp_path):
+def test_manifest_with_unusable_captured_at_sorts_last_for_count_based_removal(
+    tmp_path,
+):
     """Oldest-first count trimming must never preferentially punish an unknown-age capture --
     it sorts as "newest" (+inf), so it is the LAST candidate ever removed. With 3 candidates
     (ageless, a real older one, a real newer one) and max_captures=2, the real OLDER one must
@@ -250,6 +279,7 @@ def test_manifest_with_unusable_captured_at_sorts_last_for_count_based_removal(t
 # of a crash mid-write) -- matches list_replay_ids: not a (complete) capture, never touched.
 # ---------------------------------------------------------------------------------------
 
+
 def test_partial_write_with_no_manifest_is_untouched(tmp_path):
     # Comfortably inside the max_age_days=1 cutoff used below, with margin for test runtime.
     good_id = _capture(tmp_path, "good", time.time() - 3600)
@@ -260,7 +290,9 @@ def test_partial_write_with_no_manifest_is_untouched(tmp_path):
     result = rc.prune_replay_corpus(tmp_path, max_captures=0, max_age_days=1)
 
     assert result.ok is True
-    assert result.skipped_unparseable == 0    # not even attempted -- no manifest.json at all
+    assert (
+        result.skipped_unparseable == 0
+    )  # not even attempted -- no manifest.json at all
     assert result.kept == 1
     assert os.path.isdir(partial_dir)
     assert good_id in rc.list_replay_ids(tmp_path)
@@ -271,36 +303,48 @@ def test_partial_write_with_no_manifest_is_untouched(tmp_path):
 # specific escape and proves it is refused, not merely "not currently exploited".
 # ---------------------------------------------------------------------------------------
 
+
 def test_directory_name_not_shaped_like_a_replay_id_is_never_touched(tmp_path):
     """A directory that is not named like anything compute_replay_id could have produced is
     never ours to manage, no matter how old or how validly-formed its own manifest is."""
     weird_dir = _manual_capture_dir(
-        tmp_path, "not-a-valid-replay-id",
-        manifest_obj={"captured_at": 1.0, "replay_id": "not-a-valid-replay-id",
-                      "items": ["item_001.png"], "context": []})
+        tmp_path,
+        "not-a-valid-replay-id",
+        manifest_obj={
+            "captured_at": 1.0,
+            "replay_id": "not-a-valid-replay-id",
+            "items": ["item_001.png"],
+            "context": [],
+        },
+    )
     with open(os.path.join(weird_dir, "item_001.png"), "wb") as f:
         f.write(b"x")
 
     result = rc.prune_replay_corpus(tmp_path, max_captures=0, max_age_days=1)
 
     assert result.ok is True
-    assert result.skipped_unparseable == 0     # never even attempted -- wrong shape entirely
-    assert result.kept == 0                    # never counted as a capture at all
+    assert (
+        result.skipped_unparseable == 0
+    )  # never even attempted -- wrong shape entirely
+    assert result.kept == 0  # never counted as a capture at all
     assert result.removed == ()
     assert os.path.isdir(weird_dir)
 
 
-@pytest.mark.parametrize("bad_name", [
-    "AAAA0000000000000000000000000000000000000000000000000000000000",  # uppercase hex
-    "a" * 63,                                    # one short
-    "a" * 65,                                    # one long
-    "a" * 63 + "g",                               # non-hex trailing char
-    "../evil",
-    "a/b",
-    "..",
-    ".",
-    "",
-])
+@pytest.mark.parametrize(
+    "bad_name",
+    [
+        "AAAA0000000000000000000000000000000000000000000000000000000000",  # uppercase hex
+        "a" * 63,  # one short
+        "a" * 65,  # one long
+        "a" * 63 + "g",  # non-hex trailing char
+        "../evil",
+        "a/b",
+        "..",
+        ".",
+        "",
+    ],
+)
 def test_is_safe_capture_id_rejects_every_non_replay_id_shape(bad_name):
     assert rc._is_safe_capture_id(bad_name) is False
 
@@ -320,8 +364,15 @@ def test_symlink_escape_is_refused_and_the_outside_target_survives(tmp_path):
     outside_target = outside / "secret_photos"
     outside_target.mkdir()
     with open(outside_target / "manifest.json", "w", encoding="utf-8") as f:
-        json.dump({"captured_at": time.time() - 400 * 86400, "replay_id": _HEX64_A,
-                  "items": ["item_001.png"], "context": []}, f)
+        json.dump(
+            {
+                "captured_at": time.time() - 400 * 86400,
+                "replay_id": _HEX64_A,
+                "items": ["item_001.png"],
+                "context": [],
+            },
+            f,
+        )
     with open(outside_target / "item_001.png", "wb") as f:
         f.write(b"real person's photo")
 
@@ -339,8 +390,8 @@ def test_symlink_escape_is_refused_and_the_outside_target_survives(tmp_path):
     # is_symlink() guard fired, not merely that deletion happened to fail downstream.
     assert result.kept == 1
     assert all(r.replay_id != _HEX64_A for r in result.removed)
-    assert link_path.is_symlink()                       # the symlink itself: untouched
-    assert outside_target.is_dir()                       # its target: fully intact
+    assert link_path.is_symlink()  # the symlink itself: untouched
+    assert outside_target.is_dir()  # its target: fully intact
     assert (outside_target / "item_001.png").read_bytes() == b"real person's photo"
     assert real_id in rc.list_replay_ids(root)
 
@@ -368,7 +419,9 @@ def test_prune_keeps_a_capture_with_an_unsafe_manifest_link(tmp_path, link_kind)
     assert capture_dir.is_dir()
 
 
-def test_prune_never_deletes_anything_outside_root_even_with_many_old_captures(tmp_path):
+def test_prune_never_deletes_anything_outside_root_even_with_many_old_captures(
+    tmp_path,
+):
     """End-to-end sanity: a sibling directory that merely happens to sit next to the corpus
     root is never touched by an aggressive prune, regardless of what is inside root."""
     root = tmp_path / "corpus"
@@ -378,7 +431,7 @@ def test_prune_never_deletes_anything_outside_root_even_with_many_old_captures(t
     (sibling / "keepme.txt").write_text("do not delete", encoding="utf-8")
     now = time.time()
     for i in range(10):
-        _capture(root, f"n{i}", now - (i + 1) * 400 * 86400)   # all very old
+        _capture(root, f"n{i}", now - (i + 1) * 400 * 86400)  # all very old
 
     result = rc.prune_replay_corpus(root, max_captures=1, max_age_days=1)
 
@@ -387,7 +440,9 @@ def test_prune_never_deletes_anything_outside_root_even_with_many_old_captures(t
     assert (sibling / "keepme.txt").read_text(encoding="utf-8") == "do not delete"
 
 
-def test_prune_preserves_a_replacement_and_newer_destination_after_validation(tmp_path, monkeypatch):
+def test_prune_preserves_a_replacement_and_newer_destination_after_validation(
+    tmp_path, monkeypatch
+):
     root = tmp_path / "corpus"
     root.mkdir()
     capture_id = _capture(root, "old", time.time() - 400 * 86400)
@@ -434,7 +489,9 @@ def test_fd_relative_delete_stays_with_open_root_after_root_path_swap(tmp_path):
     replacement.mkdir()
     replacement_capture = replacement / capture_id
     replacement_capture.mkdir()
-    (replacement_capture / "keep.txt").write_text("outside replacement", encoding="utf-8")
+    (replacement_capture / "keep.txt").write_text(
+        "outside replacement", encoding="utf-8"
+    )
     root_path, root_fd = rc._open_corpus_root(root)
     hidden = tmp_path / "hidden-original"
     root.rename(hidden)
@@ -445,10 +502,14 @@ def test_fd_relative_delete_stays_with_open_root_after_root_path_swap(tmp_path):
         os.close(root_fd)
 
     assert not (hidden / capture_id).exists()
-    assert (root / capture_id / "keep.txt").read_text(encoding="utf-8") == "outside replacement"
+    assert (root / capture_id / "keep.txt").read_text(
+        encoding="utf-8"
+    ) == "outside replacement"
 
 
-def test_windows_adapter_prune_fails_closed_when_target_changes_after_discovery(tmp_path, monkeypatch):
+def test_windows_adapter_prune_fails_closed_when_target_changes_after_discovery(
+    tmp_path, monkeypatch
+):
     """Exercise the injectable Windows branch without requiring a Windows CI runner.
 
     The fake exposes only opaque handles.  Its delete operation represents the target turning
@@ -461,7 +522,9 @@ def test_windows_adapter_prune_fails_closed_when_target_changes_after_discovery(
         def __init__(self):
             self.root_handle = object()
             self.deleted_with = []
-            self.manifest = json.dumps({"replay_id": capture_id, "captured_at": 1.0}).encode()
+            self.manifest = json.dumps(
+                {"replay_id": capture_id, "captured_at": 1.0}
+            ).encode()
 
         def open_root(self, root):
             return Path(root), self.root_handle
@@ -513,6 +576,7 @@ def test_windows_adapter_prune_fails_closed_when_target_changes_after_discovery(
 # SAFE TO FAIL: never raises, for any reason.
 # ---------------------------------------------------------------------------------------
 
+
 @pytest.mark.parametrize("bad_max_captures", [-1, True, 1.5, "5", None, math.nan])
 def test_prune_never_raises_on_a_bad_max_captures(tmp_path, bad_max_captures):
     result = rc.prune_replay_corpus(tmp_path, max_captures=bad_max_captures)
@@ -520,7 +584,9 @@ def test_prune_never_raises_on_a_bad_max_captures(tmp_path, bad_max_captures):
     assert result.error
 
 
-@pytest.mark.parametrize("bad_max_age_days", [-1, True, "5", None, math.nan, math.inf, -math.inf])
+@pytest.mark.parametrize(
+    "bad_max_age_days", [-1, True, "5", None, math.nan, math.inf, -math.inf]
+)
 def test_prune_never_raises_on_a_bad_max_age_days(tmp_path, bad_max_age_days):
     result = rc.prune_replay_corpus(tmp_path, max_age_days=bad_max_age_days)
     assert result.ok is False
@@ -531,6 +597,7 @@ def test_prune_never_raises_on_an_unexpected_internal_error(tmp_path, monkeypatc
     """A failure that has nothing to do with argument validation (a permissions error, a
     filesystem oddity, ...) must still come back as PruneResult(ok=False, ...) rather than
     propagate -- the same SAFE TO FAIL contract write_replay_capture already guarantees."""
+
     def _boom(*_a, **_kw):
         raise RuntimeError("simulated unexpected failure")
 
@@ -558,6 +625,7 @@ def test_prune_zero_max_captures_means_unlimited_not_zero_captures(tmp_path):
 # ---------------------------------------------------------------------------------------
 # PruneResult carries enough detail to log without a second filesystem read.
 # ---------------------------------------------------------------------------------------
+
 
 def test_prune_result_removed_entries_carry_loggable_detail(tmp_path):
     now = time.time()

@@ -62,6 +62,7 @@ Reads config.yaml the same way every other Hinge tool does (`operation_love.conf
 forbidden zones, touch backend) matches a real run exactly — nothing here is a second,
 independently-drifting copy of a timing constant.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -128,6 +129,7 @@ _ALIASING_RATIO_HIGH = 2.0
 # SAFETY: make taps/likes/passes/typing structurally impossible before touching the phone
 # =====================================================================================
 
+
 class ScrollProbeGuardTripped(RuntimeError):
     """Raised by a neutralised method the instant this tool ever calls it.
 
@@ -149,7 +151,8 @@ def _guarded(qualified_name: str) -> Callable:
             f"{qualified_name} was called. This tool only ever calls driver.current_profile() "
             f"on the live driver, which never taps/likes/passes/types — so this call means "
             f"something outside that contract ran. Refusing rather than letting it reach the "
-            f"phone. See tools/hinge_bot_scroll_probe.py's module docstring.")
+            f"phone. See tools/hinge_bot_scroll_probe.py's module docstring."
+        )
 
     return _raise
 
@@ -221,6 +224,7 @@ def neutralize_unsafe_methods(driver: HingeDriver) -> list[str]:
 # current_profile()'s own trailing _scroll_to_top() consumes/resets it.
 # =====================================================================================
 
+
 def install_ledger_capture(driver: HingeDriver) -> list[list[tuple[float, float]]]:
     """Wrap `driver._scroll_to_top` so the read-scroll ledger it is about to consume/reset
     gets snapshotted first, and return the (empty, mutated-in-place) list those snapshots get
@@ -268,16 +272,26 @@ def install_ledger_capture(driver: HingeDriver) -> list[list[tuple[float, float]
 # Vision: heart detection (reuses the production template/threshold/band, no reimplementation)
 # =====================================================================================
 
-def detect_hearts(frame: bytes, *, template, content_band: tuple[float, float]) -> list[tuple[int, int]]:
+
+def detect_hearts(
+    frame: bytes, *, template, content_band: tuple[float, float]
+) -> list[tuple[int, int]]:
     """Locate like-hearts in `frame` using the CURRENT production recipe verbatim:
     `hinge._match_glyph` with `side="right"`, `threshold=hinge._LIKE_MATCH_THRESHOLD`, and
     `y_band=content_band` — the exact call shape `_locate_button("like")` uses
     (hinge.py:1461-1464). Returns (x, y) centers sorted top-to-bottom, in real screen pixels."""
-    return hinge._match_glyph(frame, template, side="right",
-                               threshold=hinge._LIKE_MATCH_THRESHOLD, y_band=content_band)
+    return hinge._match_glyph(
+        frame,
+        template,
+        side="right",
+        threshold=hinge._LIKE_MATCH_THRESHOLD,
+        y_band=content_band,
+    )
 
 
-def compute_heart_spacings_px(hearts_per_frame: list[list[tuple[int, int]]]) -> list[float]:
+def compute_heart_spacings_px(
+    hearts_per_frame: list[list[tuple[int, int]]],
+) -> list[float]:
     """Every consecutive-heart vertical gap measured WITHIN a single frame (two or more hearts
     visible on screen at once), collected across every frame. This is a ground-truth
     measurement of ITEM SPACING that depends on nothing but `detect_hearts`'s own per-frame
@@ -305,8 +319,10 @@ def compute_heart_spacings_px(hearts_per_frame: list[list[tuple[int, int]]]) -> 
 # driver's ledger and of hinge.py's _vertical_shift_match, which 5.5 demoted to corroboration)
 # =====================================================================================
 
-def estimate_vertical_delta(frame_a: bytes, frame_b: bytes, *,
-                             content_band: tuple[float, float]) -> tuple[float, float]:
+
+def estimate_vertical_delta(
+    frame_a: bytes, frame_b: bytes, *, content_band: tuple[float, float]
+) -> tuple[float, float]:
     """Independently estimate the vertical scroll offset between two consecutive frames via 2D
     phase correlation (`cv2.phaseCorrelate`), restricted to `content_band`'s rows.
 
@@ -337,10 +353,13 @@ def estimate_vertical_delta(frame_a: bytes, frame_b: bytes, *,
     """
     import cv2
     import numpy as np
+
     img_a = cv2.imdecode(np.frombuffer(frame_a, dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
     img_b = cv2.imdecode(np.frombuffer(frame_b, dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
     if img_a is None or img_b is None:
-        raise RuntimeError("estimate_vertical_delta: a frame failed to decode as an image")
+        raise RuntimeError(
+            "estimate_vertical_delta: a frame failed to decode as an image"
+        )
     r0, r1 = hinge._content_rows(content_band, img_a.shape[0])
     crop_a = img_a[r0:r1].astype(np.float32)
     crop_b = img_b[r0:r1].astype(np.float32)
@@ -353,6 +372,7 @@ def estimate_vertical_delta(frame_a: bytes, frame_b: bytes, *,
 # Tracking / chaining analysis — pure geometry, no image decoding, hence directly unit
 # testable against KNOWN deltas and KNOWN heart positions (see the test file).
 # =====================================================================================
+
 
 @dataclass
 class PairResult:
@@ -378,11 +398,19 @@ class PairResult:
     all_matched: bool = False
 
 
-def build_pair_result(a_index: int, b_index: int, hearts_a, hearts_b, delta_px: float,
-                       response: float, *, content_band_px: tuple[int, int],
-                       tolerance_px: float = _DEFAULT_MATCH_TOLERANCE_PX,
-                       min_response: float = _DEFAULT_MIN_CORRELATION_RESPONSE,
-                       max_delta_px: float | None = None) -> PairResult:
+def build_pair_result(
+    a_index: int,
+    b_index: int,
+    hearts_a,
+    hearts_b,
+    delta_px: float,
+    response: float,
+    *,
+    content_band_px: tuple[int, int],
+    tolerance_px: float = _DEFAULT_MATCH_TOLERANCE_PX,
+    min_response: float = _DEFAULT_MIN_CORRELATION_RESPONSE,
+    max_delta_px: float | None = None,
+) -> PairResult:
     """Match hearts_a[i] to hearts_b[j] under a single shared `delta_px`, for one frame pair.
 
     A pair is `reliable` only when BOTH: `response >= min_response` (phase correlation itself
@@ -409,7 +437,9 @@ def build_pair_result(a_index: int, b_index: int, hearts_a, hearts_b, delta_px: 
     hearts_a item is `left_band_a` (predicted position above `r0`: scrolled off the top,
     expected) or a genuine `unmatched_a` miss.
     """
-    reliable = response >= min_response and (max_delta_px is None or abs(delta_px) <= max_delta_px)
+    reliable = response >= min_response and (
+        max_delta_px is None or abs(delta_px) <= max_delta_px
+    )
     r0, _r1 = content_band_px
 
     matched: list[tuple[int, int]] = []
@@ -446,10 +476,19 @@ def build_pair_result(a_index: int, b_index: int, hearts_a, hearts_b, delta_px: 
 
     all_matched = reliable and not unmatched_a
 
-    return PairResult(a_index=a_index, b_index=b_index, hearts_a=list(hearts_a),
-                       hearts_b=list(hearts_b), delta_px=delta_px, response=response,
-                       reliable=reliable, matched=matched, left_band_a=left_band_a,
-                       unmatched_a=unmatched_a, all_matched=all_matched)
+    return PairResult(
+        a_index=a_index,
+        b_index=b_index,
+        hearts_a=list(hearts_a),
+        hearts_b=list(hearts_b),
+        delta_px=delta_px,
+        response=response,
+        reliable=reliable,
+        matched=matched,
+        left_band_a=left_band_a,
+        unmatched_a=unmatched_a,
+        all_matched=all_matched,
+    )
 
 
 @dataclass
@@ -496,8 +535,12 @@ def chain_items(pair_results: list[PairResult]) -> ChainResult:
     confirmed = 0
 
     if not pair_results:
-        return ChainResult(distinct_confirmed=0, ambiguous_new=0, orphaned_tracks=0,
-                            tracking_failures=[])
+        return ChainResult(
+            distinct_confirmed=0,
+            ambiguous_new=0,
+            orphaned_tracks=0,
+            tracking_failures=[],
+        )
 
     n_first_frame_hearts = len(pair_results[0].hearts_a)
     confirmed += n_first_frame_hearts
@@ -540,7 +583,7 @@ def chain_items(pair_results: list[PairResult]) -> ChainResult:
 
         for ai, was_confirmed in active.items():
             if ai in matched_a or ai in pair.left_band_a:
-                continue   # continued (handled above) or left cleanly — not orphaned
+                continue  # continued (handled above) or left cleanly — not orphaned
             if was_confirmed:
                 orphaned += 1
             # an already-ambiguous track that also misses here is simply dropped: it was
@@ -555,8 +598,12 @@ def chain_items(pair_results: list[PairResult]) -> ChainResult:
 
         active = new_active
 
-    return ChainResult(distinct_confirmed=confirmed, ambiguous_new=ambiguous_new,
-                        orphaned_tracks=orphaned, tracking_failures=tracking_failures)
+    return ChainResult(
+        distinct_confirmed=confirmed,
+        ambiguous_new=ambiguous_new,
+        orphaned_tracks=orphaned,
+        tracking_failures=tracking_failures,
+    )
 
 
 # =====================================================================================
@@ -564,13 +611,16 @@ def chain_items(pair_results: list[PairResult]) -> ChainResult:
 # chain_items over a real captured frame sequence.
 # =====================================================================================
 
+
 @dataclass
 class AnalysisReport:
     frame_count: int
     hearts_per_frame: list[list[tuple[int, int]]]
     pair_results: list[PairResult]
     scroll_deltas_px: list[float]
-    match_rate: float | None   # matched / (matched + unmatched_a), across reliable pairs only
+    match_rate: (
+        float | None
+    )  # matched / (matched + unmatched_a), across reliable pairs only
     chain: ChainResult
     # Every consecutive-heart Y-gap measured WITHIN a single frame — see
     # compute_heart_spacings_px's docstring. [] when no frame ever showed 2+ hearts at once.
@@ -592,27 +642,37 @@ class AnalysisReport:
         return d
 
 
-def _step_spacing_stats(scroll_deltas_px: list[float],
-                         heart_spacings_px: list[float]
-                         ) -> tuple[float | None, float | None, float | None]:
+def _step_spacing_stats(
+    scroll_deltas_px: list[float], heart_spacings_px: list[float]
+) -> tuple[float | None, float | None, float | None]:
     """`(median_scroll_step_px, median_heart_spacing_px, step_spacing_ratio)` — see
     AnalysisReport's field docstrings for exactly what each measures and why `scroll_deltas_px`
     is used un-filtered (every pair, reliable or not). Any missing input yields `None`s rather
     than raising or silently reporting a ratio of 0/1: `render_verdict` treats a `None` ratio
     as "the aliasing hypothesis was not testable this run", which is a different, honestly
     reported outcome from "tested and not aliased"."""
-    median_step = (statistics.median(abs(d) for d in scroll_deltas_px)
-                   if scroll_deltas_px else None)
+    median_step = (
+        statistics.median(abs(d) for d in scroll_deltas_px)
+        if scroll_deltas_px
+        else None
+    )
     median_spacing = statistics.median(heart_spacings_px) if heart_spacings_px else None
-    ratio = (median_step / median_spacing
-             if median_step is not None and median_spacing else None)
+    ratio = (
+        median_step / median_spacing
+        if median_step is not None and median_spacing
+        else None
+    )
     return median_step, median_spacing, ratio
 
 
-def analyze_frames(frames: list[bytes], *, screen_size: tuple[int, int],
-                    content_band: tuple[float, float],
-                    tolerance_px: float = _DEFAULT_MATCH_TOLERANCE_PX,
-                    min_response: float = _DEFAULT_MIN_CORRELATION_RESPONSE) -> AnalysisReport:
+def analyze_frames(
+    frames: list[bytes],
+    *,
+    screen_size: tuple[int, int],
+    content_band: tuple[float, float],
+    tolerance_px: float = _DEFAULT_MATCH_TOLERANCE_PX,
+    min_response: float = _DEFAULT_MIN_CORRELATION_RESPONSE,
+) -> AnalysisReport:
     """The real pipeline: detect hearts in every frame (production template/threshold/band),
     estimate each consecutive pair's scroll delta by phase correlation, match hearts under
     that delta, and chain the matches into a distinct-item count. This is what `main()` runs
@@ -622,23 +682,38 @@ def analyze_frames(frames: list[bytes], *, screen_size: tuple[int, int],
     if template is None:
         raise RuntimeError(
             "could not load the 'like' glyph template (hinge_like_button.png) — cv2 is "
-            "likely missing. Install the extra: pip install -e '.[hinge]'")
+            "likely missing. Install the extra: pip install -e '.[hinge]'"
+        )
 
     _w, h = screen_size
     r0, r1 = hinge._content_rows(content_band, h)
-    max_delta_px = float(r1 - r0)   # a shift this large shares zero guaranteed row overlap
+    max_delta_px = float(
+        r1 - r0
+    )  # a shift this large shares zero guaranteed row overlap
 
-    hearts_per_frame = [detect_hearts(f, template=template, content_band=content_band)
-                        for f in frames]
+    hearts_per_frame = [
+        detect_hearts(f, template=template, content_band=content_band) for f in frames
+    ]
 
     pair_results: list[PairResult] = []
     for i in range(len(frames) - 1):
-        delta_px, response = estimate_vertical_delta(frames[i], frames[i + 1],
-                                                      content_band=content_band)
-        pair_results.append(build_pair_result(
-            i, i + 1, hearts_per_frame[i], hearts_per_frame[i + 1], delta_px, response,
-            content_band_px=(r0, r1), tolerance_px=tolerance_px, min_response=min_response,
-            max_delta_px=max_delta_px))
+        delta_px, response = estimate_vertical_delta(
+            frames[i], frames[i + 1], content_band=content_band
+        )
+        pair_results.append(
+            build_pair_result(
+                i,
+                i + 1,
+                hearts_per_frame[i],
+                hearts_per_frame[i + 1],
+                delta_px,
+                response,
+                content_band_px=(r0, r1),
+                tolerance_px=tolerance_px,
+                min_response=min_response,
+                max_delta_px=max_delta_px,
+            )
+        )
 
     total_matched = sum(len(p.matched) for p in pair_results)
     total_eligible = total_matched + sum(len(p.unmatched_a) for p in pair_results)
@@ -648,7 +723,9 @@ def analyze_frames(frames: list[bytes], *, screen_size: tuple[int, int],
 
     scroll_deltas_px = [p.delta_px for p in pair_results]
     heart_spacings_px = compute_heart_spacings_px(hearts_per_frame)
-    median_step, median_spacing, ratio = _step_spacing_stats(scroll_deltas_px, heart_spacings_px)
+    median_step, median_spacing, ratio = _step_spacing_stats(
+        scroll_deltas_px, heart_spacings_px
+    )
 
     return AnalysisReport(
         frame_count=len(frames),
@@ -688,77 +765,107 @@ def render_verdict(report: AnalysisReport) -> str:
     same "reasons" list as ordinary tracking symptoms.
     """
     if report.frame_count < 2:
-        return ("INCONCLUSIVE: fewer than 2 frames were captured, so there is nothing to "
-                "compare frame-to-frame.")
+        return (
+            "INCONCLUSIVE: fewer than 2 frames were captured, so there is nothing to "
+            "compare frame-to-frame."
+        )
 
     ratio = report.step_spacing_ratio
     if ratio is not None:
         step_spacing_line = (
             f"measured median scroll step {report.median_scroll_step_px:.1f}px vs measured "
             f"median heart-to-heart spacing {report.median_heart_spacing_px:.1f}px (ratio "
-            f"{ratio:.2f})")
+            f"{ratio:.2f})"
+        )
         aliasing = _ALIASING_RATIO_LOW <= ratio <= _ALIASING_RATIO_HIGH
     else:
         step_spacing_line = (
             "step/spacing ratio: NOT MEASURABLE this run (no single frame showed 2+ hearts at "
             "once, so there is no within-frame spacing to compare the measured scroll step "
             "against) — the aliasing hypothesis below could not be directly tested; treat "
-            "absence of this measurement as untested, not as ruled out")
+            "absence of this measurement as untested, not as ruled out"
+        )
         aliasing = False
 
     reasons = []
     if report.chain.tracking_failures:
-        reasons.append(f"{len(report.chain.tracking_failures)} pair(s) flagged as tracking "
-                        f"failures (unreliable scroll-delta estimate): "
-                        f"{report.chain.tracking_failures}")
+        reasons.append(
+            f"{len(report.chain.tracking_failures)} pair(s) flagged as tracking "
+            f"failures (unreliable scroll-delta estimate): "
+            f"{report.chain.tracking_failures}"
+        )
     if report.chain.orphaned_tracks:
-        reasons.append(f"{report.chain.orphaned_tracks} heart(s) went unmatched despite a "
-                        f"reliable pair (a genuine tracking miss)")
+        reasons.append(
+            f"{report.chain.orphaned_tracks} heart(s) went unmatched despite a "
+            f"reliable pair (a genuine tracking miss)"
+        )
     if report.chain.ambiguous_new:
-        reasons.append(f"{report.chain.ambiguous_new} heart(s) could not be confidently "
-                        f"classified as new-vs-continuing (they sit behind a tracking "
-                        f"failure) — this is exactly how a phantom item gets fabricated")
+        reasons.append(
+            f"{report.chain.ambiguous_new} heart(s) could not be confidently "
+            f"classified as new-vs-continuing (they sit behind a tracking "
+            f"failure) — this is exactly how a phantom item gets fabricated"
+        )
     if report.match_rate is not None and report.match_rate < 1.0:
-        reasons.append(f"frame-to-frame match rate was {report.match_rate:.1%}, not 100%")
+        reasons.append(
+            f"frame-to-frame match rate was {report.match_rate:.1%}, not 100%"
+        )
 
     if not reasons:
-        return ("RELIABLE (this profile): every heart tracked cleanly frame-to-frame at the "
-                "driver's own bounded scroll cadence — zero tracking failures, zero orphaned "
-                "matches, zero ambiguous items, 100% match rate. " + step_spacing_line + ". "
-                "Bounded bot-driven scrolling looks safe to build a heart-tracking index on. "
-                "This is ONE profile — do not treat one clean run as proof; validate over more "
-                "profiles before building on it.")
+        return (
+            "RELIABLE (this profile): every heart tracked cleanly frame-to-frame at the "
+            "driver's own bounded scroll cadence — zero tracking failures, zero orphaned "
+            "matches, zero ambiguous items, 100% match rate. "
+            + step_spacing_line
+            + ". "
+            "Bounded bot-driven scrolling looks safe to build a heart-tracking index on. "
+            "This is ONE profile — do not treat one clean run as proof; validate over more "
+            "profiles before building on it."
+        )
 
     if aliasing:
         return (
             "NOT RELIABLE (this profile): ROOT CAUSE is step/spacing ALIASING, not estimator "
-            "noise. " + step_spacing_line + " — the scroll step and the item spacing are the "
+            "noise. "
+            + step_spacing_line
+            + " — the scroll step and the item spacing are the "
             "SAME magnitude, so a heart translated by one step lands almost exactly where the "
             "next item's heart already was: 'same heart moved' and 'next heart arrived' are "
             "geometrically indistinguishable from the pixels alone. No better delta estimator "
             "fixes this by construction — shrink the scroll step well below the item spacing "
             "(or use a different indexing strategy entirely). Symptoms observed, all downstream "
-            "of that one root cause, not independent bugs: " + "; ".join(reasons) + ".")
+            "of that one root cause, not independent bugs: " + "; ".join(reasons) + "."
+        )
 
-    return ("NOT RELIABLE (this profile): " + "; ".join(reasons) + ". " + step_spacing_line +
-            ". Heart tracking is NOT safe to build an index on at this cadence without further "
-            "work — the same failure mode ops/OPENER-REDESIGN.md 5.10 found under human "
-            "scrolling (a large-jump tracking failure fabricating a phantom item) can still "
-            "occur under bot-driven scrolling.")
+    return (
+        "NOT RELIABLE (this profile): "
+        + "; ".join(reasons)
+        + ". "
+        + step_spacing_line
+        + ". Heart tracking is NOT safe to build an index on at this cadence without further "
+        "work — the same failure mode ops/OPENER-REDESIGN.md 5.10 found under human "
+        "scrolling (a large-jump tracking failure fabricating a phantom item) can still "
+        "occur under bot-driven scrolling."
+    )
 
 
 # =====================================================================================
 # Capture, save, and report
 # =====================================================================================
 
+
 def _default_out_dir() -> Path:
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     return Path("ops/calibration") / f"botscroll_{stamp}"
 
 
-def save_capture(photos: list[bytes], profile_meta: dict, driver: HingeDriver,
-                  out_dir: Path, *,
-                  driver_scroll_ledger: list[tuple[float, float]] | None) -> dict:
+def save_capture(
+    photos: list[bytes],
+    profile_meta: dict,
+    driver: HingeDriver,
+    out_dir: Path,
+    *,
+    driver_scroll_ledger: list[tuple[float, float]] | None,
+) -> dict:
     """Write every frame as `NNNNN.png` (capture order) plus `manifest.json` — the raw
     capture record, separate from analysis.json's measurement output. Includes the driver's
     OWN scroll ledger (the (frac, x_frac) it actually issued for this capture) purely for
@@ -789,32 +896,39 @@ def save_capture(photos: list[bytes], profile_meta: dict, driver: HingeDriver,
         "profile_meta": profile_meta,
         "driver_scroll_ledger": (
             [{"frac": frac, "x_frac": x_frac} for frac, x_frac in driver_scroll_ledger]
-            if driver_scroll_ledger is not None else None),
+            if driver_scroll_ledger is not None
+            else None
+        ),
         "driver_scroll_ledger_note": (
-            None if driver_scroll_ledger is not None else
-            "NOT CAPTURED: the ledger could not be snapshotted before current_profile()'s own "
+            None
+            if driver_scroll_ledger is not None
+            else "NOT CAPTURED: the ledger could not be snapshotted before current_profile()'s own "
             "_scroll_to_top() reset it. This is a measurement gap, not evidence of zero "
-            "scrolling — see install_ledger_capture in tools/hinge_bot_scroll_probe.py."),
+            "scrolling — see install_ledger_capture in tools/hinge_bot_scroll_probe.py."
+        ),
         "read_scroll_frac": driver.read_scroll_frac,
         "scroll_captures": driver.scroll_captures,
         "content_band": list(driver.content_band),
         "screen_size": list(driver.adb.screen_size()),
     }
     atomic_write_private_text(
-        out_dir / "manifest.json", json.dumps(manifest, indent=2) + "\n", parent=out_dir)
+        out_dir / "manifest.json", json.dumps(manifest, indent=2) + "\n", parent=out_dir
+    )
     return manifest
 
 
 def save_analysis(report: AnalysisReport, out_dir: Path) -> None:
     ensure_private_dir(out_dir)
     atomic_write_private_text(
-        out_dir / "analysis.json", json.dumps(report.to_json_dict(), indent=2) + "\n",
+        out_dir / "analysis.json",
+        json.dumps(report.to_json_dict(), indent=2) + "\n",
         parent=out_dir,
     )
 
 
-def print_report(report: AnalysisReport, *,
-                  driver_scroll_ledger: list[tuple[float, float]] | None) -> None:
+def print_report(
+    report: AnalysisReport, *, driver_scroll_ledger: list[tuple[float, float]] | None
+) -> None:
     """`driver_scroll_ledger` — see save_capture's docstring: the pre-reset snapshot from
     `install_ledger_capture`, or `None` when that snapshot could not be taken. Printed
     separately from the phase-correlation-derived scroll_deltas_px below because it is the
@@ -827,47 +941,75 @@ def print_report(report: AnalysisReport, *,
 
     print("\n--- Per-pair scroll delta + tracking ---")
     for p in report.pair_results:
-        status = "OK" if p.all_matched else ("TRACKING FAILURE" if not p.reliable else "MISS")
-        print(f"  frame {p.a_index:2d} -> {p.b_index:2d}: delta={p.delta_px:7.1f}px  "
-              f"response={p.response:.3f}  hearts {len(p.hearts_a)}->{len(p.hearts_b)}  "
-              f"matched={len(p.matched)}  left_band={len(p.left_band_a)}  "
-              f"unmatched={len(p.unmatched_a)}  [{status}]")
+        status = (
+            "OK"
+            if p.all_matched
+            else ("TRACKING FAILURE" if not p.reliable else "MISS")
+        )
+        print(
+            f"  frame {p.a_index:2d} -> {p.b_index:2d}: delta={p.delta_px:7.1f}px  "
+            f"response={p.response:.3f}  hearts {len(p.hearts_a)}->{len(p.hearts_b)}  "
+            f"matched={len(p.matched)}  left_band={len(p.left_band_a)}  "
+            f"unmatched={len(p.unmatched_a)}  [{status}]"
+        )
 
-    print("\n--- Driver's own scroll ledger (ground truth intent — ADB gesture fraction, "
-          "before pixel measurement) ---")
+    print(
+        "\n--- Driver's own scroll ledger (ground truth intent — ADB gesture fraction, "
+        "before pixel measurement) ---"
+    )
     if driver_scroll_ledger:
         fracs = [frac for frac, _x in driver_scroll_ledger]
-        print(f"  {len(driver_scroll_ledger)} read-scroll(s) issued — frac min={min(fracs):.3f} "
-              f"max={max(fracs):.3f} mean={sum(fracs) / len(fracs):.3f}")
+        print(
+            f"  {len(driver_scroll_ledger)} read-scroll(s) issued — frac min={min(fracs):.3f} "
+            f"max={max(fracs):.3f} mean={sum(fracs) / len(fracs):.3f}"
+        )
         for i, (frac, x_frac) in enumerate(driver_scroll_ledger):
             print(f"    scroll {i:2d}: frac={frac:.3f}  x_frac={x_frac:.3f}")
     elif driver_scroll_ledger is None:
-        print("  NOT CAPTURED this run (the pre-reset snapshot could not be taken — see "
-              "manifest.json's driver_scroll_ledger_note). This is a measurement gap, not "
-              "evidence that zero scrolling happened.")
+        print(
+            "  NOT CAPTURED this run (the pre-reset snapshot could not be taken — see "
+            "manifest.json's driver_scroll_ledger_note). This is a measurement gap, not "
+            "evidence that zero scrolling happened."
+        )
     else:
         print("  empty (0 read-scrolls issued — the profile fit in a single frame)")
 
     deltas = report.scroll_deltas_px
     print("\n--- Summary ---")
     if deltas:
-        print(f"  bot scroll deltas (px, phase-correlation estimate): min={min(deltas):.1f}  "
-              f"max={max(deltas):.1f}  mean={sum(deltas) / len(deltas):.1f}  n={len(deltas)}")
+        print(
+            f"  bot scroll deltas (px, phase-correlation estimate): min={min(deltas):.1f}  "
+            f"max={max(deltas):.1f}  mean={sum(deltas) / len(deltas):.1f}  n={len(deltas)}"
+        )
     else:
         print("  bot scroll deltas: none (fewer than 2 frames)")
-    mr = f"{report.match_rate:.1%}" if report.match_rate is not None else "n/a (no eligible hearts)"
+    mr = (
+        f"{report.match_rate:.1%}"
+        if report.match_rate is not None
+        else "n/a (no eligible hearts)"
+    )
     print(f"  frame-to-frame heart match rate: {mr}")
-    print(f"  distinct items chaining recovers (confirmed): {report.chain.distinct_confirmed}")
-    print(f"  ambiguous new items (behind a tracking failure): {report.chain.ambiguous_new}")
-    print(f"  orphaned tracks (reliable pair, genuine miss): {report.chain.orphaned_tracks}")
+    print(
+        f"  distinct items chaining recovers (confirmed): {report.chain.distinct_confirmed}"
+    )
+    print(
+        f"  ambiguous new items (behind a tracking failure): {report.chain.ambiguous_new}"
+    )
+    print(
+        f"  orphaned tracks (reliable pair, genuine miss): {report.chain.orphaned_tracks}"
+    )
     print(f"  tracking failures: {report.chain.tracking_failures or 'none'}")
     if report.step_spacing_ratio is not None:
-        print(f"  step/spacing: median scroll step {report.median_scroll_step_px:.1f}px vs "
-              f"median heart spacing {report.median_heart_spacing_px:.1f}px "
-              f"(ratio {report.step_spacing_ratio:.2f}, n={len(report.heart_spacings_px)} "
-              f"within-frame spacing sample(s))")
+        print(
+            f"  step/spacing: median scroll step {report.median_scroll_step_px:.1f}px vs "
+            f"median heart spacing {report.median_heart_spacing_px:.1f}px "
+            f"(ratio {report.step_spacing_ratio:.2f}, n={len(report.heart_spacings_px)} "
+            f"within-frame spacing sample(s))"
+        )
     else:
-        print("  step/spacing: not measurable this run (no frame showed 2+ hearts at once)")
+        print(
+            "  step/spacing: not measurable this run (no frame showed 2+ hearts at once)"
+        )
 
     print("\n--- Verdict ---")
     print("  " + render_verdict(report))
@@ -881,75 +1023,113 @@ def print_report(report: AnalysisReport, *,
 def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(
         description="Bot-driven Hinge scroll probe: one real HingeDriver.current_profile() "
-                     "read, measuring whether like-hearts track reliably frame to frame at "
-                     "the driver's own bounded scroll cadence (ops/OPENER-REDESIGN.md 5.5/"
-                     "5.10). Never taps, likes, passes, or types.")
+        "read, measuring whether like-hearts track reliably frame to frame at "
+        "the driver's own bounded scroll cadence (ops/OPENER-REDESIGN.md 5.5/"
+        "5.10). Never taps, likes, passes, or types."
+    )
     ap.add_argument("--config", default="config.yaml", help="config.yaml path")
-    ap.add_argument("--out", default=None,
-                     help="output directory (default ops/calibration/botscroll_<UTC ts>/)")
-    ap.add_argument("--match-tolerance-px", type=float, default=_DEFAULT_MATCH_TOLERANCE_PX,
-                     help="max px a predicted heart position may miss an actual heart by and "
-                          f"still count as the same item (default {_DEFAULT_MATCH_TOLERANCE_PX})")
-    ap.add_argument("--min-response", type=float, default=_DEFAULT_MIN_CORRELATION_RESPONSE,
-                     help="minimum cv2.phaseCorrelate response to trust a pair's estimated "
-                          f"delta at all (default {_DEFAULT_MIN_CORRELATION_RESPONSE})")
-    ap.add_argument("--read-scroll-frac", type=float, default=None,
-                     help="override the driver's read_scroll_frac (fraction of screen height "
-                          "per read-scroll) for THIS capture only — config.yaml is not "
-                          "touched. Must be in "
-                          f"[{hinge._READ_SCROLL_FRAC_MIN}, {hinge._READ_SCROLL_FRAC_MAX}], the "
-                          "same bound hinge.py enforces on a policy-sampled fraction. Default: "
-                          "whatever config.yaml's apps.hinge.read_scroll_frac resolves to "
-                          "(0.55 in the shipped config). The aliasing hypothesis this flag "
-                          "exists to test wants a step MATERIALLY SMALLER than card spacing — "
-                          "around 0.15-0.18 — see the module docstring.")
-    ap.add_argument("--scroll-captures", type=int, default=None,
-                     help="override the driver's scroll_captures (max screencaps while "
-                          "reading one profile) for THIS capture only — config.yaml is not "
-                          f"touched. Must be an integer in [1, {_MAX_SCROLL_CAPTURES}]. "
-                          "Default: whatever config.yaml's apps.hinge.scroll_captures "
-                          "resolves to (12 in the shipped config). A smaller "
-                          "--read-scroll-frac needs proportionally more captures to reach the "
-                          "same profile depth — roughly (default_frac / new_frac) x the "
-                          "current scroll_captures; e.g. frac 0.16 against the shipped "
-                          "0.55/12 needs on the order of 40-48.")
+    ap.add_argument(
+        "--out",
+        default=None,
+        help="output directory (default ops/calibration/botscroll_<UTC ts>/)",
+    )
+    ap.add_argument(
+        "--match-tolerance-px",
+        type=float,
+        default=_DEFAULT_MATCH_TOLERANCE_PX,
+        help="max px a predicted heart position may miss an actual heart by and "
+        f"still count as the same item (default {_DEFAULT_MATCH_TOLERANCE_PX})",
+    )
+    ap.add_argument(
+        "--min-response",
+        type=float,
+        default=_DEFAULT_MIN_CORRELATION_RESPONSE,
+        help="minimum cv2.phaseCorrelate response to trust a pair's estimated "
+        f"delta at all (default {_DEFAULT_MIN_CORRELATION_RESPONSE})",
+    )
+    ap.add_argument(
+        "--read-scroll-frac",
+        type=float,
+        default=None,
+        help="override the driver's read_scroll_frac (fraction of screen height "
+        "per read-scroll) for THIS capture only — config.yaml is not "
+        "touched. Must be in "
+        f"[{hinge._READ_SCROLL_FRAC_MIN}, {hinge._READ_SCROLL_FRAC_MAX}], the "
+        "same bound hinge.py enforces on a policy-sampled fraction. Default: "
+        "whatever config.yaml's apps.hinge.read_scroll_frac resolves to "
+        "(0.55 in the shipped config). The aliasing hypothesis this flag "
+        "exists to test wants a step MATERIALLY SMALLER than card spacing — "
+        "around 0.15-0.18 — see the module docstring.",
+    )
+    ap.add_argument(
+        "--scroll-captures",
+        type=int,
+        default=None,
+        help="override the driver's scroll_captures (max screencaps while "
+        "reading one profile) for THIS capture only — config.yaml is not "
+        f"touched. Must be an integer in [1, {_MAX_SCROLL_CAPTURES}]. "
+        "Default: whatever config.yaml's apps.hinge.scroll_captures "
+        "resolves to (12 in the shipped config). A smaller "
+        "--read-scroll-frac needs proportionally more captures to reach the "
+        "same profile depth — roughly (default_frac / new_frac) x the "
+        "current scroll_captures; e.g. frac 0.16 against the shipped "
+        "0.55/12 needs on the order of 40-48.",
+    )
     args = ap.parse_args(argv)
 
     # Validate the two override flags before anything touches config.yaml or the device --
     # a typo here must fail loudly at the command line, not turn into a bogus gesture on a
     # real phone or a silently-truncated capture.
     if args.read_scroll_frac is not None and not (
-            math.isfinite(args.read_scroll_frac)
-            and hinge._READ_SCROLL_FRAC_MIN <= args.read_scroll_frac <= hinge._READ_SCROLL_FRAC_MAX):
-        print(f"ERROR: --read-scroll-frac must be a finite number in "
-              f"[{hinge._READ_SCROLL_FRAC_MIN}, {hinge._READ_SCROLL_FRAC_MAX}] (the same bound "
-              f"hinge.py's own _sample_read_scroll enforces on a policy-sampled fraction) — "
-              f"got {args.read_scroll_frac!r}.", file=sys.stderr)
+        math.isfinite(args.read_scroll_frac)
+        and hinge._READ_SCROLL_FRAC_MIN
+        <= args.read_scroll_frac
+        <= hinge._READ_SCROLL_FRAC_MAX
+    ):
+        print(
+            f"ERROR: --read-scroll-frac must be a finite number in "
+            f"[{hinge._READ_SCROLL_FRAC_MIN}, {hinge._READ_SCROLL_FRAC_MAX}] (the same bound "
+            f"hinge.py's own _sample_read_scroll enforces on a policy-sampled fraction) — "
+            f"got {args.read_scroll_frac!r}.",
+            file=sys.stderr,
+        )
         sys.exit(1)
-    if args.scroll_captures is not None and not (1 <= args.scroll_captures <= _MAX_SCROLL_CAPTURES):
-        print(f"ERROR: --scroll-captures must be an integer in [1, {_MAX_SCROLL_CAPTURES}] — "
-              f"got {args.scroll_captures!r}.", file=sys.stderr)
+    if args.scroll_captures is not None and not (
+        1 <= args.scroll_captures <= _MAX_SCROLL_CAPTURES
+    ):
+        print(
+            f"ERROR: --scroll-captures must be an integer in [1, {_MAX_SCROLL_CAPTURES}] — "
+            f"got {args.scroll_captures!r}.",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     print("=" * 78)
     print("hinge_bot_scroll_probe: SAFETY")
     print("=" * 78)
-    print("WILL: open a Hinge session (launch the app if needed) and call the real "
-          "HingeDriver.current_profile() exactly ONCE — production's own humanized, "
-          "bounded read-scroll capture. Frames are saved locally under ops/calibration/ "
-          "(gitignored) for offline heart-tracking measurement only.")
-    print("WILL NOT: tap, like, pass, send, or type ANYTHING. No comment sheet is ever "
-          "opened. Every decision method and every raw-input method this tool can reach is "
-          "monkeypatched to raise before current_profile() is called — see the neutralised-"
-          "method list printed below once the session is open.")
+    print(
+        "WILL: open a Hinge session (launch the app if needed) and call the real "
+        "HingeDriver.current_profile() exactly ONCE — production's own humanized, "
+        "bounded read-scroll capture. Frames are saved locally under ops/calibration/ "
+        "(gitignored) for offline heart-tracking measurement only."
+    )
+    print(
+        "WILL NOT: tap, like, pass, send, or type ANYTHING. No comment sheet is ever "
+        "opened. Every decision method and every raw-input method this tool can reach is "
+        "monkeypatched to raise before current_profile() is called — see the neutralised-"
+        "method list printed below once the session is open."
+    )
     print("=" * 78 + "\n")
 
     try:
         import cv2  # noqa: F401
         import numpy  # noqa: F401
     except ImportError as exc:
-        print(f"ERROR: this tool requires opencv-python + numpy ({exc}). Install the extra: "
-              "pip install -e '.[hinge]'", file=sys.stderr)
+        print(
+            f"ERROR: this tool requires opencv-python + numpy ({exc}). Install the extra: "
+            "pip install -e '.[hinge]'",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     # Device lock (tools/_devicelock.py): the probe opens a real session and drives
@@ -967,7 +1147,9 @@ def _probe(args: argparse.Namespace) -> None:
     try:
         driver.open_session()
     except Exception as exc:  # noqa: BLE001 — report clearly, exit non-zero, never retry blind
-        print(f"ERROR: open_session() raised {type(exc).__name__}: {exc}", file=sys.stderr)
+        print(
+            f"ERROR: open_session() raised {type(exc).__name__}: {exc}", file=sys.stderr
+        )
         sys.exit(1)
 
     # Override the DRIVER'S OWN attribute, not a second copy of the value — this is exactly
@@ -985,10 +1167,14 @@ def _probe(args: argparse.Namespace) -> None:
         driver.read_scroll_frac = args.read_scroll_frac
     if args.scroll_captures is not None:
         driver.scroll_captures = args.scroll_captures
-    print(f"Effective read_scroll_frac: {driver.read_scroll_frac} "
-          f"({'--read-scroll-frac override' if args.read_scroll_frac is not None else f'from {args.config}'})")
-    print(f"Effective scroll_captures: {driver.scroll_captures} "
-          f"({'--scroll-captures override' if args.scroll_captures is not None else f'from {args.config}'})")
+    print(
+        f"Effective read_scroll_frac: {driver.read_scroll_frac} "
+        f"({'--read-scroll-frac override' if args.read_scroll_frac is not None else f'from {args.config}'})"
+    )
+    print(
+        f"Effective scroll_captures: {driver.scroll_captures} "
+        f"({'--scroll-captures override' if args.scroll_captures is not None else f'from {args.config}'})"
+    )
 
     # THIS PROBE MEASURES THE ORDINARY READ CADENCE, so it must not be turned into an item
     # ENUMERATION read. Until doc 5.9's observe inversion that was implicit: enumeration ran in
@@ -1008,13 +1194,17 @@ def _probe(args: argparse.Namespace) -> None:
 
     try:
         neutralized = neutralize_unsafe_methods(driver)
-        print(f"\nSafety guard installed — {len(neutralized)} method(s) neutralised (any "
-              f"call raises {ScrollProbeGuardTripped.__name__} immediately):")
+        print(
+            f"\nSafety guard installed — {len(neutralized)} method(s) neutralised (any "
+            f"call raises {ScrollProbeGuardTripped.__name__} immediately):"
+        )
         for name in neutralized:
             print(f"  - {name}")
         if not any(m.endswith("keyevent()") for m in neutralized):
-            print("  (no keyevent()-named method exists on this driver's transports today; "
-                  "nothing to neutralise there)")
+            print(
+                "  (no keyevent()-named method exists on this driver's transports today; "
+                "nothing to neutralise there)"
+            )
 
         # See install_ledger_capture's docstring: current_profile()'s own trailing
         # _scroll_to_top() resets driver._capture_scroll_ledger to [] before this function
@@ -1039,24 +1229,33 @@ def _probe(args: argparse.Namespace) -> None:
         # refuses a paywalled/unrecognised deck, and current_profile() raises rather than
         # guessing if what is on screen is not a profile card.
         if sys.stdin.isatty():
-            input("\nPress ENTER once a real profile card is on screen "
-                  "(NOT the comment/Send-Like sheet) -> ")
+            input(
+                "\nPress ENTER once a real profile card is on screen "
+                "(NOT the comment/Send-Like sheet) -> "
+            )
         else:
-            print("\nstdin is not a TTY -- skipping the ENTER confirmation. Proceeding on the "
-                  "assumption a profile card is already on screen.")
+            print(
+                "\nstdin is not a TTY -- skipping the ENTER confirmation. Proceeding on the "
+                "assumption a profile card is already on screen."
+            )
 
         print("\nReading the profile now (bot-driven, humanized, bounded scrolling)...")
         try:
             profile = driver.current_profile()
         except Exception as exc:  # noqa: BLE001 — report clearly, exit non-zero, never retry blind
-            print(f"\nERROR: current_profile() raised {type(exc).__name__}: {exc}",
-                  file=sys.stderr)
+            print(
+                f"\nERROR: current_profile() raised {type(exc).__name__}: {exc}",
+                file=sys.stderr,
+            )
             sys.exit(1)
 
         if profile is None or not profile.photos:
-            print("\nERROR: current_profile() returned no frames (deck empty, a comment "
-                  "sheet was already open, or the capture was otherwise abandoned). Nothing "
-                  "to measure.", file=sys.stderr)
+            print(
+                "\nERROR: current_profile() returned no frames (deck empty, a comment "
+                "sheet was already open, or the capture was otherwise abandoned). Nothing "
+                "to measure.",
+                file=sys.stderr,
+            )
             sys.exit(1)
 
         print(f"Captured {len(profile.photos)} frame(s). Saving to {out_dir} ...")
@@ -1069,15 +1268,23 @@ def _probe(args: argparse.Namespace) -> None:
         # profile, so that should not happen; treated as "not captured" rather than assumed
         # empty, per the same "don't ship an empty field that looks like data" rule.
         pre_reset_ledger = ledger_snapshots[-1] if ledger_snapshots else None
-        save_capture(profile.photos, profile.meta, driver, out_dir,
-                     driver_scroll_ledger=pre_reset_ledger)
+        save_capture(
+            profile.photos,
+            profile.meta,
+            driver,
+            out_dir,
+            driver_scroll_ledger=pre_reset_ledger,
+        )
 
         screen_size = driver.adb.screen_size()
         content_band = driver.content_band
-        report = analyze_frames(profile.photos, screen_size=screen_size,
-                                content_band=content_band,
-                                tolerance_px=args.match_tolerance_px,
-                                min_response=args.min_response)
+        report = analyze_frames(
+            profile.photos,
+            screen_size=screen_size,
+            content_band=content_band,
+            tolerance_px=args.match_tolerance_px,
+            min_response=args.min_response,
+        )
         save_analysis(report, out_dir)
         print_report(report, driver_scroll_ledger=pre_reset_ledger)
         print(f"\nFrames + manifest.json + analysis.json written to {out_dir}")

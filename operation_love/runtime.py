@@ -7,6 +7,7 @@ disable openers, etc.) instead of crashing on a machine missing a dependency.
 
 Quick check on any machine:  ``python -m operation_love.runtime``
 """
+
 from __future__ import annotations
 
 import importlib.util
@@ -29,7 +30,7 @@ _OPTIONAL = {
     "arcface": "insightface",
     "quality": "pyiqa",
     "web_driver": "playwright",
-    "android_driver": "cli:adb",      # host-side ADB only — no uiautomator2/on-device helper
+    "android_driver": "cli:adb",  # host-side ADB only — no uiautomator2/on-device helper
     # Vision. Listed so a preflight/bug report can SAY "opencv is missing" rather than the
     # operator finding out when a run refuses to start. The Android driver independently
     # hard-fails open_session() without it (AndroidDriver._require_vision) — this entry is
@@ -78,8 +79,9 @@ class Capabilities:
     _device: str | None = field(default=None, repr=False, compare=False)
 
     @classmethod
-    def detect(cls, android_adb_path: str | None = None, *,
-               hinge_adb_path: str | None = None) -> "Capabilities":
+    def detect(
+        cls, android_adb_path: str | None = None, *, hinge_adb_path: str | None = None
+    ) -> "Capabilities":
         """android_adb_path: optional apps.<app>.adb_path from config.yaml for whichever
         enabled app is Android-kind (Hinge, or Bumble once calibrated — see platforms.py).
         Config-free callers (bare `python -m operation_love.runtime`, bugreport) can omit
@@ -100,7 +102,9 @@ class Capabilities:
         """
         android_adb_path = android_adb_path or hinge_adb_path
         overrides = {"android_driver": android_adb_path} if android_adb_path else {}
-        available = {k: _have(m, override=overrides.get(k)) for k, m in _OPTIONAL.items()}
+        available = {
+            k: _have(m, override=overrides.get(k)) for k, m in _OPTIONAL.items()
+        }
         for old, new in _LEGACY_ALIASES.items():
             available[old] = available[new]
         return cls(
@@ -124,10 +128,15 @@ class Capabilities:
     def banner(self) -> str:
         accel = _ACCEL.get(self.device, self.device)
         line = f"Operation Love — {self.os_name} {self.machine} · Python {self.python} · {accel}"
-        missing = [k for k, v in self.available.items()
-                   if not v and k not in _BANNER_HIDDEN_COMPONENTS]
+        missing = [
+            k
+            for k, v in self.available.items()
+            if not v and k not in _BANNER_HIDDEN_COMPONENTS
+        ]
         if missing:
-            line += f"\n  Not installed (features will be skipped): {', '.join(missing)}"
+            line += (
+                f"\n  Not installed (features will be skipped): {', '.join(missing)}"
+            )
         return line
 
     def missing(self, *components: str) -> list[str]:

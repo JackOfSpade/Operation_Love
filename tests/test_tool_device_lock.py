@@ -6,6 +6,7 @@ drivers on one phone and took a hash-bound retraction plan to undo, so "nobody w
 is not a safety argument -- especially for a capture campaign, which runs for many minutes
 beside an idle hub the owner can Start at any moment.
 """
+
 import os
 import sys
 
@@ -39,7 +40,10 @@ def test_the_command_runs_with_the_lock_held_and_released_afterwards(tmp_path):
         held["ran"] = arg
         return "result"
 
-    assert _devicelock.run_holding_the_device(_config(tmp_path), command, "arg") == "result"
+    assert (
+        _devicelock.run_holding_the_device(_config(tmp_path), command, "arg")
+        == "result"
+    )
     assert held["ran"] == "arg"
 
     # Released on the way out: the next command must not inherit a lock nobody holds.
@@ -49,7 +53,8 @@ def test_the_command_runs_with_the_lock_held_and_released_afterwards(tmp_path):
 
 
 def test_contention_exits_non_zero_naming_the_holder_instead_of_driving_the_phone(
-        tmp_path, capsys):
+    tmp_path, capsys
+):
     holder = sup._AndroidDeviceLock(sup._android_lock_path(None, "hinge"))
     holder.acquire()
     ran = []
@@ -60,7 +65,9 @@ def test_contention_exits_non_zero_naming_the_holder_instead_of_driving_the_phon
         holder.release()
 
     assert exit_info.value.code == 1
-    assert ran == [], "the command must not touch the phone while another process holds it"
+    assert ran == [], (
+        "the command must not touch the phone while another process holds it"
+    )
     err = capsys.readouterr().err
     assert "already in use by another Operation Love run" in err
     # It names the holding pid, so the operator can find the run rather than guess at it. Here
@@ -70,24 +77,30 @@ def test_contention_exits_non_zero_naming_the_holder_instead_of_driving_the_phon
 
 def test_the_lock_is_released_even_when_the_command_raises(tmp_path):
     with pytest.raises(ValueError):
-        _devicelock.run_holding_the_device(_config(tmp_path),
-                                           lambda: (_ for _ in ()).throw(ValueError("boom")))
+        _devicelock.run_holding_the_device(
+            _config(tmp_path), lambda: (_ for _ in ()).throw(ValueError("boom"))
+        )
 
     after = sup._AndroidDeviceLock(sup._android_lock_path(None, "hinge"))
-    after.acquire()          # would raise if the failed command had leaked the lock
+    after.acquire()  # would raise if the failed command had leaked the lock
     after.release()
 
 
-def test_an_unloadable_config_still_runs_the_command_so_it_reports_the_real_problem(tmp_path):
+def test_an_unloadable_config_still_runs_the_command_so_it_reports_the_real_problem(
+    tmp_path,
+):
     """A lock error must never replace a precise config message with a vague one."""
     ran = []
-    _devicelock.run_holding_the_device(str(tmp_path / "does-not-exist.yaml"), lambda: ran.append(1))
+    _devicelock.run_holding_the_device(
+        str(tmp_path / "does-not-exist.yaml"), lambda: ran.append(1)
+    )
 
     assert ran == [1]
 
 
 def test_a_config_free_acquisition_contends_with_a_configured_run_on_the_same_lock(
-        tmp_path, capsys):
+    tmp_path, capsys
+):
     """A tool that reads no setting takes the lock with NO config -- on the SAME file.
 
     The lock path reads nothing out of a config (``_android_lock_path`` ignores both of its
@@ -103,7 +116,9 @@ def test_a_config_free_acquisition_contends_with_a_configured_run_on_the_same_lo
             _devicelock.run_holding_the_device(None, lambda: ran.append("during"))
 
     assert exit_info.value.code == 1
-    assert ran == [], "the config-free path took a different lock and drove the phone anyway"
+    assert ran == [], (
+        "the config-free path took a different lock and drove the phone anyway"
+    )
     assert "already in use by another Operation Love run" in capsys.readouterr().err
 
     # ...and it is a real acquire/release, not a permanent refusal: once the run lets go, the
@@ -119,7 +134,11 @@ def test_the_calibrate_tool_locks_capture_and_observe_check_but_not_the_offline_
     source = cal.main.__code__.co_names
     assert "_run_holding_the_device" in source
     # measure/verify/attach are dispatched directly, unlocked.
-    for offline in ("_cmd_measure", "_cmd_verify_entry_anchor", "_cmd_attach_operational_evidence"):
+    for offline in (
+        "_cmd_measure",
+        "_cmd_verify_entry_anchor",
+        "_cmd_attach_operational_evidence",
+    ):
         assert offline in source
 
 
@@ -132,12 +151,18 @@ def test_every_phone_driving_tool_imports_the_shared_lock():
     import tools.hinge_video_bound
     import tools.hinge_video_bound_auto
 
-    for module in (tools.hinge_calibrate, tools.hinge_inspect, tools.hinge_bot_scroll_probe,
-                   tools.hinge_scroll_capture, tools.hinge_video_bound,
-                   tools.hinge_video_bound_auto):
-        assert any(hasattr(module, name)
-                   for name in ("run_holding_the_device", "holding_the_device")), \
-            f"{module.__name__} drives the phone but imports no device lock"
+    for module in (
+        tools.hinge_calibrate,
+        tools.hinge_inspect,
+        tools.hinge_bot_scroll_probe,
+        tools.hinge_scroll_capture,
+        tools.hinge_video_bound,
+        tools.hinge_video_bound_auto,
+    ):
+        assert any(
+            hasattr(module, name)
+            for name in ("run_holding_the_device", "holding_the_device")
+        ), f"{module.__name__} drives the phone but imports no device lock"
 
 
 def test_the_lock_helper_needs_no_heavy_import_at_module_scope():

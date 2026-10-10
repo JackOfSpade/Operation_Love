@@ -9,6 +9,7 @@ heavy deps (the fallback is fine for tests / low dimensions, slow for the real
 Cold-start: stays "not ready" until at least `min_labels` labels exist AND both
 like/dislike classes are present, so the bot doesn't swipe blind on no signal.
 """
+
 from __future__ import annotations
 
 import math
@@ -25,6 +26,7 @@ def new_classifier():
     balanced class weights since likes/passes are usually imbalanced. Raises
     ImportError if scikit-learn isn't installed."""
     from sklearn.linear_model import LogisticRegression
+
     return LogisticRegression(**SKLEARN_LOGREG_KWARGS)
 
 
@@ -69,7 +71,9 @@ class _PurePyLogReg:
             gw = [0.0] * d
             gb = 0.0
             for xi, yi in zip(X, y, strict=True):
-                p = _sigmoid(self.b + sum(wj * xj for wj, xj in zip(self.w, xi, strict=True)))
+                p = _sigmoid(
+                    self.b + sum(wj * xj for wj, xj in zip(self.w, xi, strict=True))
+                )
                 err = p - yi
                 for j in range(d):
                     gw[j] += err * xi[j]
@@ -131,12 +135,14 @@ class PreferenceModel:
             self._impl = None
             self._feature_dim = None
             if not isinstance(samples, (list, tuple)):
-                raise ValueError("samples must be a list or tuple of (liked, feature_vector) pairs")
+                raise ValueError(
+                    "samples must be a list or tuple of (liked, feature_vector) pairs"
+                )
             self.n_labels = len(samples)
             X, y, feature_dim = self._validated_samples(samples)
             if self.n_labels < self.min_labels:
                 return False
-            if len(set(y)) < 2:   # need both like and dislike examples
+            if len(set(y)) < 2:  # need both like and dislike examples
                 return False
             n_likes = sum(y)
             if min(n_likes, len(y) - n_likes) < self.min_per_class:
@@ -164,7 +170,7 @@ class PreferenceModel:
 
     @staticmethod
     def _validated_samples(
-            samples: list[tuple[bool, list[float]]] | tuple[tuple[bool, list[float]], ...]
+        samples: list[tuple[bool, list[float]]] | tuple[tuple[bool, list[float]], ...],
     ) -> tuple[list[list[float]], list[int], int | None]:
         """Return classifier-ready copies, rejecting poisoned/ragged training data.
 
@@ -177,40 +183,51 @@ class PreferenceModel:
         feature_dim: int | None = None
         for ordinal, sample in enumerate(samples):
             if not isinstance(sample, (list, tuple)) or len(sample) != 2:
-                raise ValueError(f"sample {ordinal} must be a (liked, feature_vector) pair")
+                raise ValueError(
+                    f"sample {ordinal} must be a (liked, feature_vector) pair"
+                )
             liked, vector = sample
             if type(liked) is not bool:
                 raise ValueError(f"sample {ordinal} liked label must be exactly bool")
             if not isinstance(vector, (list, tuple)) or not vector:
-                raise ValueError(f"sample {ordinal} feature vector must be a nonempty sequence")
+                raise ValueError(
+                    f"sample {ordinal} feature vector must be a nonempty sequence"
+                )
             if feature_dim is None:
                 feature_dim = len(vector)
             elif len(vector) != feature_dim:
                 raise ValueError(
                     f"sample {ordinal} feature vector has dimension {len(vector)}; "
-                    f"expected {feature_dim}")
+                    f"expected {feature_dim}"
+                )
             row: list[float] = []
             for dimension, value in enumerate(vector):
                 converted = _finite_real_as_float(value)
                 if converted is None:
                     raise ValueError(
-                        f"sample {ordinal} feature {dimension} must be a finite real number")
+                        f"sample {ordinal} feature {dimension} must be a finite real number"
+                    )
                 row.append(converted)
             X.append(row)
             y.append(1 if liked else 0)
         return X, y, feature_dim
 
     @staticmethod
-    def _validated_prediction_vector(vec: list[float], expected_dim: int) -> list[float]:
+    def _validated_prediction_vector(
+        vec: list[float], expected_dim: int
+    ) -> list[float]:
         if not isinstance(vec, (list, tuple)) or len(vec) != expected_dim:
             actual = len(vec) if isinstance(vec, (list, tuple)) else type(vec).__name__
             raise ValueError(
-                f"prediction feature vector must have dimension {expected_dim} (got {actual})")
+                f"prediction feature vector must have dimension {expected_dim} (got {actual})"
+            )
         out: list[float] = []
         for dimension, value in enumerate(vec):
             converted = _finite_real_as_float(value)
             if converted is None:
-                raise ValueError(f"prediction feature {dimension} must be a finite real number")
+                raise ValueError(
+                    f"prediction feature {dimension} must be a finite real number"
+                )
             out.append(converted)
         return out
 
@@ -218,8 +235,12 @@ class PreferenceModel:
         with self._lock:
             if self._clf is None:
                 raise RuntimeError("PreferenceModel is not ready (not enough labels)")
-            if self._feature_dim is None:  # defensive invariant; a ready model always sets it
-                raise RuntimeError("PreferenceModel is ready without a feature dimension")
+            if (
+                self._feature_dim is None
+            ):  # defensive invariant; a ready model always sets it
+                raise RuntimeError(
+                    "PreferenceModel is ready without a feature dimension"
+                )
             validated = self._validated_prediction_vector(vec, self._feature_dim)
             if self._impl == "sklearn":
                 raw_probability = self._clf.predict_proba([validated])[0][1]
@@ -228,7 +249,8 @@ class PreferenceModel:
             probability = _finite_real_as_float(raw_probability)
             if probability is None or not 0.0 <= probability <= 1.0:
                 raise RuntimeError(
-                    f"PreferenceModel returned invalid probability {raw_probability!r}")
+                    f"PreferenceModel returned invalid probability {raw_probability!r}"
+                )
             return probability
 
     def decide(self, vec: list[float]) -> tuple[str, float]:

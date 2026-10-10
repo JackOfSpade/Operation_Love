@@ -3,6 +3,7 @@
 These lower-level driver tests ensure a human-opened compose sheet is recognized
 without the detector issuing touches, text, or Send Like actions itself.
 """
+
 from __future__ import annotations
 
 import json
@@ -65,8 +66,9 @@ def _pin_identity_advance(driver, monkeypatch, next_card):
     new_sig = np.full((16, 64), 250, dtype="int16")
     driver._identity_sig = old_sig
     driver._identity_top_sig = np.full((16, 64), 200, dtype="int16")
-    monkeypatch.setattr(hinge, "_band",
-                        lambda frame, _rect: new_sig if frame == next_card else old_sig)
+    monkeypatch.setattr(
+        hinge, "_band", lambda frame, _rect: new_sig if frame == next_card else old_sig
+    )
 
 
 def _sheet_frame():
@@ -84,15 +86,17 @@ def _sheet_frame():
     canvas = np.full((2400, 1080), 249, dtype=np.uint8)
     comment = (95, 1597, 985, 1775)
     send = (390, 1807, 985, 1916)
-    canvas[comment[1]:comment[1] + 2, comment[0]:comment[2]] = 222
-    canvas[comment[3] - 2:comment[3], comment[0]:comment[2]] = 222
-    canvas[send[1]:send[3], send[0]:send[2]] = 228
+    canvas[comment[1] : comment[1] + 2, comment[0] : comment[2]] = 222
+    canvas[comment[3] - 2 : comment[3], comment[0] : comment[2]] = 222
+    canvas[send[1] : send[3], send[0] : send[2]] = 228
     template = hinge._load_template("hinge_send_like.png")
     assert template is not None
     height, width = template.shape
     x, y = 695, 1856
-    canvas[y - height // 2:y - height // 2 + height,
-           x - width // 2:x - width // 2 + width] = template
+    canvas[
+        y - height // 2 : y - height // 2 + height,
+        x - width // 2 : x - width // 2 + width,
+    ] = template
     ok, encoded = cv2.imencode(".png", canvas)
     assert ok
     return encoded.tobytes()
@@ -114,15 +118,16 @@ def _deck_frame(*, invert_heart: bool = False):
 
     canvas = np.full((2400, 1080), 120, dtype=np.uint8)
     like_glyph = hinge.HINGE_SPEC.templates["like"]
-    for name, (x, y) in ((like_glyph, (930, 1600)),
-                         ("hinge_pass_x.png", (130, 2030))):
+    for name, (x, y) in ((like_glyph, (930, 1600)), ("hinge_pass_x.png", (130, 2030))):
         template = hinge._load_template(name)
         assert template is not None
         if invert_heart and name == like_glyph:
             template = np.bitwise_not(template)
         height, width = template.shape
-        canvas[y - height // 2:y - height // 2 + height,
-               x - width // 2:x - width // 2 + width] = template
+        canvas[
+            y - height // 2 : y - height // 2 + height,
+            x - width // 2 : x - width // 2 + width,
+        ] = template
     ok, encoded = cv2.imencode(".png", canvas)
     assert ok
     return encoded.tobytes()
@@ -145,7 +150,9 @@ def test_hinge_observe_deck_ready_rejects_inverted_heart():
     assert driver._observe_deck_ready(_deck_frame(invert_heart=True)) is False
 
 
-def test_hinge_observe_recognizes_priority_like_with_geometry_but_keeps_typing_strict(monkeypatch):
+def test_hinge_observe_recognizes_priority_like_with_geometry_but_keeps_typing_strict(
+    monkeypatch,
+):
     """The passive observer supports Hinge's ``Send Priority Like`` CTA variant only.
 
     The reduced template score represents the live variant, where inserting ``Priority`` into
@@ -157,8 +164,12 @@ def test_hinge_observe_recognizes_priority_like_with_geometry_but_keeps_typing_s
 
     driver = _hinge(_Adb([b"unused"]))
     checked = []
-    surface = ComposerSurface("hinge_inline_v1", Rect(95, 1124, 985, 1302),
-                              Rect(390, 1334, 985, 1443), (630, 1383))
+    surface = ComposerSurface(
+        "hinge_inline_v1",
+        Rect(95, 1124, 985, 1302),
+        Rect(390, 1334, 985, 1443),
+        (630, 1383),
+    )
     # Both stand-ins accept `image=` (2026-08-23 perf pass: `_locate_observed_inline_composer`
     # now decodes the frame once and threads it into both calls below to skip a second
     # cv2.imdecode of the same bytes -- see that method's own docstring) and ignore it, since
@@ -185,7 +196,9 @@ class _ScriptedDiff:
         return self.pairs.pop(0) if self.pairs else (0.0, 0.0)
 
 
-def test_hinge_observe_reports_sheet_intent_before_manual_send_without_touching_app(monkeypatch):
+def test_hinge_observe_reports_sheet_intent_before_manual_send_without_touching_app(
+    monkeypatch,
+):
     """Heart -> sheet must publish intent, then only a real advance becomes LIKE.
 
     The fake frames model a human tapping the heart, seeing the compose sheet,
@@ -211,7 +224,8 @@ def test_hinge_observe_reports_sheet_intent_before_manual_send_without_touching_
     """
     monkeypatch.setattr(hinge.time, "sleep", lambda *_a, **_k: None)
     monkeypatch.setattr(
-        hinge, "_split_diff", _ScriptedDiff((2.0, 50.0), (50.0, 0.0), (50.0, 0.0)))
+        hinge, "_split_diff", _ScriptedDiff((2.0, 50.0), (50.0, 0.0), (50.0, 0.0))
+    )
     sheet = _sheet_frame()
     next_card = _deck_frame()
     adb = _Adb([b"card", sheet, next_card])
@@ -231,8 +245,10 @@ def test_hinge_observe_reports_sheet_intent_before_manual_send_without_touching_
     driver = _hinge(adb)
     _pin_identity_advance(driver, monkeypatch, next_card)
     result = driver.wait_for_decision(
-        timeout=None, should_stop=stop_after_budget,
-        on_like_intent=lambda active, anchor: callbacks.append((active, anchor)))
+        timeout=None,
+        should_stop=stop_after_budget,
+        on_like_intent=lambda active, anchor: callbacks.append((active, anchor)),
+    )
 
     assert result is True
     # The True notification carries the actual on-screen sheet frame as its anchor (the
@@ -271,9 +287,14 @@ def test_hinge_observe_waits_through_closed_sending_state_until_ready_deck(monke
 
     driver = _hinge(adb)
     _pin_identity_advance(driver, monkeypatch, next_card)
-    assert driver.wait_for_decision(
-        timeout=None, should_stop=stop_after_budget,
-        on_like_intent=lambda active, anchor: callbacks.append((active, anchor))) is True
+    assert (
+        driver.wait_for_decision(
+            timeout=None,
+            should_stop=stop_after_budget,
+            on_like_intent=lambda active, anchor: callbacks.append((active, anchor)),
+        )
+        is True
+    )
     assert callbacks == [(True, sheet), (False, None)]
     assert adb.taps == []
     assert adb.swipes == []
@@ -284,7 +305,8 @@ def test_hinge_observe_cancelled_sheet_clears_intent_and_keeps_waiting(monkeypat
     """Dismissing the compose sheet is neither a pass nor a persisted like."""
     monkeypatch.setattr(hinge.time, "sleep", lambda *_a, **_k: None)
     monkeypatch.setattr(
-        hinge, "_split_diff", _ScriptedDiff((2.0, 50.0), (2.0, 2.0), (2.0, 2.0)))
+        hinge, "_split_diff", _ScriptedDiff((2.0, 50.0), (2.0, 2.0), (2.0, 2.0))
+    )
     sheet = _sheet_frame()
     adb = _Adb([b"card", sheet, b"card", b"card"])
     callbacks = []
@@ -300,8 +322,10 @@ def test_hinge_observe_cancelled_sheet_clears_intent_and_keeps_waiting(monkeypat
         return stop_checks >= 4
 
     result = _hinge(adb).wait_for_decision(
-        timeout=None, should_stop=stop_after_cancel,
-        on_like_intent=lambda active, anchor: callbacks.append((active, anchor)))
+        timeout=None,
+        should_stop=stop_after_cancel,
+        on_like_intent=lambda active, anchor: callbacks.append((active, anchor)),
+    )
 
     assert result is None
     assert callbacks == [(True, sheet), (False, None)]
@@ -310,11 +334,14 @@ def test_hinge_observe_cancelled_sheet_clears_intent_and_keeps_waiting(monkeypat
     assert adb.texts == []
 
 
-def test_hinge_observe_bottom_animation_without_send_like_never_surfaces_opener(monkeypatch):
+def test_hinge_observe_bottom_animation_without_send_like_never_surfaces_opener(
+    monkeypatch,
+):
     """A bottom-only change is not enough evidence to spend opener budget."""
     monkeypatch.setattr(hinge.time, "sleep", lambda *_a, **_k: None)
-    monkeypatch.setattr(hinge, "_split_diff",
-                        _ScriptedDiff((2.0, 50.0), (2.0, 2.0), (2.0, 2.0)))
+    monkeypatch.setattr(
+        hinge, "_split_diff", _ScriptedDiff((2.0, 50.0), (2.0, 2.0), (2.0, 2.0))
+    )
     adb = _Adb([b"card", b"bottom-animation", b"card", b"card"])
     driver = _hinge(adb)
     monkeypatch.setattr(driver, "_observe_like_sheet_visible", lambda _frame: False)
@@ -326,34 +353,50 @@ def test_hinge_observe_bottom_animation_without_send_like_never_surfaces_opener(
         checks += 1
         return checks >= 4
 
-    assert driver.wait_for_decision(
-        timeout=None, should_stop=stop_after_candidate_is_cancelled,
-        on_like_intent=lambda active, anchor: callbacks.append((active, anchor)),
-    ) is None
+    assert (
+        driver.wait_for_decision(
+            timeout=None,
+            should_stop=stop_after_candidate_is_cancelled,
+            on_like_intent=lambda active, anchor: callbacks.append((active, anchor)),
+        )
+        is None
+    )
     assert callbacks == []
     assert adb.taps == []
     assert adb.swipes == []
     assert adb.texts == []
 
 
-def test_hinge_observe_waits_through_keyboard_motion_until_send_like_closes(monkeypatch):
+def test_hinge_observe_waits_through_keyboard_motion_until_send_like_closes(
+    monkeypatch,
+):
     """Typing may move the card behind a still-open sheet; it is not a sent like."""
     monkeypatch.setattr(hinge.time, "sleep", lambda *_a, **_k: None)
     monkeypatch.setattr(
-        hinge, "_split_diff",
+        hinge,
+        "_split_diff",
         _ScriptedDiff((2.0, 50.0), (55.0, 80.0), (55.0, 80.0), (55.0, 80.0)),
     )
     adb = _Adb([b"card", b"sheet", b"typing", b"next-card"])
     driver = _hinge(adb)
     _pin_identity_advance(driver, monkeypatch, b"next-card")
-    monkeypatch.setattr(driver, "_observe_like_sheet_visible",
-                        lambda frame: frame in {b"sheet", b"typing"})
-    monkeypatch.setattr(driver, "_observe_deck_ready", lambda frame: frame == b"next-card")
+    monkeypatch.setattr(
+        driver,
+        "_observe_like_sheet_visible",
+        lambda frame: frame in {b"sheet", b"typing"},
+    )
+    monkeypatch.setattr(
+        driver, "_observe_deck_ready", lambda frame: frame == b"next-card"
+    )
     callbacks = []
 
-    assert driver.wait_for_decision(
-        timeout=1.0,
-        on_like_intent=lambda active, anchor: callbacks.append((active, anchor))) is True
+    assert (
+        driver.wait_for_decision(
+            timeout=1.0,
+            on_like_intent=lambda active, anchor: callbacks.append((active, anchor)),
+        )
+        is True
+    )
     # The first True carries the frame that proved the sheet was up.  While the composer remains
     # visible, a later keyboard-settled frame refreshes that anchor so a provisional item read can
     # correct itself; it is still one open intent, cleared exactly once after the sheet closes.
@@ -375,9 +418,13 @@ def test_notify_observe_like_intent_passes_frame_as_anchor_and_none_on_clear():
     calls = []
 
     drv._notify_observe_like_intent(
-        lambda active, anchor: calls.append((active, anchor)), True, b"the-real-on-screen-frame")
+        lambda active, anchor: calls.append((active, anchor)),
+        True,
+        b"the-real-on-screen-frame",
+    )
     drv._notify_observe_like_intent(
-        lambda active, anchor: calls.append((active, anchor)), False)
+        lambda active, anchor: calls.append((active, anchor)), False
+    )
 
     assert calls == [(True, b"the-real-on-screen-frame"), (False, None)]
 
@@ -394,14 +441,16 @@ def test_notify_observe_like_intent_callback_exception_is_printed_not_swallowed(
     def broken_callback(active, anchor):
         raise ValueError("suggestion renderer exploded")
 
-    drv._notify_observe_like_intent(broken_callback, True, b"frame")   # must not raise
+    drv._notify_observe_like_intent(broken_callback, True, b"frame")  # must not raise
 
     printed = capsys.readouterr().out
     assert "ValueError" in printed
     assert "suggestion renderer exploded" in printed
 
 
-def test_hinge_observe_broken_callback_does_not_break_observation_but_failure_is_printed(monkeypatch, capsys):
+def test_hinge_observe_broken_callback_does_not_break_observation_but_failure_is_printed(
+    monkeypatch, capsys
+):
     """End-to-end version of the unit test above: a callback that raises on every call must
     not stop wait_for_decision from resolving the human's actual like/pass -- the run must
     continue observing normally -- but each failure must still be printed to stdout, so a
@@ -409,7 +458,8 @@ def test_hinge_observe_broken_callback_does_not_break_observation_but_failure_is
     again."""
     monkeypatch.setattr(hinge.time, "sleep", lambda *_a, **_k: None)
     monkeypatch.setattr(
-        hinge, "_split_diff", _ScriptedDiff((2.0, 50.0), (50.0, 0.0), (50.0, 0.0)))
+        hinge, "_split_diff", _ScriptedDiff((2.0, 50.0), (50.0, 0.0), (50.0, 0.0))
+    )
     sheet = _sheet_frame()
     next_card = _deck_frame()
     adb = _Adb([b"card", sheet, next_card])
@@ -426,16 +476,16 @@ def test_hinge_observe_broken_callback_does_not_break_observation_but_failure_is
     driver = _hinge(adb)
     _pin_identity_advance(driver, monkeypatch, next_card)
     result = driver.wait_for_decision(
-        timeout=None, should_stop=stop_after_budget, on_like_intent=broken_callback)
+        timeout=None, should_stop=stop_after_budget, on_like_intent=broken_callback
+    )
 
-    assert result is True             # observation still resolves the real decision
+    assert result is True  # observation still resolves the real decision
     assert adb.taps == []
     assert adb.swipes == []
     assert adb.texts == []
     printed = capsys.readouterr().out
     assert printed.count("ValueError") >= 1
     assert "suggestion renderer exploded" in printed
-
 
 
 def _extract_js_function(source: str, name: str) -> str:
@@ -449,46 +499,55 @@ def _extract_js_function(source: str, name: str) -> str:
         elif source[i] == "}":
             depth -= 1
             if depth == 0:
-                return source[match.start():i + 1]
+                return source[match.start() : i + 1]
     raise AssertionError(f"function {name} is not balanced")
 
 
-@pytest.mark.skipif(shutil.which("node") is None, reason="node is required to execute hub JavaScript")
+@pytest.mark.skipif(
+    shutil.which("node") is None, reason="node is required to execute hub JavaScript"
+)
 def test_hub_training_checkpoint_shows_the_typed_opener_with_like_and_dislike():
     """Training replaces the retired on-phone Observe cue with one Hub decision surface."""
     from operation_love.hub import _PAGE
 
-    script = "\n".join((
-        "let panel = {style:{display:''}, innerHTML:''};",
-        "let layout = {classList:{toggle(){}}};",
-        "function $(selector){ return selector === '#trainingpanel' ? panel : null; }",
-        "const document = {querySelector(){ return layout; }};",
-        "let _trainingCheckpoint = null; let _trainingRequest = 0;",
-        "let _trainingActionBusy = false; let _trainingBusyKey = ''; let _trainingBusyRequest = 0;",
-        "let _trainingImageKey = ''; let _trainingImageIndex = 0;",
-        # The image failure latch and its render stamp. Declared rather than left to sloppy-mode
-        # implicit globals: renderTrainingCheckpoint READS _trainingImageRenderGeneration
-        # (`++`), and reading an undeclared name is a ReferenceError even where assigning one
-        # silently would not be.
-        "let _trainingImageFailedIndex = null; let _trainingImageFailedGeneration = null;",
-        "let _trainingImageRenderGeneration = 0;",
-        "const _trainingIdempotency = new Map();",
-        _extract_js_function(_PAGE, "escHtml"),
-        _extract_js_function(_PAGE, "safeCheckpointImageDataUrl"),
-        _extract_js_function(_PAGE, "trainingCheckpointKey"),
-        _extract_js_function(_PAGE, "resetTrainingIdempotencyIfCardChanged"),
-        _extract_js_function(_PAGE, "resetTrainingBusyIfCardChanged"),
-        _extract_js_function(_PAGE, "trainingActionBusyFor"),
-        _extract_js_function(_PAGE, "checkpointReviewImages"),
-        _extract_js_function(_PAGE, "syncTrainingImageState"),
-        _extract_js_function(_PAGE, "renderTrainingCheckpoint"),
-        "renderTrainingCheckpoint({run_id:'r1',app:'hinge',profile_token:'p1',approval_token:'a1',"
-        "image_data_url:'data:image/png;base64,AA==',opener:'Try the taco place in your photo?',"
-        "item:2,item_description:'taco photo',pending:true,phase:'waiting_training_decision',action:'ready'});",
-        "console.log(JSON.stringify(panel));",
-    ))
-    run = subprocess.run([shutil.which("node"), "-e", script], capture_output=True, text=True,
-                         timeout=10, check=True)
+    script = "\n".join(
+        (
+            "let panel = {style:{display:''}, innerHTML:''};",
+            "let layout = {classList:{toggle(){}}};",
+            "function $(selector){ return selector === '#trainingpanel' ? panel : null; }",
+            "const document = {querySelector(){ return layout; }};",
+            "let _trainingCheckpoint = null; let _trainingRequest = 0;",
+            "let _trainingActionBusy = false; let _trainingBusyKey = ''; let _trainingBusyRequest = 0;",
+            "let _trainingImageKey = ''; let _trainingImageIndex = 0;",
+            # The image failure latch and its render stamp. Declared rather than left to sloppy-mode
+            # implicit globals: renderTrainingCheckpoint READS _trainingImageRenderGeneration
+            # (`++`), and reading an undeclared name is a ReferenceError even where assigning one
+            # silently would not be.
+            "let _trainingImageFailedIndex = null; let _trainingImageFailedGeneration = null;",
+            "let _trainingImageRenderGeneration = 0;",
+            "const _trainingIdempotency = new Map();",
+            _extract_js_function(_PAGE, "escHtml"),
+            _extract_js_function(_PAGE, "safeCheckpointImageDataUrl"),
+            _extract_js_function(_PAGE, "trainingCheckpointKey"),
+            _extract_js_function(_PAGE, "resetTrainingIdempotencyIfCardChanged"),
+            _extract_js_function(_PAGE, "resetTrainingBusyIfCardChanged"),
+            _extract_js_function(_PAGE, "trainingActionBusyFor"),
+            _extract_js_function(_PAGE, "checkpointReviewImages"),
+            _extract_js_function(_PAGE, "syncTrainingImageState"),
+            _extract_js_function(_PAGE, "renderTrainingCheckpoint"),
+            "renderTrainingCheckpoint({run_id:'r1',app:'hinge',profile_token:'p1',approval_token:'a1',"
+            "image_data_url:'data:image/png;base64,AA==',opener:'Try the taco place in your photo?',"
+            "item:2,item_description:'taco photo',pending:true,phase:'waiting_training_decision',action:'ready'});",
+            "console.log(JSON.stringify(panel));",
+        )
+    )
+    run = subprocess.run(
+        [shutil.which("node"), "-e", script],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=True,
+    )
     panel = json.loads(run.stdout)
 
     assert "Try the taco place in your photo?" in panel["innerHTML"]

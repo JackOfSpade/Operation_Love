@@ -23,6 +23,7 @@ every stdlib name (json, threading, webbrowser, ...) that happened to be
 reachable as an attribute on the old flat hub.py module as a side effect of its
 own top-level imports.
 """
+
 from __future__ import annotations
 
 import time
@@ -30,18 +31,45 @@ import time
 from .. import config as cfg_mod
 from .. import supervisor
 
-from .launchers import _LINUX_UPDATE_RUN, _MAC_UPDATE_RUN, _WIN_UPDATE_RUN, make_launchers
+from .launchers import (
+    _LINUX_UPDATE_RUN,
+    _MAC_UPDATE_RUN,
+    _WIN_UPDATE_RUN,
+    make_launchers,
+)
 from .page import _PAGE
-from .server import (_BROWSER_SHUTDOWN_GRACE_S, _BROWSER_STALE_CHECK_S,
-                      _SHUTDOWN_SAVE_TIMEOUT_S, _Handler, _bind, serve)
-from .state import (_BROWSER_CLIENT_STALE_S, _CLOSED_BROWSER_CLIENT_TTL_S,
-                     _EVAL_COLD_WAIT_S, HubState)
+from .server import (
+    _BROWSER_SHUTDOWN_GRACE_S,
+    _BROWSER_STALE_CHECK_S,
+    _SHUTDOWN_SAVE_TIMEOUT_S,
+    _Handler,
+    _bind,
+    serve,
+)
+from .state import (
+    _BROWSER_CLIENT_STALE_S,
+    _CLOSED_BROWSER_CLIENT_TTL_S,
+    _EVAL_COLD_WAIT_S,
+    HubState,
+)
 
 __all__ = [
-    "HubState", "_Handler", "_bind", "serve", "make_launchers",
-    "_MAC_UPDATE_RUN", "_LINUX_UPDATE_RUN", "_WIN_UPDATE_RUN", "_PAGE",
-    "_BROWSER_SHUTDOWN_GRACE_S", "_BROWSER_CLIENT_STALE_S",
-    "_BROWSER_STALE_CHECK_S", "_CLOSED_BROWSER_CLIENT_TTL_S",
-    "_SHUTDOWN_SAVE_TIMEOUT_S", "_EVAL_COLD_WAIT_S",
-    "cfg_mod", "supervisor", "time",
+    "HubState",
+    "_Handler",
+    "_bind",
+    "serve",
+    "make_launchers",
+    "_MAC_UPDATE_RUN",
+    "_LINUX_UPDATE_RUN",
+    "_WIN_UPDATE_RUN",
+    "_PAGE",
+    "_BROWSER_SHUTDOWN_GRACE_S",
+    "_BROWSER_CLIENT_STALE_S",
+    "_BROWSER_STALE_CHECK_S",
+    "_CLOSED_BROWSER_CLIENT_TTL_S",
+    "_SHUTDOWN_SAVE_TIMEOUT_S",
+    "_EVAL_COLD_WAIT_S",
+    "cfg_mod",
+    "supervisor",
+    "time",
 ]

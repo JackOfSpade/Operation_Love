@@ -1,4 +1,5 @@
 """Platform registry safety and selection behaviour."""
+
 import importlib
 import threading
 
@@ -41,22 +42,40 @@ def _still_photo_readiness_is_never_inherited():
 @pytest.fixture
 def installed_bound():
     """A verified still-photo bound, installed exactly as config.validate() would install it."""
-    tp.install_verified_still_photo_bound(tp.StillPhotoBoundSummary(
-        ground_truth_channel=tp.STILL_PHOTO_BOUND_GROUND_TRUTH_CHANNEL,
-        human_ground_truth=True, video_cards=60, video_accepts=0, photo_cards=60,
-        photo_false_refusals=3, max_video_exact_run_s=1.5, artifact_sha256="a" * 64,
-        device="synthetic-pixel", hinge_version_name="10.0.1"))
+    tp.install_verified_still_photo_bound(
+        tp.StillPhotoBoundSummary(
+            ground_truth_channel=tp.STILL_PHOTO_BOUND_GROUND_TRUTH_CHANNEL,
+            human_ground_truth=True,
+            video_cards=60,
+            video_accepts=0,
+            photo_cards=60,
+            photo_false_refusals=3,
+            max_video_exact_run_s=1.5,
+            artifact_sha256="a" * 64,
+            device="synthetic-pixel",
+            hinge_version_name="10.0.1",
+        )
+    )
 
 
 @pytest.fixture
 def installed_circular_bound():
     """The same, on the opted-in circular AI-labelled channel (owner decision 2026-08-21)."""
-    tp.install_verified_still_photo_bound(tp.StillPhotoBoundSummary(
-        ground_truth_channel=tp.STILL_PHOTO_BOUND_CIRCULAR_CHANNEL,
-        human_ground_truth=False, video_cards=60, video_accepts=0, photo_cards=60,
-        photo_false_refusals=3, max_video_exact_run_s=1.5, artifact_sha256="a" * 64,
-        device="synthetic-pixel", hinge_version_name="10.0.1",
-        accepted_circular_risk=tp.STILL_PHOTO_BOUND_CIRCULAR_ACCEPTANCE))
+    tp.install_verified_still_photo_bound(
+        tp.StillPhotoBoundSummary(
+            ground_truth_channel=tp.STILL_PHOTO_BOUND_CIRCULAR_CHANNEL,
+            human_ground_truth=False,
+            video_cards=60,
+            video_accepts=0,
+            photo_cards=60,
+            photo_false_refusals=3,
+            max_video_exact_run_s=1.5,
+            artifact_sha256="a" * 64,
+            device="synthetic-pixel",
+            hinge_version_name="10.0.1",
+            accepted_circular_risk=tp.STILL_PHOTO_BOUND_CIRCULAR_ACCEPTANCE,
+        )
+    )
 
 
 def test_only_android_targets_are_registered():
@@ -67,8 +86,12 @@ def test_only_android_targets_are_registered():
 
 
 def test_both_targets_exclusively_hold_the_phone():
-    assert platforms.get("hinge").exclusive_resource == platforms.RESOURCE_ANDROID_DEVICE
-    assert platforms.get("bumble").exclusive_resource == platforms.RESOURCE_ANDROID_DEVICE
+    assert (
+        platforms.get("hinge").exclusive_resource == platforms.RESOURCE_ANDROID_DEVICE
+    )
+    assert (
+        platforms.get("bumble").exclusive_resource == platforms.RESOURCE_ANDROID_DEVICE
+    )
     assert "one app in the foreground" in platforms.check_selection(["hinge", "bumble"])
 
 
@@ -103,7 +126,9 @@ def test_a_verified_still_photo_bound_licenses_hinge_driver_readiness(installed_
     assert platforms.mode_available("hinge", "auto") is True
 
 
-def test_an_accepted_circular_bound_reaches_the_same_driver_readiness(installed_circular_bound):
+def test_an_accepted_circular_bound_reaches_the_same_driver_readiness(
+    installed_circular_bound,
+):
     """The second channel changes the evidence provenance, not driver geometry."""
     assert tp.hinge_targeting_unavailable_reason() is None
     assert platforms.mode_available("hinge", "training") is True
@@ -112,7 +137,9 @@ def test_an_accepted_circular_bound_reaches_the_same_driver_readiness(installed_
     assert platforms.mode_available("hinge", "auto") is True
 
 
-def test_the_android_registry_registers_hinge_auto_from_calibrated_mechanics(installed_bound):
+def test_the_android_registry_registers_hinge_auto_from_calibrated_mechanics(
+    installed_bound,
+):
     """The driver package registers mechanical readiness, not config release evidence.
 
     Re-executing the package body is the only way to observe what it registers: the module is
@@ -121,8 +148,7 @@ def test_the_android_registry_registers_hinge_auto_from_calibrated_mechanics(ins
     """
     importlib.reload(importlib.import_module("operation_love.drivers.android"))
 
-    assert platforms._AVAILABLE_MODES["hinge"] == frozenset(
-        {"training", "auto"})
+    assert platforms._AVAILABLE_MODES["hinge"] == frozenset({"training", "auto"})
     assert platforms.unavailable_reason("hinge", "auto") is None
     assert platforms.unavailable_reason("hinge", "training") is None
 
@@ -132,7 +158,8 @@ def test_mode_unavailable_reason_is_directional_for_training_only_platform():
 
     assert platforms.unavailable_reason("bumble", "training") is None
     assert platforms.unavailable_reason("bumble", "auto") == (
-        "Bumble supports Training only; Auto is not available.")
+        "Bumble supports Training only; Auto is not available."
+    )
 
 
 def test_calibration_changes_availability_without_changing_registered_apps():
@@ -172,10 +199,12 @@ def test_lazy_calibration_serializes_concurrent_readers(monkeypatch):
         calls.append(threading.get_ident())
         entered.set()
         assert release.wait(_LIVENESS_TIMEOUT_S)
-        platforms._apply_calibration({
-            "hinge": {"training": True, "auto": False},
-            "bumble": {"training": False, "auto": False},
-        })
+        platforms._apply_calibration(
+            {
+                "hinge": {"training": True, "auto": False},
+                "bumble": {"training": False, "auto": False},
+            }
+        )
 
     monkeypatch.setattr(platforms, "_load_android_calibration", load)
     platforms._calibration_loaded = False

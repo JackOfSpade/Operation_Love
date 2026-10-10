@@ -4,6 +4,7 @@ These use the real :class:`Worker` and :class:`TrainingActionBridge`; only the
 phone, opener provider, ranker, and durable store are faked.  In particular a
 Hub command is not considered complete until the worker has recorded it.
 """
+
 from __future__ import annotations
 
 import struct
@@ -15,7 +16,10 @@ import pytest
 
 import operation_love.worker as worker_module
 from operation_love.drivers.base import ActionCancelled
-from operation_love.opener.opener import INDEX_SPACE_MODEL_ITEMS, INDEX_SPACE_PROFILE_PHOTOS
+from operation_love.opener.opener import (
+    INDEX_SPACE_MODEL_ITEMS,
+    INDEX_SPACE_PROFILE_PHOTOS,
+)
 from operation_love.opener.service import OpenerPick
 from operation_love.perception.capture import Profile
 from operation_love.ranker.profile_key import profile_key_from_identity
@@ -33,14 +37,20 @@ _FAKE_PROFILE_KEY = profile_key_from_identity(_FAKE_IDENTITY)
 
 
 def _png_chunk(kind: bytes, data: bytes) -> bytes:
-    return (struct.pack(">I", len(data)) + kind + data
-            + struct.pack(">I", zlib.crc32(kind + data) & 0xffffffff))
+    return (
+        struct.pack(">I", len(data))
+        + kind
+        + data
+        + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
+    )
 
 
-_FRAME = (b"\x89PNG\r\n\x1a\n"
-          + _png_chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 0, 0, 0, 0))
-          + _png_chunk(b"IDAT", zlib.compress(b"\x00\x00"))
-          + _png_chunk(b"IEND", b""))
+_FRAME = (
+    b"\x89PNG\r\n\x1a\n"
+    + _png_chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 0, 0, 0, 0))
+    + _png_chunk(b"IDAT", zlib.compress(b"\x00\x00"))
+    + _png_chunk(b"IEND", b"")
+)
 _TIMEOUT_S = 5.0
 
 
@@ -76,8 +86,9 @@ class _Decider:
 
 
 class _Store:
-    def __init__(self, events, *, fail_profile=False, archive_result=True,
-                 flush_error=None):
+    def __init__(
+        self, events, *, fail_profile=False, archive_result=True, flush_error=None
+    ):
         self.events = events
         self.fail_profile = fail_profile
         self.archive_result = archive_result
@@ -123,11 +134,17 @@ class _Opener:
         self.commit_result = True
         self.discards = []
         self.discard_result = True
-        self.pick = OpenerPick(text="A precise typed opener", index=2,
-                               referenced="the hiking photo", item_description="hiking photo",
-                               index_space=INDEX_SPACE_MODEL_ITEMS)
+        self.pick = OpenerPick(
+            text="A precise typed opener",
+            index=2,
+            referenced="the hiking photo",
+            item_description="hiking photo",
+            index_space=INDEX_SPACE_MODEL_ITEMS,
+        )
 
-    def maybe_opener(self, run_id, app, profile, *, items=None, should_stop=None, stage=False):
+    def maybe_opener(
+        self, run_id, app, profile, *, items=None, should_stop=None, stage=False
+    ):
         self.maybe_calls.append((run_id, app, profile, items, should_stop, stage))
         self.events.append(("generated", self.pick.text, self.pick.index))
         return self.pick
@@ -145,6 +162,7 @@ class _Opener:
 
 class _TrainingDriver:
     """A one-card Hinge seam which invokes the driver's installed decision hook."""
+
     accepts_opener = True
     supports_training_decision = True
     supports_interruptible_like_navigation = True
@@ -227,28 +245,58 @@ class _RecordingBridge(TrainingActionBridge):
 
 class _ReplacingBridge(_RecordingBridge):
     """Makes the worker stale while it is waiting, before a device choice can land."""
+
     def wait_for_action(self, worker, profile_token, stop_event):
-        replacement = type("Replacement", (), {
-            "run_id": worker.run_id, "app": worker.app,
-            "training_action_supported": True, "stop_event": threading.Event(),
-        })()
+        replacement = type(
+            "Replacement",
+            (),
+            {
+                "run_id": worker.run_id,
+                "app": worker.app,
+                "training_action_supported": True,
+                "stop_event": threading.Event(),
+            },
+        )()
         self.register(replacement)
         return None
 
 
-def _new_worker(*, bridge=None, driver_after_choice="return", fail_profile=False,
-                archive_result=True, flush_error=None, fail_retrain=False, limiter=None,
-                status=None):
+def _new_worker(
+    *,
+    bridge=None,
+    driver_after_choice="return",
+    fail_profile=False,
+    archive_result=True,
+    flush_error=None,
+    fail_retrain=False,
+    limiter=None,
+    status=None,
+):
     events = []
     driver = _TrainingDriver(events, after_choice=driver_after_choice)
     decider = _Decider(events, fail_retrain=fail_retrain)
     opener = _Opener(events)
-    store = _Store(events, fail_profile=fail_profile, archive_result=archive_result,
-                   flush_error=flush_error)
+    store = _Store(
+        events,
+        fail_profile=fail_profile,
+        archive_result=archive_result,
+        flush_error=flush_error,
+    )
     bridge = bridge or _RecordingBridge(events)
-    worker = Worker("hinge", driver, decider, opener, store, "training-run", _Pacing(),
-                    threading.Event(), mode="training", training_action_bridge=bridge,
-                    limiter=limiter, status=status)
+    worker = Worker(
+        "hinge",
+        driver,
+        decider,
+        opener,
+        store,
+        "training-run",
+        _Pacing(),
+        threading.Event(),
+        mode="training",
+        training_action_bridge=bridge,
+        limiter=limiter,
+        status=status,
+    )
     return worker, driver, decider, opener, store, bridge, events
 
 
@@ -268,16 +316,23 @@ def _checkpoint(bridge):
 
 
 def _submit(bridge, card, command):
-    ok, result, code = bridge.submit({
-        "command": command, "run_id": card["run_id"], "app": card["app"],
-        "profile_token": card["profile_token"], "approval_token": card["approval_token"],
-        "idempotency_token": f"{command}-request",
-    })
+    ok, result, code = bridge.submit(
+        {
+            "command": command,
+            "run_id": card["run_id"],
+            "app": card["app"],
+            "profile_token": card["profile_token"],
+            "approval_token": card["approval_token"],
+            "idempotency_token": f"{command}-request",
+        }
+    )
     assert (ok, code, result["status"]) == (True, 202, "queued")
 
 
 @pytest.mark.parametrize("command", ["like", "dislike"])
-def test_training_persists_verified_human_choice_only_after_hub_choice(command, monkeypatch):
+def test_training_persists_verified_human_choice_only_after_hub_choice(
+    command, monkeypatch
+):
     class _ForbiddenAutoPolicy:
         def __init__(self, *args, **kwargs):
             raise AssertionError("training must not construct AutoSessionPolicy")
@@ -299,7 +354,11 @@ def test_training_persists_verified_human_choice_only_after_hub_choice(command, 
     worker.join(_TIMEOUT_S)
     assert not worker.is_alive()
 
-    assert store.decisions[0][0:3] == (command, 1.0 if command == "like" else 0.0, "manual")
+    assert store.decisions[0][0:3] == (
+        command,
+        1.0 if command == "like" else 0.0,
+        "manual",
+    )
     assert store.profiles[0][1:3] == (command == "like", "manual")
     assert store.labels[0][0] is (command == "like")
     assert store.labels[0][2] == "manual"
@@ -307,7 +366,8 @@ def test_training_persists_verified_human_choice_only_after_hub_choice(command, 
     assert opener.commits == [] or opener.commits[0][1]["decision"] == "like"
     if command == "like":
         assert opener.commits[0][1]["pre_send_evidence"] == {
-            "evidence_id": "verified-landed-composer"}
+            "evidence_id": "verified-landed-composer"
+        }
         # profile_key (2026-09-06): read off the driver's current_profile_identity() BEFORE
         # like() is ever called (see worker.py's _current_profile_key), so a committed Like
         # carries the real attribution key, not "" or a stale value.
@@ -329,7 +389,8 @@ def test_training_persists_verified_human_choice_only_after_hub_choice(command, 
         assert discard_lineage["profile_id"] == store.profiles[0][0]
         assert isinstance(discard_lineage["decision_created_at"], float)
     assert events.index(("label", command == "like", "manual")) < events.index(
-        ("hub_complete", "completed"))
+        ("hub_complete", "completed")
+    )
     assert events.index(("flush",)) < events.index(("hub_complete", "completed"))
     result = bridge.snapshot(run_id="training-run", app="hinge")["results"][-1]
     assert (result["command"], result["status"]) == (command, "completed")
@@ -362,13 +423,16 @@ def _refuses(_model_item_index):
     raise RuntimeError("a broken optional review hint must not reach the checkpoint")
 
 
-@pytest.mark.parametrize("hook", [
-    None,                          # a driver that never had the affordance at all
-    lambda _index: None,           # fail-closed: the capture could not prove the count
-    lambda _index: 0,              # never a 1-based position
-    lambda _index: "3",            # the protocol carries an integer or nothing
-    _refuses,                      # a broken optional implementation
-])
+@pytest.mark.parametrize(
+    "hook",
+    [
+        None,  # a driver that never had the affordance at all
+        lambda _index: None,  # fail-closed: the capture could not prove the count
+        lambda _index: 0,  # never a 1-based position
+        lambda _index: "3",  # the protocol carries an integer or nothing
+        _refuses,  # a broken optional implementation
+    ],
+)
 def test_a_refused_media_ordinal_never_delays_alters_or_halts_the_checkpoint(hook):
     """NEVER BLOCKING. Whatever the hint does, the checkpoint that gets published is the one that
     would have been published without it, the operator still decides, and the run still lands and
@@ -395,14 +459,25 @@ def test_the_media_ordinal_hook_is_never_asked_about_a_legacy_profile_photo_pick
     instead, so handing it over would count a different card entirely -- the same reasoning
     `_item_type_preflight_mismatch` already applies to doc 5.8's preflight."""
     asked = []
-    driver = type("Driver", (), {
-        "model_item_media_ordinal": lambda _self, index: asked.append(index) or 1})()
-    legacy = OpenerPick(text="opener", index=2, referenced="a photo",
-                        item_description="a photo",
-                        index_space=INDEX_SPACE_PROFILE_PHOTOS)
-    model_pick = OpenerPick(text="opener", index=2, referenced="a photo",
-                            item_description="a photo",
-                            index_space=INDEX_SPACE_MODEL_ITEMS)
+    driver = type(
+        "Driver",
+        (),
+        {"model_item_media_ordinal": lambda _self, index: asked.append(index) or 1},
+    )()
+    legacy = OpenerPick(
+        text="opener",
+        index=2,
+        referenced="a photo",
+        item_description="a photo",
+        index_space=INDEX_SPACE_PROFILE_PHOTOS,
+    )
+    model_pick = OpenerPick(
+        text="opener",
+        index=2,
+        referenced="a photo",
+        item_description="a photo",
+        index_space=INDEX_SPACE_MODEL_ITEMS,
+    )
 
     assert worker_module._model_item_media_ordinal(driver, legacy) is None
     assert asked == []
@@ -416,15 +491,27 @@ def test_training_status_says_the_phone_action_landed_while_archive_and_flush_ru
     status = RunStatus("training-run", ["hinge"], min_labels=1, mode="training")
 
     class _ProgressStore(_Store):
-        def record_profile(self, run_id, app, profile_id, liked, source="auto", *, progress=None,
-                           **metadata):
+        def record_profile(
+            self,
+            run_id,
+            app,
+            profile_id,
+            liked,
+            source="auto",
+            *,
+            progress=None,
+            **metadata,
+        ):
             assert callable(progress)
             progress("profile_upload", 1, 2)
             observed.append(("archive", status.app_view("hinge")["app"].copy()))
             progress("profile_uploaded", 2, 2)
-            observed.append(("archive_complete", status.app_view("hinge")["app"].copy()))
+            observed.append(
+                ("archive_complete", status.app_view("hinge")["app"].copy())
+            )
             return super().record_profile(
-                run_id, app, profile_id, liked, source=source, **metadata)
+                run_id, app, profile_id, liked, source=source, **metadata
+            )
 
         def flush(self):
             observed.append(("flush", status.app_view("hinge")["app"].copy()))
@@ -439,7 +526,8 @@ def test_training_status_says_the_phone_action_landed_while_archive_and_flush_ru
     retrain = decider.retrain
     decider.retrain = lambda store_arg: (
         observed.append(("after_completion", status.app_view("hinge")["app"].copy()))
-        or retrain(store_arg))
+        or retrain(store_arg)
+    )
     worker.start()
     card = _wait_until(lambda: _checkpoint(bridge))
     _submit(bridge, card, "like")
@@ -449,18 +537,26 @@ def test_training_status_says_the_phone_action_landed_while_archive_and_flush_ru
     archive = dict(observed)["archive"]
     archive_complete = dict(observed)["archive_complete"]
     flushing = dict(observed)["flush"]
-    assert archive["state"] == archive_complete["state"] == flushing["state"] == "acting"
-    assert archive["detail"] == "Like landed in Hinge; archiving profile screenshots (1/2)"
+    assert (
+        archive["state"] == archive_complete["state"] == flushing["state"] == "acting"
+    )
+    assert (
+        archive["detail"] == "Like landed in Hinge; archiving profile screenshots (1/2)"
+    )
     assert archive_complete["detail"] == (
-        "Like landed in Hinge; profile archive complete—recording the training label")
+        "Like landed in Hinge; profile archive complete—recording the training label"
+    )
     assert flushing["detail"] == (
-        "Like landed in Hinge; archive complete—flushing the label and evidence to storage")
+        "Like landed in Hinge; archive complete—flushing the label and evidence to storage"
+    )
     # …and the in-flight claim must not outlive the write it describes.  The Hub renders an
     # ``acting`` state as a wait box either way, so clearing only the detail would still assert
     # an unfinished device action while the worker is merely pacing.
     settled = dict(observed)["after_completion"]
     assert settled["state"] == "scoring"
-    assert settled["detail"] == "Like recorded and saved; pacing before the next profile"
+    assert (
+        settled["detail"] == "Like recorded and saved; pacing before the next profile"
+    )
 
 
 class _LegacyProtocolStore(_Store):
@@ -471,11 +567,26 @@ class _LegacyProtocolStore(_Store):
     action has physically landed.
     """
 
-    def record_profile(self, run_id, app, profile_id, liked, source="manual", photos=None,
-                       photo_count=0, capture_truncated=False):
+    def record_profile(
+        self,
+        run_id,
+        app,
+        profile_id,
+        liked,
+        source="manual",
+        photos=None,
+        photo_count=0,
+        capture_truncated=False,
+    ):
         self.events.append(("profile", liked, source))
-        self.profiles.append((profile_id, liked, source, {
-            "photo_count": photo_count, "capture_truncated": capture_truncated}))
+        self.profiles.append(
+            (
+                profile_id,
+                liked,
+                source,
+                {"photo_count": photo_count, "capture_truncated": capture_truncated},
+            )
+        )
         return self.archive_result
 
 
@@ -514,6 +625,7 @@ def test_progress_callback_is_never_leaked_through_a_legacy_metadata_seam():
 def test_explicitly_accepts_keyword_admits_only_a_declared_parameter():
     """The deliberate asymmetry with ``_accepts_keywords``: an observational keyword is opt-in
     by declaration, so a ``**kwargs`` seam and an un-inspectable callable both decline it."""
+
     def declares(run_id, app, *, progress=None):
         pass
 
@@ -529,18 +641,38 @@ def test_explicitly_accepts_keyword_admits_only_a_declared_parameter():
 
 
 @pytest.mark.parametrize("outcome", ["like", "dislike"])
-@pytest.mark.parametrize("stage, counts, expected", [
-    ("archive", (None, None), "archiving the reviewed profile and training data"),
-    ("profile_upload", (1, 2), "archiving profile screenshots (1/2)"),
-    ("profile_upload", (None, None), "archiving profile screenshots"),
-    ("profile_uploaded", (2, 2), "profile archive complete—recording the training label"),
-    ("opener_evidence", (None, None), "archiving the typed opener and send evidence"),
-    ("label", (None, None), "recording the decision and training label"),
-    ("flush", (None, None), "archive complete—flushing the label and evidence to storage"),
-    ("some_future_stage", (None, None), "archiving the reviewed profile and training data"),
-])
+@pytest.mark.parametrize(
+    "stage, counts, expected",
+    [
+        ("archive", (None, None), "archiving the reviewed profile and training data"),
+        ("profile_upload", (1, 2), "archiving profile screenshots (1/2)"),
+        ("profile_upload", (None, None), "archiving profile screenshots"),
+        (
+            "profile_uploaded",
+            (2, 2),
+            "profile archive complete—recording the training label",
+        ),
+        (
+            "opener_evidence",
+            (None, None),
+            "archiving the typed opener and send evidence",
+        ),
+        ("label", (None, None), "recording the decision and training label"),
+        (
+            "flush",
+            (None, None),
+            "archive complete—flushing the label and evidence to storage",
+        ),
+        (
+            "some_future_stage",
+            (None, None),
+            "archiving the reviewed profile and training data",
+        ),
+    ],
+)
 def test_persistence_detail_always_states_that_the_phone_action_already_landed(
-        outcome, stage, counts, expected):
+    outcome, stage, counts, expected
+):
     status = RunStatus("training-run", ["hinge"], min_labels=1, mode="training")
     worker, *_rest = _new_worker(status=status)
 
@@ -551,9 +683,19 @@ def test_persistence_detail_always_states_that_the_phone_action_already_landed(
     assert app["detail"] == f"{outcome.title()} landed in Hinge; {expected}"
 
 
-@pytest.mark.parametrize("counts", [
-    (True, True), (3, 2), (1, 0), (1, -1), ("1", 2), (None, 2), (1, None), (1.0, 2),
-])
+@pytest.mark.parametrize(
+    "counts",
+    [
+        (True, True),
+        (3, 2),
+        (1, 0),
+        (1, -1),
+        ("1", 2),
+        (None, 2),
+        (1, None),
+        (1.0, 2),
+    ],
+)
 def test_nonsensical_store_progress_counts_fall_back_to_countless_wording(counts):
     """No shipped store can produce these, and that is the point: a store-supplied pair is
     rendered to the operator in the window right after an irreversible action landed, so a
@@ -564,13 +706,15 @@ def test_nonsensical_store_progress_counts_fall_back_to_countless_wording(counts
     worker._training_persistence_status("like", "profile_upload", *counts)
 
     assert status.app_view("hinge")["app"]["detail"] == (
-        "Like landed in Hinge; archiving profile screenshots")
+        "Like landed in Hinge; archiving profile screenshots"
+    )
 
 
 def test_training_notifies_once_after_checkpoint_becomes_actionable(monkeypatch):
     notifications = []
     monkeypatch.setattr(
-        worker_module, "notify_training_decision_ready",
+        worker_module,
+        "notify_training_decision_ready",
         lambda: notifications.append(_checkpoint(bridge)),
     )
     worker, driver, decider, opener, store, bridge, events = _new_worker()
@@ -590,13 +734,19 @@ def test_training_notifies_once_after_checkpoint_becomes_actionable(monkeypatch)
     assert notifications[0]["pending"] is True
 
 
-@pytest.mark.parametrize("after_choice, expected", [
-    ("cancel", "aborted"),
-    ("fail", "failed"),
-])
-def test_cancelled_or_failed_driver_action_never_creates_training_label(after_choice, expected):
+@pytest.mark.parametrize(
+    "after_choice, expected",
+    [
+        ("cancel", "aborted"),
+        ("fail", "failed"),
+    ],
+)
+def test_cancelled_or_failed_driver_action_never_creates_training_label(
+    after_choice, expected
+):
     worker, driver, decider, opener, store, bridge, events = _new_worker(
-        driver_after_choice=after_choice)
+        driver_after_choice=after_choice
+    )
     worker.start()
     card = _wait_until(lambda: _checkpoint(bridge))
     _submit(bridge, card, "like")
@@ -650,11 +800,14 @@ class _PostSendTrainingDriver(_TrainingDriver):
         assert self._decision is not None
         command = self._decision(_FRAME, {"evidence_id": "verified-composer"})
         self.events.append(("driver_choice", command))
-        self._send_attempted = True           # the Send Like tap: the opener is out
+        self._send_attempted = True  # the Send Like tap: the opener is out
         if self.after_choice == "cancel":
-            raise ActionCancelled("a Stop arrived between the Send Like tap and its verification")
+            raise ActionCancelled(
+                "a Stop arrived between the Send Like tap and its verification"
+            )
         raise RuntimeError(
-            "training action did not reach a stable, semantically different ready deck card")
+            "training action did not reach a stable, semantically different ready deck card"
+        )
 
     def like_send_attempted(self):
         return self._send_attempted
@@ -671,9 +824,19 @@ def _run_training_like_through(driver):
     store = _Store(events)
     bridge = _RecordingBridge(events)
     status = RunStatus("training-run", ["hinge"], min_labels=1, mode="training")
-    worker = Worker("hinge", driver, _Decider(events), opener, store, "training-run", _Pacing(),
-                    threading.Event(), mode="training", training_action_bridge=bridge,
-                    status=status)
+    worker = Worker(
+        "hinge",
+        driver,
+        _Decider(events),
+        opener,
+        store,
+        "training-run",
+        _Pacing(),
+        threading.Event(),
+        mode="training",
+        training_action_bridge=bridge,
+        status=status,
+    )
     worker.start()
     card = _wait_until(lambda: _checkpoint(bridge))
     _submit(bridge, card, "like")
@@ -682,12 +845,16 @@ def _run_training_like_through(driver):
     return opener, store, bridge
 
 
-@pytest.mark.parametrize("after_choice, expected", [
-    ("cancel", "aborted"),
-    ("fail", "failed"),
-])
+@pytest.mark.parametrize(
+    "after_choice, expected",
+    [
+        ("cancel", "aborted"),
+        ("fail", "failed"),
+    ],
+)
 def test_a_post_send_training_failure_records_the_draft_as_send_unverified(
-        after_choice, expected):
+    after_choice, expected
+):
     """The reviewer said Like, the phone sent it, and the verification AFTER the send failed.
 
     Both abandonment handlers around `driver.like()` used to answer that with
@@ -711,7 +878,10 @@ def test_a_post_send_training_failure_records_the_draft_as_send_unverified(
     assert lineage["decision_source"] == "manual"
     # Attributable, exactly like every other discarded draft -- both populations carry the key.
     assert lineage["profile_key"] == _FAKE_PROFILE_KEY
-    assert bridge.snapshot(run_id="training-run", app="hinge")["results"][-1]["status"] == expected
+    assert (
+        bridge.snapshot(run_id="training-run", app="hinge")["results"][-1]["status"]
+        == expected
+    )
     # MUTATION CHECK, once per handler, because the two parametrizations exercise different ones:
     # drop `decision=self._post_like_discard_decision()` from _training_loop's `except
     # ActionCancelled` -- re-run: only the [cancel-aborted] case fails; drop it from the generic
@@ -752,20 +922,29 @@ def test_a_blank_generated_opener_is_still_recorded_as_a_billed_never_sent_draft
     """
     status = RunStatus("training-run", ["hinge"], min_labels=1, mode="training")
     worker, driver, decider, opener, store, bridge, events = _new_worker(status=status)
-    opener.pick = OpenerPick(text="   ", index=2, referenced="the hiking photo",
-                             item_description="hiking photo",
-                             index_space=INDEX_SPACE_MODEL_ITEMS)
+    opener.pick = OpenerPick(
+        text="   ",
+        index=2,
+        referenced="the hiking photo",
+        item_description="hiking photo",
+        index_space=INDEX_SPACE_MODEL_ITEMS,
+    )
 
     worker.run()
 
     app = status.app_view("hinge")["app"]
     assert app["state"] == "stopped" and app["stop_kind"] == "opener"
-    assert driver.like_calls == [] and store.decisions == store.profiles == store.labels == []
+    assert (
+        driver.like_calls == []
+        and store.decisions == store.profiles == store.labels == []
+    )
     assert opener.commits == []
     assert len(opener.discards) == 1
     pick, lineage = opener.discards[0]
     assert pick is opener.pick
-    assert lineage["decision"] == "never_sent" and lineage["decision_source"] == "manual"
+    assert (
+        lineage["decision"] == "never_sent" and lineage["decision_source"] == "manual"
+    )
     assert lineage["profile_key"] == _FAKE_PROFILE_KEY
     assert bridge.snapshot(run_id="training-run", app="hinge")["checkpoints"] == []
 
@@ -776,6 +955,7 @@ class _SpentLikeBudget(RateLimiter):
     Subclassed rather than hand-rolled so every other part of the limiter contract the worker
     touches (``allow``/``max_per_day``) stays the real one; only the like budget is exhausted.
     """
+
     def allow_like(self, liked_this_run):
         return False
 
@@ -789,17 +969,23 @@ def test_a_rate_limited_run_still_records_the_draft_it_abandoned():
     """
     status = RunStatus("training-run", ["hinge"], min_labels=1, mode="training")
     worker, driver, decider, opener, store, bridge, events = _new_worker(
-        limiter=_SpentLikeBudget(max_likes_per_run=1), status=status)
+        limiter=_SpentLikeBudget(max_likes_per_run=1), status=status
+    )
 
     worker.run()
 
     app = status.app_view("hinge")["app"]
     assert app["state"] == "rate_limited"
-    assert driver.like_calls == [] and store.decisions == store.profiles == store.labels == []
+    assert (
+        driver.like_calls == []
+        and store.decisions == store.profiles == store.labels == []
+    )
     assert opener.commits == []
     assert len(opener.discards) == 1
     lineage = opener.discards[0][1]
-    assert lineage["decision"] == "never_sent" and lineage["decision_source"] == "manual"
+    assert (
+        lineage["decision"] == "never_sent" and lineage["decision_source"] == "manual"
+    )
     assert lineage["profile_key"] == _FAKE_PROFILE_KEY
     assert bridge.snapshot(run_id="training-run", app="hinge")["checkpoints"] == []
 
@@ -813,11 +999,15 @@ def test_stop_before_training_decision_is_not_captured_as_an_unexpected_failure(
     """
     worker, driver, decider, opener, store, bridge, events = _new_worker()
 
-    def stop_at_review(opener_text, item_index=None, *, model_item_index=None, should_stop=None):
+    def stop_at_review(
+        opener_text, item_index=None, *, model_item_index=None, should_stop=None
+    ):
         driver.like_calls.append((opener_text, item_index, model_item_index))
         assert driver._decision is not None
         assert driver._decision(_FRAME, {"evidence_id": "verified-composer"}) == "stop"
-        raise ActionCancelled("action cancelled because the run is stopping before training decision")
+        raise ActionCancelled(
+            "action cancelled because the run is stopping before training decision"
+        )
 
     driver.like = stop_at_review
     worker.start()
@@ -844,7 +1034,8 @@ def test_training_item_index_refusal_closes_the_live_phone_session():
     """
     refusal = (
         "the item index this capture produced contradicts itself, so its numbering cannot "
-        "be trusted")
+        "be trusted"
+    )
 
     class _RefusingIndexDriver(_TrainingDriver):
         def next_profile(self):
@@ -861,8 +1052,19 @@ def test_training_item_index_refusal_closes_the_live_phone_session():
     status = RunStatus("training-run", ["hinge"], min_labels=1, mode="training")
     stop = threading.Event()
     bridge = _RecordingBridge(events)
-    worker = Worker("hinge", driver, decider, opener, store, "training-run", _Pacing(), stop,
-                    mode="training", training_action_bridge=bridge, status=status)
+    worker = Worker(
+        "hinge",
+        driver,
+        decider,
+        opener,
+        store,
+        "training-run",
+        _Pacing(),
+        stop,
+        mode="training",
+        training_action_bridge=bridge,
+        status=status,
+    )
 
     worker.run()
 
@@ -905,8 +1107,12 @@ def test_training_stops_for_no_opener_consumer_unlike_auto():
             if self._profile_returned:
                 return None
             self._profile_returned = True
-            return Profile(photos=[_FRAME], name="Ari", items_unavailable=refusal,
-                           items_unavailable_kind="no_opener_consumer")
+            return Profile(
+                photos=[_FRAME],
+                name="Ari",
+                items_unavailable=refusal,
+                items_unavailable_kind="no_opener_consumer",
+            )
 
     events = []
     driver = _NoOpenerConsumerDriver(events)
@@ -916,14 +1122,25 @@ def test_training_stops_for_no_opener_consumer_unlike_auto():
     status = RunStatus("training-run", ["hinge"], min_labels=1, mode="training")
     stop = threading.Event()
     bridge = _RecordingBridge(events)
-    worker = Worker("hinge", driver, decider, opener, store, "training-run", _Pacing(), stop,
-                    mode="training", training_action_bridge=bridge, status=status)
+    worker = Worker(
+        "hinge",
+        driver,
+        decider,
+        opener,
+        store,
+        "training-run",
+        _Pacing(),
+        stop,
+        mode="training",
+        training_action_bridge=bridge,
+        status=status,
+    )
 
     worker.run()
 
     app = status.app_view("hinge")["app"]
     assert app["state"] == "stopped"
-    assert app["stop_kind"] == "opener"          # NOT "targeting_calibration"
+    assert app["stop_kind"] == "opener"  # NOT "targeting_calibration"
     assert refusal in app["stop_reason"]
     assert stop.is_set()
     assert driver.opened and driver.closed
@@ -935,7 +1152,9 @@ def test_training_stops_for_no_opener_consumer_unlike_auto():
 def test_stale_or_absent_training_action_never_creates_label():
     events = []
     stale_bridge = _ReplacingBridge(events)
-    worker, driver, decider, opener, store, bridge, events = _new_worker(bridge=stale_bridge)
+    worker, driver, decider, opener, store, bridge, events = _new_worker(
+        bridge=stale_bridge
+    )
     worker.start()
     _wait_until(lambda: driver.like_calls)
     worker.join(_TIMEOUT_S)
@@ -964,6 +1183,7 @@ def test_stale_or_absent_training_action_never_creates_label():
 
 class _SilentBridge(_RecordingBridge):
     """A Hub mailbox whose decision window closes with no answer (the ordinary Stop)."""
+
     def wait_for_action(self, worker, profile_token, stop_event):
         return None
 
@@ -983,9 +1203,19 @@ def test_an_unverified_driver_outcome_records_the_draft_nothing_was_sent_for():
     opener = _Opener(events)
     store = _Store(events)
     bridge = _SilentBridge(events)
-    worker = Worker("hinge", driver, _Decider(events), opener, store, "training-run", _Pacing(),
-                    threading.Event(), mode="training", training_action_bridge=bridge,
-                    status=status)
+    worker = Worker(
+        "hinge",
+        driver,
+        _Decider(events),
+        opener,
+        store,
+        "training-run",
+        _Pacing(),
+        threading.Event(),
+        mode="training",
+        training_action_bridge=bridge,
+        status=status,
+    )
 
     worker.run()
 
@@ -997,7 +1227,9 @@ def test_an_unverified_driver_outcome_records_the_draft_nothing_was_sent_for():
     assert opener.commits == []
     assert len(opener.discards) == 1
     lineage = opener.discards[0][1]
-    assert lineage["decision"] == "never_sent" and lineage["decision_source"] == "manual"
+    assert (
+        lineage["decision"] == "never_sent" and lineage["decision_source"] == "manual"
+    )
     assert lineage["profile_key"] == _FAKE_PROFILE_KEY
 
 
@@ -1015,7 +1247,14 @@ def test_a_landed_like_with_no_hub_claim_raises_and_is_never_written_down_as_nev
     status = RunStatus("training-run", ["hinge"], min_labels=1, mode="training")
 
     class _UnclaimedSendDriver(_TrainingDriver):
-        def like(self, opener_text, item_index=None, *, model_item_index=None, should_stop=None):
+        def like(
+            self,
+            opener_text,
+            item_index=None,
+            *,
+            model_item_index=None,
+            should_stop=None,
+        ):
             # The phone did the Like. The worker simply never saw a claimed Hub action for it.
             self.like_calls.append((opener_text, item_index, model_item_index))
             return "like"
@@ -1026,9 +1265,19 @@ def test_a_landed_like_with_no_hub_claim_raises_and_is_never_written_down_as_nev
     opener = _Opener(events)
     store = _Store(events)
     bridge = _RecordingBridge(events)
-    worker = Worker("hinge", driver, decider, opener, store, "training-run", _Pacing(),
-                    threading.Event(), mode="training", training_action_bridge=bridge,
-                    status=status)
+    worker = Worker(
+        "hinge",
+        driver,
+        decider,
+        opener,
+        store,
+        "training-run",
+        _Pacing(),
+        threading.Event(),
+        mode="training",
+        training_action_bridge=bridge,
+        status=status,
+    )
 
     worker.run()
 
@@ -1044,7 +1293,9 @@ def test_a_landed_like_with_no_hub_claim_raises_and_is_never_written_down_as_nev
 
 
 def test_persistence_failure_marks_hub_failed_and_never_completes_it():
-    worker, driver, decider, opener, store, bridge, events = _new_worker(fail_profile=True)
+    worker, driver, decider, opener, store, bridge, events = _new_worker(
+        fail_profile=True
+    )
     worker.start()
     card = _wait_until(lambda: _checkpoint(bridge))
     _submit(bridge, card, "like")
@@ -1063,7 +1314,8 @@ def test_persistence_failure_marks_hub_failed_and_never_completes_it():
 def test_incomplete_training_persistence_never_completes_the_hub_action(kind):
     worker, driver, decider, opener, store, bridge, events = _new_worker(
         archive_result=(kind != "archive_false"),
-        flush_error=(RuntimeError("durable flush failed") if kind == "flush" else None))
+        flush_error=(RuntimeError("durable flush failed") if kind == "flush" else None),
+    )
     if kind == "no_embedding":
         decider.embed = lambda profile: None
     if kind == "opener":
@@ -1086,7 +1338,9 @@ def test_incomplete_training_persistence_never_completes_the_hub_action(kind):
 
 
 def test_retrain_failure_after_durable_label_does_not_relabel_hub_action_failed():
-    worker, driver, decider, opener, store, bridge, events = _new_worker(fail_retrain=True)
+    worker, driver, decider, opener, store, bridge, events = _new_worker(
+        fail_retrain=True
+    )
     worker.start()
     card = _wait_until(lambda: _checkpoint(bridge))
     _submit(bridge, card, "dislike")
@@ -1101,7 +1355,8 @@ def test_retrain_failure_after_durable_label_does_not_relabel_hub_action_failed(
 
 def test_training_daily_limit_reads_manual_history_not_auto_history():
     worker, driver, decider, opener, store, bridge, events = _new_worker(
-        limiter=RateLimiter(max_per_day=2))
+        limiter=RateLimiter(max_per_day=2)
+    )
     worker.start()
     card = _wait_until(lambda: _checkpoint(bridge))
     assert store.count_calls == [("hinge", "manual")]
@@ -1111,7 +1366,8 @@ def test_training_daily_limit_reads_manual_history_not_auto_history():
 
 
 def test_training_none_capture_publishes_a_failed_cold_relaunch_under_its_own_stop_kind(
-        monkeypatch):
+    monkeypatch,
+):
     """Training's own capture-returned-None probe classifies the latch exactly like AUTO's.
 
     Same incident as tests/test_worker.py's AUTO counterpart: `blocked_reason()` is the only
@@ -1123,8 +1379,10 @@ def test_training_none_capture_publishes_a_failed_cold_relaunch_under_its_own_st
     whitelist entry was still missing, which made this test pass over a path that raised
     ValueError out of set_app in production -- the widening is the fix, not a test fixture.
     """
-    reason = ("Hinge was relaunched cold and the deck could not be proven re-entered; "
-              "no action or label was recorded.")
+    reason = (
+        "Hinge was relaunched cold and the deck could not be proven re-entered; "
+        "no action or label was recorded."
+    )
 
     class _ColdRelaunchDriver(_TrainingDriver):
         def __init__(self, events):
@@ -1147,9 +1405,19 @@ def test_training_none_capture_publishes_a_failed_cold_relaunch_under_its_own_st
     opener = _Opener(events)
     store = _Store(events)
     bridge = _RecordingBridge(events)
-    worker = Worker("hinge", driver, _Decider(events), opener, store, "training-run", _Pacing(),
-                    threading.Event(), mode="training", training_action_bridge=bridge,
-                    status=status)
+    worker = Worker(
+        "hinge",
+        driver,
+        _Decider(events),
+        opener,
+        store,
+        "training-run",
+        _Pacing(),
+        threading.Event(),
+        mode="training",
+        training_action_bridge=bridge,
+        status=status,
+    )
 
     worker.run()
 
@@ -1157,6 +1425,8 @@ def test_training_none_capture_publishes_a_failed_cold_relaunch_under_its_own_st
     assert app["state"] == "blocked" and app["stop_reason"] == reason
     assert app["stop_kind"] == "cold_relaunch_recovery"
     # Nothing was generated, typed or acted on: this is the capture probe, not an action path.
-    assert opener.maybe_calls == [] and opener.discards == [] and driver.like_calls == []
+    assert (
+        opener.maybe_calls == [] and opener.discards == [] and driver.like_calls == []
+    )
     assert store.decisions == store.profiles == store.labels == []
     assert driver.opened and driver.closed

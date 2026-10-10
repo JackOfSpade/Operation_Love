@@ -5,6 +5,7 @@ Uses a pyiqa no-reference metric (default CLIP-IQA) on the best available device
 installed; if the library is missing or disabled, it's a no-op (keeps all photos).
 The scorer is injectable for tests.
 """
+
 from __future__ import annotations
 
 import math
@@ -29,8 +30,13 @@ class QualityFilter:
     # enabled/min_score have no default: both come from config.yaml's quality_filter
     # section (operation_love.config.QualityCfg) at every real call site, so a stale
     # duplicate default here could silently drift from what's actually configured.
-    def __init__(self, enabled: bool, min_score: float,
-                 metric: str = "clipiqa", scorer: Callable[[bytes], float] | None = None):
+    def __init__(
+        self,
+        enabled: bool,
+        min_score: float,
+        metric: str = "clipiqa",
+        scorer: Callable[[bytes], float] | None = None,
+    ):
         if type(enabled) is not bool:
             raise ValueError("enabled must be exactly bool")
         score = _finite_real_as_float(min_score)
@@ -45,8 +51,10 @@ class QualityFilter:
         self.metric = metric
         self._scorer = scorer  # bytes -> score in ~[0,1]
         self._lock = threading.Lock()  # guards double-checked init in _ensure()
-        self._init_error: Exception | None = None  # latches a failed init so _ensure() doesn't
-                                                     # re-attempt the heavy model load on every photo
+        self._init_error: Exception | None = (
+            None  # latches a failed init so _ensure() doesn't
+        )
+        # re-attempt the heavy model load on every photo
 
     def warmup(self) -> None:
         """Load the IQA model eagerly (call once from the main thread before workers start).
@@ -59,17 +67,21 @@ class QualityFilter:
         try:
             self._ensure()
         except Exception as exc:
-            print(f"Quality filter FAILED to initialise ({type(exc).__name__}: {exc}); "
-                  "aborting run — fix the error or set quality_filter.enabled: false.")
+            print(
+                f"Quality filter FAILED to initialise ({type(exc).__name__}: {exc}); "
+                "aborting run — fix the error or set quality_filter.enabled: false."
+            )
             raise
 
     def _ensure(self) -> None:
-        if self._scorer is not None:               # fast path: no lock needed
+        if self._scorer is not None:  # fast path: no lock needed
             return
-        if self._init_error is not None:            # already failed once -> don't retry every photo
+        if (
+            self._init_error is not None
+        ):  # already failed once -> don't retry every photo
             raise self._init_error
         with self._lock:
-            if self._scorer is not None:           # second check under lock
+            if self._scorer is not None:  # second check under lock
                 return
             if self._init_error is not None:
                 raise self._init_error
@@ -101,7 +113,9 @@ class QualityFilter:
         score = self._scorer(img_bytes)
         converted = _finite_real_as_float(score)
         if converted is None:
-            raise ValueError("quality scorer returned a non-finite or non-numeric score")
+            raise ValueError(
+                "quality scorer returned a non-finite or non-numeric score"
+            )
         return converted
 
     def keep(self, img_bytes: bytes) -> bool:

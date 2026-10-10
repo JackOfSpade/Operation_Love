@@ -1,4 +1,5 @@
 """BigQueryStore tests with a fake client — no google SDK or network required."""
+
 import hashlib
 import inspect
 import math
@@ -30,7 +31,7 @@ class _FakeBQ:
 
     def __init__(self, label_rows=None, insert_errors=None):
         self.queries = []
-        self.job_configs = []          # parallel to `queries`, index-aligned
+        self.job_configs = []  # parallel to `queries`, index-aligned
         self.inserted: dict[str, list[dict]] = {}
         self.row_ids: dict[str, list] = {}
         self._label_rows = label_rows or []
@@ -116,7 +117,11 @@ class _FakeStorage:
 
     def bucket(self, name):
         self.buckets.setdefault(
-            name, _FakeBucket(name, exists=self._bucket_exists, fail_uploads=self._fail_uploads))
+            name,
+            _FakeBucket(
+                name, exists=self._bucket_exists, fail_uploads=self._fail_uploads
+            ),
+        )
         return self.buckets[name]
 
     def create_bucket(self, bucket, location=None):
@@ -127,21 +132,41 @@ class _FakeStorage:
 
 
 def _store(client, flush_every=25):
-    return BigQueryStore("proj", "ds", photo_bucket="photos", flush_every=flush_every,
-                         client=client, storage_client=_FakeStorage(), ensure=False)
+    return BigQueryStore(
+        "proj",
+        "ds",
+        photo_bucket="photos",
+        flush_every=flush_every,
+        client=client,
+        storage_client=_FakeStorage(),
+        ensure=False,
+    )
 
 
-@pytest.mark.parametrize("value", [True, math.nan, math.inf, -math.inf, 1e300, 10 ** 10_000,
-                                   "2026-01-01T00:00:00"],
-                         ids=["bool", "nan", "inf", "negative-inf", "out-of-range-float",
-                              "huge-int", "naive-iso"])
+@pytest.mark.parametrize(
+    "value",
+    [True, math.nan, math.inf, -math.inf, 1e300, 10**10_000, "2026-01-01T00:00:00"],
+    ids=[
+        "bool",
+        "nan",
+        "inf",
+        "negative-inf",
+        "out-of-range-float",
+        "huge-int",
+        "naive-iso",
+    ],
+)
 def test_bigquery_action_writes_reject_invalid_timestamp_values_without_overflow(value):
     store = _store(_FakeBQ(), flush_every=100)
     with pytest.raises(ValueError, match="timestamp"):
         store.record_decision("r", "hinge", "like", 1.0, created_at=value)
     with pytest.raises(ValueError, match="timestamp"):
         store.record_opener(
-            "r", "hinge", "model", "opener", "reference",
+            "r",
+            "hinge",
+            "model",
+            "opener",
+            "reference",
             decision_created_at=value,
         )
     assert store._buf["decisions"] == []
@@ -150,8 +175,7 @@ def test_bigquery_action_writes_reject_invalid_timestamp_values_without_overflow
 
 def test_bigquery_action_timestamp_normalizes_timezone_aware_iso_text():
     store = _store(_FakeBQ(), flush_every=100)
-    store.record_decision("r", "hinge", "like", 1.0,
-                          created_at="2026-01-01T00:00:00Z")
+    store.record_decision("r", "hinge", "like", 1.0, created_at="2026-01-01T00:00:00Z")
     assert store._buf["decisions"][0]["created_at"] == "2026-01-01T00:00:00+00:00"
 
 
@@ -184,37 +208,54 @@ class _SchemaAwareBQ(_FakeBQ):
         self.job_configs.append(job_config)
         if "INFORMATION_SCHEMA.COLUMNS" in sql:
             if not self.dataset_exists:
+
                 class NotFound(Exception):
                     pass
+
                 raise NotFound("Not found: Dataset proj:ds")
-            rows = [{"table_name": table, "column_name": column}
-                    for table, columns in self.schema.items() for column in columns]
+            rows = [
+                {"table_name": table, "column_name": column}
+                for table, columns in self.schema.items()
+                for column in columns
+            ]
             return _FakeJob(rows)
         if "CREATE SCHEMA IF NOT EXISTS" in sql:
             self.dataset_exists = True
             return _FakeJob()
         for match in re.finditer(
-                r"CREATE TABLE IF NOT EXISTS `[^`]+\.(?P<table>[a-z_]+)` "
-                r"\((?P<columns>[^;]+)\);", sql):
+            r"CREATE TABLE IF NOT EXISTS `[^`]+\.(?P<table>[a-z_]+)` "
+            r"\((?P<columns>[^;]+)\);",
+            sql,
+        ):
             self.schema.setdefault(match["table"], set()).update(
                 declaration.strip().split()[0]
                 for declaration in match["columns"].split(",")
             )
         for match in re.finditer(
-                r"ALTER TABLE `[^`]+\.(?P<table>[a-z_]+)`\n(?P<clauses>[^;]+);", sql):
+            r"ALTER TABLE `[^`]+\.(?P<table>[a-z_]+)`\n(?P<clauses>[^;]+);", sql
+        ):
             self.schema.setdefault(match["table"], set()).update(
-                re.findall(r"ADD COLUMN IF NOT EXISTS ([A-Za-z_][A-Za-z0-9_]*)", match["clauses"])
+                re.findall(
+                    r"ADD COLUMN IF NOT EXISTS ([A-Za-z_][A-Za-z0-9_]*)",
+                    match["clauses"],
+                )
             )
         return _FakeJob()
 
 
 def test_bigquery_observe_release_summary_is_bound_and_outcome_specific(monkeypatch):
     """The offline AUTO gate may read aggregate counts, never rows or interpolated run IDs."""
-    client = _FakeBQ(label_rows=[{
-        "pass_labels": 1, "like_labels": 1,
-        "pass_decisions": 1, "like_decisions": 1,
-        "successful_hinge_openers": 1,
-    }])
+    client = _FakeBQ(
+        label_rows=[
+            {
+                "pass_labels": 1,
+                "like_labels": 1,
+                "pass_decisions": 1,
+                "like_decisions": 1,
+                "successful_hinge_openers": 1,
+            }
+        ]
+    )
     store = _store(client)
 
     class _Param:
@@ -227,8 +268,14 @@ def test_bigquery_observe_release_summary_is_bound_and_outcome_specific(monkeypa
 
     import sys
     from types import SimpleNamespace
-    monkeypatch.setitem(sys.modules, "google.cloud", SimpleNamespace(
-        bigquery=SimpleNamespace(ScalarQueryParameter=_Param, QueryJobConfig=_Job)))
+
+    monkeypatch.setitem(
+        sys.modules,
+        "google.cloud",
+        SimpleNamespace(
+            bigquery=SimpleNamespace(ScalarQueryParameter=_Param, QueryJobConfig=_Job)
+        ),
+    )
 
     assert store.observe_release_persistence_summary("run'unsafe", "hinge") == {
         "manual_pass_labels": 1,
@@ -243,7 +290,9 @@ def test_bigquery_observe_release_summary_is_bound_and_outcome_specific(monkeypa
     assert "decision='dislike'" in sql and "decision='like'" in sql
     assert "opener_rejections" not in sql and "spend" not in sql
     assert [(p.name, p.value) for p in client.job_configs[-1].query_parameters] == [
-        ("run_id", "run'unsafe"), ("app", "hinge")]
+        ("run_id", "run'unsafe"),
+        ("app", "hinge"),
+    ]
 
 
 def test_read_only_summary_treats_only_missing_opener_retractions_as_empty(monkeypatch):
@@ -251,10 +300,12 @@ def test_read_only_summary_treats_only_missing_opener_retractions_as_empty(monke
     from types import SimpleNamespace
 
     class _Param:
-        def __init__(self, name, _kind, value): self.name, self.value = name, value
+        def __init__(self, name, _kind, value):
+            self.name, self.value = name, value
 
     class _JobConfig:
-        def __init__(self, query_parameters): self.query_parameters = query_parameters
+        def __init__(self, query_parameters):
+            self.query_parameters = query_parameters
 
     class NotFound(Exception):
         pass
@@ -265,15 +316,34 @@ def test_read_only_summary_treats_only_missing_opener_retractions_as_empty(monke
             self.job_configs.append(job_config)
             if "opener_retractions" in sql:
                 raise NotFound("Not found: proj.ds.opener_retractions")
-            return _FakeJob([{
-                "pass_labels": 0, "like_labels": 0, "pass_decisions": 0,
-                "like_decisions": 0, "successful_hinge_openers": 1,
-            }])
+            return _FakeJob(
+                [
+                    {
+                        "pass_labels": 0,
+                        "like_labels": 0,
+                        "pass_decisions": 0,
+                        "like_decisions": 0,
+                        "successful_hinge_openers": 1,
+                    }
+                ]
+            )
 
-    monkeypatch.setitem(sys.modules, "google.cloud", SimpleNamespace(
-        bigquery=SimpleNamespace(ScalarQueryParameter=_Param, QueryJobConfig=_JobConfig)))
+    monkeypatch.setitem(
+        sys.modules,
+        "google.cloud",
+        SimpleNamespace(
+            bigquery=SimpleNamespace(
+                ScalarQueryParameter=_Param, QueryJobConfig=_JobConfig
+            )
+        ),
+    )
     store = _store(_MissingOptional())
-    assert store.observe_release_persistence_summary("run", "hinge")["successful_hinge_openers"] == 1
+    assert (
+        store.observe_release_persistence_summary("run", "hinge")[
+            "successful_hinge_openers"
+        ]
+        == 1
+    )
     assert "opener_retractions" not in store.client.queries[-1]
 
     class _MissingRequired(_MissingOptional):
@@ -290,32 +360,65 @@ def test_bigquery_two_opener_tombstones_are_per_row_idempotent(monkeypatch):
     from operation_love.ranker.retractions import canonical_sha
 
     class _Param:
-        def __init__(self, name, _kind, value): self.name, self.value = name, value
+        def __init__(self, name, _kind, value):
+            self.name, self.value = name, value
+
     class _JobConfig:
-        def __init__(self, query_parameters): self.query_parameters = query_parameters
-    monkeypatch.setitem(sys.modules, "google.cloud", SimpleNamespace(
-        bigquery=SimpleNamespace(ScalarQueryParameter=_Param, QueryJobConfig=_JobConfig)))
+        def __init__(self, query_parameters):
+            self.query_parameters = query_parameters
+
+    monkeypatch.setitem(
+        sys.modules,
+        "google.cloud",
+        SimpleNamespace(
+            bigquery=SimpleNamespace(
+                ScalarQueryParameter=_Param, QueryJobConfig=_JobConfig
+            )
+        ),
+    )
 
     stamp_a = datetime(2026, 1, 1, tzinfo=timezone.utc)
     stamp_b = datetime(2026, 1, 1, 0, 0, 1, tzinfo=timezone.utc)
     sources = {stamp_a: ("gemini-x", "first"), stamp_b: ("gemini-y", "second")}
+
     class _RowsBQ(_FakeBQ):
         def __init__(self):
             super().__init__()
             self.tombstones = []
+
         def query(self, sql, job_config=None):
-            params = {item.name: item.value for item in (job_config.query_parameters or [])}
+            params = {
+                item.name: item.value for item in (job_config.query_parameters or [])
+            }
             if "FROM `proj.ds.openers`" in sql:
                 model, opener = sources[params["opener_created_at"]]
-                return _FakeJob([{"created_at": params["opener_created_at"], "model": model, "opener": opener}])
+                return _FakeJob(
+                    [
+                        {
+                            "created_at": params["opener_created_at"],
+                            "model": model,
+                            "opener": opener,
+                        }
+                    ]
+                )
             if "FROM `proj.ds.opener_retractions`" in sql:
                 rows = self.tombstones
                 if "correction_id" in params:
-                    rows = [row for row in rows if row["correction_id"] == params["correction_id"]]
+                    rows = [
+                        row
+                        for row in rows
+                        if row["correction_id"] == params["correction_id"]
+                    ]
                 if "opener_created_at" in params:
-                    rows = [row for row in rows if row["opener_created_at"] == params["opener_created_at"].isoformat()]
+                    rows = [
+                        row
+                        for row in rows
+                        if row["opener_created_at"]
+                        == params["opener_created_at"].isoformat()
+                    ]
                 return _FakeJob(rows)
             return _FakeJob()
+
         def insert_rows_json(self, _table, rows, row_ids=None):
             self.tombstones.extend(rows)
             return []
@@ -323,17 +426,32 @@ def test_bigquery_two_opener_tombstones_are_per_row_idempotent(monkeypatch):
     client = _RowsBQ()
     store = _store(client)
     for stamp, (model, opener) in sources.items():
-        row = {"correction_id": "same-plan", "run_id": "run", "app": "hinge",
-               "opener_created_at": stamp.isoformat(), "model": model,
-               "opener_fingerprint": canonical_sha({"run_id": "run", "app": "hinge",
-                   "created_at": stamp.isoformat(), "model": model, "opener": opener}),
-               "reason": "unacted", "evidence_ref": "debug"}
+        row = {
+            "correction_id": "same-plan",
+            "run_id": "run",
+            "app": "hinge",
+            "opener_created_at": stamp.isoformat(),
+            "model": model,
+            "opener_fingerprint": canonical_sha(
+                {
+                    "run_id": "run",
+                    "app": "hinge",
+                    "created_at": stamp.isoformat(),
+                    "model": model,
+                    "opener": opener,
+                }
+            ),
+            "reason": "unacted",
+            "evidence_ref": "debug",
+        }
         assert store.append_opener_retraction(row) is True
     assert len(client.tombstones) == 2
     assert store.append_opener_retraction(row) is False
 
 
-def test_bigquery_retraction_rows_normalize_timestamps_and_append_is_bound_idempotent(monkeypatch):
+def test_bigquery_retraction_rows_normalize_timestamps_and_append_is_bound_idempotent(
+    monkeypatch,
+):
     import sys
     from types import SimpleNamespace
 
@@ -345,8 +463,13 @@ def test_bigquery_retraction_rows_normalize_timestamps_and_append_is_bound_idemp
         def __init__(self, query_parameters):
             self.query_parameters = query_parameters
 
-    monkeypatch.setitem(sys.modules, "google.cloud", SimpleNamespace(
-        bigquery=SimpleNamespace(ScalarQueryParameter=_Param, QueryJobConfig=_Job)))
+    monkeypatch.setitem(
+        sys.modules,
+        "google.cloud",
+        SimpleNamespace(
+            bigquery=SimpleNamespace(ScalarQueryParameter=_Param, QueryJobConfig=_Job)
+        ),
+    )
 
     class _RowsBQ(_FakeBQ):
         def query(self, sql, job_config=None):
@@ -355,12 +478,28 @@ def test_bigquery_retraction_rows_normalize_timestamps_and_append_is_bound_idemp
             if "FROM `proj.ds.profiles`" in sql:
                 return _FakeJob([{"profile_id": "profile"}])
             if "FROM `proj.ds.labels`" in sql:
-                return _FakeJob([{"profile_id": "profile", "created_at": datetime(2026, 1, 1, tzinfo=timezone.utc),
-                                  "liked": False}])
+                return _FakeJob(
+                    [
+                        {
+                            "profile_id": "profile",
+                            "created_at": datetime(2026, 1, 1, tzinfo=timezone.utc),
+                            "liked": False,
+                        }
+                    ]
+                )
             if "FROM `proj.ds.decisions`" in sql:
-                return _FakeJob([{"profile_id": "profile",
-                                  "created_at": datetime(2026, 1, 1, 0, 0, 1, tzinfo=timezone.utc),
-                                  "decision": "dislike", "score": 0.0}])
+                return _FakeJob(
+                    [
+                        {
+                            "profile_id": "profile",
+                            "created_at": datetime(
+                                2026, 1, 1, 0, 0, 1, tzinfo=timezone.utc
+                            ),
+                            "decision": "dislike",
+                            "score": 0.0,
+                        }
+                    ]
+                )
             return _FakeJob([])
 
     client = _RowsBQ()
@@ -370,16 +509,30 @@ def test_bigquery_retraction_rows_normalize_timestamps_and_append_is_bound_idemp
     assert rows["decisions"][0]["profile_id"] == "profile"
     assert "run'unsafe" not in client.queries[-1]
     assert [(p.name, p.value) for p in client.job_configs[-1].query_parameters] == [
-        ("run_id", "run'unsafe"), ("app", "hinge"), ("source", "external_ai_review")]
-    row = {"correction_id": "c", "run_id": "run'unsafe", "app": "hinge", "source": "external_ai_review",
-           "profile_id": "profile", "label_created_at": "2026-01-01T00:00:00+00:00",
-           "decision_created_at": "2026-01-01T00:00:01+00:00", "decision_fingerprint": "fp",
-           "reason": "false", "evidence_ref": "debug#225", "created_at": "2026-01-01T00:01:00+00:00"}
+        ("run_id", "run'unsafe"),
+        ("app", "hinge"),
+        ("source", "external_ai_review"),
+    ]
+    row = {
+        "correction_id": "c",
+        "run_id": "run'unsafe",
+        "app": "hinge",
+        "source": "external_ai_review",
+        "profile_id": "profile",
+        "label_created_at": "2026-01-01T00:00:00+00:00",
+        "decision_created_at": "2026-01-01T00:00:01+00:00",
+        "decision_fingerprint": "fp",
+        "reason": "false",
+        "evidence_ref": "debug#225",
+        "created_at": "2026-01-01T00:01:00+00:00",
+    }
     assert store.append_label_retraction(row) is True
     assert store.append_label_retraction(row) is False
-    target_job = next(config for sql, config in zip(
-                      client.queries, client.job_configs, strict=True)
-                      if "label_created_at=@label_created_at" in sql)
+    target_job = next(
+        config
+        for sql, config in zip(client.queries, client.job_configs, strict=True)
+        if "label_created_at=@label_created_at" in sql
+    )
     assert [(p.name, p.value) for p in target_job.query_parameters][-2:] == [
         ("label_created_at", datetime(2026, 1, 1, tzinfo=timezone.utc)),
         ("decision_created_at", datetime(2026, 1, 1, 0, 0, 1, tzinfo=timezone.utc)),
@@ -422,8 +575,12 @@ def test_ensure_false_skips_schema_discovery_and_mutation():
 
 
 def test_load_labels_parses_and_counts():
-    client = _FakeBQ(label_rows=[{"liked": True, "embedding": [0.1, 0.2]},
-                                 {"liked": False, "embedding": [0.3]}])
+    client = _FakeBQ(
+        label_rows=[
+            {"liked": True, "embedding": [0.1, 0.2]},
+            {"liked": False, "embedding": [0.3]},
+        ]
+    )
     s = _store(client)
     labels = s.load_labels()
     assert labels == [(True, [0.1, 0.2]), (False, [0.3])]
@@ -433,9 +590,9 @@ def test_buffer_flushes_at_threshold():
     client = _FakeBQ()
     s = _store(client, flush_every=2)
     s.add_label("r", "bumble", True, [0.1])
-    assert "proj.ds.labels" not in client.inserted          # buffered, not yet sent
+    assert "proj.ds.labels" not in client.inserted  # buffered, not yet sent
     s.add_label("r", "bumble", False, [0.2])
-    assert len(client.inserted["proj.ds.labels"]) == 2       # flushed at threshold
+    assert len(client.inserted["proj.ds.labels"]) == 2  # flushed at threshold
 
 
 def test_add_label_includes_profile_id():
@@ -447,20 +604,40 @@ def test_add_label_includes_profile_id():
 
 
 def test_ensure_tables_runs_decision_source_migration():
-    client = _FakeBQ(label_rows=_schema_rows_without(
-        ("labels", "profile_id"), ("decisions", "source")))
-    BigQueryStore("proj", "ds", photo_bucket="photos", client=client,
-                  storage_client=_FakeStorage(), ensure=True)
+    client = _FakeBQ(
+        label_rows=_schema_rows_without(
+            ("labels", "profile_id"), ("decisions", "source")
+        )
+    )
+    BigQueryStore(
+        "proj",
+        "ds",
+        photo_bucket="photos",
+        client=client,
+        storage_client=_FakeStorage(),
+        ensure=True,
+    )
     ddl = "\n".join(client.queries)
-    assert "ALTER TABLE `proj.ds.labels`\nADD COLUMN IF NOT EXISTS profile_id STRING" in ddl
-    assert "ALTER TABLE `proj.ds.decisions`\nADD COLUMN IF NOT EXISTS source STRING" in ddl
+    assert (
+        "ALTER TABLE `proj.ds.labels`\nADD COLUMN IF NOT EXISTS profile_id STRING"
+        in ddl
+    )
+    assert (
+        "ALTER TABLE `proj.ds.decisions`\nADD COLUMN IF NOT EXISTS source STRING" in ddl
+    )
 
 
 def test_ensure_tables_fresh_project_creates_current_schema_once_without_alters():
     client = _SchemaAwareBQ(dataset_exists=False)
 
-    BigQueryStore("proj", "ds", photo_bucket="photos", client=client,
-                  storage_client=_FakeStorage(), ensure=True)
+    BigQueryStore(
+        "proj",
+        "ds",
+        photo_bucket="photos",
+        client=client,
+        storage_client=_FakeStorage(),
+        ensure=True,
+    )
     first_start = "\n".join(client.queries)
     assert "CREATE SCHEMA IF NOT EXISTS `proj.ds`" in first_start
     for table in _declared_tables():
@@ -468,8 +645,14 @@ def test_ensure_tables_fresh_project_creates_current_schema_once_without_alters(
     assert "ALTER TABLE" not in first_start
 
     before = len(client.queries)
-    BigQueryStore("proj", "ds", photo_bucket="photos", client=client,
-                  storage_client=_FakeStorage(), ensure=True)
+    BigQueryStore(
+        "proj",
+        "ds",
+        photo_bucket="photos",
+        client=client,
+        storage_client=_FakeStorage(),
+        ensure=True,
+    )
     second_start = "\n".join(client.queries[before:])
     assert "INFORMATION_SCHEMA.COLUMNS" in second_start
     assert "CREATE SCHEMA" not in second_start
@@ -480,14 +663,23 @@ def test_ensure_tables_fresh_project_creates_current_schema_once_without_alters(
 def test_ensure_tables_groups_all_missing_opener_columns_into_one_update():
     from operation_love.ranker.bigquery_store import _MIGRATIONS, _migration_parts
 
-    opener_columns = [column for statement in _MIGRATIONS
-                      for table, column, _kind in [_migration_parts(statement)]
-                      if table == "openers"]
+    opener_columns = [
+        column
+        for statement in _MIGRATIONS
+        for table, column, _kind in [_migration_parts(statement)]
+        if table == "openers"
+    ]
     assert len(opener_columns) > 5  # reproduces the reported per-table quota failure
     client = _SchemaAwareBQ(missing=[("openers", column) for column in opener_columns])
 
-    BigQueryStore("proj", "ds", photo_bucket="photos", client=client,
-                  storage_client=_FakeStorage(), ensure=True)
+    BigQueryStore(
+        "proj",
+        "ds",
+        photo_bucket="photos",
+        client=client,
+        storage_client=_FakeStorage(),
+        ensure=True,
+    )
     mutation = "\n".join(query for query in client.queries if "ALTER TABLE" in query)
     assert mutation.count("ALTER TABLE `proj.ds.openers`") == 1
     assert mutation.count("ADD COLUMN IF NOT EXISTS") == len(opener_columns)
@@ -495,8 +687,14 @@ def test_ensure_tables_groups_all_missing_opener_columns_into_one_update():
         assert f"ADD COLUMN IF NOT EXISTS {column} " in mutation
 
     before = len(client.queries)
-    BigQueryStore("proj", "ds", photo_bucket="photos", client=client,
-                  storage_client=_FakeStorage(), ensure=True)
+    BigQueryStore(
+        "proj",
+        "ds",
+        photo_bucket="photos",
+        client=client,
+        storage_client=_FakeStorage(),
+        ensure=True,
+    )
     second_start = "\n".join(client.queries[before:])
     assert "CREATE TABLE" not in second_start
     assert "ALTER TABLE" not in second_start
@@ -506,7 +704,8 @@ def test_ensure_tables_retries_transient_table_update_quota(monkeypatch):
     class _RateLimitedJob:
         def result(self):
             raise RuntimeError(
-                "Exceeded rate limits: too many table update operations for this table")
+                "Exceeded rate limits: too many table update operations for this table"
+            )
 
     class _RateLimitedOnceBQ(_FakeBQ):
         def __init__(self):
@@ -522,11 +721,19 @@ def test_ensure_tables_retries_transient_table_update_quota(monkeypatch):
             return _RateLimitedJob() if self.update_attempts == 1 else _FakeJob()
 
     sleeps = []
-    monkeypatch.setattr("operation_love.ranker.bigquery_store.time.sleep", sleeps.append)
+    monkeypatch.setattr(
+        "operation_love.ranker.bigquery_store.time.sleep", sleeps.append
+    )
     client = _RateLimitedOnceBQ()
 
-    BigQueryStore("proj", "ds", photo_bucket="photos", client=client,
-                  storage_client=_FakeStorage(), ensure=True)
+    BigQueryStore(
+        "proj",
+        "ds",
+        photo_bucket="photos",
+        client=client,
+        storage_client=_FakeStorage(),
+        ensure=True,
+    )
 
     assert client.update_attempts == 2
     assert sleeps == [1.0]
@@ -543,17 +750,27 @@ def test_record_decision_includes_source():
 
 
 def test_record_opener_buffers_and_flushes_the_expected_row_including_angle():
-    referenced = "Prompt card: two truths and a lie about 30 countries, cilantro, and a pop star"
+    referenced = (
+        "Prompt card: two truths and a lie about 30 countries, cilantro, and a pop star"
+    )
     angle = "guess which of her three claims is the lie and commit to it"
     client = _FakeBQ()
     s = _store(client, flush_every=2)
 
-    s.record_opener("r", "hinge", "gemini-x", "The cilantro one is the lie, I can feel it.",
-                    referenced, angle)
-    assert "proj.ds.openers" not in client.inserted          # buffered, not yet sent
-    s.record_opener("r", "hinge", "gemini-x", "second opener", "second referenced", "tease")
+    s.record_opener(
+        "r",
+        "hinge",
+        "gemini-x",
+        "The cilantro one is the lie, I can feel it.",
+        referenced,
+        angle,
+    )
+    assert "proj.ds.openers" not in client.inserted  # buffered, not yet sent
+    s.record_opener(
+        "r", "hinge", "gemini-x", "second opener", "second referenced", "tease"
+    )
 
-    row = client.inserted["proj.ds.openers"][0]              # flushed at threshold
+    row = client.inserted["proj.ds.openers"][0]  # flushed at threshold
     assert row["run_id"] == "r" and row["app"] == "hinge" and row["model"] == "gemini-x"
     assert row["opener"] == "The cilantro one is the lie, I can feel it."
     assert row["referenced"] == referenced
@@ -575,8 +792,13 @@ def test_record_opener_defaults_angle_to_empty_string_and_never_omits_the_field(
     client = _FakeBQ()
     s = _store(client, flush_every=1)
 
-    s.record_opener("r", "hinge", "gemini-x", "Based on that ridgeline I am going to guess Norway.",
-                    "Photo of her on a ridge with mountains behind her")
+    s.record_opener(
+        "r",
+        "hinge",
+        "gemini-x",
+        "Based on that ridgeline I am going to guess Norway.",
+        "Photo of her on a ridge with mountains behind her",
+    )
 
     row = client.inserted["proj.ds.openers"][0]
     assert "angle" in row
@@ -595,10 +817,15 @@ def test_record_opener_writes_item_description_alongside_referenced_and_angle():
     client = _FakeBQ()
     s = _store(client, flush_every=1)
 
-    s.record_opener("r", "hinge", "gemini-x", "The cilantro one is the lie, I can feel it.",
-                    "her two truths and a lie, the cilantro claim",
-                    "calling the lie and committing to it",
-                    "a written prompt card, two truths and a lie")
+    s.record_opener(
+        "r",
+        "hinge",
+        "gemini-x",
+        "The cilantro one is the lie, I can feel it.",
+        "her two truths and a lie, the cilantro claim",
+        "calling the lie and committing to it",
+        "a written prompt card, two truths and a lie",
+    )
 
     row = client.inserted["proj.ds.openers"][0]
     assert row["item_description"] == "a written prompt card, two truths and a lie"
@@ -618,8 +845,16 @@ def test_record_opener_buffers_the_prompt_era_stamp():
     client = _FakeBQ()
     s = _store(client, flush_every=1)
 
-    s.record_opener("r", "hinge", "gemini-x", "hi", "her ridgeline photo", "guess",
-                    "a photo", prompt_sha256="a" * 64)
+    s.record_opener(
+        "r",
+        "hinge",
+        "gemini-x",
+        "hi",
+        "her ridgeline photo",
+        "guess",
+        "a photo",
+        prompt_sha256="a" * 64,
+    )
 
     assert client.inserted["proj.ds.openers"][0]["prompt_sha256"] == "a" * 64
 
@@ -643,14 +878,22 @@ def test_record_opener_buffers_the_profile_key():
     client = _FakeBQ()
     s = _store(client, flush_every=1)
 
-    s.record_opener("r", "hinge", "gemini-x", "hi", "her ridgeline photo", "guess",
-                    "a photo", profile_key="k" * 64)
+    s.record_opener(
+        "r",
+        "hinge",
+        "gemini-x",
+        "hi",
+        "her ridgeline photo",
+        "guess",
+        "a photo",
+        profile_key="k" * 64,
+    )
 
     assert client.inserted["proj.ds.openers"][0]["profile_key"] == "k" * 64
 
 
 def test_record_opener_buffers_an_empty_profile_key_when_the_caller_omits_it():
-    """"" (not NULL) is "no key could be derived for this card" -- matching `profile_id`'s
+    """ "" (not NULL) is "no key could be derived for this card" -- matching `profile_id`'s
     own empty-string convention right next to it in the same row."""
     client = _FakeBQ()
     s = _store(client, flush_every=1)
@@ -667,14 +910,21 @@ def test_record_opener_persists_profile_key_as_the_hash_never_the_raw_fingerprin
     from operation_love.drivers.item_identity import ProfileIdentity
     from operation_love.ranker.profile_key import profile_key_from_identity
 
-    identity = ProfileIdentity(fingerprint=(10, 20, 30, 40), band=(0.0, 0.0, 1.0, 1.0),
-                               grid=(64, 16), frame_index=0, scroll_top_distance=0.0,
-                               reason="settled header")
+    identity = ProfileIdentity(
+        fingerprint=(10, 20, 30, 40),
+        band=(0.0, 0.0, 1.0, 1.0),
+        grid=(64, 16),
+        frame_index=0,
+        scroll_top_distance=0.0,
+        reason="settled header",
+    )
     key = profile_key_from_identity(identity)
 
     client = _FakeBQ()
     s = _store(client, flush_every=1)
-    s.record_opener("r", "hinge", "gemini-x", "hi", "her ridgeline photo", profile_key=key)
+    s.record_opener(
+        "r", "hinge", "gemini-x", "hi", "her ridgeline photo", profile_key=key
+    )
 
     stored = client.inserted["proj.ds.openers"][0]["profile_key"]
     assert stored == key
@@ -688,9 +938,16 @@ def test_record_opener_rejection_buffers_the_prompt_era_stamp():
     client = _FakeBQ()
     s = _store(client, flush_every=1)
 
-    s.record_opener_rejection("r", "hinge", "gemini-x", 2, "scaffolding",
-                              "Gemini's opener contained scaffolding text", "Here's: hi",
-                              prompt_sha256="b" * 64)
+    s.record_opener_rejection(
+        "r",
+        "hinge",
+        "gemini-x",
+        2,
+        "scaffolding",
+        "Gemini's opener contained scaffolding text",
+        "Here's: hi",
+        prompt_sha256="b" * 64,
+    )
 
     row = client.inserted["proj.ds.opener_rejections"][0]
     assert row["prompt_sha256"] == "b" * 64
@@ -708,24 +965,41 @@ def test_record_opener_writes_exactly_the_columns_the_openers_table_declares():
 
     s.record_opener("r", "hinge", "gemini-x", "hi", "her ridgeline photo", "guess")
 
-    assert "angle" in _declared_columns("openers")           # the column exists to be written
-    assert set(client.inserted["proj.ds.openers"][0]) == set(_declared_columns("openers"))
+    assert "angle" in _declared_columns("openers")  # the column exists to be written
+    assert set(client.inserted["proj.ds.openers"][0]) == set(
+        _declared_columns("openers")
+    )
 
 
 def test_auto_opener_evidence_uploads_private_png_and_buffers_queryable_linkage():
     client = _FakeBQ()
     storage = _FakeStorage()
     store = BigQueryStore(
-        "proj", "ds", photo_bucket="photos", flush_every=1,
-        client=client, storage_client=storage, ensure=True)
+        "proj",
+        "ds",
+        photo_bucket="photos",
+        flush_every=1,
+        client=client,
+        storage_client=storage,
+        ensure=True,
+    )
     frame = b"\x89PNG\r\n\x1a\npre-send"
     opener = "Quiet trail first, then coffee?"
     evidence_id = hashlib.sha256(frame + b"\0" + opener.encode()).hexdigest()
 
-    assert store.record_opener_send_evidence(
-        "r", "hinge", opener, profile_id="profile-1", decision_source="auto",
-        decision_created_at=123.0, model_item_index=3,
-        evidence={"frame": frame, "evidence_id": evidence_id}) is True
+    assert (
+        store.record_opener_send_evidence(
+            "r",
+            "hinge",
+            opener,
+            profile_id="profile-1",
+            decision_source="auto",
+            decision_created_at=123.0,
+            model_item_index=3,
+            evidence={"frame": frame, "evidence_id": evidence_id},
+        )
+        is True
+    )
 
     row = client.inserted["proj.ds.opener_send_evidence"][0]
     assert row["opener"] == opener
@@ -734,8 +1008,7 @@ def test_auto_opener_evidence_uploads_private_png_and_buffers_queryable_linkage(
     assert row["model_item_index"] == 3
     assert row["outcome"] == "like_landed"
     assert row["decision_created_at"] == "1970-01-01T00:02:03+00:00"
-    assert row["gcs_uri"].startswith(
-        "gs://photos/opener-evidence/hinge/r/profile-1/")
+    assert row["gcs_uri"].startswith("gs://photos/opener-evidence/hinge/r/profile-1/")
     object_name = row["gcs_uri"].removeprefix("gs://photos/")
     blob = storage.buckets["photos"].blobs[object_name]
     assert blob.data == frame and blob.content_type == "image/png"
@@ -746,12 +1019,25 @@ def test_auto_opener_evidence_upload_failure_does_not_create_a_dangling_bq_row()
     client = _FakeBQ()
     storage = _FakeStorage(fail_uploads=True)
     store = BigQueryStore(
-        "proj", "ds", photo_bucket="photos", flush_every=1,
-        client=client, storage_client=storage, ensure=True)
+        "proj",
+        "ds",
+        photo_bucket="photos",
+        flush_every=1,
+        client=client,
+        storage_client=storage,
+        ensure=True,
+    )
 
-    assert store.record_opener_send_evidence(
-        "r", "hinge", "opener", profile_id="p",
-        evidence={"frame": b"\x89PNG\r\n\x1a\nframe"}) is False
+    assert (
+        store.record_opener_send_evidence(
+            "r",
+            "hinge",
+            "opener",
+            profile_id="p",
+            evidence={"frame": b"\x89PNG\r\n\x1a\nframe"},
+        )
+        is False
+    )
     assert "proj.ds.opener_send_evidence" not in client.inserted
 
 
@@ -767,14 +1053,34 @@ def test_record_opener_signature_stays_positional_compatible_with_the_store_prot
     swapping them here would file every angle under item_description and vice versa, in the
     system of record, with no error anywhere."""
     params = inspect.signature(BigQueryStore.record_opener).parameters
-    assert list(params) == ["self", "run_id", "app", "model", "opener", "referenced", "angle",
-                            "item_description", "profile_id", "decision", "decision_source",
-                            "decision_created_at", "model_item_index", "prompt_sha256",
-                            "profile_key"]
+    assert list(params) == [
+        "self",
+        "run_id",
+        "app",
+        "model",
+        "opener",
+        "referenced",
+        "angle",
+        "item_description",
+        "profile_id",
+        "decision",
+        "decision_source",
+        "decision_created_at",
+        "model_item_index",
+        "prompt_sha256",
+        "profile_key",
+    ]
     assert params["angle"].default == ""
     assert params["item_description"].default == ""
-    for name in ("profile_id", "decision", "decision_source", "decision_created_at",
-                 "model_item_index", "prompt_sha256", "profile_key"):
+    for name in (
+        "profile_id",
+        "decision",
+        "decision_source",
+        "decision_created_at",
+        "model_item_index",
+        "prompt_sha256",
+        "profile_key",
+    ):
         assert params[name].kind is inspect.Parameter.KEYWORD_ONLY
     assert params["profile_key"].default == ""
     assert list(params) == list(inspect.signature(Store.record_opener).parameters)
@@ -790,11 +1096,22 @@ def test_record_opener_rejection_signature_stays_aligned_with_the_store_protocol
     POSITIONAL because service.py calls them that way; prompt_sha256 stays KEYWORD_ONLY so it
     can never bind to raw_opener."""
     params = inspect.signature(BigQueryStore.record_opener_rejection).parameters
-    assert list(params) == ["self", "run_id", "app", "model", "attempt", "reason_code",
-                            "reason", "raw_opener", "prompt_sha256"]
+    assert list(params) == [
+        "self",
+        "run_id",
+        "app",
+        "model",
+        "attempt",
+        "reason_code",
+        "reason",
+        "raw_opener",
+        "prompt_sha256",
+    ]
     assert params["prompt_sha256"].kind is inspect.Parameter.KEYWORD_ONLY
     assert params["prompt_sha256"].default is None
-    assert list(params) == list(inspect.signature(Store.record_opener_rejection).parameters)
+    assert list(params) == list(
+        inspect.signature(Store.record_opener_rejection).parameters
+    )
 
 
 def test_ensure_tables_declares_angle_on_the_openers_create_table():
@@ -802,18 +1119,34 @@ def test_ensure_tables_declares_angle_on_the_openers_create_table():
     project, where the table does not exist yet. It is NOT what fixes the live project -- see
     test_ensure_tables_runs_openers_angle_migration for that half. Both are required."""
     client = _FakeBQ()
-    BigQueryStore("proj", "ds", photo_bucket="photos", client=client,
-                  storage_client=_FakeStorage(), ensure=True)
+    BigQueryStore(
+        "proj",
+        "ds",
+        photo_bucket="photos",
+        client=client,
+        storage_client=_FakeStorage(),
+        ensure=True,
+    )
 
     ddl = "\n".join(client.queries)
     # Match the openers CREATE statement specifically, not the whole script: shared column
     # names like "run_id STRING" appear in every table, so a substring test against the full
     # script would pass even if the openers column list were missing them entirely.
-    create = next(line for line in ddl.splitlines()
-                  if line.startswith("CREATE TABLE IF NOT EXISTS `proj.ds.openers`"))
-    for col in ("run_id STRING", "app STRING", "created_at TIMESTAMP", "model STRING",
-                "opener STRING", "referenced STRING", "angle STRING",
-                "item_description STRING"):
+    create = next(
+        line
+        for line in ddl.splitlines()
+        if line.startswith("CREATE TABLE IF NOT EXISTS `proj.ds.openers`")
+    )
+    for col in (
+        "run_id STRING",
+        "app STRING",
+        "created_at TIMESTAMP",
+        "model STRING",
+        "opener STRING",
+        "referenced STRING",
+        "angle STRING",
+        "item_description STRING",
+    ):
         assert col in create
 
 
@@ -827,13 +1160,23 @@ def test_ensure_tables_runs_openers_angle_migration():
     is declared, and that it actually reaches the script _ensure_tables submits."""
     from operation_love.ranker.bigquery_store import _MIGRATIONS
 
-    assert "ALTER TABLE `{openers}` ADD COLUMN IF NOT EXISTS angle STRING;" in _MIGRATIONS
+    assert (
+        "ALTER TABLE `{openers}` ADD COLUMN IF NOT EXISTS angle STRING;" in _MIGRATIONS
+    )
 
     client = _FakeBQ(label_rows=_schema_rows_without(("openers", "angle")))
-    BigQueryStore("proj", "ds", photo_bucket="photos", client=client,
-                  storage_client=_FakeStorage(), ensure=True)
+    BigQueryStore(
+        "proj",
+        "ds",
+        photo_bucket="photos",
+        client=client,
+        storage_client=_FakeStorage(),
+        ensure=True,
+    )
     ddl = "\n".join(client.queries)
-    assert "ALTER TABLE `proj.ds.openers`\nADD COLUMN IF NOT EXISTS angle STRING;" in ddl
+    assert (
+        "ALTER TABLE `proj.ds.openers`\nADD COLUMN IF NOT EXISTS angle STRING;" in ddl
+    )
     assert "CREATE TABLE IF NOT EXISTS `proj.ds.openers`" not in ddl
 
 
@@ -847,15 +1190,25 @@ def test_ensure_tables_runs_openers_item_description_migration():
     the table fresh -- keeps passing."""
     from operation_love.ranker.bigquery_store import _MIGRATIONS
 
-    assert ("ALTER TABLE `{openers}` ADD COLUMN IF NOT EXISTS item_description STRING;"
-            in _MIGRATIONS)
+    assert (
+        "ALTER TABLE `{openers}` ADD COLUMN IF NOT EXISTS item_description STRING;"
+        in _MIGRATIONS
+    )
 
     client = _FakeBQ(label_rows=_schema_rows_without(("openers", "item_description")))
-    BigQueryStore("proj", "ds", photo_bucket="photos", client=client,
-                  storage_client=_FakeStorage(), ensure=True)
+    BigQueryStore(
+        "proj",
+        "ds",
+        photo_bucket="photos",
+        client=client,
+        storage_client=_FakeStorage(),
+        ensure=True,
+    )
     ddl = "\n".join(client.queries)
-    assert ("ALTER TABLE `proj.ds.openers`\nADD COLUMN IF NOT EXISTS item_description STRING;"
-            in ddl)
+    assert (
+        "ALTER TABLE `proj.ds.openers`\nADD COLUMN IF NOT EXISTS item_description STRING;"
+        in ddl
+    )
     assert "CREATE TABLE IF NOT EXISTS `proj.ds.openers`" not in ddl
 
 
@@ -864,12 +1217,21 @@ def test_ensure_tables_declares_prompt_sha256_on_the_openers_create_table():
     gets, where the table does not exist yet. It is NOT what fixes the live project -- see
     test_ensure_tables_runs_openers_prompt_sha256_migration for that half. Both are required."""
     client = _FakeBQ()
-    BigQueryStore("proj", "ds", photo_bucket="photos", client=client,
-                  storage_client=_FakeStorage(), ensure=True)
+    BigQueryStore(
+        "proj",
+        "ds",
+        photo_bucket="photos",
+        client=client,
+        storage_client=_FakeStorage(),
+        ensure=True,
+    )
 
     ddl = "\n".join(client.queries)
-    create = next(line for line in ddl.splitlines()
-                  if line.startswith("CREATE TABLE IF NOT EXISTS `proj.ds.openers`"))
+    create = next(
+        line
+        for line in ddl.splitlines()
+        if line.startswith("CREATE TABLE IF NOT EXISTS `proj.ds.openers`")
+    )
     assert "prompt_sha256 STRING" in create
 
 
@@ -882,13 +1244,25 @@ def test_ensure_tables_runs_openers_prompt_sha256_migration():
     -- while every local test, which always creates the table fresh, keeps passing."""
     from operation_love.ranker.bigquery_store import _MIGRATIONS
 
-    assert "ALTER TABLE `{openers}` ADD COLUMN IF NOT EXISTS prompt_sha256 STRING;" in _MIGRATIONS
+    assert (
+        "ALTER TABLE `{openers}` ADD COLUMN IF NOT EXISTS prompt_sha256 STRING;"
+        in _MIGRATIONS
+    )
 
     client = _FakeBQ(label_rows=_schema_rows_without(("openers", "prompt_sha256")))
-    BigQueryStore("proj", "ds", photo_bucket="photos", client=client,
-                  storage_client=_FakeStorage(), ensure=True)
+    BigQueryStore(
+        "proj",
+        "ds",
+        photo_bucket="photos",
+        client=client,
+        storage_client=_FakeStorage(),
+        ensure=True,
+    )
     ddl = "\n".join(client.queries)
-    assert "ALTER TABLE `proj.ds.openers`\nADD COLUMN IF NOT EXISTS prompt_sha256 STRING;" in ddl
+    assert (
+        "ALTER TABLE `proj.ds.openers`\nADD COLUMN IF NOT EXISTS prompt_sha256 STRING;"
+        in ddl
+    )
     assert "CREATE TABLE IF NOT EXISTS `proj.ds.openers`" not in ddl
 
 
@@ -897,12 +1271,21 @@ def test_ensure_tables_declares_profile_key_on_the_openers_create_table():
     gets, where the table does not exist yet. Not what fixes the live project -- see
     test_ensure_tables_runs_openers_profile_key_migration for that half."""
     client = _FakeBQ()
-    BigQueryStore("proj", "ds", photo_bucket="photos", client=client,
-                  storage_client=_FakeStorage(), ensure=True)
+    BigQueryStore(
+        "proj",
+        "ds",
+        photo_bucket="photos",
+        client=client,
+        storage_client=_FakeStorage(),
+        ensure=True,
+    )
 
     ddl = "\n".join(client.queries)
-    create = next(line for line in ddl.splitlines()
-                  if line.startswith("CREATE TABLE IF NOT EXISTS `proj.ds.openers`"))
+    create = next(
+        line
+        for line in ddl.splitlines()
+        if line.startswith("CREATE TABLE IF NOT EXISTS `proj.ds.openers`")
+    )
     assert "profile_key STRING" in create
 
 
@@ -915,13 +1298,25 @@ def test_ensure_tables_runs_openers_profile_key_migration():
     fresh, keeps passing."""
     from operation_love.ranker.bigquery_store import _MIGRATIONS
 
-    assert "ALTER TABLE `{openers}` ADD COLUMN IF NOT EXISTS profile_key STRING;" in _MIGRATIONS
+    assert (
+        "ALTER TABLE `{openers}` ADD COLUMN IF NOT EXISTS profile_key STRING;"
+        in _MIGRATIONS
+    )
 
     client = _FakeBQ(label_rows=_schema_rows_without(("openers", "profile_key")))
-    BigQueryStore("proj", "ds", photo_bucket="photos", client=client,
-                  storage_client=_FakeStorage(), ensure=True)
+    BigQueryStore(
+        "proj",
+        "ds",
+        photo_bucket="photos",
+        client=client,
+        storage_client=_FakeStorage(),
+        ensure=True,
+    )
     ddl = "\n".join(client.queries)
-    assert "ALTER TABLE `proj.ds.openers`\nADD COLUMN IF NOT EXISTS profile_key STRING;" in ddl
+    assert (
+        "ALTER TABLE `proj.ds.openers`\nADD COLUMN IF NOT EXISTS profile_key STRING;"
+        in ddl
+    )
     assert "CREATE TABLE IF NOT EXISTS `proj.ds.openers`" not in ddl
 
 
@@ -932,13 +1327,25 @@ def test_ensure_tables_creates_opener_outcomes_table():
     elsewhere (see the comment above `_MIGRATIONS`). Mirrors
     test_ensure_tables_creates_opener_rejections_table for the same kind of table."""
     client = _FakeBQ()
-    BigQueryStore("proj", "ds", photo_bucket="photos", client=client,
-                  storage_client=_FakeStorage(), ensure=True)
+    BigQueryStore(
+        "proj",
+        "ds",
+        photo_bucket="photos",
+        client=client,
+        storage_client=_FakeStorage(),
+        ensure=True,
+    )
     ddl = "\n".join(client.queries)
     assert "CREATE TABLE IF NOT EXISTS `proj.ds.opener_outcomes`" in ddl
-    for col in ("app STRING", "profile_key STRING", "outcome STRING",
-                "observed_at TIMESTAMP", "source STRING", "note STRING",
-                "created_at TIMESTAMP"):
+    for col in (
+        "app STRING",
+        "profile_key STRING",
+        "outcome STRING",
+        "observed_at TIMESTAMP",
+        "source STRING",
+        "note STRING",
+        "created_at TIMESTAMP",
+    ):
         assert col in ddl
 
 
@@ -946,12 +1353,21 @@ def test_ensure_tables_declares_prompt_sha256_on_the_opener_rejections_create_ta
     """CREATE half for `opener_rejections` -- the first column this table has ever gained, so
     it is also the first time this table has needed the two-part rollout at all."""
     client = _FakeBQ()
-    BigQueryStore("proj", "ds", photo_bucket="photos", client=client,
-                  storage_client=_FakeStorage(), ensure=True)
+    BigQueryStore(
+        "proj",
+        "ds",
+        photo_bucket="photos",
+        client=client,
+        storage_client=_FakeStorage(),
+        ensure=True,
+    )
 
     ddl = "\n".join(client.queries)
-    create = next(line for line in ddl.splitlines()
-                  if line.startswith("CREATE TABLE IF NOT EXISTS `proj.ds.opener_rejections`"))
+    create = next(
+        line
+        for line in ddl.splitlines()
+        if line.startswith("CREATE TABLE IF NOT EXISTS `proj.ds.opener_rejections`")
+    )
     assert "prompt_sha256 STRING" in create
 
 
@@ -961,15 +1377,27 @@ def test_ensure_tables_runs_opener_rejections_prompt_sha256_migration():
     happened to be thinking about is exactly how the other one starts rejecting inserts."""
     from operation_love.ranker.bigquery_store import _MIGRATIONS
 
-    assert ("ALTER TABLE `{opener_rejections}` ADD COLUMN IF NOT EXISTS prompt_sha256 STRING;"
-            in _MIGRATIONS)
+    assert (
+        "ALTER TABLE `{opener_rejections}` ADD COLUMN IF NOT EXISTS prompt_sha256 STRING;"
+        in _MIGRATIONS
+    )
 
-    client = _FakeBQ(label_rows=_schema_rows_without(("opener_rejections", "prompt_sha256")))
-    BigQueryStore("proj", "ds", photo_bucket="photos", client=client,
-                  storage_client=_FakeStorage(), ensure=True)
+    client = _FakeBQ(
+        label_rows=_schema_rows_without(("opener_rejections", "prompt_sha256"))
+    )
+    BigQueryStore(
+        "proj",
+        "ds",
+        photo_bucket="photos",
+        client=client,
+        storage_client=_FakeStorage(),
+        ensure=True,
+    )
     ddl = "\n".join(client.queries)
-    assert ("ALTER TABLE `proj.ds.opener_rejections`\n"
-            "ADD COLUMN IF NOT EXISTS prompt_sha256 STRING;" in ddl)
+    assert (
+        "ALTER TABLE `proj.ds.opener_rejections`\n"
+        "ADD COLUMN IF NOT EXISTS prompt_sha256 STRING;" in ddl
+    )
     assert "CREATE TABLE IF NOT EXISTS `proj.ds.opener_rejections`" not in ddl
 
 
@@ -978,12 +1406,26 @@ def test_ensure_tables_creates_opener_rejections_table():
     the successes the `openers` table holds -- see ranker/bigquery_store.py's _TABLES entry
     and opener/service.py's OpenerParseError handling."""
     client = _FakeBQ()
-    BigQueryStore("proj", "ds", photo_bucket="photos", client=client,
-                  storage_client=_FakeStorage(), ensure=True)
+    BigQueryStore(
+        "proj",
+        "ds",
+        photo_bucket="photos",
+        client=client,
+        storage_client=_FakeStorage(),
+        ensure=True,
+    )
     ddl = "\n".join(client.queries)
     assert "CREATE TABLE IF NOT EXISTS `proj.ds.opener_rejections`" in ddl
-    for col in ("run_id STRING", "app STRING", "created_at TIMESTAMP", "model STRING",
-                "attempt INT64", "reason_code STRING", "reason STRING", "raw_opener STRING"):
+    for col in (
+        "run_id STRING",
+        "app STRING",
+        "created_at TIMESTAMP",
+        "model STRING",
+        "attempt INT64",
+        "reason_code STRING",
+        "reason STRING",
+        "raw_opener STRING",
+    ):
         assert col in ddl
 
 
@@ -991,8 +1433,15 @@ def test_record_opener_rejection_buffers_and_flushes_the_expected_row():
     client = _FakeBQ()
     s = _store(client, flush_every=1)
 
-    s.record_opener_rejection("r", "hinge", "gemini-x", 2, "scaffolding",
-                              "Gemini's opener contained scaffolding text", "Here's: hi")
+    s.record_opener_rejection(
+        "r",
+        "hinge",
+        "gemini-x",
+        2,
+        "scaffolding",
+        "Gemini's opener contained scaffolding text",
+        "Here's: hi",
+    )
 
     row = client.inserted["proj.ds.opener_rejections"][0]
     assert row["run_id"] == "r" and row["app"] == "hinge" and row["model"] == "gemini-x"
@@ -1008,7 +1457,9 @@ def test_record_opener_rejection_accepts_none_raw_opener_and_reason_code():
     client = _FakeBQ()
     s = _store(client, flush_every=1)
 
-    s.record_opener_rejection("r", "hinge", "gemini-x", 1, None, "no text content", None)
+    s.record_opener_rejection(
+        "r", "hinge", "gemini-x", 1, None, "no text content", None
+    )
 
     row = client.inserted["proj.ds.opener_rejections"][0]
     assert row["reason_code"] is None and row["raw_opener"] is None
@@ -1020,9 +1471,13 @@ def test_count_today_counts_the_requested_decision_source():
 
     assert s.count_today("bumble") == 7
     assert "AND source=@source" in client.queries[-1]
-    assert {p.name: p.value for p in client.job_configs[-1].query_parameters}["source"] == "auto"
+    assert {p.name: p.value for p in client.job_configs[-1].query_parameters}[
+        "source"
+    ] == "auto"
     assert s.count_today("bumble", source="manual") == 7
-    assert {p.name: p.value for p in client.job_configs[-1].query_parameters}["source"] == "manual"
+    assert {p.name: p.value for p in client.job_configs[-1].query_parameters}[
+        "source"
+    ] == "manual"
     with pytest.raises(ValueError, match="source"):
         s.count_today("bumble", source="automation")
 
@@ -1030,8 +1485,15 @@ def test_count_today_counts_the_requested_decision_source():
 def test_record_profile_uploads_photos_and_manifest_rows():
     client = _FakeBQ()
     storage = _FakeStorage()
-    s = BigQueryStore("proj", "ds", photo_bucket="photos", flush_every=100,
-                      client=client, storage_client=storage, ensure=True)
+    s = BigQueryStore(
+        "proj",
+        "ds",
+        photo_bucket="photos",
+        flush_every=100,
+        client=client,
+        storage_client=storage,
+        ensure=True,
+    )
     png = b"\x89PNG\r\n\x1a\nprofile"
     jpg = b"\xff\xd8\xffprofile"
 
@@ -1046,7 +1508,9 @@ def test_record_profile_uploads_photos_and_manifest_rows():
     photo_rows = client.inserted["proj.ds.profile_photos"]
     assert [r["photo_index"] for r in photo_rows] == [0, 1]
     assert all(r["profile_id"] == "profile-1" for r in photo_rows)
-    assert photo_rows[0]["gcs_uri"].startswith("gs://photos/profiles/bumble/r/profile-1/")
+    assert photo_rows[0]["gcs_uri"].startswith(
+        "gs://photos/profiles/bumble/r/profile-1/"
+    )
     assert photo_rows[0]["content_type"] == "image/png"
     assert photo_rows[1]["content_type"] == "image/jpeg"
 
@@ -1059,14 +1523,22 @@ def test_ensure_false_store_refuses_profile_photos_without_touching_bucket():
     client = _FakeBQ()
     storage = _FakeStorage()
     store = BigQueryStore(
-        "proj", "ds", photo_bucket="photos", client=client,
-        storage_client=storage, ensure=False,
+        "proj",
+        "ds",
+        photo_bucket="photos",
+        client=client,
+        storage_client=storage,
+        ensure=False,
     )
 
     with pytest.raises(RuntimeError, match="bucket privacy policy was not verified"):
         store.record_profile(
-            "r", "hinge", "private-profile", True,
-            photos=[b"\x89PNG\r\n\x1a\nprivate"], photo_count=1,
+            "r",
+            "hinge",
+            "private-profile",
+            True,
+            photos=[b"\x89PNG\r\n\x1a\nprivate"],
+            photo_count=1,
         )
 
     assert storage.bucket("photos").blobs == {}
@@ -1077,7 +1549,9 @@ def test_record_profile_rejects_empty_photo_set():
     client = _FakeBQ()
     s = _store(client, flush_every=1)
 
-    ok = s.record_profile("r", "bumble", "profile-empty", False, photos=[], photo_count=0)
+    ok = s.record_profile(
+        "r", "bumble", "profile-empty", False, photos=[], photo_count=0
+    )
     s.flush()
 
     assert ok is False
@@ -1088,39 +1562,67 @@ def test_record_profile_rejects_empty_photo_set():
 def test_record_profile_returns_false_and_records_nothing_when_all_uploads_fail():
     client = _FakeBQ()
     storage = _FakeStorage(fail_uploads=True)
-    s = BigQueryStore("proj", "ds", photo_bucket="photos", flush_every=1,
-                      client=client, storage_client=storage, ensure=True)
+    s = BigQueryStore(
+        "proj",
+        "ds",
+        photo_bucket="photos",
+        flush_every=1,
+        client=client,
+        storage_client=storage,
+        ensure=True,
+    )
 
-    ok = s.record_profile("r", "bumble", "profile-x", True, photos=[b"\x89PNG\r\n\x1a\nx"], photo_count=1)
+    ok = s.record_profile(
+        "r", "bumble", "profile-x", True, photos=[b"\x89PNG\r\n\x1a\nx"], photo_count=1
+    )
     s.flush()
 
-    assert ok is False                                   # signals the worker to skip the label
-    assert "proj.ds.profiles" not in client.inserted     # no orphan manifest row...
-    assert "proj.ds.profile_photos" not in client.inserted   # ...and no photo rows
+    assert ok is False  # signals the worker to skip the label
+    assert "proj.ds.profiles" not in client.inserted  # no orphan manifest row...
+    assert "proj.ds.profile_photos" not in client.inserted  # ...and no photo rows
 
 
 def test_record_profile_rolls_back_partial_upload_failure():
     client = _FakeBQ()
     storage = _FakeStorage()
     bucket = storage.bucket("photos")
-    s = BigQueryStore("proj", "ds", photo_bucket="photos", flush_every=100,
-                      client=client, storage_client=storage, ensure=True)
+    s = BigQueryStore(
+        "proj",
+        "ds",
+        photo_bucket="photos",
+        flush_every=100,
+        client=client,
+        storage_client=storage,
+        ensure=True,
+    )
 
     # Make only the 2nd photo's blob fail (object path carries the photo index "/01-").
     real_blob = bucket.blob
+
     def flaky_blob(name):
         b = real_blob(name)
         b.fail = "/01-" in name
         return b
+
     bucket.blob = flaky_blob
 
-    ok = s.record_profile("r", "bumble", "profile-y", True, photos=[b"one", b"two", b"three"], photo_count=3)
+    ok = s.record_profile(
+        "r",
+        "bumble",
+        "profile-y",
+        True,
+        photos=[b"one", b"two", b"three"],
+        photo_count=3,
+    )
     s.flush()
 
     assert ok is False
     assert "proj.ds.profiles" not in client.inserted
     assert "proj.ds.profile_photos" not in client.inserted
-    assert next(blob for name, blob in bucket.blobs.items() if "/00-" in name).deleted is True
+    assert (
+        next(blob for name, blob in bucket.blobs.items() if "/00-" in name).deleted
+        is True
+    )
 
 
 def test_record_profile_persists_capture_truncated():
@@ -1130,11 +1632,23 @@ def test_record_profile_persists_capture_truncated():
     to check whether they're noisier than complete reads."""
     client = _FakeBQ()
     s = BigQueryStore(
-        "proj", "ds", photo_bucket="photos", flush_every=100,
-        client=client, storage_client=_FakeStorage(), ensure=True,
+        "proj",
+        "ds",
+        photo_bucket="photos",
+        flush_every=100,
+        client=client,
+        storage_client=_FakeStorage(),
+        ensure=True,
     )
-    s.record_profile("r", "hinge", "profile-2", True, photos=[b"\x89PNG\r\n\x1a\nx"],
-                     photo_count=1, capture_truncated=True)
+    s.record_profile(
+        "r",
+        "hinge",
+        "profile-2",
+        True,
+        photos=[b"\x89PNG\r\n\x1a\nx"],
+        photo_count=1,
+        capture_truncated=True,
+    )
     s.flush()
 
     profile = client.inserted["proj.ds.profiles"][0]
@@ -1144,10 +1658,17 @@ def test_record_profile_persists_capture_truncated():
 def test_record_profile_defaults_capture_truncated_to_false():
     client = _FakeBQ()
     s = BigQueryStore(
-        "proj", "ds", photo_bucket="photos", flush_every=100,
-        client=client, storage_client=_FakeStorage(), ensure=True,
+        "proj",
+        "ds",
+        photo_bucket="photos",
+        flush_every=100,
+        client=client,
+        storage_client=_FakeStorage(),
+        ensure=True,
     )
-    s.record_profile("r", "hinge", "profile-3", True, photos=[b"\x89PNG\r\n\x1a\nx"], photo_count=1)
+    s.record_profile(
+        "r", "hinge", "profile-3", True, photos=[b"\x89PNG\r\n\x1a\nx"], photo_count=1
+    )
     s.flush()
 
     profile = client.inserted["proj.ds.profiles"][0]
@@ -1157,14 +1678,18 @@ def test_record_profile_defaults_capture_truncated_to_false():
 def test_cloud_writes_use_deadlines_when_injected_clients_support_them(monkeypatch):
     """Real SDK calls must receive bounded request/retry settings without breaking old fakes."""
     retry_sentinel = object()
-    monkeypatch.setattr(bigquery_store_module, "_deadline_retry", lambda: retry_sentinel)
+    monkeypatch.setattr(
+        bigquery_store_module, "_deadline_retry", lambda: retry_sentinel
+    )
 
     class DeadlineBQ(_FakeBQ):
         def __init__(self):
             super().__init__()
             self.deadlines = []
 
-        def insert_rows_json(self, table_id, rows, row_ids=None, *, retry=None, timeout=None):
+        def insert_rows_json(
+            self, table_id, rows, row_ids=None, *, retry=None, timeout=None
+        ):
             self.deadlines.append((retry, timeout))
             return super().insert_rows_json(table_id, rows, row_ids=row_ids)
 
@@ -1173,7 +1698,9 @@ def test_cloud_writes_use_deadlines_when_injected_clients_support_them(monkeypat
             super().__init__(name)
             self.deadlines = []
 
-        def upload_from_string(self, data, content_type=None, *, retry=None, timeout=None):
+        def upload_from_string(
+            self, data, content_type=None, *, retry=None, timeout=None
+        ):
             self.deadlines.append((retry, timeout))
             return super().upload_from_string(data, content_type=content_type)
 
@@ -1185,26 +1712,45 @@ def test_cloud_writes_use_deadlines_when_injected_clients_support_them(monkeypat
         return bucket.blobs[name]
 
     bucket.blob = deadline_blob
-    store = BigQueryStore("proj", "ds", photo_bucket="photos", flush_every=100,
-                          client=client, storage_client=storage, ensure=True)
+    store = BigQueryStore(
+        "proj",
+        "ds",
+        photo_bucket="photos",
+        flush_every=100,
+        client=client,
+        storage_client=storage,
+        ensure=True,
+    )
     progress = []
     assert store.record_profile(
-        "run", "hinge", "profile", True, photos=[b"\x89PNG\r\n\x1a\nframe"],
-        progress=lambda stage, done, total: progress.append((stage, done, total)))
+        "run",
+        "hinge",
+        "profile",
+        True,
+        photos=[b"\x89PNG\r\n\x1a\nframe"],
+        progress=lambda stage, done, total: progress.append((stage, done, total)),
+    )
     store.flush()
 
     blob = next(iter(bucket.blobs.values()))
-    assert blob.deadlines == [(retry_sentinel, bigquery_store_module._GCS_UPLOAD_REQUEST_TIMEOUT_S)]
+    assert blob.deadlines == [
+        (retry_sentinel, bigquery_store_module._GCS_UPLOAD_REQUEST_TIMEOUT_S)
+    ]
     assert client.deadlines
-    assert all(item == (retry_sentinel, bigquery_store_module._BQ_INSERT_REQUEST_TIMEOUT_S)
-               for item in client.deadlines)
+    assert all(
+        item == (retry_sentinel, bigquery_store_module._BQ_INSERT_REQUEST_TIMEOUT_S)
+        for item in client.deadlines
+    )
     assert progress == [
-        ("profile_upload", 0, 1), ("profile_upload", 1, 1), ("profile_uploaded", 1, 1),
+        ("profile_upload", 0, 1),
+        ("profile_upload", 1, 1),
+        ("profile_uploaded", 1, 1),
     ]
 
 
 def test_transient_insert_retry_recovers_threshold_profile_flush(monkeypatch):
     """An SDK retry timeout must not fail an action when one fresh batch call succeeds."""
+
     class TransientInsertError(RuntimeError):
         pass
 
@@ -1218,22 +1764,34 @@ def test_transient_insert_retry_recovers_threshold_profile_flush(monkeypatch):
             self.calls.append((table_id, list(rows), list(row_ids or [])))
             if table_id.endswith(".profiles") and not self.failed_profiles_once:
                 self.failed_profiles_once = True
-                raise TransientInsertError("SDK retries exhausted after a transient 500")
+                raise TransientInsertError(
+                    "SDK retries exhausted after a transient 500"
+                )
             return super().insert_rows_json(table_id, rows, row_ids=row_ids)
 
     monkeypatch.setattr(
-        bigquery_store_module, "_retryable_bq_insert_exception",
+        bigquery_store_module,
+        "_retryable_bq_insert_exception",
         lambda exc: isinstance(exc, TransientInsertError),
     )
     monkeypatch.setattr(bigquery_store_module, "_BQ_INSERT_BACKOFF_S", 0.0)
     client = FlakyBQ()
     store = BigQueryStore(
-        "proj", "ds", photo_bucket="photos", flush_every=1,
-        client=client, storage_client=_FakeStorage(), ensure=True)
+        "proj",
+        "ds",
+        photo_bucket="photos",
+        flush_every=1,
+        client=client,
+        storage_client=_FakeStorage(),
+        ensure=True,
+    )
 
-    assert store.record_profile(
-        "run", "hinge", "profile", False,
-        photos=[b"\x89PNG\r\n\x1a\nframe"]) is True
+    assert (
+        store.record_profile(
+            "run", "hinge", "profile", False, photos=[b"\x89PNG\r\n\x1a\nframe"]
+        )
+        is True
+    )
 
     profile_calls = [call for call in client.calls if call[0].endswith(".profiles")]
     assert len(profile_calls) == 2
@@ -1247,6 +1805,7 @@ def test_transient_insert_retry_recovers_threshold_profile_flush(monkeypatch):
 
 def test_transient_insert_retry_is_bounded_and_keeps_uncertain_batch(monkeypatch):
     """Persistent transport failure remains loud without dropping or crediting rows."""
+
     class TransientInsertError(RuntimeError):
         pass
 
@@ -1262,7 +1821,8 @@ def test_transient_insert_retry_is_bounded_and_keeps_uncertain_batch(monkeypatch
             return super().insert_rows_json(table_id, rows, row_ids=row_ids)
 
     monkeypatch.setattr(
-        bigquery_store_module, "_retryable_bq_insert_exception",
+        bigquery_store_module,
+        "_retryable_bq_insert_exception",
         lambda exc: isinstance(exc, TransientInsertError),
     )
     sleeps = []
@@ -1287,53 +1847,104 @@ def test_transient_insert_retry_is_bounded_and_keeps_uncertain_batch(monkeypatch
 def test_sdk_retry_error_is_retryable_when_its_cause_is_transient():
     exceptions = pytest.importorskip("google.api_core.exceptions")
     wrapped = exceptions.RetryError(
-        "Timeout of 30.0s exceeded", exceptions.InternalServerError("transient 500"))
+        "Timeout of 30.0s exceeded", exceptions.InternalServerError("transient 500")
+    )
     wrapped_deadline = exceptions.RetryError(
-        "Timeout of 30.0s exceeded", exceptions.DeadlineExceeded("transient 504"))
+        "Timeout of 30.0s exceeded", exceptions.DeadlineExceeded("transient 504")
+    )
 
     assert bigquery_store_module._retryable_bq_insert_exception(wrapped) is True
-    assert bigquery_store_module._retryable_bq_insert_exception(wrapped_deadline) is True
-    assert bigquery_store_module._retryable_bq_insert_exception(
-        exceptions.BadGateway("transient 502")) is True
-    assert bigquery_store_module._retryable_bq_insert_exception(
-        exceptions.Forbidden("not transient")) is False
+    assert (
+        bigquery_store_module._retryable_bq_insert_exception(wrapped_deadline) is True
+    )
+    assert (
+        bigquery_store_module._retryable_bq_insert_exception(
+            exceptions.BadGateway("transient 502")
+        )
+        is True
+    )
+    assert (
+        bigquery_store_module._retryable_bq_insert_exception(
+            exceptions.Forbidden("not transient")
+        )
+        is False
+    )
 
     # The HTTP request timeout the function's docstring names. google-api-core's own
     # if_transient_error() returns False for it, so the explicit entry is the only thing
     # keeping a read timeout on the durable insert path from aborting the flush -- and
     # without these two lines that entry could be deleted with the suite still green.
     requests = pytest.importorskip("requests")
-    assert bigquery_store_module._retryable_bq_insert_exception(
-        requests.exceptions.ReadTimeout("read timed out")) is True
-    assert bigquery_store_module._retryable_bq_insert_exception(exceptions.RetryError(
-        "Timeout of 30.0s exceeded", requests.exceptions.ReadTimeout("read timed out"))) is True
+    assert (
+        bigquery_store_module._retryable_bq_insert_exception(
+            requests.exceptions.ReadTimeout("read timed out")
+        )
+        is True
+    )
+    assert (
+        bigquery_store_module._retryable_bq_insert_exception(
+            exceptions.RetryError(
+                "Timeout of 30.0s exceeded",
+                requests.exceptions.ReadTimeout("read timed out"),
+            )
+        )
+        is True
+    )
 
 
 def test_profile_archive_deadline_refuses_incomplete_image_set(monkeypatch):
     """An expired aggregate upload budget leaves no partial profile manifest behind."""
-    monkeypatch.setattr(bigquery_store_module, "_profile_upload_deadline_s", lambda _n: 0.0)
-    store = BigQueryStore("proj", "ds", photo_bucket="photos", flush_every=100,
-                          client=_FakeBQ(), storage_client=_FakeStorage(), ensure=True)
+    monkeypatch.setattr(
+        bigquery_store_module, "_profile_upload_deadline_s", lambda _n: 0.0
+    )
+    store = BigQueryStore(
+        "proj",
+        "ds",
+        photo_bucket="photos",
+        flush_every=100,
+        client=_FakeBQ(),
+        storage_client=_FakeStorage(),
+        ensure=True,
+    )
 
-    assert store.record_profile(
-        "run", "hinge", "profile", True, photos=[b"\x89PNG\r\n\x1a\nframe"]) is False
+    assert (
+        store.record_profile(
+            "run", "hinge", "profile", True, photos=[b"\x89PNG\r\n\x1a\nframe"]
+        )
+        is False
+    )
     assert store._buf["profiles"] == []
     assert store._buf["profile_photos"] == []
 
 
 def test_ensure_tables_runs_capture_truncated_migration():
     client = _FakeBQ(label_rows=_schema_rows_without(("profiles", "capture_truncated")))
-    BigQueryStore("proj", "ds", photo_bucket="photos", client=client,
-                  storage_client=_FakeStorage(), ensure=True)
+    BigQueryStore(
+        "proj",
+        "ds",
+        photo_bucket="photos",
+        client=client,
+        storage_client=_FakeStorage(),
+        ensure=True,
+    )
     ddl = "\n".join(client.queries)
-    assert "ALTER TABLE `proj.ds.profiles`\nADD COLUMN IF NOT EXISTS capture_truncated BOOL" in ddl
+    assert (
+        "ALTER TABLE `proj.ds.profiles`\nADD COLUMN IF NOT EXISTS capture_truncated BOOL"
+        in ddl
+    )
 
 
 def test_create_bucket_enforces_private_access():
     client = _FakeBQ()
     storage = _FakeStorage(bucket_exists=False)
-    BigQueryStore("proj", "ds", photo_bucket="newbucket", client=client,
-                  storage_client=storage, ensure=True)
+    BigQueryStore(
+        "proj",
+        "ds",
+        photo_bucket="newbucket",
+        client=client,
+        storage_client=storage,
+        ensure=True,
+    )
 
     bucket = storage.buckets["newbucket"]
     assert ("newbucket", "US") in storage.created
@@ -1346,12 +1957,20 @@ def test_existing_bucket_gets_hardened():
     # An ALREADY-EXISTING bucket (created before the hardening, e.g. fine-grained ACLs)
     # must still be locked down on startup — not just freshly created ones.
     client = _FakeBQ()
-    storage = _FakeStorage(bucket_exists=True)        # bucket already exists, unhardened defaults
-    BigQueryStore("proj", "ds", photo_bucket="existing", client=client,
-                  storage_client=storage, ensure=True)
+    storage = _FakeStorage(
+        bucket_exists=True
+    )  # bucket already exists, unhardened defaults
+    BigQueryStore(
+        "proj",
+        "ds",
+        photo_bucket="existing",
+        client=client,
+        storage_client=storage,
+        ensure=True,
+    )
 
     bucket = storage.buckets["existing"]
-    assert ("existing", "US") not in storage.created   # not re-created
+    assert ("existing", "US") not in storage.created  # not re-created
     assert bucket.iam_configuration.uniform_bucket_level_access_enabled is True
     assert bucket.iam_configuration.public_access_prevention == "enforced"
     assert bucket.patched is True
@@ -1361,11 +1980,19 @@ def test_already_hardened_bucket_is_not_repatched():
     # Idempotent: a bucket already uniform + enforced shouldn't be patched again every startup.
     client = _FakeBQ()
     storage = _FakeStorage(bucket_exists=True)
-    storage.bucket("locked").iam_configuration.uniform_bucket_level_access_enabled = True
+    storage.bucket(
+        "locked"
+    ).iam_configuration.uniform_bucket_level_access_enabled = True
     storage.bucket("locked").iam_configuration.public_access_prevention = "enforced"
-    BigQueryStore("proj", "ds", photo_bucket="locked", client=client,
-                  storage_client=storage, ensure=True)
-    assert storage.buckets["locked"].patched is False   # no needless write
+    BigQueryStore(
+        "proj",
+        "ds",
+        photo_bucket="locked",
+        client=client,
+        storage_client=storage,
+        ensure=True,
+    )
+    assert storage.buckets["locked"].patched is False  # no needless write
 
 
 @pytest.mark.parametrize("operation", ["reload", "patch"])
@@ -1379,8 +2006,14 @@ def test_existing_bucket_hardening_failure_aborts_before_store_is_usable(operati
 
     setattr(bucket, operation, refused)
     with pytest.raises(RuntimeError, match="Refusing BigQuery photo storage") as caught:
-        BigQueryStore("proj", "ds", photo_bucket="private-required", client=client,
-                      storage_client=storage, ensure=True)
+        BigQueryStore(
+            "proj",
+            "ds",
+            photo_bucket="private-required",
+            client=client,
+            storage_client=storage,
+            ensure=True,
+        )
 
     assert isinstance(caught.value.__cause__, PermissionError)
     assert bucket.blobs == {}
@@ -1402,8 +2035,14 @@ def test_bucket_hardening_reloads_and_refuses_if_settings_did_not_persist():
 
     bucket.reload = reload_without_persisting_patch
     with pytest.raises(RuntimeError, match="Refusing BigQuery photo storage") as caught:
-        BigQueryStore("proj", "ds", photo_bucket="nonpersistent-policy", client=client,
-                      storage_client=storage, ensure=True)
+        BigQueryStore(
+            "proj",
+            "ds",
+            photo_bucket="nonpersistent-policy",
+            client=client,
+            storage_client=storage,
+            ensure=True,
+        )
 
     assert reloads == 2
     assert "did not retain" in str(caught.value.__cause__)
@@ -1418,7 +2057,9 @@ def test_load_labels_includes_buffered_labels_after_initial_load():
     s.add_label("r", "bumble", True, [0.1, 0.2])
 
     assert s.load_labels() == [(False, [0.0]), (True, [0.1, 0.2])]
-    assert len([q for q in client.queries if q.strip().upper().startswith("SELECT")]) == 1
+    assert (
+        len([q for q in client.queries if q.strip().upper().startswith("SELECT")]) == 1
+    )
 
 
 def test_load_labels_includes_unflushed_labels_before_initial_load():
@@ -1432,7 +2073,9 @@ def test_load_labels_includes_unflushed_labels_before_initial_load():
 def test_flush_on_close():
     client = _FakeBQ()
     s = _store(client, flush_every=100)
-    s.record_spend("r", "gemini-test-model", Usage(input_tokens=10, output_tokens=5), 0.0001)
+    s.record_spend(
+        "r", "gemini-test-model", Usage(input_tokens=10, output_tokens=5), 0.0001
+    )
     assert "proj.ds.spend" not in client.inserted
     s.close()
     assert len(client.inserted["proj.ds.spend"]) == 1
@@ -1507,8 +2150,14 @@ def test_close_waits_for_started_profile_archive_before_its_final_flush():
     client = _FakeBQ()
     storage = _FakeStorage()
     store = BigQueryStore(
-        "proj", "ds", photo_bucket="photos", flush_every=100,
-        client=client, storage_client=storage, ensure=True)
+        "proj",
+        "ds",
+        photo_bucket="photos",
+        flush_every=100,
+        client=client,
+        storage_client=storage,
+        ensure=True,
+    )
     uploading, release_upload = threading.Event(), threading.Event()
     real_upload = store._upload_blob
 
@@ -1521,8 +2170,11 @@ def test_close_waits_for_started_profile_archive_before_its_final_flush():
         return real_upload(blob, data, content_type, deadline=deadline)
 
     store._upload_blob = paused_upload
-    writer = threading.Thread(target=lambda: store.record_profile(
-        "run", "hinge", "profile", True, photos=[b"\x89PNG\r\n\x1a\nframe"]))
+    writer = threading.Thread(
+        target=lambda: store.record_profile(
+            "run", "hinge", "profile", True, photos=[b"\x89PNG\r\n\x1a\nframe"]
+        )
+    )
     writer.start()
     assert uploading.wait(timeout=2)
     closer = threading.Thread(target=store.close)
@@ -1549,8 +2201,14 @@ def test_archive_writes_in_flight_reports_the_same_counter_close_blocks_on():
     client = _FakeBQ()
     storage = _FakeStorage()
     store = BigQueryStore(
-        "proj", "ds", photo_bucket="photos", flush_every=100,
-        client=client, storage_client=storage, ensure=True)
+        "proj",
+        "ds",
+        photo_bucket="photos",
+        flush_every=100,
+        client=client,
+        storage_client=storage,
+        ensure=True,
+    )
     assert store.archive_writes_in_flight() is False
 
     uploading, release_upload = threading.Event(), threading.Event()
@@ -1562,14 +2220,19 @@ def test_archive_writes_in_flight_reports_the_same_counter_close_blocks_on():
         return real_upload(blob, data, content_type, deadline=deadline)
 
     store._upload_blob = paused_upload
-    writer = threading.Thread(target=lambda: store.record_profile(
-        "run", "hinge", "profile", True, photos=[b"\x89PNG\r\n\x1a\nframe"]))
+    writer = threading.Thread(
+        target=lambda: store.record_profile(
+            "run", "hinge", "profile", True, photos=[b"\x89PNG\r\n\x1a\nframe"]
+        )
+    )
     writer.start()
     assert uploading.wait(timeout=2)
 
     assert store.archive_writes_in_flight() is True
-    assert store._active_async_writes == 1          # exactly what close()'s wait loop tests
-    assert int(store.archive_writes_in_flight()) > 0  # the supervisor's probe expression
+    assert store._active_async_writes == 1  # exactly what close()'s wait loop tests
+    assert (
+        int(store.archive_writes_in_flight()) > 0
+    )  # the supervisor's probe expression
 
     release_upload.set()
     writer.join(timeout=2)
@@ -1589,8 +2252,14 @@ def test_follow_on_rows_of_an_awaited_archive_are_not_refused_as_late_writes():
     client = _FakeBQ()
     storage = _FakeStorage()
     store = BigQueryStore(
-        "proj", "ds", photo_bucket="photos", flush_every=100,
-        client=client, storage_client=storage, ensure=True)
+        "proj",
+        "ds",
+        photo_bucket="photos",
+        flush_every=100,
+        client=client,
+        storage_client=storage,
+        ensure=True,
+    )
     uploading, release_upload = threading.Event(), threading.Event()
     real_upload = store._upload_blob
 
@@ -1600,8 +2269,11 @@ def test_follow_on_rows_of_an_awaited_archive_are_not_refused_as_late_writes():
         return real_upload(blob, data, content_type, deadline=deadline)
 
     store._upload_blob = paused_upload
-    writer = threading.Thread(target=lambda: store.record_profile(
-        "run", "hinge", "profile", True, photos=[b"\x89PNG\r\n\x1a\nframe"]))
+    writer = threading.Thread(
+        target=lambda: store.record_profile(
+            "run", "hinge", "profile", True, photos=[b"\x89PNG\r\n\x1a\nframe"]
+        )
+    )
     writer.start()
     assert uploading.wait(timeout=2)
     closer = threading.Thread(target=store.close)
@@ -1609,7 +2281,9 @@ def test_follow_on_rows_of_an_awaited_archive_are_not_refused_as_late_writes():
     _wait_for_store_closing(store)
 
     store.record_decision("run", "hinge", "like", 0.9, profile_id="profile")
-    store.record_opener("run", "hinge", "gemini", "an opener", True, profile_id="profile")
+    store.record_opener(
+        "run", "hinge", "gemini", "an opener", True, profile_id="profile"
+    )
     store.add_label("run", "hinge", True, [0.1], profile_id="profile")
 
     release_upload.set()
@@ -1627,8 +2301,14 @@ def test_close_waits_for_started_opener_evidence_before_its_final_flush():
     client = _FakeBQ()
     storage = _FakeStorage()
     store = BigQueryStore(
-        "proj", "ds", photo_bucket="photos", flush_every=100,
-        client=client, storage_client=storage, ensure=True)
+        "proj",
+        "ds",
+        photo_bucket="photos",
+        flush_every=100,
+        client=client,
+        storage_client=storage,
+        ensure=True,
+    )
     uploading, release_upload = threading.Event(), threading.Event()
     real_upload = store._upload_blob
 
@@ -1638,9 +2318,15 @@ def test_close_waits_for_started_opener_evidence_before_its_final_flush():
         return real_upload(blob, data, content_type, deadline=deadline)
 
     store._upload_blob = paused_upload
-    writer = threading.Thread(target=lambda: store.record_opener_send_evidence(
-        "run", "hinge", "A grounded opener", profile_id="profile",
-        evidence={"frame": b"\x89PNG\r\n\x1a\nevidence"}))
+    writer = threading.Thread(
+        target=lambda: store.record_opener_send_evidence(
+            "run",
+            "hinge",
+            "A grounded opener",
+            profile_id="profile",
+            evidence={"frame": b"\x89PNG\r\n\x1a\nevidence"},
+        )
+    )
     writer.start()
     assert uploading.wait(timeout=2)
     closer = threading.Thread(target=store.close)
@@ -1695,7 +2381,7 @@ def test_saved_summary_tallies_confirmed_inserts():
     s.flush()
     summary = s.saved_summary()
     assert "labels=2" in summary and "decisions=1" in summary
-    assert "pending" not in summary            # buffers drained -> everything landed
+    assert "pending" not in summary  # buffers drained -> everything landed
 
 
 def test_insert_errors_raise():
@@ -1717,6 +2403,7 @@ def test_insert_errors_raise():
 
 def test_flush_partial_failure_attempts_all_tables():
     """When one table fails during flush(), the other tables are still attempted."""
+
     class _PartialFailBQ(_FakeBQ):
         def __init__(self, fail_table_suffix):
             super().__init__()
@@ -1730,27 +2417,37 @@ def test_flush_partial_failure_attempts_all_tables():
 
     client = _PartialFailBQ(fail_table_suffix="labels")
     s = _store(client, flush_every=100)
-    s.add_label("r", "bumble", True, [0.1])          # goes to 'labels' (will fail)
-    s.record_decision("r", "bumble", "like", 1.0)    # goes to 'decisions' (should succeed)
+    s.add_label("r", "bumble", True, [0.1])  # goes to 'labels' (will fail)
+    s.record_decision(
+        "r", "bumble", "like", 1.0
+    )  # goes to 'decisions' (should succeed)
 
     try:
         s.flush()
     except RuntimeError as e:
         err_msg = str(e)
-        assert "labels" in err_msg                    # the failing table is named
+        assert "labels" in err_msg  # the failing table is named
     else:
         raise AssertionError("expected RuntimeError from partial flush failure")
 
     # Despite 'labels' failing, 'decisions' must still have been attempted and inserted.
     decisions_keys = [k for k in client.inserted if k.endswith("decisions")]
-    assert decisions_keys, "decisions table was never attempted after labels table failed"
+    assert decisions_keys, (
+        "decisions table was never attempted after labels table failed"
+    )
     assert len(client.inserted[decisions_keys[0]]) == 1
 
 
 def test_requires_project_id():
     try:
-        BigQueryStore("", "ds", photo_bucket="photos", client=_FakeBQ(),
-                      storage_client=_FakeStorage(), ensure=False)
+        BigQueryStore(
+            "",
+            "ds",
+            photo_bucket="photos",
+            client=_FakeBQ(),
+            storage_client=_FakeStorage(),
+            ensure=False,
+        )
     except ValueError:
         pass
     else:
@@ -1759,25 +2456,30 @@ def test_requires_project_id():
 
 def test_requires_photo_bucket():
     try:
-        BigQueryStore("proj", "ds", client=_FakeBQ(), storage_client=_FakeStorage(), ensure=False)
+        BigQueryStore(
+            "proj", "ds", client=_FakeBQ(), storage_client=_FakeStorage(), ensure=False
+        )
     except ValueError:
         pass
     else:
         raise AssertionError("expected ValueError without photo_bucket")
 
 
-@pytest.mark.parametrize(("field", "value"), [
-    ("project_id", None),
-    ("project_id", True),
-    ("project_id", "project.name"),
-    ("dataset", "dataset name"),
-    ("dataset", "dataset.name"),
-    ("location", "US' OR 1=1"),
-    ("location", 123),
-    ("photo_bucket", None),
-    ("photo_bucket", "   "),
-    ("photo_bucket", " bucket "),
-])
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("project_id", None),
+        ("project_id", True),
+        ("project_id", "project.name"),
+        ("dataset", "dataset name"),
+        ("dataset", "dataset.name"),
+        ("location", "US' OR 1=1"),
+        ("location", 123),
+        ("photo_bucket", None),
+        ("photo_bucket", "   "),
+        ("photo_bucket", " bucket "),
+    ],
+)
 def test_constructor_strictly_validates_cloud_identifiers_and_bucket(field, value):
     kwargs = {
         "project_id": "valid-project",
@@ -1789,15 +2491,21 @@ def test_constructor_strictly_validates_cloud_identifiers_and_bucket(field, valu
 
     with pytest.raises(ValueError, match=field):
         BigQueryStore(
-            **kwargs, client=_FakeBQ(), storage_client=_FakeStorage(), ensure=False)
+            **kwargs, client=_FakeBQ(), storage_client=_FakeStorage(), ensure=False
+        )
 
 
 @pytest.mark.parametrize("value", [True, False, 0, -1, 1.0, "10"])
 def test_constructor_requires_exact_positive_integer_flush_every(value):
     with pytest.raises(ValueError, match="flush_every"):
         BigQueryStore(
-            "proj", "ds", photo_bucket="photos", flush_every=value,
-            client=_FakeBQ(), storage_client=_FakeStorage(), ensure=False,
+            "proj",
+            "ds",
+            photo_bucket="photos",
+            flush_every=value,
+            client=_FakeBQ(),
+            storage_client=_FakeStorage(),
+            ensure=False,
         )
 
 
@@ -1805,13 +2513,18 @@ def test_constructor_requires_exact_positive_integer_flush_every(value):
 def test_constructor_requires_exact_boolean_ensure(value):
     with pytest.raises(ValueError, match="ensure"):
         BigQueryStore(
-            "proj", "ds", photo_bucket="photos", client=_FakeBQ(),
-            storage_client=_FakeStorage(), ensure=value,
+            "proj",
+            "ds",
+            photo_bucket="photos",
+            client=_FakeBQ(),
+            storage_client=_FakeStorage(),
+            ensure=value,
         )
 
 
 def test_constructor_closes_owned_bigquery_client_if_storage_client_creation_fails(
-        monkeypatch):
+    monkeypatch,
+):
     import sys
 
     class OwnedBigQueryClient:
@@ -1826,10 +2539,14 @@ def test_constructor_closes_owned_bigquery_client_if_storage_client_creation_fai
         def __init__(self, **_kwargs):
             raise RuntimeError("storage credentials failed")
 
-    monkeypatch.setitem(sys.modules, "google.cloud", SimpleNamespace(
-        bigquery=SimpleNamespace(Client=lambda **_kwargs: owned),
-        storage=SimpleNamespace(Client=BrokenStorageClient),
-    ))
+    monkeypatch.setitem(
+        sys.modules,
+        "google.cloud",
+        SimpleNamespace(
+            bigquery=SimpleNamespace(Client=lambda **_kwargs: owned),
+            storage=SimpleNamespace(Client=BrokenStorageClient),
+        ),
+    )
 
     with pytest.raises(RuntimeError, match="storage credentials failed"):
         BigQueryStore("proj", "ds", photo_bucket="photos", ensure=False)
@@ -1851,7 +2568,11 @@ def test_make_store_does_not_coerce_invalid_flush_every_before_constructor(monke
     cfg = SimpleNamespace(
         storage=SimpleNamespace(
             backend="bigquery",
-            bigquery={"project_id": "proj", "photo_bucket": "photos", "flush_every": "9"},
+            bigquery={
+                "project_id": "proj",
+                "photo_bucket": "photos",
+                "flush_every": "9",
+            },
         ),
     )
 
@@ -1875,7 +2596,7 @@ def test_count_today_parameterizes_local_midnight_matching_sqlite():
     params = {param.name: param for param in client.job_configs[-1].query_parameters}
     param = params["day_start"]
     expected = datetime.fromtimestamp(local_midnight_epoch(), tz=timezone.utc)
-    assert abs((param.value - expected).total_seconds()) < 2   # same boundary as SQLite
+    assert abs((param.value - expected).total_seconds()) < 2  # same boundary as SQLite
     assert params["app"].value == "bumble"
 
 
@@ -1938,12 +2659,15 @@ class _PoisonRowBQ(_FakeBQ):
 
     def insert_rows_json(self, table_id, rows, row_ids=None):
         self.calls.append((table_id, list(rows), list(row_ids or [])))
-        bad_idx = next((i for i, r in enumerate(rows) if r.get("embedding") == self.bad_embedding), None)
+        bad_idx = next(
+            (i for i, r in enumerate(rows) if r.get("embedding") == self.bad_embedding),
+            None,
+        )
         if bad_idx is None:
             self.inserted.setdefault(table_id, []).extend(rows)
             self.row_ids.setdefault(table_id, []).extend(row_ids or [])
             return []
-        return [{"index": bad_idx, "errors": ["boom"]}]        # whole request rejected
+        return [{"index": bad_idx, "errors": ["boom"]}]  # whole request rejected
 
 
 def test_flush_partial_failure_keeps_whole_batch_buffered_not_just_the_named_row():
@@ -1954,9 +2678,11 @@ def test_flush_partial_failure_keeps_whole_batch_buffered_not_just_the_named_row
     actually persisted."""
     client = _PoisonRowBQ(bad_embedding=[0.1])
     s = _store(client, flush_every=100)
-    s.add_label("r", "bumble", True, [0.0])     # good
-    s.add_label("r", "bumble", False, [0.1])    # poison -- BigQuery keeps rejecting this one
-    s.add_label("r", "bumble", True, [0.2])     # good
+    s.add_label("r", "bumble", True, [0.0])  # good
+    s.add_label(
+        "r", "bumble", False, [0.1]
+    )  # poison -- BigQuery keeps rejecting this one
+    s.add_label("r", "bumble", True, [0.2])  # good
 
     try:
         s.flush()
@@ -1985,11 +2711,11 @@ def test_flush_partial_failure_keeps_whole_batch_buffered_not_just_the_named_row
     assert s._buf["labels"] == []
 
     _, first_rows, first_ids = client.calls[0]
-    assert len(first_ids) == len(set(first_ids))            # distinct ids within a batch
+    assert len(first_ids) == len(set(first_ids))  # distinct ids within a batch
     _, second_rows, second_ids = client.calls[1]
     good_id_first_attempt = first_ids[[r["embedding"] for r in first_rows].index([0.0])]
     good_id_retry = second_ids[[r["embedding"] for r in second_rows].index([0.0])]
-    assert good_id_first_attempt == good_id_retry            # same content -> same id on retry
+    assert good_id_first_attempt == good_id_retry  # same content -> same id on retry
 
 
 def test_flush_drops_permanently_invalid_row_after_bound_and_keeps_good_rows():
@@ -2002,9 +2728,9 @@ def test_flush_drops_permanently_invalid_row_after_bound_and_keeps_good_rows():
 
     client = _PoisonRowBQ(bad_embedding=[0.1])
     s = _store(client, flush_every=100)
-    s.add_label("r", "bumble", True, [0.0])     # good
-    s.add_label("r", "bumble", False, [0.1])    # permanently poison
-    s.add_label("r", "bumble", True, [0.2])     # good
+    s.add_label("r", "bumble", True, [0.0])  # good
+    s.add_label("r", "bumble", False, [0.1])  # permanently poison
+    s.add_label("r", "bumble", True, [0.2])  # good
 
     for _ in range(_MAX_INSERT_ATTEMPTS):
         try:
@@ -2042,16 +2768,16 @@ def test_flush_partial_failure_attempts_survive_interleaved_new_rows():
 
     client = _PoisonRowBQ(bad_embedding=[0.1])
     s = _store(client, flush_every=100)
-    s.add_label("r", "bumble", False, [0.1])    # poison, starts at index 0
+    s.add_label("r", "bumble", False, [0.1])  # poison, starts at index 0
 
     for i in range(_MAX_INSERT_ATTEMPTS - 1):
         try:
             s.flush()
         except RuntimeError:
             pass
-        s.add_label("r", "bumble", True, [float(i)])   # shifts the poison row's index
+        s.add_label("r", "bumble", True, [float(i)])  # shifts the poison row's index
 
-    assert s._dropped["labels"] == 0             # not yet at the bound
+    assert s._dropped["labels"] == 0  # not yet at the bound
 
     try:
         s.flush()
@@ -2104,22 +2830,32 @@ def test_profile_upload_deadline_cannot_bind_before_the_requests_it_wraps(monkey
     clock = _VirtualClock()
     monkeypatch.setattr(bigquery_store_module, "time", clock)
     started = clock.now
-    assert BigQueryStore._upload_blob(
-        None, _AllowanceBurningBlob(clock), b"\x89PNG\r\n\x1a\n", "image/png") is False
+    assert (
+        BigQueryStore._upload_blob(
+            None, _AllowanceBurningBlob(clock), b"\x89PNG\r\n\x1a\n", "image/png"
+        )
+        is False
+    )
     worst_case_per_photo = clock.now - started
     # Every attempt ran to its full timeout AND every backoff sleep was paid.
-    assert worst_case_per_photo > (bigquery_store_module._GCS_UPLOAD_REQUEST_TIMEOUT_S
-                                   * bigquery_store_module._UPLOAD_ATTEMPTS)
+    assert worst_case_per_photo > (
+        bigquery_store_module._GCS_UPLOAD_REQUEST_TIMEOUT_S
+        * bigquery_store_module._UPLOAD_ATTEMPTS
+    )
 
     # 3 is the first count where the floor no longer covers the worst case, so start there.
     for photos in (3, 12, 14, 30):
-        assert (bigquery_store_module._profile_upload_deadline_s(photos)
-                >= photos * worst_case_per_photo)
+        assert (
+            bigquery_store_module._profile_upload_deadline_s(photos)
+            >= photos * worst_case_per_photo
+        )
     # ...and it never drops below the historic floor for a short capture, which is the only
     # range where the floor is genuinely the larger of the two.
     for photos in (0, 1, 2):
-        assert (bigquery_store_module._profile_upload_deadline_s(photos)
-                == bigquery_store_module._PROFILE_UPLOAD_DEADLINE_FLOOR_S)
+        assert (
+            bigquery_store_module._profile_upload_deadline_s(photos)
+            == bigquery_store_module._PROFILE_UPLOAD_DEADLINE_FLOOR_S
+        )
 
 
 def test_profile_photo_archive_passes_its_deadline_to_the_real_upload():
@@ -2129,8 +2865,15 @@ def test_profile_photo_archive_passes_its_deadline_to_the_real_upload():
     `deadline` degrade quietly; the per-attempt expiry check is the guard that keeps a partial
     photo set from following an already-landed Hinge action, so it must fail loudly instead.
     """
-    store = BigQueryStore("proj", "ds", photo_bucket="photos", flush_every=100,
-                          client=_FakeBQ(), storage_client=_FakeStorage(), ensure=True)
+    store = BigQueryStore(
+        "proj",
+        "ds",
+        photo_bucket="photos",
+        flush_every=100,
+        client=_FakeBQ(),
+        storage_client=_FakeStorage(),
+        ensure=True,
+    )
     seen = []
     real_upload = store._upload_blob
 
@@ -2139,15 +2882,20 @@ def test_profile_photo_archive_passes_its_deadline_to_the_real_upload():
         return real_upload(blob, data, content_type, deadline=deadline)
 
     store._upload_blob = recording_upload
-    assert store.record_profile("run", "hinge", "profile", True,
-                                photos=[b"\x89PNG\r\n\x1a\nframe"]) is True
+    assert (
+        store.record_profile(
+            "run", "hinge", "profile", True, photos=[b"\x89PNG\r\n\x1a\nframe"]
+        )
+        is True
+    )
     assert len(seen) == 1 and isinstance(seen[0], float)
 
     # A double that cannot accept the deadline now raises instead of running unbounded.
     store._upload_blob = lambda blob, data, content_type: True
     with pytest.raises(TypeError):
-        store.record_profile("run", "hinge", "profile2", True,
-                             photos=[b"\x89PNG\r\n\x1a\nframe"])
+        store.record_profile(
+            "run", "hinge", "profile2", True, photos=[b"\x89PNG\r\n\x1a\nframe"]
+        )
 
 
 class _FakeDmlJob:
@@ -2184,8 +2932,11 @@ class _FakeLabelsBQ:
                 return _FakeDmlJob()
             # created_at DESC LIMIT 1, ties broken toward the most recently seeded row so a
             # test can name exactly which row the SELECT handed to the DELETE.
-            newest = sorted(enumerate(self.labels),
-                            key=lambda pair: (pair[1]["created_at"], pair[0]), reverse=True)
+            newest = sorted(
+                enumerate(self.labels),
+                key=lambda pair: (pair[1]["created_at"], pair[0]),
+                reverse=True,
+            )
             return _FakeDmlJob([row for _, row in newest[:1]])
         if upper.startswith("DELETE") and "PROJ.DS.LABELS`" in upper:
             kept, removed = [], 0
@@ -2203,7 +2954,10 @@ class _FakeLabelsBQ:
             return False
         if "WHERE TRUE" in text:
             return True
-        if "(profile_id=@profile_id OR (profile_id IS NULL AND @profile_id IS NULL))" in text:
+        if (
+            "(profile_id=@profile_id OR (profile_id IS NULL AND @profile_id IS NULL))"
+            in text
+        ):
             stored, bound = row.get("profile_id"), params.get("profile_id")
             if (stored is None) != (bound is None) or stored != bound:
                 return False
@@ -2222,8 +2976,15 @@ class _FakeLabelsBQ:
 
 
 def _labels_store(client):
-    return BigQueryStore("proj", "ds", photo_bucket="photos", flush_every=100,
-                         client=client, storage_client=_FakeStorage(), ensure=False)
+    return BigQueryStore(
+        "proj",
+        "ds",
+        photo_bucket="photos",
+        flush_every=100,
+        client=client,
+        storage_client=_FakeStorage(),
+        ensure=False,
+    )
 
 
 def test_remove_latest_training_label_deletes_a_legacy_null_profile_id_row(monkeypatch):
@@ -2236,16 +2997,31 @@ def test_remove_latest_training_label_deletes_a_legacy_null_profile_id_row(monke
     """
     _stub_bigquery_module(monkeypatch)
     created = datetime(2026, 9, 1, 12, 0, tzinfo=timezone.utc)
-    client = _FakeLabelsBQ([{"run_id": "r", "app": "hinge", "source": "manual",
-                             "profile_id": None, "profile_name": "Ada", "created_at": created}])
+    client = _FakeLabelsBQ(
+        [
+            {
+                "run_id": "r",
+                "app": "hinge",
+                "source": "manual",
+                "profile_id": None,
+                "profile_name": "Ada",
+                "created_at": created,
+            }
+        ]
+    )
     store = _labels_store(client)
 
-    assert store.remove_latest_training_label() == {"profile_name": "Ada", "profile_id": ""}
+    assert store.remove_latest_training_label() == {
+        "profile_name": "Ada",
+        "profile_id": "",
+    }
     assert client.labels == []
     assert store._labels_cache is None
 
 
-def test_remove_latest_training_label_deletes_only_the_row_the_select_chose(monkeypatch):
+def test_remove_latest_training_label_deletes_only_the_row_the_select_chose(
+    monkeypatch,
+):
     """The DELETE must carry the same identity the visibility predicate selected on.
 
     Two labels can share a profile_id and a created_at across runs/sources; deleting on that
@@ -2253,24 +3029,51 @@ def test_remove_latest_training_label_deletes_only_the_row_the_select_chose(monk
     """
     _stub_bigquery_module(monkeypatch)
     created = datetime(2026, 9, 1, 12, 0, tzinfo=timezone.utc)
-    other = {"run_id": "older-run", "app": "hinge", "source": "auto",
-             "profile_id": "p", "profile_name": "Bea", "created_at": created}
-    newest = {"run_id": "run", "app": "hinge", "source": "manual",
-              "profile_id": "p", "profile_name": "Ada", "created_at": created}
+    other = {
+        "run_id": "older-run",
+        "app": "hinge",
+        "source": "auto",
+        "profile_id": "p",
+        "profile_name": "Bea",
+        "created_at": created,
+    }
+    newest = {
+        "run_id": "run",
+        "app": "hinge",
+        "source": "manual",
+        "profile_id": "p",
+        "profile_name": "Ada",
+        "created_at": created,
+    }
     client = _FakeLabelsBQ([other, newest])
     store = _labels_store(client)
 
-    assert store.remove_latest_training_label() == {"profile_name": "Ada", "profile_id": "p"}
+    assert store.remove_latest_training_label() == {
+        "profile_name": "Ada",
+        "profile_id": "p",
+    }
     assert client.labels == [other]
 
 
-def test_remove_latest_training_label_refuses_to_report_a_removal_that_deleted_nothing(monkeypatch):
+def test_remove_latest_training_label_refuses_to_report_a_removal_that_deleted_nothing(
+    monkeypatch,
+):
     """Any zero-row DELETE must surface, whatever caused it -- never a success dict."""
     _stub_bigquery_module(monkeypatch)
     created = datetime(2026, 9, 1, 12, 0, tzinfo=timezone.utc)
-    client = _FakeLabelsBQ([{"run_id": "r", "app": "hinge", "source": "manual",
-                             "profile_id": "p", "profile_name": "Ada", "created_at": created}],
-                           delete_matches_nothing=True)
+    client = _FakeLabelsBQ(
+        [
+            {
+                "run_id": "r",
+                "app": "hinge",
+                "source": "manual",
+                "profile_id": "p",
+                "profile_name": "Ada",
+                "created_at": created,
+            }
+        ],
+        delete_matches_nothing=True,
+    )
     store = _labels_store(client)
 
     with pytest.raises(RuntimeError, match="refusing to report a removal"):
@@ -2278,7 +3081,9 @@ def test_remove_latest_training_label_refuses_to_report_a_removal_that_deleted_n
     assert client.labels != []
 
 
-def test_remove_latest_training_label_returns_none_when_no_label_is_visible(monkeypatch):
+def test_remove_latest_training_label_returns_none_when_no_label_is_visible(
+    monkeypatch,
+):
     # The method imports the SDK for its parameter binding before it can learn there is
     # nothing to delete, so even the empty case needs the stub on an SDK-less runner (CI).
     _stub_bigquery_module(monkeypatch)
@@ -2287,8 +3092,6 @@ def test_remove_latest_training_label_returns_none_when_no_label_is_visible(monk
 
     assert store.remove_latest_training_label() is None
     assert not any(query.upper().startswith("DELETE") for query in client.queries)
-
-
 
 
 def _stub_bigquery_module(monkeypatch):
@@ -2303,8 +3106,15 @@ def _stub_bigquery_module(monkeypatch):
         def __init__(self, query_parameters):
             self.query_parameters = query_parameters
 
-    monkeypatch.setitem(sys.modules, "google.cloud", SimpleNamespace(
-        bigquery=SimpleNamespace(ScalarQueryParameter=_Param, QueryJobConfig=_JobConfig)))
+    monkeypatch.setitem(
+        sys.modules,
+        "google.cloud",
+        SimpleNamespace(
+            bigquery=SimpleNamespace(
+                ScalarQueryParameter=_Param, QueryJobConfig=_JobConfig
+            )
+        ),
+    )
 
 
 def _scalar_subqueries(text):
@@ -2327,7 +3137,7 @@ def _scalar_subqueries(text):
             position += 1
         tokens = text[position:].split()
         assert tokens[1] == "AS", f"unaliased scalar subquery in {text!r}"
-        parts.append((tokens[2].rstrip(","), text[start + 1:position]))
+        parts.append((tokens[2].rstrip(","), text[start + 1 : position]))
         index = position + 1
     return parts
 
@@ -2357,7 +3167,11 @@ class _LabelVisibilityBQ:
         DROPPING one of them fail these tests: the created_at key is the only thing stopping an
         identity-less tombstone from hiding every identity-less label in its run.
         """
-        keys = [key for key in ("run_id", "app", "source") if f"r.{key}={alias}.{key}" in sql]
+        keys = [
+            key
+            for key in ("run_id", "app", "source")
+            if f"r.{key}={alias}.{key}" in sql
+        ]
         stamped = f"r.{stamp_column}={alias}.created_at" in sql
         null_safe = f"IFNULL(r.profile_id,'')=IFNULL({alias}.profile_id,'')" in sql
         plain = f"r.profile_id={alias}.profile_id" in sql
@@ -2366,11 +3180,16 @@ class _LabelVisibilityBQ:
                 continue
             if stamped and tombstone[stamp_column] != row["created_at"]:
                 continue
-            if null_safe and (tombstone.get("profile_id") or "") != (row.get("profile_id") or ""):
+            if null_safe and (tombstone.get("profile_id") or "") != (
+                row.get("profile_id") or ""
+            ):
                 continue
             # SQL three-valued logic: a NULL operand makes `=` NULL, never TRUE.
-            if plain and (tombstone.get("profile_id") is None or row.get("profile_id") is None
-                          or tombstone["profile_id"] != row["profile_id"]):
+            if plain and (
+                tombstone.get("profile_id") is None
+                or row.get("profile_id") is None
+                or tombstone["profile_id"] != row["profile_id"]
+            ):
                 continue
             return True
         return False
@@ -2379,21 +3198,32 @@ class _LabelVisibilityBQ:
         for column in ("run_id", "app", "source"):
             if f"{column}=@{column}" in sql and row.get(column) != params.get(column):
                 return False
-        for column, value in (("source", "manual"), ("decision", "like"), ("decision", "dislike")):
+        for column, value in (
+            ("source", "manual"),
+            ("decision", "like"),
+            ("decision", "dislike"),
+        ):
             if f"{column}='{value}'" in sql and row.get(column) != value:
                 return False
         for literal, value in (("liked=TRUE", True), ("liked=FALSE", False)):
             if literal in sql and bool(row.get("liked")) is not value:
                 return False
-        alias, stamp = (("l", "label_created_at") if table == "labels"
-                        else ("d", "decision_created_at"))
-        return not ("NOT EXISTS" in sql
-                    and self._tombstoned(sql, row, alias=alias, stamp_column=stamp))
+        alias, stamp = (
+            ("l", "label_created_at")
+            if table == "labels"
+            else ("d", "decision_created_at")
+        )
+        return not (
+            "NOT EXISTS" in sql
+            and self._tombstoned(sql, row, alias=alias, stamp_column=stamp)
+        )
 
     def _count(self, sql, params):
         for table, rows in (("labels", self.labels), ("decisions", self.decisions)):
             if f"`proj.ds.{table}`" in sql:
-                return sum(1 for row in rows if self._selected(sql, params, row, table=table))
+                return sum(
+                    1 for row in rows if self._selected(sql, params, row, table=table)
+                )
         return 0  # openers / profile archives: deliberately empty in these fixtures
 
     def query(self, sql, job_config=None):
@@ -2402,12 +3232,22 @@ class _LabelVisibilityBQ:
         self.job_configs.append(job_config)
         params = {p.name: p.value for p in getattr(job_config, "query_parameters", [])}
         if text.startswith("SELECT l.liked, l.embedding"):
-            return _FakeJob([{"liked": bool(row["liked"]), "embedding": list(row["embedding"])}
-                             for row in self.labels
-                             if self._selected(text, params, row, table="labels")])
+            return _FakeJob(
+                [
+                    {"liked": bool(row["liked"]), "embedding": list(row["embedding"])}
+                    for row in self.labels
+                    if self._selected(text, params, row, table="labels")
+                ]
+            )
         if text.startswith("SELECT ("):
-            return _FakeJob([{alias: self._count(chunk, params)
-                              for alias, chunk in _scalar_subqueries(text)}])
+            return _FakeJob(
+                [
+                    {
+                        alias: self._count(chunk, params)
+                        for alias, chunk in _scalar_subqueries(text)
+                    }
+                ]
+            )
         return _FakeJob([])
 
 
@@ -2426,28 +3266,52 @@ def _identity_less_rows(source="manual"):
     _MIGRATIONS reads back; "" is what add_label's own default writes. Both mean "no profile
     identity", and a tombstone has to be able to reach either one.
     """
+
     def label(created_at, liked, embedding, profile_id):
-        return {"run_id": "r", "app": "hinge", "source": source, "profile_id": profile_id,
-                "created_at": created_at, "liked": liked, "embedding": embedding}
+        return {
+            "run_id": "r",
+            "app": "hinge",
+            "source": source,
+            "profile_id": profile_id,
+            "created_at": created_at,
+            "liked": liked,
+            "embedding": embedding,
+        }
 
     def decision(created_at, outcome):
-        return {"run_id": "r", "app": "hinge", "source": source,
-                "created_at": created_at, "decision": outcome}
+        return {
+            "run_id": "r",
+            "app": "hinge",
+            "source": source,
+            "created_at": created_at,
+            "decision": outcome,
+        }
 
     return (
-        [label(_LEGACY_LABEL_AT, False, [0.1], None),
-         label(_EMPTY_LABEL_AT, False, [0.2], ""),
-         label(_MODERN_LABEL_AT, True, [0.3], "modern-profile")],
-        [decision(_LEGACY_DECISION_AT, "dislike"),
-         decision(_EMPTY_DECISION_AT, "dislike"),
-         decision(_MODERN_DECISION_AT, "like")],
+        [
+            label(_LEGACY_LABEL_AT, False, [0.1], None),
+            label(_EMPTY_LABEL_AT, False, [0.2], ""),
+            label(_MODERN_LABEL_AT, True, [0.3], "modern-profile"),
+        ],
+        [
+            decision(_LEGACY_DECISION_AT, "dislike"),
+            decision(_EMPTY_DECISION_AT, "dislike"),
+            decision(_MODERN_DECISION_AT, "like"),
+        ],
     )
 
 
-def _tombstone(*, profile_id, label_created_at, decision_created_at, run_id="r",
-               source="manual"):
-    return {"run_id": run_id, "app": "hinge", "source": source, "profile_id": profile_id,
-            "label_created_at": label_created_at, "decision_created_at": decision_created_at}
+def _tombstone(
+    *, profile_id, label_created_at, decision_created_at, run_id="r", source="manual"
+):
+    return {
+        "run_id": run_id,
+        "app": "hinge",
+        "source": source,
+        "profile_id": profile_id,
+        "label_created_at": label_created_at,
+        "decision_created_at": decision_created_at,
+    }
 
 
 def test_bigquery_tombstone_retracts_a_label_that_carries_no_profile_id():
@@ -2459,39 +3323,73 @@ def test_bigquery_tombstone_retracts_a_label_that_carries_no_profile_id():
     """
     labels, decisions = _identity_less_rows()
     client = _LabelVisibilityBQ(labels, decisions)
-    assert _labels_store(client).load_labels() == [(False, [0.1]), (False, [0.2]), (True, [0.3])]
+    assert _labels_store(client).load_labels() == [
+        (False, [0.1]),
+        (False, [0.2]),
+        (True, [0.3]),
+    ]
 
-    client.retractions = [_tombstone(profile_id="", label_created_at=_LEGACY_LABEL_AT,
-                                     decision_created_at=_LEGACY_DECISION_AT)]
+    client.retractions = [
+        _tombstone(
+            profile_id="",
+            label_created_at=_LEGACY_LABEL_AT,
+            decision_created_at=_LEGACY_DECISION_AT,
+        )
+    ]
     assert _labels_store(client).load_labels() == [(False, [0.2]), (True, [0.3])]
 
     # The "" spelling of the same absent identity has to be reachable by its own tombstone
     # too, and only by its own: the join still carries label_created_at.
-    client.retractions.append(_tombstone(profile_id="", label_created_at=_EMPTY_LABEL_AT,
-                                         decision_created_at=_EMPTY_DECISION_AT))
+    client.retractions.append(
+        _tombstone(
+            profile_id="",
+            label_created_at=_EMPTY_LABEL_AT,
+            decision_created_at=_EMPTY_DECISION_AT,
+        )
+    )
     assert _labels_store(client).load_labels() == [(True, [0.3])]
 
 
 def test_bigquery_tombstone_for_another_label_never_hides_an_identity_less_one():
     """Folding NULL and "" together must not turn a tombstone into a wildcard."""
     labels, decisions = _identity_less_rows()
-    client = _LabelVisibilityBQ(labels, decisions, [
-        # Same timestamp as the NULL-profile label but a different profile identity.
-        _tombstone(profile_id="modern-profile", label_created_at=_LEGACY_LABEL_AT,
-                   decision_created_at=_LEGACY_DECISION_AT),
-        # No profile identity, but another label's timestamp.
-        _tombstone(profile_id="", label_created_at=_MODERN_LABEL_AT,
-                   decision_created_at=_MODERN_DECISION_AT),
-        # Right label, wrong run.
-        _tombstone(profile_id="", label_created_at=_LEGACY_LABEL_AT,
-                   decision_created_at=_LEGACY_DECISION_AT, run_id="other-run"),
-    ])
+    client = _LabelVisibilityBQ(
+        labels,
+        decisions,
+        [
+            # Same timestamp as the NULL-profile label but a different profile identity.
+            _tombstone(
+                profile_id="modern-profile",
+                label_created_at=_LEGACY_LABEL_AT,
+                decision_created_at=_LEGACY_DECISION_AT,
+            ),
+            # No profile identity, but another label's timestamp.
+            _tombstone(
+                profile_id="",
+                label_created_at=_MODERN_LABEL_AT,
+                decision_created_at=_MODERN_DECISION_AT,
+            ),
+            # Right label, wrong run.
+            _tombstone(
+                profile_id="",
+                label_created_at=_LEGACY_LABEL_AT,
+                decision_created_at=_LEGACY_DECISION_AT,
+                run_id="other-run",
+            ),
+        ],
+    )
 
-    assert _labels_store(client).load_labels() == [(False, [0.1]), (False, [0.2]), (True, [0.3])]
+    assert _labels_store(client).load_labels() == [
+        (False, [0.1]),
+        (False, [0.2]),
+        (True, [0.3]),
+    ]
 
 
 @pytest.mark.parametrize("source", ["manual", "external_ai_review"])
-def test_bigquery_every_read_path_agrees_about_a_retracted_identity_less_label(monkeypatch, source):
+def test_bigquery_every_read_path_agrees_about_a_retracted_identity_less_label(
+    monkeypatch, source
+):
     """load_labels, both release summaries and the cleanup advisory share one predicate.
 
     They are separate statements, each with its own copy of the visibility clause, so a fix
@@ -2500,20 +3398,39 @@ def test_bigquery_every_read_path_agrees_about_a_retracted_identity_less_label(m
     """
     _stub_bigquery_module(monkeypatch)
     labels, decisions = _identity_less_rows(source)
-    client = _LabelVisibilityBQ(labels, decisions, [
-        _tombstone(profile_id="", label_created_at=_LEGACY_LABEL_AT,
-                   decision_created_at=_LEGACY_DECISION_AT, source=source)])
+    client = _LabelVisibilityBQ(
+        labels,
+        decisions,
+        [
+            _tombstone(
+                profile_id="",
+                label_created_at=_LEGACY_LABEL_AT,
+                decision_created_at=_LEGACY_DECISION_AT,
+                source=source,
+            )
+        ],
+    )
     store = _labels_store(client)
 
     assert store.load_labels() == [(False, [0.2]), (True, [0.3])]
-    prefix, summary = (("manual", store.observe_release_persistence_summary("r", "hinge"))
-                       if source == "manual" else
-                       ("ai", store.ai_observe_release_persistence_summary("r", "hinge", source)))
-    assert summary == {f"{prefix}_pass_labels": 1, f"{prefix}_like_labels": 1,
-                       f"{prefix}_pass_decisions": 1, f"{prefix}_like_decisions": 1,
-                       "successful_hinge_openers": 0}
+    prefix, summary = (
+        ("manual", store.observe_release_persistence_summary("r", "hinge"))
+        if source == "manual"
+        else ("ai", store.ai_observe_release_persistence_summary("r", "hinge", source))
+    )
+    assert summary == {
+        f"{prefix}_pass_labels": 1,
+        f"{prefix}_like_labels": 1,
+        f"{prefix}_pass_decisions": 1,
+        f"{prefix}_like_decisions": 1,
+        "successful_hinge_openers": 0,
+    }
     assert store.advisory_opener_run_rows("r", "hinge")["effective_counts"] == {
-        "like_labels": 1, "like_decisions": 1, "pass_labels": 1, "pass_decisions": 2}
+        "like_labels": 1,
+        "like_decisions": 1,
+        "pass_labels": 1,
+        "pass_decisions": 2,
+    }
 
 
 class _AdvisoryOpenerBQ:
@@ -2529,13 +3446,25 @@ class _AdvisoryOpenerBQ:
             return _FakeJob(self._opener_rows)
         if "FROM `proj.ds.opener_retractions`" in sql:
             return _FakeJob([])
-        return _FakeJob([{"profiles": 0, "profile_photos": 0, "labels": 0, "decisions": 0,
-                          "like_labels": 0, "pass_labels": 0, "like_decisions": 0,
-                          "pass_decisions": 0}])
+        return _FakeJob(
+            [
+                {
+                    "profiles": 0,
+                    "profile_photos": 0,
+                    "labels": 0,
+                    "decisions": 0,
+                    "like_labels": 0,
+                    "pass_labels": 0,
+                    "like_decisions": 0,
+                    "pass_decisions": 0,
+                }
+            ]
+        )
 
 
 def test_bigquery_advisory_opener_run_rows_keep_the_prompt_stamp_out_of_the_fingerprint(
-        monkeypatch):
+    monkeypatch,
+):
     """`prompt_sha256` must NEVER enter the opener fingerprint or the advisory projection.
 
     Five on-disk cleanup plans in ops/corrections/ carry fingerprints computed from exactly
@@ -2552,10 +3481,24 @@ def test_bigquery_advisory_opener_run_rows_keep_the_prompt_stamp_out_of_the_fing
 
     _stub_bigquery_module(monkeypatch)
     created = datetime(2026, 9, 5, 12, 0, 0, tzinfo=timezone.utc)
-    client = _AdvisoryOpenerBQ([{"created_at": created, "model": "gemini-x",
-                                 "opener": "hello there", "prompt_sha256": "e" * 64}])
-    store = BigQueryStore("proj", "ds", photo_bucket="photos", client=client,
-                          storage_client=_FakeStorage(), ensure=False)
+    client = _AdvisoryOpenerBQ(
+        [
+            {
+                "created_at": created,
+                "model": "gemini-x",
+                "opener": "hello there",
+                "prompt_sha256": "e" * 64,
+            }
+        ]
+    )
+    store = BigQueryStore(
+        "proj",
+        "ds",
+        photo_bucket="photos",
+        client=client,
+        storage_client=_FakeStorage(),
+        ensure=False,
+    )
 
     rows = store.advisory_opener_run_rows("r", "hinge")["openers"]
 
@@ -2563,9 +3506,15 @@ def test_bigquery_advisory_opener_run_rows_keep_the_prompt_stamp_out_of_the_fing
     assert "prompt_sha256" not in projection
     assert len(rows) == 1
     assert set(rows[0]) == {"created_at", "model", "opener_fingerprint"}
-    assert rows[0]["opener_fingerprint"] == canonical_sha({
-        "run_id": "r", "app": "hinge", "created_at": created.isoformat(),
-        "model": "gemini-x", "opener": "hello there"})
+    assert rows[0]["opener_fingerprint"] == canonical_sha(
+        {
+            "run_id": "r",
+            "app": "hinge",
+            "created_at": created.isoformat(),
+            "model": "gemini-x",
+            "opener": "hello there",
+        }
+    )
 
 
 # =====================================================================================
@@ -2576,12 +3525,19 @@ def test_bigquery_advisory_opener_run_rows_keep_the_prompt_stamp_out_of_the_fing
 # BigQueryStore.joined_opener_outcomes.
 # =====================================================================================
 
+
 def test_record_opener_outcome_buffers_all_fields():
     client = _FakeBQ()
     s = _store(client, flush_every=1)
 
-    s.record_opener_outcome("hinge", "k" * 64, "reply", observed_at=123.0, source="owner",
-                            note="she asked about the trail")
+    s.record_opener_outcome(
+        "hinge",
+        "k" * 64,
+        "reply",
+        observed_at=123.0,
+        source="owner",
+        note="she asked about the trail",
+    )
 
     row = client.inserted["proj.ds.opener_outcomes"][0]
     assert row["app"] == "hinge"
@@ -2623,7 +3579,9 @@ def test_record_opener_outcome_stores_an_unattributable_observation_rather_than_
 
 def test_record_opener_outcome_signature_matches_the_store_protocol():
     params = inspect.signature(BigQueryStore.record_opener_outcome).parameters
-    assert list(params) == list(inspect.signature(Store.record_opener_outcome).parameters)
+    assert list(params) == list(
+        inspect.signature(Store.record_opener_outcome).parameters
+    )
     assert params["app"].kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
     assert params["profile_key"].kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
     assert params["outcome"].kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
@@ -2633,13 +3591,16 @@ def test_record_opener_outcome_signature_matches_the_store_protocol():
 
 def test_joined_opener_outcomes_signature_matches_the_store_protocol():
     params = inspect.signature(BigQueryStore.joined_opener_outcomes).parameters
-    assert list(params) == list(inspect.signature(Store.joined_opener_outcomes).parameters)
+    assert list(params) == list(
+        inspect.signature(Store.joined_opener_outcomes).parameters
+    )
     assert params["prompt_sha256"].kind is inspect.Parameter.KEYWORD_ONLY
     assert params["prompt_sha256"].default is None
 
 
 def test_joined_opener_outcomes_query_excludes_empty_and_null_profile_keys_on_both_sides(
-        monkeypatch):
+    monkeypatch,
+):
     """An unattributable opener and an unattributable outcome must never join to EACH OTHER
     just because both happen to carry the same "no key" spelling ("") -- see
     ranker/profile_key.py's own docstring."""
@@ -2653,10 +3614,14 @@ def test_joined_opener_outcomes_query_excludes_empty_and_null_profile_keys_on_bo
     assert "ON oc.app = o.app AND oc.profile_key = o.profile_key" in sql
     assert "o.profile_key IS NOT NULL AND o.profile_key != ''" in sql
     assert "oc.profile_key IS NOT NULL AND oc.profile_key != ''" in sql
-    assert {p.name: p.value for p in client.job_configs[-1].query_parameters} == {"app": "hinge"}
+    assert {p.name: p.value for p in client.job_configs[-1].query_parameters} == {
+        "app": "hinge"
+    }
 
 
-def test_joined_opener_outcomes_query_keeps_only_openers_that_were_actually_sent(monkeypatch):
+def test_joined_opener_outcomes_query_keeps_only_openers_that_were_actually_sent(
+    monkeypatch,
+):
     """An outcome is something a SENT opener earned.
 
     Without this predicate, a profile drafted-then-DISLIKED in one run and LIKED in a later one
@@ -2689,7 +3654,9 @@ def test_joined_opener_outcomes_filters_by_prompt_era_when_given_one(monkeypatch
     sql = client.queries[-1]
     assert "AND o.prompt_sha256 = @prompt_sha256" in sql
     assert {p.name: p.value for p in client.job_configs[-1].query_parameters} == {
-        "app": "hinge", "prompt_sha256": "a" * 64}
+        "app": "hinge",
+        "prompt_sha256": "a" * 64,
+    }
 
 
 def test_joined_opener_outcomes_omits_the_era_filter_when_none_is_given(monkeypatch):
@@ -2703,7 +3670,9 @@ def test_joined_opener_outcomes_omits_the_era_filter_when_none_is_given(monkeypa
 
     sql = client.queries[-1]
     assert "AND o.prompt_sha256 = @prompt_sha256" not in sql
-    assert {p.name: p.value for p in client.job_configs[-1].query_parameters} == {"app": "hinge"}
+    assert {p.name: p.value for p in client.job_configs[-1].query_parameters} == {
+        "app": "hinge"
+    }
 
 
 def test_joined_opener_outcomes_converts_timestamps_and_shapes_the_row(monkeypatch):
@@ -2711,22 +3680,42 @@ def test_joined_opener_outcomes_converts_timestamps_and_shapes_the_row(monkeypat
     created_opener = datetime(2026, 9, 6, 12, 0, 0, tzinfo=timezone.utc)
     observed = datetime(2026, 9, 6, 13, 0, 0, tzinfo=timezone.utc)
     created_outcome = datetime(2026, 9, 6, 13, 0, 1, tzinfo=timezone.utc)
-    client = _FakeBQ(label_rows=[{
-        "run_id": "r", "model": "gemini-x", "opener": "hi there", "prompt_sha256": "a" * 64,
-        "profile_key": "k" * 64, "opener_created_at": created_opener,
-        "outcome": "match", "observed_at": observed, "source": "owner", "note": "n",
-        "outcome_created_at": created_outcome,
-    }])
+    client = _FakeBQ(
+        label_rows=[
+            {
+                "run_id": "r",
+                "model": "gemini-x",
+                "opener": "hi there",
+                "prompt_sha256": "a" * 64,
+                "profile_key": "k" * 64,
+                "opener_created_at": created_opener,
+                "outcome": "match",
+                "observed_at": observed,
+                "source": "owner",
+                "note": "n",
+                "outcome_created_at": created_outcome,
+            }
+        ]
+    )
     store = _store(client)
 
     rows = store.joined_opener_outcomes("hinge")
 
-    assert rows == [{
-        "run_id": "r", "model": "gemini-x", "opener": "hi there", "prompt_sha256": "a" * 64,
-        "profile_key": "k" * 64, "opener_created_at": created_opener.isoformat(),
-        "outcome": "match", "observed_at": observed.isoformat(), "source": "owner", "note": "n",
-        "outcome_created_at": created_outcome.isoformat(),
-    }]
+    assert rows == [
+        {
+            "run_id": "r",
+            "model": "gemini-x",
+            "opener": "hi there",
+            "prompt_sha256": "a" * 64,
+            "profile_key": "k" * 64,
+            "opener_created_at": created_opener.isoformat(),
+            "outcome": "match",
+            "observed_at": observed.isoformat(),
+            "source": "owner",
+            "note": "n",
+            "outcome_created_at": created_outcome.isoformat(),
+        }
+    ]
 
 
 def test_joined_opener_outcomes_treats_missing_optional_table_as_empty(monkeypatch):

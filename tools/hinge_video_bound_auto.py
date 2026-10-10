@@ -94,6 +94,7 @@ count remains zero by construction.
 PRIVACY: identical to the sibling.  Every frame is a real person's dating profile, output is
 confined to gitignored ops/calibration/, and the tool refuses any directory git does not ignore.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -113,15 +114,28 @@ import yaml
 from operation_love import targeting_policy as _policy
 from operation_love.drivers import hinge as _hinge
 from operation_love.drivers.hinge import (
-    HingeActionError, HingeDriver, video_mute_screen_reason)
+    HingeActionError,
+    HingeDriver,
+    video_mute_screen_reason,
+)
 from operation_love.drivers.item_crops import (
-    STILL_PHOTO_AUTOPLAY_CENTER_BAND_FRAC, card_center_offset_frac, dwell_exact_over_rect)
+    STILL_PHOTO_AUTOPLAY_CENTER_BAND_FRAC,
+    card_center_offset_frac,
+    dwell_exact_over_rect,
+)
 from operation_love.drivers.scroll_step import frac_for_step_px
 from operation_love.drivers.item_type_preflight import PHOTO, WRITTEN, classify_crop
-from operation_love.drivers.segment import BLOCK_SELECTABLE, SegmentationError, segment_frame
+from operation_love.drivers.segment import (
+    BLOCK_SELECTABLE,
+    SegmentationError,
+    segment_frame,
+)
 from operation_love.human import human_cooldown, human_delay
 from operation_love.private_files import (
-    atomic_write_private_bytes, atomic_write_private_text, ensure_private_dir)
+    atomic_write_private_bytes,
+    atomic_write_private_text,
+    ensure_private_dir,
+)
 from tools import hinge_video_bound as bound
 from tools._devicelock import run_holding_the_device
 
@@ -133,16 +147,21 @@ _DEFAULT_PACKAGE = "co.hinge.app"
 # the sibling resolves them, then asserted equal to the sibling's copy.  Two modules that
 # disagreed about which channel this is would produce a campaign one of them could not read, and
 # during development the policy constants and these tools land in separate commits.
-CIRCULAR_CHANNEL = getattr(_policy, "STILL_PHOTO_BOUND_CIRCULAR_CHANNEL",
-                           bound.CIRCULAR_GROUND_TRUTH_CHANNEL)
-CIRCULAR_ACCEPTANCE = getattr(_policy, "STILL_PHOTO_BOUND_CIRCULAR_ACCEPTANCE",
-                              bound.CIRCULAR_ACCEPTANCE)
-if (CIRCULAR_CHANNEL != bound.CIRCULAR_GROUND_TRUTH_CHANNEL
-        or CIRCULAR_ACCEPTANCE != bound.CIRCULAR_ACCEPTANCE):
+CIRCULAR_CHANNEL = getattr(
+    _policy, "STILL_PHOTO_BOUND_CIRCULAR_CHANNEL", bound.CIRCULAR_GROUND_TRUTH_CHANNEL
+)
+CIRCULAR_ACCEPTANCE = getattr(
+    _policy, "STILL_PHOTO_BOUND_CIRCULAR_ACCEPTANCE", bound.CIRCULAR_ACCEPTANCE
+)
+if (
+    CIRCULAR_CHANNEL != bound.CIRCULAR_GROUND_TRUTH_CHANNEL
+    or CIRCULAR_ACCEPTANCE != bound.CIRCULAR_ACCEPTANCE
+):
     raise ImportError(
         "operation_love.targeting_policy and tools.hinge_video_bound disagree about the circular "
         "still-photo label channel or its acceptance phrase; a campaign captured under one and "
-        "measured under the other would be silently unreadable")
+        "measured under the other would be silently unreadable"
+    )
 
 LABEL_BLIND_SPOT = bound.LABEL_BLIND_SPOT
 # Re-exported from the shared machinery so a reader of this tool can find the adjudication
@@ -244,14 +263,19 @@ class EmptyProfileHalt(CampaignHalt):
 # The label rule (pure)
 # =====================================================================================
 
-def label_card(*, glyph_hit: bool, dwell_exact: bool | None,
-               mute_screens_complete: bool | None,
-               classifier_verdict: str | None,
-               centered: bool | None,
-               reattach_probe_ran: bool | None = None,
-               reattach_dwell_exact: bool | None = None,
-               reattach_mute_screens_complete: bool | None = None,
-               reattach_centered: bool | None = None) -> tuple[str, str]:
+
+def label_card(
+    *,
+    glyph_hit: bool,
+    dwell_exact: bool | None,
+    mute_screens_complete: bool | None,
+    classifier_verdict: str | None,
+    centered: bool | None,
+    reattach_probe_ran: bool | None = None,
+    reattach_dwell_exact: bool | None = None,
+    reattach_mute_screens_complete: bool | None = None,
+    reattach_centered: bool | None = None,
+) -> tuple[str, str]:
     """Return `(label, reason)` for one card from observations only. No I/O, no driver.
 
     The order is the whole rule and is not interchangeable:
@@ -291,56 +315,84 @@ def label_card(*, glyph_hit: bool, dwell_exact: bool | None,
     a verdict from a placeholder.
     """
     if glyph_hit:
-        return LABEL_VIDEO, ("a complete-ROI mute-control match at or above the shipped "
-                             "threshold was seen on this card")
+        return LABEL_VIDEO, (
+            "a complete-ROI mute-control match at or above the shipped "
+            "threshold was seen on this card"
+        )
     if dwell_exact is False:
-        return LABEL_VIDEO, ("the card rect changed across the un-interacted burst, so this "
-                             "media animates with nothing touching the screen")
+        return LABEL_VIDEO, (
+            "the card rect changed across the un-interacted burst, so this "
+            "media animates with nothing touching the screen"
+        )
     if reattach_dwell_exact is False:
-        return LABEL_VIDEO, ("the card rect changed across the un-interacted burst taken after "
-                             "the card re-entered the autoplay band, so this media started "
-                             "playing when Hinge re-attached it")
+        return LABEL_VIDEO, (
+            "the card rect changed across the un-interacted burst taken after "
+            "the card re-entered the autoplay band, so this media started "
+            "playing when Hinge re-attached it"
+        )
     if dwell_exact is not True:
-        return LABEL_UNSURE, ("no un-interacted dwell observed this card, so its byte-exactness "
-                              "was never measured")
+        return LABEL_UNSURE, (
+            "no un-interacted dwell observed this card, so its byte-exactness "
+            "was never measured"
+        )
     if mute_screens_complete is not True:
-        return LABEL_UNSURE, ("mute-control screening did not run over a complete ROI, and clean, "
-                              "on every burst frame, so a control that rendered could have gone "
-                              "unseen")
+        return LABEL_UNSURE, (
+            "mute-control screening did not run over a complete ROI, and clean, "
+            "on every burst frame, so a control that rendered could have gone "
+            "unseen"
+        )
     if classifier_verdict == WRITTEN:
-        return LABEL_WRITTEN, ("the crop classifies as a written prompt card, which is not a "
-                               "photograph and is excluded from both denominators")
+        return LABEL_WRITTEN, (
+            "the crop classifies as a written prompt card, which is not a "
+            "photograph and is excluded from both denominators"
+        )
     if centered is not True:
-        return LABEL_UNSURE, ("the card was not held inside Hinge's autoplay trigger zone for "
-                              "this burst, so its stillness is equally consistent with a video "
-                              "that was never near enough to the centre to start playing")
+        return LABEL_UNSURE, (
+            "the card was not held inside Hinge's autoplay trigger zone for "
+            "this burst, so its stillness is equally consistent with a video "
+            "that was never near enough to the centre to start playing"
+        )
     if reattach_probe_ran is not True:
-        return LABEL_UNSURE, ("no re-attach probe took this card out of the autoplay band and "
-                              "back, so a video that was stalled, buffering, unloaded or already "
-                              "ended was never asked to start")
+        return LABEL_UNSURE, (
+            "no re-attach probe took this card out of the autoplay band and "
+            "back, so a video that was stalled, buffering, unloaded or already "
+            "ended was never asked to start"
+        )
     if reattach_dwell_exact is not True:
-        return LABEL_UNSURE, ("the re-attach burst never measured this card's byte-exactness, "
-                              "so the second look that would catch a non-playing video is "
-                              "missing")
+        return LABEL_UNSURE, (
+            "the re-attach burst never measured this card's byte-exactness, "
+            "so the second look that would catch a non-playing video is "
+            "missing"
+        )
     if reattach_mute_screens_complete is not True:
-        return LABEL_UNSURE, ("mute-control screening did not run over a complete ROI, and "
-                              "clean, on every re-attach burst frame, so a control Hinge redrew "
-                              "on re-entry could have gone unseen")
+        return LABEL_UNSURE, (
+            "mute-control screening did not run over a complete ROI, and "
+            "clean, on every re-attach burst frame, so a control Hinge redrew "
+            "on re-entry could have gone unseen"
+        )
     if reattach_centered is not True:
-        return LABEL_UNSURE, ("the card was not back inside Hinge's autoplay trigger zone for "
-                              "the re-attach burst, so its stillness there says nothing about "
-                              "media nobody asked to play")
+        return LABEL_UNSURE, (
+            "the card was not back inside Hinge's autoplay trigger zone for "
+            "the re-attach burst, so its stillness there says nothing about "
+            "media nobody asked to play"
+        )
     if classifier_verdict != PHOTO:
-        return LABEL_UNSURE, "the card crop did not classify as confidently photographic"
-    return LABEL_PHOTO, ("byte-exact across BOTH bursts while centred in the autoplay trigger "
-                         "zone, including the burst taken after the card was scrolled out of "
-                         "that zone and back, screened complete and clean on every frame of "
-                         "both, and photographic")
+        return (
+            LABEL_UNSURE,
+            "the card crop did not classify as confidently photographic",
+        )
+    return LABEL_PHOTO, (
+        "byte-exact across BOTH bursts while centred in the autoplay trigger "
+        "zone, including the burst taken after the card was scrolled out of "
+        "that zone and back, screened complete and clean on every frame of "
+        "both, and photographic"
+    )
 
 
 # =====================================================================================
 # Per-card observation
 # =====================================================================================
+
 
 @dataclass(frozen=True)
 class CardObservation:
@@ -396,7 +448,9 @@ def _crop_png(frame: bytes, rect: tuple[int, int, int, int]) -> bytes:
     x0, y0, x1, y1 = rect
     height, width = image.shape[:2]
     if not (0 <= x0 < x1 <= width and 0 <= y0 < y1 <= height):
-        raise AutoBoundRefused(f"card rect {rect!r} does not lie inside a {width}x{height} frame")
+        raise AutoBoundRefused(
+            f"card rect {rect!r} does not lie inside a {width}x{height} frame"
+        )
     ok, buffer = cv2.imencode(".png", image[y0:y1, x0:x1])
     if not ok:
         raise AutoBoundRefused("a card crop could not be encoded")
@@ -430,13 +484,19 @@ def _screen_card(frame: bytes, rect: tuple[int, int, int, int], matcher) -> dict
 
     reason = video_mute_screen_reason(frame, rect, match=_recording_match)
     observed = [score for score in scores if score is not None]
-    return {"screened": bool(observed), "score": max(observed) if observed else None,
-            "reason": reason, "glyph_hit": bool(reason is not None and "mute control" in reason),
-            "clean": reason is None, "observational_only": True}
+    return {
+        "screened": bool(observed),
+        "score": max(observed) if observed else None,
+        "reason": reason,
+        "glyph_hit": bool(reason is not None and "mute control" in reason),
+        "clean": reason is None,
+        "observational_only": True,
+    }
 
 
-def selectable_card_rects(frame: bytes, *, content_band, like_template,
-                          like_threshold) -> list[tuple[int, int, int, int]]:
+def selectable_card_rects(
+    frame: bytes, *, content_band, like_template, like_threshold
+) -> list[tuple[int, int, int, int]]:
     """Card rects fully visible in ONE frame, from the shipped per-frame segmenter.
 
     Only `BLOCK_SELECTABLE` blocks whose BOTH edges were actually observed qualify.  A partial
@@ -446,17 +506,32 @@ def selectable_card_rects(frame: bytes, *, content_band, like_template,
     counting items from one frame is exactly the off-by-N `_confirm_enumeration_top` exists to
     prevent and this campaign has no use for ordinals anyway.
     """
-    segmentation = segment_frame(frame, content_band=content_band, like_template=like_template,
-                                 like_threshold=like_threshold)
-    return [(block.x0, block.y0, block.x1, block.y1) for block in segmentation.blocks
-            if block.kind == BLOCK_SELECTABLE and block.complete]
+    segmentation = segment_frame(
+        frame,
+        content_band=content_band,
+        like_template=like_template,
+        like_threshold=like_threshold,
+    )
+    return [
+        (block.x0, block.y0, block.x1, block.y1)
+        for block in segmentation.blocks
+        if block.kind == BLOCK_SELECTABLE and block.complete
+    ]
 
 
-def observe_card(rect, sequence: list[bytes], *, dwell_span_s: float, matcher,
-                 frame_height: int, content_band, classify=None,
-                 reattach_sequence: list[bytes] | None = None,
-                 reattach_span_s: float | None = None,
-                 reattach_page_shift_px: int | None = None) -> CardObservation:
+def observe_card(
+    rect,
+    sequence: list[bytes],
+    *,
+    dwell_span_s: float,
+    matcher,
+    frame_height: int,
+    content_band,
+    classify=None,
+    reattach_sequence: list[bytes] | None = None,
+    reattach_span_s: float | None = None,
+    reattach_page_shift_px: int | None = None,
+) -> CardObservation:
     """Label one card rect from the anchor frame plus its un-interacted burst.
 
     `sequence[0]` is the anchor -- the frame the rect was segmented out of, still on screen when
@@ -485,40 +560,74 @@ def observe_card(rect, sequence: list[bytes], *, dwell_span_s: float, matcher,
     dwell_exact = bool(dwell_exact_over_rect(sequence, rect))
     mute_clean = all(record["clean"] for record in mute_records)
     verdict = str(classify(crops[0]))
-    offset = card_center_offset_frac(tuple(rect), frame_height=frame_height,
-                                     content_band=content_band)
+    offset = card_center_offset_frac(
+        tuple(rect), frame_height=frame_height, content_band=content_band
+    )
     centered = abs(offset) <= CENTER_BAND_FRAC
-    reattach = _observe_reattach(rect, reattach_sequence, matcher=matcher,
-                                 frame_height=frame_height, content_band=content_band,
-                                 page_shift_px=reattach_page_shift_px)
-    scores = [record["score"] for record in mute_records + list(reattach["mute_records"])
-              if record["score"] is not None]
-    glyph_hit = any(record["glyph_hit"]
-                    for record in mute_records + list(reattach["mute_records"]))
+    reattach = _observe_reattach(
+        rect,
+        reattach_sequence,
+        matcher=matcher,
+        frame_height=frame_height,
+        content_band=content_band,
+        page_shift_px=reattach_page_shift_px,
+    )
+    scores = [
+        record["score"]
+        for record in mute_records + list(reattach["mute_records"])
+        if record["score"] is not None
+    ]
+    glyph_hit = any(
+        record["glyph_hit"] for record in mute_records + list(reattach["mute_records"])
+    )
     label, reason = label_card(
-        glyph_hit=glyph_hit, dwell_exact=dwell_exact, mute_screens_complete=mute_clean,
-        classifier_verdict=verdict, centered=centered,
-        reattach_probe_ran=reattach["probe_ran"], reattach_dwell_exact=reattach["dwell_exact"],
+        glyph_hit=glyph_hit,
+        dwell_exact=dwell_exact,
+        mute_screens_complete=mute_clean,
+        classifier_verdict=verdict,
+        centered=centered,
+        reattach_probe_ran=reattach["probe_ran"],
+        reattach_dwell_exact=reattach["dwell_exact"],
         reattach_mute_screens_complete=reattach["mute_screens_complete"],
-        reattach_centered=reattach["centered"])
+        reattach_centered=reattach["centered"],
+    )
     return CardObservation(
-        rect=tuple(rect), label=label, label_reason=reason, glyph_hit=glyph_hit,
-        max_glyph_score=max(scores) if scores else None, dwell_exact=dwell_exact,
-        mute_screens_complete=mute_clean, classifier_verdict=verdict, centered=centered,
-        center_offset_frac=float(offset), dwell_span_s=float(dwell_span_s),
-        crops=tuple(crops), mute_records=tuple(mute_records),
+        rect=tuple(rect),
+        label=label,
+        label_reason=reason,
+        glyph_hit=glyph_hit,
+        max_glyph_score=max(scores) if scores else None,
+        dwell_exact=dwell_exact,
+        mute_screens_complete=mute_clean,
+        classifier_verdict=verdict,
+        centered=centered,
+        center_offset_frac=float(offset),
+        dwell_span_s=float(dwell_span_s),
+        crops=tuple(crops),
+        mute_records=tuple(mute_records),
         reattach_probe_ran=reattach["probe_ran"],
         reattach_dwell_exact=reattach["dwell_exact"],
         reattach_mute_screens_complete=reattach["mute_screens_complete"],
         reattach_centered=reattach["centered"],
         reattach_center_offset_frac=reattach["center_offset_frac"],
-        reattach_dwell_span_s=(None if reattach_span_s is None else float(reattach_span_s)),
-        reattach_rect=reattach["rect"], reattach_crops=tuple(reattach["crops"]),
-        reattach_mute_records=tuple(reattach["mute_records"]))
+        reattach_dwell_span_s=(
+            None if reattach_span_s is None else float(reattach_span_s)
+        ),
+        reattach_rect=reattach["rect"],
+        reattach_crops=tuple(reattach["crops"]),
+        reattach_mute_records=tuple(reattach["mute_records"]),
+    )
 
 
-def _observe_reattach(rect, sequence, *, matcher, frame_height: int, content_band,
-                      page_shift_px: int | None) -> dict:
+def _observe_reattach(
+    rect,
+    sequence,
+    *,
+    matcher,
+    frame_height: int,
+    content_band,
+    page_shift_px: int | None,
+) -> dict:
     """The second burst's legs for one card, or an all-missing record when there was no probe.
 
     A rect the probe pushed off the screen is a MISSING observation rather than a failed one:
@@ -526,30 +635,41 @@ def _observe_reattach(rect, sequence, *, matcher, frame_height: int, content_ban
     be read as motion. Two frames is the minimum -- one frame has zero consecutive pairs, and a
     vacuous "all pairs matched" is the unearned pass this whole design exists to prevent.
     """
-    absent = {"probe_ran": False, "dwell_exact": None, "mute_screens_complete": None,
-              "centered": None, "center_offset_frac": None, "rect": None, "crops": (),
-              "mute_records": ()}
+    absent = {
+        "probe_ran": False,
+        "dwell_exact": None,
+        "mute_screens_complete": None,
+        "centered": None,
+        "center_offset_frac": None,
+        "rect": None,
+        "crops": (),
+        "mute_records": (),
+    }
     if not sequence or len(sequence) < 2 or page_shift_px is None:
         return absent
     shifted = (rect[0], rect[1] - page_shift_px, rect[2], rect[3] - page_shift_px)
     if shifted[1] < 0 or shifted[3] > frame_height:
         return absent
     records = [_screen_card(frame, shifted, matcher) for frame in sequence]
-    offset = card_center_offset_frac(tuple(shifted), frame_height=frame_height,
-                                     content_band=content_band)
-    return {"probe_ran": True,
-            "dwell_exact": bool(dwell_exact_over_rect(sequence, shifted)),
-            "mute_screens_complete": all(record["clean"] for record in records),
-            "centered": abs(offset) <= CENTER_BAND_FRAC,
-            "center_offset_frac": float(offset),
-            "rect": tuple(shifted),
-            "crops": tuple(_crop_png(frame, shifted) for frame in sequence),
-            "mute_records": tuple(records)}
+    offset = card_center_offset_frac(
+        tuple(shifted), frame_height=frame_height, content_band=content_band
+    )
+    return {
+        "probe_ran": True,
+        "dwell_exact": bool(dwell_exact_over_rect(sequence, shifted)),
+        "mute_screens_complete": all(record["clean"] for record in records),
+        "centered": abs(offset) <= CENTER_BAND_FRAC,
+        "center_offset_frac": float(offset),
+        "rect": tuple(shifted),
+        "crops": tuple(_crop_png(frame, shifted) for frame in sequence),
+        "mute_records": tuple(records),
+    }
 
 
 # =====================================================================================
 # Driving the phone (guarded, humanized primitives only)
 # =====================================================================================
+
 
 def _guarded_screencap(driver, *, on_blank: str = "none") -> bytes:
     """One read-only frame through the driver's own blank-frame guard.
@@ -559,12 +679,15 @@ def _guarded_screencap(driver, *, on_blank: str = "none") -> bytes:
     """
     frame = driver._screencap(on_blank=on_blank)
     if frame is None:
-        raise CampaignHalt("the phone returned a blank frame, so the screen is not recognizable")
+        raise CampaignHalt(
+            "the phone returned a blank frame, so the screen is not recognizable"
+        )
     return frame
 
 
-def reposition_for_advance(driver, *, rnd: random.Random, sleep_fn,
-                           print_fn=print) -> tuple[int, bool]:
+def reposition_for_advance(
+    driver, *, rnd: random.Random, sleep_fn, print_fn=print
+) -> tuple[int, bool]:
     """Put the page back where the deck is confirmable. Returns `(gestures, confirmed)`.
 
     NOTHING HERE WEAKENS THE CONFIRMATION.  `_observe_deck_ready` is the very predicate
@@ -583,7 +706,9 @@ def reposition_for_advance(driver, *, rnd: random.Random, sleep_fn,
     if driver._observe_deck_ready(frame):
         return 0, True
     budget = int(round(bound._hazard_value(*_REPOSITION_ATTEMPTS_SPAN, rnd)))
-    budget = max(_REPOSITION_ATTEMPTS_SPAN[0], min(_REPOSITION_ATTEMPTS_SPAN[1], budget))
+    budget = max(
+        _REPOSITION_ATTEMPTS_SPAN[0], min(_REPOSITION_ATTEMPTS_SPAN[1], budget)
+    )
     gestures = 0
     for attempt in range(budget):
         # One guarded rewind per attempt. `_scroll_to_top` may issue several strokes internally,
@@ -609,7 +734,8 @@ def _halt_if_screen_unrecognized(driver, *, ordinal: int) -> None:
     if top_reason:
         raise CampaignHalt(
             f"profile {ordinal}: the ordinary deck top could not be confirmed, so nothing on "
-            f"screen is the card this campaign thinks it is reading: {top_reason}")
+            f"screen is the card this campaign thinks it is reading: {top_reason}"
+        )
 
 
 @dataclass
@@ -642,12 +768,14 @@ class Station:
 
 
 def _offset_of(rect, *, frame_height: int, content_band) -> float:
-    return card_center_offset_frac(tuple(rect), frame_height=frame_height,
-                                   content_band=content_band)
+    return card_center_offset_frac(
+        tuple(rect), frame_height=frame_height, content_band=content_band
+    )
 
 
-def center_candidate(driver, rect, *, frame_height: int, content_band, rnd: random.Random,
-                     sleep_fn) -> bool:
+def center_candidate(
+    driver, rect, *, frame_height: int, content_band, rnd: random.Random, sleep_fn
+) -> bool:
     """One humanized corrective scroll that moves `rect` toward the autoplay trigger zone.
 
     Returns whether a gesture was actually issued.  The distance is derived from the measured
@@ -669,16 +797,25 @@ def center_candidate(driver, rect, *, frame_height: int, content_band, rnd: rand
     frac = min(frac, _hinge._READ_SCROLL_FRAC_MAX)
     _dwell, _step, x_frac = driver._sample_read_step(0, None)
     if offset > 0:
-        driver._scroll_down_one(frac, x_frac)      # the card sits low: bring the page up
+        driver._scroll_down_one(frac, x_frac)  # the card sits low: bring the page up
     else:
-        driver._scroll_up_one(frac, x_frac)        # the card sits high: bring the page down
+        driver._scroll_up_one(frac, x_frac)  # the card sits high: bring the page down
     sleep_fn(human_delay(_READ_SCROLL_SETTLE_S))
     return True
 
 
-def reattach_stimulus(driver, anchor: bytes, rect, *, frame_height: int, content_band,
-                      rnd: random.Random, sleep_fn, clock,
-                      origin: float) -> tuple[bytes, int, float] | None:
+def reattach_stimulus(
+    driver,
+    anchor: bytes,
+    rect,
+    *,
+    frame_height: int,
+    content_band,
+    rnd: random.Random,
+    sleep_fn,
+    clock,
+    origin: float,
+) -> tuple[bytes, int, float] | None:
     """Take `rect`'s card OUT of the autoplay band and bring it back.  `(frame, shift, frame_t)`.
 
     `frame_t` is the returned frame's own stamp on the caller's profile clock, taken the instant
@@ -706,13 +843,19 @@ def reattach_stimulus(driver, anchor: bytes, rect, *, frame_height: int, content
     if band_px <= 0:
         return None
     offset = _offset_of(rect, frame_height=frame_height, content_band=content_band)
-    target = CENTER_BAND_FRAC * bound._hazard_value(*_REATTACH_EXIT_BAND_MULTIPLE_SPAN, rnd)
+    target = CENTER_BAND_FRAC * bound._hazard_value(
+        *_REATTACH_EXIT_BAND_MULTIPLE_SPAN, rnd
+    )
     exit_px = min((target - offset) * band_px, _REATTACH_MAX_EXIT_BAND_FRAC * band_px)
-    frac = min(_hinge._READ_SCROLL_FRAC_MAX,
-               max(_hinge._READ_SCROLL_FRAC_MIN,
-                   frac_for_step_px(int(round(exit_px)), frame_height)))
+    frac = min(
+        _hinge._READ_SCROLL_FRAC_MAX,
+        max(
+            _hinge._READ_SCROLL_FRAC_MIN,
+            frac_for_step_px(int(round(exit_px)), frame_height),
+        ),
+    )
     _dwell, _step, x_frac = driver._sample_read_step(0, None)
-    driver._scroll_up_one(frac, x_frac)      # content down: the card slides off centre
+    driver._scroll_up_one(frac, x_frac)  # content down: the card slides off centre
     sleep_fn(human_delay(_READ_SCROLL_SETTLE_S))
     frame_t = clock() - origin
     frame = _guarded_screencap(driver)
@@ -720,8 +863,10 @@ def reattach_stimulus(driver, anchor: bytes, rect, *, frame_height: int, content
     if total is None:
         return None
     moved = (rect[0], rect[1] - total, rect[2], rect[3] - total)
-    if abs(_offset_of(moved, frame_height=frame_height,
-                      content_band=content_band)) <= CENTER_BAND_FRAC:
+    if (
+        abs(_offset_of(moved, frame_height=frame_height, content_band=content_band))
+        <= CENTER_BAND_FRAC
+    ):
         # The stroke was delivered and the card never left the zone (a clamp, a swallowed fling).
         # Nothing detached, so nothing can re-attach, and calling the re-entry a re-attach anyway
         # would manufacture the very observation this probe exists to earn.
@@ -730,11 +875,19 @@ def reattach_stimulus(driver, anchor: bytes, rect, *, frame_height: int, content
     budget = max(_CENTERING_STEPS_SPAN[0], min(_CENTERING_STEPS_SPAN[1], budget))
     for _attempt in range(budget):
         moved = (rect[0], rect[1] - total, rect[2], rect[3] - total)
-        if abs(_offset_of(moved, frame_height=frame_height,
-                          content_band=content_band)) <= CENTER_BAND_FRAC:
+        if (
+            abs(_offset_of(moved, frame_height=frame_height, content_band=content_band))
+            <= CENTER_BAND_FRAC
+        ):
             break
-        if not center_candidate(driver, moved, frame_height=frame_height,
-                                content_band=content_band, rnd=rnd, sleep_fn=sleep_fn):
+        if not center_candidate(
+            driver,
+            moved,
+            frame_height=frame_height,
+            content_band=content_band,
+            rnd=rnd,
+            sleep_fn=sleep_fn,
+        ):
             break
         following_t = clock() - origin
         following = _guarded_screencap(driver)
@@ -746,8 +899,17 @@ def reattach_stimulus(driver, anchor: bytes, rect, *, frame_height: int, content
     return frame, int(total), frame_t
 
 
-def read_stations(driver, *, rnd: random.Random, sleep_fn, clock, origin: float,
-                  content_band, segment=None, print_fn=print) -> tuple[list[Station], dict]:
+def read_stations(
+    driver,
+    *,
+    rnd: random.Random,
+    sleep_fn,
+    clock,
+    origin: float,
+    content_band,
+    segment=None,
+    print_fn=print,
+) -> tuple[list[Station], dict]:
     """Walk one profile, CENTRING a candidate card before each burst.
 
     This is the frame source, and it deliberately does NOT go through `_capture_current`.  That
@@ -776,17 +938,29 @@ def read_stations(driver, *, rnd: random.Random, sleep_fn, clock, origin: float,
     The bottom of the profile is a frame byte-identical to the previous one: the page stopped
     moving under a real scroll, which is the same signal `_capture_current`'s own loop stops on.
     """
-    segment = segment or (lambda frame: selectable_card_rects(
-        frame, content_band=driver.content_band, like_template=driver._template("like"),
-        like_threshold=_hinge._LIKE_MATCH_THRESHOLD))
+    segment = segment or (
+        lambda frame: selectable_card_rects(
+            frame,
+            content_band=driver.content_band,
+            like_template=driver._template("like"),
+            like_threshold=_hinge._LIKE_MATCH_THRESHOLD,
+        )
+    )
     planned = int(round(bound._hazard_value(*_STATIONS_SPAN, rnd)))
     planned = max(_STATIONS_SPAN[0], min(_STATIONS_SPAN[1], planned))
     stations: list[Station] = []
-    notes = {"planned_stations": planned, "stations_read": 0, "reached_bottom": False,
-             "segmentation_failures": 0, "stations_without_a_complete_card": 0,
-             "centering_steps": 0, "centering_gave_up": 0,
-             "center_band_frac": CENTER_BAND_FRAC,
-             "reattach_probes_ran": 0, "reattach_probes_refused": 0}
+    notes = {
+        "planned_stations": planned,
+        "stations_read": 0,
+        "reached_bottom": False,
+        "segmentation_failures": 0,
+        "stations_without_a_complete_card": 0,
+        "centering_steps": 0,
+        "centering_gave_up": 0,
+        "center_band_frac": CENTER_BAND_FRAC,
+        "reattach_probes_ran": 0,
+        "reattach_probes_refused": 0,
+    }
     # Every frame this walk hands on carries the stamp of the read that produced it, taken the
     # instant the read is issued -- the same convention `record_spanning_burst` uses -- because
     # whichever frame is current when a burst starts becomes that station's anchor, and the
@@ -810,20 +984,44 @@ def read_stations(driver, *, rnd: random.Random, sleep_fn, clock, origin: float,
         notes["stations_read"] += 1
         rects = _segment(frame)
         offsets_before = tuple(
-            round(_offset_of(rect, frame_height=frame_height, content_band=content_band), 6)
-            for rect in rects)
+            round(
+                _offset_of(rect, frame_height=frame_height, content_band=content_band),
+                6,
+            )
+            for rect in rects
+        )
         steps = 0
         if rects:
             budget = int(round(bound._hazard_value(*_CENTERING_STEPS_SPAN, rnd)))
-            budget = max(_CENTERING_STEPS_SPAN[0], min(_CENTERING_STEPS_SPAN[1], budget))
+            budget = max(
+                _CENTERING_STEPS_SPAN[0], min(_CENTERING_STEPS_SPAN[1], budget)
+            )
             for _attempt in range(budget):
-                target = min(rects, key=lambda r: abs(
-                    _offset_of(r, frame_height=frame_height, content_band=content_band)))
-                if abs(_offset_of(target, frame_height=frame_height,
-                                  content_band=content_band)) <= CENTER_BAND_FRAC:
+                target = min(
+                    rects,
+                    key=lambda r: abs(
+                        _offset_of(
+                            r, frame_height=frame_height, content_band=content_band
+                        )
+                    ),
+                )
+                if (
+                    abs(
+                        _offset_of(
+                            target, frame_height=frame_height, content_band=content_band
+                        )
+                    )
+                    <= CENTER_BAND_FRAC
+                ):
                     break
-                if not center_candidate(driver, target, frame_height=frame_height,
-                                        content_band=content_band, rnd=rnd, sleep_fn=sleep_fn):
+                if not center_candidate(
+                    driver,
+                    target,
+                    frame_height=frame_height,
+                    content_band=content_band,
+                    rnd=rnd,
+                    sleep_fn=sleep_fn,
+                ):
                     notes["centering_gave_up"] += 1
                     break
                 steps += 1
@@ -839,7 +1037,8 @@ def read_stations(driver, *, rnd: random.Random, sleep_fn, clock, origin: float,
         if rects:
             plan = bound.plan_burst(rnd)
             burst_payloads = bound.record_spanning_burst(
-                lambda: _guarded_screencap(driver), plan, sleep_fn=sleep_fn, clock=clock)
+                lambda: _guarded_screencap(driver), plan, sleep_fn=sleep_fn, clock=clock
+            )
             shortfall = bound.burst_span_shortfall(burst_payloads, plan)
             if shortfall > bound.BURST_SPAN_TOLERANCE_S:
                 # A burst that did not span its window is not a dwell.  Campaign 2 recorded nine
@@ -850,7 +1049,8 @@ def read_stations(driver, *, rnd: random.Random, sleep_fn, clock, origin: float,
                     f"a dwell burst spanned {plan.window_s - shortfall:.2f}s of its drawn "
                     f"{plan.window_s:.2f}s window (short by {shortfall:.2f}s, tolerance "
                     f"{bound.BURST_SPAN_TOLERANCE_S:.2f}s); a burst that does not span its "
-                    "window cannot bound the exact-run tail a production dwell will meet")
+                    "window cannot bound the exact-run tail a production dwell will meet"
+                )
             # The second look. Sized, gestured and measured exactly like the first burst, so a
             # corpus captured now stays comparable with production's own two-burst rule.
             probe_anchor = probe_burst = None
@@ -860,11 +1060,23 @@ def read_stations(driver, *, rnd: random.Random, sleep_fn, clock, origin: float,
             # what the read-scroll to the next station has to continue from.  Its stamp travels
             # with it: the anchor is the first frame of this station's card series.
             station_anchor, station_anchor_t = frame, frame_t
-            probe_target = min(rects, key=lambda r: abs(
-                _offset_of(r, frame_height=frame_height, content_band=content_band)))
-            probe = reattach_stimulus(driver, station_anchor, probe_target,
-                                      frame_height=frame_height, content_band=content_band,
-                                      rnd=rnd, sleep_fn=sleep_fn, clock=clock, origin=origin)
+            probe_target = min(
+                rects,
+                key=lambda r: abs(
+                    _offset_of(r, frame_height=frame_height, content_band=content_band)
+                ),
+            )
+            probe = reattach_stimulus(
+                driver,
+                station_anchor,
+                probe_target,
+                frame_height=frame_height,
+                content_band=content_band,
+                rnd=rnd,
+                sleep_fn=sleep_fn,
+                clock=clock,
+                origin=origin,
+            )
             if probe is None:
                 notes["reattach_probes_refused"] += 1
             else:
@@ -872,8 +1084,11 @@ def read_stations(driver, *, rnd: random.Random, sleep_fn, clock, origin: float,
                 notes["reattach_probes_ran"] += 1
                 probe_plan = bound.plan_burst(rnd)
                 probe_payloads = bound.record_spanning_burst(
-                    lambda: _guarded_screencap(driver), probe_plan, sleep_fn=sleep_fn,
-                    clock=clock)
+                    lambda: _guarded_screencap(driver),
+                    probe_plan,
+                    sleep_fn=sleep_fn,
+                    clock=clock,
+                )
                 probe_shortfall = bound.burst_span_shortfall(probe_payloads, probe_plan)
                 if probe_shortfall > bound.BURST_SPAN_TOLERANCE_S:
                     raise CampaignHalt(
@@ -882,19 +1097,34 @@ def read_stations(driver, *, rnd: random.Random, sleep_fn, clock, origin: float,
                         f"{probe_plan.window_s:.2f}s window (short by {probe_shortfall:.2f}s, "
                         f"tolerance {bound.BURST_SPAN_TOLERANCE_S:.2f}s); a burst that does not "
                         "span its window cannot bound the exact-run tail a production dwell "
-                        "will meet")
-                probe_burst = [(payload, stamp - origin) for payload, stamp in probe_payloads]
+                        "will meet"
+                    )
+                probe_burst = [
+                    (payload, stamp - origin) for payload, stamp in probe_payloads
+                ]
                 probe_span = float(probe_plan.window_s - probe_shortfall)
                 frame, frame_t = probe_payloads[-1][0], probe_payloads[-1][1] - origin
-            stations.append(Station(
-                position=position, anchor=station_anchor, anchor_t=station_anchor_t, rects=rects,
-                burst=[(payload, stamp - origin) for payload, stamp in burst_payloads],
-                planned_frames=plan.frames, planned_window_s=float(plan.window_s),
-                span_s=float(plan.window_s - shortfall), centering_steps=steps,
-                offsets_before=offsets_before,
-                reattach_anchor=probe_anchor, reattach_anchor_t=probe_anchor_t,
-                reattach_burst=probe_burst,
-                reattach_span_s=probe_span, reattach_page_shift_px=probe_shift))
+            stations.append(
+                Station(
+                    position=position,
+                    anchor=station_anchor,
+                    anchor_t=station_anchor_t,
+                    rects=rects,
+                    burst=[
+                        (payload, stamp - origin) for payload, stamp in burst_payloads
+                    ],
+                    planned_frames=plan.frames,
+                    planned_window_s=float(plan.window_s),
+                    span_s=float(plan.window_s - shortfall),
+                    centering_steps=steps,
+                    offsets_before=offsets_before,
+                    reattach_anchor=probe_anchor,
+                    reattach_anchor_t=probe_anchor_t,
+                    reattach_burst=probe_burst,
+                    reattach_span_s=probe_span,
+                    reattach_page_shift_px=probe_shift,
+                )
+            )
         else:
             notes["stations_without_a_complete_card"] += 1
         if position < planned - 1:
@@ -917,6 +1147,7 @@ def read_stations(driver, *, rnd: random.Random, sleep_fn, clock, origin: float,
 # Persistence, and the licence that gates the advance
 # =====================================================================================
 
+
 @dataclass(frozen=True)
 class ProfileHarvest:
     """Proof that one profile actually produced evidence. The ONLY key to the advance gesture.
@@ -937,11 +1168,13 @@ class ProfileHarvest:
         if not self.frame_records:
             raise EmptyProfileHalt(
                 f"{self.profile_id} persisted ZERO frames, so there is nothing to advance past "
-                "and nothing was measured; the perception path is not seeing this screen")
+                "and nothing was measured; the perception path is not seeing this screen"
+            )
         if self.measurable_cards < 1:
             raise EmptyProfileHalt(
                 f"{self.profile_id} persisted frames but produced no measurable card; refusing "
-                "to spend a real gesture on a profile that yielded no evidence")
+                "to spend a real gesture on a profile that yielded no evidence"
+            )
         for record in self.frame_records:
             path = self.root / record["path"]
             try:
@@ -949,24 +1182,31 @@ class ProfileHarvest:
             except OSError as exc:
                 raise EmptyProfileHalt(
                     f"{self.profile_id} recorded {record['path']} but it is not on disk "
-                    f"({type(exc).__name__})") from exc
+                    f"({type(exc).__name__})"
+                ) from exc
             if hashlib.sha256(payload).hexdigest() != record["sha256"]:
                 raise EmptyProfileHalt(
                     f"{self.profile_id} frame {record['path']} does not match the digest it was "
-                    "recorded with, so the persisted corpus is not what was measured")
+                    "recorded with, so the persisted corpus is not what was measured"
+                )
 
 
-def _write_frames(directory: Path, frames: list[tuple[bytes, float]], *,
-                  relative: str) -> list[dict]:
+def _write_frames(
+    directory: Path, frames: list[tuple[bytes, float]], *, relative: str
+) -> list[dict]:
     """Persist frames and return their manifest records, digest and monotonic stamp each."""
     ensure_private_dir(directory)
     records: list[dict] = []
     for position, (payload, stamp) in enumerate(frames):
         name = f"frame_{position:03d}.png"
         atomic_write_private_bytes(directory / name, payload, parent=directory)
-        records.append({"path": f"{relative}/{name}",
-                        "sha256": hashlib.sha256(payload).hexdigest(),
-                        "t": round(float(stamp), 6)})
+        records.append(
+            {
+                "path": f"{relative}/{name}",
+                "sha256": hashlib.sha256(payload).hexdigest(),
+                "t": round(float(stamp), 6),
+            }
+        )
     return records
 
 
@@ -991,23 +1231,43 @@ def advance_deck(driver, advance: str, *, harvest: ProfileHarvest) -> None:
     except HingeActionError as exc:
         raise CampaignHalt(
             f"the driver refused the {advance} advance and left the screen untouched: "
-            f"{type(exc).__name__}: {exc}") from exc
+            f"{type(exc).__name__}: {exc}"
+        ) from exc
 
 
 # =====================================================================================
 # One profile
 # =====================================================================================
 
-def _run_one_profile(*, driver, ordinal: int, out_dir: Path, next_card_no: int, advance: str,
-                     rnd: random.Random, sleep_fn, clock, classify, print_fn,
-                     segment=None) -> dict:
+
+def _run_one_profile(
+    *,
+    driver,
+    ordinal: int,
+    out_dir: Path,
+    next_card_no: int,
+    advance: str,
+    rnd: random.Random,
+    sleep_fn,
+    clock,
+    classify,
+    print_fn,
+    segment=None,
+) -> dict:
     """Read, dwell on, label and persist one profile. Performs NO gesture that advances the deck."""
     _halt_if_screen_unrecognized(driver, ordinal=ordinal)
     origin = clock()
     content_band = driver.content_band
-    stations, notes = read_stations(driver, rnd=rnd, sleep_fn=sleep_fn, clock=clock,
-                                    origin=origin, content_band=content_band, segment=segment,
-                                    print_fn=print_fn)
+    stations, notes = read_stations(
+        driver,
+        rnd=rnd,
+        sleep_fn=sleep_fn,
+        clock=clock,
+        origin=origin,
+        content_band=content_band,
+        segment=segment,
+        print_fn=print_fn,
+    )
 
     profile_id = f"profile_{ordinal:04d}"
     profile_dir = out_dir / "profiles" / profile_id
@@ -1020,11 +1280,16 @@ def _run_one_profile(*, driver, ordinal: int, out_dir: Path, next_card_no: int, 
 
     for station in stations:
         tag = f"station_{station.position:02d}"
-        anchor_records = _write_frames(profile_dir / tag / "anchor",
-                                       [(station.anchor, station.anchor_t)],
-                                       relative=f"profiles/{profile_id}/{tag}/anchor")
-        burst_records = _write_frames(profile_dir / tag / "burst", station.burst,
-                                      relative=f"profiles/{profile_id}/{tag}/burst")
+        anchor_records = _write_frames(
+            profile_dir / tag / "anchor",
+            [(station.anchor, station.anchor_t)],
+            relative=f"profiles/{profile_id}/{tag}/anchor",
+        )
+        burst_records = _write_frames(
+            profile_dir / tag / "burst",
+            station.burst,
+            relative=f"profiles/{profile_id}/{tag}/burst",
+        )
         frame_records.extend(anchor_records + burst_records)
         sequence = [station.anchor] + [payload for payload, _t in station.burst]
         # Read back off the records rather than re-rounded here, so the frame manifest and the
@@ -1040,28 +1305,38 @@ def _run_one_profile(*, driver, ordinal: int, out_dir: Path, next_card_no: int, 
             reattach_anchor_records = _write_frames(
                 profile_dir / tag / "reattach_anchor",
                 [(station.reattach_anchor, station.reattach_anchor_t)],
-                relative=f"profiles/{profile_id}/{tag}/reattach_anchor")
+                relative=f"profiles/{profile_id}/{tag}/reattach_anchor",
+            )
             reattach_burst_records = _write_frames(
-                profile_dir / tag / "reattach_burst", station.reattach_burst,
-                relative=f"profiles/{profile_id}/{tag}/reattach_burst")
+                profile_dir / tag / "reattach_burst",
+                station.reattach_burst,
+                relative=f"profiles/{profile_id}/{tag}/reattach_burst",
+            )
             frame_records.extend(reattach_anchor_records + reattach_burst_records)
-            reattach_sequence = ([station.reattach_anchor]
-                                 + [payload for payload, _t in station.reattach_burst])
-            reattach_times = ([reattach_anchor_records[0]["t"]]
-                              + [record["t"] for record in reattach_burst_records])
+            reattach_sequence = [station.reattach_anchor] + [
+                payload for payload, _t in station.reattach_burst
+            ]
+            reattach_times = [reattach_anchor_records[0]["t"]] + [
+                record["t"] for record in reattach_burst_records
+            ]
         else:
             reattach_anchor_records = []
             reattach_burst_records = []
         frame_height = bound._frame_size(station.anchor)[1]
         station_cards: list[str] = []
         for rect in station.rects:
-            observation = observe_card(rect, sequence, dwell_span_s=span,
-                                       matcher=driver._match_video_mute,
-                                       frame_height=frame_height, content_band=content_band,
-                                       classify=classify,
-                                       reattach_sequence=reattach_sequence or None,
-                                       reattach_span_s=station.reattach_span_s,
-                                       reattach_page_shift_px=station.reattach_page_shift_px)
+            observation = observe_card(
+                rect,
+                sequence,
+                dwell_span_s=span,
+                matcher=driver._match_video_mute,
+                frame_height=frame_height,
+                content_band=content_band,
+                classify=classify,
+                reattach_sequence=reattach_sequence or None,
+                reattach_span_s=station.reattach_span_s,
+                reattach_page_shift_px=station.reattach_page_shift_px,
+            )
             digest = hashlib.sha256(observation.crops[0]).hexdigest()
             if digest in seen_crop_digests:
                 # The same physical card seen from two stations would be counted twice in a
@@ -1074,122 +1349,191 @@ def _run_one_profile(*, driver, ordinal: int, out_dir: Path, next_card_no: int, 
             card_id = f"card_{card_no:04d}"
             card_no += 1
             crop_records = _write_frames(
-                out_dir / "cards" / card_id, list(zip(observation.crops, times, strict=True)),
-                relative=f"cards/{card_id}")
+                out_dir / "cards" / card_id,
+                list(zip(observation.crops, times, strict=True)),
+                relative=f"cards/{card_id}",
+            )
             frame_records.extend(crop_records)
             # Kept in their OWN key rather than appended to `frames`: the sibling's `measure`
             # computes the byte-exact run from `frames`, and splicing a second burst into that
             # list would silently redefine the statistic the whole campaign reports.
-            reattach_crop_records = _write_frames(
-                out_dir / "cards" / card_id / "reattach",
-                list(zip(observation.reattach_crops, reattach_times, strict=True)),
-                relative=f"cards/{card_id}/reattach") if observation.reattach_crops else []
+            reattach_crop_records = (
+                _write_frames(
+                    out_dir / "cards" / card_id / "reattach",
+                    list(zip(observation.reattach_crops, reattach_times, strict=True)),
+                    relative=f"cards/{card_id}/reattach",
+                )
+                if observation.reattach_crops
+                else []
+            )
             frame_records.extend(reattach_crop_records)
-            cards.append({
-                "card_id": card_id, "profile_id": profile_id, "station": station.position,
-                "card_rect": list(observation.rect), "label": observation.label,
-                # The autoplay precondition, per card per burst, measured not assumed.
-                "centered": observation.centered,
-                "center_offset_frac": round(observation.center_offset_frac, 6),
-                "center_band_frac": CENTER_BAND_FRAC,
-                # Deliberately never settled before the burst: a settle waits until two
-                # consecutive frames are identical, which would start every burst at a proven
-                # moment of stillness and bias the exactness statistic towards `photo` on
-                # exactly the stalling videos the bound is about.
-                "settled": None, "settle_reads": 0,
-                "settle_skipped_reason": "a settle would start every burst at a moment of proven "
-                                         "stillness and bias the exact-run statistic",
-                "planned_frames": station.planned_frames,
-                "planned_window_s": round(station.planned_window_s, 6),
-                "frames": crop_records,
-                "crop_sources": ([{"path": anchor_records[0]["path"], "role": "anchor"}]
-                                 + [{"path": record["path"], "role": "burst"}
-                                    for record in burst_records]),
-                "burst_completed_t": round(times[-1], 6),
-                "label_prompted_t": round(clock() - origin, 6),
-                "reattach_probe_ran": observation.reattach_probe_ran,
-                "reattach_rect": (list(observation.reattach_rect)
-                                  if observation.reattach_rect else None),
-                "reattach_page_shift_px": station.reattach_page_shift_px,
-                "reattach_span_s": observation.reattach_dwell_span_s,
-                "reattach_frames": reattach_crop_records,
-                "reattach_crop_sources": (
-                    ([{"path": reattach_anchor_records[0]["path"], "role": "reattach_anchor"}]
-                     + [{"path": record["path"], "role": "reattach_burst"}
-                        for record in reattach_burst_records])
-                    if reattach_anchor_records else []),
-                "mute_matcher_observations": [
-                    {"screened": record["screened"], "score": record["score"],
-                     "observational_only": True} for record in observation.mute_records],
-                # `label_evidence` is the measurement record the label was derived FROM. Each
-                # per-frame entry is marked observational, exactly as the owner-labeled sibling
-                # marks the same matcher's output, and `circular` states plainly that here those
-                # observations are ALSO the label, which is what makes the bound vacuous.
-                "label_evidence": {
-                    "circular": True, "channel": CIRCULAR_CHANNEL,
-                    "reason": observation.label_reason, "glyph_hit": observation.glyph_hit,
-                    "max_glyph_score": observation.max_glyph_score,
-                    "dwell_exact": observation.dwell_exact,
-                    "mute_screens_complete": observation.mute_screens_complete,
-                    "classifier_verdict": observation.classifier_verdict,
+            cards.append(
+                {
+                    "card_id": card_id,
+                    "profile_id": profile_id,
+                    "station": station.position,
+                    "card_rect": list(observation.rect),
+                    "label": observation.label,
+                    # The autoplay precondition, per card per burst, measured not assumed.
                     "centered": observation.centered,
                     "center_offset_frac": round(observation.center_offset_frac, 6),
-                    "dwell_span_s": observation.dwell_span_s,
-                    "burst_screens": [dict(record) for record in observation.mute_records],
+                    "center_band_frac": CENTER_BAND_FRAC,
+                    # Deliberately never settled before the burst: a settle waits until two
+                    # consecutive frames are identical, which would start every burst at a proven
+                    # moment of stillness and bias the exactness statistic towards `photo` on
+                    # exactly the stalling videos the bound is about.
+                    "settled": None,
+                    "settle_reads": 0,
+                    "settle_skipped_reason": "a settle would start every burst at a moment of proven "
+                    "stillness and bias the exact-run statistic",
+                    "planned_frames": station.planned_frames,
+                    "planned_window_s": round(station.planned_window_s, 6),
+                    "frames": crop_records,
+                    "crop_sources": (
+                        [{"path": anchor_records[0]["path"], "role": "anchor"}]
+                        + [
+                            {"path": record["path"], "role": "burst"}
+                            for record in burst_records
+                        ]
+                    ),
+                    "burst_completed_t": round(times[-1], 6),
+                    "label_prompted_t": round(clock() - origin, 6),
                     "reattach_probe_ran": observation.reattach_probe_ran,
-                    "reattach_dwell_exact": observation.reattach_dwell_exact,
-                    "reattach_mute_screens_complete": observation.reattach_mute_screens_complete,
-                    "reattach_centered": observation.reattach_centered,
-                    "reattach_center_offset_frac": (
-                        None if observation.reattach_center_offset_frac is None
-                        else round(observation.reattach_center_offset_frac, 6)),
-                    "reattach_dwell_span_s": observation.reattach_dwell_span_s,
-                    "reattach_burst_screens": [dict(record)
-                                               for record in observation.reattach_mute_records],
-                    "observational_only": True,
-                },
-            })
+                    "reattach_rect": (
+                        list(observation.reattach_rect)
+                        if observation.reattach_rect
+                        else None
+                    ),
+                    "reattach_page_shift_px": station.reattach_page_shift_px,
+                    "reattach_span_s": observation.reattach_dwell_span_s,
+                    "reattach_frames": reattach_crop_records,
+                    "reattach_crop_sources": (
+                        (
+                            [
+                                {
+                                    "path": reattach_anchor_records[0]["path"],
+                                    "role": "reattach_anchor",
+                                }
+                            ]
+                            + [
+                                {"path": record["path"], "role": "reattach_burst"}
+                                for record in reattach_burst_records
+                            ]
+                        )
+                        if reattach_anchor_records
+                        else []
+                    ),
+                    "mute_matcher_observations": [
+                        {
+                            "screened": record["screened"],
+                            "score": record["score"],
+                            "observational_only": True,
+                        }
+                        for record in observation.mute_records
+                    ],
+                    # `label_evidence` is the measurement record the label was derived FROM. Each
+                    # per-frame entry is marked observational, exactly as the owner-labeled sibling
+                    # marks the same matcher's output, and `circular` states plainly that here those
+                    # observations are ALSO the label, which is what makes the bound vacuous.
+                    "label_evidence": {
+                        "circular": True,
+                        "channel": CIRCULAR_CHANNEL,
+                        "reason": observation.label_reason,
+                        "glyph_hit": observation.glyph_hit,
+                        "max_glyph_score": observation.max_glyph_score,
+                        "dwell_exact": observation.dwell_exact,
+                        "mute_screens_complete": observation.mute_screens_complete,
+                        "classifier_verdict": observation.classifier_verdict,
+                        "centered": observation.centered,
+                        "center_offset_frac": round(observation.center_offset_frac, 6),
+                        "dwell_span_s": observation.dwell_span_s,
+                        "burst_screens": [
+                            dict(record) for record in observation.mute_records
+                        ],
+                        "reattach_probe_ran": observation.reattach_probe_ran,
+                        "reattach_dwell_exact": observation.reattach_dwell_exact,
+                        "reattach_mute_screens_complete": observation.reattach_mute_screens_complete,
+                        "reattach_centered": observation.reattach_centered,
+                        "reattach_center_offset_frac": (
+                            None
+                            if observation.reattach_center_offset_frac is None
+                            else round(observation.reattach_center_offset_frac, 6)
+                        ),
+                        "reattach_dwell_span_s": observation.reattach_dwell_span_s,
+                        "reattach_burst_screens": [
+                            dict(record) for record in observation.reattach_mute_records
+                        ],
+                        "observational_only": True,
+                    },
+                }
+            )
             station_cards.append(card_id)
-        station_records.append({
-            "station": station.position, "anchor_frame": anchor_records[0],
-            "burst_frames": burst_records, "card_rects": [list(r) for r in station.rects],
-            "cards": station_cards, "planned_frames": station.planned_frames,
-            "planned_window_s": round(station.planned_window_s, 6),
-            "burst_span_s": round(station.span_s, 6),
-            "centering_steps": station.centering_steps,
-            "offsets_before_centering": list(station.offsets_before),
-            "reattach_anchor_frame": (reattach_anchor_records[0]
-                                      if reattach_anchor_records else None),
-            "reattach_burst_frames": reattach_burst_records,
-            "reattach_span_s": (None if station.reattach_span_s is None
-                                else round(station.reattach_span_s, 6)),
-            "reattach_page_shift_px": station.reattach_page_shift_px})
+        station_records.append(
+            {
+                "station": station.position,
+                "anchor_frame": anchor_records[0],
+                "burst_frames": burst_records,
+                "card_rects": [list(r) for r in station.rects],
+                "cards": station_cards,
+                "planned_frames": station.planned_frames,
+                "planned_window_s": round(station.planned_window_s, 6),
+                "burst_span_s": round(station.span_s, 6),
+                "centering_steps": station.centering_steps,
+                "offsets_before_centering": list(station.offsets_before),
+                "reattach_anchor_frame": (
+                    reattach_anchor_records[0] if reattach_anchor_records else None
+                ),
+                "reattach_burst_frames": reattach_burst_records,
+                "reattach_span_s": (
+                    None
+                    if station.reattach_span_s is None
+                    else round(station.reattach_span_s, 6)
+                ),
+                "reattach_page_shift_px": station.reattach_page_shift_px,
+            }
+        )
 
-    harvest = ProfileHarvest(profile_id=profile_id, root=out_dir,
-                             frame_records=tuple(frame_records), measurable_cards=len(cards))
-    print_fn(f"  profile {ordinal}: {len(station_records)} station(s), {len(cards)} card(s) "
-             f"[{', '.join(card['label'] for card in cards) or 'none'}], "
-             f"{len(frame_records)} frame(s) persisted, "
-             f"{sum(1 for card in cards if card['centered'])} centred")
+    harvest = ProfileHarvest(
+        profile_id=profile_id,
+        root=out_dir,
+        frame_records=tuple(frame_records),
+        measurable_cards=len(cards),
+    )
+    print_fn(
+        f"  profile {ordinal}: {len(station_records)} station(s), {len(cards)} card(s) "
+        f"[{', '.join(card['label'] for card in cards) or 'none'}], "
+        f"{len(frame_records)} frame(s) persisted, "
+        f"{sum(1 for card in cards if card['centered'])} centred"
+    )
     return {
         "profile": {
-            "profile_id": profile_id, "ordinal": ordinal, "stations": station_records,
-            "persisted_frames": len(frame_records), "cards": len(cards),
+            "profile_id": profile_id,
+            "ordinal": ordinal,
+            "stations": station_records,
+            "persisted_frames": len(frame_records),
+            "cards": len(cards),
             "duplicate_card_crops_skipped": duplicates,
-            "advance": advance, "advanced": False,
+            "advance": advance,
+            "advanced": False,
             # Filled in by the campaign loop once the advance step runs; a profile that halted
             # before it keeps the zero/None it was born with, which is the honest record.
-            "repositioning_gestures": 0, "deck_confirmed_before_advance": None,
+            "repositioning_gestures": 0,
+            "deck_confirmed_before_advance": None,
             **notes,
         },
-        "cards": cards, "harvest": harvest, "next_card_no": card_no,
-        "frame_size_px": (list(bound._frame_size(stations[0].anchor)) if stations else None),
+        "cards": cards,
+        "harvest": harvest,
+        "next_card_no": card_no,
+        "frame_size_px": (
+            list(bound._frame_size(stations[0].anchor)) if stations else None
+        ),
     }
 
 
 # =====================================================================================
 # Signals
 # =====================================================================================
+
 
 def _raise_on_signal(signum, _frame):
     """Turn SIGINT/SIGTERM into an ordinary halt so the manifest is still written.
@@ -1204,7 +1548,8 @@ def _raise_on_signal(signum, _frame):
     except ValueError:
         name = str(signum)
     raise CampaignSignalled(
-        f"received {name}; stopping without another gesture and writing the incomplete manifest")
+        f"received {name}; stopping without another gesture and writing the incomplete manifest"
+    )
 
 
 @contextlib.contextmanager
@@ -1220,8 +1565,10 @@ def halt_on_signals(*, signal_module=signal, print_fn=print):
         except (ValueError, OSError, RuntimeError):
             # Only the main thread may install handlers.  Say so rather than let a caller
             # believe an interrupted run will still write its manifest.
-            print_fn(f"note: {name} could not be trapped here, so a signal will not write the "
-                     "incomplete manifest")
+            print_fn(
+                f"note: {name} could not be trapped here, so a signal will not write the "
+                "incomplete manifest"
+            )
     try:
         yield tuple(installed)
     finally:
@@ -1236,13 +1583,27 @@ def halt_on_signals(*, signal_module=signal, print_fn=print):
 # The campaign loop
 # =====================================================================================
 
-def run_capture(*, out_dir: Path, driver, advance: str, serial: str,
-                config_sha256: str | None, target_videos: int, target_photos: int,
-                max_profiles: int | None = None, hinge_version_name: str | None = None,
-                driver_content_band: tuple[float, float] | None = None,
-                print_fn=print, sleep_fn=time.sleep, clock=time.monotonic,
-                rnd: random.Random | None = None, classify=None, segment=None,
-                signal_module=signal) -> dict:
+
+def run_capture(
+    *,
+    out_dir: Path,
+    driver,
+    advance: str,
+    serial: str,
+    config_sha256: str | None,
+    target_videos: int,
+    target_photos: int,
+    max_profiles: int | None = None,
+    hinge_version_name: str | None = None,
+    driver_content_band: tuple[float, float] | None = None,
+    print_fn=print,
+    sleep_fn=time.sleep,
+    clock=time.monotonic,
+    rnd: random.Random | None = None,
+    classify=None,
+    segment=None,
+    signal_module=signal,
+) -> dict:
     """Drive the deck until the targets are met, the profile budget runs out, or a halt."""
     rnd = rnd or random.Random()
     ensure_private_dir(out_dir / "cards")
@@ -1264,7 +1625,8 @@ def run_capture(*, out_dir: Path, driver, advance: str, serial: str,
         f"not evidence.\nAdvance action for this run: {advance.upper()} (one real {advance} per "
         f"profile, never a paid control).\nA profile that persists no frame or yields no card "
         f"HALTS the run before any advance.\nFrames are LOCAL-ONLY under gitignored "
-        f"ops/calibration/: these are real people's profiles.\n")
+        f"ops/calibration/: these are real people's profiles.\n"
+    )
 
     try:
         with halt_on_signals(signal_module=signal_module, print_fn=print_fn):
@@ -1275,18 +1637,31 @@ def run_capture(*, out_dir: Path, driver, advance: str, serial: str,
             if not driver._ensure_session_top():
                 raise CampaignHalt(
                     "the card could not be confirmed at its scroll top at session start, so the "
-                    "run would begin part way down somebody's profile")
+                    "run would begin part way down somebody's profile"
+                )
             while True:
-                if counts[LABEL_VIDEO] >= target_videos and counts[LABEL_PHOTO] >= target_photos:
+                if (
+                    counts[LABEL_VIDEO] >= target_videos
+                    and counts[LABEL_PHOTO] >= target_photos
+                ):
                     ended = "targets_reached"
                     break
                 if max_profiles is not None and len(profiles) >= max_profiles:
                     ended = "max_profiles"
                     break
                 result = _run_one_profile(
-                    driver=driver, ordinal=len(profiles) + 1, out_dir=out_dir,
-                    next_card_no=next_card_no, advance=advance, rnd=rnd, sleep_fn=sleep_fn,
-                    clock=clock, classify=classify, print_fn=print_fn, segment=segment)
+                    driver=driver,
+                    ordinal=len(profiles) + 1,
+                    out_dir=out_dir,
+                    next_card_no=next_card_no,
+                    advance=advance,
+                    rnd=rnd,
+                    sleep_fn=sleep_fn,
+                    clock=clock,
+                    classify=classify,
+                    print_fn=print_fn,
+                    segment=segment,
+                )
                 profiles.append(result["profile"])
                 cards.extend(result["cards"])
                 next_card_no = result["next_card_no"]
@@ -1298,7 +1673,8 @@ def run_capture(*, out_dir: Path, driver, advance: str, serial: str,
                 # profile halts here and the page is left exactly where the walk left it.
                 result["harvest"].require_advance_licence()
                 gestures, confirmed = reposition_for_advance(
-                    driver, rnd=rnd, sleep_fn=sleep_fn, print_fn=print_fn)
+                    driver, rnd=rnd, sleep_fn=sleep_fn, print_fn=print_fn
+                )
                 result["profile"]["repositioning_gestures"] = gestures
                 result["profile"]["deck_confirmed_before_advance"] = confirmed
                 # Attempted regardless of `confirmed`: the driver's own confirmation is the only
@@ -1325,15 +1701,19 @@ def run_capture(*, out_dir: Path, driver, advance: str, serial: str,
         if isinstance(exc, EmptyProfileHalt):
             ended = "halted_empty_profile"
         halt_reason = str(exc)
-        print_fn(f"\nHALTED: {halt_reason}\nThe screen was left untouched for debugging.")
+        print_fn(
+            f"\nHALTED: {halt_reason}\nThe screen was left untouched for debugging."
+        )
     except Exception as exc:  # noqa: BLE001 -- record what was captured, then re-raise loudly
         ended = "halted"
         halt_reason = f"{type(exc).__name__}: {exc}"
         aborted = exc
 
     manifest = {
-        "schema_version": bound._MANIFEST_SCHEMA_VERSION, "kind": bound._CAMPAIGN_KIND,
-        "tool_version": _TOOL_VERSION, "campaign_mode": _CAMPAIGN_MODE,
+        "schema_version": bound._MANIFEST_SCHEMA_VERSION,
+        "kind": bound._CAMPAIGN_KIND,
+        "tool_version": _TOOL_VERSION,
+        "campaign_mode": _CAMPAIGN_MODE,
         "ground_truth_channel": CIRCULAR_CHANNEL,
         "human_ground_truth": False,
         "accepted_circular_risk": CIRCULAR_ACCEPTANCE,
@@ -1347,7 +1727,7 @@ def run_capture(*, out_dir: Path, driver, advance: str, serial: str,
         # cards held inside the same zone.
         "autoplay_center_band_frac": CENTER_BAND_FRAC,
         "burst_schedule": "absolute deadlines across the drawn window; per-frame monotonic "
-                          "stamps taken at screencap time, never file mtimes",
+        "stamps taken at screencap time, never file mtimes",
         # The hazard spans every burst in this campaign was drawn from. Two sittings can only be
         # merged into one denominator when they ran the same experiment, and this is what "the
         # same experiment" means for a dwell: see `_MERGE_AGREEMENT_FIELDS`.
@@ -1367,27 +1747,44 @@ def run_capture(*, out_dir: Path, driver, advance: str, serial: str,
         "advance_action": advance,
         "like_confirmation": LIKE_CONFIRMATION if advance == ADVANCE_LIKE else None,
         "completed": ended in ("targets_reached", "max_profiles"),
-        "ended": ended, "halt_reason": halt_reason,
-        "device": serial, "hinge_version_name": hinge_version_name,
+        "ended": ended,
+        "halt_reason": halt_reason,
+        "device": serial,
+        "hinge_version_name": hinge_version_name,
         "frame_size_px": frame_size,
         "content_band": [_CARD_CROP_BAND[0], _CARD_CROP_BAND[1]],
         "card_frames_are_card_rect_crops": True,
-        "driver_content_band": (None if driver_content_band is None
-                                else [driver_content_band[0], driver_content_band[1]]),
+        "driver_content_band": (
+            None
+            if driver_content_band is None
+            else [driver_content_band[0], driver_content_band[1]]
+        ),
         "config_sha256": config_sha256,
         "captured_at": datetime.now(timezone.utc).isoformat(),
-        "targets": {"videos": target_videos, "photos": target_photos,
-                    "max_profiles": max_profiles},
-        "counts": {"profiles_seen": len(profiles), "passes": spent[ADVANCE_PASS],
-                   "likes": spent[ADVANCE_LIKE], "cards": len(cards), **counts},
+        "targets": {
+            "videos": target_videos,
+            "photos": target_photos,
+            "max_profiles": max_profiles,
+        },
+        "counts": {
+            "profiles_seen": len(profiles),
+            "passes": spent[ADVANCE_PASS],
+            "likes": spent[ADVANCE_LIKE],
+            "cards": len(cards),
+            **counts,
+        },
         "profiles": profiles,
         "cards": cards,
     }
-    atomic_write_private_text(out_dir / "manifest.json",
-                              json.dumps(manifest, indent=2, sort_keys=True) + "\n",
-                              parent=out_dir)
-    print_fn(f"\nwrote {out_dir / 'manifest.json'} "
-             f"({'complete' if manifest['completed'] else 'INCOMPLETE'})")
+    atomic_write_private_text(
+        out_dir / "manifest.json",
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+        parent=out_dir,
+    )
+    print_fn(
+        f"\nwrote {out_dir / 'manifest.json'} "
+        f"({'complete' if manifest['completed'] else 'INCOMPLETE'})"
+    )
     if aborted is not None:
         raise aborted
     return manifest
@@ -1395,19 +1792,26 @@ def run_capture(*, out_dir: Path, driver, advance: str, serial: str,
 
 def print_run_summary(manifest: dict, *, print_fn=print) -> None:
     counts = manifest.get("counts") or {}
-    print_fn(f"\nprofiles seen: {counts.get('profiles_seen', 0)}  "
-             f"passes spent: {counts.get('passes', 0)}  likes spent: {counts.get('likes', 0)}")
-    print_fn(f"cards: {counts.get('cards', 0)} "
-             f"(video {counts.get(LABEL_VIDEO, 0)}, photo {counts.get(LABEL_PHOTO, 0)}, "
-             f"written {counts.get(LABEL_WRITTEN, 0)}, unsure {counts.get(LABEL_UNSURE, 0)})")
-    print_fn(f"ended: {manifest.get('ended')}"
-             + (f" -- {manifest['halt_reason']}" if manifest.get("halt_reason") else ""))
+    print_fn(
+        f"\nprofiles seen: {counts.get('profiles_seen', 0)}  "
+        f"passes spent: {counts.get('passes', 0)}  likes spent: {counts.get('likes', 0)}"
+    )
+    print_fn(
+        f"cards: {counts.get('cards', 0)} "
+        f"(video {counts.get(LABEL_VIDEO, 0)}, photo {counts.get(LABEL_PHOTO, 0)}, "
+        f"written {counts.get(LABEL_WRITTEN, 0)}, unsure {counts.get(LABEL_UNSURE, 0)})"
+    )
+    print_fn(
+        f"ended: {manifest.get('ended')}"
+        + (f" -- {manifest['halt_reason']}" if manifest.get("halt_reason") else "")
+    )
     print_fn(f"\n{LABEL_BLIND_SPOT}")
 
 
 # =====================================================================================
 # measure / emit: the sibling's machinery, restricted to this channel
 # =====================================================================================
+
 
 def measure(campaigns, *, config_path: str | None = None) -> bound.BoundResult:
     """The sibling's own offline bound, refusing anything that is not a circular campaign.
@@ -1433,26 +1837,31 @@ def measure(campaigns, *, config_path: str | None = None) -> bound.BoundResult:
         raise AutoBoundRefused(
             f"{campaigns} was captured on the {channel!r} channel; measure it with "
             "`python -m tools.hinge_video_bound measure`, which is the harness that channel "
-            "belongs to")
+            "belongs to"
+        )
     return result
 
 
-def emit(campaigns, *, config_path: str,
-         serial_override: str | None = None) -> tuple[dict, dict]:
+def emit(
+    campaigns, *, config_path: str, serial_override: str | None = None
+) -> tuple[dict, dict]:
     """Freeze bound.json and the paste block for one or more circular campaigns."""
     measure(campaigns, config_path=config_path)
-    artifact, paste = bound.emit(campaigns, config_path=config_path,
-                                 serial_override=serial_override)
+    artifact, paste = bound.emit(
+        campaigns, config_path=config_path, serial_override=serial_override
+    )
     if artifact.get("accepted_circular_risk") != CIRCULAR_ACCEPTANCE:
         raise AutoBoundRefused(
             "the frozen artifact does not carry the circular acceptance phrase; config "
-            "validation would refuse it and a reader could mistake it for owner-labeled evidence")
+            "validation would refuse it and a reader could mistake it for owner-labeled evidence"
+        )
     return artifact, paste
 
 
 # =====================================================================================
 # CLI
 # =====================================================================================
+
 
 def _refuse_unconfirmed(args) -> None:
     """Every authorization check, before a line of config is read or a device is touched."""
@@ -1461,16 +1870,23 @@ def _refuse_unconfirmed(args) -> None:
             f"capture requires the exact --confirmation {CIRCULAR_ACCEPTANCE!r}. It accepts a "
             "measurement whose video labels come from the same signals the accept rule reads, "
             "so the video false-accept count it produces is zero by construction. It is "
-            "deliberately not enabled by a short flag.")
+            "deliberately not enabled by a short flag."
+        )
     if args.advance not in ADVANCE_ACTIONS:
         raise AutoBoundRefused(f"--advance must be one of {ADVANCE_ACTIONS}")
-    if args.advance == ADVANCE_LIKE and getattr(args, "like_confirmation", "") != LIKE_CONFIRMATION:
+    if (
+        args.advance == ADVANCE_LIKE
+        and getattr(args, "like_confirmation", "") != LIKE_CONFIRMATION
+    ):
         raise AutoBoundRefused(
             f"--advance like requires the exact --like-confirmation {LIKE_CONFIRMATION!r}, "
             "separate from --confirmation. It replaces this campaign's Pass with a REAL, "
-            "PERMANENT Like on every profile it reads.")
+            "PERMANENT Like on every profile it reads."
+        )
     if args.target_videos < 1 or args.target_photos < 1:
-        raise AutoBoundRefused("--target-videos and --target-photos must both be at least 1")
+        raise AutoBoundRefused(
+            "--target-videos and --target-photos must both be at least 1"
+        )
     if args.max_profiles is not None and args.max_profiles < 1:
         raise AutoBoundRefused("--max-profiles must be at least 1 when given")
 
@@ -1487,11 +1903,13 @@ def preflight_perception(driver) -> None:
     """
     if driver.content_band is None:
         raise AutoBoundRefused(
-            "apps.hinge.content_band is unavailable, so no card rect can be segmented at all")
+            "apps.hinge.content_band is unavailable, so no card rect can be segmented at all"
+        )
     if driver._template("like") is None:
         raise AutoBoundRefused(
             "the calibrated 'like' glyph template could not be loaded, so segmentation cannot "
-            "tell a card from a heartless context block and every frame would yield zero cards")
+            "tell a card from a heartless context block and every frame would yield zero cards"
+        )
 
 
 def build_driver(config_path: str):
@@ -1533,18 +1951,25 @@ def _capture_command_unlocked(args) -> int:
     cfg_map, cfg_raw = bound._load_config_mapping(args.config)
     app_cfg = bound._hinge_app_config(cfg_map)
     serial, adb_path = bound._resolve_serial(app_cfg, args.serial)
-    version_name = bound._device_version_name(serial, adb_path,
-                                              app_cfg.get("package", _DEFAULT_PACKAGE))
+    version_name = bound._device_version_name(
+        serial, adb_path, app_cfg.get("package", _DEFAULT_PACKAGE)
+    )
     out_dir = bound._private_out_dir(args.out, prefix="videoauto")
     driver = build_driver(args.config)
     try:
         preflight_perception(driver)
         manifest = run_capture(
-            out_dir=out_dir, driver=driver, advance=args.advance, serial=serial,
+            out_dir=out_dir,
+            driver=driver,
+            advance=args.advance,
+            serial=serial,
             config_sha256=None if cfg_raw is None else bound._sha(cfg_raw),
-            target_videos=args.target_videos, target_photos=args.target_photos,
-            max_profiles=args.max_profiles, hinge_version_name=version_name,
-            driver_content_band=driver.content_band)
+            target_videos=args.target_videos,
+            target_photos=args.target_photos,
+            max_profiles=args.max_profiles,
+            hinge_version_name=version_name,
+            driver_content_band=driver.content_band,
+        )
     finally:
         driver.close()
     print_run_summary(manifest)
@@ -1555,39 +1980,64 @@ def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(
         prog="python -m tools.hinge_video_bound_auto",
         description="Automated, AI-labeled still-photo bound campaign for Hinge. The label "
-                    "channel is CIRCULAR by owner decision: the video false-accept count it "
-                    "produces is zero by construction and is not evidence.")
+        "channel is CIRCULAR by owner decision: the video false-accept count it "
+        "produces is zero by construction and is not evidence.",
+    )
     sub = ap.add_subparsers(dest="command", required=True)
 
-    capture = sub.add_parser("capture", help="drive the deck and build an AI-labeled corpus")
+    capture = sub.add_parser(
+        "capture", help="drive the deck and build an AI-labeled corpus"
+    )
     capture.add_argument("--out", default=None)
     capture.add_argument("--config", default="config.yaml")
     capture.add_argument("--serial", default=None)
     # required, with NO default: the advance action spends something real on every profile, so
     # it is chosen per run and can never be inherited from a default nobody typed.
-    capture.add_argument("--advance", choices=list(ADVANCE_ACTIONS), required=True,
-                         help="what to spend on each profile after it is captured")
-    capture.add_argument("--confirmation", default="",
-                         help=f"required exact phrase: {CIRCULAR_ACCEPTANCE}")
-    capture.add_argument("--like-confirmation", dest="like_confirmation", default="",
-                         help=f"required exact phrase for --advance like: {LIKE_CONFIRMATION}")
-    capture.add_argument("--target-videos", dest="target_videos", type=int,
-                         default=bound.MIN_VIDEO_CARDS)
-    capture.add_argument("--target-photos", dest="target_photos", type=int,
-                         default=bound.MIN_PHOTO_CARDS)
+    capture.add_argument(
+        "--advance",
+        choices=list(ADVANCE_ACTIONS),
+        required=True,
+        help="what to spend on each profile after it is captured",
+    )
+    capture.add_argument(
+        "--confirmation",
+        default="",
+        help=f"required exact phrase: {CIRCULAR_ACCEPTANCE}",
+    )
+    capture.add_argument(
+        "--like-confirmation",
+        dest="like_confirmation",
+        default="",
+        help=f"required exact phrase for --advance like: {LIKE_CONFIRMATION}",
+    )
+    capture.add_argument(
+        "--target-videos", dest="target_videos", type=int, default=bound.MIN_VIDEO_CARDS
+    )
+    capture.add_argument(
+        "--target-photos", dest="target_photos", type=int, default=bound.MIN_PHOTO_CARDS
+    )
     capture.add_argument("--max-profiles", dest="max_profiles", type=int, default=None)
 
-    measure_cmd = sub.add_parser("measure",
-                                 help="offline bound over one or more captured campaigns")
-    measure_cmd.add_argument("campaign", nargs="+",
-                             help="one or more completed campaign directories, merged into one "
-                                  "denominator; every field the artifact binds must agree")
+    measure_cmd = sub.add_parser(
+        "measure", help="offline bound over one or more captured campaigns"
+    )
+    measure_cmd.add_argument(
+        "campaign",
+        nargs="+",
+        help="one or more completed campaign directories, merged into one "
+        "denominator; every field the artifact binds must agree",
+    )
     measure_cmd.add_argument("--config", default=None)
 
-    emit_cmd = sub.add_parser("emit", help="freeze bound.json and print the config paste block")
-    emit_cmd.add_argument("campaign", nargs="+",
-                          help="the same directory list `measure` passed; bound.json is written "
-                               "into the first")
+    emit_cmd = sub.add_parser(
+        "emit", help="freeze bound.json and print the config paste block"
+    )
+    emit_cmd.add_argument(
+        "campaign",
+        nargs="+",
+        help="the same directory list `measure` passed; bound.json is written "
+        "into the first",
+    )
     emit_cmd.add_argument("--config", default="config.yaml")
     emit_cmd.add_argument("--serial", default=None)
 
@@ -1596,23 +2046,36 @@ def main(argv: list[str] | None = None) -> None:
         if args.command == "capture":
             sys.exit(_capture_command(args))
         elif args.command == "measure":
-            result = measure([bound._existing_campaign_dir(path) for path in args.campaign],
-                             config_path=args.config)
+            result = measure(
+                [bound._existing_campaign_dir(path) for path in args.campaign],
+                config_path=args.config,
+            )
             bound.print_bound_report(result)
-            print("\nbound holds against this campaign's own labels. Run `emit` to freeze it, "
-                  "and read the\ncaveat above before quoting the video-accept line anywhere.")
+            print(
+                "\nbound holds against this campaign's own labels. Run `emit` to freeze it, "
+                "and read the\ncaveat above before quoting the video-accept line anywhere."
+            )
         else:
             roots = [bound._existing_campaign_dir(path) for path in args.campaign]
             campaign = roots[0]
-            artifact, paste = emit(roots, config_path=args.config,
-                                   serial_override=args.serial)
-            print(f"wrote {campaign / 'bound.json'} "
-                  f"(evidence_sha256 {artifact['evidence_sha256']})\n")
+            artifact, paste = emit(
+                roots, config_path=args.config, serial_override=args.serial
+            )
+            print(
+                f"wrote {campaign / 'bound.json'} "
+                f"(evidence_sha256 {artifact['evidence_sha256']})\n"
+            )
             print(LABEL_BLIND_SPOT + "\n")
-            print("Paste into config.yaml by hand. These numbers install NUMBERING readiness "
-                  "only;\nAuto stays blocked by its own separate release chain.\n")
-            print(yaml.safe_dump({"apps": {"hinge": {"still_photo_bound_evidence": paste}}},
-                                 sort_keys=False))
+            print(
+                "Paste into config.yaml by hand. These numbers install NUMBERING readiness "
+                "only;\nAuto stays blocked by its own separate release chain.\n"
+            )
+            print(
+                yaml.safe_dump(
+                    {"apps": {"hinge": {"still_photo_bound_evidence": paste}}},
+                    sort_keys=False,
+                )
+            )
     except bound.VideoBoundRefused as exc:
         print(f"REFUSED: {exc}", file=sys.stderr)
         sys.exit(1)

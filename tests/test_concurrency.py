@@ -1,4 +1,5 @@
 """Two app workers run concurrently in one process sharing the store (offline)."""
+
 import sys
 import threading
 import time
@@ -31,18 +32,28 @@ class _Driver(DatingAppDriver):
         self.n = n
         self.i = 0
         self.closed = False
-    def open_session(self): pass
+
+    def open_session(self):
+        pass
+
     def next_profile(self):
         if self.i >= self.n:
             return None
         self.i += 1
         return Profile(photos=[b"x"])
-    def out_of_profiles(self): return self.i >= self.n
-    def like(self, opener=None, item_index=None, *, model_item_index=None): pass
+
+    def out_of_profiles(self):
+        return self.i >= self.n
+
+    def like(self, opener=None, item_index=None, *, model_item_index=None):
+        pass
+
     def dislike(self, *, should_stop=None):
         if should_stop is not None and should_stop():
             raise ActionCancelled("test pass cancelled before input")
-    def close(self): self.closed = True
+
+    def close(self):
+        self.closed = True
 
 
 class _Decider:
@@ -54,12 +65,19 @@ class _Store:
     def __init__(self):
         self._lock = threading.Lock()
         self.decisions = 0
+
     def record_decision(self, *a, **k):
         with self._lock:
             self.decisions += 1
-    def record_profile(self, *a, **k): pass
-    def add_label(self, *a, **k): pass
-    def count_today(self, app): return 0
+
+    def record_profile(self, *a, **k):
+        pass
+
+    def add_label(self, *a, **k):
+        pass
+
+    def count_today(self, app):
+        return 0
 
 
 class _Pacing:
@@ -81,7 +99,7 @@ def test_two_workers_run_concurrently_and_share_store():
 
     assert not w1.is_alive() and not w2.is_alive()
     assert d1.i == 4 and d2.i == 6 and d1.closed and d2.closed
-    assert store.decisions == 10           # both workers' swipes recorded to the shared store
+    assert store.decisions == 10  # both workers' swipes recorded to the shared store
 
 
 class _OpenerClient:
@@ -93,15 +111,29 @@ class _OpenerClient:
     anchor=anchor on every call) or these concurrency tests would TypeError the moment
     maybe_opener() is invoked.
     """
+
     def __init__(self):
         self.anchors = []
 
-    def generate(self, profile, style, retry_hint="", *, anchor=None, items=None,
-                 should_stop=None,
-                 skip_models=frozenset(), run_id: str = ""):
+    def generate(
+        self,
+        profile,
+        style,
+        retry_hint="",
+        *,
+        anchor=None,
+        items=None,
+        should_stop=None,
+        skip_models=frozenset(),
+        run_id: str = "",
+    ):
         self.anchors.append(anchor)
-        return OpenerResult(opener="hi", referenced="r",
-                            usage=Usage(input_tokens=400), model="gemini-test-model")
+        return OpenerResult(
+            opener="hi",
+            referenced="r",
+            usage=Usage(input_tokens=400),
+            model="gemini-test-model",
+        )
 
 
 class _LikeDecider:
@@ -111,14 +143,20 @@ class _LikeDecider:
 
 class _SpendStore(_Store):
     """Adds the spend/opener sinks the like path needs; records (app, decision) tuples."""
+
     def __init__(self):
         super().__init__()
         self.rows = []
+
     def record_decision(self, run_id, app, decision, score, source="auto", **_):
         with self._lock:
             self.rows.append((app, decision))
-    def record_opener(self, *a, **k): pass
-    def record_spend(self, *a, **k): pass
+
+    def record_opener(self, *a, **k):
+        pass
+
+    def record_spend(self, *a, **k):
+        pass
 
 
 def test_one_worker_budget_exhaustion_stops_the_other_worker_before_it_likes():
@@ -136,6 +174,7 @@ def test_one_worker_budget_exhaustion_stops_the_other_worker_before_it_likes():
     maybe_opener() call). So neither worker records a like, and neither worker's decision is
     persisted to the store: the store only records a decision AFTER the corresponding
     like()/dislike() call has actually landed, and A's like() never landed."""
+
     class _Spender(DatingAppDriver):
         def __init__(self, b_parked):
             self.b_parked = b_parked
@@ -143,17 +182,30 @@ def test_one_worker_budget_exhaustion_stops_the_other_worker_before_it_likes():
             self.likes = []
             self.dislikes = 0
             self.closed = False
-        def open_session(self): pass
+
+        def open_session(self):
+            pass
+
         def next_profile(self):
-            self.b_parked.wait(_LIVENESS_TIMEOUT_S)  # act only once B is parked (determinism)
+            self.b_parked.wait(
+                _LIVENESS_TIMEOUT_S
+            )  # act only once B is parked (determinism)
             if self.i >= 1:
                 return None
             self.i += 1
             return Profile(photos=[b"x"])
-        def out_of_profiles(self): return False
-        def like(self, opener=None, item_index=None, *, model_item_index=None): self.likes.append(opener)
-        def dislike(self): self.dislikes += 1
-        def close(self): self.closed = True
+
+        def out_of_profiles(self):
+            return False
+
+        def like(self, opener=None, item_index=None, *, model_item_index=None):
+            self.likes.append(opener)
+
+        def dislike(self):
+            self.dislikes += 1
+
+        def close(self):
+            self.closed = True
 
     class _Gated(DatingAppDriver):
         def __init__(self, stop):
@@ -162,41 +214,65 @@ def test_one_worker_budget_exhaustion_stops_the_other_worker_before_it_likes():
             self.likes = []
             self.dislikes = 0
             self.closed = False
-        def open_session(self): pass
+
+        def open_session(self):
+            pass
+
         def next_profile(self):
-            self.parked.set()                     # signal B is in its loop, waiting
-            self.stop.wait(_LIVENESS_TIMEOUT_S)   # released only when A exhausts -> stop set
-            return Profile(photos=[b"x"])         # returns AFTER stop; worker breaks before acting
-        def out_of_profiles(self): return False
-        def like(self, opener=None, item_index=None, *, model_item_index=None): self.likes.append(opener)
-        def dislike(self): self.dislikes += 1
-        def close(self): self.closed = True
+            self.parked.set()  # signal B is in its loop, waiting
+            self.stop.wait(
+                _LIVENESS_TIMEOUT_S
+            )  # released only when A exhausts -> stop set
+            return Profile(
+                photos=[b"x"]
+            )  # returns AFTER stop; worker breaks before acting
+
+        def out_of_profiles(self):
+            return False
+
+        def like(self, opener=None, item_index=None, *, model_item_index=None):
+            self.likes.append(opener)
+
+        def dislike(self):
+            self.dislikes += 1
+
+        def close(self):
+            self.closed = True
 
     stop = threading.Event()
     store = _SpendStore()
     # budget 0.001 < one opener's $0.002 -> generating the opener for A's first like
     # exhausts the shared budget before that like is ever sent.
-    svc = OpenerService(_OpenerClient(), CostTracker(PRICING, run_budget_usd=0.001), store,
-                        "s")
+    svc = OpenerService(
+        _OpenerClient(), CostTracker(PRICING, run_budget_usd=0.001), store, "s"
+    )
     b = _Gated(stop)
     a = _Spender(b.parked)
-    wa = Worker("hinge", a, _LikeDecider(), svc, store, "r", _Pacing(), stop, mode="auto")
-    wb = Worker("bumble", b, _LikeDecider(), svc, store, "r", _Pacing(), stop, mode="auto")
+    wa = Worker(
+        "hinge", a, _LikeDecider(), svc, store, "r", _Pacing(), stop, mode="auto"
+    )
+    wb = Worker(
+        "bumble", b, _LikeDecider(), svc, store, "r", _Pacing(), stop, mode="auto"
+    )
 
     wb.start()
-    assert b.parked.wait(_LIVENESS_TIMEOUT_S)       # B is in its loop, waiting on the shared stop
+    assert b.parked.wait(
+        _LIVENESS_TIMEOUT_S
+    )  # B is in its loop, waiting on the shared stop
     wa.start()
     wa.join(timeout=10)
     wb.join(timeout=10)
 
     assert not wa.is_alive() and not wb.is_alive()
-    assert stop.is_set()                           # A's exhaustion propagated to the shared event
-    assert a.likes == [] and a.dislikes == 0       # A's opener call exhausted the budget, so A
-                                                    # broke out of the loop BEFORE calling like()
-    assert b.likes == [] and b.dislikes == 0       # B halted WITHOUT swiping
+    assert stop.is_set()  # A's exhaustion propagated to the shared event
+    assert (
+        a.likes == [] and a.dislikes == 0
+    )  # A's opener call exhausted the budget, so A
+    # broke out of the loop BEFORE calling like()
+    assert b.likes == [] and b.dislikes == 0  # B halted WITHOUT swiping
     assert a.closed and b.closed
-    assert store.rows == []                        # neither worker's like()/dislike() landed,
-                                                     # so neither decision was ever recorded
+    assert store.rows == []  # neither worker's like()/dislike() landed,
+    # so neither decision was ever recorded
 
 
 class _DislikeDecider:
@@ -243,69 +319,116 @@ def test_second_workers_own_stop_reason_is_published_even_though_it_never_calls_
     # budget 0.001 < one opener's $0.002 -> A's first (only) opener call exhausts the
     # shared budget, exactly like test_one_worker_budget_exhaustion_stops_the_other_worker_
     # before_it_likes above.
-    svc = OpenerService(_OpenerClient(), CostTracker(PRICING, run_budget_usd=0.001), store,
-                        "s")
+    svc = OpenerService(
+        _OpenerClient(), CostTracker(PRICING, run_budget_usd=0.001), store, "s"
+    )
 
     class _ADriver(DatingAppDriver):
         """Worker A: one profile, a plain "like" -- its opener call is what exhausts the
         shared service and sets the shared stop_event (via the FIRST check, not the one
         under test here)."""
+
         def __init__(self):
             self.i = 0
             self.closed = False
-        def open_session(self): pass
+
+        def open_session(self):
+            pass
+
         def next_profile(self):
             if self.i >= 1:
                 return None
             self.i += 1
             return Profile(photos=[b"x"])
-        def out_of_profiles(self): return False
-        def like(self, opener=None, item_index=None, *, model_item_index=None): pass
-        def dislike(self): pass
-        def close(self): self.closed = True
+
+        def out_of_profiles(self):
+            return False
+
+        def like(self, opener=None, item_index=None, *, model_item_index=None):
+            pass
+
+        def dislike(self):
+            pass
+
+        def close(self):
+            self.closed = True
 
     class _BDriver(DatingAppDriver):
         """Worker B: one profile, a plain "dislike" -- never calls maybe_opener(). dislike()
         blocks until A has definitely already exhausted the shared service, pinning B
         "mid-profile" (past every earlier stop_event check) at the moment the exhaustion
         becomes visible -- exactly the window the deleted check exists to catch."""
+
         supports_interruptible_dislike = True
 
         def __init__(self):
             self.i = 0
             self.closed = False
-        def open_session(self): pass
+
+        def open_session(self):
+            pass
+
         def next_profile(self):
             if self.i >= 1:
                 return None
             self.i += 1
             return Profile(photos=[b"x"])
-        def out_of_profiles(self): return False
-        def like(self, opener=None, item_index=None, *, model_item_index=None): pass
+
+        def out_of_profiles(self):
+            return False
+
+        def like(self, opener=None, item_index=None, *, model_item_index=None):
+            pass
+
         def dislike(self, *, should_stop=None):
             if should_stop is not None and should_stop():
                 raise ActionCancelled("test pass cancelled before input")
-            b_in_dislike.set()             # past every earlier stop_event check for this profile
-            assert a_exhausted.wait(timeout=_LIVENESS_TIMEOUT_S), \
+            b_in_dislike.set()  # past every earlier stop_event check for this profile
+            assert a_exhausted.wait(timeout=_LIVENESS_TIMEOUT_S), (
                 "A never signalled exhaustion -- test is broken"
-        def close(self): self.closed = True
+            )
+
+        def close(self):
+            self.closed = True
 
     a_driver, b_driver = _ADriver(), _BDriver()
-    wa = Worker("hinge", a_driver, _LikeDecider(), svc, store, "r", _Pacing(), stop,
-               mode="auto", status=status)
-    wb = Worker("bumble", b_driver, _DislikeDecider(), svc, store, "r", _Pacing(), stop,
-               mode="auto", status=status)
+    wa = Worker(
+        "hinge",
+        a_driver,
+        _LikeDecider(),
+        svc,
+        store,
+        "r",
+        _Pacing(),
+        stop,
+        mode="auto",
+        status=status,
+    )
+    wb = Worker(
+        "bumble",
+        b_driver,
+        _DislikeDecider(),
+        svc,
+        store,
+        "r",
+        _Pacing(),
+        stop,
+        mode="auto",
+        status=status,
+    )
 
     wb.start()
     # Ordering, not patience: A must not be allowed to exhaust the service until B is genuinely
     # mid-profile, because the check under test only fires for a worker that is already past its
     # earlier stop_event checks. Waiting on the handshake makes that a fact rather than a race.
-    assert b_in_dislike.wait(_LIVENESS_TIMEOUT_S), "B never reached dislike() -- test is broken"
+    assert b_in_dislike.wait(_LIVENESS_TIMEOUT_S), (
+        "B never reached dislike() -- test is broken"
+    )
     wa.start()
-    wa.join(timeout=10)                    # A fully exhausts the service and sets `stop`
+    wa.join(timeout=10)  # A fully exhausts the service and sets `stop`
     assert stop.is_set()
     assert svc.exhausted_reason is not None
-    a_exhausted.set()                      # release B's blocked dislike() now that it's real
+    a_exhausted.set()  # release B's blocked dislike() now that it's real
     wb.join(timeout=10)
 
     assert not wa.is_alive() and not wb.is_alive()
@@ -375,7 +498,7 @@ def test_ensure_builds_models_exactly_once_under_concurrent_access(monkeypatch):
 
     def fake_create(name, pretrained=None):
         clip_calls.append(1)
-        time.sleep(0.02)             # slow enough that racers genuinely queue on the lock
+        time.sleep(0.02)  # slow enough that racers genuinely queue on the lock
         return _FakeClipModel(), None, (lambda img: img)
 
     _install_fake_open_clip(monkeypatch, fake_create)
@@ -395,7 +518,9 @@ def test_ensure_builds_models_exactly_once_under_concurrent_access(monkeypatch):
     barrier = threading.Barrier(n)
 
     def run():
-        barrier.wait(timeout=_LIVENESS_TIMEOUT_S)  # all threads hit _ensure() at ~the same instant
+        barrier.wait(
+            timeout=_LIVENESS_TIMEOUT_S
+        )  # all threads hit _ensure() at ~the same instant
         embedder._ensure()
 
     threads = [threading.Thread(target=run) for _ in range(n)]
@@ -405,12 +530,18 @@ def test_ensure_builds_models_exactly_once_under_concurrent_access(monkeypatch):
         t.join(timeout=_LIVENESS_TIMEOUT_S)
 
     assert not any(t.is_alive() for t in threads)
-    assert len(clip_calls) == 1, f"CLIP built {len(clip_calls)} times (expected 1 -> double-init race!)"
-    assert len(arc_calls) == 1, f"ArcFace built {len(arc_calls)} times (expected 1 -> double-init race!)"
+    assert len(clip_calls) == 1, (
+        f"CLIP built {len(clip_calls)} times (expected 1 -> double-init race!)"
+    )
+    assert len(arc_calls) == 1, (
+        f"ArcFace built {len(arc_calls)} times (expected 1 -> double-init race!)"
+    )
     assert embedder._arc is not None and embedder._clip is not None
 
 
-def test_ensure_never_exposes_a_half_initialized_embedder_to_a_racing_reader(monkeypatch):
+def test_ensure_never_exposes_a_half_initialized_embedder_to_a_racing_reader(
+    monkeypatch,
+):
     """_ensure() deliberately builds CLIP first and commits self._arc -- the sentinel its
     own fast path (and every other caller) short-circuits on -- LAST, so a thread that
     ever observes self._arc set can safely assume self._clip is also ready. A background
@@ -429,7 +560,7 @@ def test_ensure_never_exposes_a_half_initialized_embedder_to_a_racing_reader(mon
     _install_fake_onnxruntime(monkeypatch)
 
     def fake_build_arc(self, providers):
-        time.sleep(0.03)             # widen the arc-not-yet-committed window for the watcher
+        time.sleep(0.03)  # widen the arc-not-yet-committed window for the watcher
         return object()
 
     monkeypatch.setattr(Embedder, "_build_arc", fake_build_arc)
@@ -443,7 +574,10 @@ def test_ensure_never_exposes_a_half_initialized_embedder_to_a_racing_reader(mon
             arc, clip = embedder._arc, embedder._clip
             if arc is not None and clip is None:
                 violations.append((arc, clip))
-        arc, clip = embedder._arc, embedder._clip   # one last look after the builders joined
+        arc, clip = (
+            embedder._arc,
+            embedder._clip,
+        )  # one last look after the builders joined
         if arc is not None and clip is None:
             violations.append((arc, clip))
 
@@ -471,7 +605,9 @@ def test_ensure_never_exposes_a_half_initialized_embedder_to_a_racing_reader(mon
     assert embedder._arc is not None and embedder._clip is not None
 
 
-def test_ensure_stays_retryable_for_a_concurrent_caller_after_clip_load_fails(monkeypatch):
+def test_ensure_stays_retryable_for_a_concurrent_caller_after_clip_load_fails(
+    monkeypatch,
+):
     """Concurrent companion to test_vision.py's single-threaded
     test_ensure_leaves_embedder_retryable_if_clip_load_fails (read there for the single-
     call contract; not duplicated here). Two threads race on the real lock via the real
@@ -520,6 +656,12 @@ def test_ensure_stays_retryable_for_a_concurrent_caller_after_clip_load_fails(mo
         t.join(timeout=_LIVENESS_TIMEOUT_S)
 
     assert len(errors) == 1 and isinstance(errors[0], RuntimeError)
-    assert len(create_calls) == 2       # first attempt failed; the concurrent 2nd caller retried
-    assert len(build_arc_calls) == 1    # only the successful attempt reached arc construction
-    assert embedder._arc is not None and embedder._clip is not None   # fully committed by the retry
+    assert (
+        len(create_calls) == 2
+    )  # first attempt failed; the concurrent 2nd caller retried
+    assert (
+        len(build_arc_calls) == 1
+    )  # only the successful attempt reached arc construction
+    assert (
+        embedder._arc is not None and embedder._clip is not None
+    )  # fully committed by the retry

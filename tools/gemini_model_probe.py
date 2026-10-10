@@ -50,6 +50,7 @@ method="POST") -> (code, body)`` callable), exactly like GeminiOpener(transport=
 accepts one directly so tests never touch the real network; only __main__'s own invocation of
 main() uses the real stdlib transport.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -119,8 +120,14 @@ _EXCLUSION_RULES: tuple[tuple[str, str], ...] = (
     ("tts", "text-to-speech model; returns audio, not JSON"),
     # Live/omni streaming voice-and-video session models (Gemini Live, native-audio dialog):
     # built for a bidirectional streaming session, not a single generateContent call.
-    ("live", "live/omni streaming voice-and-video model; not a single-call generateContent model"),
-    ("native-audio", "live/omni native-audio dialog model; not a single-call generateContent model"),
+    (
+        "live",
+        "live/omni streaming voice-and-video model; not a single-call generateContent model",
+    ),
+    (
+        "native-audio",
+        "live/omni native-audio dialog model; not a single-call generateContent model",
+    ),
     # Embodied/robotics action models emit robot control tokens, not conversational prose.
     ("robotics", "embodied/robotics action model; not a conversational text model"),
     # Music generation (Lyria and friends).
@@ -142,16 +149,22 @@ _EXCLUSION_RULES: tuple[tuple[str, str], ...] = (
     # it -- and it was measured (2026-08-13) to be unusable here for a second, independent
     # reason: the Antigravity agent does not support structured output at all, and every opener
     # this project sends carries responseJsonSchema. Probing it can only ever burn quota.
-    ("antigravity", "managed-agent model (Interactions API); no structured-output support, so "
-                    "it can never serve a responseJsonSchema opener"),
+    (
+        "antigravity",
+        "managed-agent model (Interactions API); no structured-output support, so "
+        "it can never serve a responseJsonSchema opener",
+    ),
     # Marketing aliases for image-generation models whose ID contains no "-image" substring, so
     # the "-image" rule above cannot see them. "Nano Banana" is Google's own product name for
     # the gemini-*-image family (nano-banana-pro-preview is the gemini-3-pro-image alias), and
     # an alias is exactly the case a substring rule on the technical id misses. Without this
     # rule the tool spends up to six billed requests discovering a model returns image bytes --
     # something already knowable from its published identity.
-    ("nano-banana", "image-generation model (Nano Banana alias for the gemini-*-image family); "
-                    "returns image bytes, not JSON"),
+    (
+        "nano-banana",
+        "image-generation model (Nano Banana alias for the gemini-*-image family); "
+        "returns image bytes, not JSON",
+    ),
 )
 
 
@@ -171,7 +184,9 @@ class Classification:
     excluded: Mapping[str, str]
 
 
-def classify_models(model_ids: Iterable[str], configured: Iterable[str]) -> Classification:
+def classify_models(
+    model_ids: Iterable[str], configured: Iterable[str]
+) -> Classification:
     """Split generateContent-capable ``model_ids`` into configured / candidate / excluded.
 
     ``configured`` wins over an exclusion match (a model the owner already wired in is reported
@@ -199,7 +214,10 @@ def classify_models(model_ids: Iterable[str], configured: Iterable[str]) -> Clas
 # ENUMERATE
 # ---------------------------------------------------------------------------------------
 
-def enumerate_models(*, api_key: str, transport: GeminiTransport, timeout: float) -> dict[str, list[str]]:
+
+def enumerate_models(
+    *, api_key: str, transport: GeminiTransport, timeout: float
+) -> dict[str, list[str]]:
     """GET ListModels, following nextPageToken pagination. Returns {model_id: methods}.
 
     FREE: ListModels is not a generateContent call, so it does not consume any model's
@@ -217,16 +235,24 @@ def enumerate_models(*, api_key: str, transport: GeminiTransport, timeout: float
         # '#' truncates the query, so an unencoded token turns page 2 onward into a 400 that
         # aborts the whole audit -- in a tool whose entire job is to see the FULL catalog before
         # any billed probe is spent.
-        url = (_GEMINI_MODELS_LIST_URL if page_token is None else
-               f"{_GEMINI_MODELS_LIST_URL}?pageToken={quote(page_token, safe='')}")
-        code, response = transport(url, None, {"X-goog-api-key": api_key}, timeout, method="GET")
+        url = (
+            _GEMINI_MODELS_LIST_URL
+            if page_token is None
+            else f"{_GEMINI_MODELS_LIST_URL}?pageToken={quote(page_token, safe='')}"
+        )
+        code, response = transport(
+            url, None, {"X-goog-api-key": api_key}, timeout, method="GET"
+        )
         code = int(code)
         if not 200 <= code < 300:
             error = _gemini_error(code, response)
             raise RuntimeError(
-                f"ListModels failed: HTTP {error.http_code} {error.status}: {error.message}")
+                f"ListModels failed: HTTP {error.http_code} {error.status}: {error.message}"
+            )
         if not isinstance(response, Mapping):
-            raise RuntimeError("ListModels returned a malformed response (not a JSON object)")
+            raise RuntimeError(
+                "ListModels returned a malformed response (not a JSON object)"
+            )
         for entry in response.get("models") or []:
             if not isinstance(entry, Mapping):
                 continue
@@ -235,7 +261,9 @@ def enumerate_models(*, api_key: str, transport: GeminiTransport, timeout: float
                 continue
             model_id = name.split("/", 1)[1] if "/" in name else name
             methods = entry.get("supportedGenerationMethods")
-            seen[model_id] = [str(m) for m in methods] if isinstance(methods, list) else []
+            seen[model_id] = (
+                [str(m) for m in methods] if isinstance(methods, list) else []
+            )
         next_token = response.get("nextPageToken")
         if next_token in (None, ""):
             break
@@ -252,7 +280,11 @@ def enumerate_models(*, api_key: str, transport: GeminiTransport, timeout: float
 
 def generate_content_ids(catalog: Mapping[str, list[str]]) -> list[str]:
     """Ids in ``catalog`` (as returned by enumerate_models) that list generateContent support."""
-    return sorted(model_id for model_id, methods in catalog.items() if "generateContent" in methods)
+    return sorted(
+        model_id
+        for model_id, methods in catalog.items()
+        if "generateContent" in methods
+    )
 
 
 # ---------------------------------------------------------------------------------------
@@ -271,13 +303,22 @@ def _solid_color_png(width: int, height: int, rgb: tuple[int, int, int]) -> byte
     needed just to make a synthetic probe image). Used instead of any real captured photo --
     see this module's docstring and the owner's rule that a live probe must never touch real
     captured data."""
+
     def chunk(tag: bytes, data: bytes) -> bytes:
-        return (struct.pack(">I", len(data)) + tag + data
-                + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF))
+        return (
+            struct.pack(">I", len(data))
+            + tag
+            + data
+            + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+        )
 
     signature = b"\x89PNG\r\n\x1a\n"
-    ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)  # 8-bit depth, RGB color type
-    row = bytes([0]) + bytes(rgb) * width  # filter-type byte 0 (none) + width solid RGB pixels
+    ihdr = struct.pack(
+        ">IIBBBBB", width, height, 8, 2, 0, 0, 0
+    )  # 8-bit depth, RGB color type
+    row = (
+        bytes([0]) + bytes(rgb) * width
+    )  # filter-type byte 0 (none) + width solid RGB pixels
     raw = row * height
     idat = zlib.compress(raw, 9)
     return signature + chunk(b"IHDR", ihdr) + chunk(b"IDAT", idat) + chunk(b"IEND", b"")
@@ -287,7 +328,9 @@ def build_synthetic_profile_and_items() -> tuple[Profile, ItemRequest]:
     """The one synthetic, non-personal (Profile, ItemRequest) pair every probe call reuses."""
     png = _solid_color_png(64, 64, (128, 128, 128))
     profile = Profile(bio=_SYNTHETIC_BIO, prompts=[])
-    item_request = ItemRequest(items=(png,), name="Model Probe", context=(), truncated=False)
+    item_request = ItemRequest(
+        items=(png,), name="Model Probe", context=(), truncated=False
+    )
     return profile, item_request
 
 
@@ -341,7 +384,9 @@ def quota_detail(body: Any) -> dict[str, str] | None:
             if quota_id or quota_metric or quota_value:
                 return {
                     "quotaId": str(quota_id) if quota_id is not None else "",
-                    "quotaMetric": str(quota_metric) if quota_metric is not None else "",
+                    "quotaMetric": str(quota_metric)
+                    if quota_metric is not None
+                    else "",
                     "quotaValue": str(quota_value) if quota_value is not None else "",
                 }
     return None
@@ -360,10 +405,10 @@ class ProbeAttempt:
 class ProbeResult:
     model: str
     verdict: str
-    thinking_config: dict[str, Any] | None = None   # only set when verdict == USABLE
+    thinking_config: dict[str, Any] | None = None  # only set when verdict == USABLE
     thinking_label: str = ""
-    quota: dict[str, str] | None = None             # only set when verdict == QUOTA_429
-    opener_text: str = ""                           # only set when verdict == USABLE, truncated
+    quota: dict[str, str] | None = None  # only set when verdict == QUOTA_429
+    opener_text: str = ""  # only set when verdict == USABLE, truncated
     message: str = ""
     attempts: list[ProbeAttempt] = field(default_factory=list)
 
@@ -371,9 +416,17 @@ class ProbeResult:
 _OPENER_PREVIEW_LEN = 160
 
 
-def probe_model(model: str, *, api_key: str, transport: GeminiTransport, timeout: float,
-                 max_tokens: int, style: str, profile: Profile,
-                 item_request: ItemRequest) -> ProbeResult:
+def probe_model(
+    model: str,
+    *,
+    api_key: str,
+    transport: GeminiTransport,
+    timeout: float,
+    max_tokens: int,
+    style: str,
+    profile: Profile,
+    item_request: ItemRequest,
+) -> ProbeResult:
     """Probe one model, escalating through _THINKING_VARIANTS in order.
 
     ONLY a 400 whose message specifically names the thinking config advances to the next
@@ -391,77 +444,149 @@ def probe_model(model: str, *, api_key: str, transport: GeminiTransport, timeout
     for label, thinking_cfg in _THINKING_VARIANTS:
         thinking_map = {model: dict(thinking_cfg)} if thinking_cfg is not None else {}
         try:
-            opener = GeminiOpener([model], max_tokens=max_tokens, request_timeout_s=timeout,
-                                  api_key=api_key, transport=transport, thinking=thinking_map)
+            opener = GeminiOpener(
+                [model],
+                max_tokens=max_tokens,
+                request_timeout_s=timeout,
+                api_key=api_key,
+                transport=transport,
+                thinking=thinking_map,
+            )
             payload = opener._payload(profile, style, model, items=item_request)
         except Exception as exc:  # noqa: BLE001 -- request-building must never crash the audit
-            attempts.append(ProbeAttempt(label, thinking_cfg, None, "build-error",
-                                         f"{type(exc).__name__}: {exc}"))
-            return ProbeResult(model, VERDICT_BAD_REQUEST_400,
-                               message=f"could not build the request: {type(exc).__name__}: {exc}",
-                               attempts=attempts)
+            attempts.append(
+                ProbeAttempt(
+                    label,
+                    thinking_cfg,
+                    None,
+                    "build-error",
+                    f"{type(exc).__name__}: {exc}",
+                )
+            )
+            return ProbeResult(
+                model,
+                VERDICT_BAD_REQUEST_400,
+                message=f"could not build the request: {type(exc).__name__}: {exc}",
+                attempts=attempts,
+            )
 
-        url = ("https://generativelanguage.googleapis.com/v1beta/models/"
-               f"{_url_quote(model)}:generateContent")
+        url = (
+            "https://generativelanguage.googleapis.com/v1beta/models/"
+            f"{_url_quote(model)}:generateContent"
+        )
         headers = {"Content-Type": "application/json", "X-goog-api-key": api_key}
         try:
             code, response = transport(url, payload, headers, timeout)
         except OSError as exc:
             message = f"{type(exc).__name__}: {exc}"
-            attempts.append(ProbeAttempt(label, thinking_cfg, None, "transport", message))
-            return ProbeResult(model, VERDICT_TRANSPORT, message=message, attempts=attempts)
+            attempts.append(
+                ProbeAttempt(label, thinking_cfg, None, "transport", message)
+            )
+            return ProbeResult(
+                model, VERDICT_TRANSPORT, message=message, attempts=attempts
+            )
 
         code = int(code)
         if 200 <= code < 300:
             if not isinstance(response, Mapping):
-                attempts.append(ProbeAttempt(label, thinking_cfg, code, "malformed-2xx"))
-                return ProbeResult(model, VERDICT_UNUSABLE_RESPONSE,
-                                   message="malformed success response (not a JSON object)",
-                                   attempts=attempts)
+                attempts.append(
+                    ProbeAttempt(label, thinking_cfg, code, "malformed-2xx")
+                )
+                return ProbeResult(
+                    model,
+                    VERDICT_UNUSABLE_RESPONSE,
+                    message="malformed success response (not a JSON object)",
+                    attempts=attempts,
+                )
             try:
-                result = opener._parse(response, model, index_space=INDEX_SPACE_MODEL_ITEMS,
-                                       numbered_item_count=item_request.item_count)
+                result = opener._parse(
+                    response,
+                    model,
+                    index_space=INDEX_SPACE_MODEL_ITEMS,
+                    numbered_item_count=item_request.item_count,
+                )
             except OpenerError as exc:
-                attempts.append(ProbeAttempt(label, thinking_cfg, code, "unusable", str(exc)))
-                return ProbeResult(model, VERDICT_UNUSABLE_RESPONSE, message=str(exc),
-                                   attempts=attempts)
+                attempts.append(
+                    ProbeAttempt(label, thinking_cfg, code, "unusable", str(exc))
+                )
+                return ProbeResult(
+                    model,
+                    VERDICT_UNUSABLE_RESPONSE,
+                    message=str(exc),
+                    attempts=attempts,
+                )
             attempts.append(ProbeAttempt(label, thinking_cfg, code, "usable"))
             opener_text = result.opener
-            preview = (opener_text if len(opener_text) <= _OPENER_PREVIEW_LEN
-                      else opener_text[:_OPENER_PREVIEW_LEN - 3] + "...")
-            return ProbeResult(model, VERDICT_USABLE, thinking_config=thinking_cfg,
-                               thinking_label=label, opener_text=preview,
-                               message="returned a valid opener", attempts=attempts)
+            preview = (
+                opener_text
+                if len(opener_text) <= _OPENER_PREVIEW_LEN
+                else opener_text[: _OPENER_PREVIEW_LEN - 3] + "..."
+            )
+            return ProbeResult(
+                model,
+                VERDICT_USABLE,
+                thinking_config=thinking_cfg,
+                thinking_label=label,
+                opener_text=preview,
+                message="returned a valid opener",
+                attempts=attempts,
+            )
 
         error = _gemini_error(code, response)
         if code == 429:
-            attempts.append(ProbeAttempt(label, thinking_cfg, code, "quota", error.message))
-            return ProbeResult(model, VERDICT_QUOTA_429, quota=quota_detail(response),
-                               message=error.message, attempts=attempts)
+            attempts.append(
+                ProbeAttempt(label, thinking_cfg, code, "quota", error.message)
+            )
+            return ProbeResult(
+                model,
+                VERDICT_QUOTA_429,
+                quota=quota_detail(response),
+                message=error.message,
+                attempts=attempts,
+            )
         if code == 404:
-            attempts.append(ProbeAttempt(label, thinking_cfg, code, "retired", error.message))
-            return ProbeResult(model, VERDICT_RETIRED_404, message=error.message, attempts=attempts)
+            attempts.append(
+                ProbeAttempt(label, thinking_cfg, code, "retired", error.message)
+            )
+            return ProbeResult(
+                model, VERDICT_RETIRED_404, message=error.message, attempts=attempts
+            )
         if code >= 500:
-            attempts.append(ProbeAttempt(label, thinking_cfg, code, "busy", error.message))
-            return ProbeResult(model, VERDICT_BUSY_5XX, message=error.message, attempts=attempts)
+            attempts.append(
+                ProbeAttempt(label, thinking_cfg, code, "busy", error.message)
+            )
+            return ProbeResult(
+                model, VERDICT_BUSY_5XX, message=error.message, attempts=attempts
+            )
         if code == 400 and is_thinking_related_400(error.message):
-            attempts.append(ProbeAttempt(label, thinking_cfg, code, "thinking-400", error.message))
+            attempts.append(
+                ProbeAttempt(label, thinking_cfg, code, "thinking-400", error.message)
+            )
             continue  # advance to the next thinking variant
         # Any other 4xx (a 400 unrelated to thinking, 401, 403, ...): a property of the
         # request/credentials, not of which thinkingConfig was sent -- stop immediately.
-        attempts.append(ProbeAttempt(label, thinking_cfg, code, "bad-request", error.message))
-        return ProbeResult(model, VERDICT_BAD_REQUEST_400, message=error.message, attempts=attempts)
+        attempts.append(
+            ProbeAttempt(label, thinking_cfg, code, "bad-request", error.message)
+        )
+        return ProbeResult(
+            model, VERDICT_BAD_REQUEST_400, message=error.message, attempts=attempts
+        )
 
     last = attempts[-1] if attempts else None
     return ProbeResult(
-        model, VERDICT_BAD_REQUEST_400,
-        message=("every thinking variant, including omitted, was rejected as a thinking-"
-                 f"related 400; last: {last.message if last else '(no attempts)'}"),
-        attempts=attempts)
+        model,
+        VERDICT_BAD_REQUEST_400,
+        message=(
+            "every thinking variant, including omitted, was rejected as a thinking-"
+            f"related 400; last: {last.message if last else '(no attempts)'}"
+        ),
+        attempts=attempts,
+    )
 
 
 def _url_quote(model: str) -> str:
     from urllib.parse import quote
+
     return quote(model, safe="-_.")
 
 
@@ -489,10 +614,14 @@ def build_yaml_snippet(usable: list[tuple[str, dict[str, Any] | None]]) -> str:
         return ""
     models = [model for model, _ in usable]
     thinking = {model: (dict(cfg) if cfg else {}) for model, cfg in usable}
-    pricing = {model: {"input": 0.0, "output": 0.0, "cache_read": 0.0, "cache_write": 0.0}
-              for model, _ in usable}
+    pricing = {
+        model: {"input": 0.0, "output": 0.0, "cache_read": 0.0, "cache_write": 0.0}
+        for model, _ in usable
+    }
     doc = {"models": models, "thinking": thinking, "pricing": pricing}
-    return _SNIPPET_HEADER + yaml.safe_dump(doc, sort_keys=False, default_flow_style=False)
+    return _SNIPPET_HEADER + yaml.safe_dump(
+        doc, sort_keys=False, default_flow_style=False
+    )
 
 
 # ---------------------------------------------------------------------------------------
@@ -538,32 +667,50 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python tools/gemini_model_probe.py",
         description="Empirically verify which Gemini models this account can actually use "
-                     "with this project's exact opener request shape (inline image + "
-                     "responseJsonSchema + thinkingConfig). ListModels alone is NOT sufficient "
-                     "-- see config.yaml's opener.models comment: gemini-2.5-flash, "
-                     "gemini-2.5-flash-lite, and gemini-2.5-pro are all still listed by "
-                     "ListModels yet 404 NOT_FOUND on every real generateContent call for "
-                     "this account.")
-    parser.add_argument("--models", default=None,
-                        help="comma-separated model ids to probe directly, bypassing "
-                             "auto-classification (an id already in opener.models is still "
-                             "skipped by default -- see --include-configured)")
-    parser.add_argument("--include-configured", action="store_true",
-                        help="also (re-)probe models already listed in opener.models. OFF by "
-                             "default: probing a model already in production spends that "
-                             "model's own per-day free-tier quota, which is production "
-                             "capacity, not audit capacity.")
-    parser.add_argument("--json", action="store_true",
-                        help="emit one JSON report to stdout instead of the human-readable one")
-    parser.add_argument("--yes", action="store_true",
-                        help="proceed with billed probing without an interactive prompt")
-    parser.add_argument("--config", default="config.yaml",
-                        help="config.yaml to read opener.models/opener.style/opener.thinking "
-                             "from (default config.yaml; never modified)")
+        "with this project's exact opener request shape (inline image + "
+        "responseJsonSchema + thinkingConfig). ListModels alone is NOT sufficient "
+        "-- see config.yaml's opener.models comment: gemini-2.5-flash, "
+        "gemini-2.5-flash-lite, and gemini-2.5-pro are all still listed by "
+        "ListModels yet 404 NOT_FOUND on every real generateContent call for "
+        "this account.",
+    )
+    parser.add_argument(
+        "--models",
+        default=None,
+        help="comma-separated model ids to probe directly, bypassing "
+        "auto-classification (an id already in opener.models is still "
+        "skipped by default -- see --include-configured)",
+    )
+    parser.add_argument(
+        "--include-configured",
+        action="store_true",
+        help="also (re-)probe models already listed in opener.models. OFF by "
+        "default: probing a model already in production spends that "
+        "model's own per-day free-tier quota, which is production "
+        "capacity, not audit capacity.",
+    )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="emit one JSON report to stdout instead of the human-readable one",
+    )
+    parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="proceed with billed probing without an interactive prompt",
+    )
+    parser.add_argument(
+        "--config",
+        default="config.yaml",
+        help="config.yaml to read opener.models/opener.style/opener.thinking "
+        "from (default config.yaml; never modified)",
+    )
     return parser
 
 
-def _json_report(classification: Classification, results: list[ProbeResult], snippet: str) -> dict:
+def _json_report(
+    classification: Classification, results: list[ProbeResult], snippet: str
+) -> dict:
     return {
         "configured": list(classification.configured),
         "excluded": dict(classification.excluded),
@@ -584,10 +731,16 @@ def _json_report(classification: Classification, results: list[ProbeResult], sni
     }
 
 
-def _print_result(result: ProbeResult, api_key: str, *, log: Callable[..., None]) -> None:
+def _print_result(
+    result: ProbeResult, api_key: str, *, log: Callable[..., None]
+) -> None:
     log(f"\n{result.model}: {result.verdict}")
     if result.thinking_label:
-        shown = result.thinking_config if result.thinking_config is not None else "(server default)"
+        shown = (
+            result.thinking_config
+            if result.thinking_config is not None
+            else "(server default)"
+        )
         log(f"  working thinkingConfig: {result.thinking_label} -> {shown}")
     if result.quota:
         log(f"  quota detail: {result.quota}")
@@ -597,9 +750,13 @@ def _print_result(result: ProbeResult, api_key: str, *, log: Callable[..., None]
         log(f"  detail: {_redact(result.message, api_key)}")
 
 
-def main(argv: list[str] | None = None, *, transport: GeminiTransport | None = None,
-         env: Mapping[str, str] | None = None,
-         confirm: Callable[[str], bool] | None = None) -> int:
+def main(
+    argv: list[str] | None = None,
+    *,
+    transport: GeminiTransport | None = None,
+    env: Mapping[str, str] | None = None,
+    confirm: Callable[[str], bool] | None = None,
+) -> int:
     """CLI entry point. ``transport``/``env``/``confirm`` are the injection seams tests use to
     keep this hermetic (no network, no real .env, no interactive stdin) -- see this module's
     docstring's TESTABILITY paragraph. Real usage (the __main__ block below) passes none of
@@ -612,7 +769,8 @@ def main(argv: list[str] | None = None, *, transport: GeminiTransport | None = N
     # message this function prints goes through `log`, which redirects to stderr in that mode
     # and behaves like plain `print` (to stdout) otherwise.
     log: Callable[..., None] = (
-        (lambda *a, **k: print(*a, file=sys.stderr, **k)) if args.json else print)
+        (lambda *a, **k: print(*a, file=sys.stderr, **k)) if args.json else print
+    )
 
     if env is None:
         _load_dotenv()
@@ -621,8 +779,10 @@ def main(argv: list[str] | None = None, *, transport: GeminiTransport | None = N
         environment = env
     api_key = environment.get("GEMINI_API_KEY")
     if not api_key:
-        print("ERROR: GEMINI_API_KEY is not set (checked the environment and .env).",
-              file=sys.stderr)
+        print(
+            "ERROR: GEMINI_API_KEY is not set (checked the environment and .env).",
+            file=sys.stderr,
+        )
         return 1
 
     live_transport = transport or _stdlib_gemini_transport
@@ -638,14 +798,18 @@ def main(argv: list[str] | None = None, *, transport: GeminiTransport | None = N
         max_tokens = cfg.opener.max_tokens or _DEFAULT_MAX_TOKENS
         request_timeout_s = cfg.opener.request_timeout_s or _DEFAULT_TIMEOUT_S
     except Exception as exc:  # noqa: BLE001 -- config is informational here, never fatal
-        print(f"WARNING: could not read {args.config!r} ({type(exc).__name__}: {exc}); "
-              "proceeding with no known already-configured models and a placeholder style "
-              "guide.", file=sys.stderr)
+        print(
+            f"WARNING: could not read {args.config!r} ({type(exc).__name__}: {exc}); "
+            "proceeding with no known already-configured models and a placeholder style "
+            "guide.",
+            file=sys.stderr,
+        )
 
     log("=== ENUMERATE (ListModels; free, consumes no generateContent quota) ===")
     try:
-        catalog = enumerate_models(api_key=api_key, transport=live_transport,
-                                   timeout=request_timeout_s)
+        catalog = enumerate_models(
+            api_key=api_key, transport=live_transport, timeout=request_timeout_s
+        )
     except RuntimeError as exc:
         print(f"ERROR: {_redact(str(exc), api_key)}", file=sys.stderr)
         return 1
@@ -654,19 +818,25 @@ def main(argv: list[str] | None = None, *, transport: GeminiTransport | None = N
 
     log("\n=== CLASSIFY ===")
     classification = classify_models(ids, configured_models)
-    log(f"Already configured (opener.models): {list(classification.configured) or '(none)'}")
+    log(
+        f"Already configured (opener.models): {list(classification.configured) or '(none)'}"
+    )
     log(f"Excluded by kind ({len(classification.excluded)}):")
     for model_id in sorted(classification.excluded):
         log(f"  - {model_id}: {classification.excluded[model_id]}")
-    log(f"Plausible general-purpose candidates: {list(classification.candidates) or '(none)'}")
+    log(
+        f"Plausible general-purpose candidates: {list(classification.candidates) or '(none)'}"
+    )
 
     if args.models:
         requested = [m.strip() for m in args.models.split(",") if m.strip()]
         unseen = [m for m in requested if m not in ids]
         if unseen:
-            log(f"WARNING: {unseen} were not seen in ListModels' generateContent list "
+            log(
+                f"WARNING: {unseen} were not seen in ListModels' generateContent list "
                 "(the catalog can lag reality -- that lag is this tool's whole reason for "
-                "existing); probing them anyway.")
+                "existing); probing them anyway."
+            )
     else:
         requested = list(classification.candidates)
         if args.include_configured:
@@ -686,9 +856,11 @@ def main(argv: list[str] | None = None, *, transport: GeminiTransport | None = N
         to_probe.append(model_id)
 
     if skipped_configured:
-        log(f"\nSkipping already-configured model(s) (default; probing them spends "
+        log(
+            f"\nSkipping already-configured model(s) (default; probing them spends "
             f"production quota): {skipped_configured}. Pass --include-configured to probe "
-            "them too.")
+            "them too."
+        )
 
     if not to_probe:
         log("\nNothing to probe.")
@@ -697,14 +869,18 @@ def main(argv: list[str] | None = None, *, transport: GeminiTransport | None = N
         return 0
 
     log("\n=== COST TRANSPARENCY ===")
-    log(f"Up to {len(_THINKING_VARIANTS)} billed generateContent request(s) will be issued "
+    log(
+        f"Up to {len(_THINKING_VARIANTS)} billed generateContent request(s) will be issued "
         f"against EACH of the following {len(to_probe)} model(s) (a model's probe stops "
-        "earlier the moment a non-thinking-config outcome is reached):")
+        "earlier the moment a non-thinking-config outcome is reached):"
+    )
     for model_id in to_probe:
         log(f"  - {model_id}")
-    log(f"Worst case total: {len(to_probe) * len(_THINKING_VARIANTS)} billed request(s). "
+    log(
+        f"Worst case total: {len(to_probe) * len(_THINKING_VARIANTS)} billed request(s). "
         "Each request spends one call against that model's own per-day free-tier quota "
-        "(measured: as low as 20 RPD for the flash tier).")
+        "(measured: as low as 20 RPD for the flash tier)."
+    )
 
     if not args.yes:
         ask = confirm or _interactive_confirm
@@ -717,16 +893,28 @@ def main(argv: list[str] | None = None, *, transport: GeminiTransport | None = N
     results: list[ProbeResult] = []
     for model_id in to_probe:
         try:
-            result = probe_model(model_id, api_key=api_key, transport=live_transport,
-                                 timeout=request_timeout_s, max_tokens=max_tokens, style=style,
-                                 profile=profile, item_request=item_request)
+            result = probe_model(
+                model_id,
+                api_key=api_key,
+                transport=live_transport,
+                timeout=request_timeout_s,
+                max_tokens=max_tokens,
+                style=style,
+                profile=profile,
+                item_request=item_request,
+            )
         except Exception as exc:  # noqa: BLE001 -- an operator tool must never traceback
-            result = ProbeResult(model_id, VERDICT_UNUSABLE_RESPONSE,
-                                 message=f"unexpected {type(exc).__name__}: {exc}")
+            result = ProbeResult(
+                model_id,
+                VERDICT_UNUSABLE_RESPONSE,
+                message=f"unexpected {type(exc).__name__}: {exc}",
+            )
         results.append(result)
         _print_result(result, api_key, log=log)
 
-    usable = [(r.model, r.thinking_config) for r in results if r.verdict == VERDICT_USABLE]
+    usable = [
+        (r.model, r.thinking_config) for r in results if r.verdict == VERDICT_USABLE
+    ]
     snippet = build_yaml_snippet(usable)
 
     if args.json:

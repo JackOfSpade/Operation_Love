@@ -1,4 +1,5 @@
 """RateLimiter unit tests + worker auto-loop cap integration (offline)."""
+
 import math
 import threading
 
@@ -41,10 +42,19 @@ def test_direct_constructor_requires_exact_positive_integer_caps(field, value):
         RateLimiter(**{field: value})
 
 
-@pytest.mark.parametrize("value", [
-    True, 0, 1, -0.1, math.nan, math.inf,
-    pytest.param(10 ** 10_000, id="huge_int"), "0.5",
-])
+@pytest.mark.parametrize(
+    "value",
+    [
+        True,
+        0,
+        1,
+        -0.1,
+        math.nan,
+        math.inf,
+        pytest.param(10**10_000, id="huge_int"),
+        "0.5",
+    ],
+)
 def test_direct_constructor_requires_a_finite_open_interval_ratio(value):
     with pytest.raises(ValueError, match="target_like_ratio"):
         RateLimiter(target_like_ratio=value)
@@ -59,7 +69,7 @@ def test_runtime_counts_and_score_context_are_validated():
     with pytest.raises(ValueError, match="finite"):
         limiter.allow_like_ratio(1, 1, score=math.nan, like_threshold=0.5)
     with pytest.raises(ValueError, match="finite"):
-        limiter.allow_like_ratio(1, 1, score=10 ** 10_000, like_threshold=0.5)
+        limiter.allow_like_ratio(1, 1, score=10**10_000, like_threshold=0.5)
 
 
 # --- allow_like_ratio: score-aware ceiling (was score-blind; see worker.py's
@@ -67,7 +77,7 @@ def test_runtime_counts_and_score_context_are_validated():
 # and the numbers behind the fix) -------------------------------------------------
 def test_allow_like_ratio_below_ceiling_always_allows_regardless_of_score():
     rl = RateLimiter(target_like_ratio=0.5)
-    assert rl.allow_like_ratio(1, 3) is True                          # 33% < 50%
+    assert rl.allow_like_ratio(1, 3) is True  # 33% < 50%
     # Even a maximally marginal score doesn't matter below the ceiling.
     assert rl.allow_like_ratio(1, 3, score=0.5001, like_threshold=0.5) is True
 
@@ -78,8 +88,8 @@ def test_allow_like_ratio_with_no_score_context_stays_score_blind_at_ceiling():
     target, exactly as before this fix -- rather than an exception or a silent
     pass-through."""
     rl = RateLimiter(target_like_ratio=0.5)
-    assert rl.allow_like_ratio(1, 1) is False                          # 100% >= 50%, no score given
-    assert rl.allow_like_ratio(2, 4) is False                          # 50% >= 50%, no score given
+    assert rl.allow_like_ratio(1, 1) is False  # 100% >= 50%, no score given
+    assert rl.allow_like_ratio(2, 4) is False  # 50% >= 50%, no score given
 
 
 def test_allow_like_ratio_at_ceiling_demotes_marginal_but_admits_strong():
@@ -91,9 +101,15 @@ def test_allow_like_ratio_at_ceiling_demotes_marginal_but_admits_strong():
     (well past the 0.15 margin) -> admitted. 0.65 is exactly AT the margin -> the
     boundary itself counts as strong (>=), not marginal."""
     rl = RateLimiter(target_like_ratio=0.5)
-    assert rl.allow_like_ratio(1, 1, score=0.51, like_threshold=0.5) is False   # marginal -> vetoed
-    assert rl.allow_like_ratio(1, 1, score=0.90, like_threshold=0.5) is True    # strong -> admitted
-    assert rl.allow_like_ratio(1, 1, score=0.65, like_threshold=0.5) is True    # exactly on the margin
+    assert (
+        rl.allow_like_ratio(1, 1, score=0.51, like_threshold=0.5) is False
+    )  # marginal -> vetoed
+    assert (
+        rl.allow_like_ratio(1, 1, score=0.90, like_threshold=0.5) is True
+    )  # strong -> admitted
+    assert (
+        rl.allow_like_ratio(1, 1, score=0.65, like_threshold=0.5) is True
+    )  # exactly on the margin
 
 
 def test_allow_like_ratio_reproduces_the_audited_score_blind_bug_scenario_fixed():
@@ -106,7 +122,9 @@ def test_allow_like_ratio_reproduces_the_audited_score_blind_bug_scenario_fixed(
     purely because of arrival order)."""
     rl = RateLimiter(target_like_ratio=0.5)
     for liked, acted, score in [(1, 1, 0.99), (1, 2, 0.81), (1, 3, 0.82)]:
-        assert rl.allow_like_ratio(liked, acted, score=score, like_threshold=0.5) is True
+        assert (
+            rl.allow_like_ratio(liked, acted, score=score, like_threshold=0.5) is True
+        )
 
 
 # --- worker integration --------------------------------------------------
@@ -118,19 +136,29 @@ class _Driver(DatingAppDriver):
         self.i = 0
         self.dislikes = 0
         self.closed = False
-    def open_session(self): pass
+
+    def open_session(self):
+        pass
+
     def next_profile(self):
         if self.i >= self.n:
             return None
         self.i += 1
         return Profile(photos=[b"x"])
-    def out_of_profiles(self): return self.i >= self.n
-    def like(self, opener=None, item_index=None, *, model_item_index=None): pass
+
+    def out_of_profiles(self):
+        return self.i >= self.n
+
+    def like(self, opener=None, item_index=None, *, model_item_index=None):
+        pass
+
     def dislike(self, *, should_stop=None):
         if should_stop is not None and should_stop():
             raise ActionCancelled("test pass cancelled before input")
         self.dislikes += 1
-    def close(self): self.closed = True
+
+    def close(self):
+        self.closed = True
 
 
 class _Decider:
@@ -139,11 +167,20 @@ class _Decider:
 
 
 class _Store:
-    def __init__(self): self.decisions = 0
-    def count_today(self, app): return 0
-    def record_decision(self, *a, **k): self.decisions += 1
-    def record_profile(self, *a, **k): pass
-    def add_label(self, *a, **k): pass
+    def __init__(self):
+        self.decisions = 0
+
+    def count_today(self, app):
+        return 0
+
+    def record_decision(self, *a, **k):
+        self.decisions += 1
+
+    def record_profile(self, *a, **k):
+        pass
+
+    def add_label(self, *a, **k):
+        pass
 
 
 class _Pacing:
@@ -154,8 +191,18 @@ def test_worker_stops_at_run_cap():
     driver = _Driver(5)
     store = _Store()
     svc = OpenerService(None, CostTracker(PRICING, None), store, "s")
-    w = Worker("bumble", driver, _Decider(), svc, store, "r", _Pacing(),
-               threading.Event(), mode="auto", limiter=RateLimiter(max_per_run=2))
+    w = Worker(
+        "bumble",
+        driver,
+        _Decider(),
+        svc,
+        store,
+        "r",
+        _Pacing(),
+        threading.Event(),
+        mode="auto",
+        limiter=RateLimiter(max_per_run=2),
+    )
     w._auto_loop()
-    assert driver.dislikes == 2   # capped at 2 even though 5 were available
+    assert driver.dislikes == 2  # capped at 2 even though 5 were available
     assert driver.closed

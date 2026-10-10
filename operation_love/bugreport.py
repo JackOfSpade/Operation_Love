@@ -23,6 +23,7 @@ content. Pure stdlib so it imports anywhere — the capability probes below
 import cv2/touchwatch lazily and swallow their own absence rather than making
 that a hard dependency of this module.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -45,7 +46,7 @@ from pathlib import Path
 from .typography import format_duration
 
 _MAX_REPORT_LINES = 50_000
-_DEBUG_ACTION_TAIL = 30          # actions.jsonl DISPLAY entries to inline from the latest run
+_DEBUG_ACTION_TAIL = 30  # actions.jsonl DISPLAY entries to inline from the latest run
 # ^ Used to be "raw lines", and the comment here claimed a profile logs at most 2 of those, so
 # 30 always reached back ~15 profiles. That broke the day wait_for_decision grew the
 # observe_waiting heartbeat (_note_observe_waiting, hinge.py): it fires roughly every 15s of
@@ -62,18 +63,30 @@ _DEBUG_ACTION_TAIL = 30          # actions.jsonl DISPLAY entries to inline from 
 # shown are always kept as literal, uncollapsed records — even when they'd otherwise be part of
 # a run — specifically so a live stall's most recent state (its own screenshot filename
 # included) is never hidden behind a "repeated: N" summary with no filename in it.
-_RECENT_OPENERS_SHOWN = 10        # cap on _recent_openers_md rows -- see its docstring
-_RECENT_OPENER_TEXT_CHARS = 240   # per-opener cap so one runaway response can't blow up the report
-_RECENT_OPENER_MONITOR_MARKERS_SHOWN = 4  # compact cap for redundancy-monitor details per row
-_RECENT_OPENER_MONITOR_MARKER_CHARS = 120  # one malformed marker cannot dominate the section
-_RECENT_REJECTIONS_SHOWN = 10     # cap on _recent_opener_rejections_md rows -- mirrors the above
-_STALL_STRETCHES_SHOWN = 3        # cap on _stall_summary_md rows -- see its docstring
-_ABANDONED_CARDS_SHOWN = 3        # cap on _abandoned_card_summary_md rows -- see its docstring
-_CAPTURE_SPLITS_SHOWN = 3          # most recent split/recovery pairs to show — see below
-_SHIFT_TRACE_STRIPS_SHOWN = 12     # per-direction cap on rendered strips in a shift-estimator
-                                  # trace. frameshift ships a 13-strip bank, so this shows a
-                                  # whole ordinary bank and truncates (audibly, with "+N more")
-                                  # only a bank taken at a caller-varied strip count.
+_RECENT_OPENERS_SHOWN = 10  # cap on _recent_openers_md rows -- see its docstring
+_RECENT_OPENER_TEXT_CHARS = (
+    240  # per-opener cap so one runaway response can't blow up the report
+)
+_RECENT_OPENER_MONITOR_MARKERS_SHOWN = (
+    4  # compact cap for redundancy-monitor details per row
+)
+_RECENT_OPENER_MONITOR_MARKER_CHARS = (
+    120  # one malformed marker cannot dominate the section
+)
+_RECENT_REJECTIONS_SHOWN = (
+    10  # cap on _recent_opener_rejections_md rows -- mirrors the above
+)
+_STALL_STRETCHES_SHOWN = 3  # cap on _stall_summary_md rows -- see its docstring
+_ABANDONED_CARDS_SHOWN = (
+    3  # cap on _abandoned_card_summary_md rows -- see its docstring
+)
+_CAPTURE_SPLITS_SHOWN = 3  # most recent split/recovery pairs to show — see below
+_SHIFT_TRACE_STRIPS_SHOWN = (
+    12  # per-direction cap on rendered strips in a shift-estimator
+)
+# trace. frameshift ships a 13-strip bank, so this shows a
+# whole ordinary bank and truncates (audibly, with "+N more")
+# only a bank taken at a caller-varied strip count.
 _MIN_ACTIONABLE_DESCRIPTION_CHARS = 20
 _ITEM_INDEX_REASON_INLINE_LIMIT = 360
 _COMPLETION_EVIDENCE_MAX_BYTES = 8_000_000
@@ -123,7 +136,8 @@ _ADB_SCREENCAP_TIMEOUT_RE = re.compile(
 # this run's own tag" filter would silently drop every one of those untagged lines, which is
 # the exact under-report this whole matcher exists to prevent.
 _RECOVERED_PROVIDER_FAILURE_RE = re.compile(
-    r"\btrying the next configured model\b", re.IGNORECASE)
+    r"\btrying the next configured model\b", re.IGNORECASE
+)
 # supervisor.py's shutdown line for rows the store permanently gave up on. It imports this
 # exact constant (bugreport is pure stdlib, so anything may import it; the reverse would drag
 # the whole runtime into a diagnostic module), which is what keeps the printer and this reader
@@ -132,23 +146,24 @@ _RECOVERED_PROVIDER_FAILURE_RE = re.compile(
 # shutdown's printed line through this pattern so a reworded print cannot quietly stop being
 # detected here.
 DROPPED_ROWS_NOTICE = "row(s) were PERMANENTLY DROPPED and never written to"
-_DROPPED_ROWS_RE = re.compile(
-    re.escape(DROPPED_ROWS_NOTICE) + r"\s+\S+\s+\(([^)]*)\)")
-_ITEM_INDEX_GEOMETRY_SIDECARS_SHOWN = 2    # cap on _item_index_geometry_md blocks -- one
-                                  # refused capture per block, most recent last. Two is the
-                                  # incident shape: a dwell walk refuses, the retry refuses.
-_ITEM_INDEX_GEOMETRY_ROWS_SHOWN = 6        # per-line cap inside that section: named frame
-                                  # indices, distinct leading rows, run extents, and
-                                  # unanchored strips. A capture with more than this many
-                                  # distinct shapes has no single leading edge to report.
-_ITEM_INDEX_GEOMETRY_SIDECAR_BYTES = 8_000_000   # a sidecar larger than this is not read at
-                                  # all. Bounded by hinge.py at 64 blocks/runs per frame and
-                                  # 32 strips per pair, so a real one is ~1MB; anything past
-                                  # this is not the file this section was written against.
+_DROPPED_ROWS_RE = re.compile(re.escape(DROPPED_ROWS_NOTICE) + r"\s+\S+\s+\(([^)]*)\)")
+_ITEM_INDEX_GEOMETRY_SIDECARS_SHOWN = 2  # cap on _item_index_geometry_md blocks -- one
+# refused capture per block, most recent last. Two is the
+# incident shape: a dwell walk refuses, the retry refuses.
+_ITEM_INDEX_GEOMETRY_ROWS_SHOWN = 6  # per-line cap inside that section: named frame
+# indices, distinct leading rows, run extents, and
+# unanchored strips. A capture with more than this many
+# distinct shapes has no single leading edge to report.
+_ITEM_INDEX_GEOMETRY_SIDECAR_BYTES = (
+    8_000_000  # a sidecar larger than this is not read at
+)
+# all. Bounded by hinge.py at 64 blocks/runs per frame and
+# 32 strips per pair, so a real one is ~1MB; anything past
+# this is not the file this section was written against.
 # segment.py's block/run vocabulary reaches this module only as JSON tokens. Naming the one
 # token this section keys on keeps bugreport.py pure-stdlib (segment.py needs cv2/numpy,
 # which this module deliberately never hard-imports) while making the coupling greppable.
-_SIDECAR_UNANCHORED_BLOCK_KIND = "unanchored"    # == segment.BLOCK_UNANCHORED
+_SIDECAR_UNANCHORED_BLOCK_KIND = "unanchored"  # == segment.BLOCK_UNANCHORED
 # The same hold-out evidence, written by hinge.py's `geometry_record` on EVERY block
 # unconditionally (both keys, `unanchored_reason` merely None off an unanchored strip). Their
 # PRESENCE is therefore what dates a sidecar against the screen-fixed island check: they shipped
@@ -175,10 +190,15 @@ _DWELL_NAVIGATION_CANCELLED = "navigation_cancelled"
 # "carries no structured refusal telemetry" sentence, which is still true of it. The one thing
 # this list must never do is gain a name hinge.py does NOT raise, which would assert an absence
 # of measurement for a refusal that had one.
-_UNCODED_DWELL_NAVIGATION_REFUSAL_CLASSES = frozenset({
-    "ActionCancelled", "ScrollStepError", "SegmentationError", "ShiftEstimationError",
-    "IdentityError",
-})
+_UNCODED_DWELL_NAVIGATION_REFUSAL_CLASSES = frozenset(
+    {
+        "ActionCancelled",
+        "ScrollStepError",
+        "SegmentationError",
+        "ShiftEstimationError",
+        "IdentityError",
+    }
+)
 _LOG_RING: deque[str] = deque(maxlen=_MAX_REPORT_LINES)
 _LOG_LOCK = threading.Lock()
 _PROCESS_START = time.time()
@@ -207,7 +227,9 @@ class _Tee:
                 for line in lines:
                     line = line.rstrip("\r")
                     if line.strip():
-                        _LOG_RING.append(f"{datetime.now().strftime('%H:%M:%S')} {line}")
+                        _LOG_RING.append(
+                            f"{datetime.now().strftime('%H:%M:%S')} {line}"
+                        )
         except Exception:  # noqa: BLE001
             pass
         return self._s.write(data)
@@ -245,8 +267,14 @@ def recent_logs(limit: int = 120) -> list[str]:
 # ── section builders ───────────────────────────────────────────────────────
 def _git(*args: str) -> str | None:
     try:
-        r = subprocess.run(["git", *args], cwd=_REPO, capture_output=True,
-                           text=True, timeout=4, check=False)
+        r = subprocess.run(
+            ["git", *args],
+            cwd=_REPO,
+            capture_output=True,
+            text=True,
+            timeout=4,
+            check=False,
+        )
         return r.stdout.strip() if r.returncode == 0 else None
     except Exception:  # noqa: BLE001
         return None
@@ -265,14 +293,25 @@ def _newest_source_mtime() -> float:
 def _device() -> str:
     try:
         from .device import best_device
+
         return best_device()
     except Exception:  # noqa: BLE001
         return "unknown"
 
 
 def _dep_versions() -> dict[str, str]:
-    deps = ["playwright", "torch", "insightface", "open_clip", "onnxruntime",
-            "google.cloud.bigquery", "dotenv", "PIL", "sklearn", "yaml"]
+    deps = [
+        "playwright",
+        "torch",
+        "insightface",
+        "open_clip",
+        "onnxruntime",
+        "google.cloud.bigquery",
+        "dotenv",
+        "PIL",
+        "sklearn",
+        "yaml",
+    ]
     out: dict[str, str] = {}
     for d in deps:
         try:
@@ -286,20 +325,34 @@ def _build_md() -> str:
     commit = _git("rev-parse", "--short", "HEAD") or "(unknown)"
     branch = _git("rev-parse", "--abbrev-ref", "HEAD") or "(unknown)"
     dirty = _git("status", "--porcelain")
-    clean = "clean" if dirty == "" else f"DIRTY ({len(dirty.splitlines())} file(s) changed)" if dirty is not None else "(unknown)"
+    clean = (
+        "clean"
+        if dirty == ""
+        else f"DIRTY ({len(dirty.splitlines())} file(s) changed)"
+        if dirty is not None
+        else "(unknown)"
+    )
     uptime = int(time.time() - _PROCESS_START)
     stale = _newest_source_mtime() > _PROCESS_START
-    stale_note = ("⚠️ a source file changed AFTER this process started — restart "
-                  "the hub/app to run the new code" if stale else "up to date")
-    return (f"- git: `{commit}` on `{branch}` — {clean}\n"
-            f"- process uptime: {uptime}s · running code: {stale_note}")
+    stale_note = (
+        "⚠️ a source file changed AFTER this process started — restart "
+        "the hub/app to run the new code"
+        if stale
+        else "up to date"
+    )
+    return (
+        f"- git: `{commit}` on `{branch}` — {clean}\n"
+        f"- process uptime: {uptime}s · running code: {stale_note}"
+    )
 
 
 def _system_md() -> str:
-    return (f"- platform: {platform.system()} {platform.machine()} ({platform.release()})\n"
-            f"- python: {platform.python_version()} ({sys.executable})\n"
-            f"- device: {_device()}\n"
-            f"- cpu count: {os.cpu_count()}")
+    return (
+        f"- platform: {platform.system()} {platform.machine()} ({platform.release()})\n"
+        f"- python: {platform.python_version()} ({sys.executable})\n"
+        f"- device: {_device()}\n"
+        f"- cpu count: {os.cpu_count()}"
+    )
 
 
 def _deps_md() -> str:
@@ -321,25 +374,32 @@ def _deps_md() -> str:
 # device NAME is not a secret, but this never becomes a place to grow raw device output.
 def _tesseract_md() -> str:
     path = shutil.which("tesseract")
-    return (f"- tesseract: {path or 'absent'} — profile-name OCR (see hinge.py's _ocr_band) "
-            f"can veto a transient pixel mismatch and must confirm a different scroll-top "
-            f"name twice; when absent, identity safety remains fail-closed but a real advance "
-            f"may stay unresolved")
+    return (
+        f"- tesseract: {path or 'absent'} — profile-name OCR (see hinge.py's _ocr_band) "
+        f"can veto a transient pixel mismatch and must confirm a different scroll-top "
+        f"name twice; when absent, identity safety remains fail-closed but a real advance "
+        f"may stay unresolved"
+    )
 
 
 def _opencv_md() -> str:
     try:
         import cv2
+
         return f"- opencv (cv2): present ({getattr(cv2, '__version__', '(installed)')})"
     except Exception as exc:  # noqa: BLE001 — absence itself IS the diagnostic, not a crash
-        return (f"- opencv (cv2): absent ({type(exc).__name__}: {exc}) — every Android "
-                f"driver refuses to open a session without it (AndroidDriver._require_vision "
-                f"in drivers/hinge.py); a launcher shipped without the `hinge` extra has left "
-                f"this silently missing before, so this line exists to make that visible "
-                f"without waiting for every glyph-match call to fail")
+        return (
+            f"- opencv (cv2): absent ({type(exc).__name__}: {exc}) — every Android "
+            f"driver refuses to open a session without it (AndroidDriver._require_vision "
+            f"in drivers/hinge.py); a launcher shipped without the `hinge` extra has left "
+            f"this silently missing before, so this line exists to make that visible "
+            f"without waiting for every glyph-match call to fail"
+        )
 
 
-def _first_android_app_cfg(apps: dict, enabled_apps: list) -> tuple[str, str | None] | None:
+def _first_android_app_cfg(
+    apps: dict, enabled_apps: list
+) -> tuple[str, str | None] | None:
     """(adb_path, serial) for the ADB target a live run would actually probe.
 
     Android-driven apps declare `adb_path`, so its presence distinguishes a device entry
@@ -376,10 +436,13 @@ def _touch_watcher_probe_md(config_path: str) -> str:
     """
     try:
         from . import config as cfg_mod
+
         c = cfg_mod.load(config_path)
     except Exception as exc:  # noqa: BLE001
-        return (f"- touch watcher: could not load `{config_path}` to find the ADB target "
-                f"({_sanitize_inline(str(exc))})")
+        return (
+            f"- touch watcher: could not load `{config_path}` to find the ADB target "
+            f"({_sanitize_inline(str(exc))})"
+        )
     apps = c.apps if isinstance(c.apps, dict) else {}
     target = _first_android_app_cfg(apps, getattr(c, "enabled_apps", None) or [])
     if target is None:
@@ -387,6 +450,7 @@ def _touch_watcher_probe_md(config_path: str) -> str:
     adb_path, serial = target
 
     from .drivers.touchwatch import TouchWatcher, TouchWatchUnavailable
+
     # screen_size only scales GESTURE coordinates after a device has already been selected
     # (TouchWatcher.start()); device selection itself never reads it, so a placeholder is
     # fine — this probe never reaches the point that would need a real one.
@@ -400,18 +464,23 @@ def _touch_watcher_probe_md(config_path: str) -> str:
         # just attached; on failure close() is a documented no-op (nothing was ever attached,
         # since the device-selection probe runs before the Popen it would need to stop).
         watcher.close()
-    return (f"- touch watcher: would select `{watcher.device_path}` "
-            f"(name: `{_sanitize_inline(watcher.device_name or '')}`)")
+    return (
+        f"- touch watcher: would select `{watcher.device_path}` "
+        f"(name: `{_sanitize_inline(watcher.device_name or '')}`)"
+    )
 
 
 def _capabilities_md(config_path: str) -> str:
-    return "\n".join([_tesseract_md(), _opencv_md(), _touch_watcher_probe_md(config_path)])
+    return "\n".join(
+        [_tesseract_md(), _opencv_md(), _touch_watcher_probe_md(config_path)]
+    )
 
 
 def _configuration_availability_md() -> str:
     def shown(name: str) -> str:
         key = os.environ.get(name, "")
         return "present" if key else "unset (needed only for openers / auto mode)"
+
     # Never include credentials or even a credential-derived prefix.
     return f"- GEMINI_API_KEY: {shown('GEMINI_API_KEY')}"
 
@@ -442,12 +511,17 @@ def _runtime_targeting_calibration_rejection(hub_state) -> str | None:
         return None
     # The typed kind is the current contract. Keep the driver sentence as a fallback so reports
     # generated from status snapshots written before the kind existed remain actionable.
-    if kind != "targeting_calibration" and _TARGETING_CALIBRATION_UNAVAILABLE not in reason:
+    if (
+        kind != "targeting_calibration"
+        and _TARGETING_CALIBRATION_UNAVAILABLE not in reason
+    ):
         return None
     return _sanitize_inline(reason)
 
 
-def _content_band_rows(band: object, frame_size_px: object) -> tuple[int, int, int] | None:
+def _content_band_rows(
+    band: object, frame_size_px: object
+) -> tuple[int, int, int] | None:
     """`content_band`'s ``(r0, r1, frame_height)`` pixel rows, or None if it cannot be derived.
 
     Deliberately the SAME arithmetic as ``hinge._content_rows`` (round, then clamp so a
@@ -497,29 +571,51 @@ def _targeting_readiness_md(config_path: str, hub_state=None) -> str:
     empty, and the config-key line below is what carries the answer instead.
     """
     from . import targeting_policy as tp
+
     lines: list[str] = []
     try:
         import yaml
+
         raw = yaml.safe_load(Path(config_path).read_text()) or {}
-        app = ((raw.get("apps") or {}).get("hinge") or {}) if isinstance(raw, dict) else {}
+        app = (
+            ((raw.get("apps") or {}).get("hinge") or {})
+            if isinstance(raw, dict)
+            else {}
+        )
         if not isinstance(app, dict):
             app = {}
     except Exception as exc:  # noqa: BLE001 -- a diagnostic section must not raise over config
         return f"- ⚠️ could not read `{config_path}` for targeting state: {exc}"
 
-    licence_keys = [k for k in ("still_photo_bound_evidence", "still_photo_assumption_acceptance")
-                    if k in app]
-    lines.append("- still-photo licence key in config: "
-                 + (", ".join(f"`apps.hinge.{k}`" for k in licence_keys) if licence_keys
-                    else "none — numbering is refused everywhere until one is installed"))
+    licence_keys = [
+        k
+        for k in ("still_photo_bound_evidence", "still_photo_assumption_acceptance")
+        if k in app
+    ]
+    lines.append(
+        "- still-photo licence key in config: "
+        + (
+            ", ".join(f"`apps.hinge.{k}`" for k in licence_keys)
+            if licence_keys
+            else "none — numbering is refused everywhere until one is installed"
+        )
+    )
     provenance = tp.still_photo_licence_provenance()
-    lines.append("- licence installed in THIS process: "
-                 + (provenance if provenance else
-                    "no (expected when the report is generated outside a validated run)"))
+    lines.append(
+        "- licence installed in THIS process: "
+        + (
+            provenance
+            if provenance
+            else "no (expected when the report is generated outside a validated run)"
+        )
+    )
     calibration = app.get("targeting_calibration")
     calibration_valid = False
     calibration_problem = ""
-    if isinstance(calibration, dict) and tp.hinge_targeting_unavailable_reason() is None:
+    if (
+        isinstance(calibration, dict)
+        and tp.hinge_targeting_unavailable_reason() is None
+    ):
         # The report must not mistake a mapping's mere presence for a calibration licence.  This
         # narrow validator reads no device and changes no process-global readiness state; it
         # verifies exactly the mapping that a live driver would rely on.  Full
@@ -527,6 +623,7 @@ def _targeting_readiness_md(config_path: str, hub_state=None) -> str:
         # live process's still-photo licence.
         try:
             from . import config as cfg_mod
+
             cfg_mod._validate_targeting_calibration(cfg_mod.load(config_path))
             calibration_valid = True
         except Exception as exc:  # noqa: BLE001 -- a malformed report config remains reportable
@@ -539,57 +636,85 @@ def _targeting_readiness_md(config_path: str, hub_state=None) -> str:
         # bound that fired — it is a second, stricter cap applied after a bound derived inside
         # `item_verify`. These are geometry and thresholds, never credentials.
         if isinstance(calibration, dict):
-            shown = [key for key in ("hinge_version_name", "frame_size_px", "content_band",
-                                     "composer_layout_id", "inline_item_max_dist",
-                                     "identity_match_max_dist",
-                                     "calibrated_at") if calibration.get(key) is not None]
+            shown = [
+                key
+                for key in (
+                    "hinge_version_name",
+                    "frame_size_px",
+                    "content_band",
+                    "composer_layout_id",
+                    "inline_item_max_dist",
+                    "identity_match_max_dist",
+                    "calibrated_at",
+                )
+                if calibration.get(key) is not None
+            ]
             if shown:
                 calibration_line += "; " + ", ".join(
-                    f"{key}={_sanitize_inline(json.dumps(calibration[key]))}" for key in shown)
+                    f"{key}={_sanitize_inline(json.dumps(calibration[key]))}"
+                    for key in shown
+                )
             # `content_band` is two fractions, and every row number the geometry sections below
             # print is measured INSIDE the band those fractions cut. Nobody reading "block top
             # at frame row 368" can check it against [0.125, 0.875] in their head, so derive the
             # rows here, once, the same way `hinge._content_rows` does.
-            band_rows = _content_band_rows(calibration.get("content_band"),
-                                           calibration.get("frame_size_px"))
+            band_rows = _content_band_rows(
+                calibration.get("content_band"), calibration.get("frame_size_px")
+            )
             if band_rows is not None:
                 r0, r1, size = band_rows
-                calibration_line += (f"; that content_band analyses frame rows {r0}..{r1} of "
-                                     f"{size} — every geometry row reported elsewhere in this "
-                                     f"report is measured inside it")
+                calibration_line += (
+                    f"; that content_band analyses frame rows {r0}..{r1} of "
+                    f"{size} — every geometry row reported elsewhere in this "
+                    f"report is measured inside it"
+                )
     elif isinstance(calibration, dict):
-        calibration_line = ("present but not validated"
-                            + (f": {calibration_problem}" if calibration_problem else ""))
+        calibration_line = "present but not validated" + (
+            f": {calibration_problem}" if calibration_problem else ""
+        )
     else:
-        calibration_line = ("ABSENT — no numbered item list, so no targeted opener is generated "
-                            "or offered")
+        calibration_line = (
+            "ABSENT — no numbered item list, so no targeted opener is generated "
+            "or offered"
+        )
     lines.append("- `apps.hinge.targeting_calibration`: " + calibration_line)
     blocker = tp.hinge_targeting_unavailable_reason()
     lines.append("- targeting-policy blocker: " + (blocker if blocker else "none"))
     runtime_rejection = _runtime_targeting_calibration_rejection(hub_state)
     if runtime_rejection:
-        lines.append("- runtime calibration: REJECTED in the latest hub snapshot: `"
-                     + runtime_rejection + "`")
-        lines.append("- next step: recapture and validate a schema-v3 targeting calibration for "
-                     "the live Hinge build/frame geometry; also recapture measured still-photo "
-                     "evidence or explicitly re-accept the unmeasured still-photo assumption "
-                     "for that exact build/device, then resume training")
+        lines.append(
+            "- runtime calibration: REJECTED in the latest hub snapshot: `"
+            + runtime_rejection
+            + "`"
+        )
+        lines.append(
+            "- next step: recapture and validate a schema-v3 targeting calibration for "
+            "the live Hinge build/frame geometry; also recapture measured still-photo "
+            "evidence or explicitly re-accept the unmeasured still-photo assumption "
+            "for that exact build/device, then resume training"
+        )
     elif blocker is not None and licence_keys:
         # Do not let an unvalidated reporting process contradict the config two lines above.
         # The blocker and next step are read from THIS process's slot; a config that carries a
         # licence key would install one the moment a run validated it, and printing the
         # pre-licence next step without saying so is precisely the stale-guidance failure this
         # section was added to catch.
-        lines.append("- ⚠️ the blocker above reflects this unvalidated reporting process, not a "
-                     "run: the config key above would install a licence when a run validates "
-                     "it. Re-check inside the run, or with `config.validate(config.load(...))`")
+        lines.append(
+            "- ⚠️ the blocker above reflects this unvalidated reporting process, not a "
+            "run: the config key above would install a licence when a run validates "
+            "it. Re-check inside the run, or with `config.validate(config.load(...))`"
+        )
     elif calibration_valid and blocker is None:
-        lines.append("- targeting config readiness: ready — the still-photo licence and the "
-                     "calibration mapping are valid in config. A live session still requires an "
-                     "exact Hinge app-version/frame match.")
+        lines.append(
+            "- targeting config readiness: ready — the still-photo licence and the "
+            "calibration mapping are valid in config. A live session still requires an "
+            "exact Hinge app-version/frame match."
+        )
     elif calibration is not None and blocker is None:
-        lines.append("- next step: repair or replace the invalid targeting calibration before "
-                     "treating numbered targeted suggestions as ready")
+        lines.append(
+            "- next step: repair or replace the invalid targeting calibration before "
+            "treating numbered targeted suggestions as ready"
+        )
     else:
         lines.append("- next step: " + tp.targeting_setup_next_step())
     return "\n".join(lines)
@@ -608,6 +733,7 @@ def _diagnostic_improvement_md() -> str:
 def _training_alerts_md() -> str:
     """Render bounded, secret-free notification and sound outcomes from this Hub process."""
     from .notifications import recent_training_alerts
+
     alerts = recent_training_alerts()
     if not alerts:
         return "- No Training alert attempt has been recorded in this Hub process."
@@ -640,7 +766,9 @@ def _reporter_follow_up_md(description: str) -> str:
     unchanged because only its author can judge whether it is sufficient.
     """
     if len(_sanitize_inline(description)) >= _MIN_ACTIONABLE_DESCRIPTION_CHARS:
-        return "- Reporter description is present; runtime diagnostics are captured below."
+        return (
+            "- Reporter description is present; runtime diagnostics are captured below."
+        )
     return (
         "- ⚠️ The report description is too brief to diagnose from telemetry alone.\n"
         "- Add: the expected result; the actual result; the last action or steps that led "
@@ -651,21 +779,24 @@ def _reporter_follow_up_md(description: str) -> str:
 def _config_md(config_path: str) -> str:
     try:
         from . import config as cfg_mod
+
         c = cfg_mod.load(config_path)
         bq = c.storage.bigquery if isinstance(c.storage.bigquery, dict) else {}
-        return (f"- enabled_apps: {c.enabled_apps}\n"
-                f"- mode: {c.mode}\n"
-                f"- storage: {c.storage.backend} (project_id={bq.get('project_id', '?')}, "
-                f"photo_bucket={bq.get('photo_bucket', '?')})\n"
-                f"- ranker: min_labels={c.ranker.min_labels_to_engage}, "
-                f"threshold={c.ranker.like_threshold}, retrain_every={c.ranker.retrain_every}\n"
-                f"- quality_filter: enabled={c.quality_filter.enabled}, "
-                f"metric={c.quality_filter.metric}, min_score={c.quality_filter.min_score}\n"
-                f"- opener: enabled={c.opener.enabled}, provider={c.opener.provider}, "
-                f"models={c.opener.effective_models}, "
-                f"max_tokens={c.opener.max_tokens}\n"
-                f"- budget: run_budget_usd={c.budget.run_budget_usd}, "
-                f"opener.max_attempts={c.opener.max_attempts}")
+        return (
+            f"- enabled_apps: {c.enabled_apps}\n"
+            f"- mode: {c.mode}\n"
+            f"- storage: {c.storage.backend} (project_id={bq.get('project_id', '?')}, "
+            f"photo_bucket={bq.get('photo_bucket', '?')})\n"
+            f"- ranker: min_labels={c.ranker.min_labels_to_engage}, "
+            f"threshold={c.ranker.like_threshold}, retrain_every={c.ranker.retrain_every}\n"
+            f"- quality_filter: enabled={c.quality_filter.enabled}, "
+            f"metric={c.quality_filter.metric}, min_score={c.quality_filter.min_score}\n"
+            f"- opener: enabled={c.opener.enabled}, provider={c.opener.provider}, "
+            f"models={c.opener.effective_models}, "
+            f"max_tokens={c.opener.max_tokens}\n"
+            f"- budget: run_budget_usd={c.budget.run_budget_usd}, "
+            f"opener.max_attempts={c.opener.max_attempts}"
+        )
     except Exception as exc:  # noqa: BLE001
         return f"- ⚠️ could not load `{config_path}`: {exc}"
 
@@ -710,8 +841,15 @@ def _redact_report_output(text: str) -> str:
     only from plausibly-secret environment-variable names; redacting all environment values would
     turn ordinary paths and configuration into misleading ``[REDACTED]`` text.
     """
-    values = sorted({value for name, value in os.environ.items()
-                     if value and _SECRET_ENV_NAME_RE.search(name)}, key=len, reverse=True)
+    values = sorted(
+        {
+            value
+            for name, value in os.environ.items()
+            if value and _SECRET_ENV_NAME_RE.search(name)
+        },
+        key=len,
+        reverse=True,
+    )
     for value in values:
         # Do not derive or display any part of the credential.  The length guard avoids replacing
         # incidental one-character values such as a test flag throughout normal prose.
@@ -722,7 +860,9 @@ def _redact_report_output(text: str) -> str:
     return _SECRET_ASSIGNMENT_RE.sub(r"\1[REDACTED]", text)
 
 
-def _capture_window_has_dwell_walk_stop(records: list[dict], capture_index: int) -> bool:
+def _capture_window_has_dwell_walk_stop(
+    records: list[dict], capture_index: int
+) -> bool:
     """Whether Stop interrupted the candidate walk for one completed capture window.
 
     TWO tokens, because the walk has two ways of observing the same Stop. "stop" is the
@@ -735,14 +875,16 @@ def _capture_window_has_dwell_walk_stop(records: list[dict], capture_index: int)
     for prior in reversed(records[:capture_index]):
         if prior.get("action") == "capture":
             break
-        if (prior.get("action") == "still_photo_dwell_walk_candidate"
-                and prior.get("outcome") in {"stop", _DWELL_NAVIGATION_CANCELLED}):
+        if prior.get("action") == "still_photo_dwell_walk_candidate" and prior.get(
+            "outcome"
+        ) in {"stop", _DWELL_NAVIGATION_CANCELLED}:
             return True
     return False
 
 
-def _capture_stop_interrupted_gap_count(coverage: object, records: list[dict],
-                                        capture_index: int) -> int:
+def _capture_stop_interrupted_gap_count(
+    coverage: object, records: list[dict], capture_index: int
+) -> int:
     """Count only capture-scoped gaps interrupted by Stop, with an old-log fallback."""
     if not isinstance(coverage, dict):
         return 0
@@ -750,13 +892,19 @@ def _capture_stop_interrupted_gap_count(coverage: object, records: list[dict],
     if not isinstance(gaps, list):
         return 0
     interruption = coverage.get("dwell_walk_interruption")
-    if isinstance(interruption, dict) and interruption.get("reason") == "stop_requested":
+    if (
+        isinstance(interruption, dict)
+        and interruption.get("reason") == "stop_requested"
+    ):
         unattempted = interruption.get("unattempted_within_remaining_limit_page_hearts")
         interrupted = interruption.get("interrupted_page_hearts")
         if not isinstance(unattempted, list) and not isinstance(interrupted, list):
             return 0
-        gap_ordinals = {value for value in gaps
-                        if isinstance(value, int) and not isinstance(value, bool)}
+        gap_ordinals = {
+            value
+            for value in gaps
+            if isinstance(value, int) and not isinstance(value, bool)
+        }
         interrupted_ordinals = {
             value
             for values in (unattempted, interrupted)
@@ -768,7 +916,9 @@ def _capture_stop_interrupted_gap_count(coverage: object, records: list[dict],
     # Historic logs have no capture-scoped list. Within their bounded capture window, a `stop`
     # row is the best available evidence; attribute its unobserved gaps but never spill into a
     # preceding capture or another app.
-    return len(gaps) if _capture_window_has_dwell_walk_stop(records, capture_index) else 0
+    return (
+        len(gaps) if _capture_window_has_dwell_walk_stop(records, capture_index) else 0
+    )
 
 
 def _completion_capture_facts(st: dict, config_path: str) -> dict[str, object]:
@@ -788,23 +938,31 @@ def _completion_capture_facts(st: dict, config_path: str) -> dict[str, object]:
     sections render it -- but the verdict line is the durable one, and it was silent.
     """
     run_id = st.get("run_id")
-    if (not isinstance(run_id, str) or not run_id or run_id in {".", ".."}
-            or Path(run_id).name != run_id):
+    if (
+        not isinstance(run_id, str)
+        or not run_id
+        or run_id in {".", ".."}
+        or Path(run_id).name != run_id
+    ):
         return {}
     try:
         from . import config as cfg_mod
+
         cfg = cfg_mod.load(config_path)
     except Exception:  # noqa: BLE001 -- completion reporting must not depend on config loading
         return {}
     apps = cfg.apps if isinstance(cfg.apps, dict) else {}
-    facts: dict[str, object] = {"coverage_gaps": 0, "coverage_candidates": 0,
-                                "coverage_stop_interrupted_gaps": 0,
-                                "coverage_stop_interrupted_candidates": 0,
-                                "capture_truncated": False,
-                                "items_unavailable": None,
-                                "items_unavailable_kind": None,
-                                "items_unavailable_profile": None,
-                                "items_unavailable_after_stop": False}
+    facts: dict[str, object] = {
+        "coverage_gaps": 0,
+        "coverage_candidates": 0,
+        "coverage_stop_interrupted_gaps": 0,
+        "coverage_stop_interrupted_candidates": 0,
+        "capture_truncated": False,
+        "items_unavailable": None,
+        "items_unavailable_kind": None,
+        "items_unavailable_profile": None,
+        "items_unavailable_after_stop": False,
+    }
     for app in cfg.enabled_apps:
         opts = apps.get(app)
         if not isinstance(opts, dict) or not opts.get("debug_log"):
@@ -818,8 +976,13 @@ def _completion_capture_facts(st: dict, config_path: str) -> dict[str, object]:
             # The run id is status input, not authority to follow a debug-directory symlink.
             # The same guard also rules out FIFOs/devices, whose ``read_text`` could block a
             # bug-report request indefinitely instead of examining bounded JSONL evidence.
-            if (run.is_symlink() or not run.is_dir() or log.is_symlink() or not log.is_file()
-                    or log.stat().st_size > _COMPLETION_EVIDENCE_MAX_BYTES):
+            if (
+                run.is_symlink()
+                or not run.is_dir()
+                or log.is_symlink()
+                or not log.is_file()
+                or log.stat().st_size > _COMPLETION_EVIDENCE_MAX_BYTES
+            ):
                 continue
             rows = log.read_text().splitlines()
         except Exception:  # noqa: BLE001 -- optional evidence may be absent or mid-write
@@ -836,17 +999,23 @@ def _completion_capture_facts(st: dict, config_path: str) -> dict[str, object]:
                 if isinstance(gaps, list):
                     facts["coverage_gaps"] = int(facts["coverage_gaps"]) + len(gaps)
                 if isinstance(candidates, list):
-                    facts["coverage_candidates"] = int(facts["coverage_candidates"]) + len(candidates)
+                    facts["coverage_candidates"] = int(
+                        facts["coverage_candidates"]
+                    ) + len(candidates)
                 interrupted_gaps = _capture_stop_interrupted_gap_count(
-                    coverage, records, capture_index)
+                    coverage, records, capture_index
+                )
                 if interrupted_gaps:
                     facts["coverage_stop_interrupted_gaps"] = (
-                        int(facts["coverage_stop_interrupted_gaps"]) + interrupted_gaps)
+                        int(facts["coverage_stop_interrupted_gaps"]) + interrupted_gaps
+                    )
                     if isinstance(candidates, list):
-                        facts["coverage_stop_interrupted_candidates"] = (
-                            int(facts["coverage_stop_interrupted_candidates"]) + len(candidates))
-            facts["capture_truncated"] = bool(facts["capture_truncated"] or
-                                               record.get("capture_truncated"))
+                        facts["coverage_stop_interrupted_candidates"] = int(
+                            facts["coverage_stop_interrupted_candidates"]
+                        ) + len(candidates)
+            facts["capture_truncated"] = bool(
+                facts["capture_truncated"] or record.get("capture_truncated")
+            )
             # The SAME row's top-level refusal fields (hinge.py writes them beside
             # `item_coverage`, deliberately NOT inside it -- see that call site's own comment:
             # "`item_coverage` is None whenever the payload is -- which is exactly the refusal
@@ -864,8 +1033,9 @@ def _completion_capture_facts(st: dict, config_path: str) -> dict[str, object]:
                 # cause is taken from the driver's own walk rows inside THIS capture's window:
                 # a cooperative "stop" or the mid-navigation "navigation_cancelled" token. With
                 # no such row the verdict says targeting failure, never "probably a Stop".
-                facts["items_unavailable_after_stop"] = _capture_window_has_dwell_walk_stop(
-                    records, capture_index)
+                facts["items_unavailable_after_stop"] = (
+                    _capture_window_has_dwell_walk_stop(records, capture_index)
+                )
             break
     return facts
 
@@ -995,7 +1165,9 @@ def _run_completion_assessment_md(hub_state, config_path: str) -> str:
     try:
         snap = hub_state.snapshot()
     except Exception as exc:  # noqa: BLE001 -- keep a failing hub diagnostic-safe
-        return f"- **Outcome: NOT ASSESSED** — hub snapshot failed: {type(exc).__name__}."
+        return (
+            f"- **Outcome: NOT ASSESSED** — hub snapshot failed: {type(exc).__name__}."
+        )
     if not isinstance(snap, dict):
         return "- **Outcome: NOT ASSESSED** — hub snapshot is not a mapping."
     st = snap.get("status")
@@ -1009,44 +1181,68 @@ def _run_completion_assessment_md(hub_state, config_path: str) -> str:
     app_errors = any(row.get("error") for row in app_rows)
     stopped = phase == "stopped" and not st.get("running") and not snap.get("running")
     run_id = st.get("run_id")
-    run_note = (f" for run `{_sanitize_inline(run_id)}`"
-                if isinstance(run_id, str) and run_id else "")
+    run_note = (
+        f" for run `{_sanitize_inline(run_id)}`"
+        if isinstance(run_id, str) and run_id
+        else ""
+    )
 
     if phase == "save_failed":
-        return ("- **Outcome: SAVE FAILED** — the shutdown reached persistence, but flush "
-                "failed; buffered data may be incomplete.")
+        return (
+            "- **Outcome: SAVE FAILED** — the shutdown reached persistence, but flush "
+            "failed; buffered data may be incomplete."
+        )
     if phase == "wedged" or "wedged" in app_states:
-        return ("- **Outcome: DEGRADED SHUTDOWN** — persistence was attempted, but at least one "
-                "worker did not exit; do not treat the run as fully complete.")
+        return (
+            "- **Outcome: DEGRADED SHUTDOWN** — persistence was attempted, but at least one "
+            "worker did not exit; do not treat the run as fully complete."
+        )
     if st.get("stopping"):
-        return (f"- **Outcome: STOPPING / INDETERMINATE**{run_note} — a stop was requested "
-                f"while phase was {phase!r}; no durable completion verdict is available until "
-                "shutdown and persistence finish.")
+        return (
+            f"- **Outcome: STOPPING / INDETERMINATE**{run_note} — a stop was requested "
+            f"while phase was {phase!r}; no durable completion verdict is available until "
+            "shutdown and persistence finish."
+        )
     if st.get("running") or snap.get("running") or phase != "stopped":
-        return (f"- **Outcome: IN PROGRESS / INDETERMINATE**{run_note} — phase is {phase!r}; no durable "
-                "completion verdict is available yet.")
+        return (
+            f"- **Outcome: IN PROGRESS / INDETERMINATE**{run_note} — phase is {phase!r}; no durable "
+            "completion verdict is available yet."
+        )
     if snap.get("error") or app_errors or "error" in app_states:
-        return ("- **Outcome: COMPLETED WITH ERRORS** — shutdown reached stopped, but the hub "
-                "or an app recorded an error; saved records may be durable, but the run was not "
-                "clean.")
+        return (
+            "- **Outcome: COMPLETED WITH ERRORS** — shutdown reached stopped, but the hub "
+            "or an app recorded an error; saved records may be durable, but the run was not "
+            "clean."
+        )
     if not stopped:
-        return ("- **Outcome: INDETERMINATE** — terminal fields disagree, so this report will "
-                "not infer a durable save.")
+        return (
+            "- **Outcome: INDETERMINATE** — terminal fields disagree, so this report will "
+            "not infer a durable save."
+        )
     if not app_rows:
         # A terminal phase alone cannot prove that any worker actually reached it.  Treating an
         # empty/malformed app snapshot as a clean completion would make the headline claim
         # "all workers exited" when the snapshot names no workers at all.
-        return ("- **Outcome: INDETERMINATE** — the terminal snapshot contains no app status, "
-                "so worker completion cannot be verified.")
+        return (
+            "- **Outcome: INDETERMINATE** — the terminal snapshot contains no app status, "
+            "so worker completion cannot be verified."
+        )
     terminal_app_states = {
-        "error", "out_of_profiles", "rate_limited", "stopped", "wedged", "blocked",
+        "error",
+        "out_of_profiles",
+        "rate_limited",
+        "stopped",
+        "wedged",
+        "blocked",
     }
     nonterminal_app_states = sorted(app_states - terminal_app_states)
     if nonterminal_app_states:
         states = ", ".join(repr(state) for state in nonterminal_app_states)
-        return ("- **Outcome: INDETERMINATE** — the global phase is stopped, but app status "
-                f"still contains non-terminal state(s): {states}; the snapshot is internally "
-                "inconsistent, so durable completion will not be inferred.")
+        return (
+            "- **Outcome: INDETERMINATE** — the global phase is stopped, but app status "
+            f"still contains non-terminal state(s): {states}; the snapshot is internally "
+            "inconsistent, so durable completion will not be inferred."
+        )
 
     limitations: list[str] = []
     recent = recent_logs(_MAX_REPORT_LINES)
@@ -1060,7 +1256,8 @@ def _run_completion_assessment_md(hub_state, config_path: str) -> str:
     limitations.extend(
         f"the store PERMANENTLY DROPPED rows it never wrote ({tally}) — that data is LOST "
         "and this run's records are incomplete"
-        for tally in _dropped_row_tallies(_lines_for_run(recent, run_id)))
+        for tally in _dropped_row_tallies(_lines_for_run(recent, run_id))
+    )
     stop_kinds = {str(row.get("stop_kind")) for row in app_rows if row.get("stop_kind")}
     if "opener" in stop_kinds:
         limitations.append("an opener/provider condition stopped an app")
@@ -1092,7 +1289,8 @@ def _run_completion_assessment_md(hub_state, config_path: str) -> str:
     # not, so over-reporting remains the accepted trade, just narrower than a whole-ring scan.
     provider_faults = sum(
         bool(_RECOVERED_PROVIDER_FAILURE_RE.search(line))
-        for line in _lines_not_attributed_to_another_run(recent, run_id))
+        for line in _lines_not_attributed_to_another_run(recent, run_id)
+    )
     if provider_faults:
         # Not "transport failure(s)" any more: the matcher now catches every non-fatal cascade
         # branch (transport, 5xx, 429, retired-model 404), and naming one of them would be a
@@ -1102,26 +1300,36 @@ def _run_completion_assessment_md(hub_state, config_path: str) -> str:
             f"{provider_faults} provider failure(s) recovered by cascading to the next "
             "configured model appear in the recent process log (this run's own tagged cascade "
             "lines, plus any UNTAGGED one -- a cascade line explicitly tagged for a DIFFERENT "
-            "run is excluded, never one merely lacking a tag)")
+            "run is excluded, never one merely lacking a tag)"
+        )
     facts = _completion_capture_facts(st, config_path)
     gaps = facts.get("coverage_gaps", 0)
     candidates = facts.get("coverage_candidates", 0)
     if isinstance(gaps, int) and gaps:
-        total = f" of {candidates}" if isinstance(candidates, int) and candidates else ""
+        total = (
+            f" of {candidates}" if isinstance(candidates, int) and candidates else ""
+        )
         stop_gaps = facts.get("coverage_stop_interrupted_gaps", 0)
         stop_candidates = facts.get("coverage_stop_interrupted_candidates", 0)
         if isinstance(stop_gaps, int) and stop_gaps > 0:
-            stop_total = (f" of {stop_candidates}"
-                          if isinstance(stop_candidates, int) and stop_candidates else "")
+            stop_total = (
+                f" of {stop_candidates}"
+                if isinstance(stop_candidates, int) and stop_candidates
+                else ""
+            )
             limitations.append(
                 "the requested Stop interrupted the latest still-photo dwell walk, leaving "
-                f"{stop_gaps}{stop_total} photo candidate(s) uncovered")
+                f"{stop_gaps}{stop_total} photo candidate(s) uncovered"
+            )
             remaining_gaps = gaps - stop_gaps
             if remaining_gaps > 0:
                 limitations.append(
-                    f"still-photo coverage skipped {remaining_gaps} photo candidate(s)")
+                    f"still-photo coverage skipped {remaining_gaps} photo candidate(s)"
+                )
         else:
-            limitations.append(f"still-photo coverage skipped {gaps}{total} photo candidate(s)")
+            limitations.append(
+                f"still-photo coverage skipped {gaps}{total} photo candidate(s)"
+            )
     # ITEMS_UNAVAILABLE IS ITS OWN CHANNEL, not a coverage gap. The gap counters above read
     # `item_coverage`, which hinge.py sets to None exactly when the payload is None -- so the
     # WORSE outcome (no item index at all, nothing an opener could be aimed at) could never
@@ -1163,10 +1371,16 @@ def _run_completion_assessment_md(hub_state, config_path: str) -> str:
     no_opener_consumer = kind == "no_opener_consumer"
     if isinstance(unavailable, str) and unavailable and not no_opener_consumer:
         profile = facts.get("items_unavailable_profile")
-        who = (f" for profile `{_sanitize_inline(str(profile))}`"
-               if isinstance(profile, str) and profile else "")
-        kind_text = (f" (kind: `{_sanitize_inline(str(kind))}`)"
-                     if isinstance(kind, str) and kind else "")
+        who = (
+            f" for profile `{_sanitize_inline(str(profile))}`"
+            if isinstance(profile, str) and profile
+            else ""
+        )
+        kind_text = (
+            f" (kind: `{_sanitize_inline(str(kind))}`)"
+            if isinstance(kind, str) and kind
+            else ""
+        )
         detail = f"`{_compact_item_index_refusal_text(unavailable)}`{kind_text}"
         # WORDED FROM EVIDENCE, NEVER FROM AN ASSUMPTION. `items_unavailable_after_stop` is true
         # only when the driver's own walk rows inside that capture's window recorded a Stop
@@ -1198,21 +1412,28 @@ def _run_completion_assessment_md(hub_state, config_path: str) -> str:
         if facts.get("items_unavailable_after_stop"):
             limitations.append(
                 f"the requested Stop left the latest capture{who} with no numbered items at "
-                f"all, so no opener could be targeted at that profile: {detail}")
+                f"all, so no opener could be targeted at that profile: {detail}"
+            )
         else:
             limitations.append(
                 f"the latest capture{who} produced no numbered items at all, so no opener "
-                f"could be targeted at that profile: {detail}")
+                f"could be targeted at that profile: {detail}"
+            )
     if facts.get("capture_truncated"):
         limitations.append("the latest capture was truncated")
 
     if not limitations:
-        return ("- **Outcome: COMPLETED CLEANLY** — all workers exited and the store flush "
-                "succeeded before the terminal stopped snapshot; no captured app failure or "
-                "coverage limitation was found.")
-    return ("- **Outcome: COMPLETED SAFELY, WITH LIMITATIONS** — all workers exited and the "
-            "store flush succeeded before the terminal stopped snapshot, but "
-            + "; ".join(limitations) + ".")
+        return (
+            "- **Outcome: COMPLETED CLEANLY** — all workers exited and the store flush "
+            "succeeded before the terminal stopped snapshot; no captured app failure or "
+            "coverage limitation was found."
+        )
+    return (
+        "- **Outcome: COMPLETED SAFELY, WITH LIMITATIONS** — all workers exited and the "
+        "store flush succeeded before the terminal stopped snapshot, but "
+        + "; ".join(limitations)
+        + "."
+    )
 
 
 def _compact_item_index_refusal_text(value: object) -> str:
@@ -1220,8 +1441,10 @@ def _compact_item_index_refusal_text(value: object) -> str:
     text = _sanitize_inline(str(value))
     if "item index" not in text.lower() or len(text) <= _ITEM_INDEX_REASON_INLINE_LIMIT:
         return text
-    return (text[:_ITEM_INDEX_REASON_INLINE_LIMIT].rstrip() +
-            "… (full geometry is in the item-index summary below)")
+    return (
+        text[:_ITEM_INDEX_REASON_INLINE_LIMIT].rstrip()
+        + "… (full geometry is in the item-index summary below)"
+    )
 
 
 def _app_diagnostics_md(apps: dict) -> str:
@@ -1264,8 +1487,10 @@ def _app_diagnostics_md(apps: dict) -> str:
             # reformat of what was already there.
             kind = a.get("stop_kind")
             kind_label = f"`{_sanitize_inline(str(kind))}`" if kind else "unlabelled"
-            lines.append(f"- ⚠️ **{name}** stop reason: `{_compact_item_index_refusal_text(reason)}` "
-                         f"(kind: {kind_label})")
+            lines.append(
+                f"- ⚠️ **{name}** stop reason: `{_compact_item_index_refusal_text(reason)}` "
+                f"(kind: {kind_label})"
+            )
         err = a.get("error")
         if err:
             lines.append(f"- ⚠️ **{name}** error: `{_sanitize_inline(str(err))}`")
@@ -1298,9 +1523,11 @@ def _hub_guidance_md(apps: dict) -> str:
         mode = str(app.get("mode") or "")
         prefix = f"- **{_sanitize_inline(str(name))}**"
         if mode == "training" and state == "waiting_approval":
-            lines.append(f"{prefix}: hub says a typed target opener is ready; choose Like to "
-                         "send it or Dislike to pass this profile. No decision has been "
-                         "recorded yet.")
+            lines.append(
+                f"{prefix}: hub says a typed target opener is ready; choose Like to "
+                "send it or Dislike to pass this profile. No decision has been "
+                "recorded yet."
+            )
 
         # 2026-09-06: the opener_warning / opener_pending / opener_suggestion branches that used
         # to live here were the last reader of the Observe ADVISORY SUGGESTION flow, whose call
@@ -1329,10 +1556,17 @@ def _status_md(hub_state) -> str:
     run_id = st.get("run_id")
     if isinstance(run_id, str) and run_id:
         uptime = st.get("uptime_s")
-        uptime_note = (f" · status uptime: {format_duration(float(uptime))}"
-                       if isinstance(uptime, (int, float)) and not isinstance(uptime, bool)
-                       and math.isfinite(float(uptime)) and uptime >= 0 else "")
-        lines.append(f"- status provenance: run `{_sanitize_inline(run_id)}`{uptime_note}")
+        uptime_note = (
+            f" · status uptime: {format_duration(float(uptime))}"
+            if isinstance(uptime, (int, float))
+            and not isinstance(uptime, bool)
+            and math.isfinite(float(uptime))
+            and uptime >= 0
+            else ""
+        )
+        lines.append(
+            f"- status provenance: run `{_sanitize_inline(run_id)}`{uptime_note}"
+        )
     ready = "ready" if st["ranker_ready"] else "defer"
     cap = f" / ${st['budget_cap']:.2f}" if st.get("budget_cap") is not None else ""
     # These are intentionally separate ledgers.  ``labels`` is the whole ranker's loaded
@@ -1358,9 +1592,11 @@ def _status_md(hub_state) -> str:
         f"tracked spend: ${st['budget_spent']:.2f}{cap}",
     ]
     if decisions == 0:
-        lines.append("- No pass/like preference decision was recorded. A generated but unacted "
-                     "opener draft (including a Training checkpoint) or its provider cost is "
-                     "not a profile, photo, label, or decision record.")
+        lines.append(
+            "- No pass/like preference decision was recorded. A generated but unacted "
+            "opener draft (including a Training checkpoint) or its provider cost is "
+            "not a profile, photo, label, or decision record."
+        )
     # `stopping` (RunStatus.snapshot(), status.py) marks a stop that's been requested but hasn't
     # unwound yet -- distinct from `phase == "stopped"`, which only appears once it actually has.
     # Read with .get() rather than st["stopping"]: this field is landing in a concurrent change,
@@ -1376,14 +1612,18 @@ def _status_md(hub_state) -> str:
     ]
     for name, a in apps.items():
         score = "" if a.get("last_score") is None else f"{a['last_score']:.2f}"
-        lines.append(f"| {name} | {a.get('mode','')} | {a.get('state','')} "
-                     f"| {a.get('last_decision') or '—'} | {score or '—'} | {a.get('swipes_run',0)} |")
+        lines.append(
+            f"| {name} | {a.get('mode', '')} | {a.get('state', '')} "
+            f"| {a.get('last_decision') or '—'} | {score or '—'} | {a.get('swipes_run', 0)} |"
+        )
     diag = _app_diagnostics_md(apps)
     if diag:
         lines.append(diag)
     guidance = _hub_guidance_md(apps)
     if guidance:
-        lines.extend(["", "**Current hub guidance (snapshot, not a new phone read):**", guidance])
+        lines.extend(
+            ["", "**Current hub guidance (snapshot, not a new phone read):**", guidance]
+        )
     return "\n".join(lines)
 
 
@@ -1430,9 +1670,13 @@ def _recent_openers_md(hub_state) -> str:
         return "- (no hub — run via `python -m operation_love hub` for live run status)"
     entries = hub_state.recent_openers()
     if not entries:
-        return ("- (no committed opener records in the active/last run; an unacted staged "
-                "opener draft is intentionally absent)")
-    newest_first = list(reversed(entries))[:_RECENT_OPENERS_SHOWN]   # ring buffer is newest-LAST
+        return (
+            "- (no committed opener records in the active/last run; an unacted staged "
+            "opener draft is intentionally absent)"
+        )
+    newest_first = list(reversed(entries))[
+        :_RECENT_OPENERS_SHOWN
+    ]  # ring buffer is newest-LAST
     # Entries committed before session_mode was added can still be present in the Hub's frozen
     # last-run snapshot after a code reload.  The status snapshot belongs to the same active or
     # last run as the opener ring, so its per-app mode is a safe compatibility fallback.
@@ -1442,7 +1686,10 @@ def _recent_openers_md(hub_state) -> str:
         try:
             status = snapshot().get("status") or {}
             for app_name, app_status in (status.get("apps") or {}).items():
-                if isinstance(app_status, dict) and app_status.get("mode") in {"training", "auto"}:
+                if isinstance(app_status, dict) and app_status.get("mode") in {
+                    "training",
+                    "auto",
+                }:
                     legacy_app_modes[str(app_name)] = str(app_status["mode"])
         except Exception:  # noqa: BLE001 -- optional compatibility context only
             pass
@@ -1504,7 +1751,9 @@ def _recent_openers_md(hub_state) -> str:
             for marker in raw_markers:
                 if not isinstance(marker, str) or not marker.strip():
                     continue
-                markers.append(_sanitize_inline(marker)[:_RECENT_OPENER_MONITOR_MARKER_CHARS])
+                markers.append(
+                    _sanitize_inline(marker)[:_RECENT_OPENER_MONITOR_MARKER_CHARS]
+                )
         if markers:
             shown = markers[:_RECENT_OPENER_MONITOR_MARKERS_SHOWN]
             more = len(markers) - len(shown)
@@ -1514,8 +1763,12 @@ def _recent_openers_md(hub_state) -> str:
             monitor_bits.append(f"redundancy: {marker_note}")
         collision = e.get("entropy_collision")
         if isinstance(collision, str) and collision.strip():
-            collision_text = _sanitize_inline(collision)[:_RECENT_OPENER_MONITOR_MARKER_CHARS]
-            outcome = "regenerated once" if e.get("entropy_regenerated") else "kept original"
+            collision_text = _sanitize_inline(collision)[
+                :_RECENT_OPENER_MONITOR_MARKER_CHARS
+            ]
+            outcome = (
+                "regenerated once" if e.get("entropy_regenerated") else "kept original"
+            )
             monitor_bits.append(f'opening collision "{collision_text}" ({outcome})')
         elif e.get("entropy_regenerated"):
             # Defensive compatibility for a malformed/older entry which retained the outcome but
@@ -1523,7 +1776,8 @@ def _recent_openers_md(hub_state) -> str:
             monitor_bits.append("opening regenerated once (collision text unavailable)")
         monitor_note = (
             "\n  _Monitor only; never a rejection:_ " + " · ".join(monitor_bits)
-            if monitor_bits else ""
+            if monitor_bits
+            else ""
         )
         lines.append(
             f"- `{ts}` · **{app}** · model: `{model}` · {mode_note} · {anchor_note} · "
@@ -1531,8 +1785,10 @@ def _recent_openers_md(hub_state) -> str:
             f"  > {_sanitize_inline(opener)}{monitor_note}"
         )
     if not lines:
-        return ("- (no committed opener records in the active/last run; an unacted staged "
-                "opener draft is intentionally absent)")
+        return (
+            "- (no committed opener records in the active/last run; an unacted staged "
+            "opener draft is intentionally absent)"
+        )
     return "\n".join(lines)
 
 
@@ -1559,7 +1815,9 @@ def _recent_opener_rejections_md(hub_state) -> str:
     entries = hub_state.recent_opener_rejections()
     if not entries:
         return "- (no committed opener rejections in the active/last run)"
-    newest_first = list(reversed(entries))[:_RECENT_REJECTIONS_SHOWN]   # ring buffer is newest-LAST
+    newest_first = list(reversed(entries))[
+        :_RECENT_REJECTIONS_SHOWN
+    ]  # ring buffer is newest-LAST
     lines = []
     for e in newest_first:
         if not isinstance(e, dict):
@@ -1571,7 +1829,9 @@ def _recent_opener_rejections_md(hub_state) -> str:
         reason_code = e.get("reason_code") or "(no reason code)"
         reason_code = _sanitize_inline(str(reason_code))
         raw_opener = e.get("raw_opener")
-        raw_opener = str(raw_opener) if raw_opener is not None else "(no candidate text)"
+        raw_opener = (
+            str(raw_opener) if raw_opener is not None else "(no candidate text)"
+        )
         if len(raw_opener) > _RECENT_OPENER_TEXT_CHARS:
             raw_opener = raw_opener[:_RECENT_OPENER_TEXT_CHARS] + "…"
         # Same compact era suffix, and same absent-field convention, as _recent_openers_md.
@@ -1634,11 +1894,19 @@ def _render_run(run: list[str], key: tuple[str, str] | None) -> str:
     if len(run) == 1 or key is None:
         return run[0]
     action, reason = key
-    return json.dumps({"ts": f"{_rec_ts(run[0])}-{_rec_ts(run[-1])}",
-                        "action": action, "reason": reason, "repeated": len(run)})
+    return json.dumps(
+        {
+            "ts": f"{_rec_ts(run[0])}-{_rec_ts(run[-1])}",
+            "action": action,
+            "reason": reason,
+            "repeated": len(run),
+        }
+    )
 
 
-def _group_action_reason_runs(lines: list[str]) -> tuple[list[list[str]], list[tuple[str, str] | None]]:
+def _group_action_reason_runs(
+    lines: list[str],
+) -> tuple[list[list[str]], list[tuple[str, str] | None]]:
     """Group FILE-ORDER-ADJACENT lines that share an `_action_reason_key` into runs. A line
     with no key (None) never merges with anything, even another None-keyed line right next to
     it — each such line stays its own run of 1, i.e. exactly today's raw output."""
@@ -1750,7 +2018,9 @@ def _capture_split_summary_md(lines: list[str]) -> str:
             continue
         if isinstance(rec, dict):
             records.append((index, rec))
-    splits = [(index, rec) for index, rec in records if rec.get("action") == "capture_split"]
+    splits = [
+        (index, rec) for index, rec in records if rec.get("action") == "capture_split"
+    ]
     if not splits:
         return ""
 
@@ -1758,8 +2028,11 @@ def _capture_split_summary_md(lines: list[str]) -> str:
     for index, split in splits[-_CAPTURE_SPLITS_SHOWN:]:
         ts = _sanitize_inline(str(split.get("ts") or "unknown time"))
         frames = split.get("captured_frames", split.get("photos"))
-        frame_text = (f" after {frames} captured frame(s)" if isinstance(frames, int)
-                      and not isinstance(frames, bool) else "")
+        frame_text = (
+            f" after {frames} captured frame(s)"
+            if isinstance(frames, int) and not isinstance(frames, bool)
+            else ""
+        )
         evidence: list[str] = []
         before = split.get("before")
         after = split.get("after")
@@ -1767,34 +2040,56 @@ def _capture_split_summary_md(lines: list[str]) -> str:
         if before:
             evidence.append(f"source screenshot `{_sanitize_inline(str(before))}`")
         if anchor:
-            anchor_text = f"identity-anchor screenshot `{_sanitize_inline(str(anchor))}`"
+            anchor_text = (
+                f"identity-anchor screenshot `{_sanitize_inline(str(anchor))}`"
+            )
             anchor_index = split.get("identity_anchor_frame_index")
             if isinstance(anchor_index, int) and not isinstance(anchor_index, bool):
                 anchor_text += f" (frame {anchor_index})"
             evidence.append(anchor_text)
         if after:
-            evidence.append(f"boundary-trigger screenshot `{_sanitize_inline(str(after))}`")
+            evidence.append(
+                f"boundary-trigger screenshot `{_sanitize_inline(str(after))}`"
+            )
         identity_dist = split.get("identity_dist")
         top_dist = split.get("top_dist")
-        if isinstance(identity_dist, (int, float)) and not isinstance(identity_dist, bool):
+        if isinstance(identity_dist, (int, float)) and not isinstance(
+            identity_dist, bool
+        ):
             identity_evidence = f"identity distance {identity_dist:g}"
             if isinstance(top_dist, (int, float)) and not isinstance(top_dist, bool):
                 identity_evidence += f", scroll-top distance {top_dist:g}"
             evidence.append(identity_evidence)
         if "identity_anchor_confirmed" in split:
-            evidence.append("identity anchor " + (
-                "confirmed" if split.get("identity_anchor_confirmed") else "still provisional"))
+            evidence.append(
+                "identity anchor "
+                + (
+                    "confirmed"
+                    if split.get("identity_anchor_confirmed")
+                    else "still provisional"
+                )
+            )
         if "content_match" in split:
-            evidence.append("adjacent content " + (
-                "aligned" if split.get("content_match") else "did not align"))
-        evidence_text = "; ".join(evidence) if evidence else "no split evidence was saved"
+            evidence.append(
+                "adjacent content "
+                + ("aligned" if split.get("content_match") else "did not align")
+            )
+        evidence_text = (
+            "; ".join(evidence) if evidence else "no split evidence was saved"
+        )
         profile_name = split.get("profile_name")
-        name_text = (f"; identity read `{_sanitize_inline(str(profile_name))}`"
-                     if profile_name else "")
+        name_text = (
+            f"; identity read `{_sanitize_inline(str(profile_name))}`"
+            if profile_name
+            else ""
+        )
 
         recovery = next(
-            (rec for later_index, rec in records
-             if later_index > index and rec.get("action") == "capture"),
+            (
+                rec
+                for later_index, rec in records
+                if later_index > index and rec.get("action") == "capture"
+            ),
             None,
         )
         if recovery is None:
@@ -1811,9 +2106,12 @@ def _capture_split_summary_md(lines: list[str]) -> str:
             items = recovery.get("items")
             if isinstance(items, int) and not isinstance(items, bool):
                 item_context = recovery.get("item_context")
-                context_suffix = (f", {item_context} context crop(s)"
-                                  if isinstance(item_context, int) and not isinstance(item_context, bool)
-                                  else "")
+                context_suffix = (
+                    f", {item_context} context crop(s)"
+                    if isinstance(item_context, int)
+                    and not isinstance(item_context, bool)
+                    else ""
+                )
                 parts.append(f"{items} numbered item(s){context_suffix}")
             unavailable = recovery.get("items_unavailable")
             # `items_unavailable` (enumeration could not produce a payload) and
@@ -1823,14 +2121,20 @@ def _capture_split_summary_md(lines: list[str]) -> str:
             # them as the two different things they are: only one reads as a failure.
             unnumbered = recovery.get("items_unnumbered")
             if unavailable:
-                parts.append(f"items unavailable: `{_compact_item_index_refusal_text(unavailable)}`")
+                parts.append(
+                    f"items unavailable: `{_compact_item_index_refusal_text(unavailable)}`"
+                )
             elif unnumbered:
-                parts.append("enumeration completed but numbered nothing: "
-                             f"`{_compact_item_index_refusal_text(unnumbered)}`")
+                parts.append(
+                    "enumeration completed but numbered nothing: "
+                    f"`{_compact_item_index_refusal_text(unnumbered)}`"
+                )
             detail = "; ".join(parts) if parts else "no capture details were logged"
             recovery_text = f"later capture/recovery followed: {detail}"
-        out.append(f"- `{ts}`: deck advanced mid-read{frame_text}; {evidence_text}{name_text}; "
-                   f"{recovery_text}")
+        out.append(
+            f"- `{ts}`: deck advanced mid-read{frame_text}; {evidence_text}{name_text}; "
+            f"{recovery_text}"
+        )
     return "\n".join(out)
 
 
@@ -1859,22 +2163,34 @@ def _item_index_refusal_summary_md(lines: list[str]) -> str:
     out: list[str] = []
     for rec in refusals:
         pair = rec.get("failing_pair")
-        if (isinstance(pair, list) and len(pair) == 2
-                and all(isinstance(v, int) and not isinstance(v, bool) for v in pair)):
+        if (
+            isinstance(pair, list)
+            and len(pair) == 2
+            and all(isinstance(v, int) and not isinstance(v, bool) for v in pair)
+        ):
             pair_text = f"frames {pair[0]} and {pair[1]}"
         else:
             pair_text = "no specific failing pair recorded"
 
         steps = rec.get("steps_px")
-        numbered = [(i, float(step)) for i, step in enumerate(steps)
-                    if isinstance(step, (int, float)) and not isinstance(step, bool)] \
-            if isinstance(steps, list) else []
+        numbered = (
+            [
+                (i, float(step))
+                for i, step in enumerate(steps)
+                if isinstance(step, (int, float)) and not isinstance(step, bool)
+            ]
+            if isinstance(steps, list)
+            else []
+        )
 
         def _median(values: list[float]) -> float:
             ordered = sorted(values)
             middle = len(ordered) // 2
-            return (ordered[middle] if len(ordered) % 2 else
-                    (ordered[middle - 1] + ordered[middle]) / 2)
+            return (
+                ordered[middle]
+                if len(ordered) % 2
+                else (ordered[middle - 1] + ordered[middle]) / 2
+            )
 
         # A capture that hits the card's bottom keeps swiping a page that cannot move: every
         # step from there to the end is either a ~0px measured step or a refused pair, never a
@@ -1891,7 +2207,9 @@ def _item_index_refusal_summary_md(lines: list[str]) -> str:
                     run_indices.append(i)
                     i -= 1
                     continue
-                if not (isinstance(value, (int, float)) and not isinstance(value, bool)):
+                if not (
+                    isinstance(value, (int, float)) and not isinstance(value, bool)
+                ):
                     break
                 prior_values = [v for idx, v in numbered if idx < i]
                 if not prior_values or float(value) >= _median(prior_values) * 0.25:
@@ -1902,51 +2220,73 @@ def _item_index_refusal_summary_md(lines: list[str]) -> str:
         run_set = set(run_indices)
         run_measured = [(idx, value) for idx, value in numbered if idx in run_set]
 
-        trailing_saturation = None      # a single clamped final gesture (legacy phrasing)
-        trailing_run = None             # a genuine multi-step trailing saturation run
+        trailing_saturation = None  # a single clamped final gesture (legacy phrasing)
+        trailing_run = None  # a genuine multi-step trailing saturation run
         if len(run_measured) >= 2:
             # Two or more near-zero measured steps in the run is what tells this apart from an
             # ordinary final gesture clamping short: name the whole stretch as one fact instead
             # of the single last element, and keep every one of its steps out of the cadence.
-            trailing_run = (run_indices[0], len(run_measured),
-                             len(run_indices) - len(run_measured),
-                             [value for _idx, value in run_measured])
+            trailing_run = (
+                run_indices[0],
+                len(run_measured),
+                len(run_indices) - len(run_measured),
+                [value for _idx, value in run_measured],
+            )
             cadence = [(idx, value) for idx, value in numbered if idx not in run_set]
         elif len(run_measured) == 1:
             trailing_saturation = run_measured[0]
-            cadence = [(idx, value) for idx, value in numbered
-                       if idx != trailing_saturation[0]]
+            cadence = [
+                (idx, value) for idx, value in numbered if idx != trailing_saturation[0]
+            ]
         else:
             cadence = numbered
 
         cadence_values = [step for _i, step in cadence]
         if cadence_values:
             median = _median(cadence_values)
-            label = ("realised steps" if trailing_saturation is None and trailing_run is None
-                      else "main realised cadence")
-            step_text = (f"{label} ({len(cadence_values)} measured): "
-                         f"min {min(cadence_values):g}px, median {median:g}px, "
-                         f"max {max(cadence_values):g}px")
+            label = (
+                "realised steps"
+                if trailing_saturation is None and trailing_run is None
+                else "main realised cadence"
+            )
+            step_text = (
+                f"{label} ({len(cadence_values)} measured): "
+                f"min {min(cadence_values):g}px, median {median:g}px, "
+                f"max {max(cadence_values):g}px"
+            )
             if trailing_saturation is not None:
-                step_text += (f"; trailing scroll saturation at step {trailing_saturation[0]} "
-                              f"was {trailing_saturation[1]:g}px")
+                step_text += (
+                    f"; trailing scroll saturation at step {trailing_saturation[0]} "
+                    f"was {trailing_saturation[1]:g}px"
+                )
             if trailing_run is not None:
                 start, measured_count, refused_count, run_values = trailing_run
-                value_text = (f"{run_values[0]:g}px" if len(set(run_values)) == 1 else
-                              f"{min(run_values):g}-{max(run_values):g}px")
+                value_text = (
+                    f"{run_values[0]:g}px"
+                    if len(set(run_values)) == 1
+                    else f"{min(run_values):g}-{max(run_values):g}px"
+                )
                 refused_clause = f", {refused_count} refused" if refused_count else ""
                 step_text += (
                     f"; scroll saturated from step {start} to the end of the capture "
                     f"({measured_count} measured steps at {value_text}{refused_clause}): "
                     f"the profile's bottom was reached there and the remaining frames repeat "
-                    f"the same page position")
+                    f"the same page position"
+                )
             small = [(i, value) for i, value in cadence if value < median * 0.5]
             if small:
-                step_text += ("; mid-run small-step anomalies" if len(small) > 1
-                              else "; mid-run small-step anomaly")
-                step_text += " at " + ", ".join(f"step {i}={value:g}px" for i, value in small[:4])
+                step_text += (
+                    "; mid-run small-step anomalies"
+                    if len(small) > 1
+                    else "; mid-run small-step anomaly"
+                )
+                step_text += " at " + ", ".join(
+                    f"step {i}={value:g}px" for i, value in small[:4]
+                )
         else:
-            step_text = "realised-step stats unavailable (no measured pair delta was logged)"
+            step_text = (
+                "realised-step stats unavailable (no measured pair delta was logged)"
+            )
 
         evidence = []
         if rec.get("before"):
@@ -1971,13 +2311,17 @@ def _item_index_refusal_summary_md(lines: list[str]) -> str:
             if algorithm:
                 runtime_bits.append(f"algorithm `{_sanitize_inline(str(algorithm))}`")
             if module_path:
-                runtime_bits.append(f"loaded module `{_sanitize_inline(str(module_path))}`")
+                runtime_bits.append(
+                    f"loaded module `{_sanitize_inline(str(module_path))}`"
+                )
             if indexer_hash:
                 runtime_bits.append(
-                    f"in-memory indexer `{_sanitize_inline(str(indexer_hash))[:12]}`")
+                    f"in-memory indexer `{_sanitize_inline(str(indexer_hash))[:12]}`"
+                )
             if splitter_hash:
                 runtime_bits.append(
-                    f"in-memory splitter `{_sanitize_inline(str(splitter_hash))[:12]}`")
+                    f"in-memory splitter `{_sanitize_inline(str(splitter_hash))[:12]}`"
+                )
             if runtime_bits:
                 evidence.append("runtime provenance " + ", ".join(runtime_bits))
         evidence_text = "; ".join(evidence) if evidence else "no pair screenshots saved"
@@ -1992,11 +2336,15 @@ def _item_index_refusal_summary_md(lines: list[str]) -> str:
             geometry.append("distinct page regions " + ", ".join(regions[:8]))
         if frames:
             geometry.append("cited frames " + ", ".join(frames[:8]))
-        compact_geometry = "; ".join(geometry) if geometry else "no structured geometry cited"
+        compact_geometry = (
+            "; ".join(geometry) if geometry else "no structured geometry cited"
+        )
         # This is the one deliberate full rendering.  Other report sections/tail records use a
         # pointer so an incident's repeated prose cannot dominate the whole report.
-        out.append(f"- {pair_text}: {compact_geometry}; {step_text}; {evidence_text}. "
-                   f"Full refusal: `{reason}`")
+        out.append(
+            f"- {pair_text}: {compact_geometry}; {step_text}; {evidence_text}. "
+            f"Full refusal: `{reason}`"
+        )
     return "\n".join(out)
 
 
@@ -2030,8 +2378,11 @@ def _geometry_sidecar_frames(run: Path, name: object) -> list | None:
         # A bare name alone does not confine a symlink: ``run / evidence.json`` can still
         # resolve outside the run.  Evidence filenames arrive from JSONL, so do not let one
         # turn this best-effort report into an arbitrary-file reader.
-        if (path.is_symlink() or not path.is_file()
-                or path.stat().st_size > _ITEM_INDEX_GEOMETRY_SIDECAR_BYTES):
+        if (
+            path.is_symlink()
+            or not path.is_file()
+            or path.stat().st_size > _ITEM_INDEX_GEOMETRY_SIDECAR_BYTES
+        ):
             return None
         payload = json.loads(path.read_text())
     except Exception:  # noqa: BLE001 -- absent, truncated or malformed evidence stays silent
@@ -2046,15 +2397,22 @@ def _named_frames(indices: list[int]) -> str:
     """``(frames 0, 6)`` for a short list, and nothing at all for a long one."""
     if not indices or len(indices) > _ITEM_INDEX_GEOMETRY_ROWS_SHOWN:
         return ""
-    return (" (frame" + ("" if len(indices) == 1 else "s") + " "
-            + ", ".join(str(i) for i in indices) + ")")
+    return (
+        " (frame"
+        + ("" if len(indices) == 1 else "s")
+        + " "
+        + ", ".join(str(i) for i in indices)
+        + ")"
+    )
 
 
 def _sidecar_geometry_lines(frames: list) -> list[str]:
     """The three derived facts about one refused capture's leading edge. See the caller."""
-    leading: dict[int, tuple[int, int, str, bool]] = {}   # frame -> (y0, y1, top_kind, observed)
-    offsets: dict[int, int] = {}                          # frame -> page offset
-    first_run: dict[int, tuple[int, int, str]] = {}       # frame -> (y0, y1, run kind)
+    leading: dict[
+        int, tuple[int, int, str, bool]
+    ] = {}  # frame -> (y0, y1, top_kind, observed)
+    offsets: dict[int, int] = {}  # frame -> page offset
+    first_run: dict[int, tuple[int, int, str]] = {}  # frame -> (y0, y1, run kind)
     islands: dict[tuple[int, int], list[tuple[int, int | None, object]]] = {}
     unanchored_rows_unusable = False
     # DOES THIS SIDECAR'S WRITER POSTDATE THE SCREEN-FIXED ISLAND CHECK? Keyed on the PRESENCE of
@@ -2075,8 +2433,11 @@ def _sidecar_geometry_lines(frames: list) -> list[str]:
             continue
         offset = _plain_int(frame.get("offset_px"))
         raw_blocks = frame.get("blocks")
-        blocks = ([b for b in raw_blocks if isinstance(b, dict)]
-                  if isinstance(raw_blocks, list) else [])
+        blocks = (
+            [b for b in raw_blocks if isinstance(b, dict)]
+            if isinstance(raw_blocks, list)
+            else []
+        )
         for block in blocks:
             # Asked of EVERY block, before the unanchored filter below: an ordinary `selectable`
             # block carries the keys too, and a post-check capture whose segmentation happened to
@@ -2090,26 +2451,45 @@ def _sidecar_geometry_lines(frames: list) -> list[str]:
             if rows is None:
                 unanchored_rows_unusable = True
                 continue
-            islands.setdefault(rows, []).append((index, offset, block.get("content_digest")))
+            islands.setdefault(rows, []).append(
+                (index, offset, block.get("content_digest"))
+            )
         head = _row_pair(blocks[0].get("frame_rows")) if blocks else None
         if head is None:
             continue
         if offset is not None:
             offsets[index] = offset
-        leading[index] = (head[0], head[1], str(blocks[0].get("top_kind") or "unrecorded"),
-                          bool(blocks[0].get("top_observed")))
+        leading[index] = (
+            head[0],
+            head[1],
+            str(blocks[0].get("top_kind") or "unrecorded"),
+            bool(blocks[0].get("top_observed")),
+        )
         raw_runs = frame.get("background_runs")
-        runs = ([r for r in raw_runs if isinstance(r, dict)]
-                if isinstance(raw_runs, list) else [])
+        runs = (
+            [r for r in raw_runs if isinstance(r, dict)]
+            if isinstance(raw_runs, list)
+            else []
+        )
         below = sorted(
-            (rows for rows, kind in
-             ((_row_pair(r.get("frame_rows")), str(r.get("kind") or "unrecorded")) for r in runs)
-             if rows is not None and rows[0] > head[0]),
-            key=lambda rows: rows[0])
+            (
+                rows
+                for rows, kind in (
+                    (_row_pair(r.get("frame_rows")), str(r.get("kind") or "unrecorded"))
+                    for r in runs
+                )
+                if rows is not None and rows[0] > head[0]
+            ),
+            key=lambda rows: rows[0],
+        )
         for r in runs:
             rows = _row_pair(r.get("frame_rows"))
             if below and rows == below[0]:
-                first_run[index] = (rows[0], rows[1], str(r.get("kind") or "unrecorded"))
+                first_run[index] = (
+                    rows[0],
+                    rows[1],
+                    str(r.get("kind") or "unrecorded"),
+                )
                 break
 
     out: list[str] = []
@@ -2120,18 +2500,24 @@ def _sidecar_geometry_lines(frames: list) -> list[str]:
     # (1) THE TOP EDGE, aggregated. The incident's tell: one row, every frame, never observed.
     tops = Counter((y0, kind, observed) for y0, _y1, kind, observed in leading.values())
     (row, kind, observed), count = tops.most_common(1)[0]
-    line = (f"- leading block began at frame row {row} with "
-            f"{'an observed' if observed else 'an UNOBSERVED'} top edge "
-            f"({_sanitize_inline(kind)}) on {count} of {total} frames")
+    line = (
+        f"- leading block began at frame row {row} with "
+        f"{'an observed' if observed else 'an UNOBSERVED'} top edge "
+        f"({_sanitize_inline(kind)}) on {count} of {total} frames"
+    )
     others = sorted({y0 for y0, _y1, _k, _o in leading.values()} - {row})
     if others:
         shown = ", ".join(str(v) for v in others[:_ITEM_INDEX_GEOMETRY_ROWS_SHOWN])
-        line += (f"; the remaining {total - count} began at {len(others)} other row(s) "
-                 f"({shown}), so NO leading strip holds a fixed frame position in this capture")
+        line += (
+            f"; the remaining {total - count} began at {len(others)} other row(s) "
+            f"({shown}), so NO leading strip holds a fixed frame position in this capture"
+        )
     elif len(set(offsets.values())) >= 2:
-        line += (f", while the page offset moved across {min(offsets.values())}.."
-                 f"{max(offsets.values())}px — a frame row that does not move while the page "
-                 f"does is what screen-pinned chrome looks like")
+        line += (
+            f", while the page offset moved across {min(offsets.values())}.."
+            f"{max(offsets.values())}px — a frame row that does not move while the page "
+            f"does is what screen-pinned chrome looks like"
+        )
     out.append(line)
 
     # (2) THE RUN BELOW IT. `too_long` is not a gutter, so it never cut, so the strip above it
@@ -2142,88 +2528,126 @@ def _sidecar_geometry_lines(frames: list) -> list[str]:
         # run that sits at a different row on nearly every frame is just page content scrolling
         # past, and reporting its modal row (2 of 26, on the second incident capture) would
         # dress noise up as a measurement -- so say what actually varies instead.
-        group = ({i: v for i, v in first_run.items() if v[0] == starts.most_common(1)[0][0]}
-                 if len(starts) == 1 else dict(first_run))
+        group = (
+            {i: v for i, v in first_run.items() if v[0] == starts.most_common(1)[0][0]}
+            if len(starts) == 1
+            else dict(first_run)
+        )
         kinds = Counter(v[2] for v in group.values())
         kind_bits = [
             f"`{_sanitize_inline(name)}` on {n}"
             + _named_frames(sorted(i for i, v in group.items() if v[2] == name))
-            for name, n in kinds.most_common()]
+            for name, n in kinds.most_common()
+        ]
         if len(starts) == 1:
-            where = (f"began at frame row {starts.most_common(1)[0][0]} on "
-                     f"{len(group)} of {total} frames")
+            where = (
+                f"began at frame row {starts.most_common(1)[0][0]} on "
+                f"{len(group)} of {total} frames"
+            )
         else:
-            where = (f"sat at {len(starts)} different frame rows across {len(group)} of {total} "
-                     f"frames, so it moves with the page rather than holding one position")
-        line = (f"- the first background run below that top edge {where}, classified "
-                + ", ".join(kind_bits))
+            where = (
+                f"sat at {len(starts)} different frame rows across {len(group)} of {total} "
+                f"frames, so it moves with the page rather than holding one position"
+            )
+        line = (
+            f"- the first background run below that top edge {where}, classified "
+            + ", ".join(kind_bits)
+        )
         extents = Counter((v[0], v[1]) for v in group.values())
         if len(starts) == 1 and len(extents) > 1:
-            line += ("; it spanned " + ", ".join(
-                f"{y0}..{y1} on {n}" for (y0, y1), n in extents.most_common(
-                    _ITEM_INDEX_GEOMETRY_ROWS_SHOWN)))
+            line += "; it spanned " + ", ".join(
+                f"{y0}..{y1} on {n}"
+                for (y0, y1), n in extents.most_common(_ITEM_INDEX_GEOMETRY_ROWS_SHOWN)
+            )
         absorbed = sorted(i for i, v in group.items() if v[0] < leading[i][1])
         if absorbed:
-            line += (f"; on {len(absorbed)} of those {len(group)} frames the run lay INSIDE the "
-                     f"leading block instead of bounding it, so it did not cut and the strip "
-                     f"above it was merged into the content below")
+            line += (
+                f"; on {len(absorbed)} of those {len(group)} frames the run lay INSIDE the "
+                f"leading block instead of bounding it, so it did not cut and the strip "
+                f"above it was merged into the content below"
+            )
         out.append(line)
 
     # (3) THE SCREEN-FIXED VERDICT, re-derived from the same three conditions item_index's
     # `_screen_fixed_islands` applies. An absent verdict is reported as absent, never as "no".
     if islands:
-        for rows, sightings in sorted(islands.items())[:_ITEM_INDEX_GEOMETRY_ROWS_SHOWN]:
+        for rows, sightings in sorted(islands.items())[
+            :_ITEM_INDEX_GEOMETRY_ROWS_SHOWN
+        ]:
             height = rows[1] - rows[0]
             seen = sorted({o for _i, o, _d in sightings if o is not None})
             digests = {d for _i, _o, d in sightings}
-            where = (f"- screen-fixed verdict for the unanchored strip at frame rows "
-                     f"{rows[0]}..{rows[1]}"
-                     + _named_frames(sorted({i for i, _o, _d in sightings})) + ": ")
+            where = (
+                f"- screen-fixed verdict for the unanchored strip at frame rows "
+                f"{rows[0]}..{rows[1]}"
+                + _named_frames(sorted({i for i, _o, _d in sightings}))
+                + ": "
+            )
             if len(seen) < 2:
-                only = f"one page offset ({seen[0]})" if seen else "no recorded page offset"
-                out.append(where + f"NOT proven — it was seen at {only}, so nothing here "
-                                   "distinguishes screen-pinned chrome from page content and it "
-                                   "is placed on the page")
+                only = (
+                    f"one page offset ({seen[0]})"
+                    if seen
+                    else "no recorded page offset"
+                )
+                out.append(
+                    where + f"NOT proven — it was seen at {only}, so nothing here "
+                    "distinguishes screen-pinned chrome from page content and it "
+                    "is placed on the page"
+                )
             elif seen[-1] - seen[0] < height:
-                out.append(where + f"NOT proven — it was seen across only {seen[-1] - seen[0]}px "
-                                   f"of scroll, less than its own {height}px height, so the page "
-                                   "rows it would have shown still overlap and one piece of page "
-                                   "content could explain both sightings")
+                out.append(
+                    where
+                    + f"NOT proven — it was seen across only {seen[-1] - seen[0]}px "
+                    f"of scroll, less than its own {height}px height, so the page "
+                    "rows it would have shown still overlap and one piece of page "
+                    "content could explain both sightings"
+                )
             elif any(not isinstance(d, str) or not d for d in digests):
-                out.append(where + f"UNDECIDABLE FROM THIS FILE — identical frame rows at "
-                                   f"{len(seen)} page offsets spanning {seen[-1] - seen[0]}px, "
-                                   f"more than its own {height}px height, but this sidecar "
-                                   "carries no per-strip content digest, so the pixel-identity "
-                                   "leg of the proof cannot be re-checked here")
+                out.append(
+                    where + f"UNDECIDABLE FROM THIS FILE — identical frame rows at "
+                    f"{len(seen)} page offsets spanning {seen[-1] - seen[0]}px, "
+                    f"more than its own {height}px height, but this sidecar "
+                    "carries no per-strip content digest, so the pixel-identity "
+                    "leg of the proof cannot be re-checked here"
+                )
             elif len(digests) != 1:
-                out.append(where + f"NOT proven — it showed {len(digests)} different pixel "
-                                   f"contents across {len(seen)} offsets, so it is not a static "
-                                   "element; an animating or live-updating header reads exactly "
-                                   "like this and it is placed on the page")
+                out.append(
+                    where + f"NOT proven — it showed {len(digests)} different pixel "
+                    f"contents across {len(seen)} offsets, so it is not a static "
+                    "element; an animating or live-updating header reads exactly "
+                    "like this and it is placed on the page"
+                )
             else:
-                out.append(where + f"PROVEN screen-fixed — identical pixels at {len(seen)} page "
-                                   f"offsets spanning {seen[-1] - seen[0]}px, more than its own "
-                                   f"{height}px height; it has no page position at all and is "
-                                   "held out of the index entirely")
+                out.append(
+                    where
+                    + f"PROVEN screen-fixed — identical pixels at {len(seen)} page "
+                    f"offsets spanning {seen[-1] - seen[0]}px, more than its own "
+                    f"{height}px height; it has no page position at all and is "
+                    "held out of the index entirely"
+                )
     elif unanchored_rows_unusable:
         # The strips ARE recorded here, so this writer plainly has the check; only these
         # particular rows cannot be parsed back. Keep this ahead of both branches below so a
         # half-written sidecar is never described by either of their provenance claims.
-        out.append(f"- screen-fixed verdict: unavailable — this capture's geometry records "
-                   f"`{_SIDECAR_UNANCHORED_BLOCK_KIND}` strip(s) but none with usable frame "
-                   "rows, so the verdict cannot be re-derived from this file. Nothing here "
-                   "decides whether the leading block above is page content or chrome pinned "
-                   "to the screen")
+        out.append(
+            f"- screen-fixed verdict: unavailable — this capture's geometry records "
+            f"`{_SIDECAR_UNANCHORED_BLOCK_KIND}` strip(s) but none with usable frame "
+            "rows, so the verdict cannot be re-derived from this file. Nothing here "
+            "decides whether the leading block above is page content or chrome pinned "
+            "to the screen"
+        )
     elif writer_records_screen_fixed_evidence:
         # THE COMMON PATH, and until 2026-09-16 it was the one described as "predates ... (or
         # that check found nothing to place)" -- a provenance claim this very file refutes, with
         # the true cause demoted to a parenthetical. A block carrying the hold-out evidence keys
         # was written by a writer that already had the check, so there is no age question left:
         # the check ran and placed everything.
-        out.append("- screen-fixed verdict: none to give — this capture's segmentation placed "
-                   f"every block on the page and recorded no `{_SIDECAR_UNANCHORED_BLOCK_KIND}` "
-                   "strip to decide on, so the leading block above is page content as far as "
-                   "this check is concerned")
+        out.append(
+            "- screen-fixed verdict: none to give — this capture's segmentation placed "
+            f"every block on the page and recorded no `{_SIDECAR_UNANCHORED_BLOCK_KIND}` "
+            "strip to decide on, so the leading block above is page content as far as "
+            "this check is concerned"
+        )
     else:
         # STILL LIVE, and keyed on something real: no block in the whole sidecar carries either
         # hold-out key, which is the shape of `data/hinge_debug/78d364c5527d` and
@@ -2232,12 +2656,14 @@ def _sidecar_geometry_lines(frames: list) -> list[str]:
         # file. The module name is `item_index._screen_fixed_islands`, matching the caller's
         # docstring: segment.py supplies the `unanchored` block kind, item_index applies the
         # three-condition check.
-        out.append("- screen-fixed verdict: unavailable — no block in this capture's geometry "
-                   "carries the screen-fixed hold-out evidence "
-                   f"(`{'`/`'.join(_SIDECAR_SCREEN_FIXED_EVIDENCE_KEYS)}`), so this sidecar was "
-                   "written before item_index._screen_fixed_islands existed. Nothing here "
-                   "decides whether the leading block above is page content or chrome pinned "
-                   "to the screen")
+        out.append(
+            "- screen-fixed verdict: unavailable — no block in this capture's geometry "
+            "carries the screen-fixed hold-out evidence "
+            f"(`{'`/`'.join(_SIDECAR_SCREEN_FIXED_EVIDENCE_KEYS)}`), so this sidecar was "
+            "written before item_index._screen_fixed_islands existed. Nothing here "
+            "decides whether the leading block above is page content or chrome pinned "
+            "to the screen"
+        )
     return out
 
 
@@ -2284,8 +2710,11 @@ def _item_index_geometry_md(lines: list[str], run: Path) -> str:
             rec = json.loads(raw)
         except Exception:  # noqa: BLE001 -- a partial JSONL write must not hide a later refusal
             continue
-        if (isinstance(rec, dict) and rec.get("action") == "item_index_refused"
-                and rec.get("evidence_sidecar")):
+        if (
+            isinstance(rec, dict)
+            and rec.get("action") == "item_index_refused"
+            and rec.get("evidence_sidecar")
+        ):
             named.append(rec["evidence_sidecar"])
 
     out: list[str] = []
@@ -2296,7 +2725,9 @@ def _item_index_geometry_md(lines: list[str], run: Path) -> str:
         body = _sidecar_geometry_lines(frames)
         if not body:
             continue
-        out.append(f"- `{_sanitize_inline(str(name))}` ({len(frames)} frames of geometry):")
+        out.append(
+            f"- `{_sanitize_inline(str(name))}` ({len(frames)} frames of geometry):"
+        )
         out.extend(f"  {line}" for line in body)
     return "\n".join(out)
 
@@ -2326,41 +2757,51 @@ def _dwell_navigation_refusal_summary_md(lines: list[str]) -> str:
             rec = json.loads(raw)
         except Exception:  # noqa: BLE001 -- a partial action row must not hide a later one
             continue
-        if (isinstance(rec, dict)
-                and rec.get("action") == "still_photo_dwell_walk_candidate"
-                and rec.get("outcome") in {
-                    "navigation_refused", "navigation_refused_returned",
-                    "navigation_refused_return_unverified", "return_unverified",
-                    # A below-entry refusal that had already spent a gesture. Its harmless
-                    # sibling `unreachable_below_entry` is deliberately absent -- that one is a
-                    # card stepped over, not a failure -- but this one ends the capture and
-                    # stops the run, so leaving it out rendered nothing at all for the event
-                    # the operator is reading the report to understand (2026-09-04).
-                    "below_entry_after_gesture",
-                    # A mid-navigation operator Stop (2026-09-16): the literal driver token
-                    # "navigation_cancelled", held in `_DWELL_NAVIGATION_CANCELLED` so this set
-                    # and the Stop-attribution fallback in
-                    # `_capture_window_has_dwell_walk_stop` cannot drift apart. It reaches the
-                    # same terminal envelope as its `navigation_refused` sibling and must be
-                    # explained for the same reason, so the token belongs in this set even
-                    # though it is NOT a fault -- omitting it renders nothing at all for the
-                    # event, the exact regression this comment and the accepted-outcome
-                    # assertion in tests/test_hinge_item_capture.py exist to prevent. It is
-                    # rendered as a Stop below, never as a refusal.
-                    _DWELL_NAVIGATION_CANCELLED,
-                }):
+        if (
+            isinstance(rec, dict)
+            and rec.get("action") == "still_photo_dwell_walk_candidate"
+            and rec.get("outcome")
+            in {
+                "navigation_refused",
+                "navigation_refused_returned",
+                "navigation_refused_return_unverified",
+                "return_unverified",
+                # A below-entry refusal that had already spent a gesture. Its harmless
+                # sibling `unreachable_below_entry` is deliberately absent -- that one is a
+                # card stepped over, not a failure -- but this one ends the capture and
+                # stops the run, so leaving it out rendered nothing at all for the event
+                # the operator is reading the report to understand (2026-09-04).
+                "below_entry_after_gesture",
+                # A mid-navigation operator Stop (2026-09-16): the literal driver token
+                # "navigation_cancelled", held in `_DWELL_NAVIGATION_CANCELLED` so this set
+                # and the Stop-attribution fallback in
+                # `_capture_window_has_dwell_walk_stop` cannot drift apart. It reaches the
+                # same terminal envelope as its `navigation_refused` sibling and must be
+                # explained for the same reason, so the token belongs in this set even
+                # though it is NOT a fault -- omitting it renders nothing at all for the
+                # event, the exact regression this comment and the accepted-outcome
+                # assertion in tests/test_hinge_item_capture.py exist to prevent. It is
+                # rendered as a Stop below, never as a refusal.
+                _DWELL_NAVIGATION_CANCELLED,
+            }
+        ):
             records.append(rec)
     if not records:
         return ""
 
     def number(value: object) -> int | float | None:
-        return (value if isinstance(value, (int, float)) and not isinstance(value, bool)
-                else None)
+        return (
+            value
+            if isinstance(value, (int, float)) and not isinstance(value, bool)
+            else None
+        )
 
     out: list[str] = []
     for rec in records[-_CAPTURE_SPLITS_SHOWN:]:
         heart = number(rec.get("heart_ordinal"))
-        candidate = f"page heart {heart:g}" if heart is not None else "unknown page heart"
+        candidate = (
+            f"page heart {heart:g}" if heart is not None else "unknown page heart"
+        )
         telemetry = rec.get("navigation_refusal")
         if not isinstance(telemetry, dict):
             reason = rec.get("reason")
@@ -2373,47 +2814,77 @@ def _dwell_navigation_refusal_summary_md(lines: list[str]) -> str:
                 # plainly rather than borrowing the refusal wording." The dwell-navigation
                 # renderer used to violate it, filing a Stop under `navigation_refused` and then
                 # calling the row legacy.
-                out.append(f"- {candidate}: dwell-navigation CANCELLED by the requested Stop "
-                           f"(`{code}`); the walk was asked to end while moving to this card, so "
-                           "there is no plan, measured climb, or anchor-return telemetry to show "
-                           "and nothing here is a targeting or measurement fault")
+                out.append(
+                    f"- {candidate}: dwell-navigation CANCELLED by the requested Stop "
+                    f"(`{code}`); the walk was asked to end while moving to this card, so "
+                    "there is no plan, measured climb, or anchor-return telemetry to show "
+                    "and nothing here is a targeting or measurement fault"
+                )
                 continue
-            if (isinstance(reason, str)
-                    and reason in _UNCODED_DWELL_NAVIGATION_REFUSAL_CLASSES):
+            if (
+                isinstance(reason, str)
+                and reason in _UNCODED_DWELL_NAVIGATION_REFUSAL_CLASSES
+            ):
                 # Not an old row: these five classes are raised by the vision/should_stop layers
                 # UNDER `navigate_to_item` and carry no position, plan or measurement of any
                 # kind, so a current-build row naming one is complete exactly as written.
-                out.append(f"- {candidate}: dwell-navigation {outcome} (`{code}`); this refusal "
-                           "class carries no measurement, so no structured plan, measured climb "
-                           "or anchor-return telemetry exists for it")
+                out.append(
+                    f"- {candidate}: dwell-navigation {outcome} (`{code}`); this refusal "
+                    "class carries no measurement, so no structured plan, measured climb "
+                    "or anchor-return telemetry exists for it"
+                )
                 continue
             # Everything else -- including `return_unverified`, which the driver writes with no
             # `reason` key at all. Say only what is true of the row in hand; do not guess at its
             # age, because no row records one.
-            out.append(f"- {candidate}: dwell-navigation {outcome} (`{code}`); this row carries "
-                       "no structured refusal telemetry, so no plan, measured climb or "
-                       "anchor-return figures can be shown for it")
+            out.append(
+                f"- {candidate}: dwell-navigation {outcome} (`{code}`); this row carries "
+                "no structured refusal telemetry, so no plan, measured climb or "
+                "anchor-return figures can be shown for it"
+            )
             continue
 
-        code = _sanitize_inline(str(telemetry.get("code") or rec.get("reason") or "not recorded"))
+        code = _sanitize_inline(
+            str(telemetry.get("code") or rec.get("reason") or "not recorded")
+        )
         frame_index = number(telemetry.get("frame_index"))
-        frame_note = f" at navigation frame {frame_index:g}" if frame_index is not None else ""
-        planned = telemetry.get("planned") if isinstance(telemetry.get("planned"), dict) else {}
-        achieved = telemetry.get("achieved") if isinstance(telemetry.get("achieved"), dict) else {}
+        frame_note = (
+            f" at navigation frame {frame_index:g}" if frame_index is not None else ""
+        )
+        planned = (
+            telemetry.get("planned")
+            if isinstance(telemetry.get("planned"), dict)
+            else {}
+        )
+        achieved = (
+            telemetry.get("achieved")
+            if isinstance(telemetry.get("achieved"), dict)
+            else {}
+        )
         plan_bits: list[str] = []
-        for key, label in (("step_px", "step"), ("bound_px", "bound"),
-                           ("spacing_px", "spacing"), ("sized_against_px", "sized against")):
+        for key, label in (
+            ("step_px", "step"),
+            ("bound_px", "bound"),
+            ("spacing_px", "spacing"),
+            ("sized_against_px", "sized against"),
+        ):
             value = number(planned.get(key))
             if value is not None:
                 plan_bits.append(f"{label} {value:g}px")
         window = planned.get("window_px")
-        if (isinstance(window, (list, tuple)) and len(window) == 2
-                and number(window[0]) is not None and number(window[1]) is not None):
+        if (
+            isinstance(window, (list, tuple))
+            and len(window) == 2
+            and number(window[0]) is not None
+            and number(window[1]) is not None
+        ):
             plan_bits.append(f"window {number(window[0]):g}..{number(window[1]):g}px")
         basis = planned.get("basis")
         if isinstance(basis, str) and basis:
             plan_bits.append(f"basis `{_sanitize_inline(basis)}`")
-        plan_text = "; ".join(plan_bits) if plan_bits else "planned step telemetry unavailable"
+        plan_text = (
+            "; ".join(plan_bits) if plan_bits else "planned step telemetry unavailable"
+        )
 
         achieved_bits: list[str] = []
         delta = number(achieved.get("delta_px", achieved.get("measurement_delta_px")))
@@ -2444,13 +2915,22 @@ def _dwell_navigation_refusal_summary_md(lines: list[str]) -> str:
             if isinstance(reverse_reason, str) and reverse_reason:
                 reverse_bits.append(_sanitize_inline(reverse_reason))
             if reverse_bits:
-                achieved_bits.append("reverse estimator `" + "; ".join(reverse_bits) + "`")
-        achieved_text = "; ".join(achieved_bits) if achieved_bits else "achieved-climb telemetry unavailable"
+                achieved_bits.append(
+                    "reverse estimator `" + "; ".join(reverse_bits) + "`"
+                )
+        achieved_text = (
+            "; ".join(achieved_bits)
+            if achieved_bits
+            else "achieved-climb telemetry unavailable"
+        )
 
-        return_outcome = _sanitize_inline(str(telemetry.get("return_outcome") or "not recorded"))
+        return_outcome = _sanitize_inline(
+            str(telemetry.get("return_outcome") or "not recorded")
+        )
         restored = number(telemetry.get("restored_page_shift_px"))
-        anchor_text = (f"anchor return `{return_outcome}`"
-                       + (f" at {restored:+g}px" if restored is not None else ""))
+        anchor_text = f"anchor return `{return_outcome}`" + (
+            f" at {restored:+g}px" if restored is not None else ""
+        )
 
         # `walk` is new telemetry (2026-08-27): a verified return can let the candidate walk
         # continue past a refusal instead of abandoning it outright, bounded by a small budget of
@@ -2463,12 +2943,17 @@ def _dwell_navigation_refusal_summary_md(lines: list[str]) -> str:
             walk_outcome = _sanitize_inline(str(walk.get("outcome") or "unknown"))
             spent = number(walk.get("returned_refusals_spent"))
             budget = number(walk.get("returned_refusal_budget"))
-            budget_text = (f" (returned-refusal budget {spent:g}/{budget:g})"
-                           if spent is not None and budget is not None else "")
+            budget_text = (
+                f" (returned-refusal budget {spent:g}/{budget:g})"
+                if spent is not None and budget is not None
+                else ""
+            )
             if walk_outcome == "continued":
                 walk_text = f"; walk continued to the next candidate{budget_text}"
             elif walk_outcome == "abandoned_budget_spent":
-                walk_text = f"; ⚠️ walk abandoned: returned-refusal budget spent{budget_text}"
+                walk_text = (
+                    f"; ⚠️ walk abandoned: returned-refusal budget spent{budget_text}"
+                )
             elif walk_outcome == "abandoned_return_unverified":
                 walk_text = f"; ⚠️ walk abandoned: return unverified{budget_text}"
             else:
@@ -2483,8 +2968,10 @@ def _dwell_navigation_refusal_summary_md(lines: list[str]) -> str:
             pair_bits.append(f"after `{_sanitize_inline(after_name)}`")
         pair_text = ("; failing pair " + " / ".join(pair_bits)) if pair_bits else ""
 
-        out.append(f"- {candidate}{frame_note}: dwell-navigation refusal `{code}`; {plan_text}; "
-                   f"{achieved_text}; {anchor_text}{walk_text}{pair_text}")
+        out.append(
+            f"- {candidate}{frame_note}: dwell-navigation refusal `{code}`; {plan_text}; "
+            f"{achieved_text}; {anchor_text}{walk_text}{pair_text}"
+        )
         # schema_version 3 (2026-09-04) carries whole `frameshift.trace_estimate` records under
         # achieved["forward"]/["reverse"] -- the exact shape `_shift_trace_lines_md` consumes, so
         # the per-strip bank prints here too. That bank is what tells "the strips disagreed" apart
@@ -2526,11 +3013,17 @@ def _shift_trace_lines_md(measurement: object) -> list[str]:
         if not isinstance(trace, dict):
             continue
         status = trace.get("status")
-        head = f"  - {direction} estimator `{_sanitize_inline(str(status))}`" if isinstance(
-            status, str) and status else f"  - {direction} estimator"
+        head = (
+            f"  - {direction} estimator `{_sanitize_inline(str(status))}`"
+            if isinstance(status, str) and status
+            else f"  - {direction} estimator"
+        )
         counts: list[str] = []
-        for key, label in (("agreeing", "agreeing"), ("dissenting", "dissenting"),
-                           ("eligible", "eligible")):
+        for key, label in (
+            ("agreeing", "agreeing"),
+            ("dissenting", "dissenting"),
+            ("eligible", "eligible"),
+        ):
             value = trace.get(key)
             if isinstance(value, int) and not isinstance(value, bool):
                 counts.append(f"{value} {label}")
@@ -2541,8 +3034,11 @@ def _shift_trace_lines_md(measurement: object) -> list[str]:
         if isinstance(window, int) and not isinstance(window, bool):
             counts.append(f"trust window {window}px")
         band = trace.get("band")
-        if (isinstance(band, (list, tuple)) and len(band) == 2
-                and all(isinstance(v, int) and not isinstance(v, bool) for v in band)):
+        if (
+            isinstance(band, (list, tuple))
+            and len(band) == 2
+            and all(isinstance(v, int) and not isinstance(v, bool) for v in band)
+        ):
             counts.append(f"band rows {band[0]}..{band[1]}")
         if counts:
             head += " (" + ", ".join(counts) + ")"
@@ -2558,15 +3054,25 @@ def _shift_trace_lines_md(measurement: object) -> list[str]:
         for strip in strips:
             if not (isinstance(strip, (list, tuple)) and len(strip) >= 5):
                 continue
-            y0, y1, state, delta, score = strip[0], strip[1], strip[2], strip[3], strip[4]
+            y0, y1, state, delta, score = (
+                strip[0],
+                strip[1],
+                strip[2],
+                strip[3],
+                strip[4],
+            )
             state_text = state if isinstance(state, str) else "?"
             if not (isinstance(delta, int) and not isinstance(delta, bool)):
                 other[state_text] = other.get(state_text, 0) + 1
                 continue
-            score_text = (f" ({float(score):.2f})"
-                          if isinstance(score, (int, float))
-                          and not isinstance(score, bool) else "")
-            marker = "" if state_text == "matched" else f" [{_sanitize_inline(state_text)}]"
+            score_text = (
+                f" ({float(score):.2f})"
+                if isinstance(score, (int, float)) and not isinstance(score, bool)
+                else ""
+            )
+            marker = (
+                "" if state_text == "matched" else f" [{_sanitize_inline(state_text)}]"
+            )
             located.append(f"{y0}-{y1} {delta:+d}px{score_text}{marker}")
         if not located and not other:
             continue
@@ -2596,16 +3102,21 @@ def _dwell_return_chain_refusal_summary_md(lines: list[str]) -> str:
             rec = json.loads(raw)
         except Exception:  # noqa: BLE001 -- a partial row must not hide a later terminal trace
             continue
-        if (isinstance(rec, dict)
-                and rec.get("action") == "still_photo_dwell_return_chain"
-                and rec.get("outcome") == "refused"):
+        if (
+            isinstance(rec, dict)
+            and rec.get("action") == "still_photo_dwell_return_chain"
+            and rec.get("outcome") == "refused"
+        ):
             records.append(rec)
     if not records:
         return ""
 
     def number(value: object) -> int | float | None:
-        return (value if isinstance(value, (int, float)) and not isinstance(value, bool)
-                else None)
+        return (
+            value
+            if isinstance(value, (int, float)) and not isinstance(value, bool)
+            else None
+        )
 
     out: list[str] = []
     for rec in records[-_CAPTURE_SPLITS_SHOWN:]:
@@ -2635,7 +3146,9 @@ def _dwell_return_chain_refusal_summary_md(lines: list[str]) -> str:
             details.append(f"evidence before `{_sanitize_inline(before)}`")
         if after:
             details.append(f"after `{_sanitize_inline(after)}`")
-        detail_text = "; ".join(details) if details else "numeric return telemetry unavailable"
+        detail_text = (
+            "; ".join(details) if details else "numeric return telemetry unavailable"
+        )
         out.append(f"- return chain refused (`{reason}`): {detail_text}")
         # The estimator's own account of the leg that refused, when the driver recorded one.
         # Historic runs carry no `measurement` key and render exactly as they did before.
@@ -2643,8 +3156,11 @@ def _dwell_return_chain_refusal_summary_md(lines: list[str]) -> str:
     return "\n".join(out)
 
 
-_ITEM_INDEX_NOTE_ACTIONS = ("item_index_repaired", "item_index_notes",
-                            "item_index_screen_fixed_notes")
+_ITEM_INDEX_NOTE_ACTIONS = (
+    "item_index_repaired",
+    "item_index_notes",
+    "item_index_screen_fixed_notes",
+)
 
 # Text fingerprint of a `_screen_fixed_islands`-produced note (item_index.py's `where = (f"the
 # leading strip at frame rows {rows[0]}..{rows[1]}, seen in frame(s) ..."` local, ~line 2096),
@@ -2695,7 +3211,11 @@ def _item_index_note_bearing_records(lines: list[str]) -> list[dict]:
     `_item_index_note_is_screen_fixed`, each deduplicated globally across every record regardless
     of which action name wrote it or what else that same record carried.
     """
-    return [rec for rec in _action_records(lines) if rec.get("action") in _ITEM_INDEX_NOTE_ACTIONS]
+    return [
+        rec
+        for rec in _action_records(lines)
+        if rec.get("action") in _ITEM_INDEX_NOTE_ACTIONS
+    ]
 
 
 def _item_index_note_is_screen_fixed(rec: dict, note: str) -> bool:
@@ -2741,9 +3261,16 @@ def _item_index_repair_summary_md(lines: list[str]) -> str:
             path = repair.get("path")
             source_pair = repair.get("source_pair")
             raw_shift = repair.get("raw") if isinstance(repair.get("raw"), dict) else {}
-            effective = (repair.get("effective")
-                         if isinstance(repair.get("effective"), dict) else {})
-            if not isinstance(path, str) or not isinstance(source_pair, list) or len(source_pair) != 2:
+            effective = (
+                repair.get("effective")
+                if isinstance(repair.get("effective"), dict)
+                else {}
+            )
+            if (
+                not isinstance(path, str)
+                or not isinstance(source_pair, list)
+                or len(source_pair) != 2
+            ):
                 continue
             # Both shifts go through _delta_px_or_dash: a repair record exists precisely
             # BECAUSE the raw estimator refused, and a no_consensus refusal always carries
@@ -2755,7 +3282,8 @@ def _item_index_repair_summary_md(lines: list[str]) -> str:
                 f"{source_pair[0]}→{source_pair[1]}; raw "
                 f"{raw_shift.get('status')} {_delta_px_or_dash(raw_shift.get('delta_px'))} → "
                 f"effective {effective.get('status')} "
-                f"{_delta_px_or_dash(effective.get('delta_px'))}")
+                f"{_delta_px_or_dash(effective.get('delta_px'))}"
+            )
             clean = _sanitize_inline(line)
             if clean and clean not in structured:
                 structured.append(clean)
@@ -2763,7 +3291,9 @@ def _item_index_repair_summary_md(lines: list[str]) -> str:
         return ""
     shown = structured[:8]
     hidden = len(structured) - len(shown)
-    suffix = f"; {hidden} more distinct repair record(s) in actions.jsonl" if hidden else ""
+    suffix = (
+        f"; {hidden} more distinct repair record(s) in actions.jsonl" if hidden else ""
+    )
     return "\n".join(f"- {line}" for line in shown) + suffix
 
 
@@ -2816,7 +3346,9 @@ def _item_index_construction_notes_summary_md(lines: list[str]) -> str:
     notes: list[str] = []
     for rec in _item_index_note_bearing_records(lines):
         for note in rec.get("notes", ()) if isinstance(rec.get("notes"), list) else ():
-            if isinstance(note, str) and not _item_index_note_is_screen_fixed(rec, note):
+            if isinstance(note, str) and not _item_index_note_is_screen_fixed(
+                rec, note
+            ):
                 clean = _sanitize_inline(note)
                 if clean and clean not in notes:
                     notes.append(clean)
@@ -2833,8 +3365,11 @@ def _manifest_capture(lines: list[str]) -> dict | None:
     """
     capture = None
     for rec in _action_records(lines):
-        if (rec.get("action") == "capture"
-                and isinstance(rec.get("item_manifest"), list) and rec.get("item_manifest")):
+        if (
+            rec.get("action") == "capture"
+            and isinstance(rec.get("item_manifest"), list)
+            and rec.get("item_manifest")
+        ):
             capture = rec
     return capture
 
@@ -2853,8 +3388,9 @@ def _item_manifest_summary_md(lines: list[str]) -> str:
     # report print a previous profile's item table directly under a card the run never finished
     # reading -- with no warning, because the abort was invisible to this scan.
     records = _action_records(lines)
-    attempts = [rec for rec in records
-                if rec.get("action") in ("capture", "capture_aborted")]
+    attempts = [
+        rec for rec in records if rec.get("action") in ("capture", "capture_aborted")
+    ]
     capture = _manifest_capture(lines)
     if capture is None:
         return ""
@@ -2880,8 +3416,11 @@ def _item_manifest_summary_md(lines: list[str]) -> str:
         prior_profile = capture.get("profile_name")
         if prior_profile:
             prior_bits.append(f"for profile `{_sanitize_inline(str(prior_profile))}`")
-        latest_bits = ["the read that followed it was abandoned" if aborted
-                       else "the latest capture"]
+        latest_bits = [
+            "the read that followed it was abandoned"
+            if aborted
+            else "the latest capture"
+        ]
         latest_ts = latest_capture.get("ts")
         if latest_ts:
             latest_bits.append(f"at `{_sanitize_inline(str(latest_ts))}`")
@@ -2893,11 +3432,19 @@ def _item_manifest_summary_md(lines: list[str]) -> str:
             # the refusal wording.  The frame count is the useful part: it says how far into the
             # read the Stop landed, which is also how far down the card was left scrolled.
             frames = latest_capture.get("frames")
-            depth = (f" after {_sanitize_inline(str(frames))} frame(s)"
-                     if isinstance(frames, int) else "")
-            out.append("- ⚠️ " + " ".join(prior_bits) + " — the manifest below belongs to it; "
-                       + " ".join(latest_bits) + f" on Stop{depth}, so it has no manifest of its "
-                       "own and none of the numbers below describe it")
+            depth = (
+                f" after {_sanitize_inline(str(frames))} frame(s)"
+                if isinstance(frames, int)
+                else ""
+            )
+            out.append(
+                "- ⚠️ "
+                + " ".join(prior_bits)
+                + " — the manifest below belongs to it; "
+                + " ".join(latest_bits)
+                + f" on Stop{depth}, so it has no manifest of its "
+                "own and none of the numbers below describe it"
+            )
         else:
             latest_reason = latest_capture.get("items_unavailable")
             # An empty manifest means either state 2 (`items_unavailable`, enumeration failed)
@@ -2909,34 +3456,58 @@ def _item_manifest_summary_md(lines: list[str]) -> str:
             if latest_reason:
                 reason_text = f"; items unavailable: `{_compact_item_index_refusal_text(latest_reason)}`"
             elif latest_unnumbered:
-                reason_text = ("; enumeration completed but numbered nothing: "
-                               f"`{_compact_item_index_refusal_text(latest_unnumbered)}`")
+                reason_text = (
+                    "; enumeration completed but numbered nothing: "
+                    f"`{_compact_item_index_refusal_text(latest_unnumbered)}`"
+                )
             else:
                 reason_text = "; no items_unavailable reason was logged"
-            out.append("- ⚠️ " + " ".join(prior_bits) + " — the manifest below belongs to it; "
-                       + " ".join(latest_bits) + " had no numbered manifest" + reason_text)
+            out.append(
+                "- ⚠️ "
+                + " ".join(prior_bits)
+                + " — the manifest below belongs to it; "
+                + " ".join(latest_bits)
+                + " had no numbered manifest"
+                + reason_text
+            )
     if isinstance(translation, list):
-        out.append("- model item → page heart translation: `"
-                   + _sanitize_inline(json.dumps(translation)) + "`")
+        out.append(
+            "- model item → page heart translation: `"
+            + _sanitize_inline(json.dumps(translation))
+            + "`"
+        )
     # The terminal capture row carries the coverage counts, while a preceding candidate-walk
     # row records whether Stop interrupted that same capture.  Keep the scan bounded by the
     # preceding capture: an older cancelled profile must not re-label a later ordinary gap.
     capture_index = max(
-        (index for index, rec in enumerate(records)
-         if rec.get("action") == "capture" and rec == capture),
+        (
+            index
+            for index, rec in enumerate(records)
+            if rec.get("action") == "capture" and rec == capture
+        ),
         default=-1,
     )
     coverage_interrupted_by_stop = (
         _capture_stop_interrupted_gap_count(
-            capture.get("item_coverage"), records, capture_index) > 0
-        if capture_index >= 0 else False)
-    out.extend(_item_coverage_lines(
-        capture, coverage_interrupted_by_stop=coverage_interrupted_by_stop))
+            capture.get("item_coverage"), records, capture_index
+        )
+        > 0
+        if capture_index >= 0
+        else False
+    )
+    out.extend(
+        _item_coverage_lines(
+            capture, coverage_interrupted_by_stop=coverage_interrupted_by_stop
+        )
+    )
     for row in manifest[:24]:
         number = row.get("model_item")
         kind = _sanitize_inline(str(row.get("kind") or "unknown"))
-        label = f"model item {number}" if isinstance(number, int) and not isinstance(number, bool) \
+        label = (
+            f"model item {number}"
+            if isinstance(number, int) and not isinstance(number, bool)
             else f"unnumbered {kind}"
+        )
         bits = []
         heart = row.get("heart_ordinal")
         if isinstance(heart, int) and not isinstance(heart, bool):
@@ -2945,14 +3516,24 @@ def _item_manifest_summary_md(lines: list[str]) -> str:
         if isinstance(source, int) and not isinstance(source, bool):
             bits.append(f"source frame {source}")
         page_rows = row.get("page_rows")
-        if (isinstance(page_rows, list) and len(page_rows) == 2
-                and all(isinstance(value, int) and not isinstance(value, bool)
-                        for value in page_rows)):
+        if (
+            isinstance(page_rows, list)
+            and len(page_rows) == 2
+            and all(
+                isinstance(value, int) and not isinstance(value, bool)
+                for value in page_rows
+            )
+        ):
             bits.append(f"page rows {page_rows[0]}..{page_rows[1]}")
         crop_size = row.get("crop_size")
-        if (isinstance(crop_size, list) and len(crop_size) == 2
-                and all(isinstance(value, int) and not isinstance(value, bool)
-                        for value in crop_size)):
+        if (
+            isinstance(crop_size, list)
+            and len(crop_size) == 2
+            and all(
+                isinstance(value, int) and not isinstance(value, bool)
+                for value in crop_size
+            )
+        ):
             bits.append(f"crop {crop_size[0]}x{crop_size[1]}")
         digest = row.get("crop_sha256")
         if digest:
@@ -2966,18 +3547,22 @@ def _item_manifest_summary_md(lines: list[str]) -> str:
                 classifier_bits.append(_sanitize_inline(str(classifier_id)))
             if classification:
                 classifier_bits.append(_sanitize_inline(str(classification)))
-            for key, metric_label in (("colour_std", "std"),
-                                      ("dominant_background", "background"),
-                                      ("edge_density", "edges")):
+            for key, metric_label in (
+                ("colour_std", "std"),
+                ("dominant_background", "background"),
+                ("edge_density", "edges"),
+            ):
                 value = evidence.get(key)
                 if isinstance(value, (int, float)) and not isinstance(value, bool):
                     classifier_bits.append(f"{metric_label}={value}")
             if evidence.get("large_uniform_panel") is not None:
                 classifier_bits.append(
-                    f"panel={str(bool(evidence['large_uniform_panel'])).lower()}")
+                    f"panel={str(bool(evidence['large_uniform_panel'])).lower()}"
+                )
             if evidence.get("text_layout") is not None:
                 classifier_bits.append(
-                    f"text={str(bool(evidence['text_layout'])).lower()}")
+                    f"text={str(bool(evidence['text_layout'])).lower()}"
+                )
             if classifier_bits:
                 bits.append("classifier `" + ", ".join(classifier_bits) + "`")
         reason = row.get("reason")
@@ -2986,7 +3571,9 @@ def _item_manifest_summary_md(lines: list[str]) -> str:
         detail = "; ".join(bits) if bits else "no provenance detail logged"
         out.append(f"- {label}: {detail}")
     if len(manifest) > 24:
-        out.append(f"- {len(manifest) - 24} more manifest row(s) retained in actions.jsonl")
+        out.append(
+            f"- {len(manifest) - 24} more manifest row(s) retained in actions.jsonl"
+        )
     return "\n".join(out)
 
 
@@ -3007,20 +3594,29 @@ def _compact_debug_tail_line(raw: str, expanded: dict | None = None) -> str:
     if rec.get("action") == "item_index_refused" and rec.get("reason"):
         rec["reason"] = _compact_item_index_refusal_text(rec["reason"])
     elif rec.get("action") == "capture" and rec.get("items_unavailable"):
-        rec["items_unavailable"] = _compact_item_index_refusal_text(rec["items_unavailable"])
+        rec["items_unavailable"] = _compact_item_index_refusal_text(
+            rec["items_unavailable"]
+        )
     # `items_unnumbered` is the different, non-failure state-3 sentence (enumeration finished
     # and legitimately numbered nothing) -- never set alongside `items_unavailable` above, but
     # can grow just as long, so it gets the same compaction rather than being left as a wall.
     elif rec.get("action") == "capture" and rec.get("items_unnumbered"):
-        rec["items_unnumbered"] = _compact_item_index_refusal_text(rec["items_unnumbered"])
+        rec["items_unnumbered"] = _compact_item_index_refusal_text(
+            rec["items_unnumbered"]
+        )
     if rec.get("action") == "capture" and rec.get("item_manifest"):
         if expanded is not None and rec == expanded:
             rec["item_manifest"] = "see item-numbering manifest above"
         else:
-            rows = len(rec["item_manifest"]) if isinstance(rec["item_manifest"], list) else 0
+            rows = (
+                len(rec["item_manifest"])
+                if isinstance(rec["item_manifest"], list)
+                else 0
+            )
             rec["item_manifest"] = (
                 f"{rows} manifest row(s) in actions.jsonl; the expanded table above belongs to a "
-                f"different capture")
+                f"different capture"
+            )
     elif rec.get("action") in _ITEM_INDEX_NOTE_ACTIONS and rec.get("notes"):
         # PER NOTE, not per record (2026-09-17, corrected same day TWICE): this record's own
         # notes can straddle both headings at once (run 0e4257f20e64 has both a screen-fixed
@@ -3029,17 +3625,23 @@ def _compact_debug_tail_line(raw: str, expanded: dict | None = None) -> str:
         # record's separate `repairs` entries (if any) still land under "item-index conservative
         # repairs", but that is the untouched `repairs` field printed below, not this pointer.
         raw_notes = rec["notes"] if isinstance(rec["notes"], list) else []
-        has_screen_fixed = any(isinstance(n, str) and _item_index_note_is_screen_fixed(rec, n)
-                               for n in raw_notes)
-        has_other = any(isinstance(n, str) and not _item_index_note_is_screen_fixed(rec, n)
-                        for n in raw_notes)
+        has_screen_fixed = any(
+            isinstance(n, str) and _item_index_note_is_screen_fixed(rec, n)
+            for n in raw_notes
+        )
+        has_other = any(
+            isinstance(n, str) and not _item_index_note_is_screen_fixed(rec, n)
+            for n in raw_notes
+        )
         headings = []
         if has_screen_fixed:
             headings.append("item-index screen-fixed check notes")
         if has_other:
             headings.append("item-index construction notes")
-        rec["notes"] = [f"see {' and '.join(headings) or 'item-index construction notes'} "
-                        "summary above"]
+        rec["notes"] = [
+            f"see {' and '.join(headings) or 'item-index construction notes'} "
+            "summary above"
+        ]
     return json.dumps(rec)
 
 
@@ -3067,12 +3669,14 @@ def _parse_action_ts(raw_ts: object) -> datetime | None:
         return None
 
 
-_OBSERVE_WAITING_TELEMETRY_ACTIONS = frozenset({
-    # These rows are emitted by the suggestion/verification thread while the driver's existing
-    # wait_for_decision call keeps polling the SAME card. They are not decision boundaries.
-    "observe_release_hub_pre_tap_published",
-    "observe_release_post_tap_item_verified",
-})
+_OBSERVE_WAITING_TELEMETRY_ACTIONS = frozenset(
+    {
+        # These rows are emitted by the suggestion/verification thread while the driver's existing
+        # wait_for_decision call keeps polling the SAME card. They are not decision boundaries.
+        "observe_release_hub_pre_tap_published",
+        "observe_release_post_tap_item_verified",
+    }
+)
 
 
 def _is_capture_abort_timing(rec: dict) -> bool:
@@ -3084,8 +3688,9 @@ def _is_capture_abort_timing(rec: dict) -> bool:
     narrow: ordinary inputs and any future non-timing capture action still break the suffix.
     """
     action = rec.get("action")
-    return (isinstance(action, str) and action.startswith("capture_")
-            and "timing" in action)
+    return (
+        isinstance(action, str) and action.startswith("capture_") and "timing" in action
+    )
 
 
 def _terminal_capture_abort(records: list[dict]) -> dict | None:
@@ -3207,7 +3812,11 @@ def _stall_candidates(lines: list[str]) -> list[tuple[int, str, int, float | Non
                 continue
             start = _parse_action_ts(recs[0].get("ts"))
             end = _parse_action_ts(recs[-1].get("ts"))
-            duration = (end - start).total_seconds() if start is not None and end is not None else None
+            duration = (
+                (end - start).total_seconds()
+                if start is not None and end is not None
+                else None
+            )
             if duration is not None and duration < 0:
                 duration = None
             out.append((stretch_index, reason, len(recs), duration))
@@ -3259,13 +3868,18 @@ def _stall_summary_md(lines: list[str]) -> str:
         return ""
     candidates.sort(key=lambda c: (-c[0], c[3] is None, -(c[3] or 0.0), -c[2]))
     out = []
-    for i, (_stretch_index, reason, count, duration) in enumerate(candidates[:_STALL_STRETCHES_SHOWN]):
+    for i, (_stretch_index, reason, count, duration) in enumerate(
+        candidates[:_STALL_STRETCHES_SHOWN]
+    ):
         # Candidates are intentionally sorted by stretch recency, not global duration.  Do not
         # call this row "longest": a newer 31s wait can correctly precede an older 63s one.
         # The ordinal describes that actual order and remains meaningful if a report shows
         # several resolved waits alongside its still-open final wait.
-        label = (_STALL_RECENCY_LABELS[i] if i < len(_STALL_RECENCY_LABELS)
-                 else f"#{i + 1} most recent")
+        label = (
+            _STALL_RECENCY_LABELS[i]
+            if i < len(_STALL_RECENCY_LABELS)
+            else f"#{i + 1} most recent"
+        )
         record_word = "record" if count == 1 else "records"
         out.append(
             f"- {label} repeated observe wait: reason=`{_sanitize_inline(reason)}` for "
@@ -3294,24 +3908,29 @@ _RESYNC_REASON_EXPLANATIONS = {
     "like_candidate_without_observed_sheet": (
         "a bottom-only screen change was investigated as a possible like, but no Send Like "
         "sheet was ever observed and the identity anchor could not confirm the card was still "
-        "the captured profile; the card was abandoned and recaptured with nothing recorded"),
+        "the captured profile; the card was abandoned and recaptured with nothing recorded"
+    ),
     "like_send_identity_unproven": (
         "a real Send Like sheet was observed, but the deck that followed could not be "
         "positively proven to be a DIFFERENT profile, so no LIKE was recorded rather than risk "
-        "filing it against the wrong person"),
+        "filing it against the wrong person"
+    ),
     "like_send_identity_unavailable": (
         "same as like_send_identity_unproven, except this profile never revealed its sticky "
-        "header during capture, so there was no identity anchor to prove anything with"),
+        "header during capture, so there was no identity anchor to prove anything with"
+    ),
     "pass_identity_name_unconfirmed": (
         "the pixel identity check read a new, different profile on two independent frames, but "
         "there was nothing to corroborate that a human caused it: observe_touch_watch is off "
         "for Hinge (Android withholds the touch input stream on this device, so gesture "
         "corroboration is unavailable by design -- see HINGE_SPEC's observe_touch_watch "
         "comment), and OCR could not positively read the same new name on both settled frames "
-        "either; rather than guess pass, the driver recaptured the card with nothing recorded"),
+        "either; rather than guess pass, the driver recaptured the card with nothing recorded"
+    ),
     _GESTURE_UNCORROBORATED_REASON: (
         "the card genuinely changed, but the human's own touch stream did not corroborate a "
-        "decision causing it -- the pass path, not a like path"),
+        "decision causing it -- the pass path, not a like path"
+    ),
 }
 
 
@@ -3351,15 +3970,19 @@ def _abandoned_card_summary_md(lines: list[str]) -> str:
     defensively type/truthiness-checked before display, so a record missing several keys entirely
     -- as logs from before this provenance existed do -- renders with those fields omitted rather
     than throwing or printing a bare `None`."""
-    records = [rec for rec in _action_records(lines) if rec.get("action") == "observe_resync"]
+    records = [
+        rec for rec in _action_records(lines) if rec.get("action") == "observe_resync"
+    ]
     if not records:
         return ""
-    records.reverse()                                      # most recent logged resync first
+    records.reverse()  # most recent logged resync first
     shown = records[:_ABANDONED_CARDS_SHOWN]
     out: list[str] = []
     if len(records) > len(shown):
-        out.append(f"- {len(records)} card(s) abandoned without a decision (resync) logged in "
-                   f"this run; showing the most recent {len(shown)}:")
+        out.append(
+            f"- {len(records)} card(s) abandoned without a decision (resync) logged in "
+            f"this run; showing the most recent {len(shown)}:"
+        )
     for rec in shown:
         reason = rec.get("reason")
         has_reason = isinstance(reason, str) and bool(reason)
@@ -3372,8 +3995,10 @@ def _abandoned_card_summary_md(lines: list[str]) -> str:
         if profile_name:
             bits.append(f"profile_name=`{_sanitize_inline(str(profile_name))}`")
         sheet_seen = rec.get("sheet_seen")
-        if isinstance(sheet_seen, bool):                   # False is a real, meaningful value --
-            bits.append(f"sheet_seen=`{'true' if sheet_seen else 'false'}`")   # never drop it
+        if isinstance(sheet_seen, bool):  # False is a real, meaningful value --
+            bits.append(
+                f"sheet_seen=`{'true' if sheet_seen else 'false'}`"
+            )  # never drop it
         identity = rec.get("identity")
         if identity:
             bits.append(f"identity=`{_sanitize_inline(str(identity))}`")
@@ -3386,8 +4011,11 @@ def _abandoned_card_summary_md(lines: list[str]) -> str:
 
         if has_reason:
             explanation = _RESYNC_REASON_EXPLANATIONS.get(reason)
-            tail = (f" — {explanation}." if explanation is not None
-                    else " — unrecognised resync reason (no explanation on file for it yet).")
+            tail = (
+                f" — {explanation}."
+                if explanation is not None
+                else " — unrecognised resync reason (no explanation on file for it yet)."
+            )
         elif gesture == "resync":
             tail = f" — {_RESYNC_REASON_EXPLANATIONS[_GESTURE_UNCORROBORATED_REASON]}."
         else:
@@ -3399,18 +4027,18 @@ def _abandoned_card_summary_md(lines: list[str]) -> str:
 
 _OBSERVE_WAIT_EXPLANATIONS = {
     "no_change": "the frame has not visibly changed since this card became READY; no manual "
-                 "pass/like has been proven",
+    "pass/like has been proven",
     "same": "the screen changed within the same captured profile (for example, a manual "
-            "scroll), not to a proven next card",
+    "scroll), not to a proven next card",
     "scroll": "the movement matched a manual scroll within the captured profile, not a "
-              "pass/like decision",
+    "pass/like decision",
     "not_deck_ready": "the screen changed, but a stable swipe deck has not yet been proven",
     "not_settled": "a possible next deck card was seen once but did not yet pass the settle "
-                   "recheck",
+    "recheck",
     "like_candidate": "a bottom-only screen change looked like a possible like, but no Send "
-                      "Like sheet was observed; no manual decision has been proven",
+    "Like sheet was observed; no manual decision has been proven",
     "like_sheet": "the app's like/comment sheet is visibly open; it is waiting for Send Like "
-                  "or dismissal",
+    "or dismissal",
     "like_sending": "the like sheet closed, but the app has not yet shown a stable next card",
 }
 
@@ -3483,7 +4111,9 @@ def _delta_px_or_dash(value) -> str:
     return rendered if rendered == _round_or_dash(None) else f"{rendered}px"
 
 
-def _item_coverage_lines(capture: dict, *, coverage_interrupted_by_stop: bool = False) -> list[str]:
+def _item_coverage_lines(
+    capture: dict, *, coverage_interrupted_by_stop: bool = False
+) -> list[str]:
     """How many photo cards the still-photo dwell actually reached, and what that cost.
 
     `item_coverage` has always been in the log and has never been interpreted, which on
@@ -3500,9 +4130,11 @@ def _item_coverage_lines(capture: dict, *, coverage_interrupted_by_stop: bool = 
     coverage = capture.get("item_coverage")
     if not isinstance(coverage, dict):
         return []
+
     def _ordinals(key):
         value = coverage.get(key)
         return value if isinstance(value, list) else []
+
     candidates = _ordinals("photo_candidate_page_hearts")
     dwelled = _ordinals("dwell_covered_page_hearts")
     missed = _ordinals("no_dwell_coverage_page_hearts")
@@ -3511,20 +4143,29 @@ def _item_coverage_lines(capture: dict, *, coverage_interrupted_by_stop: bool = 
         return []
     limit = coverage.get("still_photo_dwell_candidate_limit")
     limit_text = f", candidate limit {limit}" if isinstance(limit, int) else ""
-    line = (f"- still-photo coverage: {len(dwelled)} of {len(candidates)} photo candidate(s) "
-            f"were dwelled{limit_text}; {len(numbered)} card(s) ended up numbered")
+    line = (
+        f"- still-photo coverage: {len(dwelled)} of {len(candidates)} photo candidate(s) "
+        f"were dwelled{limit_text}; {len(numbered)} card(s) ended up numbered"
+    )
     out = [line]
     if missed:
-        stop_cause = ("because the requested Stop interrupted this in-progress dwell walk; "
-                      "they could not be" if coverage_interrupted_by_stop
-                      else "and so they could not be")
-        out.append(f"  - ⚠️ page heart(s) {_sanitize_inline(json.dumps(missed))} were photo "
-                   f"candidates the dwell walk never reached {stop_cause} numbered — a coverage "
-                   "gap, not a judgement about the cards")
+        stop_cause = (
+            "because the requested Stop interrupted this in-progress dwell walk; "
+            "they could not be"
+            if coverage_interrupted_by_stop
+            else "and so they could not be"
+        )
+        out.append(
+            f"  - ⚠️ page heart(s) {_sanitize_inline(json.dumps(missed))} were photo "
+            f"candidates the dwell walk never reached {stop_cause} numbered — a coverage "
+            "gap, not a judgement about the cards"
+        )
     if len(numbered) == 1:
-        out.append("  - ⚠️ exactly ONE numbered item, so a later like-sheet verification has no "
-                   "neighbour to derive a separation bound from and falls back to the weakest "
-                   "ceiling available. See the post-tap sheet verification section.")
+        out.append(
+            "  - ⚠️ exactly ONE numbered item, so a later like-sheet verification has no "
+            "neighbour to derive a separation bound from and falls back to the weakest "
+            "ceiling available. See the post-tap sheet verification section."
+        )
     return out
 
 
@@ -3550,17 +4191,21 @@ def _verify_mismatch_shape(item: dict) -> str:
     """
     nearest = item.get("nearest")
     if nearest is None:
-        return ("nothing in this payload could be measured against this sheet at all (no "
-                "stored item had a usable distance)")
+        return (
+            "nothing in this payload could be measured against this sheet at all (no "
+            "stored item had a usable distance)"
+        )
     intended = item.get("item")
     try:
         same = nearest == intended
     except Exception:  # noqa: BLE001 -- malformed logged values must not break the report
         same = False
     if same:
-        return ("the CORRECT item IS the nearest stored crop, but its distance did not come "
-                "under the bound -- a possible FALSE REFUSAL (a measurement/calibration "
-                "problem, not a targeting miss)")
+        return (
+            "the CORRECT item IS the nearest stored crop, but its distance did not come "
+            "under the bound -- a possible FALSE REFUSAL (a measurement/calibration "
+            "problem, not a targeting miss)"
+        )
     return "a DIFFERENT item is on the sheet -- a real targeting miss"
 
 
@@ -3611,9 +4256,13 @@ def _sheet_verification_md(lines: list[str], run: Path) -> str:
         except Exception:  # noqa: BLE001 -- partial JSONL rows are skipped, never guessed at
             continue
         if isinstance(rec, dict) and rec.get("action") in (
-                "verify_sheet_item", "verify_sheet_identity"):
+            "verify_sheet_item",
+            "verify_sheet_identity",
+        ):
             records.append(rec)
-    item = next((r for r in reversed(records) if r.get("action") == "verify_sheet_item"), None)
+    item = next(
+        (r for r in reversed(records) if r.get("action") == "verify_sheet_item"), None
+    )
     if item is None or item.get("outcome") == "verify_match":
         return ""
     outcome = item.get("outcome")
@@ -3625,61 +4274,84 @@ def _sheet_verification_md(lines: list[str], run: Path) -> str:
         # the numbers a reader needed were not missing, they had never been computed, because the
         # locator refused before any card was compared.] Nothing was compared; the refusal's own
         # geometry, rendered below, is the entire record.
-        out = [f"- outcome: `unreadable` for model item {item.get('item')} — the sheet could not "
-               "be LOOKED AT, so no card was compared and there is no distance or bound to read. "
-               "The refusal below carries the measurement instead."]
+        out = [
+            f"- outcome: `unreadable` for model item {item.get('item')} — the sheet could not "
+            "be LOOKED AT, so no card was compared and there is no distance or bound to read. "
+            "The refusal below carries the measurement instead."
+        ]
     else:
-        out = [f"- outcome: `{outcome}` for model item {item.get('item')}; "
-               f"nearest stored item {item.get('nearest')}; "
-               f"distance {_round_or_dash(item.get('distance'))} against bound "
-               f"{_round_or_dash(item.get('bound'))}"]
+        out = [
+            f"- outcome: `{outcome}` for model item {item.get('item')}; "
+            f"nearest stored item {item.get('nearest')}; "
+            f"distance {_round_or_dash(item.get('distance'))} against bound "
+            f"{_round_or_dash(item.get('bound'))}"
+        ]
     if outcome == "verify_mismatch":
         out.append(f"- shape: {_verify_mismatch_shape(item)}")
     before_name, after_name = item.get("before"), item.get("after")
     if before_name or after_name:
         shot_cache: dict[str, str | None] = {}
         unsafe = "not available (missing or unsafe filename)"
-        before_display = (before_name if _shot_digest(run, before_name, shot_cache) is not None
-                           else unsafe)
-        after_display = (after_name if _shot_digest(run, after_name, shot_cache) is not None
-                          else unsafe)
-        out.append(f"- pre-tap card under the heart: `{before_display}`; sheet the verdict was "
-                   f"taken on: `{after_display}` — open both before reading a number.")
+        before_display = (
+            before_name
+            if _shot_digest(run, before_name, shot_cache) is not None
+            else unsafe
+        )
+        after_display = (
+            after_name
+            if _shot_digest(run, after_name, shot_cache) is not None
+            else unsafe
+        )
+        out.append(
+            f"- pre-tap card under the heart: `{before_display}`; sheet the verdict was "
+            f"taken on: `{after_display}` — open both before reading a number."
+        )
     identity = next(
-        (r for r in reversed(records) if r.get("action") == "verify_sheet_identity"), None)
+        (r for r in reversed(records) if r.get("action") == "verify_sheet_identity"),
+        None,
+    )
     if identity is not None:
         # The identity check gates the item check, so a reader has to know it passed before the
         # item numbers mean anything: a foreign profile explains a mismatch by itself.
-        out.append(f"- profile identity on the same sheet: `{identity.get('outcome')}` at "
-                   f"{_round_or_dash(identity.get('distance'))} against "
-                   f"{_round_or_dash(identity.get('bound'))}")
+        out.append(
+            f"- profile identity on the same sheet: `{identity.get('outcome')}` at "
+            f"{_round_or_dash(identity.get('distance'))} against "
+            f"{_round_or_dash(identity.get('bound'))}"
+        )
     reason = item.get("reason")
     if reason:
         out.append(
             f"- why the sheet could not be read, and the geometry it measured: {reason}"
             if outcome == "unreadable"
-            else f"- verdict, including which bound regime this was: {reason}")
+            else f"- verdict, including which bound regime this was: {reason}"
+        )
     preview = item.get("preview")
     if isinstance(preview, list) and len(preview) == 4:
         y0, y1, x0, x1 = preview
         try:
-            out.append(f"- preview compared: rows {y0}..{y1}, columns {x0}..{x1} "
-                       f"({int(x1) - int(x0)}x{int(y1) - int(y0)}px)")
+            out.append(
+                f"- preview compared: rows {y0}..{y1}, columns {x0}..{x1} "
+                f"({int(x1) - int(x0)}x{int(y1) - int(y0)}px)"
+            )
         except (TypeError, ValueError):
             out.append(f"- preview compared: {preview}")
     if item.get("preview_reason"):
         out.append(f"- how that preview was arrived at: {item['preview_reason']}")
     composer = item.get("composer")
     if isinstance(composer, dict):
-        out.append(f"- composer the comparison is bound to: layout `{composer.get('layout_id')}`; "
-                   f"comment {composer.get('comment')}; send {composer.get('send')}")
+        out.append(
+            f"- composer the comparison is bound to: layout `{composer.get('layout_id')}`; "
+            f"comment {composer.get('comment')}; send {composer.get('send')}"
+        )
     grid = item.get("grid")
     if isinstance(grid, list) and len(grid) == 2:
         out.append(f"- comparison grid: {grid[0]}x{grid[1]}")
     comparisons = item.get("comparisons")
     if isinstance(comparisons, list) and comparisons:
-        out.append("- per-item comparison table (every numbered item, as the bound is a property "
-                   "of the payload and not of this sheet):")
+        out.append(
+            "- per-item comparison table (every numbered item, as the bound is a property "
+            "of the payload and not of this sheet):"
+        )
         for row in comparisons:
             if not isinstance(row, dict):
                 continue
@@ -3687,7 +4359,8 @@ def _sheet_verification_md(lines: list[str], run: Path) -> str:
                 f"  - item {row.get('item')}: distance {_round_or_dash(row.get('distance'))}, "
                 f"bound {_round_or_dash(row.get('bound'))}, nearest other "
                 f"{_round_or_dash(row.get('nearest_other'))}, window {row.get('window_px')}px of "
-                f"a {row.get('crop_px')}px crop; {row.get('why')}")
+                f"a {row.get('crop_px')}px crop; {row.get('why')}"
+            )
         omitted = item.get("comparisons_omitted")
         if omitted:
             out.append(f"  - ⚠️ {omitted} further item(s) not listed (record is capped)")
@@ -3695,10 +4368,12 @@ def _sheet_verification_md(lines: list[str], run: Path) -> str:
         # The one-item regime is not a detail: it is what selects the weakest bound available,
         # and on the 2026-08-27 run it was the consequence of a dwell-coverage shortfall five
         # cards wide rather than of the profile only having one photo.
-        out.append("- ⚠️ this payload carried ONE numbered item, so there was no neighbour to "
-                   "derive a separation bound from and the weakest available ceiling applied. "
-                   "Check the still-photo coverage line above for why the other photo cards "
-                   "were never numbered.")
+        out.append(
+            "- ⚠️ this payload carried ONE numbered item, so there was no neighbour to "
+            "derive a separation bound from and the weakest available ceiling applied. "
+            "Check the still-photo coverage line above for why the other photo cards "
+            "were never numbered."
+        )
     return "\n".join(out)
 
 
@@ -3720,10 +4395,14 @@ def _latest_completed_capture_timing_md(lines: list[str]) -> str:
             records.append(None)
         else:
             records.append(rec if isinstance(rec, dict) else None)
-    capture_index = next((
-        index for index in range(len(records) - 1, -1, -1)
-        if records[index] is not None and records[index].get("action") == "capture"
-    ), None)
+    capture_index = next(
+        (
+            index
+            for index in range(len(records) - 1, -1, -1)
+            if records[index] is not None and records[index].get("action") == "capture"
+        ),
+        None,
+    )
     if capture_index is None:
         return ""
 
@@ -3749,10 +4428,15 @@ def _latest_completed_capture_timing_md(lines: list[str]) -> str:
     # Matching the fold's photo count to the completed capture prevents a malformed/interleaved
     # diagnostic row from being attributed to the wrong profile.  The roll-up itself has no
     # photo count, so its documented position before that paired fold is the remaining evidence.
-    if (read_record is None or fold_record is None or read_index is None or fold_index is None
-            or not read_index < fold_index < capture_index
-            or capture_photos is None
-            or _nonnegative_action_int(fold_record, "photos") != capture_photos):
+    if (
+        read_record is None
+        or fold_record is None
+        or read_index is None
+        or fold_index is None
+        or not read_index < fold_index < capture_index
+        or capture_photos is None
+        or _nonnegative_action_int(fold_record, "photos") != capture_photos
+    ):
         return ""
     read_s = _finite_nonnegative_action_seconds(read_record, "iter_wall_s_total")
     fold_s = _finite_nonnegative_action_seconds(fold_record, "fold_wall_s")
@@ -3769,7 +4453,7 @@ def _latest_completed_capture_timing_md(lines: list[str]) -> str:
     # row carries return time that intentionally belongs to no individual candidate wall clock.
     candidate_timings: list[tuple[float, float, float, float]] = []
     sweep_return_timings: list[float] = []
-    for rec in records[read_index + 1:fold_index]:
+    for rec in records[read_index + 1 : fold_index]:
         if rec is None:
             continue
         if rec.get("action") == "still_photo_dwell_progressive_sweep":
@@ -3785,10 +4469,17 @@ def _latest_completed_capture_timing_md(lines: list[str]) -> str:
         proof_s = _finite_nonnegative_action_seconds(rec, "proof_s")
         return_s = _finite_nonnegative_action_seconds(rec, "return_s")
         other_s = _finite_nonnegative_action_seconds(rec, "unattributed_s")
-        if (None in {candidate_wall_s, navigation_s, proof_s, return_s, other_s}
-                or not math.isclose(
-                    navigation_s + proof_s + return_s + other_s,
-                    candidate_wall_s, abs_tol=0.000003)):
+        if None in {
+            candidate_wall_s,
+            navigation_s,
+            proof_s,
+            return_s,
+            other_s,
+        } or not math.isclose(
+            navigation_s + proof_s + return_s + other_s,
+            candidate_wall_s,
+            abs_tol=0.000003,
+        ):
             continue
         candidate_timings.append((navigation_s, proof_s, return_s, other_s))
 
@@ -3796,13 +4487,17 @@ def _latest_completed_capture_timing_md(lines: list[str]) -> str:
     profile_name = capture.get("profile_name")
     if isinstance(profile_name, str) and profile_name.strip():
         details.append(f"profile `{_sanitize_inline(profile_name)}`")
-    details.extend((
-        f"read {_format_capture_timing_seconds(read_s)}",
-        f"fold {_format_capture_timing_seconds(fold_s)}",
-    ))
+    details.extend(
+        (
+            f"read {_format_capture_timing_seconds(read_s)}",
+            f"fold {_format_capture_timing_seconds(fold_s)}",
+        )
+    )
     dwell_s = _finite_nonnegative_action_seconds(fold_record, "still_photo_dwell_s")
     if dwell_s is not None and dwell_s <= fold_s:
-        dwell_detail = "still-photo safety checks " + _format_capture_timing_seconds(dwell_s)
+        dwell_detail = "still-photo safety checks " + _format_capture_timing_seconds(
+            dwell_s
+        )
         share_detail = ""
         if fold_s > 0:
             # Divide before scaling: valid large finite durations must not overflow merely
@@ -3811,28 +4506,42 @@ def _latest_completed_capture_timing_md(lines: list[str]) -> str:
             if math.isfinite(share):
                 share_detail = f"{share:.1f}% of fold"
         breakdown = fold_record.get("still_photo_dwell_breakdown")
-        passive_s = (_finite_nonnegative_action_seconds(breakdown, "passive_observation_s")
-                     if isinstance(breakdown, dict) else None)
+        passive_s = (
+            _finite_nonnegative_action_seconds(breakdown, "passive_observation_s")
+            if isinstance(breakdown, dict)
+            else None
+        )
         remainder_s = (
             _finite_nonnegative_action_seconds(breakdown, "navigation_and_overhead_s")
-            if isinstance(breakdown, dict) else None)
+            if isinstance(breakdown, dict)
+            else None
+        )
         # The split is optional, diagnostic detail.  Accept it only when it reconstructs the
         # compatibility total closely enough for the row's six-decimal JSON rounding; a torn or
         # hand-edited object must not make the report confidently misattribute time.
-        if (passive_s is not None and remainder_s is not None
-                and math.isclose(passive_s + remainder_s, dwell_s, abs_tol=0.000002)):
+        if (
+            passive_s is not None
+            and remainder_s is not None
+            and math.isclose(passive_s + remainder_s, dwell_s, abs_tol=0.000002)
+        ):
             split_detail = (
-                "passive observation " + _format_capture_timing_seconds(passive_s)
-                + "; navigation/overhead " + _format_capture_timing_seconds(remainder_s))
-            share_detail = f"{share_detail}; {split_detail}" if share_detail else split_detail
+                "passive observation "
+                + _format_capture_timing_seconds(passive_s)
+                + "; navigation/overhead "
+                + _format_capture_timing_seconds(remainder_s)
+            )
+            share_detail = (
+                f"{share_detail}; {split_detail}" if share_detail else split_detail
+            )
         if candidate_timings:
             navigation_s = sum(row[0] for row in candidate_timings)
             proof_s = sum(row[1] for row in candidate_timings)
             # Exactly one terminal row is the only valid progressive-sweep shape.  Duplicate
             # terminal rows are a torn/interleaved diagnostic sequence, so omit their optional
             # detail instead of double-counting cleanup the authoritative fold total already has.
-            sweep_return_s = (sweep_return_timings[0]
-                              if len(sweep_return_timings) == 1 else 0.0)
+            sweep_return_s = (
+                sweep_return_timings[0] if len(sweep_return_timings) == 1 else 0.0
+            )
             return_s = sum(row[2] for row in candidate_timings) + sweep_return_s
             other_s = sum(row[3] for row in candidate_timings)
             candidate_detail = (
@@ -3840,9 +4549,13 @@ def _latest_completed_capture_timing_md(lines: list[str]) -> str:
                 f"{_format_capture_timing_seconds(navigation_s)}; proof "
                 f"{_format_capture_timing_seconds(proof_s)}; return "
                 f"{_format_capture_timing_seconds(return_s)}; other "
-                f"{_format_capture_timing_seconds(other_s)}")
-            share_detail = (f"{share_detail}; {candidate_detail}"
-                            if share_detail else candidate_detail)
+                f"{_format_capture_timing_seconds(other_s)}"
+            )
+            share_detail = (
+                f"{share_detail}; {candidate_detail}"
+                if share_detail
+                else candidate_detail
+            )
         if share_detail:
             dwell_detail += f" ({share_detail})"
         details.append(dwell_detail)
@@ -3863,20 +4576,32 @@ def _training_probe_bool(value: object) -> str:
     return "not recorded"
 
 
-_TRAINING_PROBE_RECIPES = frozenset({
-    "identity_band_psm7_3x",
-    "top_card_header_psm6_3x",
-    "top_card_header_psm6_native",
-    "top_card_header_fallback_psm6_3x",
-    "top_card_header_fallback_psm6_native",
-    "top_card_header_take_another_look_psm6_3x",
-    "top_card_header_take_another_look_psm6_native",
-})
+_TRAINING_PROBE_RECIPES = frozenset(
+    {
+        "identity_band_psm7_3x",
+        "top_card_header_psm6_3x",
+        "top_card_header_psm6_native",
+        "top_card_header_fallback_psm6_3x",
+        "top_card_header_fallback_psm6_native",
+        "top_card_header_take_another_look_psm6_3x",
+        "top_card_header_take_another_look_psm6_native",
+    }
+)
 _TRAINING_PROBE_VERDICTS = frozenset({"same", "new"})
-_TRAINING_IDENTITY_STATES = frozenset({
-    "matched", "mismatched", "identity_unknown", "same", "new", "top", "unknown",
-})
-_TRAINING_NAME_VERDICTS = frozenset({"same", "new", "exact_name_conflict_after_content"})
+_TRAINING_IDENTITY_STATES = frozenset(
+    {
+        "matched",
+        "mismatched",
+        "identity_unknown",
+        "same",
+        "new",
+        "top",
+        "unknown",
+    }
+)
+_TRAINING_NAME_VERDICTS = frozenset(
+    {"same", "new", "exact_name_conflict_after_content"}
+)
 _DEBUG_SCREENSHOT_NAME_RE = re.compile(r"\A\d{5}_[A-Za-z0-9_]+\.png\Z")
 _GENERATION_CONTEXT_TEXT_LIMIT = 2_000
 _GENERATION_INDEX_SPACES = frozenset({"model_items", "profile_photos"})
@@ -3933,17 +4658,25 @@ def _prompt_era_description(prompt_sha256: object) -> str:
             if not isinstance(era, dict) or era.get("prompt_sha256") != prompt_sha256:
                 continue
             label = era.get("label")
-            label_text = (_sanitize_inline(label) if isinstance(label, str) and label
-                         else "(no label)")
+            label_text = (
+                _sanitize_inline(label)
+                if isinstance(label, str) and label
+                else "(no label)"
+            )
             rules = era.get("rules")
             count = len(rules) if isinstance(rules, list) else "?"
             return f"shipped era: {label_text} ({count} rule(s) on wire)"
     working_tree = raw.get("working_tree")
-    if isinstance(working_tree, dict) and working_tree.get("prompt_sha256") == prompt_sha256:
+    if (
+        isinstance(working_tree, dict)
+        and working_tree.get("prompt_sha256") == prompt_sha256
+    ):
         rules = working_tree.get("rules")
         count = len(rules) if isinstance(rules, list) else "?"
-        return (f"UNCOMMITTED WORKING TREE — provisional, not a shipped era "
-                f"({count} rule(s) on wire)")
+        return (
+            f"UNCOMMITTED WORKING TREE — provisional, not a shipped era "
+            f"({count} rule(s) on wire)"
+        )
     return "digest not in ops/prompt-eras.json"
 
 
@@ -3962,14 +4695,16 @@ def _current_prompt_stamp(config_path: str) -> str | None:
     try:
         from . import config as cfg_mod
         from .opener.opener import prompt_stamp
+
         cfg = cfg_mod.load(config_path)
         return prompt_stamp(cfg.opener.style)
     except Exception:  # noqa: BLE001
         return None
 
 
-def _prompt_provenance_lines(record_prompt_sha256: object,
-                             current_prompt_sha256: str | None) -> list[str]:
+def _prompt_provenance_lines(
+    record_prompt_sha256: object, current_prompt_sha256: str | None
+) -> list[str]:
     """Full-form prompt provenance for the pre-send evidence block: the raw digest, its
     resolved era (`_prompt_era_description`), and whether it is the SAME prompt checked out
     right now (`_current_prompt_stamp`) -- so a reader knows whether the rules they are about
@@ -3982,16 +4717,24 @@ def _prompt_provenance_lines(record_prompt_sha256: object,
     if not isinstance(record_prompt_sha256, str) or not record_prompt_sha256:
         return []
     digest = _sanitize_inline(record_prompt_sha256)
-    lines = [f"- prompt era: `{digest}` — {_prompt_era_description(record_prompt_sha256)}"]
+    lines = [
+        f"- prompt era: `{digest}` — {_prompt_era_description(record_prompt_sha256)}"
+    ]
     if not isinstance(current_prompt_sha256, str) or not current_prompt_sha256:
-        lines.append("- prompt drift: could not determine the checked-out prompt "
-                     "(config or opener module unavailable)")
+        lines.append(
+            "- prompt drift: could not determine the checked-out prompt "
+            "(config or opener module unavailable)"
+        )
     elif current_prompt_sha256 == record_prompt_sha256:
-        lines.append("- prompt drift: same as the checked-out prompt "
-                     "(these are the rules that generated this opener)")
+        lines.append(
+            "- prompt drift: same as the checked-out prompt "
+            "(these are the rules that generated this opener)"
+        )
     else:
-        lines.append("- ⚠️ prompt drift: DIFFERENT from the checked-out prompt "
-                     "(the rules on wire now are NOT the rules that generated this opener)")
+        lines.append(
+            "- ⚠️ prompt drift: DIFFERENT from the checked-out prompt "
+            "(the rules on wire now are NOT the rules that generated this opener)"
+        )
     return lines
 
 
@@ -4022,25 +4765,33 @@ def _replay_corpus_pointer_md() -> str:
     """
     try:
         from .opener import replay_corpus
+
         root = Path(replay_corpus.DEFAULT_CORPUS_DIR)
         if not root.is_absolute():
             root = Path.cwd() / root
         count = len(replay_corpus.list_replay_ids(root))
     except Exception:  # noqa: BLE001 -- this is a cheap pointer, never worth failing the report
-        return ("- replay corpus: could not be listed -- reproduce a historical draft via "
-                "`tools/opener_replay.py` against `data/opener_replay_corpus/` if a capture "
-                "was retained")
+        return (
+            "- replay corpus: could not be listed -- reproduce a historical draft via "
+            "`tools/opener_replay.py` against `data/opener_replay_corpus/` if a capture "
+            "was retained"
+        )
     if count == 0:
-        return (f"- replay corpus: no captures retained under `{root}` (disabled, or none have "
-                f"landed yet) -- see `tools/opener_replay.py`")
-    return (f"- replay corpus: {count} capture(s) retained under `{root}`, NOT correlated to "
-            f"this specific record (the manifest stores no run/profile/evidence id, only a "
-            f"content-derived `replay_id` -- see replay_corpus.py's PRIVACY section). Reproduce "
-            f"via `tools/opener_replay.py`")
+        return (
+            f"- replay corpus: no captures retained under `{root}` (disabled, or none have "
+            f"landed yet) -- see `tools/opener_replay.py`"
+        )
+    return (
+        f"- replay corpus: {count} capture(s) retained under `{root}`, NOT correlated to "
+        f"this specific record (the manifest stores no run/profile/evidence id, only a "
+        f"content-derived `replay_id` -- see replay_corpus.py's PRIVACY section). Reproduce "
+        f"via `tools/opener_replay.py`"
+    )
 
 
-def _generation_context_md(record: dict, *,
-                           current_prompt_sha256: str | None = None) -> list[str]:
+def _generation_context_md(
+    record: dict, *, current_prompt_sha256: str | None = None
+) -> list[str]:
     """Render the private structured fields retained with a staged Training draft, plus the
     prompt-era provenance for this evidence row (``_prompt_provenance_lines``) -- the latter
     renders for AUTO and Training alike, since `prompt_sha256` is stamped on every
@@ -4059,12 +4810,21 @@ def _generation_context_md(record: dict, *,
     # shape too so a partial evidence writer still leaves useful forensic data rather than a
     # silently empty report.
     if not isinstance(context, dict):
-        context = {key: record.get(key) for key in (
-            "model", "index_space", "referenced", "angle", "item_description")
-            if key in record}
+        context = {
+            key: record.get(key)
+            for key in (
+                "model",
+                "index_space",
+                "referenced",
+                "angle",
+                "item_description",
+            )
+            if key in record
+        }
 
     out: list[str] = []
     if context:
+
         def text(key: str) -> str:
             value = context.get(key)
             if not isinstance(value, str) or not value:
@@ -4072,8 +4832,11 @@ def _generation_context_md(record: dict, *,
             return _sanitize_inline(value)[:_GENERATION_CONTEXT_TEXT_LIMIT]
 
         index_space = context.get("index_space")
-        index_display = (index_space if isinstance(index_space, str)
-                         and index_space in _GENERATION_INDEX_SPACES else "not recorded")
+        index_display = (
+            index_space
+            if isinstance(index_space, str) and index_space in _GENERATION_INDEX_SPACES
+            else "not recorded"
+        )
         out = [
             "- generation context (model-private fields, not a sent/committed opener):",
             f"  - model: `{text('model')}`",
@@ -4082,7 +4845,9 @@ def _generation_context_md(record: dict, *,
             f"  - angle: `{text('angle')}`",
             f"  - item description: `{text('item_description')}`",
         ]
-    out.extend(_prompt_provenance_lines(record.get("prompt_sha256"), current_prompt_sha256))
+    out.extend(
+        _prompt_provenance_lines(record.get("prompt_sha256"), current_prompt_sha256)
+    )
     return out
 
 
@@ -4098,25 +4863,35 @@ def _training_probe_ocr_md(diagnostics: object) -> str:
         if not isinstance(attempt, dict):
             continue
         recipe = _training_probe_token(attempt.get("recipe"), _TRAINING_PROBE_RECIPES)
-        verdict = _training_probe_token(attempt.get("verdict"), _TRAINING_PROBE_VERDICTS)
+        verdict = _training_probe_token(
+            attempt.get("verdict"), _TRAINING_PROBE_VERDICTS
+        )
         # `candidate_sha256` proves only that a normalised candidate existed.  Deliberately do
         # not render either that digest or the candidate itself: a report reader needs to know
         # whether OCR found a candidate, not a stable cross-report join key for a person's name.
-        candidate = ("candidate redacted" if isinstance(attempt.get("candidate_sha256"), str)
-                     and attempt["candidate_sha256"] else "no candidate")
+        candidate = (
+            "candidate redacted"
+            if isinstance(attempt.get("candidate_sha256"), str)
+            and attempt["candidate_sha256"]
+            else "no candidate"
+        )
         summary.append(f"{recipe}: verdict={verdict}, {candidate}")
     return "; ".join(summary) if summary else "not recorded"
 
 
-def _training_probe_frame_md(probe: dict, run: Path, keys: tuple[str, ...],
-                             shot_cache: dict[str, str | None]) -> str:
+def _training_probe_frame_md(
+    probe: dict, run: Path, keys: tuple[str, ...], shot_cache: dict[str, str | None]
+) -> str:
     """Name one observation's retained frame through the normal bounded PNG guard."""
     for key in keys:
         name = probe.get(key)
         # DebugLog owns a deliberately boring filename grammar.  In addition to avoiding
         # Markdown surprises, reject an action-row filename that tries to smuggle personal text
         # into a report even if a same-named file exists under the run directory.
-        if not isinstance(name, str) or _DEBUG_SCREENSHOT_NAME_RE.fullmatch(name) is None:
+        if (
+            not isinstance(name, str)
+            or _DEBUG_SCREENSHOT_NAME_RE.fullmatch(name) is None
+        ):
             continue
         if _shot_digest(run, name, shot_cache) is None:
             continue
@@ -4130,13 +4905,18 @@ def _training_probe_observation_md(label: str, diagnostics: object, frame: str) 
     """Render a frame-bound, privacy-safe Training observation."""
     values = diagnostics if isinstance(diagnostics, dict) else {}
     state = (
-        "composer_open=" + _training_probe_bool(values.get("composer_open"))
-        + "; deck_ready=" + _training_probe_bool(values.get("deck_ready"))
-        + "; current_profile=" + _training_probe_bool(values.get("current_profile"))
+        "composer_open="
+        + _training_probe_bool(values.get("composer_open"))
+        + "; deck_ready="
+        + _training_probe_bool(values.get("deck_ready"))
+        + "; current_profile="
+        + _training_probe_bool(values.get("current_profile"))
     )
     content = (
-        "exact=" + _training_probe_bool(values.get("current_content_exact_matched"))
-        + "; shifted=" + _training_probe_bool(values.get("current_content_shift_matched"))
+        "exact="
+        + _training_probe_bool(values.get("current_content_exact_matched"))
+        + "; shifted="
+        + _training_probe_bool(values.get("current_content_shift_matched"))
     )
     identity_value = values.get("identity_verdict")
     if identity_value is None:
@@ -4151,7 +4931,8 @@ def _training_probe_observation_md(label: str, diagnostics: object, frame: str) 
 
 
 def _training_dislike_unverified_landing_md(
-        records: list[dict], opener_index: int, outcome: dict, run: Path) -> list[str]:
+    records: list[dict], opener_index: int, outcome: dict, run: Path
+) -> list[str]:
     """Explain the final semantic refusal after an irreversible Training X tap.
 
     The outcome row's ``before`` image is intentionally the pre-tap, human-reviewed checkpoint.
@@ -4160,29 +4941,48 @@ def _training_dislike_unverified_landing_md(
     evidence that a label may be recorded.
     """
     try:
-        outcome_index = next(index for index, record in enumerate(records) if record is outcome)
+        outcome_index = next(
+            index for index, record in enumerate(records) if record is outcome
+        )
     except StopIteration:  # defensive only; callers pass a member of `records`
-        return ["- post-X landing verification: the unverified outcome was not bound to a "
-                "readable action-log position."]
+        return [
+            "- post-X landing verification: the unverified outcome was not bound to a "
+            "readable action-log position."
+        ]
     final_probe = next(
-        (record for record in reversed(records[opener_index + 1:outcome_index])
-         if record.get("action") == "training_advance_probe"),
-        None)
+        (
+            record
+            for record in reversed(records[opener_index + 1 : outcome_index])
+            if record.get("action") == "training_advance_probe"
+        ),
+        None,
+    )
     if final_probe is None:
-        return ["- post-X landing verification: no final Training advance probe was recorded; "
-                "the X tap remains unverified and no training label was recorded."]
+        return [
+            "- post-X landing verification: no final Training advance probe was recorded; "
+            "the X tap remains unverified and no training label was recorded."
+        ]
 
-    outcome_name = _training_probe_token(final_probe.get("outcome"), frozenset({"retry"}))
+    outcome_name = _training_probe_token(
+        final_probe.get("outcome"), frozenset({"retry"})
+    )
     attempt_value = final_probe.get("attempt")
-    attempt = (str(attempt_value) if isinstance(attempt_value, int)
-               and not isinstance(attempt_value, bool) and 1 <= attempt_value <= 3
-               else "unrecognised")
+    attempt = (
+        str(attempt_value)
+        if isinstance(attempt_value, int)
+        and not isinstance(attempt_value, bool)
+        and 1 <= attempt_value <= 3
+        else "unrecognised"
+    )
     shot_cache: dict[str, str | None] = {}
     first_frame = _training_probe_frame_md(
-        final_probe, run, ("kept_before", "before"), shot_cache)
-    heading = ("final refused Training advance probe"
-               if outcome_name == "retry"
-               else "final Training advance probe with an unrecognised outcome")
+        final_probe, run, ("kept_before", "before"), shot_cache
+    )
+    heading = (
+        "final refused Training advance probe"
+        if outcome_name == "retry"
+        else "final Training advance probe with an unrecognised outcome"
+    )
     observations = [
         f"- post-X landing verification ({heading}; "
         f"attempt `{attempt}`, outcome `{outcome_name}`).",
@@ -4190,22 +4990,33 @@ def _training_dislike_unverified_landing_md(
     ]
     if isinstance(final_probe.get("second"), dict):
         second_frame = _training_probe_frame_md(
-            final_probe, run, ("kept_after", "after"), shot_cache)
-        observations.append(_training_probe_observation_md(
-            "second", final_probe["second"], second_frame))
+            final_probe, run, ("kept_after", "after"), shot_cache
+        )
         observations.append(
-            "- pair verdict: stable=" + _training_probe_bool(final_probe.get("stable"))
-            + "; names_agree=" + _training_probe_bool(final_probe.get("names_agree")) + ".")
-    observations.extend([
-        "- the checkpoint snapshot above is pre-action evidence; this probe is the separate "
-        "post-X landing observation. The action remains unverified and no training label was "
-        "recorded.",
-    ])
+            _training_probe_observation_md(
+                "second", final_probe["second"], second_frame
+            )
+        )
+        observations.append(
+            "- pair verdict: stable="
+            + _training_probe_bool(final_probe.get("stable"))
+            + "; names_agree="
+            + _training_probe_bool(final_probe.get("names_agree"))
+            + "."
+        )
+    observations.extend(
+        [
+            "- the checkpoint snapshot above is pre-action evidence; this probe is the separate "
+            "post-X landing observation. The action remains unverified and no training label was "
+            "recorded.",
+        ]
+    )
     return observations
 
 
-def _latest_auto_opener_evidence_md(lines: list[str], run: Path, *,
-                                    current_prompt_sha256: str | None = None) -> str:
+def _latest_auto_opener_evidence_md(
+    lines: list[str], run: Path, *, current_prompt_sha256: str | None = None
+) -> str:
     """Render the latest AUTO or Training opener's private evidence and outcome.
 
     The screenshot proves which selected card was on screen but Hinge's composer may show only
@@ -4228,7 +5039,8 @@ def _latest_auto_opener_evidence_md(lines: list[str], run: Path, *,
     # their established rendering and linkage semantics. ``session_mode`` was introduced after
     # these records, so omitted/unknown values intentionally render as AUTO for compatibility.
     candidates = [
-        (index, rec) for index, rec in enumerate(records)
+        (index, rec)
+        for index, rec in enumerate(records)
         if rec.get("action") in {"auto_opener_pre_send", "auto_opener_resumed_send"}
     ]
     if not candidates:
@@ -4247,12 +5059,17 @@ def _latest_auto_opener_evidence_md(lines: list[str], run: Path, *,
     opener_integrity = "not verifiable (full opener or SHA-256 was not recorded)"
     if opener is not None and isinstance(expected_opener_hash, str):
         actual = hashlib.sha256(opener.encode("utf-8")).hexdigest()
-        opener_integrity = "verified" if actual == expected_opener_hash else "⚠️ SHA-256 mismatch"
+        opener_integrity = (
+            "verified" if actual == expected_opener_hash else "⚠️ SHA-256 mismatch"
+        )
 
     shot_name = record.get("before")
-    shot_digest = (_shot_digest(run, shot_name, {})
-                   if isinstance(shot_name, str)
-                   and _DEBUG_SCREENSHOT_NAME_RE.fullmatch(shot_name) is not None else None)
+    shot_digest = (
+        _shot_digest(run, shot_name, {})
+        if isinstance(shot_name, str)
+        and _DEBUG_SCREENSHOT_NAME_RE.fullmatch(shot_name) is not None
+        else None
+    )
     if shot_digest is None:
         # Do not echo an unsafe path back into the report.  Apart from misleading the reader
         # about its availability, a flat-but-hostile filename can contain Markdown control text
@@ -4262,24 +5079,35 @@ def _latest_auto_opener_evidence_md(lines: list[str], run: Path, *,
     else:
         shot_display = _sanitize_inline(str(shot_name))
         if isinstance(expected_frame_hash, str):
-            frame_integrity = ("verified" if shot_digest == expected_frame_hash
-                               else "⚠️ SHA-256 mismatch")
+            frame_integrity = (
+                "verified"
+                if shot_digest == expected_frame_hash
+                else "⚠️ SHA-256 mismatch"
+            )
         else:
             frame_integrity = "not verifiable (SHA-256 was not recorded)"
 
     resumed = record.get("action") == "auto_opener_resumed_send"
-    outcome_evidence_key = "resumed_send_evidence_id" if resumed else "pre_send_evidence_id"
+    outcome_evidence_key = (
+        "resumed_send_evidence_id" if resumed else "pre_send_evidence_id"
+    )
     outcome = "no linked send outcome was logged"
     legacy_training_dislike = False
     checkpoint_tail: list[dict] = []
     unverified_landing: list[str] = []
     if evidence_id:
         linked = [
-            rec for rec in records[record_index + 1:]
+            rec
+            for rec in records[record_index + 1 :]
             if rec.get(outcome_evidence_key) == evidence_id
-            and rec.get("action") in {
-                "like_attempt", "like_rejected", "like", "training_dislike",
-                "training_dislike_unverified", "training_cancelled",
+            and rec.get("action")
+            in {
+                "like_attempt",
+                "like_rejected",
+                "like",
+                "training_dislike",
+                "training_dislike_unverified",
+                "training_cancelled",
             }
         ]
         if not linked and session_mode == "training" and not resumed:
@@ -4288,13 +5116,17 @@ def _latest_auto_opener_evidence_md(lines: list[str], run: Path, *,
             # and require the same model item.  This repairs the exact misleading wording in
             # the 2026-08-26 report without treating an arbitrary later Dislike as this draft's
             # outcome.  New rows use the explicit evidence-ID branch above.
-            for candidate in records[record_index + 1:]:
+            for candidate in records[record_index + 1 :]:
                 if candidate.get("action") in {
-                        "capture", "auto_opener_pre_send", "auto_opener_resumed_send"}:
+                    "capture",
+                    "auto_opener_pre_send",
+                    "auto_opener_resumed_send",
+                }:
                     break
                 checkpoint_tail.append(candidate)
             linked = [
-                rec for rec in checkpoint_tail
+                rec
+                for rec in checkpoint_tail
                 if rec.get("action") == "training_dislike"
                 and rec.get("model_item_index") == record.get("model_item_index")
             ]
@@ -4324,10 +5156,13 @@ def _latest_auto_opener_evidence_md(lines: list[str], run: Path, *,
                 label = labels[action]
             outcome = f"{label} at `{_record_time(result)}`"
             if legacy_training_dislike:
-                outcome += " (legacy sequence; the outcome row predates evidence-ID linkage)"
+                outcome += (
+                    " (legacy sequence; the outcome row predates evidence-ID linkage)"
+                )
             if action == "training_dislike_unverified":
                 unverified_landing = _training_dislike_unverified_landing_md(
-                    records, record_index, result, run)
+                    records, record_index, result, run
+                )
         elif session_mode == "training" and not resumed:
             # Before the cancellation-classification fix, an intentional Hub Stop while the
             # reviewer held this checkpoint was retained as an ``unexpected`` error record.
@@ -4335,20 +5170,35 @@ def _latest_auto_opener_evidence_md(lines: list[str], run: Path, *,
             # Like boundary, so this typed draft was neither sent nor committed. Limit the
             # inference to this checkpoint; a cancellation after another capture/evidence row
             # belongs to a different profile.
-            stopped = next((candidate for candidate in checkpoint_tail
-                            if candidate.get("action") == "unexpected"
-                            and isinstance(candidate.get("error"), str)
-                            and "actioncancelled" in candidate["error"].lower()
-                            and "stopp" in candidate["error"].lower()), None)
+            stopped = next(
+                (
+                    candidate
+                    for candidate in checkpoint_tail
+                    if candidate.get("action") == "unexpected"
+                    and isinstance(candidate.get("error"), str)
+                    and "actioncancelled" in candidate["error"].lower()
+                    and "stopp" in candidate["error"].lower()
+                ),
+                None,
+            )
             if stopped is not None:
-                outcome = ("Training decision cancelled by Stop; typed opener was not sent or "
-                           f"committed at `{_record_time(stopped)}`")
+                outcome = (
+                    "Training decision cancelled by Stop; typed opener was not sent or "
+                    f"committed at `{_record_time(stopped)}`"
+                )
 
     target = record.get("model_item_index")
-    target_display = str(target) if isinstance(target, int) and not isinstance(target, bool) else "not recorded"
+    target_display = (
+        str(target)
+        if isinstance(target, int) and not isinstance(target, bool)
+        else "not recorded"
+    )
     evidence_display = _sanitize_inline(evidence_id) if evidence_id else "not recorded"
-    opener_display = (_sanitize_inline(opener) if opener is not None
-                      else "not recorded (legacy evidence row)")
+    opener_display = (
+        _sanitize_inline(opener)
+        if opener is not None
+        else "not recorded (legacy evidence row)"
+    )
     out = [
         f"- session mode: {session_mode}",
         f"- evidence ID: `{evidence_display}`",
@@ -4361,13 +5211,17 @@ def _latest_auto_opener_evidence_md(lines: list[str], run: Path, *,
     # like Training's (see hinge.py's _record_auto_opener_pre_send), and the legacy
     # model-private fields this call also renders stay quiet on their own for AUTO because
     # production AUTO never populates `generation_context` in the first place.
-    out.extend(_generation_context_md(record, current_prompt_sha256=current_prompt_sha256))
+    out.extend(
+        _generation_context_md(record, current_prompt_sha256=current_prompt_sha256)
+    )
     out.append(_replay_corpus_pointer_md())
     if resumed:
         approval_evidence_id = record.get("approval_evidence_id")
-        approval_display = (_sanitize_inline(approval_evidence_id)
-                            if isinstance(approval_evidence_id, str) and approval_evidence_id
-                            else "not recorded")
+        approval_display = (
+            _sanitize_inline(approval_evidence_id)
+            if isinstance(approval_evidence_id, str) and approval_evidence_id
+            else "not recorded"
+        )
         out.append(f"- human-reviewed approval evidence ID: `{approval_display}`")
     out.append(f"- linked outcome: {outcome}")
     out.extend(unverified_landing)
@@ -4413,8 +5267,11 @@ def _latest_observe_context_md(lines: list[str], run: Path) -> str:
         return ""
     latest = records[-1]
     action = _sanitize_inline(str(latest.get("action") or "unknown action"))
-    latest_time = (_safe_action_scalar(latest, "ts")
-                   if latest.get("action") == "device_input" else _record_time(latest))
+    latest_time = (
+        _safe_action_scalar(latest, "ts")
+        if latest.get("action") == "device_input"
+        else _record_time(latest)
+    )
     out = [f"- latest logged action: `{action}` at `{latest_time}`"]
 
     # A Stop during `_capture_current` logs `capture_aborted` before the loop's finally-block
@@ -4422,21 +5279,29 @@ def _latest_observe_context_md(lines: list[str], run: Path) -> str:
     # terminal lifecycle fact and the scalar progress the abort itself logged.
     aborted_capture = _terminal_capture_abort(records)
     if aborted_capture is not None:
-        out.append("- terminal capture state: Stop abandoned the in-progress profile read; "
-                   "no profile capture or decision was recorded for it.")
+        out.append(
+            "- terminal capture state: Stop abandoned the in-progress profile read; "
+            "no profile capture or decision was recorded for it."
+        )
         details: list[str] = []
         profile_name = aborted_capture.get("profile_name")
         if isinstance(profile_name, str) and profile_name.strip():
             details.append(f"profile identity `{_sanitize_inline(profile_name)}`")
-        for label, key in (("captured frame(s)", "frames"),
-                           ("read scroll(s)", "read_scrolls")):
+        for label, key in (
+            ("captured frame(s)", "frames"),
+            ("read scroll(s)", "read_scrolls"),
+        ):
             value = aborted_capture.get(key)
             if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
                 details.append(f"{value} {label}")
         if details:
-            out.append("- abandoned-capture details from the log: " + "; ".join(details) + ".")
+            out.append(
+                "- abandoned-capture details from the log: " + "; ".join(details) + "."
+            )
         else:
-            out.append("- the abort row did not record profile identity, frames, or read-scrolls.")
+            out.append(
+                "- the abort row did not record profile identity, frames, or read-scrolls."
+            )
         return "\n".join(out)
 
     # `observe_stopped` is a terminal marker written by Hinge after Worker has noticed a Stop
@@ -4445,12 +5310,16 @@ def _latest_observe_context_md(lines: list[str], run: Path) -> str:
     # produced after the run has stopped.  It was exactly that wording mismatch which made a
     # clean Stop on a READY second card look like an observe hang.
     if latest.get("action") == "observe_stopped":
-        out.append("- observe wait ended because Stop was requested; the READY card was "
-                   "intentionally abandoned and no pass/like decision was recorded for it.")
+        out.append(
+            "- observe wait ended because Stop was requested; the READY card was "
+            "intentionally abandoned and no pass/like decision was recorded for it."
+        )
         profile_name = latest.get("profile_name")
         if profile_name:
-            out.append("- the stopped wait belonged to the captured profile identity `"
-                       f"{_sanitize_inline(str(profile_name))}`.")
+            out.append(
+                "- the stopped wait belonged to the captured profile identity `"
+                f"{_sanitize_inline(str(profile_name))}`."
+            )
         return "\n".join(out)
 
     # `device_input` is deliberately emitted only after the synchronous transport call
@@ -4461,13 +5330,19 @@ def _latest_observe_context_md(lines: list[str], run: Path) -> str:
     if latest.get("action") == "device_input":
         details = "; ".join(
             f"{label}=`{_safe_action_scalar(latest, key)}`"
-            for label, key in (("transport", "transport"), ("kind", "kind"),
-                               ("source", "source"), ("direction", "direction"),
-                               ("time", "ts"))
+            for label, key in (
+                ("transport", "transport"),
+                ("kind", "kind"),
+                ("source", "source"),
+                ("direction", "direction"),
+                ("time", "ts"),
+            )
         )
         out.append(f"- final completed device input: {details}.")
-        out.append("- logging ended after that completed input; the trace cannot pinpoint "
-                   "what subsequently blocked progress.")
+        out.append(
+            "- logging ended after that completed input; the trace cannot pinpoint "
+            "what subsequently blocked progress."
+        )
         return "\n".join(out)
 
     # Only the final logged wait is relevant. A decision/capture/resync before it resolved an
@@ -4485,52 +5360,84 @@ def _latest_observe_context_md(lines: list[str], run: Path) -> str:
         reason if isinstance(reason, str) else "",
         "the driver had not logged a proven manual decision before logging ended",
     )
-    out.append(f"- final logged observe state: waiting (`{reason_text}`) — {explanation}.")
+    out.append(
+        f"- final logged observe state: waiting (`{reason_text}`) — {explanation}."
+    )
     if len(wait) > 1:
-        out.append(f"- this final logged wait began at `{_record_time(wait[0])}` and has "
-                   f"{len(wait)} heartbeat record(s), latest at `{_record_time(final_wait)}`.")
+        out.append(
+            f"- this final logged wait began at `{_record_time(wait[0])}` and has "
+            f"{len(wait)} heartbeat record(s), latest at `{_record_time(final_wait)}`."
+        )
     else:
         out.append("- this is the first logged waiting heartbeat before logging ended.")
 
     # The immediately preceding capture is the most useful reproduction context: it says what
     # was successfully read before the app entered READY, without inventing a current screen.
     before_wait = records[:first_wait_index] if first_wait_index is not None else []
-    capture = next((rec for rec in reversed(before_wait) if rec.get("action") == "capture"), None)
+    capture = next(
+        (rec for rec in reversed(before_wait) if rec.get("action") == "capture"), None
+    )
     if capture is not None:
         bits: list[str] = []
         if capture.get("profile_name"):
-            bits.append(f"identity read `{_sanitize_inline(str(capture['profile_name']))}`")
+            bits.append(
+                f"identity read `{_sanitize_inline(str(capture['profile_name']))}`"
+            )
         photos = capture.get("photos")
         if isinstance(photos, int) and not isinstance(photos, bool):
             bits.append(f"{photos} captured photo(s)")
         items = capture.get("items")
         if isinstance(items, int) and not isinstance(items, bool):
             item_context = capture.get("item_context")
-            context_suffix = (f", {item_context} context crop(s)"
-                              if isinstance(item_context, int) and not isinstance(item_context, bool)
-                              else "")
+            context_suffix = (
+                f", {item_context} context crop(s)"
+                if isinstance(item_context, int) and not isinstance(item_context, bool)
+                else ""
+            )
             bits.append(f"{items} numbered item(s){context_suffix}")
         if capture.get("items_unavailable"):
-            bits.append("numbered items unavailable: `"
-                        f"{_compact_item_index_refusal_text(capture['items_unavailable'])}`")
+            bits.append(
+                "numbered items unavailable: `"
+                f"{_compact_item_index_refusal_text(capture['items_unavailable'])}`"
+            )
         elif capture.get("items_unnumbered"):
             # Distinct from the failure above: enumeration finished and legitimately numbered
             # nothing (Profile's state 3), so this must never read as "something broke".
-            bits.append("enumeration completed but numbered nothing: `"
-                        f"{_compact_item_index_refusal_text(capture['items_unnumbered'])}`")
+            bits.append(
+                "enumeration completed but numbered nothing: `"
+                f"{_compact_item_index_refusal_text(capture['items_unnumbered'])}`"
+            )
         detail = "; ".join(bits) if bits else "no capture detail was logged"
-        out.append(f"- last capture before this wait (`{_record_time(capture)}`): {detail}.")
+        out.append(
+            f"- last capture before this wait (`{_record_time(capture)}`): {detail}."
+        )
 
-    shot = next((final_wait.get(key) for key in ("before", "after", "screenshot")
-                 if final_wait.get(key)), None)
+    shot = next(
+        (
+            final_wait.get(key)
+            for key in ("before", "after", "screenshot")
+            if final_wait.get(key)
+        ),
+        None,
+    )
     if shot:
         shot_text = _sanitize_inline(str(shot))
-        availability = "present" if (run / str(shot)).is_file() else "not present (possibly rotated)"
-        out.append(f"- screen evidence for that waiting verdict: `{shot_text}` ({availability}).")
+        availability = (
+            "present"
+            if (run / str(shot)).is_file()
+            else "not present (possibly rotated)"
+        )
+        out.append(
+            f"- screen evidence for that waiting verdict: `{shot_text}` ({availability})."
+        )
     else:
-        out.append("- no screenshot filename was recorded with the latest waiting verdict.")
-    out.append("- reproduction sequence from the log: capture completed → READY/manual decision "
-               "prompt → no pass/like record before the final logged wait above.")
+        out.append(
+            "- no screenshot filename was recorded with the latest waiting verdict."
+        )
+    out.append(
+        "- reproduction sequence from the log: capture completed → READY/manual decision "
+        "prompt → no pass/like record before the final logged wait above."
+    )
     return "\n".join(out)
 
 
@@ -4545,19 +5452,29 @@ def _foreground_input_attribution_md(lines: list[str]) -> str:
     """
     records = _action_records(lines)
     event_indexes = [
-        index for index, rec in enumerate(records)
+        index
+        for index, rec in enumerate(records)
         if rec.get("action") in {"observe_foreground_paused", "foreground_blocked"}
     ]
     if not event_indexes:
         return ""
     index = event_indexes[-1]
     event = records[index]
-    prior_inputs = [rec for rec in records[:index] if rec.get("action") == "device_input"]
-    resumed_index = next((later_index for later_index in range(index + 1, len(records))
-                          if records[later_index].get("action") ==
-                          "observe_foreground_resumed"), None)
-    interruption_tail = records[index + 1:resumed_index]
-    later_inputs = [rec for rec in interruption_tail if rec.get("action") == "device_input"]
+    prior_inputs = [
+        rec for rec in records[:index] if rec.get("action") == "device_input"
+    ]
+    resumed_index = next(
+        (
+            later_index
+            for later_index in range(index + 1, len(records))
+            if records[later_index].get("action") == "observe_foreground_resumed"
+        ),
+        None,
+    )
+    interruption_tail = records[index + 1 : resumed_index]
+    later_inputs = [
+        rec for rec in interruption_tail if rec.get("action") == "device_input"
+    ]
     package = _sanitize_inline(str(event.get("package") or "package not recorded"))
     out = [f"- foreground interruption at `{_record_time(event)}`: `{package}`."]
     if prior_inputs:
@@ -4566,28 +5483,46 @@ def _foreground_input_attribution_md(lines: list[str]) -> str:
         source = _sanitize_inline(str(last.get("source") or "source not recorded"))
         event_ts = _parse_action_ts(event.get("ts"))
         input_ts = _parse_action_ts(last.get("ts"))
-        gap = None if event_ts is None or input_ts is None else (event_ts - input_ts).total_seconds()
-        gap_text = (f"{format_duration(max(0.0, gap))} earlier"
-                    if gap is not None else "at an unknown time before it")
+        gap = (
+            None
+            if event_ts is None or input_ts is None
+            else (event_ts - input_ts).total_seconds()
+        )
+        gap_text = (
+            f"{format_duration(max(0.0, gap))} earlier"
+            if gap is not None
+            else "at an unknown time before it"
+        )
         geometry = ""
         if last.get("start") is not None or last.get("end") is not None:
-            geometry = (f", start=`{_sanitize_inline(str(last.get('start')))}`"
-                        f", end=`{_sanitize_inline(str(last.get('end')))}`")
+            geometry = (
+                f", start=`{_sanitize_inline(str(last.get('start')))}`"
+                f", end=`{_sanitize_inline(str(last.get('end')))}`"
+            )
         out.append(
             f"- last completed Operation Love device input: `{kind}` from `{source}` at "
-            f"`{_record_time(last)}` ({gap_text}){geometry}.")
+            f"`{_record_time(last)}` ({gap_text}){geometry}."
+        )
         if later_inputs:
-            out.append(f"- ⚠️ {len(later_inputs)} Operation Love device input(s) were logged "
-                       "after the foreground interruption; inspect the action tail below.")
+            out.append(
+                f"- ⚠️ {len(later_inputs)} Operation Love device input(s) were logged "
+                "after the foreground interruption; inspect the action tail below."
+            )
         else:
-            out.append("- no Operation Love device input was logged after the interruption.")
+            out.append(
+                "- no Operation Love device input was logged after the interruption."
+            )
     else:
-        out.append("- this run contains no outbound `device_input` audit row before the "
-                   "interruption; input attribution is unavailable (legacy/incomplete trace).")
+        out.append(
+            "- this run contains no outbound `device_input` audit row before the "
+            "interruption; input attribution is unavailable (legacy/incomplete trace)."
+        )
     resumed = records[resumed_index] if resumed_index is not None else None
     if resumed is not None:
-        out.append(f"- Hinge regained foreground at `{_record_time(resumed)}`; Observe "
-                   "recaptured without recording a decision.")
+        out.append(
+            f"- Hinge regained foreground at `{_record_time(resumed)}`; Observe "
+            "recaptured without recording a decision."
+        )
     return "\n".join(out)
 
 
@@ -4601,7 +5536,11 @@ def _foreground_input_attribution_md(lines: list[str]) -> str:
 #   * the LIKE's evidence frame was a five-minute-stale screenshot from before the heart was
 #     even tapped, because _await_like_resolved holds its `base` anchor frozen by design.
 # Neither is visible by eye in an actions.jsonl tail. These two checks say them in words.
-_DECISION_ACTIONS = ("observe_decision", "observe_like_dismissed", "observe_bottom_delta")
+_DECISION_ACTIONS = (
+    "observe_decision",
+    "observe_like_dismissed",
+    "observe_bottom_delta",
+)
 
 
 def _composer_flap_md(lines: list[str]) -> str:
@@ -4620,17 +5559,26 @@ def _composer_flap_md(lines: list[str]) -> str:
     flaps: list[str] = []
     for stretch in stretches:
         for earlier, later in pairwise(stretch):
-            if earlier.get("reason") != "like_sending" or later.get("reason") != "like_sheet":
+            if (
+                earlier.get("reason") != "like_sending"
+                or later.get("reason") != "like_sheet"
+            ):
                 continue
-            flaps.append(f"`like_sending` at `{earlier.get('ts', '?')}` -> "
-                         f"`like_sheet` at `{later.get('ts', '?')}`")
+            flaps.append(
+                f"`like_sending` at `{earlier.get('ts', '?')}` -> "
+                f"`like_sheet` at `{later.get('ts', '?')}`"
+            )
     if not flaps:
         return ""
-    out = [f"- ⚠️ the composer was reported CLOSED and then OPEN again {len(flaps)}x -- a like "
-           "sheet cannot reopen itself, so at least one of these polls misread it:"]
+    out = [
+        f"- ⚠️ the composer was reported CLOSED and then OPEN again {len(flaps)}x -- a like "
+        "sheet cannot reopen itself, so at least one of these polls misread it:"
+    ]
     out.extend(f"  - {flap}" for flap in flaps)
-    out.append("  - each false `like_sending` also burns stuck-screen budget that `like_sheet` "
-               "would have re-armed, so this can end a wait the human was still composing in")
+    out.append(
+        "  - each false `like_sending` also burns stuck-screen budget that `like_sheet` "
+        "would have re-armed, so this can end a wait the human was still composing in"
+    )
     return "\n".join(out)
 
 
@@ -4659,8 +5607,11 @@ def _shot_digest(run: Path, name: object, cache: dict[str, str | None]) -> str |
                 cache[name] = None
             else:
                 size = path.stat().st_size
-                cache[name] = (hashlib.sha256(path.read_bytes()).hexdigest()
-                               if 0 < size <= _DEBUG_SCREENSHOT_MAX_BYTES else None)
+                cache[name] = (
+                    hashlib.sha256(path.read_bytes()).hexdigest()
+                    if 0 < size <= _DEBUG_SCREENSHOT_MAX_BYTES
+                    else None
+                )
         except Exception:  # noqa: BLE001
             cache[name] = None
     return cache[name]
@@ -4675,10 +5626,13 @@ def _adb_screencap_timeout_md(lines: list[str], run: Path) -> str:
     evidence for this path.  A missing shot deliberately stays indeterminate rather than being
     called a disconnect -- disk logging and the follow-up capture are both best effort.
     """
-    matches = [rec for rec in _action_records(lines)
-               if rec.get("action") == "unexpected"
-               and isinstance(rec.get("error"), str)
-               and _ADB_SCREENCAP_TIMEOUT_RE.search(rec["error"])]
+    matches = [
+        rec
+        for rec in _action_records(lines)
+        if rec.get("action") == "unexpected"
+        and isinstance(rec.get("error"), str)
+        and _ADB_SCREENCAP_TIMEOUT_RE.search(rec["error"])
+    ]
     if not matches:
         return ""
     latest = matches[-1]
@@ -4694,8 +5648,10 @@ def _adb_screencap_timeout_md(lines: list[str], run: Path) -> str:
             "disconnect while the failure handler ran."
         )
     if isinstance(screenshot, str) and screenshot:
-        evidence = (f"`{_sanitize_inline(screenshot)}` was named but is missing or unsafe to "
-                    "read")
+        evidence = (
+            f"`{_sanitize_inline(screenshot)}` was named but is missing or unsafe to "
+            "read"
+        )
     else:
         evidence = "no post-timeout screenshot was saved"
     return (
@@ -4741,11 +5697,12 @@ def _stale_evidence_md(lines: list[str], run: Path) -> str:
         if isinstance(rec, dict):
             records.append(rec)
     findings: list[str] = []
-    composer_since: int | None = None          # where the in-flight composer episode began
+    composer_since: int | None = None  # where the in-flight composer episode began
     for index, rec in enumerate(records):
         action = rec.get("action")
         if action == "observe_like_anchor" or (
-                action == "observe_waiting" and rec.get("reason") in _COMPOSER_WAIT_REASONS):
+            action == "observe_waiting" and rec.get("reason") in _COMPOSER_WAIT_REASONS
+        ):
             if composer_since is None:
                 composer_since = index
         digest = _shot_digest(run, rec.get("before"), cache)
@@ -4765,11 +5722,14 @@ def _stale_evidence_md(lines: list[str], run: Path) -> str:
             f"`{action}` at `{rec.get('ts', '?')}` is evidenced by `{rec.get('before')}`, "
             f"pixel-identical to `{origin.get('before')}` from `{origin.get('action')}` at "
             f"`{origin.get('ts', '?')}`{gap} -- before this composer opened at "
-            f"`{records[opened_at].get('ts', '?')}`")
+            f"`{records[opened_at].get('ts', '?')}`"
+        )
     if not findings:
         return ""
-    out = ["- ⚠️ a resolved like is evidenced by a frame from BEFORE its composer existed, so "
-           "the one stored frame cannot show what the human actually sent:"]
+    out = [
+        "- ⚠️ a resolved like is evidenced by a frame from BEFORE its composer existed, so "
+        "the one stored frame cannot show what the human actually sent:"
+    ]
     out.extend(f"  - {finding}" for finding in findings)
     return "\n".join(out)
 
@@ -4781,6 +5741,7 @@ def _debug_log_md(config_path: str, hub_state=None) -> str:
     so we list their paths rather than inline them. Best-effort; never raises."""
     try:
         from . import config as cfg_mod
+
         cfg = cfg_mod.load(config_path)
         apps = cfg.apps
         enabled_apps = set(cfg.enabled_apps)
@@ -4793,36 +5754,53 @@ def _debug_log_md(config_path: str, hub_state=None) -> str:
     if hub_state is not None:
         try:
             hub_snapshot = hub_state.snapshot()
-            status_snapshot = (hub_snapshot.get("status")
-                               if isinstance(hub_snapshot, dict) else None)
-            candidate = (status_snapshot.get("run_id")
-                         if isinstance(status_snapshot, dict) else None)
+            status_snapshot = (
+                hub_snapshot.get("status") if isinstance(hub_snapshot, dict) else None
+            )
+            candidate = (
+                status_snapshot.get("run_id")
+                if isinstance(status_snapshot, dict)
+                else None
+            )
             if isinstance(candidate, str) and candidate:
                 current_run_id = candidate
         except Exception:  # noqa: BLE001 -- provenance is optional diagnostic context
             pass
     apps = apps if isinstance(apps, dict) else {}
-    sections = [_one_debug_dir_md(app, (opts or {}), current_run_id=current_run_id,
-                                  current_prompt_sha256=current_prompt_sha256)
-                for app, opts in apps.items()
-                if app in enabled_apps and (opts or {}).get("debug_log")]
+    sections = [
+        _one_debug_dir_md(
+            app,
+            (opts or {}),
+            current_run_id=current_run_id,
+            current_prompt_sha256=current_prompt_sha256,
+        )
+        for app, opts in apps.items()
+        if app in enabled_apps and (opts or {}).get("debug_log")
+    ]
     if not sections:
         return "- (no enabled app has `debug_log` enabled — nothing on-disk to include)"
     return "\n".join(sections)
 
 
-def _one_debug_dir_md(app: str, opts: dict, *, current_run_id: str | None = None,
-                      current_prompt_sha256: str | None = None) -> str:
+def _one_debug_dir_md(
+    app: str,
+    opts: dict,
+    *,
+    current_run_id: str | None = None,
+    current_prompt_sha256: str | None = None,
+) -> str:
     base = Path(opts.get("debug_dir", f"./data/{app}_debug"))
     if not base.is_absolute():
         base = Path.cwd() / base
     try:
         if not base.exists():
             return f"- **{app}**: `debug_log` on, but no folder yet at `{base}` (no run has logged here)"
-        runs = sorted((p for p in base.iterdir() if p.is_dir()), key=lambda p: p.stat().st_mtime)
+        runs = sorted(
+            (p for p in base.iterdir() if p.is_dir()), key=lambda p: p.stat().st_mtime
+        )
         if not runs:
             return f"- **{app}**: `{base}` exists but has no run folders yet"
-        run = runs[-1]                                       # most recent run
+        run = runs[-1]  # most recent run
         pngs = sorted(run.glob("*.png"))
         errors = [p.name for p in pngs if p.name.endswith("_error.png")]
         if current_run_id is None:
@@ -4830,10 +5808,14 @@ def _one_debug_dir_md(app: str, opts: dict, *, current_run_id: str | None = None
         elif run.name == current_run_id:
             provenance = " · provenance: current status run"
         else:
-            provenance = (" · provenance: previous on-disk run; current status run is `"
-                          f"{_sanitize_inline(current_run_id)}`")
-        out = [f"- **{app}** · latest run: `{run}`{provenance} · screenshots: {len(pngs)}"
-               + (f" · ⚠️ error shots (kept): {', '.join(errors)}" if errors else "")]
+            provenance = (
+                " · provenance: previous on-disk run; current status run is `"
+                f"{_sanitize_inline(current_run_id)}`"
+            )
+        out = [
+            f"- **{app}** · latest run: `{run}`{provenance} · screenshots: {len(pngs)}"
+            + (f" · ⚠️ error shots (kept): {', '.join(errors)}" if errors else "")
+        ]
         log = run / "actions.jsonl"
         if log.exists():
             try:
@@ -4868,9 +5850,14 @@ def _one_debug_dir_md(app: str, opts: dict, *, current_run_id: str | None = None
             # Beside the stall summary, and for the same reason: these are the anomalies a
             # developer cannot see by reading the tail, because both look like ordinary
             # records until you hash the screenshots. Quiet on a healthy run.
-            anomalies = "\n".join(part for part in
-                                  (_composer_flap_md(raw_lines), _stale_evidence_md(raw_lines, run))
-                                  if part)
+            anomalies = "\n".join(
+                part
+                for part in (
+                    _composer_flap_md(raw_lines),
+                    _stale_evidence_md(raw_lines, run),
+                )
+                if part
+            )
             if anomalies:
                 out.append("  - evidence anomalies:")
                 out.extend(f"    {line}" for line in anomalies.splitlines())
@@ -4882,17 +5869,22 @@ def _one_debug_dir_md(app: str, opts: dict, *, current_run_id: str | None = None
             # is waiting on: when this section is present, the opener below was NOT sent.
             verification = _sheet_verification_md(raw_lines, run)
             if verification:
-                out.append("  - post-tap sheet verification (the gate the opener never passed):")
+                out.append(
+                    "  - post-tap sheet verification (the gate the opener never passed):"
+                )
                 out.extend(f"    {line}" for line in verification.splitlines())
             opener_evidence = _latest_auto_opener_evidence_md(
-                raw_lines, run, current_prompt_sha256=current_prompt_sha256)
+                raw_lines, run, current_prompt_sha256=current_prompt_sha256
+            )
             if opener_evidence:
                 evidence_mode = _latest_auto_opener_evidence_mode(raw_lines)
                 out.append(f"  - latest {evidence_mode} opener pre-send evidence:")
                 out.extend(f"    {line}" for line in opener_evidence.splitlines())
             observe_context = _latest_observe_context_md(raw_lines, run)
             if observe_context:
-                out.append("  - latest observe context (logged evidence, not a new phone read):")
+                out.append(
+                    "  - latest observe context (logged evidence, not a new phone read):"
+                )
                 out.extend(f"    {line}" for line in observe_context.splitlines())
             splits = _capture_split_summary_md(raw_lines)
             if splits:
@@ -4906,8 +5898,10 @@ def _one_debug_dir_md(app: str, opts: dict, *, current_run_id: str | None = None
             # refusal's own evidence file opened: the block top it reports is derived here.
             geometry = _item_index_geometry_md(raw_lines, run)
             if geometry:
-                out.append("  - refused-capture leading-edge geometry (read from the sidecar "
-                           "the refusal names):")
+                out.append(
+                    "  - refused-capture leading-edge geometry (read from the sidecar "
+                    "the refusal names):"
+                )
                 out.extend(f"    {line}" for line in geometry.splitlines())
             dwell_navigation = _dwell_navigation_refusal_summary_md(raw_lines)
             if dwell_navigation:
@@ -4917,12 +5911,16 @@ def _one_debug_dir_md(app: str, opts: dict, *, current_run_id: str | None = None
                 # "refusals" reasserts that exact mislabel one level up, which is the thing
                 # this module's own norm forbids -- "A Stop is not a failure to diagnose, so
                 # this says so plainly rather than borrowing the refusal wording".
-                out.append("  - dwell-navigation refusals and cancellations "
-                           "(separate from item-index correspondence):")
+                out.append(
+                    "  - dwell-navigation refusals and cancellations "
+                    "(separate from item-index correspondence):"
+                )
                 out.extend(f"    {line}" for line in dwell_navigation.splitlines())
             dwell_return_chains = _dwell_return_chain_refusal_summary_md(raw_lines)
             if dwell_return_chains:
-                out.append("  - still-photo return-chain refusals (measured cleanup after dwell):")
+                out.append(
+                    "  - still-photo return-chain refusals (measured cleanup after dwell):"
+                )
                 out.extend(f"    {line}" for line in dwell_return_chains.splitlines())
             repairs = _item_index_repair_summary_md(raw_lines)
             if repairs:
@@ -4940,19 +5938,27 @@ def _one_debug_dir_md(app: str, opts: dict, *, current_run_id: str | None = None
                 out.extend(f"    {line}" for line in screen_fixed_notes.splitlines())
             construction_notes = _item_index_construction_notes_summary_md(raw_lines)
             if construction_notes:
-                out.append("  - item-index construction notes (not from the screen-fixed check):")
+                out.append(
+                    "  - item-index construction notes (not from the screen-fixed check):"
+                )
                 out.extend(f"    {line}" for line in construction_notes.splitlines())
             manifest = _item_manifest_summary_md(raw_lines)
             if manifest:
-                out.append("  - item-numbering manifest (non-image capture provenance):")
+                out.append(
+                    "  - item-numbering manifest (non-image capture provenance):"
+                )
                 out.extend(f"    {line}" for line in manifest.splitlines())
             counts_line = _action_counts_line(raw_lines)
             if counts_line:
                 out.append(f"  - {counts_line}")
-            tail = [_compact_debug_tail_line(line, _manifest_capture(raw_lines))
-                    for line in _collapse_action_tail(raw_lines, _DEBUG_ACTION_TAIL)]
+            tail = [
+                _compact_debug_tail_line(line, _manifest_capture(raw_lines))
+                for line in _collapse_action_tail(raw_lines, _DEBUG_ACTION_TAIL)
+            ]
             if tail:
-                out.append("  - actions.jsonl (tail):\n```\n" + "\n".join(tail) + "\n```")
+                out.append(
+                    "  - actions.jsonl (tail):\n```\n" + "\n".join(tail) + "\n```"
+                )
         else:
             out.append("  - (no actions.jsonl in the latest run)")
         return "\n".join(out)
@@ -4973,11 +5979,13 @@ def _logs_md(max_lines: int) -> str:
     if max_lines < 3:
         return "_(omitted - report at 50,000-line cap)_"
 
-    available_body_lines = max_lines - 2        # opening + closing code fences
+    available_body_lines = max_lines - 2  # opening + closing code fences
     prefix: list[str] = []
     if len(logs) > available_body_lines:
-        available_body_lines -= 1               # the omission notice itself costs a body slot
-        shown = max(0, available_body_lines)    # derive the count from what's ACTUALLY shown
+        available_body_lines -= 1  # the omission notice itself costs a body slot
+        shown = max(
+            0, available_body_lines
+        )  # derive the count from what's ACTUALLY shown
         prefix = [
             f"... {len(logs) - shown} older log line(s) omitted to keep the report under "
             f"{_MAX_REPORT_LINES:,} lines ..."
@@ -4989,8 +5997,10 @@ def _logs_md(max_lines: int) -> str:
         # Console logs mirror that same sentence, so retain their timestamp/context but replace
         # only an oversized geometry wall with the same explicit pointer.  Short/ordinary logs
         # remain byte-for-byte unchanged.
-        body_lines += [_compact_item_index_refusal_text(line)
-                       for line in logs[-available_body_lines:]]
+        body_lines += [
+            _compact_item_index_refusal_text(line)
+            for line in logs[-available_body_lines:]
+        ]
     return "```\n" + "\n".join(body_lines) + "\n```"
 
 
@@ -5032,25 +6042,35 @@ def _opener_rejection_deadletter_md(config_path: str = "config.yaml") -> str:
     """
     try:
         from . import config as cfg_mod
-        path = Path(cfg_mod.load(config_path).data_dir) / "opener_rejection_deadletter.jsonl"
+
+        path = (
+            Path(cfg_mod.load(config_path).data_dir)
+            / "opener_rejection_deadletter.jsonl"
+        )
     except Exception as exc:  # noqa: BLE001
         return f"- could not resolve the dead-letter path: {type(exc).__name__}: {exc}"
     if not path.exists():
-        return ("- none: no opener-rejection row has failed to reach the store "
-                f"(`{path}` does not exist)")
+        return (
+            "- none: no opener-rejection row has failed to reach the store "
+            f"(`{path}` does not exist)"
+        )
     try:
-        entries = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+        entries = [
+            json.loads(line) for line in path.read_text().splitlines() if line.strip()
+        ]
     except Exception as exc:  # noqa: BLE001
         return f"- ⚠️ `{path}` exists but could not be read: {type(exc).__name__}: {exc}"
     if not entries:
         return f"- none: `{path}` is empty"
-    out = [f"- ⚠️ **{len(entries)} opener-rejection row(s) FAILED to reach the store** and were "
-           f"written to `{path}`.",
-           "  - This is the evidence three prior investigations of the empty "
-           "`opener_rejections` table lacked: the exception each failed write actually raised. "
-           "Nothing here diagnoses the cause yet -- read `exc_type`/`exc_str`, then "
-           "`cause_type`/`cause_str`, which is where a chained cause hides.",
-           "  - newest first:"]
+    out = [
+        f"- ⚠️ **{len(entries)} opener-rejection row(s) FAILED to reach the store** and were "
+        f"written to `{path}`.",
+        "  - This is the evidence three prior investigations of the empty "
+        "`opener_rejections` table lacked: the exception each failed write actually raised. "
+        "Nothing here diagnoses the cause yet -- read `exc_type`/`exc_str`, then "
+        "`cause_type`/`cause_str`, which is where a chained cause hides.",
+        "  - newest first:",
+    ]
     for entry in reversed(entries[-5:]):
         if not isinstance(entry, dict):
             continue
@@ -5064,7 +6084,8 @@ def _opener_rejection_deadletter_md(config_path: str = "config.yaml") -> str:
             f"{_sanitize_inline(str(entry.get('exc_type', '?')))}: "
             f"{_sanitize_inline(str(entry.get('exc_str', '')))[:200]} · cause: "
             f"{_sanitize_inline(str(cause))}: "
-            f"{_sanitize_inline(str(entry.get('cause_str', '')))[:200]}")
+            f"{_sanitize_inline(str(entry.get('cause_str', '')))[:200]}"
+        )
     if len(entries) > 5:
         out.append(f"    - ... {len(entries) - 5} older entry(ies) in the file")
     return "\n".join(out)
@@ -5083,7 +6104,9 @@ def _safe_section(fn, *args) -> str:
 
 
 # ── assembly ───────────────────────────────────────────────────────────────
-def build_report(hub_state=None, description: str = "", config_path: str = "config.yaml") -> str:
+def build_report(
+    hub_state=None, description: str = "", config_path: str = "config.yaml"
+) -> str:
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     desc = (description or "").strip() or "_(none provided)_"
     head = (

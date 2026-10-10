@@ -4,6 +4,7 @@ Spins the stdlib server in a thread and hits /, /api/config, /api/status,
 /api/stop, and a 404. We never POST /api/start (that would launch a real run /
 browser); start/stop wiring is covered by HubState's logic.
 """
+
 import errno
 import http.client
 import io
@@ -57,7 +58,7 @@ def _extract_js_function(js: str, name: str) -> str:
     can't fool the test — see the audit note this addresses."""
     m = re.search(rf"(?:async\s+)?function\s+{re.escape(name)}\s*\([^)]*\)\s*{{", js)
     assert m, f"function {name} not found in hub.html"
-    start = m.end() - 1                      # index of the opening '{'
+    start = m.end() - 1  # index of the opening '{'
     depth = 0
     for i in range(start, len(js)):
         if js[i] == "{":
@@ -65,15 +66,22 @@ def _extract_js_function(js: str, name: str) -> str:
         elif js[i] == "}":
             depth -= 1
             if depth == 0:
-                return js[m.start():i + 1]
+                return js[m.start() : i + 1]
     raise AssertionError(f"unbalanced braces extracting {name}")
 
 
 def _run_node(script: str):
     assert NODE_BIN, "node not available"
     r = subprocess.run(
-        [NODE_BIN, "-e", script], capture_output=True, text=True, timeout=10, check=False)
-    assert r.returncode == 0, f"node script failed:\nSTDOUT: {r.stdout}\nSTDERR: {r.stderr}"
+        [NODE_BIN, "-e", script],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    assert r.returncode == 0, (
+        f"node script failed:\nSTDOUT: {r.stdout}\nSTDERR: {r.stderr}"
+    )
     return json.loads(r.stdout)
 
 
@@ -89,8 +97,10 @@ def _join_hub_watch_threads(timeout=_LIVENESS_TIMEOUT_S):
     """
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        if not any(t.name == "hub-tab-stale-watch" and t.is_alive()
-                   for t in threading.enumerate()):
+        if not any(
+            t.name == "hub-tab-stale-watch" and t.is_alive()
+            for t in threading.enumerate()
+        ):
             return
         time.sleep(0.01)
     raise AssertionError("hub-tab-stale-watch thread outlived the test")
@@ -111,8 +121,12 @@ def _csrf_token(base):
 def _post(base, path, body=b"{}"):
     payload = json.loads(body)
     payload["_csrf_token"] = _csrf_token(base)
-    req = urllib.request.Request(base + path, data=json.dumps(payload).encode(), method="POST",
-                                 headers={"Content-Type": "application/json"})
+    req = urllib.request.Request(
+        base + path,
+        data=json.dumps(payload).encode(),
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
     with urllib.request.urlopen(req, timeout=5) as r:
         return r.status, json.loads(r.read())
 
@@ -142,7 +156,8 @@ def secured_stop_hub():
 
 def _raw_post(base, path, body, headers):
     request = urllib.request.Request(
-        base + path, data=body, method="POST", headers=headers)
+        base + path, data=body, method="POST", headers=headers
+    )
     return urllib.request.urlopen(request, timeout=5)
 
 
@@ -182,7 +197,10 @@ def test_bind_rejects_invalid_ports_without_calling_socket_layer(monkeypatch, po
 
     calls = []
     monkeypatch.setattr(
-        hub_server, "_HubHTTPServer", lambda *args, **kwargs: calls.append((args, kwargs)))
+        hub_server,
+        "_HubHTTPServer",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
     with pytest.raises(ValueError, match="1 to 65535"):
         hub_server._bind("127.0.0.1", port)
     assert calls == []
@@ -221,18 +239,26 @@ def test_bind_reraises_non_contention_socket_errors_immediately(monkeypatch):
     assert calls == [("127.0.0.1", 8799)]
 
 
-@pytest.mark.parametrize("origin", [
-    "https://attacker.example",
-    "null",
-])
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "https://attacker.example",
+        "null",
+    ],
+)
 def test_api_stop_rejects_hostile_origin_without_stopping(secured_stop_hub, origin):
     base, _httpd, state = secured_stop_hub
     body = json.dumps({"_csrf_token": _csrf_token(base)}).encode()
     with pytest.raises(urllib.error.HTTPError) as exc_info:
-        _raw_post(base, "/api/stop", body, {
-            "Content-Type": "application/json",
-            "Origin": origin,
-        })
+        _raw_post(
+            base,
+            "/api/stop",
+            body,
+            {
+                "Content-Type": "application/json",
+                "Origin": origin,
+            },
+        )
     assert exc_info.value.code == 403
     assert state.stop_calls == 0
 
@@ -242,30 +268,45 @@ def test_api_stop_rejects_a_different_loopback_origin(secured_stop_hub):
     origin = f"http://localhost:{httpd.server_address[1]}"
     body = json.dumps({"_csrf_token": _csrf_token(base)}).encode()
     with pytest.raises(urllib.error.HTTPError) as exc_info:
-        _raw_post(base, "/api/stop", body, {
-            "Content-Type": "application/json",
-            "Origin": origin,
-        })
+        _raw_post(
+            base,
+            "/api/stop",
+            body,
+            {
+                "Content-Type": "application/json",
+                "Origin": origin,
+            },
+        )
     assert exc_info.value.code == 403
     assert state.stop_calls == 0
 
 
-@pytest.mark.parametrize(("content_type", "body_kind"), [
-    ("text/plain", "json"),
-    ("application/x-www-form-urlencoded", "empty"),
-])
+@pytest.mark.parametrize(
+    ("content_type", "body_kind"),
+    [
+        ("text/plain", "json"),
+        ("application/x-www-form-urlencoded", "empty"),
+    ],
+)
 def test_api_stop_rejects_non_json_and_empty_form_posts(
-        secured_stop_hub, content_type, body_kind):
+    secured_stop_hub, content_type, body_kind
+):
     base, _httpd, state = secured_stop_hub
     body = (
         json.dumps({"_csrf_token": _csrf_token(base)}).encode()
-        if body_kind == "json" else b""
+        if body_kind == "json"
+        else b""
     )
     with pytest.raises(urllib.error.HTTPError) as exc_info:
-        _raw_post(base, "/api/stop", body, {
-            "Content-Type": content_type,
-            "Origin": base,
-        })
+        _raw_post(
+            base,
+            "/api/stop",
+            body,
+            {
+                "Content-Type": content_type,
+                "Origin": base,
+            },
+        )
     assert exc_info.value.code == 415
     assert state.stop_calls == 0
 
@@ -274,7 +315,8 @@ def test_api_stop_rejects_duplicate_content_length_before_parsing(secured_stop_h
     base, httpd, state = secured_stop_hub
     body = json.dumps({"_csrf_token": _csrf_token(base)}).encode()
     connection = http.client.HTTPConnection(
-        "127.0.0.1", httpd.server_address[1], timeout=5)
+        "127.0.0.1", httpd.server_address[1], timeout=5
+    )
     try:
         connection.putrequest("POST", "/api/stop")
         connection.putheader("Content-Type", "application/json")
@@ -292,28 +334,39 @@ def test_api_stop_rejects_duplicate_content_length_before_parsing(secured_stop_h
     assert state.stop_calls == 0
 
 
-@pytest.mark.parametrize("token", [
-    None,
-    "not-the-server-token",
-    # hmac.compare_digest raises TypeError on a str operand holding any non-ASCII character.
-    # Nothing in do_POST catches it, so the refusal below used to be no response at all (the
-    # caller saw RemoteDisconnected) plus a traceback teed into the operator's live log and every
-    # bug report taken afterwards.
-    "é" * 43,
-    # json.loads hands back a lone surrogate for a "\\ud800" escape, which a plain .encode()
-    # would then raise UnicodeEncodeError on -- the same failure one layer down.
-    "\ud800",
-])
+@pytest.mark.parametrize(
+    "token",
+    [
+        None,
+        "not-the-server-token",
+        # hmac.compare_digest raises TypeError on a str operand holding any non-ASCII character.
+        # Nothing in do_POST catches it, so the refusal below used to be no response at all (the
+        # caller saw RemoteDisconnected) plus a traceback teed into the operator's live log and every
+        # bug report taken afterwards.
+        "é" * 43,
+        # json.loads hands back a lone surrogate for a "\\ud800" escape, which a plain .encode()
+        # would then raise UnicodeEncodeError on -- the same failure one layer down.
+        "\ud800",
+    ],
+)
 def test_api_stop_rejects_missing_or_wrong_csrf_token(secured_stop_hub, token):
     base, _httpd, state = secured_stop_hub
     payload = {} if token is None else {"_csrf_token": token}
     with pytest.raises(urllib.error.HTTPError) as exc_info:
-        _raw_post(base, "/api/stop", json.dumps(payload).encode(), {
-            "Content-Type": "application/json",
-            "Origin": base,
-        })
+        _raw_post(
+            base,
+            "/api/stop",
+            json.dumps(payload).encode(),
+            {
+                "Content-Type": "application/json",
+                "Origin": base,
+            },
+        )
     assert exc_info.value.code == 403
-    assert json.loads(exc_info.value.read()) == {"ok": False, "msg": "invalid CSRF token"}
+    assert json.loads(exc_info.value.read()) == {
+        "ok": False,
+        "msg": "invalid CSRF token",
+    }
     assert state.stop_calls == 0
 
 
@@ -330,10 +383,15 @@ def test_hub_rejects_invalid_host_before_serving_token(secured_stop_hub, host):
 def test_api_stop_accepts_valid_same_origin_json_and_csrf_token(secured_stop_hub):
     base, _httpd, state = secured_stop_hub
     body = json.dumps({"_csrf_token": _csrf_token(base)}).encode()
-    with _raw_post(base, "/api/stop", body, {
-        "Content-Type": "application/json; charset=utf-8",
-        "Origin": base,
-    }) as response:
+    with _raw_post(
+        base,
+        "/api/stop",
+        body,
+        {
+            "Content-Type": "application/json; charset=utf-8",
+            "Origin": base,
+        },
+    ) as response:
         assert response.status == 200
         assert json.loads(response.read())["ok"] is True
     assert state.stop_calls == 1
@@ -354,9 +412,10 @@ def test_hub_endpoints():
 
         code, raw = _get(base, "/api/config")
         cfg = json.loads(raw)
-        assert "mode" in cfg                             # config.yaml loads from repo root
-        hinge = next(p for kind in cfg["kinds"] for p in kind["platforms"]
-                     if p["app"] == "hinge")
+        assert "mode" in cfg  # config.yaml loads from repo root
+        hinge = next(
+            p for kind in cfg["kinds"] for p in kind["platforms"] if p["app"] == "hinge"
+        )
         assert hinge["modes"] == {"training": True, "auto": False}
         assert hinge["mode_reasons"]["training"] is None
         assert "does not bind this calibration" in hinge["mode_reasons"]["auto"]
@@ -384,7 +443,7 @@ def test_hub_endpoints():
             assert e.code == 404
     finally:
         httpd.shutdown()
-        httpd.server_close()   # release the listening socket too; shutdown() alone leaves it open
+        httpd.server_close()  # release the listening socket too; shutdown() alone leaves it open
         _join_hub_watch_threads()
 
 
@@ -394,8 +453,10 @@ def test_training_profile_image_endpoint_serves_one_bound_png():
     class _ImageState:
         def training_profile_review_image(self, **binding):
             assert binding == {
-                "run_id": "run-1", "app": "hinge",
-                "profile_token": "profile-1", "index": 2,
+                "run_id": "run-1",
+                "app": "hinge",
+                "profile_token": "profile-1",
+                "index": 2,
             }
             return image
 
@@ -405,8 +466,9 @@ def test_training_profile_image_endpoint_serves_one_bound_png():
     thread.start()
     try:
         base = f"http://127.0.0.1:{httpd.server_address[1]}"
-        path = ("/api/training/image?run_id=run-1&app=hinge"
-                "&profile_token=profile-1&index=2")
+        path = (
+            "/api/training/image?run_id=run-1&app=hinge&profile_token=profile-1&index=2"
+        )
         with urllib.request.urlopen(base + path, timeout=5) as response:
             assert response.status == 200
             assert response.headers["Content-Type"] == "image/png"
@@ -451,7 +513,10 @@ def test_every_hub_response_has_anti_framing_and_content_hardening_headers():
             except urllib.error.HTTPError as exc:
                 response = exc
             try:
-                assert response.headers["Content-Security-Policy"] == "frame-ancestors 'none'"
+                assert (
+                    response.headers["Content-Security-Policy"]
+                    == "frame-ancestors 'none'"
+                )
                 assert response.headers["X-Frame-Options"] == "DENY"
                 assert response.headers["X-Content-Type-Options"] == "nosniff"
                 assert response.headers["Referrer-Policy"] == "no-referrer"
@@ -468,7 +533,9 @@ def test_api_stop_returns_200_with_ok_true_when_a_run_is_active():
     # -- the handler must apply the same rule to HubState.stop()'s new (ok, msg) contract.
     _Handler.state = HubState("config.yaml")
     _Handler.state._stop = threading.Event()
-    _Handler.state._thread = threading.Thread(target=lambda: time.sleep(0.3), daemon=True)
+    _Handler.state._thread = threading.Thread(
+        target=lambda: time.sleep(0.3), daemon=True
+    )
     _Handler.state._thread.start()
     httpd = _bind("127.0.0.1", 8799)
     t = threading.Thread(target=httpd.serve_forever, daemon=True)
@@ -500,9 +567,12 @@ def test_api_status_snapshot_carries_stop_kind_alongside_stop_reason():
     _Handler.state = HubState("config.yaml")
     status = RunStatus("r1", ["hinge"], min_labels=1, mode="training")
     status.set_app(
-        "hinge", mode="training", state="blocked",
+        "hinge",
+        mode="training",
+        state="blocked",
         stop_reason="Hinge is out of free likes for today — the Hinge+ upgrade screen is up",
-        stop_kind="deck_blocked")
+        stop_kind="deck_blocked",
+    )
     with _Handler.state._lock:
         _Handler.state._status = status
 
@@ -515,7 +585,8 @@ def test_api_status_snapshot_carries_stop_kind_alongside_stop_reason():
         app = json.loads(raw)["status"]["apps"]["hinge"]
         assert app["stop_kind"] == "deck_blocked"
         assert app["stop_reason"] == (
-            "Hinge is out of free likes for today — the Hinge+ upgrade screen is up")
+            "Hinge is out of free likes for today — the Hinge+ upgrade screen is up"
+        )
     finally:
         httpd.shutdown()
         httpd.server_close()
@@ -565,8 +636,11 @@ def test_hub_tab_close_shuts_server_after_last_client(monkeypatch):
     # patching the re-export wouldn't touch what _schedule_shutdown_if_tab_stayed_closed and
     # _start_stale_browser_watch actually read.
     from operation_love.hub import server as hub_server
+
     monkeypatch.setattr(hub_server, "_BROWSER_SHUTDOWN_GRACE_S", 0.01)
-    monkeypatch.setattr(hub_server, "_BROWSER_STALE_CHECK_S", 0.01)   # so the watch thread can't outlive us
+    monkeypatch.setattr(
+        hub_server, "_BROWSER_STALE_CHECK_S", 0.01
+    )  # so the watch thread can't outlive us
     _Handler.state = HubState("config.yaml")
     httpd = _bind("127.0.0.1", 8799)
     t = threading.Thread(target=httpd.serve_forever, daemon=True)
@@ -584,12 +658,13 @@ def test_hub_tab_close_shuts_server_after_last_client(monkeypatch):
         assert t.is_alive() is False
     finally:
         httpd.shutdown()
-        httpd.server_close()   # release the listening socket too; shutdown() alone leaves it open
+        httpd.server_close()  # release the listening socket too; shutdown() alone leaves it open
         _join_hub_watch_threads()
 
 
-def test_hub_tab_close_keeps_waiting_training_approval_alive_until_reopened(monkeypatch,
-                                                                              capsys):
+def test_hub_tab_close_keeps_waiting_training_approval_alive_until_reopened(
+    monkeypatch, capsys
+):
     """A preview-tab unload must not cancel the verified Training composer checkpoint."""
     from operation_love.hub import server as hub_server
     from operation_love.status import RunStatus
@@ -623,7 +698,9 @@ def test_hub_tab_close_keeps_waiting_training_approval_alive_until_reopened(monk
         assert t.is_alive() is True
         assert state.is_running() is True
         assert stop.is_set() is False
-        assert "keeping the run and verified checkpoint alive" in capsys.readouterr().out
+        assert (
+            "keeping the run and verified checkpoint alive" in capsys.readouterr().out
+        )
 
         # A new preview/browser tab gets a normal live Hub. Once the approval boundary is gone,
         # the established last-tab-close policy still stops the live run and closes the server.
@@ -648,16 +725,27 @@ def test_hub_tab_close_keeps_waiting_training_approval_alive_until_reopened(monk
 def _tiny_review_png() -> bytes:
     """A 1x1 PNG that satisfies TrainingActionBridge.publish_checkpoint's strict frame
     validation (training_actions._raster_mime/_valid_png_idat reject a bare magic number)."""
+
     def chunk(kind: bytes, data: bytes) -> bytes:
-        return (struct.pack(">I", len(data)) + kind + data
-                + struct.pack(">I", zlib.crc32(kind + data) & 0xffffffff))
-    return (b"\x89PNG\r\n\x1a\n"
-            + chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 0, 0, 0, 0))
-            + chunk(b"IDAT", zlib.compress(b"\x00\x00")) + chunk(b"IEND", b""))
+        return (
+            struct.pack(">I", len(data))
+            + kind
+            + data
+            + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
+        )
+
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 0, 0, 0, 0))
+        + chunk(b"IDAT", zlib.compress(b"\x00\x00"))
+        + chunk(b"IEND", b"")
+    )
 
 
 @pytest.mark.parametrize("phase", ["ready", "queued", "executing"])
-def test_browser_close_preserves_live_checkpoint_before_worker_reports_waiting_approval(phase):
+def test_browser_close_preserves_live_checkpoint_before_worker_reports_waiting_approval(
+    phase,
+):
     """A bridge checkpoint keeps the hub alive through every decision phase.
 
     publish_checkpoint() runs on the training worker's own thread and precedes its status
@@ -665,6 +753,7 @@ def test_browser_close_preserves_live_checkpoint_before_worker_reports_waiting_a
     comment on browser_close_shutdown_disposition.  The bridge, rather than that later status
     snapshot, must also protect a choice that is queued or being applied/recorded.
     """
+
     class _Worker:
         run_id = "training-run"
         app = "hinge"
@@ -682,22 +771,32 @@ def test_browser_close_preserves_live_checkpoint_before_worker_reports_waiting_a
 
     st = HubState("config.yaml")
     st._stop = threading.Event()
-    st._thread = threading.Thread(target=st._stop.wait, name="fake-training-run", daemon=True)
+    st._thread = threading.Thread(
+        target=st._stop.wait, name="fake-training-run", daemon=True
+    )
     st._thread.start()
     try:
         worker = _Worker()
         st._training_actions.register(worker)
-        card = st._training_actions.publish_checkpoint(worker, _tiny_review_png(), _Pick())
+        card = st._training_actions.publish_checkpoint(
+            worker, _tiny_review_png(), _Pick()
+        )
         if phase != "ready":
-            ok, result, code = st._training_actions.submit({
-                "command": "like", "run_id": card["run_id"], "app": card["app"],
-                "profile_token": card["profile_token"],
-                "approval_token": card["approval_token"], "idempotency_token": "test-action",
-            })
+            ok, result, code = st._training_actions.submit(
+                {
+                    "command": "like",
+                    "run_id": card["run_id"],
+                    "app": card["app"],
+                    "profile_token": card["profile_token"],
+                    "approval_token": card["approval_token"],
+                    "idempotency_token": "test-action",
+                }
+            )
             assert (ok, result["status"], code) == (True, "queued", 202)
         if phase == "executing":
             action = st._training_actions.wait_for_action(
-                worker, card["profile_token"], worker.stop_event)
+                worker, card["profile_token"], worker.stop_event
+            )
             assert action is not None and action["status"] == "executing"
 
         # The worker has not yet reported waiting_approval, so the status-snapshot branch cannot
@@ -713,6 +812,7 @@ def test_browser_close_preserves_live_checkpoint_before_worker_reports_waiting_a
 
 def test_hub_tab_stale_heartbeat_shutdown_when_close_beacon_is_missing(monkeypatch):
     from operation_love.hub import server as hub_server, state as hub_state
+
     monkeypatch.setattr(hub_state, "_BROWSER_CLIENT_STALE_S", 0.05)
     monkeypatch.setattr(hub_server, "_BROWSER_STALE_CHECK_S", 0.01)
     monkeypatch.setattr(hub_server, "_BROWSER_SHUTDOWN_GRACE_S", 0.01)
@@ -731,7 +831,7 @@ def test_hub_tab_stale_heartbeat_shutdown_when_close_beacon_is_missing(monkeypat
         assert t.is_alive() is False
     finally:
         httpd.shutdown()
-        httpd.server_close()   # release the listening socket too; shutdown() alone leaves it open
+        httpd.server_close()  # release the listening socket too; shutdown() alone leaves it open
         _join_hub_watch_threads()
 
 
@@ -749,6 +849,7 @@ def test_hubstate_double_start_blocked():
 # terminal/hub live-log panel, since bugreport.install_log_capture tees stdout) that a swipe
 # made after this point won't be recorded. -------------------------------------------------
 
+
 def test_hubstate_stop_without_active_run_returns_false_with_reason():
     # Pre-fix this always returned (True, "stopping") even with nothing to stop -- a stray
     # /api/stop (double-click, stale tab) looked like it had worked.
@@ -763,7 +864,7 @@ def _live_hubstate():
     the mere existence of an Event (self._stop is set by start() and never reset, so a gate on
     the object alone would keep reporting success long after a run ended)."""
     st = HubState("config.yaml")
-    st._stop = threading.Event()          # stand-in for what start() would have set up
+    st._stop = threading.Event()  # stand-in for what start() would have set up
     done = threading.Event()
     st._thread = threading.Thread(target=done.wait, daemon=True)
     st._thread.start()
@@ -779,7 +880,7 @@ def test_hubstate_stop_after_a_run_already_finished_reports_no_active_run():
 
     ok, msg = st.stop()
     assert ok is False and msg == "no run is active"
-    assert st._stop.is_set() is False     # and it did not quietly set a dead run's event
+    assert st._stop.is_set() is False  # and it did not quietly set a dead run's event
 
 
 def test_hubstate_stop_sets_the_event_and_prints_an_operator_line(capsys):
@@ -816,7 +917,9 @@ def test_hubstate_refuses_to_start_while_training_data_is_being_mutated(monkeypa
     st = HubState("config.yaml")
     result = []
     mutation = threading.Thread(
-        target=lambda: result.append(st._training_store_mutation("remove_latest_training_label")),
+        target=lambda: result.append(
+            st._training_store_mutation("remove_latest_training_label")
+        ),
         daemon=True,
     )
     mutation.start()
@@ -857,7 +960,9 @@ def test_snapshot_reports_stopping_for_a_stop_pressed_during_startup():
 
     st, done = _live_hubstate()
     status = RunStatus("r1", ["hinge"], min_labels=1, mode="training")
-    status.set_global(phase="loading ML models")     # still starting up; stopping stays False
+    status.set_global(
+        phase="loading ML models"
+    )  # still starting up; stopping stays False
     with st._lock:
         st._status = status
     assert st.snapshot()["status"]["stopping"] is False
@@ -878,7 +983,9 @@ def test_wait_for_run_returns_true_when_thread_finishes_in_time():
 def test_wait_for_run_returns_false_and_does_not_block_past_timeout():
     st = HubState("config.yaml")
     stuck = threading.Event()
-    st._thread = threading.Thread(target=stuck.wait, daemon=True)   # never finishes on its own
+    st._thread = threading.Thread(
+        target=stuck.wait, daemon=True
+    )  # never finishes on its own
     st._thread.start()
     start = time.monotonic()
     assert st.wait_for_run(timeout=0.1) is False
@@ -888,7 +995,9 @@ def test_wait_for_run_returns_false_and_does_not_block_past_timeout():
     # if wait_for_run() ignored its own `timeout=0.1` and blocked for real, this would just
     # hang forever. So this is pure hang detection and safe to widen like any other liveness
     # bound.
-    assert time.monotonic() - start < _LIVENESS_TIMEOUT_S   # returned promptly, did not hang
+    assert (
+        time.monotonic() - start < _LIVENESS_TIMEOUT_S
+    )  # returned promptly, did not hang
     assert st._thread.is_alive() is True
     stuck.set()
     st._thread.join(timeout=_LIVENESS_TIMEOUT_S)
@@ -926,7 +1035,9 @@ def test_serve_shutdown_warns_and_exits_when_run_does_not_finish_in_time(monkeyp
     monkeypatch.setattr(hub_server, "_bind", lambda host, port: httpd)
 
     printed = []
-    monkeypatch.setattr("builtins.print", lambda *a, **k: printed.append(" ".join(map(str, a))))
+    monkeypatch.setattr(
+        "builtins.print", lambda *a, **k: printed.append(" ".join(map(str, a)))
+    )
     try:
         hub_server.serve("config.yaml", open_browser=False)
     finally:
@@ -949,8 +1060,10 @@ def _shutdown_cfg(scroll_captures: int):
     return SimpleNamespace(
         enabled_apps=["hinge"],
         apps={"hinge": {"scroll_captures": scroll_captures}},
-        opener=SimpleNamespace(enabled=True,
-                               request_timeout_s=config_module._MAX_REQUEST_TIMEOUT_S))
+        opener=SimpleNamespace(
+            enabled=True, request_timeout_s=config_module._MAX_REQUEST_TIMEOUT_S
+        ),
+    )
 
 
 def test_hub_archive_ceiling_covers_the_supervisors_join_for_every_legal_capture_budget():
@@ -981,15 +1094,25 @@ def test_hub_archive_ceiling_covers_the_supervisors_join_for_every_legal_capture
     # abandon a healthy join.
     assert hub_server._SHUTDOWN_SAVE_TIMEOUT_S >= (
         config_module._MAX_REQUEST_TIMEOUT_S
-        + supervisor_module._WORKER_JOIN_TIMEOUT_MARGIN_S)
+        + supervisor_module._WORKER_JOIN_TIMEOUT_MARGIN_S
+    )
 
-    budgets = (1, MAX_PROFILE_REVIEW_FRAMES, 24, config_module._MAX_ANDROID_SCROLL_CAPTURES)
-    assert config_module._MAX_ANDROID_SCROLL_CAPTURES > MAX_PROFILE_REVIEW_FRAMES  # the gap
+    budgets = (
+        1,
+        MAX_PROFILE_REVIEW_FRAMES,
+        24,
+        config_module._MAX_ANDROID_SCROLL_CAPTURES,
+    )
+    assert (
+        config_module._MAX_ANDROID_SCROLL_CAPTURES > MAX_PROFILE_REVIEW_FRAMES
+    )  # the gap
     for captures in budgets:
         cfg = _shutdown_cfg(captures)
-        supervisor_join = (supervisor_module._worker_join_timeout_s(cfg)
-                           + supervisor_module._archive_join_grace_s(cfg)
-                           + supervisor_module._WORKER_JOIN_TIMEOUT_MARGIN_S)
+        supervisor_join = (
+            supervisor_module._worker_join_timeout_s(cfg)
+            + supervisor_module._archive_join_grace_s(cfg)
+            + supervisor_module._WORKER_JOIN_TIMEOUT_MARGIN_S
+        )
         assert hub_server._run_archive_ceiling_s(cfg) >= supervisor_join, captures
     # The archive term is load-bearing: a ceiling that silently dropped back to the opener-only
     # derivation would be far below the 100-capture run's own grace.
@@ -997,15 +1120,19 @@ def test_hub_archive_ceiling_covers_the_supervisors_join_for_every_legal_capture
     assert hub_server._run_archive_ceiling_s(biggest) > (
         config_module._MAX_REQUEST_TIMEOUT_S
         + 2 * supervisor_module._WORKER_JOIN_TIMEOUT_MARGIN_S
-        + hub_server._SHUTDOWN_SAVE_HEADROOM_S)
+        + hub_server._SHUTDOWN_SAVE_HEADROOM_S
+    )
     # ...and the ceiling is genuinely per-run, not a constant wearing a function's clothes.
-    assert (hub_server._run_archive_ceiling_s(biggest)
-            > hub_server._run_archive_ceiling_s(_shutdown_cfg(1)))
+    assert hub_server._run_archive_ceiling_s(
+        biggest
+    ) > hub_server._run_archive_ceiling_s(_shutdown_cfg(1))
     # No cfg in reach (nothing bound yet) still yields a usable flat bound, never a crash.
     assert hub_server._run_archive_ceiling_s(None) == (
-        hub_server._SHUTDOWN_ARCHIVE_CEILING_FALLBACK_S)
+        hub_server._SHUTDOWN_ARCHIVE_CEILING_FALLBACK_S
+    )
     assert hub_server._run_archive_ceiling_s(object()) == (
-        hub_server._SHUTDOWN_ARCHIVE_CEILING_FALLBACK_S)
+        hub_server._SHUTDOWN_ARCHIVE_CEILING_FALLBACK_S
+    )
 
 
 def test_hub_shutdown_stops_at_the_flat_budget_when_nothing_is_archiving(monkeypatch):
@@ -1027,10 +1154,12 @@ def test_hub_shutdown_stops_at_the_flat_budget_when_nothing_is_archiving(monkeyp
     st = HubState("config.yaml")
     st._thread = threading.Thread(target=stuck.wait, daemon=True)
     st._thread.start()
-    assert st.live_store() is None          # nothing archiving: the probe's False answer
+    assert st.live_store() is None  # nothing archiving: the probe's False answer
 
     printed = []
-    monkeypatch.setattr("builtins.print", lambda *a, **k: printed.append(" ".join(map(str, a))))
+    monkeypatch.setattr(
+        "builtins.print", lambda *a, **k: printed.append(" ".join(map(str, a)))
+    )
     try:
         t0 = time.monotonic()
         assert hub_server._wait_for_run_shutdown(st) is False
@@ -1061,7 +1190,9 @@ class _ArchiveProbe:
         return self.probes <= self._in_flight_for
 
 
-def test_hub_shutdown_extends_past_the_flat_budget_while_an_archive_is_writing(monkeypatch):
+def test_hub_shutdown_extends_past_the_flat_budget_while_an_archive_is_writing(
+    monkeypatch,
+):
     """Finding A: an already-landed decision's archive outlives the flat prompt-exit budget.
 
     Without the extension the Hub returns False here and serve()'s finally exits the process
@@ -1072,17 +1203,21 @@ def test_hub_shutdown_extends_past_the_flat_budget_while_an_archive_is_writing(m
 
     monkeypatch.setattr(hub_server, "_SHUTDOWN_SAVE_TIMEOUT_S", 0.05)
     monkeypatch.setattr(hub_server, "_SHUTDOWN_ARCHIVE_POLL_S", 0.02)
-    monkeypatch.setattr(hub_server, "_run_archive_ceiling_s", lambda cfg: _LIVENESS_TIMEOUT_S)
+    monkeypatch.setattr(
+        hub_server, "_run_archive_ceiling_s", lambda cfg: _LIVENESS_TIMEOUT_S
+    )
 
     saving = threading.Event()
     st = HubState("config.yaml")
     # Still saving when the flat budget expires, then finishes -- the healthy shutdown the flat
     # bound alone would have truncated.
-    st._thread = threading.Thread(target=lambda: saving.wait(_LIVENESS_TIMEOUT_S), daemon=True)
+    st._thread = threading.Thread(
+        target=lambda: saving.wait(_LIVENESS_TIMEOUT_S), daemon=True
+    )
     st._thread.start()
-    st._live_store = _ArchiveProbe(in_flight_for=10**6)   # never drains on its own
+    st._live_store = _ArchiveProbe(in_flight_for=10**6)  # never drains on its own
     releaser = threading.Timer(0.3, saving.set)
-    releaser.daemon = True          # a test helper must never outlive the test run
+    releaser.daemon = True  # a test helper must never outlive the test run
     releaser.start()
 
     try:
@@ -1094,7 +1229,9 @@ def test_hub_shutdown_extends_past_the_flat_budget_while_an_archive_is_writing(m
     assert st._live_store.probes >= 2
 
 
-def test_hub_shutdown_ends_the_archive_extension_as_soon_as_the_write_drains(monkeypatch):
+def test_hub_shutdown_ends_the_archive_extension_as_soon_as_the_write_drains(
+    monkeypatch,
+):
     """The extension is the archive's budget, and no other wedge may inherit it.
 
     Re-probing every slice (not sampling once before the loop) is what keeps a worker that is
@@ -1105,11 +1242,13 @@ def test_hub_shutdown_ends_the_archive_extension_as_soon_as_the_write_drains(mon
 
     monkeypatch.setattr(hub_server, "_SHUTDOWN_SAVE_TIMEOUT_S", 0.05)
     monkeypatch.setattr(hub_server, "_SHUTDOWN_ARCHIVE_POLL_S", 0.02)
-    monkeypatch.setattr(hub_server, "_run_archive_ceiling_s", lambda cfg: _LIVENESS_TIMEOUT_S)
+    monkeypatch.setattr(
+        hub_server, "_run_archive_ceiling_s", lambda cfg: _LIVENESS_TIMEOUT_S
+    )
 
     stuck = threading.Event()
     st = HubState("config.yaml")
-    st._thread = threading.Thread(target=stuck.wait, daemon=True)   # never finishes
+    st._thread = threading.Thread(target=stuck.wait, daemon=True)  # never finishes
     st._thread.start()
     st._live_store = _ArchiveProbe(in_flight_for=2)
 
@@ -1120,7 +1259,7 @@ def test_hub_shutdown_ends_the_archive_extension_as_soon_as_the_write_drains(mon
     finally:
         stuck.set()
         st._thread.join(timeout=_LIVENESS_TIMEOUT_S)
-    assert st._live_store.probes >= 2          # it did extend past the flat budget…
+    assert st._live_store.probes >= 2  # it did extend past the flat budget…
     # …and then stopped at the drain. Not a liveness bound: this IS the assertion, and it must
     # stay far below the _LIVENESS_TIMEOUT_S ceiling above, which is what burning the whole
     # extension on a drained archive would cost.
@@ -1177,7 +1316,9 @@ def test_serve_browser_timer_is_daemon_and_socket_is_closed(monkeypatch):
             self.started = True
 
     httpd = _FakeHttpd()
-    monkeypatch.setattr(hub_server, "HubState", lambda config_path: HubState(config_path))
+    monkeypatch.setattr(
+        hub_server, "HubState", lambda config_path: HubState(config_path)
+    )
     monkeypatch.setattr(hub_server, "_bind", lambda host, port: httpd)
     monkeypatch.setattr(hub_server.threading, "Timer", _FakeTimer)
 
@@ -1188,7 +1329,9 @@ def test_serve_browser_timer_is_daemon_and_socket_is_closed(monkeypatch):
     assert httpd.closed is True
 
 
-def test_serve_closes_socket_when_optional_browser_timer_cannot_start(monkeypatch, capsys):
+def test_serve_closes_socket_when_optional_browser_timer_cannot_start(
+    monkeypatch, capsys
+):
     import operation_love.hub.server as hub_server
 
     class _FakeHttpd:
@@ -1215,7 +1358,9 @@ def test_serve_closes_socket_when_optional_browser_timer_cannot_start(monkeypatc
             raise RuntimeError("thread resources exhausted")
 
     httpd = _FakeHttpd()
-    monkeypatch.setattr(hub_server, "HubState", lambda config_path: HubState(config_path))
+    monkeypatch.setattr(
+        hub_server, "HubState", lambda config_path: HubState(config_path)
+    )
     monkeypatch.setattr(hub_server, "_bind", lambda host, port: httpd)
     monkeypatch.setattr(hub_server.threading, "Timer", _StartFails)
 
@@ -1227,6 +1372,7 @@ def test_serve_closes_socket_when_optional_browser_timer_cannot_start(monkeypatc
 
 def test_hubstate_browser_client_lifecycle(monkeypatch):
     import operation_love.hub as hub
+
     now = 1000.0
     monkeypatch.setattr(hub.time, "monotonic", lambda: now)
 
@@ -1259,7 +1405,9 @@ def test_hubstate_browser_client_lifecycle(monkeypatch):
 
 
 @pytest.mark.parametrize("client_id", [None, "", "   ", [], {}, 1, "x" * 129])
-def test_hubstate_rejects_invalid_browser_client_ids_without_touching_liveness_state(client_id):
+def test_hubstate_rejects_invalid_browser_client_ids_without_touching_liveness_state(
+    client_id,
+):
     st = HubState("config.yaml")
 
     assert st.browser_client_opened(client_id) is False
@@ -1291,6 +1439,7 @@ def test_json_parser_rejects_duplicate_control_fields():
 def test_hubstate_browser_heartbeat_prevents_stale_expiry(monkeypatch):
     import operation_love.hub as hub
     from operation_love.hub import state as hub_state
+
     now = 1000.0
     monkeypatch.setattr(hub.time, "monotonic", lambda: now)
     monkeypatch.setattr(hub_state, "_BROWSER_CLIENT_STALE_S", 10.0)
@@ -1326,14 +1475,16 @@ def test_hubstate_browser_liveness_ignores_wall_clock_jumps(monkeypatch):
 
 def test_resolve_run_cap_override_semantics():
     from operation_love.supervisor import _resolve_run_cap
-    assert _resolve_run_cap(30, None) == 30      # no override -> config value
-    assert _resolve_run_cap(30, 0) is None       # 0 -> unlimited (no per-run cap)
-    assert _resolve_run_cap(30, 8) == 8          # N -> cap this run at N
-    assert _resolve_run_cap(None, 8) == 8        # config had no cap, override still applies
+
+    assert _resolve_run_cap(30, None) == 30  # no override -> config value
+    assert _resolve_run_cap(30, 0) is None  # 0 -> unlimited (no per-run cap)
+    assert _resolve_run_cap(30, 8) == 8  # N -> cap this run at N
+    assert _resolve_run_cap(None, 8) == 8  # config had no cap, override still applies
 
 
 def test_hubstate_forwards_max_per_run(monkeypatch):
     import operation_love.hub as hub
+
     seen = {}
     done = threading.Event()
 
@@ -1343,7 +1494,9 @@ def test_hubstate_forwards_max_per_run(monkeypatch):
 
     # This test isolates argument forwarding from the shipped config's deliberate Hinge
     # Auto release gate, which has its own start-rejection coverage below.
-    monkeypatch.setattr(hub.supervisor, "load_effective_config", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        hub.supervisor, "load_effective_config", lambda *args, **kwargs: None
+    )
     monkeypatch.setattr(hub.supervisor, "run", fake_run)
     st = HubState("config.yaml")
     # hinge, not bumble: bumble is an Android target that starts out uncalibrated
@@ -1355,21 +1508,30 @@ def test_hubstate_forwards_max_per_run(monkeypatch):
     assert seen["mode"] == "auto" and seen["max_per_run"] == 8
 
 
-@pytest.mark.parametrize(("requested", "effective"), [
-    ("training", "auto"),
-    ("auto", "training"),
-])
+@pytest.mark.parametrize(
+    ("requested", "effective"),
+    [
+        ("training", "auto"),
+        ("auto", "training"),
+    ],
+)
 def test_hub_explicit_mode_never_silently_yields_to_per_app_autonomy(
-        monkeypatch, requested, effective):
+    monkeypatch, requested, effective
+):
     """Per-app config precedence is valid for CLI, not an explicit Hub control click."""
     import operation_love.hub as hub
     from types import SimpleNamespace
 
     cfg = SimpleNamespace(
-        mode=requested, enabled_apps=["hinge"], apps={"hinge": {"mode": effective}})
+        mode=requested, enabled_apps=["hinge"], apps={"hinge": {"mode": effective}}
+    )
     launched = []
-    monkeypatch.setattr(hub.supervisor, "load_effective_config", lambda *args, **kwargs: cfg)
-    monkeypatch.setattr(hub.supervisor, "run", lambda *args, **kwargs: launched.append(True))
+    monkeypatch.setattr(
+        hub.supervisor, "load_effective_config", lambda *args, **kwargs: cfg
+    )
+    monkeypatch.setattr(
+        hub.supervisor, "run", lambda *args, **kwargs: launched.append(True)
+    )
     st = HubState("config.yaml")
 
     ok, message = st.start(mode=requested, apps=["hinge"])
@@ -1381,7 +1543,9 @@ def test_hub_explicit_mode_never_silently_yields_to_per_app_autonomy(
 
 
 @pytest.mark.parametrize("mode", ["training", "auto"])
-def test_hubstate_timed_stop_stops_each_run_mode_and_reports_countdown(monkeypatch, mode):
+def test_hubstate_timed_stop_stops_each_run_mode_and_reports_countdown(
+    monkeypatch, mode
+):
     """The hub's timer is mode-agnostic: it stops supervisor's shared Event, not a worker.
 
     This uses a real one-second local timer rather than calling stop() directly so the test
@@ -1398,7 +1562,9 @@ def test_hubstate_timed_stop_stops_each_run_mode_and_reports_countdown(monkeypat
         finished.set()
 
     # Exercise Timer/Event behavior in both modes without coupling it to release evidence.
-    monkeypatch.setattr(hub.supervisor, "load_effective_config", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        hub.supervisor, "load_effective_config", lambda *args, **kwargs: None
+    )
     monkeypatch.setattr(hub.supervisor, "run", fake_run)
     st = HubState("config.yaml")
     ok, _ = st.start(mode=mode, apps=["hinge"], stop_after_seconds=1)
@@ -1468,7 +1634,9 @@ def test_hub_timed_stop_validation_rejects_non_integer_or_negative_values(value)
 
 
 @pytest.mark.parametrize("value, expected", [(None, None), (0, None), (1, 1), (90, 90)])
-def test_hub_timed_stop_validation_accepts_unlimited_or_positive_seconds(value, expected):
+def test_hub_timed_stop_validation_accepts_unlimited_or_positive_seconds(
+    value, expected
+):
     from operation_love.hub.state import validate_stop_after_seconds
 
     assert validate_stop_after_seconds(value) == (True, expected, None)
@@ -1504,10 +1672,17 @@ def test_api_start_rejects_invalid_timed_stop_before_launching_run(monkeypatch):
         base = f"http://127.0.0.1:{httpd.server_address[1]}"
         req = urllib.request.Request(
             f"{base}/api/start",
-            data=json.dumps({"mode": "training", "apps": ["hinge"],
-                             "stop_after_seconds": "not-a-number",
-                             "_csrf_token": _csrf_token(base)}).encode(),
-            method="POST", headers={"Content-Type": "application/json"})
+            data=json.dumps(
+                {
+                    "mode": "training",
+                    "apps": ["hinge"],
+                    "stop_after_seconds": "not-a-number",
+                    "_csrf_token": _csrf_token(base),
+                }
+            ).encode(),
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
         with pytest.raises(urllib.error.HTTPError) as exc_info:
             urllib.request.urlopen(req, timeout=5)
         assert exc_info.value.code == 400
@@ -1532,11 +1707,17 @@ def test_api_start_rejects_unknown_control_field_before_launching_run(monkeypatc
         base = f"http://127.0.0.1:{httpd.server_address[1]}"
         request = urllib.request.Request(
             f"{base}/api/start",
-            data=json.dumps({
-                "mode": "training", "apps": ["hinge"], "max_per_ru": 8,
-                "_csrf_token": _csrf_token(base),
-            }).encode(),
-            method="POST", headers={"Content-Type": "application/json"})
+            data=json.dumps(
+                {
+                    "mode": "training",
+                    "apps": ["hinge"],
+                    "max_per_ru": 8,
+                    "_csrf_token": _csrf_token(base),
+                }
+            ).encode(),
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
         with pytest.raises(urllib.error.HTTPError) as exc_info:
             urllib.request.urlopen(request, timeout=5)
         assert exc_info.value.code == 400
@@ -1550,17 +1731,21 @@ def test_api_start_rejects_unknown_control_field_before_launching_run(monkeypatc
         _join_hub_watch_threads()
 
 
-@pytest.mark.parametrize("field,value", [
-    ("max_per_run", True),
-    ("max_per_run", "8"),
-    ("max_per_run", -1),
-    ("max_per_run", {}),
-    ("apps", "hinge"),
-    ("apps", ["hinge", "hinge"]),
-    ("apps", [1]),
-])
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("max_per_run", True),
+        ("max_per_run", "8"),
+        ("max_per_run", -1),
+        ("max_per_run", {}),
+        ("apps", "hinge"),
+        ("apps", ["hinge", "hinge"]),
+        ("apps", [1]),
+    ],
+)
 def test_api_start_rejects_malformed_controls_before_launching_run(
-        monkeypatch, field, value):
+    monkeypatch, field, value
+):
     import operation_love.hub as hub
 
     launched = []
@@ -1571,12 +1756,19 @@ def test_api_start_rejects_malformed_controls_before_launching_run(
     thread.start()
     try:
         base = f"http://127.0.0.1:{httpd.server_address[1]}"
-        payload = {"mode": "training", "apps": ["hinge"], "max_per_run": None,
-                   "_csrf_token": _csrf_token(base)}
+        payload = {
+            "mode": "training",
+            "apps": ["hinge"],
+            "max_per_run": None,
+            "_csrf_token": _csrf_token(base),
+        }
         payload[field] = value
         request = urllib.request.Request(
-            f"{base}/api/start", data=json.dumps(payload).encode(), method="POST",
-            headers={"Content-Type": "application/json"})
+            f"{base}/api/start",
+            data=json.dumps(payload).encode(),
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
         with pytest.raises(urllib.error.HTTPError) as exc_info:
             urllib.request.urlopen(request, timeout=5)
         assert exc_info.value.code == 400
@@ -1602,8 +1794,11 @@ def test_api_start_rejects_non_object_json_before_launching_run(monkeypatch, pay
     thread.start()
     try:
         req = urllib.request.Request(
-            f"http://127.0.0.1:{httpd.server_address[1]}/api/start", data=payload,
-            method="POST", headers={"Content-Type": "application/json"})
+            f"http://127.0.0.1:{httpd.server_address[1]}/api/start",
+            data=payload,
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
         with pytest.raises(urllib.error.HTTPError) as exc_info:
             urllib.request.urlopen(req, timeout=5)
         assert exc_info.value.code == 400
@@ -1614,10 +1809,16 @@ def test_api_start_rejects_non_object_json_before_launching_run(monkeypatch, pay
         _join_hub_watch_threads()
 
 
-@pytest.mark.parametrize("path", [
-    "/api/training/action", "/api/hub/open", "/api/hub/ping",
-    "/api/hub/closed", "/api/training/alert",
-])
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/api/training/action",
+        "/api/hub/open",
+        "/api/hub/ping",
+        "/api/hub/closed",
+        "/api/training/alert",
+    ],
+)
 @pytest.mark.parametrize("payload", [b"not-json", b"[]", b"null"])
 def test_api_post_endpoints_reject_non_object_json_without_crashing(path, payload):
     """POST handlers all read JSON fields, so their shared HTTP boundary must reject
@@ -1628,8 +1829,11 @@ def test_api_post_endpoints_reject_non_object_json_without_crashing(path, payloa
     thread.start()
     try:
         req = urllib.request.Request(
-            f"http://127.0.0.1:{httpd.server_address[1]}{path}", data=payload,
-            method="POST", headers={"Content-Type": "application/json"})
+            f"http://127.0.0.1:{httpd.server_address[1]}{path}",
+            data=payload,
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
         with pytest.raises(urllib.error.HTTPError) as exc_info:
             urllib.request.urlopen(req, timeout=5)
         assert exc_info.value.code == 400
@@ -1658,16 +1862,24 @@ def test_training_alert_endpoint_records_only_bounded_browser_telemetry():
     thread.start()
     try:
         base = f"http://127.0.0.1:{httpd.server_address[1]}"
-        body = json.dumps({
-            "run_id": "run-1", "app": "hinge", "profile_token": "profile-1",
-            "notification": "requested",
-        }).encode()
+        body = json.dumps(
+            {
+                "run_id": "run-1",
+                "app": "hinge",
+                "profile_token": "profile-1",
+                "notification": "requested",
+            }
+        ).encode()
         code, result = _post(base, "/api/training/alert", body)
         assert code == 200 and result == {"ok": True, "msg": "recorded"}
-        assert state.rows == [{
-            "run_id": "run-1", "app": "hinge", "profile_token": "profile-1",
-            "notification": "requested",
-        }]
+        assert state.rows == [
+            {
+                "run_id": "run-1",
+                "app": "hinge",
+                "profile_token": "profile-1",
+                "notification": "requested",
+            }
+        ]
     finally:
         httpd.shutdown()
         httpd.server_close()
@@ -1707,28 +1919,37 @@ def test_hub_state_binds_browser_alert_telemetry_to_the_live_checkpoint():
     st = HubState("config.yaml")
     st._training_actions.register(worker)
     card = st._training_actions.publish_checkpoint(worker, _tiny_review_png(), pick)
-    live = {"run_id": card["run_id"], "app": card["app"],
-            "profile_token": card["profile_token"]}
+    live = {
+        "run_id": card["run_id"],
+        "app": card["app"],
+        "profile_token": card["profile_token"],
+    }
 
     before = len(notifications.recent_training_alerts())
     assert st.record_training_browser_notification(
-        {**live, "notification": "requested"}) == (True, "recorded")
+        {**live, "notification": "requested"}
+    ) == (True, "recorded")
     rows = notifications.recent_training_alerts()
     assert len(rows) == before + 1
     assert rows[-1]["channel"] == "hub-browser"
     assert rows[-1]["notification"] == "requested"
 
-    for wrong in ({"profile_token": "a-retired-profile"}, {"run_id": "some-other-run"},
-                  {"app": "bumble"}, {"profile_token": None}, {"run_id": {"nested": "object"}},
-                  {"app": None}):
+    for wrong in (
+        {"profile_token": "a-retired-profile"},
+        {"run_id": "some-other-run"},
+        {"app": "bumble"},
+        {"profile_token": None},
+        {"run_id": {"nested": "object"}},
+        {"app": None},
+    ):
         assert st.record_training_browser_notification(
-            {**live, **wrong, "notification": "requested"}) == (
-                False, "no matching live training checkpoint")
+            {**live, **wrong, "notification": "requested"}
+        ) == (False, "no matching live training checkpoint")
 
     for outcome in ("sent", "", None, {"notification": "requested"}, "REQUESTED"):
         assert st.record_training_browser_notification(
-            {**live, "notification": outcome}) == (
-                False, "invalid browser notification outcome")
+            {**live, "notification": outcome}
+        ) == (False, "invalid browser notification outcome")
 
     # A refused row must not reach the diagnostic ring at all.
     assert len(notifications.recent_training_alerts()) == before + 1
@@ -1747,8 +1968,12 @@ def test_training_alert_endpoint_refuses_a_retired_checkpoint_with_409():
     thread.start()
     try:
         base = f"http://127.0.0.1:{httpd.server_address[1]}"
-        live = {"run_id": card["run_id"], "app": card["app"],
-                "profile_token": card["profile_token"], "notification": "requested"}
+        live = {
+            "run_id": card["run_id"],
+            "app": card["app"],
+            "profile_token": card["profile_token"],
+            "notification": "requested",
+        }
         code, result = _post(base, "/api/training/alert", json.dumps(live).encode())
         assert (code, result) == (200, {"ok": True, "msg": "recorded"})
 
@@ -1757,7 +1982,9 @@ def test_training_alert_endpoint_refuses_a_retired_checkpoint_with_409():
             _post(base, "/api/training/alert", json.dumps(stale).encode())
         assert exc_info.value.code == 409
         assert json.loads(exc_info.value.read()) == {
-            "ok": False, "msg": "no matching live training checkpoint"}
+            "ok": False,
+            "msg": "no matching live training checkpoint",
+        }
     finally:
         httpd.shutdown()
         httpd.server_close()
@@ -1803,8 +2030,7 @@ def test_hub_page_adds_csrf_token_to_fetch_and_close_beacon_json():
         "body:JSON.parse(blob.body), type:blob.type}); return true; }};\n"
         "async function fetch(path, options){ calls.push({kind:'fetch', path, "
         "body:JSON.parse(options.body), type:options.headers['Content-Type']}); "
-        "return {json:async()=>({ok:true})}; }\n"
-        + post_fn + "\n" + lifecycle_fn + "\n"
+        "return {json:async()=>({ok:true})}; }\n" + post_fn + "\n" + lifecycle_fn + "\n"
         "postJSON('/api/stop', {}).then(() => {\n"
         "  hubLifecycle('/api/hub/closed');\n"
         "  console.log(JSON.stringify(calls));\n"
@@ -1827,7 +2053,9 @@ def test_hub_page_adds_csrf_token_to_fetch_and_close_beacon_json():
 
 
 def test_committed_mac_launcher_matches_template():
-    expected = _MAC_UPDATE_RUN.replace("__EXTRAS__", "ml,bq,hinge").replace("__CONFIG_ARG__", "")
+    expected = _MAC_UPDATE_RUN.replace("__EXTRAS__", "ml,bq,hinge").replace(
+        "__CONFIG_ARG__", ""
+    )
     assert Path("Operation Love.command").read_text() == expected
 
 
@@ -1861,18 +2089,23 @@ def _launcher_project(tmp_path: Path) -> Path:
     (tmp_path / "config.yaml").write_text("mode: training\n")
     (tmp_path / "pyproject.toml").write_text(
         '[project]\nname = "launcher-test"\nversion = "1"\n'
-        '[project.optional-dependencies]\nhinge = []\n')
+        "[project.optional-dependencies]\nhinge = []\n"
+    )
     return tmp_path / "config.yaml"
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX launcher modes")
-@pytest.mark.parametrize(("platform", "name", "mode"), [
-    ("darwin", "Operation Love.command", 0o755),
-    ("linux", "operation-love.sh", 0o755),
-    ("win32", "Operation Love.bat", 0o644),
-])
+@pytest.mark.parametrize(
+    ("platform", "name", "mode"),
+    [
+        ("darwin", "Operation Love.command", 0o755),
+        ("linux", "operation-love.sh", 0o755),
+        ("win32", "Operation Love.bat", 0o644),
+    ],
+)
 def test_launcher_is_atomically_written_with_exact_mode(
-        tmp_path, monkeypatch, platform, name, mode):
+    tmp_path, monkeypatch, platform, name, mode
+):
     from operation_love.hub.launchers import make_launchers
 
     config = _launcher_project(tmp_path)
@@ -1889,13 +2122,17 @@ def test_launcher_is_atomically_written_with_exact_mode(
     assert not list(tmp_path.glob(f".{name}.*"))
 
 
-@pytest.mark.parametrize(("platform", "name", "expected"), [
-    ("darwin", "Operation Love.command", '"$PY" -m operation_love hub\n'),
-    ("linux", "operation-love.sh", 'exec "$PY" -m operation_love hub\n'),
-    ("win32", "Operation Love.bat", '"%PY%" -m operation_love hub\n'),
-])
+@pytest.mark.parametrize(
+    ("platform", "name", "expected"),
+    [
+        ("darwin", "Operation Love.command", '"$PY" -m operation_love hub\n'),
+        ("linux", "operation-love.sh", 'exec "$PY" -m operation_love hub\n'),
+        ("win32", "Operation Love.bat", '"%PY%" -m operation_love hub\n'),
+    ],
+)
 def test_launcher_default_config_preserves_existing_hub_command(
-        tmp_path, monkeypatch, platform, name, expected):
+    tmp_path, monkeypatch, platform, name, expected
+):
     from operation_love.hub.launchers import make_launchers
 
     monkeypatch.setattr(sys, "platform", platform)
@@ -1906,19 +2143,45 @@ def test_launcher_default_config_preserves_existing_hub_command(
     assert "--config" not in launcher
 
 
-@pytest.mark.parametrize(("platform", "name", "config_name", "expected"), [
-    ("darwin", "Operation Love.command", "--evening.yaml", "hub --config=--evening.yaml"),
-    ("linux", "operation-love.sh", "--evening.yaml", "hub --config=--evening.yaml"),
-    ("win32", "Operation Love.bat", "--evening.yaml", 'hub --config="--evening.yaml"'),
-    ("darwin", "Operation Love.command", "evening plans' %!^&.yaml",
-     "hub --config='evening plans'\"'\"' %!^&.yaml'"),
-    ("linux", "operation-love.sh", "evening plans' %!^&.yaml",
-     "hub --config='evening plans'\"'\"' %!^&.yaml'"),
-    ("win32", "Operation Love.bat", "evening plans' %!^&.yaml",
-     'hub --config="evening plans\' %%!^&.yaml"'),
-])
+@pytest.mark.parametrize(
+    ("platform", "name", "config_name", "expected"),
+    [
+        (
+            "darwin",
+            "Operation Love.command",
+            "--evening.yaml",
+            "hub --config=--evening.yaml",
+        ),
+        ("linux", "operation-love.sh", "--evening.yaml", "hub --config=--evening.yaml"),
+        (
+            "win32",
+            "Operation Love.bat",
+            "--evening.yaml",
+            'hub --config="--evening.yaml"',
+        ),
+        (
+            "darwin",
+            "Operation Love.command",
+            "evening plans' %!^&.yaml",
+            "hub --config='evening plans'\"'\"' %!^&.yaml'",
+        ),
+        (
+            "linux",
+            "operation-love.sh",
+            "evening plans' %!^&.yaml",
+            "hub --config='evening plans'\"'\"' %!^&.yaml'",
+        ),
+        (
+            "win32",
+            "Operation Love.bat",
+            "evening plans' %!^&.yaml",
+            'hub --config="evening plans\' %%!^&.yaml"',
+        ),
+    ],
+)
 def test_launcher_forwards_and_quotes_custom_config_filename(
-        tmp_path, monkeypatch, platform, name, config_name, expected):
+    tmp_path, monkeypatch, platform, name, config_name, expected
+):
     from operation_love.hub.launchers import make_launchers
 
     config = _launcher_project(tmp_path).with_name(config_name)
@@ -1968,7 +2231,9 @@ def test_hub_card_shows_label_gated_refresh_progress():
     # It must read HubState._attach_refresh's own `remaining` (see the edge-case test below)
     # rather than re-deriving it from `since`/`every` a second, independently-drifting way.
     assert "Updates after ${remaining} more training label" in _PAGE
-    assert "r.mode !== 'training'" in _PAGE          # only while a live training run feeds labels
+    assert (
+        "r.mode !== 'training'" in _PAGE
+    )  # only while a live training run feeds labels
     assert "r.remaining == null" in _PAGE
     assert "Number(r.remaining)" in _PAGE
 
@@ -1979,11 +2244,21 @@ def test_attach_refresh_counts_down_to_next_recompute():
         mode = "training"
 
     # 2 of 5 new labels collected since the last compute -> 3 swipes remaining.
-    r = HubState._attach_refresh({"status": "ok"}, every=5, live=42, base=40, status=LiveTraining())
-    assert r["refresh"] == {"every": 5, "since": 2, "remaining": 3, "live": True, "mode": "training"}
+    r = HubState._attach_refresh(
+        {"status": "ok"}, every=5, live=42, base=40, status=LiveTraining()
+    )
+    assert r["refresh"] == {
+        "every": 5,
+        "since": 2,
+        "remaining": 3,
+        "live": True,
+        "mode": "training",
+    }
 
     # Right after a recompute (since == every) it rolls to a full cycle, never shows 0/5.
-    edge = HubState._attach_refresh({"status": "ok"}, every=5, live=45, base=40, status=LiveTraining())
+    edge = HubState._attach_refresh(
+        {"status": "ok"}, every=5, live=45, base=40, status=LiveTraining()
+    )
     assert edge["refresh"]["since"] == 5 and edge["refresh"]["remaining"] == 5
 
 
@@ -1991,7 +2266,11 @@ def test_hub_layout_drops_app_cards_and_reorders_controls():
     # App status cards removed; controls card sits between the live log and the bug report.
     assert 'id="apps"' not in _PAGE
     assert "renderApps" not in _PAGE
-    assert _PAGE.index('id="logs"') < _PAGE.index('id="start"') < _PAGE.index('id="bugdesc"')
+    assert (
+        _PAGE.index('id="logs"')
+        < _PAGE.index('id="start"')
+        < _PAGE.index('id="bugdesc"')
+    )
 
 
 def test_hub_ranker_card_simplified_to_budget():
@@ -2036,7 +2315,7 @@ def test_cached_eval_uses_live_training_mix_without_waiting_for_next_cv_refresh(
     result = st.eval_snapshot(every=15)
     st._thread.join()
 
-    assert result["labels"] == 2              # CV itself remains cached until its cadence
+    assert result["labels"] == 2  # CV itself remains cached until its cadence
     assert result["training"] == {"labels": 3, "likes": 2, "passes": 1}
 
 
@@ -2048,7 +2327,9 @@ def test_attach_refresh_inactive_without_live_run():
     assert "refresh" not in payload
 
 
-def test_eval_snapshot_holds_full_progress_until_background_refresh_finishes(monkeypatch):
+def test_eval_snapshot_holds_full_progress_until_background_refresh_finishes(
+    monkeypatch,
+):
     import operation_love.hub as hub
     import operation_love.ranker as ranker
     import operation_love.ranker.evaluate as eval_mod
@@ -2078,8 +2359,15 @@ def test_eval_snapshot_holds_full_progress_until_background_refresh_finishes(mon
 
     monkeypatch.setattr(hub.cfg_mod, "load", lambda path: object())
     monkeypatch.setattr(ranker, "make_store", fake_make_store)
-    monkeypatch.setattr(eval_mod, "evaluate",
-                        lambda samples, **kwargs: {"status": "ok", "marker": "new", "labels": len(samples)})
+    monkeypatch.setattr(
+        eval_mod,
+        "evaluate",
+        lambda samples, **kwargs: {
+            "status": "ok",
+            "marker": "new",
+            "labels": len(samples),
+        },
+    )
 
     st = HubState("config.yaml")
     with st._lock:
@@ -2139,29 +2427,42 @@ def test_eval_snapshot_reads_live_store_while_running(monkeypatch):
     class LiveStore:
         def load_labels(self):
             live_calls.append("live")
-            return [object()] * 30           # the live in-memory set (all swipes)
+            return [object()] * 30  # the live in-memory set (all swipes)
 
     class Fresh:
         def load_labels(self):
-            return [object()] * 5            # committed-only (would lag) — must NOT be used here
+            return [object()] * 5  # committed-only (would lag) — must NOT be used here
+
         def close(self):
             pass
 
     monkeypatch.setattr(hub.cfg_mod, "load", lambda p: object())
     monkeypatch.setattr(ranker, "make_store", lambda cfg, ensure=True: Fresh())
-    monkeypatch.setattr(eval_mod, "evaluate", lambda s, **kwargs: {
-        "status": "ok", "labels": len(s), "identities": len(s), "base_rate": 0.4,
-        "pr_auc": [0.7, 0.05], "roc_auc": [0.8, 0.03], "brier": [0.2, 0.0]})
+    monkeypatch.setattr(
+        eval_mod,
+        "evaluate",
+        lambda s, **kwargs: {
+            "status": "ok",
+            "labels": len(s),
+            "identities": len(s),
+            "base_rate": 0.4,
+            "pr_auc": [0.7, 0.05],
+            "roc_auc": [0.8, 0.03],
+            "brier": [0.2, 0.0],
+        },
+    )
 
     st = HubState("config.yaml")
-    st._thread = threading.Thread(target=lambda: time.sleep(0.5))   # fake a live run
+    st._thread = threading.Thread(target=lambda: time.sleep(0.5))  # fake a live run
     st._thread.start()
     with st._lock:
         st._status = LiveTraining()
         st._live_store = LiveStore()
     res = st.eval_snapshot(every=5)
     st._thread.join()
-    assert res["labels"] == 30 and live_calls == ["live"]   # used the live store, not a fresh BQ read
+    assert res["labels"] == 30 and live_calls == [
+        "live"
+    ]  # used the live store, not a fresh BQ read
 
 
 def test_eval_snapshot_falls_back_when_live_store_read_fails(monkeypatch):
@@ -2186,14 +2487,25 @@ def test_eval_snapshot_falls_back_when_live_store_read_fails(monkeypatch):
         def load_labels(self):
             fresh_used.append(1)
             return [object()] * 12
+
         def close(self):
             pass
 
     monkeypatch.setattr(hub.cfg_mod, "load", lambda p: object())
     monkeypatch.setattr(ranker, "make_store", lambda cfg, ensure=True: Fresh())
-    monkeypatch.setattr(eval_mod, "evaluate", lambda s, **kwargs: {
-        "status": "ok", "labels": len(s), "identities": len(s), "base_rate": 0.4,
-        "pr_auc": [0.7, 0.05], "roc_auc": [0.8, 0.03], "brier": [0.2, 0.0]})
+    monkeypatch.setattr(
+        eval_mod,
+        "evaluate",
+        lambda s, **kwargs: {
+            "status": "ok",
+            "labels": len(s),
+            "identities": len(s),
+            "base_rate": 0.4,
+            "pr_auc": [0.7, 0.05],
+            "roc_auc": [0.8, 0.03],
+            "brier": [0.2, 0.0],
+        },
+    )
 
     st = HubState("config.yaml")
     st._thread = threading.Thread(target=lambda: time.sleep(0.3))
@@ -2203,8 +2515,8 @@ def test_eval_snapshot_falls_back_when_live_store_read_fails(monkeypatch):
         st._live_store = DeadStore()
     res = st.eval_snapshot(every=5)
     st._thread.join()
-    assert res["status"] == "ok" and res["labels"] == 12   # recovered via the fresh read
-    assert fresh_used                                       # the fallback store was used
+    assert res["status"] == "ok" and res["labels"] == 12  # recovered via the fresh read
+    assert fresh_used  # the fallback store was used
 
 
 def test_eval_snapshot_returns_error_dict_when_compute_raises(monkeypatch):
@@ -2239,17 +2551,17 @@ def test_hub_max_per_run_invalid_input_delegates_to_config():
     fn = _extract_js_function(_PAGE, "computeMaxPerRun")
     # (mode, unlimitedChecked, rawValue)
     cases = [
-        ("training", False, "8"),   # Training uses the same run-cap controls as Auto.
-        ("auto", True, "8"),        # unlimited checkbox -> 0, regardless of the box
+        ("training", False, "8"),  # Training uses the same run-cap controls as Auto.
+        ("auto", True, "8"),  # unlimited checkbox -> 0, regardless of the box
         ("auto", True, ""),
-        ("auto", False, ""),        # empty box -> delegate to config
-        ("auto", False, "abc"),     # non-numeric -> delegate to config
-        ("auto", False, "0"),       # typing 0 directly delegates; checkbox owns explicit 0
-        ("auto", False, "-3"),      # negative -> delegate to config
-        ("auto", False, "3.7"),     # never silently truncate a requested cap
+        ("auto", False, ""),  # empty box -> delegate to config
+        ("auto", False, "abc"),  # non-numeric -> delegate to config
+        ("auto", False, "0"),  # typing 0 directly delegates; checkbox owns explicit 0
+        ("auto", False, "-3"),  # negative -> delegate to config
+        ("auto", False, "3.7"),  # never silently truncate a requested cap
         ("auto", False, "8profiles"),
-        ("auto", False, str(2 ** 53)),
-        ("auto", False, "8"),       # a genuine positive cap is honored
+        ("auto", False, str(2**53)),
+        ("auto", False, "8"),  # a genuine positive cap is honored
     ]
     expected = [8, 0, 0, None, None, None, None, None, None, None, 8]
     script = (
@@ -2261,6 +2573,7 @@ def test_hub_max_per_run_invalid_input_delegates_to_config():
 
 
 # --- audit fix: an honest "stopping" tail, driven by status.stopping ------------------------
+
 
 def test_stop_button_state_reflects_stopping_and_disables_a_second_press():
     # Once status.stopping is true the button must relabel AND disable, in the same call --
@@ -2275,10 +2588,16 @@ def test_stop_button_state_reflects_stopping_and_disables_a_second_press():
         "console.log(JSON.stringify(cases.map(c => stopButtonState(c[0], c[1]))));\n"
     )
     assert _run_node(script) == [
-        {"label": "■ Stop", "disabled": False},        # running, not stopping -> normal
-        {"label": "■ Stopping…", "disabled": True},    # running AND stopping -> the shutdown tail
-        {"label": "■ Stop", "disabled": True},          # not running -> disabled regardless
-        {"label": "■ Stopping…", "disabled": True},    # not running but stopping (brief overlap)
+        {"label": "■ Stop", "disabled": False},  # running, not stopping -> normal
+        {
+            "label": "■ Stopping…",
+            "disabled": True,
+        },  # running AND stopping -> the shutdown tail
+        {"label": "■ Stop", "disabled": True},  # not running -> disabled regardless
+        {
+            "label": "■ Stopping…",
+            "disabled": True,
+        },  # not running but stopping (brief overlap)
     ]
 
 
@@ -2297,7 +2616,7 @@ def test_should_clear_hint_only_fires_on_the_running_to_stopped_transition():
     )
     assert _run_node(script) == [
         False,  # still running -> nothing to clear yet
-        True,   # WAS running, just stopped -> the real transition -> clear
+        True,  # WAS running, just stopped -> the real transition -> clear
         False,  # already not running (e.g. a failed Start) -> leave it alone
         False,  # just started running -> nothing to clear
     ]
@@ -2308,25 +2627,32 @@ def _render_global_script(calls: list, alert_permission: str = "granted") -> str
     SAME node process/script and in order -- renderGlobal is stateful across polls (the
     module-level `_wasRunning` shouldClearHint reads), so a fresh eval per call would miss
     exactly the transition this is testing."""
-    fns = (_extract_js_function(_PAGE, "stopButtonState") + "\n"
-           + _extract_js_function(_PAGE, "shouldClearHint") + "\n"
-           + _extract_js_function(_PAGE, "formatTimedStopRemaining") + "\n"
-           # renderGlobal re-derives #alerthint on the running transition, so the REAL hint
-           # chain is wired here rather than stubbed: a stub would let the wording drift back
-           # to naming a control the operator cannot reach.
-           + _extract_js_function(_PAGE, "trainingAlertPermission") + "\n"
-           + _extract_js_function(_PAGE, "trainingAlertHintText") + "\n"
-           + _extract_js_function(_PAGE, "syncTrainingAlertHint") + "\n"
-           + _extract_js_function(_PAGE, "renderGlobal"))
+    fns = (
+        _extract_js_function(_PAGE, "stopButtonState")
+        + "\n"
+        + _extract_js_function(_PAGE, "shouldClearHint")
+        + "\n"
+        + _extract_js_function(_PAGE, "formatTimedStopRemaining")
+        + "\n"
+        # renderGlobal re-derives #alerthint on the running transition, so the REAL hint
+        # chain is wired here rather than stubbed: a stub would let the wording drift back
+        # to naming a control the operator cannot reach.
+        + _extract_js_function(_PAGE, "trainingAlertPermission")
+        + "\n"
+        + _extract_js_function(_PAGE, "trainingAlertHintText")
+        + "\n"
+        + _extract_js_function(_PAGE, "syncTrainingAlertHint")
+        + "\n"
+        + _extract_js_function(_PAGE, "renderGlobal")
+    )
     return (
         "let _wasRunning = false, _trainingDataMutationBusy = false, _configReady = true;\n"
-        + _notification_window_literal(alert_permission) +
-        "let els = {runpill:{textContent:'',className:''}, start:{disabled:false}, "
+        + _notification_window_literal(alert_permission)
+        + "let els = {runpill:{textContent:'',className:''}, start:{disabled:false}, "
         "stop:{disabled:false,textContent:''}, hint:{textContent:''}, budget:{textContent:''}, "
         "err:{textContent:''}, stopafter:{disabled:false}, timerhint:{textContent:''}, "
         "alerthint:{textContent:''}, removeLatestTraining:{disabled:false}};\n"
-        "function $(sel){ return els[sel.slice(1)]; }\n"
-        + fns + "\n"
+        "function $(sel){ return els[sel.slice(1)]; }\n" + fns + "\n"
         "const calls = " + json.dumps(calls) + ";\n"
         "const results = [];\n"
         "for (const c of calls) {\n"
@@ -2350,16 +2676,23 @@ def test_render_global_clears_a_stuck_stopping_hint_only_on_the_running_transiti
     if NODE_BIN is None:
         pytest.skip("node is not available on this machine")
     calls = [
-        {"presetHint": "stopping…", "snap": {"running": True, "status": {"phase": "starting"}}},
-        {"snap": {"running": False, "status": None}},   # startup-abort: straight to stopped
+        {
+            "presetHint": "stopping…",
+            "snap": {"running": True, "status": {"phase": "starting"}},
+        },
+        {
+            "snap": {"running": False, "status": None}
+        },  # startup-abort: straight to stopped
     ]
     results = _run_node(_render_global_script(calls))
-    assert results[0]["hint"] == "stopping…"    # still running -> not cleared yet
-    assert results[1]["hint"] == ""              # the transition -> cleared (was stuck before)
+    assert results[0]["hint"] == "stopping…"  # still running -> not cleared yet
+    assert results[1]["hint"] == ""  # the transition -> cleared (was stuck before)
 
     # A FAILED Start (running already false, no transition ever happens) must not have its
     # explanation wiped out from under it.
-    calls_b = [{"presetHint": "not started", "snap": {"running": False, "status": None}}]
+    calls_b = [
+        {"presetHint": "not started", "snap": {"running": False, "status": None}}
+    ]
     results_b = _run_node(_render_global_script(calls_b))
     assert results_b[0]["hint"] == "not started"
 
@@ -2367,8 +2700,14 @@ def test_render_global_clears_a_stuck_stopping_hint_only_on_the_running_transiti
 def test_render_global_shows_stopping_on_the_pill_and_disables_the_stop_button():
     if NODE_BIN is None:
         pytest.skip("node is not available on this machine")
-    calls = [{"snap": {"running": True, "status": {
-        "phase": "stopping", "stopping": True, "budget_spent": 0}}}]
+    calls = [
+        {
+            "snap": {
+                "running": True,
+                "status": {"phase": "stopping", "stopping": True, "budget_spent": 0},
+            }
+        }
+    ]
     results = _run_node(_render_global_script(calls))
     assert results[0]["pill"] == "stopping"
     assert results[0]["stopDisabled"] is True
@@ -2379,8 +2718,13 @@ def test_render_global_shows_server_timer_countdown_and_locks_the_choice_while_r
     if NODE_BIN is None:
         pytest.skip("node is not available on this machine")
     calls = [
-        {"snap": {"running": True, "status": {"phase": "live", "budget_spent": 0},
-                  "timed_stop": {"duration_seconds": 1800, "remaining_seconds": 65}}},
+        {
+            "snap": {
+                "running": True,
+                "status": {"phase": "live", "budget_spent": 0},
+                "timed_stop": {"duration_seconds": 1800, "remaining_seconds": 65},
+            }
+        },
         {"snap": {"running": False, "status": None, "timed_stop": None}},
     ]
     results = _run_node(_render_global_script(calls))
@@ -2401,9 +2745,12 @@ def _hub_wake_script(body: str) -> str:
         "function hubLifecycle(path){ calls.push(path); }\n"
         "function tick(){ ticks += 1; }\n"
         "let document = { hidden: true };\n"
-        + _extract_js_function(_PAGE, "hubWake") + "\n"
-        + _extract_js_function(_PAGE, "_onHubVisibilityWake") + "\n"
-        + _extract_js_function(_PAGE, "_onHubFocusWake") + "\n"
+        + _extract_js_function(_PAGE, "hubWake")
+        + "\n"
+        + _extract_js_function(_PAGE, "_onHubVisibilityWake")
+        + "\n"
+        + _extract_js_function(_PAGE, "_onHubFocusWake")
+        + "\n"
         + body
     )
 
@@ -2419,15 +2766,17 @@ def test_hub_page_rereigsters_on_tab_wake_events():
     # whether they actually re-registered.
     if NODE_BIN is None:
         pytest.skip("node is not available on this machine")
-    assert "document.addEventListener('visibilitychange', _onHubVisibilityWake)" in _PAGE
+    assert (
+        "document.addEventListener('visibilitychange', _onHubVisibilityWake)" in _PAGE
+    )
     assert "window.addEventListener('focus', _onHubFocusWake)" in _PAGE
     script = _hub_wake_script(
-        "_onHubVisibilityWake();\n"                 # hidden -> must NOT re-register
+        "_onHubVisibilityWake();\n"  # hidden -> must NOT re-register
         "const afterHidden = calls.slice();\n"
         "document.hidden = false;\n"
-        "_onHubVisibilityWake();\n"                 # became visible -> must re-register
+        "_onHubVisibilityWake();\n"  # became visible -> must re-register
         "const afterVisible = calls.slice();\n"
-        "document.hidden = true;\n"                 # focus must fire regardless of hidden state
+        "document.hidden = true;\n"  # focus must fire regardless of hidden state
         "_onHubFocusWake();\n"
         "const afterFocus = calls.slice();\n"
         "console.log(JSON.stringify({afterHidden, afterVisible, afterFocus}));\n"
@@ -2453,22 +2802,26 @@ def test_every_tab_wake_also_repolls_status_not_just_the_lifecycle_registration(
         pytest.skip("node is not available on this machine")
     assert "window.addEventListener('pageshow', hubWake)" in _PAGE
     script = _hub_wake_script(
-        "_onHubVisibilityWake();\n"                 # still hidden -> no poll either
+        "_onHubVisibilityWake();\n"  # still hidden -> no poll either
         "const hiddenTicks = ticks;\n"
         "document.hidden = false;\n"
-        "_onHubVisibilityWake();\n"                 # woke visible -> poll now, not in ~60s
+        "_onHubVisibilityWake();\n"  # woke visible -> poll now, not in ~60s
         "const visibleTicks = ticks;\n"
         "_onHubFocusWake();\n"
-        "hubWake();\n"                              # the pageshow/bfcache leg
+        "hubWake();\n"  # the pageshow/bfcache leg
         "console.log(JSON.stringify({hiddenTicks, visibleTicks, ticks, calls: calls.length}));\n"
     )
     assert _run_node(script) == {
-        "hiddenTicks": 0, "visibleTicks": 1, "ticks": 3, "calls": 3,
+        "hiddenTicks": 0,
+        "visibleTicks": 1,
+        "ticks": 3,
+        "calls": 3,
     }
 
 
 def test_browser_stale_window_clears_throttled_worst_case():
     import operation_love.hub as hub
+
     # Chrome's intensive timer throttling aligns a hidden tab's setInterval to ~once/minute;
     # the stale window must clear that with real margin so a throttled-but-alive tab is never
     # mistaken for closed and used to stop a live run. Assert the INTENT (comfortably above a
@@ -2492,16 +2845,20 @@ def test_hubstate_start_rejects_empty_apps_list():
     assert st.is_running() is False
 
 
-@pytest.mark.parametrize(("kwargs", "needle"), [
-    ({"max_per_run": True}, "max_per_run"),
-    ({"max_per_run": "8"}, "max_per_run"),
-    ({"max_per_run": -1}, "max_per_run"),
-    ({"apps": "hinge"}, "apps must"),
-    ({"apps": ["hinge", "hinge"]}, "duplicate"),
-    ({"apps": [1]}, "app ids"),
-])
+@pytest.mark.parametrize(
+    ("kwargs", "needle"),
+    [
+        ({"max_per_run": True}, "max_per_run"),
+        ({"max_per_run": "8"}, "max_per_run"),
+        ({"max_per_run": -1}, "max_per_run"),
+        ({"apps": "hinge"}, "apps must"),
+        ({"apps": ["hinge", "hinge"]}, "duplicate"),
+        ({"apps": [1]}, "app ids"),
+    ],
+)
 def test_hubstate_rejects_malformed_controls_before_background_allocation(
-        monkeypatch, kwargs, needle):
+    monkeypatch, kwargs, needle
+):
     import operation_love.hub as hub
 
     run_calls = []
@@ -2517,8 +2874,7 @@ def test_hubstate_rejects_malformed_controls_before_background_allocation(
     assert st._timed_stop_timer is None
 
 
-def test_hubstate_timer_start_failure_returns_clean_refusal_without_worker(
-        monkeypatch):
+def test_hubstate_timer_start_failure_returns_clean_refusal_without_worker(monkeypatch):
     from operation_love.hub import state as hub_state
 
     run_calls = []
@@ -2539,7 +2895,10 @@ def test_hubstate_timer_start_failure_returns_clean_refusal_without_worker(
 
     monkeypatch.setattr(hub_state.threading, "Timer", BrokenTimer)
     monkeypatch.setattr(
-        hub_state.supervisor, "run", lambda *args, **kwargs: run_calls.append((args, kwargs)))
+        hub_state.supervisor,
+        "run",
+        lambda *args, **kwargs: run_calls.append((args, kwargs)),
+    )
     st = HubState("config.yaml")
     previous_thread = threading.Thread()
     previous_stop = threading.Event()
@@ -2572,7 +2931,8 @@ def test_hubstate_timer_start_failure_returns_clean_refusal_without_worker(
 
 
 def test_hubstate_worker_start_failure_cancels_started_timer_and_resets_state(
-        monkeypatch):
+    monkeypatch,
+):
     from operation_love.hub import state as hub_state
 
     run_calls = []
@@ -2602,7 +2962,10 @@ def test_hubstate_worker_start_failure_cancels_started_timer_and_resets_state(
     monkeypatch.setattr(hub_state.threading, "Timer", RecordingTimer)
     monkeypatch.setattr(hub_state.threading, "Thread", BrokenRunThread)
     monkeypatch.setattr(
-        hub_state.supervisor, "run", lambda *args, **kwargs: run_calls.append((args, kwargs)))
+        hub_state.supervisor,
+        "run",
+        lambda *args, **kwargs: run_calls.append((args, kwargs)),
+    )
     st = HubState("config.yaml")
 
     ok, msg = st.start(stop_after_seconds=60)
@@ -2631,8 +2994,12 @@ def test_hubstate_start_rejects_uncalibrated_bumble_in_both_modes(mode):
 
 def test_hub_config_combines_registry_and_config_level_mode_readiness():
     defaults = HubState("config.yaml").config_defaults()
-    app_platforms = [platform for kind in defaults["kinds"]
-                     if kind["kind"] == "android" for platform in kind["platforms"]]
+    app_platforms = [
+        platform
+        for kind in defaults["kinds"]
+        if kind["kind"] == "android"
+        for platform in kind["platforms"]
+    ]
     modes = {platform["app"]: platform["modes"] for platform in app_platforms}
     reasons = {platform["app"]: platform["mode_reasons"] for platform in app_platforms}
     pending = {platform["app"]: platform for platform in defaults["pending_platforms"]}
@@ -2662,8 +3029,12 @@ def test_hub_config_defaults_uses_one_validating_startup_gate_per_mode(monkeypat
     monkeypatch.setattr(hub_state.platforms, "unavailable_reason", record_reason)
     defaults = HubState("config.yaml").config_defaults()
 
-    hinge = next(p for kind in defaults["kinds"] for p in kind["platforms"]
-                 if p["app"] == "hinge")
+    hinge = next(
+        p
+        for kind in defaults["kinds"]
+        for p in kind["platforms"]
+        if p["app"] == "hinge"
+    )
     assert hinge["modes"]["auto"] is False
     assert "does not bind this calibration" in hinge["mode_reasons"]["auto"]
     assert auto_reasons == []
@@ -2674,14 +3045,17 @@ def test_hub_config_defaults_marks_per_app_mode_override_as_unavailable(monkeypa
     from types import SimpleNamespace
     from operation_love.hub import state as hub_state
 
-    platform = SimpleNamespace(app="hinge", label="Hinge", kind="android",
-                               available=True, reason=None)
-    cfg = SimpleNamespace(enabled_apps=["hinge"], mode="auto",
-                          storage=SimpleNamespace(backend="sqlite"))
+    platform = SimpleNamespace(
+        app="hinge", label="Hinge", kind="android", available=True, reason=None
+    )
+    cfg = SimpleNamespace(
+        enabled_apps=["hinge"], mode="auto", storage=SimpleNamespace(backend="sqlite")
+    )
     effective = SimpleNamespace(mode="auto", apps={"hinge": {"mode": "training"}})
     monkeypatch.setattr(hub_state.cfg_mod, "load", lambda _path: cfg)
-    monkeypatch.setattr(hub_state.supervisor, "load_effective_config",
-                        lambda *args, **kwargs: effective)
+    monkeypatch.setattr(
+        hub_state.supervisor, "load_effective_config", lambda *args, **kwargs: effective
+    )
     monkeypatch.setattr(hub_state.platforms, "kinds", lambda: ("android",))
     monkeypatch.setattr(hub_state.platforms, "for_kind", lambda _kind: (platform,))
     monkeypatch.setattr(hub_state.platforms, "all_platforms", lambda: (platform,))
@@ -2703,24 +3077,33 @@ def test_hubstate_start_rejects_two_android_platforms_together(monkeypatch):
     assert st.is_running() is False
 
 
-def test_hubstate_rejects_config_blocked_hinge_auto_before_background_work(monkeypatch, tmp_path):
+def test_hubstate_rejects_config_blocked_hinge_auto_before_background_work(
+    monkeypatch, tmp_path
+):
     """Hub and direct supervisor starts return the same release-gate message, and the Hub
     rejects before allocating any run thread or timed-stop timer."""
     import operation_love.hub as hub
 
     cfg_path = tmp_path / "config.yaml"
-    cfg_path.write_text(re.sub(
-        r"(?m)^    observe_release_evidence:\n(?:^      [^\n]*\n)+", "",
-        Path("config.yaml").read_text(), count=1))
+    cfg_path.write_text(
+        re.sub(
+            r"(?m)^    observe_release_evidence:\n(?:^      [^\n]*\n)+",
+            "",
+            Path("config.yaml").read_text(),
+            count=1,
+        )
+    )
     with pytest.raises(ValueError) as direct:
         hub.supervisor.run(str(cfg_path), mode="auto", enabled_apps=["hinge"])
 
     run_calls = []
     monkeypatch.setattr(
-        hub.supervisor, "run", lambda *args, **kwargs: run_calls.append((args, kwargs)))
+        hub.supervisor, "run", lambda *args, **kwargs: run_calls.append((args, kwargs))
+    )
     st = HubState(str(cfg_path))
     ok, msg = st.start(
-        mode="auto", apps=["hinge"], max_per_run=8, stop_after_seconds=60)
+        mode="auto", apps=["hinge"], max_per_run=8, stop_after_seconds=60
+    )
 
     assert ok is False
     assert msg == str(direct.value)
@@ -2737,10 +3120,13 @@ def test_hubstate_apps_none_validates_the_effective_file_config(tmp_path):
     cfg_text = re.sub(
         # Keep this line-oriented: DOTALL would let ``.*`` swallow the subsequent storage
         # section and turn this release-gate test into an unrelated storage-config failure.
-        r"(?m)^    observe_release_evidence:\n(?:^      [^\n]*\n)+", "",
-        Path("config.yaml").read_text(), count=1)
-    # The shipped file intentionally starts in Training while its 10.4.0 production release
-    # is pending (config.yaml's targeting_calibration pins hinge_version_name 10.4.0;
+        r"(?m)^    observe_release_evidence:\n(?:^      [^\n]*\n)+",
+        "",
+        Path("config.yaml").read_text(),
+        count=1,
+    )
+    # The shipped file intentionally starts in Training while its 10.6.0 production release
+    # is pending (config.yaml's targeting_calibration pins hinge_version_name 10.6.0;
     # this comment said 10.1.0 long after that moved on). Exercise this test's AUTO release gate
     # explicitly.
     cfg_text = cfg_text.replace("mode: training", "mode: auto", 1)
@@ -2759,6 +3145,7 @@ def test_hubstate_start_apps_none_is_not_rejected(monkeypatch):
     # apps=None means "no override" (unrelated to the empty-list user-error case above) and
     # must still fall through to supervisor.run/config as before.
     import operation_love.hub as hub
+
     seen = {}
     done = threading.Event()
 
@@ -2786,7 +3173,9 @@ def test_hubstate_retains_final_status_after_run_thread_exits(monkeypatch):
         kwargs["on_status"](status)
 
     # This is final-status retention, not release-readiness coverage.
-    monkeypatch.setattr(hub.supervisor, "load_effective_config", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        hub.supervisor, "load_effective_config", lambda *args, **kwargs: None
+    )
     monkeypatch.setattr(hub.supervisor, "run", fake_run)
     st = HubState("config.yaml")
     ok, _ = st.start(mode="auto", apps=["hinge"])
@@ -2794,8 +3183,8 @@ def test_hubstate_retains_final_status_after_run_thread_exits(monkeypatch):
     st._thread.join(timeout=_LIVENESS_TIMEOUT_S)
 
     snap = st.snapshot()
-    assert snap["running"] is False               # HubState follows Thread.is_alive()
-    assert snap["status"] is not None             # final RunStatus is still available
+    assert snap["running"] is False  # HubState follows Thread.is_alive()
+    assert snap["status"] is not None  # final RunStatus is still available
     assert snap["status"]["apps"]["hinge"]["state"] == "error"
 
 
@@ -2806,7 +3195,9 @@ def test_hubstate_surfaces_systemexit_from_supervisor(monkeypatch):
     import operation_love.hub as hub
 
     def boom(config_path, **kw):
-        raise SystemExit("Storage.backend=bigquery but cloud storage dependencies are missing")
+        raise SystemExit(
+            "Storage.backend=bigquery but cloud storage dependencies are missing"
+        )
 
     monkeypatch.setattr(hub.supervisor, "run", boom)
     st = HubState("config.yaml")
@@ -2830,11 +3221,19 @@ def test_hubstate_recent_openers_forwards_to_the_captured_opener_service():
     """Once a run has captured an OpenerService (via on_opener_service -> _capture_opener_service),
     recent_openers() must hand back exactly what that service's own recent_openers_snapshot()
     returns -- this is the real data route the bug report's 'Recent openers' section relies on."""
+
     class FakeOpenerService:
         def recent_openers_snapshot(self):
-            return [{"ts": "t0", "app": "hinge", "model": "gemini-2.5-flash",
-                     "index": 0, "referenced": "the beach photo",
-                     "opener": "love the beach shot"}]
+            return [
+                {
+                    "ts": "t0",
+                    "app": "hinge",
+                    "model": "gemini-2.5-flash",
+                    "index": 0,
+                    "referenced": "the beach photo",
+                    "opener": "love the beach shot",
+                }
+            ]
 
     st = HubState("config.yaml")
     with st._lock:
@@ -2847,6 +3246,7 @@ def test_hubstate_recent_openers_swallows_a_raising_service():
     its recent_openers_snapshot() raise instead of returning cleanly -- e.g. a lock object
     already released/replaced. recent_openers() must never propagate that into the bug report;
     it degrades to []."""
+
     class ExplodingOpenerService:
         def recent_openers_snapshot(self):
             raise RuntimeError("torn down mid-read")
@@ -2869,8 +3269,9 @@ def test_hubstate_freezes_opener_telemetry_when_a_run_finishes(monkeypatch):
 
     class FakeOpenerService:
         def __init__(self):
-            self.openers = [{"ts": "t1", "app": "hinge", "opener": "hello",
-                             "nested": ["marker"]}]
+            self.openers = [
+                {"ts": "t1", "app": "hinge", "opener": "hello", "nested": ["marker"]}
+            ]
             self.rejections = [{"ts": "t2", "app": "hinge", "reason_code": "bad_json"}]
 
         def recent_openers_snapshot(self):
@@ -2892,10 +3293,12 @@ def test_hubstate_freezes_opener_telemetry_when_a_run_finishes(monkeypatch):
 
     with st._lock:
         assert st._opener_service is None
-    assert st.recent_openers() == [{"ts": "t1", "app": "hinge", "opener": "hello",
-                                    "nested": ["marker"]}]
+    assert st.recent_openers() == [
+        {"ts": "t1", "app": "hinge", "opener": "hello", "nested": ["marker"]}
+    ]
     assert st.recent_opener_rejections() == [
-        {"ts": "t2", "app": "hinge", "reason_code": "bad_json"}]
+        {"ts": "t2", "app": "hinge", "reason_code": "bad_json"}
+    ]
     service.openers[0]["nested"].append("changed after shutdown")
     assert st.recent_openers()[0]["nested"] == ["marker"]
 
@@ -2924,8 +3327,8 @@ def test_wait_for_run_honors_timeout():
     # own (now widened) internal wait above. Raising THIS number past that wait's duration
     # would let that exact bug pass silently, so it has to stay well under it regardless of
     # machine load.
-    assert elapsed < 2.0             # returned promptly, not blocked for the full wait above
-    assert st._thread.is_alive() is True   # timed out, didn't actually finish
+    assert elapsed < 2.0  # returned promptly, not blocked for the full wait above
+    assert st._thread.is_alive() is True  # timed out, didn't actually finish
     still_running.set()
     st._thread.join(timeout=_LIVENESS_TIMEOUT_S)
 
@@ -2936,13 +3339,16 @@ def _runstatus_script(snap: dict) -> str:
     The Hub must never reconstruct one app's state in two different banners: a training
     run has its separate actionable review panel, but exactly one non-action status surface.
     """
-    fns = (_extract_js_function(_PAGE, "escHtml") + "\n"
-           + _extract_js_function(_PAGE, "selectRunApps") + "\n"
-           + _extract_js_function(_PAGE, "renderRunStatus"))
+    fns = (
+        _extract_js_function(_PAGE, "escHtml")
+        + "\n"
+        + _extract_js_function(_PAGE, "selectRunApps")
+        + "\n"
+        + _extract_js_function(_PAGE, "renderRunStatus")
+    )
     return (
         "let el = {style:{display:''}, innerHTML:''};\n"
-        "function $(sel){ return sel === '#runbanner' ? el : null; }\n"
-        + fns + "\n"
+        "function $(sel){ return sel === '#runbanner' ? el : null; }\n" + fns + "\n"
         "renderRunStatus(" + json.dumps(snap) + ");\n"
         "console.log(JSON.stringify({display: el.style.display, html: el.innerHTML}));\n"
     )
@@ -2951,10 +3357,21 @@ def _runstatus_script(snap: dict) -> str:
 def test_run_status_renders_live_training_once_with_checkpoint_detail_and_swipes():
     if NODE_BIN is None:
         pytest.skip("node is not available on this machine")
-    snap = {"running": True, "status": {"mode": "auto", "apps": {
-        "hinge": {"app": "hinge", "mode": "training", "state": "scoring",
-                  "swipes_run": 2, "detail": "verifying photo item 2 of 3"},
-    }}}
+    snap = {
+        "running": True,
+        "status": {
+            "mode": "auto",
+            "apps": {
+                "hinge": {
+                    "app": "hinge",
+                    "mode": "training",
+                    "state": "scoring",
+                    "swipes_run": 2,
+                    "detail": "verifying photo item 2 of 3",
+                },
+            },
+        },
+    }
     result = _run_node(_runstatus_script(snap))
     assert result["display"] == "block"
     assert "preparing the training checkpoint" in result["html"]
@@ -2964,19 +3381,34 @@ def test_run_status_renders_live_training_once_with_checkpoint_detail_and_swipes
     assert "tap X" not in result["html"] and "Send Like" not in result["html"]
 
 
-@pytest.mark.parametrize(("state", "expected"), [
-    ("scoring", "preparing the training checkpoint"),
-    ("waiting_approval", "waiting for your Hub decision"),
-    ("acting", "carrying out your hinge decision"),
-    ("starting", "starting hinge"),
-])
-def test_run_status_maps_live_training_producer_states_to_one_clear_cue(state, expected):
+@pytest.mark.parametrize(
+    ("state", "expected"),
+    [
+        ("scoring", "preparing the training checkpoint"),
+        ("waiting_approval", "waiting for your Hub decision"),
+        ("acting", "carrying out your hinge decision"),
+        ("starting", "starting hinge"),
+    ],
+)
+def test_run_status_maps_live_training_producer_states_to_one_clear_cue(
+    state, expected
+):
     """These are the states the training worker actually publishes."""
     if NODE_BIN is None:
         pytest.skip("node is not available on this machine")
-    snap = {"running": True, "status": {"apps": {
-        "hinge": {"app": "hinge", "mode": "training", "state": state, "swipes_run": 1},
-    }}}
+    snap = {
+        "running": True,
+        "status": {
+            "apps": {
+                "hinge": {
+                    "app": "hinge",
+                    "mode": "training",
+                    "state": state,
+                    "swipes_run": 1,
+                },
+            }
+        },
+    }
     html = _run_node(_runstatus_script(snap))["html"]
     assert expected in html
     assert html.count("hinge") == 1
@@ -2992,18 +3424,36 @@ def test_run_status_tells_the_two_scoring_publishes_apart():
     """
     if NODE_BIN is None:
         pytest.skip("node is not available on this machine")
-    prep = {"running": True, "status": {"apps": {
-        "hinge": {"app": "hinge", "mode": "training", "state": "scoring",
-                  "detail": "verifying photo item 2 of 3"},
-    }}}
+    prep = {
+        "running": True,
+        "status": {
+            "apps": {
+                "hinge": {
+                    "app": "hinge",
+                    "mode": "training",
+                    "state": "scoring",
+                    "detail": "verifying photo item 2 of 3",
+                },
+            }
+        },
+    }
     prep_html = _run_node(_runstatus_script(prep))["html"]
     assert "preparing the training checkpoint" in prep_html
     assert "decision saved" not in prep_html
 
-    saved = {"running": True, "status": {"apps": {
-        "hinge": {"app": "hinge", "mode": "training", "state": "scoring",
-                  "detail": "Like recorded and saved; pacing before the next profile"},
-    }}}
+    saved = {
+        "running": True,
+        "status": {
+            "apps": {
+                "hinge": {
+                    "app": "hinge",
+                    "mode": "training",
+                    "state": "scoring",
+                    "detail": "Like recorded and saved; pacing before the next profile",
+                },
+            }
+        },
+    }
     saved_html = _run_node(_runstatus_script(saved))["html"]
     # The title is the discriminator: the worker's detail already contains the word "pacing",
     # so asserting on that alone could not tell the title apart from its own fine print.
@@ -3013,8 +3463,8 @@ def test_run_status_tells_the_two_scoring_publishes_apart():
     # in its pacing window is still not a moment to act, so it must not restyle toward the GO cue.
     assert "Like recorded and saved; pacing before the next profile" in saved_html
     assert "🔴" in saved_html
-    assert "background:#3a2f12" in saved_html          # css.wait
-    assert "background:#123a23" not in saved_html      # never css.go
+    assert "background:#3a2f12" in saved_html  # css.wait
+    assert "background:#123a23" not in saved_html  # never css.go
 
 
 def test_run_status_explains_when_an_in_flight_training_decision_is_counted():
@@ -3025,14 +3475,25 @@ def test_run_status_explains_when_an_in_flight_training_decision_is_counted():
     """
     if NODE_BIN is None:
         pytest.skip("node is not available on this machine")
-    snap = {"running": True, "status": {"apps": {
-        "hinge": {"app": "hinge", "mode": "training", "state": "acting",
-                  "swipes_run": 2},
-    }}}
+    snap = {
+        "running": True,
+        "status": {
+            "apps": {
+                "hinge": {
+                    "app": "hinge",
+                    "mode": "training",
+                    "state": "acting",
+                    "swipes_run": 2,
+                },
+            }
+        },
+    }
 
     html = _run_node(_runstatus_script(snap))["html"]
     assert "carrying out your hinge decision" in html
-    assert "completed-swipe count updates after the action is confirmed and saved" in html
+    assert (
+        "completed-swipe count updates after the action is confirmed and saved" in html
+    )
     assert "2 swipes this run" in html
     assert "recording your hinge decision" not in html
 
@@ -3040,35 +3501,63 @@ def test_run_status_explains_when_an_in_flight_training_decision_is_counted():
 def test_run_status_shows_landed_training_persistence_detail_in_the_acting_banner():
     if NODE_BIN is None:
         pytest.skip("node is not available on this machine")
-    snap = {"running": True, "status": {"apps": {
-        "hinge": {"app": "hinge", "mode": "training", "state": "acting",
-                  "detail": ("Like landed in Hinge; archive complete—flushing the label "
-                             "and evidence to storage")},
-    }}}
+    snap = {
+        "running": True,
+        "status": {
+            "apps": {
+                "hinge": {
+                    "app": "hinge",
+                    "mode": "training",
+                    "state": "acting",
+                    "detail": (
+                        "Like landed in Hinge; archive complete—flushing the label "
+                        "and evidence to storage"
+                    ),
+                },
+            }
+        },
+    }
 
     html = _run_node(_runstatus_script(snap))["html"]
     assert "decision landed — saving training data" in html
     assert "carrying out your hinge decision" not in html
-    assert "Like landed in Hinge; archive complete—flushing the label and evidence to storage" in html
-    assert "completed-swipe count updates after the action is confirmed and saved" not in html
+    assert (
+        "Like landed in Hinge; archive complete—flushing the label and evidence to storage"
+        in html
+    )
+    assert (
+        "completed-swipe count updates after the action is confirmed and saved"
+        not in html
+    )
 
 
 def test_run_status_escapes_live_training_app():
     if NODE_BIN is None:
         pytest.skip("node is not available on this machine")
     hostile_app = '<img src=x onerror="alert(1)">'
-    app_snap = {"running": True, "status": {"apps": {
-        "hostile": {"app": hostile_app, "mode": "training", "state": "scoring"},
-    }}}
+    app_snap = {
+        "running": True,
+        "status": {
+            "apps": {
+                "hostile": {"app": hostile_app, "mode": "training", "state": "scoring"},
+            }
+        },
+    }
     app_html = _run_node(_runstatus_script(app_snap))["html"]
     assert "<img" not in app_html and "&lt;img" in app_html
+
 
 def test_run_status_hides_without_a_supported_app():
     if NODE_BIN is None:
         pytest.skip("node is not available on this machine")
-    snap = {"running": True, "status": {"apps": {
-        "hinge": {"app": "hinge", "mode": "unsupported", "state": "waiting"},
-    }}}
+    snap = {
+        "running": True,
+        "status": {
+            "apps": {
+                "hinge": {"app": "hinge", "mode": "unsupported", "state": "waiting"},
+            }
+        },
+    }
     assert _run_node(_runstatus_script(snap))["display"] == "none"
 
 
@@ -3082,11 +3571,17 @@ def test_run_status_retains_training_terminal_reason_after_the_run_ends():
         pytest.skip("node is not available on this machine")
     snap = {
         "running": False,
-        "status": {"apps": {"hinge": {
-            "app": "hinge", "mode": "training", "state": "stopped",
-            "stop_reason": "Training requires a complete generated opener",
-            "swipes_run": 3,
-        }}},
+        "status": {
+            "apps": {
+                "hinge": {
+                    "app": "hinge",
+                    "mode": "training",
+                    "state": "stopped",
+                    "stop_reason": "Training requires a complete generated opener",
+                    "swipes_run": 3,
+                }
+            }
+        },
     }
     result = _run_node(_runstatus_script(snap))
     assert result["display"] == "block"
@@ -3098,9 +3593,17 @@ def test_run_status_suppresses_training_decision_cues_while_stopping():
         pytest.skip("node is not available on this machine")
     snap = {
         "running": True,
-        "status": {"stopping": True, "apps": {"hinge": {
-            "app": "hinge", "mode": "training", "state": "waiting", "swipes_run": 1,
-        }}},
+        "status": {
+            "stopping": True,
+            "apps": {
+                "hinge": {
+                    "app": "hinge",
+                    "mode": "training",
+                    "state": "waiting",
+                    "swipes_run": 1,
+                }
+            },
+        },
     }
     html = _run_node(_runstatus_script(snap))["html"]
     assert "stopping" in html
@@ -3118,7 +3621,11 @@ def test_select_run_apps_filters_to_each_supported_mode_once():
         "mode": "training",
         "apps": {
             "bumble": {"mode": "auto", "state": "error", "app": "bumble"},
-            "training": {"mode": "training", "state": "waiting_training_decision", "app": "training"},
+            "training": {
+                "mode": "training",
+                "state": "waiting_training_decision",
+                "app": "training",
+            },
             "retired": {"mode": "unsupported", "state": "waiting", "app": "retired"},
         },
     }
@@ -3130,7 +3637,10 @@ def test_select_run_apps_filters_to_each_supported_mode_once():
     assert _run_node(script) == ["bumble", "training"]
 
     # Retired modes stay out even if the global mode would otherwise look runnable.
-    status_b = {"mode": "auto", "apps": {"hinge": {"mode": "unsupported", "state": "waiting", "app": "hinge"}}}
+    status_b = {
+        "mode": "auto",
+        "apps": {"hinge": {"mode": "unsupported", "state": "waiting", "app": "hinge"}},
+    }
     script_b = (
         fn + "\n"
         "const status = " + json.dumps(status_b) + ";\n"
@@ -3149,8 +3659,13 @@ def test_render_run_status_shows_auto_error_box_with_worker_message():
         "running": True,
         "status": {
             "apps": {
-                "hinge": {"app": "hinge", "mode": "auto", "state": "error",
-                          "error": "UnlocatedControlError: unrecognized screen", "swipes_run": 3},
+                "hinge": {
+                    "app": "hinge",
+                    "mode": "auto",
+                    "state": "error",
+                    "error": "UnlocatedControlError: unrecognized screen",
+                    "swipes_run": 3,
+                },
             },
         },
     }
@@ -3167,8 +3682,12 @@ def test_render_run_status_escapes_auto_error_and_app_before_using_inner_html():
         "running": False,
         "status": {
             "apps": {
-                "hostile": {"app": '<img src=x onerror="alert(1)">', "mode": "auto",
-                            "state": "error", "error": "bad <script>alert(2)</script>"},
+                "hostile": {
+                    "app": '<img src=x onerror="alert(1)">',
+                    "mode": "auto",
+                    "state": "error",
+                    "error": "bad <script>alert(2)</script>",
+                },
             },
         },
     }
@@ -3184,8 +3703,13 @@ def test_render_run_status_shows_auto_cold_start_defer_message():
         "running": True,
         "status": {
             "apps": {
-                "bumble": {"app": "bumble", "mode": "auto", "state": "stopped",
-                           "last_decision": "defer", "swipes_run": 0},
+                "bumble": {
+                    "app": "bumble",
+                    "mode": "auto",
+                    "state": "stopped",
+                    "last_decision": "defer",
+                    "swipes_run": 0,
+                },
             },
         },
     }
@@ -3214,9 +3738,14 @@ def test_render_run_status_shows_auto_opener_exhaustion_stop_reason():
         "running": True,
         "status": {
             "apps": {
-                "hinge": {"app": "hinge", "mode": "auto", "state": "stopped",
-                          "stop_reason": "run budget reached", "stop_kind": "opener",
-                          "swipes_run": 4},
+                "hinge": {
+                    "app": "hinge",
+                    "mode": "auto",
+                    "state": "stopped",
+                    "stop_reason": "run budget reached",
+                    "stop_kind": "opener",
+                    "swipes_run": 4,
+                },
             },
         },
     }
@@ -3243,13 +3772,24 @@ def test_render_run_status_reads_an_auto_targeting_stop_as_one_not_as_opener_cap
     numbers are the whole diagnosis."""
     if NODE_BIN is None:
         pytest.skip("node is not available on this machine")
-    reason = ("the like was NOT sent: reaching the item the opener was written about failed. "
-              "Intended: item 4 (model_items). Actual: item 6 (model_items).")
+    reason = (
+        "the like was NOT sent: reaching the item the opener was written about failed. "
+        "Intended: item 4 (model_items). Actual: item 6 (model_items)."
+    )
     snap = {
         "running": True,
-        "status": {"apps": {"hinge": {"app": "hinge", "mode": "auto", "state": "stopped",
-                                      "stop_reason": reason, "stop_kind": "targeting",
-                                      "swipes_run": 2}}},
+        "status": {
+            "apps": {
+                "hinge": {
+                    "app": "hinge",
+                    "mode": "auto",
+                    "state": "stopped",
+                    "stop_reason": reason,
+                    "stop_kind": "targeting",
+                    "swipes_run": 2,
+                }
+            }
+        },
     }
     result = _run_node(_runstatus_script(snap))
     assert result["display"] == "block"
@@ -3261,17 +3801,26 @@ def test_render_run_status_reads_an_auto_targeting_stop_as_one_not_as_opener_cap
     # Not the error box: 'idle' styling (the same neutral box every other non-crash stop uses),
     # never 'err'. Asserted on the styles themselves so a future re-colour has to come through
     # this test and worker.py's reasoning for catching the exception at all.
-    assert "#22222b" in html                      # css.idle background
-    assert "#3a1414" not in html                  # css.err background
-    assert "🔴" not in html                        # the owner's WAIT/error circle stays for crashes
+    assert "#22222b" in html  # css.idle background
+    assert "#3a1414" not in html  # css.err background
+    assert "🔴" not in html  # the owner's WAIT/error circle stays for crashes
 
     # And the branch it was split OUT of is untouched: a genuine capacity stop still reads as
     # one, so the split gained a true label rather than trading one wrong label for another.
     capacity = {
         "running": True,
-        "status": {"apps": {"hinge": {"app": "hinge", "mode": "auto", "state": "stopped",
-                                      "stop_reason": "run budget reached", "stop_kind": "opener",
-                                      "swipes_run": 2}}},
+        "status": {
+            "apps": {
+                "hinge": {
+                    "app": "hinge",
+                    "mode": "auto",
+                    "state": "stopped",
+                    "stop_reason": "run budget reached",
+                    "stop_kind": "opener",
+                    "swipes_run": 2,
+                }
+            }
+        },
     }
     other = _run_node(_runstatus_script(capacity))["html"]
     assert "could not prepare a safe opener" in other
@@ -3281,14 +3830,24 @@ def test_render_run_status_reads_an_auto_targeting_stop_as_one_not_as_opener_cap
 def test_render_run_status_names_pre_opener_targeting_calibration_stop():
     if NODE_BIN is None:
         pytest.skip("node is not available on this machine")
-    reason = ("Live Hinge 10.1.0 does not match the installed 10.0.1 calibration. "
-              "No opener, action, or label was produced.")
+    reason = (
+        "Live Hinge 10.1.0 does not match the installed 10.0.1 calibration. "
+        "No opener, action, or label was produced."
+    )
     snap = {
         "running": True,
-        "status": {"apps": {"hinge": {
-            "app": "hinge", "mode": "training", "state": "stopped",
-            "stop_reason": reason, "stop_kind": "targeting_calibration", "swipes_run": 0,
-        }}},
+        "status": {
+            "apps": {
+                "hinge": {
+                    "app": "hinge",
+                    "mode": "training",
+                    "state": "stopped",
+                    "stop_reason": reason,
+                    "stop_kind": "targeting_calibration",
+                    "swipes_run": 0,
+                }
+            }
+        },
     }
 
     html = _run_node(_runstatus_script(snap))["html"]
@@ -3309,33 +3868,53 @@ def test_render_run_status_headlines_a_failed_cold_relaunch_not_a_blocked_deck()
     """
     if NODE_BIN is None:
         pytest.skip("node is not available on this machine")
-    reason = ("Hinge was relaunched cold and the deck could not be proven re-entered; "
-              "no action or label was recorded.")
+    reason = (
+        "Hinge was relaunched cold and the deck could not be proven re-entered; "
+        "no action or label was recorded."
+    )
     snap = {
         "running": True,
-        "status": {"apps": {"hinge": {
-            "app": "hinge", "mode": "auto", "state": "blocked",
-            "stop_reason": reason, "stop_kind": "cold_relaunch_recovery", "swipes_run": 3,
-        }}},
+        "status": {
+            "apps": {
+                "hinge": {
+                    "app": "hinge",
+                    "mode": "auto",
+                    "state": "blocked",
+                    "stop_reason": reason,
+                    "stop_kind": "cold_relaunch_recovery",
+                    "swipes_run": 3,
+                }
+            }
+        },
     }
 
     html = _run_node(_runstatus_script(snap))["html"]
     assert "could not recover after the app relaunched" in html
     assert "deck blocked" not in html
-    assert reason in html                          # the driver's own sentence stays underneath
-    assert "🔴" not in html                         # a graceful stop, not a crash cue
+    assert reason in html  # the driver's own sentence stays underneath
+    assert "🔴" not in html  # a graceful stop, not a crash cue
 
     # The branch it was split OUT of is untouched: a genuine paywall still reads as one, and so
     # does a blocked stop from a driver that never classified its reason at all.
     for unclassified in ({"stop_kind": "deck_blocked"}, {}):
-        other = _run_node(_runstatus_script({
-            "running": True,
-            "status": {"apps": {"hinge": {
-                "app": "hinge", "mode": "auto", "state": "blocked",
-                "stop_reason": "Hinge is showing its out-of-likes upgrade screen.",
-                **unclassified,
-            }}},
-        }))["html"]
+        other = _run_node(
+            _runstatus_script(
+                {
+                    "running": True,
+                    "status": {
+                        "apps": {
+                            "hinge": {
+                                "app": "hinge",
+                                "mode": "auto",
+                                "state": "blocked",
+                                "stop_reason": "Hinge is showing its out-of-likes upgrade screen.",
+                                **unclassified,
+                            }
+                        }
+                    },
+                }
+            )
+        )["html"]
         assert "deck blocked" in other
         assert "could not recover after the app relaunched" not in other
 
@@ -3347,8 +3926,12 @@ def test_render_run_status_escapes_auto_stop_reason_before_using_inner_html():
         "running": False,
         "status": {
             "apps": {
-                "hinge": {"app": "hinge", "mode": "auto", "state": "stopped",
-                          "stop_reason": "bad <script>alert(3)</script>"},
+                "hinge": {
+                    "app": "hinge",
+                    "mode": "auto",
+                    "state": "stopped",
+                    "stop_reason": "bad <script>alert(3)</script>",
+                },
             },
         },
     }
@@ -3380,8 +3963,16 @@ def test_render_run_status_survives_auto_run_completion():
     # Thread.is_alive(), so this is the state a person returning after the run sees.
     snap_not_running = {
         "running": False,
-        "status": {"apps": {"hinge": {"app": "hinge", "mode": "auto", "state": "error",
-                                           "error": "unrecognized screen"}}},
+        "status": {
+            "apps": {
+                "hinge": {
+                    "app": "hinge",
+                    "mode": "auto",
+                    "state": "error",
+                    "error": "unrecognized screen",
+                }
+            }
+        },
     }
     result_b = _run_node(_runstatus_script(snap_not_running))
     assert result_b["display"] == "block"
@@ -3401,19 +3992,29 @@ def test_render_run_status_does_not_claim_auto_running_after_the_run_ended():
         "running": False,
         "status": {
             "apps": {
-                "hinge": {"app": "hinge", "mode": "auto", "state": "capturing", "swipes_run": 7},
+                "hinge": {
+                    "app": "hinge",
+                    "mode": "auto",
+                    "state": "capturing",
+                    "swipes_run": 7,
+                },
             },
         },
     }
     result = _run_node(_runstatus_script(snap))
     assert result["display"] == "block"
-    assert "running" not in result["html"]        # never claim a live worker after the run ended
-    assert "ended" in result["html"]              # ...say the run ended instead
-    assert "capturing" in result["html"]          # ...and surface the abnormal last state
+    assert (
+        "running" not in result["html"]
+    )  # never claim a live worker after the run ended
+    assert "ended" in result["html"]  # ...say the run ended instead
+    assert "capturing" in result["html"]  # ...and surface the abnormal last state
     assert "7 swipes this run" in result["html"]
 
     # Same non-terminal state while the run IS live still reads as running.
-    live = {"running": True, "status": {"apps": {"hinge": dict(snap["status"]["apps"]["hinge"])}}}
+    live = {
+        "running": True,
+        "status": {"apps": {"hinge": dict(snap["status"]["apps"]["hinge"])}},
+    }
     assert "hinge: running" in _run_node(_runstatus_script(live))["html"]
 
 
@@ -3428,9 +4029,17 @@ def test_render_run_status_shows_auto_stopping_instead_of_running_during_the_shu
         pytest.skip("node is not available on this machine")
     snap = {
         "running": True,
-        "status": {"stopping": True, "apps": {
-            "hinge": {"app": "hinge", "mode": "auto", "state": "acting", "swipes_run": 5},
-        }},
+        "status": {
+            "stopping": True,
+            "apps": {
+                "hinge": {
+                    "app": "hinge",
+                    "mode": "auto",
+                    "state": "acting",
+                    "swipes_run": 5,
+                },
+            },
+        },
     }
     result = _run_node(_runstatus_script(snap))
     assert result["display"] == "block"
@@ -3440,9 +4049,17 @@ def test_render_run_status_shows_auto_stopping_instead_of_running_during_the_shu
     # Regression guard: same non-terminal state, NOT stopping, still reads as running.
     not_stopping = {
         "running": True,
-        "status": {"stopping": False, "apps": {
-            "hinge": {"app": "hinge", "mode": "auto", "state": "acting", "swipes_run": 5},
-        }},
+        "status": {
+            "stopping": False,
+            "apps": {
+                "hinge": {
+                    "app": "hinge",
+                    "mode": "auto",
+                    "state": "acting",
+                    "swipes_run": 5,
+                },
+            },
+        },
     }
     assert "hinge: running" in _run_node(_runstatus_script(not_stopping))["html"]
 
@@ -3451,8 +4068,8 @@ def test_tick_drives_one_real_run_status_banner_and_the_separate_training_checkp
     if NODE_BIN is None:
         pytest.skip("node is not available on this machine")
     assert len(re.findall(r'<div\s+id="runbanner"(?:\s|>)', _PAGE)) == 1
-    assert "id=\"trainingbanner\"" not in _PAGE
-    assert "id=\"autobanner\"" not in _PAGE
+    assert 'id="trainingbanner"' not in _PAGE
+    assert 'id="autobanner"' not in _PAGE
     assert re.search(r'<aside\s+id="trainingpanel"(?:\s|>)', _PAGE)
     tick_fn = _extract_js_function(_PAGE, "tick")
     script = (
@@ -3462,8 +4079,7 @@ def test_tick_drives_one_real_run_status_banner_and_the_separate_training_checkp
         "function renderRunStatus(){ calls.push('run-status'); }\n"
         "function tickTrainingCheckpoint(){ calls.push('training'); }\n"
         "function clearHubConnectionLost(){}\n"
-        "function renderHubConnectionLost(){}\n"
-        + tick_fn + "\n"
+        "function renderHubConnectionLost(){}\n" + tick_fn + "\n"
         "tick().then(() => console.log(JSON.stringify(calls)));\n"
     )
     assert _run_node(script) == ["global", "run-status", "training"]
@@ -3480,13 +4096,14 @@ def test_tick_discards_an_out_of_order_status_response():
         "function renderRunStatus(s){renders.push(['run',s.version]);}\n"
         "function tickTrainingCheckpoint(s){renders.push(['training',s.version]);}\n"
         "function clearHubConnectionLost(){}\n"
-        "function renderHubConnectionLost(){}\n"
-        + tick_fn + "\n"
+        "function renderHubConnectionLost(){}\n" + tick_fn + "\n"
         "(async()=>{const first=tick(), second=tick(); resolvers[1]({version:'new'}); await second; "
         "resolvers[0]({version:'old'}); await first; console.log(JSON.stringify(renders));})();\n"
     )
     assert _run_node(script) == [
-        ["global", "new"], ["run", "new"], ["training", "new"],
+        ["global", "new"],
+        ["run", "new"],
+        ["training", "new"],
     ]
 
 
@@ -3507,48 +4124,75 @@ def _training_panel_script(checkpoint, alert_permission="granted", running=False
         # The permission gate the "Allow alerts" fine print is derived from. `window` is absent
         # in node, and _wasRunning is renderGlobal's cross-poll run flag -- both are read for
         # real here rather than stubbed, so the affordance's two preconditions are exercised.
-        + _notification_window_literal(alert_permission) +
-        "let _wasRunning=" + ("true" if running else "false") + ";\n"
+        + _notification_window_literal(alert_permission)
+        + "let _wasRunning="
+        + ("true" if running else "false")
+        + ";\n"
         # The real state synchronizer closes a modal when the checkpoint changes.  This
         # renderer-only harness has no persistent modal, so its inert stand-in keeps these
         # longstanding markup tests deliberately scoped to the panel itself.
         "function setTrainingImageZoom(){}\n"
-        + _extract_js_function(_PAGE, "trainingAlertPermission") + "\n"
-        + _extract_js_function(_PAGE, "shouldOfferTrainingAlertGesture") + "\n"
-        + _extract_js_function(_PAGE, "trainingAlertGestureOffered") + "\n"
-        + _extract_js_function(_PAGE, "escHtml") + "\n"
-        + _extract_js_function(_PAGE, "safeCheckpointImageDataUrl") + "\n"
-        + _extract_js_function(_PAGE, "trainingCheckpointKey") + "\n"
-        + _extract_js_function(_PAGE, "resetTrainingIdempotencyIfCardChanged") + "\n"
-        + _extract_js_function(_PAGE, "resetTrainingBusyIfCardChanged") + "\n"
-        + _extract_js_function(_PAGE, "trainingActionBusyFor") + "\n"
-        + _extract_js_function(_PAGE, "checkpointReviewImages") + "\n"
-        + _extract_js_function(_PAGE, "syncTrainingImageState") + "\n"
-        + _extract_js_function(_PAGE, "renderTrainingCheckpoint") + "\n"
-        + "renderTrainingCheckpoint(" + json.dumps(checkpoint) + ");\n"
+        + _extract_js_function(_PAGE, "trainingAlertPermission")
+        + "\n"
+        + _extract_js_function(_PAGE, "shouldOfferTrainingAlertGesture")
+        + "\n"
+        + _extract_js_function(_PAGE, "trainingAlertGestureOffered")
+        + "\n"
+        + _extract_js_function(_PAGE, "escHtml")
+        + "\n"
+        + _extract_js_function(_PAGE, "safeCheckpointImageDataUrl")
+        + "\n"
+        + _extract_js_function(_PAGE, "trainingCheckpointKey")
+        + "\n"
+        + _extract_js_function(_PAGE, "resetTrainingIdempotencyIfCardChanged")
+        + "\n"
+        + _extract_js_function(_PAGE, "resetTrainingBusyIfCardChanged")
+        + "\n"
+        + _extract_js_function(_PAGE, "trainingActionBusyFor")
+        + "\n"
+        + _extract_js_function(_PAGE, "checkpointReviewImages")
+        + "\n"
+        + _extract_js_function(_PAGE, "syncTrainingImageState")
+        + "\n"
+        + _extract_js_function(_PAGE, "renderTrainingCheckpoint")
+        + "\n"
+        + "renderTrainingCheckpoint("
+        + json.dumps(checkpoint)
+        + ");\n"
         + "console.log(JSON.stringify({display:panel.style.display,html:panel.innerHTML,active:layout.active}));\n"
     )
 
 
 def test_training_panel_is_a_separate_responsive_right_column():
     assert 'class="hub-layout"' in _PAGE
-    assert '.hub-layout { max-width:680px; margin:0 auto; }' in _PAGE
-    assert '.hub-layout.training-active { max-width:1120px; display:grid;' in _PAGE
-    assert 'grid-template-columns:minmax(0,680px) minmax(320px,420px)' in _PAGE
-    assert '@media (max-width:900px)' in _PAGE
+    assert ".hub-layout { max-width:680px; margin:0 auto; }" in _PAGE
+    assert ".hub-layout.training-active { max-width:1120px; display:grid;" in _PAGE
+    assert "grid-template-columns:minmax(0,680px) minmax(320px,420px)" in _PAGE
+    assert "@media (max-width:900px)" in _PAGE
     assert re.search(r'<aside\s+id="trainingpanel"[^>]*aria-live="polite"', _PAGE)
     mode = re.search(r'<select\b[^>]*\bid="mode"[^>]*>(.*?)</select>', _PAGE, re.S)
-    assert mode and 'value="training"' in mode.group(1) and 'auto_testing' not in mode.group(1)
+    assert (
+        mode
+        and 'value="training"' in mode.group(1)
+        and "auto_testing" not in mode.group(1)
+    )
 
 
 def test_training_panel_shows_full_opener_target_image_and_escapes_text():
     if NODE_BIN is None:
         pytest.skip("node is not available on this machine")
     checkpoint = {
-        "run_id": "run-1", "app": "hinge", "profile_token": "profile-1",
-        "approval_token": "approval-1", "phase": "waiting_training_decision", "pending": True,
-        "action": "ready", "item": 3, "item_description": '<img src=x onerror="boom">',
-        "referenced": "your <great> travel photo", "opener": "Line one\nLine <two>",
+        "run_id": "run-1",
+        "app": "hinge",
+        "profile_token": "profile-1",
+        "approval_token": "approval-1",
+        "phase": "waiting_training_decision",
+        "pending": True,
+        "action": "ready",
+        "item": 3,
+        "item_description": '<img src=x onerror="boom">',
+        "referenced": "your <great> travel photo",
+        "opener": "Line one\nLine <two>",
         "image_data_url": "data:image/png;base64,AA==",
     }
     result = _run_node(_training_panel_script(checkpoint))
@@ -3556,19 +4200,26 @@ def test_training_panel_shows_full_opener_target_image_and_escapes_text():
     assert result["active"] is True
     assert 'src="data:image/png;base64,AA=="' in result["html"]
     assert "Line one\nLine &lt;two&gt;" in result["html"]
-    assert "&lt;img" in result["html"] and '<img src=x' not in result["html"]
+    assert "&lt;img" in result["html"] and "<img src=x" not in result["html"]
     assert "your &lt;great&gt; travel photo" in result["html"]
     assert "already written on this target" in result["html"]
-    assert '>Like</button>' in result["html"]
-    assert '>Dislike</button>' in result["html"]
+    assert ">Like</button>" in result["html"]
+    assert ">Dislike</button>" in result["html"]
 
 
 def _training_checkpoint_with(**extra):
     return {
-        "run_id": "run-1", "app": "hinge", "profile_token": "profile-1",
-        "approval_token": "approval-1", "phase": "waiting_training_decision", "pending": True,
-        "action": "ready", "item": 3, "item_description": "the surfing photo",
-        "opener": "Complete opener", "image_data_url": "data:image/png;base64,AA==",
+        "run_id": "run-1",
+        "app": "hinge",
+        "profile_token": "profile-1",
+        "approval_token": "approval-1",
+        "phase": "waiting_training_decision",
+        "pending": True,
+        "action": "ready",
+        "item": 3,
+        "item_description": "the surfing photo",
+        "opener": "Complete opener",
+        "image_data_url": "data:image/png;base64,AA==",
         **extra,
     }
 
@@ -3580,27 +4231,32 @@ def test_training_panel_prints_the_media_ordinal_beside_the_item_description():
     if NODE_BIN is None:
         pytest.skip("node is not available on this machine")
 
-    result = _run_node(_training_panel_script(
-        _training_checkpoint_with(item_media_ordinal=2)))
+    result = _run_node(
+        _training_panel_script(_training_checkpoint_with(item_media_ordinal=2))
+    )
 
     html = result["html"]
     assert "item 3 — the surfing photo · photo/video 2 counting from the top" in html
     # It rides the existing target `.meta` line -- no new element, no new class, no styling.
-    assert 'target · item 3 — the surfing photo · photo/video 2' in html
-    assert html.count('class="meta"') == _run_node(_training_panel_script(
-        _training_checkpoint_with()))["html"].count('class="meta"')
+    assert "target · item 3 — the surfing photo · photo/video 2" in html
+    assert html.count('class="meta"') == _run_node(
+        _training_panel_script(_training_checkpoint_with())
+    )["html"].count('class="meta"')
 
 
-@pytest.mark.parametrize("extra", [
-    {},                              # the field the worker omits when nothing could be counted
-    {"item_media_ordinal": None},
-    {"item_media_ordinal": 0},
-    {"item_media_ordinal": -1},
-    {"item_media_ordinal": "2"},     # a string is never rendered as a count
-    # A float is deliberately NOT in this list: JSON and JavaScript cannot tell 2.0 from 2, so
-    # `Number.isInteger` is not the layer that can reject one. `publish_checkpoint` is, and
-    # tests/test_training_actions.py holds it to that -- a non-`int` never reaches the wire.
-])
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {},  # the field the worker omits when nothing could be counted
+        {"item_media_ordinal": None},
+        {"item_media_ordinal": 0},
+        {"item_media_ordinal": -1},
+        {"item_media_ordinal": "2"},  # a string is never rendered as a count
+        # A float is deliberately NOT in this list: JSON and JavaScript cannot tell 2.0 from 2, so
+        # `Number.isInteger` is not the layer that can reject one. `publish_checkpoint` is, and
+        # tests/test_training_actions.py holds it to that -- a non-`int` never reaches the wire.
+    ],
+)
 def test_training_panel_without_a_media_ordinal_renders_exactly_as_it_did_before(extra):
     """An absent or unusable hint must leave the card byte-identical to today's, including the
     GO/WAIT wording and the decision controls: it is an affordance, never a capability."""
@@ -3611,24 +4267,33 @@ def test_training_panel_without_a_media_ordinal_renders_exactly_as_it_did_before
 
     assert "photo/video" not in result["html"]
     assert "target · item 3 — the surfing photo</div>" in result["html"]
-    assert result["html"] == _run_node(
-        _training_panel_script(_training_checkpoint_with()))["html"]
+    assert (
+        result["html"]
+        == _run_node(_training_panel_script(_training_checkpoint_with()))["html"]
+    )
 
 
 def test_training_panel_embeds_vertical_navigation_in_order_and_starts_on_target():
     if NODE_BIN is None:
         pytest.skip("node is not available on this machine")
     checkpoint = {
-        "run_id": "run-1", "app": "hinge", "profile_token": "profile-1",
-        "approval_token": "approval-1", "phase": "waiting_training_decision", "pending": True,
-        "action": "ready", "item": 3, "opener": "Complete opener",
-        "image_data_url": "data:image/png;base64,AA==", "profile_image_count": 3,
+        "run_id": "run-1",
+        "app": "hinge",
+        "profile_token": "profile-1",
+        "approval_token": "approval-1",
+        "phase": "waiting_training_decision",
+        "pending": True,
+        "action": "ready",
+        "item": 3,
+        "opener": "Complete opener",
+        "image_data_url": "data:image/png;base64,AA==",
+        "profile_image_count": 3,
     }
 
     result = _run_node(_training_panel_script(checkpoint))
     html = result["html"]
-    assert 'id="trainingimageup"' in html and 'scroll up' in html
-    assert 'id="trainingimagedown"' in html and 'scroll down' in html
+    assert 'id="trainingimageup"' in html and "scroll up" in html
+    assert 'id="trainingimagedown"' in html and "scroll down" in html
     assert "target view · 4/4" in html
     assert re.search(r'id="trainingimagedown"[^>]* disabled', html)
     assert not re.search(r'id="trainingimageup"[^>]* disabled', html)
@@ -3637,7 +4302,8 @@ def test_training_panel_embeds_vertical_navigation_in_order_and_starts_on_target
 def test_hidden_training_image_error_overrides_its_normal_flow_display_rule():
     """An empty, hidden error must not expand the image wrap and displace its controls."""
     normal_flow = re.search(
-        r"\.training-image-wrap\s+\.training-image-error\s*\{([^}]*)\}", _PAGE)
+        r"\.training-image-wrap\s+\.training-image-error\s*\{([^}]*)\}", _PAGE
+    )
     hidden = re.search(r"\.training-image-error\[hidden\]\s*\{([^}]*)\}", _PAGE)
 
     assert normal_flow and re.search(r"\bdisplay\s*:\s*block\b", normal_flow.group(1))
@@ -3648,19 +4314,22 @@ def test_hidden_training_image_error_overrides_its_normal_flow_display_rule():
 def test_training_image_navigation_uses_top_to_bottom_profile_snapshot_order():
     if NODE_BIN is None:
         pytest.skip("node is not available on this machine")
-    functions = "\n".join((
-        _extract_js_function(_PAGE, "safeCheckpointImageDataUrl"),
-        _extract_js_function(_PAGE, "trainingCheckpointKey"),
-        _extract_js_function(_PAGE, "checkpointReviewImages"),
-        _extract_js_function(_PAGE, "showTrainingImage"),
-        _extract_js_function(_PAGE, "moveTrainingImage"),
-    ))
+    functions = "\n".join(
+        (
+            _extract_js_function(_PAGE, "safeCheckpointImageDataUrl"),
+            _extract_js_function(_PAGE, "trainingCheckpointKey"),
+            _extract_js_function(_PAGE, "checkpointReviewImages"),
+            _extract_js_function(_PAGE, "showTrainingImage"),
+            _extract_js_function(_PAGE, "moveTrainingImage"),
+        )
+    )
     script = (
         "const elements={}; function $(selector){return elements[selector]||(elements[selector]={setAttribute(){}});}\n"
         "let _trainingImageIndex=3,_trainingImageFailedIndex=null,_trainingImageRenderGeneration=0,_trainingImageFailedGeneration=null,_trainingImageZoomed=false; const _trainingCheckpoint={run_id:'run-1',app:'hinge',"
         "profile_token:'profile-1',approval_token:'approval-1',profile_image_count:3,"
         "image_data_url:'data:image/png;base64,AA=='};\n"
-        + functions + "\nmoveTrainingImage(-1);\n"
+        + functions
+        + "\nmoveTrainingImage(-1);\n"
         "const first={index:_trainingImageIndex,src:elements['#trainingimage'].src,"
         "label:elements['#trainingimageposition'].textContent};\n"
         "moveTrainingImage(-1);\n"
@@ -3683,26 +4352,35 @@ def test_training_preview_up_click_and_failed_or_missing_snapshot_are_recoverabl
     """
     if NODE_BIN is None:
         pytest.skip("node is not available on this machine")
-    functions = "\n".join((
-        _extract_js_function(_PAGE, "escHtml"),
-        _extract_js_function(_PAGE, "safeCheckpointImageDataUrl"),
-        _extract_js_function(_PAGE, "trainingCheckpointKey"),
-        _extract_js_function(_PAGE, "resetTrainingIdempotencyIfCardChanged"),
-        _extract_js_function(_PAGE, "resetTrainingBusyIfCardChanged"),
-        _extract_js_function(_PAGE, "trainingActionBusyFor"),
-        _extract_js_function(_PAGE, "checkpointReviewImages"),
-        _extract_js_function(_PAGE, "syncTrainingImageState"),
-        _extract_js_function(_PAGE, "setTrainingImageNavigationDisabled"),
-        _extract_js_function(_PAGE, "reportTrainingImageLoadError"),
-        _extract_js_function(_PAGE, "showTrainingImage"),
-        _extract_js_function(_PAGE, "moveTrainingImage"),
-        _extract_js_function(_PAGE, "renderTrainingCheckpoint"),
-    ))
+    functions = "\n".join(
+        (
+            _extract_js_function(_PAGE, "escHtml"),
+            _extract_js_function(_PAGE, "safeCheckpointImageDataUrl"),
+            _extract_js_function(_PAGE, "trainingCheckpointKey"),
+            _extract_js_function(_PAGE, "resetTrainingIdempotencyIfCardChanged"),
+            _extract_js_function(_PAGE, "resetTrainingBusyIfCardChanged"),
+            _extract_js_function(_PAGE, "trainingActionBusyFor"),
+            _extract_js_function(_PAGE, "checkpointReviewImages"),
+            _extract_js_function(_PAGE, "syncTrainingImageState"),
+            _extract_js_function(_PAGE, "setTrainingImageNavigationDisabled"),
+            _extract_js_function(_PAGE, "reportTrainingImageLoadError"),
+            _extract_js_function(_PAGE, "showTrainingImage"),
+            _extract_js_function(_PAGE, "moveTrainingImage"),
+            _extract_js_function(_PAGE, "renderTrainingCheckpoint"),
+        )
+    )
     checkpoint = {
-        "run_id": "run-1", "app": "hinge", "profile_token": "profile-1",
-        "approval_token": "approval-1", "phase": "waiting_training_decision",
-        "pending": True, "action": "ready", "item": 3, "opener": "Complete opener",
-        "image_data_url": "data:image/png;base64,AA==", "profile_image_count": 3,
+        "run_id": "run-1",
+        "app": "hinge",
+        "profile_token": "profile-1",
+        "approval_token": "approval-1",
+        "phase": "waiting_training_decision",
+        "pending": True,
+        "action": "ready",
+        "item": 3,
+        "opener": "Complete opener",
+        "image_data_url": "data:image/png;base64,AA==",
+        "profile_image_count": 3,
     }
     script = (
         "function node(){return {hidden:false,disabled:false,src:'',alt:'',textContent:'',attrs:{},"
@@ -3717,15 +4395,18 @@ def test_training_preview_up_click_and_failed_or_missing_snapshot_are_recoverabl
         "function $(selector){return elements[selector]||null;} function setTrainingImageZoom(){}\n"
         "let _trainingCheckpoint=null,_trainingActionBusy=false,_trainingBusyKey='',_trainingBusyRequest=0,"
         "_trainingImageKey='',_trainingImageIndex=0,_trainingImageFailedIndex=null,_trainingImageRenderGeneration=0,_trainingImageFailedGeneration=null,_trainingImageZoomed=false;"
-        "const _trainingIdempotency=new Map();\n"
-        + functions + "\n"
-        "renderTrainingCheckpoint(" + json.dumps(checkpoint) + "); elements['#trainingimageup'].onclick();"
+        "const _trainingIdempotency=new Map();\n" + functions + "\n"
+        "renderTrainingCheckpoint("
+        + json.dumps(checkpoint)
+        + "); elements['#trainingimageup'].onclick();"
         "const afterUp={index:_trainingImageIndex,src:elements['#trainingimage'].src};"
         "elements['#trainingimage'].onerror(); const afterError={index:_trainingImageIndex,"
         "up:elements['#trainingimageup'].disabled,down:elements['#trainingimagedown'].disabled,"
         "like:elements['#traininglike'].disabled,dislike:elements['#trainingdislike'].disabled,"
         "message:elements['#trainingimageerror'].textContent};\n"
-        "checkpointReviewImages=()=>[]; _trainingImageFailedIndex=null; _trainingImageRenderGeneration=0; _trainingImageFailedGeneration=null; renderTrainingCheckpoint(" + json.dumps(checkpoint) + ");"
+        "checkpointReviewImages=()=>[]; _trainingImageFailedIndex=null; _trainingImageRenderGeneration=0; _trainingImageFailedGeneration=null; renderTrainingCheckpoint("
+        + json.dumps(checkpoint)
+        + ");"
         "console.log(JSON.stringify({afterUp,afterError,fallback:panel.innerHTML}));\n"
     )
     result = _run_node(script)
@@ -3734,7 +4415,9 @@ def test_training_preview_up_click_and_failed_or_missing_snapshot_are_recoverabl
     assert "index=2" in result["afterUp"]["src"]
     assert result["afterError"]["index"] == 2
     assert result["afterError"]["up"] is True and result["afterError"]["down"] is True
-    assert result["afterError"]["like"] is True and result["afterError"]["dislike"] is True
+    assert (
+        result["afterError"]["like"] is True and result["afterError"]["dislike"] is True
+    )
     assert "could not be loaded" in result["afterError"]["message"]
     assert "Profile review image was unavailable" in result["fallback"]
     assert 'id="trainingimage"' not in result["fallback"]
@@ -3750,27 +4433,36 @@ def test_training_image_load_error_clears_once_the_same_frame_loads_successfully
     """
     if NODE_BIN is None:
         pytest.skip("node is not available on this machine")
-    functions = "\n".join((
-        _extract_js_function(_PAGE, "escHtml"),
-        _extract_js_function(_PAGE, "safeCheckpointImageDataUrl"),
-        _extract_js_function(_PAGE, "trainingCheckpointKey"),
-        _extract_js_function(_PAGE, "resetTrainingIdempotencyIfCardChanged"),
-        _extract_js_function(_PAGE, "resetTrainingBusyIfCardChanged"),
-        _extract_js_function(_PAGE, "trainingActionBusyFor"),
-        _extract_js_function(_PAGE, "checkpointReviewImages"),
-        _extract_js_function(_PAGE, "syncTrainingImageState"),
-        _extract_js_function(_PAGE, "setTrainingImageNavigationDisabled"),
-        _extract_js_function(_PAGE, "reportTrainingImageLoadError"),
-        _extract_js_function(_PAGE, "clearTrainingImageLoadError"),
-        _extract_js_function(_PAGE, "showTrainingImage"),
-        _extract_js_function(_PAGE, "moveTrainingImage"),
-        _extract_js_function(_PAGE, "renderTrainingCheckpoint"),
-    ))
+    functions = "\n".join(
+        (
+            _extract_js_function(_PAGE, "escHtml"),
+            _extract_js_function(_PAGE, "safeCheckpointImageDataUrl"),
+            _extract_js_function(_PAGE, "trainingCheckpointKey"),
+            _extract_js_function(_PAGE, "resetTrainingIdempotencyIfCardChanged"),
+            _extract_js_function(_PAGE, "resetTrainingBusyIfCardChanged"),
+            _extract_js_function(_PAGE, "trainingActionBusyFor"),
+            _extract_js_function(_PAGE, "checkpointReviewImages"),
+            _extract_js_function(_PAGE, "syncTrainingImageState"),
+            _extract_js_function(_PAGE, "setTrainingImageNavigationDisabled"),
+            _extract_js_function(_PAGE, "reportTrainingImageLoadError"),
+            _extract_js_function(_PAGE, "clearTrainingImageLoadError"),
+            _extract_js_function(_PAGE, "showTrainingImage"),
+            _extract_js_function(_PAGE, "moveTrainingImage"),
+            _extract_js_function(_PAGE, "renderTrainingCheckpoint"),
+        )
+    )
     checkpoint = {
-        "run_id": "run-1", "app": "hinge", "profile_token": "profile-1",
-        "approval_token": "approval-1", "phase": "waiting_training_decision",
-        "pending": True, "action": "ready", "item": 3, "opener": "Complete opener",
-        "image_data_url": "data:image/png;base64,AA==", "profile_image_count": 3,
+        "run_id": "run-1",
+        "app": "hinge",
+        "profile_token": "profile-1",
+        "approval_token": "approval-1",
+        "phase": "waiting_training_decision",
+        "pending": True,
+        "action": "ready",
+        "item": 3,
+        "opener": "Complete opener",
+        "image_data_url": "data:image/png;base64,AA==",
+        "profile_image_count": 3,
     }
     script = (
         "function node(){return {hidden:false,disabled:false,src:'',alt:'',textContent:'',attrs:{},"
@@ -3785,8 +4477,7 @@ def test_training_image_load_error_clears_once_the_same_frame_loads_successfully
         "function $(selector){return elements[selector]||null;} function setTrainingImageZoom(){}\n"
         "let _trainingCheckpoint=null,_trainingActionBusy=false,_trainingBusyKey='',_trainingBusyRequest=0,"
         "_trainingImageKey='',_trainingImageIndex=0,_trainingImageFailedIndex=null,_trainingImageRenderGeneration=0,_trainingImageFailedGeneration=null,_trainingImageZoomed=false;"
-        "const _trainingIdempotency=new Map();\n"
-        + functions + "\n"
+        "const _trainingIdempotency=new Map();\n" + functions + "\n"
         "renderTrainingCheckpoint(" + json.dumps(checkpoint) + ");\n"
         "const beforeError={like:elements['#traininglike'].disabled,dislike:elements['#trainingdislike'].disabled,"
         "image:elements['#trainingimage']};\n"
@@ -3807,8 +4498,13 @@ def test_training_image_load_error_clears_once_the_same_frame_loads_successfully
     )
     result = _run_node(script)
 
-    assert result["beforeError"]["like"] is False and result["beforeError"]["dislike"] is False
-    assert result["afterError"]["like"] is True and result["afterError"]["dislike"] is True
+    assert (
+        result["beforeError"]["like"] is False
+        and result["beforeError"]["dislike"] is False
+    )
+    assert (
+        result["afterError"]["like"] is True and result["afterError"]["dislike"] is True
+    )
     assert result["afterError"]["hidden"] is True and result["afterError"]["up"] is True
     assert result["afterError"]["zoom"] is True
     assert "could not be loaded" in result["afterError"]["message"]
@@ -3816,8 +4512,14 @@ def test_training_image_load_error_clears_once_the_same_frame_loads_successfully
     # come back through the same canDecide gate a first render would have used -- never a
     # direct flip of the disabled property on the old, now-discarded element.
     assert result["afterRecovery"]["sameNode"] is False
-    assert result["afterRecovery"]["like"] is False and result["afterRecovery"]["dislike"] is False
-    assert result["afterRecovery"]["hidden"] is False and result["afterRecovery"]["up"] is False
+    assert (
+        result["afterRecovery"]["like"] is False
+        and result["afterRecovery"]["dislike"] is False
+    )
+    assert (
+        result["afterRecovery"]["hidden"] is False
+        and result["afterRecovery"]["up"] is False
+    )
     assert result["afterRecovery"]["zoom"] is False
     assert "Profile review image was unavailable" not in result["afterRecovery"]["html"]
 
@@ -3831,27 +4533,36 @@ def test_a_superseded_training_image_load_cannot_clear_a_live_failure_latch():
     prevent. Symmetrically, a stale FAILURE must not lock a frame that loaded fine."""
     if NODE_BIN is None:
         pytest.skip("node is not available on this machine")
-    functions = "\n".join((
-        _extract_js_function(_PAGE, "escHtml"),
-        _extract_js_function(_PAGE, "safeCheckpointImageDataUrl"),
-        _extract_js_function(_PAGE, "trainingCheckpointKey"),
-        _extract_js_function(_PAGE, "resetTrainingIdempotencyIfCardChanged"),
-        _extract_js_function(_PAGE, "resetTrainingBusyIfCardChanged"),
-        _extract_js_function(_PAGE, "trainingActionBusyFor"),
-        _extract_js_function(_PAGE, "checkpointReviewImages"),
-        _extract_js_function(_PAGE, "syncTrainingImageState"),
-        _extract_js_function(_PAGE, "setTrainingImageNavigationDisabled"),
-        _extract_js_function(_PAGE, "reportTrainingImageLoadError"),
-        _extract_js_function(_PAGE, "clearTrainingImageLoadError"),
-        _extract_js_function(_PAGE, "showTrainingImage"),
-        _extract_js_function(_PAGE, "moveTrainingImage"),
-        _extract_js_function(_PAGE, "renderTrainingCheckpoint"),
-    ))
+    functions = "\n".join(
+        (
+            _extract_js_function(_PAGE, "escHtml"),
+            _extract_js_function(_PAGE, "safeCheckpointImageDataUrl"),
+            _extract_js_function(_PAGE, "trainingCheckpointKey"),
+            _extract_js_function(_PAGE, "resetTrainingIdempotencyIfCardChanged"),
+            _extract_js_function(_PAGE, "resetTrainingBusyIfCardChanged"),
+            _extract_js_function(_PAGE, "trainingActionBusyFor"),
+            _extract_js_function(_PAGE, "checkpointReviewImages"),
+            _extract_js_function(_PAGE, "syncTrainingImageState"),
+            _extract_js_function(_PAGE, "setTrainingImageNavigationDisabled"),
+            _extract_js_function(_PAGE, "reportTrainingImageLoadError"),
+            _extract_js_function(_PAGE, "clearTrainingImageLoadError"),
+            _extract_js_function(_PAGE, "showTrainingImage"),
+            _extract_js_function(_PAGE, "moveTrainingImage"),
+            _extract_js_function(_PAGE, "renderTrainingCheckpoint"),
+        )
+    )
     checkpoint = {
-        "run_id": "run-1", "app": "hinge", "profile_token": "profile-1",
-        "approval_token": "approval-1", "phase": "waiting_training_decision",
-        "pending": True, "action": "ready", "item": 3, "opener": "Complete opener",
-        "image_data_url": "data:image/png;base64,AA==", "profile_image_count": 3,
+        "run_id": "run-1",
+        "app": "hinge",
+        "profile_token": "profile-1",
+        "approval_token": "approval-1",
+        "phase": "waiting_training_decision",
+        "pending": True,
+        "action": "ready",
+        "item": 3,
+        "opener": "Complete opener",
+        "image_data_url": "data:image/png;base64,AA==",
+        "profile_image_count": 3,
     }
     script = (
         "function node(){return {hidden:false,disabled:false,src:'',alt:'',textContent:'',attrs:{},"
@@ -3867,8 +4578,7 @@ def test_a_superseded_training_image_load_cannot_clear_a_live_failure_latch():
         "let _trainingCheckpoint=null,_trainingActionBusy=false,_trainingBusyKey='',_trainingBusyRequest=0,"
         "_trainingImageKey='',_trainingImageIndex=0,_trainingImageFailedIndex=null,"
         "_trainingImageRenderGeneration=0,_trainingImageFailedGeneration=null,_trainingImageZoomed=false;"
-        "const _trainingIdempotency=new Map();\n"
-        + functions + "\n"
+        "const _trainingIdempotency=new Map();\n" + functions + "\n"
         "renderTrainingCheckpoint(" + json.dumps(checkpoint) + ");\n"
         # Keep a handle on generation 1's <img>, then let an ordinary poll tick re-render.
         "const staleImage=elements['#trainingimage'];\n"
@@ -3910,7 +4620,9 @@ def test_a_superseded_training_image_load_cannot_clear_a_live_failure_latch():
     assert "could not be loaded" in result["afterStaleLoad"]["message"]
     assert result["afterStaleLoad"]["sameNode"] is True
     # The live element's own load is the one event that may unlock, and it re-renders.
-    assert result["recovered"]["like"] is False and result["recovered"]["dislike"] is False
+    assert (
+        result["recovered"]["like"] is False and result["recovered"]["dislike"] is False
+    )
     assert result["recovered"]["sameNode"] is False
     # A superseded onerror likewise cannot lock the frame the reviewer is actually looking at.
     assert result["afterStaleError"]["like"] is False
@@ -3923,16 +4635,18 @@ def test_training_image_zoom_keeps_the_modal_open_and_in_sync_while_navigating()
     both copies of the snapshot without closing the modal or changing its profile binding."""
     if NODE_BIN is None:
         pytest.skip("node is not available on this machine")
-    functions = "\n".join((
-        _extract_js_function(_PAGE, "safeCheckpointImageDataUrl"),
-        _extract_js_function(_PAGE, "trainingCheckpointKey"),
-        _extract_js_function(_PAGE, "checkpointReviewImages"),
-        _extract_js_function(_PAGE, "setTrainingImageZoom"),
-        _extract_js_function(_PAGE, "toggleTrainingImageZoom"),
-        _extract_js_function(_PAGE, "onTrainingImageZoomKeydown"),
-        _extract_js_function(_PAGE, "showTrainingImage"),
-        _extract_js_function(_PAGE, "moveTrainingImage"),
-    ))
+    functions = "\n".join(
+        (
+            _extract_js_function(_PAGE, "safeCheckpointImageDataUrl"),
+            _extract_js_function(_PAGE, "trainingCheckpointKey"),
+            _extract_js_function(_PAGE, "checkpointReviewImages"),
+            _extract_js_function(_PAGE, "setTrainingImageZoom"),
+            _extract_js_function(_PAGE, "toggleTrainingImageZoom"),
+            _extract_js_function(_PAGE, "onTrainingImageZoomKeydown"),
+            _extract_js_function(_PAGE, "showTrainingImage"),
+            _extract_js_function(_PAGE, "moveTrainingImage"),
+        )
+    )
     script = (
         "function node(){return {hidden:false,disabled:false,src:'',alt:'',title:'',"
         "textContent:'',attrs:{},focused:0,setAttribute(k,v){this.attrs[k]=String(v);},"
@@ -3947,8 +4661,7 @@ def test_training_image_zoom_keeps_the_modal_open_and_in_sync_while_navigating()
         "let _trainingImageIndex=3,_trainingImageKey='',_trainingImageFailedIndex=null,_trainingImageRenderGeneration=0,_trainingImageFailedGeneration=null,_trainingImageZoomed=false,"
         "_trainingImageZoomRestoreFocus=null; const _trainingCheckpoint={run_id:'run-1',app:'hinge',"
         "profile_token:'profile-1',approval_token:'approval-1',profile_image_count:3,"
-        "image_data_url:'data:image/png;base64,AA=='};\n"
-        + functions + "\n"
+        "image_data_url:'data:image/png;base64,AA=='};\n" + functions + "\n"
         "toggleTrainingImageZoom(); moveTrainingImage(-1);\n"
         "const afterButtonNav={open:!elements['#trainingimagezoomoverlay'].hidden,"
         "bodyOpen:classes.has('training-image-zoom-open'),index:_trainingImageIndex,"
@@ -3984,23 +4697,34 @@ def test_training_image_zoom_keeps_the_modal_open_and_in_sync_while_navigating()
 
 
 def test_training_zoom_trigger_and_persistent_modal_are_wired_for_click_and_reset():
-    assert re.search(r'<div\s+id="trainingimagezoomoverlay"[^>]*role="dialog"[^>]*aria-modal="true"', _PAGE)
+    assert re.search(
+        r'<div\s+id="trainingimagezoomoverlay"[^>]*role="dialog"[^>]*aria-modal="true"',
+        _PAGE,
+    )
     assert 'id="trainingimagezoomup"' in _PAGE and 'id="trainingimagezoomdown"' in _PAGE
-    assert re.search(r"imageZoomButton\.onclick\s*=\s*\(\)\s*=>\s*toggleTrainingImageZoom\(\)", _PAGE)
+    assert re.search(
+        r"imageZoomButton\.onclick\s*=\s*\(\)\s*=>\s*toggleTrainingImageZoom\(\)", _PAGE
+    )
     # Every path that retires/replaces the card must use the same close routine, so the
     # background's inert state and focus restoration are never left behind.
-    for name in ("syncTrainingImageState", "renderTrainingCheckpoint",
-                 "renderTrainingFeedback", "submitTrainingAction"):
+    for name in (
+        "syncTrainingImageState",
+        "renderTrainingCheckpoint",
+        "renderTrainingFeedback",
+        "submitTrainingAction",
+    ):
         assert "setTrainingImageZoom(false)" in _extract_js_function(_PAGE, name)
 
 
 def test_training_zoom_makes_background_inert_and_traps_tab_until_closed():
     if NODE_BIN is None:
         pytest.skip("node is not available on this machine")
-    functions = "\n".join((
-        _extract_js_function(_PAGE, "setTrainingImageZoom"),
-        _extract_js_function(_PAGE, "onTrainingImageZoomKeydown"),
-    ))
+    functions = "\n".join(
+        (
+            _extract_js_function(_PAGE, "setTrainingImageZoom"),
+            _extract_js_function(_PAGE, "onTrainingImageZoomKeydown"),
+        )
+    )
     script = (
         "let document; function node(){return {hidden:false,disabled:false,attrs:{},focused:0,"
         "setAttribute(k,v){this.attrs[k]=String(v);},getAttribute(k){return this.attrs[k]||'';},"
@@ -4012,7 +4736,8 @@ def test_training_zoom_makes_background_inert_and_traps_tab_until_closed():
         "querySelector(selector){return selector==='.hub-layout'?layout:null;},contains(){return true;}};\n"
         "function $(selector){return elements[selector]||null;} let _trainingImageZoomed=false,"
         "_trainingImageZoomRestoreFocus=null;\n"
-        + functions + "\nsetTrainingImageZoom(true); const opened={inert:layout.inert,"
+        + functions
+        + "\nsetTrainingImageZoom(true); const opened={inert:layout.inert,"
         "visible:!elements['#trainingimagezoomoverlay'].hidden,focused:document.activeElement===elements['#trainingimagezoomclose']};\n"
         "let prevented=0; onTrainingImageZoomKeydown({key:'Tab',shiftKey:false,preventDefault(){prevented+=1;}});"
         "const forward=document.activeElement===elements['#trainingimagezoomup'];\n"
@@ -4028,9 +4753,17 @@ def test_training_zoom_makes_background_inert_and_traps_tab_until_closed():
     result = _run_node(script)
 
     assert result["opened"] == {"inert": True, "visible": True, "focused": True}
-    assert result["forward"] is True and result["last"] is True and result["backward"] is True
+    assert (
+        result["forward"] is True
+        and result["last"] is True
+        and result["backward"] is True
+    )
     assert result["prevented"] == 4
-    assert result["closed"] is True and result["inert"] is False and result["bodyOpen"] is False
+    assert (
+        result["closed"] is True
+        and result["inert"] is False
+        and result["bodyOpen"] is False
+    )
     assert result["focusRestored"] is True
 
 
@@ -4043,25 +4776,39 @@ def test_replacing_a_zoomed_checkpoint_moves_focus_to_its_new_preview_trigger():
     if NODE_BIN is None:
         pytest.skip("node is not available on this machine")
     old = {
-        "run_id": "run-1", "app": "hinge", "profile_token": "old-profile",
-        "approval_token": "old-approval", "phase": "waiting_training_decision",
-        "pending": True, "action": "ready", "item": 1, "opener": "Old opener",
-        "image_data_url": "data:image/png;base64,AA==", "profile_image_count": 1,
+        "run_id": "run-1",
+        "app": "hinge",
+        "profile_token": "old-profile",
+        "approval_token": "old-approval",
+        "phase": "waiting_training_decision",
+        "pending": True,
+        "action": "ready",
+        "item": 1,
+        "opener": "Old opener",
+        "image_data_url": "data:image/png;base64,AA==",
+        "profile_image_count": 1,
     }
-    new = {**old, "profile_token": "new-profile", "approval_token": "new-approval",
-           "item": 2, "opener": "New opener"}
-    functions = "\n".join((
-        _extract_js_function(_PAGE, "escHtml"),
-        _extract_js_function(_PAGE, "safeCheckpointImageDataUrl"),
-        _extract_js_function(_PAGE, "trainingCheckpointKey"),
-        _extract_js_function(_PAGE, "resetTrainingIdempotencyIfCardChanged"),
-        _extract_js_function(_PAGE, "resetTrainingBusyIfCardChanged"),
-        _extract_js_function(_PAGE, "trainingActionBusyFor"),
-        _extract_js_function(_PAGE, "checkpointReviewImages"),
-        _extract_js_function(_PAGE, "syncTrainingImageState"),
-        _extract_js_function(_PAGE, "setTrainingImageZoom"),
-        _extract_js_function(_PAGE, "renderTrainingCheckpoint"),
-    ))
+    new = {
+        **old,
+        "profile_token": "new-profile",
+        "approval_token": "new-approval",
+        "item": 2,
+        "opener": "New opener",
+    }
+    functions = "\n".join(
+        (
+            _extract_js_function(_PAGE, "escHtml"),
+            _extract_js_function(_PAGE, "safeCheckpointImageDataUrl"),
+            _extract_js_function(_PAGE, "trainingCheckpointKey"),
+            _extract_js_function(_PAGE, "resetTrainingIdempotencyIfCardChanged"),
+            _extract_js_function(_PAGE, "resetTrainingBusyIfCardChanged"),
+            _extract_js_function(_PAGE, "trainingActionBusyFor"),
+            _extract_js_function(_PAGE, "checkpointReviewImages"),
+            _extract_js_function(_PAGE, "syncTrainingImageState"),
+            _extract_js_function(_PAGE, "setTrainingImageZoom"),
+            _extract_js_function(_PAGE, "renderTrainingCheckpoint"),
+        )
+    )
     script = (
         "let document; function node(name){return {name,hidden:false,disabled:false,attrs:{},"
         "focused:0,connected:true,setAttribute(k,v){this.attrs[k]=String(v);},"
@@ -4077,12 +4824,22 @@ def test_replacing_a_zoomed_checkpoint_moves_focus_to_its_new_preview_trigger():
         "if(on)bodyClasses.add(name);else bodyClasses.delete(name);}}},querySelector(selector){"
         "return selector==='.hub-layout'?layout:null;},contains(item){return !!item.connected;}};\n"
         "function $(selector){return elements[selector]||null;}\n"
-        "let _trainingCheckpoint=" + json.dumps(old) + ",_trainingActionBusy=false,_trainingBusyKey='',"
-        "_trainingBusyRequest=0,_trainingImageKey=" + json.dumps(json.dumps([
-            old["run_id"], old["app"], old["profile_token"], old["approval_token"]])) + ","
+        "let _trainingCheckpoint="
+        + json.dumps(old)
+        + ",_trainingActionBusy=false,_trainingBusyKey='',"
+        "_trainingBusyRequest=0,_trainingImageKey="
+        + json.dumps(
+            json.dumps(
+                [old["run_id"], old["app"], old["profile_token"], old["approval_token"]]
+            )
+        )
+        + ","
         "_trainingImageIndex=1,_trainingImageFailedIndex=null,_trainingImageRenderGeneration=0,_trainingImageFailedGeneration=null,_trainingImageZoomed=true,_trainingImageZoomRestoreFocus=oldTrigger;"
         "const _trainingIdempotency=new Map();\n"
-        + functions + "\nrenderTrainingCheckpoint(" + json.dumps(new) + ");\n"
+        + functions
+        + "\nrenderTrainingCheckpoint("
+        + json.dumps(new)
+        + ");\n"
         "const replacement=elements['#trainingimagezoom']; console.log(JSON.stringify({"
         "focusOnReplacement:document.activeElement===replacement,replacementFocused:replacement.focused,"
         "oldFocused:oldTrigger.focused,oldConnected:oldTrigger.connected,overlayHidden:elements['#trainingimagezoomoverlay'].hidden,"
@@ -4091,9 +4848,14 @@ def test_replacing_a_zoomed_checkpoint_moves_focus_to_its_new_preview_trigger():
     result = _run_node(script)
 
     assert result == {
-        "focusOnReplacement": True, "replacementFocused": 1,
-        "oldFocused": 1, "oldConnected": False, "overlayHidden": True,
-        "zoomed": False, "inert": False, "bodyLocked": False,
+        "focusOnReplacement": True,
+        "replacementFocused": 1,
+        "oldFocused": 1,
+        "oldConnected": False,
+        "overlayHidden": True,
+        "zoomed": False,
+        "inert": False,
+        "bodyLocked": False,
     }
 
 
@@ -4107,14 +4869,16 @@ def test_training_panel_hides_and_restores_the_original_single_column_layout():
 def test_actionable_training_checkpoint_requests_one_silent_browser_notification():
     if NODE_BIN is None:
         pytest.skip("node is not available on this machine")
-    functions = "\n".join((
-        _extract_js_function(_PAGE, "trainingCheckpointKey"),
-        _extract_js_function(_PAGE, "trainingAlertPermission"),
-        _extract_js_function(_PAGE, "trainingAlertHintText"),
-        _extract_js_function(_PAGE, "syncTrainingAlertHint"),
-        _extract_js_function(_PAGE, "reportTrainingBrowserNotification"),
-        _extract_js_function(_PAGE, "notifyTrainingCheckpoint"),
-    ))
+    functions = "\n".join(
+        (
+            _extract_js_function(_PAGE, "trainingCheckpointKey"),
+            _extract_js_function(_PAGE, "trainingAlertPermission"),
+            _extract_js_function(_PAGE, "trainingAlertHintText"),
+            _extract_js_function(_PAGE, "syncTrainingAlertHint"),
+            _extract_js_function(_PAGE, "reportTrainingBrowserNotification"),
+            _extract_js_function(_PAGE, "notifyTrainingCheckpoint"),
+        )
+    )
     script = (
         "const hint={textContent:''},posts=[],notices=[]; let focused=0;\n"
         "class BrowserNotification { constructor(title,options){this.title=title;this.options=options;"
@@ -4123,7 +4887,8 @@ def test_actionable_training_checkpoint_requests_one_silent_browser_notification
         "focus(){focused+=1;}}; function $(selector){return selector==='#alerthint'?hint:null;}\n"
         "function postJSON(path,body){posts.push({path,body});return Promise.resolve({ok:true});}\n"
         "let _trainingBrowserAlertedKey='',_trainingBrowserPermissionPendingKey='',_wasRunning=true;\n"
-        + functions + "\n"
+        + functions
+        + "\n"
         "const card={run_id:'run-1',app:'hinge',profile_token:'profile-1',"
         "approval_token:'approval-1',pending:true,phase:'waiting_training_decision',action:'ready'};\n"
         "notifyTrainingCheckpoint(card);notifyTrainingCheckpoint(card);notices[0].onclick();\n"
@@ -4136,8 +4901,12 @@ def test_actionable_training_checkpoint_requests_one_silent_browser_notification
     assert result["options"]["requireInteraction"] is True
     assert result["post"] == {
         "path": "/api/training/alert",
-        "body": {"run_id": "run-1", "app": "hinge", "profile_token": "profile-1",
-                 "notification": "requested"},
+        "body": {
+            "run_id": "run-1",
+            "app": "hinge",
+            "profile_token": "profile-1",
+            "notification": "requested",
+        },
     }
     assert result["focused"] == result["closed"] == 1
     assert "browser banners allowed" in result["hint"]
@@ -4145,7 +4914,8 @@ def test_actionable_training_checkpoint_requests_one_silent_browser_notification
 
 def test_training_start_requests_browser_permission_inside_click_handler():
     assert "prepareTrainingBrowserNotifications()" in _extract_js_function(
-        _PAGE, "startRunFromControls")
+        _PAGE, "startRunFromControls"
+    )
     assert re.search(r'id="alerthint"[^>]*role="status"', _PAGE)
 
 
@@ -4171,10 +4941,17 @@ def test_alert_hint_names_a_gesture_the_operator_can_actually_press():
     if NODE_BIN is None:
         pytest.skip("node is not available on this machine")
 
-    hints = _run_node(_alert_hint_script([
-        ["default", False], ["default", True],
-        ["granted", True], ["denied", True], ["", True],
-    ]))
+    hints = _run_node(
+        _alert_hint_script(
+            [
+                ["default", False],
+                ["default", True],
+                ["granted", True],
+                ["denied", True],
+                ["", True],
+            ]
+        )
+    )
     idle_default, live_default, granted, denied, unsupported = hints
 
     assert "Start Training" in idle_default and "Allow alerts" not in idle_default
@@ -4199,17 +4976,34 @@ def test_alert_hint_is_rewritten_on_the_running_transition_and_only_then():
     if NODE_BIN is None:
         pytest.skip("node is not available on this machine")
 
-    results = _run_node(_render_global_script([
-        {"snap": {"running": False, "status": None}},        # no change from the initial state
-        {"snap": {"running": True, "status": {"phase": "live", "budget_spent": 0}}},
-        {"snap": {"running": True, "status": {"phase": "live", "budget_spent": 0}}},
-        {"snap": {"running": False, "status": None}},
-    ], alert_permission="default"))
+    results = _run_node(
+        _render_global_script(
+            [
+                {
+                    "snap": {"running": False, "status": None}
+                },  # no change from the initial state
+                {
+                    "snap": {
+                        "running": True,
+                        "status": {"phase": "live", "budget_spent": 0},
+                    }
+                },
+                {
+                    "snap": {
+                        "running": True,
+                        "status": {"phase": "live", "budget_spent": 0},
+                    }
+                },
+                {"snap": {"running": False, "status": None}},
+            ],
+            alert_permission="default",
+        )
+    )
 
-    assert results[0]["alertHint"] == ""                     # nothing flipped -> no rewrite
-    assert "Allow alerts" in results[1]["alertHint"]         # Start just became unpressable
-    assert results[2]["alertHint"] == ""                     # still live -> no aria-live churn
-    assert "Start Training" in results[3]["alertHint"]       # Start is pressable again
+    assert results[0]["alertHint"] == ""  # nothing flipped -> no rewrite
+    assert "Allow alerts" in results[1]["alertHint"]  # Start just became unpressable
+    assert results[2]["alertHint"] == ""  # still live -> no aria-live churn
+    assert "Start Training" in results[3]["alertHint"]  # Start is pressable again
 
 
 def test_live_run_at_default_permission_offers_an_enabled_allow_alerts_control():
@@ -4223,38 +5017,53 @@ def test_live_run_at_default_permission_offers_an_enabled_allow_alerts_control()
     if NODE_BIN is None:
         pytest.skip("node is not available on this machine")
 
-    html = _run_node(_training_panel_script(
-        _training_checkpoint_with(), alert_permission="default", running=True))["html"]
+    html = _run_node(
+        _training_panel_script(
+            _training_checkpoint_with(), alert_permission="default", running=True
+        )
+    )["html"]
 
     assert 'id="trainingallowalerts"' in html
     assert not re.search(r'id="trainingallowalerts"[^>]* disabled', html)
     assert ">Allow alerts</button>" in html
     # Fine print, not a decision: plain button inside a `.meta` row, after Like/Dislike.
-    assert 'id="trainingalertgesture"' in html and 'class="meta" id="trainingalertgesture"' in html
+    assert (
+        'id="trainingalertgesture"' in html
+        and 'class="meta" id="trainingalertgesture"' in html
+    )
     assert not re.search(r'id="trainingallowalerts"[^>]*class="(primary|danger)"', html)
     assert html.index('id="trainingallowalerts"') > html.index('id="trainingdislike"')
     # It adds no GO/WAIT cue and does not restyle one (hands are banned outright; circles belong
     # to the run banner, not to this affordance).
-    assert "🟢" not in html and "🔴" not in html and "👍" not in html and "👎" not in html
+    assert (
+        "🟢" not in html and "🔴" not in html and "👍" not in html and "👎" not in html
+    )
     # The decision controls themselves are untouched by its presence.
     assert ">Like</button>" in html and ">Dislike</button>" in html
     assert not re.search(r'id="traininglike"[^>]* disabled', html)
 
 
-@pytest.mark.parametrize("permission,running", [
-    ("granted", True),      # already armed -- nothing to ask for
-    ("denied", True),       # a denied permission can never be re-asked from a page
-    ("default", False),     # Start is right there and enabled; it is the gesture
-    (None, True),           # no Notification API at all
-])
+@pytest.mark.parametrize(
+    "permission,running",
+    [
+        ("granted", True),  # already armed -- nothing to ask for
+        ("denied", True),  # a denied permission can never be re-asked from a page
+        ("default", False),  # Start is right there and enabled; it is the gesture
+        (None, True),  # no Notification API at all
+    ],
+)
 def test_allow_alerts_control_is_absent_whenever_start_or_the_answer_already_settles_it(
-        permission, running):
+    permission, running
+):
     """Both halves of the precondition are load-bearing, so neither alone may render it."""
     if NODE_BIN is None:
         pytest.skip("node is not available on this machine")
 
-    html = _run_node(_training_panel_script(
-        _training_checkpoint_with(), alert_permission=permission, running=running))["html"]
+    html = _run_node(
+        _training_panel_script(
+            _training_checkpoint_with(), alert_permission=permission, running=running
+        )
+    )["html"]
 
     assert "trainingallowalerts" not in html and "trainingalertgesture" not in html
 
@@ -4264,7 +5073,8 @@ def test_allow_alerts_control_is_absent_whenever_start_or_the_answer_already_set
 # out here as ONE constant on purpose -- see the test below for what a symmetric comparison
 # cannot see.
 _TRAINING_CARD_SEAM = (
-    '</div>\n       <div class="meta" id="trainingactionhint" style="margin-top:8px">')
+    '</div>\n       <div class="meta" id="trainingactionhint" style="margin-top:8px">'
+)
 
 
 def test_card_without_the_allow_alerts_control_is_byte_identical_to_the_plain_card():
@@ -4281,14 +5091,19 @@ def test_card_without_the_allow_alerts_control_is_byte_identical_to_the_plain_ca
     if NODE_BIN is None:
         pytest.skip("node is not available on this machine")
 
-    with_control = _run_node(_training_panel_script(
-        _training_checkpoint_with(), alert_permission="default", running=True))["html"]
+    with_control = _run_node(
+        _training_panel_script(
+            _training_checkpoint_with(), alert_permission="default", running=True
+        )
+    )["html"]
     without = _run_node(_training_panel_script(_training_checkpoint_with()))["html"]
 
     assert without.count(_TRAINING_CARD_SEAM) == 1
     block = re.search(
         r'\n       <div class="meta" id="trainingalertgesture".*?\n       </div>',
-        with_control, re.S)
+        with_control,
+        re.S,
+    )
     assert block, "the affordance should render as one self-contained fine-print row"
     lifted = with_control.replace(block.group(0), "", 1)
     assert lifted.count(_TRAINING_CARD_SEAM) == 1
@@ -4313,23 +5128,25 @@ def test_allow_alerts_click_requests_permission_and_buys_exactly_one_repaint():
     """
     if NODE_BIN is None:
         pytest.skip("node is not available on this machine")
-    functions = "\n".join((
-        _extract_js_function(_PAGE, "escHtml"),
-        _extract_js_function(_PAGE, "safeCheckpointImageDataUrl"),
-        _extract_js_function(_PAGE, "trainingCheckpointKey"),
-        _extract_js_function(_PAGE, "resetTrainingIdempotencyIfCardChanged"),
-        _extract_js_function(_PAGE, "resetTrainingBusyIfCardChanged"),
-        _extract_js_function(_PAGE, "trainingActionBusyFor"),
-        _extract_js_function(_PAGE, "checkpointReviewImages"),
-        _extract_js_function(_PAGE, "syncTrainingImageState"),
-        _extract_js_function(_PAGE, "trainingAlertPermission"),
-        _extract_js_function(_PAGE, "trainingAlertHintText"),
-        _extract_js_function(_PAGE, "shouldOfferTrainingAlertGesture"),
-        _extract_js_function(_PAGE, "trainingAlertGestureOffered"),
-        _extract_js_function(_PAGE, "syncTrainingAlertHint"),
-        _extract_js_function(_PAGE, "prepareTrainingBrowserNotifications"),
-        _extract_js_function(_PAGE, "renderTrainingCheckpoint"),
-    ))
+    functions = "\n".join(
+        (
+            _extract_js_function(_PAGE, "escHtml"),
+            _extract_js_function(_PAGE, "safeCheckpointImageDataUrl"),
+            _extract_js_function(_PAGE, "trainingCheckpointKey"),
+            _extract_js_function(_PAGE, "resetTrainingIdempotencyIfCardChanged"),
+            _extract_js_function(_PAGE, "resetTrainingBusyIfCardChanged"),
+            _extract_js_function(_PAGE, "trainingActionBusyFor"),
+            _extract_js_function(_PAGE, "checkpointReviewImages"),
+            _extract_js_function(_PAGE, "syncTrainingImageState"),
+            _extract_js_function(_PAGE, "trainingAlertPermission"),
+            _extract_js_function(_PAGE, "trainingAlertHintText"),
+            _extract_js_function(_PAGE, "shouldOfferTrainingAlertGesture"),
+            _extract_js_function(_PAGE, "trainingAlertGestureOffered"),
+            _extract_js_function(_PAGE, "syncTrainingAlertHint"),
+            _extract_js_function(_PAGE, "prepareTrainingBrowserNotifications"),
+            _extract_js_function(_PAGE, "renderTrainingCheckpoint"),
+        )
+    )
     script = (
         "function node(){return {hidden:false,disabled:false,src:'',alt:'',textContent:'',"
         "setAttribute(){},removeAttribute(){}};}\n"
@@ -4350,8 +5167,7 @@ def test_allow_alerts_click_requests_permission_and_buys_exactly_one_repaint():
         "_trainingImageFailedIndex=null,_trainingImageRenderGeneration=0,"
         "_trainingImageFailedGeneration=null,_wasRunning=true,"
         "_trainingPollRenderSignature='a-waiting-card';\n"
-        "const _trainingIdempotency=new Map();\n"
-        + functions + "\n"
+        "const _trainingIdempotency=new Map();\n" + functions + "\n"
         "renderTrainingCheckpoint(" + json.dumps(_training_checkpoint_with()) + ");\n"
         "const rendered=!!elements['#trainingallowalerts'];\n"
         "elements['#trainingallowalerts'].onclick();\n"
@@ -4396,16 +5212,18 @@ def test_checkpoint_retries_after_an_open_notification_permission_prompt_resolve
     """
     if NODE_BIN is None:
         pytest.skip("node is not available on this machine")
-    functions = "\n".join((
-        _extract_js_function(_PAGE, "trainingCheckpointKey"),
-        _extract_js_function(_PAGE, "trainingPollRenderFingerprint"),
-        _extract_js_function(_PAGE, "renderTrainingCheckpointFromPoll"),
-        _extract_js_function(_PAGE, "trainingAlertPermission"),
-        _extract_js_function(_PAGE, "trainingAlertHintText"),
-        _extract_js_function(_PAGE, "syncTrainingAlertHint"),
-        _extract_js_function(_PAGE, "reportTrainingBrowserNotification"),
-        _extract_js_function(_PAGE, "notifyTrainingCheckpoint"),
-    ))
+    functions = "\n".join(
+        (
+            _extract_js_function(_PAGE, "trainingCheckpointKey"),
+            _extract_js_function(_PAGE, "trainingPollRenderFingerprint"),
+            _extract_js_function(_PAGE, "renderTrainingCheckpointFromPoll"),
+            _extract_js_function(_PAGE, "trainingAlertPermission"),
+            _extract_js_function(_PAGE, "trainingAlertHintText"),
+            _extract_js_function(_PAGE, "syncTrainingAlertHint"),
+            _extract_js_function(_PAGE, "reportTrainingBrowserNotification"),
+            _extract_js_function(_PAGE, "notifyTrainingCheckpoint"),
+        )
+    )
     script = (
         "const hint={textContent:''},posts=[],notices=[]; class BrowserNotification {"
         "constructor(){notices.push(this);} } BrowserNotification.permission='default';"
@@ -4435,29 +5253,54 @@ def test_training_panel_disables_both_decisions_when_review_data_is_incomplete()
     if NODE_BIN is None:
         pytest.skip("node is not available on this machine")
     checkpoint = {
-        "run_id": "run-1", "app": "hinge", "profile_token": "profile-1",
-        "approval_token": "approval-1", "phase": "waiting_training_decision", "pending": True,
-        "action": "ready", "item": None, "opener": None, "image_data_url": "",
+        "run_id": "run-1",
+        "app": "hinge",
+        "profile_token": "profile-1",
+        "approval_token": "approval-1",
+        "phase": "waiting_training_decision",
+        "pending": True,
+        "action": "ready",
+        "item": None,
+        "opener": None,
+        "image_data_url": "",
     }
     result = _run_node(_training_panel_script(checkpoint))
     assert "Review data is incomplete" in result["html"]
-    assert 'id="traininglike" class="primary" aria-label="Like — send opener" disabled' in result["html"]
-    assert 'id="trainingdislike" class="danger" aria-label="Dislike — pass this profile" disabled' in result["html"]
+    assert (
+        'id="traininglike" class="primary" aria-label="Like — send opener" disabled'
+        in result["html"]
+    )
+    assert (
+        'id="trainingdislike" class="danger" aria-label="Dislike — pass this profile" disabled'
+        in result["html"]
+    )
 
 
 def test_training_panel_keeps_queued_decision_visible_but_not_actionable():
     if NODE_BIN is None:
         pytest.skip("node is not available on this machine")
     checkpoint = {
-        "run_id": "run-1", "app": "hinge", "profile_token": "profile-1",
-        "approval_token": "approval-1", "phase": "waiting_training_decision", "pending": False,
-        "action": "queued", "command": "like", "opener": "typed opener",
+        "run_id": "run-1",
+        "app": "hinge",
+        "profile_token": "profile-1",
+        "approval_token": "approval-1",
+        "phase": "waiting_training_decision",
+        "pending": False,
+        "action": "queued",
+        "command": "like",
+        "opener": "typed opener",
         "image_data_url": "data:image/png;base64,AA==",
     }
     result = _run_node(_training_panel_script(checkpoint))
     assert "Like is queued; waiting for the worker to claim it." in result["html"]
-    assert 'id="traininglike" class="primary" aria-label="Like — send opener" disabled' in result["html"]
-    assert 'id="trainingdislike" class="danger" aria-label="Dislike — pass this profile" disabled' in result["html"]
+    assert (
+        'id="traininglike" class="primary" aria-label="Like — send opener" disabled'
+        in result["html"]
+    )
+    assert (
+        'id="trainingdislike" class="danger" aria-label="Dislike — pass this profile" disabled'
+        in result["html"]
+    )
 
 
 def test_training_feedback_surfaces_terminal_status_and_reason():
@@ -4469,11 +5312,16 @@ def test_training_feedback_surfaces_terminal_status_and_reason():
         "const document={querySelector:(selector)=>selector==='.hub-layout'?layout:null};\n"
         "function $(selector){ return selector==='#trainingpanel' ? panel : null; }\n"
         "let _trainingCheckpoint={run_id:'r',app:'hinge',profile_token:'p',approval_token:'a'}, _trainingActionBusy=false, _trainingBusyKey='', _trainingBusyRequest=0; const _trainingIdempotency=new Map();\n"
-        + _extract_js_function(_PAGE, "escHtml") + "\n"
-        + _extract_js_function(_PAGE, "trainingCheckpointKey") + "\n"
-        + _extract_js_function(_PAGE, "resetTrainingIdempotencyIfCardChanged") + "\n"
-        + _extract_js_function(_PAGE, "resetTrainingBusyIfCardChanged") + "\n"
-        + _extract_js_function(_PAGE, "renderTrainingFeedback") + "\n"
+        + _extract_js_function(_PAGE, "escHtml")
+        + "\n"
+        + _extract_js_function(_PAGE, "trainingCheckpointKey")
+        + "\n"
+        + _extract_js_function(_PAGE, "resetTrainingIdempotencyIfCardChanged")
+        + "\n"
+        + _extract_js_function(_PAGE, "resetTrainingBusyIfCardChanged")
+        + "\n"
+        + _extract_js_function(_PAGE, "renderTrainingFeedback")
+        + "\n"
         + "renderTrainingFeedback({command:'dislike',status:'failed',reason:'device verification failed'});\n"
         + "console.log(JSON.stringify({html:panel.innerHTML,display:panel.style.display,active:layout.active}));\n"
     )
@@ -4491,7 +5339,8 @@ def test_stopping_immediately_replaces_actionable_checkpoint_with_non_actionable
         "function selectRunApps(status){return Object.values(status.apps).filter(a=>a.mode==='training'||a.mode==='auto');}\n"
         "function renderTrainingFeedback(result,message){seen={result,message};}\n"
         "function renderTrainingCheckpoint(){throw new Error('must not render an actionable card while stopping');}\n"
-        + _extract_js_function(_PAGE, "tickTrainingCheckpoint") + "\n"
+        + _extract_js_function(_PAGE, "tickTrainingCheckpoint")
+        + "\n"
         + "tickTrainingCheckpoint({running:true,status:{run_id:'run-1',stopping:true,apps:{hinge:{app:'hinge',mode:'training'}}}}).then(()=>console.log(JSON.stringify(seen)));\n"
     )
     result = _run_node(script)
@@ -4504,22 +5353,31 @@ def test_training_panel_accepts_only_png_image_urls():
     if NODE_BIN is None:
         pytest.skip("node is not available on this machine")
     fn = _extract_js_function(_PAGE, "safeCheckpointImageDataUrl")
-    script = (fn + "\nconsole.log(JSON.stringify(["
-              "safeCheckpointImageDataUrl('data:image/png;base64,AA=='),"
-              "safeCheckpointImageDataUrl('data:image/jpeg;base64,AA=='),"
-              "safeCheckpointImageDataUrl('data:image/svg+xml;base64,PHN2Zz4='),"
-              "safeCheckpointImageDataUrl('https://example.test/a.png')" "]));\n")
+    script = (
+        fn + "\nconsole.log(JSON.stringify(["
+        "safeCheckpointImageDataUrl('data:image/png;base64,AA=='),"
+        "safeCheckpointImageDataUrl('data:image/jpeg;base64,AA=='),"
+        "safeCheckpointImageDataUrl('data:image/svg+xml;base64,PHN2Zz4='),"
+        "safeCheckpointImageDataUrl('https://example.test/a.png')"
+        "]));\n"
+    )
     assert _run_node(script) == ["data:image/png;base64,AA==", "", "", ""]
 
 
 def test_training_choice_posts_the_bound_checkpoint_and_idempotency_token():
     if NODE_BIN is None:
         pytest.skip("node is not available on this machine")
-    fns = (_extract_js_function(_PAGE, "safeCheckpointImageDataUrl") + "\n"
-           + _extract_js_function(_PAGE, "trainingCheckpointKey") + "\n"
-           + _extract_js_function(_PAGE, "trainingActionBusyFor") + "\n"
-           + _extract_js_function(_PAGE, "trainingActionToken") + "\n"
-           + _extract_js_function(_PAGE, "submitTrainingAction"))
+    fns = (
+        _extract_js_function(_PAGE, "safeCheckpointImageDataUrl")
+        + "\n"
+        + _extract_js_function(_PAGE, "trainingCheckpointKey")
+        + "\n"
+        + _extract_js_function(_PAGE, "trainingActionBusyFor")
+        + "\n"
+        + _extract_js_function(_PAGE, "trainingActionToken")
+        + "\n"
+        + _extract_js_function(_PAGE, "submitTrainingAction")
+    )
     script = (
         "const hubClientId='hub-client';\n"
         "const window={crypto:{randomUUID:()=> 'nonce'}}; const crypto=window.crypto;\n"
@@ -4529,13 +5387,17 @@ def test_training_choice_posts_the_bound_checkpoint_and_idempotency_token():
         "function renderTrainingCheckpoint(checkpoint,message){renders.push([checkpoint,message]);}\n"
         "async function postJSON(path,body){posted={path,body};return {ok:true};}\n"
         "function tick(){ticks+=1;}\n"
-        + fns + "\nsubmitTrainingAction('like').then(()=>console.log(JSON.stringify({posted,renders,ticks})));\n"
+        + fns
+        + "\nsubmitTrainingAction('like').then(()=>console.log(JSON.stringify({posted,renders,ticks})));\n"
     )
     result = _run_node(script)
     assert result["posted"]["path"] == "/api/training/action"
     assert result["posted"]["body"] == {
-        "command": "like", "run_id": "run-1", "app": "hinge",
-        "profile_token": "profile-1", "approval_token": "approval-1",
+        "command": "like",
+        "run_id": "run-1",
+        "app": "hinge",
+        "profile_token": "profile-1",
+        "approval_token": "approval-1",
         "idempotency_token": "hub-client-nonce",
     }
     assert result["ticks"] == 1
@@ -4544,11 +5406,17 @@ def test_training_choice_posts_the_bound_checkpoint_and_idempotency_token():
 def test_training_choice_does_not_post_when_the_review_data_is_missing():
     if NODE_BIN is None:
         pytest.skip("node is not available on this machine")
-    fns = (_extract_js_function(_PAGE, "safeCheckpointImageDataUrl") + "\n"
-           + _extract_js_function(_PAGE, "trainingCheckpointKey") + "\n"
-           + _extract_js_function(_PAGE, "trainingActionBusyFor") + "\n"
-           + _extract_js_function(_PAGE, "trainingActionToken") + "\n"
-           + _extract_js_function(_PAGE, "submitTrainingAction"))
+    fns = (
+        _extract_js_function(_PAGE, "safeCheckpointImageDataUrl")
+        + "\n"
+        + _extract_js_function(_PAGE, "trainingCheckpointKey")
+        + "\n"
+        + _extract_js_function(_PAGE, "trainingActionBusyFor")
+        + "\n"
+        + _extract_js_function(_PAGE, "trainingActionToken")
+        + "\n"
+        + _extract_js_function(_PAGE, "submitTrainingAction")
+    )
     script = (
         "const hubClientId='hub-client';\n"
         "const window={crypto:{randomUUID:()=> 'nonce'}}; const crypto=window.crypto;\n"
@@ -4558,7 +5426,8 @@ def test_training_choice_does_not_post_when_the_review_data_is_missing():
         "function renderTrainingCheckpoint(checkpoint,message){renders.push([checkpoint,message]);}\n"
         "async function postJSON(path,body){posted={path,body};return {ok:true};}\n"
         "function tick(){ticks+=1;}\n"
-        + fns + "\nsubmitTrainingAction('like').then(()=>console.log(JSON.stringify({posted,renders,ticks})));\n"
+        + fns
+        + "\nsubmitTrainingAction('like').then(()=>console.log(JSON.stringify({posted,renders,ticks})));\n"
     )
     assert _run_node(script) == {"posted": None, "renders": [], "ticks": 0}
 
@@ -4567,11 +5436,17 @@ def test_training_action_failure_reenables_the_live_card_before_the_next_poll():
     """A dropped local POST must not leave Like/Dislike disabled until a later poll succeeds."""
     if NODE_BIN is None:
         pytest.skip("node is not available on this machine")
-    fns = (_extract_js_function(_PAGE, "safeCheckpointImageDataUrl") + "\n"
-           + _extract_js_function(_PAGE, "trainingCheckpointKey") + "\n"
-           + _extract_js_function(_PAGE, "trainingActionBusyFor") + "\n"
-           + _extract_js_function(_PAGE, "trainingActionToken") + "\n"
-           + _extract_js_function(_PAGE, "submitTrainingAction"))
+    fns = (
+        _extract_js_function(_PAGE, "safeCheckpointImageDataUrl")
+        + "\n"
+        + _extract_js_function(_PAGE, "trainingCheckpointKey")
+        + "\n"
+        + _extract_js_function(_PAGE, "trainingActionBusyFor")
+        + "\n"
+        + _extract_js_function(_PAGE, "trainingActionToken")
+        + "\n"
+        + _extract_js_function(_PAGE, "submitTrainingAction")
+    )
     script = (
         "const hubClientId='hub-client';\n"
         "const window={crypto:{randomUUID:()=> 'nonce'}}; const crypto=window.crypto;\n"
@@ -4581,7 +5456,8 @@ def test_training_action_failure_reenables_the_live_card_before_the_next_poll():
         "function renderTrainingCheckpoint(checkpoint,message){renders.push({message,busy:_trainingActionBusy,checkpoint});}\n"
         "async function postJSON(){return {ok:false,result:{reason:'stale approval'}};}\n"
         "function tick(){ticks+=1;}\n"
-        + fns + "\nsubmitTrainingAction('dislike').then(()=>console.log(JSON.stringify({renders,ticks,busy:_trainingActionBusy})));\n"
+        + fns
+        + "\nsubmitTrainingAction('dislike').then(()=>console.log(JSON.stringify({renders,ticks,busy:_trainingActionBusy})));\n"
     )
     result = _run_node(script)
     assert result["busy"] is False
@@ -4594,12 +5470,19 @@ def test_old_hung_training_post_cannot_change_new_card_busy_state():
     """A delayed request from a stopped run must not strand or unlock a new card."""
     if NODE_BIN is None:
         pytest.skip("node is not available on this machine")
-    fns = (_extract_js_function(_PAGE, "safeCheckpointImageDataUrl") + "\n"
-           + _extract_js_function(_PAGE, "trainingCheckpointKey") + "\n"
-           + _extract_js_function(_PAGE, "resetTrainingBusyIfCardChanged") + "\n"
-           + _extract_js_function(_PAGE, "trainingActionBusyFor") + "\n"
-           + _extract_js_function(_PAGE, "trainingActionToken") + "\n"
-           + _extract_js_function(_PAGE, "submitTrainingAction"))
+    fns = (
+        _extract_js_function(_PAGE, "safeCheckpointImageDataUrl")
+        + "\n"
+        + _extract_js_function(_PAGE, "trainingCheckpointKey")
+        + "\n"
+        + _extract_js_function(_PAGE, "resetTrainingBusyIfCardChanged")
+        + "\n"
+        + _extract_js_function(_PAGE, "trainingActionBusyFor")
+        + "\n"
+        + _extract_js_function(_PAGE, "trainingActionToken")
+        + "\n"
+        + _extract_js_function(_PAGE, "submitTrainingAction")
+    )
     script = (
         "const hubClientId='hub-client';\n"
         "const window={crypto:{randomUUID:()=> 'nonce'}}; const crypto=window.crypto;\n"
@@ -4609,7 +5492,8 @@ def test_old_hung_training_post_cannot_change_new_card_busy_state():
         "let _trainingCheckpoint=oldCard, resolves=[];\n"
         "function renderTrainingCheckpoint(){} function tick(){}\n"
         "function postJSON(){return new Promise(resolve=>resolves.push(resolve));}\n"
-        + fns + "\n"
+        + fns
+        + "\n"
         "(async()=>{const first=submitTrainingAction('like'); await Promise.resolve();\n"
         "resetTrainingBusyIfCardChanged(oldCard,newCard); _trainingCheckpoint=newCard;\n"
         "const second=submitTrainingAction('dislike'); await Promise.resolve();\n"
@@ -4626,14 +5510,18 @@ def test_old_hung_training_post_cannot_change_new_card_busy_state():
 def test_training_idempotency_tokens_are_discarded_when_the_card_changes():
     if NODE_BIN is None:
         pytest.skip("node is not available on this machine")
-    fns = (_extract_js_function(_PAGE, "trainingCheckpointKey") + "\n"
-           + _extract_js_function(_PAGE, "resetTrainingIdempotencyIfCardChanged"))
+    fns = (
+        _extract_js_function(_PAGE, "trainingCheckpointKey")
+        + "\n"
+        + _extract_js_function(_PAGE, "resetTrainingIdempotencyIfCardChanged")
+    )
     script = (
         "const _trainingIdempotency=new Map([['old-action','old-token']]);\n"
         "const oldCard={run_id:'r',app:'hinge',profile_token:'old',approval_token:'a'};\n"
         "const sameCard={run_id:'r',app:'hinge',profile_token:'old',approval_token:'a'};\n"
         "const newCard={run_id:'r',app:'hinge',profile_token:'new',approval_token:'b'};\n"
-        + fns + "\nresetTrainingIdempotencyIfCardChanged(oldCard,sameCard);\n"
+        + fns
+        + "\nresetTrainingIdempotencyIfCardChanged(oldCard,sameCard);\n"
         "const same=_trainingIdempotency.size;\n"
         "resetTrainingIdempotencyIfCardChanged(oldCard,newCard);\n"
         "console.log(JSON.stringify({same,changed:_trainingIdempotency.size}));\n"
@@ -4644,7 +5532,7 @@ def test_training_idempotency_tokens_are_discarded_when_the_card_changes():
 def test_hub_auto_volume_control_defaults_to_config_cap():
     tag = re.search(r'<input\b[^>]*\bid="unlimited"[^>]*>', _PAGE)
     assert tag, "unlimited control missing"
-    assert not re.search(r'\bchecked(?:\s|=|>)', tag.group(0)), (
+    assert not re.search(r"\bchecked(?:\s|=|>)", tag.group(0)), (
         "a normal Hub start must delegate to config instead of explicitly clearing its cap"
     )
     box = re.search(r'<input\b[^>]*\bid="maxrun"[^>]*>', _PAGE)
@@ -4658,7 +5546,11 @@ def test_hub_timed_stop_is_visible_in_both_modes_and_defaults_to_unlimited():
     assert tag, "timed stop control missing"
     assert re.search(r'<option\s+value="0"\s+selected>Unlimited</option>', tag.group(0))
     assert [int(v) for v in re.findall(r'<option\s+value="(\d+)"', tag.group(1))] == [
-        0, 900, 1800, 3600, 7200,
+        0,
+        900,
+        1800,
+        3600,
+        7200,
     ]
     # The duration is a run-wide safety limit, including a Training run waiting for the
     # operator; unlike the auto-only max-profile control, it must never be mode-gated.
@@ -4670,7 +5562,10 @@ def test_hub_defaults_to_training_even_when_config_defaults_to_auto():
     if NODE_BIN is None:
         pytest.skip("node is not available on this machine")
     fn = _extract_js_function(_PAGE, "initialHubMode")
-    assert _run_node(fn + "\nconsole.log(JSON.stringify(initialHubMode()));\n") == "training"
+    assert (
+        _run_node(fn + "\nconsole.log(JSON.stringify(initialHubMode()));\n")
+        == "training"
+    )
     assert "$('#mode').value = initialHubMode()" in _PAGE
     assert "$('#mode').value = cfg.mode" not in _PAGE
 
@@ -4679,10 +5574,15 @@ def test_hub_start_handler_posts_explicit_unlimited_override():
     if NODE_BIN is None:
         pytest.skip("node is not available on this machine")
     assert re.search(r"\$\('#start'\)\.onclick\s*=\s*startRunFromControls", _PAGE)
-    fns = (_extract_js_function(_PAGE, "escHtml") + "\n"
-           + _extract_js_function(_PAGE, "computeMaxPerRun") + "\n"
-           + _extract_js_function(_PAGE, "stopAfterSeconds") + "\n"
-           + _extract_js_function(_PAGE, "startRunFromControls"))
+    fns = (
+        _extract_js_function(_PAGE, "escHtml")
+        + "\n"
+        + _extract_js_function(_PAGE, "computeMaxPerRun")
+        + "\n"
+        + _extract_js_function(_PAGE, "stopAfterSeconds")
+        + "\n"
+        + _extract_js_function(_PAGE, "startRunFromControls")
+    )
     script = (
         "const els = {hint:{textContent:''}, mode:{value:'auto'}, unlimited:{checked:true}, "
         "maxrun:{value:'8'}, stopafter:{value:'0'}, platnote:{innerHTML:''}};\n"
@@ -4690,14 +5590,17 @@ def test_hub_start_handler_posts_explicit_unlimited_override():
         "function chosenApps(){ return ['hinge']; }\n"
         "let posted = null;\n"
         "async function postJSON(path, body){ posted={path,body}; return {ok:true,msg:'started'}; }\n"
-        "function tick(){}\n"
-        + fns + "\n"
+        "function tick(){}\n" + fns + "\n"
         "startRunFromControls().then(() => console.log(JSON.stringify(posted)));\n"
     )
     assert _run_node(script) == {
         "path": "/api/start",
-        "body": {"mode": "auto", "apps": ["hinge"], "max_per_run": 0,
-                 "stop_after_seconds": 0},
+        "body": {
+            "mode": "auto",
+            "apps": ["hinge"],
+            "max_per_run": 0,
+            "stop_after_seconds": 0,
+        },
     }
 
 
@@ -4705,10 +5608,15 @@ def test_hub_start_handler_delegates_blank_default_cap_to_config():
     """A blank Hub cap delegates to the config (uncapped in the shipped config)."""
     if NODE_BIN is None:
         pytest.skip("node is not available on this machine")
-    fns = (_extract_js_function(_PAGE, "escHtml") + "\n"
-           + _extract_js_function(_PAGE, "computeMaxPerRun") + "\n"
-           + _extract_js_function(_PAGE, "stopAfterSeconds") + "\n"
-           + _extract_js_function(_PAGE, "startRunFromControls"))
+    fns = (
+        _extract_js_function(_PAGE, "escHtml")
+        + "\n"
+        + _extract_js_function(_PAGE, "computeMaxPerRun")
+        + "\n"
+        + _extract_js_function(_PAGE, "stopAfterSeconds")
+        + "\n"
+        + _extract_js_function(_PAGE, "startRunFromControls")
+    )
     script = (
         "const els = {hint:{textContent:''}, mode:{value:'auto'}, unlimited:{checked:false}, "
         "maxrun:{value:''}, stopafter:{value:'0'}, platnote:{innerHTML:''}};\n"
@@ -4716,24 +5624,32 @@ def test_hub_start_handler_delegates_blank_default_cap_to_config():
         "function chosenApps(){ return ['hinge']; }\n"
         "let posted = null;\n"
         "async function postJSON(path, body){ posted={path,body}; return {ok:true,msg:'started'}; }\n"
-        "function tick(){}\n"
-        + fns + "\n"
+        "function tick(){}\n" + fns + "\n"
         "startRunFromControls().then(() => console.log(JSON.stringify(posted)));\n"
     )
     assert _run_node(script) == {
         "path": "/api/start",
-        "body": {"mode": "auto", "apps": ["hinge"], "max_per_run": None,
-                 "stop_after_seconds": 0},
+        "body": {
+            "mode": "auto",
+            "apps": ["hinge"],
+            "max_per_run": None,
+            "stop_after_seconds": 0,
+        },
     }
 
 
 def test_hub_start_posts_a_timed_stop_for_training_runs_too():
     if NODE_BIN is None:
         pytest.skip("node is not available on this machine")
-    fns = (_extract_js_function(_PAGE, "escHtml") + "\n"
-           + _extract_js_function(_PAGE, "computeMaxPerRun") + "\n"
-           + _extract_js_function(_PAGE, "stopAfterSeconds") + "\n"
-           + _extract_js_function(_PAGE, "startRunFromControls"))
+    fns = (
+        _extract_js_function(_PAGE, "escHtml")
+        + "\n"
+        + _extract_js_function(_PAGE, "computeMaxPerRun")
+        + "\n"
+        + _extract_js_function(_PAGE, "stopAfterSeconds")
+        + "\n"
+        + _extract_js_function(_PAGE, "startRunFromControls")
+    )
     script = (
         "const els = {hint:{textContent:''}, mode:{value:'training'}, unlimited:{checked:true}, "
         "maxrun:{value:'8'}, stopafter:{value:'1800'}, platnote:{innerHTML:''}};\n"
@@ -4741,14 +5657,17 @@ def test_hub_start_posts_a_timed_stop_for_training_runs_too():
         "function chosenApps(){ return ['hinge']; }\n"
         "let posted = null;\n"
         "async function postJSON(path, body){ posted={path,body}; return {ok:true,msg:'started'}; }\n"
-        "function tick(){}\n"
-        + fns + "\n"
+        "function tick(){}\n" + fns + "\n"
         "startRunFromControls().then(() => console.log(JSON.stringify(posted)));\n"
     )
     assert _run_node(script) == {
         "path": "/api/start",
-        "body": {"mode": "training", "apps": ["hinge"], "max_per_run": 0,
-                 "stop_after_seconds": 1800},
+        "body": {
+            "mode": "training",
+            "apps": ["hinge"],
+            "max_per_run": 0,
+            "stop_after_seconds": 1800,
+        },
     }
 
 
@@ -4776,9 +5695,15 @@ def test_eval_snapshot_cold_start_single_flights_concurrent_pollers(monkeypatch)
 
     monkeypatch.setattr(hub.cfg_mod, "load", lambda path: object())
     monkeypatch.setattr(ranker, "make_store", lambda cfg, ensure=True: Store())
-    monkeypatch.setattr(eval_mod, "evaluate",
-                        lambda samples, **kwargs: {"status": "ok", "labels": len(samples),
-                                          "identities": len(samples)})
+    monkeypatch.setattr(
+        eval_mod,
+        "evaluate",
+        lambda samples, **kwargs: {
+            "status": "ok",
+            "labels": len(samples),
+            "identities": len(samples),
+        },
+    )
 
     st = HubState("config.yaml")
     results = []
@@ -4793,15 +5718,17 @@ def test_eval_snapshot_cold_start_single_flights_concurrent_pollers(monkeypatch)
     threads = [threading.Thread(target=caller) for _ in range(5)]
     for t in threads:
         t.start()
-    assert started.wait(timeout=_LIVENESS_TIMEOUT_S)  # one caller is inside the computation
-    time.sleep(0.05)                   # let the other pollers reach the cold path as waiters
+    assert started.wait(
+        timeout=_LIVENESS_TIMEOUT_S
+    )  # one caller is inside the computation
+    time.sleep(0.05)  # let the other pollers reach the cold path as waiters
     release.set()
     for t in threads:
         t.join(timeout=_LIVENESS_TIMEOUT_S)
 
     assert not errors
     assert len(results) == 5
-    assert len(compute_calls) == 1     # only ONE actual computation ran despite 5 pollers
+    assert len(compute_calls) == 1  # only ONE actual computation ran despite 5 pollers
     assert all(r["status"] == "ok" and r["labels"] == 10 for r in results)
 
 
@@ -4815,8 +5742,7 @@ def test_bug_report_generation_reports_failure_instead_of_an_unhandled_rejection
     script = (
         "const hint={textContent:''}; const desc={value:''};\n"
         "function $(selector){return selector==='#bughint'?hint:selector==='#bugdesc'?desc:null;}\n"
-        "async function fetch(){throw new TypeError('Failed to fetch');}\n"
-        + fn + "\n"
+        "async function fetch(){throw new TypeError('Failed to fetch');}\n" + fn + "\n"
         "getReport().then(md => console.log(JSON.stringify({md, hint: hint.textContent})));\n"
     )
     result = _run_node(script)
@@ -4834,17 +5760,20 @@ def test_unchanged_checkpoint_poll_does_not_rebuild_no_store_review_images():
     """
     if NODE_BIN is None:
         pytest.skip("node is not available on this machine")
-    functions = "\n".join((
-        _extract_js_function(_PAGE, "trainingCheckpointKey"),
-        _extract_js_function(_PAGE, "trainingPollRenderFingerprint"),
-        _extract_js_function(_PAGE, "renderTrainingCheckpointFromPoll"),
-        _extract_js_function(_PAGE, "clearHubConnectionLost"),
-    ))
+    functions = "\n".join(
+        (
+            _extract_js_function(_PAGE, "trainingCheckpointKey"),
+            _extract_js_function(_PAGE, "trainingPollRenderFingerprint"),
+            _extract_js_function(_PAGE, "renderTrainingCheckpointFromPoll"),
+            _extract_js_function(_PAGE, "clearHubConnectionLost"),
+        )
+    )
     script = (
         "let _trainingPollRenderSignature='',renders=[];"
         "const err={textContent:''};function $(selector){return selector==='#err'?err:null;}"
         "function renderTrainingCheckpoint(card){renders.push(card.action);}\n"
-        + functions + "\n"
+        + functions
+        + "\n"
         "const card={run_id:'run',app:'hinge',profile_token:'profile',approval_token:'approval',"
         "phase:'waiting_training_decision',action:'ready',pending:true,profile_image_count:12};"
         "const poll=next=>{clearHubConnectionLost();renderTrainingCheckpointFromPoll(next);};"
@@ -4869,13 +5798,15 @@ def test_unchanged_polls_let_the_image_retry_timer_actually_fire():
     """
     if NODE_BIN is None:
         pytest.skip("node is not available on this machine")
-    functions = "\n".join((
-        _extract_js_function(_PAGE, "trainingCheckpointKey"),
-        _extract_js_function(_PAGE, "trainingPollRenderFingerprint"),
-        _extract_js_function(_PAGE, "renderTrainingCheckpointFromPoll"),
-        _extract_js_function(_PAGE, "clearHubConnectionLost"),
-        _extract_js_function(_PAGE, "scheduleTrainingImageRetry"),
-    ))
+    functions = "\n".join(
+        (
+            _extract_js_function(_PAGE, "trainingCheckpointKey"),
+            _extract_js_function(_PAGE, "trainingPollRenderFingerprint"),
+            _extract_js_function(_PAGE, "renderTrainingCheckpointFromPoll"),
+            _extract_js_function(_PAGE, "clearHubConnectionLost"),
+            _extract_js_function(_PAGE, "scheduleTrainingImageRetry"),
+        )
+    )
     script = (
         # virtual clock: the real 2000ms retry against a real 900ms poll cadence, no sleeping
         "let now=0,seq=0,timers=[];"
@@ -4891,7 +5822,8 @@ def test_unchanged_polls_let_the_image_retry_timer_actually_fire():
         "function renderTrainingCheckpoint(card){renderedAt.push(now);_trainingCheckpoint=card;"
         "if(_trainingImageFailedIndex!=null)"
         "scheduleTrainingImageRetry(_trainingImageFailedGeneration,_trainingImageFailedIndex);}\n"
-        + functions + "\n"
+        + functions
+        + "\n"
         "const card={run_id:'run',app:'hinge',profile_token:'profile',approval_token:'approval',"
         "phase:'waiting_training_decision',action:'ready',pending:true,profile_image_count:2};"
         "const poll=next=>{clearHubConnectionLost();renderTrainingCheckpointFromPoll(next);};"
@@ -4909,11 +5841,13 @@ def test_unchanged_polls_let_the_image_retry_timer_actually_fire():
 def test_hub_disconnect_replaces_stale_in_progress_state_and_disables_actions():
     if NODE_BIN is None:
         pytest.skip("node is not available on this machine")
-    functions = "\n".join((
-        _extract_js_function(_PAGE, "escHtml"),
-        _extract_js_function(_PAGE, "renderHubConnectionLost"),
-        _extract_js_function(_PAGE, "clearHubConnectionLost"),
-    ))
+    functions = "\n".join(
+        (
+            _extract_js_function(_PAGE, "escHtml"),
+            _extract_js_function(_PAGE, "renderHubConnectionLost"),
+            _extract_js_function(_PAGE, "clearHubConnectionLost"),
+        )
+    )
     script = (
         "function element(){return {textContent:'',innerHTML:'',style:{},disabled:false};}"
         "const elements={};for(const id of ['#err','#runbanner','#start','#stop','#traininglike',"
@@ -4946,20 +5880,22 @@ def test_a_failed_checkpoint_refresh_does_not_pin_its_error_on_a_live_card():
     """
     if NODE_BIN is None:
         pytest.skip("node is not available on this machine")
-    functions = "\n".join((
-        _extract_js_function(_PAGE, "escHtml"),
-        _extract_js_function(_PAGE, "safeCheckpointImageDataUrl"),
-        _extract_js_function(_PAGE, "trainingCheckpointKey"),
-        _extract_js_function(_PAGE, "trainingPollRenderFingerprint"),
-        _extract_js_function(_PAGE, "resetTrainingIdempotencyIfCardChanged"),
-        _extract_js_function(_PAGE, "resetTrainingBusyIfCardChanged"),
-        _extract_js_function(_PAGE, "trainingActionBusyFor"),
-        _extract_js_function(_PAGE, "checkpointReviewImages"),
-        _extract_js_function(_PAGE, "syncTrainingImageState"),
-        _extract_js_function(_PAGE, "renderTrainingCheckpoint"),
-        _extract_js_function(_PAGE, "renderTrainingCheckpointFromPoll"),
-        _extract_js_function(_PAGE, "clearHubConnectionLost"),
-    ))
+    functions = "\n".join(
+        (
+            _extract_js_function(_PAGE, "escHtml"),
+            _extract_js_function(_PAGE, "safeCheckpointImageDataUrl"),
+            _extract_js_function(_PAGE, "trainingCheckpointKey"),
+            _extract_js_function(_PAGE, "trainingPollRenderFingerprint"),
+            _extract_js_function(_PAGE, "resetTrainingIdempotencyIfCardChanged"),
+            _extract_js_function(_PAGE, "resetTrainingBusyIfCardChanged"),
+            _extract_js_function(_PAGE, "trainingActionBusyFor"),
+            _extract_js_function(_PAGE, "checkpointReviewImages"),
+            _extract_js_function(_PAGE, "syncTrainingImageState"),
+            _extract_js_function(_PAGE, "renderTrainingCheckpoint"),
+            _extract_js_function(_PAGE, "renderTrainingCheckpointFromPoll"),
+            _extract_js_function(_PAGE, "clearHubConnectionLost"),
+        )
+    )
     script = (
         "const panel={style:{display:''},innerHTML:''};"
         "const layout={classList:{toggle(){}}};"
@@ -4971,7 +5907,7 @@ def test_a_failed_checkpoint_refresh_does_not_pin_its_error_on_a_live_card():
         "_trainingImageFailedIndex=null,_trainingImageRenderGeneration=0,"
         "_trainingImageFailedGeneration=null,_trainingPollRenderSignature='';"
         "const _trainingIdempotency=new Map();\n" + functions + "\n"
-        "const hint=()=>{const m=/id=\"trainingactionhint\"[^>]*>([^<]*)</.exec(panel.innerHTML);"
+        'const hint=()=>{const m=/id="trainingactionhint"[^>]*>([^<]*)</.exec(panel.innerHTML);'
         "return m?m[1]:null;};"
         "const card={run_id:'run',app:'hinge',profile_token:'profile',approval_token:'approval',"
         "phase:'waiting_training_decision',action:'ready',pending:true,profile_image_count:2,"
@@ -4982,15 +5918,17 @@ def test_a_failed_checkpoint_refresh_does_not_pin_its_error_on_a_live_card():
         "renderTrainingCheckpoint(_trainingCheckpoint,"
         "'Could not refresh decision status. Retry your choice or Stop the run.');"
         "const failed=hint();"
-        "poll({...card});const recovered=hint();"       # endpoint recovered; card never changed
-        "panel.innerHTML='SENTINEL';poll({...card});"    # and the dedupe must resume immediately
+        "poll({...card});const recovered=hint();"  # endpoint recovered; card never changed
+        "panel.innerHTML='SENTINEL';poll({...card});"  # and the dedupe must resume immediately
         "console.log(JSON.stringify({healthy,failed,recovered,"
         "deduped:panel.innerHTML==='SENTINEL'}));"
     )
     result = _run_node(script)
     assert result["healthy"] == ""
     assert "Could not refresh decision status" in result["failed"]
-    assert result["recovered"] == "", "the recovered poll must repaint and clear the stale error"
+    assert result["recovered"] == "", (
+        "the recovered poll must repaint and clear the stale error"
+    )
     assert result["deduped"] is True, "one repaint, not a repaint on every later poll"
 
 
@@ -5005,14 +5943,16 @@ def test_a_transient_disconnect_does_not_leave_the_decision_buttons_dead():
     """
     if NODE_BIN is None:
         pytest.skip("node is not available on this machine")
-    functions = "\n".join((
-        _extract_js_function(_PAGE, "escHtml"),
-        _extract_js_function(_PAGE, "trainingCheckpointKey"),
-        _extract_js_function(_PAGE, "trainingPollRenderFingerprint"),
-        _extract_js_function(_PAGE, "renderTrainingCheckpointFromPoll"),
-        _extract_js_function(_PAGE, "renderHubConnectionLost"),
-        _extract_js_function(_PAGE, "clearHubConnectionLost"),
-    ))
+    functions = "\n".join(
+        (
+            _extract_js_function(_PAGE, "escHtml"),
+            _extract_js_function(_PAGE, "trainingCheckpointKey"),
+            _extract_js_function(_PAGE, "trainingPollRenderFingerprint"),
+            _extract_js_function(_PAGE, "renderTrainingCheckpointFromPoll"),
+            _extract_js_function(_PAGE, "renderHubConnectionLost"),
+            _extract_js_function(_PAGE, "clearHubConnectionLost"),
+        )
+    )
     script = (
         "let _trainingPollRenderSignature='',renders=0;"
         "function element(){return {textContent:'',innerHTML:'',style:{},disabled:false};}"
@@ -5036,8 +5976,12 @@ def test_a_transient_disconnect_does_not_leave_the_decision_buttons_dead():
         "hint:elements['#trainingactionhint'].textContent}));"
     )
     result = _run_node(script)
-    assert result["lost"]["like"] is True, "the disconnect must still disable the decision"
-    assert result["renders"] == 2, "the reconnecting poll has to repaint, not short-circuit"
+    assert result["lost"]["like"] is True, (
+        "the disconnect must still disable the decision"
+    )
+    assert result["renders"] == 2, (
+        "the reconnecting poll has to repaint, not short-circuit"
+    )
     assert result["like"] is False and result["dislike"] is False
     assert result["hint"] == "ready"
 
@@ -5047,12 +5991,17 @@ def test_bug_report_buttons_never_write_or_download_a_failed_report():
     # is a source-order check (not a node run) because both handlers are anonymous arrow
     # functions assigned directly to an onclick property, matching this file's established
     # pattern for asserting other anonymous click-wiring (e.g. imageZoomButton.onclick above).
-    copy_block = re.search(r"\$\('#bugcopy'\)\.onclick = async \(\) => \{(.*?)\n\};",
-                            _PAGE, re.S)
-    dl_block = re.search(r"\$\('#bugdl'\)\.onclick = async \(\) => \{(.*?)\n\};", _PAGE, re.S)
+    copy_block = re.search(
+        r"\$\('#bugcopy'\)\.onclick = async \(\) => \{(.*?)\n\};", _PAGE, re.S
+    )
+    dl_block = re.search(
+        r"\$\('#bugdl'\)\.onclick = async \(\) => \{(.*?)\n\};", _PAGE, re.S
+    )
     assert copy_block and dl_block
-    for block, guarded_call in ((copy_block, "navigator.clipboard.writeText"),
-                                 (dl_block, "document.createElement")):
+    for block, guarded_call in (
+        (copy_block, "navigator.clipboard.writeText"),
+        (dl_block, "document.createElement"),
+    ):
         body = block.group(1)
         get_at = body.index("await getReport()")
         guard_at = body.index("if (md == null) return;")
@@ -5079,7 +6028,7 @@ def test_bugreport_uses_hub_config_path_not_default():
         assert "definitely-not-a-real-config.yaml" in md
     finally:
         httpd.shutdown()
-        httpd.server_close()   # release the listening socket too; shutdown() alone leaves it open
+        httpd.server_close()  # release the listening socket too; shutdown() alone leaves it open
         _join_hub_watch_threads()
 
 
@@ -5097,15 +6046,24 @@ _PICKER_CFG = {
             "label": "App-based",
             "platforms": [
                 {"app": "hinge", "label": "Hinge", "available": True, "reason": None},
-                {"app": "bumble", "label": "Bumble", "available": False, "reason": "not calibrated"},
+                {
+                    "app": "bumble",
+                    "label": "Bumble",
+                    "available": False,
+                    "reason": "not calibrated",
+                },
             ],
         },
         {
             "kind": "web",
             "label": "Web-based",
             "platforms": [
-                {"app": "future_web", "label": "Future web target", "available": False,
-                 "reason": "Additional work needed to get this to run."},
+                {
+                    "app": "future_web",
+                    "label": "Future web target",
+                    "available": False,
+                    "reason": "Additional work needed to get this to run.",
+                },
             ],
         },
     ],
@@ -5130,7 +6088,8 @@ def test_picker_expands_only_a_kind_with_more_than_one_target():
         "  shouldExpand(kindEntry(cfg, 'web')),"
         "  shouldExpand(kindEntry(cfg, 'nonesuch')),"
         "]));\n",
-        "kindEntry", "shouldExpand",
+        "kindEntry",
+        "shouldExpand",
     )
     assert _run_node(script) == [True, False, False]
 
@@ -5140,20 +6099,26 @@ def test_picker_defaults_to_an_available_target_within_a_kind():
     # "App-based" has to land on Hinge even though both are listed.
     if NODE_BIN is None:
         pytest.skip("node is not available on this machine")
-    reversed_cfg = {"kinds": [{
-        "kind": "android", "label": "App-based",
-        "platforms": list(reversed(_PICKER_CFG["kinds"][0]["platforms"])),
-    }]}
+    reversed_cfg = {
+        "kinds": [
+            {
+                "kind": "android",
+                "label": "App-based",
+                "platforms": list(reversed(_PICKER_CFG["kinds"][0]["platforms"])),
+            }
+        ]
+    }
     script = _picker_script(
         "const a = " + json.dumps(_PICKER_CFG) + ";\n"
         "const b = " + json.dumps(reversed_cfg) + ";\n"
         "console.log(JSON.stringify(["
         "  defaultAppForKind(kindEntry(a, 'android')),"
         "  defaultAppForKind(kindEntry(b, 'android')),"
-        "  defaultAppForKind(kindEntry(a, 'web')),"   # none available -> first anyway
+        "  defaultAppForKind(kindEntry(a, 'web')),"  # none available -> first anyway
         "  defaultAppForKind(null),"
         "]));\n",
-        "kindEntry", "defaultAppForKind",
+        "kindEntry",
+        "defaultAppForKind",
     )
     assert _run_node(script) == ["hinge", "hinge", "future_web", None]
 
@@ -5168,15 +6133,25 @@ def test_picker_initial_selection_honours_server_then_falls_back_to_runnable():
     stale = dict(_PICKER_CFG, selected={"kind": "android", "app": "tinder"})
     web_first = {"kinds": list(reversed(_PICKER_CFG["kinds"])), "selected": None}
     script = _picker_script(
-        "const cases = " + json.dumps([_PICKER_CFG, stale, web_first, {"kinds": []}]) + ";\n"
+        "const cases = "
+        + json.dumps([_PICKER_CFG, stale, web_first, {"kinds": []}])
+        + ";\n"
         "console.log(JSON.stringify(cases.map(initialSelection)));\n",
-        "kindEntry", "defaultAppForKind", "initialSelection",
+        "kindEntry",
+        "defaultAppForKind",
+        "initialSelection",
     )
     assert _run_node(script) == [
-        {"kind": "android", "app": "hinge"},   # server's choice honoured
-        {"kind": "android", "app": "hinge"},   # unknown app -> first kind with a runnable target
-        {"kind": "android", "app": "hinge"},   # web listed first, but nothing there can run
-        {"kind": None, "app": None},           # empty registry -> select nothing
+        {"kind": "android", "app": "hinge"},  # server's choice honoured
+        {
+            "kind": "android",
+            "app": "hinge",
+        },  # unknown app -> first kind with a runnable target
+        {
+            "kind": "android",
+            "app": "hinge",
+        },  # web listed first, but nothing there can run
+        {"kind": None, "app": None},  # empty registry -> select nothing
     ]
 
 
@@ -5206,9 +6181,11 @@ def test_pending_platform_note_uses_and_escapes_server_reason_with_safe_fallback
         {"label": "No reason"},
     ]
     script = _picker_script(
-        "console.log(JSON.stringify(" + json.dumps(cases)
+        "console.log(JSON.stringify("
+        + json.dumps(cases)
         + ".map(pendingPlatformNoteHtml)));\n",
-        "escHtml", "pendingPlatformNoteHtml",
+        "escHtml",
+        "pendingPlatformNoteHtml",
     )
     notes = _run_node(script)
 
@@ -5234,7 +6211,9 @@ def test_mode_picker_exposes_escaped_config_reason_through_accessible_hint():
         "mode_reasons": {"training": None, "auto": hostile_reason},
     }
     script = _picker_script(
-        "const cfg={kinds:[{kind:'android',platforms:[" + json.dumps(platform) + "]}]};\n"
+        "const cfg={kinds:[{kind:'android',platforms:["
+        + json.dumps(platform)
+        + "]}]};\n"
         "let sel={kind:'android',app:'hinge'};\n"
         "const options=[{value:'training'},{value:'auto'}];\n"
         "let selected='auto';\n"
@@ -5246,7 +6225,10 @@ def test_mode_picker_exposes_escaped_config_reason_through_accessible_hint():
         "console.log(JSON.stringify({value:select.value,disabled:options[1].disabled,"
         "hidden:options[1].hidden,optionTitle:options[1].title,selectTitle:select.title,"
         "hint:hint.innerHTML}));\n",
-        "kindEntry", "escHtml", "modeUnavailableReason", "syncModeAvailability",
+        "kindEntry",
+        "escHtml",
+        "modeUnavailableReason",
+        "syncModeAvailability",
     )
     result = _run_node(script)
 

@@ -1,4 +1,5 @@
 """RankerDecider composition tests — no_face / cold-start defer / like-dislike."""
+
 from operation_love.perception.capture import Profile
 from operation_love.ranker.decider import RankerDecider
 
@@ -11,6 +12,7 @@ class FakeQuality:
 class FakeEmbedder:
     def __init__(self, vec):
         self.vec = vec
+
     def embed_profile(self, profile):
         return self.vec
 
@@ -19,9 +21,11 @@ class FakeModel:
     def __init__(self, ready, decision=("like", 0.8)):
         self._ready = ready
         self._decision = decision
+
     @property
     def ready(self):
         return self._ready
+
     def decide(self, vec):
         return self._decision
 
@@ -31,18 +35,26 @@ def _profile():
 
 
 def test_no_face_returns_no_face():
-    d = RankerDecider(FakeQuality(), FakeEmbedder(None), FakeModel(True)).decide(_profile())
+    d = RankerDecider(FakeQuality(), FakeEmbedder(None), FakeModel(True)).decide(
+        _profile()
+    )
     assert d.decision == "no_face" and d.embedding == []
 
 
 def test_cold_start_defers():
-    d = RankerDecider(FakeQuality(), FakeEmbedder([1.0, 2.0]), FakeModel(False)).decide(_profile())
-    assert d.decision == "defer" and d.source == "cold_start" and d.embedding == [1.0, 2.0]
+    d = RankerDecider(FakeQuality(), FakeEmbedder([1.0, 2.0]), FakeModel(False)).decide(
+        _profile()
+    )
+    assert (
+        d.decision == "defer" and d.source == "cold_start" and d.embedding == [1.0, 2.0]
+    )
 
 
 def test_ranker_likes():
     model = FakeModel(True, ("like", 0.91))
-    d = RankerDecider(FakeQuality(), FakeEmbedder([1.0, 2.0, 3.0]), model).decide(_profile())
+    d = RankerDecider(FakeQuality(), FakeEmbedder([1.0, 2.0, 3.0]), model).decide(
+        _profile()
+    )
     assert d.decision == "like" and d.score == 0.91 and d.embedding == [1.0, 2.0, 3.0]
 
 
@@ -61,6 +73,7 @@ class SpyEmbedder:
     def __init__(self, vec):
         self.vec = vec
         self.seen = None
+
     def embed_profile(self, profile):
         self.seen = profile.photos
         return self.vec

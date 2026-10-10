@@ -8,6 +8,7 @@ which is enough for pass/none/stop/timeout; the region-based LIKE path is driven
 monkeypatching _split_diff with scripted (top, bottom) deltas. Real coordinates and
 diff thresholds are confirmed live on a finished profile (see hinge.py header).
 """
+
 import hashlib
 import math
 import random
@@ -34,6 +35,7 @@ def _png(value=0, size=(24, 24)):
 
     import numpy as np
     from PIL import Image
+
     arr = np.full((size[1], size[0]), value, dtype="uint8")
     buf = BytesIO()
     Image.fromarray(arr, mode="L").save(buf, format="PNG")
@@ -48,15 +50,17 @@ _INLINE_CONFIRM = (695, 1856)
 def _paint_inline_composer(canvas):
     """Paint the independently required input, CTA, and shipped confirmation glyph."""
     x0, y0, x1, y1 = _INLINE_COMMENT
-    canvas[y0:y0 + 2, x0:x1] = 222
-    canvas[y1 - 2:y1, x0:x1] = 222
+    canvas[y0 : y0 + 2, x0:x1] = 222
+    canvas[y1 - 2 : y1, x0:x1] = 222
     x0, y0, x1, y1 = _INLINE_SEND
     canvas[y0:y1, x0:x1] = 228
     glyph = hinge._load_template("hinge_send_like.png")
     height, width = glyph.shape
     x, y = _INLINE_CONFIRM
-    canvas[y - height // 2:y - height // 2 + height,
-           x - width // 2:x - width // 2 + width] = glyph
+    canvas[
+        y - height // 2 : y - height // 2 + height,
+        x - width // 2 : x - width // 2 + width,
+    ] = glyph
 
 
 def _action_frame(heart_xy=(937, 1600), x_xy=(125, 2035)):
@@ -73,6 +77,7 @@ def _action_frame(heart_xy=(937, 1600), x_xy=(125, 2035)):
     heart — see the templates dict comment on HINGE_SPEC in hinge.py)."""
     import cv2
     import numpy as np
+
     canvas = np.full((2400, 1080), 249, dtype=np.uint8)
     _paint_inline_composer(canvas)
     for name, (cx, cy) in (
@@ -81,7 +86,7 @@ def _action_frame(heart_xy=(937, 1600), x_xy=(125, 2035)):
     ):
         t = hinge._load_template(name)
         th, tw = t.shape
-        canvas[cy - th // 2: cy - th // 2 + th, cx - tw // 2: cx - tw // 2 + tw] = t
+        canvas[cy - th // 2 : cy - th // 2 + th, cx - tw // 2 : cx - tw // 2 + tw] = t
     ok, buf = cv2.imencode(".png", canvas)
     return buf.tobytes()
 
@@ -134,9 +139,10 @@ def _drv(adb, **cfg):
     # (which screencaps after an action); tests that want it pass halt_on_error=True explicitly.
     class C:
         apps = {"hinge": {"serial": "pixel", "halt_on_error": False, **cfg}}
+
     d = HingeDriver(C())
     d._adb = adb
-    d._touch = adb            # touches route through the (fake) transport
+    d._touch = adb  # touches route through the (fake) transport
     return d
 
 
@@ -152,8 +158,10 @@ def test_capture_stops_when_scroll_repeats(monkeypatch):
     # reach, so read_dwell_s_total > 0 below is a deterministic assertion rather than one that
     # only holds on the ~85% of unseeded draws that happen to land a pause somewhere this
     # 2-iteration read actually gets to.
-    monkeypatch.setattr(HingeDriver, "_plan_read_pause_iterations", lambda self, _n: {0})
-    adb = FakeAdb([b"a", b"b", b"b", b"c"])     # frame repeats after the scroll to "b"
+    monkeypatch.setattr(
+        HingeDriver, "_plan_read_pause_iterations", lambda self, _n: {0}
+    )
+    adb = FakeAdb([b"a", b"b", b"b", b"c"])  # frame repeats after the scroll to "b"
     drv = _drv(adb)
     profile = drv._capture_current()
     assert profile.photos == [b"a", b"b"]
@@ -162,7 +170,9 @@ def test_capture_stops_when_scroll_repeats(monkeypatch):
     assert profile.meta["read_scrolls"] == 2
     assert profile.meta["read_dwell_s_total"] > 0
     assert adb.scrolls == 2
-    assert profile.meta["capture_truncated"] is False    # the repeat proves the true bottom was seen
+    assert (
+        profile.meta["capture_truncated"] is False
+    )  # the repeat proves the true bottom was seen
     assert drv._current_capture_truncated is False
 
 
@@ -173,6 +183,7 @@ def test_system_ui_foreground_blocks_capture_before_a_scroll_top_verdict(monkeyp
     was compared with the filter-chip band and reported as ``confirmed_not_top``. The focused
     window is independent evidence, so no capture or recovery swipe may start.
     """
+
     class SystemUiAdb(FakeAdb):
         def foreground_package(self):
             return "com.android.systemui"
@@ -195,16 +206,20 @@ def test_system_ui_mid_wait_pauses_then_resyncs_without_stopping_or_input():
     the next frame at 01:38:48, and the generic unknown-screen watchdog stopped 94.7s later.
     Observe must wait without touching anything, then recapture when Hinge returns.
     """
+
     class SwitchingForegroundAdb(FakeAdb):
         def __init__(self):
-            super().__init__([b"hinge", b"system-ui", b"hinge-returned"],
-                             advance_on_screencap=True)
-            self.packages = iter([
-                "co.hinge.app",            # initial base handoff
-                "com.android.systemui",    # changed frame proves the interruption
-                "com.android.systemui",    # shade remains open for one pause poll
-                "co.hinge.app",            # owner/system closes it
-            ])
+            super().__init__(
+                [b"hinge", b"system-ui", b"hinge-returned"], advance_on_screencap=True
+            )
+            self.packages = iter(
+                [
+                    "co.hinge.app",  # initial base handoff
+                    "com.android.systemui",  # changed frame proves the interruption
+                    "com.android.systemui",  # shade remains open for one pause poll
+                    "co.hinge.app",  # owner/system closes it
+                ]
+            )
 
         def foreground_package(self):
             return next(self.packages, "co.hinge.app")
@@ -223,7 +238,8 @@ def test_system_ui_mid_wait_pauses_then_resyncs_without_stopping_or_input():
 
 
 def test_unknown_screen_watchdog_claims_only_that_operation_love_did_not_inject_input(
-        monkeypatch, capsys):
+    monkeypatch, capsys
+):
     """A watchdog timeout cannot know whether the owner touched the phone while waiting."""
     drv = _drv(FakeAdb([b"unknown-screen"]))
     drv._dbg = _FakeDbg()
@@ -357,14 +373,25 @@ def test_capture_carries_one_contradictory_frame_to_index_rebuild(monkeypatch):
     def plan(_frame, _lane, *, allow_segmentation_failure_fallback=False):
         calls.append(allow_segmentation_failure_fallback)
         return SimpleNamespace(
-            frac=0.4, x_frac=0.5, step_px=240, sized_against_px=1027,
-            basis=(hinge.COVERAGE_STEP_SEGMENTATION_FALLBACK if len(calls) == 1 else "measured"),
+            frac=0.4,
+            x_frac=0.5,
+            step_px=240,
+            sized_against_px=1027,
+            basis=(
+                hinge.COVERAGE_STEP_SEGMENTATION_FALLBACK
+                if len(calls) == 1
+                else "measured"
+            ),
             spacing=SimpleNamespace(measured=False, px=None),
-            reason="synthetic contradictory frame")
+            reason="synthetic contradictory frame",
+        )
 
     monkeypatch.setattr(drv, "_plan_enumeration_step", plan)
-    monkeypatch.setattr(drv, "_index_captured_items",
-                        lambda photos, should_stop=None: indexed.append(list(photos)) or "")
+    monkeypatch.setattr(
+        drv,
+        "_index_captured_items",
+        lambda photos, should_stop=None: indexed.append(list(photos)) or "",
+    )
 
     profile = drv._capture_current()
 
@@ -375,7 +402,9 @@ def test_capture_carries_one_contradictory_frame_to_index_rebuild(monkeypatch):
     assert indexed == [[b"a", b"b"]]
 
 
-def test_capture_carries_two_adjacent_contradictory_frames_to_index_rebuild(monkeypatch):
+def test_capture_carries_two_adjacent_contradictory_frames_to_index_rebuild(
+    monkeypatch,
+):
     adb = FakeAdb([b"a", b"b", b"c", b"c"])
     drv = _drv(adb, scroll_captures=4)
     calls = []
@@ -387,20 +416,34 @@ def test_capture_carries_two_adjacent_contradictory_frames_to_index_rebuild(monk
     def plan(_frame, _lane, *, allow_segmentation_failure_fallback=False):
         calls.append(allow_segmentation_failure_fallback)
         return SimpleNamespace(
-            frac=0.4, x_frac=0.5, step_px=240, sized_against_px=1027,
-            basis=(hinge.COVERAGE_STEP_SEGMENTATION_FALLBACK if len(calls) <= 2 else "measured"),
-            spacing=SimpleNamespace(measured=False, px=None), reason="synthetic contradiction")
+            frac=0.4,
+            x_frac=0.5,
+            step_px=240,
+            sized_against_px=1027,
+            basis=(
+                hinge.COVERAGE_STEP_SEGMENTATION_FALLBACK
+                if len(calls) <= 2
+                else "measured"
+            ),
+            spacing=SimpleNamespace(measured=False, px=None),
+            reason="synthetic contradiction",
+        )
 
     monkeypatch.setattr(drv, "_plan_enumeration_step", plan)
-    monkeypatch.setattr(drv, "_index_captured_items",
-                        lambda photos, should_stop=None: indexed.append(list(photos)) or "")
+    monkeypatch.setattr(
+        drv,
+        "_index_captured_items",
+        lambda photos, should_stop=None: indexed.append(list(photos)) or "",
+    )
 
     assert drv._capture_current() is not None
     assert calls == [True, True, True]
     assert indexed == [[b"a", b"b", b"c"]]
 
 
-def test_capture_carries_four_adjacent_contradictory_frames_to_index_rebuild(monkeypatch):
+def test_capture_carries_four_adjacent_contradictory_frames_to_index_rebuild(
+    monkeypatch,
+):
     """The fourth bounded failure reaches the indexer's measured-bridge gate."""
     adb = FakeAdb([b"a", b"b", b"c", b"d", b"e", b"e"])
     drv = _drv(adb, scroll_captures=5)
@@ -413,13 +456,25 @@ def test_capture_carries_four_adjacent_contradictory_frames_to_index_rebuild(mon
     def plan(_frame, _lane, *, allow_segmentation_failure_fallback=False):
         calls.append(allow_segmentation_failure_fallback)
         return SimpleNamespace(
-            frac=0.4, x_frac=0.5, step_px=240, sized_against_px=1027,
-            basis=(hinge.COVERAGE_STEP_SEGMENTATION_FALLBACK if len(calls) <= 4 else "measured"),
-            spacing=SimpleNamespace(measured=False, px=None), reason="synthetic contradiction")
+            frac=0.4,
+            x_frac=0.5,
+            step_px=240,
+            sized_against_px=1027,
+            basis=(
+                hinge.COVERAGE_STEP_SEGMENTATION_FALLBACK
+                if len(calls) <= 4
+                else "measured"
+            ),
+            spacing=SimpleNamespace(measured=False, px=None),
+            reason="synthetic contradiction",
+        )
 
     monkeypatch.setattr(drv, "_plan_enumeration_step", plan)
-    monkeypatch.setattr(drv, "_index_captured_items",
-                        lambda photos, should_stop=None: indexed.append(list(photos)) or "")
+    monkeypatch.setattr(
+        drv,
+        "_index_captured_items",
+        lambda photos, should_stop=None: indexed.append(list(photos)) or "",
+    )
 
     assert drv._capture_current() is not None
     assert calls == [True, True, True, True, False]
@@ -441,13 +496,21 @@ def test_capture_refuses_a_fifth_contradictory_frame(monkeypatch):
         if not allow_segmentation_failure_fallback:
             raise hinge.ScrollStepError("synthetic fifth contradiction")
         return SimpleNamespace(
-            frac=0.4, x_frac=0.5, step_px=240, sized_against_px=1027,
+            frac=0.4,
+            x_frac=0.5,
+            step_px=240,
+            sized_against_px=1027,
             basis=hinge.COVERAGE_STEP_SEGMENTATION_FALLBACK,
-            spacing=SimpleNamespace(measured=False, px=None), reason="synthetic contradiction")
+            spacing=SimpleNamespace(measured=False, px=None),
+            reason="synthetic contradiction",
+        )
 
     monkeypatch.setattr(drv, "_plan_enumeration_step", plan)
-    monkeypatch.setattr(drv, "_index_captured_items",
-                        lambda photos, should_stop=None: indexed.append(list(photos)) or "")
+    monkeypatch.setattr(
+        drv,
+        "_index_captured_items",
+        lambda photos, should_stop=None: indexed.append(list(photos)) or "",
+    )
 
     assert drv._capture_current() is not None
     assert calls == [True, True, True, True, False]
@@ -470,15 +533,25 @@ def test_capture_refuses_a_second_disjoint_contradictory_run(monkeypatch):
             assert not allow_segmentation_failure_fallback
             raise hinge.ScrollStepError("synthetic disjoint contradiction")
         return SimpleNamespace(
-            frac=0.4, x_frac=0.5, step_px=240, sized_against_px=1027,
-            basis=(hinge.COVERAGE_STEP_SEGMENTATION_FALLBACK if len(calls) == 1
-                   else "measured"),
+            frac=0.4,
+            x_frac=0.5,
+            step_px=240,
+            sized_against_px=1027,
+            basis=(
+                hinge.COVERAGE_STEP_SEGMENTATION_FALLBACK
+                if len(calls) == 1
+                else "measured"
+            ),
             spacing=SimpleNamespace(measured=False, px=None),
-            reason="synthetic contradiction")
+            reason="synthetic contradiction",
+        )
 
     monkeypatch.setattr(drv, "_plan_enumeration_step", plan)
-    monkeypatch.setattr(drv, "_index_captured_items",
-                        lambda photos, should_stop=None: indexed.append(list(photos)) or "")
+    monkeypatch.setattr(
+        drv,
+        "_index_captured_items",
+        lambda photos, should_stop=None: indexed.append(list(photos)) or "",
+    )
 
     profile = drv._capture_current()
 
@@ -489,7 +562,9 @@ def test_capture_refuses_a_second_disjoint_contradictory_run(monkeypatch):
     assert "synthetic disjoint contradiction" in profile.items_unavailable
 
 
-def test_auto_policy_varies_read_geometry_dwell_and_only_raises_capture_ceiling(monkeypatch):
+def test_auto_policy_varies_read_geometry_dwell_and_only_raises_capture_ceiling(
+    monkeypatch,
+):
     class Policy:
         def __init__(self):
             self.scroll_calls = []
@@ -522,7 +597,9 @@ def test_auto_policy_varies_read_geometry_dwell_and_only_raises_capture_ceiling(
     ]
 
 
-def test_real_auto_session_policy_drives_capture_geometry_dwell_and_metadata(monkeypatch):
+def test_real_auto_session_policy_drives_capture_geometry_dwell_and_metadata(
+    monkeypatch,
+):
     # 2026-08-24: the per-frame dwell this test used to pin down (one dwell + one settle per
     # scroll, in strict alternation) no longer exists -- see _READ_PAUSE_COUNTS in hinge.py and
     # ops/ANTI-BOT-RESEARCH.md's dated addendum. Pin the read's one randomized pause to "none
@@ -532,7 +609,9 @@ def test_real_auto_session_policy_drives_capture_geometry_dwell_and_metadata(mon
     # below would otherwise have to guess at. The pause draw itself is covered by its own
     # dedicated tests just below (test_read_pause_count_and_position_are_drawn_not_fixed and
     # test_read_pause_duration_is_drawn_and_fully_credited_when_it_fires).
-    monkeypatch.setattr(HingeDriver, "_plan_read_pause_iterations", lambda self, _n: set())
+    monkeypatch.setattr(
+        HingeDriver, "_plan_read_pause_iterations", lambda self, _n: set()
+    )
     adb = FakeAdb([f"frame-{i}".encode() for i in range(12)])
     drv = _drv(adb, scroll_captures=8)
     policy = AutoSessionPolicy(rng=random.Random(19), local_hour=lambda: 15)
@@ -584,7 +663,9 @@ def test_read_pause_count_and_position_are_drawn_not_fixed():
     # The count is not hardcoded to exactly one: over 500 draws at 15%/75%/10% weights, both a
     # zero-pause and a one-pause read are certain to appear.
     counts = {len(draw) for draw in draws}
-    assert counts >= {0, 1}, f"expected at least 0- and 1-pause reads among 500 draws, got {counts}"
+    assert counts >= {0, 1}, (
+        f"expected at least 0- and 1-pause reads among 500 draws, got {counts}"
+    )
     # Every returned position is a real candidate iteration, and a read never plans more pauses
     # than there are iterations to place them in.
     assert all(0 <= i < eligible for draw in draws for i in draw)
@@ -592,7 +673,8 @@ def test_read_pause_count_and_position_are_drawn_not_fixed():
 
     single_pause_positions = {next(iter(draw)) for draw in draws if len(draw) == 1}
     assert len(single_pause_positions) > 1, (
-        "the pause position must vary across reads, not settle on one constant iteration")
+        "the pause position must vary across reads, not settle on one constant iteration"
+    )
 
 
 def test_read_pause_duration_is_drawn_and_fully_credited_when_it_fires(monkeypatch):
@@ -603,7 +685,9 @@ def test_read_pause_duration_is_drawn_and_fully_credited_when_it_fires(monkeypat
     nothing less. Position is pinned (to iteration 0) so this test is about the DURATION draw
     specifically; position variety has its own test just above.
     """
-    monkeypatch.setattr(HingeDriver, "_plan_read_pause_iterations", lambda self, _n: {0})
+    monkeypatch.setattr(
+        HingeDriver, "_plan_read_pause_iterations", lambda self, _n: {0}
+    )
 
     def _one_run(seed):
         random.seed(seed)
@@ -663,16 +747,18 @@ def test_malformed_auto_policy_falls_back_to_existing_read_behavior():
 def test_dislike_taps_the_vision_located_pass_x():
     adb = FakeAdb([_action_frame()])
     _drv(adb).dislike()
-    assert adb.taps == [(125, 2035)]             # X located by vision (glyph), not a fixed fraction
+    assert adb.taps == [
+        (125, 2035)
+    ]  # X located by vision (glyph), not a fixed fraction
 
 
 def test_like_without_opener_taps_heart_then_send():
-    adb = FakeAdb([_action_frame()])             # constant frame -> _scroll_to_top stops at once
+    adb = FakeAdb([_action_frame()])  # constant frame -> _scroll_to_top stops at once
     _drv(adb).like()
-    heart = (937, 1600)                          # heart located by vision on the first photo
-    send = _INLINE_CONFIRM                          # vision-located inline Send Like glyph
+    heart = (937, 1600)  # heart located by vision on the first photo
+    send = _INLINE_CONFIRM  # vision-located inline Send Like glyph
     assert adb.taps == [heart, send]
-    assert adb.texts == []                       # no comment typed
+    assert adb.texts == []  # no comment typed
 
 
 def test_like_with_capture_order_opener_is_refused_before_heart_and_send():
@@ -688,13 +774,16 @@ def test_pass_detected_on_card_advance(monkeypatch):
     # in addition to deck readiness. Raw fake frames have no such pixels by themselves, so give
     # this focused positive-path test explicit old/new identity bands.
     import numpy as np
+
     adb = FakeAdb([b"a", b"b"], advance_on_screencap=True)
     drv = _drv(adb)
     old_sig = np.full((16, 64), 10, dtype="int16")
     new_sig = np.full((16, 64), 250, dtype="int16")
     drv._identity_sig = old_sig
     drv._identity_top_sig = np.full((16, 64), 200, dtype="int16")
-    monkeypatch.setattr(hinge, "_band", lambda frame, rect: new_sig if frame == b"b" else old_sig)
+    monkeypatch.setattr(
+        hinge, "_band", lambda frame, rect: new_sig if frame == b"b" else old_sig
+    )
     monkeypatch.setattr(drv, "_observe_deck_ready", lambda frame: True)
     monkeypatch.setattr(drv, "_observe_gesture_verdict", lambda frame: "pass")
     assert drv.wait_for_decision(timeout=5.0) is False
@@ -702,20 +791,25 @@ def test_pass_detected_on_card_advance(monkeypatch):
 
 def test_waits_until_a_change_then_pass(monkeypatch):
     import numpy as np
+
     adb = FakeAdb([b"a", b"a", b"b"], advance_on_screencap=True)
     drv = _drv(adb)
     old_sig = np.full((16, 64), 10, dtype="int16")
     new_sig = np.full((16, 64), 250, dtype="int16")
     drv._identity_sig = old_sig
     drv._identity_top_sig = np.full((16, 64), 200, dtype="int16")
-    monkeypatch.setattr(hinge, "_band", lambda frame, rect: new_sig if frame == b"b" else old_sig)
-    monkeypatch.setattr(drv, "_observe_deck_ready", lambda frame: True)  # deck-ready evidence -- see above
+    monkeypatch.setattr(
+        hinge, "_band", lambda frame, rect: new_sig if frame == b"b" else old_sig
+    )
+    monkeypatch.setattr(
+        drv, "_observe_deck_ready", lambda frame: True
+    )  # deck-ready evidence -- see above
     monkeypatch.setattr(drv, "_observe_gesture_verdict", lambda frame: "pass")
     assert drv.wait_for_decision(timeout=None) is False
 
 
 def test_timeout_returns_none():
-    adb = FakeAdb([b"a"])                         # never changes
+    adb = FakeAdb([b"a"])  # never changes
     assert _drv(adb).wait_for_decision(timeout=0.05) is None
 
 
@@ -733,25 +827,35 @@ def test_stop_interrupts_and_returns_none():
 
 class _ScriptedDiff:
     """Replaces hinge._split_diff with a scripted (top, bottom) per call."""
+
     def __init__(self, *pairs):
         self.pairs = list(pairs)
 
     def __call__(self, _a, _b):
-        return self.pairs.pop(0) if self.pairs else (0.0, 0.0)   # exhausted -> "no change"
+        return (
+            self.pairs.pop(0) if self.pairs else (0.0, 0.0)
+        )  # exhausted -> "no change"
 
 
 def test_like_detected_sheet_then_advance(monkeypatch):
     # A structurally observed sheet, then a stable identity-proven new deck -> like sent.
-    monkeypatch.setattr(hinge, "_split_diff", _ScriptedDiff((2.0, 50.0), (50.0, 0.0), (50.0, 0.0)))
+    monkeypatch.setattr(
+        hinge, "_split_diff", _ScriptedDiff((2.0, 50.0), (50.0, 0.0), (50.0, 0.0))
+    )
     adb = FakeAdb([b"a", b"sheet", b"b"], advance_on_screencap=True)
     drv = _drv(adb)
     import numpy as np
+
     old_sig = np.full((16, 64), 10, dtype="int16")
     new_sig = np.full((16, 64), 250, dtype="int16")
     drv._identity_sig = old_sig
     drv._identity_top_sig = np.full((16, 64), 200, dtype="int16")
-    monkeypatch.setattr(hinge, "_band", lambda frame, rect: new_sig if frame == b"b" else old_sig)
-    monkeypatch.setattr(drv, "_observe_like_sheet_visible", lambda frame: frame == b"sheet")
+    monkeypatch.setattr(
+        hinge, "_band", lambda frame, rect: new_sig if frame == b"b" else old_sig
+    )
+    monkeypatch.setattr(
+        drv, "_observe_like_sheet_visible", lambda frame: frame == b"sheet"
+    )
     monkeypatch.setattr(drv, "_observe_deck_ready", lambda frame: frame == b"b")
     assert drv.wait_for_decision(timeout=5.0) is True
 
@@ -763,18 +867,25 @@ def test_like_writes_its_own_decision_record(monkeypatch):
     tell a sent like from a sheet the human opened and backed out of. Without a resolution
     record, one profile's capture can be followed by an anchor and another profile's capture,
     with nothing on disk proving the first profile was liked."""
-    monkeypatch.setattr(hinge, "_split_diff", _ScriptedDiff((2.0, 50.0), (50.0, 0.0), (50.0, 0.0)))
+    monkeypatch.setattr(
+        hinge, "_split_diff", _ScriptedDiff((2.0, 50.0), (50.0, 0.0), (50.0, 0.0))
+    )
     adb = FakeAdb([b"a", b"sheet", b"b"], advance_on_screencap=True)
     drv = _drv(adb)
     drv._dbg = _FakeDbg()
     drv._identity_name = "profile_a"
     import numpy as np
+
     old_sig = np.full((16, 64), 10, dtype="int16")
     new_sig = np.full((16, 64), 250, dtype="int16")
     drv._identity_sig = old_sig
     drv._identity_top_sig = np.full((16, 64), 200, dtype="int16")
-    monkeypatch.setattr(hinge, "_band", lambda frame, rect: new_sig if frame == b"b" else old_sig)
-    monkeypatch.setattr(drv, "_observe_like_sheet_visible", lambda frame: frame == b"sheet")
+    monkeypatch.setattr(
+        hinge, "_band", lambda frame, rect: new_sig if frame == b"b" else old_sig
+    )
+    monkeypatch.setattr(
+        drv, "_observe_like_sheet_visible", lambda frame: frame == b"sheet"
+    )
     monkeypatch.setattr(drv, "_observe_deck_ready", lambda frame: frame == b"b")
 
     assert drv.wait_for_decision(timeout=5.0) is True
@@ -789,7 +900,9 @@ def test_like_writes_its_own_decision_record(monkeypatch):
     assert decisions[0]["sheet_seen"] is True
 
 
-def test_like_decision_is_evidenced_by_the_composer_not_a_stale_pre_tap_frame(monkeypatch):
+def test_like_decision_is_evidenced_by_the_composer_not_a_stale_pre_tap_frame(
+    monkeypatch,
+):
     """The frame filed with a LIKE must be one that actually showed the composer.
 
     _await_like_resolved holds `base` frozen for the whole wait, on purpose -- it is the
@@ -798,33 +911,44 @@ def test_like_decision_is_evidenced_by_the_composer_not_a_stale_pre_tap_frame(mo
     was a scrolled profile from five minutes before the heart was even tapped, so the one
     frame stored to prove a like showed a screen the human had already left.
     """
-    monkeypatch.setattr(hinge, "_split_diff", _ScriptedDiff((2.0, 50.0), (50.0, 0.0), (50.0, 0.0)))
+    monkeypatch.setattr(
+        hinge, "_split_diff", _ScriptedDiff((2.0, 50.0), (50.0, 0.0), (50.0, 0.0))
+    )
     adb = FakeAdb([b"a", b"sheet1", b"sheet2", b"b"], advance_on_screencap=True)
     drv = _drv(adb)
     drv._dbg = _FakeDbg()
     drv._identity_name = "profile_a"
     import numpy as np
+
     old_sig = np.full((16, 64), 10, dtype="int16")
     new_sig = np.full((16, 64), 250, dtype="int16")
     drv._identity_sig = old_sig
     drv._identity_top_sig = np.full((16, 64), 200, dtype="int16")
-    monkeypatch.setattr(hinge, "_band", lambda frame, rect: new_sig if frame == b"b" else old_sig)
-    monkeypatch.setattr(drv, "_observe_like_sheet_visible", lambda frame: frame.startswith(b"sheet"))
+    monkeypatch.setattr(
+        hinge, "_band", lambda frame, rect: new_sig if frame == b"b" else old_sig
+    )
+    monkeypatch.setattr(
+        drv, "_observe_like_sheet_visible", lambda frame: frame.startswith(b"sheet")
+    )
     monkeypatch.setattr(drv, "_observe_deck_ready", lambda frame: frame == b"b")
 
     assert drv.wait_for_decision(timeout=5.0) is True
 
     evidence = dict(drv._dbg.befores)["observe_decision"]
-    assert evidence == b"sheet2"        # the LAST composer state -- what the human sent
-    assert evidence != b"a"             # not the frozen pre-tap anchor
+    assert evidence == b"sheet2"  # the LAST composer state -- what the human sent
+    assert evidence != b"a"  # not the frozen pre-tap anchor
     # The resolved composer must not survive into the next wait on another profile.
     assert drv._observe_like_evidence is None
 
 
 def test_dismissed_like_sheet_is_recorded_but_never_as_a_decision(monkeypatch):
     import numpy as np
-    monkeypatch.setattr(hinge, "_split_diff",
-                        _ScriptedDiff((2.0, 50.0), (2.0, 2.0), (2.0, 2.0), (50.0, 50.0)))
+
+    monkeypatch.setattr(
+        hinge,
+        "_split_diff",
+        _ScriptedDiff((2.0, 50.0), (2.0, 2.0), (2.0, 2.0), (50.0, 50.0)),
+    )
     adb = FakeAdb([b"a", b"sheet", b"a", b"c"])
     drv = _drv(adb)
     drv._dbg = _FakeDbg()
@@ -832,7 +956,9 @@ def test_dismissed_like_sheet_is_recorded_but_never_as_a_decision(monkeypatch):
     new_sig = np.full((16, 64), 250, dtype="int16")
     drv._identity_sig = old_sig
     drv._identity_top_sig = np.full((16, 64), 200, dtype="int16")
-    monkeypatch.setattr(hinge, "_band", lambda frame, rect: new_sig if frame == b"c" else old_sig)
+    monkeypatch.setattr(
+        hinge, "_band", lambda frame, rect: new_sig if frame == b"c" else old_sig
+    )
     monkeypatch.setattr(drv, "_observe_deck_ready", lambda frame: True)
     # This test's deliberately tiny deadline is about composer resolution, not cold-loading
     # the unrelated paywall template on a fresh xdist worker.
@@ -844,16 +970,16 @@ def test_dismissed_like_sheet_is_recorded_but_never_as_a_decision(monkeypatch):
 
     def _sheet_visible(_frame):
         polls["n"] += 1
-        return polls["n"] <= 2                   # up for the first two polls, then dismissed
+        return polls["n"] <= 2  # up for the first two polls, then dismissed
 
     monkeypatch.setattr(drv, "_observe_like_sheet_visible", _sheet_visible)
 
-    assert drv.wait_for_decision(timeout=0.2) is None        # no stable positive new identity
+    assert drv.wait_for_decision(timeout=0.2) is None  # no stable positive new identity
 
     names = [name for name, _f in drv._dbg.calls]
-    assert "observe_like_dismissed" in names                 # the backed-out sheet left a trace...
+    assert "observe_like_dismissed" in names  # the backed-out sheet left a trace...
     decisions = [f for name, f in drv._dbg.calls if name == "observe_decision"]
-    assert decisions == []                                      # ...and no label was guessed
+    assert decisions == []  # ...and no label was guessed
 
 
 def test_bottom_delta_with_no_sheet_is_not_logged_as_a_dismissed_like(monkeypatch):
@@ -862,8 +988,12 @@ def test_bottom_delta_with_no_sheet_is_not_logged_as_a_dismissed_like(monkeypatc
     sheet would assert something nobody ever observed, in the log you read specifically to find
     out what the human did."""
     import numpy as np
-    monkeypatch.setattr(hinge, "_split_diff",
-                        _ScriptedDiff((2.0, 50.0), (2.0, 2.0), (2.0, 2.0), (50.0, 50.0)))
+
+    monkeypatch.setattr(
+        hinge,
+        "_split_diff",
+        _ScriptedDiff((2.0, 50.0), (2.0, 2.0), (2.0, 2.0), (50.0, 50.0)),
+    )
     adb = FakeAdb([b"a", b"snackbar", b"a", b"c"])
     drv = _drv(adb)
     drv._dbg = _FakeDbg()
@@ -871,10 +1001,14 @@ def test_bottom_delta_with_no_sheet_is_not_logged_as_a_dismissed_like(monkeypatc
     new_sig = np.full((16, 64), 250, dtype="int16")
     drv._identity_sig = old_sig
     drv._identity_top_sig = np.full((16, 64), 200, dtype="int16")
-    monkeypatch.setattr(hinge, "_band", lambda frame, rect: new_sig if frame == b"c" else old_sig)
+    monkeypatch.setattr(
+        hinge, "_band", lambda frame, rect: new_sig if frame == b"c" else old_sig
+    )
     monkeypatch.setattr(drv, "_observe_deck_ready", lambda frame: True)
     monkeypatch.setattr(drv, "_deck_blocked_reason", lambda _frame: None)
-    monkeypatch.setattr(drv, "_observe_like_sheet_visible", lambda frame: False)   # never a sheet
+    monkeypatch.setattr(
+        drv, "_observe_like_sheet_visible", lambda frame: False
+    )  # never a sheet
 
     assert drv.wait_for_decision(timeout=0.2) is None
 
@@ -898,10 +1032,13 @@ def test_unobserved_bottom_delta_on_an_identity_proven_card_keeps_waiting(monkey
     what is added is that it must not resync either.
     """
     monkeypatch.setattr(hinge, "_split_diff", _ScriptedDiff((2.0, 50.0), (0.0, 0.0)))
-    adb = FakeAdb([b"base", b"scroll", b"processing", b"steady"], advance_on_screencap=True)
+    adb = FakeAdb(
+        [b"base", b"scroll", b"processing", b"steady"], advance_on_screencap=True
+    )
     drv = _drv(adb)
     drv._dbg = _FakeDbg()
     import numpy as np
+
     identity = np.full((16, 64), 10, dtype="int16")
     captured_content = np.full((24, 24), 10, dtype="int16")
     scrolled_content = np.full((24, 24), 200, dtype="int16")
@@ -915,19 +1052,24 @@ def test_unobserved_bottom_delta_on_an_identity_proven_card_keeps_waiting(monkey
 
     # The two halves of the mechanism, asserted directly so a future change to either one
     # cannot quietly make this test pass for the wrong reason.
-    assert drv._is_current_profile_frame(b"steady") is True                       # header: same card
-    assert drv._is_current_profile_frame(b"steady", require_content=True) is False  # photos: no match
+    assert drv._is_current_profile_frame(b"steady") is True  # header: same card
+    assert (
+        drv._is_current_profile_frame(b"steady", require_content=True) is False
+    )  # photos: no match
 
-    sent, notified = drv._await_like_resolved(b"base", None, lambda: False,
-                                              intent_notified=False)
+    sent, notified = drv._await_like_resolved(
+        b"base", None, lambda: False, intent_notified=False
+    )
 
-    assert sent is False            # "no like happened" -> the outer loop keeps this card
+    assert sent is False  # "no like happened" -> the outer loop keeps this card
     assert notified is False
     assert not [name for name, _fields in drv._dbg.calls if name == "observe_resync"]
     assert not [name for name, _fields in drv._dbg.calls if name == "observe_decision"]
 
 
-def test_unobserved_bottom_delta_still_resyncs_when_identity_cannot_name_the_card(monkeypatch):
+def test_unobserved_bottom_delta_still_resyncs_when_identity_cannot_name_the_card(
+    monkeypatch,
+):
     """The other side of the same rule, and the reason it is not simply "always keep waiting".
 
     When the anchor CANNOT say this is the captured profile, the card really may have advanced
@@ -941,6 +1083,7 @@ def test_unobserved_bottom_delta_still_resyncs_when_identity_cannot_name_the_car
     drv = _drv(adb)
     drv._dbg = _FakeDbg()
     import numpy as np
+
     identity = np.full((16, 64), 10, dtype="int16")
     other = np.full((16, 64), 250, dtype="int16")
     captured_content = np.full((24, 24), 10, dtype="int16")
@@ -949,30 +1092,42 @@ def test_unobserved_bottom_delta_still_resyncs_when_identity_cannot_name_the_car
     drv._identity_top_sig = np.full((16, 64), 150, dtype="int16")
     drv._current_sigs = [captured_content]
     # A DIFFERENT profile's header on every frame the resolver sees.
-    monkeypatch.setattr(hinge, "_band",
-                        lambda frame, _rect: identity if frame == b"base" else other)
+    monkeypatch.setattr(
+        hinge, "_band", lambda frame, _rect: identity if frame == b"base" else other
+    )
     monkeypatch.setattr(hinge, "_downsample", lambda *_a, **_k: scrolled_content)
     monkeypatch.setattr(drv, "_observe_like_sheet_visible", lambda _frame: False)
     monkeypatch.setattr(drv, "_observe_deck_ready", lambda _frame: True)
 
-    sent, notified = drv._await_like_resolved(b"base", None, lambda: False,
-                                              intent_notified=False)
+    sent, notified = drv._await_like_resolved(
+        b"base", None, lambda: False, intent_notified=False
+    )
 
-    assert sent is None             # unlabeled resync, never a LIKE
+    assert sent is None  # unlabeled resync, never a LIKE
     assert notified is False
     resyncs = [fields for name, fields in drv._dbg.calls if name == "observe_resync"]
-    assert resyncs == [{"reason": "like_candidate_without_observed_sheet",
-                        "sheet_seen": False, "profile_name": None,
-                        "identity": "new", "confirm_identity": "new",
-                        "current": False, "deck_ready": True}]
+    assert resyncs == [
+        {
+            "reason": "like_candidate_without_observed_sheet",
+            "sheet_seen": False,
+            "profile_name": None,
+            "identity": "new",
+            "confirm_identity": "new",
+            "current": False,
+            "deck_ready": True,
+        }
+    ]
     assert not [name for name, _fields in drv._dbg.calls if name == "observe_decision"]
 
 
-def test_observed_sheet_keeps_the_strict_content_rule_for_a_same_named_next_card(monkeypatch):
+def test_observed_sheet_keeps_the_strict_content_rule_for_a_same_named_next_card(
+    monkeypatch,
+):
     """The asymmetry must not leak the other way. Once a composer HAS been observed, a wrong
     "still the current profile" silently drops a like the human really sent, so that state
     still demands the header AND the photos agree before calling a frame current."""
     import numpy as np
+
     adb = FakeAdb([b"steady", b"steady"], advance_on_screencap=True)
     drv = _drv(adb)
     drv._dbg = _FakeDbg()
@@ -980,14 +1135,18 @@ def test_observed_sheet_keeps_the_strict_content_rule_for_a_same_named_next_card
     drv._identity_sig = identity
     drv._identity_top_sig = np.full((16, 64), 150, dtype="int16")
     drv._current_sigs = [np.full((24, 24), 10, dtype="int16")]
-    monkeypatch.setattr(hinge, "_band", lambda _frame, _rect: identity)     # same first name
-    monkeypatch.setattr(hinge, "_downsample",
-                        lambda *_a, **_k: np.full((24, 24), 200, dtype="int16"))
+    monkeypatch.setattr(
+        hinge, "_band", lambda _frame, _rect: identity
+    )  # same first name
+    monkeypatch.setattr(
+        hinge, "_downsample", lambda *_a, **_k: np.full((24, 24), 200, dtype="int16")
+    )
     monkeypatch.setattr(drv, "_observe_like_sheet_visible", lambda _frame: False)
     monkeypatch.setattr(drv, "_observe_deck_ready", lambda _frame: True)
 
-    sent, notified = drv._await_like_resolved(b"base", None, lambda: False,
-                                              intent_notified=True)
+    sent, notified = drv._await_like_resolved(
+        b"base", None, lambda: False, intent_notified=True
+    )
 
     # Not a dismissal (which is what require_content=False would have concluded here), and not
     # a fabricated LIKE either: identity cannot prove a NEW deck, so it resyncs.
@@ -1013,8 +1172,9 @@ def test_observed_sheet_treats_a_verified_content_scroll_as_a_dismissal(monkeypa
     drv._identity_top_sig = np.full((16, 64), 150, dtype="int16")
 
     r0, r1 = hinge._content_rows(drv.content_band, 24)
-    content = np.random.default_rng(91).integers(
-        0, 255, size=(r1 - r0, 24)).astype("int16")
+    content = (
+        np.random.default_rng(91).integers(0, 255, size=(r1 - r0, 24)).astype("int16")
+    )
     captured = np.full((24, 24), -50, dtype="int16")
     captured[r0:r1] = content
     scrolled = np.full((24, 24), -50, dtype="int16")
@@ -1029,8 +1189,9 @@ def test_observed_sheet_treats_a_verified_content_scroll_as_a_dismissal(monkeypa
     monkeypatch.setattr(drv, "_observe_deck_ready", lambda _frame: True)
 
     assert drv._is_current_profile_frame(b"scrolled", require_content=True)
-    sent, notified = drv._await_like_resolved(b"base", None, lambda: False,
-                                              intent_notified=True)
+    sent, notified = drv._await_like_resolved(
+        b"base", None, lambda: False, intent_notified=True
+    )
 
     assert sent is False
     assert notified is True
@@ -1042,27 +1203,38 @@ def test_observed_sheet_needs_identity_proven_new_deck_when_anchor_exists(monkey
     the deck is the old profile.  This includes the same-first-name/content-ambiguous case;
     resyncing is safer than assigning a LIKE to the profile held before the sheet opened.
     """
-    monkeypatch.setattr(hinge, "_split_diff",
-                        _ScriptedDiff((2.0, 50.0), (50.0, 0.0), (50.0, 0.0)))
+    monkeypatch.setattr(
+        hinge, "_split_diff", _ScriptedDiff((2.0, 50.0), (50.0, 0.0), (50.0, 0.0))
+    )
     adb = FakeAdb([b"base", b"sheet", b"steady"], advance_on_screencap=True)
     drv = _drv(adb)
     drv._dbg = _FakeDbg()
     import numpy as np
+
     old_sig = np.full((16, 64), 10, dtype="int16")
     drv._identity_sig = old_sig
     drv._identity_top_sig = np.full((16, 64), 200, dtype="int16")
     monkeypatch.setattr(hinge, "_band", lambda _frame, _rect: old_sig)
-    monkeypatch.setattr(drv, "_observe_like_sheet_visible", lambda frame: frame == b"sheet")
+    monkeypatch.setattr(
+        drv, "_observe_like_sheet_visible", lambda frame: frame == b"sheet"
+    )
     monkeypatch.setattr(drv, "_is_current_profile_frame", lambda *_a, **_k: False)
     monkeypatch.setattr(drv, "_observe_deck_ready", lambda frame: frame == b"steady")
 
     assert drv.wait_for_decision(timeout=5.0) is None
 
     resyncs = [fields for name, fields in drv._dbg.calls if name == "observe_resync"]
-    assert resyncs == [{"reason": "like_send_identity_unproven", "sheet_seen": True,
-                        "profile_name": None, "identity": "same",
-                        "confirm_identity": "same", "current": False,
-                        "deck_ready": True}]
+    assert resyncs == [
+        {
+            "reason": "like_send_identity_unproven",
+            "sheet_seen": True,
+            "profile_name": None,
+            "identity": "same",
+            "confirm_identity": "same",
+            "current": False,
+            "deck_ready": True,
+        }
+    ]
     assert not [name for name, _fields in drv._dbg.calls if name == "observe_decision"]
 
 
@@ -1071,22 +1243,32 @@ def test_observed_sheet_without_identity_anchor_resyncs_never_likes(monkeypatch)
     captured identity anchor a dismissal followed by a manual scroll is indistinguishable from
     a new card, so the result must stay unlabeled.
     """
-    monkeypatch.setattr(hinge, "_split_diff",
-                        _ScriptedDiff((2.0, 50.0), (50.0, 0.0), (50.0, 0.0)))
+    monkeypatch.setattr(
+        hinge, "_split_diff", _ScriptedDiff((2.0, 50.0), (50.0, 0.0), (50.0, 0.0))
+    )
     adb = FakeAdb([b"base", b"sheet", b"steady"], advance_on_screencap=True)
     drv = _drv(adb)
     drv._dbg = _FakeDbg()
-    monkeypatch.setattr(drv, "_observe_like_sheet_visible", lambda frame: frame == b"sheet")
+    monkeypatch.setattr(
+        drv, "_observe_like_sheet_visible", lambda frame: frame == b"sheet"
+    )
     monkeypatch.setattr(drv, "_is_current_profile_frame", lambda *_a, **_k: False)
     monkeypatch.setattr(drv, "_observe_deck_ready", lambda frame: frame == b"steady")
 
     assert drv.wait_for_decision(timeout=5.0) is None
 
     resyncs = [fields for name, fields in drv._dbg.calls if name == "observe_resync"]
-    assert resyncs == [{"reason": "like_send_identity_unavailable", "sheet_seen": True,
-                        "profile_name": None, "identity": "unknown",
-                        "confirm_identity": "unknown", "current": False,
-                        "deck_ready": True}]
+    assert resyncs == [
+        {
+            "reason": "like_send_identity_unavailable",
+            "sheet_seen": True,
+            "profile_name": None,
+            "identity": "unknown",
+            "confirm_identity": "unknown",
+            "current": False,
+            "deck_ready": True,
+        }
+    ]
     assert not [name for name, _fields in drv._dbg.calls if name == "observe_decision"]
 
 
@@ -1104,7 +1286,7 @@ def test_like_sheet_wait_emits_a_heartbeat_instead_of_going_silent(monkeypatch):
     monkeypatch.setattr(drv, "_observe_like_sheet_visible", lambda frame: True)
 
     def _stop_after_a_while():
-        clock[0] += 20.0                    # each poll advances past the like-wait interval
+        clock[0] += 20.0  # each poll advances past the like-wait interval
         return clock[0] > 1_100.0
 
     drv._await_like_resolved(b"base", None, _stop_after_a_while)
@@ -1123,7 +1305,9 @@ def test_one_negative_composer_poll_does_not_close_a_still_open_sheet(monkeypatc
     adb = FakeAdb([b"negative", b"sheet"], advance_on_screencap=True)
     drv = _drv(adb)
     drv._dbg = _FakeDbg()
-    monkeypatch.setattr(drv, "_observe_like_sheet_visible", lambda frame: frame == b"sheet")
+    monkeypatch.setattr(
+        drv, "_observe_like_sheet_visible", lambda frame: frame == b"sheet"
+    )
     callbacks = []
     calls = {"n": 0}
 
@@ -1134,9 +1318,12 @@ def test_one_negative_composer_poll_does_not_close_a_still_open_sheet(monkeypatc
         return calls["n"] > 2
 
     sent, seen = drv._await_like_resolved(
-        b"base", None, should_stop,
+        b"base",
+        None,
+        should_stop,
         on_like_intent=lambda active, anchor=None: callbacks.append((active, anchor)),
-        intent_notified=True)
+        intent_notified=True,
+    )
 
     assert sent is None and seen is True
     assert callbacks == [(True, b"sheet")]
@@ -1144,7 +1331,9 @@ def test_one_negative_composer_poll_does_not_close_a_still_open_sheet(monkeypatc
     assert waiting and all(fields["reason"] == "like_sheet" for fields in waiting)
 
 
-def test_like_sheet_wait_suppresses_heartbeat_when_stop_lands_after_its_screencap(monkeypatch):
+def test_like_sheet_wait_suppresses_heartbeat_when_stop_lands_after_its_screencap(
+    monkeypatch,
+):
     """The composer resolver has the same post-screencap Stop race as the ordinary wait.
     It must exit without writing a stale `like_sheet` heartbeat."""
     drv = _drv(FakeAdb([b"sheet"], advance_on_screencap=True))
@@ -1154,9 +1343,11 @@ def test_like_sheet_wait_suppresses_heartbeat_when_stop_lands_after_its_screenca
 
     def should_stop():
         calls["n"] += 1
-        return calls["n"] > 1                 # after the resolver's screencap
+        return calls["n"] > 1  # after the resolver's screencap
 
-    sent, seen = drv._await_like_resolved(b"base", None, should_stop, intent_notified=True)
+    sent, seen = drv._await_like_resolved(
+        b"base", None, should_stop, intent_notified=True
+    )
 
     assert sent is None and seen is True
     assert not [name for name, _fields in drv._dbg.calls if name == "observe_waiting"]
@@ -1175,7 +1366,9 @@ def test_two_negative_composer_pairs_do_not_spend_a_human_draft_as_sending(monke
     )
     drv = _drv(adb)
     drv._dbg = _FakeDbg()
-    monkeypatch.setattr(drv, "_observe_like_sheet_visible", lambda frame: frame == b"sheet")
+    monkeypatch.setattr(
+        drv, "_observe_like_sheet_visible", lambda frame: frame == b"sheet"
+    )
     calls = {"n": 0}
 
     def should_stop():
@@ -1183,7 +1376,8 @@ def test_two_negative_composer_pairs_do_not_spend_a_human_draft_as_sending(monke
         return calls["n"] > 3
 
     sent, seen = drv._await_like_resolved(
-        b"base", None, should_stop, intent_notified=True)
+        b"base", None, should_stop, intent_notified=True
+    )
 
     assert sent is None and seen is True
     waiting = [fields for name, fields in drv._dbg.calls if name == "observe_waiting"]
@@ -1191,7 +1385,9 @@ def test_two_negative_composer_pairs_do_not_spend_a_human_draft_as_sending(monke
     assert any(fields.get("composer_detection") == "unconfirmed" for fields in waiting)
 
 
-def test_many_negative_composer_pairs_remain_unconfirmed_until_positive_closure(monkeypatch):
+def test_many_negative_composer_pairs_remain_unconfirmed_until_positive_closure(
+    monkeypatch,
+):
     """No arbitrary retry count may turn an edited draft into app-side sending.
 
     The 2026-08-18 device trace lost the strict composer detector for three
@@ -1200,13 +1396,22 @@ def test_many_negative_composer_pairs_remain_unconfirmed_until_positive_closure(
     human who is still composing.
     """
     adb = FakeAdb(
-        [b"negative-1", b"negative-2", b"negative-3", b"negative-4",
-         b"negative-5", b"negative-6", b"sheet"],
+        [
+            b"negative-1",
+            b"negative-2",
+            b"negative-3",
+            b"negative-4",
+            b"negative-5",
+            b"negative-6",
+            b"sheet",
+        ],
         advance_on_screencap=True,
     )
     drv = _drv(adb)
     drv._dbg = _FakeDbg()
-    monkeypatch.setattr(drv, "_observe_like_sheet_visible", lambda frame: frame == b"sheet")
+    monkeypatch.setattr(
+        drv, "_observe_like_sheet_visible", lambda frame: frame == b"sheet"
+    )
     calls = {"n": 0}
 
     def should_stop():
@@ -1214,7 +1419,8 @@ def test_many_negative_composer_pairs_remain_unconfirmed_until_positive_closure(
         return calls["n"] > 4
 
     sent, seen = drv._await_like_resolved(
-        b"base", None, should_stop, intent_notified=True)
+        b"base", None, should_stop, intent_notified=True
+    )
 
     assert sent is None and seen is True
     waiting = [fields for name, fields in drv._dbg.calls if name == "observe_waiting"]
@@ -1235,8 +1441,9 @@ def test_focused_partial_composer_is_not_a_shared_composer_proof():
     canvas[1334:1443, 390:985] = 228
     glyph = hinge._load_template("hinge_send_like.png")
     gh, gw = glyph.shape
-    canvas[1383 - gh // 2:1383 - gh // 2 + gh,
-           695 - gw // 2:695 - gw // 2 + gw] = glyph
+    canvas[1383 - gh // 2 : 1383 - gh // 2 + gh, 695 - gw // 2 : 695 - gw // 2 + gw] = (
+        glyph
+    )
     canvas[1560:, :] = 43
     ok, encoded = cv2.imencode(".png", canvas)
     assert ok
@@ -1265,13 +1472,15 @@ def test_focused_partial_only_defers_a_prior_strict_like_intent(monkeypatch):
         return calls["n"] > 2
 
     sent, seen = drv._await_like_resolved(
-        b"base", None, should_stop,
+        b"base",
+        None,
+        should_stop,
         on_like_intent=lambda active, anchor=None: callbacks.append((active, anchor)),
         intent_notified=True,
     )
 
     assert sent is None and seen is True
-    assert callbacks == []                         # no new/refreshed intent from weak evidence
+    assert callbacks == []  # no new/refreshed intent from weak evidence
     waiting = [fields for name, fields in drv._dbg.calls if name == "observe_waiting"]
     assert waiting and waiting[-1]["composer_detection"] == "focused_partial"
 
@@ -1282,8 +1491,11 @@ def test_focused_partial_never_originates_intent_or_a_like_outcome(monkeypatch):
     drv = _drv(adb)
     monkeypatch.setattr(drv, "_observe_like_sheet_visible", lambda _frame: False)
     partial_calls = []
-    monkeypatch.setattr(drv, "_focused_draft_composer_visible",
-                        lambda frame: partial_calls.append(frame) or True)
+    monkeypatch.setattr(
+        drv,
+        "_focused_draft_composer_visible",
+        lambda frame: partial_calls.append(frame) or True,
+    )
     callbacks = []
     calls = {"n": 0}
 
@@ -1292,12 +1504,13 @@ def test_focused_partial_never_originates_intent_or_a_like_outcome(monkeypatch):
         return calls["n"] > 1
 
     result = drv.wait_for_decision(
-        timeout=None, should_stop=should_stop,
+        timeout=None,
+        should_stop=should_stop,
         on_like_intent=lambda active, anchor=None: callbacks.append((active, anchor)),
     )
 
     assert result is None
-    assert partial_calls == []                     # fallback cannot originate the resolver
+    assert partial_calls == []  # fallback cannot originate the resolver
     assert callbacks == []
 
 
@@ -1305,9 +1518,13 @@ def test_focused_partial_does_not_block_the_strict_only_session_top_path(monkeyp
     """Auto/session paths must never treat the observe-only fallback as an open sheet."""
     drv = _drv(FakeAdb([b"partial"]))
     monkeypatch.setattr(drv, "_focused_draft_composer_visible", lambda _frame: True)
-    monkeypatch.setattr(drv, "_capture_entry_profile_evidence", lambda _frame: "deck_controls")
+    monkeypatch.setattr(
+        drv, "_capture_entry_profile_evidence", lambda _frame: "deck_controls"
+    )
     calls = []
-    monkeypatch.setattr(drv, "_scroll_to_top", lambda _stop: calls.append("scroll") or True)
+    monkeypatch.setattr(
+        drv, "_scroll_to_top", lambda _stop: calls.append("scroll") or True
+    )
 
     drv._ensure_session_top()
 
@@ -1327,10 +1544,12 @@ def test_waiting_notice_always_fires_when_the_reason_changes(monkeypatch):
     drv._observe_last_reason = None
 
     drv._note_observe_waiting("no_change")
-    clock[0] += hinge._OBSERVE_NOTICE_FLOOR_S     # past the floor, far inside the 15s interval
+    clock[0] += (
+        hinge._OBSERVE_NOTICE_FLOOR_S
+    )  # past the floor, far inside the 15s interval
     drv._note_observe_waiting("not_deck_ready")
     clock[0] += 1.0
-    drv._note_observe_waiting("not_deck_ready")   # a repeat IS still suppressed
+    drv._note_observe_waiting("not_deck_ready")  # a repeat IS still suppressed
 
     reasons = [f["reason"] for name, f in drv._dbg.calls if name == "observe_waiting"]
     assert reasons == ["no_change", "not_deck_ready"]
@@ -1347,7 +1566,7 @@ def test_waiting_notice_floor_stops_a_flapping_screen_becoming_a_firehose(monkey
     drv._observe_last_notice = 0.0
     drv._observe_last_reason = None
 
-    for i in range(20):                          # 20 polls at the real 0.35s cadence = 7s
+    for i in range(20):  # 20 polls at the real 0.35s cadence = 7s
         drv._note_observe_waiting("no_change" if i % 2 else "not_deck_ready")
         clock[0] += hinge._OBSERVE_POLL_S
 
@@ -1376,13 +1595,17 @@ def test_waiting_notice_logs_the_frame_the_verdict_came_from(monkeypatch):
     drv._note_observe_waiting("no_change", b"the-frame-the-verdict-used")
 
     assert seen["before"] == b"the-frame-the-verdict-used"
-    assert seen["after"] is None              # and no extra ADB round-trip was made for it
+    assert seen["after"] is None  # and no extra ADB round-trip was made for it
 
 
 def test_cancelled_like_then_pass(monkeypatch):
     # Sheet up then reverts to the same card. Without a stable positive new identity afterward,
     # the conservative observer must not guess either a LIKE or a PASS.
-    monkeypatch.setattr(hinge, "_split_diff", _ScriptedDiff((2.0, 50.0), (2.0, 2.0), (2.0, 2.0), (50.0, 50.0)))
+    monkeypatch.setattr(
+        hinge,
+        "_split_diff",
+        _ScriptedDiff((2.0, 50.0), (2.0, 2.0), (2.0, 2.0), (50.0, 50.0)),
+    )
     adb = FakeAdb([b"a", b"sheet", b"a", b"c"])
     drv = _drv(adb)
     # Deck-ready evidence for "c" -- see test_pass_detected_on_card_advance's comment: the
@@ -1404,7 +1627,7 @@ class FakeAdbNoDevice(FakeAdb):
         super().__init__([b"x"])
 
     def devices(self):
-        return []                                # nothing connected
+        return []  # nothing connected
 
 
 def test_device_loss_propagates_as_driver_closed():
@@ -1430,8 +1653,11 @@ def test_real_bug_is_not_masked_as_driver_closed():
 
 def test_open_session_raises_driver_closed_when_deps_missing(monkeypatch):
     import sys
+
     monkeypatch.setitem(sys.modules, "PIL", None)
-    monkeypatch.setattr("operation_love.platforms.unavailable_reason", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        "operation_love.platforms.unavailable_reason", lambda *_a, **_k: None
+    )
     # This is an internal legacy passive-observer dependency-order test.  It intentionally
     # avoids the autonomous/training readiness gate so the missing-PIL failure remains the
     # first lifecycle error it exercises.
@@ -1448,12 +1674,15 @@ def test_wait_for_decision_ignores_scroll(monkeypatch):
     # Pre-populate the captured signatures with downsamples of "a" and "b"
     # (use 24x24 arrays of ones to simulate valid downsampled images)
     import numpy as np
+
     drv._current_sigs = [np.ones((24, 24)), np.ones((24, 24)) * 2]
     old_sig = np.full((16, 64), 10, dtype="int16")
     new_sig = np.full((16, 64), 250, dtype="int16")
     drv._identity_sig = old_sig
     drv._identity_top_sig = np.full((16, 64), 200, dtype="int16")
-    monkeypatch.setattr(hinge, "_band", lambda frame, rect: new_sig if frame == b"c" else old_sig)
+    monkeypatch.setattr(
+        hinge, "_band", lambda frame, rect: new_sig if frame == b"c" else old_sig
+    )
 
     # Mock _downsample to return our simulated signatures
     def mock_downsample(frame, size=24):
@@ -1464,7 +1693,9 @@ def test_wait_for_decision_ignores_scroll(monkeypatch):
         return np.ones((24, 24)) * 99  # "c" is far away
 
     monkeypatch.setattr(hinge, "_downsample", mock_downsample)
-    monkeypatch.setattr(hinge, "_split_diff", lambda x, y: (0.0, 0.0) if x == y else (15.0, 15.0))
+    monkeypatch.setattr(
+        hinge, "_split_diff", lambda x, y: (0.0, 0.0) if x == y else (15.0, 15.0)
+    )
     # Deck-ready evidence for "c" -- see test_pass_detected_on_card_advance's comment: these
     # raw fake frames can't satisfy the real glyph template match, and the new rule requires
     # positive proof of a settled deck-ready card before concluding PASS.
@@ -1490,7 +1721,7 @@ def test_capture_raises_on_identical_undecodable_when_observe_ready():
     # Audit fix: a wedged device returning the SAME undecodable bytes (e.g. empty screencap on
     # exit 0) must NOT masquerade as a static 'Out of Profiles' screen (return None -> the
     # observe worker livelocks). With deps validated, it hard-fails so the worker stops clean.
-    adb = FakeAdb([b"x", b"x"])          # identical, undecodable -> not a real static screen
+    adb = FakeAdb([b"x", b"x"])  # identical, undecodable -> not a real static screen
     drv = _drv(adb)
     drv._observe_ready = True
     with pytest.raises(DriverClosed):
@@ -1502,23 +1733,32 @@ def test_like_sheet_not_misread_as_scroll(monkeypatch):
     # genuinely NEW profile. Sheet detected before the scroll check, AND the advance frame
     # must NOT match the current profile's sigs (so it counts as a new card, not a scroll).
     import numpy as np
+
     sig = np.ones((24, 24))
     new_profile = np.ones((24, 24)) * 99
-    monkeypatch.setattr(hinge, "_downsample",
-                        lambda frame, size=24: new_profile if frame == b"b" else sig)
-    monkeypatch.setattr(hinge, "_split_diff",
-                        _ScriptedDiff((2.0, 50.0), (50.0, 0.0), (50.0, 0.0)))  # sheet, then advance confirmed
+    monkeypatch.setattr(
+        hinge,
+        "_downsample",
+        lambda frame, size=24: new_profile if frame == b"b" else sig,
+    )
+    monkeypatch.setattr(
+        hinge, "_split_diff", _ScriptedDiff((2.0, 50.0), (50.0, 0.0), (50.0, 0.0))
+    )  # sheet, then advance confirmed
     adb = FakeAdb([b"a", b"sheet", b"b"], advance_on_screencap=True)
     drv = _drv(adb)
-    drv._current_sigs = [sig]            # advance frame b"b" doesn't match -> genuine new profile
+    drv._current_sigs = [sig]  # advance frame b"b" doesn't match -> genuine new profile
     old_sig = np.full((16, 64), 10, dtype="int16")
     new_sig = np.full((16, 64), 250, dtype="int16")
     drv._identity_sig = old_sig
     drv._identity_top_sig = np.full((16, 64), 200, dtype="int16")
-    monkeypatch.setattr(hinge, "_band", lambda frame, rect: new_sig if frame == b"b" else old_sig)
-    monkeypatch.setattr(drv, "_observe_like_sheet_visible", lambda frame: frame == b"sheet")
+    monkeypatch.setattr(
+        hinge, "_band", lambda frame, rect: new_sig if frame == b"b" else old_sig
+    )
+    monkeypatch.setattr(
+        drv, "_observe_like_sheet_visible", lambda frame: frame == b"sheet"
+    )
     monkeypatch.setattr(drv, "_observe_deck_ready", lambda frame: frame == b"b")
-    assert drv.wait_for_decision(timeout=5.0) is True   # LIKE
+    assert drv.wait_for_decision(timeout=5.0) is True  # LIKE
 
 
 def test_uniform_top_scroll_not_misread_as_like(monkeypatch):
@@ -1526,13 +1766,18 @@ def test_uniform_top_scroll_not_misread_as_like(monkeypatch):
     # like-branch, but the 'advanced' frame still matches the current profile's sigs, so it
     # must be recognized as a scroll -> NOT reported as a LIKE.
     import numpy as np
+
     sig = np.ones((24, 24))
-    monkeypatch.setattr(hinge, "_downsample", lambda *a, **k: sig)   # every frame = the SAME profile
-    monkeypatch.setattr(hinge, "_split_diff", _ScriptedDiff((2.0, 50.0), (50.0, 0.0), (50.0, 0.0)))
+    monkeypatch.setattr(
+        hinge, "_downsample", lambda *a, **k: sig
+    )  # every frame = the SAME profile
+    monkeypatch.setattr(
+        hinge, "_split_diff", _ScriptedDiff((2.0, 50.0), (50.0, 0.0), (50.0, 0.0))
+    )
     adb = FakeAdb([b"a", b"s1", b"s2"])
     drv = _drv(adb)
     drv._current_sigs = [sig]
-    assert drv.wait_for_decision(timeout=0.2) is not True   # not a false LIKE
+    assert drv.wait_for_decision(timeout=0.2) is not True  # not a false LIKE
 
 
 # --- _vertical_shift_match: bug report regression -------------------------
@@ -1543,10 +1788,11 @@ def test_uniform_top_scroll_not_misread_as_like(monkeypatch):
 # the bot's own stride, so it landed BETWEEN two stops and read as "whole card changed".
 def test_vertical_shift_match_recognizes_a_scroll_that_lands_between_two_capture_stops():
     import numpy as np
+
     # Row i's value is i, so any vertical shift is unambiguous and exactly checkable.
-    seen = (np.arange(24, dtype="int16").reshape(24, 1) * np.ones((1, 24), dtype="int16"))
+    seen = np.arange(24, dtype="int16").reshape(24, 1) * np.ones((1, 24), dtype="int16")
     cur = np.full((24, 24), 250, dtype="int16")
-    cur[:18] = seen[6:24]           # human scrolled 6 rows further than this capture stop
+    cur[:18] = seen[6:24]  # human scrolled 6 rows further than this capture stop
     # _vertical_shift_match now returns (matched, shift, overlap_rows), not a bare bool -- a
     # (False, ...) 3-tuple is still TRUTHY, so `assert hinge._vertical_shift_match(...)` alone
     # would silently stop being a real assertion; index [0] for the boolean this test cares
@@ -1558,27 +1804,36 @@ def test_vertical_shift_match_recognizes_a_scroll_that_lands_between_two_capture
 
 def test_vertical_shift_match_rejects_a_genuinely_different_profile():
     import numpy as np
-    seen = (np.arange(24, dtype="int16").reshape(24, 1) * np.ones((1, 24), dtype="int16"))
-    cur = np.full((24, 24), 220, dtype="int16")   # nowhere near `seen`'s 0..23 range at any offset
+
+    seen = np.arange(24, dtype="int16").reshape(24, 1) * np.ones((1, 24), dtype="int16")
+    cur = np.full(
+        (24, 24), 220, dtype="int16"
+    )  # nowhere near `seen`'s 0..23 range at any offset
     assert hinge._vertical_shift_match(cur, seen, threshold=9.0)[0] is False
 
 
 def test_wait_for_decision_ignores_a_scroll_between_capture_stops_but_still_catches_a_real_pass(
-        monkeypatch):
+    monkeypatch,
+):
     """Integration regression for the bug report: a scroll landing between two of
     _capture_current's stops must NOT be recorded as a pass, but a genuinely different profile
     (no vertical alignment at any offset) still must be."""
     import numpy as np
-    seen0 = np.arange(24, dtype="int16").reshape(24, 1) * np.ones((1, 24), dtype="int16")
+
+    seen0 = np.arange(24, dtype="int16").reshape(24, 1) * np.ones(
+        (1, 24), dtype="int16"
+    )
     mid = np.full((24, 24), 250, dtype="int16")
-    mid[:18] = seen0[6:24]                       # a manual scroll 6 rows past the captured stop
-    new_profile = np.full((24, 24), 220, dtype="int16")   # a real X-tap advance
+    mid[:18] = seen0[6:24]  # a manual scroll 6 rows past the captured stop
+    new_profile = np.full((24, 24), 220, dtype="int16")  # a real X-tap advance
 
     def mock_downsample(frame, size=24):
         return {b"a": seen0, b"mid": mid, b"new": new_profile}[frame]
 
     monkeypatch.setattr(hinge, "_downsample", mock_downsample)
-    monkeypatch.setattr(hinge, "_split_diff", lambda x, y: (0.0, 0.0) if x == y else (15.0, 15.0))
+    monkeypatch.setattr(
+        hinge, "_split_diff", lambda x, y: (0.0, 0.0) if x == y else (15.0, 15.0)
+    )
     adb = FakeAdb([b"a", b"mid", b"new"], advance_on_screencap=True)
     drv = _drv(adb)
     drv._current_sigs = [seen0]
@@ -1586,22 +1841,24 @@ def test_wait_for_decision_ignores_a_scroll_between_capture_stops_but_still_catc
     new_sig = np.full((16, 64), 250, dtype="int16")
     drv._identity_sig = old_sig
     drv._identity_top_sig = np.full((16, 64), 200, dtype="int16")
-    monkeypatch.setattr(hinge, "_band", lambda frame, rect: new_sig if frame == b"new" else old_sig)
+    monkeypatch.setattr(
+        hinge, "_band", lambda frame, rect: new_sig if frame == b"new" else old_sig
+    )
     # Deck-ready evidence for "new" -- see test_pass_detected_on_card_advance's comment: the
     # new rule requires positive proof of a settled deck-ready card (these raw fake frames
     # never satisfy the real glyph template match) before it will conclude PASS at all.
     monkeypatch.setattr(drv, "_observe_deck_ready", lambda frame: True)
     monkeypatch.setattr(drv, "_observe_gesture_verdict", lambda frame: "pass")
 
-    assert drv.wait_for_decision(timeout=5.0) is False   # only "new" is a genuine pass
-    assert adb.i == 2                                    # both "mid" and "new" were observed
+    assert drv.wait_for_decision(timeout=5.0) is False  # only "new" is a genuine pass
+    assert adb.i == 2  # both "mid" and "new" were observed
 
 
 class _FakeDbg:
     def __init__(self):
         self.calls = []
-        self.befores = []          # (name, before) -- the frame each record is evidenced by
-        self.afters = []           # (name, after) -- only rare retained pair diagnostics use it
+        self.befores = []  # (name, before) -- the frame each record is evidenced by
+        self.afters = []  # (name, after) -- only rare retained pair diagnostics use it
 
     def action(self, name, *, before=None, after=None, **fields):
         self.calls.append((name, fields))
@@ -1616,27 +1873,45 @@ def test_reviewed_observe_pass_emits_a_verified_frame_bound_decision(monkeypatch
     monkeypatch.setattr(drv, "_deliver_decision", lambda _kind: (12, 34))
     monkeypatch.setattr(drv, "_interruptible_sleep", lambda *_a, **_k: True)
     verified = []
-    monkeypatch.setattr(drv, "_verify_progress", lambda before, kind: verified.append((before, kind)))
+    monkeypatch.setattr(
+        drv, "_verify_progress", lambda before, kind: verified.append((before, kind))
+    )
 
     drv.observe_pass()
 
     assert verified == [(b"before", "dislike")]
-    decisions = [fields for name, fields in drv._dbg.calls if name == "observe_decision"]
-    assert decisions == [{"decision": "pass", "reviewed": True, "x": [12, 34],
-                          "gesture": drv.spec.decide_gesture}]
+    decisions = [
+        fields for name, fields in drv._dbg.calls if name == "observe_decision"
+    ]
+    assert decisions == [
+        {
+            "decision": "pass",
+            "reviewed": True,
+            "x": [12, 34],
+            "gesture": drv.spec.decide_gesture,
+        }
+    ]
 
 
-def test_reviewed_capture_keeps_its_real_index_anchor_while_manual_capture_unwinds(monkeypatch):
+def test_reviewed_capture_keeps_its_real_index_anchor_while_manual_capture_unwinds(
+    monkeypatch,
+):
     """The bridge starts where the index was measured; manual Observe remains top-facing."""
     profile = object()
 
     reviewed = _drv(FakeAdb([b"unused"]))
     reviewed_top_calls = []
-    monkeypatch.setattr(reviewed, "_ensure_session_top",
-                        lambda _stop=None: reviewed_top_calls.append("top") or True)
+    monkeypatch.setattr(
+        reviewed,
+        "_ensure_session_top",
+        lambda _stop=None: reviewed_top_calls.append("top") or True,
+    )
     monkeypatch.setattr(reviewed, "_capture_current", lambda _stop=None: profile)
-    monkeypatch.setattr(reviewed, "_scroll_to_top",
-                        lambda *_a, **_k: pytest.fail("reviewed capture must not rewind"))
+    monkeypatch.setattr(
+        reviewed,
+        "_scroll_to_top",
+        lambda *_a, **_k: pytest.fail("reviewed capture must not rewind"),
+    )
     assert reviewed.current_profile_reviewed() is profile
     assert reviewed_top_calls == ["top"]
 
@@ -1644,8 +1919,9 @@ def test_reviewed_capture_keeps_its_real_index_anchor_while_manual_capture_unwin
     manual._session_top_done = True
     calls = []
     monkeypatch.setattr(manual, "_capture_current", lambda _stop=None: profile)
-    monkeypatch.setattr(manual, "_scroll_to_top",
-                        lambda *_a, **_k: calls.append("unwind") or True)
+    monkeypatch.setattr(
+        manual, "_scroll_to_top", lambda *_a, **_k: calls.append("unwind") or True
+    )
     assert manual.current_profile() is profile
     assert calls == ["unwind"]
 
@@ -1661,7 +1937,9 @@ def test_reviewed_send_does_not_fabricate_sending_for_ready_next_card(monkeypatc
     assert not [name for name, _fields in drv._dbg.calls if name == "observe_waiting"]
 
 
-def test_reviewed_open_commits_anchor_and_verification_fact_inside_its_lease(monkeypatch):
+def test_reviewed_open_commits_anchor_and_verification_fact_inside_its_lease(
+    monkeypatch,
+):
     drv = _drv(FakeAdb([b"sheet"]))
     drv._dbg = _FakeDbg()
     payload = object()
@@ -1677,8 +1955,12 @@ def test_reviewed_open_commits_anchor_and_verification_fact_inside_its_lease(mon
     drv.observe_open_targeted_like(3)
 
     names = [name for name, _fields in drv._dbg.calls]
-    assert names.index("observe_like_anchor") < names.index("observe_release_post_tap_item_verified")
-    assert names.index("observe_release_post_tap_item_verified") < names.index("observe_reviewed_open")
+    assert names.index("observe_like_anchor") < names.index(
+        "observe_release_post_tap_item_verified"
+    )
+    assert names.index("observe_release_post_tap_item_verified") < names.index(
+        "observe_reviewed_open"
+    )
 
 
 def test_observe_release_facts_are_transport_free_exact_debug_rows(tmp_path):
@@ -1705,12 +1987,19 @@ def test_observe_release_facts_are_transport_free_exact_debug_rows(tmp_path):
     drv = _drv(adb)
     drv._dbg = HingeDebugLog(str(tmp_path), run_id="release-facts")
 
-    for fact in ("hub_pre_tap_published", "post_tap_item_verified",
-                 "refusal_or_paywall_logged"):
+    for fact in (
+        "hub_pre_tap_published",
+        "post_tap_item_verified",
+        "refusal_or_paywall_logged",
+    ):
         drv.observe_release_fact(fact)
 
-    rows = [json.loads(line) for line in
-            (tmp_path / "release-facts" / "actions.jsonl").read_text().splitlines()]
+    rows = [
+        json.loads(line)
+        for line in (tmp_path / "release-facts" / "actions.jsonl")
+        .read_text()
+        .splitlines()
+    ]
     assert [row["action"] for row in rows] == [
         "observe_release_hub_pre_tap_published",
         "observe_release_post_tap_item_verified",
@@ -1722,6 +2011,7 @@ def test_observe_release_facts_are_transport_free_exact_debug_rows(tmp_path):
 
 def test_observe_release_fact_without_debug_log_remains_transport_free():
     """Debug-disabled production runs keep the same harmless no-op semantics."""
+
     class NoCaptureAdb(FakeAdb):
         def screencap(self):
             raise AssertionError("observe_release_fact must not use ADB screencap")
@@ -1736,6 +2026,7 @@ def test_wait_for_decision_records_pass_diagnostics_in_the_debug_log(monkeypatch
     was recorded -- just a bare 'Got PASS' in the console log. A corroborated PASS verdict must
     leave a paper trail for the next report to point at."""
     import numpy as np
+
     adb = FakeAdb([b"a", b"new"], advance_on_screencap=True)
     drv = _drv(adb)
     drv._dbg = _FakeDbg()
@@ -1745,18 +2036,28 @@ def test_wait_for_decision_records_pass_diagnostics_in_the_debug_log(monkeypatch
     new_sig = np.full((16, 64), 250, dtype="int16")
     drv._identity_sig = old_sig
     drv._identity_top_sig = np.full((16, 64), 200, dtype="int16")
-    monkeypatch.setattr(hinge, "_band", lambda frame, rect: new_sig if frame == b"new" else old_sig)
     monkeypatch.setattr(
-        hinge, "_downsample",
-        lambda frame, size=24: np.ones((24, 24)) if frame == b"a" else np.full((24, 24), 220.0))
-    monkeypatch.setattr(hinge, "_split_diff", lambda x, y: (0.0, 0.0) if x == y else (15.0, 15.0))
+        hinge, "_band", lambda frame, rect: new_sig if frame == b"new" else old_sig
+    )
+    monkeypatch.setattr(
+        hinge,
+        "_downsample",
+        lambda frame, size=24: (
+            np.ones((24, 24)) if frame == b"a" else np.full((24, 24), 220.0)
+        ),
+    )
+    monkeypatch.setattr(
+        hinge, "_split_diff", lambda x, y: (0.0, 0.0) if x == y else (15.0, 15.0)
+    )
     # Deck-ready evidence for "new" -- see test_pass_detected_on_card_advance's comment.
     monkeypatch.setattr(drv, "_observe_deck_ready", lambda frame: True)
     monkeypatch.setattr(drv, "_observe_gesture_verdict", lambda frame: "pass")
 
     assert drv.wait_for_decision(timeout=5.0) is False
 
-    decisions = [fields for name, fields in drv._dbg.calls if name == "observe_decision"]
+    decisions = [
+        fields for name, fields in drv._dbg.calls if name == "observe_decision"
+    ]
     assert len(decisions) == 1
     assert decisions[0]["decision"] == "pass"
     assert decisions[0]["shift_matched"] is False
@@ -1769,7 +2070,8 @@ def test_wait_for_decision_records_pass_diagnostics_in_the_debug_log(monkeypatch
 
 
 def test_observe_scroll_shift_match_record_carries_sig_index_shift_overlap_rows_and_safe_ocr_metadata(
-        monkeypatch):
+    monkeypatch,
+):
     """Observability fix motivated directly by the reported incident: the exact record type
     that was written while wait_for_decision was actually looking at a DIFFERENT woman's
     profile (reason=shift_match) used to say only "matched a stored signature", with no way
@@ -1783,31 +2085,36 @@ def test_observe_scroll_shift_match_record_carries_sig_index_shift_overlap_rows_
     for why a gradient fixture can't pin an exact expected shift.
     """
     import numpy as np
+
     rng = np.random.default_rng(11)
     r0, r1 = hinge._content_rows(hinge.HINGE_SPEC.content_band, 24)
     band_h = r1 - r0
     content = rng.integers(0, 255, size=(band_h, 24)).astype("int16")
-    seen0 = np.full((24, 24), -50, dtype="int16")          # -50: never coincidentally close to
-    seen0[r0:r1] = content                                 # any 0..254 random content value
+    seen0 = np.full((24, 24), -50, dtype="int16")  # -50: never coincidentally close to
+    seen0[r0:r1] = content  # any 0..254 random content value
 
     shift = 5
     mid_content = np.full((band_h, 24), -50, dtype="int16")
-    mid_content[shift:] = content[:band_h - shift]         # mid = seen's content shifted DOWN
+    mid_content[shift:] = content[: band_h - shift]  # mid = seen's content shifted DOWN
     mid = np.full((24, 24), -50, dtype="int16")
     mid[r0:r1] = mid_content
 
     adb = FakeAdb([b"a", b"mid"], advance_on_screencap=True)
     drv = _drv(adb)
     drv._dbg = _FakeDbg()
-    drv._current_sigs = [seen0]     # index 0 -- this IS the stored signature that matches
+    drv._current_sigs = [seen0]  # index 0 -- this IS the stored signature that matches
 
     def mock_downsample(frame, size=24):
         return {b"a": seen0, b"mid": mid}[frame]
 
     monkeypatch.setattr(hinge, "_downsample", mock_downsample)
-    monkeypatch.setattr(hinge, "_split_diff", lambda x, y: (0.0, 0.0) if x == y else (15.0, 15.0))
+    monkeypatch.setattr(
+        hinge, "_split_diff", lambda x, y: (0.0, 0.0) if x == y else (15.0, 15.0)
+    )
 
-    assert drv.wait_for_decision(timeout=0.2) is None     # times out -- correctly read as a scroll
+    assert (
+        drv.wait_for_decision(timeout=0.2) is None
+    )  # times out -- correctly read as a scroll
 
     scrolls = [fields for name, fields in drv._dbg.calls if name == "observe_scroll"]
     assert scrolls, "expected at least one observe_scroll debug record"
@@ -1817,8 +2124,10 @@ def test_observe_scroll_shift_match_record_carries_sig_index_shift_overlap_rows_
     assert rec["shift"] == shift
     assert rec["overlap_rows"] == band_h - shift
     assert rec["band_rows"] == band_h
-    assert "name_read" not in rec     # raw OCR transcript must not enter action records
-    assert rec["ocr_attempts"] == []  # identity never reached "top" here (raw bytes -> "unknown")
+    assert "name_read" not in rec  # raw OCR transcript must not enter action records
+    assert (
+        rec["ocr_attempts"] == []
+    )  # identity never reached "top" here (raw bytes -> "unknown")
 
 
 # --- observe: identity-anchor + gesture-corroboration redesign ------------------------
@@ -1826,6 +2135,7 @@ def test_observe_scroll_shift_match_record_carries_sig_index_shift_overlap_rows_
 # parsing and getevent -p device selection -- already live in tests/test_touchwatch.py;
 # test 11 -- AndroidAppSpec validation for identity_band/observe_touch_watch -- already
 # lives in tests/test_android_spec.py; neither is duplicated here).
+
 
 def test_identity_match_keeps_waiting_despite_an_unmatched_manual_scroll(monkeypatch):
     """THE reported bug, reproduced directly (the owner hit this twice). A profile is
@@ -1840,21 +2150,31 @@ def test_identity_match_keeps_waiting_despite_an_unmatched_manual_scroll(monkeyp
     going and times out to None, never False.
     """
     import numpy as np
+
     identity_sig = np.full((16, 64), 30, dtype="int16")
     adb = FakeAdb([b"base", b"scrolled"], advance_on_screencap=True)
     drv = _drv(adb)
-    drv._identity_sig = identity_sig                              # the captured profile's own header
-    drv._identity_top_sig = np.full((16, 64), 200, dtype="int16")  # scroll-top chrome, unrelated
+    drv._identity_sig = identity_sig  # the captured profile's own header
+    drv._identity_top_sig = np.full(
+        (16, 64), 200, dtype="int16"
+    )  # scroll-top chrome, unrelated
     # This scroll position was never one of _capture_current's own stops -- neither the
     # exact-signature match nor _vertical_shift_match would recognise it (both key off
     # _current_sigs/_downsample, never reached here: identity 'same' short-circuits first).
     drv._current_sigs = [np.zeros((24, 24), dtype="int16")]
-    monkeypatch.setattr(hinge, "_band",
-                        lambda frame, rect: identity_sig if frame == b"scrolled" else drv._identity_top_sig)
-    monkeypatch.setattr(hinge, "_split_diff", lambda a, b: (50.0, 50.0))   # a big "whole card changed" delta
+    monkeypatch.setattr(
+        hinge,
+        "_band",
+        lambda frame, rect: (
+            identity_sig if frame == b"scrolled" else drv._identity_top_sig
+        ),
+    )
+    monkeypatch.setattr(
+        hinge, "_split_diff", lambda a, b: (50.0, 50.0)
+    )  # a big "whole card changed" delta
 
     assert drv.wait_for_decision(timeout=0.05) is None
-    assert adb.taps == [] and adb.swipes == 0             # never touched the device either
+    assert adb.taps == [] and adb.swipes == 0  # never touched the device either
 
 
 def test_external_current_profile_or_scroll_refuses_during_observe_wait():
@@ -1910,26 +2230,33 @@ def test_observe_input_lease_key_is_a_stable_non_identifying_hash_of_app_and_ser
         apps = {"hinge": {"serial": "33111JEHN04475"}}
 
     drv_a = HingeDriver(_SerialCfg())
-    drv_b = HingeDriver(_SerialCfg())          # a second instance, identical inputs
+    drv_b = HingeDriver(_SerialCfg())  # a second instance, identical inputs
 
     key_a = drv_a._observe_input_lease_key()
     key_b = drv_b._observe_input_lease_key()
-    assert key_a == key_b, "same app/serial must resolve to the same lease file every time"
+    assert key_a == key_b, (
+        "same app/serial must resolve to the same lease file every time"
+    )
 
     name = Path(key_a).name
     match = re.fullmatch(r"operation-love-observe-([0-9a-f]{24})\.lock", name)
     assert match is not None, f"unexpected lease filename shape: {name!r}"
 
     expected_digest = hashlib.sha256(
-        f"{drv_a.spec.app}:{drv_a.serial}".encode()).hexdigest()[:24]
+        f"{drv_a.spec.app}:{drv_a.serial}".encode()
+    ).hexdigest()[:24]
     assert match.group(1) == expected_digest
-    assert drv_a.serial not in name    # non-identifying: the raw serial must not leak into it
+    assert (
+        drv_a.serial not in name
+    )  # non-identifying: the raw serial must not leak into it
 
     class _OtherSerialCfg:
         apps = {"hinge": {"serial": "some-other-pixel"}}
 
     drv_c = HingeDriver(_OtherSerialCfg())
-    assert drv_c._observe_input_lease_key() != key_a, "different serials must not share a lease"
+    assert drv_c._observe_input_lease_key() != key_a, (
+        "different serials must not share a lease"
+    )
 
 
 def test_identity_new_profile_plus_deck_ready_and_settle_confirms_a_pass(monkeypatch):
@@ -1939,14 +2266,19 @@ def test_identity_new_profile_plus_deck_ready_and_settle_confirms_a_pass(monkeyp
     next deck is confirmed ready, a settle re-capture reconfirms both, and the pass-control
     gesture independently corroborates it -- wait_for_decision returns False (PASS)."""
     import numpy as np
+
     old_sig = np.full((16, 64), 10, dtype="int16")
     new_sig = np.full((16, 64), 250, dtype="int16")
     adb = FakeAdb([b"base", b"new"], advance_on_screencap=True)
     drv = _drv(adb)
     drv._identity_sig = old_sig
     drv._identity_top_sig = np.full((16, 64), 200, dtype="int16")
-    monkeypatch.setattr(hinge, "_band", lambda frame, rect: new_sig if frame == b"new" else old_sig)
-    monkeypatch.setattr(hinge, "_split_diff", lambda a, b: (0.0, 0.0) if a == b else (50.0, 50.0))
+    monkeypatch.setattr(
+        hinge, "_band", lambda frame, rect: new_sig if frame == b"new" else old_sig
+    )
+    monkeypatch.setattr(
+        hinge, "_split_diff", lambda a, b: (0.0, 0.0) if a == b else (50.0, 50.0)
+    )
     monkeypatch.setattr(drv, "_observe_deck_ready", lambda frame: True)
     monkeypatch.setattr(drv, "_observe_gesture_verdict", lambda frame: "pass")
 
@@ -1954,7 +2286,8 @@ def test_identity_new_profile_plus_deck_ready_and_settle_confirms_a_pass(monkeyp
 
 
 def test_repeated_tight_name_cannot_override_weak_pixel_same_without_canonical_header_proof(
-        monkeypatch):
+    monkeypatch,
+):
     """A tight/local candidate is diagnostic only, not canonical-header advance proof."""
     import numpy as np
 
@@ -1966,13 +2299,19 @@ def test_repeated_tight_name_cannot_override_weak_pixel_same_without_canonical_h
     drv._identity_top_sig = np.full((16, 64), 200, dtype="int16")
     monkeypatch.setattr(hinge, "_band", lambda frame, rect: drv._identity_sig)
     monkeypatch.setattr(
-        hinge, "_split_diff", lambda a, b: (0.0, 0.0) if a == b else (50.0, 50.0))
+        hinge, "_split_diff", lambda a, b: (0.0, 0.0) if a == b else (50.0, 50.0)
+    )
     monkeypatch.setattr(drv, "_observe_deck_ready", lambda frame: True)
-    monkeypatch.setattr(drv, "_ocr_band",
-                        lambda frame, rect, psm="7": "Brittany" if psm == "7" else None)
+    monkeypatch.setattr(
+        drv,
+        "_ocr_band",
+        lambda frame, rect, psm="7": "Brittany" if psm == "7" else None,
+    )
 
     assert drv.wait_for_decision(timeout=5.0) is None
-    decisions = [fields for name, fields in drv._dbg.calls if name == "observe_decision"]
+    decisions = [
+        fields for name, fields in drv._dbg.calls if name == "observe_decision"
+    ]
     assert not decisions
 
 
@@ -1992,14 +2331,19 @@ def test_two_different_tight_ocr_candidates_do_not_create_a_no_touch_pass(monkey
     monkeypatch.setattr(drv, "_changed", lambda a, b: False)
     monkeypatch.setattr(drv, "_observe_deck_ready", lambda frame: True)
     names = itertools.cycle(("Brittany", "Brenda"))
-    monkeypatch.setattr(drv, "_ocr_band",
-                        lambda frame, rect, psm="7": next(names) if psm == "7" else None)
+    monkeypatch.setattr(
+        drv,
+        "_ocr_band",
+        lambda frame, rect, psm="7": next(names) if psm == "7" else None,
+    )
 
     assert drv.wait_for_decision(timeout=0.01) is None
     assert not [name for name, _fields in drv._dbg.calls if name == "observe_decision"]
 
 
-def test_same_profile_reflow_with_pixel_new_and_no_gesture_resyncs_without_a_pass(monkeypatch):
+def test_same_profile_reflow_with_pixel_new_and_no_gesture_resyncs_without_a_pass(
+    monkeypatch,
+):
     """Exact 2026-08-16 Julia regression.
 
     Hinge moved the filter-chip/name/card layout while the same profile remained visible. The
@@ -2009,6 +2353,7 @@ def test_same_profile_reflow_with_pixel_new_and_no_gesture_resyncs_without_a_pas
     nothing instead of manufacturing a PASS.
     """
     import numpy as np
+
     old_sig = np.full((16, 64), 10, dtype="int16")
     reflowed_sig = np.full((16, 64), 250, dtype="int16")
     adb = FakeAdb([b"base", b"same-julia-reflow"], advance_on_screencap=True)
@@ -2017,11 +2362,13 @@ def test_same_profile_reflow_with_pixel_new_and_no_gesture_resyncs_without_a_pas
     drv._identity_sig = old_sig
     drv._identity_top_sig = np.full((16, 64), 200, dtype="int16")
     monkeypatch.setattr(
-        hinge, "_band",
+        hinge,
+        "_band",
         lambda frame, rect: reflowed_sig if frame == b"same-julia-reflow" else old_sig,
     )
     monkeypatch.setattr(
-        hinge, "_split_diff", lambda a, b: (0.0, 0.0) if a == b else (50.0, 50.0))
+        hinge, "_split_diff", lambda a, b: (0.0, 0.0) if a == b else (50.0, 50.0)
+    )
     monkeypatch.setattr(drv, "_observe_deck_ready", lambda frame: True)
 
     assert drv.wait_for_decision(timeout=5.0) is None
@@ -2034,7 +2381,8 @@ def test_same_profile_reflow_with_pixel_new_and_no_gesture_resyncs_without_a_pas
 
 
 def test_identity_same_beats_a_large_top_delta_across_repeated_scrolls_then_catches_the_real_pass(
-        monkeypatch):
+    monkeypatch,
+):
     """identity 'same' beats _split_diff's top delta on its OWN terms, explicitly: every
     frame here -- including the two manual-scroll ones -- reports a huge top-half delta,
     exactly the signal the pre-fix rule read as 'unrecognised card -> PASS'. Only the frame
@@ -2042,6 +2390,7 @@ def test_identity_same_beats_a_large_top_delta_across_repeated_scrolls_then_catc
     identity anchor doesn't get the observer stuck: repeated 'same' verdicts still let a
     later, genuine advance conclude normally."""
     import numpy as np
+
     id_sig = np.full((16, 64), 10, dtype="int16")
     new_sig = np.full((16, 64), 250, dtype="int16")
     top_sig = np.full((16, 64), 200, dtype="int16")
@@ -2052,12 +2401,14 @@ def test_identity_same_beats_a_large_top_delta_across_repeated_scrolls_then_catc
     drv._identity_sig = id_sig
     drv._identity_top_sig = top_sig
     monkeypatch.setattr(hinge, "_band", lambda frame, rect: band_by_frame[frame])
-    monkeypatch.setattr(hinge, "_split_diff", lambda a, b: (0.0, 0.0) if a == b else (50.0, 50.0))
+    monkeypatch.setattr(
+        hinge, "_split_diff", lambda a, b: (0.0, 0.0) if a == b else (50.0, 50.0)
+    )
     monkeypatch.setattr(drv, "_observe_deck_ready", lambda frame: True)
     monkeypatch.setattr(drv, "_observe_gesture_verdict", lambda frame: "pass")
 
     assert drv.wait_for_decision(timeout=5.0) is False
-    assert adb.i == 3                # every frame observed: two same-identity scrolls, then the pass
+    assert adb.i == 3  # every frame observed: two same-identity scrolls, then the pass
 
 
 def test_vertical_shift_match_restricted_to_content_rows_ignores_fixed_chrome():
@@ -2070,18 +2421,21 @@ def test_vertical_shift_match_restricted_to_content_rows_ignores_fixed_chrome():
     search must HIT. A pair of genuinely different profiles (same chrome, unrelated content
     at every offset) must still be rejected either way."""
     import numpy as np
+
     size = 24
     r0, r1 = hinge._content_rows(hinge.HINGE_SPEC.content_band, size)
-    chrome_val = 200                # identical, fixed chrome in every frame -- never translates
-    content = np.arange(size, dtype="int16").reshape(size, 1) * np.ones((1, size), dtype="int16")
+    chrome_val = 200  # identical, fixed chrome in every frame -- never translates
+    content = np.arange(size, dtype="int16").reshape(size, 1) * np.ones(
+        (1, size), dtype="int16"
+    )
 
     seen = content.copy()
     seen[:r0] = chrome_val
     seen[r1:] = chrome_val
 
-    shift = 6                       # a manual scroll landing between two capture stops
+    shift = 6  # a manual scroll landing between two capture stops
     cur = np.full((size, size), chrome_val, dtype="int16")
-    cur[r0:r1 - shift] = seen[r0 + shift:r1]
+    cur[r0 : r1 - shift] = seen[r0 + shift : r1]
 
     # [0] everywhere below: _vertical_shift_match now returns (matched, shift, overlap_rows),
     # and a (False, ...) 3-tuple is still truthy -- see the module-level regression test above
@@ -2089,11 +2443,19 @@ def test_vertical_shift_match_restricted_to_content_rows_ignores_fixed_chrome():
     assert hinge._vertical_shift_match(cur, seen, threshold=9.0, rows=None)[0] is False
     assert hinge._vertical_shift_match(cur, seen, threshold=9.0, rows=(r0, r1))[0]
 
-    different = np.full((size, size), 240, dtype="int16")   # a genuinely different profile
+    different = np.full(
+        (size, size), 240, dtype="int16"
+    )  # a genuinely different profile
     different[:r0] = chrome_val
     different[r1:] = chrome_val
-    assert hinge._vertical_shift_match(different, seen, threshold=9.0, rows=None)[0] is False
-    assert hinge._vertical_shift_match(different, seen, threshold=9.0, rows=(r0, r1))[0] is False
+    assert (
+        hinge._vertical_shift_match(different, seen, threshold=9.0, rows=None)[0]
+        is False
+    )
+    assert (
+        hinge._vertical_shift_match(different, seen, threshold=9.0, rows=(r0, r1))[0]
+        is False
+    )
 
 
 def test_vertical_shift_match_requires_at_least_half_the_content_band():
@@ -2113,16 +2475,18 @@ def test_vertical_shift_match_requires_at_least_half_the_content_band():
     seen = rng.integers(0, 255, size=(size, size)).astype("int16")
 
     four_row_collision = rng.integers(0, 255, size=(size, size)).astype("int16")
-    four_row_collision[r0 + 14:r1] = seen[r0:r1 - 14]
+    four_row_collision[r0 + 14 : r1] = seen[r0 : r1 - 14]
     matched, _shift, overlap = hinge._vertical_shift_match(
-        four_row_collision, seen, threshold=0.1, rows=rows, min_overlap_rows=9)
+        four_row_collision, seen, threshold=0.1, rows=rows, min_overlap_rows=9
+    )
     assert matched is False
     assert overlap >= 9
 
     half_band_scroll = rng.integers(0, 255, size=(size, size)).astype("int16")
-    half_band_scroll[r0 + 9:r1] = seen[r0:r1 - 9]
+    half_band_scroll[r0 + 9 : r1] = seen[r0 : r1 - 9]
     matched, shift, overlap = hinge._vertical_shift_match(
-        half_band_scroll, seen, threshold=0.1, rows=rows, min_overlap_rows=9)
+        half_band_scroll, seen, threshold=0.1, rows=rows, min_overlap_rows=9
+    )
     assert matched is True
     assert shift == 9
     assert overlap == 9
@@ -2138,14 +2502,18 @@ def test_current_profile_check_rejects_a_four_row_collision(monkeypatch):
     r0, r1 = hinge._content_rows(drv.content_band, size)
     marina_sig = rng.integers(0, 255, size=(size, size)).astype("int16")
     sara_sig = rng.integers(0, 255, size=(size, size)).astype("int16")
-    sara_sig[r0 + 14:r1] = marina_sig[r0:r1 - 14]
+    sara_sig[r0 + 14 : r1] = marina_sig[r0 : r1 - 14]
     drv._current_sigs = [marina_sig]
     monkeypatch.setattr(drv, "_identity_of", lambda _frame: ("same", 42.85))
     monkeypatch.setattr(hinge, "_downsample", lambda _frame: sara_sig)
     diagnostics = {}
 
-    assert drv._is_current_profile_frame(
-        b"sara", require_content=True, diagnostics=diagnostics) is False
+    assert (
+        drv._is_current_profile_frame(
+            b"sara", require_content=True, diagnostics=diagnostics
+        )
+        is False
+    )
     assert diagnostics["current_content_shift_matched"] is False
     assert diagnostics["current_profile_result"] is False
 
@@ -2161,14 +2529,17 @@ def test_vertical_shift_match_reports_which_shift_matched_and_how_much_overlappe
     assert. An exact copy embedded in random noise at ONE known offset has no such ambiguity:
     every other offset compares unrelated random values and lands far over threshold."""
     import numpy as np
+
     rng = np.random.default_rng(3)
     size = 24
     seen = rng.integers(0, 255, size=(size, size)).astype("int16")
     cur = np.zeros((size, size), dtype="int16")
     shift = 5
-    cur[shift:] = seen[:size - shift]      # cur's content is `seen` shifted DOWN by 5 rows
+    cur[shift:] = seen[: size - shift]  # cur's content is `seen` shifted DOWN by 5 rows
 
-    matched, reported_shift, overlap_rows = hinge._vertical_shift_match(cur, seen, threshold=9.0)
+    matched, reported_shift, overlap_rows = hinge._vertical_shift_match(
+        cur, seen, threshold=9.0
+    )
 
     assert matched is True
     assert reported_shift == shift
@@ -2177,9 +2548,11 @@ def test_vertical_shift_match_reports_which_shift_matched_and_how_much_overlappe
     # The no-match path also reports its BEST (lowest-diff) attempt, purely as a diagnostic --
     # unrelated random content should not clear the threshold at any offset.
     unrelated = rng.integers(0, 255, size=(size, size)).astype("int16")
-    matched2, _shift2, overlap2 = hinge._vertical_shift_match(unrelated, seen, threshold=9.0)
+    matched2, _shift2, overlap2 = hinge._vertical_shift_match(
+        unrelated, seen, threshold=9.0
+    )
     assert matched2 is False
-    assert overlap2 > 0        # still a real (best-effort) overlap count, not a placeholder
+    assert overlap2 > 0  # still a real (best-effort) overlap count, not a placeholder
 
 
 # --- observe: card-header OCR resolves scroll-top, and vetoes transient pixel-new ------------
@@ -2187,43 +2560,57 @@ def test_vertical_shift_match_reports_which_shift_matched_and_how_much_overlappe
 # crop can resolve a different name there, but that path must reproduce on a second frame before
 # PASS; when pixels already say ``new``, a nonmatch never strengthens that weaker evidence.
 
+
 def _top_state_drv(monkeypatch, *, stored_name="Zorva", **cfg):
     """A driver whose pixel identity verdict is pinned to exactly 'top' -- the SAME per-call
     setup every test below needs, so only the OCR stub (and the stored name, for the
     near-miss test) differs between callers."""
     import numpy as np
+
     drv = _drv(FakeAdb([b"frame"]), **cfg)
     drv._identity_name = stored_name
-    drv._identity_top_sig = np.zeros((16, 64), dtype="int16")   # matches whatever `_band` returns below
-    monkeypatch.setattr(hinge, "_band", lambda frame, rect: np.zeros((16, 64), dtype="int16"))
+    drv._identity_top_sig = np.zeros(
+        (16, 64), dtype="int16"
+    )  # matches whatever `_band` returns below
+    monkeypatch.setattr(
+        hinge, "_band", lambda frame, rect: np.zeros((16, 64), dtype="int16")
+    )
     return drv
 
 
-def test_identity_top_name_ocr_resolves_top_to_new_when_a_different_name_is_read(monkeypatch):
+def test_identity_top_name_ocr_resolves_top_to_new_when_a_different_name_is_read(
+    monkeypatch,
+):
     """At measured scroll-top geometry, a clean different name resolves the generic top
     signature to a candidate ``new``; wait_for_decision separately requires it twice."""
     drv = _top_state_drv(monkeypatch)
-    monkeypatch.setattr(drv, "_ocr_band",
-                        lambda frame, rect, psm="7": "qelix" if psm == "6" else None)
+    monkeypatch.setattr(
+        drv, "_ocr_band", lambda frame, rect, psm="7": "qelix" if psm == "6" else None
+    )
 
     state, _dist = drv._identity_of(b"frame")
 
     assert state == "new"
 
 
-def test_identity_top_name_ocr_resolves_top_to_same_when_the_stored_name_is_read(monkeypatch):
+def test_identity_top_name_ocr_resolves_top_to_same_when_the_stored_name_is_read(
+    monkeypatch,
+):
     """Complement of the above: reading the SAME stored name resolves 'top' to 'same' instead
     of leaving the wait loop stuck on an inconclusive verdict."""
     drv = _top_state_drv(monkeypatch)
-    monkeypatch.setattr(drv, "_ocr_band",
-                        lambda frame, rect, psm="7": "Zorva" if psm == "6" else None)
+    monkeypatch.setattr(
+        drv, "_ocr_band", lambda frame, rect, psm="7": "Zorva" if psm == "6" else None
+    )
 
     state, _dist = drv._identity_of(b"frame")
 
     assert state == "same"
 
 
-def test_identity_top_name_ocr_near_miss_reads_stay_same_the_false_pass_guard(monkeypatch):
+def test_identity_top_name_ocr_near_miss_reads_stay_same_the_false_pass_guard(
+    monkeypatch,
+):
     """MEASURED calibration for _NAME_MATCH_RATIO: 'Zorva' vs plausible OCR misreads 'Zorba'
     and 'Zorna' scores 0.80 -- both MUST stay 'same', because a false 'new'
     here records a PASS the human never made and corrupts the taste model, while a false
@@ -2231,12 +2618,17 @@ def test_identity_top_name_ocr_near_miss_reads_stay_same_the_false_pass_guard(mo
     full asymmetry argument). Exercise both measured misreads."""
     for misread in ("Zorba", "Zorna"):
         drv = _top_state_drv(monkeypatch)
-        monkeypatch.setattr(drv, "_ocr_band",
-                            lambda frame, rect, psm="7", _r=misread: _r if psm == "6" else None)
+        monkeypatch.setattr(
+            drv,
+            "_ocr_band",
+            lambda frame, rect, psm="7", _r=misread: _r if psm == "6" else None,
+        )
 
         state, _dist = drv._identity_of(b"frame")
 
-        assert state == "same", f"OCR misread {misread!r} of the stored name must stay 'same'"
+        assert state == "same", (
+            f"OCR misread {misread!r} of the stored name must stay 'same'"
+        )
 
 
 def test_identity_top_name_ocr_distinguishes_sara_from_marina(monkeypatch):
@@ -2249,8 +2641,10 @@ def test_identity_top_name_ocr_distinguishes_sara_from_marina(monkeypatch):
     """
     drv = _top_state_drv(monkeypatch, stored_name="Marina")
     monkeypatch.setattr(
-        drv, "_ocr_band",
-        lambda frame, rect, psm="7", **_kwargs: "Sara" if psm == "6" else None)
+        drv,
+        "_ocr_band",
+        lambda frame, rect, psm="7", **_kwargs: "Sara" if psm == "6" else None,
+    )
 
     state, _dist = drv._identity_of(b"sara-after-like")
 
@@ -2268,8 +2662,10 @@ def test_passive_identity_keeps_sofia_sophia_fuzzy_match_conservative(monkeypatc
     """
     drv = _top_state_drv(monkeypatch, stored_name="Sophia")
     monkeypatch.setattr(
-        drv, "_ocr_band",
-        lambda frame, rect, psm="7", **_kwargs: "Sofia" if psm == "6" else None)
+        drv,
+        "_ocr_band",
+        lambda frame, rect, psm="7", **_kwargs: "Sofia" if psm == "6" else None,
+    )
 
     state, _dist = drv._identity_of(b"sofia-after-like")
 
@@ -2287,22 +2683,28 @@ def test_identity_top_name_ocr_all_chrome_words_stays_top_inconclusive(monkeypat
     this failure mode."""
     drv = _top_state_drv(monkeypatch)
     monkeypatch.setattr(
-        drv, "_ocr_band",
+        drv,
+        "_ocr_band",
         lambda frame, rect, psm="7", **_kwargs: (
-            "Signals Active today" if psm == "6" else None))
+            "Signals Active today" if psm == "6" else None
+        ),
+    )
 
     state, _dist = drv._identity_of(b"frame")
 
     assert state == "top"
 
 
-def test_identity_top_name_ocr_garbage_with_multiple_candidates_stays_inconclusive(monkeypatch):
+def test_identity_top_name_ocr_garbage_with_multiple_candidates_stays_inconclusive(
+    monkeypatch,
+):
     """Exact OCR side of the 2026-08-16 Julia regression: a broad/misaligned crop can include
     photo texture and hallucinate many word-like tokens. None is positive evidence of one clean
     different profile name, so the generic scroll-top verdict must remain inconclusive."""
     drv = _top_state_drv(monkeypatch, stored_name="Julia")
     monkeypatch.setattr(
-        drv, "_ocr_band",
+        drv,
+        "_ocr_band",
         lambda frame, rect, psm="7", **_kwargs: (
             "Neh eae Bk hySey spate Batya Marina SENS Cie" if psm == "6" else None
         ),
@@ -2324,7 +2726,8 @@ def test_identity_top_name_ocr_uses_the_name_line_not_pronouns_or_activity(monke
     """
     drv = _top_state_drv(monkeypatch, stored_name="Sammy")
     monkeypatch.setattr(
-        drv, "_ocr_band",
+        drv,
+        "_ocr_band",
         lambda frame, rect, psm="7": "Jen\nshe her Active now" if psm == "6" else None,
     )
 
@@ -2342,9 +2745,11 @@ def test_identity_top_name_pronoun_cannot_fuzzy_match_a_short_stored_name(monkey
     """
     drv = _top_state_drv(monkeypatch, stored_name="Ery")
     monkeypatch.setattr(
-        drv, "_ocr_band",
+        drv,
+        "_ocr_band",
         lambda frame, rect, psm="7": (
-            "Roisin\nshe her\nMe in the wild" if psm == "6" else None),
+            "Roisin\nshe her\nMe in the wild" if psm == "6" else None
+        ),
     )
 
     state, _dist = drv._identity_of(b"roisin-after-x")
@@ -2354,7 +2759,9 @@ def test_identity_top_name_pronoun_cannot_fuzzy_match_a_short_stored_name(monkey
     assert drv._identity_name_candidate == "Roisin"
 
 
-def test_tight_name_ocr_overrules_a_weak_pixel_same_for_a_different_profile(monkeypatch):
+def test_tight_name_ocr_overrules_a_weak_pixel_same_for_a_different_profile(
+    monkeypatch,
+):
     """Regression for the Allison -> Brittany missed X incident.
 
     The two sticky headers measured only 6.81 apart because their shared white chrome dominated
@@ -2379,11 +2786,11 @@ def test_tight_name_ocr_overrules_a_weak_pixel_same_for_a_different_profile(monk
 
     state, distance = drv._identity_of(b"brittany-scrolled")
 
-    assert state == "same"                      # OCR is only a candidate, never a one-frame verdict
-    assert distance == 0.0                       # the pixel layer alone said an exact "same"
+    assert state == "same"  # OCR is only a candidate, never a one-frame verdict
+    assert distance == 0.0  # the pixel layer alone said an exact "same"
     assert drv._identity_top_name_verdict == "new"
     assert drv._identity_name_candidate == "Brittany"
-    assert psms == ["7"]                         # the clean tight read needs no broad photo OCR
+    assert psms == ["7"]  # the clean tight read needs no broad photo OCR
 
 
 def test_tight_name_ocr_near_match_preserves_pixel_same(monkeypatch):
@@ -2395,26 +2802,33 @@ def test_tight_name_ocr_near_match_preserves_pixel_same(monkeypatch):
     drv._identity_sig = np.zeros((16, 64), dtype="int16")
     drv._identity_top_sig = np.full((16, 64), 200, dtype="int16")
     monkeypatch.setattr(hinge, "_band", lambda frame, rect: drv._identity_sig)
-    monkeypatch.setattr(drv, "_ocr_band",
-                        lambda frame, rect, psm="7": "Alllson" if psm == "7" else None)
+    monkeypatch.setattr(
+        drv, "_ocr_band", lambda frame, rect, psm="7": "Alllson" if psm == "7" else None
+    )
 
     assert drv._identity_of(b"allison")[0] == "same"
     assert drv._identity_name_candidate is None
 
 
-def test_identity_top_name_ocr_vetoes_a_pixel_new_when_the_stored_name_is_read(monkeypatch):
+def test_identity_top_name_ocr_vetoes_a_pixel_new_when_the_stored_name_is_read(
+    monkeypatch,
+):
     """The card header closes the incident's exact hole: a transition can make the thin
     identity band look pixel-``new``, but reading the captured name is positive same-card proof.
     A nonmatch remains inert; only this matching direction may override the pixels."""
     import numpy as np
+
     psms_seen = []
 
     drv = _drv(FakeAdb([b"frame"]))
     drv._identity_name = "Zorva"
-    drv._identity_sig = np.zeros((16, 64), dtype="int16")           # id_sig set
+    drv._identity_sig = np.zeros((16, 64), dtype="int16")  # id_sig set
     drv._identity_top_sig = np.full((16, 64), 200, dtype="int16")
     # band far from BOTH id_sig and top_sig -> pixel verdict is 'new' outright
-    monkeypatch.setattr(hinge, "_band", lambda frame, rect: np.full((16, 64), 99, dtype="int16"))
+    monkeypatch.setattr(
+        hinge, "_band", lambda frame, rect: np.full((16, 64), 99, dtype="int16")
+    )
+
     def matching_ocr(frame, rect, psm="7"):
         psms_seen.append(psm)
         return "Zorva" if psm == "6" else None
@@ -2432,14 +2846,19 @@ def test_identity_top_name_ocr_nonmatch_does_not_strengthen_pixel_new(monkeypatc
     a stored-name match vetoes it. A nonmatch leaves the pixel verdict untouched rather than
     declaring a second, OCR-derived reason to label a PASS."""
     import numpy as np
+
     drv = _drv(FakeAdb([b"frame"]))
     drv._identity_name = "Zorva"
     drv._identity_sig = np.zeros((16, 64), dtype="int16")
     drv._identity_top_sig = np.full((16, 64), 200, dtype="int16")
-    monkeypatch.setattr(hinge, "_band", lambda frame, rect: np.full((16, 64), 99, dtype="int16"))
-    monkeypatch.setattr(drv, "_ocr_band",
-                        lambda frame, rect, psm="7", **_kwargs: (
-                            "qelix" if psm == "6" else None))
+    monkeypatch.setattr(
+        hinge, "_band", lambda frame, rect: np.full((16, 64), 99, dtype="int16")
+    )
+    monkeypatch.setattr(
+        drv,
+        "_ocr_band",
+        lambda frame, rect, psm="7", **_kwargs: "qelix" if psm == "6" else None,
+    )
 
     state, _dist = drv._identity_of(b"frame")
 
@@ -2462,14 +2881,20 @@ def test_canonical_top_with_changed_filter_chips_uses_name_proof(monkeypatch):
     drv._identity_top_sig = np.full((16, 64), 200, dtype="int16")
     # Far from BOTH stored bands, reproducing the incident's provisional pixel-new verdict.
     monkeypatch.setattr(
-        hinge, "_band", lambda frame, rect: np.full((16, 64), 99, dtype="int16"))
+        hinge, "_band", lambda frame, rect: np.full((16, 64), 99, dtype="int16")
+    )
     monkeypatch.setattr(
-        hinge, "confirm_scroll_top",
-        lambda frame, **_kw: SimpleNamespace(confirmed=True))
+        hinge,
+        "confirm_scroll_top",
+        lambda frame, **_kw: SimpleNamespace(confirmed=True),
+    )
     monkeypatch.setattr(
-        drv, "_ocr_band",
+        drv,
+        "_ocr_band",
         lambda frame, rect, psm="7": (
-            "Kate\nshe her\nLet me introduce you" if psm == "6" else None))
+            "Kate\nshe her\nLet me introduce you" if psm == "6" else None
+        ),
+    )
 
     state, _distance = drv._identity_of(b"kate-at-top")
 
@@ -2484,7 +2909,9 @@ def test_identity_top_name_ocr_skipped_when_observe_name_ocr_is_off(monkeypatch)
     one whose result is then discarded."""
     calls = []
     drv = _top_state_drv(monkeypatch, observe_name_ocr=False)
-    monkeypatch.setattr(drv, "_ocr_band", lambda frame, rect, psm="7": calls.append(psm))
+    monkeypatch.setattr(
+        drv, "_ocr_band", lambda frame, rect, psm="7": calls.append(psm)
+    )
 
     state, _dist = drv._identity_of(b"frame")
 
@@ -2497,12 +2924,17 @@ def test_identity_top_name_ocr_skipped_when_no_stored_name(monkeypatch):
     header) means there is nothing to compare a read against -- must not run, not even to
     compare against an empty/None stored name."""
     import numpy as np
+
     calls = []
     drv = _drv(FakeAdb([b"frame"]))
     drv._identity_name = None
     drv._identity_top_sig = np.zeros((16, 64), dtype="int16")
-    monkeypatch.setattr(hinge, "_band", lambda frame, rect: np.zeros((16, 64), dtype="int16"))
-    monkeypatch.setattr(drv, "_ocr_band", lambda frame, rect, psm="7": calls.append(psm))
+    monkeypatch.setattr(
+        hinge, "_band", lambda frame, rect: np.zeros((16, 64), dtype="int16")
+    )
+    monkeypatch.setattr(
+        drv, "_ocr_band", lambda frame, rect, psm="7": calls.append(psm)
+    )
 
     state, _dist = drv._identity_of(b"frame")
 
@@ -2516,7 +2948,9 @@ def test_identity_top_name_ocr_skipped_when_band_not_declared(monkeypatch):
     calls = []
     drv = _top_state_drv(monkeypatch)
     drv.identity_top_name_band = None
-    monkeypatch.setattr(drv, "_ocr_band", lambda frame, rect, psm="7": calls.append(psm))
+    monkeypatch.setattr(
+        drv, "_ocr_band", lambda frame, rect, psm="7": calls.append(psm)
+    )
 
     state, _dist = drv._identity_of(b"frame")
 
@@ -2525,28 +2959,38 @@ def test_identity_top_name_ocr_skipped_when_band_not_declared(monkeypatch):
 
 
 def test_scroll_top_pass_swallowed_by_content_match_is_now_correctly_a_pass_via_name_ocr(
-        monkeypatch):
+    monkeypatch,
+):
     """A repeatedly read different name at scroll-top gives the real-advance path a positive
     ``new`` identity on both frames, before Layer 2 can swallow a lookalike new card as scroll."""
     import numpy as np
+
     chrome_sig = np.full((16, 64), 200, dtype="int16")
     seen_ds = np.ones((24, 24), dtype="int16") * 50
-    cur_ds = np.ones((24, 24), dtype="int16") * 51   # would content-match seen_ds if Layer 2 ran
+    cur_ds = (
+        np.ones((24, 24), dtype="int16") * 51
+    )  # would content-match seen_ds if Layer 2 ran
 
     adb = FakeAdb([b"base", b"new"], advance_on_screencap=True)
     drv = _drv(adb)
     drv._identity_name = "Zorva"
-    drv._identity_sig = None              # never revealed Zorva's own sticky header this capture
-    drv._identity_top_sig = chrome_sig    # the scroll-top chrome IS recognised -> pixel verdict 'top'
+    drv._identity_sig = None  # never revealed Zorva's own sticky header this capture
+    drv._identity_top_sig = (
+        chrome_sig  # the scroll-top chrome IS recognised -> pixel verdict 'top'
+    )
     drv._current_sigs = [seen_ds]
     monkeypatch.setattr(hinge, "_band", lambda frame, rect: chrome_sig)
     monkeypatch.setattr(hinge, "_downsample", lambda frame, size=24: cur_ds)
-    monkeypatch.setattr(hinge, "confirm_scroll_top",
-                        lambda *_a, **_kw: SimpleNamespace(confirmed=True))
-    monkeypatch.setattr(hinge, "_split_diff", lambda a, b: (0.0, 0.0) if a == b else (50.0, 50.0))
+    monkeypatch.setattr(
+        hinge, "confirm_scroll_top", lambda *_a, **_kw: SimpleNamespace(confirmed=True)
+    )
+    monkeypatch.setattr(
+        hinge, "_split_diff", lambda a, b: (0.0, 0.0) if a == b else (50.0, 50.0)
+    )
     monkeypatch.setattr(drv, "_observe_deck_ready", lambda frame: True)
-    monkeypatch.setattr(drv, "_ocr_band",
-                        lambda frame, rect, psm="7": "qelix" if psm == "6" else None)
+    monkeypatch.setattr(
+        drv, "_ocr_band", lambda frame, rect, psm="7": "qelix" if psm == "6" else None
+    )
 
     assert drv.wait_for_decision(timeout=5.0) is False
 
@@ -2562,26 +3006,36 @@ def test_scroll_top_pass_swallowed_by_content_match_is_now_correctly_a_pass_via_
 # docstring for the exact numbers) and must stay 'same' -- the owner rule in force is that a
 # false 'same' only ever costs a wait, never a wrong label.
 
+
 def test_identity_top_name_ocr_truncated_read_of_a_longer_name_stays_same(monkeypatch):
     """False-PASS guard: a truncated READ this poll ('Zo' for stored 'Zorva', 'Kat'/'Ka' for
     stored 'Katherine') scores 0.57/0.50/0.36 against _NAME_MATCH_RATIO=0.6 -- below the bar,
     so without the prefix test this would have resolved 'top' straight to a false 'new' and
     recorded a PASS the human never made. A truncation is by definition a prefix of the name
     it came from, so the prefix test must catch every one of these."""
-    for stored_name, read_name in (("Zorva", "Zo"), ("Katherine", "Kat"), ("Katherine", "Ka")):
+    for stored_name, read_name in (
+        ("Zorva", "Zo"),
+        ("Katherine", "Kat"),
+        ("Katherine", "Ka"),
+    ):
         drv = _top_state_drv(monkeypatch, stored_name=stored_name)
         monkeypatch.setattr(
-            drv, "_ocr_band",
-            lambda frame, rect, psm="7", _r=read_name: _r if psm == "6" else None)
+            drv,
+            "_ocr_band",
+            lambda frame, rect, psm="7", _r=read_name: _r if psm == "6" else None,
+        )
 
         state, _dist = drv._identity_of(b"frame")
 
         assert state == "same", (
             f"truncated read {read_name!r} of stored {stored_name!r} must stay 'same' "
-            f"(false PASS guard)")
+            f"(false PASS guard)"
+        )
 
 
-def test_identity_top_name_ocr_stored_name_truncated_by_a_bad_capture_stays_same(monkeypatch):
+def test_identity_top_name_ocr_stored_name_truncated_by_a_bad_capture_stays_same(
+    monkeypatch,
+):
     """The REVERSE direction of the same hole: a BAD CAPTURE-TIME read is what got stored as
     self._identity_name ('Zo' for a profile actually named 'Zorva', 'Sam' for 'Samantha') --
     not this poll's OCR read, which is the FULL correct name. Every later full-name read must
@@ -2590,22 +3044,28 @@ def test_identity_top_name_ocr_stored_name_truncated_by_a_bad_capture_stays_same
     for stored_name, read_name in (("Zo", "Zorva"), ("Sam", "Samantha")):
         drv = _top_state_drv(monkeypatch, stored_name=stored_name)
         monkeypatch.setattr(
-            drv, "_ocr_band",
-            lambda frame, rect, psm="7", _r=read_name: _r if psm == "6" else None)
+            drv,
+            "_ocr_band",
+            lambda frame, rect, psm="7", _r=read_name: _r if psm == "6" else None,
+        )
 
         state, _dist = drv._identity_of(b"frame")
 
         assert state == "same", (
             f"full read {read_name!r} against a truncated stored name {stored_name!r} must "
-            f"stay 'same' (a bad capture-time read must not poison the whole profile)")
+            f"stay 'same' (a bad capture-time read must not poison the whole profile)"
+        )
 
 
 def test_identity_top_name_ocr_genuine_different_name_still_resolves_new(monkeypatch):
     """The top-name path stays able to distinguish a real top-of-next-card from generic
     scroll-top chrome; the two-frame PASS gate is what makes that candidate safe."""
     drv = _top_state_drv(monkeypatch, stored_name="Katherine")
-    monkeypatch.setattr(drv, "_ocr_band",
-                        lambda frame, rect, psm="7": "Michelle" if psm == "6" else None)
+    monkeypatch.setattr(
+        drv,
+        "_ocr_band",
+        lambda frame, rect, psm="7": "Michelle" if psm == "6" else None,
+    )
 
     state, _dist = drv._identity_of(b"frame")
 
@@ -2619,9 +3079,11 @@ def test_identity_top_name_ocr_short_candidate_token_never_becomes_new(monkeypat
     fuzzy/prefix-match the stored name closely enough to resolve 'same' either. This must stay
     the inconclusive 'top', not be promoted to a false 'new'."""
     drv = _top_state_drv(monkeypatch, stored_name="Katherine")
-    monkeypatch.setattr(drv, "_ocr_band",
-                        lambda frame, rect, psm="7", **_kwargs: (
-                            "Xy" if psm == "6" else None))
+    monkeypatch.setattr(
+        drv,
+        "_ocr_band",
+        lambda frame, rect, psm="7", **_kwargs: "Xy" if psm == "6" else None,
+    )
 
     state, _dist = drv._identity_of(b"frame")
 
@@ -2633,7 +3095,8 @@ def test_identity_top_name_ocr_short_candidate_token_never_becomes_new(monkeypat
     [("Aisha", "new", "S"), ("S", "same", None), ("Samantha", "same", None)],
 )
 def test_identity_top_name_ocr_accepts_only_structured_single_letter_signals_name(
-        monkeypatch, stored_name, expected_state, expected_candidate):
+    monkeypatch, stored_name, expected_state, expected_candidate
+):
     """The Aisha -> S incident: Hinge itself binds the initial to the profile-name slot.
 
     The exact Signals banner may recover the displayed one-letter name, while the same read for
@@ -2641,9 +3104,12 @@ def test_identity_top_name_ocr_accepts_only_structured_single_letter_signals_nam
     """
     drv = _top_state_drv(monkeypatch, stored_name=stored_name)
     monkeypatch.setattr(
-        drv, "_ocr_band",
+        drv,
+        "_ocr_band",
         lambda frame, rect, psm="7", **_kwargs: (
-            "S shows thoughtful signals" if psm == "6" else None))
+            "S shows thoughtful signals" if psm == "6" else None
+        ),
+    )
 
     state, _dist = drv._identity_of(b"frame")
 
@@ -2656,7 +3122,8 @@ def test_identity_top_name_ocr_accepts_only_structured_single_letter_signals_nam
     [("Francesca", "new", "Ri"), ("Ri", "same", None), ("Rina", "same", None)],
 )
 def test_identity_top_name_ocr_accepts_only_structured_two_letter_signals_name(
-        monkeypatch, stored_name, expected_state, expected_candidate):
+    monkeypatch, stored_name, expected_state, expected_candidate
+):
     """The run-24179f2e77e0 exception is equally structural for a two-letter name.
 
     A different stored name may produce the candidate, while an exact or prefix-compatible
@@ -2664,9 +3131,12 @@ def test_identity_top_name_ocr_accepts_only_structured_two_letter_signals_name(
     """
     drv = _top_state_drv(monkeypatch, stored_name=stored_name)
     monkeypatch.setattr(
-        drv, "_ocr_band",
+        drv,
+        "_ocr_band",
         lambda frame, rect, psm="7", **_kwargs: (
-            "Ri shows thoughtful signals" if psm == "6" else None))
+            "Ri shows thoughtful signals" if psm == "6" else None
+        ),
+    )
 
     state, _dist = drv._identity_of(b"frame")
 
@@ -2675,15 +3145,26 @@ def test_identity_top_name_ocr_accepts_only_structured_two_letter_signals_name(
 
 
 @pytest.mark.parametrize(
-    "ocr_text", ["S", "S Active today", "X shows signals",
-                 "Ri", "Ri Active today", "Ri shows signals"])
+    "ocr_text",
+    [
+        "S",
+        "S Active today",
+        "X shows signals",
+        "Ri",
+        "Ri Active today",
+        "Ri shows signals",
+    ],
+)
 def test_identity_top_name_ocr_unstructured_short_name_stays_inconclusive(
-        monkeypatch, ocr_text):
+    monkeypatch, ocr_text
+):
     """A short name has no authority unless Hinge's complete fixed banner binds it."""
     drv = _top_state_drv(monkeypatch, stored_name="Aisha")
     monkeypatch.setattr(
-        drv, "_ocr_band",
-        lambda frame, rect, psm="7", **_kwargs: ocr_text if psm == "6" else None)
+        drv,
+        "_ocr_band",
+        lambda frame, rect, psm="7", **_kwargs: ocr_text if psm == "6" else None,
+    )
 
     assert drv._identity_of(b"frame")[0] == "top"
     assert drv._identity_name_candidate is None
@@ -2699,6 +3180,7 @@ def test_transient_pixel_new_followed_by_scroll_top_never_produces_a_pass(monkey
     positively proves a different profile twice, so this must remain an unlabeled wait.
     """
     import numpy as np
+
     old_sig = np.full((16, 64), 10, dtype="int16")
     top_sig = np.full((16, 64), 200, dtype="int16")
     transition_sig = np.full((16, 64), 100, dtype="int16")
@@ -2708,10 +3190,17 @@ def test_transient_pixel_new_followed_by_scroll_top_never_produces_a_pass(monkey
     drv._identity_top_sig = top_sig
     drv._dbg = _FakeDbg()
     monkeypatch.setattr(
-        hinge, "_band",
-        lambda frame, rect: {b"base": old_sig, b"transition": transition_sig,
-                             b"top": top_sig}[frame])
-    monkeypatch.setattr(hinge, "_split_diff", lambda a, b: (0.0, 0.0) if a == b else (50.0, 50.0))
+        hinge,
+        "_band",
+        lambda frame, rect: {
+            b"base": old_sig,
+            b"transition": transition_sig,
+            b"top": top_sig,
+        }[frame],
+    )
+    monkeypatch.setattr(
+        hinge, "_split_diff", lambda a, b: (0.0, 0.0) if a == b else (50.0, 50.0)
+    )
     monkeypatch.setattr(drv, "_observe_deck_ready", lambda frame: True)
     monkeypatch.setattr(drv, "_changed", lambda a, b: False)
 
@@ -2723,6 +3212,7 @@ def test_name_derived_new_reproduced_on_confirm_frame_produces_a_pass(monkeypatc
     """The genuine scroll-top advance path remains valid when the independently captured
     confirm frame also resolves a different card-header name to ``new``."""
     import numpy as np
+
     chrome_sig = np.full((16, 64), 200, dtype="int16")
     adb = FakeAdb([b"base", b"new", b"new"], advance_on_screencap=True)
     drv = _drv(adb)
@@ -2731,32 +3221,52 @@ def test_name_derived_new_reproduced_on_confirm_frame_produces_a_pass(monkeypatc
     drv._identity_top_sig = chrome_sig
     drv._dbg = _FakeDbg()
     monkeypatch.setattr(hinge, "_band", lambda frame, rect: chrome_sig)
-    monkeypatch.setattr(hinge, "confirm_scroll_top",
-                        lambda *_a, **_kw: SimpleNamespace(confirmed=True))
-    monkeypatch.setattr(hinge, "_split_diff", lambda a, b: (0.0, 0.0) if a == b else (50.0, 50.0))
+    monkeypatch.setattr(
+        hinge, "confirm_scroll_top", lambda *_a, **_kw: SimpleNamespace(confirmed=True)
+    )
+    monkeypatch.setattr(
+        hinge, "_split_diff", lambda a, b: (0.0, 0.0) if a == b else (50.0, 50.0)
+    )
     monkeypatch.setattr(drv, "_observe_deck_ready", lambda frame: True)
-    monkeypatch.setattr(drv, "_ocr_band",
-                        lambda frame, rect, psm="7", **_kwargs: (
-                            "qelix\nprivate OCR transcript" if psm == "6" else None))
+    monkeypatch.setattr(
+        drv,
+        "_ocr_band",
+        lambda frame, rect, psm="7", **_kwargs: (
+            "qelix\nprivate OCR transcript" if psm == "6" else None
+        ),
+    )
 
     assert drv.wait_for_decision(timeout=5.0) is False
-    decision = next(fields for name, fields in drv._dbg.calls if name == "observe_decision")
+    decision = next(
+        fields for name, fields in drv._dbg.calls if name == "observe_decision"
+    )
     serialized = repr(decision)
     assert "identity_name_read" not in decision
     assert "confirm_identity_name_read" not in decision
     assert "private OCR transcript" not in serialized
     assert "qelix" not in serialized.casefold()
-    assert decision["identity_name_candidate_sha256"] == hashlib.sha256(
-        b"qelix").hexdigest()
+    assert (
+        decision["identity_name_candidate_sha256"]
+        == hashlib.sha256(b"qelix").hexdigest()
+    )
     assert decision["identity_ocr_attempts"][0]["token_count"] == 0
     assert decision["identity_ocr_attempts"][0]["parser"] == "inconclusive"
     assert decision["identity_ocr_attempts"][0]["upscale"] == 3
     assert decision["identity_ocr_attempts"][0]["match_scope"] == "all_tokens"
-    assert all(set(attempt) == {
-        "recipe", "digest", "verdict", "parser", "upscale", "match_scope",
-        "candidate_sha256", "token_count",
-    }
-               for attempt in decision["identity_ocr_attempts"])
+    assert all(
+        set(attempt)
+        == {
+            "recipe",
+            "digest",
+            "verdict",
+            "parser",
+            "upscale",
+            "match_scope",
+            "candidate_sha256",
+            "token_count",
+        }
+        for attempt in decision["identity_ocr_attempts"]
+    )
 
 
 def test_observe_name_proof_refuses_hybrid_primary_and_fallback_reads(monkeypatch):
@@ -2770,13 +3280,17 @@ def test_observe_name_proof_refuses_hybrid_primary_and_fallback_reads(monkeypatc
     drv._identity_top_sig = chrome_sig
     drv._dbg = _FakeDbg()
     monkeypatch.setattr(hinge, "_band", lambda *_a: chrome_sig)
-    monkeypatch.setattr(hinge, "_split_diff", lambda a, b: (0.0, 0.0) if a == b else (50.0, 50.0))
+    monkeypatch.setattr(
+        hinge, "_split_diff", lambda a, b: (0.0, 0.0) if a == b else (50.0, 50.0)
+    )
     monkeypatch.setattr(drv, "_observe_deck_ready", lambda _frame: True)
     monkeypatch.setattr(drv, "_changed", lambda _a, _b: False)
-    monkeypatch.setattr(hinge, "confirm_scroll_top",
-                        lambda *_a, **_kw: SimpleNamespace(confirmed=True))
-    monkeypatch.setattr(drv, "_note_observe_waiting",
-                        lambda reason, *_a, **_kw: reason == "not_settled")
+    monkeypatch.setattr(
+        hinge, "confirm_scroll_top", lambda *_a, **_kw: SimpleNamespace(confirmed=True)
+    )
+    monkeypatch.setattr(
+        drv, "_note_observe_waiting", lambda reason, *_a, **_kw: reason == "not_settled"
+    )
 
     def ocr(frame, rect, *, psm="7", **_kwargs):
         if psm != "6":
@@ -2784,8 +3298,11 @@ def test_observe_name_proof_refuses_hybrid_primary_and_fallback_reads(monkeypatc
         if frame == b"primary":
             return "Qelix" if tuple(rect) == drv.identity_top_name_band else None
         if frame == b"fallback":
-            return ("pronouns Active now" if tuple(rect) == drv.identity_top_name_band
-                    else "Qelix")
+            return (
+                "pronouns Active now"
+                if tuple(rect) == drv.identity_top_name_band
+                else "Qelix"
+            )
         return None
 
     monkeypatch.setattr(drv, "_ocr_band", ocr)
@@ -2805,16 +3322,26 @@ def test_observe_name_proof_refuses_local_top_when_canonical_top_is_pinned(monke
     drv._identity_top_sig = chrome_sig
     drv._dbg = _FakeDbg()
     monkeypatch.setattr(hinge, "_band", lambda *_a: chrome_sig)
-    monkeypatch.setattr(hinge, "_split_diff", lambda a, b: (0.0, 0.0) if a == b else (50.0, 50.0))
+    monkeypatch.setattr(
+        hinge, "_split_diff", lambda a, b: (0.0, 0.0) if a == b else (50.0, 50.0)
+    )
     monkeypatch.setattr(drv, "_observe_deck_ready", lambda _frame: True)
     monkeypatch.setattr(drv, "_changed", lambda _a, _b: False)
-    monkeypatch.setattr(drv, "_ocr_band",
-                        lambda _frame, _rect, *, psm="7", **_kw: "Qelix" if psm == "6" else None)
     monkeypatch.setattr(
-        hinge, "confirm_scroll_top",
-        lambda *_a, **_kw: SimpleNamespace(confirmed=False, state="pinned", reason="pinned row"))
-    monkeypatch.setattr(drv, "_note_observe_waiting",
-                        lambda reason, *_a, **_kw: reason == "not_settled")
+        drv,
+        "_ocr_band",
+        lambda _frame, _rect, *, psm="7", **_kw: "Qelix" if psm == "6" else None,
+    )
+    monkeypatch.setattr(
+        hinge,
+        "confirm_scroll_top",
+        lambda *_a, **_kw: SimpleNamespace(
+            confirmed=False, state="pinned", reason="pinned row"
+        ),
+    )
+    monkeypatch.setattr(
+        drv, "_note_observe_waiting", lambda reason, *_a, **_kw: reason == "not_settled"
+    )
 
     assert drv.wait_for_decision(timeout=5.0) is None
     assert not [name for name, _fields in drv._dbg.calls if name == "observe_decision"]
@@ -2829,18 +3356,27 @@ def test_observe_name_proof_refuses_local_top_when_canonical_top_is_pinned(monke
 # driver-level _ocr_band monkeypatch every other test in this file uses, since that would
 # bypass the very code path being tested).
 
-def test_ocr_band_caches_a_repeated_identical_band_without_rerunning_tesseract(monkeypatch):
+
+def test_ocr_band_caches_a_repeated_identical_band_without_rerunning_tesseract(
+    monkeypatch,
+):
     """The common repeat this cache targets: wait_for_decision's own settle/confirm frame 0.5s
     later is usually the identical screen, and _is_current_profile_frame re-enters _identity_of
     (and so this method) on frames already seen earlier in the same poll. Identical
     (rect, psm, frame bytes) must not spawn a second tesseract subprocess."""
     from types import SimpleNamespace
+
     drv = _drv(FakeAdb([b"x"]))
     calls = []
     monkeypatch.setattr(hinge.shutil, "which", lambda name: "/usr/bin/tesseract")
     monkeypatch.setattr(
-        hinge.subprocess, "run",
-        lambda *a, **k: (calls.append(1), SimpleNamespace(stdout=b"Zorva", returncode=0))[1])
+        hinge.subprocess,
+        "run",
+        lambda *a, **k: (
+            calls.append(1),
+            SimpleNamespace(stdout=b"Zorva", returncode=0),
+        )[1],
+    )
     frame = _png(value=10)
     rect = (0.0, 0.0, 1.0, 1.0)
 
@@ -2923,8 +3459,11 @@ def test_scroll_top_name_ignores_secondary_fuzzy_noise_and_retries_native(monkey
         if psm == "7":
             return None
         calls.append(upscale)
-        return ("she hers her Active now\nSMM a ee en" if upscale == 3 else
-                "Lynn\nshe hers her Active now")
+        return (
+            "she hers her Active now\nSMM a ee en"
+            if upscale == 3
+            else "Lynn\nshe hers her Active now"
+        )
 
     monkeypatch.setattr(drv, "_ocr_band", ocr)
 
@@ -2938,13 +3477,17 @@ def test_scroll_top_name_ignores_secondary_fuzzy_noise_and_retries_native(monkey
     assert native["verdict"] == "new"
 
 
-def test_scroll_top_name_later_stored_name_token_cannot_veto_first_line_candidate(monkeypatch):
+def test_scroll_top_name_later_stored_name_token_cannot_veto_first_line_candidate(
+    monkeypatch,
+):
     """A clean Lynn line remains new even when a later line literally says stored Vee."""
     drv = _top_state_drv(monkeypatch, stored_name="Vee")
     monkeypatch.setattr(
-        drv, "_ocr_band",
+        drv,
+        "_ocr_band",
         lambda _frame, _rect, *, psm="7", **_kwargs: (
-            "Lynn\nVee" if psm == "6" else None),
+            "Lynn\nVee" if psm == "6" else None
+        ),
     )
 
     assert drv._identity_of(b"LYNN_WITH_LATER_VEE")[0] == "new"
@@ -2952,13 +3495,17 @@ def test_scroll_top_name_later_stored_name_token_cannot_veto_first_line_candidat
     assert drv._identity_ocr_attempts[-1]["match_scope"] == "first_nonempty_line"
 
 
-def test_scroll_top_name_secondary_fuzzy_noise_cannot_veto_or_create_a_name(monkeypatch):
+def test_scroll_top_name_secondary_fuzzy_noise_cannot_veto_or_create_a_name(
+    monkeypatch,
+):
     """Later-line ``ee`` is neither a stored-name veto nor a next-profile candidate."""
     drv = _top_state_drv(monkeypatch, stored_name="Vee")
     monkeypatch.setattr(
-        drv, "_ocr_band",
+        drv,
+        "_ocr_band",
         lambda _frame, _rect, *, psm="7", **_kwargs: (
-            "she hers her Active now\nSMM a ee en" if psm == "6" else None),
+            "she hers her Active now\nSMM a ee en" if psm == "6" else None
+        ),
     )
 
     assert drv._identity_of(b"SECONDARY_NOISE")[0] == "top"
@@ -2977,9 +3524,11 @@ def test_scroll_top_name_native_retry_keeps_noise_inconclusive(monkeypatch):
     drv._identity_top_sig = top_sig
     monkeypatch.setattr(hinge, "_band", lambda _frame, _rect: top_sig)
     monkeypatch.setattr(
-        drv, "_ocr_band",
+        drv,
+        "_ocr_band",
         lambda _frame, _rect, *, psm="7", upscale=3, **_kwargs: (
-            None if psm == "7" else "photo texture has many words"),
+            None if psm == "7" else "photo texture has many words"
+        ),
     )
 
     assert drv._identity_of(b"AMBIGUOUS_PROFILE")[0] == "top"
@@ -2987,7 +3536,9 @@ def test_scroll_top_name_native_retry_keeps_noise_inconclusive(monkeypatch):
     assert drv._identity_name_candidate is None
 
 
-def test_scroll_top_name_compact_fallback_recovers_lara_after_broad_prompt_read(monkeypatch):
+def test_scroll_top_name_compact_fallback_recovers_lara_after_broad_prompt_read(
+    monkeypatch,
+):
     """The Lara incident: both broad recipes read only metadata/prompt, while the contained
     compact fallback returns the actual first name.  Its provenance must remain distinct."""
     drv = _top_state_drv(monkeypatch, stored_name="Emily")
@@ -3009,10 +3560,14 @@ def test_scroll_top_name_compact_fallback_recovers_lara_after_broad_prompt_read(
     assert calls[-1] == (drv.identity_top_name_fallback_band, "6", 3)
     attempts = drv._identity_ocr_attempts
     assert [a["recipe"] for a in attempts] == [
-        "identity_band_psm7_3x", "top_card_header_psm6_3x",
-        "top_card_header_psm6_native", "top_card_header_fallback_psm6_3x",
+        "identity_band_psm7_3x",
+        "top_card_header_psm6_3x",
+        "top_card_header_psm6_native",
+        "top_card_header_fallback_psm6_3x",
     ]
-    assert all("text" not in attempt and "text_sha256" in attempt for attempt in attempts)
+    assert all(
+        "text" not in attempt and "text_sha256" in attempt for attempt in attempts
+    )
 
 
 def test_scroll_top_name_take_another_look_layout_reads_the_displaced_name(monkeypatch):
@@ -3045,7 +3600,8 @@ def test_scroll_top_name_take_another_look_layout_reads_the_displaced_name(monke
         (drv.identity_top_name_take_another_look_band, "6", 1),
     ]
     assert [attempt["recipe"] for attempt in drv._identity_ocr_attempts] == [
-        "identity_band_psm7_3x", "top_card_header_psm6_3x",
+        "identity_band_psm7_3x",
+        "top_card_header_psm6_3x",
         "top_card_header_psm6_native",
         "top_card_header_take_another_look_psm6_3x",
         "top_card_header_take_another_look_psm6_native",
@@ -3074,7 +3630,9 @@ def test_scroll_top_name_take_another_look_crop_requires_exact_banner(monkeypatc
     assert lower_reads == []
 
 
-def test_scroll_top_name_take_another_look_crop_requires_both_banner_recipes(monkeypatch):
+def test_scroll_top_name_take_another_look_crop_requires_both_banner_recipes(
+    monkeypatch,
+):
     """One exact panel OCR output cannot authorize the shifted lower crop."""
     drv = _top_state_drv(monkeypatch, stored_name="Holly")
     lower_reads = []
@@ -3114,7 +3672,8 @@ def test_scroll_top_name_take_another_look_crop_requires_both_name_recipes(monke
     assert drv._identity_of(b"ONE_LOWER_NAME_RECIPE")[0] == "top"
     assert drv._identity_name_candidate is None
     lower_attempts = [
-        attempt for attempt in drv._identity_ocr_attempts
+        attempt
+        for attempt in drv._identity_ocr_attempts
         if attempt["recipe"].startswith("top_card_header_take_another_look")
     ]
     assert len(lower_attempts) == 2
@@ -3141,13 +3700,17 @@ def test_scroll_top_name_take_another_look_paired_stored_name_keeps_same(monkeyp
     assert drv._identity_top_name_read_source == "top_card_header_take_another_look"
 
 
-@pytest.mark.parametrize("fallback_text, expected_state", [
-    ("Emily", "same"),
-    ("Lara Michelle", "top"),
-    ("she her hers Active now", "top"),
-])
+@pytest.mark.parametrize(
+    "fallback_text, expected_state",
+    [
+        ("Emily", "same"),
+        ("Lara Michelle", "top"),
+        ("she her hers Active now", "top"),
+    ],
+)
 def test_scroll_top_name_compact_fallback_keeps_stored_multiple_and_prompt_reads_closed(
-        monkeypatch, fallback_text, expected_state):
+    monkeypatch, fallback_text, expected_state
+):
     """The compact retry preserves the existing stored-name veto and exact-one parser."""
     drv = _top_state_drv(monkeypatch, stored_name="Emily")
 
@@ -3171,12 +3734,15 @@ def test_ocr_band_preserves_lines_and_separates_punctuation(monkeypatch):
     newline discarded the strongest evidence that ``Jen`` was the actual profile name.
     """
     from types import SimpleNamespace
+
     drv = _drv(FakeAdb([b"x"]))
     monkeypatch.setattr(hinge.shutil, "which", lambda name: "/usr/bin/tesseract")
     monkeypatch.setattr(
-        hinge.subprocess, "run",
+        hinge.subprocess,
+        "run",
         lambda *a, **k: SimpleNamespace(
-            stdout=b"Jen &\nshe/her Active now\n", returncode=0),
+            stdout=b"Jen &\nshe/her Active now\n", returncode=0
+        ),
     )
 
     assert drv._ocr_band(_png(value=10), (0.0, 0.0, 1.0, 1.0), psm="6") == (
@@ -3184,7 +3750,9 @@ def test_ocr_band_preserves_lines_and_separates_punctuation(monkeypatch):
     )
 
 
-def test_ocr_band_folds_diacritic_profile_names_instead_of_dropping_letters(monkeypatch):
+def test_ocr_band_folds_diacritic_profile_names_instead_of_dropping_letters(
+    monkeypatch,
+):
     """Regression for the Lauren -> Zoë Training Dislike on 2026-09-07.
 
     The post-X card was visibly a stable, ready Zoë profile.  The OCR cleanup's ASCII-only
@@ -3198,9 +3766,11 @@ def test_ocr_band_folds_diacritic_profile_names_instead_of_dropping_letters(monk
     drv = _drv(FakeAdb([b"x"]))
     monkeypatch.setattr(hinge.shutil, "which", lambda name: "/usr/bin/tesseract")
     monkeypatch.setattr(
-        hinge.subprocess, "run",
+        hinge.subprocess,
+        "run",
         lambda *a, **k: SimpleNamespace(
-            stdout="Zoë\nshe/her Active today\n".encode(), returncode=0),
+            stdout="Zoë\nshe/her Active today\n".encode(), returncode=0
+        ),
     )
 
     text = drv._ocr_band(_png(value=10), (0.0, 0.0, 1.0, 1.0), psm="6")
@@ -3214,16 +3784,24 @@ def test_ocr_band_cache_miss_on_a_different_band_still_invokes_tesseract(monkeyp
     different frame (a different band crop) is a cache miss and must still spawn tesseract, so
     a miss behaves exactly as it did before this cache existed."""
     from types import SimpleNamespace
+
     drv = _drv(FakeAdb([b"x"]))
     calls = []
     monkeypatch.setattr(hinge.shutil, "which", lambda name: "/usr/bin/tesseract")
     monkeypatch.setattr(
-        hinge.subprocess, "run",
-        lambda *a, **k: (calls.append(1), SimpleNamespace(stdout=b"Zorva", returncode=0))[1])
+        hinge.subprocess,
+        "run",
+        lambda *a, **k: (
+            calls.append(1),
+            SimpleNamespace(stdout=b"Zorva", returncode=0),
+        )[1],
+    )
     rect = (0.0, 0.0, 1.0, 1.0)
 
     drv._ocr_band(_png(value=10), rect, psm="6")
-    drv._ocr_band(_png(value=20), rect, psm="6")   # different frame bytes -> different band
+    drv._ocr_band(
+        _png(value=20), rect, psm="6"
+    )  # different frame bytes -> different band
 
     assert len(calls) == 2
 
@@ -3234,22 +3812,30 @@ def test_ocr_band_cache_resets_per_profile(monkeypatch):
     otherwise return a stale answer. _capture_current must reset it exactly where it resets the
     other per-profile identity state (_identity_top_sig / _identity_sig / _identity_name)."""
     from types import SimpleNamespace
+
     drv = _drv(FakeAdb([b"x"]))
     calls = []
     monkeypatch.setattr(hinge.shutil, "which", lambda name: "/usr/bin/tesseract")
     monkeypatch.setattr(
-        hinge.subprocess, "run",
-        lambda *a, **k: (calls.append(1), SimpleNamespace(stdout=b"Zorva", returncode=0))[1])
+        hinge.subprocess,
+        "run",
+        lambda *a, **k: (
+            calls.append(1),
+            SimpleNamespace(stdout=b"Zorva", returncode=0),
+        )[1],
+    )
     frame = _png(value=10)
     rect = (0.0, 0.0, 1.0, 1.0)
 
     drv._ocr_band(frame, rect, psm="6")
     assert len(calls) == 1
 
-    drv._capture_current()          # the per-profile reset point
+    drv._capture_current()  # the per-profile reset point
 
     drv._ocr_band(frame, rect, psm="6")
-    assert len(calls) == 2, "cache must not survive across _capture_current (a new profile)"
+    assert len(calls) == 2, (
+        "cache must not survive across _capture_current (a new profile)"
+    )
 
 
 # --- observe: rate-limited "still watching" operator notice (2026-08-10 incident) ----------
@@ -3258,6 +3844,7 @@ def test_ocr_band_cache_resets_per_profile(monkeypatch):
 # for the whole time before Stop was pressed by hand. This does not fix the misclassification
 # (the tests above do) -- it exists so the NEXT time anything stalls, for this reason or a new
 # one nobody has hit yet, there is something to look at instead of silence.
+
 
 def test_note_observe_waiting_prints_and_records_but_is_rate_limited(monkeypatch):
     """Direct test of the rate limiter: a burst of calls (as wait_for_decision's poll loop
@@ -3268,10 +3855,12 @@ def test_note_observe_waiting_prints_and_records_but_is_rate_limited(monkeypatch
     monkeypatch.setattr(hinge.time, "monotonic", lambda: clock[0])
     drv = _drv(FakeAdb([b"x"]))
     drv._dbg = _FakeDbg()
-    drv._observe_last_notice = 0.0   # long enough ago that the very first call is already due
+    drv._observe_last_notice = (
+        0.0  # long enough ago that the very first call is already due
+    )
 
     drv._note_observe_waiting("no_change")
-    clock[0] += 1.0                  # 1s later -- well under the 15s interval
+    clock[0] += 1.0  # 1s later -- well under the 15s interval
     drv._note_observe_waiting("no_change")
     clock[0] += 1.0
     drv._note_observe_waiting("no_change")
@@ -3280,16 +3869,17 @@ def test_note_observe_waiting_prints_and_records_but_is_rate_limited(monkeypatch
     assert len(records) == 1
     assert records[0]["reason"] == "no_change"
 
-    clock[0] += hinge.AndroidDriver._OBSERVE_WAIT_NOTICE_S   # now enough time has passed
+    clock[0] += hinge.AndroidDriver._OBSERVE_WAIT_NOTICE_S  # now enough time has passed
     drv._note_observe_waiting("not_settled")
 
     records = [f for name, f in drv._dbg.calls if name == "observe_waiting"]
     assert len(records) == 2
-    assert records[1]["reason"] == "not_settled"    # repeats with the CURRENT reason
+    assert records[1]["reason"] == "not_settled"  # repeats with the CURRENT reason
 
 
 def test_note_observe_waiting_reuses_identical_before_evidence_without_recapturing(
-        monkeypatch, tmp_path):
+    monkeypatch, tmp_path
+):
     """The production heartbeat records its already-held frame; it never takes another shot.
 
     A human can deliberate on an unchanged card for minutes.  The heartbeat must retain each
@@ -3307,7 +3897,9 @@ def test_note_observe_waiting_reuses_identical_before_evidence_without_recapturi
 
         def screencap(self):
             self.capture_calls += 1
-            raise AssertionError("observe_waiting must log the supplied frame, not recapture")
+            raise AssertionError(
+                "observe_waiting must log the supplied frame, not recapture"
+            )
 
     from operation_love.drivers.debuglog import HingeDebugLog
 
@@ -3324,7 +3916,10 @@ def test_note_observe_waiting_reuses_identical_before_evidence_without_recapturi
         clock[0] += hinge.AndroidDriver._OBSERVE_WAIT_NOTICE_S
 
     run_dir = tmp_path / "wait-before-dedupe"
-    rows = [json.loads(line) for line in (run_dir / "actions.jsonl").read_text().splitlines()]
+    rows = [
+        json.loads(line)
+        for line in (run_dir / "actions.jsonl").read_text().splitlines()
+    ]
     assert [row["action"] for row in rows] == ["observe_waiting"] * 3
     assert [row["reason"] for row in rows] == ["no_change"] * 3
     assert len({row["before"] for row in rows}) == 1
@@ -3332,7 +3927,9 @@ def test_note_observe_waiting_reuses_identical_before_evidence_without_recapturi
     assert adb.capture_calls == 0
 
 
-def test_note_observe_waiting_prints_a_plain_actionable_status_line(monkeypatch, capsys):
+def test_note_observe_waiting_prints_a_plain_actionable_status_line(
+    monkeypatch, capsys
+):
     """The operator-facing half of the fix: plain wording naming the reason, and something
     actionable (press Stop) -- not just a debug-log line only a developer would ever read."""
     monkeypatch.setattr(hinge.time, "monotonic", lambda: 1_000.0)
@@ -3355,13 +3952,19 @@ def test_note_observe_waiting_suppresses_a_heartbeat_after_stop(monkeypatch, cap
     drv._dbg = _FakeDbg()
     drv._observe_last_notice = 0.0
 
-    assert drv._note_observe_waiting(
-        "no_change", b"stale-frame", should_stop=lambda: stopped) is True
+    assert (
+        drv._note_observe_waiting(
+            "no_change", b"stale-frame", should_stop=lambda: stopped
+        )
+        is True
+    )
     assert drv._dbg.calls == []
     assert capsys.readouterr().out == ""
 
 
-def test_like_candidate_wait_is_truthful_and_uses_the_normal_notice_cadence(monkeypatch, capsys):
+def test_like_candidate_wait_is_truthful_and_uses_the_normal_notice_cadence(
+    monkeypatch, capsys
+):
     """No composer has been seen in this state, so it must not inherit either the wording or
     slower human-compose/send cadence of `like_sheet` / `like_sending`."""
     clock = [1_000.0]
@@ -3385,7 +3988,10 @@ def test_like_candidate_wait_is_truthful_and_uses_the_normal_notice_cadence(monk
     clock[0] += 1.0
     drv._note_observe_waiting("like_candidate")
     records = [fields for name, fields in drv._dbg.calls if name == "observe_waiting"]
-    assert [record["reason"] for record in records] == ["like_candidate", "like_candidate"]
+    assert [record["reason"] for record in records] == [
+        "like_candidate",
+        "like_candidate",
+    ]
 
 
 def test_wait_for_decision_resets_the_waiting_rate_limiter_at_the_start_of_every_call():
@@ -3394,11 +4000,13 @@ def test_wait_for_decision_resets_the_waiting_rate_limiter_at_the_start_of_every
     going permanently quiet across profiles: a notice suppressed near the end of one profile's
     wait must not suppress the FIRST notice of the very next one."""
     drv = _drv(FakeAdb([b"a"]))
-    drv._observe_last_notice = -10_000.0     # simulate ancient leftover state from a prior call
+    drv._observe_last_notice = (
+        -10_000.0
+    )  # simulate ancient leftover state from a prior call
 
     assert drv.wait_for_decision(timeout=0.05) is None
 
-    assert drv._observe_last_notice > 0      # reset to a real, current monotonic() value
+    assert drv._observe_last_notice > 0  # reset to a real, current monotonic() value
 
 
 # --- observe: gesture corroboration (layer 3, read-only touch-stream watcher) ----------
@@ -3407,6 +4015,7 @@ class _FakeWatcher:
     corroboration (_observe_gesture_verdict) only ever reads `alive`, `event_count`, and
     `gestures_since()` off the real watcher -- never its Popen/thread internals -- so a
     fake exposing just those three is a faithful substitute."""
+
     def __init__(self, gestures=(), *, alive=True, event_count=1):
         self._gestures = list(gestures)
         self.alive = alive
@@ -3421,8 +4030,13 @@ def _tap_gesture(x, y):
 
 
 def _drag_gesture(x0, y0, x1, y1):
-    return Gesture(t_down=0.0, t_up=0.0, down=(x0, y0), up=(x1, y1),
-                   travel_px=math.hypot(x1 - x0, y1 - y0))
+    return Gesture(
+        t_down=0.0,
+        t_up=0.0,
+        down=(x0, y0),
+        up=(x1, y1),
+        travel_px=math.hypot(x1 - x0, y1 - y0),
+    )
 
 
 def _proven_advance_drv(monkeypatch, watcher, frames=(b"base", b"new")):
@@ -3434,6 +4048,7 @@ def _proven_advance_drv(monkeypatch, watcher, frames=(b"base", b"new")):
     SUBSTRING 'new' (not an exact frame match) so a driver reused across a second advance
     with a fresh frame pair keeps classifying correctly."""
     import numpy as np
+
     old_sig = np.full((16, 64), 10, dtype="int16")
     new_sig = np.full((16, 64), 250, dtype="int16")
     adb = FakeAdb(list(frames), advance_on_screencap=True)
@@ -3443,8 +4058,12 @@ def _proven_advance_drv(monkeypatch, watcher, frames=(b"base", b"new")):
     drv._identity_sig = old_sig
     drv._identity_top_sig = np.full((16, 64), 200, dtype="int16")
     drv._touch_watcher = watcher
-    monkeypatch.setattr(hinge, "_band", lambda frame, rect: new_sig if b"new" in frame else old_sig)
-    monkeypatch.setattr(hinge, "_split_diff", lambda a, b: (0.0, 0.0) if a == b else (50.0, 50.0))
+    monkeypatch.setattr(
+        hinge, "_band", lambda frame, rect: new_sig if b"new" in frame else old_sig
+    )
+    monkeypatch.setattr(
+        hinge, "_split_diff", lambda a, b: (0.0, 0.0) if a == b else (50.0, 50.0)
+    )
     monkeypatch.setattr(drv, "_observe_deck_ready", lambda frame: True)
     return drv, adb
 
@@ -3469,7 +4088,9 @@ def test_gesture_verdict_tap_in_ignore_zone_resyncs(monkeypatch):
     """A card advance whose corroborating tap landed in an observe_ignore_zones rect (here:
     the rewind-arrow / '...' overflow zone, top-right) is a known non-decision -- resync,
     not a pass, even though the card genuinely changed and the deck is genuinely ready."""
-    watcher = _FakeWatcher([_tap_gesture(900, 150)], event_count=3)   # inside (0.75,0.03,1.00,0.115)
+    watcher = _FakeWatcher(
+        [_tap_gesture(900, 150)], event_count=3
+    )  # inside (0.75,0.03,1.00,0.115)
     drv, _adb = _proven_advance_drv(monkeypatch, watcher)
 
     assert drv.wait_for_decision(timeout=5.0) is None
@@ -3485,7 +4106,9 @@ def test_gesture_verdict_tap_on_pass_x_confirms_the_pass(monkeypatch):
     assert drv.wait_for_decision(timeout=5.0) is False
 
 
-def test_touch_watcher_health_exception_requires_name_proof_and_warns_once(monkeypatch, capsys):
+def test_touch_watcher_health_exception_requires_name_proof_and_warns_once(
+    monkeypatch, capsys
+):
     """event_count == 0 for the whole run is proof the STREAM itself isn't delivering
     anything on this device (wrong node selected, a permissions change mid-run, ...) -- not
     "the human genuinely never touched the screen". It therefore cannot veto an independently
@@ -3531,6 +4154,7 @@ def test_observe_open_session_raises_when_its_touch_watcher_cant_start(monkeypat
     failure only wrapped the debug-log setup AFTER this block, so the DriverClosed raised here
     escaped uncaught and the registered touch transport (and the ADB link) leaked -- the same
     failure class that already leaked 7 virtual touchscreens once from a different trigger."""
+
     class _OpenAdb(FakeAdb):
         def __init__(self):
             super().__init__([b"x"])
@@ -3549,6 +4173,7 @@ def test_observe_open_session_raises_when_its_touch_watcher_cant_start(monkeypat
         """Stands in for UhidTouch so this test can prove the registered transport gets
         released on the open_session() failure path below, without touching a real
         /dev/hidg node."""
+
         instances = []
 
         def __init__(self, adb):
@@ -3564,10 +4189,20 @@ def test_observe_open_session_raises_when_its_touch_watcher_cant_start(monkeypat
 
     monkeypatch.setattr(hinge, "Adb", lambda *a, **k: _OpenAdb())
     monkeypatch.setattr(hinge, "TouchWatcher", _DeadWatcher)
-    monkeypatch.setattr(hinge, "UhidTouch", _FakeTouch)   # touch_backend defaults to "auto"
-    monkeypatch.setattr("operation_love.platforms.unavailable_reason", lambda *_a, **_k: None)
-    cfg = type("C", (), {"mode": "training", "apps": {
-        "hinge": {"serial": "pixel", "observe_touch_watch": True}}})
+    monkeypatch.setattr(
+        hinge, "UhidTouch", _FakeTouch
+    )  # touch_backend defaults to "auto"
+    monkeypatch.setattr(
+        "operation_love.platforms.unavailable_reason", lambda *_a, **_k: None
+    )
+    cfg = type(
+        "C",
+        (),
+        {
+            "mode": "training",
+            "apps": {"hinge": {"serial": "pixel", "observe_touch_watch": True}},
+        },
+    )
     drv = HingeDriver(cfg)
     # No set_auto_session_policy() call: this simulates an OBSERVE session, and
     # _auto_session must stay at its constructed-False default for the gate above to
@@ -3631,19 +4266,36 @@ def test_open_session_always_reads_the_targeting_binding_live(monkeypatch):
     monkeypatch.setattr(hinge, "Adb", _make_adb)
     monkeypatch.setattr(hinge, "UhidTouch", _FakeTouch)
     monkeypatch.setattr(hinge.time, "sleep", lambda *_a, **_k: None)
-    monkeypatch.setattr("operation_love.platforms.unavailable_reason", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        "operation_love.platforms.unavailable_reason", lambda *_a, **_k: None
+    )
     calibration = {
-        "schema_version": 3, "hinge_version_name": "10.1.0", "frame_size_px": [1080, 2400],
-        "composer_layout_id": "hinge_inline_v1", "item_selection_policy_id": "hinge_photos_only_v2",
-        "identity_match_max_dist": 2.0, "inline_item_max_dist": 10.0, "device": "pixel",
+        "schema_version": 3,
+        "hinge_version_name": "10.1.0",
+        "frame_size_px": [1080, 2400],
+        "composer_layout_id": "hinge_inline_v1",
+        "item_selection_policy_id": "hinge_photos_only_v2",
+        "identity_match_max_dist": 2.0,
+        "inline_item_max_dist": 10.0,
+        "device": "pixel",
         "calibrated_at": "2026-08-12",
         "identity_band": list(hinge.HINGE_SPEC.identity_band),
         "content_band": list(hinge.HINGE_SPEC.content_band),
     }
-    cfg = type("C", (), {"mode": "training", "apps": {"hinge": {
-        "serial": "pixel", "targeting_calibration": calibration}}})
+    cfg = type(
+        "C",
+        (),
+        {
+            "mode": "training",
+            "apps": {
+                "hinge": {"serial": "pixel", "targeting_calibration": calibration}
+            },
+        },
+    )
     drv = HingeDriver(cfg)
-    assert drv.targeting_calibration is not None, "fixture must reach the binding read at all"
+    assert drv.targeting_calibration is not None, (
+        "fixture must reach the binding read at all"
+    )
 
     drv.open_session()
     assert adbs[0].dumpsys_package_calls == 1
@@ -3653,11 +4305,14 @@ def test_open_session_always_reads_the_targeting_binding_live(monkeypatch):
     drv.open_session()
     assert adbs[-1].dumpsys_package_calls == 1, (
         "the second session reused the first session's memoized build/frame binding instead "
-        "of reading the device it is actually driving")
+        "of reading the device it is actually driving"
+    )
     assert len(launched) == 2
 
 
-def test_observe_mode_never_taps_swipes_or_types_across_the_new_decision_paths(monkeypatch):
+def test_observe_mode_never_taps_swipes_or_types_across_the_new_decision_paths(
+    monkeypatch,
+):
     """Passivity contract, across layer 1 (identity), layer 2 (content /
     _vertical_shift_match -- exercised transitively by the identity tests above, which
     reuse the same wait_for_decision path), and layer 3 (gesture corroboration) alike:
@@ -3696,47 +4351,69 @@ def test_observe_mode_never_taps_swipes_or_types_across_the_new_decision_paths(m
 def test_capture_refuses_degraded_when_decode_fails():
     # H1: in a real run (open_session validated deps), undecodable frames must hard-fail
     # rather than silently disable scroll-detection (which would mislabel scrolls as PASS).
-    adb = FakeAdb([b"a", b"b"])          # non-PNG bytes -> _downsample returns None
+    adb = FakeAdb([b"a", b"b"])  # non-PNG bytes -> _downsample returns None
     drv = _drv(adb)
-    drv._observe_ready = True            # simulate open_session having validated PIL/numpy
+    drv._observe_ready = True  # simulate open_session having validated PIL/numpy
     with pytest.raises(DriverClosed):
         drv._capture_current()
 
 
-def test_scroll_to_top_ceiling_derived_from_capture_scrolls_not_a_magic_four(monkeypatch):
+def test_scroll_to_top_ceiling_derived_from_capture_scrolls_not_a_magic_four(
+    monkeypatch,
+):
     # bug 1 fix: a fixed cap of 4 could NOT undo a capture that scrolled further than that
     # (scroll_captures defaults to 8, i.e. up to 7 read-scrolls) -- it left the phone parked
     # mid-profile, so the next heart/pass tap template-matched a photo from the WRONG card.
     # The ceiling must track how far the just-completed capture actually scrolled, not a guess.
-    frames = [b"f0", b"f1", b"f2", b"f3", b"f4", b"f5", b"f6", b"f7"]   # 8 distinct -> 7 scrolls
+    frames = [
+        b"f0",
+        b"f1",
+        b"f2",
+        b"f3",
+        b"f4",
+        b"f5",
+        b"f6",
+        b"f7",
+    ]  # 8 distinct -> 7 scrolls
     adb = FakeAdb(frames)
     drv = _drv(adb, scroll_captures=8)
     drv._capture_current()
-    assert adb.scrolls == 7                          # sanity: capture scrolled down 7 times
+    assert adb.scrolls == 7  # sanity: capture scrolled down 7 times
 
     adb.swipes = 0
-    monkeypatch.setattr(HingeDriver, "_changed", lambda self, a, b: True)  # never settles -> ceiling governs
+    monkeypatch.setattr(
+        HingeDriver, "_changed", lambda self, a, b: True
+    )  # never settles -> ceiling governs
     drv._scroll_to_top()
-    assert adb.swipes == 7               # old code capped this at a magic 4 -> would fail here
+    assert adb.swipes == 7  # old code capped this at a magic 4 -> would fail here
 
 
 def test_scroll_to_top_still_bounded_against_a_stuck_screen(monkeypatch):
     # the (now-correct) ceiling is still a hard cap, not an infinite loop, when a screen never
     # settles (e.g. an animated/video card whose frames always differ).
-    monkeypatch.setattr(HingeDriver, "_changed", lambda self, a, b: True)  # always "still moving"
+    monkeypatch.setattr(
+        HingeDriver, "_changed", lambda self, a, b: True
+    )  # always "still moving"
     adb = FakeAdb([b"x"])
     drv = _drv(adb, scroll_captures=8)
-    drv._capture_scrolls = 3             # simulate a capture that scrolled 3 times
+    drv._capture_scrolls = 3  # simulate a capture that scrolled 3 times
     drv._scroll_to_top()
-    assert adb.swipes == 3               # stops at the ceiling, doesn't spin forever
+    assert adb.swipes == 3  # stops at the ceiling, doesn't spin forever
 
 
-@pytest.mark.parametrize("top_result", (
-    SimpleNamespace(confirmed=False, state="confirmed_not_top", reason="sticky header visible"),
-    hinge.ScrollTopError("identity band unreadable"),
-), ids=("refuted", "unreadable"))
+@pytest.mark.parametrize(
+    "top_result",
+    (
+        SimpleNamespace(
+            confirmed=False, state="confirmed_not_top", reason="sticky header visible"
+        ),
+        hinge.ScrollTopError("identity band unreadable"),
+    ),
+    ids=("refuted", "unreadable"),
+)
 def test_hinge_rewind_does_not_accept_no_motion_without_an_affirmative_top_verdict(
-        monkeypatch, top_result):
+    monkeypatch, top_result
+):
     """A swallowed reverse swipe mid-card is not proof that the card reached its top."""
     adb = FakeAdb([b"mid-card"])
     drv = _drv(adb, scroll_captures=2)
@@ -3752,8 +4429,8 @@ def test_hinge_rewind_does_not_accept_no_motion_without_an_affirmative_top_verdi
     monkeypatch.setattr(hinge, "confirm_scroll_top", top_verdict)
 
     assert drv._scroll_to_top() is False
-    assert adb.swipes == 2                    # bounded retries still happen
-    assert drv._capture_scrolls == 2          # failure cannot erase recovery evidence
+    assert adb.swipes == 2  # bounded retries still happen
+    assert drv._capture_scrolls == 2  # failure cannot erase recovery evidence
     assert drv._capture_scroll_ledger == [(0.55, 0.5)] * 2
 
 
@@ -3773,41 +4450,55 @@ def test_failed_hinge_rewind_records_its_final_filter_chip_verdict(monkeypatch):
 
     assert drv._scroll_to_top() is False
 
-    recovery = next(fields for name, fields in drv._dbg.calls
-                    if name == "capture_entry_recovery_spent")
+    recovery = next(
+        fields
+        for name, fields in drv._dbg.calls
+        if name == "capture_entry_recovery_spent"
+    )
     assert recovery["scroll_top_state"] == "cannot_tell"
     assert recovery["scroll_top_distance"] == pytest.approx(8.859375)
     assert recovery["scroll_top_alignment_offset_px"] == 1
     assert "scroll_top_error" not in recovery
 
 
-def test_failed_hinge_rewind_retains_bounded_attempt_facts_and_endpoint_frames(monkeypatch):
+def test_failed_hinge_rewind_retains_bounded_attempt_facts_and_endpoint_frames(
+    monkeypatch,
+):
     """Per-attempt facts stay scalar; only the bounded rewind's endpoints retain frames."""
     adb = FakeAdb([b"same-scrolled-card"])
     drv = _drv(adb, scroll_captures=2, read_scroll_frac=0.55, rewind_scroll_frac=0.78)
     drv._dbg = _FakeDbg()
     drv._capture_scrolls = 2
     verdict = SimpleNamespace(
-        confirmed=False, state="confirmed_not_top", distance=9.640625,
+        confirmed=False,
+        state="confirmed_not_top",
+        distance=9.640625,
         alignment_offset_px=12,
     )
     monkeypatch.setattr(hinge, "confirm_scroll_top", lambda *_a, **_k: verdict)
     monkeypatch.setattr(drv, "_changed", lambda *_a: False)
 
     assert drv._scroll_to_top() is False
-    recovery = next(fields for name, fields in drv._dbg.calls
-                    if name == "capture_entry_recovery_spent")
+    recovery = next(
+        fields
+        for name, fields in drv._dbg.calls
+        if name == "capture_entry_recovery_spent"
+    )
     assert recovery["scroll_top_state"] == "confirmed_not_top"
     assert recovery["scroll_top_initial"]["scroll_top_state"] == "confirmed_not_top"
     attempts = recovery["scroll_top_attempts"]
     assert len(attempts) == 2
-    assert [(row["start"], row["end"], row["duration_ms"], row["frame_changed"])
-            for row in attempts] == [
-                ([540, 540], [540, 1860], 450, False),
-                ([540, 540], [540, 1860], 450, False),
-            ]
-    assert all(row["detector"]["scroll_top_distance"] == pytest.approx(9.640625)
-               for row in attempts)
+    assert [
+        (row["start"], row["end"], row["duration_ms"], row["frame_changed"])
+        for row in attempts
+    ] == [
+        ([540, 540], [540, 1860], 450, False),
+        ([540, 540], [540, 1860], 450, False),
+    ]
+    assert all(
+        row["detector"]["scroll_top_distance"] == pytest.approx(9.640625)
+        for row in attempts
+    )
     assert not any("before" in row or "after" in row for row in attempts)
     assert recovery["keep_before"] is True and recovery["keep_after"] is True
     assert ("capture_entry_recovery_spent", b"same-scrolled-card") in drv._dbg.befores
@@ -3823,15 +4514,19 @@ def test_saved_rewind_failure_frame_is_refuted_while_prior_same_card_top_confirm
     evidence and this test intentionally skips in CI when they are not present.
     """
     root = Path(__file__).resolve().parent.parent
-    failure = root / "data/hinge_debug/de89edfe05e1/00001_capture_entry_refused_before.png"
+    failure = (
+        root / "data/hinge_debug/de89edfe05e1/00001_capture_entry_refused_before.png"
+    )
     confirmed_top = root / "data/hinge_debug/4efcff0d78ca/00315_capture_before.png"
     if not failure.is_file() or not confirmed_top.is_file():
         pytest.skip("private local Hinge rewind evidence is unavailable")
 
     failed = scroll_top.confirm_scroll_top(
-        failure.read_bytes(), identity_band=hinge.HINGE_SPEC.identity_band)
+        failure.read_bytes(), identity_band=hinge.HINGE_SPEC.identity_band
+    )
     top = scroll_top.confirm_scroll_top(
-        confirmed_top.read_bytes(), identity_band=hinge.HINGE_SPEC.identity_band)
+        confirmed_top.read_bytes(), identity_band=hinge.HINGE_SPEC.identity_band
+    )
 
     assert failed.state == scroll_top.SCROLL_TOP_REFUTED
     assert failed.distance == pytest.approx(9.640625)
@@ -3839,7 +4534,9 @@ def test_saved_rewind_failure_frame_is_refuted_while_prior_same_card_top_confirm
     assert top.confirmed is True
 
 
-def test_session_top_failure_prints_filter_chip_detector_fact_not_motion(monkeypatch, capsys):
+def test_session_top_failure_prints_filter_chip_detector_fact_not_motion(
+    monkeypatch, capsys
+):
     """A settled but uncalibrated top must not be reported as a screen that kept moving."""
     drv = _drv(FakeAdb([b"settled-top-with-new-chrome"]))
     drv._dbg = _FakeDbg()
@@ -3849,7 +4546,9 @@ def test_session_top_failure_prints_filter_chip_detector_fact_not_motion(monkeyp
         distance=8.859375,
         alignment_offset_px=1,
     )
-    monkeypatch.setattr(drv, "_capture_entry_profile_evidence", lambda _frame: "deck_controls")
+    monkeypatch.setattr(
+        drv, "_capture_entry_profile_evidence", lambda _frame: "deck_controls"
+    )
     monkeypatch.setattr(hinge, "confirm_scroll_top", lambda *_a, **_k: verdict)
 
     assert drv._ensure_session_top() is False
@@ -3858,7 +4557,9 @@ def test_session_top_failure_prints_filter_chip_detector_fact_not_motion(monkeyp
     assert "final filter-chip verdict was `cannot_tell`" in out
     assert "distance 8.859" in out and "alignment offset +1px" in out
     assert "never stopped moving" not in out
-    session = next(fields for name, fields in drv._dbg.calls if name == "session_top_unconfirmed")
+    session = next(
+        fields for name, fields in drv._dbg.calls if name == "session_top_unconfirmed"
+    )
     assert session["scroll_top_state"] == "cannot_tell"
     assert session["scroll_top_distance"] == pytest.approx(8.859375)
     assert session["scroll_top_alignment_offset_px"] == 1
@@ -3876,8 +4577,11 @@ def test_failed_hinge_rewind_records_filter_chip_decode_error(monkeypatch):
     monkeypatch.setattr(hinge, "confirm_scroll_top", unreadable)
     assert drv._scroll_to_top() is False
 
-    recovery = next(fields for name, fields in drv._dbg.calls
-                    if name == "capture_entry_recovery_spent")
+    recovery = next(
+        fields
+        for name, fields in drv._dbg.calls
+        if name == "capture_entry_recovery_spent"
+    )
     assert recovery["scroll_top_error"] == "identity band unreadable"
     assert "scroll_top_state" not in recovery
 
@@ -3890,8 +4594,11 @@ def test_generic_rewind_keeps_legacy_no_motion_top_confirmation(monkeypatch):
     drv._capture_scroll_ledger = [(0.55, 0.5)] * 2
     drv._capture_scrolls = 2
     monkeypatch.setattr(drv, "_changed", lambda *_a: False)
-    monkeypatch.setattr(hinge, "confirm_scroll_top",
-                        lambda *_a, **_k: pytest.fail("generic rewind must not request a band"))
+    monkeypatch.setattr(
+        hinge,
+        "confirm_scroll_top",
+        lambda *_a, **_k: pytest.fail("generic rewind must not request a band"),
+    )
 
     assert drv._scroll_to_top() is True
     assert adb.swipes == 1
@@ -3907,18 +4614,21 @@ class PositionTrackingAdb(FakeAdb):
     cancel, which is exactly the bug a fixed-drag undo-swipe had: same swipe COUNT as
     read-scrolls, but each swipe covered less ground, so the net position never reached zero.
     """
+
     def __init__(self, frames, **kw):
         super().__init__(frames, **kw)
         self.position = 0.0
 
     def scroll_up(self, distance_frac=0.55, x_frac=0.5):
         super().scroll_up(distance_frac=distance_frac, x_frac=x_frac)
-        self.position += distance_frac    # forward read-scroll: further down the profile
+        self.position += distance_frac  # forward read-scroll: further down the profile
 
     def swipe(self, x1, y1, x2, y2, duration_ms=450):
         super().swipe(x1, y1, x2, y2, duration_ms=duration_ms)
         h = self.screen_size()[1]
-        self.position += (y1 - y2) / h    # scroll_to_top's undo gesture: top-of-screen -> bottom-of-screen
+        self.position += (
+            y1 - y2
+        ) / h  # scroll_to_top's undo gesture: top-of-screen -> bottom-of-screen
 
 
 def test_scroll_to_top_returns_to_true_top_not_just_matching_swipe_count(monkeypatch):
@@ -3928,13 +4638,17 @@ def test_scroll_to_top_returns_to_true_top_not_just_matching_swipe_count(monkeyp
     # scrolled down by ~18% per scroll even with a correct swipe count -- up to ~0.7 screen-heights
     # short of the top on a long profile -- so the next heart/pass tap could land on the wrong
     # photo. Track actual displacement (not just call counts) so an under/over-correction is visible.
-    monkeypatch.setattr(HingeDriver, "_changed", lambda self, a, b: True)   # never settle early -> full ceiling
-    frames = [f"f{i}".encode() for i in range(8)]     # 8 distinct frames -> 7 read-scrolls
+    monkeypatch.setattr(
+        HingeDriver, "_changed", lambda self, a, b: True
+    )  # never settle early -> full ceiling
+    frames = [f"f{i}".encode() for i in range(8)]  # 8 distinct frames -> 7 read-scrolls
     adb = PositionTrackingAdb(frames)
     drv = _drv(adb, scroll_captures=8, read_scroll_frac=0.55)
 
     drv._capture_current()
-    assert adb.position == pytest.approx(7 * 0.55)     # capture read-scrolled forward 7 times
+    assert adb.position == pytest.approx(
+        7 * 0.55
+    )  # capture read-scrolled forward 7 times
 
     drv._scroll_to_top()
     assert adb.position <= 1e-9, (
@@ -3950,11 +4664,17 @@ def test_scroll_to_top_caps_configured_rewind_to_safe_central_geometry(monkeypat
     drv._capture_scroll_ledger = [(0.55, 0.5)] * 6
     drv._capture_scrolls = len(drv._capture_scroll_ledger)
     gestures = []
-    monkeypatch.setattr(drv, "_swipe", lambda *args, **kwargs: gestures.append((args, kwargs)))
     monkeypatch.setattr(
-        hinge, "confirm_scroll_top", lambda *_a, **_k: SimpleNamespace(confirmed=True))
+        drv, "_swipe", lambda *args, **kwargs: gestures.append((args, kwargs))
+    )
     monkeypatch.setattr(
-        drv, "_changed", lambda *_a, **_k: pytest.fail("confirmed top must stop immediately"))
+        hinge, "confirm_scroll_top", lambda *_a, **_k: SimpleNamespace(confirmed=True)
+    )
+    monkeypatch.setattr(
+        drv,
+        "_changed",
+        lambda *_a, **_k: pytest.fail("confirmed top must stop immediately"),
+    )
 
     assert drv._scroll_to_top() is True
     # 0.78 used to be 263 -> 2136 @160ms, ending in the fixed Hinge nav.  The cap keeps the
@@ -3976,12 +4696,18 @@ def test_auto_policy_hinge_undo_stays_in_the_central_read_corridor(monkeypatch):
     drv.identity_band = None
     drv._auto_policy = Policy()
     drv._capture_scroll_ledger = [
-        (0.46, 0.41), (0.50, 0.57), (0.54, 0.45),
-        (0.48, 0.60), (0.52, 0.39), (0.50, 0.53),
+        (0.46, 0.41),
+        (0.50, 0.57),
+        (0.54, 0.45),
+        (0.48, 0.60),
+        (0.52, 0.39),
+        (0.50, 0.53),
     ]
     drv._capture_scrolls = len(drv._capture_scroll_ledger)
     adb.position = sum(frac for frac, _lane in drv._capture_scroll_ledger)
-    monkeypatch.setattr(HingeDriver, "_changed", lambda self, _a, _b: adb.position > 1e-9)
+    monkeypatch.setattr(
+        HingeDriver, "_changed", lambda self, _a, _b: adb.position > 1e-9
+    )
 
     drv._scroll_to_top()
 
@@ -4003,10 +4729,12 @@ def test_auto_policy_undo_has_a_hard_ceiling_on_a_never_settling_screen(monkeypa
 
     drv._scroll_to_top()
 
-    assert adb.swipes == 7                 # four recorded strokes + three safety attempts
+    assert adb.swipes == 7  # four recorded strokes + three safety attempts
 
 
-def test_auto_policy_hinge_undo_cannot_vary_out_of_the_central_safe_geometry(monkeypatch):
+def test_auto_policy_hinge_undo_cannot_vary_out_of_the_central_safe_geometry(
+    monkeypatch,
+):
     class Policy:
         pass
 
@@ -4029,15 +4757,19 @@ def test_current_profile_returns_to_top_after_observe_capture(monkeypatch):
     # "READY - swipe this profile" immediately after it returns -- so leaving the phone
     # scrolled to the bottom (all _capture_current did before this fix) has the operator
     # swipe a view that isn't the top of the profile they just read.
-    monkeypatch.setattr(HingeDriver, "_changed", lambda self, a, b: True)  # force full ceiling
+    monkeypatch.setattr(
+        HingeDriver, "_changed", lambda self, a, b: True
+    )  # force full ceiling
     adb = FakeAdb([b"a", b"b", b"c"])
     drv = _drv(adb, scroll_captures=3)
-    drv._session_top_done = True         # isolate the per-capture unwind from the once-per-session one
+    drv._session_top_done = (
+        True  # isolate the per-capture unwind from the once-per-session one
+    )
 
     drv.current_profile()
 
-    assert adb.scrolls == 2              # capture read-scrolled twice (3 distinct frames)
-    assert adb.swipes == 2               # _scroll_to_top swiped all the way back up before returning
+    assert adb.scrolls == 2  # capture read-scrolled twice (3 distinct frames)
+    assert adb.swipes == 2  # _scroll_to_top swiped all the way back up before returning
 
 
 def test_manual_capture_is_not_published_when_trailing_rewind_fails(monkeypatch):
@@ -4049,10 +4781,15 @@ def test_manual_capture_is_not_published_when_trailing_rewind_fails(monkeypatch)
     monkeypatch.setattr(drv, "_scroll_to_top", lambda *_a, **_k: False)
 
     assert drv.current_profile() is None
-    assert "could not be returned to a confirmed scroll top" in drv._current_items_unavailable
+    assert (
+        "could not be returned to a confirmed scroll top"
+        in drv._current_items_unavailable
+    )
     # This is Observe (the default _auto_session is False): the terminal refusal must still be
     # visible to Worker rather than being retried as an unexplained capture None.
-    assert "could not be returned to a confirmed scroll top" in (drv.blocked_reason() or "")
+    assert "could not be returned to a confirmed scroll top" in (
+        drv.blocked_reason() or ""
+    )
 
 
 def test_manual_capture_keeps_completed_profile_at_a_stop_boundary(monkeypatch):
@@ -4066,7 +4803,9 @@ def test_manual_capture_keeps_completed_profile_at_a_stop_boundary(monkeypatch):
     assert drv.current_profile(should_stop=lambda: True) is marker
 
 
-def test_actionable_manual_capture_rewinds_and_reproves_before_any_profile_read(monkeypatch):
+def test_actionable_manual_capture_rewinds_and_reproves_before_any_profile_read(
+    monkeypatch,
+):
     """A user-scrolled READY card must not first be read as an unnumbered profile."""
     drv = _drv(FakeAdb([b"card"]))
     drv._session_top_done = True
@@ -4074,32 +4813,47 @@ def test_actionable_manual_capture_rewinds_and_reproves_before_any_profile_read(
     profile = object()
     top_answers = iter(["confirmed_not_top", ""])
     monkeypatch.setattr(drv, "_item_enumeration_blocker", lambda: "")
-    monkeypatch.setattr(drv, "_confirm_enumeration_top",
-                        lambda: events.append("top") or next(top_answers))
+    monkeypatch.setattr(
+        drv,
+        "_confirm_enumeration_top",
+        lambda: events.append("top") or next(top_answers),
+    )
     monkeypatch.setattr(drv, "_observe_like_sheet_visible", lambda _frame: False)
-    monkeypatch.setattr(drv, "_capture_entry_profile_evidence", lambda _frame: "deck_controls")
-    monkeypatch.setattr(drv, "_scroll_to_top",
-                        lambda *_a, **_k: events.append("rewind") or True)
-    monkeypatch.setattr(drv, "_capture_current",
-                        lambda *_a, **_k: events.append("capture") or profile)
+    monkeypatch.setattr(
+        drv, "_capture_entry_profile_evidence", lambda _frame: "deck_controls"
+    )
+    monkeypatch.setattr(
+        drv, "_scroll_to_top", lambda *_a, **_k: events.append("rewind") or True
+    )
+    monkeypatch.setattr(
+        drv, "_capture_current", lambda *_a, **_k: events.append("capture") or profile
+    )
 
     assert drv.current_profile() is profile
     assert events == ["top", "rewind", "top", "capture", "rewind"]
 
 
-def test_actionable_capture_refuses_to_publish_when_rewind_cannot_reprove_top(monkeypatch):
+def test_actionable_capture_refuses_to_publish_when_rewind_cannot_reprove_top(
+    monkeypatch,
+):
     """No ranker/identity Profile escapes when the post-rewind entry proof is still absent."""
     drv = _drv(FakeAdb([b"card"]))
     drv._session_top_done = True
     captured = []
     monkeypatch.setattr(drv, "_item_enumeration_blocker", lambda: "")
-    monkeypatch.setattr(drv, "_confirm_enumeration_top",
-                        lambda: "the card is not confirmed to be at its scroll top")
+    monkeypatch.setattr(
+        drv,
+        "_confirm_enumeration_top",
+        lambda: "the card is not confirmed to be at its scroll top",
+    )
     monkeypatch.setattr(drv, "_observe_like_sheet_visible", lambda _frame: False)
-    monkeypatch.setattr(drv, "_capture_entry_profile_evidence", lambda _frame: "deck_controls")
+    monkeypatch.setattr(
+        drv, "_capture_entry_profile_evidence", lambda _frame: "deck_controls"
+    )
     monkeypatch.setattr(drv, "_scroll_to_top", lambda *_a, **_k: False)
-    monkeypatch.setattr(drv, "_capture_current",
-                        lambda *_a, **_k: captured.append(True) or object())
+    monkeypatch.setattr(
+        drv, "_capture_current", lambda *_a, **_k: captured.append(True) or object()
+    )
 
     assert drv.current_profile() is None
     assert captured == []
@@ -4112,20 +4866,29 @@ def test_unchanged_refused_observe_entry_spends_only_one_bounded_rewind(monkeypa
     drv._session_top_done = True
     rewinds = []
     monkeypatch.setattr(drv, "_item_enumeration_blocker", lambda: "")
-    monkeypatch.setattr(drv, "_capture_entry_profile_evidence", lambda _frame: "deck_controls")
-    monkeypatch.setattr(drv, "_confirm_enumeration_top",
-                        lambda: "confirmed_not_top: sticky profile header")
+    monkeypatch.setattr(
+        drv, "_capture_entry_profile_evidence", lambda _frame: "deck_controls"
+    )
+    monkeypatch.setattr(
+        drv,
+        "_confirm_enumeration_top",
+        lambda: "confirmed_not_top: sticky profile header",
+    )
     monkeypatch.setattr(drv, "_observe_like_sheet_visible", lambda _frame: False)
-    monkeypatch.setattr(drv, "_scroll_to_top",
-                        lambda *_a, **_k: rewinds.append("rewind") or False)
+    monkeypatch.setattr(
+        drv, "_scroll_to_top", lambda *_a, **_k: rewinds.append("rewind") or False
+    )
 
     assert drv.current_profile() is None
     assert drv.current_profile() is None
     assert rewinds == ["rewind"]
 
 
-def test_animated_refused_observe_entry_still_spends_only_one_bounded_rewind(monkeypatch):
+def test_animated_refused_observe_entry_still_spends_only_one_bounded_rewind(
+    monkeypatch,
+):
     """Frame churn is diagnostic noise, never permission for a second autonomous recovery."""
+
     class AnimatedAdb(FakeAdb):
         def __init__(self):
             super().__init__([b"seed"])
@@ -4139,51 +4902,80 @@ def test_animated_refused_observe_entry_still_spends_only_one_bounded_rewind(mon
     drv._session_top_done = True
     rewinds = []
     monkeypatch.setattr(drv, "_item_enumeration_blocker", lambda: "")
-    monkeypatch.setattr(drv, "_capture_entry_profile_evidence", lambda _frame: "deck_controls")
-    monkeypatch.setattr(drv, "_confirm_enumeration_top",
-                        lambda: "confirmed_not_top: animated sticky header")
-    monkeypatch.setattr(drv, "_scroll_to_top",
-                        lambda *_a, **_k: rewinds.append("rewind") or False)
+    monkeypatch.setattr(
+        drv, "_capture_entry_profile_evidence", lambda _frame: "deck_controls"
+    )
+    monkeypatch.setattr(
+        drv,
+        "_confirm_enumeration_top",
+        lambda: "confirmed_not_top: animated sticky header",
+    )
+    monkeypatch.setattr(
+        drv, "_scroll_to_top", lambda *_a, **_k: rewinds.append("rewind") or False
+    )
 
     assert drv.current_profile() is None
     assert drv.current_profile() is None
     assert rewinds == ["rewind"]
 
 
-def test_ambiguous_in_package_surface_never_rewinds_even_when_top_would_be_refuted(monkeypatch):
+def test_ambiguous_in_package_surface_never_rewinds_even_when_top_would_be_refuted(
+    monkeypatch,
+):
     """Hinge ownership alone cannot turn an unknown in-app page into a scroll target."""
     drv = _drv(FakeAdb([b"hinge-settings-or-modal"]))
     drv._session_top_done = True
     monkeypatch.setattr(drv, "_item_enumeration_blocker", lambda: "")
     monkeypatch.setattr(drv, "_capture_entry_profile_evidence", lambda _frame: None)
-    monkeypatch.setattr(drv, "_confirm_enumeration_top",
-                        lambda: "confirmed_not_top: unrelated identity band")
-    monkeypatch.setattr(drv, "_scroll_to_top",
-                        lambda *_a, **_k: pytest.fail("ambiguous in-package surface must be no-input"))
+    monkeypatch.setattr(
+        drv,
+        "_confirm_enumeration_top",
+        lambda: "confirmed_not_top: unrelated identity band",
+    )
+    monkeypatch.setattr(
+        drv,
+        "_scroll_to_top",
+        lambda *_a, **_k: pytest.fail("ambiguous in-package surface must be no-input"),
+    )
 
     assert drv.current_profile() is None
 
 
-def test_session_start_ambiguous_in_package_surface_never_spends_its_first_rewind(monkeypatch):
+def test_session_start_ambiguous_in_package_surface_never_spends_its_first_rewind(
+    monkeypatch,
+):
     """The session helper is guarded too; prep must not be the first no-input boundary."""
     drv = _drv(FakeAdb([b"hinge-settings-or-modal"]))
     monkeypatch.setattr(drv, "_capture_entry_profile_evidence", lambda _frame: None)
-    monkeypatch.setattr(drv, "_scroll_to_top",
-                        lambda *_a, **_k: pytest.fail("session rewind must require profile evidence"))
+    monkeypatch.setattr(
+        drv,
+        "_scroll_to_top",
+        lambda *_a, **_k: pytest.fail("session rewind must require profile evidence"),
+    )
 
     assert drv.current_profile() is None
     assert drv._session_top_done is False
 
 
-def test_failed_session_rewind_does_not_trigger_a_second_capture_entry_rewind(monkeypatch):
+def test_failed_session_rewind_does_not_trigger_a_second_capture_entry_rewind(
+    monkeypatch,
+):
     """One public capture call gets one bounded session recovery attempt, never two ceilings."""
     drv = _drv(FakeAdb([b"deck"]))
     calls = []
-    monkeypatch.setattr(drv, "_capture_entry_profile_evidence", lambda _frame: "deck_controls")
-    monkeypatch.setattr(drv, "_scroll_to_top",
-                        lambda *_a, **_k: calls.append("session-rewind") or False)
-    monkeypatch.setattr(drv, "_prepare_actionable_capture_entry",
-                        lambda *_a, **_k: pytest.fail("must not immediately retry a failed session rewind"))
+    monkeypatch.setattr(
+        drv, "_capture_entry_profile_evidence", lambda _frame: "deck_controls"
+    )
+    monkeypatch.setattr(
+        drv, "_scroll_to_top", lambda *_a, **_k: calls.append("session-rewind") or False
+    )
+    monkeypatch.setattr(
+        drv,
+        "_prepare_actionable_capture_entry",
+        lambda *_a, **_k: pytest.fail(
+            "must not immediately retry a failed session rewind"
+        ),
+    )
 
     assert drv.current_profile() is None
     assert calls == ["session-rewind"]
@@ -4193,11 +4985,17 @@ def test_reviewed_capture_does_not_retry_a_failed_session_rewind(monkeypatch):
     """Reviewed's unconditional session helper must respect the same spent recovery latch."""
     drv = _drv(FakeAdb([b"deck"]))
     rewinds = []
-    monkeypatch.setattr(drv, "_capture_entry_profile_evidence", lambda _frame: "deck_controls")
-    monkeypatch.setattr(drv, "_scroll_to_top",
-                        lambda *_a, **_k: rewinds.append("rewind") or False)
-    monkeypatch.setattr(drv, "_capture_current",
-                        lambda *_a, **_k: pytest.fail("failed recovery must not capture"))
+    monkeypatch.setattr(
+        drv, "_capture_entry_profile_evidence", lambda _frame: "deck_controls"
+    )
+    monkeypatch.setattr(
+        drv, "_scroll_to_top", lambda *_a, **_k: rewinds.append("rewind") or False
+    )
+    monkeypatch.setattr(
+        drv,
+        "_capture_current",
+        lambda *_a, **_k: pytest.fail("failed recovery must not capture"),
+    )
 
     assert drv.current_profile_reviewed() is None
     assert drv.current_profile_reviewed() is None
@@ -4210,10 +5008,14 @@ def test_failed_manual_trailing_rewind_blocks_the_next_recapture(monkeypatch):
     drv._session_top_done = True
     calls = []
     profile = SimpleNamespace(photos=[b"captured"])
-    monkeypatch.setattr(drv, "_capture_current",
-                        lambda *_a, **_k: calls.append("capture") or profile)
-    monkeypatch.setattr(drv, "_scroll_to_top",
-                        lambda *_a, **_k: calls.append("trailing-rewind") or False)
+    monkeypatch.setattr(
+        drv, "_capture_current", lambda *_a, **_k: calls.append("capture") or profile
+    )
+    monkeypatch.setattr(
+        drv,
+        "_scroll_to_top",
+        lambda *_a, **_k: calls.append("trailing-rewind") or False,
+    )
 
     assert drv.current_profile() is None
     assert drv.current_profile() is None
@@ -4226,10 +5028,14 @@ def test_failed_split_recovery_blocks_an_immediate_second_rewind(monkeypatch):
     drv._session_top_done = True
     drv._current_capture_split = True
     rewinds = []
-    monkeypatch.setattr(drv, "_scroll_to_top",
-                        lambda *_a, **_k: rewinds.append("split-rewind") or False)
-    monkeypatch.setattr(drv, "_capture_current",
-                        lambda *_a, **_k: pytest.fail("spent split recovery must block recapture"))
+    monkeypatch.setattr(
+        drv, "_scroll_to_top", lambda *_a, **_k: rewinds.append("split-rewind") or False
+    )
+    monkeypatch.setattr(
+        drv,
+        "_capture_current",
+        lambda *_a, **_k: pytest.fail("spent split recovery must block recapture"),
+    )
 
     drv._recover_capture_split()
     assert drv.next_profile() is None
@@ -4243,8 +5049,11 @@ def test_actionable_capture_does_not_rewind_under_an_open_like_sheet(monkeypatch
     monkeypatch.setattr(drv, "_item_enumeration_blocker", lambda: "")
     monkeypatch.setattr(drv, "_confirm_enumeration_top", lambda: "top is unreadable")
     monkeypatch.setattr(drv, "_observe_like_sheet_visible", lambda _frame: True)
-    monkeypatch.setattr(drv, "_scroll_to_top",
-                        lambda *_a, **_k: pytest.fail("must not rewind under a like sheet"))
+    monkeypatch.setattr(
+        drv,
+        "_scroll_to_top",
+        lambda *_a, **_k: pytest.fail("must not rewind under a like sheet"),
+    )
 
     assert drv.current_profile() is None
 
@@ -4257,15 +5066,22 @@ def test_actionable_auto_capture_uses_the_same_pre_read_top_gate(monkeypatch):
     events = []
     top_answers = iter(["confirmed_not_top", ""])
     monkeypatch.setattr(drv, "_item_enumeration_blocker", lambda: "")
-    monkeypatch.setattr(drv, "_confirm_enumeration_top",
-                        lambda: events.append("top") or next(top_answers))
+    monkeypatch.setattr(
+        drv,
+        "_confirm_enumeration_top",
+        lambda: events.append("top") or next(top_answers),
+    )
     monkeypatch.setattr(drv, "_observe_like_sheet_visible", lambda _frame: False)
-    monkeypatch.setattr(drv, "_capture_entry_profile_evidence", lambda _frame: "deck_controls")
-    monkeypatch.setattr(drv, "_scroll_to_top",
-                        lambda *_a, **_k: events.append("rewind") or True)
+    monkeypatch.setattr(
+        drv, "_capture_entry_profile_evidence", lambda _frame: "deck_controls"
+    )
+    monkeypatch.setattr(
+        drv, "_scroll_to_top", lambda *_a, **_k: events.append("rewind") or True
+    )
     marker = object()
-    monkeypatch.setattr(drv, "_capture_current",
-                        lambda *_a, **_k: events.append("capture") or marker)
+    monkeypatch.setattr(
+        drv, "_capture_current", lambda *_a, **_k: events.append("capture") or marker
+    )
 
     assert drv.next_profile() is marker
     assert events == ["top", "rewind", "top", "capture"]
@@ -4278,32 +5094,49 @@ def test_auto_capture_entry_refusal_latches_a_worker_visible_block_reason(monkey
     drv._auto_session = True
     drv._current_capture_split = False
     monkeypatch.setattr(drv, "_item_enumeration_blocker", lambda: "")
-    monkeypatch.setattr(drv, "_capture_entry_profile_evidence", lambda _frame: "deck_controls")
-    monkeypatch.setattr(drv, "_confirm_enumeration_top",
-                        lambda: "confirmed_not_top: sticky profile header")
+    monkeypatch.setattr(
+        drv, "_capture_entry_profile_evidence", lambda _frame: "deck_controls"
+    )
+    monkeypatch.setattr(
+        drv,
+        "_confirm_enumeration_top",
+        lambda: "confirmed_not_top: sticky profile header",
+    )
     monkeypatch.setattr(drv, "_scroll_to_top", lambda *_a, **_k: False)
 
     assert drv.next_profile() is None
     assert "capture entry could not be proven" in (drv.blocked_reason() or "")
 
 
-def test_reviewed_actionable_capture_rewinds_before_building_its_item_anchor(monkeypatch):
+def test_reviewed_actionable_capture_rewinds_before_building_its_item_anchor(
+    monkeypatch,
+):
     """The reviewed bridge retains only an index anchored after the fresh top proof."""
     drv = _drv(FakeAdb([b"card"]))
     events = []
     top_answers = iter(["confirmed_not_top", ""])
-    monkeypatch.setattr(drv, "_ensure_session_top",
-                        lambda *_a, **_k: events.append("session-rewind") or True)
+    monkeypatch.setattr(
+        drv,
+        "_ensure_session_top",
+        lambda *_a, **_k: events.append("session-rewind") or True,
+    )
     monkeypatch.setattr(drv, "_item_enumeration_blocker", lambda: "")
-    monkeypatch.setattr(drv, "_confirm_enumeration_top",
-                        lambda: events.append("top") or next(top_answers))
+    monkeypatch.setattr(
+        drv,
+        "_confirm_enumeration_top",
+        lambda: events.append("top") or next(top_answers),
+    )
     monkeypatch.setattr(drv, "_observe_like_sheet_visible", lambda _frame: False)
-    monkeypatch.setattr(drv, "_capture_entry_profile_evidence", lambda _frame: "deck_controls")
-    monkeypatch.setattr(drv, "_scroll_to_top",
-                        lambda *_a, **_k: events.append("rewind") or True)
+    monkeypatch.setattr(
+        drv, "_capture_entry_profile_evidence", lambda _frame: "deck_controls"
+    )
+    monkeypatch.setattr(
+        drv, "_scroll_to_top", lambda *_a, **_k: events.append("rewind") or True
+    )
     marker = object()
-    monkeypatch.setattr(drv, "_capture_current",
-                        lambda *_a, **_k: events.append("capture") or marker)
+    monkeypatch.setattr(
+        drv, "_capture_current", lambda *_a, **_k: events.append("capture") or marker
+    )
 
     assert drv.current_profile_reviewed() is marker
     assert events == ["session-rewind", "top", "rewind", "top", "capture"]
@@ -4322,11 +5155,13 @@ def test_next_profile_does_not_scroll_to_top_itself():
     drv.identity_band = None
 
     drv.next_profile()
-    assert adb.swipes == 1               # the one-shot session-top pass, settled immediately
+    assert adb.swipes == 1  # the one-shot session-top pass, settled immediately
 
     swipes_after_first = adb.swipes
     drv.next_profile()
-    assert adb.swipes == swipes_after_first   # and never again for the rest of the session
+    assert (
+        adb.swipes == swipes_after_first
+    )  # and never again for the rest of the session
 
 
 # --- session-start scroll-top invariant ------------------------------------------
@@ -4334,6 +5169,7 @@ def test_next_profile_does_not_scroll_to_top_itself():
 # above), and open_session only foregrounds the app -- so without this pass, the NEXT run's
 # first capture starts mid-card and seeds the identity anchor from that person's sticky header
 # instead of the app's scroll-top chrome, silently killing layer 1 for the first card.
+
 
 def test_first_capture_of_a_session_confirms_the_card_is_at_the_top():
     adb = FakeAdb([b"a", b"b", b"c"])
@@ -4361,13 +5197,17 @@ def test_session_top_pass_never_touches_an_open_like_sheet():
 
 
 def test_session_top_pass_says_so_when_it_cannot_confirm_the_top(monkeypatch, capsys):
-    monkeypatch.setattr(HingeDriver, "_changed", lambda self, a, b: True)   # never settles
+    monkeypatch.setattr(
+        HingeDriver, "_changed", lambda self, a, b: True
+    )  # never settles
     drv = _drv(FakeAdb([b"a"]), scroll_captures=3)
-    monkeypatch.setattr(drv, "_capture_entry_profile_evidence", lambda _frame: "deck_controls")
+    monkeypatch.setattr(
+        drv, "_capture_entry_profile_evidence", lambda _frame: "deck_controls"
+    )
 
     drv._ensure_session_top()
 
-    assert drv._session_top_done is True          # one attempt per session, even on failure
+    assert drv._session_top_done is True  # one attempt per session, even on failure
     assert "could not confirm" in capsys.readouterr().out
 
 
@@ -4382,8 +5222,8 @@ def test_identity_never_manufactures_new_from_the_scroll_top_chrome_alone(monkey
     drv._identity_top_sig = b"chrome"
     drv._identity_sig = None
 
-    assert drv._identity_of(b"chrome")[0] == "top"        # positively the scroll-top chrome
-    assert drv._identity_of(b"anything-else")[0] == "unknown"   # NOT "new"
+    assert drv._identity_of(b"chrome")[0] == "top"  # positively the scroll-top chrome
+    assert drv._identity_of(b"anything-else")[0] == "unknown"  # NOT "new"
 
 
 # --- Stop honoured DURING a profile read (the ~85s stop-deaf window) -------------
@@ -4391,6 +5231,7 @@ def test_identity_never_manufactures_new_from_the_scroll_top_chrome_alone(monkey
 # completes the read (by scrolling a bunch) then stops." Before this, worker.py's only stop
 # check between one profile and the next ran AFTER current_profile() returned, so the whole
 # read (12 screencaps + 11 read-scrolls) plus the whole scroll-back-to-top ran regardless.
+
 
 def test_capture_abandons_the_read_as_soon_as_stop_is_requested(monkeypatch):
     # dwell_s=0 keeps the dwell instant while still exercising the in-dwell stop check.
@@ -4400,7 +5241,9 @@ def test_capture_abandons_the_read_as_soon_as_stop_is_requested(monkeypatch):
     # that draw to iteration 1 so the stop-during-pause check this test exists for is exercised
     # deterministically: iteration 1's pause is where the read must notice `_should_stop` BEFORE
     # issuing iteration 1's scroll, exactly like iteration 1's dwell always did pre-2026-08-24.
-    monkeypatch.setattr(HingeDriver, "_plan_read_pause_iterations", lambda self, _n: {1})
+    monkeypatch.setattr(
+        HingeDriver, "_plan_read_pause_iterations", lambda self, _n: {1}
+    )
     adb = FakeAdb([b"a", b"b", b"c", b"d", b"e"])
     drv = _drv(adb, scroll_captures=5, dwell_s=0)
 
@@ -4408,9 +5251,13 @@ def test_capture_abandons_the_read_as_soon_as_stop_is_requested(monkeypatch):
     def _should_stop():
         return len(drv._current_sigs) >= 2
 
-    assert drv._capture_current(_should_stop) is None      # partial read is discarded, never returned
-    assert adb.scrolls == 1                                # only the one scroll already issued
-    assert drv._current_sigs and len(drv._current_sigs) == 2   # it really did get two frames in
+    assert (
+        drv._capture_current(_should_stop) is None
+    )  # partial read is discarded, never returned
+    assert adb.scrolls == 1  # only the one scroll already issued
+    assert (
+        drv._current_sigs and len(drv._current_sigs) == 2
+    )  # it really did get two frames in
 
 
 def test_capture_without_a_stop_callable_is_byte_for_byte_the_old_behaviour():
@@ -4423,24 +5270,34 @@ def test_capture_without_a_stop_callable_is_byte_for_byte_the_old_behaviour():
     assert adb.scrolls == 2
 
 
-def test_stop_during_capture_leaves_the_scroll_ledger_intact_for_a_later_unwind(monkeypatch):
+def test_stop_during_capture_leaves_the_scroll_ledger_intact_for_a_later_unwind(
+    monkeypatch,
+):
     # The ledger is the driver's only record of how far down the card actually is. An abandoned
     # read must not clear it, or a later _scroll_to_top (from a restarted session, like(), or
     # _locate_target_heart's fallback) would think it was already at the top and tap the wrong item.
     # Pin the read's one randomized pause to iteration 1, same reasoning as
     # test_capture_abandons_the_read_as_soon_as_stop_is_requested just above.
-    monkeypatch.setattr(HingeDriver, "_plan_read_pause_iterations", lambda self, _n: {1})
+    monkeypatch.setattr(
+        HingeDriver, "_plan_read_pause_iterations", lambda self, _n: {1}
+    )
     adb = FakeAdb([b"a", b"b", b"c", b"d"])
     drv = _drv(adb, scroll_captures=4, dwell_s=0)
 
     assert drv._capture_current(lambda: len(drv._current_sigs) >= 2) is None
-    assert drv._capture_scroll_ledger                       # outstanding scrolls still recorded
+    assert drv._capture_scroll_ledger  # outstanding scrolls still recorded
     assert drv._capture_scrolls == len(drv._capture_scroll_ledger) == 1
 
 
-def test_stop_during_scroll_to_top_stops_swiping_without_claiming_it_reached_the_top(monkeypatch):
-    monkeypatch.setattr(HingeDriver, "_changed", lambda self, a, b: True)   # never settles on its own
-    monkeypatch.setattr(hinge, "human_delay", lambda seconds, **_k: 0.0)    # instant settle waits
+def test_stop_during_scroll_to_top_stops_swiping_without_claiming_it_reached_the_top(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        HingeDriver, "_changed", lambda self, a, b: True
+    )  # never settles on its own
+    monkeypatch.setattr(
+        hinge, "human_delay", lambda seconds, **_k: 0.0
+    )  # instant settle waits
     drv = _drv(FakeAdb([b"stable"]))
     drv._capture_scroll_ledger = [(0.55, 0.5)] * 6
     drv._capture_scrolls = 6
@@ -4449,8 +5306,8 @@ def test_stop_during_scroll_to_top_stops_swiping_without_claiming_it_reached_the
 
     drv._scroll_to_top(lambda: len(swipes) >= 2)
 
-    assert len(swipes) == 2                                 # stopped early instead of all 6
-    assert drv._capture_scroll_ledger                       # and did NOT claim to be back at the top
+    assert len(swipes) == 2  # stopped early instead of all 6
+    assert drv._capture_scroll_ledger  # and did NOT claim to be back at the top
     assert drv._capture_scrolls == 6
 
 
@@ -4462,13 +5319,14 @@ def test_current_profile_still_unwinds_fully_when_no_stop_is_requested():
     drv.identity_band = None
     drv.current_profile(should_stop=lambda: False)
     assert adb.scrolls == 2
-    assert adb.swipes >= 1                                  # scroll_to_top still ran
+    assert adb.swipes >= 1  # scroll_to_top still ran
 
 
 def test_android_driver_declares_interruptible_capture_and_the_abc_defaults_to_off():
     # worker.py only passes should_stop to a driver that advertises the capability, so the flag
     # must be True exactly where the code honours it -- a flag that lies is worse than no flag.
     from operation_love.drivers.base import DatingAppDriver
+
     assert DatingAppDriver.supports_interruptible_capture is False
     assert HingeDriver.supports_interruptible_capture is True
 
@@ -4476,6 +5334,7 @@ def test_android_driver_declares_interruptible_capture_and_the_abc_defaults_to_o
 # --- Phase 4: touch transport selection (UHID preferred, adb input fallback) -----
 class _HidAdb(FakeAdb):
     """A FakeAdb whose `test -e /system/bin/hid` probe says hid IS present."""
+
     def shell(self, command="", **_):
         super().shell(command)
         return "yes" if "system/bin/hid" in command else ""
@@ -4483,6 +5342,7 @@ class _HidAdb(FakeAdb):
 
 def test_make_touch_prefers_uhid_when_hid_present():
     from operation_love.drivers.uhid import UhidTouch
+
     drv = HingeDriver(_Cfg())
     drv._adb = _HidAdb([b"x"])
     assert isinstance(drv._make_touch(), UhidTouch)
@@ -4495,7 +5355,7 @@ def test_make_touch_refuses_to_downgrade_when_uhid_unavailable():
     # weaker transport -- a silent downgrade could run for an unknown length of time with
     # no error, on the account we actually care about. Only an explicit
     # touch_backend="adb" (see test_touch_backend_adb_forces_input_transport) accepts it.
-    adb = FakeAdb([b"x"])                 # shell returns "" -> no hid -> UhidUnavailable
+    adb = FakeAdb([b"x"])  # shell returns "" -> no hid -> UhidUnavailable
     drv = HingeDriver(_Cfg())
     drv._adb = adb
     with pytest.raises(DriverClosed):
@@ -4503,14 +5363,14 @@ def test_make_touch_refuses_to_downgrade_when_uhid_unavailable():
 
 
 def test_touch_backend_adb_forces_input_transport():
-    adb = _HidAdb([b"x"])                 # hid present, but config forces adb
+    adb = _HidAdb([b"x"])  # hid present, but config forces adb
     drv = HingeDriver(type("C", (), {"apps": {"hinge": {"touch_backend": "adb"}}}))
     drv._adb = adb
     assert drv._make_touch() is adb
 
 
 def test_touch_backend_uhid_required_raises_when_unavailable():
-    adb = FakeAdb([b"x"])                 # no hid
+    adb = FakeAdb([b"x"])  # no hid
     drv = HingeDriver(type("C", (), {"apps": {"hinge": {"touch_backend": "uhid"}}}))
     drv._adb = adb
     with pytest.raises(DriverClosed):
@@ -4579,7 +5439,9 @@ class _MinimalFakePersistentPopen:
         return self
 
 
-def test_make_touch_selects_persistent_uhid_when_backend_is_uhid_persistent(monkeypatch):
+def test_make_touch_selects_persistent_uhid_when_backend_is_uhid_persistent(
+    monkeypatch,
+):
     from operation_love.drivers import uhid as uhid_mod
     from operation_love.drivers.uhid import PersistentUhidTouch, UhidTouch
 
@@ -4587,15 +5449,21 @@ def test_make_touch_selects_persistent_uhid_when_backend_is_uhid_persistent(monk
     monkeypatch.setattr(uhid_mod.time, "sleep", lambda *_a, **_k: None)
 
     adb = _HidAdb([b"x"])
-    adb.adb_path = "adb"    # PersistentUhidTouch.open() reads these directly off self.adb,
-    adb.serial = "pixel"    # the same convention Adb._run already uses (see adb.py)
-    drv = HingeDriver(type("C", (), {"apps": {"hinge": {"touch_backend": "uhid_persistent"}}}))
+    adb.adb_path = (
+        "adb"  # PersistentUhidTouch.open() reads these directly off self.adb,
+    )
+    adb.serial = "pixel"  # the same convention Adb._run already uses (see adb.py)
+    drv = HingeDriver(
+        type("C", (), {"apps": {"hinge": {"touch_backend": "uhid_persistent"}}})
+    )
     drv._adb = adb
 
     touch = drv._make_touch()
 
     assert isinstance(touch, PersistentUhidTouch)
-    assert not isinstance(touch, UhidTouch)   # a genuinely different class, not a subclass
+    assert not isinstance(
+        touch, UhidTouch
+    )  # a genuinely different class, not a subclass
 
 
 def test_touch_backend_uhid_persistent_required_raises_when_unavailable(monkeypatch):
@@ -4605,10 +5473,14 @@ def test_touch_backend_uhid_persistent_required_raises_when_unavailable(monkeypa
         raise AssertionError("no real adb process should be spawned when hid is absent")
 
     monkeypatch.setattr(uhid_mod.subprocess, "Popen", _must_not_spawn)
-    adb = FakeAdb([b"x"])                 # no hid -> UhidUnavailable, same probe as `uhid`
-    drv = HingeDriver(type("C", (), {"apps": {"hinge": {"touch_backend": "uhid_persistent"}}}))
+    adb = FakeAdb([b"x"])  # no hid -> UhidUnavailable, same probe as `uhid`
+    drv = HingeDriver(
+        type("C", (), {"apps": {"hinge": {"touch_backend": "uhid_persistent"}}})
+    )
     drv._adb = adb
-    with pytest.raises(DriverClosed):     # fails loudly -- no silent fallback to UhidTouch/adb
+    with pytest.raises(
+        DriverClosed
+    ):  # fails loudly -- no silent fallback to UhidTouch/adb
         drv._make_touch()
 
 
@@ -4621,7 +5493,10 @@ def test_touch_backend_auto_and_uhid_never_select_persistent_uhid(monkeypatch):
 
     monkeypatch.setattr(uhid_mod.subprocess, "Popen", _MinimalFakePersistentPopen)
 
-    for backend_cfg in ({"serial": "pixel"}, {"serial": "pixel", "touch_backend": "uhid"}):
+    for backend_cfg in (
+        {"serial": "pixel"},
+        {"serial": "pixel", "touch_backend": "uhid"},
+    ):
         adb = _HidAdb([b"x"])
         drv = HingeDriver(type("C", (), {"apps": {"hinge": backend_cfg}}))
         drv._adb = adb
@@ -4634,12 +5509,13 @@ def _modal_frame():
     """A decodable frame containing the 'Send Like anyway' modal text (the Rose upsell)."""
     import cv2
     import numpy as np
+
     rng = np.random.default_rng(2)
     canvas = rng.integers(60, 200, size=(2400, 1080), dtype=np.uint8)
     t = hinge._load_template("hinge_send_like_anyway.png")
     th, tw = t.shape
     cx, cy = 420, 2197
-    canvas[cy - th // 2: cy - th // 2 + th, cx - tw // 2: cx - tw // 2 + tw] = t
+    canvas[cy - th // 2 : cy - th // 2 + th, cx - tw // 2 : cx - tw // 2 + tw] = t
     ok, buf = cv2.imencode(".png", canvas)
     return buf.tobytes()
 
@@ -4649,11 +5525,11 @@ def test_handle_rose_upsell_taps_send_like_anyway_when_modal_present():
     adb = FakeAdb([_modal_frame()])
     drv = _drv(adb)
     assert drv._handle_rose_upsell() is True
-    assert adb.taps == [(420, 2197)]          # "Send Like anyway", not the Rose button above it
+    assert adb.taps == [(420, 2197)]  # "Send Like anyway", not the Rose button above it
 
 
 def test_handle_rose_upsell_noop_when_no_modal():
-    adb = FakeAdb([_action_frame()])          # no Rose modal present
+    adb = FakeAdb([_action_frame()])  # no Rose modal present
     drv = _drv(adb)
     assert drv._handle_rose_upsell() is False
     assert adb.taps == []
@@ -4667,6 +5543,7 @@ def _like_flow_frame_with_modal(heart_xy=(937, 1600), modal_xy=(420, 2197)):
     end, unlike the old vision-miss-then-fallback shortcut this replaces."""
     import cv2
     import numpy as np
+
     canvas = np.full((2400, 1080), 249, dtype=np.uint8)
     _paint_inline_composer(canvas)
     for name, (cx, cy) in (
@@ -4675,7 +5552,7 @@ def _like_flow_frame_with_modal(heart_xy=(937, 1600), modal_xy=(420, 2197)):
     ):
         t = hinge._load_template(name)
         th, tw = t.shape
-        canvas[cy - th // 2: cy - th // 2 + th, cx - tw // 2: cx - tw // 2 + tw] = t
+        canvas[cy - th // 2 : cy - th // 2 + th, cx - tw // 2 : cx - tw // 2 + tw] = t
     ok, buf = cv2.imencode(".png", canvas)
     return buf.tobytes()
 
@@ -4686,7 +5563,7 @@ def test_like_dismisses_rose_upsell_modal():
     # left to lean on), so the frame must actually carry the glyph.
     adb = FakeAdb([_like_flow_frame_with_modal()])
     _drv(adb).like()
-    assert (420, 2197) in adb.taps            # the normal-like confirmation was tapped
+    assert (420, 2197) in adb.taps  # the normal-like confirmation was tapped
 
 
 # --- opener item targeting: reach the RIGHT item, or STOP -----------------------------------
@@ -4703,13 +5580,19 @@ def test_locate_target_heart_navigates_to_referenced_item(monkeypatch):
     answers with the chosen item's heart or raises, so there is no state left for an
     "is this actually the right one" flag to describe."""
     import numpy as np
+
     sig0, sig1 = np.zeros((24, 24)), np.ones((24, 24)) * 50
     adb = FakeAdb([b"f0", b"f1"])
     drv = _drv(adb)
     drv._current_sigs = [sig0, sig1]
-    monkeypatch.setattr(hinge, "_downsample", lambda f, size=24: sig0 if f == b"f0" else sig1)
-    monkeypatch.setattr(hinge, "_match_glyph",
-                        lambda frame, t, side="right", **k: [(937, 1500)] if frame == b"f1" else [])
+    monkeypatch.setattr(
+        hinge, "_downsample", lambda f, size=24: sig0 if f == b"f0" else sig1
+    )
+    monkeypatch.setattr(
+        hinge,
+        "_match_glyph",
+        lambda frame, t, side="right", **k: [(937, 1500)] if frame == b"f1" else [],
+    )
     # scrolled to frame 1 and took its heart
     assert drv._locate_target_heart(1) == (937, 1500)
 
@@ -4739,22 +5622,26 @@ def test_locate_target_heart_none_taps_the_topmost_heart_because_nothing_was_cho
 
 
 def test_locate_target_heart_none_is_logged_as_its_own_reason(tmp_path):
-    """"we were never told which item" and "we aimed at item N and could not find it" are
+    """ "we were never told which item" and "we aimed at item N and could not find it" are
     different bugs in different layers, so a debug log must not render them the same. Recorded
     even though there ARE sigs to search -- unlike every other branch, this one is not a search
     that failed, and unlike every other branch it is not a stop either."""
     from operation_love.drivers.debuglog import HingeDebugLog
     import json
+
     drv = _drv(FakeAdb([_action_frame()]))
     drv._dbg = HingeDebugLog(str(tmp_path), run_id="r")
     drv._current_sigs = [object(), object()]
 
     assert drv._locate_target_heart(None) == (937, 1600)
 
-    recs = [json.loads(ln) for ln in (tmp_path / "r" / "actions.jsonl").read_text().splitlines()]
+    recs = [
+        json.loads(ln)
+        for ln in (tmp_path / "r" / "actions.jsonl").read_text().splitlines()
+    ]
     entries = [r for r in recs if r["action"] == "locate_target_heart"]
     assert len(entries) == 1
-    assert entries[0]["outcome"] == "no_item_named"      # not "stop": nothing was aimed at
+    assert entries[0]["outcome"] == "no_item_named"  # not "stop": nothing was aimed at
     assert entries[0]["reason"] == "no_target_index"
     assert entries[0]["item_index"] is None
 
@@ -4765,11 +5652,11 @@ def test_capture_keeps_sigs_index_aligned_with_photos():
     # capture-order space is no longer what the opener answers in -- since 2026-08-12 the model
     # returns a 1-based index over numbered ITEMS, ops/OPENER-REDESIGN.md 5.1/5.7 -- but the
     # alignment pinned here is a property of the driver alone and holds either way.)
-    adb = FakeAdb([_png(10), b"BADFRAME", _png(20), _png(20)])   # f3 dups f2 -> stop
+    adb = FakeAdb([_png(10), b"BADFRAME", _png(20), _png(20)])  # f3 dups f2 -> stop
     drv = _drv(adb)
     prof = drv._capture_current()
     assert len(drv._current_sigs) == len(prof.photos)
-    assert drv._current_sigs[1] is None                  # the undecodable frame's aligned slot
+    assert drv._current_sigs[1] is None  # the undecodable frame's aligned slot
 
 
 def test_locate_target_heart_stops_rather_than_substitute_on_an_undecodable_sig():
@@ -4777,7 +5664,7 @@ def test_locate_target_heart_stops_rather_than_substitute_on_an_undecodable_sig(
     on_target=False. It now stops: the opener was written about item 1, and item 0 is a different
     item, which is the one thing that is never an option."""
     drv = _drv(FakeAdb([_action_frame()]))
-    drv._current_sigs = [object(), None, object()]       # target index 1 is undecodable
+    drv._current_sigs = [object(), None, object()]  # target index 1 is undecodable
     with pytest.raises(hinge.HingeTargetingError, match="could not be decoded"):
         drv._locate_target_heart(1)
 
@@ -4787,7 +5674,7 @@ def test_locate_target_heart_stops_rather_than_substitute_on_an_out_of_range_ind
     profile entirely. Also a stop, for the same reason -- there is no item here to land on, and
     landing on a different one is not a degraded success."""
     drv = _drv(FakeAdb([_action_frame()]))
-    drv._current_sigs = [object(), object()]              # only indices 0..1 exist
+    drv._current_sigs = [object(), object()]  # only indices 0..1 exist
     with pytest.raises(hinge.HingeTargetingError, match="outside the 2 frame"):
         drv._locate_target_heart(5)
 
@@ -4798,7 +5685,9 @@ def test_locate_target_heart_stops_rather_than_substitute_on_a_negative_index():
     resolve into a confident tap on card 1."""
     drv = _drv(FakeAdb([_action_frame()]))
     drv._current_sigs = [object(), object()]
-    with pytest.raises(hinge.HingeTargetingError, match="not a valid capture-order index"):
+    with pytest.raises(
+        hinge.HingeTargetingError, match="not a valid capture-order index"
+    ):
         drv._locate_target_heart(-1)
 
 
@@ -4818,6 +5707,7 @@ def test_locate_target_heart_retries_the_same_item_before_it_stops(monkeypatch):
     one attempt's worth would be at most `min(limit + 1, item_index + 3)`, and two attempts is
     what actually happens."""
     import numpy as np
+
     never_matches = np.ones((24, 24)) * 250
     monkeypatch.setattr(hinge, "_downsample", lambda frame, size=24: np.zeros((24, 24)))
     adb = FakeAdb([_action_frame()])
@@ -4829,8 +5719,8 @@ def test_locate_target_heart_retries_the_same_item_before_it_stops(monkeypatch):
 
     per_attempt = min(drv._profile_capture_limit + 1, 1 + 3)
     assert adb.scrolls == per_attempt * hinge._TARGET_HEART_ATTEMPTS
-    assert adb.swipes >= 1        # the retry re-established the top before searching again
-    assert adb.taps == []         # locating never taps, and a stop least of all
+    assert adb.swipes >= 1  # the retry re-established the top before searching again
+    assert adb.taps == []  # locating never taps, and a stop least of all
 
 
 def test_locate_target_heart_returns_the_heart_when_the_retry_finds_it(monkeypatch):
@@ -4838,6 +5728,7 @@ def test_locate_target_heart_returns_the_heart_when_the_retry_finds_it(monkeypat
     a success, not a stop. This is the case the retry exists for (HINGE-05's measured cause: a
     real-device scroll can over/undershoot the intended frame), and it must not cost a run."""
     import numpy as np
+
     target = np.ones((24, 24)) * 50
     seen = {"n": 0}
 
@@ -4848,22 +5739,27 @@ def test_locate_target_heart_returns_the_heart_when_the_retry_finds_it(monkeypat
         return target if seen["n"] > 4 else np.zeros((24, 24))
 
     monkeypatch.setattr(hinge, "_downsample", _ds)
-    monkeypatch.setattr(hinge, "_match_glyph", lambda frame, t, side="right", **k: [(937, 1500)])
+    monkeypatch.setattr(
+        hinge, "_match_glyph", lambda frame, t, side="right", **k: [(937, 1500)]
+    )
     adb = FakeAdb([_action_frame()])
     drv = _drv(adb, scroll_captures=8)
     drv._current_sigs = [np.zeros((24, 24)), target]
 
     assert drv._locate_target_heart(1) == (937, 1500)
-    assert hinge._TARGET_HEART_ATTEMPTS >= 2      # or the retry above never ran at all
+    assert hinge._TARGET_HEART_ATTEMPTS >= 2  # or the retry above never ran at all
 
 
-def test_locate_target_heart_records_the_stop_when_the_target_is_never_found(monkeypatch, tmp_path):
+def test_locate_target_heart_records_the_stop_when_the_target_is_never_found(
+    monkeypatch, tmp_path
+):
     """HINGE-05's debug record survives the change from fallback to stop, and says which of the
     two search failures it was: the frame never matched, versus it matched and carried no heart.
     Every attempt is recorded, and only the last one is an outcome of "stop"."""
     from operation_love.drivers.debuglog import HingeDebugLog
     import json
     import numpy as np
+
     never_matches = np.ones((24, 24)) * 250
     monkeypatch.setattr(hinge, "_downsample", lambda frame, size=24: np.zeros((24, 24)))
     adb = FakeAdb([_action_frame()])
@@ -4871,34 +5767,50 @@ def test_locate_target_heart_records_the_stop_when_the_target_is_never_found(mon
     drv._dbg = HingeDebugLog(str(tmp_path), run_id="r")
     drv._current_sigs = [np.zeros((24, 24)), never_matches]
 
-    with pytest.raises(hinge.HingeTargetingError, match="none of the frames read back matched"):
+    with pytest.raises(
+        hinge.HingeTargetingError, match="none of the frames read back matched"
+    ):
         drv._locate_target_heart(1)
 
-    recs = [json.loads(ln) for ln in (tmp_path / "r" / "actions.jsonl").read_text().splitlines()]
+    recs = [
+        json.loads(ln)
+        for ln in (tmp_path / "r" / "actions.jsonl").read_text().splitlines()
+    ]
     entries = [r for r in recs if r["action"] == "locate_target_heart"]
     assert len(entries) == hinge._TARGET_HEART_ATTEMPTS
     assert [e["outcome"] for e in entries] == ["retry", "stop"]
     assert {e["reason"] for e in entries} == {"target_frame_not_found"}
 
 
-def test_locate_target_heart_records_the_stop_when_the_matched_frame_has_no_heart(monkeypatch, tmp_path):
+def test_locate_target_heart_records_the_stop_when_the_matched_frame_has_no_heart(
+    monkeypatch, tmp_path
+):
     """The other search failure: the frame IS the one the target was captured on, but no like
     glyph is visible on it. Distinguished in both the debug record and the raised message, because
     "we never found the card" and "we found it and it has no heart" are different bugs."""
     from operation_love.drivers.debuglog import HingeDebugLog
     import json
     import numpy as np
+
     monkeypatch.setattr(hinge, "_downsample", lambda frame, size=24: np.zeros((24, 24)))
-    monkeypatch.setattr(hinge, "_match_glyph", lambda *a, **k: [])     # nothing on the frame
+    monkeypatch.setattr(
+        hinge, "_match_glyph", lambda *a, **k: []
+    )  # nothing on the frame
     adb = FakeAdb([_action_frame()])
     drv = _drv(adb, scroll_captures=8)
     drv._dbg = HingeDebugLog(str(tmp_path), run_id="r")
-    drv._current_sigs = [np.zeros((24, 24)), np.zeros((24, 24))]       # target matches at once
+    drv._current_sigs = [
+        np.zeros((24, 24)),
+        np.zeros((24, 24)),
+    ]  # target matches at once
 
     with pytest.raises(hinge.HingeTargetingError, match="no like heart was visible"):
         drv._locate_target_heart(1)
 
-    recs = [json.loads(ln) for ln in (tmp_path / "r" / "actions.jsonl").read_text().splitlines()]
+    recs = [
+        json.loads(ln)
+        for ln in (tmp_path / "r" / "actions.jsonl").read_text().splitlines()
+    ]
     entries = [r for r in recs if r["action"] == "locate_target_heart"]
     assert {e["reason"] for e in entries} == {"heart_not_visible_on_matched_frame"}
 
@@ -4910,6 +5822,7 @@ def test_locate_target_heart_bounds_search_when_target_not_found(monkeypatch):
     # close to item_index (how far down from the top the target should be), so the bound holds
     # per attempt and the retry multiplies a small number rather than a full sweep.
     import numpy as np
+
     never_matches = np.ones((24, 24)) * 250
     monkeypatch.setattr(hinge, "_downsample", lambda frame, size=24: np.zeros((24, 24)))
     adb = FakeAdb([_action_frame()])
@@ -4932,6 +5845,7 @@ def test_a_targeting_stop_is_the_driver_agnostic_type_the_worker_catches():
     of its prose."""
     from operation_love.drivers.base import ItemTargetingError
     from operation_love.drivers.hinge import HingeActionError
+
     drv = _drv(FakeAdb([_action_frame()]))
     drv._current_sigs = [object(), object()]
 
@@ -4942,7 +5856,7 @@ def test_a_targeting_stop_is_the_driver_agnostic_type_the_worker_catches():
     assert isinstance(exc.value, HingeActionError)
     assert exc.value.stage == "navigate"
     assert exc.value.intended == 5
-    assert exc.value.actual is None          # we never got far enough to see what we would hit
+    assert exc.value.actual is None  # we never got far enough to see what we would hit
     assert exc.value.index_space == "capture_order"
 
 
@@ -4965,12 +5879,12 @@ def test_like_stops_and_sends_nothing_when_targeting_cannot_reach_the_item():
     it afterwards. Now: no tap, no text, no Send, and the run stops."""
     adb = FakeAdb([_action_frame()])
     drv = _drv(adb)
-    drv._current_sigs = [object(), object()]        # item 5 is outside the capture
+    drv._current_sigs = [object(), object()]  # item 5 is outside the capture
 
     with pytest.raises(hinge.HingeTargetingError, match="model item index"):
         drv.like(opener="original opener about a different item", item_index=5)
 
-    assert adb.taps == []       # the heart was never tapped, so no sheet and no like
+    assert adb.taps == []  # the heart was never tapped, so no sheet and no like
     assert adb.texts == []
 
 
@@ -4986,7 +5900,7 @@ def test_like_refuses_an_opener_with_no_item_index_at_all_before_touching_the_sc
         _drv(adb).like(opener="original opener about an unidentified item")
 
     assert adb.taps == [] and adb.texts == []
-    assert adb.scrolls == 0 and adb.swipes == 0     # not even the scroll-to-top happened
+    assert adb.scrolls == 0 and adb.swipes == 0  # not even the scroll-to-top happened
 
 
 def test_like_with_no_opener_and_no_item_still_likes():
@@ -4998,7 +5912,7 @@ def test_like_with_no_opener_and_no_item_still_likes():
     _drv(adb).like()
 
     assert adb.texts == []
-    assert (937, 1600) in adb.taps                  # the heart was tapped
+    assert (937, 1600) in adb.taps  # the heart was tapped
 
 
 def test_like_no_longer_accepts_an_anchored_opener_callback():
@@ -5009,26 +5923,37 @@ def test_like_no_longer_accepts_an_anchored_opener_callback():
     adb = FakeAdb([_action_frame()])
 
     with pytest.raises(TypeError):
-        _drv(adb).like(opener="x", item_index=0, anchored_opener=lambda anchor: "repaired")
+        _drv(adb).like(
+            opener="x", item_index=0, anchored_opener=lambda anchor: "repaired"
+        )
+
+
 @pytest.mark.parametrize(
     ("sheet_visible", "modal_visible", "message"),
     [
         (True, False, "like did not complete — the like composer is still open"),
         (False, True, "like did not complete — the like upsell modal is still open"),
-        (True, True,
-         "like did not complete — the like composer and upsell modal are still open"),
+        (
+            True,
+            True,
+            "like did not complete — the like composer and upsell modal are still open",
+        ),
     ],
 )
 def test_verify_like_landed_names_the_open_blocker(
-        monkeypatch, sheet_visible, modal_visible, message):
+    monkeypatch, sheet_visible, modal_visible, message
+):
     """The terminal diagnostic names the concrete post-send UI still blocking progress."""
     from operation_love.drivers.hinge import HingeActionError
+
     drv = _drv(FakeAdb([b"f"]), halt_on_error=True)
     monkeypatch.setattr(drv, "_deck_blocked_reason", lambda _frame: None)
-    monkeypatch.setattr(drv, "_observe_like_sheet_visible",
-                        lambda _frame: sheet_visible)
-    monkeypatch.setattr(hinge, "_match_glyph",
-                        lambda *a, **k: [(1, 1)] if modal_visible else [])
+    monkeypatch.setattr(
+        drv, "_observe_like_sheet_visible", lambda _frame: sheet_visible
+    )
+    monkeypatch.setattr(
+        hinge, "_match_glyph", lambda *a, **k: [(1, 1)] if modal_visible else []
+    )
 
     with pytest.raises(HingeActionError) as exc:
         drv._verify_like_landed(b"before")
@@ -5038,16 +5963,17 @@ def test_verify_like_landed_names_the_open_blocker(
 
 def test_verify_like_landed_ok_when_closed_and_advanced(monkeypatch):
     drv = _drv(FakeAdb([b"after"]), halt_on_error=True)
-    monkeypatch.setattr(hinge, "_match_glyph", lambda *a, **k: [])         # no sheet/modal
-    monkeypatch.setattr(hinge, "_split_diff", lambda a, b: (50.0, 50.0))   # advanced
-    drv._verify_like_landed(b"before")                                     # no raise
+    monkeypatch.setattr(hinge, "_match_glyph", lambda *a, **k: [])  # no sheet/modal
+    monkeypatch.setattr(hinge, "_split_diff", lambda a, b: (50.0, 50.0))  # advanced
+    drv._verify_like_landed(b"before")  # no raise
 
 
 def test_verify_like_landed_raises_when_screen_unchanged(monkeypatch):
     from operation_love.drivers.hinge import HingeActionError
+
     drv = _drv(FakeAdb([b"same"]), halt_on_error=True)
-    monkeypatch.setattr(hinge, "_match_glyph", lambda *a, **k: [])         # no sheet/modal
-    monkeypatch.setattr(hinge, "_split_diff", lambda a, b: (0.0, 0.0))     # never advanced
+    monkeypatch.setattr(hinge, "_match_glyph", lambda *a, **k: [])  # no sheet/modal
+    monkeypatch.setattr(hinge, "_split_diff", lambda a, b: (0.0, 0.0))  # never advanced
     with pytest.raises(HingeActionError):
         drv._verify_like_landed(b"before")
 
@@ -5062,12 +5988,14 @@ def test_verify_like_landed_dismisses_late_animating_rose_modal(monkeypatch):
     # Give the matcher logical role names instead of depending on its global invocation count.
     # `_verify_like_landed` deliberately probes paywall before the sheet/modal glyphs now; that
     # extra read-only probe must not change when the Rose itself arrives.
-    drv = _drv(FakeAdb([b"before", b"before", b"after"], advance_on_screencap=True),
-               halt_on_error=True)
+    drv = _drv(
+        FakeAdb([b"before", b"before", b"after"], advance_on_screencap=True),
+        halt_on_error=True,
+    )
     monkeypatch.setattr(drv, "_template", lambda role: role)
 
     def fake_match(frame, template, side="any", threshold=0.6):
-        if template != "upsell_dismiss":             # paywall + sheet are absent throughout
+        if template != "upsell_dismiss":  # paywall + sheet are absent throughout
             return []
         calls["modal"] += 1
         # Iteration 1: not yet animated; iteration 2: up and dismissed; iteration 3: gone.
@@ -5076,10 +6004,12 @@ def test_verify_like_landed_dismisses_late_animating_rose_modal(monkeypatch):
         return []
 
     monkeypatch.setattr(hinge, "_match_glyph", fake_match)
-    monkeypatch.setattr(hinge, "_split_diff", lambda a, b: (0.0, 0.0) if a == b else (50.0, 50.0))
+    monkeypatch.setattr(
+        hinge, "_split_diff", lambda a, b: (0.0, 0.0) if a == b else (50.0, 50.0)
+    )
 
-    drv._verify_like_landed(b"before")            # must NOT raise
-    assert drv._touch.taps == [(5, 5)]             # dismissed the late modal itself, never a Rose
+    drv._verify_like_landed(b"before")  # must NOT raise
+    assert drv._touch.taps == [(5, 5)]  # dismissed the late modal itself, never a Rose
 
 
 def test_snap_retries_once_past_transient_failure():
@@ -5097,7 +6027,7 @@ def test_snap_retries_once_past_transient_failure():
             return super().screencap()
 
     drv = _drv(Flaky([b"ok"]), halt_on_error=True)
-    assert drv._snap() == b"ok"                           # retried past the transient AdbError
+    assert drv._snap() == b"ok"  # retried past the transient AdbError
 
 
 def test_snap_propagates_driver_closed():
@@ -5135,12 +6065,14 @@ def test_snap_returns_none_after_two_failures_when_halt_on_error_false():
     # debug_log=True keeps _snap() from short-circuiting; halt_on_error=False means a
     # flaky screencap here is debug-only best-effort and must not halt the run.
     drv = _drv(Wedged([b"x"]), halt_on_error=False, debug_log=True)
-    drv._dbg = object()   # any non-None sentinel; _snap only checks "is None"
+    drv._dbg = object()  # any non-None sentinel; _snap only checks "is None"
     assert drv._snap() is None
 
 
 def test_retry_until_default_bool_predicate_matches_existing_callers():
-    calls = iter([None, (0, 0)])   # a falsy-looking-but-later-truthy sequence: None then a tuple
+    calls = iter(
+        [None, (0, 0)]
+    )  # a falsy-looking-but-later-truthy sequence: None then a tuple
     assert hinge._retry_until(lambda: next(calls), tries=3, delay_s=0) == (0, 0)
 
 
@@ -5149,8 +6081,9 @@ def test_retry_until_custom_predicate_accepts_a_falsy_found_result():
     # would be silently retried away by the default `bool` predicate; an explicit
     # is_found predicate is exactly the escape hatch that prevents that.
     calls = iter([0])
-    result = hinge._retry_until(lambda: next(calls), tries=3, delay_s=0,
-                                is_found=lambda r: r is not None)
+    result = hinge._retry_until(
+        lambda: next(calls), tries=3, delay_s=0, is_found=lambda r: r is not None
+    )
     assert result == 0
 
 
@@ -5165,38 +6098,46 @@ def test_retry_until_default_predicate_would_have_missed_a_falsy_found_result():
 # --- debug logging + halt-on-unexpected --------------------------------
 def test_verify_progress_raises_when_screen_unchanged():
     from operation_love.drivers.hinge import HingeActionError
+
     drv = _drv(FakeAdb([b"same"]), halt_on_error=True)
     with pytest.raises(HingeActionError):
-        drv._verify_progress(b"same", "dislike")          # before == after -> stuck -> raise
+        drv._verify_progress(b"same", "dislike")  # before == after -> stuck -> raise
 
 
 def test_verify_progress_ok_when_screen_changes():
     drv = _drv(FakeAdb([b"after"]), halt_on_error=True)
-    drv._verify_progress(b"before", "dislike")            # before != after -> changed -> no raise
+    drv._verify_progress(b"before", "dislike")  # before != after -> changed -> no raise
 
 
 def test_verify_progress_skipped_when_halt_disabled():
-    drv = _drv(FakeAdb([b"same"]))                        # halt_on_error False -> never raises
+    drv = _drv(FakeAdb([b"same"]))  # halt_on_error False -> never raises
     drv._verify_progress(b"same", "dislike")
 
 
 def test_snapshot_failure_writes_error_record(tmp_path):
     from operation_love.drivers.debuglog import HingeDebugLog
+
     drv = _drv(FakeAdb([b"frame"]))
     drv._dbg = HingeDebugLog(str(tmp_path), run_id="r")
     drv.snapshot_failure(ValueError("boom"))
     import json
+
     rec = json.loads((tmp_path / "r" / "actions.jsonl").read_text().strip())
     assert rec["action"] == "unexpected" and "boom" in rec["error"]
 
 
 def test_dislike_writes_debug_action_record(tmp_path):
     from operation_love.drivers.debuglog import HingeDebugLog
+
     drv = _drv(FakeAdb([_action_frame()]))
     drv._dbg = HingeDebugLog(str(tmp_path), run_id="r")
     drv.dislike()
     import json
-    recs = [json.loads(ln) for ln in (tmp_path / "r" / "actions.jsonl").read_text().splitlines()]
+
+    recs = [
+        json.loads(ln)
+        for ln in (tmp_path / "r" / "actions.jsonl").read_text().splitlines()
+    ]
     assert any(r["action"] == "dislike" for r in recs)
 
 
@@ -5206,11 +6147,13 @@ def test_actions_route_through_touch_transport_not_adb():
     touch = FakeAdb([b"x"])
     drv = HingeDriver(_Cfg())
     drv._adb, drv._touch = adb, touch
-    drv.halt_on_error = False                                # routing test: skip progress-verify
+    drv.halt_on_error = False  # routing test: skip progress-verify
     drv.dislike()
-    assert touch.taps == [(125, 2035)] and adb.taps == []   # X found via adb screencap, tapped via touch
+    assert (
+        touch.taps == [(125, 2035)] and adb.taps == []
+    )  # X found via adb screencap, tapped via touch
     drv._scroll_to_top()
-    assert touch.swipes >= 1 and adb.swipes == 0   # swipes via the touch transport
+    assert touch.swipes >= 1 and adb.swipes == 0  # swipes via the touch transport
 
 
 def test_await_button_refuses_when_vision_fails(monkeypatch):
@@ -5221,7 +6164,7 @@ def test_await_button_refuses_when_vision_fails(monkeypatch):
     Rose, Bumble's SuperSwipe) or something irreversible, and (b) a persistent vision miss is
     usually a missing OpenCV install, not a transient one -- silently tapping blind forever
     is worse than refusing and surfacing the real problem."""
-    adb = FakeAdb([_png()])    # non-action frame: vision finds nothing
+    adb = FakeAdb([_png()])  # non-action frame: vision finds nothing
     drv = _drv(adb)
     # Force every vision attempt to return None
     monkeypatch.setattr(drv, "_locate_button", lambda _which: None)
@@ -5230,8 +6173,7 @@ def test_await_button_refuses_when_vision_fails(monkeypatch):
         drv._await_button("like", tries=2)
     with pytest.raises(hinge.UnlocatedControlError):
         drv._await_button("pass", tries=2)
-    assert adb.taps == []      # neither refusal issued a blind tap at the fixed coordinate
-
+    assert adb.taps == []  # neither refusal issued a blind tap at the fixed coordinate
 
 
 # --- blank-frame guard (screen off / keyguard) -------------------------------
@@ -5239,6 +6181,7 @@ def test_await_button_refuses_when_vision_fails(monkeypatch):
 # black. Two black frames read as "nothing changed" (silent stall); a good frame
 # followed by a black one reads as a huge delta (phantom "pass"). The guard fails
 # loudly on ACTING paths and merely keeps waiting on PASSIVE observe loops.
+
 
 def _sparse_bright_png():
     """mean<=2 but LARGE spread. Deliberately tuned so ONLY the uniformity (ptp)
@@ -5248,9 +6191,10 @@ def _sparse_bright_png():
 
     import numpy as np
     from PIL import Image
+
     arr = np.zeros((24, 24), dtype=np.uint8)
     arr[0, 0] = arr[5, 5] = 200
-    arr[11, 11] = 180                       # -> mean 1.01, ptp 200
+    arr[11, 11] = 180  # -> mean 1.01, ptp 200
     buf = BytesIO()
     Image.fromarray(arr, mode="L").save(buf, format="PNG")
     return buf.getvalue()
@@ -5262,6 +6206,7 @@ def _noisy_png(size=(24, 24), lo=40, hi=200):
 
     import numpy as np
     from PIL import Image
+
     rng = np.random.default_rng(7)
     arr = rng.integers(lo, hi, size=(size[1], size[0]), dtype=np.uint8)
     buf = BytesIO()
@@ -5271,6 +6216,7 @@ def _noisy_png(size=(24, 24), lo=40, hi=200):
 
 class _CountingAdb(FakeAdb):
     """Counts screencaps so retry CARDINALITY is pinned, not just the outcome."""
+
     def __init__(self, *a, **k):
         super().__init__(*a, **k)
         self.caps = 0
@@ -5291,7 +6237,10 @@ def test_is_blank_frame_needs_uniformity_not_just_darkness():
     import numpy as np
     from io import BytesIO
     from PIL import Image
-    arr = np.asarray(Image.open(BytesIO(frame)).convert("L").resize((24, 24)), dtype="int16")
+
+    arr = np.asarray(
+        Image.open(BytesIO(frame)).convert("L").resize((24, 24)), dtype="int16"
+    )
     assert np.mean(arr) <= hinge._BLANK_MEAN_MAX, "fixture must pass the MEAN clause..."
     assert np.ptp(arr) > hinge._BLANK_SPREAD_MAX, "...so that only PTP can reject it"
     assert hinge._is_blank_frame(frame) is False
@@ -5319,9 +6268,10 @@ def test_is_blank_frame_ignores_a_monkeypatched_downsample(monkeypatch):
     dedup/diff layer and is freely stubbed by tests — sharing it let a sentinel
     signature masquerade as a dead screen (and let a patch disable the guard)."""
     import numpy as np
+
     monkeypatch.setattr(hinge, "_downsample", lambda *a, **k: np.ones((24, 24)))
-    assert hinge._is_blank_frame(_noisy_png()) is False   # real content stays visible
-    assert hinge._is_blank_frame(_png(0)) is True         # real black stays blank
+    assert hinge._is_blank_frame(_noisy_png()) is False  # real content stays visible
+    assert hinge._is_blank_frame(_png(0)) is True  # real black stays blank
 
 
 # --- acting paths: raise -----------------------------------------------------
@@ -5379,8 +6329,7 @@ def test_screencap_retry_still_enforces_v2_calibrated_frame_size():
         "identity_band": list(hinge.HINGE_SPEC.identity_band),
         "content_band": list(hinge.HINGE_SPEC.content_band),
     }
-    adb = FakeAdb(
-        [_png(0), _noisy_png(size=(720, 1600))], advance_on_screencap=True)
+    adb = FakeAdb([_png(0), _noisy_png(size=(720, 1600))], advance_on_screencap=True)
     with pytest.raises(hinge.HingeActionError, match="does not match schema-v3"):
         _drv(adb, targeting_calibration=calibration)._screencap()
 
@@ -5396,7 +6345,7 @@ def test_snap_does_not_bury_or_swallow_the_blank_diagnosis():
     swallowed to None when halt_on_error is False."""
     adb = FakeAdb([_png(0)])
     drv = _drv(adb, halt_on_error=False)
-    drv._dbg = object()                      # force _snap past its early-out
+    drv._dbg = object()  # force _snap past its early-out
     with pytest.raises(hinge.HingeActionError) as ei:
         drv._snap()
     assert "blank" in str(ei.value).lower()
@@ -5409,37 +6358,38 @@ def test_wait_for_decision_does_not_raise_when_screen_sleeps():
     with no touches of its own, so the screen sleeping mid-wait is ordinary. It must
     keep watching and time out benignly, NOT halt the run (which, via the shared
     stop_event, would also kill the concurrent Bumble worker)."""
-    adb = FakeAdb([_png(0)])                 # asleep for the whole wait
+    adb = FakeAdb([_png(0)])  # asleep for the whole wait
     assert _drv(adb).wait_for_decision(timeout=0.05) is None
 
 
 def test_wait_for_decision_resumes_after_the_screen_comes_back(monkeypatch):
     """Asleep, then the owner wakes it and swipes -> the decision is still detected."""
     import numpy as np
+
     asleep = _png(0)
     woken = _noisy_png(lo=10, hi=60)
     advanced = _noisy_png(lo=150, hi=250)
-    adb = FakeAdb([asleep, woken, advanced],
-                  advance_on_screencap=True)
+    adb = FakeAdb([asleep, woken, advanced], advance_on_screencap=True)
     drv = _drv(adb)
     old_sig = np.full((16, 64), 10, dtype="int16")
     new_sig = np.full((16, 64), 250, dtype="int16")
     drv._identity_sig = old_sig
     drv._identity_top_sig = np.full((16, 64), 200, dtype="int16")
-    monkeypatch.setattr(hinge, "_band",
-                        lambda frame, rect: new_sig if frame == advanced else old_sig)
+    monkeypatch.setattr(
+        hinge, "_band", lambda frame, rect: new_sig if frame == advanced else old_sig
+    )
     # Deck-ready evidence for the final frame -- see test_pass_detected_on_card_advance's
     # comment: these noise frames carry no real glyph for _observe_deck_ready to match.
     monkeypatch.setattr(drv, "_observe_deck_ready", lambda frame: True)
     monkeypatch.setattr(drv, "_observe_gesture_verdict", lambda frame: "pass")
-    assert drv.wait_for_decision(timeout=5.0) is False   # advanced -> pass
+    assert drv.wait_for_decision(timeout=5.0) is False  # advanced -> pass
 
 
 def test_wait_for_decision_never_scores_a_blank_frame_as_a_pass():
     """A good baseline followed by black is a HUGE delta; diffing it would report a
     phantom 'pass' the human never made. Skipping the frame is what prevents that."""
     adb = FakeAdb([_noisy_png(), _png(0)], advance_on_screencap=True)
-    assert _drv(adb).wait_for_decision(timeout=0.05) is None    # not False
+    assert _drv(adb).wait_for_decision(timeout=0.05) is None  # not False
 
 
 def test_handle_rose_upsell_degrades_instead_of_raising_post_tap():
@@ -5450,6 +6400,7 @@ def test_handle_rose_upsell_degrades_instead_of_raising_post_tap():
 
 def test_blank_reason_reports_real_device_state():
     """The message must carry the actual diagnosis — that is the whole point of it."""
+
     class _Stateful(FakeAdb):
         def shell(self, command="", **_):
             if "power" in command:
@@ -5457,6 +6408,7 @@ def test_blank_reason_reports_real_device_state():
             if "trust" in command:
                 return "deviceLocked=1\n"
             return ""
+
     reason = _drv(_Stateful([_png(0)]))._blank_reason()
     assert "Dozing" in reason and "deviceLocked=1" in reason
 
@@ -5465,6 +6417,7 @@ def test_blank_reason_never_raises_even_if_shell_fails():
     class _Boom(FakeAdb):
         def shell(self, command="", **_):
             raise RuntimeError("device gone")
+
     assert isinstance(_drv(_Boom([_png(0)]))._blank_reason(), str)
 
 
@@ -5473,8 +6426,11 @@ def _identity_drv(monkeypatch, adb=None, **cfg):
     """Driver with a captured profile identity in place and OCR forced on, so
     _identity_of's OCR branch is exercised without needing a real tesseract."""
     import numpy as np
+
     drv = _drv(adb or FakeAdb([b"a"]), observe_name_ocr=True, **cfg)
-    drv._identity_sig = np.full((16, 64), 10, dtype="int16")     # captured profile's header
+    drv._identity_sig = np.full(
+        (16, 64), 10, dtype="int16"
+    )  # captured profile's header
     drv._identity_top_sig = np.full((16, 64), 200, dtype="int16")  # scroll-top chrome
     drv._identity_name = "qelix"
     return drv
@@ -5495,9 +6451,12 @@ def test_ocr_cannot_turn_a_scroll_top_frame_into_a_new_profile(monkeypatch):
     drv = _identity_drv(monkeypatch)
     monkeypatch.setattr(hinge, "_band", lambda frame, rect: drv._identity_top_sig)
     monkeypatch.setattr(
-        drv, "_ocr_band",
+        drv,
+        "_ocr_band",
         lambda frame, rect, psm="7", **_kwargs: (
-            None if psm == "6" else "Signals ( Agev ) Height v"))
+            None if psm == "6" else "Signals ( Agev ) Height v"
+        ),
+    )
 
     assert drv._identity_of(b"scroll-top-frame")[0] == "top"
 
@@ -5508,7 +6467,7 @@ def test_ocr_cannot_turn_a_pixel_match_into_a_new_profile(monkeypatch):
     'same' costs at most a missed pass."""
     drv = _identity_drv(monkeypatch)
     monkeypatch.setattr(hinge, "_band", lambda frame, rect: drv._identity_sig)
-    monkeypatch.setattr(drv, "_ocr_band", lambda frame, rect: "jessi<a")   # garbled
+    monkeypatch.setattr(drv, "_ocr_band", lambda frame, rect: "jessi<a")  # garbled
 
     assert drv._identity_of(b"same-profile")[0] == "same"
 
@@ -5517,9 +6476,14 @@ def test_ocr_can_still_rescue_a_position_shifted_header_as_same(monkeypatch):
     """The whole reason OCR is wired in at all: a header that moved a few px (a banner
     appearing) fails the position-sensitive pixel compare, but the NAME is still the name."""
     import numpy as np
+
     drv = _identity_drv(monkeypatch)
-    monkeypatch.setattr(hinge, "_band", lambda frame, rect: np.full((16, 64), 120, dtype="int16"))
-    monkeypatch.setattr(drv, "_ocr_band", lambda frame, rect: "Qelix")   # case-insensitive
+    monkeypatch.setattr(
+        hinge, "_band", lambda frame, rect: np.full((16, 64), 120, dtype="int16")
+    )
+    monkeypatch.setattr(
+        drv, "_ocr_band", lambda frame, rect: "Qelix"
+    )  # case-insensitive
 
     assert drv._identity_of(b"shifted-header")[0] == "same"
 
@@ -5534,12 +6498,14 @@ def test_tap_slop_is_much_tighter_than_the_control_radius():
     slop = drv._observe_tap_slop_px()
     radius = drv._observe_tap_radius_px()
 
-    assert slop < radius / 3            # not merely different -- a different order of size
-    assert slop < 200.0                 # a 200px flick is a scroll, and must not be a tap
-    assert radius >= 200.0              # but the button itself still gets a generous target
+    assert slop < radius / 3  # not merely different -- a different order of size
+    assert slop < 200.0  # a 200px flick is a scroll, and must not be a tap
+    assert radius >= 200.0  # but the button itself still gets a generous target
 
 
-def test_like_vs_scroll_uses_the_identity_anchor_instead_of_lookalike_photos(monkeypatch):
+def test_like_vs_scroll_uses_the_identity_anchor_instead_of_lookalike_photos(
+    monkeypatch,
+):
     """REGRESSION (audit-flagged, previously deferred): _is_current_profile_frame was
     full-frame min-over-all-captured-sigs, so a NEW card whose first photo merely looked like
     one of the current profile's frames (centred face, light background -- i.e. most dating
@@ -5547,37 +6513,51 @@ def test_like_vs_scroll_uses_the_identity_anchor_instead_of_lookalike_photos(mon
     NEXT decision gets attributed to this profile's photos. The identity anchor answers "same
     card?" without depending on how alike two people's photos are, so it wins outright."""
     import numpy as np
+
     drv = _drv(FakeAdb([b"a"]), observe_name_ocr=False)
     drv._identity_sig = np.full((16, 64), 10, dtype="int16")
     drv._identity_top_sig = np.full((16, 64), 200, dtype="int16")
     drv._identity_name = None
     # A colliding photo signature: full-frame matching alone would call this the same profile.
     drv._current_sigs = [np.full((24, 24), 50, dtype="int16")]
-    monkeypatch.setattr(hinge, "_downsample", lambda f: np.full((24, 24), 50, dtype="int16"))
+    monkeypatch.setattr(
+        hinge, "_downsample", lambda f: np.full((24, 24), 50, dtype="int16")
+    )
     # ...but the sticky header says it is a DIFFERENT person.
-    monkeypatch.setattr(hinge, "_band", lambda f, rect: np.full((16, 64), 120, dtype="int16"))
+    monkeypatch.setattr(
+        hinge, "_band", lambda f, rect: np.full((16, 64), 120, dtype="int16")
+    )
 
     assert drv._is_current_profile_frame(b"new-card-that-looks-alike") is False
 
 
-def test_like_vs_scroll_still_falls_back_to_photos_when_the_header_is_not_visible(monkeypatch):
+def test_like_vs_scroll_still_falls_back_to_photos_when_the_header_is_not_visible(
+    monkeypatch,
+):
     """A 'top'/'unknown' identity verdict must not become a silent "it's a new card": at
     scroll-top the header simply isn't showing, and the original full-frame comparison is
     still the best available answer -- no worse than the behaviour this replaced."""
     import numpy as np
+
     drv = _drv(FakeAdb([b"a"]), observe_name_ocr=False)
     top = np.full((16, 64), 200, dtype="int16")
     drv._identity_sig = np.full((16, 64), 10, dtype="int16")
     drv._identity_top_sig = top
     drv._identity_name = None
     drv._current_sigs = [np.full((24, 24), 50, dtype="int16")]
-    monkeypatch.setattr(hinge, "_downsample", lambda f: np.full((24, 24), 50, dtype="int16"))
-    monkeypatch.setattr(hinge, "_band", lambda f, rect: top)     # -> 'top', header not visible
+    monkeypatch.setattr(
+        hinge, "_downsample", lambda f: np.full((24, 24), 50, dtype="int16")
+    )
+    monkeypatch.setattr(
+        hinge, "_band", lambda f, rect: top
+    )  # -> 'top', header not visible
 
     assert drv._is_current_profile_frame(b"scrolled-back-to-top") is True
 
 
-def test_current_profile_diagnostics_keep_original_signature_index_after_none_slots(monkeypatch):
+def test_current_profile_diagnostics_keep_original_signature_index_after_none_slots(
+    monkeypatch,
+):
     """A diagnostic index must point at the capture deque, not its filtered position."""
     import numpy as np
 
@@ -5588,7 +6568,9 @@ def test_current_profile_diagnostics_keep_original_signature_index_after_none_sl
     monkeypatch.setattr(hinge, "_downsample", lambda _frame: target)
 
     diagnostics = {}
-    assert drv._is_current_profile_frame(b"matching-third-capture", diagnostics=diagnostics)
+    assert drv._is_current_profile_frame(
+        b"matching-third-capture", diagnostics=diagnostics
+    )
     assert diagnostics["current_content_exact_min_index"] == 2
 
 
@@ -5596,6 +6578,7 @@ def test_current_profile_diagnostics_keep_original_signature_index_after_none_sl
 def _idrv(monkeypatch, adb=None, **cfg):
     """Driver with an identity anchor already locked to a captured profile."""
     import numpy as np
+
     drv = _drv(adb or FakeAdb([b"a"]), observe_name_ocr=False, **cfg)
     drv._identity_sig = np.full((16, 64), 10, dtype="int16")
     drv._identity_top_sig = np.full((16, 64), 200, dtype="int16")
@@ -5611,31 +6594,43 @@ def test_a_content_collision_cannot_override_an_authoritative_identity_new(monke
     and be swallowed as 'just a scroll': the human's decision on the card they actually left
     is never recorded, and their NEXT one gets attributed to the old profile's photos."""
     import numpy as np
+
     drv = _idrv(monkeypatch, FakeAdb([b"base", b"newcard"], advance_on_screencap=True))
     drv._current_sigs = [np.full((24, 24), 50, dtype="int16")]
     monkeypatch.setattr(hinge, "_split_diff", lambda a, b: (50.0, 50.0))
     # The new card's photos coincidentally match the OLD profile's stored signature...
-    monkeypatch.setattr(hinge, "_downsample", lambda f: np.full((24, 24), 50, dtype="int16"))
+    monkeypatch.setattr(
+        hinge, "_downsample", lambda f: np.full((24, 24), 50, dtype="int16")
+    )
     # ...but its sticky header is a different person's -> identity 'new'.
-    monkeypatch.setattr(hinge, "_band", lambda f, rect: np.full((16, 64), 120, dtype="int16"))
+    monkeypatch.setattr(
+        hinge, "_band", lambda f, rect: np.full((16, 64), 120, dtype="int16")
+    )
     monkeypatch.setattr(drv, "_observe_deck_ready", lambda f: True)
     monkeypatch.setattr(drv, "_observe_like_sheet_visible", lambda f: False)
     monkeypatch.setattr(drv, "_changed", lambda a, b: False)
     monkeypatch.setattr(drv, "_observe_gesture_verdict", lambda f: "pass")
 
-    assert drv.wait_for_decision(timeout=5.0) is False   # the advance is NOT swallowed
+    assert drv.wait_for_decision(timeout=5.0) is False  # the advance is NOT swallowed
 
 
-def test_like_flow_requires_content_as_well_as_identity_before_calling_a_like_cancelled(monkeypatch):
+def test_like_flow_requires_content_as_well_as_identity_before_calling_a_like_cancelled(
+    monkeypatch,
+):
     """REGRESSION: the identity band holds only a FIRST NAME, so two adjacent profiles sharing
     one render an identical header. At _await_like_resolved's call site a wrong 'same' does not
     merely defer -- it reports a like the human really SENT as a dismissal, dropping it. So
     that caller now needs the header AND the photos to agree."""
     import numpy as np
+
     drv = _idrv(monkeypatch)
-    monkeypatch.setattr(hinge, "_band", lambda f, rect: drv._identity_sig)   # collided header
+    monkeypatch.setattr(
+        hinge, "_band", lambda f, rect: drv._identity_sig
+    )  # collided header
     drv._current_sigs = [np.full((24, 24), 10, dtype="int16")]
-    monkeypatch.setattr(hinge, "_downsample", lambda f: np.full((24, 24), 200, dtype="int16"))
+    monkeypatch.setattr(
+        hinge, "_downsample", lambda f: np.full((24, 24), 200, dtype="int16")
+    )
 
     # identity alone still says "current profile" for the cheap caller...
     assert drv._is_current_profile_frame(b"nextcard") is True
@@ -5654,9 +6649,24 @@ def test_two_pass_taps_in_one_wait_resync_rather_than_guess_the_profile(monkeypa
     class _W:
         alive = True
         event_count = 40
+
         def gestures_since(self, t):
-            return [Gesture(t_down=1.0, t_up=1.1, down=(130, 2035), up=(130, 2035), travel_px=1.0),
-                    Gesture(t_down=2.0, t_up=2.1, down=(128, 2030), up=(128, 2030), travel_px=1.0)]
+            return [
+                Gesture(
+                    t_down=1.0,
+                    t_up=1.1,
+                    down=(130, 2035),
+                    up=(130, 2035),
+                    travel_px=1.0,
+                ),
+                Gesture(
+                    t_down=2.0,
+                    t_up=2.1,
+                    down=(128, 2030),
+                    up=(128, 2030),
+                    travel_px=1.0,
+                ),
+            ]
 
     drv._touch_watcher = _W()
     drv.observe_touch_watch = True
@@ -5675,9 +6685,24 @@ def test_one_pass_tap_in_a_wait_is_still_a_pass(monkeypatch):
     class _W:
         alive = True
         event_count = 40
+
         def gestures_since(self, t):
-            return [Gesture(t_down=1.0, t_up=1.4, down=(540, 1800), up=(540, 900), travel_px=900.0),
-                    Gesture(t_down=2.0, t_up=2.1, down=(130, 2035), up=(130, 2035), travel_px=1.0)]
+            return [
+                Gesture(
+                    t_down=1.0,
+                    t_up=1.4,
+                    down=(540, 1800),
+                    up=(540, 900),
+                    travel_px=900.0,
+                ),
+                Gesture(
+                    t_down=2.0,
+                    t_up=2.1,
+                    down=(130, 2035),
+                    up=(130, 2035),
+                    travel_px=1.0,
+                ),
+            ]
 
     drv._touch_watcher = _W()
     drv.observe_touch_watch = True
@@ -5694,6 +6719,7 @@ def test_a_deck_advance_mid_capture_discards_the_mixed_profile(monkeypatch):
     appended as more of the SAME person. worker.py would then mean-pool two different faces
     into one embedding and store it under one label."""
     import numpy as np
+
     # Identity band per frame: f0 is the scroll-top chrome, f1/f2 are THIS profile's sticky
     # header, f3 is a different person's. Content is tracked separately and must differ per
     # frame -- _frame_sig hashes the DOWNSAMPLE, so equal content would read as "reached the
@@ -5706,11 +6732,17 @@ def test_a_deck_advance_mid_capture_discards_the_mixed_profile(monkeypatch):
     # through the driver's one decode -- with a THIRD argument (the grid). The 2-argument lambda
     # this fixture used to install raised a TypeError out of that gate rather than being refused
     # by it. `*rest` keeps the fake honest for both callers; what this test is about is untouched.
-    monkeypatch.setattr(hinge, "_band",
-                        lambda f, rect, *rest: np.full((16, 64), bands[f], dtype="int16"))
-    monkeypatch.setattr(hinge, "_downsample",
-                        lambda f: np.full((24, 24), content[f], dtype="int16"))
+    monkeypatch.setattr(
+        hinge,
+        "_band",
+        lambda f, rect, *rest: np.full((16, 64), bands[f], dtype="int16"),
+    )
+    monkeypatch.setattr(
+        hinge, "_downsample", lambda f: np.full((24, 24), content[f], dtype="int16")
+    )
     monkeypatch.setattr(drv, "_observe_like_sheet_visible", lambda f: False)
     monkeypatch.setattr(drv, "_scroll_down_one", lambda *a, **k: adb.scroll_up())
 
-    assert drv._capture_current() is None      # discarded, not returned as one mixed Profile
+    assert (
+        drv._capture_current() is None
+    )  # discarded, not returned as one mixed Profile

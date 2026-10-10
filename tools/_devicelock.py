@@ -14,6 +14,7 @@ possibly open.  So the lock is held for a whole command, never just around ``ope
 Tools that never open ADB (every ``measure``/``verify``/``attach`` subcommand here) deliberately
 do NOT take it: locking them would block a production run for no reason.
 """
+
 from __future__ import annotations
 
 import sys
@@ -55,6 +56,7 @@ def holding_the_device(config_path: str | None = None, *, app: str = "hinge"):
     silently becomes an UNLOCKED run of the command.
     """
     from operation_love.supervisor import exclusive_android_device
+
     if config_path is None:
         return exclusive_android_device(None, app)
     try:
@@ -64,7 +66,9 @@ def holding_the_device(config_path: str | None = None, *, app: str = "hinge"):
     return exclusive_android_device(cfg, app)
 
 
-def run_holding_the_device(config_path: str | None, command, *args, app: str = "hinge", **kwargs):
+def run_holding_the_device(
+    config_path: str | None, command, *args, app: str = "hinge", **kwargs
+):
     """Run ``command(*args, **kwargs)`` under the device lock; exit non-zero if it is held.
 
     ``config_path`` may be ``None`` -- see :func:`holding_the_device` for why that is the right

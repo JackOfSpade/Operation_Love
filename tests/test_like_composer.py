@@ -4,6 +4,7 @@ The production measurements are geometry only.  These canvases contain no profil
 paint the measured input and CTA around the shipped ``Send Like`` glyph, then remove one piece
 of evidence at a time.
 """
+
 from __future__ import annotations
 
 import cv2
@@ -12,7 +13,10 @@ import pytest
 
 from operation_love.drivers import hinge
 from operation_love.drivers.like_composer import (
-    ComposerDetectionError, Rect, locate_inline_composer)
+    ComposerDetectionError,
+    Rect,
+    locate_inline_composer,
+)
 
 
 _W, _H = 1080, 2400
@@ -26,7 +30,9 @@ _KEYBOARD_COMMENT = Rect(95, 1123, 985, 1301)
 _KEYBOARD_SEND = Rect(390, 1333, 985, 1442)
 _KEYBOARD_CONFIRM_CENTER = (695, 1383)
 _TEMPLATE = hinge._load_template("hinge_send_like.png")
-assert _TEMPLATE is not None, "the shipped Send Like glyph is part of this detector's contract"
+assert _TEMPLATE is not None, (
+    "the shipped Send Like glyph is part of this detector's contract"
+)
 
 
 def _png(gray: np.ndarray, *, color: bool) -> bytes:
@@ -39,26 +45,39 @@ def _png(gray: np.ndarray, *, color: bool) -> bytes:
 def _paint_glyph(canvas: np.ndarray, *, center=_CONFIRM_CENTER) -> None:
     height, width = _TEMPLATE.shape
     x, y = center
-    canvas[y - height // 2:y - height // 2 + height,
-           x - width // 2:x - width // 2 + width] = _TEMPLATE
+    canvas[
+        y - height // 2 : y - height // 2 + height,
+        x - width // 2 : x - width // 2 + width,
+    ] = _TEMPLATE
 
 
 def _scaled_rect(rect: Rect, width: int, height: int) -> Rect:
-    return Rect(round(rect.x0 / _W * width), round(rect.y0 / _H * height),
-                round(rect.x1 / _W * width), round(rect.y1 / _H * height))
+    return Rect(
+        round(rect.x0 / _W * width),
+        round(rect.y0 / _H * height),
+        round(rect.x1 / _W * width),
+        round(rect.y1 / _H * height),
+    )
 
 
-def _inline_composer(*, input_present=True, cta_present=True, glyph_center=_CONFIRM_CENTER,
-                     color=False, width=_W, height=_H) -> bytes:
+def _inline_composer(
+    *,
+    input_present=True,
+    cta_present=True,
+    glyph_center=_CONFIRM_CENTER,
+    color=False,
+    width=_W,
+    height=_H,
+) -> bytes:
     canvas = np.full((height, width), _BG, dtype=np.uint8)
     comment = _scaled_rect(_COMMENT, width, height)
     send = _scaled_rect(_SEND, width, height)
     if input_present:
         # Long, dark top/bottom lines are an outlined input, not a large card-shaped region.
-        canvas[comment.y0:comment.y0 + 2, comment.x0:comment.x1] = 222
-        canvas[comment.y1 - 2:comment.y1, comment.x0:comment.x1] = 222
+        canvas[comment.y0 : comment.y0 + 2, comment.x0 : comment.x1] = 222
+        canvas[comment.y1 - 2 : comment.y1, comment.x0 : comment.x1] = 222
     if cta_present:
-        canvas[send.y0:send.y1, send.x0:send.x1] = 228
+        canvas[send.y0 : send.y1, send.x0 : send.x1] = 228
     _paint_glyph(canvas, center=glyph_center)
     return _png(canvas, color=color)
 
@@ -66,11 +85,17 @@ def _inline_composer(*, input_present=True, cta_present=True, glyph_center=_CONF
 def _keyboard_open_composer(*, color=False) -> bytes:
     """Public synthetic layout for the keyboard-open current-phone state."""
     canvas = np.full((_H, _W), _BG, dtype=np.uint8)
-    canvas[_KEYBOARD_COMMENT.y0:_KEYBOARD_COMMENT.y0 + 2,
-           _KEYBOARD_COMMENT.x0:_KEYBOARD_COMMENT.x1] = 222
-    canvas[_KEYBOARD_COMMENT.y1 - 2:_KEYBOARD_COMMENT.y1,
-           _KEYBOARD_COMMENT.x0:_KEYBOARD_COMMENT.x1] = 222
-    canvas[_KEYBOARD_SEND.y0:_KEYBOARD_SEND.y1, _KEYBOARD_SEND.x0:_KEYBOARD_SEND.x1] = 228
+    canvas[
+        _KEYBOARD_COMMENT.y0 : _KEYBOARD_COMMENT.y0 + 2,
+        _KEYBOARD_COMMENT.x0 : _KEYBOARD_COMMENT.x1,
+    ] = 222
+    canvas[
+        _KEYBOARD_COMMENT.y1 - 2 : _KEYBOARD_COMMENT.y1,
+        _KEYBOARD_COMMENT.x0 : _KEYBOARD_COMMENT.x1,
+    ] = 222
+    canvas[
+        _KEYBOARD_SEND.y0 : _KEYBOARD_SEND.y1, _KEYBOARD_SEND.x0 : _KEYBOARD_SEND.x1
+    ] = 228
     _paint_glyph(canvas, center=_KEYBOARD_CONFIRM_CENTER)
     return _png(canvas, color=color)
 
@@ -87,9 +112,9 @@ def _scrolled_priority_like_composer() -> bytes:
     send = Rect(390, 1826, 985, 1935)
     confirm = (690, 1882)
     canvas = np.full((_H, _W), _BG, dtype=np.uint8)
-    canvas[comment.y0:comment.y0 + 2, comment.x0:comment.x1] = 222
-    canvas[comment.y1 - 2:comment.y1, comment.x0:comment.x1] = 222
-    canvas[send.y0:send.y1, send.x0:send.x1] = 228
+    canvas[comment.y0 : comment.y0 + 2, comment.x0 : comment.x1] = 222
+    canvas[comment.y1 - 2 : comment.y1, comment.x0 : comment.x1] = 222
+    canvas[send.y0 : send.y1, send.x0 : send.x1] = 228
     _paint_glyph(canvas, center=confirm)
     return _png(canvas, color=False)
 
@@ -104,11 +129,17 @@ def _keyboard_open_composer_with_selected_photo_edge() -> bytes:
     canvas = np.full((_H, _W), _BG, dtype=np.uint8)
     # The selected photo ends just above the outlined comment field.
     canvas[1046:1092, 95:985] = 190
-    canvas[_KEYBOARD_COMMENT.y0:_KEYBOARD_COMMENT.y0 + 2,
-           _KEYBOARD_COMMENT.x0:_KEYBOARD_COMMENT.x1] = 222
-    canvas[_KEYBOARD_COMMENT.y1 - 2:_KEYBOARD_COMMENT.y1,
-           _KEYBOARD_COMMENT.x0:_KEYBOARD_COMMENT.x1] = 222
-    canvas[_KEYBOARD_SEND.y0:_KEYBOARD_SEND.y1, _KEYBOARD_SEND.x0:_KEYBOARD_SEND.x1] = 228
+    canvas[
+        _KEYBOARD_COMMENT.y0 : _KEYBOARD_COMMENT.y0 + 2,
+        _KEYBOARD_COMMENT.x0 : _KEYBOARD_COMMENT.x1,
+    ] = 222
+    canvas[
+        _KEYBOARD_COMMENT.y1 - 2 : _KEYBOARD_COMMENT.y1,
+        _KEYBOARD_COMMENT.x0 : _KEYBOARD_COMMENT.x1,
+    ] = 222
+    canvas[
+        _KEYBOARD_SEND.y0 : _KEYBOARD_SEND.y1, _KEYBOARD_SEND.x0 : _KEYBOARD_SEND.x1
+    ] = 228
     _paint_glyph(canvas, center=_KEYBOARD_CONFIRM_CENTER)
     return _png(canvas, color=False)
 
@@ -122,14 +153,20 @@ def _keyboard_open_composer_with_text_selection_handle() -> bytes:
     below it.  Only that geometry is reproduced; no profile pixels are kept.
     """
     canvas = np.full((_H, _W), _BG, dtype=np.uint8)
-    canvas[_KEYBOARD_COMMENT.y0:_KEYBOARD_COMMENT.y0 + 2,
-           _KEYBOARD_COMMENT.x0:_KEYBOARD_COMMENT.x1] = 222
-    canvas[_KEYBOARD_COMMENT.y1 - 2:_KEYBOARD_COMMENT.y1,
-           _KEYBOARD_COMMENT.x0:_KEYBOARD_COMMENT.x1] = 222
-    canvas[_KEYBOARD_SEND.y0:_KEYBOARD_SEND.y1, _KEYBOARD_SEND.x0:_KEYBOARD_SEND.x1] = 228
+    canvas[
+        _KEYBOARD_COMMENT.y0 : _KEYBOARD_COMMENT.y0 + 2,
+        _KEYBOARD_COMMENT.x0 : _KEYBOARD_COMMENT.x1,
+    ] = 222
+    canvas[
+        _KEYBOARD_COMMENT.y1 - 2 : _KEYBOARD_COMMENT.y1,
+        _KEYBOARD_COMMENT.x0 : _KEYBOARD_COMMENT.x1,
+    ] = 222
+    canvas[
+        _KEYBOARD_SEND.y0 : _KEYBOARD_SEND.y1, _KEYBOARD_SEND.x0 : _KEYBOARD_SEND.x1
+    ] = 228
     for offset, y in enumerate(range(_KEYBOARD_COMMENT.y1 - 1, _KEYBOARD_SEND.y0 + 1)):
         half = round(28 - offset * 0.5)
-        canvas[y, 502 - half:502 + half] = 60
+        canvas[y, 502 - half : 502 + half] = 60
     _paint_glyph(canvas, center=_KEYBOARD_CONFIRM_CENTER)
     return _png(canvas, color=False)
 
@@ -137,7 +174,8 @@ def _keyboard_open_composer_with_text_selection_handle() -> bytes:
 def test_text_selection_handle_bridging_the_controls_is_still_an_open_composer():
     """Editing the opener must never read as a composer that closed itself."""
     surface = locate_inline_composer(
-        _keyboard_open_composer_with_text_selection_handle(), _TEMPLATE)
+        _keyboard_open_composer_with_text_selection_handle(), _TEMPLATE
+    )
 
     assert surface.comment_rect == _KEYBOARD_COMMENT
     assert surface.send_rect == _KEYBOARD_SEND
@@ -147,7 +185,8 @@ def test_text_selection_handle_bridging_the_controls_is_still_an_open_composer()
 def test_text_selection_handle_does_not_move_any_composer_geometry():
     """The handle is a transient overlay, so tap targets must not shift under it."""
     edited = locate_inline_composer(
-        _keyboard_open_composer_with_text_selection_handle(), _TEMPLATE)
+        _keyboard_open_composer_with_text_selection_handle(), _TEMPLATE
+    )
     untouched = locate_inline_composer(_keyboard_open_composer(), _TEMPLATE)
 
     assert edited == untouched
@@ -180,7 +219,9 @@ def test_rejects_filled_cta_when_the_wide_comment_input_is_missing():
 
 
 def test_rejects_a_matching_glyph_outside_the_measured_cta_region():
-    with pytest.raises(ComposerDetectionError, match="outside the inline composer's measured CTA"):
+    with pytest.raises(
+        ComposerDetectionError, match="outside the inline composer's measured CTA"
+    ):
         locate_inline_composer(_inline_composer(glyph_center=(695, 1200)), _TEMPLATE)
 
 
@@ -198,11 +239,14 @@ def test_rejects_undecodable_frame_bytes():
         locate_inline_composer(b"not a PNG", _TEMPLATE)
 
 
-@pytest.mark.parametrize("image", [
-    np.empty((0, _W), dtype=np.uint8),
-    np.empty((_H, 0), dtype=np.uint8),
-    np.empty((_H, _W, 3), dtype=np.uint8),
-])
+@pytest.mark.parametrize(
+    "image",
+    [
+        np.empty((0, _W), dtype=np.uint8),
+        np.empty((_H, 0), dtype=np.uint8),
+        np.empty((_H, _W, 3), dtype=np.uint8),
+    ],
+)
 def test_reused_image_must_be_a_nonempty_grayscale_buffer(image):
     with pytest.raises(ComposerDetectionError, match="non-empty grayscale"):
         locate_inline_composer(_inline_composer(), _TEMPLATE, image=image)
@@ -215,9 +259,9 @@ def test_boolean_composer_threshold_is_not_accepted_as_a_number():
 
 def test_rejects_missing_confirmation_even_when_input_and_cta_geometry_are_present():
     canvas = np.full((_H, _W), _BG, dtype=np.uint8)
-    canvas[_COMMENT.y0:_COMMENT.y0 + 2, _COMMENT.x0:_COMMENT.x1] = 222
-    canvas[_COMMENT.y1 - 2:_COMMENT.y1, _COMMENT.x0:_COMMENT.x1] = 222
-    canvas[_SEND.y0:_SEND.y1, _SEND.x0:_SEND.x1] = 228
+    canvas[_COMMENT.y0 : _COMMENT.y0 + 2, _COMMENT.x0 : _COMMENT.x1] = 222
+    canvas[_COMMENT.y1 - 2 : _COMMENT.y1, _COMMENT.x0 : _COMMENT.x1] = 222
+    canvas[_SEND.y0 : _SEND.y1, _SEND.x0 : _SEND.x1] = 228
 
     with pytest.raises(ComposerDetectionError, match="no Send Like confirmation glyph"):
         locate_inline_composer(_png(canvas, color=False), _TEMPLATE)
@@ -236,14 +280,14 @@ def test_rejects_a_false_confirm_on_a_plain_card_without_input_or_filled_cta():
 def test_rejects_narrow_surface_that_cannot_be_the_measured_composer(which):
     canvas = np.full((_H, _W), _BG, dtype=np.uint8)
     if which == "input":
-        canvas[_COMMENT.y0:_COMMENT.y0 + 2, 400:650] = 222
-        canvas[_COMMENT.y1 - 2:_COMMENT.y1, 400:650] = 222
-        canvas[_SEND.y0:_SEND.y1, _SEND.x0:_SEND.x1] = 228
+        canvas[_COMMENT.y0 : _COMMENT.y0 + 2, 400:650] = 222
+        canvas[_COMMENT.y1 - 2 : _COMMENT.y1, 400:650] = 222
+        canvas[_SEND.y0 : _SEND.y1, _SEND.x0 : _SEND.x1] = 228
         message = "comment input was not found"
     else:
-        canvas[_COMMENT.y0:_COMMENT.y0 + 2, _COMMENT.x0:_COMMENT.x1] = 222
-        canvas[_COMMENT.y1 - 2:_COMMENT.y1, _COMMENT.x0:_COMMENT.x1] = 222
-        canvas[_SEND.y0:_SEND.y1, 700:850] = 228
+        canvas[_COMMENT.y0 : _COMMENT.y0 + 2, _COMMENT.x0 : _COMMENT.x1] = 222
+        canvas[_COMMENT.y1 - 2 : _COMMENT.y1, _COMMENT.x0 : _COMMENT.x1] = 222
+        canvas[_SEND.y0 : _SEND.y1, 700:850] = 228
         message = "CTA is not visibly filled"
     _paint_glyph(canvas)
 
@@ -266,9 +310,9 @@ def test_rejects_input_and_cta_when_their_vertical_topology_is_reversed():
 def test_rejects_two_equally_plausible_send_like_glyphs_in_the_cta():
     """A detector cannot choose which copied confirmation text licenses input."""
     canvas = np.full((_H, _W), _BG, dtype=np.uint8)
-    canvas[_COMMENT.y0:_COMMENT.y0 + 2, _COMMENT.x0:_COMMENT.x1] = 222
-    canvas[_COMMENT.y1 - 2:_COMMENT.y1, _COMMENT.x0:_COMMENT.x1] = 222
-    canvas[_SEND.y0:_SEND.y1, _SEND.x0:_SEND.x1] = 228
+    canvas[_COMMENT.y0 : _COMMENT.y0 + 2, _COMMENT.x0 : _COMMENT.x1] = 222
+    canvas[_COMMENT.y1 - 2 : _COMMENT.y1, _COMMENT.x0 : _COMMENT.x1] = 222
+    canvas[_SEND.y0 : _SEND.y1, _SEND.x0 : _SEND.x1] = 228
     _paint_glyph(canvas, center=(520, 1856))
     _paint_glyph(canvas, center=(860, 1856))
 
@@ -278,16 +322,22 @@ def test_rejects_two_equally_plausible_send_like_glyphs_in_the_cta():
 
 def test_resolution_relative_layout_scales_with_the_frame():
     width, height = 1440, 3200
-    confirm = (round(_CONFIRM_CENTER[0] / _W * width), round(_CONFIRM_CENTER[1] / _H * height))
+    confirm = (
+        round(_CONFIRM_CENTER[0] / _W * width),
+        round(_CONFIRM_CENTER[1] / _H * height),
+    )
     surface = locate_inline_composer(
-        _inline_composer(width=width, height=height, glyph_center=confirm), _TEMPLATE)
+        _inline_composer(width=width, height=height, glyph_center=confirm), _TEMPLATE
+    )
 
     assert surface.comment_rect == _scaled_rect(_COMMENT, width, height)
     assert surface.send_rect == _scaled_rect(_SEND, width, height)
     assert surface.confirm_point == confirm
 
 
-@pytest.mark.parametrize("color", [False, True], ids=["keyboard_grayscale", "keyboard_color"])
+@pytest.mark.parametrize(
+    "color", [False, True], ids=["keyboard_grayscale", "keyboard_color"]
+)
 def test_keyboard_open_current_phone_layout_returns_its_shifted_actual_geometry(color):
     surface = locate_inline_composer(_keyboard_open_composer(color=color), _TEMPLATE)
 
@@ -299,7 +349,9 @@ def test_keyboard_open_current_phone_layout_returns_its_shifted_actual_geometry(
 
 def test_keyboard_open_composer_ignores_a_selected_photo_edge_above_its_input():
     """Only adjacent wide-run groups can be the input's top and bottom borders."""
-    surface = locate_inline_composer(_keyboard_open_composer_with_selected_photo_edge(), _TEMPLATE)
+    surface = locate_inline_composer(
+        _keyboard_open_composer_with_selected_photo_edge(), _TEMPLATE
+    )
 
     assert surface.comment_rect == _KEYBOARD_COMMENT
     assert surface.send_rect == _KEYBOARD_SEND

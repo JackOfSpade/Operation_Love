@@ -5,6 +5,7 @@ report bytes, the dynamic descriptor sizing, the register+report/delay gesture s
 and that each gesture writes a file then runs `hid <file>`. The live `hid`/`/dev/uhid`
 behaviour is verified on-device separately.
 """
+
 import functools
 import json
 import random
@@ -15,7 +16,13 @@ import pytest
 from operation_love.drivers import uhid
 from operation_love.drivers.adb import AdbError
 from operation_love.drivers.base import DriverClosed
-from operation_love.drivers.uhid import PersistentUhidTouch, UhidTouch, UhidUnavailable, _build_descriptor, _report
+from operation_love.drivers.uhid import (
+    PersistentUhidTouch,
+    UhidTouch,
+    UhidUnavailable,
+    _build_descriptor,
+    _report,
+)
 from operation_love.human_motion import TouchSample
 
 
@@ -32,7 +39,7 @@ class FakeAdb:
 
     def shell(self, cmd):
         self.shell_calls.append(cmd)
-        return "yes" if "system/bin/hid" in cmd else ""   # hid present by default
+        return "yes" if "system/bin/hid" in cmd else ""  # hid present by default
 
     def write_file(self, path, data):
         self.files[path] = data
@@ -48,7 +55,7 @@ def test_report_layout_and_pressure_scaling():
     assert down[0] == 0x01 and down[1] == 0x03 and down[2] == 0x00 and down[8] == 1
     assert down[3] == 540 & 0xFF and down[4] == (540 >> 8) & 0xFF
     assert down[5] == 1200 & 0xFF and down[6] == (1200 >> 8) & 0xFF
-    assert down[7] == round(0.706 * 255)                                       # -> 180
+    assert down[7] == round(0.706 * 255)  # -> 180
     up = _report(TouchSample(0, 540, 1200, 0.0, 0.0, False), 1080, 2400)
     assert up[1] == 0x00 and up[7] == 0 and up[8] == 0
 
@@ -64,16 +71,16 @@ def test_report_clamps_coords_and_pressure():
 # --- descriptor uses live screen dims (Codex fix #1) -------------------
 def test_descriptor_encodes_screen_dimensions():
     d = _build_descriptor(1080, 2400)
-    ix = d.index(0x26)                                                          # 1st 0x26 = X logical max
-    assert d[ix + 1: ix + 3] == [0x37, 0x04]                                    # X max = 1079
-    iy = d.index(0x26, ix + 1)                                                  # 2nd 0x26 = Y logical max
-    assert d[iy + 1: iy + 3] == [0x5F, 0x09]                                    # Y max = 2399
+    ix = d.index(0x26)  # 1st 0x26 = X logical max
+    assert d[ix + 1 : ix + 3] == [0x37, 0x04]  # X max = 1079
+    iy = d.index(0x26, ix + 1)  # 2nd 0x26 = Y logical max
+    assert d[iy + 1 : iy + 3] == [0x5F, 0x09]  # Y max = 2399
     d2 = _build_descriptor(1440, 3120)
-    assert d2 != d                                                              # different resolution -> different descriptor
+    assert d2 != d  # different resolution -> different descriptor
     jx = d2.index(0x26)
-    assert d2[jx + 1: jx + 3] == [0x9F, 0x05]                                   # X max 1439 -> 0x059F LE
+    assert d2[jx + 1 : jx + 3] == [0x9F, 0x05]  # X max 1439 -> 0x059F LE
     jy = d2.index(0x26, jx + 1)
-    assert d2[jy + 1: jy + 3] == [0x2F, 0x0C]                                   # Y max 3119 -> 0x0C2F LE
+    assert d2[jy + 1 : jy + 3] == [0x2F, 0x0C]  # Y max 3119 -> 0x0C2F LE
 
 
 # --- gesture -> register + report/delay script -------------------------
@@ -89,31 +96,41 @@ def test_gesture_script_structure():
     assert drv.enumerate_ms <= cmds[1]["duration"] <= drv.enumerate_ms + 180
     assert drv.flush_ms <= cmds[-1]["duration"] <= drv.flush_ms + 90
     report_delays = [c["duration"] for c in cmds[2:-1] if c["command"] == "delay"]
-    assert report_delays == [10, 10]                                              # 0.01s -> 10ms
+    assert report_delays == [10, 10]  # 0.01s -> 10ms
     reports = [c["report"] for c in cmds if c["command"] == "report"]
-    assert reports[0][8] == 1 and reports[-1][8] == 0                           # down ... up
+    assert reports[0][8] == 1 and reports[-1][8] == 0  # down ... up
 
 
 def test_uhid_delays_vary_per_gesture_but_never_undercut_safe_baselines():
     drv = UhidTouch(FakeAdb(), rng=random.Random(21), name="explicit_name")
-    samples = [TouchSample(0.0, 100, 200, 0.5, 0.3, True),
-               TouchSample(0.02, 100, 200, 0.0, 0.0, False)]
+    samples = [
+        TouchSample(0.0, 100, 200, 0.5, 0.3, True),
+        TouchSample(0.02, 100, 200, 0.0, 0.0, False),
+    ]
     pairs = []
     for _ in range(30):
         cmds = _cmds(drv._gesture_script(samples))
         pairs.append((cmds[1]["duration"], cmds[-1]["duration"]))
     assert len(set(pairs)) > 5
-    assert all(drv.enumerate_ms <= e <= drv.enumerate_ms + 180 and
-               drv.flush_ms <= f <= drv.flush_ms + 90 for e, f in pairs)
+    assert all(
+        drv.enumerate_ms <= e <= drv.enumerate_ms + 180
+        and drv.flush_ms <= f <= drv.flush_ms + 90
+        for e, f in pairs
+    )
 
 
 def test_default_uhid_name_is_session_stable_and_explicit_name_is_preserved():
     first, second = UhidTouch(FakeAdb()), UhidTouch(FakeAdb())
     assert first.name.startswith("og_touch_") and first.name != second.name
-    samples = [TouchSample(0.0, 100, 200, 0.5, 0.3, True),
-               TouchSample(0.02, 100, 200, 0.0, 0.0, False)]
+    samples = [
+        TouchSample(0.0, 100, 200, 0.5, 0.3, True),
+        TouchSample(0.02, 100, 200, 0.0, 0.0, False),
+    ]
     names = [_cmds(first._gesture_script(samples))[0]["name"] for _ in range(2)]
-    assert names == [first.name, first.name]  # one session identity, not per-gesture identity
+    assert names == [
+        first.name,
+        first.name,
+    ]  # one session identity, not per-gesture identity
     explicit = UhidTouch(FakeAdb(), name="calibration_touch", vid=7, pid=9)
     assert (explicit.name, explicit.vid, explicit.pid) == ("calibration_touch", 7, 9)
 
@@ -133,7 +150,7 @@ def test_swipe_writes_file_then_runs_hid():
     cmds = _cmds(fa.files[drv.file_path])
     assert cmds[0]["command"] == "register"
     reports = [c["report"] for c in cmds if c["command"] == "report"]
-    assert reports[0][8] == 1 and reports[-1][8] == 0                           # down ... release
+    assert reports[0][8] == 1 and reports[-1][8] == 0  # down ... release
     for r in reports:
         x = r[3] | (r[4] << 8)
         y = r[5] | (r[6] << 8)
@@ -155,9 +172,11 @@ def test_scroll_up_jitters_x_column():
         drv.scroll_up()
         cmds = _cmds(fa.files[drv.file_path])
         reports = [c["report"] for c in cmds if c["command"] == "report"]
-        x0 = reports[0][3] | (reports[0][4] << 8)   # first sample's x is exact (no path jitter at k=0)
+        x0 = reports[0][3] | (
+            reports[0][4] << 8
+        )  # first sample's x is exact (no path jitter at k=0)
         xs.add(x0)
-    assert len(xs) > 1     # jittered run to run, not a fixed column every time
+    assert len(xs) > 1  # jittered run to run, not a fixed column every time
 
 
 def test_tap_writes_down_then_release():
@@ -166,13 +185,13 @@ def test_tap_writes_down_then_release():
     cmds = _cmds(next(iter(fa.files.values())))
     reports = [c["report"] for c in cmds if c["command"] == "report"]
     assert reports[0][8] == 1 and reports[-1][8] == 0
-    assert max(r[7] for r in reports) > 0                                       # a real pressure pulse
+    assert max(r[7] for r in reports) > 0  # a real pressure pulse
 
 
 # --- lifecycle ---------------------------------------------------------
 def test_open_caches_screen_size():
     fa = FakeAdb()
-    UhidTouch(fa).open()                                                        # hid present -> no raise
+    UhidTouch(fa).open()  # hid present -> no raise
 
 
 def test_open_raises_uhid_unavailable_when_hid_missing():
@@ -181,7 +200,7 @@ def test_open_raises_uhid_unavailable_when_hid_missing():
     class NoHid(FakeAdb):
         def shell(self, cmd):
             self.shell_calls.append(cmd)
-            return "no"          # always-exit-0 probe -> stdout "no" when /system/bin/hid is absent
+            return "no"  # always-exit-0 probe -> stdout "no" when /system/bin/hid is absent
 
     with pytest.raises(UhidUnavailable):
         UhidTouch(NoHid()).open()
@@ -196,11 +215,11 @@ def test_open_probe_does_not_depend_on_exit_code():
     class ExitCodeAdb(FakeAdb):
         def shell(self, cmd):
             self.shell_calls.append(cmd)
-            if "&&" in cmd and "||" not in cmd:                                # `test -e .. && echo` would exit 1
+            if "&&" in cmd and "||" not in cmd:  # `test -e .. && echo` would exit 1
                 raise AdbError(["adb", "shell", cmd], "exit code 1")
-            return "no"                                                        # exit-0 form -> stdout "no"
+            return "no"  # exit-0 form -> stdout "no"
 
-    with pytest.raises(UhidUnavailable):                                       # clean fall back, not AdbError
+    with pytest.raises(UhidUnavailable):  # clean fall back, not AdbError
         UhidTouch(ExitCodeAdb()).open()
 
 
@@ -245,8 +264,10 @@ def test_write_file_permanent_failure_still_attempts_a_fallback_cleanup(monkeypa
     with pytest.raises(DriverClosed, match="file write failed before delivery"):
         UhidTouch(fa, rng=random.Random(7)).swipe(540, 1700, 540, 700)
 
-    assert not any(c.startswith("hid ") for c in fa.shell_calls)   # hid never ran
-    assert any(c.startswith("rm -f") for c in fa.shell_calls)      # but cleanup was still attempted
+    assert not any(c.startswith("hid ") for c in fa.shell_calls)  # hid never ran
+    assert any(
+        c.startswith("rm -f") for c in fa.shell_calls
+    )  # but cleanup was still attempted
 
 
 def test_hid_failure_is_never_replayed_after_delivery_may_have_started():
@@ -260,7 +281,9 @@ def test_hid_failure_is_never_replayed_after_delivery_may_have_started():
             return "yes" if "system/bin/hid" in cmd else ""
 
     fa = Flaky()
-    with pytest.raises(DriverClosed, match="delivery became uncertain.*refusing to replay"):
+    with pytest.raises(
+        DriverClosed, match="delivery became uncertain.*refusing to replay"
+    ):
         UhidTouch(fa, rng=random.Random(4)).swipe(540, 1700, 540, 700)
     assert sum(1 for c in fa.shell_calls if c.startswith("hid ")) == 1
     # Cleanup is now PART OF the one compound command sent for `hid` (see _run_gesture's
@@ -289,7 +312,7 @@ def test_hid_failure_cause_chain_names_hid_not_the_folded_in_cleanup():
 
     assert isinstance(caught.value.__cause__, AdbError)
     assert "hid failed" in str(caught.value.__cause__)
-    assert sum(1 for c in fa.shell_calls if c.startswith("hid ")) == 1          # no replay
+    assert sum(1 for c in fa.shell_calls if c.startswith("hid ")) == 1  # no replay
 
 
 def test_compound_shell_command_preserves_hid_exit_code_regardless_of_rm_outcome():
@@ -322,8 +345,8 @@ def test_compound_shell_command_preserves_hid_exit_code_regardless_of_rm_outcome
     # `hid ...; rm -f ...` -- no `$?` capture -- really does leak rm -f's exit status instead of
     # hid's, proving the assertions above actually distinguish the safe shape from the unsafe
     # one rather than passing no matter which is used.
-    naive = "false; true"          # hid "fails", rm -f "succeeds"
-    assert run(naive) == 0   # the bug: hid's failure vanishes
+    naive = "false; true"  # hid "fails", rm -f "succeeds"
+    assert run(naive) == 0  # the bug: hid's failure vanishes
 
 
 # --- per-gesture timing ledger (2026-08-23, one level down from hinge.py's own) --------
@@ -340,8 +363,12 @@ def test_swipe_records_the_named_timing_buckets_when_given_a_stamps_dict():
     # `rm -f` collapsed into one remote call, so there is no separate "uhid_cleanup_s" bucket
     # to report any more -- pinned here by the exact-set equality below, not just an absence
     # check, so a regression that reintroduces a standalone cleanup bucket fails this test).
-    assert set(stamps) == {"uhid_plan_swipe_s", "uhid_script_build_s", "uhid_write_file_s",
-                          "uhid_hid_run_s"}
+    assert set(stamps) == {
+        "uhid_plan_swipe_s",
+        "uhid_script_build_s",
+        "uhid_write_file_s",
+        "uhid_hid_run_s",
+    }
     assert all(v >= 0.0 for v in stamps.values())
 
 
@@ -353,8 +380,13 @@ def test_scroll_up_adds_its_own_screen_size_bucket_on_top_of_swipes(monkeypatch)
     drv.scroll_up(_timing=stamps)
 
     assert "screen_size_s" in stamps
-    assert set(stamps) >= {"screen_size_s", "uhid_plan_swipe_s", "uhid_script_build_s",
-                          "uhid_write_file_s", "uhid_hid_run_s"}
+    assert set(stamps) >= {
+        "screen_size_s",
+        "uhid_plan_swipe_s",
+        "uhid_script_build_s",
+        "uhid_write_file_s",
+        "uhid_hid_run_s",
+    }
     assert "uhid_cleanup_s" not in stamps
 
 
@@ -404,6 +436,7 @@ def test_gesture_file_write_may_retry_before_any_hid_delivery(monkeypatch):
 # (a different module, the identical shape: a long-lived Popen this driver owns).
 # =====================================================================================
 
+
 def _cmds_from_strings(lines: list) -> list:
     """Same job as this file's `_cmds(data: bytes)` above, for PersistentUhidTouch's
     str-mode stdin writes instead of UhidTouch's one-shot bytes payload: `lines` is every
@@ -415,7 +448,8 @@ def _cmds_from_strings(lines: list) -> list:
 def _popen_must_not_be_called(*_a, **_k):
     raise AssertionError(
         "subprocess.Popen must not be called on this path (a real adb process would "
-        "otherwise be spawned by this test)")
+        "otherwise be spawned by this test)"
+    )
 
 
 class _FakePersistentStdin:
@@ -451,14 +485,24 @@ class _FakePersistentPopen:
     subprocess. `start_alive=False` is the simpler "already dead from the very first check"
     case (dies during open()'s own registration/enumeration window)."""
 
-    instances: list = []   # every instance constructed since the last `.clear()` -- lets a
+    instances: list = []  # every instance constructed since the last `.clear()` -- lets a
     # test assert exactly one process was ever spawned for a whole session (no re-registration).
 
-    def __init__(self, argv, *, start_alive: bool = True, die_after_polls: int | None = None,
-                 stdin_fail_after: int | None = None, stdin_raise_type=BrokenPipeError, **kwargs):
+    def __init__(
+        self,
+        argv,
+        *,
+        start_alive: bool = True,
+        die_after_polls: int | None = None,
+        stdin_fail_after: int | None = None,
+        stdin_raise_type=BrokenPipeError,
+        **kwargs,
+    ):
         self.argv = list(argv)
         self.kwargs = kwargs
-        self.stdin = _FakePersistentStdin(fail_after=stdin_fail_after, raise_type=stdin_raise_type)
+        self.stdin = _FakePersistentStdin(
+            fail_after=stdin_fail_after, raise_type=stdin_raise_type
+        )
         # The real persistent PTY command deliberately discards its unused output.  Mirroring
         # Popen's `None` stream attributes here makes close() exercise that production shape.
         self.stdout = None
@@ -472,7 +516,10 @@ class _FakePersistentPopen:
 
     def poll(self):
         self._poll_calls += 1
-        if self._die_after_polls is not None and self._poll_calls >= self._die_after_polls:
+        if (
+            self._die_after_polls is not None
+            and self._poll_calls >= self._die_after_polls
+        ):
             self._alive = False
         return None if self._alive else 1
 
@@ -523,9 +570,9 @@ def test_persistent_open_registers_once_and_gestures_never_reregister(monkeypatc
     drv.swipe(540, 1700, 540, 700)
     drv.swipe(540, 700, 540, 1700)
 
-    assert len(_FakePersistentPopen.instances) == 1        # same process, no re-spawn
+    assert len(_FakePersistentPopen.instances) == 1  # same process, no re-spawn
     gesture_cmds = _cmds_from_strings(proc.stdin.written[before:])
-    assert gesture_cmds                                     # gestures actually wrote something
+    assert gesture_cmds  # gestures actually wrote something
     assert all(c["command"] != "register" for c in gesture_cmds)
 
 
@@ -547,7 +594,9 @@ def test_persistent_two_gestures_write_distinct_report_streams_no_register(monke
     first_reports = [c["report"] for c in first if c["command"] == "report"]
     second_reports = [c["report"] for c in second if c["command"] == "report"]
     assert first_reports and second_reports
-    assert first_reports != second_reports     # different tap coords -> genuinely distinct streams
+    assert (
+        first_reports != second_reports
+    )  # different tap coords -> genuinely distinct streams
 
 
 # --- open() failure modes: all UhidUnavailable, never DriverClosed ---------------------
@@ -572,21 +621,33 @@ def test_persistent_open_raises_uhid_unavailable_when_popen_cannot_start(monkeyp
         PersistentUhidTouch(FakeAdb()).open()
 
 
-def test_persistent_open_raises_uhid_unavailable_when_registration_write_fails(monkeypatch):
+def test_persistent_open_raises_uhid_unavailable_when_registration_write_fails(
+    monkeypatch,
+):
     monkeypatch.setattr(
-        uhid.subprocess, "Popen", functools.partial(_FakePersistentPopen, stdin_fail_after=0))
+        uhid.subprocess,
+        "Popen",
+        functools.partial(_FakePersistentPopen, stdin_fail_after=0),
+    )
 
     with pytest.raises(UhidUnavailable, match="rejected registration"):
         PersistentUhidTouch(FakeAdb()).open()
 
     proc = _FakePersistentPopen.instances[0]
-    assert proc.kill_called      # the half-registered process is torn down, not left dangling
+    assert (
+        proc.kill_called
+    )  # the half-registered process is torn down, not left dangling
 
 
-def test_persistent_open_raises_uhid_unavailable_when_process_dies_during_enumerate(monkeypatch):
+def test_persistent_open_raises_uhid_unavailable_when_process_dies_during_enumerate(
+    monkeypatch,
+):
     _quiet_sleep(monkeypatch)
     monkeypatch.setattr(
-        uhid.subprocess, "Popen", functools.partial(_FakePersistentPopen, start_alive=False))
+        uhid.subprocess,
+        "Popen",
+        functools.partial(_FakePersistentPopen, start_alive=False),
+    )
 
     with pytest.raises(UhidUnavailable, match="exited during registration"):
         PersistentUhidTouch(FakeAdb()).open()
@@ -598,17 +659,22 @@ def test_persistent_gesture_succeeds_silently_when_process_stays_alive(monkeypat
     monkeypatch.setattr(uhid.subprocess, "Popen", _FakePersistentPopen)
     drv = PersistentUhidTouch(FakeAdb(), rng=random.Random(3))
     drv.open()
-    drv.swipe(540, 1700, 540, 700)          # must not raise
-    drv.tap(540, 1200)                       # must not raise
+    drv.swipe(540, 1700, 540, 700)  # must not raise
+    drv.tap(540, 1200)  # must not raise
 
 
-def test_persistent_death_after_gesture_marks_session_dead_and_next_call_never_writes(monkeypatch):
+def test_persistent_death_after_gesture_marks_session_dead_and_next_call_never_writes(
+    monkeypatch,
+):
     _quiet_sleep(monkeypatch)
     # poll() call #1 is open()'s own post-enumerate check (must read alive); #2 is the NEXT
     # gesture's guard check (must also still read alive, or delivery would never be
     # attempted); #3 is that same gesture's post-wait check, where death is revealed.
     monkeypatch.setattr(
-        uhid.subprocess, "Popen", functools.partial(_FakePersistentPopen, die_after_polls=3))
+        uhid.subprocess,
+        "Popen",
+        functools.partial(_FakePersistentPopen, die_after_polls=3),
+    )
     drv = PersistentUhidTouch(FakeAdb(), rng=random.Random(4))
     drv.open()
     proc = _FakePersistentPopen.instances[0]
@@ -625,22 +691,28 @@ def test_persistent_death_after_gesture_marks_session_dead_and_next_call_never_w
     assert len(proc.stdin.written) == written_after_death
 
 
-def test_persistent_write_failure_marks_session_dead_and_next_call_never_writes(monkeypatch):
+def test_persistent_write_failure_marks_session_dead_and_next_call_never_writes(
+    monkeypatch,
+):
     _quiet_sleep(monkeypatch)
     monkeypatch.setattr(uhid.subprocess, "Popen", _FakePersistentPopen)
     drv = PersistentUhidTouch(FakeAdb(), rng=random.Random(5))
     drv.open()
     proc = _FakePersistentPopen.instances[0]
     written_after_open = len(proc.stdin.written)
-    proc.stdin._fail_after = 0     # every write from here on raises BrokenPipeError
+    proc.stdin._fail_after = 0  # every write from here on raises BrokenPipeError
 
     with pytest.raises(DriverClosed, match="stdin write"):
         drv.swipe(540, 1700, 540, 700)
-    assert len(proc.stdin.written) == written_after_open   # nothing from this gesture landed
+    assert (
+        len(proc.stdin.written) == written_after_open
+    )  # nothing from this gesture landed
 
     with pytest.raises(DriverClosed, match="already died"):
         drv.swipe(540, 700, 540, 1700)
-    assert len(proc.stdin.written) == written_after_open   # still nothing -- no retry, no reopen
+    assert (
+        len(proc.stdin.written) == written_after_open
+    )  # still nothing -- no retry, no reopen
 
 
 def test_persistent_run_gesture_empty_samples_is_a_true_noop(monkeypatch):
@@ -669,10 +741,14 @@ def test_persistent_gesture_flush_delay_matches_uhid_touchs_jittered_range(monke
         mark = len(proc.stdin.written)
         drv.swipe(540, 1700, 540, 700)
         cmds = _cmds_from_strings(proc.stdin.written[mark:])
-        seen.add(cmds[-1]["duration"])     # the trailing flush delay is always the last command
+        seen.add(
+            cmds[-1]["duration"]
+        )  # the trailing flush delay is always the last command
 
-    assert len(seen) > 5                                              # genuinely jittered
-    assert all(drv.flush_ms <= v <= drv.flush_ms + 90 for v in seen)   # never below the safe baseline
+    assert len(seen) > 5  # genuinely jittered
+    assert all(
+        drv.flush_ms <= v <= drv.flush_ms + 90 for v in seen
+    )  # never below the safe baseline
 
 
 # --- the gesture surface is ONE surface, and the shipped transport is the tested one -----
@@ -684,16 +760,22 @@ def test_persistent_gesture_flush_delay_matches_uhid_touchs_jittered_range(monke
 # directions. The identity test below is what makes the drift impossible; the two after it are
 # the coverage that would have caught it anyway.
 
+
 def test_both_uhid_transports_are_literally_the_same_gesture_surface():
     """`touch_backend: uhid` is documented as the instant revert to the proven per-gesture
     transport, which is only true while the two emit the same touch signature. The humanization
     (Fitts-law duration scaling, HINGE-04 x-column jitter, the plan_swipe parameters) is
     therefore ONE function each, shared by inheritance, not two that happen to match today."""
     for method in ("tap", "swipe", "scroll_up"):
-        assert getattr(UhidTouch, method) is getattr(PersistentUhidTouch, method), method
-        assert method not in UhidTouch.__dict__, f"{method} was re-overridden on UhidTouch"
-        assert method not in PersistentUhidTouch.__dict__, \
+        assert getattr(UhidTouch, method) is getattr(PersistentUhidTouch, method), (
+            method
+        )
+        assert method not in UhidTouch.__dict__, (
+            f"{method} was re-overridden on UhidTouch"
+        )
+        assert method not in PersistentUhidTouch.__dict__, (
             f"{method} was re-overridden on PersistentUhidTouch"
+        )
     # ...and delivery, the one thing they genuinely differ on, IS overridden by each of them.
     assert "_run_gesture" in UhidTouch.__dict__
     assert "_run_gesture" in PersistentUhidTouch.__dict__
@@ -743,7 +825,9 @@ def test_persistent_swipe_scales_its_duration_and_clamps_at_both_ends(monkeypatc
         return sum(1 for c in cmds if c["command"] == "report")
 
     default, short = reports_for(450), reports_for(150)
-    assert short < default, "a shorter requested duration must deliver a shorter gesture"
+    assert short < default, (
+        "a shorter requested duration must deliver a shorter gesture"
+    )
     # The LOW clamp: 0.20 * 450 = 90ms is the floor, so anything under it plans identically
     # and a 1ms request can never collapse the gesture to a teleport (humanized-input rule).
     assert reports_for(90) == reports_for(45) == reports_for(1) < short
@@ -754,11 +838,13 @@ def test_persistent_swipe_scales_its_duration_and_clamps_at_both_ends(monkeypatc
 # --- close(): idempotent, best-effort, never raises -------------------------------------
 def test_persistent_close_is_idempotent_and_never_raises_even_when_never_opened():
     drv = PersistentUhidTouch(FakeAdb())
-    drv.close()     # never opened at all -- must not raise
-    drv.close()     # idempotent
+    drv.close()  # never opened at all -- must not raise
+    drv.close()  # idempotent
 
 
-def test_persistent_close_kills_and_waits_on_the_process_and_closes_its_pipes(monkeypatch):
+def test_persistent_close_kills_and_waits_on_the_process_and_closes_its_pipes(
+    monkeypatch,
+):
     _quiet_sleep(monkeypatch)
     monkeypatch.setattr(uhid.subprocess, "Popen", _FakePersistentPopen)
     drv = PersistentUhidTouch(FakeAdb())
@@ -771,7 +857,7 @@ def test_persistent_close_kills_and_waits_on_the_process_and_closes_its_pipes(mo
     assert proc.stdin.closed
     assert proc.stdout is None and proc.stderr is None
 
-    drv.close()     # idempotent: second close is a pure no-op, not a second kill/wait
+    drv.close()  # idempotent: second close is a pure no-op, not a second kill/wait
     assert proc.wait_calls == 1
 
 
@@ -789,5 +875,5 @@ def test_persistent_close_swallows_kill_and_wait_failures(monkeypatch):
     drv = PersistentUhidTouch(FakeAdb())
     drv.open()
 
-    drv.close()     # must not raise despite kill()/wait() both blowing up
-    assert drv._proc is None    # still torn down from this object's point of view
+    drv.close()  # must not raise despite kill()/wait() both blowing up
+    assert drv._proc is None  # still torn down from this object's point of view

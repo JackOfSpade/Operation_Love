@@ -32,6 +32,7 @@ states, page geometry and counts (never a pixel, a name, or a fingerprint), and 
 frames are absent, which is the same convention tests/test_hinge_observe_release.py and
 tests/test_hinge_video_bound_auto.py already use for real-pixel replays.
 """
+
 import json
 from io import BytesIO
 from pathlib import Path
@@ -43,11 +44,11 @@ from PIL import Image
 from operation_love.drivers import hinge, scroll_top
 from operation_love.drivers.hinge import HINGE_SPEC
 
-_W, _H = 1080, 2400                        # the calibrated Pixel 7a screencap size
-_IB = HINGE_SPEC.identity_band             # (0.10, 0.048, 0.80, 0.094) -> x 108..864, y 115..226
-_GRID = scroll_top._FINGERPRINT_GRID       # (16, 4)
-_CONFIRM = scroll_top._CONFIRM_MAX_DIST    # 3.0
-_REFUTE = scroll_top._REFUTE_MIN_DIST      # 9.0
+_W, _H = 1080, 2400  # the calibrated Pixel 7a screencap size
+_IB = HINGE_SPEC.identity_band  # (0.10, 0.048, 0.80, 0.094) -> x 108..864, y 115..226
+_GRID = scroll_top._FINGERPRINT_GRID  # (16, 4)
+_CONFIRM = scroll_top._CONFIRM_MAX_DIST  # 3.0
+_REFUTE = scroll_top._REFUTE_MIN_DIST  # 9.0
 
 # Mid-grey, so a reference offset by +-12 levels stays inside 0..255 and the offset the test asked
 # for is the offset the metric sees. A band painted near white would clip and quietly shrink the
@@ -81,6 +82,7 @@ def _frame(band_paint=None, *, background=40) -> bytes:
 def _flat(value):
     def paint(band):
         band[:, :] = value
+
     return paint
 
 
@@ -91,9 +93,13 @@ def _gradient(top_value, per_row, shift_rows=0):
     fingerprint by exactly `N * per_row`, so "the same chrome redrawn a few pixels lower" has an
     exactly known cost instead of a plausible one.
     """
+
     def paint(band):
         rows = np.arange(band.shape[0], dtype="float64") - shift_rows
-        band[:, :] = np.clip(top_value + rows * per_row, 0, 255).astype("uint8")[:, None]
+        band[:, :] = np.clip(top_value + rows * per_row, 0, 255).astype("uint8")[
+            :, None
+        ]
+
     return paint
 
 
@@ -111,10 +117,12 @@ def _offset(fingerprint, delta) -> tuple:
 # The three outcomes.
 # =====================================================================================
 
+
 def test_a_band_matching_the_reference_confirms_the_top():
     frame = _frame(_flat(_BASE))
     verdict = scroll_top.confirm_scroll_top(
-        frame, identity_band=_IB, fingerprint=_fingerprint_of(frame), grid=_GRID)
+        frame, identity_band=_IB, fingerprint=_fingerprint_of(frame), grid=_GRID
+    )
 
     assert verdict.state == scroll_top.SCROLL_TOP_CONFIRMED
     assert verdict.confirmed is True
@@ -126,10 +134,11 @@ def test_a_band_matching_the_reference_confirms_the_top():
 
 def test_a_band_far_from_the_reference_confirms_NOT_at_the_top():
     frame = _frame(_flat(_BASE))
-    reference = _offset(_fingerprint_of(frame), 12)      # 12.0 > refute_min 9.0
+    reference = _offset(_fingerprint_of(frame), 12)  # 12.0 > refute_min 9.0
 
     verdict = scroll_top.confirm_scroll_top(
-        frame, identity_band=_IB, fingerprint=reference, grid=_GRID)
+        frame, identity_band=_IB, fingerprint=reference, grid=_GRID
+    )
 
     assert verdict.state == scroll_top.SCROLL_TOP_REFUTED
     assert verdict.refuted is True
@@ -141,10 +150,11 @@ def test_a_band_between_the_two_bounds_answers_cannot_tell():
     """The outcome the gate exists to keep distinct: 5.0 is too far to be the filter-chips row
     and too near to be positively something else."""
     frame = _frame(_flat(_BASE))
-    reference = _offset(_fingerprint_of(frame), 5)       # 3.0 < 5.0 < 9.0
+    reference = _offset(_fingerprint_of(frame), 5)  # 3.0 < 5.0 < 9.0
 
     verdict = scroll_top.confirm_scroll_top(
-        frame, identity_band=_IB, fingerprint=reference, grid=_GRID)
+        frame, identity_band=_IB, fingerprint=reference, grid=_GRID
+    )
 
     assert verdict.state == scroll_top.SCROLL_TOP_UNKNOWN
     assert verdict.unknown is True
@@ -159,10 +169,13 @@ def test_cannot_tell_is_never_reported_as_at_the_top():
     frame = _frame(_flat(_BASE))
     base = _fingerprint_of(frame)
 
-    for delta, expected in ((5, scroll_top.SCROLL_TOP_UNKNOWN),
-                            (12, scroll_top.SCROLL_TOP_REFUTED)):
+    for delta, expected in (
+        (5, scroll_top.SCROLL_TOP_UNKNOWN),
+        (12, scroll_top.SCROLL_TOP_REFUTED),
+    ):
         verdict = scroll_top.confirm_scroll_top(
-            frame, identity_band=_IB, fingerprint=_offset(base, delta), grid=_GRID)
+            frame, identity_band=_IB, fingerprint=_offset(base, delta), grid=_GRID
+        )
         assert verdict.state == expected
         assert verdict.confirmed is False
 
@@ -174,13 +187,23 @@ def test_the_two_bounds_are_inclusive_on_the_confirming_side_and_on_the_refuting
     base = _fingerprint_of(frame)
 
     at_confirm = scroll_top.confirm_scroll_top(
-        frame, identity_band=_IB, fingerprint=_offset(base, int(_CONFIRM)), grid=_GRID)
+        frame, identity_band=_IB, fingerprint=_offset(base, int(_CONFIRM)), grid=_GRID
+    )
     just_past = scroll_top.confirm_scroll_top(
-        frame, identity_band=_IB, fingerprint=_offset(base, int(_CONFIRM) + 1), grid=_GRID)
+        frame,
+        identity_band=_IB,
+        fingerprint=_offset(base, int(_CONFIRM) + 1),
+        grid=_GRID,
+    )
     at_refute = scroll_top.confirm_scroll_top(
-        frame, identity_band=_IB, fingerprint=_offset(base, int(_REFUTE)), grid=_GRID)
+        frame, identity_band=_IB, fingerprint=_offset(base, int(_REFUTE)), grid=_GRID
+    )
     just_under = scroll_top.confirm_scroll_top(
-        frame, identity_band=_IB, fingerprint=_offset(base, int(_REFUTE) - 1), grid=_GRID)
+        frame,
+        identity_band=_IB,
+        fingerprint=_offset(base, int(_REFUTE) - 1),
+        grid=_GRID,
+    )
 
     assert at_confirm.distance == _CONFIRM and at_confirm.confirmed
     assert just_past.unknown
@@ -203,6 +226,7 @@ def test_no_declared_identity_band_answers_cannot_tell_rather_than_raising():
 # Fail loud: a caller cannot proceed on anything but a confirmation by accident.
 # =====================================================================================
 
+
 def test_the_verdict_has_no_truth_value():
     """`if confirm_scroll_top(...):` is the most natural way to write the off-by-N this module
     exists to prevent — a frozen dataclass is truthy, so it would read every outcome as a top."""
@@ -211,7 +235,8 @@ def test_the_verdict_has_no_truth_value():
 
     for delta in (0, 5, 12):
         verdict = scroll_top.confirm_scroll_top(
-            frame, identity_band=_IB, fingerprint=_offset(base, delta), grid=_GRID)
+            frame, identity_band=_IB, fingerprint=_offset(base, delta), grid=_GRID
+        )
         with pytest.raises(TypeError) as excinfo:
             bool(verdict)
         assert "no truth value" in str(excinfo.value)
@@ -221,13 +246,16 @@ def test_the_verdict_has_no_truth_value():
 def test_require_scroll_top_returns_the_verdict_on_a_confirmed_top():
     frame = _frame(_flat(_BASE))
     verdict = scroll_top.require_scroll_top(
-        frame, identity_band=_IB, fingerprint=_fingerprint_of(frame), grid=_GRID)
+        frame, identity_band=_IB, fingerprint=_fingerprint_of(frame), grid=_GRID
+    )
 
     assert verdict.confirmed is True
 
 
-@pytest.mark.parametrize("delta,state", [(5, scroll_top.SCROLL_TOP_UNKNOWN),
-                                         (12, scroll_top.SCROLL_TOP_REFUTED)])
+@pytest.mark.parametrize(
+    "delta,state",
+    [(5, scroll_top.SCROLL_TOP_UNKNOWN), (12, scroll_top.SCROLL_TOP_REFUTED)],
+)
 def test_require_scroll_top_raises_on_cannot_tell_and_on_refuted_alike(delta, state):
     """Doc 5.5: "treat failure to confirm as a hard stop". To a caller about to count hearts,
     "cannot tell" and "definitely not" are the same thing — neither may proceed."""
@@ -236,7 +264,8 @@ def test_require_scroll_top_raises_on_cannot_tell_and_on_refuted_alike(delta, st
 
     with pytest.raises(scroll_top.ScrollTopUnconfirmed) as excinfo:
         scroll_top.require_scroll_top(
-            frame, identity_band=_IB, fingerprint=reference, grid=_GRID)
+            frame, identity_band=_IB, fingerprint=reference, grid=_GRID
+        )
 
     assert excinfo.value.verdict.state == state
     assert "off-by-N" in str(excinfo.value)
@@ -252,6 +281,7 @@ def test_require_scroll_top_raises_when_no_identity_band_is_declared():
 # =====================================================================================
 # "Could not look" is not a verdict.
 # =====================================================================================
+
 
 def test_undecodable_bytes_raise_rather_than_answering_cannot_tell():
     """`SCROLL_TOP_UNKNOWN` means "I looked and could not tell". A broken decode must not be able
@@ -277,8 +307,10 @@ def test_a_band_the_driver_could_not_read_raises_rather_than_answering(monkeypat
     same mechanism: a real, decodable frame whose crop step refuses must still raise, never
     silently answer 'cannot tell'.
     """
+
     def boom(*_a, **_k):
         raise RuntimeError("simulated crop-and-resize failure")
+
     monkeypatch.setattr(hinge, "_band_of_image", boom)
 
     with pytest.raises(scroll_top.ScrollTopError):
@@ -288,7 +320,8 @@ def test_a_band_the_driver_could_not_read_raises_rather_than_answering(monkeypat
 def test_a_fingerprint_that_does_not_match_its_grid_raises():
     with pytest.raises(scroll_top.ScrollTopError) as excinfo:
         scroll_top.confirm_scroll_top(
-            _frame(_flat(_BASE)), identity_band=_IB, fingerprint=(1, 2, 3), grid=_GRID)
+            _frame(_flat(_BASE)), identity_band=_IB, fingerprint=(1, 2, 3), grid=_GRID
+        )
 
     assert "needs 64" in str(excinfo.value)
 
@@ -298,7 +331,8 @@ def test_bounds_that_collapse_the_dead_zone_raise():
     becomes unreachable, which is the gate silently reverting to a two-valued answer."""
     with pytest.raises(scroll_top.ScrollTopError) as excinfo:
         scroll_top.confirm_scroll_top(
-            _frame(_flat(_BASE)), identity_band=_IB, confirm_max=9.0, refute_min=9.0)
+            _frame(_flat(_BASE)), identity_band=_IB, confirm_max=9.0, refute_min=9.0
+        )
 
     assert "cannot tell" in str(excinfo.value)
 
@@ -314,6 +348,7 @@ def test_fingerprint_distance_refuses_mismatched_and_empty_inputs():
 # The signal itself: what it tolerates, what it does not, and what the shipped constant is.
 # =====================================================================================
 
+
 def test_the_same_chrome_redrawn_a_few_pixels_lower_still_confirms():
     """The reason the grid is 16x4 rather than the driver's 64x16: a banner appearing or a font
     metric changing moves this strip a few px, and that must read as "the same chrome, moved",
@@ -322,7 +357,8 @@ def test_the_same_chrome_redrawn_a_few_pixels_lower_still_confirms():
     shifted = _frame(_gradient(160, 0.5, shift_rows=4))
 
     verdict = scroll_top.confirm_scroll_top(
-        shifted, identity_band=_IB, fingerprint=reference, grid=_GRID)
+        shifted, identity_band=_IB, fingerprint=reference, grid=_GRID
+    )
 
     assert verdict.confirmed is True
     assert verdict.distance == pytest.approx(2.0, abs=0.25)
@@ -346,7 +382,8 @@ def test_the_control_a_shift_large_enough_to_matter_does_not_confirm():
     shifted = _frame(_gradient(15, 2.0, shift_rows=8))
 
     verdict = scroll_top.confirm_scroll_top(
-        shifted, identity_band=_IB, fingerprint=reference, grid=_GRID)
+        shifted, identity_band=_IB, fingerprint=reference, grid=_GRID
+    )
 
     assert verdict.refuted is True
     assert verdict.distance == pytest.approx(11.0, abs=0.5)
@@ -386,7 +423,8 @@ def test_the_metric_is_the_same_one_the_driver_already_uses_on_this_band():
     nb = hinge._band(b, _IB, _GRID)
 
     assert scroll_top.fingerprint_distance(fa, fb) == pytest.approx(
-        hinge._band_dist(na, nb), abs=1e-9)
+        hinge._band_dist(na, nb), abs=1e-9
+    )
 
 
 def test_band_fingerprint_reads_the_declared_band_at_the_declared_grid(monkeypatch):
@@ -418,8 +456,11 @@ def test_the_default_grid_and_reference_are_used_when_the_caller_names_neither()
     accidentally run against whatever reference happened to be lying around."""
     frame = _frame(_flat(_BASE))
     explicit = scroll_top.confirm_scroll_top(
-        frame, identity_band=_IB, fingerprint=scroll_top._SCROLL_TOP_BAND_FINGERPRINT,
-        grid=scroll_top._FINGERPRINT_GRID)
+        frame,
+        identity_band=_IB,
+        fingerprint=scroll_top._SCROLL_TOP_BAND_FINGERPRINT,
+        grid=scroll_top._FINGERPRINT_GRID,
+    )
     implicit = scroll_top.confirm_scroll_top(frame, identity_band=_IB)
 
     assert implicit == explicit
@@ -452,19 +493,26 @@ def test_all_shipped_fingerprint_variants_match_grid_and_are_in_range():
 def test_either_shipped_variant_confirms_scroll_top_under_default_matching(monkeypatch):
     for fp in scroll_top._SCROLL_TOP_BAND_FINGERPRINTS:
         arr = np.array(fp, dtype="uint8").reshape(_GRID[1], _GRID[0])
-        monkeypatch.setattr(hinge, "_band_of_image", lambda _im, _rect, _size, arr=arr: arr)
+        monkeypatch.setattr(
+            hinge, "_band_of_image", lambda _im, _rect, _size, arr=arr: arr
+        )
         verdict = scroll_top.confirm_scroll_top(_frame(_flat(_BASE)), identity_band=_IB)
         assert verdict.confirmed is True
         assert verdict.distance == 0.0
 
 
-@pytest.mark.parametrize("fp", [
-    scroll_top._SCROLL_TOP_BAND_FINGERPRINT_SIGNALS,
-    scroll_top._SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_UNSELECTED,
-    scroll_top._SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_SELECTED_CURRENT,
-    scroll_top._SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_CURRENT,
-])
-def test_hingex_signals_chip_variants_are_default_scroll_top_candidates(monkeypatch, fp):
+@pytest.mark.parametrize(
+    "fp",
+    [
+        scroll_top._SCROLL_TOP_BAND_FINGERPRINT_SIGNALS,
+        scroll_top._SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_UNSELECTED,
+        scroll_top._SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_SELECTED_CURRENT,
+        scroll_top._SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_CURRENT,
+    ],
+)
+def test_hingex_signals_chip_variants_are_default_scroll_top_candidates(
+    monkeypatch, fp
+):
     """Selected and unselected HingeX Signals chips change the fixed filter strip.
 
     The accompanying Most Compatible banner is below ``identity_band``.  This regression
@@ -487,27 +535,96 @@ def test_observed_selected_signals_top_is_not_rejected_into_the_dead_zone(monkey
     This is the filter-strip fingerprint only: no profile pixels or identifying data are stored.
     """
     observed = (
-        254, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
-        255, 200, 168, 168, 203, 251, 232, 232, 232, 248, 238, 232, 233, 231, 242, 246,
-        227, 87, 78, 75, 85, 223, 237, 237, 240, 232, 235, 230, 231, 239, 235, 233,
-        215, 88, 126, 120, 89, 218, 221, 196, 232, 233, 237, 198, 193, 226, 235, 236,
+        254,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        200,
+        168,
+        168,
+        203,
+        251,
+        232,
+        232,
+        232,
+        248,
+        238,
+        232,
+        233,
+        231,
+        242,
+        246,
+        227,
+        87,
+        78,
+        75,
+        85,
+        223,
+        237,
+        237,
+        240,
+        232,
+        235,
+        230,
+        231,
+        239,
+        235,
+        233,
+        215,
+        88,
+        126,
+        120,
+        89,
+        218,
+        221,
+        196,
+        232,
+        233,
+        237,
+        198,
+        193,
+        226,
+        235,
+        236,
     )
     arr = np.array(observed, dtype="uint8").reshape(_GRID[1], _GRID[0])
     monkeypatch.setattr(hinge, "_band_of_image", lambda _im, _rect, _size: arr)
 
-    assert scroll_top.fingerprint_distance(
-        observed, scroll_top._SCROLL_TOP_BAND_FINGERPRINT_SIGNALS) == 3.28125
+    assert (
+        scroll_top.fingerprint_distance(
+            observed, scroll_top._SCROLL_TOP_BAND_FINGERPRINT_SIGNALS
+        )
+        == 3.28125
+    )
     verdict = scroll_top.confirm_scroll_top(_frame(_flat(_BASE)), identity_band=_IB)
 
     assert verdict.confirmed is True
     assert verdict.distance == 0.0
 
 
-@pytest.mark.parametrize("fp", [
-    scroll_top._SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_DARK_PILL,
-    scroll_top._SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_DARK_PILL_B,
-])
-def test_hingex_signals_dark_pill_variants_are_default_scroll_top_candidates(monkeypatch, fp):
+@pytest.mark.parametrize(
+    "fp",
+    [
+        scroll_top._SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_DARK_PILL,
+        scroll_top._SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_DARK_PILL_B,
+    ],
+)
+def test_hingex_signals_dark_pill_variants_are_default_scroll_top_candidates(
+    monkeypatch, fp
+):
     """Dark/charcoal Signals pill rendering (Variants 7 & 8) must be registered candidates.
 
     Regression for the 2026-08-19 Lana capture (run ce1de851af2e) where the dark-pill
@@ -569,14 +686,78 @@ def test_observed_signals_purple_banner_top_is_not_refused_in_dead_zone(monkeypa
     profile-independent filter-strip fingerprint; no dating-profile pixels are stored here.
     """
     observed = (
-        255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
-        243, 186, 181, 184, 241, 243, 232, 232, 239, 249, 233, 233, 233, 233, 249, 237,
-        159,  70,  72,  64, 149, 242, 236, 242, 236, 232, 234, 233, 236, 240, 232, 235,
-        138,  99, 130, 102, 130, 246, 190, 214, 234, 235, 220, 182, 206, 231, 232, 235,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        243,
+        186,
+        181,
+        184,
+        241,
+        243,
+        232,
+        232,
+        239,
+        249,
+        233,
+        233,
+        233,
+        233,
+        249,
+        237,
+        159,
+        70,
+        72,
+        64,
+        149,
+        242,
+        236,
+        242,
+        236,
+        232,
+        234,
+        233,
+        236,
+        240,
+        232,
+        235,
+        138,
+        99,
+        130,
+        102,
+        130,
+        246,
+        190,
+        214,
+        234,
+        235,
+        220,
+        182,
+        206,
+        231,
+        232,
+        235,
     )
     assert observed == scroll_top._SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_PURPLE_BANNER
-    assert scroll_top.fingerprint_distance(
-        observed, scroll_top._SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_DARK_PILL) == 8.953125
+    assert (
+        scroll_top.fingerprint_distance(
+            observed, scroll_top._SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_DARK_PILL
+        )
+        == 8.953125
+    )
     arr = np.array(observed, dtype="uint8").reshape(_GRID[1], _GRID[0])
     monkeypatch.setattr(hinge, "_band_of_image", lambda _im, _rect, _size: arr)
 
@@ -586,7 +767,9 @@ def test_observed_signals_purple_banner_top_is_not_refused_in_dead_zone(monkeypa
     assert verdict.distance == 0.0
 
 
-def test_observed_hinge_10_0_1_signals_unselected_top_is_not_refused_in_dead_zone(monkeypatch):
+def test_observed_hinge_10_0_1_signals_unselected_top_is_not_refused_in_dead_zone(
+    monkeypatch,
+):
     """The Hinge Android app auto-updating 9.134.0 -> 10.0.1 redrew the unselected-Signals chip
     row and pushed it into the dead zone, not past the refute bound.
 
@@ -600,14 +783,78 @@ def test_observed_hinge_10_0_1_signals_unselected_top_is_not_refused_in_dead_zon
     dating-profile pixels are stored here.
     """
     observed = (
-        254, 254, 253, 253, 254, 255, 251, 250, 251, 255, 253, 250, 250, 250, 254, 255,
-        253, 250, 252, 253, 251, 245, 233, 236, 233, 242, 235, 236, 236, 234, 238, 240,
-        247, 241, 214, 216, 244, 241, 228, 222, 236, 233, 237, 215, 215, 232, 236, 236,
-        247, 247, 214, 220, 245, 241, 231, 218, 242, 234, 240, 223, 216, 240, 237, 236,
+        254,
+        254,
+        253,
+        253,
+        254,
+        255,
+        251,
+        250,
+        251,
+        255,
+        253,
+        250,
+        250,
+        250,
+        254,
+        255,
+        253,
+        250,
+        252,
+        253,
+        251,
+        245,
+        233,
+        236,
+        233,
+        242,
+        235,
+        236,
+        236,
+        234,
+        238,
+        240,
+        247,
+        241,
+        214,
+        216,
+        244,
+        241,
+        228,
+        222,
+        236,
+        233,
+        237,
+        215,
+        215,
+        232,
+        236,
+        236,
+        247,
+        247,
+        214,
+        220,
+        245,
+        241,
+        231,
+        218,
+        242,
+        234,
+        240,
+        223,
+        216,
+        240,
+        237,
+        236,
     )
     assert observed == scroll_top._SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_UNSELECTED_10_0_1
-    assert scroll_top.fingerprint_distance(
-        observed, scroll_top._SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_UNSELECTED) == 6.671875
+    assert (
+        scroll_top.fingerprint_distance(
+            observed, scroll_top._SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_UNSELECTED
+        )
+        == 6.671875
+    )
     assert scroll_top._CONFIRM_MAX_DIST < 6.671875 < scroll_top._REFUTE_MIN_DIST
     arr = np.array(observed, dtype="uint8").reshape(_GRID[1], _GRID[0])
     monkeypatch.setattr(hinge, "_band_of_image", lambda _im, _rect, _size: arr)
@@ -618,7 +865,9 @@ def test_observed_hinge_10_0_1_signals_unselected_top_is_not_refused_in_dead_zon
     assert verdict.distance == 0.0
 
 
-def test_observed_current_unselected_signals_top_confirms_after_registration(monkeypatch):
+def test_observed_current_unselected_signals_top_confirms_after_registration(
+    monkeypatch,
+):
     """The 2026-08-24 top chrome was formerly an alignment-sweep dead-zone refusal.
 
     The recorded screen visibly shows Hinge's filter-chip row above the card, but its best
@@ -627,13 +876,75 @@ def test_observed_current_unselected_signals_top_confirms_after_registration(mon
     """
     observed = scroll_top._SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_UNSELECTED_CURRENT
     observed_plus_one_px = (
-        254, 254, 254, 254, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
-        251, 251, 250, 251, 235, 232, 231, 244, 243, 232, 233, 232, 237, 248, 233, 233,
-        231, 237, 244, 242, 235, 236, 241, 233, 234, 232, 232, 238, 237, 232, 233, 230,
-        191, 189, 225, 245, 231, 187, 225, 234, 237, 207, 184, 218, 234, 234, 221, 192,
+        254,
+        254,
+        254,
+        254,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        251,
+        251,
+        250,
+        251,
+        235,
+        232,
+        231,
+        244,
+        243,
+        232,
+        233,
+        232,
+        237,
+        248,
+        233,
+        233,
+        231,
+        237,
+        244,
+        242,
+        235,
+        236,
+        241,
+        233,
+        234,
+        232,
+        232,
+        238,
+        237,
+        232,
+        233,
+        230,
+        191,
+        189,
+        225,
+        245,
+        231,
+        187,
+        225,
+        234,
+        237,
+        207,
+        184,
+        218,
+        234,
+        234,
+        221,
+        192,
     )
     observed_arr = np.array(observed, dtype="uint8").reshape(_GRID[1], _GRID[0])
-    shifted_arr = np.array(observed_plus_one_px, dtype="uint8").reshape(_GRID[1], _GRID[0])
+    shifted_arr = np.array(observed_plus_one_px, dtype="uint8").reshape(
+        _GRID[1], _GRID[0]
+    )
 
     def observed_crop(_image, rect, _size):
         dy_px = round((rect[1] - _IB[1]) * _H)
@@ -644,7 +955,8 @@ def test_observed_current_unselected_signals_top_confirms_after_registration(mon
     # to replay the candidate set that actually existed before Variant 12 was registered.
     old_candidates = scroll_top._SCROLL_TOP_BAND_FINGERPRINTS[:11]
     before = scroll_top.confirm_scroll_top(
-        _frame(_flat(_BASE)), identity_band=_IB, fingerprint=old_candidates)
+        _frame(_flat(_BASE)), identity_band=_IB, fingerprint=old_candidates
+    )
 
     assert before.unknown is True
     assert before.distance == pytest.approx(8.859375)
@@ -657,7 +969,9 @@ def test_observed_current_unselected_signals_top_confirms_after_registration(mon
     assert after.distance == 0.0
 
 
-def test_observed_hinge_10_1_0_unselected_signals_top_confirms_after_registration(monkeypatch):
+def test_observed_hinge_10_1_0_unselected_signals_top_confirms_after_registration(
+    monkeypatch,
+):
     """A read-only 10.1.0 top is a discrete chrome variant, not threshold evidence.
 
     The visibly confirmed Pixel 7a frame has chips above the profile name and first photo; its
@@ -671,7 +985,8 @@ def test_observed_hinge_10_1_0_unselected_signals_top_confirms_after_registratio
     monkeypatch.setattr(hinge, "_band_of_image", lambda _im, _rect, _size: arr)
 
     before = scroll_top.confirm_scroll_top(
-        _frame(_flat(_BASE)), identity_band=_IB, fingerprint=old_candidates)
+        _frame(_flat(_BASE)), identity_band=_IB, fingerprint=old_candidates
+    )
     assert before.unknown is True
     assert before.distance == pytest.approx(7.09375)
     assert scroll_top._CONFIRM_MAX_DIST < before.distance < scroll_top._REFUTE_MIN_DIST
@@ -682,7 +997,9 @@ def test_observed_hinge_10_1_0_unselected_signals_top_confirms_after_registratio
     assert after.distance == 0.0
 
 
-def test_observed_hinge_10_1_0_selected_filter_top_confirms_after_registration(monkeypatch):
+def test_observed_hinge_10_1_0_selected_filter_top_confirms_after_registration(
+    monkeypatch,
+):
     """The selected-filter Age/Height strip is a discrete 10.1.0 top-chrome state.
 
     On the live Pixel 7a its bounded alignment sweep was 6.765625 from every older candidate,
@@ -695,7 +1012,8 @@ def test_observed_hinge_10_1_0_selected_filter_top_confirms_after_registration(m
     monkeypatch.setattr(hinge, "_band_of_image", lambda _im, _rect, _size: arr)
 
     before = scroll_top.confirm_scroll_top(
-        _frame(_flat(_BASE)), identity_band=_IB, fingerprint=old_candidates)
+        _frame(_flat(_BASE)), identity_band=_IB, fingerprint=old_candidates
+    )
     assert before.refuted is True
     assert before.distance == pytest.approx(9.375)
 
@@ -705,7 +1023,9 @@ def test_observed_hinge_10_1_0_selected_filter_top_confirms_after_registration(m
     assert after.distance == 0.0
 
 
-def test_hinge_10_1_0_selected_filter_variant_keeps_synthetic_scrolled_band_refuted(monkeypatch):
+def test_hinge_10_1_0_selected_filter_variant_keeps_synthetic_scrolled_band_refuted(
+    monkeypatch,
+):
     """Variant 14 does not confirm a band a full 16 grey levels away."""
     scrolled = _offset(scroll_top._SCROLL_TOP_BAND_FINGERPRINT_AGE_HEIGHT_10_1_0, -16)
     arr = np.array(scrolled, dtype="uint8").reshape(_GRID[1], _GRID[0])
@@ -724,7 +1044,8 @@ def test_observed_hinge_10_1_0_settled_selected_filter_top_confirms(monkeypatch)
     monkeypatch.setattr(hinge, "_band_of_image", lambda _im, _rect, _size: arr)
 
     before = scroll_top.confirm_scroll_top(
-        _frame(_flat(_BASE)), identity_band=_IB, fingerprint=old_candidates)
+        _frame(_flat(_BASE)), identity_band=_IB, fingerprint=old_candidates
+    )
     assert before.unknown is True
     assert before.distance == pytest.approx(4.53125)
 
@@ -742,7 +1063,8 @@ def test_observed_hinge_10_1_0_alternate_settled_filter_top_confirms(monkeypatch
     monkeypatch.setattr(hinge, "_band_of_image", lambda _im, _rect, _size: arr)
 
     before = scroll_top.confirm_scroll_top(
-        _frame(_flat(_BASE)), identity_band=_IB, fingerprint=old_candidates)
+        _frame(_flat(_BASE)), identity_band=_IB, fingerprint=old_candidates
+    )
     assert before.unknown is True
     assert before.distance == pytest.approx(6.328125)
 
@@ -760,7 +1082,8 @@ def test_observed_hinge_10_1_0_alternate_unselected_signals_top_confirms(monkeyp
     monkeypatch.setattr(hinge, "_band_of_image", lambda _im, _rect, _size: arr)
 
     before = scroll_top.confirm_scroll_top(
-        _frame(_flat(_BASE)), identity_band=_IB, fingerprint=old_candidates)
+        _frame(_flat(_BASE)), identity_band=_IB, fingerprint=old_candidates
+    )
     assert before.unknown is True
     assert before.distance == pytest.approx(6.484375)
 
@@ -782,14 +1105,76 @@ def test_observed_hinge_10_4_0_selected_signals_entry_top_confirms(monkeypatch):
     """
     observed = scroll_top._SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_SELECTED_10_4_0
     observed_plus_two_px = (
-        254, 255, 255, 255, 255, 255, 255, 255, 255, 255, 254, 254, 254, 254, 254, 254,
-        255, 199, 166, 166, 201, 250, 232, 231, 231, 248, 251, 251, 251, 250, 252, 252,
-        226,  85,  76,  73,  83, 223, 237, 237, 239, 237, 245, 230, 232, 240, 248, 250,
-        215,  86, 123, 118,  87, 218, 220, 196, 231, 239, 243, 196, 192, 225, 246, 251,
+        254,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        255,
+        254,
+        254,
+        254,
+        254,
+        254,
+        254,
+        255,
+        199,
+        166,
+        166,
+        201,
+        250,
+        232,
+        231,
+        231,
+        248,
+        251,
+        251,
+        251,
+        250,
+        252,
+        252,
+        226,
+        85,
+        76,
+        73,
+        83,
+        223,
+        237,
+        237,
+        239,
+        237,
+        245,
+        230,
+        232,
+        240,
+        248,
+        250,
+        215,
+        86,
+        123,
+        118,
+        87,
+        218,
+        220,
+        196,
+        231,
+        239,
+        243,
+        196,
+        192,
+        225,
+        246,
+        251,
     )
     old_candidates = scroll_top._SCROLL_TOP_BAND_FINGERPRINTS[:-1]
     arr = np.array(observed, dtype="uint8").reshape(_GRID[1], _GRID[0])
-    shifted_arr = np.array(observed_plus_two_px, dtype="uint8").reshape(_GRID[1], _GRID[0])
+    shifted_arr = np.array(observed_plus_two_px, dtype="uint8").reshape(
+        _GRID[1], _GRID[0]
+    )
 
     def observed_crop(_image, rect, _size):
         dy_px = round((rect[1] - _IB[1]) * _H)
@@ -798,7 +1183,8 @@ def test_observed_hinge_10_4_0_selected_signals_entry_top_confirms(monkeypatch):
     monkeypatch.setattr(hinge, "_band_of_image", observed_crop)
 
     before = scroll_top.confirm_scroll_top(
-        _frame(_flat(_BASE)), identity_band=_IB, fingerprint=old_candidates)
+        _frame(_flat(_BASE)), identity_band=_IB, fingerprint=old_candidates
+    )
     assert before.unknown is True
     assert before.distance == pytest.approx(3.296875)
     assert before.alignment_offset_px == 2
@@ -809,9 +1195,13 @@ def test_observed_hinge_10_4_0_selected_signals_entry_top_confirms(monkeypatch):
     assert after.distance == 0.0
 
 
-def test_hinge_10_4_0_selected_signals_candidate_keeps_a_scrolled_band_refuted(monkeypatch):
+def test_hinge_10_4_0_selected_signals_candidate_keeps_a_scrolled_band_refuted(
+    monkeypatch,
+):
     """The new discrete raster must not make an unrelated sticky/header band permissive."""
-    scrolled = _offset(scroll_top._SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_SELECTED_10_4_0, -16)
+    scrolled = _offset(
+        scroll_top._SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_SELECTED_10_4_0, -16
+    )
     arr = np.array(scrolled, dtype="uint8").reshape(_GRID[1], _GRID[0])
     monkeypatch.setattr(hinge, "_band_of_image", lambda _im, _rect, _size: arr)
 
@@ -824,7 +1214,8 @@ def test_hinge_10_4_0_selected_signals_candidate_keeps_a_scrolled_band_refuted(m
 def test_hinge_10_1_0_variant_keeps_a_synthetic_scrolled_band_refuted(monkeypatch):
     """Adding Variant 13 must not turn a previously refuted band into an unknown one."""
     scrolled = _offset(
-        scroll_top._SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_UNSELECTED_10_1_0, -16)
+        scroll_top._SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_UNSELECTED_10_1_0, -16
+    )
     arr = np.array(scrolled, dtype="uint8").reshape(_GRID[1], _GRID[0])
     monkeypatch.setattr(hinge, "_band_of_image", lambda _im, _rect, _size: arr)
 
@@ -833,7 +1224,9 @@ def test_hinge_10_1_0_variant_keeps_a_synthetic_scrolled_band_refuted(monkeypatc
     assert verdict.distance >= scroll_top._REFUTE_MIN_DIST
 
 
-def test_hinge_10_0_1_variant_does_not_pull_a_scrolled_frame_into_the_dead_zone(monkeypatch):
+def test_hinge_10_0_1_variant_does_not_pull_a_scrolled_frame_into_the_dead_zone(
+    monkeypatch,
+):
     """Registered variants must not pull a genuinely scrolled control into the dead zone.
 
     Regression built from the real negative check: on the physical Pixel 7a, composer-open
@@ -874,6 +1267,7 @@ def test_hinge_10_0_1_variant_does_not_pull_a_scrolled_frame_into_the_dead_zone(
 # the ~111px band height, so no gesture could have corrected it and the rewind could only refuse.
 # =====================================================================================
 
+
 def _frame_with_band_at(fill, *, dy: int, background=40) -> bytes:
     """Like `_frame`, but the identity band's content is painted `dy` PIXELS away from the
     nominal `identity_band` crop -- simulating chrome that rendered a few pixels off the position
@@ -885,7 +1279,7 @@ def _frame_with_band_at(fill, *, dy: int, background=40) -> bytes:
     """
     arr = np.full((_H, _W), background, dtype="uint8")
     r0, r1, c0, c1 = _band_rows_cols()
-    arr[r0 + dy:r1 + dy, c0:c1] = fill
+    arr[r0 + dy : r1 + dy, c0:c1] = fill
     buf = BytesIO()
     Image.fromarray(arr, mode="L").save(buf, format="PNG")
     return buf.getvalue()
@@ -900,12 +1294,15 @@ def test_a_band_settled_a_few_pixels_off_calibration_confirms_after_the_alignmen
     reference = _fingerprint_of(_frame_with_band_at(_BASE, dy=0))
     live_frame = _frame_with_band_at(_BASE, dy=-8)
 
-    at_nominal_crop = scroll_top.fingerprint_distance(_fingerprint_of(live_frame), reference)
+    at_nominal_crop = scroll_top.fingerprint_distance(
+        _fingerprint_of(live_frame), reference
+    )
     assert at_nominal_crop == pytest.approx(5.75, abs=1e-9)
     assert scroll_top._CONFIRM_MAX_DIST < at_nominal_crop < scroll_top._REFUTE_MIN_DIST
 
     verdict = scroll_top.confirm_scroll_top(
-        live_frame, identity_band=_IB, fingerprint=reference, grid=_GRID)
+        live_frame, identity_band=_IB, fingerprint=reference, grid=_GRID
+    )
 
     assert verdict.state == scroll_top.SCROLL_TOP_CONFIRMED
     assert verdict.confirmed is True
@@ -927,18 +1324,28 @@ def test_the_alignment_search_never_pulls_a_genuinely_scrolled_band_into_confirm
     to be so on one capture.
     """
     frame = _frame(_flat(_BASE))
-    reference = _offset(_fingerprint_of(frame), 12)      # 12.0 at dy=0, same as the plain test
+    reference = _offset(
+        _fingerprint_of(frame), 12
+    )  # 12.0 at dy=0, same as the plain test
 
-    for dy in range(-scroll_top._ALIGNMENT_SEARCH_PX, scroll_top._ALIGNMENT_SEARCH_PX + 1):
-        seen = (_fingerprint_of(frame) if dy == 0 else
-                scroll_top._band_fingerprint_at_offset(frame, identity_band=_IB, grid=_GRID,
-                                                       dy_px=dy))
+    for dy in range(
+        -scroll_top._ALIGNMENT_SEARCH_PX, scroll_top._ALIGNMENT_SEARCH_PX + 1
+    ):
+        seen = (
+            _fingerprint_of(frame)
+            if dy == 0
+            else scroll_top._band_fingerprint_at_offset(
+                frame, identity_band=_IB, grid=_GRID, dy_px=dy
+            )
+        )
         assert scroll_top.fingerprint_distance(seen, reference) >= 12.0, (
             f"offset {dy:+d}px found a closer match than dy=0 -- the sweep would be pulling a "
-            "scrolled frame toward confirmation")
+            "scrolled frame toward confirmation"
+        )
 
     verdict = scroll_top.confirm_scroll_top(
-        frame, identity_band=_IB, fingerprint=reference, grid=_GRID)
+        frame, identity_band=_IB, fingerprint=reference, grid=_GRID
+    )
 
     assert verdict.state == scroll_top.SCROLL_TOP_REFUTED
     assert verdict.refuted is True
@@ -953,18 +1360,29 @@ def test_the_dead_zone_survives_the_alignment_search():
     offset -- 5.0 to 13.0 across the full +/-12px sweep, never dropping to confirm_max -- must
     still come back `cannot_tell`, exactly as it would with no alignment search at all."""
     frame = _frame(_flat(_BASE))
-    reference = _offset(_fingerprint_of(frame), 5)       # 5.0 at dy=0: inside (3.0, 9.0)
+    reference = _offset(_fingerprint_of(frame), 5)  # 5.0 at dy=0: inside (3.0, 9.0)
 
-    for dy in range(-scroll_top._ALIGNMENT_SEARCH_PX, scroll_top._ALIGNMENT_SEARCH_PX + 1):
-        seen = (_fingerprint_of(frame) if dy == 0 else
-                scroll_top._band_fingerprint_at_offset(frame, identity_band=_IB, grid=_GRID,
-                                                       dy_px=dy))
-        assert scroll_top.fingerprint_distance(seen, reference) > scroll_top._CONFIRM_MAX_DIST, (
+    for dy in range(
+        -scroll_top._ALIGNMENT_SEARCH_PX, scroll_top._ALIGNMENT_SEARCH_PX + 1
+    ):
+        seen = (
+            _fingerprint_of(frame)
+            if dy == 0
+            else scroll_top._band_fingerprint_at_offset(
+                frame, identity_band=_IB, grid=_GRID, dy_px=dy
+            )
+        )
+        assert (
+            scroll_top.fingerprint_distance(seen, reference)
+            > scroll_top._CONFIRM_MAX_DIST
+        ), (
             f"offset {dy:+d}px dropped to or below confirm_max -- the dead zone must never be "
-            "searchable into a false confirmation")
+            "searchable into a false confirmation"
+        )
 
     verdict = scroll_top.confirm_scroll_top(
-        frame, identity_band=_IB, fingerprint=reference, grid=_GRID)
+        frame, identity_band=_IB, fingerprint=reference, grid=_GRID
+    )
 
     assert verdict.state == scroll_top.SCROLL_TOP_UNKNOWN
     assert verdict.unknown is True
@@ -979,7 +1397,8 @@ def test_alignment_offset_defaults_to_zero_and_is_silent_in_the_reason_when_unse
     test's fixture rather than duplicating its assertions."""
     frame = _frame(_flat(_BASE))
     verdict = scroll_top.confirm_scroll_top(
-        frame, identity_band=_IB, fingerprint=_fingerprint_of(frame), grid=_GRID)
+        frame, identity_band=_IB, fingerprint=_fingerprint_of(frame), grid=_GRID
+    )
 
     assert verdict.alignment_offset_px == 0
     assert "px" not in verdict.reason
@@ -996,11 +1415,14 @@ def test_band_fingerprint_at_offset_skips_a_shift_that_would_fall_off_the_frame(
     # larger dy_px than pushing y0 below 0 -- (1.0 - 0.094) * 2400 = 2174.4px versus 0.048 * 2400
     # = 115.2px. Both are picked comfortably past their respective thresholds.
     off_top = scroll_top._band_fingerprint_at_offset(
-        frame, identity_band=_IB, grid=_GRID, dy_px=-1000)
+        frame, identity_band=_IB, grid=_GRID, dy_px=-1000
+    )
     off_bottom = scroll_top._band_fingerprint_at_offset(
-        frame, identity_band=_IB, grid=_GRID, dy_px=2200)
+        frame, identity_band=_IB, grid=_GRID, dy_px=2200
+    )
     in_bounds = scroll_top._band_fingerprint_at_offset(
-        frame, identity_band=_IB, grid=_GRID, dy_px=4)
+        frame, identity_band=_IB, grid=_GRID, dy_px=4
+    )
 
     assert off_top is None
     assert off_bottom is None
@@ -1013,8 +1435,9 @@ def test_band_fingerprint_at_offset_dy_zero_agrees_with_band_fingerprint():
     disagree with the public function if a caller ever passes dy_px=0 directly."""
     frame = _frame(_flat(_BASE))
 
-    assert (scroll_top._band_fingerprint_at_offset(frame, identity_band=_IB, grid=_GRID, dy_px=0)
-            == scroll_top.band_fingerprint(frame, identity_band=_IB, grid=_GRID))
+    assert scroll_top._band_fingerprint_at_offset(
+        frame, identity_band=_IB, grid=_GRID, dy_px=0
+    ) == scroll_top.band_fingerprint(frame, identity_band=_IB, grid=_GRID)
 
 
 # =====================================================================================
@@ -1033,14 +1456,18 @@ def test_band_fingerprint_at_offset_dy_zero_agrees_with_band_fingerprint():
 # and (unlike the real frames) its distances are exact by construction.
 # =====================================================================================
 
-_BAND_HEIGHT_PX = round(_IB[3] * _H) - round(_IB[1] * _H)      # 111px, `_band_of_image`'s crop
+_BAND_HEIGHT_PX = round(_IB[3] * _H) - round(
+    _IB[1] * _H
+)  # 111px, `_band_of_image`'s crop
 
 
 def _pinned_capture(band_value=_BASE, *, offsets=(0, 600, 1200)):
     """Frames whose identity band is the SAME strip while the rest of the screen moves, plus the
     reference that band matches exactly. The moving background is not read by anything under test
     -- it is there so the fixture cannot be mistaken for a capture that simply never scrolled."""
-    frames = [_frame(_flat(band_value), background=40 + 9 * i) for i in range(len(offsets))]
+    frames = [
+        _frame(_flat(band_value), background=40 + 9 * i) for i in range(len(offsets))
+    ]
     return frames, _fingerprint_of(frames[0]), list(offsets)
 
 
@@ -1052,7 +1479,8 @@ def test_a_chips_row_that_survives_a_proven_scroll_is_screen_pinned():
     frames, reference, offsets = _pinned_capture()
 
     evidence = scroll_top.band_pinned_evidence(
-        frames, identity_band=_IB, page_offsets=offsets, fingerprint=reference)
+        frames, identity_band=_IB, page_offsets=offsets, fingerprint=reference
+    )
 
     assert evidence.pinned is True
     assert evidence.offsets == (0, 600, 1200) and evidence.offset_span == 1200
@@ -1073,19 +1501,30 @@ def test_frames_that_did_not_scroll_prove_nothing_about_pinning():
     frames, reference, _offsets = _pinned_capture(offsets=(0, 0, 0))
 
     standing_still = scroll_top.band_pinned_evidence(
-        frames, identity_band=_IB, page_offsets=[500, 500, 500], fingerprint=reference)
+        frames, identity_band=_IB, page_offsets=[500, 500, 500], fingerprint=reference
+    )
     assert standing_still.pinned is False
     assert "same page offset (500)" in standing_still.reason
-    assert standing_still.distinct_bands == 1        # the band IS constant; that is not the point
+    assert (
+        standing_still.distinct_bands == 1
+    )  # the band IS constant; that is not the point
 
     too_close = scroll_top.band_pinned_evidence(
-        frames[:2], identity_band=_IB, page_offsets=[0, _BAND_HEIGHT_PX - 1], fingerprint=reference)
+        frames[:2],
+        identity_band=_IB,
+        page_offsets=[0, _BAND_HEIGHT_PX - 1],
+        fingerprint=reference,
+    )
     assert too_close.pinned is False
     assert f"span only {_BAND_HEIGHT_PX - 1}px of scroll" in too_close.reason
 
     # THE CONTROL, one pixel further: at exactly the band height the page rows are disjoint.
     at_the_bound = scroll_top.band_pinned_evidence(
-        frames[:2], identity_band=_IB, page_offsets=[0, _BAND_HEIGHT_PX], fingerprint=reference)
+        frames[:2],
+        identity_band=_IB,
+        page_offsets=[0, _BAND_HEIGHT_PX],
+        fingerprint=reference,
+    )
     assert at_the_bound.pinned is True
 
 
@@ -1101,22 +1540,27 @@ def test_the_collapsed_header_state_is_not_pinned_even_though_its_band_never_cha
     # the frame's background (40) into a shifted crop, which would pull a band ABOVE 128 back
     # toward it and quietly shrink the distance the test asked for. Below it, every shift only
     # moves further away, so 20.000 is the real minimum over the whole sweep.
-    header = _frame(_flat(_BASE - 20))                     # a person, 20.000 from the chips row
+    header = _frame(_flat(_BASE - 20))  # a person, 20.000 from the chips row
     frames = [header, header, header]
 
     evidence = scroll_top.band_pinned_evidence(
-        frames, identity_band=_IB, page_offsets=[0, 600, 1200], fingerprint=reference)
+        frames, identity_band=_IB, page_offsets=[0, 600, 1200], fingerprint=reference
+    )
 
     assert evidence.pinned is False
-    assert evidence.distinct_bands == 1                    # constant, and beside the point
+    assert evidence.distinct_bands == 1  # constant, and beside the point
     assert evidence.max_chips_distance == 20.0
-    assert "does not read as the filter-chips row on 3 of these 3 frames" in evidence.reason
+    assert (
+        "does not read as the filter-chips row on 3 of these 3 frames"
+        in evidence.reason
+    )
     assert "still reads correctly" in evidence.reason
 
     # And the gate itself is untouched on that state: it refutes, which tells a scroll-up loop to
     # scroll -- the right action there, and the wrong one for a pinned chips row.
     verdict = scroll_top.confirm_scroll_top(
-        header, identity_band=_IB, fingerprint=reference, pinned_evidence=evidence)
+        header, identity_band=_IB, fingerprint=reference, pinned_evidence=evidence
+    )
     assert verdict.state == scroll_top.SCROLL_TOP_REFUTED
 
 
@@ -1128,7 +1572,8 @@ def test_a_band_that_moves_with_the_page_is_not_pinned():
     frames = [_frame(_flat(_BASE)), _frame(_flat(_BASE - 1)), _frame(_flat(_BASE))]
 
     evidence = scroll_top.band_pinned_evidence(
-        frames, identity_band=_IB, page_offsets=[0, 600, 1200], fingerprint=reference)
+        frames, identity_band=_IB, page_offsets=[0, 600, 1200], fingerprint=reference
+    )
 
     assert evidence.pinned is False
     assert evidence.distinct_bands == 2
@@ -1145,26 +1590,41 @@ def test_the_gate_confirms_with_no_evidence_and_refuses_to_confirm_with_pinned_e
     band, so the reason names recalibration instead of another gesture."""
     frames, reference, offsets = _pinned_capture()
     evidence = scroll_top.band_pinned_evidence(
-        frames, identity_band=_IB, page_offsets=offsets, fingerprint=reference)
+        frames, identity_band=_IB, page_offsets=offsets, fingerprint=reference
+    )
 
-    blind = scroll_top.confirm_scroll_top(frames[2], identity_band=_IB, fingerprint=reference)
+    blind = scroll_top.confirm_scroll_top(
+        frames[2], identity_band=_IB, fingerprint=reference
+    )
     assert blind.state == scroll_top.SCROLL_TOP_CONFIRMED and blind.confirmed is True
 
     informed = scroll_top.confirm_scroll_top(
-        frames[2], identity_band=_IB, fingerprint=reference, pinned_evidence=evidence)
+        frames[2], identity_band=_IB, fingerprint=reference, pinned_evidence=evidence
+    )
     assert informed.state == scroll_top.SCROLL_TOP_UNAVAILABLE
     assert informed.unavailable is True
-    assert (informed.confirmed, informed.refuted, informed.unknown) == (False, False, False)
-    assert informed.distance == 0.0                # the measurement is still reported...
-    assert "structurally UNAVAILABLE" in informed.reason      # ...and no longer believed
+    assert (informed.confirmed, informed.refuted, informed.unknown) == (
+        False,
+        False,
+        False,
+    )
+    assert informed.distance == 0.0  # the measurement is still reported...
+    assert "structurally UNAVAILABLE" in informed.reason  # ...and no longer believed
     assert "identity_band" in informed.reason and "recalibrat" in informed.reason
     assert "this capture's current toolbar state" in informed.reason
-    assert "fresh capture may be considered only if it independently proves" in informed.reason
+    assert (
+        "fresh capture may be considered only if it independently proves"
+        in informed.reason
+    )
     assert "on this app version" not in informed.reason
 
     with pytest.raises(scroll_top.ScrollTopUnconfirmed, match="check_unavailable"):
         scroll_top.require_scroll_top(
-            frames[2], identity_band=_IB, fingerprint=reference, pinned_evidence=evidence)
+            frames[2],
+            identity_band=_IB,
+            fingerprint=reference,
+            pinned_evidence=evidence,
+        )
 
 
 def test_pinned_evidence_downgrades_the_confirmed_outcome_and_only_that_one():
@@ -1173,16 +1633,23 @@ def test_pinned_evidence_downgrades_the_confirmed_outcome_and_only_that_one():
     into UNAVAILABLE would report a signal as dead on the very screens where it works."""
     frames, reference, offsets = _pinned_capture()
     evidence = scroll_top.band_pinned_evidence(
-        frames, identity_band=_IB, page_offsets=offsets, fingerprint=reference)
+        frames, identity_band=_IB, page_offsets=offsets, fingerprint=reference
+    )
     assert evidence.pinned is True
 
     # Darker than the reference for the alignment sweep's sake — see the collapsed-header test.
     refuted = scroll_top.confirm_scroll_top(
-        _frame(_flat(_BASE - int(_REFUTE))), identity_band=_IB, fingerprint=reference,
-        pinned_evidence=evidence)
+        _frame(_flat(_BASE - int(_REFUTE))),
+        identity_band=_IB,
+        fingerprint=reference,
+        pinned_evidence=evidence,
+    )
     dead_zone = scroll_top.confirm_scroll_top(
-        _frame(_flat(_BASE - int(_CONFIRM) - 1)), identity_band=_IB, fingerprint=reference,
-        pinned_evidence=evidence)
+        _frame(_flat(_BASE - int(_CONFIRM) - 1)),
+        identity_band=_IB,
+        fingerprint=reference,
+        pinned_evidence=evidence,
+    )
 
     assert refuted.state == scroll_top.SCROLL_TOP_REFUTED
     assert dead_zone.state == scroll_top.SCROLL_TOP_UNKNOWN
@@ -1195,15 +1662,25 @@ def test_evidence_measured_on_a_different_crop_is_an_error_not_a_downgrade():
     the same mistake on the same band."""
     frames, reference, offsets = _pinned_capture()
     evidence = scroll_top.band_pinned_evidence(
-        frames, identity_band=_IB, page_offsets=offsets, fingerprint=reference)
+        frames, identity_band=_IB, page_offsets=offsets, fingerprint=reference
+    )
     elsewhere = (0.10, 0.020, 0.80, 0.066)
 
     with pytest.raises(scroll_top.ScrollTopError, match="different crops"):
-        scroll_top.confirm_scroll_top(frames[0], identity_band=elsewhere, fingerprint=reference,
-                                      pinned_evidence=evidence)
+        scroll_top.confirm_scroll_top(
+            frames[0],
+            identity_band=elsewhere,
+            fingerprint=reference,
+            pinned_evidence=evidence,
+        )
     with pytest.raises(scroll_top.ScrollTopError, match="different geometries"):
-        scroll_top.confirm_scroll_top(frames[0], identity_band=_IB, fingerprint=reference,
-                                      grid=(8, 8), pinned_evidence=evidence)
+        scroll_top.confirm_scroll_top(
+            frames[0],
+            identity_band=_IB,
+            fingerprint=reference,
+            grid=(8, 8),
+            pinned_evidence=evidence,
+        )
 
 
 def test_frames_and_offsets_of_different_lengths_raise_rather_than_pairing_them_up():
@@ -1212,8 +1689,9 @@ def test_frames_and_offsets_of_different_lengths_raise_rather_than_pairing_them_
     that never made it."""
     frames, reference, _offsets = _pinned_capture()
     with pytest.raises(scroll_top.ScrollTopError, match="different captures"):
-        scroll_top.band_pinned_evidence(frames, identity_band=_IB, page_offsets=[0, 600],
-                                        fingerprint=reference)
+        scroll_top.band_pinned_evidence(
+            frames, identity_band=_IB, page_offsets=[0, 600], fingerprint=reference
+        )
 
 
 def test_frames_without_an_offset_or_without_a_readable_band_are_skipped_not_fatal():
@@ -1224,17 +1702,22 @@ def test_frames_without_an_offset_or_without_a_readable_band_are_skipped_not_fat
     frames, reference, offsets = _pinned_capture()
 
     skipped = scroll_top.band_pinned_evidence(
-        frames, identity_band=_IB, page_offsets=[0, None, 1200], fingerprint=reference)
+        frames, identity_band=_IB, page_offsets=[0, None, 1200], fingerprint=reference
+    )
     assert skipped.pinned is True and skipped.frames_compared == 2
 
     junk = scroll_top.band_pinned_evidence(
-        [frames[0], b"not an image at all"], identity_band=_IB, page_offsets=[0, 1200],
-        fingerprint=reference)
+        [frames[0], b"not an image at all"],
+        identity_band=_IB,
+        page_offsets=[0, 1200],
+        fingerprint=reference,
+    )
     assert junk.pinned is False
     assert "could not be read at all: [1]" in junk.reason
 
     no_band = scroll_top.band_pinned_evidence(
-        frames, identity_band=None, page_offsets=offsets, fingerprint=reference)
+        frames, identity_band=None, page_offsets=offsets, fingerprint=reference
+    )
     assert no_band.pinned is False and "no identity_band is declared" in no_band.reason
 
 
@@ -1252,8 +1735,11 @@ def test_mixed_screen_geometries_cannot_prove_a_band_is_pinned():
     resized.save(encoded, format="PNG")
 
     evidence = scroll_top.band_pinned_evidence(
-        [frames[0], encoded.getvalue()], identity_band=_IB, page_offsets=[0, 1200],
-        fingerprint=reference)
+        [frames[0], encoded.getvalue()],
+        identity_band=_IB,
+        page_offsets=[0, 1200],
+        fingerprint=reference,
+    )
 
     assert evidence.pinned is False
     assert evidence.frames_compared == 1
@@ -1267,7 +1753,8 @@ def test_pinned_evidence_has_no_truth_value():
     gate on every capture. `ScrollTopVerdict.__bool__`'s precedent."""
     frames, reference, _offsets = _pinned_capture()
     evidence = scroll_top.band_pinned_evidence(
-        frames, identity_band=_IB, page_offsets=[0, 0, 0], fingerprint=reference)
+        frames, identity_band=_IB, page_offsets=[0, 0, 0], fingerprint=reference
+    )
 
     with pytest.raises(TypeError, match="no truth value"):
         bool(evidence)
@@ -1286,13 +1773,19 @@ def evidence_frames():
     exactly this fixture (tests/test_hinge_debuglog.py enforces that link). The path is absolute
     and resolved from this file: a relative one would silently skip under any test that chdirs.
     """
-    run = Path(__file__).resolve().parent.parent / "data" / "hinge_debug" / "8fb11094ef4d"
+    run = (
+        Path(__file__).resolve().parent.parent / "data" / "hinge_debug" / "8fb11094ef4d"
+    )
     sidecar = run / "item_index_refused_3fa8b8db66fd_evidence.json"
-    paths = [run / f"item_index_refused_3fa8b8db66fd_frame_{i}.png" for i in range(13, 19)]
+    paths = [
+        run / f"item_index_refused_3fa8b8db66fd_frame_{i}.png" for i in range(13, 19)
+    ]
     if not sidecar.is_file() or not all(p.is_file() for p in paths):
         pytest.skip("private local debug capture 8fb11094ef4d is unavailable")
-    recorded = {f["local_frame_index"]: f["offset_px"]
-                for f in json.loads(sidecar.read_text())["frames"]}
+    recorded = {
+        f["local_frame_index"]: f["offset_px"]
+        for f in json.loads(sidecar.read_text())["frames"]
+    }
     return [p.read_bytes() for p in paths], [recorded[i] for i in range(13, 19)]
 
 
@@ -1313,12 +1806,16 @@ def test_the_real_hinge_10_1_0_frames_that_broke_the_premise(evidence_frames):
     assert [v.state for v in blind] == [scroll_top.SCROLL_TOP_CONFIRMED] * 6
     assert [v.distance for v in blind] == [0.0] * 6
 
-    evidence = scroll_top.band_pinned_evidence(frames, identity_band=band, page_offsets=offsets)
+    evidence = scroll_top.band_pinned_evidence(
+        frames, identity_band=band, page_offsets=offsets
+    )
     assert evidence.pinned is True
     assert evidence.offset_span == 2305 and evidence.band_height_px == 111
     assert evidence.distinct_bands == 1 and evidence.frames_compared == 6
 
-    informed = [scroll_top.confirm_scroll_top(f, identity_band=band, pinned_evidence=evidence)
-                for f in frames]
+    informed = [
+        scroll_top.confirm_scroll_top(f, identity_band=band, pinned_evidence=evidence)
+        for f in frames
+    ]
     assert [v.state for v in informed] == [scroll_top.SCROLL_TOP_UNAVAILABLE] * 6
     assert not any(v.confirmed for v in informed)

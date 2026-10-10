@@ -9,6 +9,7 @@ the `ml` extra installed.
 
 Returns None for a profile with no detectable face (-> "no_face" decision).
 """
+
 from __future__ import annotations
 
 import math
@@ -42,7 +43,8 @@ def _vector_dimension(vectors: list[list[float]]) -> int:
             raise ValueError(f"vector {ordinal} is not a sequence") from exc
         if actual != dimension:
             raise ValueError(
-                f"vector {ordinal} has dimension {actual}; expected {dimension}")
+                f"vector {ordinal} has dimension {actual}; expected {dimension}"
+            )
     return dimension
 
 
@@ -90,11 +92,13 @@ def gem_pool(vectors: list[list[float]], p: float = 3.0) -> list[float]:
     for j in range(dimension):
         col = [v[j] for v in vectors]
         mag = (sum(abs(x) ** exponent for x in col) / k) ** (1.0 / exponent)
-        out.append(mag if sum(col) >= 0 else -mag)   # restore the bag's dominant sign
+        out.append(mag if sum(col) >= 0 else -mag)  # restore the bag's dominant sign
     return out
 
 
-def square_crop_around_bbox(size: tuple[int, int], bbox, expand: float = 3.5) -> tuple[int, int, int, int]:
+def square_crop_around_bbox(
+    size: tuple[int, int], bbox, expand: float = 3.5
+) -> tuple[int, int, int, int]:
     """A square crop box (left, top, right, bottom) centered on a face bbox and expanded to
     include the upper body / setting, clamped inside the image. Used to give CLIP a person-centric
     ~square photo crop instead of the full screenshot (status bar, buttons, white margins), which
@@ -105,13 +109,15 @@ def square_crop_around_bbox(size: tuple[int, int], bbox, expand: float = 3.5) ->
     # at least 2px (never a degenerate empty crop), at most the image's min dimension
     side = min(max(max(x2 - x1, y2 - y1) * expand, 2.0), float(min(w, h)))
     half = side / 2.0
-    cx = min(max(cx, half), w - half)                              # keep the square inside the image
+    cx = min(max(cx, half), w - half)  # keep the square inside the image
     cy = min(max(cy, half), h - half)
     left, top = int(round(cx - half)), int(round(cy - half))
     return (left, top, int(round(left + side)), int(round(top + side)))
 
 
-def dedup_by_cosine(vectors: list[list[float]], threshold: float = 0.85) -> list[list[float]]:
+def dedup_by_cosine(
+    vectors: list[list[float]], threshold: float = 0.85
+) -> list[list[float]]:
     """Drop near-duplicate vectors (cosine > threshold vs an already-kept one), so a
     burst of near-identical photos can't dominate the pool. Assumes L2-normalized
     inputs (cosine == dot product). Keeps the first of each group. Pure-Python."""
@@ -124,8 +130,9 @@ def dedup_by_cosine(vectors: list[list[float]], threshold: float = 0.85) -> list
     kept: list[list[float]] = []
     for v in vectors:
         if any(
-                sum(a * b for a, b in zip(v, u, strict=True)) > threshold_value
-                for u in kept):
+            sum(a * b for a, b in zip(v, u, strict=True)) > threshold_value
+            for u in kept
+        ):
             continue
         kept.append(v)
     return kept
@@ -265,13 +272,18 @@ class Embedder:
         self._clip_preprocess = None
         self._device = None
         self._lock = threading.Lock()  # guards double-checked init in _ensure()
-        self._reported_total_failure = False  # surface a total-failure profile once, not per profile
+        self._reported_total_failure = (
+            False  # surface a total-failure profile once, not per profile
+        )
 
     def _build_arc(self, providers: list[str]):
         from insightface.app import FaceAnalysis
 
-        arc = FaceAnalysis(name="buffalo_l", providers=providers,
-                           provider_options=_onnx_provider_options(providers))
+        arc = FaceAnalysis(
+            name="buffalo_l",
+            providers=providers,
+            provider_options=_onnx_provider_options(providers),
+        )
         if "CoreMLExecutionProvider" in providers:
             # Before prepare(), and only when CoreML is actually in play: the detector cannot
             # run there at insightface's multi-scale det sizes. See _pin_detector_to_cpu.
@@ -322,10 +334,10 @@ class Embedder:
         self._probe_inference()
 
     def _ensure(self) -> None:
-        if self._arc is not None:                  # fast path: already init, no lock needed
+        if self._arc is not None:  # fast path: already init, no lock needed
             return
         with self._lock:
-            if self._arc is not None:              # second check under lock (double-checked)
+            if self._arc is not None:  # second check under lock (double-checked)
                 return
             import open_clip  # lazy
             import onnxruntime as ort
@@ -355,13 +367,16 @@ class Embedder:
             self._clip_preprocess = preprocess
             self._arc_providers = list(providers)
             self._arc_on_cpu = self._arc_providers == ["CPUExecutionProvider"]
-            self._arc = arc                    # initialization sentinel is committed last
+            self._arc = arc  # initialization sentinel is committed last
             # Say what ArcFace actually ended up on, once, at init. Before the detector pin
             # the operator's only evidence was a CoreML stack trace at warmup followed by a
             # silently CPU-only session; a provider split this consequential (~9x on the
             # recognition model) should be legible from the run log, not only from the code.
-            detector_note = (" (detector on CPUExecutionProvider — see _pin_detector_to_cpu)"
-                             if "CoreMLExecutionProvider" in providers else "")
+            detector_note = (
+                " (detector on CPUExecutionProvider — see _pin_detector_to_cpu)"
+                if "CoreMLExecutionProvider" in providers
+                else ""
+            )
             print(f"ArcFace providers: {', '.join(providers)}{detector_note}")
 
     def _probe_inference(self) -> None:
@@ -418,10 +433,13 @@ class Embedder:
 
         # ArcFace (largest detected face)
         face_vec = None
-        clip_src = pil                                    # default: whole image (no face -> skipped anyway)
+        clip_src = pil  # default: whole image (no face -> skipped anyway)
         faces = self._arc.get(np.array(pil)[:, :, ::-1])  # RGB->BGR
         if faces:
-            faces.sort(key=lambda f: (f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1]), reverse=True)
+            faces.sort(
+                key=lambda f: (f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1]),
+                reverse=True,
+            )
             # RAW (un-normalized) embedding: its magnitude correlates with face
             # quality, so averaging raws then L2-normalizing is an implicit
             # quality-weighted template (see embed_profile).
@@ -439,14 +457,16 @@ class Embedder:
         t = self._clip_preprocess(clip_src).unsqueeze(0).to(self._device)
         with torch.no_grad():
             clip_vec = self._clip.encode_image(t)
-            clip_vec = (clip_vec / clip_vec.norm(dim=-1, keepdim=True))[0].cpu().tolist()
+            clip_vec = (
+                (clip_vec / clip_vec.norm(dim=-1, keepdim=True))[0].cpu().tolist()
+            )
         return face_vec, [float(x) for x in clip_vec]
 
     # --- per-profile ---------------------------------------------------
     def embed_profile(self, profile: Profile) -> list[float] | None:
         self._ensure()
         retried_on_cpu = False
-        prior_errors = 0             # errors from a failed pass BEFORE a CPU retry, if any
+        prior_errors = 0  # errors from a failed pass BEFORE a CPU retry, if any
         prior_provider: str | None = None
         while True:
             face_vecs: list[list[float]] = []
@@ -466,7 +486,9 @@ class Embedder:
                     fv, cv = self._embed_image(img)
                 except Exception as exc:  # noqa: BLE001
                     errors += 1
-                    provider_error_seen = provider_error_seen or _is_onnx_provider_failure(exc)
+                    provider_error_seen = (
+                        provider_error_seen or _is_onnx_provider_failure(exc)
+                    )
                     if first_error is None:
                         first_error = exc
                         # Surface the first failure; don't spam one line per photo.
@@ -512,8 +534,10 @@ class Embedder:
                 # now-CPU model the winner installed. Scope stays tight — no inference in here.
                 with self._lock:
                     if not self._arc_on_cpu:
-                        print("CoreML/ONNX provider failed; retrying this profile on CPU "
-                              "(CPU stays in effect for the rest of this run).")
+                        print(
+                            "CoreML/ONNX provider failed; retrying this profile on CPU "
+                            "(CPU stays in effect for the rest of this run)."
+                        )
                         self._set_arc_providers(["CPUExecutionProvider"])
                 retried_on_cpu = True
                 continue
@@ -528,12 +552,16 @@ class Embedder:
         # "8 photo(s) -> 8 with a face", with zero record that the first pass had failed
         # outright.
         retry_note = (
-            f" ({prior_errors} errored on {prior_provider}, re-run on CPU)" if prior_errors else ""
+            f" ({prior_errors} errored on {prior_provider}, re-run on CPU)"
+            if prior_errors
+            else ""
         )
-        print(f"Profile: {len(profile.photos)} photo(s) -> "
-              f"{len(face_vecs)} with a face"
-              f"{f', {errors} errored' if errors else ''}"
-              f"{retry_note}")
+        print(
+            f"Profile: {len(profile.photos)} photo(s) -> "
+            f"{len(face_vecs)} with a face"
+            f"{f', {errors} errored' if errors else ''}"
+            f"{retry_note}"
+        )
         # Any photo that fails to embed and STAYS failed (no further fallback recovered
         # it) means the pooled embedding below is built from fewer photos than the
         # profile actually has -- a partially-embedded profile must never look
@@ -542,23 +570,31 @@ class Embedder:
         # CPU with nowhere left to fall back to, or a handful of corrupt/undecodable
         # images unrelated to the provider).
         if errors:
-            print(f"WARNING: {errors}/{len(profile.photos)} photo(s) failed to embed in "
-                  f"this profile ({type(first_error).__name__}: {first_error}) -- the "
-                  "pooled embedding below is built from fewer photos than the profile "
-                  "actually has.")
+            print(
+                f"WARNING: {errors}/{len(profile.photos)} photo(s) failed to embed in "
+                f"this profile ({type(first_error).__name__}: {first_error}) -- the "
+                "pooled embedding below is built from fewer photos than the profile "
+                "actually has."
+            )
         # A profile where EVERY photo threw (on the final pass) is an operator problem
         # (broken embedder: bad weights, OOM, corrupt install), not a profile property --
         # left alone it returns None exactly like a genuine no-face profile and silently
         # vanishes into the same "skip" path, with zero signal that the embedder itself
         # is broken. Say so loudly, once per run (same convention as quality.py's
         # _report_failure).
-        if bool(profile.photos) and errors == len(profile.photos) and not self._reported_total_failure:
+        if (
+            bool(profile.photos)
+            and errors == len(profile.photos)
+            and not self._reported_total_failure
+        ):
             self._reported_total_failure = True
-            print(f"WARNING: total embedding failure ({errors}/{len(profile.photos)} photos "
-                  f"errored: {type(first_error).__name__}: {first_error}) -- this looks like a "
-                  "broken embedder, not a genuine no-face profile. (further occurrences this "
-                  "run are not logged)")
-        if not face_vecs:           # no face anywhere -> can't evaluate the person
+            print(
+                f"WARNING: total embedding failure ({errors}/{len(profile.photos)} photos "
+                f"errored: {type(first_error).__name__}: {first_error}) -- this looks like a "
+                "broken embedder, not a genuine no-face profile. (further occurrences this "
+                "run are not logged)"
+            )
+        if not face_vecs:  # no face anywhere -> can't evaluate the person
             return None
         # Modality-specific aggregation (per the small-data MIL research). All of a
         # profile's photos collapse into ONE vector, so the label is per PROFILE.
@@ -573,6 +609,8 @@ class Embedder:
         clip = l2_normalize(gem_pool(dedup_by_cosine(clip_vecs)))
         vec = concat(face, clip)
         if not all(math.isfinite(x) for x in vec):
-            print("Profile embedding contains non-finite values (NaN/Inf); treating as no_face.")
+            print(
+                "Profile embedding contains non-finite values (NaN/Inf); treating as no_face."
+            )
             return None
         return vec

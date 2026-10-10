@@ -1,4 +1,5 @@
 """Vision pure-logic tests — aggregation + quality gating (no torch/pyiqa)."""
+
 import math
 import types
 
@@ -6,27 +7,42 @@ import pytest
 
 from operation_love.perception.capture import Profile
 from operation_love.vision.embed import (
-    _COREML_PROVIDER_OPTIONS, Embedder, _is_onnx_provider_failure, _onnx_provider_options,
-    _select_onnx_providers, _synthetic_probe_image, aggregate, concat, dedup_by_cosine,
-    gem_pool, l2_normalize, square_crop_around_bbox,
+    _COREML_PROVIDER_OPTIONS,
+    Embedder,
+    _is_onnx_provider_failure,
+    _onnx_provider_options,
+    _select_onnx_providers,
+    _synthetic_probe_image,
+    aggregate,
+    concat,
+    dedup_by_cosine,
+    gem_pool,
+    l2_normalize,
+    square_crop_around_bbox,
 )
 from operation_love.vision.quality import QualityFilter
 
 
 def test_square_crop_around_bbox_is_square_and_in_bounds():
-    left, top, right, bottom = square_crop_around_bbox((1080, 2400), [500, 1000, 600, 1200], expand=3.0)
+    left, top, right, bottom = square_crop_around_bbox(
+        (1080, 2400), [500, 1000, 600, 1200], expand=3.0
+    )
     assert 0 <= left < right <= 1080 and 0 <= top < bottom <= 2400
-    assert abs((right - left) - (bottom - top)) <= 1            # square
+    assert abs((right - left) - (bottom - top)) <= 1  # square
 
 
 def test_square_crop_clamps_to_image_at_corner():
-    left, top, right, bottom = square_crop_around_bbox((1080, 2400), [0, 0, 120, 120], expand=6.0)
+    left, top, right, bottom = square_crop_around_bbox(
+        (1080, 2400), [0, 0, 120, 120], expand=6.0
+    )
     assert left >= 0 and top >= 0 and right <= 1080 and bottom <= 2400
 
 
 def test_square_crop_side_never_exceeds_image():
-    left, top, right, bottom = square_crop_around_bbox((1080, 2400), [400, 1100, 700, 1400], expand=99.0)
-    assert (right - left) <= 1080 and (bottom - top) <= 2400    # clamped to min dimension
+    left, top, right, bottom = square_crop_around_bbox(
+        (1080, 2400), [400, 1100, 700, 1400], expand=99.0
+    )
+    assert (right - left) <= 1080 and (bottom - top) <= 2400  # clamped to min dimension
 
 
 COREML_RUNTIME_ERROR = (
@@ -46,18 +62,35 @@ def test_vector_pooling_rejects_ragged_dimensions(function):
         function([[1.0, 2.0], [3.0]])
 
 
-@pytest.mark.parametrize("p", [
-    True, 0, -1, math.nan, math.inf, pytest.param(10 ** 10_000, id="huge_int"), "3",
-])
+@pytest.mark.parametrize(
+    "p",
+    [
+        True,
+        0,
+        -1,
+        math.nan,
+        math.inf,
+        pytest.param(10**10_000, id="huge_int"),
+        "3",
+    ],
+)
 def test_gem_pool_requires_a_positive_finite_exponent(p):
     with pytest.raises(ValueError, match="positive finite"):
         gem_pool([[1.0], [2.0]], p=p)
 
 
-@pytest.mark.parametrize("threshold", [
-    True, -1.1, 1.1, math.nan, math.inf,
-    pytest.param(10 ** 10_000, id="huge_int"), "0.8",
-])
+@pytest.mark.parametrize(
+    "threshold",
+    [
+        True,
+        -1.1,
+        1.1,
+        math.nan,
+        math.inf,
+        pytest.param(10**10_000, id="huge_int"),
+        "0.8",
+    ],
+)
 def test_cosine_dedup_requires_a_finite_cosine_threshold(threshold):
     with pytest.raises(ValueError, match="threshold"):
         dedup_by_cosine([[1.0], [0.0]], threshold=threshold)
@@ -71,11 +104,11 @@ def test_l2_normalize_unit_length_and_zero_safe():
     out = l2_normalize([3.0, 4.0])
     assert math.isclose(out[0], 0.6) and math.isclose(out[1], 0.8)
     assert math.isclose(math.sqrt(sum(x * x for x in out)), 1.0)
-    assert l2_normalize([0.0, 0.0]) == [0.0, 0.0]      # no divide-by-zero
+    assert l2_normalize([0.0, 0.0]) == [0.0, 0.0]  # no divide-by-zero
 
 
 def test_gem_pool_single_is_identity_and_amplifies_salient():
-    assert gem_pool([[0.2, -0.5, 0.9]]) == [0.2, -0.5, 0.9]      # K=1 -> identity
+    assert gem_pool([[0.2, -0.5, 0.9]]) == [0.2, -0.5, 0.9]  # K=1 -> identity
     # GeM(p=3) sits between mean and max, so a spike dominates more than the mean would.
     col = [0.1, 0.1, 0.9]
     g = gem_pool([[v] for v in col], p=3.0)[0]
@@ -84,28 +117,34 @@ def test_gem_pool_single_is_identity_and_amplifies_salient():
 
 def test_gem_pool_preserves_sign():
     out = gem_pool([[-0.8], [-0.6]], p=3.0)
-    assert out[0] < 0                               # dominant sign kept negative
+    assert out[0] < 0  # dominant sign kept negative
 
 
 def test_dedup_by_cosine_drops_near_duplicates():
     a = l2_normalize([1.0, 0.0])
-    a2 = l2_normalize([0.99, 0.01])                # nearly identical to a -> dropped
-    b = l2_normalize([0.0, 1.0])                   # orthogonal -> kept
+    a2 = l2_normalize([0.99, 0.01])  # nearly identical to a -> dropped
+    b = l2_normalize([0.0, 1.0])  # orthogonal -> kept
     kept = dedup_by_cosine([a, a2, b], threshold=0.85)
     assert kept == [a, b]
 
 
 def test_select_onnx_providers_prefers_coreml_on_mps():
-    available = ["CoreMLExecutionProvider", "AzureExecutionProvider", "CPUExecutionProvider"]
+    available = [
+        "CoreMLExecutionProvider",
+        "AzureExecutionProvider",
+        "CPUExecutionProvider",
+    ]
     assert _select_onnx_providers("mps", available) == [
-        "CoreMLExecutionProvider", "CPUExecutionProvider"
+        "CoreMLExecutionProvider",
+        "CPUExecutionProvider",
     ]
 
 
 def test_select_onnx_providers_prefers_cuda_when_available():
     available = ["CUDAExecutionProvider", "CPUExecutionProvider"]
     assert _select_onnx_providers("cuda", available) == [
-        "CUDAExecutionProvider", "CPUExecutionProvider"
+        "CUDAExecutionProvider",
+        "CPUExecutionProvider",
     ]
 
 
@@ -120,16 +159,20 @@ def test_select_onnx_providers_never_returns_empty():
     # Even if nothing preferred is available, fall back to CPU (onnxruntime
     # raises on an empty provider list).
     assert _select_onnx_providers("mps", []) == ["CPUExecutionProvider"]
-    assert _select_onnx_providers("cuda", ["AzureExecutionProvider"]) == ["CPUExecutionProvider"]
+    assert _select_onnx_providers("cuda", ["AzureExecutionProvider"]) == [
+        "CPUExecutionProvider"
+    ]
 
 
 def test_onnx_provider_options_are_positionally_aligned_with_providers():
     # onnxruntime matches provider_options to providers BY POSITION, so the list has to be
     # the same length -- a non-CoreML provider gets an empty dict, never an omitted slot.
-    assert _onnx_provider_options(["CoreMLExecutionProvider", "CPUExecutionProvider"]) == [
-        {"ModelFormat": "MLProgram"}, {}
-    ]
-    assert _onnx_provider_options(["CUDAExecutionProvider", "CPUExecutionProvider"]) == [{}, {}]
+    assert _onnx_provider_options(
+        ["CoreMLExecutionProvider", "CPUExecutionProvider"]
+    ) == [{"ModelFormat": "MLProgram"}, {}]
+    assert _onnx_provider_options(
+        ["CUDAExecutionProvider", "CPUExecutionProvider"]
+    ) == [{}, {}]
     assert _onnx_provider_options(["CPUExecutionProvider"]) == [{}]
     assert _onnx_provider_options([]) == []
 
@@ -175,7 +218,9 @@ class _FakeFaceAnalysis:
 
     def prepare(self, ctx_id=None, **kwargs):
         self.prepared_ctx = ctx_id
-        self.detector_providers_at_prepare = list(self.models["detection"].session.provider_calls)
+        self.detector_providers_at_prepare = list(
+            self.models["detection"].session.provider_calls
+        )
 
 
 def _install_fake_insightface(monkeypatch):
@@ -204,11 +249,15 @@ def test_build_arc_pins_the_detector_to_cpu_when_coreml_is_selected(monkeypatch)
 
     arc = Embedder()._build_arc(providers)
 
-    assert arc.providers == providers                       # CoreML still attempted, not dropped
+    assert arc.providers == providers  # CoreML still attempted, not dropped
     assert arc.provider_options == [{"ModelFormat": "MLProgram"}, {}]
     assert arc.models["detection"].session.provider_calls == [["CPUExecutionProvider"]]
-    assert arc.models["recognition"].session.provider_calls == []   # recognition stays on CoreML
-    assert arc.detector_providers_at_prepare == [["CPUExecutionProvider"]]   # pinned pre-prepare
+    assert (
+        arc.models["recognition"].session.provider_calls == []
+    )  # recognition stays on CoreML
+    assert arc.detector_providers_at_prepare == [
+        ["CPUExecutionProvider"]
+    ]  # pinned pre-prepare
     assert arc.prepared_ctx == 0
 
 
@@ -238,7 +287,9 @@ def test_build_arc_on_cuda_does_not_pin_the_detector(monkeypatch):
 
 def test_provider_failure_detector_matches_coreml_onnxruntime_failures():
     assert _is_onnx_provider_failure(COREML_RUNTIME_ERROR)
-    assert _is_onnx_provider_failure(RuntimeError("[ONNXRuntimeError] : 1 : FAIL : failed"))
+    assert _is_onnx_provider_failure(
+        RuntimeError("[ONNXRuntimeError] : 1 : FAIL : failed")
+    )
     assert _is_onnx_provider_failure("status: fail while running provider")
     assert not _is_onnx_provider_failure(ValueError("PIL cannot identify image file"))
 
@@ -308,11 +359,13 @@ def test_ensure_leaves_embedder_retryable_if_clip_load_fails(monkeypatch):
     e = Embedder()
     with pytest.raises(RuntimeError):
         e._ensure()
-    assert e._arc is None and e._clip is None        # nothing committed -> retry-able
+    assert e._arc is None and e._clip is None  # nothing committed -> retry-able
     assert calls["n"] == 1
 
 
-def test_ensure_publishes_nothing_if_arcface_load_fails_then_retries_cleanly(monkeypatch):
+def test_ensure_publishes_nothing_if_arcface_load_fails_then_retries_cleanly(
+    monkeypatch,
+):
     import sys
 
     import operation_love.vision.embed as embed_mod
@@ -325,7 +378,11 @@ def test_ensure_publishes_nothing_if_arcface_load_fails_then_retries_cleanly(mon
             return self
 
     open_clip = types.ModuleType("open_clip")
-    open_clip.create_model_and_transforms = lambda *_args, **_kwargs: (_Clip(), None, "prep")
+    open_clip.create_model_and_transforms = lambda *_args, **_kwargs: (
+        _Clip(),
+        None,
+        "prep",
+    )
     onnxruntime = types.ModuleType("onnxruntime")
     onnxruntime.get_available_providers = lambda: ["CPUExecutionProvider"]
     monkeypatch.setitem(sys.modules, "open_clip", open_clip)
@@ -391,22 +448,32 @@ def test_quality_disabled_keeps_all():
     assert qf.filter([b"a", b"b"]) == [b"a", b"b"]
 
 
-@pytest.mark.parametrize("kwargs", [
-    {"enabled": 1, "min_score": 0.3},
-    {"enabled": True, "min_score": math.nan},
-    {"enabled": True, "min_score": 10 ** 10_000},
-    {"enabled": True, "min_score": 1.1},
-    {"enabled": True, "min_score": 0.3, "metric": ""},
-    {"enabled": True, "min_score": 0.3, "scorer": 1},
-])
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"enabled": 1, "min_score": 0.3},
+        {"enabled": True, "min_score": math.nan},
+        {"enabled": True, "min_score": 10**10_000},
+        {"enabled": True, "min_score": 1.1},
+        {"enabled": True, "min_score": 0.3, "metric": ""},
+        {"enabled": True, "min_score": 0.3, "scorer": 1},
+    ],
+)
 def test_quality_filter_validates_direct_construction(kwargs):
     with pytest.raises(ValueError):
         QualityFilter(**kwargs)
 
 
-@pytest.mark.parametrize("score", [
-    math.nan, math.inf, pytest.param(10 ** 10_000, id="huge_int"), "0.5", True,
-])
+@pytest.mark.parametrize(
+    "score",
+    [
+        math.nan,
+        math.inf,
+        pytest.param(10**10_000, id="huge_int"),
+        "0.5",
+        True,
+    ],
+)
 def test_quality_filter_rejects_invalid_scorer_results(score):
     qf = QualityFilter(enabled=True, min_score=0.3, scorer=lambda _image: score)
     with pytest.raises(ValueError, match="quality scorer"):
@@ -462,15 +529,25 @@ def test_faceless_photo_clip_vector_excluded_from_profile_pool(monkeypatch):
     docstring). Only the faced photo's crop should survive into the pool."""
     embedder = Embedder()
     monkeypatch.setattr(embedder, "_ensure", lambda: None)
-    results = iter([
-        ([1.0, 0.0], [1.0, 0.0]),  # photo 1: face found -> person-crop clip vec
-        (None, [0.0, 1.0]),        # photo 2: no face -> whole-screenshot clip vec, must be dropped
-    ])
+    results = iter(
+        [
+            ([1.0, 0.0], [1.0, 0.0]),  # photo 1: face found -> person-crop clip vec
+            (
+                None,
+                [0.0, 1.0],
+            ),  # photo 2: no face -> whole-screenshot clip vec, must be dropped
+        ]
+    )
     monkeypatch.setattr(embedder, "_embed_image", lambda img: next(results))
 
     vec = embedder.embed_profile(Profile(photos=[b"a", b"b"]))
 
-    assert vec == [1.0, 0.0, 1.0, 0.0]   # clip half == photo 1's vec alone, never photo 2's
+    assert vec == [
+        1.0,
+        0.0,
+        1.0,
+        0.0,
+    ]  # clip half == photo 1's vec alone, never photo 2's
 
 
 def test_embed_profile_flags_total_failure_distinctly_from_no_face(monkeypatch, capsys):
@@ -503,6 +580,7 @@ def test_embed_profile_returns_none_on_nan_in_final_vector(monkeypatch):
     # Inject a degenerate face vector (all zeros -> l2_normalize returns zeros -> concat has zeros,
     # not NaN, but we test the guard by patching concat to return a NaN-containing vector).
     import operation_love.vision.embed as embed_mod
+
     monkeypatch.setattr(embed_mod, "concat", lambda *_: [0.1, float("nan"), 0.3])
     # Also patch _ensure so it doesn't try to import ML libs.
     monkeypatch.setattr(embedder, "_ensure", lambda: None)
@@ -525,12 +603,14 @@ def test_synthetic_probe_image_is_a_valid_deterministic_in_memory_image():
     b1 = _synthetic_probe_image()
     b2 = _synthetic_probe_image()
     assert isinstance(b1, bytes) and len(b1) > 0
-    assert b1 == b2                                       # fixed seed -> reproducible probe
+    assert b1 == b2  # fixed seed -> reproducible probe
     img = Image.open(io.BytesIO(b1)).convert("RGB")
     assert img.size == (128, 128)
 
 
-def test_warmup_probe_catches_coreml_failure_invisible_to_build_only_warmup(monkeypatch, capsys):
+def test_warmup_probe_catches_coreml_failure_invisible_to_build_only_warmup(
+    monkeypatch, capsys
+):
     """The real bug this project hit: CoreMLExecutionProvider's ort.InferenceSession(...)
     for buffalo_l BUILDS without error -- the plain _ensure() gate that existed before
     this fix saw a clean success -- but the compiled graph's static-shape incompatibility
@@ -578,7 +658,9 @@ def test_warmup_probe_does_not_hard_fail_on_non_provider_shaped_error(monkeypatc
     monkeypatch.setattr(embedder, "_ensure", lambda: None)
 
     def fake_embed_image(_img):
-        raise ValueError("PIL cannot identify image file")   # deliberately not provider-shaped
+        raise ValueError(
+            "PIL cannot identify image file"
+        )  # deliberately not provider-shaped
 
     monkeypatch.setattr(embedder, "_embed_image", fake_embed_image)
 
@@ -608,21 +690,25 @@ def test_embed_profile_falls_back_to_cpu_on_partial_not_total_coreml_failure():
         calls["n"] += 1
         if self._arc_on_cpu:
             return [1.0, 0.0], [0.6, 0.8]
-        if calls["n"] in (1, 2):                  # 2 of 3 photos fail on CoreML this pass
+        if calls["n"] in (1, 2):  # 2 of 3 photos fail on CoreML this pass
             raise RuntimeError(COREML_RUNTIME_ERROR)
-        return [9.0, 0.0], [1.0, 0.0]              # the 1 "survivor" a pre-fix run would pool alone
+        return [9.0, 0.0], [1.0, 0.0]  # the 1 "survivor" a pre-fix run would pool alone
 
     embedder._build_arc = types.MethodType(fake_build_arc, embedder)
     embedder._embed_image = types.MethodType(fake_embed_image, embedder)
 
     vec = embedder.embed_profile(Profile(photos=[b"a", b"b", b"c"]))
 
-    assert rebuilds == [["CPUExecutionProvider"]]   # fallback DID trigger on a 2-of-3 failure
+    assert rebuilds == [
+        ["CPUExecutionProvider"]
+    ]  # fallback DID trigger on a 2-of-3 failure
     assert embedder._arc_on_cpu is True
     assert vec is not None
 
 
-def test_embed_profile_warns_on_partial_failure_with_no_fallback_left(monkeypatch, capsys):
+def test_embed_profile_warns_on_partial_failure_with_no_fallback_left(
+    monkeypatch, capsys
+):
     """Even when there's nowhere left to fall back to (already on CPU) -- or the errors
     aren't provider-shaped at all -- a partially-embedded profile must never look
     indistinguishable from a clean one: whenever ANY photo errors, a clear WARNING states
@@ -632,7 +718,7 @@ def test_embed_profile_warns_on_partial_failure_with_no_fallback_left(monkeypatc
     monkeypatch.setattr(embedder, "_ensure", lambda: None)
     embedder._arc_on_cpu = True  # already on CPU -- nowhere left to fall back to
 
-    results = iter([([1.0, 0.0], [0.6, 0.8])])   # only the 1st of 3 photos succeeds
+    results = iter([([1.0, 0.0], [0.6, 0.8])])  # only the 1st of 3 photos succeeds
 
     def fake_embed_image(_img):
         try:
@@ -646,7 +732,9 @@ def test_embed_profile_warns_on_partial_failure_with_no_fallback_left(monkeypatc
 
     out = capsys.readouterr().out
     assert "WARNING: 2/3 photo(s) failed to embed in this profile" in out
-    assert vec is not None    # fail loud (warn), not fail closed (the 1 survivor still pools)
+    assert (
+        vec is not None
+    )  # fail loud (warn), not fail closed (the 1 survivor still pools)
 
 
 def test_embed_profile_summary_carries_failed_first_pass_after_cpu_recovery(capsys):
@@ -675,5 +763,7 @@ def test_embed_profile_summary_carries_failed_first_pass_after_cpu_recovery(caps
     embedder.embed_profile(Profile(photos=photos))
 
     out = capsys.readouterr().out
-    assert ("Profile: 8 photo(s) -> 8 with a face "
-            "(8 errored on CoreMLExecutionProvider, re-run on CPU)") in out
+    assert (
+        "Profile: 8 photo(s) -> 8 with a face "
+        "(8 errored on CoreMLExecutionProvider, re-run on CPU)"
+    ) in out

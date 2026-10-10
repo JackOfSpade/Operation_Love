@@ -14,6 +14,7 @@ cap) are exercised through GeminiOpener with an injected fake transport, the sam
 technique tests/test_gemini_opener.py uses for its own (much larger) REST/quota/
 thinking-config coverage. No SDK/network either way.
 """
+
 import copy
 import json
 
@@ -72,7 +73,10 @@ def test_image_media_type_detects_gif():
 
 
 def test_image_media_type_detects_webp():
-    assert _image_media_type(b"RIFF" + b"\x00\x00\x00\x00" + b"WEBP" + b"rest") == "image/webp"
+    assert (
+        _image_media_type(b"RIFF" + b"\x00\x00\x00\x00" + b"WEBP" + b"rest")
+        == "image/webp"
+    )
 
 
 def test_image_media_type_defaults_to_png_for_unknown_bytes():
@@ -91,10 +95,10 @@ def test_sanitize_credentials_lose_the_hyphen():
 
 
 def test_sanitize_no_dangling_comma_from_boundary_dash():
-    assert _sanitize("your dog—") == "your dog"          # trailing dash -> no trailing comma
-    assert _sanitize("—start") == "start"                # leading dash -> no leading comma
-    assert _sanitize("Bold move—!") == "Bold move!"      # dash before terminal -> clean
-    assert "," not in _sanitize("nice try—")             # no stray comma anywhere
+    assert _sanitize("your dog—") == "your dog"  # trailing dash -> no trailing comma
+    assert _sanitize("—start") == "start"  # leading dash -> no leading comma
+    assert _sanitize("Bold move—!") == "Bold move!"  # dash before terminal -> clean
+    assert "," not in _sanitize("nice try—")  # no stray comma anywhere
 
 
 # Every dash-like codepoint a model has been observed to emit (owner hard rule: NO em dashes,
@@ -118,7 +122,9 @@ _ALL_DASH_CODEPOINTS = [
 def test_sanitize_strips_every_dash_codepoint():
     for ch in _ALL_DASH_CODEPOINTS:
         out = _sanitize(f"left{ch}right")
-        assert ch not in out, f"dash codepoint U+{ord(ch):04X} survived sanitize: {out!r}"
+        assert ch not in out, (
+            f"dash codepoint U+{ord(ch):04X} survived sanitize: {out!r}"
+        )
 
 
 # --- _sanitize is now WYSIWYG: what it returns is byte-for-byte what Adb.text() will type
@@ -132,10 +138,16 @@ def test_sanitize_folds_accented_names_to_readable_ascii():
 
 
 def test_sanitize_removes_comma_immediately_before_or_for_casual_texting():
-    assert _sanitize(
-        "Were you reading a handwritten note, or just scanning the dessert menu?"
-    ) == "Were you reading a handwritten note or just scanning the dessert menu?"
-    assert _sanitize("Dessert, OR the handwritten note?") == "Dessert OR the handwritten note?"
+    assert (
+        _sanitize(
+            "Were you reading a handwritten note, or just scanning the dessert menu?"
+        )
+        == "Were you reading a handwritten note or just scanning the dessert menu?"
+    )
+    assert (
+        _sanitize("Dessert, OR the handwritten note?")
+        == "Dessert OR the handwritten note?"
+    )
 
 
 def test_sanitize_keeps_other_commas_and_does_not_touch_words_starting_with_or():
@@ -143,6 +155,146 @@ def test_sanitize_keeps_other_commas_and_does_not_touch_words_starting_with_or()
         "Honestly, that looks fun or slightly chaotic"
     )
     assert _sanitize("That orange, obviously") == "That orange, obviously"
+
+
+# --- _repair_question_periods: _sanitize's last step turns a stray terminal "." into "?"
+# where the sentence is an unambiguous question (the shipped "Is that Japan." artifact).
+# Same WYSIWYG contract as the rest of _sanitize: one char for one char, so length is
+# preserved and the result is byte-for-byte what will be typed.
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("Is that Japan.", "Is that Japan?"),
+        ("Are those your dogs.", "Are those your dogs?"),
+        ("Was that in Lisbon.", "Was that in Lisbon?"),
+        ("Does she ever sit still.", "Does she ever sit still?"),
+        ("Did you build that.", "Did you build that?"),
+        ("Have you been there.", "Have you been there?"),
+        ("Do you surf.", "Do you surf?"),
+        ("Isn't that Kyoto.", "Isn't that Kyoto?"),
+        ("Can't you pick one.", "Can't you pick one?"),
+        ("Where was that.", "Where was that?"),
+        ("Where is that taken.", "Where is that taken?"),
+        ("What camera is that.", "What camera is that?"),
+        ("How did you get that shot.", "How did you get that shot?"),
+        ("Who's she.", "Who's she?"),
+        ("What's that.", "What's that?"),
+        ("Why would anyone leave.", "Why would anyone leave?"),
+        # Shipped live in Training: a wh-question typed with a period.
+        ("Where is the signup sheet.", "Where is the signup sheet?"),
+        ("Which one is yours.", "Which one is yours?"),
+        ("Nice view. Is that Japan.", "Nice view. Is that Japan?"),
+        ("Is that Japan. Looks great.", "Is that Japan? Looks great."),
+        ("Is that Japan. Do you surf.", "Is that Japan? Do you surf?"),
+        ('"Is that Japan."', '"Is that Japan?"'),
+        ("Is that St. Moritz.", "Is that St. Moritz?"),
+    ],
+)
+def test_sanitize_repairs_an_unambiguous_question_period(raw, expected):
+    """A lone terminal '.' on an anchored interrogative body becomes '?'; abbreviation
+    periods elsewhere in the sentence (St. Moritz) are masked and left alone."""
+    assert _sanitize(raw) == expected
+    assert len(_sanitize(raw)) == len(expected)
+    assert _sanitize(_sanitize(raw)) == expected
+
+
+def test_sanitize_question_period_is_idempotent_and_length_preserving():
+    """f(f(x)) == f(x) and len is never changed, over the repaired inputs."""
+    repaired_inputs = [
+        "Is that Japan.",
+        "Are those your dogs.",
+        "Was that in Lisbon.",
+        "Does she ever sit still.",
+        "Did you build that.",
+        "Have you been there.",
+        "Do you surf.",
+        "Isn't that Kyoto.",
+        "Can't you pick one.",
+        "Where was that.",
+        "Where is that taken.",
+        "What camera is that.",
+        "How did you get that shot.",
+        "Who's she.",
+        "What's that.",
+        "Why would anyone leave.",
+        "Where is the signup sheet.",
+        "Which one is yours.",
+        "Nice view. Is that Japan.",
+        "Is that Japan. Looks great.",
+        "Is that Japan. Do you surf.",
+        '"Is that Japan."',
+        "Is that St. Moritz.",
+    ]
+    for raw in repaired_inputs:
+        once = _sanitize(raw)
+        assert _sanitize(once) == once
+        assert len(once) == len(raw)
+
+
+def test_sanitize_question_period_wrapped_quote_composes_with_strip():
+    """The repair runs inside _sanitize (before _strip_wrapping_quotes), so the wrapped
+    artifact fires end-to-end and then the wrapping pair is removed."""
+    assert _strip_wrapping_quotes(_sanitize('"Is that Japan."')) == "Is that Japan?"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Is that Japan?",
+        "Nice view.",
+        "Have fun.",
+        "Do tell.",
+        "Do it.",
+        "Do that.",
+        "Will do.",
+        "Can't wait.",
+        "Don't you dare.",
+        "What a day it was.",
+        "How good it was.",
+        "Where I was.",
+        "What it is.",
+        "What's more.",
+        # Statements that merely open with an auxiliary or a relative wh word.
+        "Which is fine.",
+        "Which is why I asked.",
+        "Had it up to here.",
+        "Had I known.",
+        "Where there's a will.",
+        "Who knew.",
+        "Guess where that is.",
+        "I wonder if that is Japan.",
+        "Is that Japan...",
+        "Is that Japan!",
+        "Dr. Dolittle energy.",
+        "Is that St. Moritz?",
+        "That is Japan.",
+        "",
+    ],
+)
+def test_sanitize_question_period_leaves_non_questions_untouched(text):
+    """Statements, imperatives, exclamatives, embedded clauses, ellipses, and text already
+    ending in ?/! must be byte-identical out."""
+    assert _sanitize(text) == text
+
+
+def test_sanitize_question_period_ignores_a_masked_mid_word_period():
+    """An abbreviation leading the sentence is masked, so 'Mr. Jones is that Japan.' does not
+    look like an interrogative and stays unchanged."""
+    assert _sanitize("Mr. Jones is that Japan.") == "Mr. Jones is that Japan."
+
+
+def test_parse_repairs_an_unambiguous_question_period_end_to_end():
+    """A model payload {opener: 'Is that Japan.'} comes back with the '?' repaired, driven
+    through the same fake-transport generate() helper the other _parse edge cases use."""
+    payload = _gemini_response(
+        {"opener": "Is that Japan.", "referenced": "x", "item_index": 1}
+    )
+    result = _opener(_Transport([(200, payload)])).generate(
+        Profile(photos=[b"a"]), style="s"
+    )
+    assert result.opener == "Is that Japan?"
 
 
 # --- _strip_wrapping_quotes: a pure formatting repair (the model quoting its own message
@@ -165,10 +317,14 @@ def test_strip_wrapping_quotes_strips_around_a_contraction():
     into her comment box. Before the rewrite the model produced zero apostrophes in 188
     openers, which is why the old rule never showed the hole."""
     assert _strip_wrapping_quotes("'That's a nice mug.'") == "That's a nice mug."
-    assert _strip_wrapping_quotes("'Nice antlers, isn't it?'") == "Nice antlers, isn't it?"
+    assert (
+        _strip_wrapping_quotes("'Nice antlers, isn't it?'") == "Nice antlers, isn't it?"
+    )
     # A message quoted back with BOTH kinds of interior contraction still repairs.
-    assert (_strip_wrapping_quotes("'You'd never guess what that isn't.'")
-            == "You'd never guess what that isn't.")
+    assert (
+        _strip_wrapping_quotes("'You'd never guess what that isn't.'")
+        == "You'd never guess what that isn't."
+    )
 
 
 def test_strip_wrapping_quotes_leaves_unbalanced_inner_apostrophe_alone():
@@ -202,15 +358,15 @@ def test_strip_wrapping_quotes_leaves_mismatched_quote_pair_alone():
 # ---------------------------------------------------------------------------------------
 
 _SCAFFOLDING_FALSE_POSITIVES = [
-    "Two options: skiing or the beach?",                               # "option" excluded on purpose
+    "Two options: skiing or the beach?",  # "option" excluded on purpose
     "That golden retriever has better hair than me.",
     "Your Rome photo just moved it up my list.",
-    "Fair warning, I message back too fast.",                          # naturally contains "message"
-    "Your photo from the trailhead is doing a lot of work for you.",   # naturally contains "photo"
-    "The answer is obviously pineapple.",                              # naturally contains "answer"
-    "That's a bold sweater, tell me it's not a dare.",                 # internal apostrophe
-    'Your caption said "adventure awaits", so where to first?',        # internal quotes
-    "Two truths and a lie: you go first or should I?",                 # leading colon, no label word
+    "Fair warning, I message back too fast.",  # naturally contains "message"
+    "Your photo from the trailhead is doing a lot of work for you.",  # naturally contains "photo"
+    "The answer is obviously pineapple.",  # naturally contains "answer"
+    "That's a bold sweater, tell me it's not a dare.",  # internal apostrophe
+    'Your caption said "adventure awaits", so where to first?',  # internal quotes
+    "Two truths and a lie: you go first or should I?",  # leading colon, no label word
     "Sunrise hikes and bad coffee, we might be the same person.",
     "That ski photo has main character energy, what's the story?",
     "Best travel story wins, mine involves a scooter and no plan.",
@@ -220,7 +376,7 @@ _SCAFFOLDING_FALSE_POSITIVES = [
     # the refusal-verb requirement in _SCAFFOLD_REFUSAL_RE.
     "I cannot believe you skied that line.",
     "I cannot get over that dog's face.",
-    "I cannot help but notice the antlers.",                           # "help but" is the idiom
+    "I cannot help but notice the antlers.",  # "help but" is the idiom
     "Okay, I'm unable to look away from that sunset shot.",
     # 2026-09-06 (b) "HERE'S" collision (ops/OPENER-REDESIGN.md residuals section): a bare
     # leading "Here's"/"Here is" used to be matched unconditionally, so this perfectly natural
@@ -228,8 +384,8 @@ _SCAFFOLDING_FALSE_POSITIVES = [
     # that stops a whole run. "hoping" is a gerund, never the meta noun naming the output, so
     # _SCAFFOLD_HERE_IS_OBJECT_RE does not match it.
     "Here's hoping that trail's as steep as it looks. Have you done the full loop?",
-    "Here's to a good hike, was that trail as brutal as it looks?",     # "to" is not a determiner
-    "Here's a photo I love, where was it taken?",                      # "a photo" names a thing, not the output
+    "Here's to a good hike, was that trail as brutal as it looks?",  # "to" is not a determiner
+    "Here's a photo I love, where was it taken?",  # "a photo" names a thing, not the output
 ]
 
 
@@ -239,14 +395,14 @@ def test_scaffolding_markers_false_positive_corpus_is_clean(text):
 
 
 _SCAFFOLDING_TRUE_POSITIVES = [
-    "Here's the response: Great ocean, where was this taken?",         # owner's own example
+    "Here's the response: Great ocean, where was this taken?",  # owner's own example
     "Opener: Nice antlers.",
     'Sure! Here\'s a great opener: "Nice antlers."',
     "As an AI, I would say...",
-    "`Nice antlers, great catch.`",                                    # backtick-wrapped
-    '{"opener": "Nice antlers, where was this taken?"}',               # raw JSON leak
+    "`Nice antlers, great catch.`",  # backtick-wrapped
+    '{"opener": "Nice antlers, where was this taken?"}',  # raw JSON leak
     "Certainly, here's a good one: love the ski photo, where was that taken?",
-    "I cannot assist with that request.",                              # refusal framing
+    "I cannot assist with that request.",  # refusal framing
     "# Nice antlers, where was this taken?",
     "This is my **opener** suggestion for her hiking photo.",
     # 2026-09-06 (b): the narrowed "here's"/"here is" check must still catch genuine preamble
@@ -262,28 +418,34 @@ def test_scaffolding_markers_true_positive_corpus_is_flagged(text):
     assert _scaffolding_markers(text) != []
 
 
-@pytest.mark.parametrize("text", [
-    "Zero judgment here, you wear those Mickey ears with total confidence.",
-    "No judgement from me. Which ride is nonnegotiable?",
-    "No offense, but that hat has serious main character energy.",
-    "Hey, no pressure! What is the story behind that costume?",
-    "Don't take this the wrong way, that sweater is spectacular.",
-    "Not to be weird, but your dog looks exactly like my old neighbor's.",
-    "I'm not trying to sound nosy, but where was that photo taken?",
-    "This might sound dramatic, but that cake deserves its own fan club.",
-])
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Zero judgment here, you wear those Mickey ears with total confidence.",
+        "No judgement from me. Which ride is nonnegotiable?",
+        "No offense, but that hat has serious main character energy.",
+        "Hey, no pressure! What is the story behind that costume?",
+        "Don't take this the wrong way, that sweater is spectacular.",
+        "Not to be weird, but your dog looks exactly like my old neighbor's.",
+        "I'm not trying to sound nosy, but where was that photo taken?",
+        "This might sound dramatic, but that cake deserves its own fan club.",
+    ],
+)
 def test_preemptive_disclaimer_markers_flag_negative_framing_at_the_start(text):
     assert _preemptive_disclaimer_markers(text) != []
 
 
-@pytest.mark.parametrize("text", [
-    "You wear those Mickey ears with total confidence. Which ride is nonnegotiable?",
-    "That sweater is not subtle, and I respect the commitment.",
-    "The no pressure approach clearly does not apply to that competition.",
-    "Tell me that dramatic cake tasted as good as it looked.",
-    "I cannot get over that dog's face.",
-    "Is judging the costume contest as difficult as entering it?",
-])
+@pytest.mark.parametrize(
+    "text",
+    [
+        "You wear those Mickey ears with total confidence. Which ride is nonnegotiable?",
+        "That sweater is not subtle, and I respect the commitment.",
+        "The no pressure approach clearly does not apply to that competition.",
+        "Tell me that dramatic cake tasted as good as it looked.",
+        "I cannot get over that dog's face.",
+        "Is judging the costume contest as difficult as entering it?",
+    ],
+)
 def test_preemptive_disclaimer_markers_leave_ordinary_negation_and_words_alone(text):
     assert _preemptive_disclaimer_markers(text) == []
 
@@ -308,49 +470,72 @@ def test_preemptive_disclaimer_markers_leave_ordinary_negation_and_words_alone(t
 _REDUNDANCY_FALSE_POSITIVES = [
     # The redesign's own worked example (doc 1): the "Yes" half of the sauna edit pair. The
     # claim ("looks relaxing") survives with the photo covered and names nothing visible.
-    ("That view looks relaxing, where is this from?",
-     "Photo of her in an outdoor sauna at sunset"),
+    (
+        "That view looks relaxing, where is this from?",
+        "Photo of her in an outdoor sauna at sunset",
+    ),
     # Guess: the visible detail is the PREMISE ("that ridgeline"), the point is the country.
-    ("Based on that ridgeline I'm going to guess Norway.",
-     "Photo of her on a ridge with mountains behind her"),
+    (
+        "Based on that ridgeline I'm going to guess Norway.",
+        "Photo of her on a ridge with mountains behind her",
+    ),
     # Imagine: a claim about her experience, entirely outside the frame.
-    ("I know you were smiling, but I bet you were freezing out there.",
-     "Photo of her with a husky in the arctic"),
+    (
+        "I know you were smiling, but I bet you were freezing out there.",
+        "Photo of her with a husky in the arctic",
+    ),
     # Know, hedged. Note it says "they", not "that husky" -- the pronoun is what keeps it off
     # the monitor, and it is also what makes it read like two people looking at one thing.
-    ("I heard they run about as warm as a space heater, so at least you had that.",
-     "Photo of her with a husky in the arctic"),
+    (
+        "I heard they run about as warm as a space heater, so at least you had that.",
+        "Photo of her with a husky in the arctic",
+    ),
     # 2026-09-08 watched Training incident, implicit control: the attached item resolves the
     # place reference without repeating its visible surface, furniture, drink, or pose.
-    ("You look very at home there. Is this your regular spot for a quiet evening out?",
-     "Photo of Taylor sitting on a tiled outdoor bench under string lights with her legs "
-     "folded up, holding a glass of white wine"),
+    (
+        "You look very at home there. Is this your regular spot for a quiet evening out?",
+        "Photo of Taylor sitting on a tiled outdoor bench under string lights with her legs "
+        "folded up, holding a glass of white wine",
+    ),
     # STRUCTURAL NOUNS ONLY. Nearly every `referenced` the model writes opens with
     # "photo of..." or "prompt card...", so counting those words would fire on almost every
     # profile and swamp the real signal -- hence the second stopword group.
-    ("I bet that took three tries to get right.",
-     "The second photo, a picture of a latte with a leaf poured into it"),
-    ("You look like you won that argument.",
-     "One of her photos, a picture of her mid debate at a podium"),
-    ("That is a lot of confidence for a Tuesday.",
-     "Her answer to the two truths prompt card"),
+    (
+        "I bet that took three tries to get right.",
+        "The second photo, a picture of a latte with a leaf poured into it",
+    ),
+    (
+        "You look like you won that argument.",
+        "One of her photos, a picture of her mid debate at a podium",
+    ),
+    (
+        "That is a lot of confidence for a Tuesday.",
+        "Her answer to the two truths prompt card",
+    ),
     # Possessive in `referenced` ("dog's") must not leave a fragment that matches anything.
-    ("Tell me you did not carry that the whole way up.",
-     "Photo of her dog's pack on a summit trail"),
+    (
+        "Tell me you did not carry that the whole way up.",
+        "Photo of her dog's pack on a summit trail",
+    ),
     # Sub-3-character tokens are dropped whether or not they are stopwords ("DJ" here), which
     # is the correct trade for a monitor: a two-character overlap is noise far more often
     # than it is evidence.
-    ("I bet that is louder than it looks.",
-     "Photo of her DJ setup at home"),
+    ("I bet that is louder than it looks.", "Photo of her DJ setup at home"),
     # A bare digit run in `referenced` ("30") is likewise below the length floor.
-    ("I am going to guess that was colder than it looks.",
-     "Photo taken at 30 below in Tromso"),
+    (
+        "I am going to guess that was colder than it looks.",
+        "Photo taken at 30 below in Tromso",
+    ),
     # Shared FUNCTION words ("where", "she", "the") must never count -- they say nothing
     # about which profile this is.
-    ("Where does someone even learn that?",
-     "Prompt card where she says she taught herself to weld"),
-    ("Fair warning, I message back too fast.",
-     "Prompt card about her slow reply times"),
+    (
+        "Where does someone even learn that?",
+        "Prompt card where she says she taught herself to weld",
+    ),
+    (
+        "Fair warning, I message back too fast.",
+        "Prompt card about her slow reply times",
+    ),
     # Degenerate input: an empty `referenced` has no content words to restate.
     ("I bet the dog picked that hat.", ""),
 ]
@@ -364,34 +549,44 @@ def test_redundancy_markers_false_positive_corpus_is_clean(opener, referenced):
 _REDUNDANCY_TRUE_POSITIVES = [
     # The shipped opener this entire redesign exists to stop (doc 1), and the "No" half of
     # the sauna edit pair: cover the photo and nothing is left.
-    ("That view by the sauna during sunset looks relaxing, where is this from?",
-     "Photo of her in an outdoor sauna at sunset"),
+    (
+        "That view by the sauna during sunset looks relaxing, where is this from?",
+        "Photo of her in an outdoor sauna at sunset",
+    ),
     # Synthetic illustration of a failure shape production data confirmed is real, not just
     # hypothetical (doc 3.7). The second clause is a genuine claim; redundantly naming the
     # location is exactly the pattern being targeted here.
-    ("That water at the alpine lake looks freezing, were you brave enough to jump all the way in?",
-     "Photo of her swimming in the freezing water at the alpine lake"),
+    (
+        "That water at the alpine lake looks freezing, were you brave enough to jump all the way in?",
+        "Photo of her swimming in the freezing water at the alpine lake",
+    ),
     # The "No" half of the husky edit pair: a null verdict plus a near-certain question.
-    ("That husky is too cute, is it yours?",
-     "Photo of her with a husky in the arctic"),
+    ("That husky is too cute, is it yours?", "Photo of her with a husky in the arctic"),
     # The "No" half of the prompt-card edit pair: reads the card back to the woman who wrote it.
-    ("Your two truths and a lie about the countries, cilantro and the pop star is fun, "
-     "which one is the lie?",
-     "Prompt card, two truths and a lie about 30 countries, cilantro, and meeting a pop star"),
+    (
+        "Your two truths and a lie about the countries, cilantro and the pop star is fun, "
+        "which one is the lie?",
+        "Prompt card, two truths and a lie about 30 countries, cilantro, and meeting a pop star",
+    ),
     # Minimal case: exactly one restated content word is still a restatement.
-    ("The antlers are doing a lot of work in that shot.",
-     "Photo of her wearing antlers at a party"),
+    (
+        "The antlers are doing a lot of work in that shot.",
+        "Photo of her wearing antlers at a party",
+    ),
     # Normalization is applied to BOTH sides, so case never hides a restatement.
-    ("NORWAY looks unreal in that light.",
-     "Photo of a fjord in norway"),
-    ("Your rooftop sunset photo is a whole mood.",
-     "Photo of a sunset from a rooftop bar"),
+    ("NORWAY looks unreal in that light.", "Photo of a fjord in norway"),
+    (
+        "Your rooftop sunset photo is a whole mood.",
+        "Photo of a sunset from a rooftop bar",
+    ),
     # 2026-09-08 watched Training incident: its question supplies conversational value, but the
     # setup still copies four obvious content words that an implicit place reference can replace.
-    ("Perching right up on the tiled bench with a glass of wine is definitely the way to do it. "
-     "Is this your regular spot for a quiet evening out?",
-     "Photo of Taylor sitting on a tiled outdoor bench under string lights with her legs "
-     "folded up, holding a glass of white wine"),
+    (
+        "Perching right up on the tiled bench with a glass of wine is definitely the way to do it. "
+        "Is this your regular spot for a quiet evening out?",
+        "Photo of Taylor sitting on a tiled outdoor bench under string lights with her legs "
+        "folded up, holding a glass of white wine",
+    ),
 ]
 
 
@@ -425,12 +620,16 @@ def test_redundancy_markers_name_each_distinct_word_once_in_referenced_order():
     than in the opener, with the word quoted so a multi-word marker list stays readable."""
     markers = _redundant_description_markers(
         "That view by the sauna during sunset looks relaxing, where is this from?",
-        "Photo of her in an outdoor sauna at sunset")
-    assert markers == ['opener restates the referenced word "sauna"',
-                       'opener restates the referenced word "sunset"']
+        "Photo of her in an outdoor sauna at sunset",
+    )
+    assert markers == [
+        'opener restates the referenced word "sauna"',
+        'opener restates the referenced word "sunset"',
+    ]
     # A word restated twice in the opener is still exactly one marker.
-    assert _redundant_description_markers("Sauna today, sauna tomorrow.", "an outdoor sauna") == [
-        'opener restates the referenced word "sauna"']
+    assert _redundant_description_markers(
+        "Sauna today, sauna tomorrow.", "an outdoor sauna"
+    ) == ['opener restates the referenced word "sauna"']
 
 
 def test_redundancy_markers_is_a_lower_bound_and_fails_by_missing_not_by_alarming():
@@ -443,15 +642,27 @@ def test_redundancy_markers_is_a_lower_bound_and_fails_by_missing_not_by_alarmin
     any threshold calibrated before it, so it must not happen silently."""
     # 1. A terse `referenced` defeats it completely: the opener describes the scene in full
     #    and there is nothing to match against.
-    assert _redundant_description_markers(
-        "That outdoor sauna at sunset looks unreal, where is it?", "the third photo") == []
+    assert (
+        _redundant_description_markers(
+            "That outdoor sauna at sunset looks unreal, where is it?", "the third photo"
+        )
+        == []
+    )
     # 2. It counts words, not meaning, so a paraphrase scores zero.
-    assert _redundant_description_markers(
-        "That steam room looks like the best part of the trip.",
-        "Photo of her in an outdoor sauna at sunset") == []
+    assert (
+        _redundant_description_markers(
+            "That steam room looks like the best part of the trip.",
+            "Photo of her in an outdoor sauna at sunset",
+        )
+        == []
+    )
     # 3. Exact-token match only, so morphology defeats it ("huskies" against "husky").
-    assert _redundant_description_markers(
-        "I heard huskies run warm.", "Photo of her with a husky in the arctic") == []
+    assert (
+        _redundant_description_markers(
+            "I heard huskies run warm.", "Photo of her with a husky in the arctic"
+        )
+        == []
+    )
 
 
 def test_redundancy_markers_fires_on_a_good_connect_opener_which_is_why_it_is_not_a_gate():
@@ -468,14 +679,22 @@ def test_redundancy_markers_fires_on_a_good_connect_opener_which_is_why_it_is_no
     above would reject the best openers the system can write, and five consecutive rejections
     stop the run (service.py). Whoever calibrates the offline threshold must hold these two
     out as the false-positive set."""
-    assert _redundant_description_markers(
-        "The cilantro one is the lie, I can feel it.",
-        "Prompt card, two truths and a lie about 30 countries, cilantro, and meeting a pop "
-        "star") != []
-    assert _redundant_description_markers(
-        "How many bottles of hot sauce did that trip cost you?",
-        "Her prompt says she puts hot sauce on everything, plus a separate photo of her "
-        "backpacking") != []
+    assert (
+        _redundant_description_markers(
+            "The cilantro one is the lie, I can feel it.",
+            "Prompt card, two truths and a lie about 30 countries, cilantro, and meeting a pop "
+            "star",
+        )
+        != []
+    )
+    assert (
+        _redundant_description_markers(
+            "How many bottles of hot sauce did that trip cost you?",
+            "Her prompt says she puts hot sauce on everything, plus a separate photo of her "
+            "backpacking",
+        )
+        != []
+    )
 
 
 # ---------------------------------------------------------------------------------------
@@ -493,15 +712,24 @@ def test_redundancy_markers_fires_on_a_good_connect_opener_which_is_why_it_is_no
 # what makes two differently-punctuated copies of the same opening register as the same.
 # ---------------------------------------------------------------------------------------
 
+
 def test_leading_ngram_takes_the_first_four_words_lowercased_without_punctuation():
-    assert _leading_ngram("Based on that ridgeline I'm going to guess Norway.") == \
-        "based on that ridgeline"
+    assert (
+        _leading_ngram("Based on that ridgeline I'm going to guess Norway.")
+        == "based on that ridgeline"
+    )
     assert _leading_ngram("I bet you were freezing out there.") == "i bet you were"
 
 
 def test_leading_ngram_n_is_configurable_and_a_short_text_returns_all_its_words():
-    assert _leading_ngram("Based on that ridgeline I'm going to guess Norway.", 2) == "based on"
-    assert _leading_ngram("one two three four five six", 6) == "one two three four five six"
+    assert (
+        _leading_ngram("Based on that ridgeline I'm going to guess Norway.", 2)
+        == "based on"
+    )
+    assert (
+        _leading_ngram("one two three four five six", 6)
+        == "one two three four five six"
+    )
     # Fewer words than n: return what there is rather than padding or failing. This is the
     # case that makes two openers of "Hi" collide with each other, which is correct.
     assert _leading_ngram("Hi!", 6) == "hi"
@@ -511,12 +739,16 @@ def test_leading_ngram_n_is_configurable_and_a_short_text_returns_all_its_words(
 def test_leading_ngram_collapses_the_noise_two_near_identical_openers_differ_by():
     """The whole point: openers that differ only in case, punctuation or whitespace must
     normalize to the SAME n-gram, or the guard misses the repetition it exists to catch."""
-    assert _leading_ngram("I BET you were freezing") == _leading_ngram("i bet, you were freezing!")
+    assert _leading_ngram("I BET you were freezing") == _leading_ngram(
+        "i bet, you were freezing!"
+    )
     assert _leading_ngram("  I bet,   you were   freezing ") == "i bet you were"
     assert _leading_ngram("I bet -- you were freezing") == "i bet you were"
     # ...while a genuinely different opening must NOT collide, or the guard would regenerate
     # openers for no reason and burn a billed draw each time.
-    assert _leading_ngram("I bet you were freezing") != _leading_ngram("That view looks relaxing")
+    assert _leading_ngram("I bet you were freezing") != _leading_ngram(
+        "That view looks relaxing"
+    )
 
 
 def test_leading_ngram_keeps_apostrophes_inside_words_but_not_at_the_edges():
@@ -551,6 +783,7 @@ def test_leading_ngram_is_pure_and_deterministic():
 # the same prompt, so these tests pin BOTH directions: identical inputs must agree, and each
 # input the digest claims to cover must be able to change it.
 # ---------------------------------------------------------------------------------------
+
 
 def test_prompt_stamp_is_a_64_character_hex_sha256():
     """Stored as a nullable STRING/TEXT column in both backends, so its shape is a contract
@@ -597,10 +830,13 @@ def test_prompt_stamp_changes_when_a_schema_field_description_changes(monkeypatc
     assert prompt_stamp(style) != before
 
 
-@pytest.mark.parametrize("constant", ["_ITEM_PREAMBLE", "_ITEM_PREAMBLE_CONTEXT",
-                                      "_ITEM_LABEL", "_CONTEXT_LABEL"])
+@pytest.mark.parametrize(
+    "constant",
+    ["_ITEM_PREAMBLE", "_ITEM_PREAMBLE_CONTEXT", "_ITEM_LABEL", "_CONTEXT_LABEL"],
+)
 def test_prompt_stamp_changes_when_an_item_crop_instruction_constant_changes(
-        monkeypatch, constant):
+    monkeypatch, constant
+):
     """Every fixed prompt-era input, including legacy digest-only values, must move the digest.
 
     `_ITEM_PREAMBLE` and `_ITEM_LABEL` are current wire rules. `_ITEM_PREAMBLE_CONTEXT` and
@@ -611,11 +847,15 @@ def test_prompt_stamp_changes_when_an_item_crop_instruction_constant_changes(
     """
     style = "casual and warm"
     before = prompt_stamp(style)
-    monkeypatch.setattr(opener_mod, constant, getattr(opener_mod, constant) + " One more rule.")
+    monkeypatch.setattr(
+        opener_mod, constant, getattr(opener_mod, constant) + " One more rule."
+    )
     assert prompt_stamp(style) != before
 
 
-def test_prompt_stamp_separates_adjacent_constants_rather_than_concatenating_them(monkeypatch):
+def test_prompt_stamp_separates_adjacent_constants_rather_than_concatenating_them(
+    monkeypatch,
+):
     """The NUL between every pair of components is what makes the boundaries unambiguous.
 
     Without it, moving a sentence from the end of one constant to the start of the next -- a
@@ -629,8 +869,11 @@ def test_prompt_stamp_separates_adjacent_constants_rather_than_concatenating_the
     monkeypatch.setattr(opener_mod, "_ITEM_PREAMBLE", _ITEM_PREAMBLE + moved_sentence)
     trailing = prompt_stamp(style)
     monkeypatch.setattr(opener_mod, "_ITEM_PREAMBLE", _ITEM_PREAMBLE)
-    monkeypatch.setattr(opener_mod, "_ITEM_PREAMBLE_CONTEXT",
-                        moved_sentence + opener_mod._ITEM_PREAMBLE_CONTEXT)
+    monkeypatch.setattr(
+        opener_mod,
+        "_ITEM_PREAMBLE_CONTEXT",
+        moved_sentence + opener_mod._ITEM_PREAMBLE_CONTEXT,
+    )
     assert prompt_stamp(style) != trailing
 
 
@@ -640,12 +883,15 @@ def test_prompt_stamp_ignores_schema_dict_key_ordering(monkeypatch):
     every cosmetic reshuffle of _SCHEMA would split one era into two in the stored rows."""
     style = "casual and warm"
     before = prompt_stamp(style)
-    reordered = {key: copy.deepcopy(value)
-                 for key, value in reversed(list(opener_mod._SCHEMA.items()))}
+    reordered = {
+        key: copy.deepcopy(value)
+        for key, value in reversed(list(opener_mod._SCHEMA.items()))
+    }
     reordered["properties"] = {
         key: copy.deepcopy(value)
-        for key, value in reversed(list(opener_mod._SCHEMA["properties"].items()))}
-    assert list(reordered) != list(opener_mod._SCHEMA)          # the reorder really happened
+        for key, value in reversed(list(opener_mod._SCHEMA["properties"].items()))
+    }
+    assert list(reordered) != list(opener_mod._SCHEMA)  # the reorder really happened
     monkeypatch.setattr(opener_mod, "_SCHEMA", reordered)
     assert prompt_stamp(style) == before
 
@@ -653,7 +899,9 @@ def test_prompt_stamp_ignores_schema_dict_key_ordering(monkeypatch):
 def test_sentence_count_basic_cases():
     assert _sentence_count("One profile-specific thought") == 1
     assert _sentence_count("One thought. One easy question?") == 2
-    assert _sentence_count("Dr. Dolittle energy. What's the story?") == 2   # abbreviation guard
+    assert (
+        _sentence_count("Dr. Dolittle energy. What's the story?") == 2
+    )  # abbreviation guard
     assert _sentence_count("One. Two? Three!") == 3
 
 
@@ -664,12 +912,19 @@ def test_sensitive_inference_guard_catches_the_reported_bridge_jump_angle_only()
     the final pre send backstop for the reported wording, and intentionally stays narrower than
     a ban on all sport vocabulary so explicit, benign profile activities remain possible.
     """
-    reported = ("Did you work up the courage to jump or were you happy just taking in "
-                "the scenery?")
+    reported = (
+        "Did you work up the courage to jump or were you happy just taking in "
+        "the scenery?"
+    )
     assert _sensitive_inference_markers(reported) == ["courage to jump"]
     assert _sensitive_inference_markers("Did you jump from the bridge?") == [
-        "asking whether she jumped", "jumping from a height"]
-    assert _sensitive_inference_markers("Your paragliding story sounds unforgettable.") == []
+        "asking whether she jumped",
+        "jumping from a height",
+    ]
+    assert (
+        _sensitive_inference_markers("Your paragliding story sounds unforgettable.")
+        == []
+    )
     assert _sensitive_inference_markers("That bridge is beautiful.") == []
 
 
@@ -681,102 +936,116 @@ _REPORTED_UNCONFIRMED_LOCATION_FOLLOWUP = (
 _UNCONFIRMED_LOCATION_MARKER = "unconfirmed location used as a later premise"
 
 
-@pytest.mark.parametrize("text", [
-    _REPORTED_UNCONFIRMED_LOCATION_FOLLOWUP,
-    ("That looks like Namsan Tower in Seoul right behind you. Was visiting Korea your "
-     "favorite trip so far or is another destination at the top of your list?"),
-    ("That looks like an Iceland super jeep tour. Did you guys take that thing out onto a "
-     "glacier or into the highlands?"),
-    ("That sunny stone street looks like Spain, maybe Mallorca. Did you sneak away there for "
-     "a quick escape while you were living in London?"),
-    ("Judging by the architecture, my official guess for that backdrop is Italy. What was "
-     "your favorite spot you visited while you were there?"),
-    "Is that Banff? How long were you there?",
-    "I'm guessing Norway, did you hike while you were there?",
-    ("My guess is Switzerland, but did that fluffy cat hire himself out as your local tour "
-     "guide or just demand a petting break?"),
-    "It has to be Lake Louise. How cold was it there?",
-    "My guess is Switzerland, you must have loved hiking there.",
-    "That looks like Banff and you must have gone skiing.",
-    "Was that Lake Louise? Did you skate there?",
-    "That looks like Banff. How long were you there?",
-    "That looks like Lake Louise. Was that taken during your ski trip?",
-    "That looks like Lake Louise. Is that taken before you went skating?",
-    "That looks like Lake Louise. Was that taken in Alberta during the ski trip?",
-    "That looks like Lake Louise. Was that taken out west after the glacier hike?",
-    "That looks like Lake Louise. Is that Banff and did the group skate there?",
-    "That looks like Lake Louise. Is that Banff because the group went skiing?",
-    "That looks like Banff, must have been freezing there.",
-    # Addendum -- 2026-09-14 (b): the 2026-09-14 noun-set/pattern widening (see
-    # _LOCATION_CONFIRMATION_NOUN's module comment) only had to make MORE confirmation shapes
-    # legal, never fewer rejections. These three put the same newly-legal place nouns into a
-    # frame that is NOT a confirmation of the sender's own guess, to prove the widening did not
-    # open a hole alongside it.
-    "My guess is Rome. Did you get the city right?",
-    "My guess is Rome. How close is that gelato?",
-    "My guess is Rome. What was the best part of the city?",
-    # 2026-09-15: the "is that where ...?" shape was added to
-    # _DIRECT_LOCATION_CONFIRMATION_PATTERNS and the mis-addressed short-circuit narrowed from
-    # "mentions her at all" to "puts her in the guesser's slot". Both widen what is accepted,
-    # so these pin the rejection side of exactly that frame: the moment anything but the place
-    # itself is being asked about, the end-to-end anchor must stop matching again.
-    "My guess is Rome. Is that where you were skating?",
-    "My guess is Rome. Is that where you had the best pasta?",
-    "My guess is Rome. Is that where you were, and did you love it?",
-    "My guess is Rome. Is that where your favourite trip was?",
-    # 2026-09-15, the regression the narrowing caused on the OTHER branch. Dropping the bare
-    # recipient veto from the free-form location-QUERY short circuit let these back in, because
-    # _is_location_confirmation_phrase reads any Title-Cased run as a place name and neither
-    # "your happy place" nor "your hometown" is one of _LOCATION_CONFIRMATION_NOUN's places.
-    # Each asks what the place MEANT TO HER on top of a guess she has not confirmed yet, which
-    # is the whole reason this guard exists; _RECIPIENT_INSIDE_LOCATION_RE is what stops them.
-    # They are pinned here as strings rather than left to the invariant test below because the
-    # first round was tested in one direction only, and that is how the hole opened.
-    "That looks like Lake Louise. Is that Your Happy Place?",
-    "That looks like Lake Louise. Is that Your Kind of Town?",
-    "That looks like Lake Louise. Is that Your Favourite Spot?",
-    "That looks like Lake Louise. Was that Your Best Trip?",
-    "That looks like Lake Louise. Is that Your Hometown?",
-    "That looks like Lake Louise. Was that You?",
-    "That looks like Lake Louise. Is that You in Banff?",
-    "That looks like Lake Louise. Was that shot in Your Hometown?",
-], ids=[
-    "reported-lake-louise",
-    "logged-namsan-tower",
-    "logged-iceland-tour",
-    "logged-spain-mallorca",
-    "logged-official-italy-guess",
-    "confirmation-question-then-assumption",
-    "single-sentence-comma-then-assumption",
-    "logged-switzerland-comma-but-followup",
-    "has-to-be-then-assumption",
-    "comma-subject-led-statement",
-    "conjunction-subject-led-statement",
-    "past-tense-location-question-then-assumption",
-    "looks-like-with-there-followup",
-    "taken-during-activity-is-not-confirmation",
-    "taken-before-activity-is-not-confirmation",
-    "place-then-temporal-activity-is-not-confirmation",
-    "direction-then-activity-is-not-confirmation",
-    "named-place-then-coordinated-activity-is-not-confirmation",
-    "named-place-then-causal-activity-is-not-confirmation",
-    "comma-bare-modal-statement",
-    "widened-noun-set-still-rejects-recipient-directed-phrasing",
-    "widened-noun-set-still-rejects-a-noun-outside-the-shared-set",
-    "widened-noun-set-still-rejects-an-experience-question-after-the-noun",
-    "where-shape-still-rejects-an-activity-clause",
-    "where-shape-still-rejects-an-experience-clause",
-    "where-shape-still-rejects-a-coordinated-second-question",
-    "where-shape-still-rejects-a-possessive-experience-subject",
-    "query-branch-still-rejects-your-happy-place",
-    "query-branch-still-rejects-your-kind-of-town",
-    "query-branch-still-rejects-your-favourite-spot",
-    "query-branch-still-rejects-your-best-trip",
-    "query-branch-still-rejects-your-hometown",
-    "query-branch-still-rejects-was-that-you",
-    "query-branch-still-rejects-you-inside-a-real-place-name",
-    "query-branch-still-rejects-your-place-behind-taken-shot-filmed",
-])
+@pytest.mark.parametrize(
+    "text",
+    [
+        _REPORTED_UNCONFIRMED_LOCATION_FOLLOWUP,
+        (
+            "That looks like Namsan Tower in Seoul right behind you. Was visiting Korea your "
+            "favorite trip so far or is another destination at the top of your list?"
+        ),
+        (
+            "That looks like an Iceland super jeep tour. Did you guys take that thing out onto a "
+            "glacier or into the highlands?"
+        ),
+        (
+            "That sunny stone street looks like Spain, maybe Mallorca. Did you sneak away there for "
+            "a quick escape while you were living in London?"
+        ),
+        (
+            "Judging by the architecture, my official guess for that backdrop is Italy. What was "
+            "your favorite spot you visited while you were there?"
+        ),
+        "Is that Banff? How long were you there?",
+        "I'm guessing Norway, did you hike while you were there?",
+        (
+            "My guess is Switzerland, but did that fluffy cat hire himself out as your local tour "
+            "guide or just demand a petting break?"
+        ),
+        "It has to be Lake Louise. How cold was it there?",
+        "My guess is Switzerland, you must have loved hiking there.",
+        "That looks like Banff and you must have gone skiing.",
+        "Was that Lake Louise? Did you skate there?",
+        "That looks like Banff. How long were you there?",
+        "That looks like Lake Louise. Was that taken during your ski trip?",
+        "That looks like Lake Louise. Is that taken before you went skating?",
+        "That looks like Lake Louise. Was that taken in Alberta during the ski trip?",
+        "That looks like Lake Louise. Was that taken out west after the glacier hike?",
+        "That looks like Lake Louise. Is that Banff and did the group skate there?",
+        "That looks like Lake Louise. Is that Banff because the group went skiing?",
+        "That looks like Banff, must have been freezing there.",
+        # Addendum -- 2026-09-14 (b): the 2026-09-14 noun-set/pattern widening (see
+        # _LOCATION_CONFIRMATION_NOUN's module comment) only had to make MORE confirmation shapes
+        # legal, never fewer rejections. These three put the same newly-legal place nouns into a
+        # frame that is NOT a confirmation of the sender's own guess, to prove the widening did not
+        # open a hole alongside it.
+        "My guess is Rome. Did you get the city right?",
+        "My guess is Rome. How close is that gelato?",
+        "My guess is Rome. What was the best part of the city?",
+        # 2026-09-15: the "is that where ...?" shape was added to
+        # _DIRECT_LOCATION_CONFIRMATION_PATTERNS and the mis-addressed short-circuit narrowed from
+        # "mentions her at all" to "puts her in the guesser's slot". Both widen what is accepted,
+        # so these pin the rejection side of exactly that frame: the moment anything but the place
+        # itself is being asked about, the end-to-end anchor must stop matching again.
+        "My guess is Rome. Is that where you were skating?",
+        "My guess is Rome. Is that where you had the best pasta?",
+        "My guess is Rome. Is that where you were, and did you love it?",
+        "My guess is Rome. Is that where your favourite trip was?",
+        # 2026-09-15, the regression the narrowing caused on the OTHER branch. Dropping the bare
+        # recipient veto from the free-form location-QUERY short circuit let these back in, because
+        # _is_location_confirmation_phrase reads any Title-Cased run as a place name and neither
+        # "your happy place" nor "your hometown" is one of _LOCATION_CONFIRMATION_NOUN's places.
+        # Each asks what the place MEANT TO HER on top of a guess she has not confirmed yet, which
+        # is the whole reason this guard exists; _RECIPIENT_INSIDE_LOCATION_RE is what stops them.
+        # They are pinned here as strings rather than left to the invariant test below because the
+        # first round was tested in one direction only, and that is how the hole opened.
+        "That looks like Lake Louise. Is that Your Happy Place?",
+        "That looks like Lake Louise. Is that Your Kind of Town?",
+        "That looks like Lake Louise. Is that Your Favourite Spot?",
+        "That looks like Lake Louise. Was that Your Best Trip?",
+        "That looks like Lake Louise. Is that Your Hometown?",
+        "That looks like Lake Louise. Was that You?",
+        "That looks like Lake Louise. Is that You in Banff?",
+        "That looks like Lake Louise. Was that shot in Your Hometown?",
+    ],
+    ids=[
+        "reported-lake-louise",
+        "logged-namsan-tower",
+        "logged-iceland-tour",
+        "logged-spain-mallorca",
+        "logged-official-italy-guess",
+        "confirmation-question-then-assumption",
+        "single-sentence-comma-then-assumption",
+        "logged-switzerland-comma-but-followup",
+        "has-to-be-then-assumption",
+        "comma-subject-led-statement",
+        "conjunction-subject-led-statement",
+        "past-tense-location-question-then-assumption",
+        "looks-like-with-there-followup",
+        "taken-during-activity-is-not-confirmation",
+        "taken-before-activity-is-not-confirmation",
+        "place-then-temporal-activity-is-not-confirmation",
+        "direction-then-activity-is-not-confirmation",
+        "named-place-then-coordinated-activity-is-not-confirmation",
+        "named-place-then-causal-activity-is-not-confirmation",
+        "comma-bare-modal-statement",
+        "widened-noun-set-still-rejects-recipient-directed-phrasing",
+        "widened-noun-set-still-rejects-a-noun-outside-the-shared-set",
+        "widened-noun-set-still-rejects-an-experience-question-after-the-noun",
+        "where-shape-still-rejects-an-activity-clause",
+        "where-shape-still-rejects-an-experience-clause",
+        "where-shape-still-rejects-a-coordinated-second-question",
+        "where-shape-still-rejects-a-possessive-experience-subject",
+        "query-branch-still-rejects-your-happy-place",
+        "query-branch-still-rejects-your-kind-of-town",
+        "query-branch-still-rejects-your-favourite-spot",
+        "query-branch-still-rejects-your-best-trip",
+        "query-branch-still-rejects-your-hometown",
+        "query-branch-still-rejects-was-that-you",
+        "query-branch-still-rejects-you-inside-a-real-place-name",
+        "query-branch-still-rejects-your-place-behind-taken-shot-filmed",
+    ],
+)
 def test_unconfirmed_location_followup_guard_flags_dependent_later_beats(text):
     assert _unconfirmed_location_followup_markers(text) == [
         _UNCONFIRMED_LOCATION_MARKER
@@ -796,155 +1065,171 @@ def test_unconfirmed_location_followup_guard_addendum_20260914b_keeps_the_histor
     """
     historical_failures = [
         _REPORTED_UNCONFIRMED_LOCATION_FOLLOWUP,  # Lake Louise
-        ("That looks like Namsan Tower in Seoul right behind you. Was visiting Korea your "
-         "favorite trip so far or is another destination at the top of your list?"),
-        ("That looks like an Iceland super jeep tour. Did you guys take that thing out onto a "
-         "glacier or into the highlands?"),
-        ("That sunny stone street looks like Spain, maybe Mallorca. Did you sneak away there "
-         "for a quick escape while you were living in London?"),
-        ("Judging by the architecture, my official guess for that backdrop is Italy. What was "
-         "your favorite spot you visited while you were there?"),
-        ("My guess is Switzerland, but did that fluffy cat hire himself out as your local tour "
-         "guide or just demand a petting break?"),
+        (
+            "That looks like Namsan Tower in Seoul right behind you. Was visiting Korea your "
+            "favorite trip so far or is another destination at the top of your list?"
+        ),
+        (
+            "That looks like an Iceland super jeep tour. Did you guys take that thing out onto a "
+            "glacier or into the highlands?"
+        ),
+        (
+            "That sunny stone street looks like Spain, maybe Mallorca. Did you sneak away there "
+            "for a quick escape while you were living in London?"
+        ),
+        (
+            "Judging by the architecture, my official guess for that backdrop is Italy. What was "
+            "your favorite spot you visited while you were there?"
+        ),
+        (
+            "My guess is Switzerland, but did that fluffy cat hire himself out as your local tour "
+            "guide or just demand a petting break?"
+        ),
     ]
     for text in historical_failures:
-        assert _unconfirmed_location_followup_markers(text) == [_UNCONFIRMED_LOCATION_MARKER]
+        assert _unconfirmed_location_followup_markers(text) == [
+            _UNCONFIRMED_LOCATION_MARKER
+        ]
 
 
-@pytest.mark.parametrize("text", [
-    # Existing accepted corpus entries: these must not be lost to a broad guess/there rule.
-    "Based on that ridgeline I'm going to guess Norway.",
-    "I know you were smiling, but I bet you were freezing out there.",
-    "I am going to guess that was colder than it looks.",
-    # A later beat may ask only for confirmation or correction of the inferred place.
-    "That looks a lot like Lake Louise in deep winter. Am I close?",
-    "That looks like Lake Louise. Is that right?",
-    "That scenery looks like British Columbia. Was this taken out west or somewhere else?",
-    "My guess is Switzerland. Could it be Austria instead?",
-    "That looks like Lake Louise. Was that taken in Alberta?",
-    "That looks like Lake Louise. Was that taken on the Icefields Parkway?",
-    "That looks like Banff and Lake Louise.",
-    "That looks like Lake Louise. Was that Banff instead?",
-    "That looks like Croatia. Could that be Bosnia and Herzegovina?",
-    "That looks like Lake Louise. Could that be right?",
-    "That looks like Lake Louise. Is my guess right?",
-    "That looks like Lake Louise. Am I even close?",
-    "That looks like Lake Louise. Could that be St. Moritz?",
-    "That looks like Lake Louise. Am I close? :)",
-    "That looks like Mt. Fuji.",
-    "That looks like Washington D.C. in spring.",
-    "That sweeping metal bridge over the water looks like Portugal. Am I close on that location?",
-    "Is that Lake Louise in deep winter?",
-    "That has to be Lake Louise, right?",
-    # A stated place may come from profile text; outgoing text alone cannot relitigate it.
-    "Banff in January sounds intense. How long were you there?",
-    # Looks like is often a grounded interpretation rather than a place identification.
-    "That looks like serious dedication. Were you out there before sunrise?",
-    "That husky looks like he takes guard duty seriously. Which one calls the shots?",
-    "That looks like Audrey Hepburn. Where did you find the coat?",
-    # Addendum -- 2026-09-14 (b): until this date _DIRECT_LOCATION_CONFIRMATION_PATTERNS'
-    # two confirmation shapes carried DIFFERENT place-noun sets ("Am I right about the
-    # country?" accepted, "Did I get the country right?" rejected; "city" and "town" in
-    # neither), so which verb the model reached for silently decided the verdict, and the
-    # "how close" shape only ever matched the literal "How close am I?". One shared
-    # _LOCATION_CONFIRMATION_NOUN alternation now backs every shape. The line below is the
-    # measured regression: replaying the reported "Looks like Rome, right?" capture through
-    # the 2026-09-14 (a) prompt produced this exact draft, and the pre-fix detector rejected
-    # it even though it violates no rule on wire (see run draw 1 in the addendum table).
-    "My guess is Rome. Did I get the city right?",
-    "That looks like Norway. Did I get the country right?",
-    "That looks like Tuscany. Did I get the region right?",
-    "My guess is Vienna. Did I guess the city right?",
-    "Is that Sedona? Did I call the town right?",
-    "That looks like Vienna. Am I right about the city?",
-    "That looks like Vienna. Was I close on the city?",
-    # The exact string from ops/OPENER-REDESIGN.md's 2026-09-05 (d) PRECISION CHECK, which
-    # claimed this retained Portugal draft "remain[ed] valid". Re-running the shipped
-    # detector on it before this fix showed that claim was never true (the "how close" shape
-    # only matched "How close am I?"); the 2026-09-14 (b) addendum corrects the record and
-    # this line pins the correction.
-    "That rock arch looks a lot like the Algarve coast in Portugal. How close is that guess?",
-    "My guess is Norway. How far off was that guess?",
-    "My guess is Norway. How close am I?",
-    # 2026-09-15: "is that where you were?" is a direct place confirmation that the guard's own
-    # docstring, VISUAL LOCATION TURN BOUNDARY and the retry hint all declare legal, and the
-    # 2026-09-14 (a) corpus sweep found it already in live use among 234 openers -- yet this
-    # table did not carry it, so the prompt asked for a wording the detector then rejected and
-    # the retry re-drew the same natural phrasing until the attempt budget was gone. The second
-    # person here is the point, not a defect: SHE IS THE ONE WHO KNOWS settles the place because
-    # she was standing in it, which is why the mis-addressed short-circuit had to narrow from
-    # "mentions her" to "puts her in the guesser's slot" for these to pass.
-    "That looks like Lake Louise. Is that where you were?",
-    "That looks like Lake Louise. Was that where you were?",
-    "That looks like Lake Louise. Is this where you were?",
-    "That looks like Lake Louise. Is that where this was taken?",
-    "That looks like Lake Louise. Is that the lake where you were?",
-    # The determiner disagreement measured on 2026-09-15: shape 1 accepted "that city" while
-    # shape 3 rejected it, and "my city" was legal in shapes 1 and 2 but not 3. One shared
-    # _LOCATION_CONFIRMATION_DET now backs all of them (the cross product is swept live by
-    # test_location_confirmation_shapes_share_one_noun_and_determiner_set; these are the
-    # measured strings, kept by name).
-    "My guess is Rome. Did I get that city right?",
-    "My guess is Rome. Did I get my city right?",
-    "My guess is Rome. How close is the guess?",
-    # The third recurrence, measured 2026-09-16: "is my guess right?" was the one shape that
-    # interpolated NEITHER shared constant, so it accepted "my guess"/"my call" and rejected
-    # the other 70 determiner x noun combinations its siblings accept. These three are the
-    # rejections that replay showed (the first is the same sentence as the accepted
-    # "is-my-guess-right" entry above with only the determiner changed, which is what makes it
-    # a disagreement rather than a policy).
-    "My guess is Rome. Is that guess right?",
-    "My guess is Rome. Is the city right?",
-    "My guess is Rome. Was this region way off?",
-], ids=[
-    "existing-norway-guess",
-    "existing-freezing-guess",
-    "existing-coldness-guess",
-    "direct-confirmation-followup",
-    "direct-pronoun-confirmation",
-    "direct-location-correction",
-    "direct-named-location-correction",
-    "taken-in-proper-place-confirmation",
-    "taken-on-proper-place-confirmation",
-    "compound-place-guess-with-no-followup",
-    "past-tense-named-place-correction",
-    "place-name-with-and",
-    "could-that-be-right",
-    "is-my-guess-right",
-    "am-i-even-close",
-    "direct-place-confirmation-with-abbreviation",
-    "confirmation-with-terminal-smiley",
-    "standalone-mount-abbreviation",
-    "standalone-dotted-place-abbreviation",
-    "exact-portugal-confirmation-control",
-    "single-beat-location-question",
-    "confirmation-tag",
-    "known-location",
-    "non-location-looks-like",
-    "figurative-pet-looks-like",
-    "no-location-context-with-wh",
-    "measured-regression-my-guess-is-rome-did-i-get-the-city-right",
-    "did-i-get-the-country-right",
-    "did-i-get-the-region-right",
-    "did-i-guess-the-city-right",
-    "did-i-call-the-town-right",
-    "am-i-right-about-the-city",
-    "was-i-close-on-the-city",
-    "portugal-how-close-is-that-guess-precision-check-correction",
-    "how-far-off-was-that-guess",
-    "how-close-am-i-still-passes",
-    "is-that-where-you-were",
-    "was-that-where-you-were",
-    "is-this-where-you-were",
-    "is-that-where-this-was-taken",
-    "is-that-the-lake-where-you-were",
-    "measured-regression-did-i-get-that-city-right",
-    "measured-regression-did-i-get-my-city-right",
-    "measured-regression-how-close-is-the-guess",
-    "measured-regression-is-that-guess-right",
-    "measured-regression-is-the-city-right",
-    "measured-regression-was-this-region-way-off",
-])
+@pytest.mark.parametrize(
+    "text",
+    [
+        # Existing accepted corpus entries: these must not be lost to a broad guess/there rule.
+        "Based on that ridgeline I'm going to guess Norway.",
+        "I know you were smiling, but I bet you were freezing out there.",
+        "I am going to guess that was colder than it looks.",
+        # A later beat may ask only for confirmation or correction of the inferred place.
+        "That looks a lot like Lake Louise in deep winter. Am I close?",
+        "That looks like Lake Louise. Is that right?",
+        "That scenery looks like British Columbia. Was this taken out west or somewhere else?",
+        "My guess is Switzerland. Could it be Austria instead?",
+        "That looks like Lake Louise. Was that taken in Alberta?",
+        "That looks like Lake Louise. Was that taken on the Icefields Parkway?",
+        "That looks like Banff and Lake Louise.",
+        "That looks like Lake Louise. Was that Banff instead?",
+        "That looks like Croatia. Could that be Bosnia and Herzegovina?",
+        "That looks like Lake Louise. Could that be right?",
+        "That looks like Lake Louise. Is my guess right?",
+        "That looks like Lake Louise. Am I even close?",
+        "That looks like Lake Louise. Could that be St. Moritz?",
+        "That looks like Lake Louise. Am I close? :)",
+        "That looks like Mt. Fuji.",
+        "That looks like Washington D.C. in spring.",
+        "That sweeping metal bridge over the water looks like Portugal. Am I close on that location?",
+        "Is that Lake Louise in deep winter?",
+        "That has to be Lake Louise, right?",
+        # A stated place may come from profile text; outgoing text alone cannot relitigate it.
+        "Banff in January sounds intense. How long were you there?",
+        # Looks like is often a grounded interpretation rather than a place identification.
+        "That looks like serious dedication. Were you out there before sunrise?",
+        "That husky looks like he takes guard duty seriously. Which one calls the shots?",
+        "That looks like Audrey Hepburn. Where did you find the coat?",
+        # Addendum -- 2026-09-14 (b): until this date _DIRECT_LOCATION_CONFIRMATION_PATTERNS'
+        # two confirmation shapes carried DIFFERENT place-noun sets ("Am I right about the
+        # country?" accepted, "Did I get the country right?" rejected; "city" and "town" in
+        # neither), so which verb the model reached for silently decided the verdict, and the
+        # "how close" shape only ever matched the literal "How close am I?". One shared
+        # _LOCATION_CONFIRMATION_NOUN alternation now backs every shape. The line below is the
+        # measured regression: replaying the reported "Looks like Rome, right?" capture through
+        # the 2026-09-14 (a) prompt produced this exact draft, and the pre-fix detector rejected
+        # it even though it violates no rule on wire (see run draw 1 in the addendum table).
+        "My guess is Rome. Did I get the city right?",
+        "That looks like Norway. Did I get the country right?",
+        "That looks like Tuscany. Did I get the region right?",
+        "My guess is Vienna. Did I guess the city right?",
+        "Is that Sedona? Did I call the town right?",
+        "That looks like Vienna. Am I right about the city?",
+        "That looks like Vienna. Was I close on the city?",
+        # The exact string from ops/OPENER-REDESIGN.md's 2026-09-05 (d) PRECISION CHECK, which
+        # claimed this retained Portugal draft "remain[ed] valid". Re-running the shipped
+        # detector on it before this fix showed that claim was never true (the "how close" shape
+        # only matched "How close am I?"); the 2026-09-14 (b) addendum corrects the record and
+        # this line pins the correction.
+        "That rock arch looks a lot like the Algarve coast in Portugal. How close is that guess?",
+        "My guess is Norway. How far off was that guess?",
+        "My guess is Norway. How close am I?",
+        # 2026-09-15: "is that where you were?" is a direct place confirmation that the guard's own
+        # docstring, VISUAL LOCATION TURN BOUNDARY and the retry hint all declare legal, and the
+        # 2026-09-14 (a) corpus sweep found it already in live use among 234 openers -- yet this
+        # table did not carry it, so the prompt asked for a wording the detector then rejected and
+        # the retry re-drew the same natural phrasing until the attempt budget was gone. The second
+        # person here is the point, not a defect: SHE IS THE ONE WHO KNOWS settles the place because
+        # she was standing in it, which is why the mis-addressed short-circuit had to narrow from
+        # "mentions her" to "puts her in the guesser's slot" for these to pass.
+        "That looks like Lake Louise. Is that where you were?",
+        "That looks like Lake Louise. Was that where you were?",
+        "That looks like Lake Louise. Is this where you were?",
+        "That looks like Lake Louise. Is that where this was taken?",
+        "That looks like Lake Louise. Is that the lake where you were?",
+        # The determiner disagreement measured on 2026-09-15: shape 1 accepted "that city" while
+        # shape 3 rejected it, and "my city" was legal in shapes 1 and 2 but not 3. One shared
+        # _LOCATION_CONFIRMATION_DET now backs all of them (the cross product is swept live by
+        # test_location_confirmation_shapes_share_one_noun_and_determiner_set; these are the
+        # measured strings, kept by name).
+        "My guess is Rome. Did I get that city right?",
+        "My guess is Rome. Did I get my city right?",
+        "My guess is Rome. How close is the guess?",
+        # The third recurrence, measured 2026-09-16: "is my guess right?" was the one shape that
+        # interpolated NEITHER shared constant, so it accepted "my guess"/"my call" and rejected
+        # the other 70 determiner x noun combinations its siblings accept. These three are the
+        # rejections that replay showed (the first is the same sentence as the accepted
+        # "is-my-guess-right" entry above with only the determiner changed, which is what makes it
+        # a disagreement rather than a policy).
+        "My guess is Rome. Is that guess right?",
+        "My guess is Rome. Is the city right?",
+        "My guess is Rome. Was this region way off?",
+    ],
+    ids=[
+        "existing-norway-guess",
+        "existing-freezing-guess",
+        "existing-coldness-guess",
+        "direct-confirmation-followup",
+        "direct-pronoun-confirmation",
+        "direct-location-correction",
+        "direct-named-location-correction",
+        "taken-in-proper-place-confirmation",
+        "taken-on-proper-place-confirmation",
+        "compound-place-guess-with-no-followup",
+        "past-tense-named-place-correction",
+        "place-name-with-and",
+        "could-that-be-right",
+        "is-my-guess-right",
+        "am-i-even-close",
+        "direct-place-confirmation-with-abbreviation",
+        "confirmation-with-terminal-smiley",
+        "standalone-mount-abbreviation",
+        "standalone-dotted-place-abbreviation",
+        "exact-portugal-confirmation-control",
+        "single-beat-location-question",
+        "confirmation-tag",
+        "known-location",
+        "non-location-looks-like",
+        "figurative-pet-looks-like",
+        "no-location-context-with-wh",
+        "measured-regression-my-guess-is-rome-did-i-get-the-city-right",
+        "did-i-get-the-country-right",
+        "did-i-get-the-region-right",
+        "did-i-guess-the-city-right",
+        "did-i-call-the-town-right",
+        "am-i-right-about-the-city",
+        "was-i-close-on-the-city",
+        "portugal-how-close-is-that-guess-precision-check-correction",
+        "how-far-off-was-that-guess",
+        "how-close-am-i-still-passes",
+        "is-that-where-you-were",
+        "was-that-where-you-were",
+        "is-this-where-you-were",
+        "is-that-where-this-was-taken",
+        "is-that-the-lake-where-you-were",
+        "measured-regression-did-i-get-that-city-right",
+        "measured-regression-did-i-get-my-city-right",
+        "measured-regression-how-close-is-the-guess",
+        "measured-regression-is-that-guess-right",
+        "measured-regression-is-the-city-right",
+        "measured-regression-was-this-region-way-off",
+    ],
+)
 def test_unconfirmed_location_followup_guard_preserves_clean_corpus(text):
     assert _unconfirmed_location_followup_markers(text) == []
 
@@ -959,9 +1244,12 @@ def _live_alternation_members(alternation: str, name: str) -> list[str]:
     """
     assert alternation.startswith("(?:") and alternation.endswith(")"), (
         f"this test assumes the simple (?:a|b|c) alternation shape used today; update the "
-        f"extraction if {name}'s construction ever changes")
-    members = alternation[len("(?:"):-len(")")].split("|")
-    assert len(members) > 1  # sanity: the alternation really does list more than one member
+        f"extraction if {name}'s construction ever changes"
+    )
+    members = alternation[len("(?:") : -len(")")].split("|")
+    assert (
+        len(members) > 1
+    )  # sanity: the alternation really does list more than one member
     return members
 
 
@@ -1008,7 +1296,8 @@ def _expand_confirmation_source(source: str) -> list[str]:
             current = [head + tail for head in current for tail in tails]
             assert len(current) <= 5000, (
                 f"expanding {source!r} exceeded 5000 alternatives; the table has grown a "
-                f"combinatorial shape and this sweep needs a bounded strategy instead")
+                f"combinatorial shape and this sweep needs a bounded strategy instead"
+            )
         finished.append(current)
         return [text for branch in finished for text in branch]
 
@@ -1022,21 +1311,23 @@ def _expand_confirmation_source(source: str) -> list[str]:
             escaped = source[index + 1]
             index += 2
             if index < len(source) and source[index] in "+*?":
-                index += 1      # \s+ and \?+ both collapse to one occurrence
+                index += 1  # \s+ and \?+ both collapse to one occurrence
             assert escaped in ("s", "?"), (
-                f"{source!r} uses the escape \\{escaped}, which this expander does not model")
+                f"{source!r} uses the escape \\{escaped}, which this expander does not model"
+            )
             return [" " if escaped == "s" else "?"]
         if char == "(":
-            assert source[index:index + 3] == "(?:", (
+            assert source[index : index + 3] == "(?:", (
                 f"{source!r} uses a group this expander does not model at {source[index:]!r}; "
-                f"the table is non-capturing (?:...) only")
+                f"the table is non-capturing (?:...) only"
+            )
             index += 3
             alternatives = parse_sequence(True)
             assert source[index] == ")"
             index += 1
             if index < len(source) and source[index] == "?":
                 index += 1
-                alternatives = [""] + alternatives      # the whole group is optional
+                alternatives = [""] + alternatives  # the whole group is optional
             return alternatives
         end = index
         while end < len(source) and source[end] not in "\\()|^$":
@@ -1045,11 +1336,14 @@ def _expand_confirmation_source(source: str) -> list[str]:
         index = end
         assert not set(literal) & {"?", "+", "*"}, (
             f"{source!r} quantifies a literal ({literal!r}); this expander models quantifiers "
-            f"on groups and on the escapes \\s / \\? only")
+            f"on groups and on the escapes \\s / \\? only"
+        )
         return [literal]
 
     expanded = parse_sequence(False)
-    assert index == len(source), f"stopped short of the end of {source!r} at {source[index:]!r}"
+    assert index == len(source), (
+        f"stopped short of the end of {source!r} at {source[index:]!r}"
+    )
     return expanded
 
 
@@ -1063,11 +1357,13 @@ def _confirmation_shape_expansions() -> list[tuple[str, list[str]]]:
     """
     expansions = []
     for pattern in opener_mod._DIRECT_LOCATION_CONFIRMATION_PATTERNS:
-        source = (pattern.pattern
-                  .replace(opener_mod._LOCATION_CONFIRMATION_NOUN, _CONFIRMATION_NOUN_SLOT)
-                  .replace(opener_mod._LOCATION_CONFIRMATION_DET, _CONFIRMATION_DET_SLOT))
+        source = pattern.pattern.replace(
+            opener_mod._LOCATION_CONFIRMATION_NOUN, _CONFIRMATION_NOUN_SLOT
+        ).replace(opener_mod._LOCATION_CONFIRMATION_DET, _CONFIRMATION_DET_SLOT)
         expansions.append((pattern.pattern, _expand_confirmation_source(source)))
-    assert expansions, "the confirmation table is empty -- every sweep below would be vacuous"
+    assert expansions, (
+        "the confirmation table is empty -- every sweep below would be vacuous"
+    )
     return expansions
 
 
@@ -1102,10 +1398,16 @@ def test_no_confirmation_shape_hardcodes_its_own_determiner_or_place_noun():
     right?"), so a flat "no shape may contain these words" rule would fire on correct code.
     Only the pair -- a determiner immediately in front of a place noun -- is the bug.
     """
-    nouns = set(_live_alternation_members(
-        opener_mod._LOCATION_CONFIRMATION_NOUN, "_LOCATION_CONFIRMATION_NOUN"))
-    determiners = set(_live_alternation_members(
-        opener_mod._LOCATION_CONFIRMATION_DET, "_LOCATION_CONFIRMATION_DET"))
+    nouns = set(
+        _live_alternation_members(
+            opener_mod._LOCATION_CONFIRMATION_NOUN, "_LOCATION_CONFIRMATION_NOUN"
+        )
+    )
+    determiners = set(
+        _live_alternation_members(
+            opener_mod._LOCATION_CONFIRMATION_DET, "_LOCATION_CONFIRMATION_DET"
+        )
+    )
     det_tokens = determiners | {_CONFIRMATION_DET_SLOT}
     noun_tokens = nouns | {_CONFIRMATION_NOUN_SLOT}
 
@@ -1117,13 +1419,16 @@ def test_no_confirmation_shape_hardcodes_its_own_determiner_or_place_noun():
             # the shorter one is the intent, not an oversight B905 should catch.
             for first, second in zip(words, words[1:], strict=False):
                 if first in det_tokens and second in noun_tokens:
-                    assert (first, second) == (_CONFIRMATION_DET_SLOT,
-                                               _CONFIRMATION_NOUN_SLOT), (
+                    assert (first, second) == (
+                        _CONFIRMATION_DET_SLOT,
+                        _CONFIRMATION_NOUN_SLOT,
+                    ), (
                         f"{sentence!r} puts {first!r} in front of {second!r} in "
                         f"{source!r}: this shape wrote its own determiner or place-noun list "
                         f"instead of interpolating _LOCATION_CONFIRMATION_DET and "
                         f"_LOCATION_CONFIRMATION_NOUN, which is how the same false positive "
-                        f"reached production three times (2026-09-14, 2026-09-15, 2026-09-16)")
+                        f"reached production three times (2026-09-14, 2026-09-15, 2026-09-16)"
+                    )
 
 
 def test_location_confirmation_shapes_share_one_noun_and_determiner_set():
@@ -1159,14 +1464,18 @@ def test_location_confirmation_shapes_share_one_noun_and_determiner_set():
     the hardcoded "is my guess right?") confirmed both fail, with that one naming the shape.
     """
     nouns = _live_alternation_members(
-        opener_mod._LOCATION_CONFIRMATION_NOUN, "_LOCATION_CONFIRMATION_NOUN")
+        opener_mod._LOCATION_CONFIRMATION_NOUN, "_LOCATION_CONFIRMATION_NOUN"
+    )
     determiners = _live_alternation_members(
-        opener_mod._LOCATION_CONFIRMATION_DET, "_LOCATION_CONFIRMATION_DET")
+        opener_mod._LOCATION_CONFIRMATION_DET, "_LOCATION_CONFIRMATION_DET"
+    )
 
-    shapes = [(source, template)
-              for source, sentences in _confirmation_shape_expansions()
-              for template in sentences
-              if _CONFIRMATION_DET_SLOT in template and _CONFIRMATION_NOUN_SLOT in template]
+    shapes = [
+        (source, template)
+        for source, sentences in _confirmation_shape_expansions()
+        for template in sentences
+        if _CONFIRMATION_DET_SLOT in template and _CONFIRMATION_NOUN_SLOT in template
+    ]
     # Anti-vacuity, in this repo's "fixtures can miss the branch they name" tradition: an edit
     # that leaves every shape without a det+noun slot would make the loop below iterate zero
     # times and pass. Count the SHAPES, not the templates, because the template count is an
@@ -1175,7 +1484,8 @@ def test_location_confirmation_shapes_share_one_noun_and_determiner_set():
         f"only {len({source for source, _ in shapes})} shape(s) in the live confirmation "
         f"table carry a determiner + place-noun slot, but {_SHAPES_WITH_DET_AND_NOUN} did "
         f"when this sweep was written -- either a shape lost its slot (fix it) or one was "
-        f"deliberately removed (lower the constant on purpose)")
+        f"deliberately removed (lower the constant on purpose)"
+    )
     for determiner in determiners:
         for noun in nouns:
             for source, template in shapes:
@@ -1184,7 +1494,8 @@ def test_location_confirmation_shapes_share_one_noun_and_determiner_set():
                 assert _unconfirmed_location_followup_markers(text) == [], (
                     f"{beat!r} should be accepted as a location confirmation, the same as "
                     f"every other determiner x noun combination in the shared sets "
-                    f"(expanded from {source!r})")
+                    f"(expanded from {source!r})"
+                )
 
 
 def test_location_confirmation_determiner_set_excludes_the_bare_pronoun_it():
@@ -1200,12 +1511,15 @@ def test_location_confirmation_determiner_set_excludes_the_bare_pronoun_it():
     place noun" back into "whatever each list happened to contain", which is the bug.
     """
     determiners = _live_alternation_members(
-        opener_mod._LOCATION_CONFIRMATION_DET, "_LOCATION_CONFIRMATION_DET")
+        opener_mod._LOCATION_CONFIRMATION_DET, "_LOCATION_CONFIRMATION_DET"
+    )
     assert "it" not in determiners, (
-        "'it' is a bare pronoun, not a determiner -- keep it as a shape-local alternative")
+        "'it' is a bare pronoun, not a determiner -- keep it as a shape-local alternative"
+    )
     for beat in ("Did I get it right?", "How close is it?", "Is that where it was?"):
-        assert _unconfirmed_location_followup_markers(f"My guess is Rome. {beat}") == [], (
-            f"{beat!r} uses 'it' in the bare-pronoun slot and must stay accepted")
+        assert (
+            _unconfirmed_location_followup_markers(f"My guess is Rome. {beat}") == []
+        ), f"{beat!r} uses 'it' in the bare-pronoun slot and must stay accepted"
 
 
 def test_misaddressed_confirmation_check_reads_the_guessers_slot_not_the_word_you():
@@ -1225,31 +1539,42 @@ def test_misaddressed_confirmation_check_reads_the_guessers_slot_not_the_word_yo
     the accepted cases below fail; narrow it past the guesser's slot and the rejected ones do.
     """
     misaddressed = opener_mod._MISADDRESSED_CONFIRMATION_RE
-    for beat in ("Did you get the city right?",
-                 "Did you guess the country right?",
-                 "Did you call it right?",
-                 "Were you close?",
-                 "Are you right about the region?",
-                 "Was your guess right?",
-                 "Is your call right?",
-                 "You guessed it right?"):
+    for beat in (
+        "Did you get the city right?",
+        "Did you guess the country right?",
+        "Did you call it right?",
+        "Were you close?",
+        "Are you right about the region?",
+        "Was your guess right?",
+        "Is your call right?",
+        "You guessed it right?",
+    ):
         assert misaddressed.search(beat) is not None, (
-            f"{beat!r} puts her in the guesser's slot and must stay suppressed")
-    for beat in ("Is that where you were?",
-                 "Was that where you were?",
-                 "Is that the city where you were?",
-                 "Am I right about that city?",
-                 "Did I get that city right?",
-                 "How close is my guess?"):
+            f"{beat!r} puts her in the guesser's slot and must stay suppressed"
+        )
+    for beat in (
+        "Is that where you were?",
+        "Was that where you were?",
+        "Is that the city where you were?",
+        "Am I right about that city?",
+        "Did I get that city right?",
+        "How close is my guess?",
+    ):
         assert misaddressed.search(beat) is None, (
             f"{beat!r} confirms the place with the sender as the guesser and must not be "
-            f"suppressed merely because it names her")
+            f"suppressed merely because it names her"
+        )
 
     # And the end-to-end consequence, both directions, through the shipped function.
+    assert (
+        _unconfirmed_location_followup_markers(
+            "That looks like Lake Louise. Is that where you were?"
+        )
+        == []
+    )
     assert _unconfirmed_location_followup_markers(
-        "That looks like Lake Louise. Is that where you were?") == []
-    assert _unconfirmed_location_followup_markers(
-        "My guess is Rome. Did you get the city right?") == [_UNCONFIRMED_LOCATION_MARKER]
+        "My guess is Rome. Did you get the city right?"
+    ) == [_UNCONFIRMED_LOCATION_MARKER]
 
 
 def test_query_branch_keeps_the_recipient_veto_the_confirmation_table_dropped():
@@ -1271,42 +1596,56 @@ def test_query_branch_keeps_the_recipient_veto_the_confirmation_table_dropped():
     guesser-slot test, or reverting the table to the bare "you" search) fails one block below.
     """
     # The veto is case-insensitive, which is the specific thing Title Case slipped past.
-    assert opener_mod._RECIPIENT_INSIDE_LOCATION_RE.search("Your Happy Place") is not None
+    assert (
+        opener_mod._RECIPIENT_INSIDE_LOCATION_RE.search("Your Happy Place") is not None
+    )
     assert opener_mod._RECIPIENT_INSIDE_LOCATION_RE.search("You") is not None
     assert opener_mod._RECIPIENT_INSIDE_LOCATION_RE.search("Banff") is None
 
     # Direction (a): the measured flips. A Title-Cased noun phrase she owns is not a place.
-    for beat in ("Is that Your Happy Place?",
-                 "Is that Your Kind of Town?",
-                 "Is that Your Favourite Spot?",
-                 "Was that Your Best Trip?",
-                 "Is that Your Hometown?",
-                 "Was that You?",
-                 "Is that You in Banff?",
-                 "Was that shot in Your Hometown?"):
+    for beat in (
+        "Is that Your Happy Place?",
+        "Is that Your Kind of Town?",
+        "Is that Your Favourite Spot?",
+        "Was that Your Best Trip?",
+        "Is that Your Hometown?",
+        "Was that You?",
+        "Is that You in Banff?",
+        "Was that shot in Your Hometown?",
+    ):
         text = f"That looks like Lake Louise. {beat}"
-        assert _unconfirmed_location_followup_markers(text) == [_UNCONFIRMED_LOCATION_MARKER], (
+        assert _unconfirmed_location_followup_markers(text) == [
+            _UNCONFIRMED_LOCATION_MARKER
+        ], (
             f"{beat!r} asks what the place meant to her on top of an unconfirmed guess and "
-            f"must stay rejected")
+            f"must stay rejected"
+        )
 
     # Direction (b): everything the first round legitimately fixed still passes. The full
     # determiner x noun cross product is read off the LIVE constants, so this half cannot go
     # stale against the shapes the narrowing exists to serve.
     nouns = _live_alternation_members(
-        opener_mod._LOCATION_CONFIRMATION_NOUN, "_LOCATION_CONFIRMATION_NOUN")
+        opener_mod._LOCATION_CONFIRMATION_NOUN, "_LOCATION_CONFIRMATION_NOUN"
+    )
     determiners = _live_alternation_members(
-        opener_mod._LOCATION_CONFIRMATION_DET, "_LOCATION_CONFIRMATION_DET")
-    beats = [shape.format(det=det, noun=noun)
-             for det in determiners
-             for noun in nouns
-             for shape in ("Did I get {det} {noun} right?",
-                           "Am I right about {det} {noun}?",
-                           "How close is {det} {noun}?")]
+        opener_mod._LOCATION_CONFIRMATION_DET, "_LOCATION_CONFIRMATION_DET"
+    )
+    beats = [
+        shape.format(det=det, noun=noun)
+        for det in determiners
+        for noun in nouns
+        for shape in (
+            "Did I get {det} {noun} right?",
+            "Am I right about {det} {noun}?",
+            "How close is {det} {noun}?",
+        )
+    ]
     beats += ["Is that where you were?", "Is that where this was?"]
     for beat in beats:
         text = f"My guess is Rome. {beat}"
         assert _unconfirmed_location_followup_markers(text) == [], (
-            f"{beat!r} confirms nothing but the place itself and must stay accepted")
+            f"{beat!r} confirms nothing but the place itself and must stay accepted"
+        )
 
 
 def test_confirmation_shapes_exclude_below_world_scale_nouns():
@@ -1324,18 +1663,21 @@ def test_confirmation_shapes_exclude_below_world_scale_nouns():
     path in the code, only this table's silence on them.
     """
     noun_alternation = opener_mod._LOCATION_CONFIRMATION_NOUN
-    nouns = noun_alternation[len("(?:"):-len(")")].split("|")
+    nouns = noun_alternation[len("(?:") : -len(")")].split("|")
     excluded_nouns = ("street", "neighbourhood", "hotel", "venue")
     for excluded in excluded_nouns:
         assert excluded not in nouns, (
             f"{excluded!r} must stay out of the shared confirmation noun set -- GUESS THE "
-            f"WORLD, NOT HER IDENTITY forbids guessing it at all")
+            f"WORLD, NOT HER IDENTITY forbids guessing it at all"
+        )
         did_i_get = f"My guess is Rome. Did I get the {excluded} right?"
         am_i_right = f"My guess is Rome. Am I right about the {excluded}?"
         assert _unconfirmed_location_followup_markers(did_i_get) == [
-            _UNCONFIRMED_LOCATION_MARKER]
+            _UNCONFIRMED_LOCATION_MARKER
+        ]
         assert _unconfirmed_location_followup_markers(am_i_right) == [
-            _UNCONFIRMED_LOCATION_MARKER]
+            _UNCONFIRMED_LOCATION_MARKER
+        ]
 
 
 def test_system_prompt_keeps_faithful_corey_opener_policy_and_two_sentence_cap():
@@ -1362,12 +1704,14 @@ def test_system_prompt_keeps_faithful_corey_opener_policy_and_two_sentence_cap()
     assert "do not force teasing into every opener" in lowered
     assert "profile text fact check" in lowered
     assert "never ask for a fact, preference, activity, place, or opinion" in lowered
-    assert "if she says she likes apples, do not ask whether she likes apples" in lowered
+    assert (
+        "if she says she likes apples, do not ask whether she likes apples" in lowered
+    )
     assert "positive, fun conversation" in lowered
     assert "brief greeting is optional" in lowered
     assert "two sentences is the absolute maximum" in lowered
     assert "never use an em dash or any hyphen" in lowered
-    assert "plain ascii letters and punctuation" in lowered   # WYSIWYG / no-emoji rule
+    assert "plain ascii letters and punctuation" in lowered  # WYSIWYG / no-emoji rule
     assert "no emoji" in lowered
     assert "terminal plain text smiley, :) is allowed only" in lowered
     assert "never add it by default" in lowered
@@ -1379,64 +1723,119 @@ def test_system_prompt_keeps_faithful_corey_opener_policy_and_two_sentence_cap()
     # remains the final payoff. Claims are optional and minimum invention wins.
     assert "exactly one concrete detail" not in lowered
     assert "conversational value rule" in lowered
-    assert "a visible detail may be named and may be the subject, premise, or setup" in lowered
+    assert (
+        "a visible detail may be named and may be the subject, premise, or setup"
+        in lowered
+    )
     assert "final conversational point is merely that description" in lowered
-    assert "perspective, grounded interpretation, playful framing, connection, or natural question" in lowered
+    assert (
+        "perspective, grounded interpretation, playful framing, connection, or natural question"
+        in lowered
+    )
     assert "does not have to contain a guess or a claim that could be wrong" in lowered
     assert "claims only when natural" in lowered
     assert "a correctable inference is one available move, not a requirement" in lowered
-    assert "prefer a grounded observation or specific question over a forced guess" in lowered
+    assert (
+        "prefer a grounded observation or specific question over a forced guess"
+        in lowered
+    )
     assert "write the whole proposition rather than a shorthand answer" in lowered
     assert "choose the least speculative interpretation" in lowered
     assert "minimum invention" in lowered
-    assert "never invent a purpose, motive, cause, plan, sequence, effort, goal" in lowered
-    assert "do not assign why she chose or did something unless her profile states it" in lowered
-    assert "any literal premise must be plainly visible in the item or explicitly stated" in lowered
+    assert (
+        "never invent a purpose, motive, cause, plan, sequence, effort, goal" in lowered
+    )
+    assert (
+        "do not assign why she chose or did something unless her profile states it"
+        in lowered
+    )
+    assert (
+        "any literal premise must be plainly visible in the item or explicitly stated"
+        in lowered
+    )
     assert "never use one invented fact as the premise for another" in lowered
     assert "a setting or destination does not establish how she arrived" in lowered
     assert "what effort it took, or whether she pursued a goal" in lowered
     assert "a hedge does not rescue a far-fetched premise" in lowered
-    assert "ownership, employment, a routine, a responsibility, or a relationship" in lowered
+    assert (
+        "ownership, employment, a routine, a responsibility, or a relationship"
+        in lowered
+    )
     assert "traceability test" in lowered
-    assert "for any inference, she should instantly see which visible or stated clue led there" in lowered
+    assert (
+        "for any inference, she should instantly see which visible or stated clue led there"
+        in lowered
+    )
     assert "playful hyperbole" in lowered
     assert "unmistakably nonliteral exaggeration is allowed" in lowered
-    assert "does not license presenting an invented motive, circumstance, or event as literal fact" in lowered
+    assert (
+        "does not license presenting an invented motive, circumstance, or event as literal fact"
+        in lowered
+    )
     assert "safety and dignity" in lowered
-    assert "never infer, tease, or pose a forced choice about self harm, suicide" in lowered
-    assert "a bridge, height, water, travel scene, or recognized location is never evidence" in lowered
+    assert (
+        "never infer, tease, or pose a forced choice about self harm, suicide"
+        in lowered
+    )
+    assert (
+        "a bridge, height, water, travel scene, or recognized location is never evidence"
+        in lowered
+    )
     assert "that she jumped or considered jumping" in lowered
-    assert ("shared context rule: your message is displayed directly under the exact photo "
-            "or prompt it attaches to") in lowered
+    assert (
+        "shared context rule: your message is displayed directly under the exact photo "
+        "or prompt it attaches to"
+    ) in lowered
     assert "she is looking at that item while she reads your words" in lowered
     assert "primary item rule" in lowered
     assert "clear main subject of referenced, angle, and opener" in lowered
-    assert "profile text only when it sharpens a connection back to the selected item" in lowered
+    assert (
+        "profile text only when it sharpens a connection back to the selected item"
+        in lowered
+    )
     assert "connection back to the selected item" in lowered
     assert "justify why the selected item was liked" in lowered
     assert "it supplies the reason, subject, or payoff" in lowered
     assert "do not let profile text replace the selected item" in lowered
     assert "photo header rule" in lowered
-    assert "title, caption, or prompt printed with a photo is part of that same item" in lowered
+    assert (
+        "title, caption, or prompt printed with a photo is part of that same item"
+        in lowered
+    )
     assert "defines how the photo is meant to be read" in lowered
-    assert "interpret the visible scene through that text before choosing an angle" in lowered
+    assert (
+        "interpret the visible scene through that text before choosing an angle"
+        in lowered
+    )
     assert "never contradict, reverse, or ignore the header's framing" in lowered
 
     # A question may stand alone when it is more natural than a claim. A guess stays unconfirmed
     # across the whole opener so she, rather than the sender, gets to resolve it.
     assert "one open, easy-to-answer question" not in lowered
-    assert "a natural claim she can correct can be effective, but it is not mandatory" in lowered
-    assert "question may be the whole message when that is the strongest natural angle" in lowered
+    assert (
+        "a natural claim she can correct can be effective, but it is not mandatory"
+        in lowered
+    )
+    assert (
+        "question may be the whole message when that is the strongest natural angle"
+        in lowered
+    )
     assert "never as the whole message" not in lowered
     assert "setup payoff continuity" in lowered
     assert "every visible detail you name must be necessary to, and used by" in lowered
-    assert "necessary means its exact identity changes how the move is understood" in lowered
+    assert (
+        "necessary means its exact identity changes how the move is understood"
+        in lowered
+    )
     assert "not merely that it anchors the reaction" in lowered
     assert "removing a descriptive clause or replacing it" in lowered
     assert "use the shorter implicit version" in lowered
     assert "question coherence" in lowered
     assert "ask one coherent thing at a time" in lowered
-    assert "parallel, genuinely contrasting answers to that same underlying question" in lowered
+    assert (
+        "parallel, genuinely contrasting answers to that same underlying question"
+        in lowered
+    )
     assert "never to join unrelated dimensions" in lowered
     assert "casual or punctuation" in lowered
     assert "never put a comma immediately before 'or'" in lowered
@@ -1444,7 +1843,10 @@ def test_system_prompt_keeps_faithful_corey_opener_policy_and_two_sentence_cap()
     assert "referent clarity" in lowered
     assert "every pronoun, shorthand noun, and question subject" in lowered
     assert "must have one immediately obvious referent" in lowered
-    assert "keep the same referent unless the transition to a new one is explicit" in lowered
+    assert (
+        "keep the same referent unless the transition to a new one is explicit"
+        in lowered
+    )
     assert "different ordinary meanings of the same word" in lowered
     assert "role consistency" in lowered
     assert "preserve that role across every beat" in lowered
@@ -1452,43 +1854,83 @@ def test_system_prompt_keeps_faithful_corey_opener_policy_and_two_sentence_cap()
     assert "different subject, name it explicitly" in lowered
     assert "reply comfort" in lowered
     assert "most natural honest reply feel good to give" in lowered
-    assert "preference, perspective, inspiration, or experience, not self justification" in lowered
+    assert (
+        "preference, perspective, inspiration, or experience, not self justification"
+        in lowered
+    )
     assert "intelligence, sincerity, knowledge, effort" in lowered
-    assert "forced choice whose honest answers make her defend, diminish, or embarrass herself" in lowered
+    assert (
+        "forced choice whose honest answers make her defend, diminish, or embarrass herself"
+        in lowered
+    )
     assert "rather than asking her to verify its status" in lowered
     assert "positive social framing" in lowered
-    assert "state the intended positive observation, question, or invitation directly" in lowered
-    assert ("naming an insulting, judgmental, awkward, pressuring, creepy, or offensive "
-            "interpretation") in lowered
+    assert (
+        "state the intended positive observation, question, or invitation directly"
+        in lowered
+    )
+    assert (
+        "naming an insulting, judgmental, awkward, pressuring, creepy, or offensive "
+        "interpretation"
+    ) in lowered
     assert "that denial introduces the negative interpretation" in lowered
-    assert "remove the disclaimer and make the substantive thought stand on its own" in lowered
+    assert (
+        "remove the disclaimer and make the substantive thought stand on its own"
+        in lowered
+    )
     assert "reciprocity before future" in lowered
     assert "not an audition for a role described in her profile" in lowered
     assert "never answer one of her preferences by advertising the sender" in lowered
     assert "promising what he will do for her" in lowered
-    assert "do not assume that a match, date, relationship, or shared future already exists" in lowered
-    assert "possessive language about a first date, place, trip, or other future together" in lowered
+    assert (
+        "do not assume that a match, date, relationship, or shared future already exists"
+        in lowered
+    )
+    assert (
+        "possessive language about a first date, place, trip, or other future together"
+        in lowered
+    )
     assert "a proposal is not an established shared plan" in lowered
     assert "information gain test" in lowered
-    assert "conclusion of a guess must not itself be directly visible or explicitly stated" in lowered
+    assert (
+        "conclusion of a guess must not itself be directly visible or explicitly stated"
+        in lowered
+    )
     assert "its header, a sign, or elsewhere in her profile" in lowered
     assert "they are clues, not guessed conclusions" in lowered
-    assert "ordinary viewer can read or see the conclusion directly without inference" in lowered
+    assert (
+        "ordinary viewer can read or see the conclusion directly without inference"
+        in lowered
+    )
     assert "confirmation boundary" in lowered
     assert "a guess remains unconfirmed until she replies" in lowered
-    assert "statement, question, compliment, or invitation that assumes it is correct" in lowered
+    assert (
+        "statement, question, compliment, or invitation that assumes it is correct"
+        in lowered
+    )
     assert "natural next move is to confirm or correct it" in lowered
-    assert "only invite that confirmation or correction without presupposing the answer" in lowered
-    assert "experience, preference, or consequence that only makes sense if the guess is true" in lowered
+    assert (
+        "only invite that confirmation or correction without presupposing the answer"
+        in lowered
+    )
+    assert (
+        "experience, preference, or consequence that only makes sense if the guess is true"
+        in lowered
+    )
     assert "confirmation boundary overrides this inheritance rule" in lowered
     assert "never let a later beat inherit an unconfirmed claim as fact" in lowered
     assert "asking only whether an inferred location itself is right" in lowered
     assert "visual location turn boundary" in lowered
-    assert "that location guess is the only conversational move before she replies" in lowered
+    assert (
+        "that location guess is the only conversational move before she replies"
+        in lowered
+    )
     assert "end after it or ask only whether the location itself is right" in lowered
     assert "her settling it is the whole payoff either way" in lowered
-    assert ("activity, reason, preference, feeling, experience, or consequence at that place"
-            in lowered)
+    assert (
+        "activity, reason, preference, feeling, experience, or consequence at that place"
+        in lowered
+    )
     assert "must accept x as its working premise" not in lowered
 
     # --- LENGTH: the ceiling stays, the one-sentence PREFERENCE is gone (doc 3.2.1).
@@ -1515,7 +1957,10 @@ def test_system_prompt_keeps_faithful_corey_opener_policy_and_two_sentence_cap()
     assert "the goal is calibrated uncertainty, not a particular lead in" in lowered
     assert "this is not a phrase menu" in lowered
     assert "choose the construction from context" in lowered
-    assert "never use a hedge as a substitute for the complete self contained claim" in lowered
+    assert (
+        "never use a hedge as a substitute for the complete self contained claim"
+        in lowered
+    )
     assert "my money is on" not in lowered
     assert "vary the opening" in lowered
     assert "let the specific item and angle determine the wording" in lowered
@@ -1525,10 +1970,18 @@ def test_system_prompt_keeps_faithful_corey_opener_policy_and_two_sentence_cap()
     assert "never call your own question dumb" in lowered
     assert "guess the world, not her identity" in lowered
     assert "name a country, a region, or a park" in lowered
-    assert "when a place comes from recognizing the image rather than from her profile text" in lowered
-    assert "present it only as an inference and obey visual location turn boundary" in lowered
+    assert (
+        "when a place comes from recognizing the image rather than from her profile text"
+        in lowered
+    )
+    assert (
+        "present it only as an inference and obey visual location turn boundary"
+        in lowered
+    )
     assert "do not build on an inferred location as though it were correct" in lowered
-    assert "state it as shared experience, or turn it into a generic compliment" in lowered
+    assert (
+        "state it as shared experience, or turn it into a generic compliment" in lowered
+    )
     assert "never guess her employer, her school, or her age" in lowered
     assert "never invent the sender" in lowered
     assert "you may not claim he has been somewhere" in lowered
@@ -1537,12 +1990,17 @@ def test_system_prompt_keeps_faithful_corey_opener_policy_and_two_sentence_cap()
     # to put the description and nothing ever told the model to route it there, so it wrote
     # the description twice. thinkingLevel is minimal on every model in the cascade, so these
     # earlier output fields are the only scratchpad that exists.
-    assert ("fill item_index, referenced, angle and item_description before you write the "
-            "opener") in lowered
+    assert (
+        "fill item_index, referenced, angle and item_description before you write the "
+        "opener"
+    ) in lowered
     assert "is never sent to her" in lowered
     assert "put the literal inventory there" in lowered
     assert "message must use the least explicit immediately clear reference" in lowered
-    assert "may name only the setup whose exact identity changes the conversational move" in lowered
+    assert (
+        "may name only the setup whose exact identity changes the conversational move"
+        in lowered
+    )
     assert "angle is your own short wording for what your opener is doing" in lowered
     assert "item_description says in a few words what the item you picked is" in lowered
 
@@ -1565,31 +2023,51 @@ def test_system_prompt_keeps_faithful_corey_opener_policy_and_two_sentence_cap()
     # strong prior toward the best photograph, so the preference alone does not settle it. It is
     # THE ONE RULE applied one step earlier: the item is only the premise, so choosing by how the
     # item looks optimises the half that never becomes the message.
-    assert "the item you have the best conversational angle on, not the most striking picture" in lowered
+    assert (
+        "the item you have the best conversational angle on, not the most striking picture"
+        in lowered
+    )
     assert "natural observation, question, connection, or playful framing" in lowered
     assert "beats a beautiful one you have nothing to say about" in lowered
-    assert "the item supplies the material and the conversational payoff is the message" in lowered
+    assert (
+        "the item supplies the material and the conversational payoff is the message"
+        in lowered
+    )
     assert "pick that one even when another item is the better picture" in lowered
     # The inverted criterion must never come back: instructing the model to pick by how the item
     # LOOKS is the exact regression this block exists to catch, and it would not contradict any
     # other assertion in this file.
-    for _inverted in ("the best photo", "the most striking", "the most interesting photo",
-                      "the most eye catching"):
-        assert f"pick {_inverted}" not in lowered, f"_SYSTEM selects by appearance: {_inverted!r}"
-        assert f"choose {_inverted}" not in lowered, f"_SYSTEM selects by appearance: {_inverted!r}"
+    for _inverted in (
+        "the best photo",
+        "the most striking",
+        "the most interesting photo",
+        "the most eye catching",
+    ):
+        assert f"pick {_inverted}" not in lowered, (
+            f"_SYSTEM selects by appearance: {_inverted!r}"
+        )
+        assert f"choose {_inverted}" not in lowered, (
+            f"_SYSTEM selects by appearance: {_inverted!r}"
+        )
 
     # --- THE FAILURE MODE, named as a failure (doc 5.1). Not a restatement of THE ONE RULE:
     # picking a striking item with nothing to say about it is the upstream CAUSE of
     # over-description, reachable with every Part A wording rule obeyed, because once the item
     # is chosen and no claim is available, description is the only material left. The remedy has
     # to be stated at the stage it goes wrong, i.e. pick a different item.
-    assert "the failure to avoid is picking a photo you have nothing to say about" in lowered
+    assert (
+        "the failure to avoid is picking a photo you have nothing to say about"
+        in lowered
+    )
     assert "all that is left to write is what it looks like" in lowered
     assert "never enough as the final point" in lowered
 
     # --- SELECTED-ITEM-ONLY. Context crops are retained for forensics but never shown to Gemini;
     # once it picks, every other numbered candidate stops being usable source material.
-    assert "once you choose, every other numbered image was only an alternative for selection" in lowered
+    assert (
+        "once you choose, every other numbered image was only an alternative for selection"
+        in lowered
+    )
     assert "never take its facts, concepts, wordplay, or payoff" in lowered
     assert "given without a number is context" not in lowered
     assert "unnumbered profile image" not in lowered
@@ -1628,23 +2106,41 @@ def test_system_prompt_ships_the_she_is_the_one_who_knows_rule():
     first_sentence = lowered.split("she is the one who knows:", 1)[1].split(". ", 1)[0]
     assert "write any inference about it from your own not knowing" in first_sentence
     assert "never ask her to agree about how something appears" in first_sentence
-    assert ("never close a claim about her own life with a tag whose only job is to collect "
-            "her agreement") in first_sentence
-    assert "the shared looking covers the item on the screen, never the world behind it" in lowered
+    assert (
+        "never close a claim about her own life with a tag whose only job is to collect "
+        "her agreement"
+    ) in first_sentence
+    assert (
+        "the shared looking covers the item on the screen, never the world behind it"
+        in lowered
+    )
     assert "she was in the world the item shows and you were not" in lowered
     assert "is news to you and old news to her" in lowered
     assert "write any inference about it from your own not knowing" in lowered
-    assert ("an impression the two of you are forming together, or a tag collecting her "
-            "agreement, hands the one person who was actually there") in lowered
+    assert (
+        "an impression the two of you are forming together, or a tag collecting her "
+        "agreement, hands the one person who was actually there"
+    ) in lowered
     assert "never ask her to agree about how something appears" in lowered
-    assert ("never close a claim about her own life with a tag whose only job is to collect "
-            "her agreement") in lowered
+    assert (
+        "never close a claim about her own life with a tag whose only job is to collect "
+        "her agreement"
+    ) in lowered
     assert "co-signing" in lowered
     assert "and how it appears is what she can already see" in lowered
-    assert "this narrows the shared context rule and sharpens hedge the claim, never yourself" in lowered
-    assert "the uncertainty belongs in how sure you are, not in how clear the item is" in lowered
+    assert (
+        "this narrows the shared context rule and sharpens hedge the claim, never yourself"
+        in lowered
+    )
+    assert (
+        "the uncertainty belongs in how sure you are, not in how clear the item is"
+        in lowered
+    )
     assert "asking her outright stays welcome" in lowered
-    assert "never invent the sender still forbids saying where he has or has not been" in lowered
+    assert (
+        "never invent the sender still forbids saying where he has or has not been"
+        in lowered
+    )
 
     # VISUAL LOCATION TURN BOUNDARY amendment: the old payoff line is SUPERSEDED, not merely
     # supplemented -- its return would silently reinstate the wording that produced the "right?"
@@ -1673,12 +2169,26 @@ def test_system_prompt_defaults_to_minimum_sufficient_visual_reference():
     lowered = " ".join(_SYSTEM.lower().split())
     assert "minimum sufficient reference" in lowered
     assert "default to omission or the least explicit natural reference" in lowered
-    assert "replace each literal visual description with an implicit reference" in lowered
-    assert "if meaning and the conversational move survive, use the implicit version" in lowered
-    assert "exact identity changes the point or distinguishes possible referents" in lowered
-    assert "never merely to prove grounding, identify the selected item, or add textual specificity" in lowered
+    assert (
+        "replace each literal visual description with an implicit reference" in lowered
+    )
+    assert (
+        "if meaning and the conversational move survive, use the implicit version"
+        in lowered
+    )
+    assert (
+        "exact identity changes the point or distinguishes possible referents"
+        in lowered
+    )
+    assert (
+        "never merely to prove grounding, identify the selected item, or add textual specificity"
+        in lowered
+    )
     assert "attachment itself can supply an immediately obvious referent" in lowered
-    assert "full literal inventory in private referenced and item_description, not in the message" in lowered
+    assert (
+        "full literal inventory in private referenced and item_description, not in the message"
+        in lowered
+    )
     assert "do not force implicit wording where it creates real ambiguity" in lowered
     assert "specificity may come from how it fits the attached item" in lowered
     assert "subject to minimum sufficient reference" in lowered
@@ -1711,11 +2221,19 @@ def test_system_prompt_ships_the_spoken_register_rules():
     assert "never internet slang, chat abbreviations, meme phrasing" in lowered
     assert "idiom fit" in lowered
     assert "idiom only when it is contemporary" in lowered
-    assert "everyday, immediately understandable on first reading in ordinary conversation" in lowered
+    assert (
+        "everyday, immediately understandable on first reading in ordinary conversation"
+        in lowered
+    )
     assert "semantically apt to the item and point" in lowered
     assert "natural when spoken" in lowered
-    assert "idioms that are dated, literary, formal, obscure, forced, or tied to a passing trend" in lowered
-    assert "does not license internet slang, memes, or borrowed caption wording" in lowered
+    assert (
+        "idioms that are dated, literary, formal, obscure, forced, or tied to a passing trend"
+        in lowered
+    )
+    assert (
+        "does not license internet slang, memes, or borrowed caption wording" in lowered
+    )
     assert "makes her stop to decode the point" in lowered
     # The scope limiter. Its config.yaml twin carries it ("this licenses wording only:
     # spelling, capitalization, and every punctuation rule here stand unchanged"), and this
@@ -1724,11 +2242,17 @@ def test_system_prompt_ships_the_spoken_register_rules():
     # the two copies; dropping a scope limiter is not compression, it is a wider rule.
     assert "licenses wording only" in lowered
     assert "say it once" in lowered
-    assert "never restate a connection or context the message already established" in lowered
+    assert (
+        "never restate a connection or context the message already established"
+        in lowered
+    )
     assert "compliment as remark" in lowered
     assert "not an earnest verdict on her" in lowered
     assert "vary the shape" in lowered
-    assert "specific item determine the whole message's sentence count, clause pattern" in lowered
+    assert (
+        "specific item determine the whole message's sentence count, clause pattern"
+        in lowered
+    )
     assert "no structure is the default" in lowered
     assert "never point at the medium" in lowered
     assert "rephrase so no hyphen is needed" in lowered
@@ -1833,8 +2357,12 @@ def test_system_prompt_folds_qualification_into_compliment_as_remark():
     # MUTATION GUARD: the (c) fold's own restated portability test must be GONE, not merely
     # supplemented -- its absence is what proves COMPLIMENT AS REMARK no longer carries a
     # second, exception-free test that could contradict NO GRADING's SUBSTITUTION TEST.
-    assert "unable to survive being detached from what was actually noticed" not in lowered
-    assert "remain inseparable from a specific observation about that item" not in lowered
+    assert (
+        "unable to survive being detached from what was actually noticed" not in lowered
+    )
+    assert (
+        "remain inseparable from a specific observation about that item" not in lowered
+    )
     # The forward reference ("below") must be literally true: COMPLIMENT AS REMARK's pointer
     # has to precede the SUBSTITUTION TEST sentence it names, not follow it.
     assert lowered.index("compliment as remark") < lowered.index("substitution test")
@@ -1864,9 +2392,20 @@ def test_no_grading_rule_ships_no_example_verdict_vocabulary():
     """
     lowered = _SYSTEM.lower()
     schema_text = json.dumps(opener_mod._SCHEMA).lower()
-    for word in ("elite", "iconic", "top tier", "masterpiece", "unmatched", "power move"):
-        assert word not in lowered, f"_SYSTEM must not name banned verdict vocabulary: {word!r}"
-        assert word not in schema_text, f"_SCHEMA must not name banned verdict vocabulary: {word!r}"
+    for word in (
+        "elite",
+        "iconic",
+        "top tier",
+        "masterpiece",
+        "unmatched",
+        "power move",
+    ):
+        assert word not in lowered, (
+            f"_SYSTEM must not name banned verdict vocabulary: {word!r}"
+        )
+        assert word not in schema_text, (
+            f"_SCHEMA must not name banned verdict vocabulary: {word!r}"
+        )
 
 
 def test_angle_field_carries_the_no_grading_self_check():
@@ -1880,7 +2419,10 @@ def test_angle_field_carries_the_no_grading_self_check():
     angle_description = opener_mod._SCHEMA["properties"]["angle"]["description"].lower()
     assert "not a grade, rank, or" in angle_description
     assert "verdict on how good" in angle_description
-    assert "would not fit unchanged under a different woman's different photo" in angle_description
+    assert (
+        "would not fit unchanged under a different woman's different photo"
+        in angle_description
+    )
 
 
 def test_angle_field_carries_the_she_is_the_one_who_knows_self_check():
@@ -1893,9 +2435,13 @@ def test_angle_field_carries_the_she_is_the_one_who_knows_self_check():
     """
     angle_description = opener_mod._SCHEMA["properties"]["angle"]["description"].lower()
     assert "she was in the world the item shows and you were not" in angle_description
-    assert ("confirm that the opener states any inference about it as your own uncertainty"
-            ) in angle_description
-    assert "never closes it with a tag whose only job is to collect her agreement" in angle_description
+    assert (
+        "confirm that the opener states any inference about it as your own uncertainty"
+    ) in angle_description
+    assert (
+        "never closes it with a tag whose only job is to collect her agreement"
+        in angle_description
+    )
     assert "never as an appearance she is asked to agree with" in angle_description
 
 
@@ -1951,11 +2497,15 @@ def test_looks_like_rome_right_motivating_opener_stays_off_every_prompt_surface(
 
     style = load_config("config.yaml").opener.style
     schema_text = json.dumps(opener_mod._SCHEMA)
-    for surface_name, surface in (("config.yaml opener.style", style),
-                                  ("_SYSTEM", _SYSTEM),
-                                  ("_SCHEMA", schema_text)):
+    for surface_name, surface in (
+        ("config.yaml opener.style", style),
+        ("_SYSTEM", _SYSTEM),
+        ("_SCHEMA", schema_text),
+    ):
         lowered = surface.lower()
-        assert _SHE_IS_THE_ONE_WHO_KNOWS_MOTIVATING_OPENER.lower() not in lowered, surface_name
+        assert _SHE_IS_THE_ONE_WHO_KNOWS_MOTIVATING_OPENER.lower() not in lowered, (
+            surface_name
+        )
         assert "looks like rome" not in lowered, surface_name
         assert not re.search(r"\brome\b", lowered), surface_name
         assert "right?" not in lowered, surface_name
@@ -1981,7 +2531,9 @@ _BINDING_MENU_PHRASINGS = (
 def test_system_prompt_contains_no_move_menu_or_concrete_opener_copy():
     lowered = _SYSTEM.lower()
     for phrase in _BINDING_MENU_PHRASINGS:
-        assert phrase not in lowered, f"_SYSTEM presents the moves as a closed menu: {phrase!r}"
+        assert phrase not in lowered, (
+            f"_SYSTEM presents the moves as a closed menu: {phrase!r}"
+        )
     for marker in _MOVE_LIST_MARKERS:
         assert marker not in lowered
     for copied_phrase in (
@@ -2009,6 +2561,7 @@ def test_item_preamble_binds_a_photo_header_to_its_numbered_photo():
 # contract and _sentence_count/_sanitize above).
 # ---------------------------------------------------------------------------------------
 
+
 class _Transport:
     def __init__(self, responses):
         self.responses = iter(responses)
@@ -2034,8 +2587,11 @@ def _opener(transport) -> GeminiOpener:
     return GeminiOpener(["gemini-test"], api_key="test-key", transport=transport)
 
 
-@pytest.mark.parametrize("bad_value", ["notanint", None, [], {}, -3, 0], ids=[
-    "string", "null", "list", "dict", "negative", "zero"])
+@pytest.mark.parametrize(
+    "bad_value",
+    ["notanint", None, [], {}, -3, 0],
+    ids=["string", "null", "list", "dict", "negative", "zero"],
+)
 def test_generate_defaults_an_unusable_item_index_to_the_absent_value(bad_value):
     """Every way the model can fail to give a usable item number collapses to the SAME
     out-of-band value (ITEM_INDEX_ABSENT), and none of them costs the profile its opener --
@@ -2047,16 +2603,22 @@ def test_generate_defaults_an_unusable_item_index_to_the_absent_value(bad_value)
     Under the old 0-based referenced_index the identical coercion produced a confident,
     perfectly legal "the first item", which is exactly what made a silently reinterpreted
     integer dangerous (doc 5.3)."""
-    payload = _gemini_response({"opener": "hi", "referenced": "x", "item_index": bad_value})
-    result = _opener(_Transport([(200, payload)])).generate(Profile(photos=[b"a"]), style="s")
+    payload = _gemini_response(
+        {"opener": "hi", "referenced": "x", "item_index": bad_value}
+    )
+    result = _opener(_Transport([(200, payload)])).generate(
+        Profile(photos=[b"a"]), style="s"
+    )
     assert result.item_index == ITEM_INDEX_ABSENT
-    assert result.opener == "hi"                # the opener itself is never at risk
+    assert result.opener == "hi"  # the opener itself is never at risk
 
 
 def test_generate_defaults_a_missing_item_index_to_the_absent_value():
     """A response with no item_index key at all -- the field absent rather than unusable."""
     payload = _gemini_response({"opener": "hi", "referenced": "x"})
-    result = _opener(_Transport([(200, payload)])).generate(Profile(photos=[b"a"]), style="s")
+    result = _opener(_Transport([(200, payload)])).generate(
+        Profile(photos=[b"a"]), style="s"
+    )
     assert result.item_index == ITEM_INDEX_ABSENT
 
 
@@ -2070,12 +2632,20 @@ def test_item_index_is_one_based_and_never_shifted_on_the_way_through():
     index past the end of what was actually sent is a different case entirely and is refused
     (see test_item_index_beyond_what_was_sent_is_refused_as_absent)."""
     payload = _gemini_response({"opener": "hi", "referenced": "x", "item_index": 1})
-    assert _opener(_Transport([(200, payload)])).generate(
-        Profile(photos=[b"a"]), style="s").item_index == 1
+    assert (
+        _opener(_Transport([(200, payload)]))
+        .generate(Profile(photos=[b"a"]), style="s")
+        .item_index
+        == 1
+    )
 
     payload = _gemini_response({"opener": "hi", "referenced": "x", "item_index": 9})
-    assert _opener(_Transport([(200, payload)])).generate(
-        Profile(photos=[b"a"] * 9), style="s").item_index == 9
+    assert (
+        _opener(_Transport([(200, payload)]))
+        .generate(Profile(photos=[b"a"] * 9), style="s")
+        .item_index
+        == 9
+    )
     assert FIRST_ITEM_INDEX == 1 and ITEM_INDEX_ABSENT == 0
 
 
@@ -2085,36 +2655,58 @@ def test_item_index_is_one_based_and_never_shifted_on_the_way_through():
 # through it and lands on a real, wrong heart. generate() is the only place the request and
 # the response are both in scope, which is why the check lives there.
 
+
 @pytest.mark.parametrize("returned", [2, 12, 999])
 def test_item_index_beyond_what_was_sent_is_refused_as_absent(returned):
     """One photo was sent, so item 1 is the only legal answer. Anything above it names an item
     that does not exist and must collapse to ITEM_INDEX_ABSENT -- never be passed on as a
     plausible small integer -- while leaving the opener text alone."""
-    payload = _gemini_response({"opener": "hi", "referenced": "x", "item_index": returned})
-    result = _opener(_Transport([(200, payload)])).generate(Profile(photos=[b"a"]), style="s")
+    payload = _gemini_response(
+        {"opener": "hi", "referenced": "x", "item_index": returned}
+    )
+    result = _opener(_Transport([(200, payload)])).generate(
+        Profile(photos=[b"a"]), style="s"
+    )
     assert result.item_index == ITEM_INDEX_ABSENT
-    assert result.opener == "hi"                # a numbering slip never costs the opener
+    assert result.opener == "hi"  # a numbering slip never costs the opener
 
 
-@pytest.mark.parametrize("returned, expected", [
-    (3.7, ITEM_INDEX_ABSENT),   # truncation would INVENT item 3; 3.7 names neither 3 nor 4
-    (3.0, 3),                   # an integral float names exactly one item, so it is kept
-    (True, ITEM_INDEX_ABSENT),  # bool is an int subclass, so int(True) would give "item 1"
-    (False, ITEM_INDEX_ABSENT),
-    ("3", 3),                   # a decimal string names exactly one item; nothing is invented
-    ("3.7", ITEM_INDEX_ABSENT),  # int() raises rather than truncating, which is the right answer
-])
-def test_only_values_that_unambiguously_name_an_item_survive_as_a_pick(returned, expected):
+@pytest.mark.parametrize(
+    "returned, expected",
+    [
+        (
+            3.7,
+            ITEM_INDEX_ABSENT,
+        ),  # truncation would INVENT item 3; 3.7 names neither 3 nor 4
+        (3.0, 3),  # an integral float names exactly one item, so it is kept
+        (
+            True,
+            ITEM_INDEX_ABSENT,
+        ),  # bool is an int subclass, so int(True) would give "item 1"
+        (False, ITEM_INDEX_ABSENT),
+        ("3", 3),  # a decimal string names exactly one item; nothing is invented
+        (
+            "3.7",
+            ITEM_INDEX_ABSENT,
+        ),  # int() raises rather than truncating, which is the right answer
+    ],
+)
+def test_only_values_that_unambiguously_name_an_item_survive_as_a_pick(
+    returned, expected
+):
     """`int()` will happily turn things that never meant an item number into a plausible one,
     and under 1-based numbering a plausible number is worse than a refused one: it names a REAL
     card. None of these is reachable from a schema-conforming model, which is exactly why the
     old truncation was harmless under the 0-based contract and is worth closing under this
     one."""
-    payload = _gemini_response({"opener": "hi", "referenced": "x", "item_index": returned})
+    payload = _gemini_response(
+        {"opener": "hi", "referenced": "x", "item_index": returned}
+    )
     result = _opener(_Transport([(200, payload)])).generate(
-        Profile(photos=[b"a", b"b", b"c"]), style="s")
+        Profile(photos=[b"a", b"b", b"c"]), style="s"
+    )
     assert result.item_index == expected
-    assert result.opener == "hi"                # never at the cost of the opener itself
+    assert result.opener == "hi"  # never at the cost of the opener itself
 
 
 def test_item_index_at_the_exact_end_of_the_sent_range_is_kept():
@@ -2122,7 +2714,8 @@ def test_item_index_at_the_exact_end_of_the_sent_range_is_kept():
     check itself would silently disable the last item on every profile."""
     payload = _gemini_response({"opener": "hi", "referenced": "x", "item_index": 3})
     result = _opener(_Transport([(200, payload)])).generate(
-        Profile(photos=[b"a", b"b", b"c"]), style="s")
+        Profile(photos=[b"a", b"b", b"c"]), style="s"
+    )
     assert result.item_index == 3
 
 
@@ -2137,18 +2730,23 @@ def test_item_index_is_refused_when_no_numbered_items_were_sent_at_all():
 
 # --- index_space: the fact a bare small int cannot carry -------------------------------------
 
+
 def test_generate_records_which_list_the_item_index_counts():
     """`item_index` is meaningless without the list it indexes, and the 2026-08-12 seam bug was
     a consumer assuming that list. generate() states it, derived from the payload it actually
     built, so no consumer has to guess."""
     payload = _gemini_response({"opener": "hi", "referenced": "x", "item_index": 1})
-    frames = _opener(_Transport([(200, payload)])).generate(Profile(photos=[b"a"]), style="s")
+    frames = _opener(_Transport([(200, payload)])).generate(
+        Profile(photos=[b"a"]), style="s"
+    )
     assert frames.index_space == INDEX_SPACE_PROFILE_PHOTOS
 
     payload = _gemini_response({"opener": "hi", "referenced": "x", "item_index": 1})
     items = _opener(_Transport([(200, payload)])).generate(
-        Profile(), style="s",
-        items=ItemRequest(name="A", items=[b"crop-1"], context=[], truncated=False))
+        Profile(),
+        style="s",
+        items=ItemRequest(name="A", items=[b"crop-1"], context=[], truncated=False),
+    )
     assert items.index_space == INDEX_SPACE_MODEL_ITEMS
 
 
@@ -2156,38 +2754,60 @@ def test_an_openerresult_built_by_hand_defaults_to_the_untranslatable_space():
     """Fakes and future call sites do not have to know about index spaces, but their picks must
     not be convertible into a tap. The default is the space nothing can translate, so being
     wrong here means "no target", never "target 1"."""
-    assert OpenerResult("hi", "x", Usage(0, 0), "m").index_space == INDEX_SPACE_MODEL_ITEMS
+    assert (
+        OpenerResult("hi", "x", Usage(0, 0), "m").index_space == INDEX_SPACE_MODEL_ITEMS
+    )
 
 
 def test_item_description_is_parsed_defensively_like_angle():
     """Trimmed, coerced to str, and degraded to "" when missing or unusable -- never a reason
     to fail a request. Doc 5.7 requires it in BOTH modes, so it is parsed unconditionally;
     nothing here branches on advisory/auto."""
-    payload = _gemini_response({"opener": "hi", "referenced": "x", "item_index": 2,
-                                "item_description": "  a photo of a ridge  "})
+    payload = _gemini_response(
+        {
+            "opener": "hi",
+            "referenced": "x",
+            "item_index": 2,
+            "item_description": "  a photo of a ridge  ",
+        }
+    )
     result = _opener(_Transport([(200, payload)])).generate(
-        Profile(photos=[b"a", b"b"]), style="s")
+        Profile(photos=[b"a", b"b"]), style="s"
+    )
     assert result.item_description == "a photo of a ridge"
 
     for bad_value in (None, 0, [], {}):
-        payload = _gemini_response({"opener": "hi", "referenced": "x", "item_index": 2,
-                                    "item_description": bad_value})
+        payload = _gemini_response(
+            {
+                "opener": "hi",
+                "referenced": "x",
+                "item_index": 2,
+                "item_description": bad_value,
+            }
+        )
         result = _opener(_Transport([(200, payload)])).generate(
-            Profile(photos=[b"a", b"b"]), style="s")
+            Profile(photos=[b"a", b"b"]), style="s"
+        )
         assert result.item_description == ""
-        assert result.item_index == 2           # a bad description never disturbs the pick
+        assert result.item_index == 2  # a bad description never disturbs the pick
 
 
 def test_generate_raises_parse_error_on_missing_opener_key():
-    payload = _gemini_response({"referenced": "x", "item_index": 1})   # no "opener" key
+    payload = _gemini_response({"referenced": "x", "item_index": 1})  # no "opener" key
     with pytest.raises(OpenerParseError):
-        _opener(_Transport([(200, payload)])).generate(Profile(photos=[b"a"]), style="s")
+        _opener(_Transport([(200, payload)])).generate(
+            Profile(photos=[b"a"]), style="s"
+        )
 
 
 def test_generate_raises_parse_error_when_opener_exceeds_two_sentence_maximum():
-    payload = _gemini_response({"opener": "One. Two? Three!", "referenced": "x", "item_index": 1})
+    payload = _gemini_response(
+        {"opener": "One. Two? Three!", "referenced": "x", "item_index": 1}
+    )
     with pytest.raises(OpenerParseError, match="two-sentence maximum") as exc:
-        _opener(_Transport([(200, payload)])).generate(Profile(photos=[b"a"]), style="s")
+        _opener(_Transport([(200, payload)])).generate(
+            Profile(photos=[b"a"]), style="s"
+        )
     # Machine-readable reason_code lets a persisted rejection row be grouped/queried without
     # regex-parsing the human message -- see OpenerParseError's own docstring for the full
     # reason_code/raw_opener contract. raw_opener here is the SANITIZED text (this guard runs
@@ -2202,57 +2822,80 @@ def test_generate_raises_parse_error_when_opener_exceeds_two_sentence_maximum():
 # OpenerParseError, not a silently-sent opener that later fails (or worse, silently
 # truncates) at the device-input boundary (drivers.adb.Adb.text). See opener.py's _parse.
 def test_generate_raises_parse_error_naming_an_emoji_in_the_opener():
-    payload = _gemini_response({"opener": "Love the \U0001F384 vibes", "referenced": "x",
-                                "item_index": 1})
+    payload = _gemini_response(
+        {"opener": "Love the \U0001f384 vibes", "referenced": "x", "item_index": 1}
+    )
     with pytest.raises(OpenerParseError, match="CHRISTMAS TREE") as exc:
-        _opener(_Transport([(200, payload)])).generate(Profile(photos=[b"a"]), style="s")
+        _opener(_Transport([(200, payload)])).generate(
+            Profile(photos=[b"a"]), style="s"
+        )
     assert "\\U0001f384" in str(exc.value)
     assert "🎄" in str(exc.value)
     assert exc.value.reason_code == REASON_UNDELIVERABLE_CHARS
     # raw_opener is the SANITIZED text (undeliverable_chars() runs on `sanitized`, and
     # _sanitize's fold_to_ascii pass doesn't touch an emoji -- there's no ASCII substitute).
-    assert exc.value.raw_opener == "Love the \U0001F384 vibes"
+    assert exc.value.raw_opener == "Love the \U0001f384 vibes"
 
 
 # --- % is left ALONE by _sanitize/fold_to_ascii (owner decision: "50%" must type as "50%",
 # never "50 percent"); only the narrow %+lowercase-s collision is a loud, named rejection --
 # see typography.fold_to_ascii's docstring point 4 and typography.undeliverable_sequences.
 def test_generate_accepts_opener_with_percent_sign_unchanged():
-    payload = _gemini_response({
-        "opener": "That trail run photo is great, looks like you hit 50% of the course already",
-        "referenced": "x", "item_index": 1,
-    })
-    result = _opener(_Transport([(200, payload)])).generate(Profile(photos=[b"a"]), style="s")
+    payload = _gemini_response(
+        {
+            "opener": "That trail run photo is great, looks like you hit 50% of the course already",
+            "referenced": "x",
+            "item_index": 1,
+        }
+    )
+    result = _opener(_Transport([(200, payload)])).generate(
+        Profile(photos=[b"a"]), style="s"
+    )
     assert "50%" in result.opener
     assert "percent" not in result.opener
 
 
 def test_generate_accepts_a_terminal_plain_text_smiley_unchanged():
     """A sparing, terminal :) is ASCII and reaches the phone exactly as the model wrote it."""
-    payload = _gemini_response({
-        "opener": "That pirate flag makes this look like the most serious dune expedition :) ",
-        "referenced": "x", "item_index": 1,
-    })
-    result = _opener(_Transport([(200, payload)])).generate(Profile(photos=[b"a"]), style="s")
-    assert result.opener == "That pirate flag makes this look like the most serious dune expedition :)"
+    payload = _gemini_response(
+        {
+            "opener": "That pirate flag makes this look like the most serious dune expedition :) ",
+            "referenced": "x",
+            "item_index": 1,
+        }
+    )
+    result = _opener(_Transport([(200, payload)])).generate(
+        Profile(photos=[b"a"]), style="s"
+    )
+    assert (
+        result.opener
+        == "That pirate flag makes this look like the most serious dune expedition :)"
+    )
 
 
 def test_generate_raises_parse_error_for_percent_lowercase_s_collision():
-    payload = _gemini_response({
-        "opener": "That trail run photo is great, 100%sure you crushed it",
-        "referenced": "x", "item_index": 1,
-    })
+    payload = _gemini_response(
+        {
+            "opener": "That trail run photo is great, 100%sure you crushed it",
+            "referenced": "x",
+            "item_index": 1,
+        }
+    )
     with pytest.raises(OpenerParseError) as exc:
-        _opener(_Transport([(200, payload)])).generate(Profile(photos=[b"a"]), style="s")
+        _opener(_Transport([(200, payload)])).generate(
+            Profile(photos=[b"a"]), style="s"
+        )
     assert exc.value.reason_code == REASON_UNDELIVERABLE_SEQUENCE
     msg = str(exc.value)
-    assert "'%s'" in msg                      # names the offending sequence
+    assert "'%s'" in msg  # names the offending sequence
     # Retry hint is actionable and natural: it must not read as "percent signs are banned"
     # (that risks scaring the model off '%' entirely) -- it says '%' is fine on its own and
     # suggests a concrete reword.
     assert "'50%' is fine on its own" in msg
     assert "50 percent" in msg
-    assert exc.value.raw_opener == "That trail run photo is great, 100%sure you crushed it"
+    assert (
+        exc.value.raw_opener == "That trail run photo is great, 100%sure you crushed it"
+    )
 
 
 def test_generate_returns_opener_result_whose_text_is_already_wysiwyg():
@@ -2261,16 +2904,20 @@ def test_generate_returns_opener_result_whose_text_is_already_wysiwyg():
     for a later fold to change. This is the whole point of the fix: before it, this identity
     could fail silently (the recorded opener carried typography Adb.text() would go on to
     mangle or drop)."""
-    payload = _gemini_response({"opener": "that’s a bold choice — love it",
-                                "referenced": "x", "item_index": 1})
-    result = _opener(_Transport([(200, payload)])).generate(Profile(photos=[b"a"]), style="s")
+    payload = _gemini_response(
+        {"opener": "that’s a bold choice — love it", "referenced": "x", "item_index": 1}
+    )
+    result = _opener(_Transport([(200, payload)])).generate(
+        Profile(photos=[b"a"]), style="s"
+    )
     assert result.opener == fold_to_ascii(result.opener)
-    assert result.opener != ""     # sanity: the fixture text really did need folding
+    assert result.opener != ""  # sanity: the fixture text really did need folding
 
 
 class _NeverBudgetTracker:
     """Minimal CostTracker-shaped fake for the retry test below: never over budget, and
     `record` just needs to return a number -- the actual cost doesn't matter to this test."""
+
     def budget_reached(self):
         return False
 
@@ -2301,10 +2948,12 @@ def test_emoji_opener_is_retried_by_the_service_and_a_clean_second_attempt_succe
     a retry_hint and asks again; the model's second response is clean and is returned. A
     profile whose first draft happened to include an emoji still gets a real opener, rather
     than being skipped or halting the run."""
-    bad = _gemini_response({"opener": "Love the \U0001F384 vibes", "referenced": "x",
-                            "item_index": 1})
-    clean = _gemini_response({"opener": "Love the holiday vibes", "referenced": "x",
-                              "item_index": 1})
+    bad = _gemini_response(
+        {"opener": "Love the \U0001f384 vibes", "referenced": "x", "item_index": 1}
+    )
+    clean = _gemini_response(
+        {"opener": "Love the holiday vibes", "referenced": "x", "item_index": 1}
+    )
     client = _opener(_Transport([(200, bad), (200, clean)]))
     service = OpenerService(client, _NeverBudgetTracker(), _DiscardingStore(), "casual")
 
@@ -2318,14 +2967,22 @@ def test_emoji_opener_is_retried_by_the_service_and_a_clean_second_attempt_succe
 # preamble/label text leaking INSIDE the opener string, e.g. a "Here's the response:"
 # clause that the JSON schema does nothing to prevent since it's inside the string value).
 def test_generate_raises_parse_error_on_scaffolded_opener():
-    payload = _gemini_response({
-        "opener": "Here's the response: Great ocean, where was this taken?",
-        "referenced": "x", "item_index": 1,
-    })
+    payload = _gemini_response(
+        {
+            "opener": "Here's the response: Great ocean, where was this taken?",
+            "referenced": "x",
+            "item_index": 1,
+        }
+    )
     with pytest.raises(OpenerParseError, match="scaffolding") as exc:
-        _opener(_Transport([(200, payload)])).generate(Profile(photos=[b"a"]), style="s")
+        _opener(_Transport([(200, payload)])).generate(
+            Profile(photos=[b"a"]), style="s"
+        )
     assert exc.value.reason_code == REASON_SCAFFOLDING
-    assert exc.value.raw_opener == "Here's the response: Great ocean, where was this taken?"
+    assert (
+        exc.value.raw_opener
+        == "Here's the response: Great ocean, where was this taken?"
+    )
 
 
 def test_generate_still_raises_parse_error_on_narrowed_here_is_scaffolding():
@@ -2333,44 +2990,69 @@ def test_generate_still_raises_parse_error_on_narrowed_here_is_scaffolding():
     object shape must not stop catching real preamble of that exact shape. "Here's an option:"
     names the output as an object just as "Here's the response:" does, so it must still burn a
     retry rather than reach her phone."""
-    payload = _gemini_response({
-        "opener": "Here's an option: Skiing or the beach, whichever you prefer?",
-        "referenced": "x", "item_index": 1,
-    })
+    payload = _gemini_response(
+        {
+            "opener": "Here's an option: Skiing or the beach, whichever you prefer?",
+            "referenced": "x",
+            "item_index": 1,
+        }
+    )
     with pytest.raises(OpenerParseError, match="scaffolding") as exc:
-        _opener(_Transport([(200, payload)])).generate(Profile(photos=[b"a"]), style="s")
+        _opener(_Transport([(200, payload)])).generate(
+            Profile(photos=[b"a"]), style="s"
+        )
     assert exc.value.reason_code == REASON_SCAFFOLDING
-    assert exc.value.raw_opener == "Here's an option: Skiing or the beach, whichever you prefer?"
+    assert (
+        exc.value.raw_opener
+        == "Here's an option: Skiing or the beach, whichever you prefer?"
+    )
 
 
 def test_generate_accepts_a_natural_spoken_here_is_opening():
     """2026-09-06 (b) "HERE'S" collision fix: the same generate() path that used to reject this
     exact opener (ops/OPENER-REDESIGN.md's live-verified example) must now accept it, since
     "hoping" is never the meta noun the narrowed rule requires."""
-    text = "Here's hoping that trail's as steep as it looks. Have you done the full loop?"
+    text = (
+        "Here's hoping that trail's as steep as it looks. Have you done the full loop?"
+    )
     payload = _gemini_response({"opener": text, "referenced": "x", "item_index": 1})
-    result = _opener(_Transport([(200, payload)])).generate(Profile(photos=[b"a"]), style="s")
+    result = _opener(_Transport([(200, payload)])).generate(
+        Profile(photos=[b"a"]), style="s"
+    )
     assert result.opener == text
 
 
 def test_generate_rejects_a_preemptive_negative_framing_disclaimer():
     text = "Zero judgment here, you wear the Mickey ears with total confidence."
-    payload = _gemini_response({"opener": text, "referenced": "Mickey ears", "item_index": 1})
+    payload = _gemini_response(
+        {"opener": text, "referenced": "Mickey ears", "item_index": 1}
+    )
     with pytest.raises(OpenerParseError, match="negative social interpretation") as exc:
-        _opener(_Transport([(200, payload)])).generate(Profile(photos=[b"a"]), style="s")
+        _opener(_Transport([(200, payload)])).generate(
+            Profile(photos=[b"a"]), style="s"
+        )
     assert exc.value.reason_code == REASON_PREEMPTIVE_DISCLAIMER
     assert exc.value.raw_opener == text
 
 
 def test_preemptive_disclaimer_is_retried_and_direct_second_attempt_succeeds():
-    bad = _gemini_response({
-        "opener": "Zero judgment here, you wear the Mickey ears with total confidence.",
-        "referenced": "Mickey ears", "item_index": 1,
-    })
-    clean_text = "You wear the Mickey ears with total confidence. Which ride is nonnegotiable?"
-    clean = _gemini_response({
-        "opener": clean_text, "referenced": "Mickey ears", "item_index": 1,
-    })
+    bad = _gemini_response(
+        {
+            "opener": "Zero judgment here, you wear the Mickey ears with total confidence.",
+            "referenced": "Mickey ears",
+            "item_index": 1,
+        }
+    )
+    clean_text = (
+        "You wear the Mickey ears with total confidence. Which ride is nonnegotiable?"
+    )
+    clean = _gemini_response(
+        {
+            "opener": clean_text,
+            "referenced": "Mickey ears",
+            "item_index": 1,
+        }
+    )
     client = _opener(_Transport([(200, bad), (200, clean)]))
     service = OpenerService(client, _NeverBudgetTracker(), _DiscardingStore(), "casual")
 
@@ -2381,26 +3063,36 @@ def test_preemptive_disclaimer_is_retried_and_direct_second_attempt_succeeds():
 
 
 def test_generate_rejects_the_reported_courage_to_jump_inference_before_send():
-    payload = _gemini_response({
-        "opener": ("Did you work up the courage to jump or were you happy just taking in "
-                   "the scenery?"),
-        "referenced": "a bridge in a travel photo", "item_index": 1,
-    })
+    payload = _gemini_response(
+        {
+            "opener": (
+                "Did you work up the courage to jump or were you happy just taking in "
+                "the scenery?"
+            ),
+            "referenced": "a bridge in a travel photo",
+            "item_index": 1,
+        }
+    )
     with pytest.raises(OpenerParseError, match="sensitive dangerous activity") as exc:
-        _opener(_Transport([(200, payload)])).generate(Profile(photos=[b"a"]), style="s")
+        _opener(_Transport([(200, payload)])).generate(
+            Profile(photos=[b"a"]), style="s"
+        )
     assert exc.value.reason_code == REASON_SENSITIVE_INFERENCE
     assert exc.value.raw_opener == (
-        "Did you work up the courage to jump or were you happy just taking in the scenery?")
+        "Did you work up the courage to jump or were you happy just taking in the scenery?"
+    )
 
 
 def test_generate_rejects_the_reported_unconfirmed_location_followup_before_send():
-    payload = _gemini_response({
-        "opener": _REPORTED_UNCONFIRMED_LOCATION_FOLLOWUP,
-        "referenced": "snowy mountains and a frozen lake",
-        "angle": "guessing the location, then asking what she did there",
-        "item_description": "photo of her beside a frozen lake",
-        "item_index": 1,
-    })
+    payload = _gemini_response(
+        {
+            "opener": _REPORTED_UNCONFIRMED_LOCATION_FOLLOWUP,
+            "referenced": "snowy mountains and a frozen lake",
+            "angle": "guessing the location, then asking what she did there",
+            "item_description": "photo of her beside a frozen lake",
+            "item_index": 1,
+        }
+    )
     transport = _Transport([(200, payload)])
 
     with pytest.raises(OpenerParseError, match="unconfirmed location guess") as exc:
@@ -2412,24 +3104,29 @@ def test_generate_rejects_the_reported_unconfirmed_location_followup_before_send
 
 
 def test_unconfirmed_location_followup_is_retried_and_confirmation_only_succeeds():
-    bad = _gemini_response({
-        "opener": _REPORTED_UNCONFIRMED_LOCATION_FOLLOWUP,
-        "referenced": "snowy mountains and a frozen lake",
-        "angle": "guessing the location, then asking what she did there",
-        "item_description": "photo of her beside a frozen lake",
-        "item_index": 1,
-    })
+    bad = _gemini_response(
+        {
+            "opener": _REPORTED_UNCONFIRMED_LOCATION_FOLLOWUP,
+            "referenced": "snowy mountains and a frozen lake",
+            "angle": "guessing the location, then asking what she did there",
+            "item_description": "photo of her beside a frozen lake",
+            "item_index": 1,
+        }
+    )
     clean_text = "That looks a lot like Lake Louise in deep winter. Am I close?"
-    clean = _gemini_response({
-        "opener": clean_text,
-        "referenced": "snowy mountains and a frozen lake",
-        "angle": "guessing the location and leaving it for her to confirm or correct",
-        "item_description": "photo of her beside a frozen lake",
-        "item_index": 1,
-    })
+    clean = _gemini_response(
+        {
+            "opener": clean_text,
+            "referenced": "snowy mountains and a frozen lake",
+            "angle": "guessing the location and leaving it for her to confirm or correct",
+            "item_description": "photo of her beside a frozen lake",
+            "item_index": 1,
+        }
+    )
     transport = _Transport([(200, bad), (200, clean)])
     service = OpenerService(
-        _opener(transport), _NeverBudgetTracker(), _DiscardingStore(), "casual")
+        _opener(transport), _NeverBudgetTracker(), _DiscardingStore(), "casual"
+    )
 
     pick = service.maybe_opener("r", "hinge", Profile(photos=[b"a"]))
 
@@ -2449,44 +3146,66 @@ def test_premature_shared_future_guard_catches_reported_opener_but_allows_invita
         "assumed shared first date or outing",
         "promise of future performance",
     ]
-    assert _premature_shared_future_markers(
-        "You seem fun. Let's grab a drink this week if you're free."
-    ) == []
-    assert _premature_shared_future_markers(
-        "That skyline feels like a subtle hint for whoever gets to plan the date."
-    ) == []
+    assert (
+        _premature_shared_future_markers(
+            "You seem fun. Let's grab a drink this week if you're free."
+        )
+        == []
+    )
+    assert (
+        _premature_shared_future_markers(
+            "That skyline feels like a subtle hint for whoever gets to plan the date."
+        )
+        == []
+    )
     assert _premature_shared_future_markers(
         "Good news, I'm exactly the man who handles the planning."
     ) == ["self-advertised dating role"]
     assert _premature_shared_future_markers(
         "I can handle the date planning, you just show up."
     ) == ["promise to handle date planning"]
-    assert _premature_shared_future_markers(
-        "You seem fun. I'm in if you want to grab a drink."
-    ) == []
+    assert (
+        _premature_shared_future_markers(
+            "You seem fun. I'm in if you want to grab a drink."
+        )
+        == []
+    )
 
 
 def test_generate_rejects_the_reported_premature_shared_future_before_send():
-    payload = _gemini_response({
-        "opener": _REPORTED_PREMATURE_FUTURE_OPENER,
-        "referenced": "a red dress against a city skyline", "item_index": 1,
-    })
+    payload = _gemini_response(
+        {
+            "opener": _REPORTED_PREMATURE_FUTURE_OPENER,
+            "referenced": "a red dress against a city skyline",
+            "item_index": 1,
+        }
+    )
     with pytest.raises(OpenerParseError, match="unaccepted shared plan") as exc:
-        _opener(_Transport([(200, payload)])).generate(Profile(photos=[b"a"]), style="s")
+        _opener(_Transport([(200, payload)])).generate(
+            Profile(photos=[b"a"]), style="s"
+        )
     assert exc.value.reason_code == REASON_PREMATURE_SHARED_FUTURE
     assert exc.value.raw_opener == _REPORTED_PREMATURE_FUTURE_OPENER
 
 
 def test_premature_shared_future_is_retried_and_a_relaxed_second_attempt_succeeds():
-    bad = _gemini_response({
-        "opener": _REPORTED_PREMATURE_FUTURE_OPENER,
-        "referenced": "a red dress against a city skyline", "item_index": 1,
-    })
-    clean_text = "That skyline feels like a subtle hint for whoever gets to plan the date."
-    clean = _gemini_response({
-        "opener": clean_text,
-        "referenced": "a red dress against a city skyline", "item_index": 1,
-    })
+    bad = _gemini_response(
+        {
+            "opener": _REPORTED_PREMATURE_FUTURE_OPENER,
+            "referenced": "a red dress against a city skyline",
+            "item_index": 1,
+        }
+    )
+    clean_text = (
+        "That skyline feels like a subtle hint for whoever gets to plan the date."
+    )
+    clean = _gemini_response(
+        {
+            "opener": clean_text,
+            "referenced": "a red dress against a city skyline",
+            "item_index": 1,
+        }
+    )
     client = _opener(_Transport([(200, bad), (200, clean)]))
     service = OpenerService(client, _NeverBudgetTracker(), _DiscardingStore(), "casual")
 
@@ -2497,14 +3216,20 @@ def test_premature_shared_future_is_retried_and_a_relaxed_second_attempt_succeed
 
 
 def test_sensitive_inference_is_retried_and_a_grounded_second_attempt_succeeds():
-    bad = _gemini_response({
-        "opener": "Did you work up the courage to jump from the bridge?",
-        "referenced": "a bridge in a travel photo", "item_index": 1,
-    })
-    clean = _gemini_response({
-        "opener": "That view looks like it was worth the trip.",
-        "referenced": "a bridge in a travel photo", "item_index": 1,
-    })
+    bad = _gemini_response(
+        {
+            "opener": "Did you work up the courage to jump from the bridge?",
+            "referenced": "a bridge in a travel photo",
+            "item_index": 1,
+        }
+    )
+    clean = _gemini_response(
+        {
+            "opener": "That view looks like it was worth the trip.",
+            "referenced": "a bridge in a travel photo",
+            "item_index": 1,
+        }
+    )
     client = _opener(_Transport([(200, bad), (200, clean)]))
     service = OpenerService(client, _NeverBudgetTracker(), _DiscardingStore(), "casual")
 
@@ -2520,12 +3245,20 @@ def test_scaffolded_opener_is_retried_by_the_service_and_a_clean_second_attempt_
     clause is rejected and retried via service.py's existing retry loop (the rejection
     message is fed back to the model as a retry_hint), and a clean second attempt is
     returned rather than the run being skipped or halted."""
-    bad = _gemini_response({
-        "opener": "Here's the response: Great ocean, where was this taken?",
-        "referenced": "x", "item_index": 1,
-    })
-    clean = _gemini_response({"opener": "Great ocean, where was this taken?",
-                              "referenced": "x", "item_index": 1})
+    bad = _gemini_response(
+        {
+            "opener": "Here's the response: Great ocean, where was this taken?",
+            "referenced": "x",
+            "item_index": 1,
+        }
+    )
+    clean = _gemini_response(
+        {
+            "opener": "Great ocean, where was this taken?",
+            "referenced": "x",
+            "item_index": 1,
+        }
+    )
     client = _opener(_Transport([(200, bad), (200, clean)]))
     service = OpenerService(client, _NeverBudgetTracker(), _DiscardingStore(), "casual")
 
@@ -2550,13 +3283,20 @@ def test_scaffolded_opener_is_retried_by_the_service_and_a_clean_second_attempt_
 # cost is uncalibrated rejections against a run that halts after five consecutive ones.
 # ---------------------------------------------------------------------------------------
 
-_REDUNDANT_OPENER = "That view by the sauna during sunset looks relaxing, where is this from?"
+_REDUNDANT_OPENER = (
+    "That view by the sauna during sunset looks relaxing, where is this from?"
+)
 _REDUNDANT_REFERENCED = "Photo of her in an outdoor sauna at sunset"
 
 
 def test_generate_returns_a_redundant_opener_unchanged_and_records_the_markers(capsys):
-    payload = _gemini_response({"opener": _REDUNDANT_OPENER,
-                                "referenced": _REDUNDANT_REFERENCED, "item_index": 1})
+    payload = _gemini_response(
+        {
+            "opener": _REDUNDANT_OPENER,
+            "referenced": _REDUNDANT_REFERENCED,
+            "item_index": 1,
+        }
+    )
     transport = _Transport([(200, payload)])
 
     result = _opener(transport).generate(Profile(photos=[b"a"]), style="s")
@@ -2568,9 +3308,12 @@ def test_generate_returns_a_redundant_opener_unchanged_and_records_the_markers(c
     # ...and the measurement is still taken and carried on the result, which is the entire
     # point of shipping it now: the offline calibration pass in doc 3.7 needs these counts.
     assert result.redundancy_markers == _redundant_description_markers(
-        _REDUNDANT_OPENER, _REDUNDANT_REFERENCED)
-    assert result.redundancy_markers == ['opener restates the referenced word "sauna"',
-                                         'opener restates the referenced word "sunset"']
+        _REDUNDANT_OPENER, _REDUNDANT_REFERENCED
+    )
+    assert result.redundancy_markers == [
+        'opener restates the referenced word "sauna"',
+        'opener restates the referenced word "sunset"',
+    ]
     # "Log only" means it is actually logged -- a monitor nobody can see is not a monitor.
     out = capsys.readouterr().out
     assert "redundancy monitor" in out
@@ -2581,10 +3324,17 @@ def test_generate_returns_a_redundant_opener_unchanged_and_records_the_markers(c
 def test_a_clean_opener_carries_no_redundancy_markers(capsys):
     """Control for the test above: the "Yes" half of the same edit pair, same `referenced`.
     Without this, a monitor that flagged every opener unconditionally would still pass."""
-    payload = _gemini_response({"opener": "That view looks relaxing, where is this from?",
-                                "referenced": _REDUNDANT_REFERENCED, "item_index": 1})
+    payload = _gemini_response(
+        {
+            "opener": "That view looks relaxing, where is this from?",
+            "referenced": _REDUNDANT_REFERENCED,
+            "item_index": 1,
+        }
+    )
 
-    result = _opener(_Transport([(200, payload)])).generate(Profile(photos=[b"a"]), style="s")
+    result = _opener(_Transport([(200, payload)])).generate(
+        Profile(photos=[b"a"]), style="s"
+    )
 
     assert result.redundancy_markers == []
     assert "redundancy monitor" not in capsys.readouterr().out
@@ -2595,11 +3345,17 @@ def test_redundant_opener_is_sent_by_the_service_without_burning_a_retry():
     promoted to a rejection, the service's retry loop would ask the model again, so a second
     request is the observable signature of a gate; there is only one response queued here, so
     a retry would also exhaust the transport. One request in, one opener out."""
-    payload = _gemini_response({"opener": _REDUNDANT_OPENER,
-                                "referenced": _REDUNDANT_REFERENCED, "item_index": 1})
+    payload = _gemini_response(
+        {
+            "opener": _REDUNDANT_OPENER,
+            "referenced": _REDUNDANT_REFERENCED,
+            "item_index": 1,
+        }
+    )
     transport = _Transport([(200, payload)])
-    service = OpenerService(_opener(transport), _NeverBudgetTracker(), _DiscardingStore(),
-                            "casual")
+    service = OpenerService(
+        _opener(transport), _NeverBudgetTracker(), _DiscardingStore(), "casual"
+    )
 
     pick = service.maybe_opener("r", "hinge", Profile(photos=[b"a"]))
 
@@ -2632,11 +3388,14 @@ def test_permanent_scope_remedies_partitions_the_quota_scope_labels_table():
     without a matching _TRANSIENT_SCOPES or _PERMANENT_SCOPE_REMEDIES decision fails here
     instead of quietly hitting _UNKNOWN_PERMANENT_REMEDY at runtime."""
     assert set(opener_mod._PERMANENT_SCOPE_REMEDIES) == (
-        set(opener_mod._QUOTA_SCOPE_LABELS) - opener_mod._TRANSIENT_SCOPES)
+        set(opener_mod._QUOTA_SCOPE_LABELS) - opener_mod._TRANSIENT_SCOPES
+    )
     # Belt and braces: the two halves the partition claims are disjoint really are, so a scope
     # cannot be read as BOTH self-clearing and permanent depending on which table a future
     # editor happens to consult first.
-    assert not (set(opener_mod._PERMANENT_SCOPE_REMEDIES) & opener_mod._TRANSIENT_SCOPES)
+    assert not (
+        set(opener_mod._PERMANENT_SCOPE_REMEDIES) & opener_mod._TRANSIENT_SCOPES
+    )
 
 
 @pytest.mark.parametrize("scope", sorted(opener_mod._QUOTA_SCOPE_LABELS))
@@ -2657,34 +3416,46 @@ def test_exhaustion_reason_over_every_singleton_scope_never_over_promises(scope)
     if scope not in opener_mod._TRANSIENT_SCOPES:
         assert "succeed" not in reason, (
             f"scope {scope!r} is not in _TRANSIENT_SCOPES -- nothing about it clears on its "
-            f"own -- so {reason!r} must not promise a restart will succeed")
+            f"own -- so {reason!r} must not promise a restart will succeed"
+        )
 
 
-@pytest.mark.parametrize(("scopes", "must_contain", "must_not_contain"), [
-    # Task 1's failure mode: the host itself loses wifi/DNS, every model raises OSError, and
-    # every scope collapses to "transport" -- _TRANSIENT_SCOPES membership alone would let the
-    # old code promise "restarting should succeed" here, which is false until the LOCAL
-    # connection is back. Fixed 2026-09-17; this pins the fix rather than the old bug.
-    ({"gemini-a": "transport", "gemini-b": "transport"}, ["LOCAL"], ["succeed"]),
-    # Every model exhausted its per-day quota: purely self-clearing on a clock, not a restart,
-    # so a restart promise is wrong here for a different reason than the transport case above.
-    ({"gemini-a": "day", "gemini-b": "day"}, ["midnight Pacific"], ["succeed"]),
-    # day+gone: FINDING 5's exact boundary (see ops/OPENER-REDESIGN.md 2026-09-16 addendum) --
-    # a mix with NO self-clearing member at all. Both remedies must be named and neither may
-    # be dressed up as something a restart fixes.
-    ({"gemini-a": "day", "gemini-b": "gone"},
-     ["midnight Pacific", "opener.models"], ["succeed"]),
-    # gone+thinking: the other permanent-only pair, sharing "gone"'s ban on promising a
-    # restart but needing opener.thinking rather than opener.models named as ITS fix.
-    ({"gemini-a": "gone", "gemini-b": "thinking"},
-     ["opener.models", "opener.thinking"], ["succeed"]),
-    # The empty mapping: __init__ requires >=1 model so this is unreachable in a live run, but
-    # _exhaustion_reason still has to return something rather than raising, and that something
-    # must not promise a restart either -- there is no model here to restart at all.
-    ({}, [], ["succeed"]),
-], ids=["all-transport", "all-day", "day-plus-gone", "gone-plus-thinking", "empty"])
+@pytest.mark.parametrize(
+    ("scopes", "must_contain", "must_not_contain"),
+    [
+        # Task 1's failure mode: the host itself loses wifi/DNS, every model raises OSError, and
+        # every scope collapses to "transport" -- _TRANSIENT_SCOPES membership alone would let the
+        # old code promise "restarting should succeed" here, which is false until the LOCAL
+        # connection is back. Fixed 2026-09-17; this pins the fix rather than the old bug.
+        ({"gemini-a": "transport", "gemini-b": "transport"}, ["LOCAL"], ["succeed"]),
+        # Every model exhausted its per-day quota: purely self-clearing on a clock, not a restart,
+        # so a restart promise is wrong here for a different reason than the transport case above.
+        ({"gemini-a": "day", "gemini-b": "day"}, ["midnight Pacific"], ["succeed"]),
+        # day+gone: FINDING 5's exact boundary (see ops/OPENER-REDESIGN.md 2026-09-16 addendum) --
+        # a mix with NO self-clearing member at all. Both remedies must be named and neither may
+        # be dressed up as something a restart fixes.
+        (
+            {"gemini-a": "day", "gemini-b": "gone"},
+            ["midnight Pacific", "opener.models"],
+            ["succeed"],
+        ),
+        # gone+thinking: the other permanent-only pair, sharing "gone"'s ban on promising a
+        # restart but needing opener.thinking rather than opener.models named as ITS fix.
+        (
+            {"gemini-a": "gone", "gemini-b": "thinking"},
+            ["opener.models", "opener.thinking"],
+            ["succeed"],
+        ),
+        # The empty mapping: __init__ requires >=1 model so this is unreachable in a live run, but
+        # _exhaustion_reason still has to return something rather than raising, and that something
+        # must not promise a restart either -- there is no model here to restart at all.
+        ({}, [], ["succeed"]),
+    ],
+    ids=["all-transport", "all-day", "day-plus-gone", "gone-plus-thinking", "empty"],
+)
 def test_exhaustion_reason_over_representative_mixes_never_over_promises(
-        scopes, must_contain, must_not_contain):
+    scopes, must_contain, must_not_contain
+):
     """The mix-shaped counterpart to the singleton sweep above, executing the real function
     over the specific combinations Task 1 and the mixed-scope fix both reasoned about by name,
     so the reasoning is checked against the shipped code rather than trusted from the comments

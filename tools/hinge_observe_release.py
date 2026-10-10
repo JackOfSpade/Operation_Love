@@ -8,6 +8,7 @@ debug actions, while a persisted manual label/decision/provider record must alre
 active store. BigQuery is queried through the store's read-only aggregate API, so no personal row
 data is exported.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -25,10 +26,21 @@ from operation_love.ranker import make_store
 from tools._debug_frames import debug_frame_path
 
 _ARTIFACT_KEYS = {
-    "schema_version", "kind", "completed", "calibration_calibrated_at",
-    "calibration_sha256", "device", "hinge_version_name", "frame_size_px",
-    "production_run_reference", "production_run_id", "debug_actions_sha256", "store_persistence_evidence_sha256",
-    "provider_store_evidence_sha256", "observe_control_evidence_sha256", "verified_at",
+    "schema_version",
+    "kind",
+    "completed",
+    "calibration_calibrated_at",
+    "calibration_sha256",
+    "device",
+    "hinge_version_name",
+    "frame_size_px",
+    "production_run_reference",
+    "production_run_id",
+    "debug_actions_sha256",
+    "store_persistence_evidence_sha256",
+    "provider_store_evidence_sha256",
+    "observe_control_evidence_sha256",
+    "verified_at",
 }
 
 
@@ -41,8 +53,11 @@ def _sha256(data: bytes) -> str:
 
 
 def _canonical_sha256(value) -> str:
-    return _sha256(json.dumps(value, sort_keys=True, separators=(",", ":"),
-                             ensure_ascii=True).encode("utf-8"))
+    return _sha256(
+        json.dumps(
+            value, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+        ).encode("utf-8")
+    )
 
 
 # Shared with the AI-driven verifier, which unlocks the same gate and had drifted to a weaker
@@ -62,16 +77,26 @@ def _direct_like_resolution(row: dict, run_dir: Path) -> bool:
     resolution.  Require the fields and retained frames that make that claim
     auditable; do not attempt to re-classify private screenshot pixels here.
     """
-    if (row.get("action") != "observe_decision" or row.get("decision") != "like"
-            or row.get("sheet_seen") is not True
-            or row.get("capture_truncated") is not False):
+    if (
+        row.get("action") != "observe_decision"
+        or row.get("decision") != "like"
+        or row.get("sheet_seen") is not True
+        or row.get("capture_truncated") is not False
+    ):
         return False
     before, after = row.get("before"), row.get("after")
-    if (not isinstance(before, str) or not before
-            or not isinstance(after, str) or not after or before == after):
+    if (
+        not isinstance(before, str)
+        or not before
+        or not isinstance(after, str)
+        or not after
+        or before == after
+    ):
         return False
-    return (_debug_frame_path(run_dir, before) is not None
-            and _debug_frame_path(run_dir, after) is not None)
+    return (
+        _debug_frame_path(run_dir, before) is not None
+        and _debug_frame_path(run_dir, after) is not None
+    )
 
 
 def _has_like_control_chain(rows: list[dict], run_dir: Path) -> bool:
@@ -89,14 +114,23 @@ def _has_like_control_chain(rows: list[dict], run_dir: Path) -> bool:
         action = row.get("action")
         if action == "capture":
             capture_seen, hub_seen, anchor_seen, post_tap_seen, sending_seen = (
-                True, False, False, False, False)
+                True,
+                False,
+                False,
+                False,
+                False,
+            )
             continue
         if action in {"capture_aborted", "observe_resync", "observe_stopped"}:
             capture_seen = hub_seen = anchor_seen = post_tap_seen = sending_seen = False
             continue
         if action == "observe_decision":
-            if (capture_seen and post_tap_seen and row.get("decision") == "like"
-                    and (sending_seen or _direct_like_resolution(row, run_dir))):
+            if (
+                capture_seen
+                and post_tap_seen
+                and row.get("decision") == "like"
+                and (sending_seen or _direct_like_resolution(row, run_dir))
+            ):
                 return True
             # A pass, dismissed/ambiguous decision row, or a LIKE without this
             # cycle's complete control trail ends the current profile lifecycle.
@@ -105,7 +139,12 @@ def _has_like_control_chain(rows: list[dict], run_dir: Path) -> bool:
         if action == "observe_release_hub_pre_tap_published":
             if not capture_seen:
                 continue
-            hub_seen, anchor_seen, post_tap_seen, sending_seen = True, False, False, False
+            hub_seen, anchor_seen, post_tap_seen, sending_seen = (
+                True,
+                False,
+                False,
+                False,
+            )
             continue
         if not capture_seen or not hub_seen:
             continue
@@ -125,8 +164,11 @@ def _has_like_control_chain(rows: list[dict], run_dir: Path) -> bool:
         if action == "observe_release_post_tap_item_verified" and anchor_seen:
             post_tap_seen = True
             continue
-        if (action == "observe_waiting" and post_tap_seen
-                and row.get("reason") == "like_sending"):
+        if (
+            action == "observe_waiting"
+            and post_tap_seen
+            and row.get("reason") == "like_sending"
+        ):
             sending_seen = True
             continue
     return False
@@ -138,22 +180,35 @@ def _verify_debug_run(run_dir: Path, run_id: str) -> str:
         raw = actions.read_bytes()
         rows = [json.loads(line) for line in raw.splitlines() if line.strip()]
     except (OSError, json.JSONDecodeError) as exc:
-        raise ReleaseEvidenceRefused(f"could not read production debug actions {actions}: {type(exc).__name__}") from exc
+        raise ReleaseEvidenceRefused(
+            f"could not read production debug actions {actions}: {type(exc).__name__}"
+        ) from exc
     if not rows or any(not isinstance(row, dict) for row in rows):
         raise ReleaseEvidenceRefused("production debug actions are empty or malformed")
     if run_dir.name != run_id:
-        raise ReleaseEvidenceRefused("debug-run directory name must exactly equal --run-id")
+        raise ReleaseEvidenceRefused(
+            "debug-run directory name must exactly equal --run-id"
+        )
     binding = rows[0]
-    if (set(binding) != {"ts", "action", "run_id", "app"}
-            or binding.get("action") != "observe_release_run_binding"
-            or binding.get("run_id") != run_id or binding.get("app") != "hinge"
-            or not isinstance(binding.get("ts"), str) or not binding["ts"].strip()):
+    if (
+        set(binding) != {"ts", "action", "run_id", "app"}
+        or binding.get("action") != "observe_release_run_binding"
+        or binding.get("run_id") != run_id
+        or binding.get("app") != "hinge"
+        or not isinstance(binding.get("ts"), str)
+        or not binding["ts"].strip()
+    ):
         raise ReleaseEvidenceRefused(
             "debug run lacks the required first production Worker run binding; it may be a "
-            "legacy timestamp-named or unrelated actions.jsonl")
-    decisions = {row.get("decision") for row in rows if row.get("action") == "observe_decision"}
+            "legacy timestamp-named or unrelated actions.jsonl"
+        )
+    decisions = {
+        row.get("decision") for row in rows if row.get("action") == "observe_decision"
+    }
     if not {"pass", "like"} <= decisions:
-        raise ReleaseEvidenceRefused("debug run lacks both observed manual pass and like decisions")
+        raise ReleaseEvidenceRefused(
+            "debug run lacks both observed manual pass and like decisions"
+        )
     # A refusal/paywall fact is retained when production naturally sees one, but no safe release
     # workflow may manufacture a paywall merely to produce evidence. It is therefore informative,
     # not an AUTO prerequisite.
@@ -161,12 +216,15 @@ def _verify_debug_run(run_dir: Path, run_id: str) -> str:
         for key in ("before", "after", "anchor"):
             name = row.get(key)
             if name is not None and _debug_frame_path(run_dir, name) is None:
-                raise ReleaseEvidenceRefused(f"debug action references missing frame {name!r}")
+                raise ReleaseEvidenceRefused(
+                    f"debug action references missing frame {name!r}"
+                )
     if not _has_like_control_chain(rows, run_dir):
         raise ReleaseEvidenceRefused(
             "debug run lacks an ordered per-capture production LIKE control chain (pre-tap hub publish, "
             "inline-composer anchor, post-tap item verification, then either like_sending or "
-            "a direct frame-backed verified LIKE resolution)")
+            "a direct frame-backed verified LIKE resolution)"
+        )
     return _sha256(raw)
 
 
@@ -176,40 +234,64 @@ def _verify_store_persistence(store, run_id: str) -> tuple[str, str]:
         summary = store.observe_release_persistence_summary(run_id, "hinge")
     except Exception as exc:  # noqa: BLE001 -- store backend errors must fail the release closed
         raise ReleaseEvidenceRefused(
-            f"could not query active store's read-only release summary: {type(exc).__name__}") from exc
+            f"could not query active store's read-only release summary: {type(exc).__name__}"
+        ) from exc
     required = {
-        "manual_pass_labels", "manual_like_labels",
-        "manual_pass_decisions", "manual_like_decisions",
+        "manual_pass_labels",
+        "manual_like_labels",
+        "manual_pass_decisions",
+        "manual_like_decisions",
         "successful_hinge_openers",
     }
-    if (not isinstance(summary, dict) or set(summary) != required
-            or any(type(summary.get(key)) is not int for key in required)):
-        raise ReleaseEvidenceRefused("active store returned malformed release-persistence counts")
-    missing = [key for key in (
-        "manual_pass_labels", "manual_like_labels",
-        "manual_pass_decisions", "manual_like_decisions",
-    ) if summary[key] < 1]
+    if (
+        not isinstance(summary, dict)
+        or set(summary) != required
+        or any(type(summary.get(key)) is not int for key in required)
+    ):
+        raise ReleaseEvidenceRefused(
+            "active store returned malformed release-persistence counts"
+        )
+    missing = [
+        key
+        for key in (
+            "manual_pass_labels",
+            "manual_like_labels",
+            "manual_pass_decisions",
+            "manual_like_decisions",
+        )
+        if summary[key] < 1
+    ]
     if missing:
         raise ReleaseEvidenceRefused(
             "active store lacks a persisted complete manual Hinge pass+like cycle for this "
-            f"run_id ({', '.join(missing)} missing)")
+            f"run_id ({', '.join(missing)} missing)"
+        )
     if summary["successful_hinge_openers"] < 1:
         raise ReleaseEvidenceRefused(
             "active store lacks a successful persisted Hinge opener for this run_id; "
-            "a rejection or spend row cannot substitute")
-    persistence_summary = {key: summary[key] for key in required if key != "successful_hinge_openers"}
+            "a rejection or spend row cannot substitute"
+        )
+    persistence_summary = {
+        key: summary[key] for key in required if key != "successful_hinge_openers"
+    }
     provider_summary = {"successful_hinge_openers": summary["successful_hinge_openers"]}
     return _canonical_sha256(persistence_summary), _canonical_sha256(provider_summary)
 
 
-def verify(*, cfg, run_dir: Path, run_id: str, out_dir: Path, store=None) -> tuple[dict, dict]:
+def verify(
+    *, cfg, run_dir: Path, run_id: str, out_dir: Path, store=None
+) -> tuple[dict, dict]:
     """Verify existing evidence only and return ``(artifact, paste_mapping)``."""
     app_cfg = (cfg.apps or {}).get("hinge", {}) or {}
     calibration = app_cfg.get("targeting_calibration")
     if not isinstance(calibration, dict):
-        raise ReleaseEvidenceRefused("apps.hinge.targeting_calibration is required before production OBSERVE release verification")
+        raise ReleaseEvidenceRefused(
+            "apps.hinge.targeting_calibration is required before production OBSERVE release verification"
+        )
     if app_cfg.get("mode", cfg.mode) != "observe":
-        raise ReleaseEvidenceRefused("release verification requires config mode observe, never auto")
+        raise ReleaseEvidenceRefused(
+            "release verification requires config mode observe, never auto"
+        )
     if not run_id.strip():
         raise ReleaseEvidenceRefused("--run-id must be the production Worker run id")
     debug_sha = _verify_debug_run(run_dir, run_id)
@@ -227,7 +309,9 @@ def verify(*, cfg, run_dir: Path, run_id: str, out_dir: Path, store=None) -> tup
     try:
         run_ref = str(run_dir.resolve().relative_to(root))
     except ValueError as exc:
-        raise ReleaseEvidenceRefused("--debug-run must be inside the repository") from exc
+        raise ReleaseEvidenceRefused(
+            "--debug-run must be inside the repository"
+        ) from exc
     verified_at = datetime.now(timezone.utc).isoformat()
     artifact = {
         "schema_version": 1,
@@ -250,12 +334,16 @@ def verify(*, cfg, run_dir: Path, run_id: str, out_dir: Path, store=None) -> tup
         raise AssertionError("release artifact schema drift")
     ensure_private_dir(out_dir, exist_ok=False)
     artifact_path = out_dir / "hinge_observe_release.json"
-    artifact_bytes = json.dumps(artifact, indent=2, sort_keys=True).encode("utf-8") + b"\n"
+    artifact_bytes = (
+        json.dumps(artifact, indent=2, sort_keys=True).encode("utf-8") + b"\n"
+    )
     atomic_write_private_bytes(artifact_path, artifact_bytes, parent=out_dir)
     try:
         artifact_ref = str(artifact_path.resolve().relative_to(root))
     except ValueError as exc:  # defensive: output is restricted by CLI before creation
-        raise ReleaseEvidenceRefused("release artifact must be inside the repository") from exc
+        raise ReleaseEvidenceRefused(
+            "release artifact must be inside the repository"
+        ) from exc
     paste = {
         "schema_version": 1,
         "calibration_calibrated_at": artifact["calibration_calibrated_at"],
@@ -289,12 +377,17 @@ def main(argv: list[str] | None = None) -> None:
     except ValueError as exc:
         raise ReleaseEvidenceRefused("--out must stay inside the repository") from exc
     try:
-        _artifact, paste = verify(cfg=cfg, run_dir=Path(args.debug_run), run_id=args.run_id,
-                                  out_dir=out)
+        _artifact, paste = verify(
+            cfg=cfg, run_dir=Path(args.debug_run), run_id=args.run_id, out_dir=out
+        )
     except ReleaseEvidenceRefused as exc:
         print(f"REFUSED: {exc}", file=sys.stderr)
         sys.exit(1)
-    print(yaml.safe_dump({"apps": {"hinge": {"observe_release_evidence": paste}}}, sort_keys=False))
+    print(
+        yaml.safe_dump(
+            {"apps": {"hinge": {"observe_release_evidence": paste}}}, sort_keys=False
+        )
+    )
 
 
 if __name__ == "__main__":

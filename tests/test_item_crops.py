@@ -15,6 +15,7 @@ numbers and the exact pixels each crop must contain.
 The negative that matters most is checked pixel by pixel: an item that was never bounded end to
 end must produce NO image at all, not a crop of the part that happened to be visible.
 """
+
 import hashlib
 import math
 
@@ -26,20 +27,26 @@ import pytest
 
 from operation_love import targeting_policy as tp
 from operation_love.drivers import (
-    hinge, item_crops, item_identity, item_index, item_type_preflight, segment)
+    hinge,
+    item_crops,
+    item_identity,
+    item_index,
+    item_type_preflight,
+    segment,
+)
 
-_W, _H = 1080, 2400                        # the calibrated Pixel 7a screencap size
+_W, _H = 1080, 2400  # the calibrated Pixel 7a screencap size
 _SEED = 21
-_CONTENT_BAND = hinge.HINGE_SPEC.content_band          # (0.125, 0.875) -> rows 300..2100
+_CONTENT_BAND = hinge.HINGE_SPEC.content_band  # (0.125, 0.875) -> rows 300..2100
 _BAND0, _BAND1 = 300, 2100
 _BAND_H = _BAND1 - _BAND0
-_CARD_X0 = segment._CARD_MARGIN_PX                     # 53
-_CARD_X1 = _W - segment._CARD_MARGIN_PX                # 1027
-_GUTTER = max(segment._GUTTER_PX)                      # 53, the canonical measured gutter
-_CORNER_RADIUS_PX = 22                                 # doc 5.10: "~20-23px"
-_HEART_CX = 937                                        # bottom-right, as test_segment.py stamps it
-_HEART_ABOVE_BOTTOM = 90                               # segment.py: ~89px above a card's bottom
-_PAGE_TOP, _PAGE_BOTTOM = 254, 243                     # doc 5.10's background gradient
+_CARD_X0 = segment._CARD_MARGIN_PX  # 53
+_CARD_X1 = _W - segment._CARD_MARGIN_PX  # 1027
+_GUTTER = max(segment._GUTTER_PX)  # 53, the canonical measured gutter
+_CORNER_RADIUS_PX = 22  # doc 5.10: "~20-23px"
+_HEART_CX = 937  # bottom-right, as test_segment.py stamps it
+_HEART_ABOVE_BOTTOM = 90  # segment.py: ~89px above a card's bottom
+_PAGE_TOP, _PAGE_BOTTOM = 254, 243  # doc 5.10's background gradient
 _WORLD_H = 6400
 
 # The step doc 5.10.1 measured at 100% frame-to-frame heart tracking with zero phantoms.
@@ -58,7 +65,13 @@ _STEP = 363
 # the false-scroll-top geometry — and is now a refusal.
 _CHROME = (_BAND0 + 68, _BAND0 + 158)
 _PAGE_TOP_GAP = 1200
-_LAYOUT = (("card", 900), ("card", 760), ("context", 215), ("card", 1000), ("card", 820))
+_LAYOUT = (
+    ("card", 900),
+    ("card", 760),
+    ("context", 215),
+    ("card", 1000),
+    ("card", 820),
+)
 
 
 def _layout_rows():
@@ -72,7 +85,9 @@ def _layout_rows():
 
 _ROWS = _layout_rows()
 _CARD1, _CARD2, _VITALS, _CARD3, _CARD4 = _ROWS
-assert _CHROME[1] + 47 < _PAGE_TOP_GAP, "the chrome gap must be wider than the gutter window"
+assert _CHROME[1] + 47 < _PAGE_TOP_GAP, (
+    "the chrome gap must be wider than the gutter window"
+)
 
 _TEMPLATE = hinge._load_template(hinge.HINGE_SPEC.templates["like"])
 assert _TEMPLATE is not None, "the shipped like glyph must load"
@@ -85,21 +100,27 @@ def _page_column(height=_WORLD_H):
 def _paint_card(world, col, y0, y1, *, heart):
     rng = np.random.default_rng(_SEED + y0)
     world[y0:y1, _CARD_X0:_CARD_X1] = rng.integers(
-        60, 200, size=(y1 - y0, _CARD_X1 - _CARD_X0), dtype=np.uint8)
-    for i in range(_CORNER_RADIUS_PX):                 # carve the four corner arcs back to page
+        60, 200, size=(y1 - y0, _CARD_X1 - _CARD_X0), dtype=np.uint8
+    )
+    for i in range(_CORNER_RADIUS_PX):  # carve the four corner arcs back to page
         dy = _CORNER_RADIUS_PX - i
-        inset = int(math.ceil(_CORNER_RADIUS_PX
-                              - math.sqrt(max(0.0, _CORNER_RADIUS_PX ** 2 - dy ** 2))))
+        inset = int(
+            math.ceil(
+                _CORNER_RADIUS_PX - math.sqrt(max(0.0, _CORNER_RADIUS_PX**2 - dy**2))
+            )
+        )
         if inset <= 0:
             continue
         for y in (y0 + i, y1 - 1 - i):
-            world[y, _CARD_X0:_CARD_X0 + inset] = col[y]
-            world[y, _CARD_X1 - inset:_CARD_X1] = col[y]
+            world[y, _CARD_X0 : _CARD_X0 + inset] = col[y]
+            world[y, _CARD_X1 - inset : _CARD_X1] = col[y]
     if heart:
         th, tw = _TEMPLATE.shape
         cy = y1 - _HEART_ABOVE_BOTTOM
-        world[cy - th // 2: cy - th // 2 + th, _HEART_CX - tw // 2: _HEART_CX - tw // 2 + tw] = \
-            _TEMPLATE
+        world[
+            cy - th // 2 : cy - th // 2 + th,
+            _HEART_CX - tw // 2 : _HEART_CX - tw // 2 + tw,
+        ] = _TEMPLATE
 
 
 def _build_world():
@@ -107,16 +128,23 @@ def _build_world():
     world = np.repeat(col[:, None], _W, axis=1)
     # Header chrome: full card width so it reads as content, but square-cornered and heartless,
     # which is what makes it a PARTIAL block the index can only class as chrome.
-    world[_CHROME[0]:_CHROME[1], _CARD_X0:_CARD_X1] = np.random.default_rng(7).integers(
-        20, 90, size=(_CHROME[1] - _CHROME[0], _CARD_X1 - _CARD_X0), dtype=np.uint8)
+    world[_CHROME[0] : _CHROME[1], _CARD_X0:_CARD_X1] = np.random.default_rng(
+        7
+    ).integers(
+        20, 90, size=(_CHROME[1] - _CHROME[0], _CARD_X1 - _CARD_X0), dtype=np.uint8
+    )
     for kind, y0, y1 in _ROWS:
         _paint_card(world, col, y0, y1, heart=(kind == "card"))
     return world
 
 
 _WORLD = _build_world()
-_CHROME_TOP = np.random.default_rng(3).integers(0, 60, size=(_BAND0, _W), dtype=np.uint8)
-_CHROME_BOTTOM = np.random.default_rng(4).integers(0, 60, size=(_H - _BAND1, _W), dtype=np.uint8)
+_CHROME_TOP = np.random.default_rng(3).integers(
+    0, 60, size=(_BAND0, _W), dtype=np.uint8
+)
+_CHROME_BOTTOM = np.random.default_rng(4).integers(
+    0, 60, size=(_H - _BAND1, _W), dtype=np.uint8
+)
 _FRAMES: dict[int, bytes] = {}
 
 
@@ -124,7 +152,7 @@ def _frame(scroll: int) -> bytes:
     """The 1080x2400 window of the world at `scroll`, as PNG. Content at world row `w` lands on
     frame row `w - scroll`, so `_frame(s)` then `_frame(s + d)` is a forward scroll of `d`."""
     if scroll not in _FRAMES:
-        gray = _WORLD[scroll:scroll + _H].copy()
+        gray = _WORLD[scroll : scroll + _H].copy()
         gray[:_BAND0] = _CHROME_TOP
         gray[_BAND1:] = _CHROME_BOTTOM
         ok, buf = cv2.imencode(".png", gray)
@@ -143,9 +171,13 @@ _CACHE: dict[str, object] = {}
 
 def _index(scrolls, *, at_scroll_top=True):
     return item_index.build_item_index(
-        [_frame(s) for s in scrolls], content_band=_CONTENT_BAND, like_template=_TEMPLATE,
-        like_threshold=hinge._LIKE_MATCH_THRESHOLD, at_scroll_top=at_scroll_top,
-        identity_band=None)
+        [_frame(s) for s in scrolls],
+        content_band=_CONTENT_BAND,
+        like_template=_TEMPLATE,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD,
+        at_scroll_top=at_scroll_top,
+        identity_band=None,
+    )
 
 
 def _full():
@@ -195,11 +227,12 @@ def _animated_capture(*, delta: int):
     y0, y1 = _ANIMATED_CARD[1] + _ANIMATED_INSET, _ANIMATED_CARD[2] - _ANIMATED_INSET
     x0, x1 = _CARD_X0 + _ANIMATED_INSET, _CARD_X1 - _ANIMATED_INSET
     moved[y0:y1, x0:x1] = np.clip(
-        moved[y0:y1, x0:x1].astype(np.int16) + delta, 0, 255).astype(np.uint8)
+        moved[y0:y1, x0:x1].astype(np.int16) + delta, 0, 255
+    ).astype(np.uint8)
 
     frames = []
     for i, scroll in enumerate(_FULL_SCROLL):
-        gray = (moved if i >= _ANIMATED_FROM else _WORLD)[scroll:scroll + _H].copy()
+        gray = (moved if i >= _ANIMATED_FROM else _WORLD)[scroll : scroll + _H].copy()
         gray[:_BAND0] = _CHROME_TOP
         gray[_BAND1:] = _CHROME_BOTTOM
         ok, buf = cv2.imencode(".png", gray)
@@ -207,14 +240,20 @@ def _animated_capture(*, delta: int):
         frames.append(buf.tobytes())
 
     index = item_index.build_item_index(
-        frames, content_band=_CONTENT_BAND, like_template=_TEMPLATE,
-        like_threshold=hinge._LIKE_MATCH_THRESHOLD, at_scroll_top=True, identity_band=None)
+        frames,
+        content_band=_CONTENT_BAND,
+        like_template=_TEMPLATE,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD,
+        at_scroll_top=True,
+        identity_band=None,
+    )
     return frames, index, item_crops.build_item_payload(frames, index)
 
 
 # =====================================================================================
 # The headline: one crop per item, numbered, and nothing else in the request
 # =====================================================================================
+
 
 def test_a_clean_capture_yields_one_numbered_crop_per_selectable_item():
     """Doc 5.2: "image 3 in the request IS item 3". Four planted cards become items 1..4, the
@@ -226,8 +265,13 @@ def test_a_clean_capture_yields_one_numbered_crop_per_selectable_item():
 
     assert payload.usable, payload.failures
     assert [c.kind for c in payload.crops] == [
-        item_crops.CROP_CHROME, item_crops.CROP_ITEM, item_crops.CROP_ITEM,
-        item_crops.CROP_CONTEXT, item_crops.CROP_ITEM, item_crops.CROP_ITEM]
+        item_crops.CROP_CHROME,
+        item_crops.CROP_ITEM,
+        item_crops.CROP_ITEM,
+        item_crops.CROP_CONTEXT,
+        item_crops.CROP_ITEM,
+        item_crops.CROP_ITEM,
+    ]
     assert [c.number for c in payload.items] == [1, 2, 3, 4]
     assert payload.item_count == 4 and payload.context_count == 1
     assert not payload.excluded and not payload.uncroppable
@@ -244,7 +288,7 @@ def test_the_model_numbering_and_the_private_heart_table():
     payload = _payload()
 
     assert payload.translation == (1, 2, 3, 4)
-    assert payload.translation == index.translation      # nothing excluded, so they agree
+    assert payload.translation == index.translation  # nothing excluded, so they agree
     assert [c.heart_ordinal for c in payload.crops] == [None, 1, 2, None, 3, 4]
     assert payload.item(3).heart_ordinal == 3
     assert payload.item(3).number == 3
@@ -264,8 +308,9 @@ def test_each_item_crop_is_exactly_the_card_that_was_planted():
 
     context = payload.context[0]
     assert (context.page_y0, context.page_y1) == (_VITALS[1], _VITALS[2])
-    assert np.array_equal(_decode(context.image),
-                          _WORLD[_VITALS[1]:_VITALS[2], _CARD_X0:_CARD_X1])
+    assert np.array_equal(
+        _decode(context.image), _WORLD[_VITALS[1] : _VITALS[2], _CARD_X0:_CARD_X1]
+    )
 
 
 def test_the_request_is_crops_only_each_item_exactly_once():
@@ -275,7 +320,9 @@ def test_the_request_is_crops_only_each_item_exactly_once():
     index, frames = _full()
     payload = _payload()
 
-    assert all(len(b.frames) >= 2 for b in index.selectable), [b.frames for b in index.selectable]
+    assert all(len(b.frames) >= 2 for b in index.selectable), [
+        b.frames for b in index.selectable
+    ]
     assert len(payload.images) == payload.item_count + payload.context_count
     assert len(set(payload.images)) == len(payload.images)
     assert payload.images == tuple(c.image for c in payload.items + payload.context)
@@ -299,6 +346,7 @@ def test_the_chrome_block_is_accounted_for_but_never_cropped():
 # Rule one: a crop is never a fragment
 # =====================================================================================
 
+
 def test_an_item_never_bounded_end_to_end_is_reported_and_not_cropped():
     """A capture that stops mid-card. The last block is real, it has a page position, and it has
     no honest image — so it is a CROP_UNCROPPABLE entry with a reason, not a crop of the part
@@ -306,7 +354,9 @@ def test_an_item_never_bounded_end_to_end_is_reported_and_not_cropped():
     scrolls = _FULL_SCROLL[:3]
     index = _index(scrolls)
     assert index.usable, index.failures
-    assert index.partial, "this prefix must leave a block unbounded for the test to mean anything"
+    assert index.partial, (
+        "this prefix must leave a block unbounded for the test to mean anything"
+    )
 
     payload = item_crops.build_item_payload([_frame(s) for s in scrolls], index)
 
@@ -328,20 +378,29 @@ def test_a_partial_item_keeps_its_heart_ordinal_even_though_it_is_not_sent():
     block that could not be cropped still occupies its ordinal and nothing below it renumbers."""
     observations = [
         _obs(0, 400, 1300, hearts=(1200,)),
-        _obs(0, 1400, 1900, complete=False, hearts=(1800,)),   # never bounded, but has a heart
+        _obs(
+            0, 1400, 1900, complete=False, hearts=(1800,)
+        ),  # never bounded, but has a heart
         _obs(0, 1960, 2340, hearts=(2250,)),
     ]
     blocks, failures = item_index._assemble(
-        observations, at_scroll_top=False, card_x=(_CARD_X0, _CARD_X1),
+        observations,
+        at_scroll_top=False,
+        card_x=(_CARD_X0, _CARD_X1),
         extent_tolerance_px=item_index._EXTENT_TOLERANCE_PX,
-        min_item_gap_px=item_index._MIN_ITEM_GAP_PX, band_y0=_BAND0)
+        min_item_gap_px=item_index._MIN_ITEM_GAP_PX,
+        band_y0=_BAND0,
+    )
     assert not failures
     index = _fake_index(blocks)
 
     payload = item_crops.build_item_payload([_frame(0)], index)
 
     assert [c.kind for c in payload.crops] == [
-        item_crops.CROP_ITEM, item_crops.CROP_UNCROPPABLE, item_crops.CROP_ITEM]
+        item_crops.CROP_ITEM,
+        item_crops.CROP_UNCROPPABLE,
+        item_crops.CROP_ITEM,
+    ]
     assert [c.number for c in payload.crops] == [1, None, 2]
     assert [c.heart_ordinal for c in payload.crops] == [1, 2, 3]
     # The model's item 2 is the page's THIRD heart: the uncroppable one in between kept its own.
@@ -352,6 +411,7 @@ def test_a_partial_item_keeps_its_heart_ordinal_even_though_it_is_not_sent():
 # Rule two: the over-tall case is detected, not stitched around
 # =====================================================================================
 
+
 def test_a_block_taller_than_the_band_fails_loud_instead_of_being_stitched():
     """Doc 5.10 closed the viewport question on "the tallest card fully observed is 1114px
     against an 1800px content band" and added the caveat this is: "a very long prompt answer
@@ -359,11 +419,16 @@ def test_a_block_taller_than_the_band_fails_loud_instead_of_being_stitched():
     No single frame can ever contain such a block, and stitching two is not implemented."""
     tall = _BAND_H + 1
     blocks, failures = item_index._assemble(
-        [_obs(0, 500, 1400, hearts=(1300,)),
-         _obs(0, 1500, 1500 + tall, complete=False, hearts=(1600,))],
-        at_scroll_top=False, card_x=(_CARD_X0, _CARD_X1),
+        [
+            _obs(0, 500, 1400, hearts=(1300,)),
+            _obs(0, 1500, 1500 + tall, complete=False, hearts=(1600,)),
+        ],
+        at_scroll_top=False,
+        card_x=(_CARD_X0, _CARD_X1),
         extent_tolerance_px=item_index._EXTENT_TOLERANCE_PX,
-        min_item_gap_px=item_index._MIN_ITEM_GAP_PX, band_y0=_BAND0)
+        min_item_gap_px=item_index._MIN_ITEM_GAP_PX,
+        band_y0=_BAND0,
+    )
     assert not failures
     payload = item_crops.build_item_payload([_frame(0)], _fake_index(blocks))
 
@@ -375,11 +440,16 @@ def test_a_block_taller_than_the_band_fails_loud_instead_of_being_stitched():
 
     # The control: one pixel shorter and the same block is merely uncroppable, with no failure.
     blocks, _ = item_index._assemble(
-        [_obs(0, 500, 1400, hearts=(1300,)),
-         _obs(0, 1500, 1500 + _BAND_H, complete=False, hearts=(1600,))],
-        at_scroll_top=False, card_x=(_CARD_X0, _CARD_X1),
+        [
+            _obs(0, 500, 1400, hearts=(1300,)),
+            _obs(0, 1500, 1500 + _BAND_H, complete=False, hearts=(1600,)),
+        ],
+        at_scroll_top=False,
+        card_x=(_CARD_X0, _CARD_X1),
         extent_tolerance_px=item_index._EXTENT_TOLERANCE_PX,
-        min_item_gap_px=item_index._MIN_ITEM_GAP_PX, band_y0=_BAND0)
+        min_item_gap_px=item_index._MIN_ITEM_GAP_PX,
+        band_y0=_BAND0,
+    )
     assert item_crops.build_item_payload([_frame(0)], _fake_index(blocks)).usable
 
 
@@ -396,6 +466,7 @@ def test_no_item_of_a_real_capture_comes_close_to_the_band():
 # Exclusion: a mechanism, with no detector attached
 # =====================================================================================
 
+
 def test_photo_only_policy_demotes_a_heart_bearing_prompt_without_renumbering_hearts():
     """A written card may keep Hinge's like heart, but it must not become a model choice.
 
@@ -408,18 +479,30 @@ def test_photo_only_policy_demotes_a_heart_bearing_prompt_without_renumbering_he
 
     def photo_only(crop: bytes) -> str | None:
         seen.append(crop)
-        return "written prompt cards are context, never model items" if len(seen) == 2 else None
+        return (
+            "written prompt cards are context, never model items"
+            if len(seen) == 2
+            else None
+        )
 
     payload = item_crops.build_item_payload(frames, index, unnumber=photo_only)
 
     assert payload.usable, payload.failures
-    assert len(seen) == 4                         # complete, heart-bearing cards only
+    assert len(seen) == 4  # complete, heart-bearing cards only
     assert [c.kind for c in payload.crops] == [
-        item_crops.CROP_CHROME, item_crops.CROP_ITEM, item_crops.CROP_CONTEXT,
-        item_crops.CROP_CONTEXT, item_crops.CROP_ITEM, item_crops.CROP_ITEM]
+        item_crops.CROP_CHROME,
+        item_crops.CROP_ITEM,
+        item_crops.CROP_CONTEXT,
+        item_crops.CROP_CONTEXT,
+        item_crops.CROP_ITEM,
+        item_crops.CROP_ITEM,
+    ]
     assert [c.number for c in payload.items] == [1, 2, 3]
     assert [(c.page_y0, c.page_y1) for c in payload.items] == [
-        _CARD1[1:], _CARD3[1:], _CARD4[1:]]
+        _CARD1[1:],
+        _CARD3[1:],
+        _CARD4[1:],
+    ]
 
     prompt = next(c for c in payload.context if (c.page_y0, c.page_y1) == _CARD2[1:])
     assert prompt.number is None and prompt.heart_ordinal == 2
@@ -441,7 +524,8 @@ def test_photo_only_policy_refuses_a_capture_with_no_numbered_photographs():
     """
     index, frames = _full()
     payload = item_crops.build_item_payload(
-        frames, index, unnumber=lambda _crop: "not confidently a photograph")
+        frames, index, unnumber=lambda _crop: "not confidently a photograph"
+    )
 
     assert not payload.usable
     assert payload.item_count == 0 and payload.translation == ()
@@ -449,7 +533,10 @@ def test_photo_only_policy_refuses_a_capture_with_no_numbered_photographs():
     assert [c.heart_ordinal for c in prompt_cards] == [1, 2, 3, 4]
     assert all(c.number is None and c.sent for c in prompt_cards)
     assert all("not confidently a photograph" in c.reason for c in prompt_cards)
-    assert any("nothing for the model to choose between" in failure for failure in payload.failures)
+    assert any(
+        "nothing for the model to choose between" in failure
+        for failure in payload.failures
+    )
     with pytest.raises(item_crops.ItemCropError, match="unusable"):
         payload.item(1)
 
@@ -463,8 +550,16 @@ def test_hinge_photo_policy_ignores_geometry_and_requires_photo_evidence():
     portrait_unknown = np.full((256, 180, 3), (130, 105, 80), dtype=np.uint8)
     written_square = np.full((256, 256, 3), 246, dtype=np.uint8)
     for y in (70, 130):
-        cv2.putText(written_square, "PROMPT", (25, y), cv2.FONT_HERSHEY_SIMPLEX,
-                    0.8, (20, 20, 20), 2, cv2.LINE_AA)
+        cv2.putText(
+            written_square,
+            "PROMPT",
+            (25, y),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.8,
+            (20, 20, 20),
+            2,
+            cv2.LINE_AA,
+        )
 
     def encoded(image):
         ok, value = cv2.imencode(".png", image)
@@ -473,10 +568,16 @@ def test_hinge_photo_policy_ignores_geometry_and_requires_photo_evidence():
 
     assert item_crops.unnumber_unless_confident_photo(encoded(square_photo)) is None
     assert item_crops.unnumber_unless_confident_photo(encoded(landscape_photo)) is None
-    assert (item_type_preflight.classify_crop(encoded(portrait_unknown))
-            == item_type_preflight.UNKNOWN)
-    assert "photo_only" in item_crops.unnumber_unless_confident_photo(encoded(portrait_unknown))
-    assert "photo_only" in item_crops.unnumber_unless_confident_photo(encoded(written_square))
+    assert (
+        item_type_preflight.classify_crop(encoded(portrait_unknown))
+        == item_type_preflight.UNKNOWN
+    )
+    assert "photo_only" in item_crops.unnumber_unless_confident_photo(
+        encoded(portrait_unknown)
+    )
+    assert "photo_only" in item_crops.unnumber_unless_confident_photo(
+        encoded(written_square)
+    )
 
 
 def test_hinge_photo_policy_does_not_number_unknown_cards(monkeypatch):
@@ -486,53 +587,84 @@ def test_hinge_photo_policy_does_not_number_unknown_cards(monkeypatch):
     820px tall. Force an inconclusive result for all four; geometry and a presumed item count may
     not override the content classifier.
     """
-    monkeypatch.setattr(item_type_preflight, "classify_crop",
-                        lambda _image: item_type_preflight.UNKNOWN)
+    monkeypatch.setattr(
+        item_type_preflight, "classify_crop", lambda _image: item_type_preflight.UNKNOWN
+    )
     index, frames = _full()
     payload = item_crops.build_item_payload(
-        frames, index, unnumber=item_crops.unnumber_unless_confident_photo)
+        frames, index, unnumber=item_crops.unnumber_unless_confident_photo
+    )
 
     assert not payload.usable
     assert payload.item_count == 0 and payload.translation == ()
-    assert [crop.heart_ordinal for crop in payload.context if crop.heart_ordinal] == [1, 2, 3, 4]
-    assert all("classified as unknown" in crop.reason for crop in payload.context
-               if crop.heart_ordinal)
+    assert [crop.heart_ordinal for crop in payload.context if crop.heart_ordinal] == [
+        1,
+        2,
+        3,
+        4,
+    ]
+    assert all(
+        "classified as unknown" in crop.reason
+        for crop in payload.context
+        if crop.heart_ordinal
+    )
 
 
-def test_confident_photo_candidate_prepass_matches_content_policy_and_exclusions(monkeypatch):
+def test_confident_photo_candidate_prepass_matches_content_policy_and_exclusions(
+    monkeypatch,
+):
     """Dwell candidates are the confidently photographic selectable crops only.
 
     This pre-pass intentionally runs before the expensive still-media proof, but it must use the
     same PHOTO/WRITTEN/UNKNOWN decision and the same video/block exclusion as the final payload.
     It is only a cost filter: later code still requires every returned heart to pass dwell.
     """
-    classes = iter([
-        item_type_preflight.PHOTO, item_type_preflight.WRITTEN,
-        item_type_preflight.UNKNOWN, item_type_preflight.PHOTO,
-    ])
-    monkeypatch.setattr(item_type_preflight, "classify_crop", lambda _image: next(classes))
+    classes = iter(
+        [
+            item_type_preflight.PHOTO,
+            item_type_preflight.WRITTEN,
+            item_type_preflight.UNKNOWN,
+            item_type_preflight.PHOTO,
+        ]
+    )
+    monkeypatch.setattr(
+        item_type_preflight, "classify_crop", lambda _image: next(classes)
+    )
     index, frames = _full()
 
     ordinals = item_crops.confident_photo_heart_ordinals(
-        frames, index, exclude=lambda block: "video" if block.heart_ordinal == 4 else None)
+        frames,
+        index,
+        exclude=lambda block: "video" if block.heart_ordinal == 4 else None,
+    )
 
     assert ordinals == (1,)
 
 
 def test_unknown_prompt_cannot_shift_the_last_photo_from_six_to_seven(monkeypatch):
     """Regression for the reported dog-photo ordinal, derived from classes rather than a cap."""
-    classes = iter([
-        item_type_preflight.PHOTO, item_type_preflight.WRITTEN,
-        item_type_preflight.PHOTO, item_type_preflight.PHOTO,
-        item_type_preflight.WRITTEN, item_type_preflight.PHOTO,
-        item_type_preflight.UNKNOWN, item_type_preflight.PHOTO,
-        item_type_preflight.PHOTO,
-    ])
-    monkeypatch.setattr(item_type_preflight, "classify_crop", lambda _image: next(classes))
+    classes = iter(
+        [
+            item_type_preflight.PHOTO,
+            item_type_preflight.WRITTEN,
+            item_type_preflight.PHOTO,
+            item_type_preflight.PHOTO,
+            item_type_preflight.WRITTEN,
+            item_type_preflight.PHOTO,
+            item_type_preflight.UNKNOWN,
+            item_type_preflight.PHOTO,
+            item_type_preflight.PHOTO,
+        ]
+    )
+    monkeypatch.setattr(
+        item_type_preflight, "classify_crop", lambda _image: next(classes)
+    )
 
     numbered_hearts = tuple(
-        heart for heart in range(1, 10)
-        if item_crops.unnumber_unless_confident_photo(b"crop") is None)
+        heart
+        for heart in range(1, 10)
+        if item_crops.unnumber_unless_confident_photo(b"crop") is None
+    )
 
     assert numbered_hearts == (1, 3, 4, 6, 8, 9)
     assert numbered_hearts.index(9) + 1 == 6
@@ -544,7 +676,8 @@ def test_exclusion_withholds_the_image_entirely():
     ignore."""
     index, frames = _full()
     payload = item_crops.build_item_payload(
-        frames, index, exclude=item_crops.exclude_page_rows([(_VITALS[1], _VITALS[2])]))
+        frames, index, exclude=item_crops.exclude_page_rows([(_VITALS[1], _VITALS[2])])
+    )
 
     assert payload.usable, payload.failures
     assert payload.context_count == 0
@@ -565,14 +698,17 @@ def test_excluding_a_heart_bearing_block_renumbers_the_model_and_not_navigation(
     heart ordinals do not."""
     index, frames = _full()
     payload = item_crops.build_item_payload(
-        frames, index, exclude=item_crops.exclude_page_rows([(_CARD2[1], _CARD2[2])]))
+        frames, index, exclude=item_crops.exclude_page_rows([(_CARD2[1], _CARD2[2])])
+    )
 
     assert payload.usable, payload.failures
     assert [c.number for c in payload.items] == [1, 2, 3]
-    assert payload.translation == (1, 3, 4)              # heart 2 is gone from the model's list
-    assert payload.translation != index.translation      # ...so THIS is the table to navigate by
-    assert payload.excluded[0].heart_ordinal == 2        # ...and its own ordinal is untouched
-    assert index.heart_ordinal_for(2) == 2               # the index still knows it as heart 2
+    assert payload.translation == (1, 3, 4)  # heart 2 is gone from the model's list
+    assert (
+        payload.translation != index.translation
+    )  # ...so THIS is the table to navigate by
+    assert payload.excluded[0].heart_ordinal == 2  # ...and its own ordinal is untouched
+    assert index.heart_ordinal_for(2) == 2  # the index still knows it as heart 2
 
 
 def test_exclude_page_rows_only_touches_the_rows_it_was_given():
@@ -582,10 +718,15 @@ def test_exclude_page_rows_only_touches_the_rows_it_was_given():
     index, _ = _full()
     hit = [b for b in index.blocks if predicate(b) is not None]
 
-    assert len(hit) == 1 and (hit[0].page_y0, hit[0].page_y1) == (_VITALS[1], _VITALS[2])
+    assert len(hit) == 1 and (hit[0].page_y0, hit[0].page_y1) == (
+        _VITALS[1],
+        _VITALS[2],
+    )
     # A span one row short of the block touches nothing.
-    assert all(item_crops.exclude_page_rows([(_VITALS[1] - 10, _VITALS[1])])(b) is None
-               for b in index.blocks)
+    assert all(
+        item_crops.exclude_page_rows([(_VITALS[1] - 10, _VITALS[1])])(b) is None
+        for b in index.blocks
+    )
     assert "endorsement" == item_crops.EXCLUSION_ENDORSEMENT
 
 
@@ -593,7 +734,8 @@ def test_excluding_everything_selectable_is_a_failure_not_an_empty_request():
     """A payload the model cannot answer is not a payload."""
     index, frames = _full()
     payload = item_crops.build_item_payload(
-        frames, index, exclude=item_crops.exclude_page_rows([(0, 10 ** 6)]))
+        frames, index, exclude=item_crops.exclude_page_rows([(0, 10**6)])
+    )
 
     assert not payload.usable
     assert any("nothing for the model to choose between" in f for f in payload.failures)
@@ -605,6 +747,7 @@ def test_excluding_everything_selectable_is_a_failure_not_an_empty_request():
 # The crop signature (doc 5.6's verification reference)
 # =====================================================================================
 
+
 def test_a_signature_matches_the_same_item_seen_in_another_frame_and_no_other():
     """The whole point of storing one: later, a screenshot of a sheet is signed the same way and
     compared. The same card from a DIFFERENT frame must be nearest to its own stored signature by
@@ -615,15 +758,24 @@ def test_a_signature_matches_the_same_item_seen_in_another_frame_and_no_other():
     for number, block in enumerate(index.selectable, start=1):
         crop = payload.item(number)
         elsewhere = [o for o in block.croppable if o.frame_index != crop.frame_index]
-        assert elsewhere, "the fixture must show every card whole in more than one frame"
+        assert elsewhere, (
+            "the fixture must show every card whole in more than one frame"
+        )
         seen_again = item_crops.signature_of(
-            frames[elsewhere[0].frame_index], y0=elsewhere[0].frame_y0,
-            y1=elsewhere[0].frame_y1, x0=block.x0, x1=block.x1)
+            frames[elsewhere[0].frame_index],
+            y0=elsewhere[0].frame_y0,
+            y1=elsewhere[0].frame_y1,
+            x0=block.x0,
+            x1=block.x1,
+        )
 
         own = crop.signature.distance(seen_again)
-        others = [payload.item(k).signature.distance(seen_again)
-                  for k in range(1, payload.item_count + 1) if k != number]
-        assert own == 0.0                       # same pixels, same decode, same grid
+        others = [
+            payload.item(k).signature.distance(seen_again)
+            for k in range(1, payload.item_count + 1)
+            if k != number
+        ]
+        assert own == 0.0  # same pixels, same decode, same grid
         assert min(others) > 1.0, (number, own, others)
 
     assert payload.signature_grid == item_crops._SIGNATURE_GRID
@@ -636,7 +788,10 @@ def test_signature_geometry_and_digest_are_carried_with_the_cells():
     compare."""
     payload = _payload()
     for crop in payload.items + payload.context:
-        assert (crop.signature.width, crop.signature.height) == (crop.width, crop.height)
+        assert (crop.signature.width, crop.signature.height) == (
+            crop.width,
+            crop.height,
+        )
         assert crop.signature.grid == item_crops._SIGNATURE_GRID
     digests = {c.signature.digest for c in payload.items + payload.context}
     assert len(digests) == payload.item_count + payload.context_count
@@ -656,8 +811,9 @@ def test_signature_of_refuses_a_rect_that_is_not_inside_the_frame():
 
 def test_distance_refuses_two_different_grids():
     """Two signatures at different grids are not two measurements of the same thing."""
-    coarse = item_crops.signature_of(_frame(0), y0=400, y1=900, x0=_CARD_X0, x1=_CARD_X1,
-                                     grid=(8, 8))
+    coarse = item_crops.signature_of(
+        _frame(0), y0=400, y1=900, x0=_CARD_X0, x1=_CARD_X1, grid=(8, 8)
+    )
     fine = item_crops.signature_of(_frame(0), y0=400, y1=900, x0=_CARD_X0, x1=_CARD_X1)
     assert coarse.distance(coarse) == 0.0
     with pytest.raises(item_crops.ItemCropError, match="not a distance"):
@@ -667,6 +823,7 @@ def test_distance_refuses_two_different_grids():
 # =====================================================================================
 # Whether a stored crop can serve as doc 5.6's reference at all (the animated-card class)
 # =====================================================================================
+
 
 def test_a_static_capture_measures_no_drift_and_every_item_stays_separable():
     """The baseline the two negatives below are read against. Nothing in this world moves, so
@@ -696,15 +853,19 @@ def test_drift_is_measured_by_resampling_the_rect_in_every_frame_that_contains_i
 
     for crop in payload.items + payload.context:
         contained = tuple(
-            i for i, offset in enumerate(index.offsets)
+            i
+            for i, offset in enumerate(index.offsets)
             if i != crop.frame_index
             and index.frames[i].band[0] <= crop.page_y0 - offset
-            and crop.page_y1 - offset <= index.frames[i].band[1])
+            and crop.page_y1 - offset <= index.frames[i].band[1]
+        )
         assert crop.drift_frames == contained, crop.number
         # ...and a frame that only PARTLY holds the rect is skipped rather than clipped: a
         # clipped rect is a different region, so its distance would not be a drift.
-        assert all(index.frames[i].band[0] <= crop.page_y0 - index.offsets[i]
-                   for i in crop.drift_frames)
+        assert all(
+            index.frames[i].band[0] <= crop.page_y0 - index.offsets[i]
+            for i in crop.drift_frames
+        )
 
 
 def test_a_card_whose_pixels_move_is_reported_unseparable_rather_than_thresholded():
@@ -774,12 +935,27 @@ def _evidence(drift, frames=(2,), *, dwell=None, regime=None):
     drift came from: those objects must keep taking the STRICTER parked ceiling, so the default
     here is also the assertion that the parked bound was not loosened for anybody.
     """
-    return item_crops.still_photo_evidence_from_drift(drift, frames, dwell, drift_regime=regime)
+    return item_crops.still_photo_evidence_from_drift(
+        drift, frames, dwell, drift_regime=regime
+    )
 
 
-def _full_dwell(*, exact=True, span_s=6.0, screened=True, digests=2, centered=True,
-                offset=0.02, probe_ran=True, probe_exact=True, probe_screened=True,
-                probe_digests=2, probe_centered=True, probe_offset=0.02, probe_span_s=6.0):
+def _full_dwell(
+    *,
+    exact=True,
+    span_s=6.0,
+    screened=True,
+    digests=2,
+    centered=True,
+    offset=0.02,
+    probe_ran=True,
+    probe_exact=True,
+    probe_screened=True,
+    probe_digests=2,
+    probe_centered=True,
+    probe_offset=0.02,
+    probe_span_s=6.0,
+):
     """A dwell that passes every rung, so one field at a time can be spoiled.
 
     `centered` is the autoplay precondition (2026-08-21): Hinge plays a video only near the
@@ -792,35 +968,45 @@ def _full_dwell(*, exact=True, span_s=6.0, screened=True, digests=2, centered=Tr
     """
     return item_crops.StillPhotoDwell(
         dwell_frame_sha256s=tuple(f"{i:064x}" for i in range(digests)),
-        dwell_exact=exact, dwell_span_s=span_s, mute_screens_complete=screened,
-        centered=centered, center_offset_frac=offset,
+        dwell_exact=exact,
+        dwell_span_s=span_s,
+        mute_screens_complete=screened,
+        centered=centered,
+        center_offset_frac=offset,
         reattach_probe_ran=probe_ran,
         reattach_dwell_frame_sha256s=tuple(f"{i:064x}" for i in range(probe_digests)),
-        reattach_dwell_exact=probe_exact, reattach_dwell_span_s=probe_span_s,
-        reattach_mute_screens_complete=probe_screened, reattach_centered=probe_centered,
-        reattach_center_offset_frac=probe_offset)
+        reattach_dwell_exact=probe_exact,
+        reattach_dwell_span_s=probe_span_s,
+        reattach_mute_screens_complete=probe_screened,
+        reattach_centered=probe_centered,
+        reattach_center_offset_frac=probe_offset,
+    )
 
 
 @pytest.mark.parametrize("centered, offset", [(None, None), (False, 0.42), (1, 0.02)])
 def test_the_dwell_rung_refuses_a_card_that_was_not_in_the_autoplay_trigger_zone(
-        centered, offset, installed_still_photo_bound):
+    centered, offset, installed_still_photo_bound
+):
     """Hinge autoplays only near the centre, so an off-centre still run is not evidence.
 
     `1` is included deliberately: a truthy placeholder must not buy the observation, exactly as
     every other three-valued field on this object is compared with `is True`.
     """
     reason = item_crops.unnumber_without_still_photo_evidence(
-        _evidence(0.01, dwell=_full_dwell(centered=centered, offset=offset)))
+        _evidence(0.01, dwell=_full_dwell(centered=centered, offset=offset))
+    )
     assert reason is not None
     assert "autoplay trigger zone" in reason
     assert "never near enough to the centre" in reason
 
 
 def test_a_centred_card_passes_the_autoplay_rung_and_reaches_the_later_ones(
-        installed_still_photo_bound):
+    installed_still_photo_bound,
+):
     """The rung is a precondition on byte-exactness, not an extra veto on everything after it."""
     reason = item_crops.unnumber_without_still_photo_evidence(
-        _evidence(0.01, dwell=_full_dwell(centered=True, screened=False)))
+        _evidence(0.01, dwell=_full_dwell(centered=True, screened=False))
+    )
     assert reason is not None and "mute-control screening" in reason
 
 
@@ -828,38 +1014,65 @@ def test_still_photo_dwell_evidence_measures_centring_from_the_content_band():
     """The producer computes `centered` itself; a caller cannot assert it into existence."""
     index, frames = _full()
     without = item_crops.still_photo_dwell_evidence(
-        index, frames, [frames[-1], frames[-1]], dwell_span_s=6.0,
-        mute_screen=lambda _frame, _rect: True)
+        index,
+        frames,
+        [frames[-1], frames[-1]],
+        dwell_span_s=6.0,
+        mute_screen=lambda _frame, _rect: True,
+    )
     assert without, "the fixture must produce at least one dwell entry"
     # No content_band -> the observation was never made -> fail closed, never a silent pass.
-    assert all(entry.centered is None and entry.center_offset_frac is None
-               for entry in without.values())
+    assert all(
+        entry.centered is None and entry.center_offset_frac is None
+        for entry in without.values()
+    )
 
     with_band = item_crops.still_photo_dwell_evidence(
-        index, frames, [frames[-1], frames[-1]], dwell_span_s=6.0,
-        mute_screen=lambda _frame, _rect: True, content_band=(0.0, 1.0))
+        index,
+        frames,
+        [frames[-1], frames[-1]],
+        dwell_span_s=6.0,
+        mute_screen=lambda _frame, _rect: True,
+        content_band=(0.0, 1.0),
+    )
     assert with_band and set(with_band) == set(without)
     for entry in with_band.values():
         assert isinstance(entry.center_offset_frac, float)
-        assert entry.centered is (abs(entry.center_offset_frac)
-                                  <= item_crops.STILL_PHOTO_AUTOPLAY_CENTER_BAND_FRAC)
+        assert entry.centered is (
+            abs(entry.center_offset_frac)
+            <= item_crops.STILL_PHOTO_AUTOPLAY_CENTER_BAND_FRAC
+        )
 
 
-def _fold_reattach(dwell, index, frames, *, burst=None, shift=0,
-                   mute_screen=lambda _frame, _rect: True):
+def _fold_reattach(
+    dwell, index, frames, *, burst=None, shift=0, mute_screen=lambda _frame, _rect: True
+):
     """Fold one probe's second burst in, the way the driver and the replay both do."""
     probe = item_crops.ReattachProbe(
-        anchor=frames[-1], frames=tuple(frames[-1:] if burst is None else burst),
-        span_s=6.0, page_shift_px=shift)
+        anchor=frames[-1],
+        frames=tuple(frames[-1:] if burst is None else burst),
+        span_s=6.0,
+        page_shift_px=shift,
+    )
     return item_crops.still_photo_reattach_evidence(
-        dwell, index, frame_count=len(frames), probe=probe, mute_screen=mute_screen,
-        content_band=(0.0, 1.0))
+        dwell,
+        index,
+        frame_count=len(frames),
+        probe=probe,
+        mute_screen=mute_screen,
+        content_band=(0.0, 1.0),
+    )
 
 
 def _first_burst(index, frames, mute_screen=lambda _frame, _rect: True):
     return item_crops.still_photo_dwell_evidence(
-        index, frames, [frames[-1], frames[-1]], dwell_span_s=6.0, mute_screen=mute_screen,
-        content_band=(0.0, 1.0))
+        index,
+        frames,
+        [frames[-1], frames[-1]],
+        dwell_span_s=6.0,
+        mute_screen=mute_screen,
+        content_band=(0.0, 1.0),
+    )
 
 
 def _repaint(frame: bytes, rect) -> bytes:
@@ -876,8 +1089,9 @@ def _repaint(frame: bytes, rect) -> bytes:
 def test_the_reattach_producer_records_a_second_burst_that_agrees_with_the_first():
     """A probe that ran, came back, and saw nothing move: every second-burst leg is measured."""
     index, frames = _full()
-    folded = _fold_reattach(_first_burst(index, frames), index, frames,
-                            burst=[frames[-1], frames[-1]])
+    folded = _fold_reattach(
+        _first_burst(index, frames), index, frames, burst=[frames[-1], frames[-1]]
+    )
 
     assert folded, "the fixture must produce at least one dwell entry"
     for entry in folded.values():
@@ -885,9 +1099,13 @@ def test_the_reattach_producer_records_a_second_burst_that_agrees_with_the_first
         assert entry.reattach_dwell_exact is True
         assert entry.reattach_mute_screens_complete is True
         assert entry.reattach_dwell_span_s == 6.0
-        assert len(entry.reattach_dwell_frame_sha256s) == 3   # the probe anchor leads its burst
-        assert entry.reattach_centered is (abs(entry.reattach_center_offset_frac)
-                                           <= item_crops.STILL_PHOTO_AUTOPLAY_CENTER_BAND_FRAC)
+        assert (
+            len(entry.reattach_dwell_frame_sha256s) == 3
+        )  # the probe anchor leads its burst
+        assert entry.reattach_centered is (
+            abs(entry.reattach_center_offset_frac)
+            <= item_crops.STILL_PHOTO_AUTOPLAY_CENTER_BAND_FRAC
+        )
 
 
 def test_motion_in_the_second_burst_alone_is_still_motion():
@@ -898,8 +1116,9 @@ def test_motion_in_the_second_burst_alone_is_still_motion():
     first = _first_burst(index, frames)
     assert first[ordinal].dwell_exact is True
 
-    folded = _fold_reattach(first, index, frames,
-                            burst=[frames[-1], _repaint(frames[-1], rect[ordinal])])
+    folded = _fold_reattach(
+        first, index, frames, burst=[frames[-1], _repaint(frames[-1], rect[ordinal])]
+    )
 
     assert folded[ordinal].dwell_exact is True, "the FIRST burst still saw nothing move"
     assert folded[ordinal].reattach_dwell_exact is False
@@ -908,19 +1127,30 @@ def test_motion_in_the_second_burst_alone_is_still_motion():
 def test_a_mute_control_that_renders_only_on_re_entry_fails_the_second_screen():
     """C3 on the second burst, for the control Hinge redraws when it re-attaches media."""
     index, frames = _full()
-    folded = _fold_reattach(_first_burst(index, frames), index, frames,
-                            burst=[frames[-1], frames[-1]],
-                            mute_screen=lambda _frame, _rect: False)
+    folded = _fold_reattach(
+        _first_burst(index, frames),
+        index,
+        frames,
+        burst=[frames[-1], frames[-1]],
+        mute_screen=lambda _frame, _rect: False,
+    )
 
-    assert all(entry.reattach_mute_screens_complete is False for entry in folded.values())
+    assert all(
+        entry.reattach_mute_screens_complete is False for entry in folded.values()
+    )
 
 
 def test_a_card_the_probe_pushed_off_the_screen_made_no_second_observation():
     """Missing, not failed: an unmeasurable card refuses at the probe rung and is never read as
     motion, which would name it a video on the strength of nothing."""
     index, frames = _full()
-    folded = _fold_reattach(_first_burst(index, frames), index, frames,
-                            burst=[frames[-1], frames[-1]], shift=100_000)
+    folded = _fold_reattach(
+        _first_burst(index, frames),
+        index,
+        frames,
+        burst=[frames[-1], frames[-1]],
+        shift=100_000,
+    )
 
     assert folded
     for entry in folded.values():
@@ -937,16 +1167,26 @@ def test_the_second_burst_follows_the_measured_page_shift_rather_than_the_card()
     rects = item_crops.dwell_card_rects(index, len(frames) - 1)
     ordinal = sorted(rects)[0]
     shift = 40
-    moved_rect = (rects[ordinal][0], rects[ordinal][1] - shift,
-                  rects[ordinal][2], rects[ordinal][3] - shift)
+    moved_rect = (
+        rects[ordinal][0],
+        rects[ordinal][1] - shift,
+        rects[ordinal][2],
+        rects[ordinal][3] - shift,
+    )
     seen: list[tuple[int, int, int, int]] = []
 
     def record(_frame, rect):
         seen.append(rect)
         return True
 
-    _fold_reattach(_first_burst(index, frames), index, frames,
-                   burst=[frames[-1], frames[-1]], shift=shift, mute_screen=record)
+    _fold_reattach(
+        _first_burst(index, frames),
+        index,
+        frames,
+        burst=[frames[-1], frames[-1]],
+        shift=shift,
+        mute_screen=record,
+    )
 
     assert moved_rect in seen
     assert rects[ordinal] not in seen
@@ -966,16 +1206,23 @@ def test_the_centering_geometry_is_defined_once_and_measured_from_the_screen_cen
     # A card centred on the band's centre has zero offset and is inside the zone.
     dead_centre = (53, int(centre_row) - 487, 1027, int(centre_row) + 487)
     assert item_crops.card_center_offset_frac(
-        dead_centre, frame_height=height, content_band=band) == pytest.approx(0.0, abs=1e-3)
-    assert item_crops.card_is_centered(dead_centre, frame_height=height, content_band=band)
+        dead_centre, frame_height=height, content_band=band
+    ) == pytest.approx(0.0, abs=1e-3)
+    assert item_crops.card_is_centered(
+        dead_centre, frame_height=height, content_band=band
+    )
     # A card near the bottom of the band is outside it, and the sign says which way to scroll.
     low = (53, 1900, 1027, 2100)
-    assert item_crops.card_center_offset_frac(
-        low, frame_height=height, content_band=band) > item_crops.STILL_PHOTO_AUTOPLAY_CENTER_BAND_FRAC
+    assert (
+        item_crops.card_center_offset_frac(low, frame_height=height, content_band=band)
+        > item_crops.STILL_PHOTO_AUTOPLAY_CENTER_BAND_FRAC
+    )
     assert not item_crops.card_is_centered(low, frame_height=height, content_band=band)
     high = (53, 300, 1027, 500)
-    assert item_crops.card_center_offset_frac(
-        high, frame_height=height, content_band=band) < 0
+    assert (
+        item_crops.card_center_offset_frac(high, frame_height=height, content_band=band)
+        < 0
+    )
 
 
 def test_the_autoplay_aim_point_is_the_screen_centre_and_never_moves_with_the_content_band():
@@ -995,12 +1242,21 @@ def test_the_autoplay_aim_point_is_the_screen_centre_and_never_moves_with_the_co
     downstream. Mutation-checked against exactly that reversion.
     """
     height = _H
-    assert item_crops.content_band_center_row(height, _CONTENT_BAND) == pytest.approx(height / 2)
+    assert item_crops.content_band_center_row(height, _CONTENT_BAND) == pytest.approx(
+        height / 2
+    )
 
     # Move the band anywhere, symmetric or not: the aim point does not follow it.
-    for moved in ((0.2154, 0.875), (0.125, 0.875), (0.0, 1.0), (0.30, 0.70), (0.10, 0.60)):
+    for moved in (
+        (0.2154, 0.875),
+        (0.125, 0.875),
+        (0.0, 1.0),
+        (0.30, 0.70),
+        (0.10, 0.60),
+    ):
         assert item_crops.content_band_center_row(height, moved) == pytest.approx(
-            height / 2), f"band {moved} moved the autoplay aim point off screen centre"
+            height / 2
+        ), f"band {moved} moved the autoplay aim point off screen centre"
 
     # The worked example, spelled out: the band-derived reading really is a DIFFERENT row, so the
     # assertions above are not agreeing with the old formula by luck.
@@ -1013,9 +1269,11 @@ def test_the_autoplay_aim_point_is_the_screen_centre_and_never_moves_with_the_co
     # screen centre reads ZERO offset under a band whose own centre is 108px away from it.
     dead_centre = (_CARD_X0, height // 2 - 400, _CARD_X1, height // 2 + 400)
     assert item_crops.card_center_offset_frac(
-        dead_centre, frame_height=height, content_band=pinned_header_band) == pytest.approx(0.0)
+        dead_centre, frame_height=height, content_band=pinned_header_band
+    ) == pytest.approx(0.0)
     assert item_crops.card_is_centered(
-        dead_centre, frame_height=height, content_band=pinned_header_band)
+        dead_centre, frame_height=height, content_band=pinned_header_band
+    )
 
     # The DENOMINATOR, by contrast, stays the band's height on purpose (see
     # `card_center_offset_frac`): `STILL_PHOTO_AUTOPLAY_CENTER_BAND_FRAC` is a tolerance chosen in
@@ -1024,7 +1282,8 @@ def test_the_autoplay_aim_point_is_the_screen_centre_and_never_moves_with_the_co
     # is 0.100, never 180/2400 = 0.075.
     below = (_CARD_X0, height // 2 + 180 - 400, _CARD_X1, height // 2 + 180 + 400)
     assert item_crops.card_center_offset_frac(
-        below, frame_height=height, content_band=_CONTENT_BAND) == pytest.approx(0.100)
+        below, frame_height=height, content_band=_CONTENT_BAND
+    ) == pytest.approx(0.100)
 
 
 def test_card_center_offset_frac_requires_a_positive_frame_height():
@@ -1033,9 +1292,12 @@ def test_card_center_offset_frac_requires_a_positive_frame_height():
     produce a meaningless fraction rather than an honest refusal."""
     rect = (_CARD_X0, 800, _CARD_X1, 1200)
     for bad_height in (0, -1):
-        with pytest.raises(item_crops.ItemCropError, match="frame height must be positive"):
+        with pytest.raises(
+            item_crops.ItemCropError, match="frame height must be positive"
+        ):
             item_crops.card_center_offset_frac(
-                rect, frame_height=bad_height, content_band=_CONTENT_BAND)
+                rect, frame_height=bad_height, content_band=_CONTENT_BAND
+            )
 
 
 def test_card_center_offset_frac_requires_an_ordered_content_band():
@@ -1045,7 +1307,9 @@ def test_card_center_offset_frac_requires_an_ordered_content_band():
     rect = (_CARD_X0, 800, _CARD_X1, 1200)
     for bad_band in ((0.9, 0.1), (0.5, 0.5)):
         with pytest.raises(item_crops.ItemCropError, match="must be an ordered band"):
-            item_crops.card_center_offset_frac(rect, frame_height=_H, content_band=bad_band)
+            item_crops.card_center_offset_frac(
+                rect, frame_height=_H, content_band=bad_band
+            )
 
 
 def test_card_center_offset_frac_checks_frame_height_before_the_content_band():
@@ -1054,7 +1318,9 @@ def test_card_center_offset_frac_checks_frame_height_before_the_content_band():
     and must be the one that actually catches it, not the band-ordering check underneath it."""
     rect = (_CARD_X0, 800, _CARD_X1, 1200)
     with pytest.raises(item_crops.ItemCropError, match="frame height must be positive"):
-        item_crops.card_center_offset_frac(rect, frame_height=-1, content_band=(0.9, 0.1))
+        item_crops.card_center_offset_frac(
+            rect, frame_height=-1, content_band=(0.9, 0.1)
+        )
 
 
 @pytest.mark.parametrize("drift", [True, -0.01, float("nan"), float("inf")])
@@ -1083,7 +1349,8 @@ def test_still_photo_gate_rejects_anything_that_is_not_an_evidence_object():
 
 
 def test_still_photo_gate_uses_drift_only_to_reject_and_never_as_positive_proof(
-        installed_still_photo_bound):
+    installed_still_photo_bound,
+):
     """Drift may only ever REJECT, and the assertions have to reach the drift rung to show it.
 
     The licence is what makes this test about drift at all.  Without one, every call here is
@@ -1110,7 +1377,8 @@ def test_still_photo_gate_uses_drift_only_to_reject_and_never_as_positive_proof(
     # Same with a perfect drift beside a dwell that failed: the refusal is the dwell's, and no
     # amount of clean re-observation buys it off.
     spoiled = item_crops.unnumber_without_still_photo_evidence(
-        _evidence(0.0, dwell=_full_dwell(exact=False)))
+        _evidence(0.0, dwell=_full_dwell(exact=False))
+    )
     assert spoiled is not None and "no un-interacted dwell proved" in spoiled
 
 
@@ -1121,17 +1389,27 @@ def installed_still_photo_bound():
     Readiness is process-global (ops/STILL-PHOTO-DISCRIMINATOR.md section 5), so it is installed
     through the real API rather than monkeypatched, and always torn down.
     """
-    tp.install_verified_still_photo_bound(tp.StillPhotoBoundSummary(
-        ground_truth_channel=tp.STILL_PHOTO_BOUND_GROUND_TRUTH_CHANNEL,
-        human_ground_truth=True, video_cards=60, video_accepts=0, photo_cards=60,
-        photo_false_refusals=3, max_video_exact_run_s=1.5, artifact_sha256="a" * 64,
-        device="synthetic-pixel", hinge_version_name="10.0.1"))
+    tp.install_verified_still_photo_bound(
+        tp.StillPhotoBoundSummary(
+            ground_truth_channel=tp.STILL_PHOTO_BOUND_GROUND_TRUTH_CHANNEL,
+            human_ground_truth=True,
+            video_cards=60,
+            video_accepts=0,
+            photo_cards=60,
+            photo_false_refusals=3,
+            max_video_exact_run_s=1.5,
+            artifact_sha256="a" * 64,
+            device="synthetic-pixel",
+            hinge_version_name="10.0.1",
+        )
+    )
     yield
     tp._reset_installed_still_photo_bound_for_tests()
 
 
 def test_drift_alone_is_never_positive_proof_even_with_a_bound_installed(
-        installed_still_photo_bound):
+    installed_still_photo_bound,
+):
     """The heart of the design: a bound licenses the RULE, never an individual card.  With a
     verified bound installed and nothing but a clean drift measurement, the gate still refuses --
     naming the dwell it never took, not the policy blocker it no longer has."""
@@ -1144,24 +1422,37 @@ def test_drift_alone_is_never_positive_proof_even_with_a_bound_installed(
 
 
 def test_the_still_photo_gate_stops_refusing_only_once_a_verified_bound_is_installed(
-        installed_still_photo_bound):
+    installed_still_photo_bound,
+):
     """The policy blocker is the middle check, so the rejectors above it are unaffected by it."""
     ceiling = item_crops._STILL_PHOTO_MAX_SIGNATURE_DRIFT
 
-    assert item_crops.unnumber_without_still_photo_evidence(
-        _evidence(ceiling, dwell=_full_dwell())) is None
+    assert (
+        item_crops.unnumber_without_still_photo_evidence(
+            _evidence(ceiling, dwell=_full_dwell())
+        )
+        is None
+    )
     # Readiness licenses numbering; it never excuses missing or failing re-observation evidence.
     drifted = item_crops.unnumber_without_still_photo_evidence(
-        _evidence(ceiling + 1e-6, dwell=_full_dwell()))
-    assert drifted is not None and "animated or video media is not targetable" in drifted
+        _evidence(ceiling + 1e-6, dwell=_full_dwell())
+    )
+    assert (
+        drifted is not None and "animated or video media is not targetable" in drifted
+    )
     # What readiness does NOT excuse is a FAILING dwell; a MISSING drift is a different thing and
     # is covered by `test_an_unmeasurable_drift_falls_through_to_the_rungs_that_carry_the_proof`.
-    assert item_crops.unnumber_without_still_photo_evidence(
-        _evidence(ceiling, dwell=_full_dwell(exact=False))) is not None
+    assert (
+        item_crops.unnumber_without_still_photo_evidence(
+            _evidence(ceiling, dwell=_full_dwell(exact=False))
+        )
+        is not None
+    )
 
 
 def test_an_unmeasurable_drift_falls_through_to_the_rungs_that_carry_the_proof(
-        installed_still_photo_bound):
+    installed_still_photo_bound,
+):
     """The depth-1 case, and the reason this rung stopped refusing on silence.
 
     Drift is measured by resampling a crop's page rows in the OTHER frames of the capture, so
@@ -1180,27 +1471,43 @@ def test_an_unmeasurable_drift_falls_through_to_the_rungs_that_carry_the_proof(
     before any ceiling is chosen, so a measurement nobody made cannot exceed a number nobody
     compared it against, whichever regime the producer declares.
     """
-    for regime in (None, item_crops.DRIFT_REGIME_PARKED, item_crops.DRIFT_REGIME_READ_SCROLL):
-        assert item_crops.unnumber_without_still_photo_evidence(
-            item_crops.still_photo_evidence_from_drift(
-                None, (), _full_dwell(), drift_regime=regime)) is None, regime
+    for regime in (
+        None,
+        item_crops.DRIFT_REGIME_PARKED,
+        item_crops.DRIFT_REGIME_READ_SCROLL,
+    ):
+        assert (
+            item_crops.unnumber_without_still_photo_evidence(
+                item_crops.still_photo_evidence_from_drift(
+                    None, (), _full_dwell(), drift_regime=regime
+                )
+            )
+            is None
+        ), regime
 
 
 def test_a_measured_drift_over_the_ceiling_still_refuses_however_perfect_the_dwell(
-        installed_still_photo_bound):
+    installed_still_photo_bound,
+):
     """A card that was OBSERVED to move is disqualified, and no amount of later stillness undoes
     it: byte-exactness measured after the fact cannot un-see the motion the read already saw."""
     reason = item_crops.unnumber_without_still_photo_evidence(
-        _evidence(item_crops._STILL_PHOTO_MAX_SIGNATURE_DRIFT + 1e-6, dwell=_full_dwell()))
+        _evidence(
+            item_crops._STILL_PHOTO_MAX_SIGNATURE_DRIFT + 1e-6, dwell=_full_dwell()
+        )
+    )
 
     assert reason is not None
-    assert (f"exceeds the measured static-photo ceiling "
-            f"{item_crops._STILL_PHOTO_MAX_SIGNATURE_DRIFT:.6g}") in reason
+    assert (
+        f"exceeds the measured static-photo ceiling "
+        f"{item_crops._STILL_PHOTO_MAX_SIGNATURE_DRIFT:.6g}"
+    ) in reason
     assert "animated or video media is not targetable" in reason
 
 
 def test_a_read_scroll_drift_over_the_parked_ceiling_is_numbered_now_that_it_is_judged_as_one(
-        installed_still_photo_bound):
+    installed_still_photo_bound,
+):
     """THE CATEGORY ERROR THIS SPLIT FIXES.  `_signature_drift` compares a crop against frames
     taken at OTHER scroll positions, where the card was re-rasterised at a different sub-pixel
     offset, so what it measures is resampling difference rather than motion.  Judging it at the
@@ -1215,20 +1522,35 @@ def test_a_read_scroll_drift_over_the_parked_ceiling_is_numbered_now_that_it_is_
     """
     parked = item_crops._STILL_PHOTO_MAX_SIGNATURE_DRIFT
     read_scroll = item_crops._READ_SCROLL_MAX_SIGNATURE_DRIFT
-    assert read_scroll > parked, "the split is pointless unless the read-scroll band exists"
+    assert read_scroll > parked, (
+        "the split is pointless unless the read-scroll band exists"
+    )
 
     for drift in (parked + 1e-6, 0.285, 2.15, 27.22, read_scroll):
-        assert item_crops.unnumber_without_still_photo_evidence(
-            _evidence(drift, dwell=_full_dwell(),
-                      regime=item_crops.DRIFT_REGIME_READ_SCROLL)) is None, drift
+        assert (
+            item_crops.unnumber_without_still_photo_evidence(
+                _evidence(
+                    drift,
+                    dwell=_full_dwell(),
+                    regime=item_crops.DRIFT_REGIME_READ_SCROLL,
+                )
+            )
+            is None
+        ), drift
         # The pin: the SAME number, declared parked, is still a moving card.
-        assert item_crops.unnumber_without_still_photo_evidence(
-            _evidence(drift, dwell=_full_dwell(),
-                      regime=item_crops.DRIFT_REGIME_PARKED)) is not None, drift
+        assert (
+            item_crops.unnumber_without_still_photo_evidence(
+                _evidence(
+                    drift, dwell=_full_dwell(), regime=item_crops.DRIFT_REGIME_PARKED
+                )
+            )
+            is not None
+        ), drift
 
 
 def test_a_read_scroll_drift_above_the_read_scroll_ceiling_is_still_refused_as_animated(
-        installed_still_photo_bound):
+    installed_still_photo_bound,
+):
     """Widening the band is not removing the rung.  A card whose pixels turned into DIFFERENT
     pixels between enumeration frames is still rejected, with the same operator-facing sentence,
     and the reason names the read-scroll ceiling it actually failed rather than a number nobody
@@ -1236,8 +1558,12 @@ def test_a_read_scroll_drift_above_the_read_scroll_ceiling_is_still_refused_as_a
     ceiling = item_crops._READ_SCROLL_MAX_SIGNATURE_DRIFT
 
     reason = item_crops.unnumber_without_still_photo_evidence(
-        _evidence(ceiling + 1e-6, dwell=_full_dwell(),
-                  regime=item_crops.DRIFT_REGIME_READ_SCROLL))
+        _evidence(
+            ceiling + 1e-6,
+            dwell=_full_dwell(),
+            regime=item_crops.DRIFT_REGIME_READ_SCROLL,
+        )
+    )
 
     assert reason is not None
     assert f"exceeds the measured static-photo ceiling {ceiling:.6g}" in reason
@@ -1246,7 +1572,8 @@ def test_a_read_scroll_drift_above_the_read_scroll_ceiling_is_still_refused_as_a
 
 
 def test_the_parked_ceiling_is_not_loosened_by_the_read_scroll_ceiling_existing(
-        installed_still_photo_bound):
+    installed_still_photo_bound,
+):
     """THE PIN.  `_verified_still_photo_proof` -- the sole licence for touching a heart --
     measures drift over its own PARKED re-observations, where rect error is zero by construction
     and any distance at all is motion in the media.  That population still answers to 0.24, so
@@ -1255,51 +1582,83 @@ def test_the_parked_ceiling_is_not_loosened_by_the_read_scroll_ceiling_existing(
     parked = item_crops._STILL_PHOTO_MAX_SIGNATURE_DRIFT
     assert parked == 0.24, "the parked ceiling is measured evidence, not a tunable"
 
-    assert item_crops.unnumber_without_still_photo_evidence(
-        _evidence(parked, dwell=_full_dwell(),
-                  regime=item_crops.DRIFT_REGIME_PARKED)) is None
+    assert (
+        item_crops.unnumber_without_still_photo_evidence(
+            _evidence(
+                parked, dwell=_full_dwell(), regime=item_crops.DRIFT_REGIME_PARKED
+            )
+        )
+        is None
+    )
 
     reason = item_crops.unnumber_without_still_photo_evidence(
-        _evidence(parked + 1e-6, dwell=_full_dwell(),
-                  regime=item_crops.DRIFT_REGIME_PARKED))
+        _evidence(
+            parked + 1e-6, dwell=_full_dwell(), regime=item_crops.DRIFT_REGIME_PARKED
+        )
+    )
     assert reason is not None
     assert f"exceeds the measured static-photo ceiling {parked:.6g}" in reason
     assert item_crops.DRIFT_REGIME_PARKED in reason
     assert "animated or video media is not targetable" in reason
 
 
-@pytest.mark.parametrize("regime", [None, "", "read scroll", "READ_SCROLL", "parked_burst", 7],
-                         ids=["undeclared", "empty", "spaced", "cased", "invented", "not-a-string"])
+@pytest.mark.parametrize(
+    "regime",
+    [None, "", "read scroll", "READ_SCROLL", "parked_burst", 7],
+    ids=["undeclared", "empty", "spaced", "cased", "invented", "not-a-string"],
+)
 def test_an_undeclared_or_unrecognised_drift_regime_takes_the_stricter_parked_ceiling(
-        installed_still_photo_bound, regime):
+    installed_still_photo_bound, regime
+):
     """Unknown provenance must never win the looser bound.  A producer that did not say where
     its drift came from -- and a producer that said something this module has not been taught,
     including a near-miss spelling of the real name -- has not earned the resampling allowance,
     so both fall to 0.24.  Written as the failing direction on purpose: the safe default is only
     a safe default if getting it wrong REFUSES."""
-    between = (item_crops._STILL_PHOTO_MAX_SIGNATURE_DRIFT
-               + item_crops._READ_SCROLL_MAX_SIGNATURE_DRIFT) / 2
+    between = (
+        item_crops._STILL_PHOTO_MAX_SIGNATURE_DRIFT
+        + item_crops._READ_SCROLL_MAX_SIGNATURE_DRIFT
+    ) / 2
 
     reason = item_crops.unnumber_without_still_photo_evidence(
-        _evidence(between, dwell=_full_dwell(), regime=regime))
+        _evidence(between, dwell=_full_dwell(), regime=regime)
+    )
 
     assert reason is not None
-    assert (f"exceeds the measured static-photo ceiling "
-            f"{item_crops._STILL_PHOTO_MAX_SIGNATURE_DRIFT:.6g}") in reason
+    assert (
+        f"exceeds the measured static-photo ceiling "
+        f"{item_crops._STILL_PHOTO_MAX_SIGNATURE_DRIFT:.6g}"
+    ) in reason
     assert "animated or video media is not targetable" in reason
 
 
 @pytest.mark.parametrize(
     "regime",
     [None, "parked", "read_scroll"],
-    ids=["undeclared", "parked", "read-scroll"])
+    ids=["undeclared", "parked", "read-scroll"],
+)
 @pytest.mark.parametrize(
     "drift, drift_frames",
-    [(float("nan"), (1,)), (float("inf"), (1,)), (-0.01, (1,)), (True, (1,)),
-     (0.0, ()), (None, (2,))],
-    ids=["nan", "inf", "negative", "bool", "drift-without-frames", "frames-without-drift"])
+    [
+        (float("nan"), (1,)),
+        (float("inf"), (1,)),
+        (-0.01, (1,)),
+        (True, (1,)),
+        (0.0, ()),
+        (None, (2,)),
+    ],
+    ids=[
+        "nan",
+        "inf",
+        "negative",
+        "bool",
+        "drift-without-frames",
+        "frames-without-drift",
+    ],
+)
 def test_a_corrupt_drift_is_refused_rather_than_treated_as_unmeasurable(
-        installed_still_photo_bound, drift, drift_frames, regime):
+    installed_still_photo_bound, drift, drift_frames, regime
+):
     """The line the pass-through must not cross.  A measurement that came back broken is not the
     same claim as a measurement nobody made, and only the second one may fall through -- reading
     a NaN as "nothing to compare against" is how a fail-closed gate quietly becomes fail-open.
@@ -1317,7 +1676,8 @@ def test_a_corrupt_drift_is_refused_rather_than_treated_as_unmeasurable(
     read-scroll provenance must not turn a broken measurement into a passing one.
     """
     reason = item_crops.unnumber_without_still_photo_evidence(
-        _evidence(drift, drift_frames, dwell=_full_dwell(), regime=regime))
+        _evidence(drift, drift_frames, dwell=_full_dwell(), regime=regime)
+    )
 
     assert reason is not None
     assert "auto-hidden video cannot be ruled out" in reason
@@ -1328,7 +1688,8 @@ def test_without_a_licence_an_unmeasurable_drift_still_stops_at_the_policy_rung(
     blocker answers before any dwell rung is consulted, so a build with no discriminator cannot
     number a card merely because its drift could not be measured."""
     reason = item_crops.unnumber_without_still_photo_evidence(
-        item_crops.still_photo_evidence_from_drift(None, (), _full_dwell()))
+        item_crops.still_photo_evidence_from_drift(None, (), _full_dwell())
+    )
 
     assert reason is not None
     assert "positive still-photo discriminator unavailable" in reason
@@ -1350,23 +1711,38 @@ def test_without_a_licence_an_unmeasurable_drift_still_stops_at_the_policy_rung(
         (_full_dwell(span_s=float("nan")), "dwell window is missing or non-positive"),
         (_full_dwell(span_s=True), "dwell window is missing or non-positive"),
     ],
-    ids=["exact-none", "exact-false", "exact-truthy", "one-digest", "screen-none",
-         "screen-false", "screen-truthy", "span-none", "span-zero", "span-negative",
-         "span-nan", "span-bool"],
+    ids=[
+        "exact-none",
+        "exact-false",
+        "exact-truthy",
+        "one-digest",
+        "screen-none",
+        "screen-false",
+        "screen-truthy",
+        "span-none",
+        "span-zero",
+        "span-negative",
+        "span-nan",
+        "span-bool",
+    ],
 )
 def test_every_dwell_rung_of_the_evidence_ladder_is_reachable_and_says_which_one_failed(
-        installed_still_photo_bound, dwell, expected):
+    installed_still_photo_bound, dwell, expected
+):
     """One spoiled field at a time, with everything else passing, so each rung is proven to be
     load-bearing rather than shadowed by an earlier one.  `is not True` matters here: a truthy
     placeholder must not be able to claim an observation nothing made."""
     reason = item_crops.unnumber_without_still_photo_evidence(
-        _evidence(item_crops._STILL_PHOTO_MAX_SIGNATURE_DRIFT, dwell=dwell))
+        _evidence(item_crops._STILL_PHOTO_MAX_SIGNATURE_DRIFT, dwell=dwell)
+    )
 
     assert reason is not None and expected in reason
     assert reason.startswith(item_crops.EXCLUSION_NON_PHOTO + ":")
 
 
-def test_never_dwelled_reads_differently_from_dwelled_and_refused(installed_still_photo_bound):
+def test_never_dwelled_reads_differently_from_dwelled_and_refused(
+    installed_still_photo_bound,
+):
     """found+fixed 2026-08-22 (ops/STILL-PHOTO-DISCRIMINATOR.md 5d): "we never looked at this
     card" (a structural coverage gap that happens on nearly every real profile -- production
     dwells once, at wherever the read stopped) must not read as the same sentence as "we looked
@@ -1380,13 +1756,15 @@ def test_never_dwelled_reads_differently_from_dwelled_and_refused(installed_stil
     assert never_dwelled == item_crops.EXCLUSION_NEVER_DWELLED
 
     measured_but_inconclusive = item_crops.unnumber_without_still_photo_evidence(
-        _evidence(ceiling, dwell=_full_dwell(exact=None)))
+        _evidence(ceiling, dwell=_full_dwell(exact=None))
+    )
     assert measured_but_inconclusive is not None
     assert measured_but_inconclusive != item_crops.EXCLUSION_NEVER_DWELLED
     assert "no un-interacted dwell proved" in measured_but_inconclusive
 
     measured_and_moved = item_crops.unnumber_without_still_photo_evidence(
-        _evidence(ceiling, dwell=_full_dwell(exact=False)))
+        _evidence(ceiling, dwell=_full_dwell(exact=False))
+    )
     assert measured_and_moved is not None
     assert measured_and_moved != item_crops.EXCLUSION_NEVER_DWELLED
     assert "no un-interacted dwell proved" in measured_and_moved
@@ -1408,7 +1786,10 @@ def test_never_dwelled_reads_differently_from_dwelled_and_refused(installed_stil
         (_full_dwell(probe_exact="yes"), "second dwell burst"),
         (_full_dwell(probe_digests=1), "second dwell burst"),
         (_full_dwell(probe_centered=None), "did not put this card back inside"),
-        (_full_dwell(probe_centered=False, probe_offset=0.42), "did not put this card back"),
+        (
+            _full_dwell(probe_centered=False, probe_offset=0.42),
+            "did not put this card back",
+        ),
         (_full_dwell(probe_centered=1), "did not put this card back inside"),
         (_full_dwell(probe_screened=None), "every re-attach burst frame"),
         (_full_dwell(probe_screened=False), "every re-attach burst frame"),
@@ -1418,20 +1799,37 @@ def test_never_dwelled_reads_differently_from_dwelled_and_refused(installed_stil
         (_full_dwell(probe_span_s=float("nan")), "re-attach dwell window is missing"),
         (_full_dwell(probe_span_s=True), "re-attach dwell window is missing"),
     ],
-    ids=["probe-none", "probe-false", "probe-truthy", "exact-none", "exact-false",
-         "exact-truthy", "one-digest", "centred-none", "centred-false", "centred-truthy",
-         "screen-none", "screen-false", "screen-truthy", "span-none", "span-zero", "span-nan",
-         "span-bool"],
+    ids=[
+        "probe-none",
+        "probe-false",
+        "probe-truthy",
+        "exact-none",
+        "exact-false",
+        "exact-truthy",
+        "one-digest",
+        "centred-none",
+        "centred-false",
+        "centred-truthy",
+        "screen-none",
+        "screen-false",
+        "screen-truthy",
+        "span-none",
+        "span-zero",
+        "span-nan",
+        "span-bool",
+    ],
 )
 def test_the_reattach_rung_refuses_the_stalled_video_the_dwell_cannot_see(
-        installed_still_photo_bound, dwell, expected):
+    installed_still_photo_bound, dwell, expected
+):
     """The residual rung (g) exists for.  A centred byte-exact burst proves Hinge was ASKED to
     play the card and that nothing moved; it cannot prove the media ANSWERED, so a video that
     was stalled, buffering, unloaded or already ended holds byte-exact for as long as anyone
     watches.  Every leg of the second burst is spoiled one at a time, with the first burst
     passing, so each is proven load-bearing rather than shadowed."""
     reason = item_crops.unnumber_without_still_photo_evidence(
-        _evidence(item_crops._STILL_PHOTO_MAX_SIGNATURE_DRIFT, dwell=dwell))
+        _evidence(item_crops._STILL_PHOTO_MAX_SIGNATURE_DRIFT, dwell=dwell)
+    )
 
     assert reason is not None and expected in reason
     assert reason.startswith(item_crops.EXCLUSION_NON_PHOTO + ":")
@@ -1440,14 +1838,24 @@ def test_the_reattach_rung_refuses_the_stalled_video_the_dwell_cannot_see(
 def test_the_missing_probe_names_the_stalled_video_residual_it_exists_to_catch():
     """The wording is the contract: an operator reading this refusal has to learn WHY a card
     that never moved is still not a photograph."""
-    tp.install_verified_still_photo_bound(tp.StillPhotoBoundSummary(
-        ground_truth_channel=tp.STILL_PHOTO_BOUND_GROUND_TRUTH_CHANNEL,
-        human_ground_truth=True, video_cards=60, video_accepts=0, photo_cards=60,
-        photo_false_refusals=3, max_video_exact_run_s=1.5, artifact_sha256="e" * 64,
-        device="synthetic-pixel", hinge_version_name="10.0.1"))
+    tp.install_verified_still_photo_bound(
+        tp.StillPhotoBoundSummary(
+            ground_truth_channel=tp.STILL_PHOTO_BOUND_GROUND_TRUTH_CHANNEL,
+            human_ground_truth=True,
+            video_cards=60,
+            video_accepts=0,
+            photo_cards=60,
+            photo_false_refusals=3,
+            max_video_exact_run_s=1.5,
+            artifact_sha256="e" * 64,
+            device="synthetic-pixel",
+            hinge_version_name="10.0.1",
+        )
+    )
     try:
         reason = item_crops.unnumber_without_still_photo_evidence(
-            _evidence(0.01, dwell=_full_dwell(probe_ran=None)))
+            _evidence(0.01, dwell=_full_dwell(probe_ran=None))
+        )
     finally:
         tp._reset_installed_still_photo_bound_for_tests()
 
@@ -1457,37 +1865,49 @@ def test_the_missing_probe_names_the_stalled_video_residual_it_exists_to_catch()
 
 
 def test_the_reattach_rung_is_the_last_word_and_never_speaks_over_an_earlier_one(
-        installed_still_photo_bound):
+    installed_still_photo_bound,
+):
     """Order is contract: the probe costs two real gestures, so it answers only once every
     cheaper, always-available rung has passed."""
     for spoiled, expected in (
-            (dict(exact=False), "no un-interacted dwell proved"),
-            (dict(centered=False), "autoplay trigger zone"),
-            (dict(screened=False), "mute-control screening did not complete"),
-            (dict(span_s=0.0), "dwell window is missing or non-positive"),
+        (dict(exact=False), "no un-interacted dwell proved"),
+        (dict(centered=False), "autoplay trigger zone"),
+        (dict(screened=False), "mute-control screening did not complete"),
+        (dict(span_s=0.0), "dwell window is missing or non-positive"),
     ):
         reason = item_crops.unnumber_without_still_photo_evidence(
-            _evidence(item_crops._STILL_PHOTO_MAX_SIGNATURE_DRIFT,
-                      dwell=_full_dwell(probe_ran=None, **spoiled)))
+            _evidence(
+                item_crops._STILL_PHOTO_MAX_SIGNATURE_DRIFT,
+                dwell=_full_dwell(probe_ran=None, **spoiled),
+            )
+        )
         assert reason is not None and expected in reason
         assert "re-attach" not in reason
 
 
-def test_the_ladder_answers_with_the_cheapest_failing_rung_first(installed_still_photo_bound):
+def test_the_ladder_answers_with_the_cheapest_failing_rung_first(
+    installed_still_photo_bound,
+):
     """Order is part of the contract: an animated card is reported as animated whatever the
     dwell did, so the operator-facing vocabulary does not change with the bound."""
     animated = item_crops.unnumber_without_still_photo_evidence(
-        _evidence(item_crops._STILL_PHOTO_MAX_SIGNATURE_DRIFT + 1e-6,
-                  dwell=_full_dwell(exact=False)))
+        _evidence(
+            item_crops._STILL_PHOTO_MAX_SIGNATURE_DRIFT + 1e-6,
+            dwell=_full_dwell(exact=False),
+        )
+    )
 
-    assert animated is not None and "animated or video media is not targetable" in animated
+    assert (
+        animated is not None and "animated or video media is not targetable" in animated
+    )
 
 
 def test_the_policy_blocker_outranks_the_dwell_rungs_when_no_bound_is_installed():
     """With no artifact the operator's fix is the campaign, not the dwell, so the blocker is
     what the reason names -- and rungs (d)-(f) stay unreachable, exactly as designed."""
     reason = item_crops.unnumber_without_still_photo_evidence(
-        _evidence(0.0, dwell=_full_dwell(exact=False)))
+        _evidence(0.0, dwell=_full_dwell(exact=False))
+    )
 
     assert reason is not None
     assert "positive still-photo discriminator unavailable" in reason
@@ -1498,22 +1918,28 @@ def test_payload_disables_targeting_when_no_positive_still_photo_proof_exists():
     frames, index, _ = _animated_capture(delta=60)
 
     payload = item_crops.build_item_payload(
-        frames, index,
+        frames,
+        index,
         unnumber=lambda _image: None,
-        unnumber_without_evidence=item_crops.unnumber_without_still_photo_evidence)
+        unnumber_without_evidence=item_crops.unnumber_without_still_photo_evidence,
+    )
 
     assert not payload.usable
     assert payload.translation == ()
     demoted = next(crop for crop in payload.context if crop.heart_ordinal == 2)
     assert demoted.number is None
     assert "animated or video media is not targetable" in demoted.reason
-    assert any("positive still-photo discriminator unavailable" in crop.reason
-               for crop in payload.context if crop.heart_ordinal != 2)
+    assert any(
+        "positive still-photo discriminator unavailable" in crop.reason
+        for crop in payload.context
+        if crop.heart_ordinal != 2
+    )
 
 
 # =====================================================================================
 # C2: the dwell, which is the only POSITIVE observation the discriminator makes
 # =====================================================================================
+
 
 def test_dwell_exactness_is_byte_equality_and_one_pixel_breaks_it():
     """Zero tolerance over the rect, and only over the rect.  The one-pixel case is the point:
@@ -1521,8 +1947,13 @@ def test_dwell_exactness_is_byte_equality_and_one_pixel_breaks_it():
     test goes bimodal on exactly the population this has to catch."""
     rect = (100, 200, 400, 700)
     still = _frame(0)
-    moved = np.frombuffer(cv2.imdecode(np.frombuffer(still, np.uint8), cv2.IMREAD_COLOR),
-                          np.uint8).reshape(_H, _W, 3).copy()
+    moved = (
+        np.frombuffer(
+            cv2.imdecode(np.frombuffer(still, np.uint8), cv2.IMREAD_COLOR), np.uint8
+        )
+        .reshape(_H, _W, 3)
+        .copy()
+    )
     moved[300, 200, 0] = 255 - moved[300, 200, 0]
     ok, buf = cv2.imencode(".png", moved)
     assert ok
@@ -1531,7 +1962,10 @@ def test_dwell_exactness_is_byte_equality_and_one_pixel_breaks_it():
     assert item_crops.dwell_exact_over_rect([still, buf.tobytes()], rect) is False
     # The changed pixel is INSIDE the rect above and outside this one, so the same pair of
     # frames answers differently -- the rect is doing the work, not a whole-frame compare.
-    assert item_crops.dwell_exact_over_rect([still, buf.tobytes()], (500, 900, 900, 1400)) is True
+    assert (
+        item_crops.dwell_exact_over_rect([still, buf.tobytes()], (500, 900, 900, 1400))
+        is True
+    )
 
 
 def test_a_dwell_that_never_happened_is_not_an_exact_dwell():
@@ -1544,11 +1978,23 @@ def test_a_dwell_that_never_happened_is_not_an_exact_dwell():
     # Undecodable bytes are a failed observation, never a passing one.
     assert item_crops.dwell_exact_over_rect([b"not-a-png", b"not-a-png"], rect) is False
     # A rect off the end of the frame is likewise unobserved, not equal-by-emptiness.
-    assert item_crops.dwell_exact_over_rect([_frame(0), _frame(0)], (0, 0, _W + 1, 10)) is False
+    assert (
+        item_crops.dwell_exact_over_rect([_frame(0), _frame(0)], (0, 0, _W + 1, 10))
+        is False
+    )
 
 
-@pytest.mark.parametrize("rect", [(10, 10, 10, 20), (10, 10, 20, 10), (-1, 0, 20, 20),
-                                  (0, 0, 20), "rect", (0.0, 0.0, 20.0, 20.0)])
+@pytest.mark.parametrize(
+    "rect",
+    [
+        (10, 10, 10, 20),
+        (10, 10, 20, 10),
+        (-1, 0, 20, 20),
+        (0, 0, 20),
+        "rect",
+        (0.0, 0.0, 20.0, 20.0),
+    ],
+)
 def test_a_structurally_invalid_dwell_rect_is_a_caller_bug_and_raises(rect):
     """A degenerate rect is not an observation that failed; it is a caller that never had one.
     Returning False would let it read as a measured refusal in a log."""
@@ -1562,11 +2008,18 @@ def test_dwell_evidence_covers_only_the_cards_the_anchor_frame_bounded():
     occupy, which would be a dwell of the wrong pixels."""
     index, frames = _full()
     dwell = item_crops.still_photo_dwell_evidence(
-        index, frames, [frames[-1], frames[-1]], dwell_span_s=6.0,
-        mute_screen=lambda _frame, _rect: True)
+        index,
+        frames,
+        [frames[-1], frames[-1]],
+        dwell_span_s=6.0,
+        mute_screen=lambda _frame, _rect: True,
+    )
 
-    anchor_cards = {block.heart_ordinal for block in index.selectable
-                    if any(obs.frame_index == len(frames) - 1 for obs in block.croppable)}
+    anchor_cards = {
+        block.heart_ordinal
+        for block in index.selectable
+        if any(obs.frame_index == len(frames) - 1 for obs in block.croppable)
+    }
     assert set(dwell) == anchor_cards and anchor_cards
     for entry in dwell.values():
         assert entry.dwell_exact is True
@@ -1582,7 +2035,8 @@ def test_dwell_evidence_without_a_mute_screen_leaves_that_leg_unmeasured():
     index, frames = _full()
 
     dwell = item_crops.still_photo_dwell_evidence(
-        index, frames, [frames[-1]], dwell_span_s=6.0)
+        index, frames, [frames[-1]], dwell_span_s=6.0
+    )
 
     assert dwell and all(e.mute_screens_complete is None for e in dwell.values())
 
@@ -1590,37 +2044,51 @@ def test_dwell_evidence_without_a_mute_screen_leaves_that_leg_unmeasured():
 def test_no_dwell_frames_means_no_dwell_evidence_at_all():
     index, frames = _full()
 
-    assert item_crops.still_photo_dwell_evidence(
-        index, frames, [], dwell_span_s=6.0) == {}
+    assert (
+        item_crops.still_photo_dwell_evidence(index, frames, [], dwell_span_s=6.0) == {}
+    )
 
 
 def test_a_bound_plus_a_complete_dwell_is_what_finally_numbers_a_photo(
-        installed_still_photo_bound):
+    installed_still_photo_bound,
+):
     """The whole C1-C4 conjunction, end to end through the payload builder: with a verified
     bound installed AND a byte-exact, fully screened dwell of every candidate, numbering is
     allowed.  Nothing short of that has ever produced a number in this test file."""
     index, frames = _full()
     dwell = item_crops.still_photo_dwell_evidence(
-        index, frames, [frames[-1], frames[-1]], dwell_span_s=6.0,
-        mute_screen=lambda _frame, _rect: True)
+        index,
+        frames,
+        [frames[-1], frames[-1]],
+        dwell_span_s=6.0,
+        mute_screen=lambda _frame, _rect: True,
+    )
     # This test is about the C1-C4 conjunction, not about where the synthetic cards happen to sit
     # on a synthetic screen. The autoplay-centring precondition is measured from real geometry in
     # `test_still_photo_dwell_evidence_measures_centring_from_the_content_band` below, and its
     # refusal path has its own parametrised test; here it is satisfied explicitly so the rest of
     # the ladder stays the subject.
-    dwell = {ordinal: dataclasses.replace(entry, centered=True, center_offset_frac=0.0)
-             for ordinal, entry in dwell.items()}
+    dwell = {
+        ordinal: dataclasses.replace(entry, centered=True, center_offset_frac=0.0)
+        for ordinal, entry in dwell.items()
+    }
     # Rung (g): the re-attach probe's second burst, folded in by the shared producer from a probe
     # whose MEASURED page displacement is zero -- the card came back exactly where it was.
     dwell = _fold_reattach(dwell, index, frames)
-    dwell = {ordinal: dataclasses.replace(entry, reattach_centered=True,
-                                          reattach_center_offset_frac=0.0)
-             for ordinal, entry in dwell.items()}
+    dwell = {
+        ordinal: dataclasses.replace(
+            entry, reattach_centered=True, reattach_center_offset_frac=0.0
+        )
+        for ordinal, entry in dwell.items()
+    }
 
     payload = item_crops.build_item_payload(
-        frames, index, unnumber=lambda _image: None,
+        frames,
+        index,
+        unnumber=lambda _image: None,
         unnumber_without_evidence=item_crops.unnumber_without_still_photo_evidence,
-        still_photo_dwell=dwell)
+        still_photo_dwell=dwell,
+    )
 
     numbered = {crop.heart_ordinal for crop in payload.items}
     assert numbered, "a complete dwell under a verified bound must number something"
@@ -1633,7 +2101,8 @@ def test_a_bound_plus_a_complete_dwell_is_what_finally_numbers_a_photo(
 
 
 def test_the_payload_hook_receives_one_evidence_object_carrying_both_halves(
-        installed_still_photo_bound):
+    installed_still_photo_bound,
+):
     """The hook contract itself: drift comes from the frames the builder holds, the dwell from
     the mapping the caller supplies, and they arrive together so no caller can grade one alone.
 
@@ -1646,14 +2115,23 @@ def test_the_payload_hook_receives_one_evidence_object_carrying_both_halves(
     """
     index, frames = _full()
     dwell = item_crops.still_photo_dwell_evidence(
-        index, frames, [frames[-1], frames[-1]], dwell_span_s=6.0,
-        mute_screen=lambda _frame, _rect: True)
+        index,
+        frames,
+        [frames[-1], frames[-1]],
+        dwell_span_s=6.0,
+        mute_screen=lambda _frame, _rect: True,
+    )
     seen = []
 
     item_crops.build_item_payload(
-        frames, index, unnumber=lambda _image: None,
-        unnumber_without_evidence=lambda evidence: seen.append(evidence) or "photo_only: stop",
-        still_photo_dwell=dwell)
+        frames,
+        index,
+        unnumber=lambda _image: None,
+        unnumber_without_evidence=lambda evidence: (
+            seen.append(evidence) or "photo_only: stop"
+        ),
+        still_photo_dwell=dwell,
+    )
 
     assert seen and all(isinstance(e, item_crops.StillPhotoEvidence) for e in seen)
     assert any(e.dwell_exact is True and e.dwell_span_s == 6.0 for e in seen)
@@ -1664,6 +2142,7 @@ def test_the_payload_hook_receives_one_evidence_object_carrying_both_halves(
 # =====================================================================================
 # Frame choice, and the hard stops
 # =====================================================================================
+
 
 def test_the_frame_each_item_is_cropped_from_is_chosen_and_deterministic():
     """Only a sighting that saw both edges may be cropped, and among those the one with the most
@@ -1684,8 +2163,9 @@ def test_the_frame_each_item_is_cropped_from_is_chosen_and_deterministic():
 
         best = max(clearance(o) for o in block.croppable)
         assert clearance(chosen[0]) == best
-        assert crop.frame_index == min(o.frame_index for o in block.croppable
-                                       if clearance(o) == best)
+        assert crop.frame_index == min(
+            o.frame_index for o in block.croppable if clearance(o) == best
+        )
 
     again = item_crops.build_item_payload(frames, index)
     assert again.images == payload.images
@@ -1694,11 +2174,13 @@ def test_the_frame_each_item_is_cropped_from_is_chosen_and_deterministic():
 def test_an_unusable_index_is_a_hard_stop_before_any_crop_is_made():
     """Doc 5.3: "treat a missing table as a hard stop, never as a reason to fall back to a fixed
     coordinate". The gate is inherited from ItemIndex.usable rather than re-derived."""
-    scrolls = (0, _STEP * 4)                   # a step far past the trust window
+    scrolls = (0, _STEP * 4)  # a step far past the trust window
     index = _index(scrolls)
     assert not index.usable and index.blocks == ()
 
-    with pytest.raises(item_crops.ItemCropError, match="refusing to crop an unusable item index"):
+    with pytest.raises(
+        item_crops.ItemCropError, match="refusing to crop an unusable item index"
+    ):
         item_crops.build_item_payload([_frame(s) for s in scrolls], index)
 
 
@@ -1714,29 +2196,39 @@ def test_frames_that_are_not_the_indexed_frames_are_refused():
     could never fire on a real mix-up. A per-frame digest can only fire on one."""
     index, frames = _full()
 
-    with pytest.raises(item_crops.ItemCropError, match="frame\\(s\\) given for an index"):
+    with pytest.raises(
+        item_crops.ItemCropError, match="frame\\(s\\) given for an index"
+    ):
         item_crops.build_item_payload(frames[:-1], index)
 
     ok, small = cv2.imencode(".png", np.zeros((_H // 2, _W // 2), np.uint8))
     assert ok
     wrong = list(frames)
     wrong[_payload().item(1).frame_index] = small.tobytes()
-    with pytest.raises(item_crops.ItemCropError, match="not the frame the index was built from"):
+    with pytest.raises(
+        item_crops.ItemCropError, match="not the frame the index was built from"
+    ):
         item_crops.build_item_payload(wrong, index)
 
     # Same count, same 1080x2400 size, same profile, same bytes — only the order differs, and
     # every rect in the index now names different content.
-    with pytest.raises(item_crops.ItemCropError, match="not the frame the index was built from"):
+    with pytest.raises(
+        item_crops.ItemCropError, match="not the frame the index was built from"
+    ):
         item_crops.build_item_payload(list(reversed(frames)), index)
 
     # ...and it fires even when the swapped frame is one no item is cropped from, because the
     # payload is a claim about the whole capture and not only about the frames it happened to
     # slice.
-    cropped_from = {c.frame_index for c in _payload().crops if c.frame_index is not None}
+    cropped_from = {
+        c.frame_index for c in _payload().crops if c.frame_index is not None
+    }
     unused = next(i for i in range(len(frames)) if i not in cropped_from)
     untouched = list(frames)
     untouched[unused] = _frame(_FULL_SCROLL[-1] + 1)
-    with pytest.raises(item_crops.ItemCropError, match=f"frame {unused} is not the frame"):
+    with pytest.raises(
+        item_crops.ItemCropError, match=f"frame {unused} is not the frame"
+    ):
         item_crops.build_item_payload(untouched, index)
 
 
@@ -1745,12 +2237,13 @@ def test_confident_photo_heart_ordinals_refuses_an_unusable_index_before_any_cro
     same doc 5.3 hard stop rather than re-deriving it (see
     test_an_unusable_index_is_a_hard_stop_before_any_crop_is_made above): a numbering that
     contradicts itself is not a safe list to pick still-photo dwell candidates from either."""
-    scrolls = (0, _STEP * 4)                   # a step far past the trust window
+    scrolls = (0, _STEP * 4)  # a step far past the trust window
     index = _index(scrolls)
     assert not index.usable and index.blocks == ()
 
-    with pytest.raises(item_crops.ItemCropError,
-                       match="refusing to classify crops from an unusable"):
+    with pytest.raises(
+        item_crops.ItemCropError, match="refusing to classify crops from an unusable"
+    ):
         item_crops.confident_photo_heart_ordinals([_frame(s) for s in scrolls], index)
 
 
@@ -1760,7 +2253,9 @@ def test_confident_photo_heart_ordinals_refuses_a_frame_count_that_does_not_matc
     only mean anything against the exact capture they were measured on."""
     index, frames = _full()
 
-    with pytest.raises(item_crops.ItemCropError, match="frame\\(s\\) given for an index"):
+    with pytest.raises(
+        item_crops.ItemCropError, match="frame\\(s\\) given for an index"
+    ):
         item_crops.confident_photo_heart_ordinals(frames[:-1], index)
 
 
@@ -1786,10 +2281,13 @@ def test_a_page_class_this_module_has_no_policy_for_is_refused():
     block always carries its own failure — which is exactly why it is asserted rather than
     assumed."""
     blocks, _ = item_index._assemble(
-        [_obs(0, 400, 1300, hearts=(1000, 1200))],          # two hearts: ITEM_AMBIGUOUS
-        at_scroll_top=False, card_x=(_CARD_X0, _CARD_X1),
+        [_obs(0, 400, 1300, hearts=(1000, 1200))],  # two hearts: ITEM_AMBIGUOUS
+        at_scroll_top=False,
+        card_x=(_CARD_X0, _CARD_X1),
         extent_tolerance_px=item_index._EXTENT_TOLERANCE_PX,
-        min_item_gap_px=item_index._MIN_ITEM_GAP_PX, band_y0=_BAND0)
+        min_item_gap_px=item_index._MIN_ITEM_GAP_PX,
+        band_y0=_BAND0,
+    )
     assert [b.kind for b in blocks] == [item_index.ITEM_AMBIGUOUS]
 
     with pytest.raises(item_crops.ItemCropError, match="no crop policy for"):
@@ -1811,27 +2309,49 @@ def test_item_refuses_a_number_the_model_was_never_offered():
 # Helpers for driving the payload off hand-written blocks
 # =====================================================================================
 
+
 def _obs(frame_index, page_y0, page_y1, *, complete=True, hearts=()):
     """One hand-written sighting, in a frame whose rows equal its page rows."""
-    kind = (segment.BLOCK_SELECTABLE if hearts else segment.BLOCK_CONTEXT) if complete \
+    kind = (
+        (segment.BLOCK_SELECTABLE if hearts else segment.BLOCK_CONTEXT)
+        if complete
         else segment.BLOCK_PARTIAL
+    )
     return item_index.BlockObservation(
-        frame_index=frame_index, page_y0=page_y0, page_y1=page_y1,
-        frame_y0=page_y0, frame_y1=page_y1, kind=kind, complete=complete,
-        top_observed=complete, bottom_observed=complete,
-        hearts=tuple((_HEART_CX, y) for y in hearts))
+        frame_index=frame_index,
+        page_y0=page_y0,
+        page_y1=page_y1,
+        frame_y0=page_y0,
+        frame_y1=page_y1,
+        kind=kind,
+        complete=complete,
+        top_observed=complete,
+        bottom_observed=complete,
+        hearts=tuple((_HEART_CX, y) for y in hearts),
+    )
 
 
 def _fake_index(blocks):
     """An `ItemIndex` over hand-written blocks, with one frame's real segmentation behind it so
     the band, the frame size and the crop path are all the shipped ones."""
     segmentation = segment.segment_frame(
-        _frame(0), content_band=_CONTENT_BAND, like_template=_TEMPLATE,
-        like_threshold=hinge._LIKE_MATCH_THRESHOLD)
+        _frame(0),
+        content_band=_CONTENT_BAND,
+        like_template=_TEMPLATE,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD,
+    )
     return item_index.ItemIndex(
-        blocks=tuple(blocks), frames=(segmentation,), shifts=(), offsets=(0,),
-        page_span=segmentation.band, at_scroll_top=False, reached_end=False, tail_gap_px=None,
-        failures=(), identity=item_identity.capture_profile_identity((), identity_band=None))
+        blocks=tuple(blocks),
+        frames=(segmentation,),
+        shifts=(),
+        offsets=(0,),
+        page_span=segmentation.band,
+        at_scroll_top=False,
+        reached_end=False,
+        tail_gap_px=None,
+        failures=(),
+        identity=item_identity.capture_profile_identity((), identity_band=None),
+    )
 
 
 def test_a_crop_carries_a_greyscale_reference_that_reproduces_its_signature_exactly():
@@ -1850,13 +2370,16 @@ def test_a_crop_carries_a_greyscale_reference_that_reproduces_its_signature_exac
     payload = _payload()
     for crop in payload.items + payload.context:
         assert crop.verify_image, crop.reason
-        decoded = cv2.imdecode(np.frombuffer(crop.verify_image, np.uint8), cv2.IMREAD_GRAYSCALE)
+        decoded = cv2.imdecode(
+            np.frombuffer(crop.verify_image, np.uint8), cv2.IMREAD_GRAYSCALE
+        )
         assert decoded.ndim == 2
         colour = cv2.imdecode(np.frombuffer(crop.image, np.uint8), cv2.IMREAD_COLOR)
         assert decoded.shape == colour.shape[:2]
         if crop.signature is not None:
             reproduced = item_crops._signature_from_gray(
-                decoded, grid=payload.signature_grid, cv2=cv2, np=np)
+                decoded, grid=payload.signature_grid, cv2=cv2, np=np
+            )
             assert crop.signature.distance(reproduced) == 0.0, crop.reason
 
 

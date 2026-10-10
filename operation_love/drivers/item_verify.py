@@ -213,6 +213,7 @@ WHAT THIS DOES NOT DO
   * It does not repair. There is no "closest reachable item" and no re-ask: doc 5.6's owner rule
     is that a miss stops the run, and a verdict that is not MATCH has no second reading.
 """
+
 from __future__ import annotations
 
 import math
@@ -221,7 +222,12 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 from .item_crops import (
-    CropSignature, ItemCropError, ItemPayload, _signature_from_gray, signature_of)
+    CropSignature,
+    ItemCropError,
+    ItemPayload,
+    _signature_from_gray,
+    signature_of,
+)
 
 
 # =====================================================================================
@@ -471,8 +477,10 @@ _ROW_BACKGROUND_TOLERANCE = 6
 
 
 # --- the three outcomes ---------------------------------------------------------------
-VERIFY_MATCH = "verify_match"                # the sheet is showing the item that was chosen
-VERIFY_MISMATCH = "verify_mismatch"          # it is showing something else, or nothing near enough
+VERIFY_MATCH = "verify_match"  # the sheet is showing the item that was chosen
+VERIFY_MISMATCH = (
+    "verify_mismatch"  # it is showing something else, or nothing near enough
+)
 VERIFY_UNVERIFIABLE = "verify_unverifiable"  # the comparison has no power for this item
 
 
@@ -500,7 +508,8 @@ def _require_vision():
     except Exception as exc:  # noqa: BLE001 — surfaced as SheetVerificationError, never swallowed
         raise SheetVerificationError(
             "verifying the like sheet needs opencv-python + numpy "
-            f"(extra: operation-love[hinge]); import failed: {exc}") from exc
+            f"(extra: operation-love[hinge]); import failed: {exc}"
+        ) from exc
     return cv2, np
 
 
@@ -512,6 +521,7 @@ class SheetPreview:
     a stop record can show the operator the geometry the run was looking at rather than only the
     verdict it reached.
     """
+
     y0: int
     y1: int
     x0: int
@@ -564,13 +574,16 @@ class _InlineGapEvidence:
 
     @property
     def max_hidden_fraction(self) -> float:
-        return (_INLINE_SUGGESTION_MAX_HIDDEN_FRACTION
-                if self.suggestion_shelf is not None
-                else _INLINE_REFRAME_MAX_HIDDEN_FRACTION)
+        return (
+            _INLINE_SUGGESTION_MAX_HIDDEN_FRACTION
+            if self.suggestion_shelf is not None
+            else _INLINE_REFRAME_MAX_HIDDEN_FRACTION
+        )
 
 
-def _inline_gap_evidence(gray, *, preview_y1: int, preview_height: int, comment,
-                         cv2, np) -> _InlineGapEvidence:
+def _inline_gap_evidence(
+    gray, *, preview_y1: int, preview_height: int, comment, cv2, np
+) -> _InlineGapEvidence:
     """Prove either the ordinary direct gap or Hinge's outlined suggestion-pill shelf.
 
     The ordinary 25%-of-preview rule protects a still-open composer from adopting an unrelated
@@ -584,30 +597,38 @@ def _inline_gap_evidence(gray, *, preview_y1: int, preview_height: int, comment,
     direct_max = max(40, round(preview_height * 0.25))
     if 0 <= gap <= direct_max:
         return _InlineGapEvidence(
-            True, direct_max, None,
-            f"direct photo-to-field gap allowed 0..{direct_max}px")
+            True,
+            direct_max,
+            None,
+            f"direct photo-to-field gap allowed 0..{direct_max}px",
+        )
     if gap <= 0 or preview_y1 < 0 or comment.y0 > gray.shape[0]:
         return _InlineGapEvidence(
-            False, direct_max, None,
-            f"photo-to-field gap allowed 0..{direct_max}px")
+            False, direct_max, None, f"photo-to-field gap allowed 0..{direct_max}px"
+        )
 
-    band = gray[preview_y1:comment.y0]
+    band = gray[preview_y1 : comment.y0]
     if not band.size:
         return _InlineGapEvidence(
-            False, direct_max, None,
-            f"photo-to-field gap allowed 0..{direct_max}px")
+            False, direct_max, None, f"photo-to-field gap allowed 0..{direct_max}px"
+        )
 
     frame_width = int(gray.shape[1])
     probe_hi = min(80, max(9, frame_width // 4))
-    margin_parts = [band[:, 8:probe_hi], band[:, frame_width - probe_hi:frame_width - 8]]
+    margin_parts = [
+        band[:, 8:probe_hi],
+        band[:, frame_width - probe_hi : frame_width - 8],
+    ]
     margin_samples = [part.reshape(-1) for part in margin_parts if part.size]
     if not margin_samples:
         return _InlineGapEvidence(
-            False, direct_max, None,
-            f"photo-to-field gap allowed 0..{direct_max}px")
+            False, direct_max, None, f"photo-to-field gap allowed 0..{direct_max}px"
+        )
     background = float(np.median(np.concatenate(margin_samples)))
     mask = (band < background - _ROW_BACKGROUND_TOLERANCE).astype(np.uint8)
-    count, _labels, stats, _centres = cv2.connectedComponentsWithStats(mask, connectivity=8)
+    count, _labels, stats, _centres = cv2.connectedComponentsWithStats(
+        mask, connectivity=8
+    )
 
     min_width = round(comment.width * 0.20)
     min_height = round(comment.height * 0.30)
@@ -618,44 +639,63 @@ def _inline_gap_evidence(gray, *, preview_y1: int, preview_height: int, comment,
         x, y, width, height, area = map(int, (x, y, width, height, area))
         density = area / (width * height)
         absolute_y = preview_y1 + y
-        if (width >= min_width
-                and min_height <= height <= max_height
-                and 0.015 <= density <= 0.35
-                and x < comment.x1 + edge_slack
-                and x + width > comment.x0 - edge_slack):
+        if (
+            width >= min_width
+            and min_height <= height <= max_height
+            and 0.015 <= density <= 0.35
+            and x < comment.x1 + edge_slack
+            and x + width > comment.x0 - edge_slack
+        ):
             components.append((x, absolute_y, x + width, absolute_y + height))
 
     gutter_max = max(12, round(comment.height * 0.25))
     components.sort()
     for start in range(len(components)):
         row = [components[start]]
-        for candidate in components[start + 1:]:
-            if (abs(candidate[1] - row[0][1]) <= 8
-                    and abs(candidate[3] - row[0][3]) <= 8
-                    and candidate[0] >= row[-1][2] + 4):
+        for candidate in components[start + 1 :]:
+            if (
+                abs(candidate[1] - row[0][1]) <= 8
+                and abs(candidate[3] - row[0][3]) <= 8
+                and candidate[0] >= row[-1][2] + 4
+            ):
                 row.append(candidate)
         if len(row) < _INLINE_SUGGESTION_MIN_PILLS:
             continue
-        shelf = (row[0][0], min(rect[1] for rect in row),
-                 row[-1][2], max(rect[3] for rect in row))
+        shelf = (
+            row[0][0],
+            min(rect[1] for rect in row),
+            row[-1][2],
+            max(rect[3] for rect in row),
+        )
         top_gutter = shelf[1] - preview_y1
         bottom_gutter = comment.y0 - shelf[3]
-        spans_column = (shelf[0] <= comment.x0 + round(comment.width * 0.20)
-                        and shelf[2] >= comment.x1 - edge_slack
-                        and shelf[2] - shelf[0] >= round(comment.width * 0.70))
-        if (spans_column and 0 <= top_gutter <= gutter_max
-                and 0 <= bottom_gutter <= gutter_max):
+        spans_column = (
+            shelf[0] <= comment.x0 + round(comment.width * 0.20)
+            and shelf[2] >= comment.x1 - edge_slack
+            and shelf[2] - shelf[0] >= round(comment.width * 0.70)
+        )
+        if (
+            spans_column
+            and 0 <= top_gutter <= gutter_max
+            and 0 <= bottom_gutter <= gutter_max
+        ):
             max_gap = (shelf[3] - shelf[1]) + 2 * gutter_max
             return _InlineGapEvidence(
-                True, max_gap, shelf,
+                True,
+                max_gap,
+                shelf,
                 f"suggestion shelf ({shelf[0]},{shelf[1]})-({shelf[2]},{shelf[3]}) "
                 f"with {len(row)} outlined pills and gutters {top_gutter}px/{bottom_gutter}px; "
-                f"photo-to-field gap allowed 0..{max_gap}px")
+                f"photo-to-field gap allowed 0..{max_gap}px",
+            )
 
     return _InlineGapEvidence(
-        False, direct_max, None,
+        False,
+        direct_max,
+        None,
         f"photo-to-field gap allowed 0..{direct_max}px; no bounded outlined suggestion shelf "
-        "bridges the extra space")
+        "bridges the extra space",
+    )
 
 
 @dataclass(frozen=True)
@@ -674,6 +714,7 @@ class ItemComparison:
     an item still carries a reference and still bounds every other item, which is the whole of
     `_compare_item`'s 2026-08-12 fix.
     """
+
     number: int
     distance: float | None
     window_px: int
@@ -697,6 +738,7 @@ class SheetVerdict:
     comparison has no power" -- as a match, which is the single most dangerous line anyone could
     write against this API. Callers test `.matched`.
     """
+
     state: str
     model_index: int
     nearest_index: int | None
@@ -710,7 +752,8 @@ class SheetVerdict:
     def __bool__(self):
         raise TypeError(
             "SheetVerdict has no truth value -- test .matched. A bare truth test would read "
-            f"{self.state!r} as a match and type an opener under an item nobody checked")
+            f"{self.state!r} as a match and type an opener under an item nobody checked"
+        )
 
     @property
     def matched(self) -> bool:
@@ -729,7 +772,7 @@ def _row_spans(gray, np, *, tolerance: float, probe: tuple[int, int]):
     lo, hi = probe
     width = gray.shape[1]
     left = gray[:, lo:hi]
-    right = gray[:, width - hi:width - lo]
+    right = gray[:, width - hi : width - lo]
     reference = np.median(np.concatenate([left, right], axis=1), axis=1)
     differs = np.abs(gray.astype(np.int16) - reference[:, None]) > tolerance
     out = []
@@ -739,14 +782,17 @@ def _row_spans(gray, np, *, tolerance: float, probe: tuple[int, int]):
     return out
 
 
-def locate_sheet_preview(frame: bytes, *,
-                         search_top_px: int = _PREVIEW_SEARCH_TOP_PX,
-                         min_width_px: int = _PREVIEW_MIN_WIDTH_PX,
-                         min_height_px: int = _PREVIEW_MIN_HEIGHT_PX,
-                         margin_px: int = _PREVIEW_MARGIN_PX,
-                         margin_tolerance_px: int = _PREVIEW_MARGIN_TOLERANCE_PX,
-                         background_tolerance: float = _ROW_BACKGROUND_TOLERANCE,
-                         margin_probe: tuple[int, int] = _MARGIN_PROBE) -> SheetPreview:
+def locate_sheet_preview(
+    frame: bytes,
+    *,
+    search_top_px: int = _PREVIEW_SEARCH_TOP_PX,
+    min_width_px: int = _PREVIEW_MIN_WIDTH_PX,
+    min_height_px: int = _PREVIEW_MIN_HEIGHT_PX,
+    margin_px: int = _PREVIEW_MARGIN_PX,
+    margin_tolerance_px: int = _PREVIEW_MARGIN_TOLERANCE_PX,
+    background_tolerance: float = _ROW_BACKGROUND_TOLERANCE,
+    margin_probe: tuple[int, int] = _MARGIN_PROBE,
+) -> SheetPreview:
     """Where the open comment sheet is rendering the item. Raises when there is no such thing.
 
     The rule is the layout measurement in the module docstring turned into three tests, in the
@@ -768,13 +814,15 @@ def locate_sheet_preview(frame: bytes, *,
     if gray is None:
         raise SheetVerificationError(
             f"the like-sheet frame did not decode as an image ({len(frame)} bytes), so there is "
-            "nothing to verify the chosen item against")
+            "nothing to verify the chosen item against"
+        )
     height, width = gray.shape
     lo, hi = margin_probe
     if width < 2 * hi + 1 or hi <= lo:
         raise SheetVerificationError(
             f"a {width}px-wide frame leaves no margin strip at columns {lo}..{hi} to read a "
-            "background reference from, so the preview cannot be bounded")
+            "background reference from, so the preview cannot be bounded"
+        )
     spans = _row_spans(gray, np, tolerance=background_tolerance, probe=margin_probe)
 
     runs: list[tuple[int, int]] = []
@@ -797,7 +845,8 @@ def locate_sheet_preview(frame: bytes, *,
             f"no comment-sheet item preview on this frame: nothing at least {min_width_px}px "
             f"wide runs for {min_height_px} rows below row {search_top_px} (the tallest such run "
             f"is {widest} rows). Doc 5.6 verifies the sheet against the stored crop, and there is "
-            "no sheet here to verify")
+            "no sheet here to verify"
+        )
     y0, y1 = tall[0]
     band = [spans[y] for y in range(y0, y1) if spans[y] is not None]
     x0 = int(np.median([s[0] for s in band]))
@@ -807,14 +856,23 @@ def locate_sheet_preview(frame: bytes, *,
             f"the topmost full-width block on this frame starts at column {x0}, and a comment "
             f"sheet indents its item preview to {margin_px} (+-{margin_tolerance_px}). A profile "
             "card sits at 53, so this looks like a profile screen rather than an open sheet, and "
-            "comparing it against the stored crops would confirm the item we never tapped")
+            "comparing it against the stored crops would confirm the item we never tapped"
+        )
     return SheetPreview(
-        y0=y0, y1=y1, x0=x0, x1=x1,
-        reason=(f"topmost run of rows at least {min_width_px}px wide, {y1 - y0} rows tall, "
-                f"indented to column {x0}"))
+        y0=y0,
+        y1=y1,
+        x0=x0,
+        x1=x1,
+        reason=(
+            f"topmost run of rows at least {min_width_px}px wide, {y1 - y0} rows tall, "
+            f"indented to column {x0}"
+        ),
+    )
 
 
-def _locate_inline_composer_preview(frame: bytes, composer_surface, *, cv2, np) -> SheetPreview:
+def _locate_inline_composer_preview(
+    frame: bytes, composer_surface, *, cv2, np
+) -> SheetPreview:
     """Locate the selected photo that belongs to an independently proven inline composer.
 
     A Training reviewer may scroll Hinge's still-open inline surface while deciding.  In that
@@ -845,7 +903,8 @@ def _locate_inline_composer_preview(frame: bytes, composer_surface, *, cv2, np) 
     comment = getattr(composer_surface, "comment_rect", None)
     if comment is None:
         raise SheetVerificationError(
-            "the supplied inline-composer surface has no comment rectangle for preview lookup")
+            "the supplied inline-composer surface has no comment rectangle for preview lookup"
+        )
     slack = max(8, round(comment.width * 0.03))
     minimum_width = round(comment.width * _INLINE_COMPACT_MIN_WIDTH_FRACTION)
     pillarbox_width = round(comment.width * _INLINE_PILLARBOX_MIN_WIDTH_FRACTION)
@@ -853,15 +912,18 @@ def _locate_inline_composer_preview(frame: bytes, composer_surface, *, cv2, np) 
     if gray is None:
         raise SheetVerificationError(
             f"the like-sheet frame did not decode as an image ({len(frame)} bytes), so there is "
-            "nothing to verify the chosen item against")
+            "nothing to verify the chosen item against"
+        )
     height, width = gray.shape
     lo, hi = _MARGIN_PROBE
     if width < 2 * hi + 1 or hi <= lo:
         raise SheetVerificationError(
             f"a {width}px-wide frame leaves no margin strip at columns {lo}..{hi} to read a "
-            "background reference from, so the inline preview cannot be bounded")
+            "background reference from, so the inline preview cannot be bounded"
+        )
     spans = _row_spans(
-        gray, np, tolerance=_ROW_BACKGROUND_TOLERANCE, probe=_MARGIN_PROBE)
+        gray, np, tolerance=_ROW_BACKGROUND_TOLERANCE, probe=_MARGIN_PROBE
+    )
     bottom = min(height, comment.y0)
 
     def _tall_runs(floor: int) -> list[tuple[int, int]]:
@@ -894,15 +956,17 @@ def _locate_inline_composer_preview(frame: bytes, composer_surface, *, cv2, np) 
         is a measurement artefact rather than a layout.]
         """
         band = [spans[y] for y in range(y0, y1) if spans[y] is not None]
-        return (int(np.median([span[0] for span in band])),
-                int(np.median([span[1] for span in band])))
+        return (
+            int(np.median([span[0] for span in band])),
+            int(np.median([span[1] for span in band])),
+        )
 
     def _field_gap(y0: int, y1: int) -> int | None:
         """The run's distance to the comment field, or None when it is not adjacent to it."""
         gap = comment.y0 - y1
         evidence = _inline_gap_evidence(
-            gray, preview_y1=y1, preview_height=y1 - y0, comment=comment,
-            cv2=cv2, np=np)
+            gray, preview_y1=y1, preview_height=y1 - y0, comment=comment, cv2=cv2, np=np
+        )
         return gap if evidence.accepted else None
 
     def _survey() -> str:
@@ -936,9 +1000,11 @@ def _locate_inline_composer_preview(frame: bytes, composer_surface, *, cv2, np) 
             blocks.append((start, bottom))
         blocks = [(a, b) for a, b in blocks if b - a >= survey_min_height]
         if not blocks:
-            return ("No non-background block at all was found between row "
-                    f"{_PREVIEW_SEARCH_TOP_PX} and the field, so the frame above the composer is "
-                    "blank rather than showing something this could not identify.")
+            return (
+                "No non-background block at all was found between row "
+                f"{_PREVIEW_SEARCH_TOP_PX} and the field, so the frame above the composer is "
+                "blank rather than showing something this could not identify."
+            )
         blocks.sort(key=lambda block: block[1] - block[0], reverse=True)
         described: list[str] = []
         for y0, y1 in blocks[:3]:
@@ -949,53 +1015,88 @@ def _locate_inline_composer_preview(frame: bytes, composer_surface, *, cv2, np) 
             left_offset, right_offset = x0 - comment.x0, x1 - comment.x1
             gap = comment.y0 - y1
             gap_evidence = _inline_gap_evidence(
-                gray, preview_y1=y1, preview_height=rows, comment=comment,
-                cv2=cv2, np=np)
+                gray,
+                preview_y1=y1,
+                preview_height=rows,
+                comment=comment,
+                cv2=cv2,
+                np=np,
+            )
             passed: list[str] = []
             failed: list[str] = []
             for ok, text in (
-                    (width >= minimum_width, f"width {width}px vs {minimum_width}px"),
-                    (rows >= _PREVIEW_MIN_HEIGHT_PX,
-                     f"height {rows} rows vs {_PREVIEW_MIN_HEIGHT_PX}"),
-                    (gap_evidence.accepted,
-                     f"field gap {gap}px: {gap_evidence.reason}"),
-                    (abs(left_offset) <= slack,
-                     f"left edge {left_offset:+d}px vs +-{slack}px"),
-                    (abs(right_offset) <= slack,
-                     f"right edge {right_offset:+d}px vs +-{slack}px")):
+                (width >= minimum_width, f"width {width}px vs {minimum_width}px"),
+                (
+                    rows >= _PREVIEW_MIN_HEIGHT_PX,
+                    f"height {rows} rows vs {_PREVIEW_MIN_HEIGHT_PX}",
+                ),
+                (gap_evidence.accepted, f"field gap {gap}px: {gap_evidence.reason}"),
+                (
+                    abs(left_offset) <= slack,
+                    f"left edge {left_offset:+d}px vs +-{slack}px",
+                ),
+                (
+                    abs(right_offset) <= slack,
+                    f"right edge {right_offset:+d}px vs +-{slack}px",
+                ),
+            ):
                 (passed if ok else failed).append(text)
             note = ""
             # Only where WIDTH (and the edges that follow from it) is the single thing wrong.
             # Without this the sentence lands on the sheet's own title row -- 210px of text, 42
             # rows tall, symmetric because centred text is -- and a diagnostic that explains the
             # wrong block is worse than one that explains nothing.
-            if (rows >= _PREVIEW_MIN_HEIGHT_PX and gap_evidence.accepted
-                    and left_offset >= -slack and right_offset <= slack
-                    and abs(left_offset + right_offset) <= slack):
-                note = (f" -- it is inset by the same {left_offset}px on both sides, i.e. a card "
-                        "rendered whole into the content column with a narrower photo "
-                        f"pillarboxed inside it, which needs at least {pillarbox_width}px of ink "
-                        f"and {_PREVIEW_MIN_HEIGHT_PX} rows")
+            if (
+                rows >= _PREVIEW_MIN_HEIGHT_PX
+                and gap_evidence.accepted
+                and left_offset >= -slack
+                and right_offset <= slack
+                and abs(left_offset + right_offset) <= slack
+            ):
+                note = (
+                    f" -- it is inset by the same {left_offset}px on both sides, i.e. a card "
+                    "rendered whole into the content column with a narrower photo "
+                    f"pillarboxed inside it, which needs at least {pillarbox_width}px of ink "
+                    f"and {_PREVIEW_MIN_HEIGHT_PX} rows"
+                )
             described.append(
                 f"rows {y0}..{y1}, columns {x0}..{x1} -- fails: "
                 + ("; ".join(failed) if failed else "nothing")
-                + (("; passes: " + "; ".join(passed)) if passed else "") + note)
-        more = ("" if len(blocks) <= 3
-                else f" ({len(blocks) - 3} shorter block(s) not listed)")
+                + (("; passes: " + "; ".join(passed)) if passed else "")
+                + note
+            )
+        more = (
+            ""
+            if len(blocks) <= 3
+            else f" ({len(blocks) - 3} shorter block(s) not listed)"
+        )
         return "The blocks above it, tallest first: " + " | ".join(described) + more
 
     candidates: list[tuple[int, SheetPreview]] = []
     for y0, y1 in _tall_runs(minimum_width):
         x0, x1 = _columns(y0, y1)
         gap = _field_gap(y0, y1)
-        if (abs(x0 - comment.x0) <= slack
-                and abs(x1 - comment.x1) <= slack
-                and gap is not None):
-            candidates.append((gap, SheetPreview(
-                y0=y0, y1=y1, x0=x0, x1=x1,
-                reason=(f"inline-composer-bound run of rows at least {minimum_width}px wide, "
-                        f"{y1 - y0} rows tall, aligned to comment field "
-                        f"x={comment.x0}..{comment.x1}, with a {gap}px field gap"))))
+        if (
+            abs(x0 - comment.x0) <= slack
+            and abs(x1 - comment.x1) <= slack
+            and gap is not None
+        ):
+            candidates.append(
+                (
+                    gap,
+                    SheetPreview(
+                        y0=y0,
+                        y1=y1,
+                        x0=x0,
+                        x1=x1,
+                        reason=(
+                            f"inline-composer-bound run of rows at least {minimum_width}px wide, "
+                            f"{y1 - y0} rows tall, aligned to comment field "
+                            f"x={comment.x0}..{comment.x1}, with a {gap}px field gap"
+                        ),
+                    ),
+                )
+            )
 
     if not candidates:
         # THE PILLARBOX REGIME, AND IT IS TRIED ONLY WHEN NOTHING SAT FLUSH, so a full-bleed
@@ -1041,13 +1142,26 @@ def _locate_inline_composer_preview(frame: bytes, composer_surface, *, cv2, np) 
             contained = left_pad >= -slack and right_pad >= -slack
             centred = abs(left_pad - right_pad) <= slack
             if contained and centred and gap is not None:
-                candidates.append((gap, SheetPreview(
-                    y0=y0, y1=y1, x0=comment.x0, x1=comment.x1, ink_x0=x0, ink_x1=x1,
-                    reason=(f"inline-composer-bound pillarboxed run of rows at least "
-                            f"{pillarbox_width}px wide, {y1 - y0} rows tall, its {x1 - x0}px of "
-                            f"ink at x={x0}..{x1} centred inside the comment field's "
-                            f"x={comment.x0}..{comment.x1} ({left_pad}px of card left, "
-                            f"{right_pad}px right), with a {gap}px field gap"))))
+                candidates.append(
+                    (
+                        gap,
+                        SheetPreview(
+                            y0=y0,
+                            y1=y1,
+                            x0=comment.x0,
+                            x1=comment.x1,
+                            ink_x0=x0,
+                            ink_x1=x1,
+                            reason=(
+                                f"inline-composer-bound pillarboxed run of rows at least "
+                                f"{pillarbox_width}px wide, {y1 - y0} rows tall, its {x1 - x0}px of "
+                                f"ink at x={x0}..{x1} centred inside the comment field's "
+                                f"x={comment.x0}..{comment.x1} ({left_pad}px of card left, "
+                                f"{right_pad}px right), with a {gap}px field gap"
+                            ),
+                        ),
+                    )
+                )
 
     if not candidates:
         # A selected inline card can have a page-coloured right rail after the profile-card heart
@@ -1061,22 +1175,37 @@ def _locate_inline_composer_preview(frame: bytes, composer_surface, *, cv2, np) 
         # this is a geometry recovery, not permission to compare blank page.  Keep the normal
         # compact width, height, gap, composer, and content-verification gates unchanged.
         right_control_lane = round(
-            comment.width * _INLINE_REFRAME_RIGHT_CONTROL_FRACTION)
+            comment.width * _INLINE_REFRAME_RIGHT_CONTROL_FRACTION
+        )
         compared_x1 = comment.x1 - right_control_lane
         for y0, y1 in _tall_runs(minimum_width):
             x0, x1 = _columns(y0, y1)
             gap = _field_gap(y0, y1)
-            if (abs(x0 - comment.x0) <= slack
-                    and compared_x1 <= x1 <= comment.x1 + slack
-                    and gap is not None):
-                candidates.append((gap, SheetPreview(
-                    y0=y0, y1=y1, x0=comment.x0, x1=comment.x1,
-                    ink_x0=x0, ink_x1=x1,
-                    reason=(f"inline-composer-bound left-edge-attached run of rows at least "
-                            f"{minimum_width}px wide, {y1 - y0} rows tall, its "
-                            f"{x1 - x0}px of ink at x={x0}..{x1} reaches the existing "
-                            f"right control-lane start x={compared_x1} inside comment "
-                            f"x={comment.x0}..{comment.x1}, with a {gap}px field gap"))))
+            if (
+                abs(x0 - comment.x0) <= slack
+                and compared_x1 <= x1 <= comment.x1 + slack
+                and gap is not None
+            ):
+                candidates.append(
+                    (
+                        gap,
+                        SheetPreview(
+                            y0=y0,
+                            y1=y1,
+                            x0=comment.x0,
+                            x1=comment.x1,
+                            ink_x0=x0,
+                            ink_x1=x1,
+                            reason=(
+                                f"inline-composer-bound left-edge-attached run of rows at least "
+                                f"{minimum_width}px wide, {y1 - y0} rows tall, its "
+                                f"{x1 - x0}px of ink at x={x0}..{x1} reaches the existing "
+                                f"right control-lane start x={compared_x1} inside comment "
+                                f"x={comment.x0}..{comment.x1}, with a {gap}px field gap"
+                            ),
+                        ),
+                    )
+                )
 
     if not candidates:
         raise SheetVerificationError(
@@ -1086,19 +1215,34 @@ def _locate_inline_composer_preview(frame: bytes, composer_surface, *, cv2, np) 
             f"or at least {pillarbox_width}px and centred inside it, runs for "
             f"{_PREVIEW_MIN_HEIGHT_PX} rows above it. The field is at rows "
             f"{comment.y0}..{comment.y1}, columns {comment.x0}..{comment.x1}, and a flush "
-            f"candidate has to hold both edges within {slack}px of those columns. " + _survey())
+            f"candidate has to hold both edges within {slack}px of those columns. "
+            + _survey()
+        )
     _gap, preview = min(candidates, key=lambda candidate: candidate[0])
     return SheetPreview(
-        y0=preview.y0, y1=preview.y1, x0=preview.x0, x1=preview.x1,
-        ink_x0=preview.ink_x0, ink_x1=preview.ink_x1,
-        reason=(f"inline-composer compact fallback: {preview.reason}; minimum width "
-                f"{minimum_width}px bound to comment x={comment.x0}..{comment.x1}"))
+        y0=preview.y0,
+        y1=preview.y1,
+        x0=preview.x0,
+        x1=preview.x1,
+        ink_x0=preview.ink_x0,
+        ink_x1=preview.ink_x1,
+        reason=(
+            f"inline-composer compact fallback: {preview.reason}; minimum width "
+            f"{minimum_width}px bound to comment x={comment.x0}..{comment.x1}"
+        ),
+    )
 
 
 def _extend_inline_preview_to_block_edges(
-        frame: bytes, preview: SheetPreview, composer_surface, *, cv2, np,
-        background_tolerance: float = _ROW_BACKGROUND_TOLERANCE,
-        margin_probe: tuple[int, int] = _MARGIN_PROBE) -> SheetPreview:
+    frame: bytes,
+    preview: SheetPreview,
+    composer_surface,
+    *,
+    cv2,
+    np,
+    background_tolerance: float = _ROW_BACKGROUND_TOLERANCE,
+    margin_probe: tuple[int, int] = _MARGIN_PROBE,
+) -> SheetPreview:
     """Carry a located preview's edges to where the selected photo actually begins and ends.
 
     `locate_sheet_preview` ends its run at the first row whose non-background span falls under
@@ -1182,8 +1326,10 @@ def _extend_inline_preview_to_block_edges(
     reference_width = preview.ink_width if preview.pillarboxed else comment.width
     minimum_width = round(reference_width * _INLINE_COMPACT_MIN_WIDTH_FRACTION)
     one_edge_minimum_width = round(
-        reference_width * _INLINE_PREVIEW_ONE_EDGE_MIN_WIDTH_FRACTION)
+        reference_width * _INLINE_PREVIEW_ONE_EDGE_MIN_WIDTH_FRACTION
+    )
     slack = max(8, round(reference_width * 0.03))
+
     def row_support(scan_y: int) -> tuple[bool, bool]:
         span = spans[scan_y]
         span_width = 0 if span is None else span[1] - span[0]
@@ -1200,17 +1346,22 @@ def _extend_inline_preview_to_block_edges(
         # welded a 236..1092 preview into 110..1092 and turned a `verify_match` into a
         # `verify_mismatch`.] Containment costs nothing legitimate: a genuine row of THIS photo
         # cannot extend past the photo's own columns.
-        contained = (span is not None
-                     and span[0] >= ink_x0 - slack
-                     and span[1] <= ink_x1 + slack)
+        contained = (
+            span is not None and span[0] >= ink_x0 - slack and span[1] <= ink_x1 + slack
+        )
         fully_supported = span_width >= minimum_width and left_aligned and contained
         # Pale content may erase either visible edge against the page, but it cannot erase both:
         # this lower, composer-only floor requires the other edge to remain exactly attached to
         # the strict preview we already found.  It does not bridge blank page rows (span=None).
         one_edge_supported = (
-            span_width >= one_edge_minimum_width and (left_aligned or right_aligned)
-            and contained)
-        return fully_supported or one_edge_supported, one_edge_supported and not fully_supported
+            span_width >= one_edge_minimum_width
+            and (left_aligned or right_aligned)
+            and contained
+        )
+        return (
+            fully_supported or one_edge_supported,
+            one_edge_supported and not fully_supported,
+        )
 
     def scan_edge(start: int, stop: int, step: int, boundary: int):
         scan_y = start
@@ -1237,9 +1388,11 @@ def _extend_inline_preview_to_block_edges(
         return last_supported_boundary, bridged_rows, bridged_runs, one_edge_rows
 
     y0, upper_bridged_rows, upper_bridged_runs, upper_one_edge_rows = scan_edge(
-        preview.y0 - 1, upper_limit, -1, preview.y0)
+        preview.y0 - 1, upper_limit, -1, preview.y0
+    )
     y1, lower_bridged_rows, lower_bridged_runs, lower_one_edge_rows = scan_edge(
-        preview.y1, lower_limit, 1, preview.y1)
+        preview.y1, lower_limit, 1, preview.y1
+    )
 
     # THE SEAM BUDGET IS JUDGED PER EDGE, AND THE OFFENDING EDGE ALONE IS DISCARDED. Summing the
     # two directions and testing the sum against a single-direction budget was a REGRESSION
@@ -1279,13 +1432,20 @@ def _extend_inline_preview_to_block_edges(
     if y1 != preview.y1:
         carried.append(f"bottom edge carried from row {preview.y1} to {y1}")
     return SheetPreview(
-        y0=y0, y1=y1, x0=preview.x0, x1=preview.x1,
-        ink_x0=preview.ink_x0, ink_x1=preview.ink_x1,
-        reason=(f"{preview.reason}; {' and '.join(carried)} over the "
-                f">={minimum_width}px image block bounded by search row {upper_limit} and the "
-                f"composer comment field at row {comment.y0}, retaining one aligned edge across "
-                f"{one_edge_rows} rows and bridging {bridged_rows} measured internal background "
-                "rows"))
+        y0=y0,
+        y1=y1,
+        x0=preview.x0,
+        x1=preview.x1,
+        ink_x0=preview.ink_x0,
+        ink_x1=preview.ink_x1,
+        reason=(
+            f"{preview.reason}; {' and '.join(carried)} over the "
+            f">={minimum_width}px image block bounded by search row {upper_limit} and the "
+            f"composer comment field at row {comment.y0}, retaining one aligned edge across "
+            f"{one_edge_rows} rows and bridging {bridged_rows} measured internal background "
+            "rows"
+        ),
+    )
 
 
 def _decode_crop(crop, cv2, np):
@@ -1331,7 +1491,8 @@ def _decode_crop(crop, cv2, np):
         # match" are different problems with the same consequence.
         raise SheetVerificationError(
             f"model item {number} carries no stored crop, so the sheet cannot be verified "
-            "against it")
+            "against it"
+        )
     if not crop.verify_image:
         # Fail closed rather than fall back to `crop.image`: that fallback IS the bug above, and
         # it is invisible in the numbers it produces -- a wrongly-scaled distance still looks
@@ -1339,16 +1500,22 @@ def _decode_crop(crop, cv2, np):
         # payload without it is hand-assembled and cannot be verified in the sheet's grey space.
         raise SheetVerificationError(
             f"model item {number} carries no greyscale verification reference, so the sheet "
-            "cannot be compared against it in the grey space it was measured in")
-    gray = cv2.imdecode(np.frombuffer(crop.verify_image, dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
+            "cannot be compared against it in the grey space it was measured in"
+        )
+    gray = cv2.imdecode(
+        np.frombuffer(crop.verify_image, dtype=np.uint8), cv2.IMREAD_GRAYSCALE
+    )
     if gray is None:
         raise SheetVerificationError(
             f"the stored verification reference for item {number} did not decode as an image "
-            f"({len(crop.verify_image)} bytes), so there is nothing to verify the sheet against")
+            f"({len(crop.verify_image)} bytes), so there is nothing to verify the sheet against"
+        )
     return gray
 
 
-def _check_reference_provenance(crop, gray, *, signature_grid: tuple[int, int], cv2, np) -> None:
+def _check_reference_provenance(
+    crop, gray, *, signature_grid: tuple[int, int], cv2, np
+) -> None:
     """Refuse a verification whose reference is not in the grey space its signature was stored in.
 
     THIS IS THE GUARD FOR THE FAULT CLASS `_decode_crop` DESCRIBES, and it is cheap because both
@@ -1378,7 +1545,8 @@ def _check_reference_provenance(crop, gray, *, signature_grid: tuple[int, int], 
     except Exception as exc:  # noqa: BLE001 -- surface as this module's typed refusal
         raise SheetVerificationError(
             f"the verification reference for item {crop.number} could not be reduced to a "
-            f"signature to check its provenance against the stored one: {exc}") from exc
+            f"signature to check its provenance against the stored one: {exc}"
+        ) from exc
     distance = crop.signature.distance(reproduced)
     if distance > _REFERENCE_PROVENANCE_MAX_DIST:
         raise SheetVerificationError(
@@ -1387,15 +1555,24 @@ def _check_reference_provenance(crop, gray, *, signature_grid: tuple[int, int], 
             f"{signature_grid[0]}x{signature_grid[1]} grid, against a "
             f"{_REFERENCE_PROVENANCE_MAX_DIST:.3f} bound. The two are the same pixels, so a "
             f"difference means they were decoded into different grey spaces and every distance "
-            f"measured against this sheet would be in the wrong units. Nothing is typed")
+            f"measured against this sheet would be in the wrong units. Nothing is typed"
+        )
 
 
-def _compare_item(crop, gray, preview: SheetPreview, sheet: CropSignature, *,
-                  grid: tuple[int, int], scale_tolerance: float, cv2, np,
-                  inline_reframe: bool = False,
-                  inline_reframe_max_hidden_fraction: float =
-                  _INLINE_REFRAME_MAX_HIDDEN_FRACTION,
-                  pool: ThreadPoolExecutor | None = None):
+def _compare_item(
+    crop,
+    gray,
+    preview: SheetPreview,
+    sheet: CropSignature,
+    *,
+    grid: tuple[int, int],
+    scale_tolerance: float,
+    cv2,
+    np,
+    inline_reframe: bool = False,
+    inline_reframe_max_hidden_fraction: float = _INLINE_REFRAME_MAX_HIDDEN_FRACTION,
+    pool: ThreadPoolExecutor | None = None,
+):
     """One item measured against the sheet: its swept distance, its window, and its reference.
 
     Returns `(distance_or_None, window_px, reference_signature, reason)`. The reference is the
@@ -1422,9 +1599,13 @@ def _compare_item(crop, gray, preview: SheetPreview, sheet: CropSignature, *,
     if inline_reframe:
         source_x1 -= round(crop_width * _INLINE_REFRAME_RIGHT_CONTROL_FRACTION)
         if source_x1 <= round(crop_width * 0.70):
-            return (None, 0, None,
-                    "inline composer verification would leave too little source width after "
-                    "excluding the profile-card heart control lane")
+            return (
+                None,
+                0,
+                None,
+                "inline composer verification would leave too little source width after "
+                "excluding the profile-card heart control lane",
+            )
         crop_width = source_x1
     scale = crop_width / preview.width
     window_px = int(round(preview.height * scale))
@@ -1436,8 +1617,9 @@ def _compare_item(crop, gray, preview: SheetPreview, sheet: CropSignature, *,
         # grayscale/signature implementation.
         if start is None:
             start = crop_height - rows
-        return _signature_from_gray(gray[start:start + rows, :source_x1], grid=grid,
-                                    cv2=cv2, np=np)
+        return _signature_from_gray(
+            gray[start : start + rows, :source_x1], grid=grid, cv2=cv2, np=np
+        )
 
     # As much of this card as the sheet would be able to show. For a card at least as tall as the
     # window that is the bottom `window_px` rows; for a shorter one it is the whole card, which is
@@ -1446,13 +1628,19 @@ def _compare_item(crop, gray, preview: SheetPreview, sheet: CropSignature, *,
     # Neighbour separation must not depend on which candidate happens to fit THIS screenshot.
     # Keep one deterministic centered reference for each item; only intended-item distance may
     # search the tightly bounded inline reframe offsets below.
-    reference = _window(reference_rows, start=(crop_height - reference_rows) // 2
-                        if inline_reframe else None)
+    reference = _window(
+        reference_rows,
+        start=(crop_height - reference_rows) // 2 if inline_reframe else None,
+    )
     if window_px - tolerance > crop_height:
-        return (None, window_px, reference,
-                f"the sheet is rendering {window_px}px of card and item {crop.number} is only "
-                f"{crop_height}px tall, so this item cannot be what is on screen (it still bounds "
-                f"every other item)")
+        return (
+            None,
+            window_px,
+            reference,
+            f"the sheet is rendering {window_px}px of card and item {crop.number} is only "
+            f"{crop_height}px tall, so this item cannot be what is on screen (it still bounds "
+            f"every other item)",
+        )
 
     if not inline_reframe:
         best = None
@@ -1461,8 +1649,12 @@ def _compare_item(crop, gray, preview: SheetPreview, sheet: CropSignature, *,
                 continue
             distance = sheet.distance(_window(candidate))
             best = distance if best is None else min(best, distance)
-        return (best, window_px, reference,
-                f"bottom {window_px}px of a {crop_height}px crop, swept +-{tolerance}px")
+        return (
+            best,
+            window_px,
+            reference,
+            f"bottom {window_px}px of a {crop_height}px crop, swept +-{tolerance}px",
+        )
 
     # This is deliberately not a generic patch search. Every candidate keeps the full card
     # width and all but a bounded edge strip. The ordinary composer permits the measured 30%;
@@ -1470,9 +1662,13 @@ def _compare_item(crop, gray, preview: SheetPreview, sheet: CropSignature, *,
     # suggestion shelf is detected. The normal modal comparison above retains bottom anchoring.
     nominal_hidden = crop_height - window_px
     if nominal_hidden > round(crop_height * inline_reframe_max_hidden_fraction):
-        return (None, window_px, reference,
-                f"inline composer preview would hide {nominal_hidden}px of this {crop_height}px "
-                f"crop, above the {inline_reframe_max_hidden_fraction:.0%} reframe limit")
+        return (
+            None,
+            window_px,
+            reference,
+            f"inline composer preview would hide {nominal_hidden}px of this {crop_height}px "
+            f"crop, above the {inline_reframe_max_hidden_fraction:.0%} reframe limit",
+        )
     best_distance = None
     best_start = None
     best_rows = None
@@ -1529,16 +1725,28 @@ def _compare_item(crop, gray, preview: SheetPreview, sheet: CropSignature, *,
             best_start = start
             best_rows = candidate
     if best_distance is None:
-        return (None, window_px, reference,
-                "inline composer reframe offered no bounded full-width source window")
-    return (best_distance, window_px, reference,
-            f"inline reframe rows {best_start}..{best_start + best_rows} of a {crop_height}px "
-            f"crop, width-derived {window_px}px swept +-{tolerance}px")
+        return (
+            None,
+            window_px,
+            reference,
+            "inline composer reframe offered no bounded full-width source window",
+        )
+    return (
+        best_distance,
+        window_px,
+        reference,
+        f"inline reframe rows {best_start}..{best_start + best_rows} of a {crop_height}px "
+        f"crop, width-derived {window_px}px swept +-{tolerance}px",
+    )
 
 
-def verification_blocker(payload: ItemPayload, model_index: int, *,
-                         sheet_render_drift: float = _SHEET_RENDER_DRIFT,
-                         separation_fraction: float = _SEPARATION_FRACTION) -> str:
+def verification_blocker(
+    payload: ItemPayload,
+    model_index: int,
+    *,
+    sheet_render_drift: float = _SHEET_RENDER_DRIFT,
+    separation_fraction: float = _SEPARATION_FRACTION,
+) -> str:
     """Why item `model_index` cannot be verified on the sheet at all, or "" when it can.
 
     CALL THIS BEFORE THE TAP. Doc 5.2's addendum ends "5.6 decides what an unverifiable item may
@@ -1583,7 +1791,8 @@ def verification_blocker(payload: ItemPayload, model_index: int, *,
         crop = payload.item(model_index)
     except ItemCropError as exc:
         raise SheetVerificationError(
-            f"cannot check whether model item {model_index} is verifiable: {exc}") from exc
+            f"cannot check whether model item {model_index} is verifiable: {exc}"
+        ) from exc
     nearest = crop.nearest_item_distance
     if nearest is None:
         # One numbered item and nothing to confuse it with. `verify_sheet_item` falls back to the
@@ -1600,18 +1809,24 @@ def verification_blocker(payload: ItemPayload, model_index: int, *,
             f"for {noise:.3f} of expected noise against a {bound:.3f} bound "
             f"({separation_fraction:g} x its {nearest:.3f} distance to the nearest other item). A "
             f"tolerance wide enough to accept it is wide enough to accept a different item, and "
-            f"doc 5.6 forbids substituting one, so nothing is tapped")
+            f"doc 5.6 forbids substituting one, so nothing is tapped"
+        )
     return ""
 
 
-def verify_sheet_item(frame: bytes, payload: ItemPayload, model_index: int, *,
-                      grid: tuple[int, int] = _VERIFY_GRID,
-                      scale_tolerance: float = _SCALE_TOLERANCE,
-                      separation_fraction: float = _SEPARATION_FRACTION,
-                      sheet_render_drift: float = _SHEET_RENDER_DRIFT,
-                      absolute_max_dist: float | None = None,
-                      composer_surface=None,
-                      **locate_kwargs) -> SheetVerdict:
+def verify_sheet_item(
+    frame: bytes,
+    payload: ItemPayload,
+    model_index: int,
+    *,
+    grid: tuple[int, int] = _VERIFY_GRID,
+    scale_tolerance: float = _SCALE_TOLERANCE,
+    separation_fraction: float = _SEPARATION_FRACTION,
+    sheet_render_drift: float = _SHEET_RENDER_DRIFT,
+    absolute_max_dist: float | None = None,
+    composer_surface=None,
+    **locate_kwargs,
+) -> SheetVerdict:
     """Is the open comment sheet in `frame` showing model item `model_index`? Deterministic.
 
     CALL THIS AFTER THE TAP AND BEFORE ANY TYPING. It never taps, types, sends or repairs; it
@@ -1639,20 +1854,24 @@ def verify_sheet_item(frame: bytes, payload: ItemPayload, model_index: int, *,
     # cosmetic tolerance: NaN makes ``distance >= ceiling`` false and infinity makes it always
     # false, both silently erasing the foreign-card guard below.
     if absolute_max_dist is not None:
-        if (isinstance(absolute_max_dist, bool)
-                or not isinstance(absolute_max_dist, (int, float))
-                or not math.isfinite(absolute_max_dist)
-                or absolute_max_dist <= 0
-                or absolute_max_dist >= _SHEET_FALSE_MATCH_DISTANCE):
+        if (
+            isinstance(absolute_max_dist, bool)
+            or not isinstance(absolute_max_dist, (int, float))
+            or not math.isfinite(absolute_max_dist)
+            or absolute_max_dist <= 0
+            or absolute_max_dist >= _SHEET_FALSE_MATCH_DISTANCE
+        ):
             raise SheetVerificationError(
                 "absolute_max_dist must be a finite positive number strictly below the known "
-                f"{_SHEET_FALSE_MATCH_DISTANCE} foreign-card false-match distance")
+                f"{_SHEET_FALSE_MATCH_DISTANCE} foreign-card false-match distance"
+            )
 
     try:
         chosen = payload.item(model_index)
     except ItemCropError as exc:
         raise SheetVerificationError(
-            f"cannot verify model item {model_index} against this payload: {exc}") from exc
+            f"cannot verify model item {model_index} against this payload: {exc}"
+        ) from exc
 
     cv2, np = _require_vision()
     try:
@@ -1666,7 +1885,8 @@ def verify_sheet_item(frame: bytes, payload: ItemPayload, model_index: int, *,
         if composer_surface is None:
             raise
         preview = _locate_inline_composer_preview(
-            frame, composer_surface, cv2=cv2, np=np)
+            frame, composer_surface, cv2=cv2, np=np
+        )
     inline_reframe_max_hidden_fraction = _INLINE_REFRAME_MAX_HIDDEN_FRACTION
     if composer_surface is not None:
         # The located run is where the preview STARTS; under a proven composer its bottom edge is
@@ -1674,10 +1894,16 @@ def verify_sheet_item(frame: bytes, payload: ItemPayload, model_index: int, *,
         # `_extend_inline_preview_to_block_edges` -- a real 10.0.1 composer was refused below
         # because a bright photo edge cut an 856px preview down to a 620px fragment.
         preview = _extend_inline_preview_to_block_edges(
-            frame, preview, composer_surface, cv2=cv2, np=np,
+            frame,
+            preview,
+            composer_surface,
+            cv2=cv2,
+            np=np,
             background_tolerance=locate_kwargs.get(
-                "background_tolerance", _ROW_BACKGROUND_TOLERANCE),
-            margin_probe=locate_kwargs.get("margin_probe", _MARGIN_PROBE))
+                "background_tolerance", _ROW_BACKGROUND_TOLERANCE
+            ),
+            margin_probe=locate_kwargs.get("margin_probe", _MARGIN_PROBE),
+        )
         # Hinge 9.134 moved this UI inline.  The legacy preview geometry remains useful for
         # content comparison, but no longer proves by itself that a composer exists: an ordinary
         # card can share the same inset.  Bind the selected-card crop to an independently
@@ -1686,23 +1912,34 @@ def verify_sheet_item(frame: bytes, payload: ItemPayload, model_index: int, *,
         send = getattr(composer_surface, "send_rect", None)
         if comment is None or send is None:
             raise SheetVerificationError(
-                "the supplied inline-composer surface has no comment/send rectangles")
-        gap_gray = cv2.imdecode(np.frombuffer(frame, dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
+                "the supplied inline-composer surface has no comment/send rectangles"
+            )
+        gap_gray = cv2.imdecode(
+            np.frombuffer(frame, dtype=np.uint8), cv2.IMREAD_GRAYSCALE
+        )
         if gap_gray is None:
             raise SheetVerificationError(
                 f"the like-sheet frame did not decode as an image ({len(frame)} bytes), so "
-                "its preview-to-composer topology cannot be checked")
+                "its preview-to-composer topology cannot be checked"
+            )
         width_slack = max(8, round(preview.width * 0.03))
         gap = comment.y0 - preview.y1
         gap_evidence = _inline_gap_evidence(
-            gap_gray, preview_y1=preview.y1, preview_height=preview.height,
-            comment=comment, cv2=cv2, np=np)
+            gap_gray,
+            preview_y1=preview.y1,
+            preview_height=preview.height,
+            comment=comment,
+            cv2=cv2,
+            np=np,
+        )
         inline_reframe_max_hidden_fraction = gap_evidence.max_hidden_fraction
         controls_gap = send.y0 - comment.y1
-        if (abs(preview.x0 - comment.x0) > width_slack
-                or abs(preview.x1 - comment.x1) > width_slack
-                or not gap_evidence.accepted
-                or not 0 <= controls_gap <= max(60, round(comment.height * 0.40))):
+        if (
+            abs(preview.x0 - comment.x0) > width_slack
+            or abs(preview.x1 - comment.x1) > width_slack
+            or not gap_evidence.accepted
+            or not 0 <= controls_gap <= max(60, round(comment.height * 0.40))
+        ):
             raise SheetVerificationError(
                 "the selected-card preview is not immediately above the independently detected "
                 "inline comment field and Send Like CTA "
@@ -1710,20 +1947,32 @@ def verify_sheet_item(frame: bytes, payload: ItemPayload, model_index: int, *,
                 f"comment=({comment.x0},{comment.y0})-({comment.x1},{comment.y1}), "
                 f"send=({send.x0},{send.y0})-({send.x1},{send.y1}), "
                 f"photo-to-field gap={gap}px ({gap_evidence.reason}), "
-                f"field-to-CTA gap={controls_gap}px)")
+                f"field-to-CTA gap={controls_gap}px)"
+            )
         if gap_evidence.suggestion_shelf is not None:
             preview = SheetPreview(
-                y0=preview.y0, y1=preview.y1, x0=preview.x0, x1=preview.x1,
-                ink_x0=preview.ink_x0, ink_x1=preview.ink_x1,
-                reason=(preview.reason + "; " + gap_evidence.reason
-                        + f"; inline reframe limit {_INLINE_SUGGESTION_MAX_HIDDEN_FRACTION:.0%}"))
+                y0=preview.y0,
+                y1=preview.y1,
+                x0=preview.x0,
+                x1=preview.x1,
+                ink_x0=preview.ink_x0,
+                ink_x1=preview.ink_x1,
+                reason=(
+                    preview.reason
+                    + "; "
+                    + gap_evidence.reason
+                    + f"; inline reframe limit {_INLINE_SUGGESTION_MAX_HIDDEN_FRACTION:.0%}"
+                ),
+            )
     try:
-        sheet = signature_of(frame, y0=preview.y0, y1=preview.y1, x0=preview.x0, x1=preview.x1,
-                             grid=grid)
+        sheet = signature_of(
+            frame, y0=preview.y0, y1=preview.y1, x0=preview.x0, x1=preview.x1, grid=grid
+        )
     except ItemCropError as exc:
         raise SheetVerificationError(
             f"the sheet's item preview at rows {preview.y0}..{preview.y1}, columns "
-            f"{preview.x0}..{preview.x1} could not be reduced to a signature: {exc}") from exc
+            f"{preview.x0}..{preview.x1} could not be reduced to a signature: {exc}"
+        ) from exc
 
     comparison_preview = preview
     if composer_surface is not None:
@@ -1735,16 +1984,28 @@ def verify_sheet_item(frame: bytes, payload: ItemPayload, model_index: int, *,
         if preview.width - right_lane <= round(preview.width * 0.70):
             raise SheetVerificationError(
                 "inline selected-photo preview leaves too little width after excluding the "
-                "profile-card heart-control lane")
+                "profile-card heart-control lane"
+            )
         comparison_preview = SheetPreview(
-            y0=preview.y0, y1=preview.y1, x0=preview.x0, x1=preview.x1 - right_lane,
-            reason=preview.reason + "; inline right control lane excluded")
+            y0=preview.y0,
+            y1=preview.y1,
+            x0=preview.x0,
+            x1=preview.x1 - right_lane,
+            reason=preview.reason + "; inline right control lane excluded",
+        )
         try:
-            sheet = signature_of(frame, y0=comparison_preview.y0, y1=comparison_preview.y1,
-                                 x0=comparison_preview.x0, x1=comparison_preview.x1, grid=grid)
+            sheet = signature_of(
+                frame,
+                y0=comparison_preview.y0,
+                y1=comparison_preview.y1,
+                x0=comparison_preview.x0,
+                x1=comparison_preview.x1,
+                grid=grid,
+            )
         except ItemCropError as exc:
             raise SheetVerificationError(
-                "the inline selected-photo content rect could not be reduced to a signature") from exc
+                "the inline selected-photo content rect could not be reduced to a signature"
+            ) from exc
 
     # THE PILLARBOX DILUTION, AND WHY THE TWO ABSOLUTE CEILINGS CANNOT BE CARRIED OVER UNCHANGED.
     # A pillarboxed comparison rect is blank on BOTH sides of the comparison: card-white in the
@@ -1792,26 +2053,40 @@ def verify_sheet_item(frame: bytes, payload: ItemPayload, model_index: int, *,
             raise SheetVerificationError(
                 f"the pillarboxed preview's ink ({preview.ink_bounds[0]}..{preview.ink_bounds[1]}) "
                 f"covers none of the {comparison_preview.width}px compared, so every distance "
-                "measured through it would be between two blank regions")
+                "measured through it would be between two blank regions"
+            )
 
     measured: list[tuple] = []
     # ONE pool for the whole payload, and only for the inline regime that has a sweep to spend it
     # on -- a pool per item would pay its own startup 9 times for a sweep that is over in ~100ms.
     # The modal branch scores ~17 windows per item and is not worth threading.
-    pool = (ThreadPoolExecutor(max_workers=_INLINE_REFRAME_SWEEP_WORKERS)
-            if composer_surface is not None else None)
+    pool = (
+        ThreadPoolExecutor(max_workers=_INLINE_REFRAME_SWEEP_WORKERS)
+        if composer_surface is not None
+        else None
+    )
     try:
         for crop in payload.items:
             gray = _decode_crop(crop, cv2, np)
             _check_reference_provenance(
-                crop, gray, signature_grid=payload.signature_grid, cv2=cv2, np=np)
+                crop, gray, signature_grid=payload.signature_grid, cv2=cv2, np=np
+            )
             distance, window_px, reference, reason = _compare_item(
-                crop, gray, comparison_preview, sheet, grid=grid,
-                scale_tolerance=scale_tolerance, cv2=cv2,
-                np=np, inline_reframe=(composer_surface is not None),
+                crop,
+                gray,
+                comparison_preview,
+                sheet,
+                grid=grid,
+                scale_tolerance=scale_tolerance,
+                cv2=cv2,
+                np=np,
+                inline_reframe=(composer_surface is not None),
                 inline_reframe_max_hidden_fraction=inline_reframe_max_hidden_fraction,
-                pool=pool)
-            measured.append((crop, distance, window_px, reference, reason, int(gray.shape[0])))
+                pool=pool,
+            )
+            measured.append(
+                (crop, distance, window_px, reference, reason, int(gray.shape[0]))
+            )
     finally:
         if pool is not None:
             pool.shutdown()
@@ -1825,7 +2100,9 @@ def verify_sheet_item(frame: bytes, payload: ItemPayload, model_index: int, *,
     for crop, distance, window_px, reference, reason, crop_px in measured:
         nearest_other = None
         if reference is not None:
-            others = [reference.distance(r) for n, r in references.items() if n != crop.number]
+            others = [
+                reference.distance(r) for n, r in references.items() if n != crop.number
+            ]
             nearest_other = min(others) if others else None
         # With a neighbour the bound is the separation scaled DOWN by the fraction (half of it,
         # which is what makes the nearest match unique). With none -- a one-item list, or one
@@ -1835,24 +2112,45 @@ def verify_sheet_item(frame: bytes, payload: ItemPayload, model_index: int, *,
         # structurally proven inline composer has a distinct Hinge renderer/reframe and therefore
         # uses its own held-out one-item ceiling; it never widens a multi-item relative proof.
         # Production's independently calibrated absolute ceiling remains a second, stricter cap.
-        bound = (separation_fraction * nearest_other if nearest_other is not None
-                 else (sheet_render_drift + (crop.signature_drift or 0.0)) / separation_fraction)
+        bound = (
+            separation_fraction * nearest_other
+            if nearest_other is not None
+            else (sheet_render_drift + (crop.signature_drift or 0.0))
+            / separation_fraction
+        )
         if composer_surface is not None and nearest_other is None:
             bound = _INLINE_COMPOSER_ONE_ITEM_MAX_DIST * content_fraction
-        comparisons.append(ItemComparison(
-            number=crop.number, distance=distance, window_px=window_px, crop_px=crop_px,
-            nearest_other=nearest_other, bound=bound, reason=reason))
+        comparisons.append(
+            ItemComparison(
+                number=crop.number,
+                distance=distance,
+                window_px=window_px,
+                crop_px=crop_px,
+                nearest_other=nearest_other,
+                bound=bound,
+                reason=reason,
+            )
+        )
     by_number = {c.number: c for c in comparisons}
     mine = by_number[model_index]
 
     reachable = [c for c in comparisons if c.distance is not None]
-    nearest_index = (min(reachable, key=lambda c: c.distance).number if reachable else None)
+    nearest_index = (
+        min(reachable, key=lambda c: c.distance).number if reachable else None
+    )
 
     def _verdict(state: str, reason: str) -> SheetVerdict:
         return SheetVerdict(
-            state=state, model_index=model_index, nearest_index=nearest_index,
-            distance=mine.distance, bound=mine.bound, comparisons=tuple(comparisons),
-            preview=preview, grid=grid, reason=reason)
+            state=state,
+            model_index=model_index,
+            nearest_index=nearest_index,
+            distance=mine.distance,
+            bound=mine.bound,
+            comparisons=tuple(comparisons),
+            preview=preview,
+            grid=grid,
+            reason=reason,
+        )
 
     # UNVERIFIABLE first: when the bound is not wide enough to hold a correct reading, the
     # numbers below decide nothing, and reporting a MATCH off them would be the substitution doc
@@ -1860,69 +2158,109 @@ def verify_sheet_item(frame: bytes, payload: ItemPayload, model_index: int, *,
     # before the tap, off the payload's own coarser numbers; this is the same test re-made in the
     # space the comparison actually happened in.
     noise = sheet_render_drift + (chosen.signature_drift or 0.0)
-    if mine.bound is not None and mine.nearest_other is not None and noise >= mine.bound:
-        return _verdict(VERIFY_UNVERIFIABLE, (
-            f"model item {model_index} cannot be told from its neighbours on a like sheet: it "
-            f"sits {mine.nearest_other:.3f} grey levels from the nearest other item in the window "
-            f"the sheet renders, against {noise:.3f} of expected noise "
-            f"({sheet_render_drift:.2f} for the sheet's own re-render plus "
-            f"{chosen.signature_drift or 0.0:.3f} of the crop's own drift). Nothing is typed"))
+    if (
+        mine.bound is not None
+        and mine.nearest_other is not None
+        and noise >= mine.bound
+    ):
+        return _verdict(
+            VERIFY_UNVERIFIABLE,
+            (
+                f"model item {model_index} cannot be told from its neighbours on a like sheet: it "
+                f"sits {mine.nearest_other:.3f} grey levels from the nearest other item in the window "
+                f"the sheet renders, against {noise:.3f} of expected noise "
+                f"({sheet_render_drift:.2f} for the sheet's own re-render plus "
+                f"{chosen.signature_drift or 0.0:.3f} of the crop's own drift). Nothing is typed"
+            ),
+        )
     if mine.distance is None:
         # `nearest_index` is None when NOTHING in the payload could be measured against this
         # sheet -- not when some other item was the nearest. Those are different facts and the
         # operator gets this sentence verbatim: the 2026-08-15 observe run printed "The nearest
         # stored item is None", which reads as an item named None rather than as "no comparison
         # was possible at all". Say which one it is.
-        nearest = (f"The nearest stored item is {nearest_index}" if nearest_index is not None
-                   else "No stored item could be measured against this sheet either")
-        return _verdict(VERIFY_MISMATCH, (
-            f"the sheet is not showing model item {model_index}: {mine.reason}. {nearest}"))
+        nearest = (
+            f"The nearest stored item is {nearest_index}"
+            if nearest_index is not None
+            else "No stored item could be measured against this sheet either"
+        )
+        return _verdict(
+            VERIFY_MISMATCH,
+            (
+                f"the sheet is not showing model item {model_index}: {mine.reason}. {nearest}"
+            ),
+        )
     if nearest_index != model_index:
         other = by_number[nearest_index]
-        return _verdict(VERIFY_MISMATCH, (
-            f"the like sheet is showing model item {nearest_index}, not the item {model_index} "
-            f"the opener was written about: the sheet sits {other.distance:.3f} grey levels from "
-            f"item {nearest_index}'s crop and {mine.distance:.3f} from item {model_index}'s. "
-            f"Nothing is sent and the sheet is left open"))
+        return _verdict(
+            VERIFY_MISMATCH,
+            (
+                f"the like sheet is showing model item {nearest_index}, not the item {model_index} "
+                f"the opener was written about: the sheet sits {other.distance:.3f} grey levels from "
+                f"item {nearest_index}'s crop and {mine.distance:.3f} from item {model_index}'s. "
+                f"Nothing is sent and the sheet is left open"
+            ),
+        )
     # How the bound was arrived at, spelled out in both the accept and the reject message: with a
     # neighbour it is half the distance to it, and with none (a one-item list, or a list where
     # every other item is too short to be what the sheet is rendering) there is no neighbour to
     # halve, so the only defensible bound left is the sheet's own measured reproduction noise.
     derivation = (
         f"{separation_fraction:g} x its {mine.nearest_other:.3f} distance to the nearest other "
-        f"item" if mine.nearest_other is not None else
-        (f"the inline composer's independently held-out {mine.bound:.2f} one-item render ceiling, "
-         f"there being no other item to bound against" if composer_surface is not None else
-         f"the sheet's own {sheet_render_drift:.2f} reproduction noise plus this crop's "
-         f"{chosen.signature_drift or 0.0:.3f} drift over {separation_fraction:g}, there being no "
-         f"other item to bound against"))
+        f"item"
+        if mine.nearest_other is not None
+        else (
+            f"the inline composer's independently held-out {mine.bound:.2f} one-item render ceiling, "
+            f"there being no other item to bound against"
+            if composer_surface is not None
+            else f"the sheet's own {sheet_render_drift:.2f} reproduction noise plus this crop's "
+            f"{chosen.signature_drift or 0.0:.3f} drift over {separation_fraction:g}, there being no "
+            f"other item to bound against"
+        )
+    )
     if mine.distance >= mine.bound:
-        return _verdict(VERIFY_MISMATCH, (
-            # "CANNOT CONFIRM", not "does not show", and the difference is the whole diagnosis.
-            # Reaching here means item `model_index` IS the nearest stored crop -- no other item
-            # was closer -- so the honest statement is that the distance did not come under the
-            # bound, which is a measurement or calibration outcome. Claiming the sheet shows
-            # something else is a stronger assertion than the numbers support, and on 2026-08-27
-            # it sent the reader looking for a targeting bug when the sheet had been correct all
-            # along and the reference was in the wrong grey space.
-            f"the like sheet cannot be confirmed as model item {model_index}: item {model_index} "
-            f"IS the nearest stored crop, but at {mine.distance:.3f} grey levels, against a "
-            f"{mine.bound:.3f} bound ({derivation}). Nothing else this profile was indexed with "
-            f"is closer, so this is a distance/bound refusal rather than a different card. "
-            f"Nothing is sent and the sheet is left open"))
-    effective_absolute = (None if absolute_max_dist is None
-                          else absolute_max_dist * content_fraction)
+        return _verdict(
+            VERIFY_MISMATCH,
+            (
+                # "CANNOT CONFIRM", not "does not show", and the difference is the whole diagnosis.
+                # Reaching here means item `model_index` IS the nearest stored crop -- no other item
+                # was closer -- so the honest statement is that the distance did not come under the
+                # bound, which is a measurement or calibration outcome. Claiming the sheet shows
+                # something else is a stronger assertion than the numbers support, and on 2026-08-27
+                # it sent the reader looking for a targeting bug when the sheet had been correct all
+                # along and the reference was in the wrong grey space.
+                f"the like sheet cannot be confirmed as model item {model_index}: item {model_index} "
+                f"IS the nearest stored crop, but at {mine.distance:.3f} grey levels, against a "
+                f"{mine.bound:.3f} bound ({derivation}). Nothing else this profile was indexed with "
+                f"is closer, so this is a distance/bound refusal rather than a different card. "
+                f"Nothing is sent and the sheet is left open"
+            ),
+        )
+    effective_absolute = (
+        None if absolute_max_dist is None else absolute_max_dist * content_fraction
+    )
     if effective_absolute is not None and mine.distance >= effective_absolute:
-        return _verdict(VERIFY_MISMATCH, (
-            f"the like sheet is too far from model item {model_index} to confirm: "
-            f"{mine.distance:.3f} grey levels is within its relative {mine.bound:.3f} bound "
-            f"but not below the calibrated absolute {effective_absolute:.3f} ceiling"
-            + ("" if content_fraction == 1.0 else
-               f" (the {absolute_max_dist:.3f} calibrated ceiling scaled by the "
-               f"{content_fraction:.3f} of this pillarboxed preview that carries ink, so it is "
-               "applied in the units it was fitted in)")
-            + ". Nothing was typed and the sheet is left open"))
-    return _verdict(VERIFY_MATCH, (
-        f"the like sheet shows model item {model_index}: {mine.distance:.3f} grey levels from its "
-        f"stored crop, against a {mine.bound:.3f} bound ({derivation}), and nearer than every "
-        f"other numbered item this profile was indexed with"))
+        return _verdict(
+            VERIFY_MISMATCH,
+            (
+                f"the like sheet is too far from model item {model_index} to confirm: "
+                f"{mine.distance:.3f} grey levels is within its relative {mine.bound:.3f} bound "
+                f"but not below the calibrated absolute {effective_absolute:.3f} ceiling"
+                + (
+                    ""
+                    if content_fraction == 1.0
+                    else f" (the {absolute_max_dist:.3f} calibrated ceiling scaled by the "
+                    f"{content_fraction:.3f} of this pillarboxed preview that carries ink, so it is "
+                    "applied in the units it was fitted in)"
+                )
+                + ". Nothing was typed and the sheet is left open"
+            ),
+        )
+    return _verdict(
+        VERIFY_MATCH,
+        (
+            f"the like sheet shows model item {model_index}: {mine.distance:.3f} grey levels from its "
+            f"stored crop, against a {mine.bound:.3f} bound ({derivation}), and nearer than every "
+            f"other numbered item this profile was indexed with"
+        ),
+    )

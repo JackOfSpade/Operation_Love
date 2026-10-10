@@ -3,6 +3,7 @@
 Kept separate from state/server so editing the launcher shell-script bodies
 never touches request-handling or process-lifecycle code.
 """
+
 from __future__ import annotations
 
 import os
@@ -23,7 +24,7 @@ from pathlib import Path
 # we re-run pip only when pyproject.toml is newer than the last install (stamped
 # inside .venv) or there's no .venv yet. Then it launches the hub; when the
 # browser hub tab closes, the hub exits and the launcher closes this Terminal tab.
-_MAC_UPDATE_RUN = r'''#!/bin/zsh
+_MAC_UPDATE_RUN = r"""#!/bin/zsh
 # Operation Love — set up if needed, then launch, in one double-click. Portable:
 # resolves the project from this script's own location, so it works on any
 # machine. Dependencies are (re)installed ONLY when they change; otherwise it
@@ -74,35 +75,41 @@ if [ "$status" -eq 0 ] && [[ "$TTY_NAME" == /dev/* ]]; then
     -e 'end tell' >/dev/null 2>&1 &
 fi
 exit "$status"
-'''
+"""
 
-_LINUX_UPDATE_RUN = ('#!/bin/sh\ncd "$(dirname "$0")" || exit 1\n'
-                     'PY=".venv/bin/python"\nSTAMP=".venv/.oplove-deps-stamp"\nNEED=0\n'
-                     'if [ ! -x "$PY" ]; then python3 -m venv .venv || exit 1; NEED=1\n'
-                     'elif [ ! -e "$STAMP" ] || [ pyproject.toml -nt "$STAMP" ]; then NEED=1; fi\n'
-                     'if [ "$NEED" -eq 1 ]; then\n'
-                     '  "$PY" -m pip install -e ".[__EXTRAS__]" || exit 1\n'
-                     '  "$PY" -m operation_love.runtime || exit 1\n'
-                     '  touch "$STAMP"\nfi\n'
-                     'exec "$PY" -m operation_love hub__CONFIG_ARG__\n')
+_LINUX_UPDATE_RUN = (
+    '#!/bin/sh\ncd "$(dirname "$0")" || exit 1\n'
+    'PY=".venv/bin/python"\nSTAMP=".venv/.oplove-deps-stamp"\nNEED=0\n'
+    'if [ ! -x "$PY" ]; then python3 -m venv .venv || exit 1; NEED=1\n'
+    'elif [ ! -e "$STAMP" ] || [ pyproject.toml -nt "$STAMP" ]; then NEED=1; fi\n'
+    'if [ "$NEED" -eq 1 ]; then\n'
+    '  "$PY" -m pip install -e ".[__EXTRAS__]" || exit 1\n'
+    '  "$PY" -m operation_love.runtime || exit 1\n'
+    '  touch "$STAMP"\nfi\n'
+    'exec "$PY" -m operation_love hub__CONFIG_ARG__\n'
+)
 
-_WIN_UPDATE_RUN = ('@echo off\r\nsetlocal DisableDelayedExpansion\r\ncd /d "%~dp0"\r\n'
-                   'set "PY=.venv\\Scripts\\python.exe"\r\n'
-                   'set "STAMP=.venv\\.oplove-deps-stamp"\r\n'
-                   'set NEED=0\r\n'
-                   'if not exist "%PY%" ( python -m venv .venv || exit /b 1 & set NEED=1 ) else (\r\n'
-                   '  powershell -NoProfile -Command "if(!(Test-Path \'%STAMP%\') -or (Get-Item \'pyproject.toml\').LastWriteTime -gt (Get-Item \'%STAMP%\').LastWriteTime){exit 1}else{exit 0}"\r\n'
-                   '  if errorlevel 1 set NEED=1\r\n'
-                   ')\r\n'
-                   'if "%NEED%"=="1" (\r\n'
-                   '  "%PY%" -m pip install -e ".[__EXTRAS__]" || exit /b 1\r\n'
-                   '  "%PY%" -m operation_love.runtime || exit /b 1\r\n'
-                   '  echo ok> "%STAMP%"\r\n'
-                   ')\r\n'
-                   '"%PY%" -m operation_love hub__CONFIG_ARG__\r\n')
+_WIN_UPDATE_RUN = (
+    '@echo off\r\nsetlocal DisableDelayedExpansion\r\ncd /d "%~dp0"\r\n'
+    'set "PY=.venv\\Scripts\\python.exe"\r\n'
+    'set "STAMP=.venv\\.oplove-deps-stamp"\r\n'
+    "set NEED=0\r\n"
+    'if not exist "%PY%" ( python -m venv .venv || exit /b 1 & set NEED=1 ) else (\r\n'
+    "  powershell -NoProfile -Command \"if(!(Test-Path '%STAMP%') -or (Get-Item 'pyproject.toml').LastWriteTime -gt (Get-Item '%STAMP%').LastWriteTime){exit 1}else{exit 0}\"\r\n"
+    "  if errorlevel 1 set NEED=1\r\n"
+    ")\r\n"
+    'if "%NEED%"=="1" (\r\n'
+    '  "%PY%" -m pip install -e ".[__EXTRAS__]" || exit /b 1\r\n'
+    '  "%PY%" -m operation_love.runtime || exit /b 1\r\n'
+    '  echo ok> "%STAMP%"\r\n'
+    ")\r\n"
+    '"%PY%" -m operation_love hub__CONFIG_ARG__\r\n'
+)
 
 
-def make_launchers(config_path: str = "config.yaml", extras: str = "ml,bq,hinge") -> None:
+def make_launchers(
+    config_path: str = "config.yaml", extras: str = "ml,bq,hinge"
+) -> None:
     """Write ONE portable double-click launcher INTO the project folder.
 
     It resolves the project from the script's own location (no absolute paths)
@@ -117,15 +124,26 @@ def make_launchers(config_path: str = "config.yaml", extras: str = "ml,bq,hinge"
     config_name = Path(config_path).resolve().name
     plat = sys.platform
     extra_ids = extras.split(",")
-    if (not extra_ids or any(not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", item)
-                             for item in extra_ids)
-            or len(set(extra_ids)) != len(extra_ids)):
-        raise ValueError("extras must be unique comma-separated optional-dependency ids")
-    declared = set(tomllib.loads((proj / "pyproject.toml").read_text(encoding="utf-8"))
-                   ["project"]["optional-dependencies"])
+    if (
+        not extra_ids
+        or any(
+            not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", item) for item in extra_ids
+        )
+        or len(set(extra_ids)) != len(extra_ids)
+    ):
+        raise ValueError(
+            "extras must be unique comma-separated optional-dependency ids"
+        )
+    declared = set(
+        tomllib.loads((proj / "pyproject.toml").read_text(encoding="utf-8"))["project"][
+            "optional-dependencies"
+        ]
+    )
     unknown = set(extra_ids) - declared
     if unknown:
-        raise ValueError(f"unknown optional-dependency extras: {', '.join(sorted(unknown))}")
+        raise ValueError(
+            f"unknown optional-dependency extras: {', '.join(sorted(unknown))}"
+        )
 
     # Launchers always ``cd`` to the directory holding the chosen config. Preserve the default
     # command text for config.yaml, but forward any custom leaf exactly so a launcher made with
@@ -146,8 +164,9 @@ def make_launchers(config_path: str = "config.yaml", extras: str = "ml,bq,hinge"
             existing = path.lstat()
         except FileNotFoundError:
             existing = None
-        if existing is not None and (stat.S_ISLNK(existing.st_mode)
-                                     or not stat.S_ISREG(existing.st_mode)):
+        if existing is not None and (
+            stat.S_ISLNK(existing.st_mode) or not stat.S_ISREG(existing.st_mode)
+        ):
             raise OSError(f"launcher target is not a regular file: {path}")
         fd, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
         temporary = Path(temporary_name)
@@ -174,8 +193,11 @@ def make_launchers(config_path: str = "config.yaml", extras: str = "ml,bq,hinge"
     def _write(name: str, body: str, executable: bool) -> None:
         p = proj / name
         config_arg = windows_config_arg if name.endswith(".bat") else posix_config_arg
-        _atomic_write(p, body.replace("__EXTRAS__", extras).replace("__CONFIG_ARG__", config_arg),
-                      0o755 if executable else 0o644)
+        _atomic_write(
+            p,
+            body.replace("__EXTRAS__", extras).replace("__CONFIG_ARG__", config_arg),
+            0o755 if executable else 0o644,
+        )
         print(f"Hub: wrote: {p.name}")
 
     if plat == "darwin":
@@ -185,5 +207,7 @@ def make_launchers(config_path: str = "config.yaml", extras: str = "ml,bq,hinge"
     else:  # linux / *bsd
         _write("operation-love.sh", _LINUX_UPDATE_RUN, True)
 
-    print("      One launcher: installs deps only when they change, then opens the hub.")
+    print(
+        "      One launcher: installs deps only when they change, then opens the hub."
+    )
     print("      Portable across machines (relative paths + project-local .venv).")

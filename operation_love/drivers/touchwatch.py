@@ -34,6 +34,7 @@ human's.
 streaming API just for this one caller. This module owns its own `subprocess.Popen`
 instead of routing through Adb.
 """
+
 from __future__ import annotations
 
 import math
@@ -75,9 +76,9 @@ class Gesture:
 
     t_down: float
     t_up: float
-    down: tuple[int, int]   # screen px
-    up: tuple[int, int]     # screen px
-    travel_px: float        # max euclidean distance from the down point
+    down: tuple[int, int]  # screen px
+    up: tuple[int, int]  # screen px
+    travel_px: float  # max euclidean distance from the down point
 
     def is_tap(self, slop_px: float) -> bool:
         """True when the finger never travelled more than `slop_px` from its down point.
@@ -110,15 +111,21 @@ _LT_LINE_RE = re.compile(
 #                   0036  : value 0, min 0, max 2399, fuzz 0, flat 0, resolution 0
 #     input props:
 #       INPUT_PROP_DIRECT
-_ADD_DEVICE_RE = re.compile(r"^add device \d+:\s*(/dev/input/event\d+)\s*$", re.MULTILINE)
+_ADD_DEVICE_RE = re.compile(
+    r"^add device \d+:\s*(/dev/input/event\d+)\s*$", re.MULTILINE
+)
 _NAME_RE = re.compile(r'^\s*name:\s*"([^"]*)"', re.MULTILINE)
-_KEY_CODES_RE = re.compile(r"^\s*KEY\s+\(0001\):\s*((?:[0-9a-fA-F]{4}\*?\s*)+)$", re.MULTILINE)
+_KEY_CODES_RE = re.compile(
+    r"^\s*KEY\s+\(0001\):\s*((?:[0-9a-fA-F]{4}\*?\s*)+)$", re.MULTILINE
+)
 _INPUT_PROP_DIRECT_RE = re.compile(r"^\s*INPUT_PROP_DIRECT\s*$", re.MULTILINE)
 # Matches every "<4-hex-code>  : value V, min N, max M, ..." axis line inside an ABS
 # block, regardless of exactly how the surrounding "ABS (0003):" header wraps around the
 # first axis -- that header never itself matches this pattern (its own trailing "):" is
 # followed by an axis code, not literally by "value").
-_ABS_AXIS_RE = re.compile(r"([0-9a-fA-F]{4})\s*:\s*value\s+-?\d+,\s*min\s+-?\d+,\s*max\s+(-?\d+)")
+_ABS_AXIS_RE = re.compile(
+    r"([0-9a-fA-F]{4})\s*:\s*value\s+-?\d+,\s*min\s+-?\d+,\s*max\s+(-?\d+)"
+)
 
 ABS_MT_POSITION_X = "0035"
 ABS_MT_POSITION_Y = "0036"
@@ -135,10 +142,12 @@ ABS_MT_TRACKING_ID = "0039"
 # human gesture, so fail closed rather than attaching to it. Unlike a name prefix, this survives
 # a custom PersistentUhidTouch name.
 _OUR_VIRTUAL_TOUCH_KEYS = frozenset({BTN_TOUCH})
-_OUR_VIRTUAL_TOUCH_AXIS_PROFILES = frozenset({
-    frozenset({"0000", "0001", "0018", "002f", "0035", "0036", "0039", "003a"}),
-    frozenset({"0030", "0035", "0036", "0039"}),
-})
+_OUR_VIRTUAL_TOUCH_AXIS_PROFILES = frozenset(
+    {
+        frozenset({"0000", "0001", "0018", "002f", "0035", "0036", "0039", "003a"}),
+        frozenset({"0030", "0035", "0036", "0039"}),
+    }
+)
 
 
 def _iter_device_blocks(getevent_p_output: str):
@@ -154,10 +163,17 @@ def _iter_device_blocks(getevent_p_output: str):
 def _is_our_virtual_touch_profile(block: str, axes: dict[str, str]) -> bool:
     """Whether `block` exposes Operation Love's UHID descriptor under any device name."""
     key_match = _KEY_CODES_RE.search(block)
-    keys = (frozenset(code.lower() for code in re.findall(r"[0-9a-fA-F]{4}", key_match.group(1)))
-            if key_match else frozenset())
-    return (keys == _OUR_VIRTUAL_TOUCH_KEYS
-            and frozenset(axes) in _OUR_VIRTUAL_TOUCH_AXIS_PROFILES)
+    keys = (
+        frozenset(
+            code.lower() for code in re.findall(r"[0-9a-fA-F]{4}", key_match.group(1))
+        )
+        if key_match
+        else frozenset()
+    )
+    return (
+        keys == _OUR_VIRTUAL_TOUCH_KEYS
+        and frozenset(axes) in _OUR_VIRTUAL_TOUCH_AXIS_PROFILES
+    )
 
 
 def select_touch_device(
@@ -183,11 +199,15 @@ def select_touch_device(
         name_m = _NAME_RE.search(block)
         name = name_m.group(1) if name_m else ""
         axes = {code.lower(): maximum for code, maximum in _ABS_AXIS_RE.findall(block)}
-        if (any(name.startswith(prefix) for prefix in exclude_name_prefixes)
-                or _is_our_virtual_touch_profile(block, axes)):
+        if any(
+            name.startswith(prefix) for prefix in exclude_name_prefixes
+        ) or _is_our_virtual_touch_profile(block, axes):
             continue
-        if (_INPUT_PROP_DIRECT_RE.search(block) is not None
-                and ABS_MT_POSITION_X in axes and ABS_MT_POSITION_Y in axes):
+        if (
+            _INPUT_PROP_DIRECT_RE.search(block) is not None
+            and ABS_MT_POSITION_X in axes
+            and ABS_MT_POSITION_Y in axes
+        ):
             x_max, y_max = int(axes[ABS_MT_POSITION_X]), int(axes[ABS_MT_POSITION_Y])
             # A non-positive axis range cannot represent a screen position.  In particular,
             # ``-1`` would make start() divide by zero while calculating its scale and leak an
@@ -263,7 +283,7 @@ class TouchWatcher:
         self._x: float | None = None
         self._y: float | None = None
         self._down_point: tuple[float, float] | None = None
-        self._down_pending = False   # DOWN seen, but no coordinate yet to anchor it on
+        self._down_pending = False  # DOWN seen, but no coordinate yet to anchor it on
         self._down_t: float | None = None
         self._last_point: tuple[float, float] | None = None
         self._max_travel = 0.0
@@ -275,9 +295,11 @@ class TouchWatcher:
         same "explicit operator decision, never a silent downgrade" contract as
         UhidUnavailable (uhid.py)."""
         if self._proc is not None:
-            return   # idempotent: already attached, nothing to do
+            return  # idempotent: already attached, nothing to do
         probe = self._run_getevent_p()
-        dev_path, name, x_max, y_max = select_touch_device(probe, self._exclude_name_prefixes)
+        dev_path, name, x_max, y_max = select_touch_device(
+            probe, self._exclude_name_prefixes
+        )
         self.device_path = dev_path
         self.device_name = name
         w, h = self._screen_size
@@ -306,15 +328,24 @@ class TouchWatcher:
         argv += ["shell", "getevent", "-lt", dev_path]
         try:
             self._proc = subprocess.Popen(
-                argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                text=True, encoding="utf-8", errors="replace", bufsize=1,
+                argv,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                bufsize=1,
             )
         except OSError as exc:
-            raise TouchWatchUnavailable(f"could not start `{' '.join(argv)}`: {exc}") from exc
+            raise TouchWatchUnavailable(
+                f"could not start `{' '.join(argv)}`: {exc}"
+            ) from exc
 
         self._alive = True
         self._thread = threading.Thread(
-            target=self._read_loop, name="touchwatch-reader", daemon=True,
+            target=self._read_loop,
+            name="touchwatch-reader",
+            daemon=True,
         )
         self._thread.start()
 
@@ -349,7 +380,8 @@ class TouchWatcher:
         argv += ["shell", "getevent", "-p"]
         try:
             result = subprocess.run(
-                argv, capture_output=True, timeout=self._probe_timeout, check=False)
+                argv, capture_output=True, timeout=self._probe_timeout, check=False
+            )
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise TouchWatchUnavailable(
                 f"could not probe input devices (`{' '.join(argv)}`): {exc}"
@@ -372,7 +404,8 @@ class TouchWatcher:
         try:
             if proc is None or proc.stdout is None:
                 raise TouchWatchUnavailable(
-                    "getevent reader started without a live process/stdout stream")
+                    "getevent reader started without a live process/stdout stream"
+                )
             for line in proc.stdout:
                 self._feed_line(line)
         except Exception:  # noqa: BLE001 — see docstring: must never raise into the process
@@ -394,7 +427,9 @@ class TouchWatcher:
             # Keep only a scrubbed *format* sample for incident reports.  It contains no
             # coordinates or profile pixels, but lets a future Android toolbox spelling be
             # fixed from a report instead of asking the owner to reproduce it in a terminal.
-            sample = re.sub(r"\b(?:[0-9a-fA-F]{2,}|\d+(?:\.\d+)?)\b", "<n>", line.strip())
+            sample = re.sub(
+                r"\b(?:[0-9a-fA-F]{2,}|\d+(?:\.\d+)?)\b", "<n>", line.strip()
+            )
             sample = re.sub(r"\s+", " ", sample)
             if sample:
                 with self._lock:
@@ -405,20 +440,25 @@ class TouchWatcher:
             self._event_count += 1
             numeric = len(ev) == 4 and all(ch in "0123456789abcdefABCDEF" for ch in ev)
             if (ev == "EV_ABS" or (numeric and ev.lower() == EV_ABS)) and (
-                    code == "ABS_MT_POSITION_X" or code.lower() == ABS_MT_POSITION_X):
+                code == "ABS_MT_POSITION_X" or code.lower() == ABS_MT_POSITION_X
+            ):
                 self._note_axis_locked("x", value)
             elif (ev == "EV_ABS" or (numeric and ev.lower() == EV_ABS)) and (
-                    code == "ABS_MT_POSITION_Y" or code.lower() == ABS_MT_POSITION_Y):
+                code == "ABS_MT_POSITION_Y" or code.lower() == ABS_MT_POSITION_Y
+            ):
                 self._note_axis_locked("y", value)
             elif (ev == "EV_KEY" or (numeric and ev.lower() == EV_KEY)) and (
-                    code == "BTN_TOUCH" or code.lower() == BTN_TOUCH):
+                code == "BTN_TOUCH" or code.lower() == BTN_TOUCH
+            ):
                 if value == "DOWN" or value.lower() in {"1", "00000001"}:
                     self._begin_gesture_locked()
                 elif value == "UP" or value.lower() in {"0", "00000000"}:
                     self._end_gesture_locked()
-            elif ((ev == "EV_ABS" or (numeric and ev.lower() == EV_ABS)) and
-                  (code == "ABS_MT_TRACKING_ID" or code.lower() == ABS_MT_TRACKING_ID) and
-                  value.lower() == "ffffffff"):
+            elif (
+                (ev == "EV_ABS" or (numeric and ev.lower() == EV_ABS))
+                and (code == "ABS_MT_TRACKING_ID" or code.lower() == ABS_MT_TRACKING_ID)
+                and value.lower() == "ffffffff"
+            ):
                 # Devices that omit BTN_TOUCH altogether signal release by resetting the
                 # multitouch tracking ID to -1 (the ffffffff 32-bit wraparound) instead --
                 # same boundary, different spelling. goodix_ts0 DOES declare BTN_TOUCH
@@ -431,7 +471,7 @@ class TouchWatcher:
         try:
             raw = int(raw_hex, 16)
         except ValueError:
-            return   # a malformed value must not take the reader thread down with it
+            return  # a malformed value must not take the reader thread down with it
         scaled = raw * (self._scale_x if axis == "x" else self._scale_y)
         if axis == "x":
             self._x = scaled
@@ -456,7 +496,9 @@ class TouchWatcher:
         if self._down_point is not None and self._x is not None and self._y is not None:
             point = (self._x, self._y)
             self._last_point = point
-            dist = math.hypot(point[0] - self._down_point[0], point[1] - self._down_point[1])
+            dist = math.hypot(
+                point[0] - self._down_point[0], point[1] - self._down_point[1]
+            )
             if dist > self._max_travel:
                 self._max_travel = dist
 
@@ -493,7 +535,9 @@ class TouchWatcher:
             self._down_t = None
             self._x = self._y = None
             return
-        up_point = self._last_point if self._last_point is not None else self._down_point
+        up_point = (
+            self._last_point if self._last_point is not None else self._down_point
+        )
         gesture = Gesture(
             t_down=self._down_t,
             t_up=time.monotonic(),

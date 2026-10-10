@@ -17,6 +17,7 @@ which matters here because "the screen is at its top" is one of the three outcom
 Following the house pattern, every positive is paired with a negative plus a control that proves
 WHICH mechanism did the refusing.
 """
+
 from io import BytesIO
 
 import numpy as np
@@ -26,10 +27,10 @@ from PIL import Image
 from operation_love.drivers import hinge, item_identity, scroll_top
 from operation_love.drivers.hinge import HINGE_SPEC
 
-_W, _H = 1080, 2400                        # the calibrated Pixel 7a screencap size
-_IB = HINGE_SPEC.identity_band             # (0.10, 0.048, 0.80, 0.094) -> x 108..864, y 115..226
-_GRID = item_identity._IDENTITY_GRID       # (64, 16)
-_MATCH_MAX = item_identity._IDENTITY_MATCH_MAX_DIST     # 3.0
+_W, _H = 1080, 2400  # the calibrated Pixel 7a screencap size
+_IB = HINGE_SPEC.identity_band  # (0.10, 0.048, 0.80, 0.094) -> x 108..864, y 115..226
+_GRID = item_identity._IDENTITY_GRID  # (64, 16)
+_MATCH_MAX = item_identity._IDENTITY_MATCH_MAX_DIST  # 3.0
 
 # Two people's sticky headers, as flat bands. 40 grey levels apart: far outside the bound, and far
 # inside 0..255 so nothing clips and the distance the test asked for is the distance the metric
@@ -54,8 +55,12 @@ def _chips(rows, cols):
     records it as byte-identical across two different people, which is why one array serves every
     profile and why nothing about anyone is in it.
     """
-    cells = np.array(scroll_top._SCROLL_TOP_BAND_FINGERPRINT, dtype="uint8").reshape(4, 16)
-    return np.asarray(Image.fromarray(cells, mode="L").resize((cols, rows), Image.NEAREST))
+    cells = np.array(scroll_top._SCROLL_TOP_BAND_FINGERPRINT, dtype="uint8").reshape(
+        4, 16
+    )
+    return np.asarray(
+        Image.fromarray(cells, mode="L").resize((cols, rows), Image.NEAREST)
+    )
 
 
 def _frame(header=None, *, background=40, rect=_IB) -> bytes:
@@ -89,6 +94,7 @@ def _compare(frame, identity, *, band=_IB):
 # The primitive is the driver's own, not a second one
 # =====================================================================================
 
+
 def test_the_grid_is_the_drivers_own_and_the_bound_is_deliberately_not_change_threshold():
     """The grid is DECLARED here rather than imported, because hinge imports this package and not
     the other way round, so this is the test that stops the copies drifting — and the point of the
@@ -100,7 +106,9 @@ def test_the_grid_is_the_drivers_own_and_the_bound_is_deliberately_not_change_th
     (9.0, what `hinge._identity_of` decides same-person on) calls two different people the same
     person. This assertion is what stops anyone "restoring consistency" by putting it back."""
     assert _GRID == hinge._IDENTITY_DS
-    assert _MATCH_MAX == scroll_top._CONFIRM_MAX_DIST      # one tolerance on this strip, not two
+    assert (
+        _MATCH_MAX == scroll_top._CONFIRM_MAX_DIST
+    )  # one tolerance on this strip, not two
     assert _MATCH_MAX < 7.287 < HINGE_SPEC.change_threshold
 
 
@@ -122,14 +130,16 @@ def test_the_distance_is_the_same_number_hinge_band_dist_would_have_produced():
 # Capturing the fingerprint: both states of the strip, or nothing
 # =====================================================================================
 
+
 def test_the_fingerprint_is_the_earliest_corroborated_scrolled_frame_after_a_confirmed_top():
     frames, identity = _capture(_HER)
 
     assert identity.known
-    assert identity.frame_index == 1                  # frame 0 is the chips row
+    assert identity.frame_index == 1  # frame 0 is the chips row
     assert identity.band == _IB and identity.grid == _GRID
     assert identity.fingerprint == scroll_top.band_fingerprint(
-        frames[1], identity_band=_IB, grid=_GRID)
+        frames[1], identity_band=_IB, grid=_GRID
+    )
     assert identity.scroll_top_distance >= scroll_top._REFUTE_MIN_DIST
     assert (identity.agreeing_frames, identity.outlier_frames) == (3, 0)
     assert "sticky per-profile header" in identity.reason
@@ -144,12 +154,12 @@ def test_an_uncorroborated_transitional_frame_is_not_the_fingerprint():
 
     Corroboration is what fixes it, and it is the same rule `item_index` applies to a block's
     extent: two frames that both observed one fixed quantity are two measurements of it."""
-    transitional = (_HER + _HIM) // 2        # neither the chips row nor the settled header
+    transitional = (_HER + _HIM) // 2  # neither the chips row nor the settled header
     frames = [_frame(None), _frame(transitional)] + [_frame(_HER) for _ in range(4)]
     identity = item_identity.capture_profile_identity(frames, identity_band=_IB)
 
     assert identity.known
-    assert identity.frame_index == 2                  # NOT 1, which nothing agrees with
+    assert identity.frame_index == 2  # NOT 1, which nothing agrees with
     assert (identity.agreeing_frames, identity.outlier_frames) == (4, 1)
     assert identity.outlier_max_distance == pytest.approx(abs(transitional - _HER))
     assert "mid-slide-in" in identity.reason
@@ -163,7 +173,8 @@ def test_a_single_uncorroborated_header_reading_is_no_fingerprint_at_all():
     corroborate it there is no way to tell a settled header from a frame caught mid-animation, so
     the capture reports no identity rather than a reading it cannot stand behind."""
     identity = item_identity.capture_profile_identity(
-        [_frame(None), _frame(_HER)], identity_band=_IB)
+        [_frame(None), _frame(_HER)], identity_band=_IB
+    )
 
     assert not identity.known
     assert "no two frames" in identity.reason
@@ -181,7 +192,9 @@ def test_a_capture_whose_headers_split_evenly_is_refused_rather_than_halved():
     assert "may span two profiles" in identity.reason
 
     # The control: one more frame of hers makes it a majority, and it fingerprints her.
-    tipped = item_identity.capture_profile_identity(frames + [_frame(_HER)], identity_band=_IB)
+    tipped = item_identity.capture_profile_identity(
+        frames + [_frame(_HER)], identity_band=_IB
+    )
     assert tipped.known and tipped.agreeing_frames == 3 and tipped.outlier_frames == 2
 
 
@@ -193,7 +206,7 @@ def test_two_people_fingerprint_differently_and_one_person_does_not():
     _g, his = _capture(_HIM)
 
     assert hers.fingerprint != his.fingerprint
-    assert _compare(_frame(_HER), hers).matched                    # a later frame of her profile
+    assert _compare(_frame(_HER), hers).matched  # a later frame of her profile
     assert _compare(_frame(_HIM), hers).mismatched
 
 
@@ -202,7 +215,7 @@ def test_a_rect_that_never_shows_the_chips_row_yields_no_fingerprint():
     a top is a band nothing proves is Hinge's header strip — and a fingerprint of, say, the status
     bar would be IDENTICAL on every profile, so the gate would pass for everybody. Refusing to
     take one is the only structure that rules that out without a second calibration."""
-    elsewhere = (0.10, 0.020, 0.80, 0.066)            # the paint is at _IB, the band is not
+    elsewhere = (0.10, 0.020, 0.80, 0.066)  # the paint is at _IB, the band is not
     frames = [_frame(None), _frame(_HER), _frame(_HER)]
     identity = item_identity.capture_profile_identity(frames, identity_band=elsewhere)
 
@@ -217,7 +230,8 @@ def test_a_capture_that_never_scrolled_far_enough_yields_no_fingerprint():
     """The other half. At a scroll top the strip is chrome that is byte-identical across two
     different people, so a capture that only ever saw the top has seen nothing about anyone."""
     identity = item_identity.capture_profile_identity(
-        [_frame(None), _frame(None)], identity_band=_IB)
+        [_frame(None), _frame(None)], identity_band=_IB
+    )
 
     assert not identity.known
     assert "never appeared" in identity.reason
@@ -235,16 +249,24 @@ def test_a_pinned_band_is_diagnosed_as_this_captures_toolbar_state_not_the_whole
 
     The OUTCOME is identical and deliberately untouched: no fingerprint, `.known` False,
     navigation refuses. Only the diagnosis changes."""
-    frames = [_frame(None), _frame(None), _frame(None)]     # the chips row on every frame
+    frames = [_frame(None), _frame(None), _frame(None)]  # the chips row on every frame
 
     pinned = item_identity.capture_profile_identity(
-        frames, identity_band=_IB, page_offsets=[0, 600, 1200])
+        frames, identity_band=_IB, page_offsets=[0, 600, 1200]
+    )
 
-    assert not pinned.known and pinned.fingerprint is None   # fail-closed, exactly as before
-    assert "PINNED to the screen in this capture's current toolbar state" in pinned.reason
+    assert (
+        not pinned.known and pinned.fingerprint is None
+    )  # fail-closed, exactly as before
+    assert (
+        "PINNED to the screen in this capture's current toolbar state" in pinned.reason
+    )
     assert "structurally unavailable" in pinned.reason
-    assert "1200px of page scroll" in pinned.reason          # the evidence, not an assertion
-    assert "fresh capture may be considered only if it independently proves" in pinned.reason
+    assert "1200px of page scroll" in pinned.reason  # the evidence, not an assertion
+    assert (
+        "fresh capture may be considered only if it independently proves"
+        in pinned.reason
+    )
     assert "Do not target or label from it" in pinned.reason
     assert "NO capture on this build" not in pinned.reason
     assert "never scrolled far enough" not in pinned.reason
@@ -253,7 +275,8 @@ def test_a_pinned_band_is_diagnosed_as_this_captures_toolbar_state_not_the_whole
     # provably did not scroll, keep the original message. Nothing here proves anything about the
     # app -- at one offset a pinned strip and page content predict identical pixels.
     still = item_identity.capture_profile_identity(
-        frames, identity_band=_IB, page_offsets=[900, 900, 900])
+        frames, identity_band=_IB, page_offsets=[900, 900, 900]
+    )
     assert not still.known
     assert "never scrolled far enough" in still.reason
     assert "PINNED" not in still.reason
@@ -271,14 +294,17 @@ def test_offsets_that_do_not_line_up_with_the_frames_raise_rather_than_being_zip
     made it."""
     with pytest.raises(item_identity.IdentityError, match="different captures"):
         item_identity.capture_profile_identity(
-            [_frame(None), _frame(_HER)], identity_band=_IB, page_offsets=[0])
+            [_frame(None), _frame(_HER)], identity_band=_IB, page_offsets=[0]
+        )
 
 
 def test_no_band_and_no_frames_are_both_unknown_rather_than_errors():
     """`identity_band` is optional on `AndroidAppSpec` by design, so an app without one is a thing
     this gate cannot judge rather than a bug. Both answers are UNKNOWN, which navigation
     refuses."""
-    none_declared = item_identity.capture_profile_identity([_frame(_HER)], identity_band=None)
+    none_declared = item_identity.capture_profile_identity(
+        [_frame(_HER)], identity_band=None
+    )
     assert not none_declared.known and "no identity_band" in none_declared.reason
 
     empty = item_identity.capture_profile_identity([], identity_band=_IB)
@@ -292,10 +318,13 @@ def test_an_undecodable_frame_is_skipped_rather_than_fatal():
     frames = [_frame(None), b"not an image at all", _frame(_HER), _frame(_HER)]
     identity = item_identity.capture_profile_identity(frames, identity_band=_IB)
 
-    assert identity.known and identity.frame_index == 2 and identity.agreeing_frames == 2
+    assert (
+        identity.known and identity.frame_index == 2 and identity.agreeing_frames == 2
+    )
 
     only_junk = item_identity.capture_profile_identity(
-        [_frame(None), b"not an image at all"], identity_band=_IB)
+        [_frame(None), b"not an image at all"], identity_band=_IB
+    )
     assert not only_junk.known and "could not be read" in only_junk.reason
 
 
@@ -303,12 +332,17 @@ def test_an_undecodable_frame_is_skipped_rather_than_fatal():
 # Comparing: match, mismatch, cannot tell
 # =====================================================================================
 
+
 def test_the_same_profile_matches_at_the_distance_it_really_is():
     _frames, identity = _capture(_HER)
     verdict = _compare(_frame(_HER), identity)
 
     assert verdict.state == item_identity.IDENTITY_MATCH
-    assert (verdict.matched, verdict.mismatched, verdict.unknown) == (True, False, False)
+    assert (verdict.matched, verdict.mismatched, verdict.unknown) == (
+        True,
+        False,
+        False,
+    )
     assert verdict.distance == 0.0
     assert "matches the one this index was built from" in verdict.reason
 
@@ -343,7 +377,12 @@ def test_a_screen_at_its_scroll_top_is_cannot_tell_even_when_the_distance_is_sma
     top = _frame(None)
     chips = item_identity.ProfileIdentity(
         fingerprint=scroll_top.band_fingerprint(top, identity_band=_IB, grid=_GRID),
-        band=_IB, grid=_GRID, frame_index=0, scroll_top_distance=None, reason="constructed")
+        band=_IB,
+        grid=_GRID,
+        frame_index=0,
+        scroll_top_distance=None,
+        reason="constructed",
+    )
 
     verdict = _compare(top, chips)
 
@@ -364,7 +403,8 @@ def test_an_unknown_identity_and_an_undeclared_band_are_both_cannot_tell():
     assert _compare(_frame(_HER), None).unknown
 
     no_band = item_identity.compare_profile_identity(
-        _frame(_HER), identity, identity_band=None)
+        _frame(_HER), identity, identity_band=None
+    )
     assert no_band.unknown and "no identity_band is declared" in no_band.reason
 
 
@@ -378,7 +418,7 @@ def test_a_band_that_moved_since_capture_is_an_error_not_a_distance():
 
 
 def test_bytes_that_are_not_an_image_are_could_not_look_and_one_exception_type():
-    """"We could not look" must never be reachable by a route that also produces a verdict. The
+    """ "We could not look" must never be reachable by a route that also produces a verdict. The
     read goes through `scroll_top`'s shared decode, and its `ScrollTopError` is re-wrapped so a
     caller has one exception type to route rather than needing to know which sibling module the
     bytes went through."""
@@ -390,6 +430,7 @@ def test_bytes_that_are_not_an_image_are_could_not_look_and_one_exception_type()
 # =====================================================================================
 # The API cannot be misused quietly
 # =====================================================================================
+
 
 def test_a_verdict_has_no_truth_value():
     """`if compare_profile_identity(...):` would read "cannot tell" and "that is a different
@@ -410,7 +451,17 @@ def test_the_fingerprint_is_plain_ints_and_carries_no_image():
     assert len(identity.fingerprint) == _GRID[0] * _GRID[1]
     assert all(isinstance(v, int) for v in identity.fingerprint)
     assert item_identity.ProfileIdentity(
-        fingerprint=identity.fingerprint, band=identity.band, grid=identity.grid,
-        frame_index=1, scroll_top_distance=None, reason="") == item_identity.ProfileIdentity(
-        fingerprint=identity.fingerprint, band=identity.band, grid=identity.grid,
-        frame_index=1, scroll_top_distance=None, reason="")
+        fingerprint=identity.fingerprint,
+        band=identity.band,
+        grid=identity.grid,
+        frame_index=1,
+        scroll_top_distance=None,
+        reason="",
+    ) == item_identity.ProfileIdentity(
+        fingerprint=identity.fingerprint,
+        band=identity.band,
+        grid=identity.grid,
+        frame_index=1,
+        scroll_top_distance=None,
+        reason="",
+    )

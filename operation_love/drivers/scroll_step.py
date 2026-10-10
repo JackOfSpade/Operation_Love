@@ -312,6 +312,7 @@ WHAT THIS MODULE DOES NOT DECIDE, AND WHICH LAYER HAS TO
   * WHETHER THE GESTURE HAPPENED. This returns a number. The ledger, the forbidden-zone guard and
     the transport are `_scroll_down_one`'s, and a plan that is never spent leaves no trace here.
 """
+
 from __future__ import annotations
 
 from itertools import pairwise
@@ -440,15 +441,19 @@ _DEFAULT_X_FRAC = 0.5
 # =====================================================================================
 
 # --- which measurement produced a spacing figure ------------------------------------
-SPACING_HEART_PITCH = "heart_pitch"    # two like glyphs on one frame, exact
-SPACING_CARD_PITCH = "card_pitch"      # a heart-bearing block's top to the top of the block
-                                       # directly below it: that card's own period, exact
-SPACING_CARD_EXTENT = "card_extent"    # one complete heart-bearing block's height + one gutter;
-                                       # a LOWER bound on the pitch to the next heart
+SPACING_HEART_PITCH = "heart_pitch"  # two like glyphs on one frame, exact
+SPACING_CARD_PITCH = "card_pitch"  # a heart-bearing block's top to the top of the block
+# directly below it: that card's own period, exact
+SPACING_CARD_EXTENT = (
+    "card_extent"  # one complete heart-bearing block's height + one gutter;
+)
+# a LOWER bound on the pitch to the next heart
 
 # --- what sized the step ------------------------------------------------------------
-STEP_MEASURED = "measured"             # sized against this frame's own smallest spacing
-STEP_FALLBACK = "fallback"             # nothing measurable here: sized against _FALLBACK_SPACING_PX
+STEP_MEASURED = "measured"  # sized against this frame's own smallest spacing
+STEP_FALLBACK = (
+    "fallback"  # nothing measurable here: sized against _FALLBACK_SPACING_PX
+)
 # An explicitly opted-in bounded escape hatch for the capture loop. This is distinct from
 # STEP_FALLBACK: that frame segmented normally but exposed no period; these frames contradicted
 # themselves and must later be omitted from the item-index rebuild before any can support an opener.
@@ -492,6 +497,7 @@ class LocalSpacing:
     has nothing but a heart pitch — which is rule 1 earning its place, since that frame bounds no
     block at all. The chosen minima are 737, 808, 827, 1026, 1027, 1161, 1165 and 1166px.]
     """
+
     px: int | None
     evidence: tuple[tuple[str, int], ...]
 
@@ -542,6 +548,7 @@ class ScrollStep:
     a card spacing near the ~608px refusal threshold forces, and which no draw can undo — must be
     legible from the result rather than inferred from a suspiciously repetitive log.
     """
+
     frac: float
     x_frac: float
     step_px: int
@@ -582,8 +589,7 @@ def frac_for_step_px(step_px: int, screen_height: int) -> float:
     plain closed-form inverse and callers do not have to know about the correction.
     """
     if screen_height <= 0:
-        raise ScrollStepError(
-            f"cannot size a scroll on a {screen_height}px screen")
+        raise ScrollStepError(f"cannot size a scroll on a {screen_height}px screen")
     return (step_px + _TOUCH_SLOP_PX) / screen_height
 
 
@@ -638,16 +644,19 @@ def measure_local_spacing(segmentation: FrameSegmentation) -> LocalSpacing:
     return LocalSpacing(px=min(px for _kind, px in evidence), evidence=tuple(evidence))
 
 
-def plan_scroll_step(segmentation: FrameSegmentation, *,
-                     x_frac: float = _DEFAULT_X_FRAC,
-                     profile_min_spacing_px: int | None = None,
-                     screen_height: int | None = None,
-                     rng: random.Random | None = None,
-                     ratio_window: tuple[float, float] = (_STEP_RATIO_MIN, _STEP_RATIO_MAX),
-                     max_step_px: int = _MAX_STEP_PX,
-                     fallback_spacing_px: int = _FALLBACK_SPACING_PX,
-                     frac_window: tuple[float, float] | None = None,
-                     allow_segmentation_failure_fallback: bool = False) -> ScrollStep:
+def plan_scroll_step(
+    segmentation: FrameSegmentation,
+    *,
+    x_frac: float = _DEFAULT_X_FRAC,
+    profile_min_spacing_px: int | None = None,
+    screen_height: int | None = None,
+    rng: random.Random | None = None,
+    ratio_window: tuple[float, float] = (_STEP_RATIO_MIN, _STEP_RATIO_MAX),
+    max_step_px: int = _MAX_STEP_PX,
+    fallback_spacing_px: int = _FALLBACK_SPACING_PX,
+    frac_window: tuple[float, float] | None = None,
+    allow_segmentation_failure_fallback: bool = False,
+) -> ScrollStep:
     """Size the next enumeration read-scroll against the spacing `segmentation` can see.
 
     The entry point. Hand `step.frac` AND `step.x_frac` to `_scroll_down_one` — both, always;
@@ -684,7 +693,8 @@ def plan_scroll_step(segmentation: FrameSegmentation, *,
     if segmentation_failed and not allow_segmentation_failure_fallback:
         raise ScrollStepError(
             "refusing to size a scroll from a frame whose segmentation contradicts itself: "
-            + "; ".join(segmentation.failures))
+            + "; ".join(segmentation.failures)
+        )
 
     height = screen_height if screen_height is not None else segmentation.frame_size[1]
     if height <= 0:
@@ -693,25 +703,34 @@ def plan_scroll_step(segmentation: FrameSegmentation, *,
     ratio_lo, ratio_hi = float(ratio_window[0]), float(ratio_window[1])
     if not 0.0 < ratio_lo <= ratio_hi:
         raise ScrollStepError(
-            f"ratio window {ratio_window} is not a positive, non-inverted range")
+            f"ratio window {ratio_window} is not a positive, non-inverted range"
+        )
 
     if not _X_FRAC_WINDOW[0] <= float(x_frac) <= _X_FRAC_WINDOW[1]:
         raise ScrollStepError(
             f"lane x_frac={x_frac} is outside the {_X_FRAC_WINDOW} window the driver validates "
             "every read-scroll lane against; refusing here rather than letting the zone guard "
-            "raise on the gesture")
+            "raise on the gesture"
+        )
 
-    frac_lo, frac_hi = _frac_window() if frac_window is None else (
-        float(frac_window[0]), float(frac_window[1]))
+    frac_lo, frac_hi = (
+        _frac_window()
+        if frac_window is None
+        else (float(frac_window[0]), float(frac_window[1]))
+    )
     if not 0.0 < frac_lo <= frac_hi:
         raise ScrollStepError(
-            f"read-scroll frac window {(frac_lo, frac_hi)} is not a positive, non-inverted range")
+            f"read-scroll frac window {(frac_lo, frac_hi)} is not a positive, non-inverted range"
+        )
 
     # A contradictory frame has no safe local period to measure.  The only permitted recovery
     # does not pretend otherwise: it sizes at the already-validated corpus minimum and labels
     # the gesture so its caller cannot mistake this for an ordinary missing measurement.
-    spacing = (LocalSpacing(px=None, evidence=()) if segmentation_failed
-               else measure_local_spacing(segmentation))
+    spacing = (
+        LocalSpacing(px=None, evidence=())
+        if segmentation_failed
+        else measure_local_spacing(segmentation)
+    )
     if spacing.measured:
         basis, sizing_px = STEP_MEASURED, spacing.px
     else:
@@ -719,14 +738,16 @@ def plan_scroll_step(segmentation: FrameSegmentation, *,
         sizing_px = int(fallback_spacing_px)
         if sizing_px <= 0:
             raise ScrollStepError(
-                f"fallback spacing {fallback_spacing_px} is not a positive distance")
+                f"fallback spacing {fallback_spacing_px} is not a positive distance"
+            )
 
     # The loop's memory: a short card seen earlier on this profile keeps binding after it has
     # scrolled out of view, because it is still on the page we are indexing.
     if profile_min_spacing_px is not None:
         if int(profile_min_spacing_px) <= 0:
             raise ScrollStepError(
-                f"profile_min_spacing_px {profile_min_spacing_px} is not a positive distance")
+                f"profile_min_spacing_px {profile_min_spacing_px} is not a positive distance"
+            )
         sizing_px = min(sizing_px, int(profile_min_spacing_px))
 
     # The safety cap this plan must respect no matter what the draw or the rounding does. It is
@@ -743,7 +764,8 @@ def plan_scroll_step(segmentation: FrameSegmentation, *,
             f"this driver may make (frac {frac_lo:g} on a {height}px screen) moves {floor_px}px. "
             "Stepping further would alias the scroll against the card spacing, which measures as "
             "an index that loses items and then refuses outright (doc 5.10.1, and the module "
-            "docstring's stride measurements); no larger step is substituted")
+            "docstring's stride measurements); no larger step is substituted"
+        )
 
     # THE DRAW WINDOW. Its ends are the ratio rule applied to the card in front of us, so the
     # distance still follows the content; the draw inside it is over PIXELS, so neither end
@@ -766,7 +788,9 @@ def plan_scroll_step(segmentation: FrameSegmentation, *,
     # then says out loud rather than leaving for someone to infer from two numbers.
     jitter_margin_px = min(_STEP_DELIVERY_JITTER_PX, (cap_px - low_px) // 2)
     draw_cap_px = cap_px - jitter_margin_px
-    target_px = (rng.randint if rng is not None else random.randint)(low_px, draw_cap_px)
+    target_px = (rng.randint if rng is not None else random.randint)(
+        low_px, draw_cap_px
+    )
 
     frac = frac_for_step_px(target_px, height)
     frac = min(max(frac, frac_lo), frac_hi)
@@ -791,46 +815,71 @@ def plan_scroll_step(segmentation: FrameSegmentation, *,
     while step_px > draw_cap_px and frac > frac_lo:
         frac = max(frac_lo, frac - 1.0 / height)
         step_px = step_px_for_frac(frac, height)
-    if step_px > cap_px:  # pragma: no cover — unreachable: floor_px <= cap_px was checked above
+    if (
+        step_px > cap_px
+    ):  # pragma: no cover — unreachable: floor_px <= cap_px was checked above
         raise ScrollStepError(
             f"could not find a frac delivering at most {cap_px}px on a {height}px screen; "
-            f"closest is {step_px}px at frac {frac:g}")
+            f"closest is {step_px}px at frac {frac:g}"
+        )
 
     ratio = (step_px / spacing.px) if spacing.measured else None
     if spacing.measured:
-        reason = (f"step {step_px}px is {ratio:.2f} of the {spacing.px}px local spacing "
-                  f"({'+'.join(spacing.kinds)})")
+        reason = (
+            f"step {step_px}px is {ratio:.2f} of the {spacing.px}px local spacing "
+            f"({'+'.join(spacing.kinds)})"
+        )
     else:
-        reason = (f"no local spacing on this frame ({len(segmentation.blocks)} block(s), "
-                  f"{len(segmentation.hearts)} heart(s)); stepped {step_px}px, sized against the "
-                  f"{fallback_spacing_px}px corpus minimum")
+        reason = (
+            f"no local spacing on this frame ({len(segmentation.blocks)} block(s), "
+            f"{len(segmentation.hearts)} heart(s)); stepped {step_px}px, sized against the "
+            f"{fallback_spacing_px}px corpus minimum"
+        )
         if segmentation_failed:
-            reason = ("frame segmentation contradicted itself ("
-                      + "; ".join(segmentation.failures)
-                      + "); " + reason)
+            reason = (
+                "frame segmentation contradicted itself ("
+                + "; ".join(segmentation.failures)
+                + "); "
+                + reason
+            )
     if sizing_px != (spacing.px if spacing.measured else int(fallback_spacing_px)):
-        reason += f", tightened to {sizing_px}px by this profile's smallest spacing so far"
+        reason += (
+            f", tightened to {sizing_px}px by this profile's smallest spacing so far"
+        )
     if low_px >= draw_cap_px:
         # Reported rather than silent, on the same rule `STEP_FALLBACK` is reported: this gesture
         # has no distance jitter at all, and a constant distance is the shape the owner's
         # randomization rule exists to forbid. Nothing here can fix it — a smaller gesture is
         # outside the driver's sanctioned window and a larger one breaks the ratio rule — so what
         # the plan owes the log is that it happened.
-        reason += (f"; the {low_px}px gesture floor meets the {cap_px}px aliasing ceiling here, "
-                   "so this profile's step distance has no jitter left to draw")
+        reason += (
+            f"; the {low_px}px gesture floor meets the {cap_px}px aliasing ceiling here, "
+            "so this profile's step distance has no jitter left to draw"
+        )
     elif jitter_margin_px < _STEP_DELIVERY_JITTER_PX:
         # The window was too narrow to reserve the full delivery headroom, so a draw at the top
         # of it can still be over-delivered past the bound. Say so: the alternative is a refusal
         # whose telemetry shows a step below the bound and no hint of why it was still close
         # enough to matter.
-        reason += (f"; only {jitter_margin_px}px of the {_STEP_DELIVERY_JITTER_PX}px delivery "
-                   f"headroom fits under the {cap_px}px ceiling, so a top-of-window draw can "
-                   "still over-deliver past the aliasing bound")
+        reason += (
+            f"; only {jitter_margin_px}px of the {_STEP_DELIVERY_JITTER_PX}px delivery "
+            f"headroom fits under the {cap_px}px ceiling, so a top-of-window draw can "
+            "still over-deliver past the aliasing bound"
+        )
 
-    return ScrollStep(frac=frac, x_frac=float(x_frac), step_px=step_px,
-                      spacing_px=spacing.px, sized_against_px=sizing_px, bound_px=bound_px,
-                      window_px=(low_px, draw_cap_px), ratio=ratio, basis=basis, spacing=spacing,
-                      reason=reason)
+    return ScrollStep(
+        frac=frac,
+        x_frac=float(x_frac),
+        step_px=step_px,
+        spacing_px=spacing.px,
+        sized_against_px=sizing_px,
+        bound_px=bound_px,
+        window_px=(low_px, draw_cap_px),
+        ratio=ratio,
+        basis=basis,
+        spacing=spacing,
+        reason=reason,
+    )
 
 
 def step_overshoot(step: ScrollStep, achieved_px: int) -> str | None:
@@ -850,13 +899,17 @@ def step_overshoot(step: ScrollStep, achieved_px: int) -> str | None:
     `ratio_window` is held to the window it chose.
     """
     if achieved_px <= 0:
-        return (f"the profile did not move: measured {achieved_px}px against a planned "
-                f"{step.step_px}px")
+        return (
+            f"the profile did not move: measured {achieved_px}px against a planned "
+            f"{step.step_px}px"
+        )
     if achieved_px > step.bound_px:
-        return (f"moved {achieved_px}px, which is "
-                f"{achieved_px / step.sized_against_px:.2f} of the {step.sized_against_px}px "
-                f"spacing this step was sized against and past its {step.bound_px}px aliasing "
-                f"bound; planned {step.step_px}px")
+        return (
+            f"moved {achieved_px}px, which is "
+            f"{achieved_px / step.sized_against_px:.2f} of the {step.sized_against_px}px "
+            f"spacing this step was sized against and past its {step.bound_px}px aliasing "
+            f"bound; planned {step.step_px}px"
+        )
     return None
 
 
@@ -870,6 +923,7 @@ def _frac_window() -> tuple[float, float]:
     read-scroll in the driver is validated against, without giving that up.
     """
     from .hinge import _READ_SCROLL_FRAC_MAX, _READ_SCROLL_FRAC_MIN
+
     return float(_READ_SCROLL_FRAC_MIN), float(_READ_SCROLL_FRAC_MAX)
 
 
@@ -1105,8 +1159,9 @@ _ENUM_WINDOW_LOW_FRAC = 0.75
 # supplies entropy.  If a future device's sanctioned floor rises above it, refusing is the only
 # safe answer -- widening a multi-frame bridge from a contradictory frame would make the later
 # omission recovery an unmeasured guess.
-_SEGMENTATION_FALLBACK_CAP_PX = int(round(
-    ((_STEP_RATIO_MIN + _STEP_RATIO_MAX) / 2.0) * _FALLBACK_SPACING_PX))
+_SEGMENTATION_FALLBACK_CAP_PX = int(
+    round(((_STEP_RATIO_MIN + _STEP_RATIO_MAX) / 2.0) * _FALLBACK_SPACING_PX)
+)
 
 # The blind branches' cap is the DIRECT-BRIDGE BUDGET, 360px on the calibrated device: whatever
 # frameshift's trust window has left once the enumeration ceiling is spent, so a frame-omission
@@ -1119,12 +1174,16 @@ _SEGMENTATION_FALLBACK_CAP_PX = int(round(
 # --- what sized the step (coverage rule's own vocabulary, deliberately distinct from
 #     `STEP_MEASURED`/`STEP_FALLBACK` above so a debug log or a replay pass can never confuse
 #     which rule planned a given step) ---------------------------------------------------------
-COVERAGE_STEP_OPEN = "coverage_open"                    # no open trailing card: bound 1 alone
-COVERAGE_STEP_THROTTLED = "coverage_throttled"           # bound 2 narrowed this step; see depth_px
-COVERAGE_STEP_FALLBACK = "coverage_fallback"             # no blocks at all: the blind margin
-COVERAGE_STEP_SEGMENTATION_FALLBACK = "coverage_segmentation_fallback"  # frame contradicted
-                                                          # itself; the same bounded, reported
-                                                          # opt-in `plan_scroll_step` uses
+COVERAGE_STEP_OPEN = "coverage_open"  # no open trailing card: bound 1 alone
+COVERAGE_STEP_THROTTLED = (
+    "coverage_throttled"  # bound 2 narrowed this step; see depth_px
+)
+COVERAGE_STEP_FALLBACK = "coverage_fallback"  # no blocks at all: the blind margin
+COVERAGE_STEP_SEGMENTATION_FALLBACK = (
+    "coverage_segmentation_fallback"  # frame contradicted
+)
+# itself; the same bounded, reported
+# opt-in `plan_scroll_step` uses
 
 
 @dataclass(frozen=True)
@@ -1146,6 +1205,7 @@ class CoverageStep:
     distance), and a window narrowed to one value must be legible from the result rather than
     inferred from a suspiciously repetitive log.
     """
+
     frac: float
     x_frac: float
     step_px: int
@@ -1219,14 +1279,17 @@ def _scrolling_viewport_top(segmentation: FrameSegmentation) -> int:
     return max(r0, strip.y1 + (strip.bottom.run_px or 0))
 
 
-def plan_coverage_step(segmentation: FrameSegmentation, *,
-                       x_frac: float = _DEFAULT_X_FRAC,
-                       screen_height: int | None = None,
-                       rng: random.Random | None = None,
-                       trust_ceiling_band_frac: float = _ENUM_TRUST_CEILING_BAND_FRAC,
-                       window_low_frac: float = _ENUM_WINDOW_LOW_FRAC,
-                       frac_window: tuple[float, float] | None = None,
-                       allow_segmentation_failure_fallback: bool = False) -> CoverageStep:
+def plan_coverage_step(
+    segmentation: FrameSegmentation,
+    *,
+    x_frac: float = _DEFAULT_X_FRAC,
+    screen_height: int | None = None,
+    rng: random.Random | None = None,
+    trust_ceiling_band_frac: float = _ENUM_TRUST_CEILING_BAND_FRAC,
+    window_low_frac: float = _ENUM_WINDOW_LOW_FRAC,
+    frac_window: tuple[float, float] | None = None,
+    allow_segmentation_failure_fallback: bool = False,
+) -> CoverageStep:
     """Size the next enumeration read-scroll against what THIS frame's own geometry needs for
     coverage, rather than against the tracking-safe ratio `plan_scroll_step` uses.
 
@@ -1261,16 +1324,19 @@ def plan_coverage_step(segmentation: FrameSegmentation, *,
     trailing_has_no_observed_edge = bool(
         trailing is not None
         and not trailing.top.observed
-        and not trailing.bottom.observed)
+        and not trailing.bottom.observed
+    )
     needs_recovery_fallback = segmentation_failed or trailing_has_no_observed_edge
     if needs_recovery_fallback and not allow_segmentation_failure_fallback:
         if trailing_has_no_observed_edge and not segmentation_failed:
             raise ScrollStepError(
                 "refusing to size a coverage scroll from a frame whose trailing block has "
-                "neither edge observed; a bounded frame-omission fallback was not opted into")
+                "neither edge observed; a bounded frame-omission fallback was not opted into"
+            )
         raise ScrollStepError(
             "refusing to size a coverage scroll from a frame whose segmentation contradicts "
-            "itself: " + "; ".join(segmentation.failures))
+            "itself: " + "; ".join(segmentation.failures)
+        )
 
     height = screen_height if screen_height is not None else segmentation.frame_size[1]
     if height <= 0:
@@ -1280,23 +1346,31 @@ def plan_coverage_step(segmentation: FrameSegmentation, *,
         raise ScrollStepError(
             f"lane x_frac={x_frac} is outside the {_X_FRAC_WINDOW} window the driver validates "
             "every read-scroll lane against; refusing here rather than letting the zone guard "
-            "raise on the gesture")
+            "raise on the gesture"
+        )
 
-    frac_lo, frac_hi = _frac_window() if frac_window is None else (
-        float(frac_window[0]), float(frac_window[1]))
+    frac_lo, frac_hi = (
+        _frac_window()
+        if frac_window is None
+        else (float(frac_window[0]), float(frac_window[1]))
+    )
     if not 0.0 < frac_lo <= frac_hi:
         raise ScrollStepError(
-            f"read-scroll frac window {(frac_lo, frac_hi)} is not a positive, non-inverted range")
+            f"read-scroll frac window {(frac_lo, frac_hi)} is not a positive, non-inverted range"
+        )
 
     r0, r1 = segmentation.band
     band_height = r1 - r0
     if band_height <= 0:
-        raise ScrollStepError(f"analysed band {(r0, r1)} has no rows to size a scroll against")
+        raise ScrollStepError(
+            f"analysed band {(r0, r1)} has no rows to size a scroll against"
+        )
 
     trust_ceiling_px = int(round(float(trust_ceiling_band_frac) * band_height))
     if trust_ceiling_px < 1:
         raise ScrollStepError(
-            f"trust ceiling resolved to {trust_ceiling_px}px: no step could ever be planned")
+            f"trust ceiling resolved to {trust_ceiling_px}px: no step could ever be planned"
+        )
 
     # THE BLIND BRANCHES' CAP, and why it is no longer a card-height margin (rewritten 2026-08-28
     # after a measured review; the previous form is described below so the change is auditable).
@@ -1338,13 +1412,15 @@ def plan_coverage_step(segmentation: FrameSegmentation, *,
     # It also stays band-relative and device-derived, and stays above the 219px gesture floor for
     # any band down to 1095 — where a viewport-based card-height margin goes NEGATIVE and raises.
     from .frameshift import _TRUST_WINDOW_BAND_FRAC
+
     bridge_budget_frac = float(_TRUST_WINDOW_BAND_FRAC) - float(trust_ceiling_band_frac)
     coverage_margin_px = int(round(bridge_budget_frac * band_height))
     if coverage_margin_px < 1:
         raise ScrollStepError(
             f"the enumeration trust ceiling ({trust_ceiling_band_frac:g} of the band) leaves no "
             f"room under frameshift's {_TRUST_WINDOW_BAND_FRAC:g} trust window for a blind step "
-            f"that a frame-omission recovery could still bridge across")
+            f"that a frame-omission recovery could still bridge across"
+        )
 
     depth: int | None = None
     if needs_recovery_fallback:
@@ -1352,17 +1428,21 @@ def plan_coverage_step(segmentation: FrameSegmentation, *,
         # four-frame run, while `coverage_margin_px` proves only the bridge over ONE bad frame.
         # `_SEGMENTATION_FALLBACK_CAP_PX` is the separately measured, recovery-compatible cap
         # above; retaining the `min` also makes a future smaller trust budget more conservative.
-        cap_px = min(trust_ceiling_px, coverage_margin_px,
-                     _SEGMENTATION_FALLBACK_CAP_PX)
+        cap_px = min(
+            trust_ceiling_px, coverage_margin_px, _SEGMENTATION_FALLBACK_CAP_PX
+        )
         basis = COVERAGE_STEP_SEGMENTATION_FALLBACK
         if segmentation_failed:
             basis_note = (
                 "frame segmentation contradicted itself ("
-                + "; ".join(segmentation.failures) + "); ")
+                + "; ".join(segmentation.failures)
+                + "); "
+            )
         else:
             basis_note = (
                 "the trailing block had neither edge observed, so this frame supplies no "
-                "safe local depth and must be independently reconciled or omitted/rebuilt; ")
+                "safe local depth and must be independently reconciled or omitted/rebuilt; "
+            )
     else:
         depth = _open_trailing_block_depth(segmentation)
         basis_note = ""
@@ -1384,7 +1464,8 @@ def plan_coverage_step(segmentation: FrameSegmentation, *,
             f"an open card's own top row out of the {band_height}px analysed band "
             f"(depth {depth}px) before it could ever be observed complete; no larger step is "
             "substituted, and none is what would fix this -- a smaller one would help and is not "
-            "permitted")
+            "permitted"
+        )
 
     low_px = max(floor_px, int(round(float(window_low_frac) * cap_px)))
     if low_px >= cap_px:
@@ -1406,7 +1487,9 @@ def plan_coverage_step(segmentation: FrameSegmentation, *,
     # jitter rather than collapse onto a single distance (owner randomization rule).
     jitter_margin_px = min(_STEP_DELIVERY_JITTER_PX, (cap_px - low_px) // 2)
     draw_cap_px = cap_px - jitter_margin_px
-    target_px = (rng.randint if rng is not None else random.randint)(low_px, draw_cap_px)
+    target_px = (rng.randint if rng is not None else random.randint)(
+        low_px, draw_cap_px
+    )
 
     frac = frac_for_step_px(target_px, height)
     frac = min(max(frac, frac_lo), frac_hi)
@@ -1418,14 +1501,19 @@ def plan_coverage_step(segmentation: FrameSegmentation, *,
     while step_px > draw_cap_px and frac > frac_lo:
         frac = max(frac_lo, frac - 1.0 / height)
         step_px = step_px_for_frac(frac, height)
-    if step_px > cap_px:  # pragma: no cover — unreachable: floor_px <= cap_px was checked above
+    if (
+        step_px > cap_px
+    ):  # pragma: no cover — unreachable: floor_px <= cap_px was checked above
         raise ScrollStepError(
             f"could not find a frac delivering at most {cap_px}px on a {height}px screen; "
-            f"closest is {step_px}px at frac {frac:g}")
+            f"closest is {step_px}px at frac {frac:g}"
+        )
 
     if basis == COVERAGE_STEP_THROTTLED:
-        reason = (f"step {step_px}px throttled to protect an open card {depth}px below the "
-                  f"scrolling viewport's top row (trust ceiling {trust_ceiling_px}px)")
+        reason = (
+            f"step {step_px}px throttled to protect an open card {depth}px below the "
+            f"scrolling viewport's top row (trust ceiling {trust_ceiling_px}px)"
+        )
     elif basis == COVERAGE_STEP_OPEN:
         reason = f"step {step_px}px at the {trust_ceiling_px}px trust-window ceiling"
     else:
@@ -1434,24 +1522,39 @@ def plan_coverage_step(segmentation: FrameSegmentation, *,
                 f"{basis_note}stepped {step_px}px, capped at the "
                 f"{_SEGMENTATION_FALLBACK_CAP_PX}px corpus-minimum recovery cadence so a "
                 f"run of up to {MAX_SEGMENTATION_FALLBACK_FRAMES} unusable frames can "
-                "still be omitted and rebuilt over a fresh measured bridge")
+                "still be omitted and rebuilt over a fresh measured bridge"
+            )
         else:
-            reason = (f"{basis_note}stepped {step_px}px, sized against the {coverage_margin_px}px "
-                      "direct-bridge budget — what frameshift's trust window has left after the "
-                      f"enumeration ceiling, so a frame-omission recovery can still bridge across "
-                      f"this step (band {band_height}px)")
+            reason = (
+                f"{basis_note}stepped {step_px}px, sized against the {coverage_margin_px}px "
+                "direct-bridge budget — what frameshift's trust window has left after the "
+                f"enumeration ceiling, so a frame-omission recovery can still bridge across "
+                f"this step (band {band_height}px)"
+            )
     if low_px >= draw_cap_px:
-        reason += (f"; the {low_px}px gesture floor meets the {cap_px}px ceiling here, so this "
-                  "step has no jitter left to draw")
+        reason += (
+            f"; the {low_px}px gesture floor meets the {cap_px}px ceiling here, so this "
+            "step has no jitter left to draw"
+        )
     elif jitter_margin_px < _STEP_DELIVERY_JITTER_PX:
         # Same reason the sibling reports its own shortfall: the window was too narrow to reserve
         # the full delivery headroom, so a top-of-window draw can still over-deliver past the
         # cap, and the telemetry would otherwise show a step under the bound and no hint of why
         # the card it was protecting still went partial.
-        reason += (f"; only {jitter_margin_px}px of the {_STEP_DELIVERY_JITTER_PX}px delivery "
-                   f"headroom fits under the {cap_px}px ceiling, so a top-of-window draw can "
-                   "still over-deliver past it")
+        reason += (
+            f"; only {jitter_margin_px}px of the {_STEP_DELIVERY_JITTER_PX}px delivery "
+            f"headroom fits under the {cap_px}px ceiling, so a top-of-window draw can "
+            "still over-deliver past it"
+        )
 
-    return CoverageStep(frac=frac, x_frac=float(x_frac), step_px=step_px, cap_px=cap_px,
-                        trust_ceiling_px=trust_ceiling_px, depth_px=depth,
-                        window_px=(low_px, draw_cap_px), basis=basis, reason=reason)
+    return CoverageStep(
+        frac=frac,
+        x_frac=float(x_frac),
+        step_px=step_px,
+        cap_px=cap_px,
+        trust_ceiling_px=trust_ceiling_px,
+        depth_px=depth,
+        window_px=(low_px, draw_cap_px),
+        basis=basis,
+        reason=reason,
+    )

@@ -4,6 +4,7 @@ Also tracks live hub-page (browser tab) liveness so the server can shut itself
 down once the last browser tab goes away, except at a live Training approval
 checkpoint that must remain available for the owner to reopen and decide.
 """
+
 from __future__ import annotations
 
 import copy
@@ -22,7 +23,9 @@ from ..training_actions import TrainingActionBridge
 # "gone" and stop()s a live run out from under the owner.
 _BROWSER_CLIENT_STALE_S = 120.0
 _CLOSED_BROWSER_CLIENT_TTL_S = 30.0
-_EVAL_COLD_WAIT_S = 60.0  # bound on a cold-eval waiter so a dead computer thread can't hang it
+_EVAL_COLD_WAIT_S = (
+    60.0  # bound on a cold-eval waiter so a dead computer thread can't hang it
+)
 
 
 _MAX_BROWSER_CLIENT_ID_LENGTH = 128
@@ -38,8 +41,13 @@ def validate_browser_client_id(value: object) -> tuple[bool, str | None, str | N
     if not isinstance(value, str) or not value.strip():
         return False, None, "browser client id must be a non-empty string"
     if len(value) > _MAX_BROWSER_CLIENT_ID_LENGTH:
-        return False, None, (
-            f"browser client id must not exceed {_MAX_BROWSER_CLIENT_ID_LENGTH} characters")
+        return (
+            False,
+            None,
+            (
+                f"browser client id must not exceed {_MAX_BROWSER_CLIENT_ID_LENGTH} characters"
+            ),
+        )
     return True, value, None
 
 
@@ -86,7 +94,11 @@ def validate_stop_after_seconds(value: object) -> tuple[bool, int | None, str | 
     # platforms.  Keep API validation deterministic instead of letting a background thread
     # crash after Start appeared to succeed.
     if value > threading.TIMEOUT_MAX:
-        return False, None, f"stop_after_seconds must not exceed {int(threading.TIMEOUT_MAX)}"
+        return (
+            False,
+            None,
+            f"stop_after_seconds must not exceed {int(threading.TIMEOUT_MAX)}",
+        )
     return True, value, None
 
 
@@ -117,16 +129,20 @@ class HubState:
         self._timed_stop_timer: threading.Timer | None = None
         self._timed_stop_deadline: float | None = None
         self._timed_stop_duration_seconds: int | None = None
-        self._status = None                 # RunStatus, captured via on_status
+        self._status = None  # RunStatus, captured via on_status
         self._error: str | None = None
-        self._eval: dict | None = None      # cached model-quality CV (eval_snapshot)
+        self._eval: dict | None = None  # cached model-quality CV (eval_snapshot)
         self._eval_at: float = 0.0
-        self._eval_labels: int | None = None  # label count when _eval was computed (cadence gate)
+        self._eval_labels: int | None = (
+            None  # label count when _eval was computed (cadence gate)
+        )
         self._eval_refreshing = False
         self._eval_cold_event: threading.Event | None = None  # cold-start single-flight
-        self._live_store = None             # the running supervisor's store (live in-memory labels)
-        self._live_cfg = None               # the active run's EFFECTIVE Config (shutdown prices its own waits off it)
-        self._opener_service = None         # the running supervisor's OpenerService (recent_openers_snapshot for the bug report)
+        self._live_store = (
+            None  # the running supervisor's store (live in-memory labels)
+        )
+        self._live_cfg = None  # the active run's EFFECTIVE Config (shutdown prices its own waits off it)
+        self._opener_service = None  # the running supervisor's OpenerService (recent_openers_snapshot for the bug report)
         # Plain, detached copies from the most recently completed run.  The live service owns
         # locks and references to a store which supervisor.run() closes during shutdown, so the
         # hub must never keep that object merely to make a later bug report nicer.  Freeze its
@@ -146,14 +162,19 @@ class HubState:
     def is_running(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
 
-    def start(self, mode: str | None = None, apps=None,
-              max_per_run: int | None = None,
-              stop_after_seconds: int | None = None) -> tuple[bool, str]:
+    def start(
+        self,
+        mode: str | None = None,
+        apps=None,
+        max_per_run: int | None = None,
+        stop_after_seconds: int | None = None,
+    ) -> tuple[bool, str]:
         valid_cap, max_per_run, cap_error = validate_max_per_run(max_per_run)
         if not valid_cap:
             return False, cap_error or "invalid max-per-run override"
         valid_timeout, stop_after_seconds, timeout_error = validate_stop_after_seconds(
-            stop_after_seconds)
+            stop_after_seconds
+        )
         if not valid_timeout:
             return False, timeout_error or "invalid timed-stop duration"
         valid_apps, apps, apps_error = validate_apps(apps)
@@ -163,13 +184,19 @@ class HubState:
             if self.is_running():
                 return False, "a run is already active"
             if self._training_data_mutating:
-                return False, "training data is being updated — wait for it to finish before starting"
+                return (
+                    False,
+                    "training data is being updated — wait for it to finish before starting",
+                )
             if apps is not None and len(apps) == 0:
                 # chosenApps() sends [] when every app checkbox is unchecked. The shared
                 # supervisor gate also rejects this, but the Hub can give the owner a clearer
                 # selection-specific message. apps=None (no override argument at all) still
                 # falls through to config, unchanged.
-                return False, "no apps selected — check at least one app before starting"
+                return (
+                    False,
+                    "no apps selected — check at least one app before starting",
+                )
             try:
                 # Validate the complete EFFECTIVE config synchronously. Registry readiness
                 # alone is insufficient: a platform can implement Auto while config-level
@@ -177,7 +204,8 @@ class HubState:
                 # resolves apps=None through config.yaml and honors per-app mode overrides,
                 # exactly as supervisor.run() does in its direct-caller backstop.
                 effective_cfg = supervisor.load_effective_config(
-                    self.config_path, mode=mode, enabled_apps=apps)
+                    self.config_path, mode=mode, enabled_apps=apps
+                )
                 # A mode chosen in the Hub is an explicit operator instruction, not merely a
                 # suggestion for config.yaml.  Per-app overrides remain useful for unattended
                 # CLI/config runs, but silently changing an explicit Hub mode selection is a
@@ -187,33 +215,51 @@ class HubState:
                 if mode is not None and effective_cfg is not None:
                     effective_modes = {
                         app: ((effective_cfg.apps or {}).get(app, {}) or {}).get(
-                            "mode", effective_cfg.mode)
+                            "mode", effective_cfg.mode
+                        )
                         for app in effective_cfg.enabled_apps
                     }
                     mismatched = {
-                        app: actual for app, actual in effective_modes.items() if actual != mode
+                        app: actual
+                        for app, actual in effective_modes.items()
+                        if actual != mode
                     }
                     if mismatched:
                         details = ", ".join(
-                            f"{app}={actual}" for app, actual in sorted(mismatched.items()))
+                            f"{app}={actual}"
+                            for app, actual in sorted(mismatched.items())
+                        )
                         return False, (
                             f"Hub requested {mode!r}, but per-app mode override(s) resolve to "
-                            f"{details}; choose that mode explicitly or remove the override")
+                            f"{details}; choose that mode explicitly or remove the override"
+                        )
             except Exception as exc:  # noqa: BLE001 — configuration/load errors are user-facing
                 return False, str(exc)
             # Treat background allocation as a transaction. A completed run's status/error
             # remains the Hub's last diagnostic snapshot unless both the optional timer and
             # the replacement run thread start successfully.
             previous_run = (
-                self._run_generation, self._thread, self._stop, self._status, self._error,
-                self._live_store, self._live_cfg, self._opener_service,
+                self._run_generation,
+                self._thread,
+                self._stop,
+                self._status,
+                self._error,
+                self._live_store,
+                self._live_cfg,
+                self._opener_service,
             )
 
             def _restore_failed_start() -> None:
                 self._cancel_timed_stop_locked(clear=True)
                 (
-                    self._run_generation, self._thread, self._stop, self._status, self._error,
-                    self._live_store, self._live_cfg, self._opener_service,
+                    self._run_generation,
+                    self._thread,
+                    self._stop,
+                    self._status,
+                    self._error,
+                    self._live_store,
+                    self._live_cfg,
+                    self._opener_service,
                 ) = previous_run
 
             # No prior timer should survive into a replacement run.  The generation check in
@@ -238,7 +284,10 @@ class HubState:
                 self._timed_stop_duration_seconds = stop_after_seconds
                 self._timed_stop_deadline = time.monotonic() + stop_after_seconds
                 timer = threading.Timer(
-                    stop_after_seconds, self._timed_stop_elapsed, args=(generation, stop))
+                    stop_after_seconds,
+                    self._timed_stop_elapsed,
+                    args=(generation, stop),
+                )
                 # A timed stop is strictly a run helper.  It must not keep the local hub
                 # process alive after a normal shutdown or a test teardown.
                 timer.daemon = True
@@ -258,11 +307,17 @@ class HubState:
 
             def _target():
                 try:
-                    supervisor.run(self.config_path, stop_event=stop, on_status=_capture,
-                                   on_store=_capture_store,
-                                   on_opener_service=_capture_opener_service,
-                                   on_worker=self._bind_training_worker,
-                                   mode=mode, enabled_apps=apps, max_per_run=max_per_run)
+                    supervisor.run(
+                        self.config_path,
+                        stop_event=stop,
+                        on_status=_capture,
+                        on_store=_capture_store,
+                        on_opener_service=_capture_opener_service,
+                        on_worker=self._bind_training_worker,
+                        mode=mode,
+                        enabled_apps=apps,
+                        max_per_run=max_per_run,
+                    )
                 except (Exception, SystemExit) as exc:  # noqa: BLE001
                     # supervisor.run raises SystemExit (a BaseException, not Exception) for a
                     # startup failure it treats as fatal (e.g. missing cloud deps) — catch it
@@ -284,9 +339,11 @@ class HubState:
                             # irrelevant.  Clear it so a completed snapshot is unambiguously
                             # inactive, and so it cannot later wake up a new run.
                             self._cancel_timed_stop_locked(clear=True)
-                        self._live_store = None   # supervisor closed it on exit; don't read a dead store
-                        self._live_cfg = None     # no run left to price a shutdown wait for
-                        self._opener_service = None   # same reason: don't read a torn-down object after the supervisor tore the run down
+                        self._live_store = None  # supervisor closed it on exit; don't read a dead store
+                        self._live_cfg = (
+                            None  # no run left to price a shutdown wait for
+                        )
+                        self._opener_service = None  # same reason: don't read a torn-down object after the supervisor tore the run down
 
             self._thread = threading.Thread(target=_target, name="hub-run", daemon=True)
             # Start the optional timer first while holding _lock. Its callback also needs
@@ -299,8 +356,8 @@ class HubState:
                 except Exception as exc:  # noqa: BLE001 — user-facing lifecycle refusal
                     _restore_failed_start()
                     return False, (
-                        "could not start timed-stop timer: "
-                        f"{type(exc).__name__}: {exc}")
+                        f"could not start timed-stop timer: {type(exc).__name__}: {exc}"
+                    )
             try:
                 self._thread.start()
             except Exception as exc:  # noqa: BLE001 — never leave half-started Hub state
@@ -342,15 +399,21 @@ class HubState:
         # operator watching only the browser tab (not a terminal) saw nothing happen for the
         # whole worker-join tail. The decision to actually discard an in-flight swipe is
         # worker.py's, not this line's (see its stop_event re-checks) -- this just says so.
-        print("Hub: stop requested -- waiting for the active run to finish what it's doing. "
-              "A swipe made from now on will NOT be recorded.")
+        print(
+            "Hub: stop requested -- waiting for the active run to finish what it's doing. "
+            "A swipe made from now on will NOT be recorded."
+        )
         return True, "stopping"
 
     def _timed_stop_elapsed(self, generation: int, stop: threading.Event) -> None:
         """Request a stop only for the exact run that created this timer."""
         with self._lock:
-            if (generation != self._run_generation or stop is not self._stop
-                    or not self.is_running() or stop.is_set()):
+            if (
+                generation != self._run_generation
+                or stop is not self._stop
+                or not self.is_running()
+                or stop.is_set()
+            ):
                 return
             stop.set()
             # Keep the duration/deadline until the run's thread finishes, so the active
@@ -358,9 +421,11 @@ class HubState:
             # the timer thread itself, so there is nothing left to cancel.
             self._timed_stop_timer = None
             duration = self._timed_stop_duration_seconds
-        print("Hub: timed stop reached after "
-              f"{duration} seconds -- waiting for the active run to finish what it's doing. "
-              "A swipe made from now on will NOT be recorded.")
+        print(
+            "Hub: timed stop reached after "
+            f"{duration} seconds -- waiting for the active run to finish what it's doing. "
+            "A swipe made from now on will NOT be recorded."
+        )
 
     def _cancel_timed_stop_locked(self, *, clear: bool) -> None:
         """Cancel the scheduled callback.  Caller must hold ``self._lock``."""
@@ -555,20 +620,26 @@ class HubState:
             "timed_stop": (
                 {
                     "duration_seconds": timed_stop_duration,
-                    "remaining_seconds": max(0, math.ceil(timed_stop_deadline - time.monotonic())),
+                    "remaining_seconds": max(
+                        0, math.ceil(timed_stop_deadline - time.monotonic())
+                    ),
                 }
-                if timed_stop_duration is not None and timed_stop_deadline is not None else None
+                if timed_stop_duration is not None and timed_stop_deadline is not None
+                else None
             ),
         }
 
-    def training_action_snapshot(self, *, run_id: str | None = None,
-                                 app: str | None = None) -> dict:
+    def training_action_snapshot(
+        self, *, run_id: str | None = None, app: str | None = None
+    ) -> dict:
         return self._training_actions.snapshot(run_id=run_id, app=app)
 
-    def training_profile_review_image(self, *, run_id: str, app: str,
-                                      profile_token: str, index: int) -> bytes | None:
+    def training_profile_review_image(
+        self, *, run_id: str, app: str, profile_token: str, index: int
+    ) -> bytes | None:
         return self._training_actions.profile_review_image(
-            run_id=run_id, app=app, profile_token=profile_token, index=index)
+            run_id=run_id, app=app, profile_token=profile_token, index=index
+        )
 
     def submit_training_action(self, body: dict) -> tuple[bool, dict, int]:
         return self._training_actions.submit(body)
@@ -580,10 +651,14 @@ class HubState:
         profile_token = body.get("profile_token")
         outcome = body.get("notification")
         if not self._training_actions.has_checkpoint(
-                run_id=run_id, app=app, profile_token=profile_token):
+            run_id=run_id, app=app, profile_token=profile_token
+        ):
             return False, "no matching live training checkpoint"
         from ..notifications import record_training_browser_notification
-        if not isinstance(outcome, str) or not record_training_browser_notification(outcome):
+
+        if not isinstance(outcome, str) or not record_training_browser_notification(
+            outcome
+        ):
             return False, "invalid browser notification outcome"
         return True, "recorded"
 
@@ -602,6 +677,7 @@ class HubState:
             self._training_data_mutating = True
         try:
             from ..ranker import make_store
+
             cfg = cfg_mod.load(self.config_path)
             store = make_store(cfg)
             try:
@@ -654,7 +730,9 @@ class HubState:
             return []
         try:
             rows = snapshot_fn()
-            if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
+            if not isinstance(rows, list) or not all(
+                isinstance(row, dict) for row in rows
+            ):
                 return []
             return copy.deepcopy(rows)
         except Exception:  # noqa: BLE001 — diagnostics must never break the hub
@@ -682,7 +760,11 @@ class HubState:
         with self._lock:
             svc = self._opener_service
             completed = copy.deepcopy(self._completed_openers)
-        return self._service_snapshot(svc, "recent_openers_snapshot") if svc is not None else completed
+        return (
+            self._service_snapshot(svc, "recent_openers_snapshot")
+            if svc is not None
+            else completed
+        )
 
     def recent_opener_rejections(self) -> list[dict]:
         """Committed rejected-opener records from the active or last completed run.
@@ -693,7 +775,11 @@ class HubState:
         with self._lock:
             svc = self._opener_service
             completed = copy.deepcopy(self._completed_opener_rejections)
-        return self._service_snapshot(svc, "recent_rejections_snapshot") if svc is not None else completed
+        return (
+            self._service_snapshot(svc, "recent_rejections_snapshot")
+            if svc is not None
+            else completed
+        )
 
     def config_defaults(self) -> dict:
         try:
@@ -708,32 +794,40 @@ class HubState:
                     # load_effective_config validates, then invokes the registry before any
                     # construction, so it is the authoritative readiness answer.
                     effective = supervisor.load_effective_config(
-                        self.config_path, mode=mode, enabled_apps=[app])
+                        self.config_path, mode=mode, enabled_apps=[app]
+                    )
                 except Exception as exc:  # noqa: BLE001 — exact start reason is picker help
                     return False, str(exc)
                 # ``load_effective_config`` intentionally retains per-app precedence for
                 # unattended CLI runs.  The Hub, however, refuses an explicit mode click that
                 # would resolve to another mode in start(). Reflect that exact refusal in the
                 # picker instead of advertising an option that Start will immediately reject.
-                actual = ((getattr(effective, "apps", {}) or {}).get(app, {}) or {}).get(
-                    "mode", getattr(effective, "mode", None))
+                actual = (
+                    (getattr(effective, "apps", {}) or {}).get(app, {}) or {}
+                ).get("mode", getattr(effective, "mode", None))
                 if actual != mode:
                     return False, (
                         f"Hub requested {mode!r}, but per-app mode override resolves to "
-                        f"{app}={actual}; choose that mode explicitly or remove the override")
+                        f"{app}={actual}; choose that mode explicitly or remove the override"
+                    )
                 return True, None
 
             def _platform_payload(p: "platforms.Platform") -> dict:
-                status = {mode: _mode_status(p.app, mode)
-                          for mode in ("training", "auto")}
+                status = {
+                    mode: _mode_status(p.app, mode) for mode in ("training", "auto")
+                }
                 return {
                     "app": p.app,
                     "label": p.label,
                     "available": p.available,
                     "reason": p.reason,
                     # Keep the established boolean contract and add diagnostic detail beside it.
-                    "modes": {mode: available for mode, (available, _) in status.items()},
-                    "mode_reasons": {mode: reason for mode, (_, reason) in status.items()},
+                    "modes": {
+                        mode: available for mode, (available, _) in status.items()
+                    },
+                    "mode_reasons": {
+                        mode: reason for mode, (_, reason) in status.items()
+                    },
                 }
 
             # The hub is an operational control surface, not a calibration console. Do not
@@ -745,7 +839,8 @@ class HubState:
                     "label": platforms.KIND_LABELS[kind],
                     "platforms": [
                         _platform_payload(p)
-                        for p in platforms.for_kind(kind) if p.available
+                        for p in platforms.for_kind(kind)
+                        if p.available
                     ],
                 }
                 for kind in platforms.kinds()
@@ -753,7 +848,8 @@ class HubState:
             ]
             pending = [
                 {"app": p.app, "label": p.label, "reason": p.reason}
-                for p in platforms.all_platforms() if not p.available
+                for p in platforms.all_platforms()
+                if not p.available
             ]
             selected = _selected_platform(cfg.enabled_apps)
             return {
@@ -777,22 +873,39 @@ class HubState:
         every/every progress until the new metrics land. Never raises."""
         every = max(1, every)
         with self._lock:
-            cached, at, base, status = self._eval, self._eval_at, self._eval_labels, self._status
+            cached, at, base, status = (
+                self._eval,
+                self._eval_at,
+                self._eval_labels,
+                self._status,
+            )
         live = getattr(status, "labels", None) if status is not None else None
 
         fresh_enough = cached is not None and (time.time() - at) < max_age
         if live is not None and base is not None:
             enough_new = (live - base) >= every
         else:
-            enough_new = cached is None           # no live counter -> lean on max_age
+            enough_new = cached is None  # no live counter -> lean on max_age
         if cached is not None:
             if enough_new:
                 self._start_eval_refresh(every)
-                return self._attach_refresh(cached, every, live, base, status,
-                                            training=self._live_training_mix(status))
+                return self._attach_refresh(
+                    cached,
+                    every,
+                    live,
+                    base,
+                    status,
+                    training=self._live_training_mix(status),
+                )
             if fresh_enough:
-                return self._attach_refresh(cached, every, live, base, status,
-                                            training=self._live_training_mix(status))
+                return self._attach_refresh(
+                    cached,
+                    every,
+                    live,
+                    base,
+                    status,
+                    training=self._live_training_mix(status),
+                )
 
         return self._compute_eval_snapshot_singleflight(every)
 
@@ -813,7 +926,11 @@ class HubState:
         if not is_computer:
             finished = event.wait(timeout=_EVAL_COLD_WAIT_S)
             with self._lock:
-                cached, computed_at, status = self._eval, self._eval_labels, self._status
+                cached, computed_at, status = (
+                    self._eval,
+                    self._eval_labels,
+                    self._status,
+                )
             live = getattr(status, "labels", None) if status is not None else None
             if not finished or cached is None:
                 # Either the wait timed out, or the computing thread died via a BaseException
@@ -821,19 +938,37 @@ class HubState:
                 # catch, so it never populated self._eval before its `finally: event.set()`
                 # ran. Degrade to the documented error dict instead of handing None to
                 # _attach_refresh, which would break eval_snapshot's "never raises" contract.
-                cached = {"status": "error", "message": "eval computation did not complete",
-                          "labels": None, "identities": None, "folds": 0,
-                          "roc_auc": None, "pr_auc": None, "brier": None, "base_rate": 0.0,
-                          "like_threshold": None, "accepted_recall": None,
-                          "false_dislike_rate": None, "confusion": None}
-            return self._attach_refresh(cached, every, live, computed_at, status,
-                                        training=self._live_training_mix(status))
+                cached = {
+                    "status": "error",
+                    "message": "eval computation did not complete",
+                    "labels": None,
+                    "identities": None,
+                    "folds": 0,
+                    "roc_auc": None,
+                    "pr_auc": None,
+                    "brier": None,
+                    "base_rate": 0.0,
+                    "like_threshold": None,
+                    "accepted_recall": None,
+                    "false_dislike_rate": None,
+                    "confusion": None,
+                }
+            return self._attach_refresh(
+                cached,
+                every,
+                live,
+                computed_at,
+                status,
+                training=self._live_training_mix(status),
+            )
         try:
             return self._compute_eval_snapshot(every)
         finally:
-            event.set()               # wake waiters first...
+            event.set()  # wake waiters first...
             with self._lock:
-                self._eval_cold_event = None   # ...then clear the slot for the next cold start
+                self._eval_cold_event = (
+                    None  # ...then clear the slot for the next cold start
+                )
 
     def _start_eval_refresh(self, every: int) -> None:
         with self._lock:
@@ -849,7 +984,9 @@ class HubState:
                     self._eval_refreshing = False
 
         try:
-            threading.Thread(target=_target, name="hub-eval-refresh", daemon=True).start()
+            threading.Thread(
+                target=_target, name="hub-eval-refresh", daemon=True
+            ).start()
         except Exception:  # noqa: BLE001 — preserve eval_snapshot's never-raise contract
             # A failed Thread.start() runs none of _target's finally block.  Clear this guard
             # ourselves so a transient resource failure does not make every later eval request
@@ -865,6 +1002,7 @@ class HubState:
         try:
             from ..ranker import make_store
             from ..ranker.evaluate import evaluate
+
             cfg = cfg_mod.load(self.config_path)
             # FRESHNESS: when a run is live, read its in-memory store so the card sees
             # EVERY swipe (incl. the unflushed buffer) — not a re-query of BigQuery, which
@@ -877,12 +1015,14 @@ class HubState:
                 except Exception:  # noqa: BLE001 — run ended + store closed mid-read; fall back
                     samples = None
             if samples is None:
-                store = make_store(cfg, ensure=False)   # read-only; don't run DDL just to eval
+                store = make_store(
+                    cfg, ensure=False
+                )  # read-only; don't run DDL just to eval
                 try:
                     samples = store.load_labels()
                 finally:
                     store.close()
-                live_store = None                        # don't reuse a dead store for the chart
+                live_store = None  # don't reuse a dead store for the chart
             # This evaluates the ranker's configured base threshold. The stored dataset has
             # labels and embeddings, but not the live profile/session state required to replay
             # AutoSessionPolicy's additional conservative demotions, so this result is useful
@@ -896,18 +1036,34 @@ class HubState:
             # status.labels by the worker's unflushed buffer and re-fire the gate every poll.
             computed_at = live if live is not None else len(samples)
         except Exception as exc:  # noqa: BLE001
-            result = {"status": "error", "message": f"{type(exc).__name__}: {exc}",
-                      "labels": None, "identities": None, "folds": 0,
-                      "roc_auc": None, "pr_auc": None, "brier": None, "base_rate": 0.0,
-                      "like_threshold": None, "accepted_recall": None,
-                      "false_dislike_rate": None, "confusion": None}
+            result = {
+                "status": "error",
+                "message": f"{type(exc).__name__}: {exc}",
+                "labels": None,
+                "identities": None,
+                "folds": 0,
+                "roc_auc": None,
+                "pr_auc": None,
+                "brier": None,
+                "base_rate": 0.0,
+                "like_threshold": None,
+                "accepted_recall": None,
+                "false_dislike_rate": None,
+                "confusion": None,
+            }
             computed_at = live if live is not None else base
             training = None
         with self._lock:
-            self._eval, self._eval_at, self._eval_labels = result, time.time(), computed_at
+            self._eval, self._eval_at, self._eval_labels = (
+                result,
+                time.time(),
+                computed_at,
+            )
             status = self._status
         live = getattr(status, "labels", None) if status is not None else None
-        return self._attach_refresh(result, every, live, computed_at, status, training=training)
+        return self._attach_refresh(
+            result, every, live, computed_at, status, training=training
+        )
 
     @staticmethod
     def _training_mix(samples) -> dict:
@@ -915,7 +1071,9 @@ class HubState:
         rows = list(samples or [])
         # Stores always return (liked, embedding) pairs. Keep the display helper tolerant of
         # a malformed/testing row nevertheless: count the record but do not guess its class.
-        likes = sum(1 for row in rows if isinstance(row, tuple) and row and bool(row[0]))
+        likes = sum(
+            1 for row in rows if isinstance(row, tuple) and row and bool(row[0])
+        )
         return {"labels": len(rows), "likes": likes, "passes": len(rows) - likes}
 
     def _live_training_mix(self, status) -> dict | None:
@@ -925,7 +1083,10 @@ class HubState:
         refresh remains deliberately throttled. BigQueryStore serves this from its in-memory
         cache after startup, so polling does not issue a BigQuery query every five seconds.
         """
-        if not bool(getattr(status, "running", False)) or getattr(status, "mode", None) != "training":
+        if (
+            not bool(getattr(status, "running", False))
+            or getattr(status, "mode", None) != "training"
+        ):
             return None
         with self._lock:
             live_store = self._live_store
@@ -937,21 +1098,33 @@ class HubState:
             return None
 
     @staticmethod
-    def _attach_refresh(result: dict, every: int, live, base, status,
-                        training: dict | None = None) -> dict:
+    def _attach_refresh(
+        result: dict, every: int, live, base, status, training: dict | None = None
+    ) -> dict:
         """Return a shallow copy of the cached/fresh eval with a `refresh` countdown
         attached (the cached dict itself stays refresh-free so the count stays live)."""
         every = max(1, every)
-        running = bool(getattr(status, "running", False)) if status is not None else False
+        running = (
+            bool(getattr(status, "running", False)) if status is not None else False
+        )
         mode = getattr(status, "mode", None) if status is not None else None
         if live is None or base is None or not running:
-            refresh = {"every": every, "remaining": None, "since": None,
-                       "live": False, "mode": mode}
+            refresh = {
+                "every": every,
+                "remaining": None,
+                "since": None,
+                "live": False,
+                "mode": mode,
+            }
         else:
             since = max(0, int(live) - int(base))
-            refresh = {"every": every, "since": since,
-                       "remaining": max(0, every - since) or every,
-                       "live": True, "mode": mode}
+            refresh = {
+                "every": every,
+                "since": since,
+                "remaining": max(0, every - since) or every,
+                "live": True,
+                "mode": mode,
+            }
         attached = {**result, "refresh": refresh}
         if training is not None:
             attached["training"] = training

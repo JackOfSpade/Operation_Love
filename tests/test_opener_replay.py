@@ -5,6 +5,7 @@ No network, ever: every CLI test injects a fake GeminiTransport exactly as
 tests/test_gemini_opener.py and tests/test_gemini_model_probe.py do. NEVER make a real API call
 from a test.
 """
+
 from __future__ import annotations
 
 import base64
@@ -29,15 +30,38 @@ from tools import opener_replay as m
 # ---------------------------------------------------------------------------------------
 
 
-def _success(opener="Nice hike, where was that?", *, index=1,
-             angle="asking about the trail", item_description="a photo on a ridge"):
-    return (200, {
-        "candidates": [{"content": {"parts": [{"text": json.dumps({
-            "item_index": index, "referenced": "ridge photo", "angle": angle,
-            "item_description": item_description, "opener": opener,
-        })}]}}],
-        "usageMetadata": {"promptTokenCount": 9, "candidatesTokenCount": 5},
-    })
+def _success(
+    opener="Nice hike, where was that?",
+    *,
+    index=1,
+    angle="asking about the trail",
+    item_description="a photo on a ridge",
+):
+    return (
+        200,
+        {
+            "candidates": [
+                {
+                    "content": {
+                        "parts": [
+                            {
+                                "text": json.dumps(
+                                    {
+                                        "item_index": index,
+                                        "referenced": "ridge photo",
+                                        "angle": angle,
+                                        "item_description": item_description,
+                                        "opener": opener,
+                                    }
+                                )
+                            }
+                        ]
+                    }
+                }
+            ],
+            "usageMetadata": {"promptTokenCount": 9, "candidatesTokenCount": 5},
+        },
+    )
 
 
 class _ScriptedTransport:
@@ -65,7 +89,9 @@ class _ForbiddenStore:
         raise AssertionError("store.record_opener must not be called in dry-run mode")
 
     def record_opener_rejection(self, *a, **kw):
-        raise AssertionError("store.record_opener_rejection must not be called in dry-run mode")
+        raise AssertionError(
+            "store.record_opener_rejection must not be called in dry-run mode"
+        )
 
 
 def _config_path(tmp_path, models=("gemini-x",), style="Be warm, specific, and brief."):
@@ -75,11 +101,25 @@ def _config_path(tmp_path, models=("gemini-x",), style="Be warm, specific, and b
     return path
 
 
-def _write_capture(root, *, name="Alex", items=(b"item-1-bytes",), context=(),
-                   truncated=False, prompt_sha256="captured-era", captured_at=None):
-    result = rc.write_replay_capture(root, items=items, name=name, context=context,
-                                     truncated=truncated, prompt_sha256=prompt_sha256,
-                                     captured_at=captured_at)
+def _write_capture(
+    root,
+    *,
+    name="Alex",
+    items=(b"item-1-bytes",),
+    context=(),
+    truncated=False,
+    prompt_sha256="captured-era",
+    captured_at=None,
+):
+    result = rc.write_replay_capture(
+        root,
+        items=items,
+        name=name,
+        context=context,
+        truncated=truncated,
+        prompt_sha256=prompt_sha256,
+        captured_at=captured_at,
+    )
     assert result.ok, result.error
     return result
 
@@ -88,10 +128,17 @@ def _write_capture(root, *, name="Alex", items=(b"item-1-bytes",), context=(),
 # replay_corpus.py -- manifest round-trip
 # ---------------------------------------------------------------------------------------
 
+
 def test_write_then_load_roundtrips_every_field(tmp_path):
     written = _write_capture(
-        tmp_path, name="Jamie", items=(b"item-one", b"item-two"),
-        context=(b"context-one",), truncated=True, prompt_sha256="abc123", captured_at=1700.5)
+        tmp_path,
+        name="Jamie",
+        items=(b"item-one", b"item-two"),
+        context=(b"context-one",),
+        truncated=True,
+        prompt_sha256="abc123",
+        captured_at=1700.5,
+    )
 
     capture = rc.load_replay_capture(tmp_path, written.replay_id)
 
@@ -105,8 +152,14 @@ def test_write_then_load_roundtrips_every_field(tmp_path):
 
 
 def test_manifest_json_has_exactly_the_documented_shape(tmp_path):
-    written = _write_capture(tmp_path, name="Sam", items=(b"i1", b"i2"), context=(b"c1",),
-                             truncated=False, prompt_sha256="era-1")
+    written = _write_capture(
+        tmp_path,
+        name="Sam",
+        items=(b"i1", b"i2"),
+        context=(b"c1",),
+        truncated=False,
+        prompt_sha256="era-1",
+    )
     manifest_path = written.path / "manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
 
@@ -135,10 +188,17 @@ def test_write_replay_capture_is_idempotent_by_content(tmp_path):
 # replay_corpus.py -- discovery, listing, ordering
 # ---------------------------------------------------------------------------------------
 
+
 def test_list_replay_ids_orders_by_captured_at_then_replay_id(tmp_path):
-    late = _write_capture(tmp_path, name="Late", items=(b"late-bytes",), captured_at=300.0)
-    early = _write_capture(tmp_path, name="Early", items=(b"early-bytes",), captured_at=100.0)
-    middle = _write_capture(tmp_path, name="Mid", items=(b"mid-bytes",), captured_at=200.0)
+    late = _write_capture(
+        tmp_path, name="Late", items=(b"late-bytes",), captured_at=300.0
+    )
+    early = _write_capture(
+        tmp_path, name="Early", items=(b"early-bytes",), captured_at=100.0
+    )
+    middle = _write_capture(
+        tmp_path, name="Mid", items=(b"mid-bytes",), captured_at=200.0
+    )
 
     ordered = rc.list_replay_ids(tmp_path)
 
@@ -182,7 +242,9 @@ def test_load_replay_corpus_limit_applies_after_ordering(tmp_path):
 
     # explicit order reversed relative to captured_at; limit=1 must keep only the FIRST of
     # THIS order (c), not the earliest by captured_at (a).
-    captures = rc.load_replay_corpus(tmp_path, replay_ids=[c.replay_id, a.replay_id], limit=1)
+    captures = rc.load_replay_corpus(
+        tmp_path, replay_ids=[c.replay_id, a.replay_id], limit=1
+    )
 
     assert [cap.replay_id for cap in captures] == [c.replay_id]
 
@@ -191,16 +253,23 @@ def test_load_replay_corpus_limit_applies_after_ordering(tmp_path):
 # replay_corpus.py -- content-derived id, validation, safe-to-fail writer
 # ---------------------------------------------------------------------------------------
 
+
 def test_compute_replay_id_changes_with_content():
-    base = rc.compute_replay_id(name="Alex", items=(b"photo-a",), context=(), truncated=False)
-    different_name = rc.compute_replay_id(name="Sam", items=(b"photo-a",), context=(),
-                                          truncated=False)
-    different_photo = rc.compute_replay_id(name="Alex", items=(b"photo-b",), context=(),
-                                           truncated=False)
-    different_truncated = rc.compute_replay_id(name="Alex", items=(b"photo-a",), context=(),
-                                               truncated=True)
-    same_again = rc.compute_replay_id(name="Alex", items=(b"photo-a",), context=(),
-                                      truncated=False)
+    base = rc.compute_replay_id(
+        name="Alex", items=(b"photo-a",), context=(), truncated=False
+    )
+    different_name = rc.compute_replay_id(
+        name="Sam", items=(b"photo-a",), context=(), truncated=False
+    )
+    different_photo = rc.compute_replay_id(
+        name="Alex", items=(b"photo-b",), context=(), truncated=False
+    )
+    different_truncated = rc.compute_replay_id(
+        name="Alex", items=(b"photo-a",), context=(), truncated=True
+    )
+    same_again = rc.compute_replay_id(
+        name="Alex", items=(b"photo-a",), context=(), truncated=False
+    )
 
     assert base == same_again
     assert len({base, different_name, different_photo, different_truncated}) == 4
@@ -217,6 +286,7 @@ def test_write_replay_capture_rejects_zero_items(tmp_path):
 def test_write_replay_capture_never_raises_on_a_disk_failure(tmp_path, monkeypatch):
     """The writer's core safety property: a real OSError from the filesystem must come back
     as ReplayWriteResult(ok=False), never propagate."""
+
     def _boom(self, *_a, **_k):
         raise OSError("disk full (simulated)")
 
@@ -235,7 +305,9 @@ def test_write_replay_capture_never_raises_on_a_disk_failure(tmp_path, monkeypat
     assert "disk full" in result.error
 
 
-def test_interrupted_staged_write_leaves_no_canonical_partial_and_retry_succeeds(tmp_path, monkeypatch):
+def test_interrupted_staged_write_leaves_no_canonical_partial_and_retry_succeeds(
+    tmp_path, monkeypatch
+):
     """A failed crop write cannot poison its deterministic replay id forever."""
     original = rc._write_new_capture_file
     failed = False
@@ -260,7 +332,9 @@ def test_interrupted_staged_write_leaves_no_canonical_partial_and_retry_succeeds
     assert rc.load_replay_capture(tmp_path, replay_id).items == (b"same",)
 
 
-def test_legacy_canonical_partial_crop_is_quarantined_and_the_same_write_recovers(tmp_path):
+def test_legacy_canonical_partial_crop_is_quarantined_and_the_same_write_recovers(
+    tmp_path,
+):
     """Exact pre-transaction repro: crop present, manifest absent, then retry same content."""
     first = _write_capture(tmp_path, name="Casey", items=(b"same",))
     (first.path / "manifest.json").unlink()
@@ -274,7 +348,9 @@ def test_legacy_canonical_partial_crop_is_quarantined_and_the_same_write_recover
     assert (quarantines[0] / "item_001.bin").read_bytes() == b"same"
 
 
-def test_two_writers_cannot_quarantine_a_completed_legacy_recovery_winner(tmp_path, monkeypatch):
+def test_two_writers_cannot_quarantine_a_completed_legacy_recovery_winner(
+    tmp_path, monkeypatch
+):
     """The legacy observation and its rename share the per-id OS lock."""
     first = _write_capture(tmp_path, name="Casey", items=(b"same",))
     (first.path / "manifest.json").unlink()
@@ -292,10 +368,16 @@ def test_two_writers_cannot_quarantine_a_completed_legacy_recovery_winner(tmp_pa
 
     monkeypatch.setattr(rc, "_quarantine_incomplete_capture", pause_first)
     results = []
-    a = threading.Thread(target=lambda: results.append(
-        rc.write_replay_capture(tmp_path, name="Casey", items=(b"same",))))
-    b = threading.Thread(target=lambda: results.append(
-        rc.write_replay_capture(tmp_path, name="Casey", items=(b"same",))))
+    a = threading.Thread(
+        target=lambda: results.append(
+            rc.write_replay_capture(tmp_path, name="Casey", items=(b"same",))
+        )
+    )
+    b = threading.Thread(
+        target=lambda: results.append(
+            rc.write_replay_capture(tmp_path, name="Casey", items=(b"same",))
+        )
+    )
     a.start()
     assert entered.wait(5)
     b.start()
@@ -306,8 +388,11 @@ def test_two_writers_cannot_quarantine_a_completed_legacy_recovery_winner(tmp_pa
     assert all(result.ok for result in results)
     assert calls == [first.replay_id]
     assert rc.load_replay_capture(tmp_path, first.replay_id).items == (b"same",)
-    assert all(not (path / "manifest.json").exists()
-               for path in tmp_path.iterdir() if path.name.startswith(".incomplete-"))
+    assert all(
+        not (path / "manifest.json").exists()
+        for path in tmp_path.iterdir()
+        if path.name.startswith(".incomplete-")
+    )
 
 
 def test_idempotent_writer_fails_closed_on_tampered_completed_crop(tmp_path):
@@ -382,7 +467,9 @@ def test_writer_refuses_a_symlinked_root(tmp_path):
     assert list(outside.iterdir()) == []
 
 
-def test_every_root_path_component_is_no_follow_for_write_read_prune_and_purge(tmp_path, capsys):
+def test_every_root_path_component_is_no_follow_for_write_read_prune_and_purge(
+    tmp_path, capsys
+):
     """O_NOFOLLOW on only the final root component would let this escape via ``hop``."""
     outside = tmp_path / "outside"
     outside.mkdir()
@@ -404,7 +491,9 @@ def test_every_root_path_component_is_no_follow_for_write_read_prune_and_purge(t
     assert list(outside.iterdir()) == []
 
 
-def test_writer_rejects_root_component_replaced_by_symlink_during_creation(tmp_path, monkeypatch):
+def test_writer_rejects_root_component_replaced_by_symlink_during_creation(
+    tmp_path, monkeypatch
+):
     outside = tmp_path / "outside"
     outside.mkdir()
     root = tmp_path / "new-corpus"
@@ -457,7 +546,9 @@ def test_load_replay_capture_raises_on_missing_replay_id(tmp_path):
         rc.load_replay_capture(tmp_path, "0" * 64)
 
 
-def test_load_replay_capture_raises_when_manifest_replay_id_disagrees_with_directory(tmp_path):
+def test_load_replay_capture_raises_when_manifest_replay_id_disagrees_with_directory(
+    tmp_path,
+):
     written = _write_capture(tmp_path, items=(b"item-bytes",))
     manifest_path = written.path / "manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -469,10 +560,15 @@ def test_load_replay_capture_raises_when_manifest_replay_id_disagrees_with_direc
 
 
 @pytest.mark.parametrize("field", ["items", "context"])
-@pytest.mark.parametrize("unsafe_name", ["../outside.bin", "/tmp/outside.bin", "..\\outside.bin"])
+@pytest.mark.parametrize(
+    "unsafe_name", ["../outside.bin", "/tmp/outside.bin", "..\\outside.bin"]
+)
 def test_load_replay_capture_rejects_manifest_paths_outside_its_directory(
-        tmp_path, field, unsafe_name):
-    written = _write_capture(tmp_path, items=(b"safe-item",), context=(b"safe-context",))
+    tmp_path, field, unsafe_name
+):
+    written = _write_capture(
+        tmp_path, items=(b"safe-item",), context=(b"safe-context",)
+    )
     outside = tmp_path / "outside.bin"
     outside.write_bytes(b"must never be read")
     manifest_path = written.path / "manifest.json"
@@ -513,7 +609,9 @@ def test_load_replay_capture_rejects_hard_linked_manifest_and_crops(tmp_path, ta
 
 
 @pytest.mark.parametrize("target", ["manifest.json", "item_001.bin"])
-def test_load_replay_capture_rejects_fifo_manifest_and_crops_without_blocking(tmp_path, target):
+def test_load_replay_capture_rejects_fifo_manifest_and_crops_without_blocking(
+    tmp_path, target
+):
     written = _write_capture(tmp_path, items=(b"safe-item",))
     path = written.path / target
     path.unlink()
@@ -523,14 +621,17 @@ def test_load_replay_capture_rejects_fifo_manifest_and_crops_without_blocking(tm
         rc.load_replay_capture(tmp_path, written.replay_id)
 
 
-def test_load_replay_capture_keeps_reading_the_open_root_after_a_root_path_swap(tmp_path, monkeypatch):
+def test_load_replay_capture_keeps_reading_the_open_root_after_a_root_path_swap(
+    tmp_path, monkeypatch
+):
     root = tmp_path / "corpus"
     written = _write_capture(root, items=(b"original-item",))
     replacement = tmp_path / "replacement"
     replacement_capture = replacement / written.replay_id
     replacement_capture.mkdir(parents=True)
     (replacement_capture / "manifest.json").write_bytes(
-        (written.path / "manifest.json").read_bytes())
+        (written.path / "manifest.json").read_bytes()
+    )
     (replacement_capture / "item_001.bin").write_bytes(b"replacement-item")
     moved = tmp_path / "original-root-now-hidden"
     real_open_capture = rc._open_capture_directory
@@ -546,7 +647,9 @@ def test_load_replay_capture_keeps_reading_the_open_root_after_a_root_path_swap(
     assert capture.items == (b"original-item",)
 
 
-def test_load_replay_capture_rejects_noncanonical_replay_id_before_accessing_root(tmp_path):
+def test_load_replay_capture_rejects_noncanonical_replay_id_before_accessing_root(
+    tmp_path,
+):
     with pytest.raises(ValueError, match="64 lowercase hexadecimal"):
         rc.load_replay_capture(tmp_path, "../not-a-capture")
 
@@ -559,7 +662,9 @@ def test_windows_native_relative_name_uses_utf16_bytes_and_refuses_wraparound():
         @staticmethod
         def NtCreateFile(handle_ptr, _access, attrs_ptr, *_rest):
             calls.append(attrs_ptr._obj.ObjectName.contents)
-            ctypes.cast(handle_ptr, ctypes.POINTER(ctypes.c_void_p))[0] = ctypes.c_void_p(7)
+            ctypes.cast(handle_ptr, ctypes.POINTER(ctypes.c_void_p))[0] = (
+                ctypes.c_void_p(7)
+            )
             return 0
 
     native = object.__new__(rc._NativeWindowsCorpusFilesystem)
@@ -579,12 +684,17 @@ def test_windows_native_relative_name_uses_utf16_bytes_and_refuses_wraparound():
     assert calls == []
 
 
-def _directory_information_record(name: str, *, next_offset: int = 0,
-                                  filename_length: int | None = None) -> bytes:
+def _directory_information_record(
+    name: str, *, next_offset: int = 0, filename_length: int | None = None
+) -> bytes:
     encoded = name.encode("utf-16-le")
     length = len(encoded) if filename_length is None else filename_length
-    return (struct.pack("<II", next_offset, 0) + (b"\0" * 48)
-            + struct.pack("<II", 0, length) + encoded)
+    return (
+        struct.pack("<II", next_offset, 0)
+        + (b"\0" * 48)
+        + struct.pack("<II", 0, length)
+        + encoded
+    )
 
 
 def test_windows_native_directory_query_grows_for_overflow_and_zero_information():
@@ -595,18 +705,24 @@ def test_windows_native_directory_query_grows_for_overflow_and_zero_information(
             self.responses = iter(responses)
             self.sizes = []
 
-        def NtQueryDirectoryFile(self, _directory, _event, _apc, _context, iosb_ptr,
-                                 buffer, length, *_rest):
+        def NtQueryDirectoryFile(
+            self, _directory, _event, _apc, _context, iosb_ptr, buffer, length, *_rest
+        ):
             status, payload = next(self.responses)
             self.sizes.append(length)
             iosb = ctypes.cast(iosb_ptr, ctypes.POINTER(rc._WinIoStatusBlock)).contents
             iosb.Information = len(payload)
-            buffer[:len(payload)] = payload
+            buffer[: len(payload)] = payload
             return status
 
     for first_status in (rc._NativeWindowsCorpusFilesystem._STATUS_BUFFER_OVERFLOW, 0):
-        ntdll = Ntdll([(first_status, b""), (0, record),
-                       (rc._NativeWindowsCorpusFilesystem._STATUS_NO_MORE_FILES, b"")])
+        ntdll = Ntdll(
+            [
+                (first_status, b""),
+                (0, record),
+                (rc._NativeWindowsCorpusFilesystem._STATUS_NO_MORE_FILES, b""),
+            ]
+        )
         native = object.__new__(rc._NativeWindowsCorpusFilesystem)
         native._ctypes = ctypes
         native._ntdll = ntdll
@@ -615,16 +731,21 @@ def test_windows_native_directory_query_grows_for_overflow_and_zero_information(
         assert ntdll.sizes[:2] == [65536, 131072]
 
 
-@pytest.mark.parametrize("record", [
-    _directory_information_record("x", next_offset=2),
-    _directory_information_record("x", filename_length=4)[:-1],
-])
+@pytest.mark.parametrize(
+    "record",
+    [
+        _directory_information_record("x", next_offset=2),
+        _directory_information_record("x", filename_length=4)[:-1],
+    ],
+)
 def test_windows_native_directory_parser_rejects_malformed_record_bounds(record):
     with pytest.raises(ValueError, match="FILE_DIRECTORY_INFORMATION"):
         rc._NativeWindowsCorpusFilesystem._parse_directory_information(record)
 
 
-def test_delete_replay_captures_skips_a_replaced_nondirectory_and_continues(tmp_path, monkeypatch):
+def test_delete_replay_captures_skips_a_replaced_nondirectory_and_continues(
+    tmp_path, monkeypatch
+):
     root = tmp_path / "corpus"
     replaced = _write_capture(root, name="replaced", items=(b"one",))
     survivor = _write_capture(root, name="survivor", items=(b"two",))
@@ -637,13 +758,16 @@ def test_delete_replay_captures_skips_a_replaced_nondirectory_and_continues(tmp_
 
     monkeypatch.setattr(rc, "_open_capture_directory", replaced_before_open)
 
-    assert rc.delete_replay_captures(root, [replaced.replay_id, survivor.replay_id]) == (
-        survivor.replay_id,)
+    assert rc.delete_replay_captures(
+        root, [replaced.replay_id, survivor.replay_id]
+    ) == (survivor.replay_id,)
     assert replaced.path.is_dir()
     assert not survivor.path.exists()
 
 
-def test_delete_replay_captures_never_deletes_a_manifestless_same_id_replacement(tmp_path):
+def test_delete_replay_captures_never_deletes_a_manifestless_same_id_replacement(
+    tmp_path,
+):
     root = tmp_path / "corpus"
     written = _write_capture(root, name="Casey", items=(b"same",))
     (written.path / "manifest.json").unlink()
@@ -653,7 +777,9 @@ def test_delete_replay_captures_never_deletes_a_manifestless_same_id_replacement
     assert (written.path / "item_001.bin").read_bytes() == b"same"
 
 
-def test_delete_replay_captures_preserves_a_replacement_after_validation(tmp_path, monkeypatch):
+def test_delete_replay_captures_preserves_a_replacement_after_validation(
+    tmp_path, monkeypatch
+):
     root = tmp_path / "corpus"
     written = _write_capture(root, name="Casey", items=(b"same",))
     real_rename = rc.os.rename
@@ -786,18 +912,25 @@ class _FakeWindowsCorpusFilesystem:
         self.remove_roots.append(("root", directory[2]))
         if replay_id in self.reparse_captures or replay_id in self.swap_before_remove:
             return False
-        if replay_id not in self.captures or id(self.captures[replay_id]) != expected_identity:
+        if (
+            replay_id not in self.captures
+            or id(self.captures[replay_id]) != expected_identity
+        ):
             return False
         del self.captures[replay_id]
         return True
 
 
-def test_windows_handle_adapter_supports_write_list_load_prune_and_purge(tmp_path, monkeypatch):
+def test_windows_handle_adapter_supports_write_list_load_prune_and_purge(
+    tmp_path, monkeypatch
+):
     windows = _FakeWindowsCorpusFilesystem()
     monkeypatch.setattr(rc, "_WINDOWS_FILESYSTEM", windows)
     root = tmp_path / "corpus"
     old = _write_capture(root, name="old", items=(b"old-item",), captured_at=1.0)
-    fresh = _write_capture(root, name="fresh", items=(b"fresh-item",), captured_at=time.time())
+    fresh = _write_capture(
+        root, name="fresh", items=(b"fresh-item",), captured_at=time.time()
+    )
 
     assert rc.list_replay_ids(root) == [old.replay_id, fresh.replay_id]
     assert rc.load_replay_capture(root, fresh.replay_id).items == (b"fresh-item",)
@@ -807,7 +940,9 @@ def test_windows_handle_adapter_supports_write_list_load_prune_and_purge(tmp_pat
     assert windows.captures == {}
 
 
-def test_windows_handle_adapter_recovers_the_legacy_manifest_absent_partial(tmp_path, monkeypatch):
+def test_windows_handle_adapter_recovers_the_legacy_manifest_absent_partial(
+    tmp_path, monkeypatch
+):
     windows = _FakeWindowsCorpusFilesystem()
     monkeypatch.setattr(rc, "_WINDOWS_FILESYSTEM", windows)
     root = tmp_path / "corpus"
@@ -821,7 +956,9 @@ def test_windows_handle_adapter_recovers_the_legacy_manifest_absent_partial(tmp_
     assert any(name.startswith(".incomplete-") for name in windows.captures)
 
 
-def test_windows_handle_adapter_fails_closed_on_tampered_completed_winner(tmp_path, monkeypatch):
+def test_windows_handle_adapter_fails_closed_on_tampered_completed_winner(
+    tmp_path, monkeypatch
+):
     windows = _FakeWindowsCorpusFilesystem()
     monkeypatch.setattr(rc, "_WINDOWS_FILESYSTEM", windows)
     root = tmp_path / "corpus"
@@ -834,7 +971,9 @@ def test_windows_handle_adapter_fails_closed_on_tampered_completed_winner(tmp_pa
     assert "canonical" in result.error
 
 
-def test_windows_handle_adapter_purge_keeps_manifestless_same_id_replacement(tmp_path, monkeypatch):
+def test_windows_handle_adapter_purge_keeps_manifestless_same_id_replacement(
+    tmp_path, monkeypatch
+):
     windows = _FakeWindowsCorpusFilesystem()
     monkeypatch.setattr(rc, "_WINDOWS_FILESYSTEM", windows)
     root = tmp_path / "corpus"
@@ -845,7 +984,9 @@ def test_windows_handle_adapter_purge_keeps_manifestless_same_id_replacement(tmp
     assert written.replay_id in windows.captures
 
 
-def test_windows_handle_adapter_rejects_reparse_hardlink_and_replacement_races(tmp_path, monkeypatch):
+def test_windows_handle_adapter_rejects_reparse_hardlink_and_replacement_races(
+    tmp_path, monkeypatch
+):
     windows = _FakeWindowsCorpusFilesystem()
     monkeypatch.setattr(rc, "_WINDOWS_FILESYSTEM", windows)
     root = tmp_path / "corpus"
@@ -871,7 +1012,9 @@ def test_windows_handle_adapter_rejects_reparse_hardlink_and_replacement_races(t
     assert windows.remove_roots == [("root", windows.root_token)]
 
 
-def test_main_live_rejects_a_traversal_manifest_before_provider_transport(tmp_path, capsys):
+def test_main_live_rejects_a_traversal_manifest_before_provider_transport(
+    tmp_path, capsys
+):
     corpus_dir = tmp_path / "corpus"
     written = _write_capture(corpus_dir, items=(b"safe-item",))
     (tmp_path / "private.bin").write_bytes(b"must never reach Gemini")
@@ -882,9 +1025,19 @@ def test_main_live_rejects_a_traversal_manifest_before_provider_transport(tmp_pa
     transport = _ScriptedTransport([_success()])
 
     result = m.main(
-        ["--live", "--corpus-dir", str(corpus_dir), "--config", str(_config_path(tmp_path)),
-         "--replay-ids", written.replay_id],
-        transport=transport, env={"GEMINI_API_KEY": "k"}, confirm=lambda _prompt: True)
+        [
+            "--live",
+            "--corpus-dir",
+            str(corpus_dir),
+            "--config",
+            str(_config_path(tmp_path)),
+            "--replay-ids",
+            written.replay_id,
+        ],
+        transport=transport,
+        env={"GEMINI_API_KEY": "k"},
+        confirm=lambda _prompt: True,
+    )
 
     assert result == 1
     assert transport.calls == []
@@ -895,19 +1048,33 @@ def test_main_live_rejects_a_traversal_manifest_before_provider_transport(tmp_pa
 # tools/opener_replay.py -- dry run: no network, no store write
 # ---------------------------------------------------------------------------------------
 
+
 def test_main_dry_run_makes_no_network_call_and_no_store_write(tmp_path, capsys):
     corpus_dir = tmp_path / "corpus"
-    _write_capture(corpus_dir, name="Alex", items=(b"item-one", b"item-two"),
-                   context=(b"context-one",))
+    _write_capture(
+        corpus_dir,
+        name="Alex",
+        items=(b"item-one", b"item-two"),
+        context=(b"context-one",),
+    )
     config_path = _config_path(tmp_path)
     db_path = tmp_path / "store.db"
 
     rc_code = m.main(
-        ["--corpus-dir", str(corpus_dir), "--config", str(config_path), "--db", str(db_path)],
-        transport=_forbidden_transport, store=_ForbiddenStore())
+        [
+            "--corpus-dir",
+            str(corpus_dir),
+            "--config",
+            str(config_path),
+            "--db",
+            str(db_path),
+        ],
+        transport=_forbidden_transport,
+        store=_ForbiddenStore(),
+    )
 
     assert rc_code == 0
-    assert not db_path.exists()   # the store file was never even opened
+    assert not db_path.exists()  # the store file was never even opened
     out = capsys.readouterr().out
     assert "DRY RUN" in out
     assert "item_count=2" in out
@@ -922,7 +1089,9 @@ def test_main_dry_run_json_report_has_counts_and_models(tmp_path, capsys):
 
     rc_code = m.main(
         ["--corpus-dir", str(corpus_dir), "--config", str(config_path), "--json"],
-        transport=_forbidden_transport, store=_ForbiddenStore())
+        transport=_forbidden_transport,
+        store=_ForbiddenStore(),
+    )
 
     assert rc_code == 0
     report = json.loads(capsys.readouterr().out)
@@ -937,13 +1106,18 @@ def test_main_dry_run_json_report_has_counts_and_models(tmp_path, capsys):
     assert isinstance(entry["estimated_request_bytes"], int)
     assert entry["estimated_request_bytes"] > 0
     assert entry["name_present"] is True
-    assert "Robin" not in json.dumps(entry)  # her literal name is never echoed into the report
+    assert "Robin" not in json.dumps(
+        entry
+    )  # her literal name is never echoed into the report
 
 
 def test_main_dry_run_reports_nothing_to_do_on_an_empty_corpus(tmp_path, capsys):
     config_path = _config_path(tmp_path)
-    rc_code = m.main(["--corpus-dir", str(tmp_path / "empty"), "--config", str(config_path)],
-                    transport=_forbidden_transport, store=_ForbiddenStore())
+    rc_code = m.main(
+        ["--corpus-dir", str(tmp_path / "empty"), "--config", str(config_path)],
+        transport=_forbidden_transport,
+        store=_ForbiddenStore(),
+    )
     assert rc_code == 0
     assert "Nothing to do" in capsys.readouterr().out
 
@@ -952,7 +1126,10 @@ def test_main_dry_run_reports_nothing_to_do_on_an_empty_corpus(tmp_path, capsys)
 # tools/opener_replay.py -- --live: confirmation gate, api key requirement
 # ---------------------------------------------------------------------------------------
 
-def test_main_live_requires_confirmation_and_does_not_call_transport_when_declined(tmp_path):
+
+def test_main_live_requires_confirmation_and_does_not_call_transport_when_declined(
+    tmp_path,
+):
     corpus_dir = tmp_path / "corpus"
     _write_capture(corpus_dir, items=(b"item-bytes",))
     config_path = _config_path(tmp_path)
@@ -960,8 +1137,11 @@ def test_main_live_requires_confirmation_and_does_not_call_transport_when_declin
 
     rc_code = m.main(
         ["--corpus-dir", str(corpus_dir), "--config", str(config_path), "--live"],
-        transport=transport, env={"GEMINI_API_KEY": "k"}, confirm=lambda _p: False,
-        store=_ForbiddenStore())
+        transport=transport,
+        env={"GEMINI_API_KEY": "k"},
+        confirm=lambda _p: False,
+        store=_ForbiddenStore(),
+    )
 
     assert rc_code != 0
     assert transport.calls == []
@@ -977,8 +1157,18 @@ def test_main_live_requires_api_key(tmp_path):
     transport = _ScriptedTransport([_success()])
 
     rc_code = m.main(
-        ["--corpus-dir", str(corpus_dir), "--config", str(config_path), "--live", "--yes"],
-        transport=transport, env={}, store=_ForbiddenStore())
+        [
+            "--corpus-dir",
+            str(corpus_dir),
+            "--config",
+            str(config_path),
+            "--live",
+            "--yes",
+        ],
+        transport=transport,
+        env={},
+        store=_ForbiddenStore(),
+    )
 
     assert rc_code != 0
     assert transport.calls == []
@@ -988,18 +1178,35 @@ def test_main_live_requires_api_key(tmp_path):
 # tools/opener_replay.py -- --live: the replay marker, the CURRENT prompt_sha256, real store
 # ---------------------------------------------------------------------------------------
 
+
 def test_main_live_writes_replay_marker_under_the_current_prompt_era(tmp_path):
     corpus_dir = tmp_path / "corpus"
-    _write_capture(corpus_dir, name="Alex", items=(b"item-bytes",),
-                  prompt_sha256="some-stale-captured-era")
+    _write_capture(
+        corpus_dir,
+        name="Alex",
+        items=(b"item-bytes",),
+        prompt_sha256="some-stale-captured-era",
+    )
     config_path = _config_path(tmp_path, style="Current live style guide text.")
     db_path = tmp_path / "store.db"
     transport = _ScriptedTransport([_success("Great trail, where was that?")])
 
     rc_code = m.main(
-        ["--corpus-dir", str(corpus_dir), "--config", str(config_path), "--db", str(db_path),
-         "--live", "--yes", "--run-id", "test-run-1"],
-        transport=transport, env={"GEMINI_API_KEY": "k"})
+        [
+            "--corpus-dir",
+            str(corpus_dir),
+            "--config",
+            str(config_path),
+            "--db",
+            str(db_path),
+            "--live",
+            "--yes",
+            "--run-id",
+            "test-run-1",
+        ],
+        transport=transport,
+        env={"GEMINI_API_KEY": "k"},
+    )
 
     assert rc_code == 0
     assert len(transport.calls) == 1
@@ -1021,6 +1228,7 @@ def test_main_live_writes_replay_marker_under_the_current_prompt_era(tmp_path):
     assert decision == m.DECISION_REPLAY
     # The CURRENT config's era, never the stale one recorded at capture time.
     from operation_love.opener.opener import prompt_stamp
+
     cfg = yaml.safe_load(config_path.read_text())
     assert prompt_sha256 == prompt_stamp(cfg["opener"]["style"])
     assert prompt_sha256 != "some-stale-captured-era"
@@ -1055,12 +1263,23 @@ def _replay_one_rejection(tmp_path, *, run_id=None):
     _write_capture(corpus_dir, items=(b"item-bytes",))
     config_path = _config_path(tmp_path)
     db_path = tmp_path / "store.db"
-    argv = ["--corpus-dir", str(corpus_dir), "--config", str(config_path), "--db", str(db_path),
-            "--live", "--yes"]
+    argv = [
+        "--corpus-dir",
+        str(corpus_dir),
+        "--config",
+        str(config_path),
+        "--db",
+        str(db_path),
+        "--live",
+        "--yes",
+    ]
     if run_id is not None:
         argv += ["--run-id", run_id]
-    rc_code = m.main(argv, transport=_ScriptedTransport([_rejected_opener_response()]),
-                     env={"GEMINI_API_KEY": "k"})
+    rc_code = m.main(
+        argv,
+        transport=_ScriptedTransport([_rejected_opener_response()]),
+        env={"GEMINI_API_KEY": "k"},
+    )
     # Every capture was rejected, so nothing this run was asked to do happened -- exit 1 by
     # design (see main()'s own trailing comment), which is not a failure of this fixture.
     assert rc_code == 1
@@ -1071,7 +1290,8 @@ def _rejection_rows(db_path):
     store = SQLiteStore(db_path)
     try:
         return store.con.execute(
-            "SELECT run_id, reason_code, prompt_sha256 FROM opener_rejections").fetchall()
+            "SELECT run_id, reason_code, prompt_sha256 FROM opener_rejections"
+        ).fetchall()
     finally:
         store.close()
 
@@ -1083,7 +1303,9 @@ def test_main_live_rejection_row_carries_the_replay_run_id_prefix(tmp_path):
     assert len(rows) == 1
     run_id, reason_code, prompt_sha256 = rows[0]
     assert run_id.startswith(m.REPLAY_RUN_ID_PREFIX)
-    assert reason_code  # a real guard fired; this is a genuine rejection row, not a stub
+    assert (
+        reason_code
+    )  # a real guard fired; this is a genuine rejection row, not a stub
     assert prompt_sha256  # stamped with the CURRENT era, same as the success path
     # MUTATION CHECK: change the generated-id branch in main() back to a bare
     # f"{int(time.time())}_{uuid...}" (no prefix) -- re-run: this assertion fails
@@ -1147,15 +1369,27 @@ def test_report_recognizes_a_run_id_this_tool_actually_writes(tmp_path):
 def test_main_live_omits_retained_context_crops_from_the_gemini_request(tmp_path):
     """Context stays available in replay storage, but is never an unselectable visual premise."""
     corpus_dir = tmp_path / "corpus"
-    _write_capture(corpus_dir, items=(b"selected-item",), context=(b"forensic-context",))
+    _write_capture(
+        corpus_dir, items=(b"selected-item",), context=(b"forensic-context",)
+    )
     config_path = _config_path(tmp_path)
     transport = _ScriptedTransport([_success()])
 
     store = SQLiteStore(tmp_path / "db.sqlite")
     try:
         rc_code = m.main(
-            ["--corpus-dir", str(corpus_dir), "--config", str(config_path), "--live", "--yes"],
-            transport=transport, env={"GEMINI_API_KEY": "k"}, store=store)
+            [
+                "--corpus-dir",
+                str(corpus_dir),
+                "--config",
+                str(config_path),
+                "--live",
+                "--yes",
+            ],
+            transport=transport,
+            env={"GEMINI_API_KEY": "k"},
+            store=store,
+        )
     finally:
         store.close()
 
@@ -1180,13 +1414,17 @@ def test_main_live_replay_marker_is_never_the_sent_decision_value(tmp_path):
 # from replaying. Dry run is the default (deletes nothing); --delete performs the removal.
 # ---------------------------------------------------------------------------------------
 
+
 def test_purge_dry_run_whole_corpus_deletes_nothing(tmp_path, capsys):
     corpus_dir = tmp_path / "corpus"
     a = _write_capture(corpus_dir, name="A", items=(b"a-bytes",), captured_at=100.0)
     b = _write_capture(corpus_dir, name="B", items=(b"b-bytes",), captured_at=200.0)
 
-    rc_code = m.main(["--corpus-dir", str(corpus_dir), "--purge"],
-                     transport=_forbidden_transport, store=_ForbiddenStore())
+    rc_code = m.main(
+        ["--corpus-dir", str(corpus_dir), "--purge"],
+        transport=_forbidden_transport,
+        store=_ForbiddenStore(),
+    )
 
     assert rc_code == 0
     out = capsys.readouterr().out
@@ -1199,13 +1437,17 @@ def test_purge_dry_run_whole_corpus_deletes_nothing(tmp_path, capsys):
 
 
 def test_purge_delete_whole_corpus_removes_everything_and_prints_what_it_removed(
-        tmp_path, capsys):
+    tmp_path, capsys
+):
     corpus_dir = tmp_path / "corpus"
     a = _write_capture(corpus_dir, name="A", items=(b"a-bytes",), captured_at=100.0)
     b = _write_capture(corpus_dir, name="B", items=(b"b-bytes",), captured_at=200.0)
 
-    rc_code = m.main(["--corpus-dir", str(corpus_dir), "--purge", "--delete"],
-                     transport=_forbidden_transport, store=_ForbiddenStore())
+    rc_code = m.main(
+        ["--corpus-dir", str(corpus_dir), "--purge", "--delete"],
+        transport=_forbidden_transport,
+        store=_ForbiddenStore(),
+    )
 
     assert rc_code == 0
     out = capsys.readouterr().out
@@ -1221,14 +1463,18 @@ def test_purge_delete_whole_corpus_removes_everything_and_prints_what_it_removed
 def test_purge_dry_run_older_than_days_reports_only_the_old_one(tmp_path, capsys):
     corpus_dir = tmp_path / "corpus"
     now = time.time()
-    old = _write_capture(corpus_dir, name="Old", items=(b"old-bytes",),
-                         captured_at=now - 30 * 86400)
-    new = _write_capture(corpus_dir, name="New", items=(b"new-bytes",),
-                         captured_at=now - 1 * 86400)
+    old = _write_capture(
+        corpus_dir, name="Old", items=(b"old-bytes",), captured_at=now - 30 * 86400
+    )
+    new = _write_capture(
+        corpus_dir, name="New", items=(b"new-bytes",), captured_at=now - 1 * 86400
+    )
 
     rc_code = m.main(
         ["--corpus-dir", str(corpus_dir), "--purge", "--purge-older-than-days", "10"],
-        transport=_forbidden_transport, store=_ForbiddenStore())
+        transport=_forbidden_transport,
+        store=_ForbiddenStore(),
+    )
 
     assert rc_code == 0
     out = capsys.readouterr().out
@@ -1243,14 +1489,25 @@ def test_purge_dry_run_older_than_days_reports_only_the_old_one(tmp_path, capsys
 def test_purge_delete_older_than_days_removes_only_the_old_one(tmp_path, capsys):
     corpus_dir = tmp_path / "corpus"
     now = time.time()
-    old = _write_capture(corpus_dir, name="Old", items=(b"old-bytes",),
-                         captured_at=now - 30 * 86400)
-    new = _write_capture(corpus_dir, name="New", items=(b"new-bytes",),
-                         captured_at=now - 1 * 86400)
+    old = _write_capture(
+        corpus_dir, name="Old", items=(b"old-bytes",), captured_at=now - 30 * 86400
+    )
+    new = _write_capture(
+        corpus_dir, name="New", items=(b"new-bytes",), captured_at=now - 1 * 86400
+    )
 
     rc_code = m.main(
-        ["--corpus-dir", str(corpus_dir), "--purge", "--purge-older-than-days", "10", "--delete"],
-        transport=_forbidden_transport, store=_ForbiddenStore())
+        [
+            "--corpus-dir",
+            str(corpus_dir),
+            "--purge",
+            "--purge-older-than-days",
+            "10",
+            "--delete",
+        ],
+        transport=_forbidden_transport,
+        store=_ForbiddenStore(),
+    )
 
     assert rc_code == 0
     out = capsys.readouterr().out
@@ -1261,19 +1518,27 @@ def test_purge_delete_older_than_days_removes_only_the_old_one(tmp_path, capsys)
 
 
 def test_purge_on_empty_corpus_reports_nothing_matched_and_succeeds(tmp_path, capsys):
-    rc_code = m.main(["--corpus-dir", str(tmp_path / "empty"), "--purge"],
-                     transport=_forbidden_transport, store=_ForbiddenStore())
+    rc_code = m.main(
+        ["--corpus-dir", str(tmp_path / "empty"), "--purge"],
+        transport=_forbidden_transport,
+        store=_ForbiddenStore(),
+    )
     assert rc_code == 0
     out = capsys.readouterr().out
     assert "nothing matched" in out
 
 
-def test_purge_json_mode_reports_structured_removed_list_and_stays_a_dry_run(tmp_path, capsys):
+def test_purge_json_mode_reports_structured_removed_list_and_stays_a_dry_run(
+    tmp_path, capsys
+):
     corpus_dir = tmp_path / "corpus"
     a = _write_capture(corpus_dir, name="A", items=(b"a-bytes",), captured_at=100.0)
 
-    rc_code = m.main(["--corpus-dir", str(corpus_dir), "--purge", "--json"],
-                     transport=_forbidden_transport, store=_ForbiddenStore())
+    rc_code = m.main(
+        ["--corpus-dir", str(corpus_dir), "--purge", "--json"],
+        transport=_forbidden_transport,
+        store=_ForbiddenStore(),
+    )
 
     assert rc_code == 0
     report = json.loads(capsys.readouterr().out)
@@ -1281,19 +1546,29 @@ def test_purge_json_mode_reports_structured_removed_list_and_stays_a_dry_run(tmp
     assert report["purge_older_than_days"] is None
     assert len(report["removed"]) == 1
     assert report["removed"][0]["replay_id"] == a.replay_id
-    assert (corpus_dir / a.replay_id).is_dir()   # still a dry run -- nothing deleted
+    assert (corpus_dir / a.replay_id).is_dir()  # still a dry run -- nothing deleted
 
 
 def test_purge_json_delete_mode_reports_delete_and_the_age_bound(tmp_path, capsys):
     corpus_dir = tmp_path / "corpus"
     now = time.time()
-    old = _write_capture(corpus_dir, name="Old", items=(b"old-bytes",),
-                         captured_at=now - 30 * 86400)
+    old = _write_capture(
+        corpus_dir, name="Old", items=(b"old-bytes",), captured_at=now - 30 * 86400
+    )
 
     rc_code = m.main(
-        ["--corpus-dir", str(corpus_dir), "--purge", "--purge-older-than-days", "10",
-         "--delete", "--json"],
-        transport=_forbidden_transport, store=_ForbiddenStore())
+        [
+            "--corpus-dir",
+            str(corpus_dir),
+            "--purge",
+            "--purge-older-than-days",
+            "10",
+            "--delete",
+            "--json",
+        ],
+        transport=_forbidden_transport,
+        store=_ForbiddenStore(),
+    )
 
     assert rc_code == 0
     report = json.loads(capsys.readouterr().out)
@@ -1312,8 +1587,16 @@ def test_purge_never_reads_config_or_touches_the_transport_or_store(tmp_path):
     _write_capture(corpus_dir, items=(b"item-bytes",))
 
     rc_code = m.main(
-        ["--corpus-dir", str(corpus_dir), "--config", str(tmp_path / "nope.yaml"), "--purge"],
-        transport=_forbidden_transport, store=_ForbiddenStore())
+        [
+            "--corpus-dir",
+            str(corpus_dir),
+            "--config",
+            str(tmp_path / "nope.yaml"),
+            "--purge",
+        ],
+        transport=_forbidden_transport,
+        store=_ForbiddenStore(),
+    )
 
     assert rc_code == 0
 
@@ -1324,7 +1607,9 @@ def test_purge_age_based_reports_an_error_for_a_negative_age(tmp_path, capsys):
 
     rc_code = m.main(
         ["--corpus-dir", str(corpus_dir), "--purge", "--purge-older-than-days", "-1"],
-        transport=_forbidden_transport, store=_ForbiddenStore())
+        transport=_forbidden_transport,
+        store=_ForbiddenStore(),
+    )
 
     assert rc_code != 0
     err = capsys.readouterr().err
@@ -1340,15 +1625,33 @@ def test_main_replay_ids_flag_gives_a_deterministic_subset_and_order(tmp_path, c
 
     chosen = f"{c.replay_id},{a.replay_id}"
     first_run = m.main(
-        ["--corpus-dir", str(corpus_dir), "--config", str(config_path), "--json",
-         "--replay-ids", chosen],
-        transport=_forbidden_transport, store=_ForbiddenStore())
+        [
+            "--corpus-dir",
+            str(corpus_dir),
+            "--config",
+            str(config_path),
+            "--json",
+            "--replay-ids",
+            chosen,
+        ],
+        transport=_forbidden_transport,
+        store=_ForbiddenStore(),
+    )
     first_report = json.loads(capsys.readouterr().out)
 
     second_run = m.main(
-        ["--corpus-dir", str(corpus_dir), "--config", str(config_path), "--json",
-         "--replay-ids", chosen],
-        transport=_forbidden_transport, store=_ForbiddenStore())
+        [
+            "--corpus-dir",
+            str(corpus_dir),
+            "--config",
+            str(config_path),
+            "--json",
+            "--replay-ids",
+            chosen,
+        ],
+        transport=_forbidden_transport,
+        store=_ForbiddenStore(),
+    )
     second_report = json.loads(capsys.readouterr().out)
 
     assert first_run == 0 and second_run == 0

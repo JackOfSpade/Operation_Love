@@ -13,6 +13,7 @@ Design (per the chosen 'BQ of-record + memory cache' approach):
 At personal scale this stays within BigQuery's free tier. The ``client`` is
 injectable so tests run without the google-cloud-bigquery package or network.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -24,12 +25,18 @@ import time
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
-from ..bigquery_validation import validate_bigquery_identifier, validate_bigquery_photo_bucket
+from ..bigquery_validation import (
+    validate_bigquery_identifier,
+    validate_bigquery_photo_bucket,
+)
 from ..costing import Usage
-from .store import (local_midnight_epoch, normalize_timestamp_datetime,
-                    normalize_timestamp_iso)
+from .store import (
+    local_midnight_epoch,
+    normalize_timestamp_datetime,
+    normalize_timestamp_iso,
+)
 
-_UPLOAD_ATTEMPTS = 3        # bounded retry so a transient GCS blip doesn't drop a swipe
+_UPLOAD_ATTEMPTS = 3  # bounded retry so a transient GCS blip doesn't drop a swipe
 _UPLOAD_BACKOFF_S = 0.5
 # Cloud client defaults are intentionally generous (and, depending on the transport, can be
 # effectively unbounded). A Training action has already changed the phone by the time its
@@ -71,17 +78,20 @@ def _profile_upload_deadline_s(photo_count: int) -> float:
     """The whole-archive budget for `photo_count` photos, never below the historic floor."""
     # `_upload_blob` sleeps _UPLOAD_BACKOFF_S, then double it, between attempts, so the whole
     # ladder's sleeps sum to B*(2**(attempts-1) - 1) on top of the per-request timeouts.
-    per_photo = (_GCS_UPLOAD_REQUEST_TIMEOUT_S * _UPLOAD_ATTEMPTS
-                 + _UPLOAD_BACKOFF_S * (2 ** (_UPLOAD_ATTEMPTS - 1) - 1))
+    per_photo = _GCS_UPLOAD_REQUEST_TIMEOUT_S * _UPLOAD_ATTEMPTS + _UPLOAD_BACKOFF_S * (
+        2 ** (_UPLOAD_ATTEMPTS - 1) - 1
+    )
     return max(_PROFILE_UPLOAD_DEADLINE_FLOOR_S, max(0, int(photo_count)) * per_photo)
+
+
 # Shared with ranker/__init__.py's make_store(), so the config-parsing fallback (when
 # storage.bigquery.flush_every isn't set) can't silently drift from this constructor's
 # own default.
 DEFAULT_FLUSH_EVERY = 25
 
-_MAX_INSERT_ATTEMPTS = 5    # bounded retry so a row BigQuery keeps rejecting as invalid
-                            # can't poison its table's buffer (and everything queued
-                            # behind it) forever -- see _flush_table
+_MAX_INSERT_ATTEMPTS = 5  # bounded retry so a row BigQuery keeps rejecting as invalid
+# can't poison its table's buffer (and everything queued
+# behind it) forever -- see _flush_table
 
 _SCHEMA_UPDATE_ATTEMPTS = 5
 _SCHEMA_UPDATE_BACKOFF_S = 1.0
@@ -134,10 +144,12 @@ _TABLES = {
     # swipe: `profile_key` is what an `opener_outcomes` row observed days later joins against
     # (see the `opener_outcomes` table below and `BigQueryStore.joined_opener_outcomes`).
     # Nullable and never backfilled, same _MIGRATIONS caveat as every column above.
-    "openers": ("run_id STRING, app STRING, created_at TIMESTAMP, model STRING, opener STRING, "
-                "referenced STRING, angle STRING, item_description STRING, profile_id STRING, "
-                "decision STRING, decision_source STRING, decision_created_at TIMESTAMP, "
-                "model_item_index INT64, prompt_sha256 STRING, profile_key STRING"),
+    "openers": (
+        "run_id STRING, app STRING, created_at TIMESTAMP, model STRING, opener STRING, "
+        "referenced STRING, angle STRING, item_description STRING, profile_id STRING, "
+        "decision STRING, decision_source STRING, decision_created_at TIMESTAMP, "
+        "model_item_index INT64, prompt_sha256 STRING, profile_key STRING"
+    ),
     # The OUTCOME half of the measurement gap `openers.profile_key` exists to close: what a
     # sent opener actually PERFORMED (a match, a reply, silence), as opposed to everything
     # else this schema records about what the prompt PRODUCED. Deliberately carries no
@@ -243,7 +255,9 @@ def _timestamp(value) -> str:
     return normalize_timestamp_iso(value)
 
 
-def _copy_labels(labels: list[tuple[bool, list[float]]]) -> list[tuple[bool, list[float]]]:
+def _copy_labels(
+    labels: list[tuple[bool, list[float]]],
+) -> list[tuple[bool, list[float]]]:
     return [(liked, list(embedding)) for liked, embedding in labels]
 
 
@@ -291,6 +305,7 @@ def _retryable_bq_insert_exception(exc: Exception) -> bool:
         return False
     try:
         from requests import exceptions as requests_exceptions
+
         request_timeout_types = (requests_exceptions.Timeout,)
     except ImportError:
         request_timeout_types = ()
@@ -307,12 +322,18 @@ def _retryable_bq_insert_exception(exc: Exception) -> bool:
         if id(current) in seen:
             continue
         seen.add(id(current))
-        if if_transient_error(current) or isinstance(current, additional_transient_types):
+        if if_transient_error(current) or isinstance(
+            current, additional_transient_types
+        ):
             return True
         pending.extend(
-            candidate for candidate in (getattr(current, "cause", None),
-                                        getattr(current, "__cause__", None))
-            if isinstance(candidate, Exception))
+            candidate
+            for candidate in (
+                getattr(current, "cause", None),
+                getattr(current, "__cause__", None),
+            )
+            if isinstance(candidate, Exception)
+        )
     return False
 
 
@@ -334,11 +355,14 @@ def _call_with_supported_keywords(method, *args, **kwargs):
     if any(param.kind is inspect.Parameter.VAR_KEYWORD for param in parameters):
         return method(*args, **kwargs)
     allowed = set(signature.parameters)
-    return method(*args, **{key: value for key, value in kwargs.items() if key in allowed})
+    return method(
+        *args, **{key: value for key, value in kwargs.items() if key in allowed}
+    )
 
 
-def _day_start_job_config(start_dt: datetime, *, app: str | None = None,
-                          source: str | None = None):
+def _day_start_job_config(
+    start_dt: datetime, *, app: str | None = None, source: str | None = None
+):
     """QueryJobConfig binding `start_dt` as the `day_start` TIMESTAMP parameter shared by
     count_today/spend_today (see local_midnight_epoch), plus optional application/source filters.
     Falls back to a minimal duck-typed stand-in when the SDK isn't installed: the ``client`` is
@@ -352,20 +376,27 @@ def _day_start_job_config(start_dt: datetime, *, app: str | None = None,
     try:
         from google.cloud import bigquery
     except ImportError:
-        return SimpleNamespace(query_parameters=[
-            SimpleNamespace(name=name, type_=kind, value=value)
+        return SimpleNamespace(
+            query_parameters=[
+                SimpleNamespace(name=name, type_=kind, value=value)
+                for name, kind, value in parameters
+            ]
+        )
+    return bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter(name, kind, value)
             for name, kind, value in parameters
-        ])
-    return bigquery.QueryJobConfig(query_parameters=[
-        bigquery.ScalarQueryParameter(name, kind, value)
-        for name, kind, value in parameters
-    ])
+        ]
+    )
 
 
 def _missing_optional_opener_retractions(exc: Exception, *, ensure: bool) -> bool:
     """Only the known optional-table NotFound is empty; every other read error is real."""
-    return (not ensure and type(exc).__name__ == "NotFound"
-            and "opener_retractions" in str(exc))
+    return (
+        not ensure
+        and type(exc).__name__ == "NotFound"
+        and "opener_retractions" in str(exc)
+    )
 
 
 def _missing_optional_opener_outcomes(exc: Exception, *, ensure: bool) -> bool:
@@ -376,8 +407,11 @@ def _missing_optional_opener_outcomes(exc: Exception, *, ensure: bool) -> bool:
     created it. A NotFound naming this specific table is "no outcomes recorded yet," not a
     real failure; anything else still propagates.
     """
-    return (not ensure and type(exc).__name__ == "NotFound"
-            and "opener_outcomes" in str(exc))
+    return (
+        not ensure
+        and type(exc).__name__ == "NotFound"
+        and "opener_outcomes" in str(exc)
+    )
 
 
 def _missing_dataset(exc: Exception) -> bool:
@@ -388,8 +422,10 @@ def _missing_dataset(exc: Exception) -> bool:
 def _table_update_rate_limited(exc: Exception) -> bool:
     """The metadata-update quota is transient and BigQuery explicitly recommends retry."""
     message = str(exc).lower()
-    return ("exceeded rate limits" in message
-            and "too many table update operations" in message)
+    return (
+        "exceeded rate limits" in message
+        and "too many table update operations" in message
+    )
 
 
 def _migration_parts(stmt: str) -> tuple[str, str, str]:
@@ -407,16 +443,25 @@ def _migration_parts(stmt: str) -> tuple[str, str, str]:
 
 
 class BigQueryStore:
-    def __init__(self, project_id: str, dataset: str = "operation_love",
-                 location: str = "US", photo_bucket: str = "", flush_every: int = DEFAULT_FLUSH_EVERY,
-                 client=None, storage_client=None, ensure: bool = True):
+    def __init__(
+        self,
+        project_id: str,
+        dataset: str = "operation_love",
+        location: str = "US",
+        photo_bucket: str = "",
+        flush_every: int = DEFAULT_FLUSH_EVERY,
+        client=None,
+        storage_client=None,
+        ensure: bool = True,
+    ):
         self.project_id = validate_bigquery_identifier(project_id, "project_id")
         self.dataset = validate_bigquery_identifier(dataset, "dataset")
         self.location = validate_bigquery_identifier(location, "location")
         photo_bucket = validate_bigquery_photo_bucket(photo_bucket)
         if type(flush_every) is not int or flush_every <= 0:
             raise ValueError(
-                f"BigQuery flush_every must be a positive integer (got {flush_every!r})")
+                f"BigQuery flush_every must be a positive integer (got {flush_every!r})"
+            )
         if type(ensure) is not bool:
             raise ValueError(f"BigQuery ensure must be true or false (got {ensure!r})")
         self.photo_bucket_name = photo_bucket
@@ -432,9 +477,11 @@ class BigQueryStore:
         try:
             if client_resource is None:
                 from google.cloud import bigquery  # lazy: only needed for real use
+
                 client_resource = bigquery.Client(project=project_id)
             if storage_resource is None:
                 from google.cloud import storage  # lazy: only needed for real use
+
                 storage_resource = storage.Client(project=project_id)
             self.client = client_resource
             self.storage_client = storage_resource
@@ -463,7 +510,8 @@ class BigQueryStore:
             self._photo_bucket_private_verified = False
             self._photo_bucket = (
                 self._get_or_create_photo_bucket()
-                if ensure else self.storage_client.bucket(photo_bucket)
+                if ensure
+                else self.storage_client.bucket(photo_bucket)
             )
             self._photo_bucket_private_verified = ensure
             if ensure:
@@ -472,8 +520,9 @@ class BigQueryStore:
             # SDK clients created here own HTTP resources. Constructor failure produces no
             # usable store, so close only those owned clients and retain the setup exception.
             for owned, resource in (
-                    (owns_storage_client, storage_resource),
-                    (owns_client, client_resource)):
+                (owns_storage_client, storage_resource),
+                (owns_client, client_resource),
+            ):
                 close = getattr(resource, "close", None)
                 if owned and callable(close):
                     try:
@@ -503,9 +552,7 @@ class BigQueryStore:
         schema_query = (
             "SELECT table_name, column_name "
             f"FROM `{self.project_id}.{self.dataset}.INFORMATION_SCHEMA.COLUMNS` "
-            "WHERE table_name IN ("
-            + ", ".join(f"'{name}'" for name in _TABLES)
-            + ")"
+            "WHERE table_name IN (" + ", ".join(f"'{name}'" for name in _TABLES) + ")"
         )
         try:
             rows = self.client.query(schema_query).result()
@@ -534,7 +581,9 @@ class BigQueryStore:
         additions: dict[str, list[tuple[str, str]]] = {}
         for migration in _MIGRATIONS:
             table, column, column_type = _migration_parts(migration)
-            if table not in missing_tables and column.lower() not in existing.get(table, set()):
+            if table not in missing_tables and column.lower() not in existing.get(
+                table, set()
+            ):
                 additions.setdefault(table, []).append((column, column_type))
         for table, columns in additions.items():
             clauses = ",\n".join(
@@ -552,10 +601,12 @@ class BigQueryStore:
                 self.client.query(script).result()
                 return
             except Exception as exc:  # noqa: BLE001 - preserve the original SDK error
-                if (not _table_update_rate_limited(exc)
-                        or attempt == _SCHEMA_UPDATE_ATTEMPTS - 1):
+                if (
+                    not _table_update_rate_limited(exc)
+                    or attempt == _SCHEMA_UPDATE_ATTEMPTS - 1
+                ):
                     raise
-                time.sleep(_SCHEMA_UPDATE_BACKOFF_S * (2 ** attempt))
+                time.sleep(_SCHEMA_UPDATE_BACKOFF_S * (2**attempt))
 
     def _get_or_create_photo_bucket(self):
         bucket = self.storage_client.bucket(self.photo_bucket_name)
@@ -574,22 +625,30 @@ class BigQueryStore:
         patch, or verification failure aborts startup before profile photos can be uploaded."""
         try:
             if not created:
-                bucket.reload()             # fetch authoritative IAM state before inspecting it
+                bucket.reload()  # fetch authoritative IAM state before inspecting it
             iam = bucket.iam_configuration
-            if (getattr(iam, "uniform_bucket_level_access_enabled", False)
-                    and getattr(iam, "public_access_prevention", "") == "enforced"):
-                return                      # already locked down -> no needless patch
+            if (
+                getattr(iam, "uniform_bucket_level_access_enabled", False)
+                and getattr(iam, "public_access_prevention", "") == "enforced"
+            ):
+                return  # already locked down -> no needless patch
             iam.uniform_bucket_level_access_enabled = True
             iam.public_access_prevention = "enforced"
             bucket.patch()
             bucket.reload()
             iam = bucket.iam_configuration
-            if (not getattr(iam, "uniform_bucket_level_access_enabled", False)
-                    or getattr(iam, "public_access_prevention", "") != "enforced"):
-                raise RuntimeError("bucket IAM did not retain the required private settings")
+            if (
+                not getattr(iam, "uniform_bucket_level_access_enabled", False)
+                or getattr(iam, "public_access_prevention", "") != "enforced"
+            ):
+                raise RuntimeError(
+                    "bucket IAM did not retain the required private settings"
+                )
             if not created:
-                print(f"BigQuery store: hardened existing photo bucket {self.photo_bucket_name} "
-                      "(uniform bucket-level access + public-access-prevention enforced).")
+                print(
+                    f"BigQuery store: hardened existing photo bucket {self.photo_bucket_name} "
+                    "(uniform bucket-level access + public-access-prevention enforced)."
+                )
         except Exception as exc:  # noqa: BLE001
             raise RuntimeError(
                 f"Refusing BigQuery photo storage: could not verify private bucket "
@@ -630,10 +689,12 @@ class BigQueryStore:
         (run_id, app, source, decision_created_at) and never on profile_id, so it carries no
         NULL exposure and is intentionally left as plain equality.
         """
-        return (f"NOT EXISTS (SELECT 1 FROM `{self._tid('label_retractions')}` r "
-                "WHERE r.run_id=l.run_id AND r.app=l.app AND r.source=l.source "
-                "AND IFNULL(r.profile_id,'')=IFNULL(l.profile_id,'') "
-                "AND r.label_created_at=l.created_at)")
+        return (
+            f"NOT EXISTS (SELECT 1 FROM `{self._tid('label_retractions')}` r "
+            "WHERE r.run_id=l.run_id AND r.app=l.app AND r.source=l.source "
+            "AND IFNULL(r.profile_id,'')=IFNULL(l.profile_id,'') "
+            "AND r.label_created_at=l.created_at)"
+        )
 
     def load_labels(self) -> list[tuple[bool, list[float]]]:
         # Hold the lock across the whole fill so the cache-miss check, the SELECT,
@@ -645,9 +706,12 @@ class BigQueryStore:
                 return _copy_labels(self._labels_cache)
             rows = self.client.query(
                 f"SELECT l.liked, l.embedding FROM `{self._tid('labels')}` l "
-                f"WHERE {self._label_not_retracted()}").result()
+                f"WHERE {self._label_not_retracted()}"
+            ).result()
             out = [(bool(r["liked"]), list(r["embedding"])) for r in rows]
-            out.extend((bool(r["liked"]), list(r["embedding"])) for r in self._buf["labels"])
+            out.extend(
+                (bool(r["liked"]), list(r["embedding"])) for r in self._buf["labels"]
+            )
             self._labels_cache = _copy_labels(out)
             return _copy_labels(self._labels_cache)
 
@@ -665,7 +729,9 @@ class BigQueryStore:
             return int(r["c"])
         return 0
 
-    def observe_release_persistence_summary(self, run_id: str, app: str) -> dict[str, int]:
+    def observe_release_persistence_summary(
+        self, run_id: str, app: str
+    ) -> dict[str, int]:
         """Read-only run-scoped complete-cycle counts for the Hinge AUTO release gate.
 
         This deliberately queries only aggregate counts with bound parameters: a verifier needs
@@ -676,10 +742,13 @@ class BigQueryStore:
         verifier call it without DDL/bucket changes.
         """
         from google.cloud import bigquery
-        job = bigquery.QueryJobConfig(query_parameters=[
-            bigquery.ScalarQueryParameter("run_id", "STRING", run_id),
-            bigquery.ScalarQueryParameter("app", "STRING", app),
-        ])
+
+        job = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("run_id", "STRING", run_id),
+                bigquery.ScalarQueryParameter("app", "STRING", app),
+            ]
+        )
         opener_visibility = (
             f"AND NOT EXISTS (SELECT 1 FROM `{self._tid('opener_retractions')}` r WHERE r.run_id=o.run_id "
             "AND r.app=o.app AND r.opener_created_at=o.created_at)"
@@ -706,7 +775,9 @@ class BigQueryStore:
         except Exception as exc:
             if not _missing_optional_opener_retractions(exc, ensure=self._ensure):
                 raise
-            rows = self.client.query(query.replace(opener_visibility, ""), job_config=job).result()
+            rows = self.client.query(
+                query.replace(opener_visibility, ""), job_config=job
+            ).result()
         for row in rows:
             return {
                 "manual_pass_labels": int(row["pass_labels"]),
@@ -723,17 +794,23 @@ class BigQueryStore:
             "successful_hinge_openers": 0,
         }
 
-    def ai_observe_release_persistence_summary(self, run_id: str, app: str,
-                                               source: str) -> dict[str, int]:
+    def ai_observe_release_persistence_summary(
+        self, run_id: str, app: str, source: str
+    ) -> dict[str, int]:
         """Read-only complete-cycle summary for an honest non-manual evidence source."""
         if source not in {"external_ai_review", "automation"}:
-            raise ValueError("AI observe release source must be external_ai_review or automation")
+            raise ValueError(
+                "AI observe release source must be external_ai_review or automation"
+            )
         from google.cloud import bigquery
-        job = bigquery.QueryJobConfig(query_parameters=[
-            bigquery.ScalarQueryParameter("run_id", "STRING", run_id),
-            bigquery.ScalarQueryParameter("app", "STRING", app),
-            bigquery.ScalarQueryParameter("source", "STRING", source),
-        ])
+
+        job = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("run_id", "STRING", run_id),
+                bigquery.ScalarQueryParameter("app", "STRING", app),
+                bigquery.ScalarQueryParameter("source", "STRING", source),
+            ]
+        )
         opener_visibility = (
             f"AND NOT EXISTS (SELECT 1 FROM `{self._tid('opener_retractions')}` r WHERE r.run_id=o.run_id "
             "AND r.app=o.app AND r.opener_created_at=o.created_at)"
@@ -760,7 +837,9 @@ class BigQueryStore:
         except Exception as exc:
             if not _missing_optional_opener_retractions(exc, ensure=self._ensure):
                 raise
-            rows = self.client.query(query.replace(opener_visibility, ""), job_config=job).result()
+            rows = self.client.query(
+                query.replace(opener_visibility, ""), job_config=job
+            ).result()
         for row in rows:
             return {
                 "ai_pass_labels": int(row["pass_labels"]),
@@ -780,18 +859,25 @@ class BigQueryStore:
     def retraction_run_rows(self, run_id: str, app: str, source: str) -> dict:
         """Read the exact, minimal committed rows needed to plan a safe correction."""
         from google.cloud import bigquery
-        job = bigquery.QueryJobConfig(query_parameters=[
-            bigquery.ScalarQueryParameter("run_id", "STRING", run_id),
-            bigquery.ScalarQueryParameter("app", "STRING", app),
-            bigquery.ScalarQueryParameter("source", "STRING", source),
-        ])
+
+        job = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("run_id", "STRING", run_id),
+                bigquery.ScalarQueryParameter("app", "STRING", app),
+                bigquery.ScalarQueryParameter("source", "STRING", source),
+            ]
+        )
+
         def fetch(table: str, columns: str, order: str) -> list[dict]:
             try:
                 rows = self.client.query(
                     f"SELECT {columns} FROM `{self._tid(table)}` "
                     "WHERE run_id=@run_id AND app=@app AND source=@source " + order,
-                    job_config=job).result()
-            except Exception as exc:  # The first plan can precede creation of this new table.
+                    job_config=job,
+                ).result()
+            except (
+                Exception
+            ) as exc:  # The first plan can precede creation of this new table.
                 if table == "label_retractions" and type(exc).__name__ == "NotFound":
                     return []
                 raise
@@ -803,18 +889,33 @@ class BigQueryStore:
                         row[key] = item.astimezone(timezone.utc).isoformat()
                 out.append(row)
             return out
+
         decisions = fetch(
-            "decisions", "profile_id, created_at, decision, score",
-            "ORDER BY created_at, decision, score")
+            "decisions",
+            "profile_id, created_at, decision, score",
+            "ORDER BY created_at, decision, score",
+        )
         for decision in decisions:
             if decision.get("profile_id") in {None, ""}:
                 decision.pop("profile_id", None)
-        return {"run_id": run_id, "app": app, "source": source,
-                "profiles": fetch("profiles", "profile_id", "ORDER BY profile_id"),
-                "labels": fetch("labels", "profile_id, created_at, liked", "ORDER BY created_at, profile_id"),
-                "decisions": decisions,
-                "retractions": fetch("label_retractions", "correction_id, profile_id, label_created_at, "
-                                      "decision_created_at, decision_fingerprint", "ORDER BY created_at, correction_id")}
+        return {
+            "run_id": run_id,
+            "app": app,
+            "source": source,
+            "profiles": fetch("profiles", "profile_id", "ORDER BY profile_id"),
+            "labels": fetch(
+                "labels",
+                "profile_id, created_at, liked",
+                "ORDER BY created_at, profile_id",
+            ),
+            "decisions": decisions,
+            "retractions": fetch(
+                "label_retractions",
+                "correction_id, profile_id, label_created_at, "
+                "decision_created_at, decision_fingerprint",
+                "ORDER BY created_at, correction_id",
+            ),
+        }
 
     def append_label_retraction(self, row: dict) -> bool:
         """Synchronously append one idempotent tombstone after bound existence checks.
@@ -830,6 +931,7 @@ class BigQueryStore:
         """
         from .retractions import RetractionRefused
         from google.cloud import bigquery
+
         correction_id = row["correction_id"]
         # Query parameters of type TIMESTAMP are datetime objects in the BigQuery
         # client.  The portable correction document stores RFC-3339 text so it can be
@@ -837,47 +939,76 @@ class BigQueryStore:
         # on SDK-version-dependent coercion of strings.
         try:
             label_time = normalize_timestamp_datetime(
-                row["label_created_at"], label="label_created_at")
+                row["label_created_at"], label="label_created_at"
+            )
             decision_time = normalize_timestamp_datetime(
-                row["decision_created_at"], label="decision_created_at")
+                row["decision_created_at"], label="decision_created_at"
+            )
         except (KeyError, ValueError) as exc:
-            raise RetractionRefused("BigQuery correction timestamps must be RFC-3339") from exc
-        job = bigquery.QueryJobConfig(query_parameters=[
-            bigquery.ScalarQueryParameter("correction_id", "STRING", correction_id)])
-        target_job = bigquery.QueryJobConfig(query_parameters=[
-            bigquery.ScalarQueryParameter("run_id", "STRING", row["run_id"]),
-            bigquery.ScalarQueryParameter("app", "STRING", row["app"]),
-            bigquery.ScalarQueryParameter("source", "STRING", row["source"]),
-            bigquery.ScalarQueryParameter("profile_id", "STRING", row["profile_id"]),
-            bigquery.ScalarQueryParameter("label_created_at", "TIMESTAMP", label_time),
-            bigquery.ScalarQueryParameter("decision_created_at", "TIMESTAMP", decision_time),
-        ])
+            raise RetractionRefused(
+                "BigQuery correction timestamps must be RFC-3339"
+            ) from exc
+        job = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("correction_id", "STRING", correction_id)
+            ]
+        )
+        target_job = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("run_id", "STRING", row["run_id"]),
+                bigquery.ScalarQueryParameter("app", "STRING", row["app"]),
+                bigquery.ScalarQueryParameter("source", "STRING", row["source"]),
+                bigquery.ScalarQueryParameter(
+                    "profile_id", "STRING", row["profile_id"]
+                ),
+                bigquery.ScalarQueryParameter(
+                    "label_created_at", "TIMESTAMP", label_time
+                ),
+                bigquery.ScalarQueryParameter(
+                    "decision_created_at", "TIMESTAMP", decision_time
+                ),
+            ]
+        )
         with self._lock:
             self._require_open_for_write()
             if correction_id in self._retraction_ids:
                 return False
-            existing = list(self.client.query(
-                f"SELECT correction_id FROM `{self._tid('label_retractions')}` "
-                "WHERE correction_id=@correction_id LIMIT 1", job_config=job).result())
+            existing = list(
+                self.client.query(
+                    f"SELECT correction_id FROM `{self._tid('label_retractions')}` "
+                    "WHERE correction_id=@correction_id LIMIT 1",
+                    job_config=job,
+                ).result()
+            )
             if existing:
                 return False
-            target = list(self.client.query(
-                f"SELECT correction_id FROM `{self._tid('label_retractions')}` "
-                "WHERE run_id=@run_id AND app=@app AND source=@source AND profile_id=@profile_id "
-                "AND label_created_at=@label_created_at AND decision_created_at=@decision_created_at LIMIT 1",
-                job_config=target_job).result())
+            target = list(
+                self.client.query(
+                    f"SELECT correction_id FROM `{self._tid('label_retractions')}` "
+                    "WHERE run_id=@run_id AND app=@app AND source=@source AND profile_id=@profile_id "
+                    "AND label_created_at=@label_created_at AND decision_created_at=@decision_created_at LIMIT 1",
+                    job_config=target_job,
+                ).result()
+            )
             if target:
-                raise RetractionRefused("target label/decision pair already has a different retraction")
+                raise RetractionRefused(
+                    "target label/decision pair already has a different retraction"
+                )
             payload = dict(row)
             try:
                 for key in ("label_created_at", "decision_created_at", "created_at"):
                     payload[key] = normalize_timestamp_iso(payload[key], label=key)
             except (KeyError, ValueError) as exc:
-                raise RetractionRefused("BigQuery correction timestamps must be RFC-3339") from exc
-            errors = self._insert_rows_json("label_retractions", [payload],
-                                            row_ids=[correction_id])
+                raise RetractionRefused(
+                    "BigQuery correction timestamps must be RFC-3339"
+                ) from exc
+            errors = self._insert_rows_json(
+                "label_retractions", [payload], row_ids=[correction_id]
+            )
             if errors:
-                raise RuntimeError(f"BigQuery insert errors for label_retractions: {errors}")
+                raise RuntimeError(
+                    f"BigQuery insert errors for label_retractions: {errors}"
+                )
             self._written["label_retractions"] += 1
             self._retraction_ids.add(correction_id)
             self._labels_cache = None
@@ -887,25 +1018,41 @@ class BigQueryStore:
         """Read exact no-text opener identities and zero-decision proof with bound values."""
         from .retractions import RetractionRefused, canonical_sha
         from google.cloud import bigquery
-        job = bigquery.QueryJobConfig(query_parameters=[
-            bigquery.ScalarQueryParameter("run_id", "STRING", run_id),
-            bigquery.ScalarQueryParameter("app", "STRING", app),
-        ])
-        def rows(query: str, *, optional_opener_retractions: bool = False) -> list[dict]:
+
+        job = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("run_id", "STRING", run_id),
+                bigquery.ScalarQueryParameter("app", "STRING", app),
+            ]
+        )
+
+        def rows(
+            query: str, *, optional_opener_retractions: bool = False
+        ) -> list[dict]:
             try:
-                return [dict(value) for value in self.client.query(query, job_config=job).result()]
+                return [
+                    dict(value)
+                    for value in self.client.query(query, job_config=job).result()
+                ]
             except Exception as exc:
                 # Read-only tools may predate this optional append-only table.  Do not turn an
                 # absent tombstone table into a failed audit; do re-raise every other failure.
                 if optional_opener_retractions and _missing_optional_opener_retractions(
-                        exc, ensure=self._ensure):
+                    exc, ensure=self._ensure
+                ):
                     return []
                 raise
-        opener_rows = rows(f"SELECT created_at,model,opener FROM `{self._tid('openers')}` "
-                           "WHERE run_id=@run_id AND app=@app ORDER BY created_at")
-        tombstones = rows(f"SELECT correction_id,opener_created_at,model,opener_fingerprint,reason,evidence_ref "
-                          f"FROM `{self._tid('opener_retractions')}` "
-                          "WHERE run_id=@run_id AND app=@app", optional_opener_retractions=True)
+
+        opener_rows = rows(
+            f"SELECT created_at,model,opener FROM `{self._tid('openers')}` "
+            "WHERE run_id=@run_id AND app=@app ORDER BY created_at"
+        )
+        tombstones = rows(
+            f"SELECT correction_id,opener_created_at,model,opener_fingerprint,reason,evidence_ref "
+            f"FROM `{self._tid('opener_retractions')}` "
+            "WHERE run_id=@run_id AND app=@app",
+            optional_opener_retractions=True,
+        )
         counts = rows(
             "SELECT "
             f"(SELECT COUNT(*) FROM `{self._tid('profiles')}` WHERE run_id=@run_id AND app=@app) AS profiles, "
@@ -917,28 +1064,60 @@ class BigQueryStore:
             f"(SELECT COUNT(*) FROM `{self._tid('labels')}` l WHERE run_id=@run_id AND app=@app AND liked=FALSE "
             f"AND {self._label_not_retracted()}) AS pass_labels, "
             f"(SELECT COUNT(*) FROM `{self._tid('decisions')}` WHERE run_id=@run_id AND app=@app AND decision='like') AS like_decisions, "
-            f"(SELECT COUNT(*) FROM `{self._tid('decisions')}` WHERE run_id=@run_id AND app=@app AND decision='dislike') AS pass_decisions")[0]
+            f"(SELECT COUNT(*) FROM `{self._tid('decisions')}` WHERE run_id=@run_id AND app=@app AND decision='dislike') AS pass_decisions"
+        )[0]
+
         def stamp(value) -> str:
             if not isinstance(value, datetime):
                 raise RetractionRefused("BigQuery opener row has invalid created_at")
             return value.astimezone(timezone.utc).isoformat()
-        openers = [{"created_at": stamp(row["created_at"]), "model": str(row["model"]),
-                    "opener_fingerprint": canonical_sha({"run_id": run_id, "app": app,
-                                                           "created_at": stamp(row["created_at"]),
-                                                           "model": str(row["model"]), "opener": str(row["opener"])})}
-                   for row in opener_rows]
-        return {"run_id": run_id, "app": app, "openers": openers,
-                "decisions": [{} for _ in range(int(counts["decisions"]))],
-                "preference_counts": {key: int(counts[key]) for key in
-                                      ("profiles", "profile_photos", "labels", "decisions")},
-                "effective_counts": {key: int(counts[key]) for key in
-                                     ("like_labels", "like_decisions", "pass_labels", "pass_decisions")},
-                "retractions": [{"correction_id": str(row["correction_id"]),
-                                  "opener_created_at": stamp(row["opener_created_at"]),
-                                  "model": str(row["model"]),
-                                  "opener_fingerprint": str(row["opener_fingerprint"]),
-                                  "reason": str(row["reason"]),
-                                  "evidence_ref": str(row["evidence_ref"])} for row in tombstones]}
+
+        openers = [
+            {
+                "created_at": stamp(row["created_at"]),
+                "model": str(row["model"]),
+                "opener_fingerprint": canonical_sha(
+                    {
+                        "run_id": run_id,
+                        "app": app,
+                        "created_at": stamp(row["created_at"]),
+                        "model": str(row["model"]),
+                        "opener": str(row["opener"]),
+                    }
+                ),
+            }
+            for row in opener_rows
+        ]
+        return {
+            "run_id": run_id,
+            "app": app,
+            "openers": openers,
+            "decisions": [{} for _ in range(int(counts["decisions"]))],
+            "preference_counts": {
+                key: int(counts[key])
+                for key in ("profiles", "profile_photos", "labels", "decisions")
+            },
+            "effective_counts": {
+                key: int(counts[key])
+                for key in (
+                    "like_labels",
+                    "like_decisions",
+                    "pass_labels",
+                    "pass_decisions",
+                )
+            },
+            "retractions": [
+                {
+                    "correction_id": str(row["correction_id"]),
+                    "opener_created_at": stamp(row["opener_created_at"]),
+                    "model": str(row["model"]),
+                    "opener_fingerprint": str(row["opener_fingerprint"]),
+                    "reason": str(row["reason"]),
+                    "evidence_ref": str(row["evidence_ref"]),
+                }
+                for row in tombstones
+            ],
+        }
 
     def append_opener_retraction(self, row: dict) -> bool:
         """Append one exact opener tombstone using bound idempotency checks.
@@ -948,64 +1127,105 @@ class BigQueryStore:
         """
         from .retractions import RetractionRefused, canonical_sha
         from google.cloud import bigquery
+
         try:
             opener_at = normalize_timestamp_datetime(
-                row["opener_created_at"], label="opener_created_at")
+                row["opener_created_at"], label="opener_created_at"
+            )
         except (KeyError, ValueError) as exc:
-            raise RetractionRefused("BigQuery opener correction timestamp must be RFC-3339") from exc
+            raise RetractionRefused(
+                "BigQuery opener correction timestamp must be RFC-3339"
+            ) from exc
         correction_id = row["correction_id"]
-        by_key = bigquery.QueryJobConfig(query_parameters=[
-            bigquery.ScalarQueryParameter("correction_id", "STRING", correction_id),
-            bigquery.ScalarQueryParameter("opener_created_at", "TIMESTAMP", opener_at)])
-        target = bigquery.QueryJobConfig(query_parameters=[
-            bigquery.ScalarQueryParameter("run_id", "STRING", row["run_id"]),
-            bigquery.ScalarQueryParameter("app", "STRING", row["app"]),
-            bigquery.ScalarQueryParameter("opener_created_at", "TIMESTAMP", opener_at),
-        ])
+        by_key = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("correction_id", "STRING", correction_id),
+                bigquery.ScalarQueryParameter(
+                    "opener_created_at", "TIMESTAMP", opener_at
+                ),
+            ]
+        )
+        target = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("run_id", "STRING", row["run_id"]),
+                bigquery.ScalarQueryParameter("app", "STRING", row["app"]),
+                bigquery.ScalarQueryParameter(
+                    "opener_created_at", "TIMESTAMP", opener_at
+                ),
+            ]
+        )
         opener_stamp = opener_at.isoformat()
         key = (correction_id, opener_stamp)
         with self._lock:
             self._require_open_for_write()
             if key in self._opener_retraction_ids:
                 return False
-            source = list(self.client.query(
-                f"SELECT created_at,model,opener FROM `{self._tid('openers')}` "
-                "WHERE run_id=@run_id AND app=@app AND created_at=@opener_created_at", job_config=target).result())
+            source = list(
+                self.client.query(
+                    f"SELECT created_at,model,opener FROM `{self._tid('openers')}` "
+                    "WHERE run_id=@run_id AND app=@app AND created_at=@opener_created_at",
+                    job_config=target,
+                ).result()
+            )
             if len(source) != 1 or str(source[0]["model"]) != row["model"]:
-                raise RetractionRefused("target opener row is missing or does not match its cleanup plan")
+                raise RetractionRefused(
+                    "target opener row is missing or does not match its cleanup plan"
+                )
             source_at = source[0]["created_at"]
             if not isinstance(source_at, datetime):
                 raise RetractionRefused("target opener row has an invalid created_at")
             source_stamp = source_at.astimezone(timezone.utc).isoformat()
-            fingerprint = canonical_sha({"run_id": row["run_id"], "app": row["app"],
-                                         "created_at": source_stamp, "model": str(source[0]["model"]),
-                                         "opener": str(source[0]["opener"])})
-            if source_stamp != opener_stamp \
-                    or fingerprint != row["opener_fingerprint"]:
-                raise RetractionRefused("target opener fingerprint no longer matches its cleanup plan")
-            by_same_plan = list(self.client.query(
-                f"SELECT correction_id,model,opener_fingerprint,reason,evidence_ref "
-                f"FROM `{self._tid('opener_retractions')}` WHERE correction_id=@correction_id "
-                "AND opener_created_at=@opener_created_at LIMIT 1", job_config=by_key).result())
+            fingerprint = canonical_sha(
+                {
+                    "run_id": row["run_id"],
+                    "app": row["app"],
+                    "created_at": source_stamp,
+                    "model": str(source[0]["model"]),
+                    "opener": str(source[0]["opener"]),
+                }
+            )
+            if source_stamp != opener_stamp or fingerprint != row["opener_fingerprint"]:
+                raise RetractionRefused(
+                    "target opener fingerprint no longer matches its cleanup plan"
+                )
+            by_same_plan = list(
+                self.client.query(
+                    f"SELECT correction_id,model,opener_fingerprint,reason,evidence_ref "
+                    f"FROM `{self._tid('opener_retractions')}` WHERE correction_id=@correction_id "
+                    "AND opener_created_at=@opener_created_at LIMIT 1",
+                    job_config=by_key,
+                ).result()
+            )
             if by_same_plan:
                 actual = dict(by_same_plan[0])
                 expected = {key: row[key] for key in actual}
                 if actual == expected:
                     return False
-                raise RetractionRefused("correction id/opener timestamp has different cleanup data")
-            existing = list(self.client.query(
-                f"SELECT correction_id,model,opener_fingerprint,reason,evidence_ref "
-                f"FROM `{self._tid('opener_retractions')}` WHERE run_id=@run_id AND app=@app "
-                "AND opener_created_at=@opener_created_at LIMIT 1", job_config=target).result())
+                raise RetractionRefused(
+                    "correction id/opener timestamp has different cleanup data"
+                )
+            existing = list(
+                self.client.query(
+                    f"SELECT correction_id,model,opener_fingerprint,reason,evidence_ref "
+                    f"FROM `{self._tid('opener_retractions')}` WHERE run_id=@run_id AND app=@app "
+                    "AND opener_created_at=@opener_created_at LIMIT 1",
+                    job_config=target,
+                ).result()
+            )
             if existing:
-                raise RetractionRefused("opener row already has a different cleanup tombstone")
+                raise RetractionRefused(
+                    "opener row already has a different cleanup tombstone"
+                )
             payload = dict(row)
             payload["opener_created_at"] = opener_stamp
             payload["created_at"] = datetime.now(timezone.utc).isoformat()
-            errors = self._insert_rows_json("opener_retractions", [payload],
-                                            row_ids=[canonical_sha(row)])
+            errors = self._insert_rows_json(
+                "opener_retractions", [payload], row_ids=[canonical_sha(row)]
+            )
             if errors:
-                raise RuntimeError(f"BigQuery insert errors for opener_retractions: {errors}")
+                raise RuntimeError(
+                    f"BigQuery insert errors for opener_retractions: {errors}"
+                )
             self._written["opener_retractions"] += 1
             self._opener_retraction_ids.add(key)
             return True
@@ -1037,7 +1257,8 @@ class BigQueryStore:
         """
         if self._closed or (self._closing and not allow_closing):
             raise RuntimeError(
-                "BigQueryStore is closed; refusing a late write after the final flush")
+                "BigQueryStore is closed; refusing a late write after the final flush"
+            )
 
     def _begin_async_write(self) -> None:
         """Register an image-backed write before its upload starts."""
@@ -1049,7 +1270,9 @@ class BigQueryStore:
         """Release one registered image-backed write and wake a waiting close."""
         with self._lock:
             self._active_async_writes -= 1
-            if self._active_async_writes < 0:  # internal invariant; never hide a lifecycle bug
+            if (
+                self._active_async_writes < 0
+            ):  # internal invariant; never hide a lifecycle bug
                 self._active_async_writes = 0
                 raise RuntimeError("BigQueryStore async-write accounting underflow")
             if self._active_async_writes == 0:
@@ -1075,10 +1298,12 @@ class BigQueryStore:
                 kwargs["retry"] = retry
             try:
                 return _call_with_supported_keywords(
-                    self.client.insert_rows_json, self._tid(table), rows, **kwargs)
+                    self.client.insert_rows_json, self._tid(table), rows, **kwargs
+                )
             except Exception as exc:  # noqa: BLE001 - classify optional SDK exceptions lazily
-                if (attempt == _BQ_INSERT_ATTEMPTS
-                        or not _retryable_bq_insert_exception(exc)):
+                if attempt == _BQ_INSERT_ATTEMPTS or not _retryable_bq_insert_exception(
+                    exc
+                ):
                     raise
                 print(
                     f"BigQuery transient insert failure for table '{table}' after SDK retries "
@@ -1090,7 +1315,9 @@ class BigQueryStore:
         raise AssertionError("unreachable BigQuery insert retry state")
 
     @staticmethod
-    def _report_profile_progress(progress, stage: str, completed: int, total: int) -> None:
+    def _report_profile_progress(
+        progress, stage: str, completed: int, total: int
+    ) -> None:
         """Best-effort persistence telemetry; observers must never affect durability."""
         if not callable(progress):
             return
@@ -1099,9 +1326,18 @@ class BigQueryStore:
         except Exception:  # noqa: BLE001 -- status plumbing must not affect an already-landed action
             pass
 
-    def record_profile(self, run_id, app, profile_id, liked, source="manual",
-                       photos=None, photo_count=0, capture_truncated: bool = False,
-                       progress=None) -> bool:
+    def record_profile(
+        self,
+        run_id,
+        app,
+        profile_id,
+        liked,
+        source="manual",
+        photos=None,
+        photo_count=0,
+        capture_truncated: bool = False,
+        progress=None,
+    ) -> bool:
         """Archive the profile's images + manifest row. Returns True if recorded.
 
         Image archiving is the system of record, so it is mandatory but non-fatal
@@ -1121,56 +1357,76 @@ class BigQueryStore:
         """
         photos = list(photos or [])
         if not photos:
-            print(f"BigQuery store warning: captured 0 photos for profile {profile_id}; "
-                  "skipping profile archive.")
+            print(
+                f"BigQuery store warning: captured 0 photos for profile {profile_id}; "
+                "skipping profile archive."
+            )
             return False
         if not self._photo_bucket_private_verified:
             raise RuntimeError(
                 "Refusing profile-photo upload: this BigQueryStore was created with "
-                "ensure=False and its bucket privacy policy was not verified")
+                "ensure=False and its bucket privacy policy was not verified"
+            )
         self._begin_async_write()
         try:
             created_at = _now()
             self._report_profile_progress(progress, "profile_upload", 0, len(photos))
             photo_rows = self._upload_profile_photos(
-                run_id, app, profile_id, created_at, photos, progress=progress)
+                run_id, app, profile_id, created_at, photos, progress=progress
+            )
             if len(photo_rows) != len(photos):
                 if photo_rows:
                     self._delete_profile_photo_rows(photo_rows)
-                print(f"BigQuery store warning: archived {len(photo_rows)}/{len(photos)} photos for "
-                      f"profile {profile_id}; skipping its label to keep image data complete.")
+                print(
+                    f"BigQuery store warning: archived {len(photo_rows)}/{len(photos)} photos for "
+                    f"profile {profile_id}; skipping its label to keep image data complete."
+                )
                 return False
             with self._lock:
                 # close waits for this registered write, so its finished manifest must be
                 # buffered before close performs its final flush.
                 self._require_open_for_write(allow_closing=True)
-                self._buf["profiles"].append({
-                    "run_id": run_id, "app": app, "profile_id": profile_id, "created_at": created_at,
-                    "liked": bool(liked), "source": source, "photo_count": len(photo_rows),
-                    "capture_truncated": bool(capture_truncated),
-                })
+                self._buf["profiles"].append(
+                    {
+                        "run_id": run_id,
+                        "app": app,
+                        "profile_id": profile_id,
+                        "created_at": created_at,
+                        "liked": bool(liked),
+                        "source": source,
+                        "photo_count": len(photo_rows),
+                        "capture_truncated": bool(capture_truncated),
+                    }
+                )
                 self._buf["profile_photos"].extend(photo_rows)
                 self._maybe_flush("profiles")
                 self._maybe_flush("profile_photos")
-            self._report_profile_progress(progress, "profile_uploaded", len(photo_rows), len(photos))
+            self._report_profile_progress(
+                progress, "profile_uploaded", len(photo_rows), len(photos)
+            )
             return True
         finally:
             self._finish_async_write()
 
-    def _upload_blob(self, blob, data: bytes, content_type: str, *, deadline: float | None = None) -> bool:
+    def _upload_blob(
+        self, blob, data: bytes, content_type: str, *, deadline: float | None = None
+    ) -> bool:
         delay = _UPLOAD_BACKOFF_S
         for attempt in range(1, _UPLOAD_ATTEMPTS + 1):
             remaining = None if deadline is None else deadline - time.monotonic()
             if remaining is not None and remaining <= 0:
-                print("BigQuery store photo upload deadline expired before the next attempt "
-                      f"({getattr(blob, 'name', '?')})")
+                print(
+                    "BigQuery store photo upload deadline expired before the next attempt "
+                    f"({getattr(blob, 'name', '?')})"
+                )
                 return False
             try:
                 retry = _deadline_retry()
                 kwargs = {
                     "content_type": content_type,
                     "timeout": min(_GCS_UPLOAD_REQUEST_TIMEOUT_S, remaining)
-                    if remaining is not None else _GCS_UPLOAD_REQUEST_TIMEOUT_S,
+                    if remaining is not None
+                    else _GCS_UPLOAD_REQUEST_TIMEOUT_S,
                 }
                 if retry is not None:
                     kwargs["retry"] = retry
@@ -1178,8 +1434,10 @@ class BigQueryStore:
                 return True
             except Exception as exc:  # noqa: BLE001
                 if attempt == _UPLOAD_ATTEMPTS:
-                    print(f"BigQuery store photo upload failed after {_UPLOAD_ATTEMPTS} "
-                          f"attempts ({getattr(blob, 'name', '?')}): {exc}")
+                    print(
+                        f"BigQuery store photo upload failed after {_UPLOAD_ATTEMPTS} "
+                        f"attempts ({getattr(blob, 'name', '?')}): {exc}"
+                    )
                     return False
                 if remaining is not None:
                     delay = min(delay, max(0.0, deadline - time.monotonic()))
@@ -1189,18 +1447,30 @@ class BigQueryStore:
                 delay *= 2
         return False
 
-    def _upload_profile_photos(self, run_id: str, app: str, profile_id: str,
-                               created_at: str, photos: list[bytes], *, progress=None) -> list[dict]:
+    def _upload_profile_photos(
+        self,
+        run_id: str,
+        app: str,
+        profile_id: str,
+        created_at: str,
+        photos: list[bytes],
+        *,
+        progress=None,
+    ) -> list[dict]:
         rows = []
         deadline = time.monotonic() + _profile_upload_deadline_s(len(photos))
         for i, photo in enumerate(photos):
             if time.monotonic() >= deadline:
-                print(f"BigQuery store profile upload deadline expired after {len(rows)}/{len(photos)} "
-                      f"photos for profile {profile_id}")
+                print(
+                    f"BigQuery store profile upload deadline expired after {len(rows)}/{len(photos)} "
+                    f"photos for profile {profile_id}"
+                )
                 break
             digest = hashlib.sha256(photo).hexdigest()
             content_type, ext = _image_type(photo)
-            object_name = f"profiles/{app}/{run_id}/{profile_id}/{i:02d}-{digest[:16]}.{ext}"
+            object_name = (
+                f"profiles/{app}/{run_id}/{profile_id}/{i:02d}-{digest[:16]}.{ext}"
+            )
             blob = self._photo_bucket.blob(object_name)
             # Called directly, NOT through _call_with_supported_keywords: that shim exists for
             # third-party SDK entry points whose injected fakes may lack `retry`/`timeout`, and
@@ -1210,12 +1480,22 @@ class BigQueryStore:
             # Hinge action, so a replacement that cannot take it must break loudly.
             if not self._upload_blob(blob, photo, content_type, deadline=deadline):
                 break
-            rows.append({
-                "run_id": run_id, "app": app, "profile_id": profile_id, "created_at": created_at,
-                "photo_index": i, "gcs_uri": f"gs://{self.photo_bucket_name}/{object_name}",
-                "sha256": digest, "byte_size": len(photo), "content_type": content_type,
-            })
-            self._report_profile_progress(progress, "profile_upload", len(rows), len(photos))
+            rows.append(
+                {
+                    "run_id": run_id,
+                    "app": app,
+                    "profile_id": profile_id,
+                    "created_at": created_at,
+                    "photo_index": i,
+                    "gcs_uri": f"gs://{self.photo_bucket_name}/{object_name}",
+                    "sha256": digest,
+                    "byte_size": len(photo),
+                    "content_type": content_type,
+                }
+            )
+            self._report_profile_progress(
+                progress, "profile_upload", len(rows), len(photos)
+            )
         return rows
 
     def _delete_profile_photo_rows(self, rows: list[dict]) -> None:
@@ -1230,12 +1510,25 @@ class BigQueryStore:
                 if retry is not None:
                     kwargs["retry"] = retry
                 _call_with_supported_keywords(
-                    self._photo_bucket.blob(uri[len(prefix):]).delete, **kwargs)
+                    self._photo_bucket.blob(uri[len(prefix) :]).delete, **kwargs
+                )
             except Exception as exc:  # noqa: BLE001
-                print(f"BigQuery store warning: could not delete partial photo {uri}: {exc}")
+                print(
+                    f"BigQuery store warning: could not delete partial photo {uri}: {exc}"
+                )
 
-    def add_label(self, run_id, app, liked, embedding, source="manual", photo_count=0,
-                  profile_id="", profile_name="", **_):
+    def add_label(
+        self,
+        run_id,
+        app,
+        liked,
+        embedding,
+        source="manual",
+        photo_count=0,
+        profile_id="",
+        profile_name="",
+        **_,
+    ):
         liked = bool(liked)
         embedding_vec = [float(x) for x in embedding]
         with self._lock:
@@ -1243,11 +1536,19 @@ class BigQueryStore:
             # already waiting for, so refusing it would discard the label of a swipe that has
             # physically landed while close is still holding the buffer open for its manifest.
             self._require_open_for_write(allow_closing=True)
-            self._buf["labels"].append({
-                "run_id": run_id, "app": app, "profile_id": profile_id, "created_at": _now(), "liked": liked,
-                "source": source, "embedding": embedding_vec, "photo_count": int(photo_count),
-                "profile_name": str(profile_name or ""),
-            })
+            self._buf["labels"].append(
+                {
+                    "run_id": run_id,
+                    "app": app,
+                    "profile_id": profile_id,
+                    "created_at": _now(),
+                    "liked": liked,
+                    "source": source,
+                    "embedding": embedding_vec,
+                    "photo_count": int(photo_count),
+                    "profile_name": str(profile_name or ""),
+                }
+            )
             label = (liked, list(embedding_vec))
             if self._labels_cache is not None:
                 self._labels_cache.append(label)
@@ -1269,56 +1570,97 @@ class BigQueryStore:
         the raise into a visible error) instead of a removal that never happened.
         """
         from google.cloud import bigquery
+
         with self._lock:
             self._require_open_for_write()
             self.flush()
             rows = self.client.query(
                 f"SELECT l.run_id, l.app, l.source, l.profile_id, l.profile_name, l.created_at "
                 f"FROM `{self._tid('labels')}` l WHERE {self._label_not_retracted()} "
-                "ORDER BY l.created_at DESC LIMIT 1").result()
+                "ORDER BY l.created_at DESC LIMIT 1"
+            ).result()
             row = next(iter(rows), None)
             if row is None:
                 return None
             created_at = row["created_at"]
-            job = bigquery.QueryJobConfig(query_parameters=[
-                bigquery.ScalarQueryParameter("run_id", "STRING", row["run_id"]),
-                bigquery.ScalarQueryParameter("app", "STRING", row["app"]),
-                bigquery.ScalarQueryParameter("source", "STRING", row["source"]),
-                bigquery.ScalarQueryParameter("profile_id", "STRING", row["profile_id"]),
-                bigquery.ScalarQueryParameter("created_at", "TIMESTAMP", created_at),
-            ])
+            job = bigquery.QueryJobConfig(
+                query_parameters=[
+                    bigquery.ScalarQueryParameter("run_id", "STRING", row["run_id"]),
+                    bigquery.ScalarQueryParameter("app", "STRING", row["app"]),
+                    bigquery.ScalarQueryParameter("source", "STRING", row["source"]),
+                    bigquery.ScalarQueryParameter(
+                        "profile_id", "STRING", row["profile_id"]
+                    ),
+                    bigquery.ScalarQueryParameter(
+                        "created_at", "TIMESTAMP", created_at
+                    ),
+                ]
+            )
             delete_job = self.client.query(
                 f"DELETE FROM `{self._tid('labels')}` WHERE run_id=@run_id AND app=@app "
                 "AND source=@source AND created_at=@created_at "
                 "AND (profile_id=@profile_id OR (profile_id IS NULL AND @profile_id IS NULL))",
-                job_config=job)
+                job_config=job,
+            )
             delete_job.result()
             affected = getattr(delete_job, "num_dml_affected_rows", None)
             if affected is None or int(affected) != 1:
                 raise RuntimeError(
                     "BigQuery removed "
                     f"{'an unknown number of' if affected is None else affected} training label "
-                    "rows for the label it selected; refusing to report a removal")
+                    "rows for the label it selected; refusing to report a removal"
+                )
             self._labels_cache = None
-        return {"profile_name": str(row["profile_name"] or ""),
-                "profile_id": str(row["profile_id"] or "")}
+        return {
+            "profile_name": str(row["profile_name"] or ""),
+            "profile_id": str(row["profile_id"] or ""),
+        }
 
-    def record_decision(self, run_id, app, decision, score, source="auto", profile_id="",
-                        created_at=None):
+    def record_decision(
+        self,
+        run_id,
+        app,
+        decision,
+        score,
+        source="auto",
+        profile_id="",
+        created_at=None,
+    ):
         with self._lock:
             # allow_closing: see add_label -- an already-landed decision's audit row must not be
             # refused while close is still draining that same profile's archive.
             self._require_open_for_write(allow_closing=True)
-            self._buf["decisions"].append({
-                "run_id": run_id, "app": app, "created_at": _timestamp(created_at),
-                "decision": decision, "score": float(score), "source": source, "profile_id": profile_id,
-            })
+            self._buf["decisions"].append(
+                {
+                    "run_id": run_id,
+                    "app": app,
+                    "created_at": _timestamp(created_at),
+                    "decision": decision,
+                    "score": float(score),
+                    "source": source,
+                    "profile_id": profile_id,
+                }
+            )
             self._maybe_flush("decisions")
 
-    def record_opener(self, run_id, app, model, opener, referenced, angle="",
-                      item_description="", *, profile_id="", decision="", decision_source="",
-                      decision_created_at=None, model_item_index=None,
-                      prompt_sha256: str | None = None, profile_key: str = ""):
+    def record_opener(
+        self,
+        run_id,
+        app,
+        model,
+        opener,
+        referenced,
+        angle="",
+        item_description="",
+        *,
+        profile_id="",
+        decision="",
+        decision_source="",
+        decision_created_at=None,
+        model_item_index=None,
+        prompt_sha256: str | None = None,
+        profile_key: str = "",
+    ):
         # `angle` and `item_description`: telemetry only (see the openers entry in _TABLES).
         # Both defaulted to "" so a caller that predates either still writes a valid row rather
         # than omitting the field. The live table already holds real rows, so each column got
@@ -1338,36 +1680,63 @@ class BigQueryStore:
         with self._lock:
             # allow_closing: see add_label -- the opener belongs to a like that already landed.
             self._require_open_for_write(allow_closing=True)
-            self._buf["openers"].append({
-                "run_id": run_id, "app": app, "created_at": _now(),
-                "model": model, "opener": opener, "referenced": referenced, "angle": angle,
-                "item_description": item_description, "profile_id": profile_id,
-                "decision": decision, "decision_source": decision_source,
-                "decision_created_at": (None if decision_created_at is None
-                                        else _timestamp(decision_created_at)),
-                "model_item_index": model_item_index,
-                "prompt_sha256": prompt_sha256,
-                "profile_key": profile_key,
-            })
+            self._buf["openers"].append(
+                {
+                    "run_id": run_id,
+                    "app": app,
+                    "created_at": _now(),
+                    "model": model,
+                    "opener": opener,
+                    "referenced": referenced,
+                    "angle": angle,
+                    "item_description": item_description,
+                    "profile_id": profile_id,
+                    "decision": decision,
+                    "decision_source": decision_source,
+                    "decision_created_at": (
+                        None
+                        if decision_created_at is None
+                        else _timestamp(decision_created_at)
+                    ),
+                    "model_item_index": model_item_index,
+                    "prompt_sha256": prompt_sha256,
+                    "profile_key": profile_key,
+                }
+            )
             self._maybe_flush("openers")
 
-    def record_opener_outcome(self, app: str, profile_key: str, outcome: str, *,
-                              observed_at=None, source: str = "owner", note: str = "") -> None:
+    def record_opener_outcome(
+        self,
+        app: str,
+        profile_key: str,
+        outcome: str,
+        *,
+        observed_at=None,
+        source: str = "owner",
+        note: str = "",
+    ) -> None:
         # See ranker/__init__.py's Store.record_opener_outcome for the full design rationale
         # (no run_id by design, profile_key accepted unvalidated including "", observed_at
         # distinct from this row's own created_at). Buffered like every other write here --
         # flushed on the normal batch/close cadence, not published synchronously.
         with self._lock:
             self._require_open_for_write(allow_closing=True)
-            self._buf["opener_outcomes"].append({
-                "app": app, "profile_key": profile_key, "outcome": outcome,
-                "observed_at": _timestamp(observed_at), "source": source, "note": note,
-                "created_at": _now(),
-            })
+            self._buf["opener_outcomes"].append(
+                {
+                    "app": app,
+                    "profile_key": profile_key,
+                    "outcome": outcome,
+                    "observed_at": _timestamp(observed_at),
+                    "source": source,
+                    "note": note,
+                    "created_at": _now(),
+                }
+            )
             self._maybe_flush("opener_outcomes")
 
-    def joined_opener_outcomes(self, app: str, *,
-                              prompt_sha256: str | None = None) -> list[dict]:
+    def joined_opener_outcomes(
+        self, app: str, *, prompt_sha256: str | None = None
+    ) -> list[dict]:
         """Every `opener_outcomes` row for `app` joined to its `openers` row by profile_key.
 
         See ranker/__init__.py's Store.joined_opener_outcomes for the full contract (why the
@@ -1380,6 +1749,7 @@ class BigQueryStore:
         than a real failure -- the same accommodation `opener_retractions` already has.
         """
         from google.cloud import bigquery
+
         parameters = [bigquery.ScalarQueryParameter("app", "STRING", app)]
         query = (
             "SELECT o.run_id AS run_id, o.model AS model, o.opener AS opener, "
@@ -1406,7 +1776,8 @@ class BigQueryStore:
         if prompt_sha256 is not None:
             query += "AND o.prompt_sha256 = @prompt_sha256 "
             parameters.append(
-                bigquery.ScalarQueryParameter("prompt_sha256", "STRING", prompt_sha256))
+                bigquery.ScalarQueryParameter("prompt_sha256", "STRING", prompt_sha256)
+            )
         query += "ORDER BY oc.created_at"
         job = bigquery.QueryJobConfig(query_parameters=parameters)
         try:
@@ -1425,9 +1796,18 @@ class BigQueryStore:
             out.append(entry)
         return out
 
-    def record_opener_send_evidence(self, run_id, app, opener, *, profile_id="",
-                                    decision_source="auto", decision_created_at=None,
-                                    model_item_index=None, evidence=None) -> bool:
+    def record_opener_send_evidence(
+        self,
+        run_id,
+        app,
+        opener,
+        *,
+        profile_id="",
+        decision_source="auto",
+        decision_created_at=None,
+        model_item_index=None,
+        evidence=None,
+    ) -> bool:
         """Archive one verified-landed AUTO opener's pre-send PNG and queryable linkage.
 
         Raw images stay in the private GCS bucket; BigQuery stores only scalar metadata and the
@@ -1438,12 +1818,16 @@ class BigQueryStore:
         evidence = evidence if isinstance(evidence, dict) else {}
         frame = evidence.get("frame")
         if not isinstance(frame, bytes) or not frame:
-            print("BigQuery store warning: AUTO opener evidence had no pre-send frame; "
-                  "skipping its evidence row.")
+            print(
+                "BigQuery store warning: AUTO opener evidence had no pre-send frame; "
+                "skipping its evidence row."
+            )
             return False
         if not self._photo_bucket_private_verified:
-            print("BigQuery store warning: refusing AUTO opener evidence upload because this "
-                  "store has not verified the bucket privacy policy.")
+            print(
+                "BigQuery store warning: refusing AUTO opener evidence upload because this "
+                "store has not verified the bucket privacy policy."
+            )
             return False
         self._begin_async_write()
         try:
@@ -1458,29 +1842,49 @@ class BigQueryStore:
             )
             blob = self._photo_bucket.blob(object_name)
             if not self._upload_blob(blob, frame, content_type):
-                print("BigQuery store warning: pre-send AUTO opener screenshot was not archived; "
-                      "skipping its evidence row.")
+                print(
+                    "BigQuery store warning: pre-send AUTO opener screenshot was not archived; "
+                    "skipping its evidence row."
+                )
                 return False
 
             expected_id = evidence.get("evidence_id")
             expected_frame_hash = evidence.get("frame_sha256")
             expected_opener_hash = evidence.get("opener_sha256")
-            if any((expected_id is not None and expected_id != evidence_id,
-                    expected_frame_hash is not None and expected_frame_hash != frame_sha256,
-                    expected_opener_hash is not None and expected_opener_hash != opener_sha256)):
-                print("BigQuery store warning: driver-supplied AUTO opener evidence hashes did not "
-                      "match the content; persisted authoritative hashes computed at storage.")
+            if any(
+                (
+                    expected_id is not None and expected_id != evidence_id,
+                    expected_frame_hash is not None
+                    and expected_frame_hash != frame_sha256,
+                    expected_opener_hash is not None
+                    and expected_opener_hash != opener_sha256,
+                )
+            ):
+                print(
+                    "BigQuery store warning: driver-supplied AUTO opener evidence hashes did not "
+                    "match the content; persisted authoritative hashes computed at storage."
+                )
 
             row = {
-                "run_id": run_id, "app": app, "profile_id": profile_id, "created_at": _now(),
+                "run_id": run_id,
+                "app": app,
+                "profile_id": profile_id,
+                "created_at": _now(),
                 "decision_source": decision_source,
-                "decision_created_at": (None if decision_created_at is None
-                                        else _timestamp(decision_created_at)),
-                "outcome": "like_landed", "model_item_index": model_item_index,
-                "opener": str(opener), "evidence_id": evidence_id,
-                "opener_sha256": opener_sha256, "frame_sha256": frame_sha256,
+                "decision_created_at": (
+                    None
+                    if decision_created_at is None
+                    else _timestamp(decision_created_at)
+                ),
+                "outcome": "like_landed",
+                "model_item_index": model_item_index,
+                "opener": str(opener),
+                "evidence_id": evidence_id,
+                "opener_sha256": opener_sha256,
+                "frame_sha256": frame_sha256,
                 "gcs_uri": f"gs://{self.photo_bucket_name}/{object_name}",
-                "byte_size": len(frame), "content_type": content_type,
+                "byte_size": len(frame),
+                "content_type": content_type,
             }
             with self._lock:
                 self._require_open_for_write(allow_closing=True)
@@ -1490,18 +1894,36 @@ class BigQueryStore:
         finally:
             self._finish_async_write()
 
-    def record_opener_rejection(self, run_id, app, model, attempt, reason_code, reason, raw_opener,
-                                *, prompt_sha256: str | None = None):
+    def record_opener_rejection(
+        self,
+        run_id,
+        app,
+        model,
+        attempt,
+        reason_code,
+        reason,
+        raw_opener,
+        *,
+        prompt_sha256: str | None = None,
+    ):
         # `prompt_sha256`: the same prompt-era digest record_opener writes, keyword-only so the
         # seven existing parameters stay positional. This table's first added column, so its
         # _MIGRATIONS line is what puts it on the live table -- see the comment there.
         with self._lock:
             self._require_open_for_write()
-            self._buf["opener_rejections"].append({
-                "run_id": run_id, "app": app, "created_at": _now(), "model": model,
-                "attempt": int(attempt), "reason_code": reason_code, "reason": reason,
-                "raw_opener": raw_opener, "prompt_sha256": prompt_sha256,
-            })
+            self._buf["opener_rejections"].append(
+                {
+                    "run_id": run_id,
+                    "app": app,
+                    "created_at": _now(),
+                    "model": model,
+                    "attempt": int(attempt),
+                    "reason_code": reason_code,
+                    "reason": reason,
+                    "raw_opener": raw_opener,
+                    "prompt_sha256": prompt_sha256,
+                }
+            )
             self._maybe_flush("opener_rejections")
 
     def record_spend(self, run_id, model, usage: Usage, cost):
@@ -1510,13 +1932,18 @@ class BigQueryStore:
         # genuinely free $0.00 call.
         with self._lock:
             self._require_open_for_write()
-            self._buf["spend"].append({
-                "run_id": run_id, "created_at": _now(), "model": model,
-                "input_tokens": usage.input_tokens, "output_tokens": usage.output_tokens,
-                "cache_read_tokens": usage.cache_read_input_tokens,
-                "cache_write_tokens": usage.cache_creation_input_tokens,
-                "cost_usd": None if cost is None else float(cost),
-            })
+            self._buf["spend"].append(
+                {
+                    "run_id": run_id,
+                    "created_at": _now(),
+                    "model": model,
+                    "input_tokens": usage.input_tokens,
+                    "output_tokens": usage.output_tokens,
+                    "cache_read_tokens": usage.cache_read_input_tokens,
+                    "cache_write_tokens": usage.cache_creation_input_tokens,
+                    "cost_usd": None if cost is None else float(cost),
+                }
+            )
             self._maybe_flush("spend")
 
     # --- flush ----------------------------------------------------------
@@ -1549,20 +1976,28 @@ class BigQueryStore:
             # consecutive failures naming the same row (tracked by its stable row_id, not
             # its position, since position shifts as the buffer changes across retries),
             # drop just that row, loudly, and keep the rest of the buffer intact.
-            bad_ids = {row_ids[e["index"]] for e in errors if e.get("index") is not None}
+            bad_ids = {
+                row_ids[e["index"]] for e in errors if e.get("index") is not None
+            }
             for rid in bad_ids:
                 key = f"{table}:{rid}"
                 self._fail_counts[key] = self._fail_counts.get(key, 0) + 1
-            drop_ids = {rid for rid in bad_ids if self._fail_counts[f"{table}:{rid}"] >= _MAX_INSERT_ATTEMPTS}
+            drop_ids = {
+                rid
+                for rid in bad_ids
+                if self._fail_counts[f"{table}:{rid}"] >= _MAX_INSERT_ATTEMPTS
+            }
             if drop_ids:
                 kept, dropped = [], []
                 for row, rid in zip(rows, row_ids, strict=True):
                     (dropped if rid in drop_ids else kept).append(row)
                 for row in dropped:
-                    print(f"BigQuery store: DROPPING a row from '{table}' after "
-                          f"{_MAX_INSERT_ATTEMPTS} consecutive failed insert attempts -- "
-                          f"this row's data is LOST (never written to BigQuery). "
-                          f"BigQuery errors: {errors}. Row: {row}")
+                    print(
+                        f"BigQuery store: DROPPING a row from '{table}' after "
+                        f"{_MAX_INSERT_ATTEMPTS} consecutive failed insert attempts -- "
+                        f"this row's data is LOST (never written to BigQuery). "
+                        f"BigQuery errors: {errors}. Row: {row}"
+                    )
                 self._dropped[table] += len(dropped)
                 for rid in drop_ids:
                     self._fail_counts.pop(f"{table}:{rid}", None)
@@ -1615,8 +2050,16 @@ class BigQueryStore:
         """Human-readable tally of rows confirmed inserted to BigQuery this run, for the
         shutdown confirmation log. Empty buffers + a non-empty tally = everything landed."""
         with self._lock:
-            parts = [f"{name}={self._written[name]}" for name in _TABLES if self._written[name]]
-            dropped = [f"{name}={self._dropped[name]}" for name in _TABLES if self._dropped[name]]
+            parts = [
+                f"{name}={self._written[name]}"
+                for name in _TABLES
+                if self._written[name]
+            ]
+            dropped = [
+                f"{name}={self._dropped[name]}"
+                for name in _TABLES
+                if self._dropped[name]
+            ]
             pending = sum(len(self._buf[name]) for name in _TABLES)
         body = ", ".join(parts) if parts else "nothing new"
         if dropped:
@@ -1641,7 +2084,9 @@ class BigQueryStore:
         Store.dropped_rows for the contract both backends share.
         """
         with self._lock:
-            return {name: self._dropped[name] for name in _TABLES if self._dropped[name]}
+            return {
+                name: self._dropped[name] for name in _TABLES if self._dropped[name]
+            }
 
     def pending_opener_rejections(self) -> list[dict]:
         """(2026-09-17) Snapshot of `opener_rejections` rows still sitting in the buffer.

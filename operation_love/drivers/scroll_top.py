@@ -167,6 +167,7 @@ WHAT THIS MODULE DOES NOT DECIDE, AND WHICH LAYER HAS TO
     forever -- loud, and a hard stop at the gate -- never a false top. Re-measuring is a
     calibration task with the owner present, not something to soften a threshold over.
 """
+
 from __future__ import annotations
 
 from collections.abc import Sequence
@@ -205,18 +206,138 @@ _FINGERPRINT_GRID = (16, 4)
 # The filter-chips row variants, as `_FINGERPRINT_GRID` grey levels in row-major order.
 # Variant 1: `( Compatible ) Active today Dating Intent ...` (calibration corpus baseline)
 _SCROLL_TOP_BAND_FINGERPRINT_COMPATIBLE = (
-    254, 254, 254, 254, 254, 255, 255, 255, 255, 255, 254, 254, 254, 254, 254, 254,
-    254, 251, 251, 250, 251, 250, 233, 232, 232, 249, 252, 251, 251, 250, 252, 252,
-    248, 244, 236, 239, 249, 238, 236, 239, 240, 237, 246, 235, 236, 243, 248, 250,
-    245, 240, 186, 191, 239, 242, 215, 193, 229, 239, 242, 192, 188, 222, 245, 251,
+    254,
+    254,
+    254,
+    254,
+    254,
+    255,
+    255,
+    255,
+    255,
+    255,
+    254,
+    254,
+    254,
+    254,
+    254,
+    254,
+    254,
+    251,
+    251,
+    250,
+    251,
+    250,
+    233,
+    232,
+    232,
+    249,
+    252,
+    251,
+    251,
+    250,
+    252,
+    252,
+    248,
+    244,
+    236,
+    239,
+    249,
+    238,
+    236,
+    239,
+    240,
+    237,
+    246,
+    235,
+    236,
+    243,
+    248,
+    250,
+    245,
+    240,
+    186,
+    191,
+    239,
+    242,
+    215,
+    193,
+    229,
+    239,
+    242,
+    192,
+    188,
+    222,
+    245,
+    251,
 )
 
 # Variant 2: `( Age v ) Height v Dating Intent ...` (filter-selected layout)
 _SCROLL_TOP_BAND_FINGERPRINT_AGE_HEIGHT = (
-    254, 255, 255, 255, 255, 254, 254, 254, 254, 254, 254, 254, 254, 254, 254, 254,
-    253, 237, 232, 231, 243, 253, 251, 251, 250, 251, 253, 251, 251, 250, 251, 251,
-    240, 236, 237, 242, 235, 248, 236, 236, 240, 247, 250, 239, 234, 242, 237, 238,
-    237, 233, 185, 222, 236, 248, 207, 182, 214, 237, 253, 224, 190, 196, 198, 196,
+    254,
+    255,
+    255,
+    255,
+    255,
+    254,
+    254,
+    254,
+    254,
+    254,
+    254,
+    254,
+    254,
+    254,
+    254,
+    254,
+    253,
+    237,
+    232,
+    231,
+    243,
+    253,
+    251,
+    251,
+    250,
+    251,
+    253,
+    251,
+    251,
+    250,
+    251,
+    251,
+    240,
+    236,
+    237,
+    242,
+    235,
+    248,
+    236,
+    236,
+    240,
+    247,
+    250,
+    239,
+    234,
+    242,
+    237,
+    238,
+    237,
+    233,
+    185,
+    222,
+    236,
+    248,
+    207,
+    182,
+    214,
+    237,
+    253,
+    224,
+    190,
+    196,
+    198,
+    196,
 )
 
 # Variant 3: `( Signals ) Age v Height v Dating Intent ...` (HingeX Signals selection).
@@ -230,10 +351,70 @@ _SCROLL_TOP_BAND_FINGERPRINT_AGE_HEIGHT = (
 # top. That placed a real top in the deliberate 3..9 dead zone. This fingerprint is the later
 # top's shipped-band decode, so the gate is calibrated to the layout actually on the device.
 _SCROLL_TOP_BAND_FINGERPRINT_SIGNALS = (
-    254, 255, 255, 255, 255, 255, 254, 254, 254, 255, 255, 254, 254, 254, 255, 255,
-    254, 186, 150, 150, 189, 249, 232, 232, 231, 246, 236, 233, 234, 232, 240, 244,
-    223, 91, 91, 88, 88, 222, 235, 232, 239, 232, 236, 225, 225, 237, 235, 234,
-    220, 93, 123, 118, 95, 221, 225, 204, 236, 233, 238, 207, 201, 231, 236, 236,
+    254,
+    255,
+    255,
+    255,
+    255,
+    255,
+    254,
+    254,
+    254,
+    255,
+    255,
+    254,
+    254,
+    254,
+    255,
+    255,
+    254,
+    186,
+    150,
+    150,
+    189,
+    249,
+    232,
+    232,
+    231,
+    246,
+    236,
+    233,
+    234,
+    232,
+    240,
+    244,
+    223,
+    91,
+    91,
+    88,
+    88,
+    222,
+    235,
+    232,
+    239,
+    232,
+    236,
+    225,
+    225,
+    237,
+    235,
+    234,
+    220,
+    93,
+    123,
+    118,
+    95,
+    221,
+    225,
+    204,
+    236,
+    233,
+    238,
+    207,
+    201,
+    231,
+    236,
+    236,
 )
 
 # Variant 4: `( Signals ) Age v Height v Dating Intent ...` (HingeX Signals unselected).
@@ -242,10 +423,70 @@ _SCROLL_TOP_BAND_FINGERPRINT_SIGNALS = (
 # 2.891 levels from the older Compatible reference -- inside the 3.0 tolerance, but too close to
 # the edge to leave as an accidental match.
 _SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_UNSELECTED = (
-    254, 254, 254, 254, 254, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
-    254, 251, 251, 250, 251, 250, 233, 232, 232, 249, 239, 233, 233, 232, 243, 247,
-    248, 244, 236, 239, 249, 238, 236, 239, 240, 232, 235, 233, 233, 240, 234, 233,
-    245, 240, 186, 191, 239, 242, 215, 193, 230, 233, 236, 193, 189, 223, 234, 235,
+    254,
+    254,
+    254,
+    254,
+    254,
+    255,
+    255,
+    255,
+    255,
+    255,
+    255,
+    255,
+    255,
+    255,
+    255,
+    255,
+    254,
+    251,
+    251,
+    250,
+    251,
+    250,
+    233,
+    232,
+    232,
+    249,
+    239,
+    233,
+    233,
+    232,
+    243,
+    247,
+    248,
+    244,
+    236,
+    239,
+    249,
+    238,
+    236,
+    239,
+    240,
+    232,
+    235,
+    233,
+    233,
+    240,
+    234,
+    233,
+    245,
+    240,
+    186,
+    191,
+    239,
+    242,
+    215,
+    193,
+    230,
+    233,
+    236,
+    193,
+    189,
+    223,
+    234,
+    235,
 )
 
 # Variant 5: `( Signals ) Age v Height v Dating Intent ...` (HingeX Signals selected, current
@@ -258,10 +499,70 @@ _SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_UNSELECTED = (
 # preserves the 3.0 confirmation bound instead of admitting every unknown band between 3 and 9.
 # This records only the 16x4 greyscale filter-strip fingerprint, never a profile image or name.
 _SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_SELECTED_CURRENT = (
-    254, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
-    255, 200, 168, 168, 203, 251, 232, 232, 232, 248, 238, 232, 233, 231, 242, 246,
-    227, 87, 78, 75, 85, 223, 237, 237, 240, 232, 235, 230, 231, 239, 235, 233,
-    215, 88, 126, 120, 89, 218, 221, 196, 232, 233, 237, 198, 193, 226, 235, 236,
+    254,
+    255,
+    255,
+    255,
+    255,
+    255,
+    255,
+    255,
+    255,
+    255,
+    255,
+    255,
+    255,
+    255,
+    255,
+    255,
+    255,
+    200,
+    168,
+    168,
+    203,
+    251,
+    232,
+    232,
+    232,
+    248,
+    238,
+    232,
+    233,
+    231,
+    242,
+    246,
+    227,
+    87,
+    78,
+    75,
+    85,
+    223,
+    237,
+    237,
+    240,
+    232,
+    235,
+    230,
+    231,
+    239,
+    235,
+    233,
+    215,
+    88,
+    126,
+    120,
+    89,
+    218,
+    221,
+    196,
+    232,
+    233,
+    237,
+    198,
+    193,
+    226,
+    235,
+    236,
 )
 
 # Variant 6: current HingeX Signals filter strip, measured from Jaden's visibly top-of-card
@@ -269,10 +570,70 @@ _SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_SELECTED_CURRENT = (
 # outside the 3.0 confirm tolerance; registering this discrete chrome variant keeps the safety
 # dead zone intact rather than broadening it to admit unknown bands.
 _SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_CURRENT = (
-    254, 254, 254, 254, 254, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
-    252, 251, 251, 250, 253, 241, 232, 232, 239, 249, 233, 233, 233, 233, 249, 237,
-    250, 237, 239, 241, 247, 235, 236, 242, 236, 232, 234, 233, 236, 240, 232, 235,
-    253, 213, 184, 207, 247, 239, 189, 214, 234, 235, 220, 182, 206, 231, 232, 235,
+    254,
+    254,
+    254,
+    254,
+    254,
+    255,
+    255,
+    255,
+    255,
+    255,
+    255,
+    255,
+    255,
+    255,
+    255,
+    255,
+    252,
+    251,
+    251,
+    250,
+    253,
+    241,
+    232,
+    232,
+    239,
+    249,
+    233,
+    233,
+    233,
+    233,
+    249,
+    237,
+    250,
+    237,
+    239,
+    241,
+    247,
+    235,
+    236,
+    242,
+    236,
+    232,
+    234,
+    233,
+    236,
+    240,
+    232,
+    235,
+    253,
+    213,
+    184,
+    207,
+    247,
+    239,
+    189,
+    214,
+    234,
+    235,
+    220,
+    182,
+    206,
+    231,
+    232,
+    235,
 )
 
 # Variant 7: `( Signals ) Age v Height v Dating Intent ...` (HingeX Signals selected, dark/
@@ -288,10 +649,70 @@ _SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_CURRENT = (
 # the card was genuinely at its scroll top the whole time.
 # This records only the 16x4 greyscale filter-strip fingerprint, never a profile image or name.
 _SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_DARK_PILL = (
-    255, 255, 255, 255, 254, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
-    219, 181, 181, 206, 254, 234, 232, 232, 248, 242, 233, 235, 232, 241, 248, 233,
-     84,  65,  64,  68, 213, 239, 236, 239, 232, 233, 232, 233, 238, 234, 232, 231,
-     75, 129, 134,  82, 198, 231, 183, 228, 233, 238, 197, 182, 219, 233, 236, 216,
+    255,
+    255,
+    255,
+    255,
+    254,
+    255,
+    255,
+    255,
+    255,
+    255,
+    255,
+    255,
+    255,
+    255,
+    255,
+    255,
+    219,
+    181,
+    181,
+    206,
+    254,
+    234,
+    232,
+    232,
+    248,
+    242,
+    233,
+    235,
+    232,
+    241,
+    248,
+    233,
+    84,
+    65,
+    64,
+    68,
+    213,
+    239,
+    236,
+    239,
+    232,
+    233,
+    232,
+    233,
+    238,
+    234,
+    232,
+    231,
+    75,
+    129,
+    134,
+    82,
+    198,
+    231,
+    183,
+    228,
+    233,
+    238,
+    197,
+    182,
+    219,
+    233,
+    236,
+    216,
 )
 
 # Variant 8: `( Signals ) Age v Height v Dating Intent ...` (HingeX Signals selected, dark/
@@ -304,10 +725,70 @@ _SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_DARK_PILL = (
 # both calibration points means each confirms the other rather than landing in the dead zone.
 # This records only the 16x4 greyscale filter-strip fingerprint, never a profile image or name.
 _SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_DARK_PILL_B = (
-    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
-    207, 164, 164, 192, 252, 233, 233, 231, 246, 241, 234, 236, 232, 240, 247, 232,
-     81,  75,  74,  69, 210, 239, 232, 239, 231, 234, 228, 228, 236, 235, 233, 230,
-    81, 128, 133,  86, 201, 233, 187, 231, 233, 239, 202, 187, 223, 234, 237, 220,
+    255,
+    255,
+    255,
+    255,
+    255,
+    255,
+    255,
+    255,
+    255,
+    255,
+    255,
+    255,
+    255,
+    255,
+    255,
+    255,
+    207,
+    164,
+    164,
+    192,
+    252,
+    233,
+    233,
+    231,
+    246,
+    241,
+    234,
+    236,
+    232,
+    240,
+    247,
+    232,
+    81,
+    75,
+    74,
+    69,
+    210,
+    239,
+    232,
+    239,
+    231,
+    234,
+    228,
+    228,
+    236,
+    235,
+    233,
+    230,
+    81,
+    128,
+    133,
+    86,
+    201,
+    233,
+    187,
+    231,
+    233,
+    239,
+    202,
+    187,
+    223,
+    234,
+    237,
+    220,
 )
 
 # Variant 9: `Age v  Height v  Dating Intentions v  Active …` (current non-Signals
@@ -324,10 +805,70 @@ _SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_DARK_PILL_B = (
 #
 # This contains only the 16x4 greyscale filter-strip fingerprint, never profile pixels or text.
 _SCROLL_TOP_BAND_FINGERPRINT_AGE_HEIGHT_CURRENT = (
-    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
-    238, 233, 232, 241, 248, 233, 233, 232, 234, 249, 235, 233, 233, 233, 233, 233,
-    233, 236, 242, 235, 233, 234, 233, 237, 239, 232, 234, 231, 239, 235, 235, 236,
-    235, 187, 218, 234, 236, 215, 182, 210, 232, 233, 229, 191, 195, 200, 195, 199,
+    255,
+    255,
+    255,
+    255,
+    255,
+    255,
+    255,
+    255,
+    255,
+    255,
+    255,
+    255,
+    255,
+    255,
+    255,
+    255,
+    238,
+    233,
+    232,
+    241,
+    248,
+    233,
+    233,
+    232,
+    234,
+    249,
+    235,
+    233,
+    233,
+    233,
+    233,
+    233,
+    233,
+    236,
+    242,
+    235,
+    233,
+    234,
+    233,
+    237,
+    239,
+    232,
+    234,
+    231,
+    239,
+    235,
+    235,
+    236,
+    235,
+    187,
+    218,
+    234,
+    236,
+    215,
+    182,
+    210,
+    232,
+    233,
+    229,
+    191,
+    195,
+    200,
+    195,
+    199,
 )
 
 # Variant 10: `( Signals ) Age v Height v Dating Intent ...` (selected Signals, current
@@ -341,10 +882,70 @@ _SCROLL_TOP_BAND_FINGERPRINT_AGE_HEIGHT_CURRENT = (
 # registered. Keeping the exact chrome-only fingerprint retains the 3.0 confirmation bound
 # rather than weakening the gate for unknown layouts.
 _SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_PURPLE_BANNER = (
-    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
-    243, 186, 181, 184, 241, 243, 232, 232, 239, 249, 233, 233, 233, 233, 249, 237,
-    159,  70,  72,  64, 149, 242, 236, 242, 236, 232, 234, 233, 236, 240, 232, 235,
-    138,  99, 130, 102, 130, 246, 190, 214, 234, 235, 220, 182, 206, 231, 232, 235,
+    255,
+    255,
+    255,
+    255,
+    255,
+    255,
+    255,
+    255,
+    255,
+    255,
+    255,
+    255,
+    255,
+    255,
+    255,
+    255,
+    243,
+    186,
+    181,
+    184,
+    241,
+    243,
+    232,
+    232,
+    239,
+    249,
+    233,
+    233,
+    233,
+    233,
+    249,
+    237,
+    159,
+    70,
+    72,
+    64,
+    149,
+    242,
+    236,
+    242,
+    236,
+    232,
+    234,
+    233,
+    236,
+    240,
+    232,
+    235,
+    138,
+    99,
+    130,
+    102,
+    130,
+    246,
+    190,
+    214,
+    234,
+    235,
+    220,
+    182,
+    206,
+    231,
+    232,
+    235,
 )
 
 # Variant 11: `Signals  Age v  Height v  Dating Intent ...` (unselected Signals pill, Hinge
@@ -363,10 +964,70 @@ _SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_PURPLE_BANNER = (
 # whole app-version rendering change.
 # This records only the 16x4 greyscale filter-strip fingerprint, never a profile image or name.
 _SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_UNSELECTED_10_0_1 = (
-    254, 254, 253, 253, 254, 255, 251, 250, 251, 255, 253, 250, 250, 250, 254, 255,
-    253, 250, 252, 253, 251, 245, 233, 236, 233, 242, 235, 236, 236, 234, 238, 240,
-    247, 241, 214, 216, 244, 241, 228, 222, 236, 233, 237, 215, 215, 232, 236, 236,
-    247, 247, 214, 220, 245, 241, 231, 218, 242, 234, 240, 223, 216, 240, 237, 236,
+    254,
+    254,
+    253,
+    253,
+    254,
+    255,
+    251,
+    250,
+    251,
+    255,
+    253,
+    250,
+    250,
+    250,
+    254,
+    255,
+    253,
+    250,
+    252,
+    253,
+    251,
+    245,
+    233,
+    236,
+    233,
+    242,
+    235,
+    236,
+    236,
+    234,
+    238,
+    240,
+    247,
+    241,
+    214,
+    216,
+    244,
+    241,
+    228,
+    222,
+    236,
+    233,
+    237,
+    215,
+    215,
+    232,
+    236,
+    236,
+    247,
+    247,
+    214,
+    220,
+    245,
+    241,
+    231,
+    218,
+    242,
+    234,
+    240,
+    223,
+    216,
+    240,
+    237,
+    236,
 )
 
 # Variant 12: `Signals  Age v  Height v  Dating Intentions` (current unselected-Signals
@@ -381,10 +1042,70 @@ _SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_UNSELECTED_10_0_1 = (
 # this chrome-only fingerprint keeps the 3.0 confirmation bound instead of weakening it for an
 # unknown rendering.  No profile pixels or text are stored here.
 _SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_UNSELECTED_CURRENT = (
-    254, 254, 254, 254, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
-    251, 251, 250, 252, 236, 232, 232, 245, 244, 232, 233, 232, 238, 249, 233, 233,
-    234, 239, 245, 242, 235, 237, 242, 233, 234, 233, 233, 239, 237, 232, 233, 231,
-    190, 187, 224, 245, 230, 186, 224, 234, 237, 205, 182, 217, 234, 234, 220, 190,
+    254,
+    254,
+    254,
+    254,
+    255,
+    255,
+    255,
+    255,
+    255,
+    255,
+    255,
+    255,
+    255,
+    255,
+    255,
+    255,
+    251,
+    251,
+    250,
+    252,
+    236,
+    232,
+    232,
+    245,
+    244,
+    232,
+    233,
+    232,
+    238,
+    249,
+    233,
+    233,
+    234,
+    239,
+    245,
+    242,
+    235,
+    237,
+    242,
+    233,
+    234,
+    233,
+    233,
+    239,
+    237,
+    232,
+    233,
+    231,
+    190,
+    187,
+    224,
+    245,
+    230,
+    186,
+    224,
+    234,
+    237,
+    205,
+    182,
+    217,
+    234,
+    234,
+    220,
+    190,
 )
 
 # Variant 13: `Signals  Age v  Height v  Dating Intentions` (Hinge 10.1.0 current
@@ -401,10 +1122,70 @@ _SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_UNSELECTED_CURRENT = (
 # 10.531 above the 9.0 refute floor.  This records only the 16x4 greyscale chrome fingerprint,
 # never profile pixels or text.
 _SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_UNSELECTED_10_1_0 = (
-    254, 251, 251, 251, 252, 250, 236, 235, 235, 249, 241, 236, 236, 235, 244, 247,
-    249, 246, 239, 241, 249, 242, 240, 242, 244, 237, 240, 237, 237, 243, 239, 238,
-    248, 244, 208, 211, 244, 244, 228, 214, 238, 237, 241, 214, 210, 234, 239, 239,
-    253, 251, 250, 252, 251, 246, 235, 237, 237, 244, 237, 239, 238, 238, 240, 242,
+    254,
+    251,
+    251,
+    251,
+    252,
+    250,
+    236,
+    235,
+    235,
+    249,
+    241,
+    236,
+    236,
+    235,
+    244,
+    247,
+    249,
+    246,
+    239,
+    241,
+    249,
+    242,
+    240,
+    242,
+    244,
+    237,
+    240,
+    237,
+    237,
+    243,
+    239,
+    238,
+    248,
+    244,
+    208,
+    211,
+    244,
+    244,
+    228,
+    214,
+    238,
+    237,
+    241,
+    214,
+    210,
+    234,
+    239,
+    239,
+    253,
+    251,
+    250,
+    252,
+    251,
+    246,
+    235,
+    237,
+    237,
+    244,
+    237,
+    239,
+    238,
+    238,
+    240,
+    242,
 )
 
 # Variant 14: `Age  Height  Dating Intentions` (Hinge 10.1.0 selected-Signals/filter-selected
@@ -424,10 +1205,70 @@ _SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_UNSELECTED_10_1_0 = (
 # scroll/recheck.  This records only the 16x4 greyscale chrome fingerprint, never profile pixels
 # or text.
 _SCROLL_TOP_BAND_FINGERPRINT_AGE_HEIGHT_10_1_0 = (
-    247, 245, 252, 252, 243, 242, 249, 250, 251, 246, 241, 246, 249, 252, 250, 251,
-    244, 242, 217, 236, 242, 244, 227, 215, 232, 242, 242, 236, 218, 223, 222, 221,
-    250, 241, 238, 242, 243, 243, 241, 238, 242, 241, 244, 240, 241, 238, 241, 241,
-    254, 250, 247, 246, 252, 253, 247, 247, 246, 250, 254, 248, 247, 247, 247, 247,
+    247,
+    245,
+    252,
+    252,
+    243,
+    242,
+    249,
+    250,
+    251,
+    246,
+    241,
+    246,
+    249,
+    252,
+    250,
+    251,
+    244,
+    242,
+    217,
+    236,
+    242,
+    244,
+    227,
+    215,
+    232,
+    242,
+    242,
+    236,
+    218,
+    223,
+    222,
+    221,
+    250,
+    241,
+    238,
+    242,
+    243,
+    243,
+    241,
+    238,
+    242,
+    241,
+    244,
+    240,
+    241,
+    238,
+    241,
+    241,
+    254,
+    250,
+    247,
+    246,
+    252,
+    253,
+    247,
+    247,
+    246,
+    250,
+    254,
+    248,
+    247,
+    247,
+    247,
+    247,
 )
 
 # Variant 15: `Age  Height  Dating Intentions` (Hinge 10.1.0 selected-filter strip after the
@@ -444,10 +1285,70 @@ _SCROLL_TOP_BAND_FINGERPRINT_AGE_HEIGHT_10_1_0 = (
 # historical non-top remained 15.547 away.
 # This is only the 16x4 greyscale filter-strip fingerprint, never profile pixels or text.
 _SCROLL_TOP_BAND_FINGERPRINT_AGE_HEIGHT_SETTLED_10_1_0 = (
-    254, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
-    253, 237, 232, 231, 244, 246, 232, 233, 232, 237, 249, 234, 233, 233, 233, 233,
-    240, 236, 237, 242, 234, 234, 233, 233, 238, 237, 232, 233, 232, 239, 234, 235,
-    237, 233, 185, 222, 234, 237, 208, 182, 215, 233, 234, 223, 191, 196, 199, 197,
+    254,
+    255,
+    255,
+    255,
+    255,
+    255,
+    255,
+    255,
+    255,
+    255,
+    255,
+    255,
+    255,
+    255,
+    255,
+    255,
+    253,
+    237,
+    232,
+    231,
+    244,
+    246,
+    232,
+    233,
+    232,
+    237,
+    249,
+    234,
+    233,
+    233,
+    233,
+    233,
+    240,
+    236,
+    237,
+    242,
+    234,
+    234,
+    233,
+    233,
+    238,
+    237,
+    232,
+    233,
+    232,
+    239,
+    234,
+    235,
+    237,
+    233,
+    185,
+    222,
+    234,
+    237,
+    208,
+    182,
+    215,
+    233,
+    234,
+    223,
+    191,
+    196,
+    199,
+    197,
 )
 
 # Variant 16: `Age  Height  Dating Intentions` (Hinge 10.1.0 alternate settled filter chrome).
@@ -462,10 +1363,70 @@ _SCROLL_TOP_BAND_FINGERPRINT_AGE_HEIGHT_SETTLED_10_1_0 = (
 # confirmations, and left the closest historical non-top 13.953 away.  This is only the 16x4
 # greyscale filter-strip fingerprint, never profile pixels or text.
 _SCROLL_TOP_BAND_FINGERPRINT_AGE_HEIGHT_ALT_10_1_0 = (
-    255, 252, 251, 252, 255, 253, 251, 251, 251, 255, 254, 251, 251, 251, 251, 251,
-    242, 234, 235, 233, 243, 234, 236, 236, 234, 240, 238, 234, 236, 235, 236, 236,
-    240, 226, 226, 237, 233, 235, 215, 218, 234, 235, 237, 218, 218, 224, 217, 218,
-    240, 226, 220, 242, 233, 240, 217, 218, 240, 236, 238, 226, 218, 222, 222, 224,
+    255,
+    252,
+    251,
+    252,
+    255,
+    253,
+    251,
+    251,
+    251,
+    255,
+    254,
+    251,
+    251,
+    251,
+    251,
+    251,
+    242,
+    234,
+    235,
+    233,
+    243,
+    234,
+    236,
+    236,
+    234,
+    240,
+    238,
+    234,
+    236,
+    235,
+    236,
+    236,
+    240,
+    226,
+    226,
+    237,
+    233,
+    235,
+    215,
+    218,
+    234,
+    235,
+    237,
+    218,
+    218,
+    224,
+    217,
+    218,
+    240,
+    226,
+    220,
+    242,
+    233,
+    240,
+    217,
+    218,
+    240,
+    236,
+    238,
+    226,
+    218,
+    222,
+    222,
+    224,
 )
 
 # Variant 17: `Signals  Age  Height  Dating Intentions` (Hinge 10.1.0 unselected-Signals
@@ -482,10 +1443,70 @@ _SCROLL_TOP_BAND_FINGERPRINT_AGE_HEIGHT_ALT_10_1_0 = (
 # confirmations, but its existing UNKNOWN now sits only 3.3125 away; therefore neither the 3.0
 # threshold nor the +/-12px search may be widened alongside this candidate.
 _SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_UNSELECTED_ALT_10_1_0 = (
-    253, 242, 242, 244, 250, 245, 242, 247, 246, 243, 243, 240, 242, 247, 242, 245,
-    253, 236, 222, 233, 250, 245, 226, 237, 244, 243, 239, 222, 234, 244, 242, 244,
-    253, 252, 252, 253, 253, 244, 242, 242, 243, 248, 242, 242, 243, 242, 248, 242,
-    254, 254, 254, 254, 254, 254, 253, 253, 254, 255, 253, 253, 253, 253, 255, 254,
+    253,
+    242,
+    242,
+    244,
+    250,
+    245,
+    242,
+    247,
+    246,
+    243,
+    243,
+    240,
+    242,
+    247,
+    242,
+    245,
+    253,
+    236,
+    222,
+    233,
+    250,
+    245,
+    226,
+    237,
+    244,
+    243,
+    239,
+    222,
+    234,
+    244,
+    242,
+    244,
+    253,
+    252,
+    252,
+    253,
+    253,
+    244,
+    242,
+    242,
+    243,
+    248,
+    242,
+    242,
+    243,
+    242,
+    248,
+    242,
+    254,
+    254,
+    254,
+    254,
+    254,
+    254,
+    253,
+    253,
+    254,
+    255,
+    253,
+    253,
+    253,
+    253,
+    255,
+    254,
 )
 
 # Variant 18: `( Signals ) Age v Height v Dating Intent ...` (Hinge 10.4.0 selected-Signals
@@ -505,10 +1526,70 @@ _SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_UNSELECTED_ALT_10_1_0 = (
 # an unmeasured sticky header still cannot be accepted merely for being near this rendering.
 # This records only the 16x4 greyscale filter-strip fingerprint, never a profile image or name.
 _SCROLL_TOP_BAND_FINGERPRINT_SIGNALS_SELECTED_10_4_0 = (
-    254, 255, 255, 255, 255, 254, 255, 255, 255, 255, 254, 254, 254, 254, 254, 254,
-    255, 209, 179, 180, 211, 252, 233, 232, 232, 249, 252, 251, 251, 250, 252, 252,
-    229,  88,  72,  69,  86, 225, 238, 239, 240, 237, 246, 235, 236, 243, 248, 250,
-    214,  86, 127, 122,  87, 217, 218, 193, 229, 239, 242, 192, 188, 222, 245, 251,
+    254,
+    255,
+    255,
+    255,
+    255,
+    254,
+    255,
+    255,
+    255,
+    255,
+    254,
+    254,
+    254,
+    254,
+    254,
+    254,
+    255,
+    209,
+    179,
+    180,
+    211,
+    252,
+    233,
+    232,
+    232,
+    249,
+    252,
+    251,
+    251,
+    250,
+    252,
+    252,
+    229,
+    88,
+    72,
+    69,
+    86,
+    225,
+    238,
+    239,
+    240,
+    237,
+    246,
+    235,
+    236,
+    243,
+    248,
+    250,
+    214,
+    86,
+    127,
+    122,
+    87,
+    217,
+    218,
+    193,
+    229,
+    239,
+    242,
+    192,
+    188,
+    222,
+    245,
+    251,
 )
 
 _SCROLL_TOP_BAND_FINGERPRINTS: tuple[tuple[int, ...], ...] = (
@@ -582,9 +1663,9 @@ _REFUTE_MIN_DIST = 9.0
 
 
 # --- the four outcomes ----------------------------------------------------------------
-SCROLL_TOP_CONFIRMED = "confirmed_top"       # the band IS the filter-chips row
-SCROLL_TOP_REFUTED = "confirmed_not_top"     # the band is positively something else
-SCROLL_TOP_UNKNOWN = "cannot_tell"           # neither — and never to be read as "at top"
+SCROLL_TOP_CONFIRMED = "confirmed_top"  # the band IS the filter-chips row
+SCROLL_TOP_REFUTED = "confirmed_not_top"  # the band is positively something else
+SCROLL_TOP_UNKNOWN = "cannot_tell"  # neither — and never to be read as "at top"
 # The chips row is pinned to the SCREEN in this capture's current toolbar state, across the
 # observed scroll offsets, so this check has nothing left to read from this capture. Reachable
 # ONLY when a caller supplies
@@ -638,6 +1719,7 @@ class ScrollTopVerdict:
     constructions in `tests/test_hinge_calibrate.py` and `tests/test_hinge_operational_evidence.py`
     (7 positional args, matching the 7 fields above) keep working unchanged.
     """
+
     state: str
     distance: float | None
     reason: str
@@ -677,7 +1759,8 @@ class ScrollTopVerdict:
         raise TypeError(
             "ScrollTopVerdict has no truth value: 'cannot tell' is not 'at top'. Test "
             "`.confirmed` explicitly, or call require_scroll_top() to make anything but a "
-            f"confirmed top a hard stop. This verdict was {self.state!r}: {self.reason}")
+            f"confirmed top a hard stop. This verdict was {self.state!r}: {self.reason}"
+        )
 
 
 @dataclass(frozen=True)
@@ -701,6 +1784,7 @@ class PinnedBandEvidence:
     proof was unavailable" and "the band moves like page content" are different facts and an
     operator reading a refusal needs to know which one they have.
     """
+
     pinned: bool
     reason: str
     band: tuple[float, float, float, float] | None
@@ -718,7 +1802,8 @@ class PinnedBandEvidence:
         # disable a working gate on every capture. `ScrollTopVerdict.__bool__`'s precedent.
         raise TypeError(
             "PinnedBandEvidence has no truth value: an unproven pinning is not a proven one. "
-            f"Test `.pinned` explicitly. This evidence was pinned={self.pinned!r}: {self.reason}")
+            f"Test `.pinned` explicitly. This evidence was pinned={self.pinned!r}: {self.reason}"
+        )
 
 
 def fingerprint_distance(a: Sequence[int], b: Sequence[int]) -> float:
@@ -733,15 +1818,20 @@ def fingerprint_distance(a: Sequence[int], b: Sequence[int]) -> float:
     if len(a) != len(b):
         raise ScrollTopError(
             f"fingerprint length mismatch: {len(a)} against {len(b)} — these describe different "
-            "grids and no distance between them means anything")
+            "grids and no distance between them means anything"
+        )
     if not a:
         raise ScrollTopError("empty fingerprints have no distance")
     # The explicit length guard above is part of this metric's public contract.
     return sum(abs(int(x) - int(y)) for x, y in zip(a, b, strict=True)) / len(a)
 
 
-def band_fingerprint(frame: bytes, *, identity_band: tuple[float, float, float, float],
-                     grid: tuple[int, int] = _FINGERPRINT_GRID) -> tuple[int, ...]:
+def band_fingerprint(
+    frame: bytes,
+    *,
+    identity_band: tuple[float, float, float, float],
+    grid: tuple[int, int] = _FINGERPRINT_GRID,
+) -> tuple[int, ...]:
     """`frame`'s identity band as a row-major tuple of `grid` grey levels.
 
     Goes through `hinge._band`, which is the driver's ONE decode of this rect, rather than
@@ -765,7 +1855,8 @@ def band_fingerprint(frame: bytes, *, identity_band: tuple[float, float, float, 
         raise ScrollTopError(
             f"identity band {identity_band} could not be read from {len(frame)} bytes of frame "
             "— either the vision extras (PIL/numpy) are missing or the bytes are not an image. "
-            "This is 'could not look', which is not a verdict")
+            "This is 'could not look', which is not a verdict"
+        )
     return tuple(int(v) for v in band.reshape(-1))
 
 
@@ -785,14 +1876,20 @@ def _decode_for_alignment_sweep(frame: bytes):
         from io import BytesIO
 
         from PIL import Image
+
         return Image.open(BytesIO(frame)).convert("L")
     except Exception:  # noqa: BLE001 — any decode/dep failure -> caller treats it as "could not look"
         return None
 
 
-def _band_fingerprint_at_offset(frame: bytes, *, identity_band: tuple[float, float, float, float],
-                                grid: tuple[int, int], dy_px: int,
-                                image=None) -> tuple[int, ...] | None:
+def _band_fingerprint_at_offset(
+    frame: bytes,
+    *,
+    identity_band: tuple[float, float, float, float],
+    grid: tuple[int, int],
+    dy_px: int,
+    image=None,
+) -> tuple[int, ...] | None:
     """`band_fingerprint`'s decode, with the identity band's crop shifted `dy_px` pixels DOWN
     (negative moves it up) in the source frame before `hinge._band_of_image` crops and resizes
     it. This is `confirm_scroll_top`'s alignment search calling the SAME shipped crop-and-resize
@@ -839,13 +1936,17 @@ def _band_fingerprint_at_offset(frame: bytes, *, identity_band: tuple[float, flo
     return tuple(int(v) for v in band.reshape(-1))
 
 
-def confirm_scroll_top(frame: bytes, *,
-                       identity_band: tuple[float, float, float, float] | None,
-                       fingerprint: Sequence[int] | Sequence[Sequence[int]] = _SCROLL_TOP_BAND_FINGERPRINTS,
-                       grid: tuple[int, int] = _FINGERPRINT_GRID,
-                       confirm_max: float = _CONFIRM_MAX_DIST,
-                       refute_min: float = _REFUTE_MIN_DIST,
-                       pinned_evidence: PinnedBandEvidence | None = None) -> ScrollTopVerdict:
+def confirm_scroll_top(
+    frame: bytes,
+    *,
+    identity_band: tuple[float, float, float, float] | None,
+    fingerprint: Sequence[int]
+    | Sequence[Sequence[int]] = _SCROLL_TOP_BAND_FINGERPRINTS,
+    grid: tuple[int, int] = _FINGERPRINT_GRID,
+    confirm_max: float = _CONFIRM_MAX_DIST,
+    refute_min: float = _REFUTE_MIN_DIST,
+    pinned_evidence: PinnedBandEvidence | None = None,
+) -> ScrollTopVerdict:
     """Affirmatively confirm — or refuse to — that `frame` shows a Hinge profile at scroll top.
 
     `identity_band` is the normalised `(x0, y0, x1, y1)` rect of the filter-chips / sticky-header
@@ -893,20 +1994,27 @@ def confirm_scroll_top(frame: bytes, *,
             raise ScrollTopError(
                 f"the pinning evidence was measured on band {pinned_evidence.band} but this call "
                 f"reads {tuple(identity_band)} — these are different crops of the screen, and one "
-                "crop being pinned says nothing about another")
+                "crop being pinned says nothing about another"
+            )
         if pinned_evidence.grid != tuple(grid):
             raise ScrollTopError(
                 f"the pinning evidence was measured at grid {pinned_evidence.grid} but this call "
                 f"compares at {tuple(grid)} — these describe different geometries, and the "
-                "evidence's 'identical pixels' finding does not carry across them")
+                "evidence's 'identical pixels' finding does not carry across them"
+            )
     if confirm_max >= refute_min:
         raise ScrollTopError(
             f"confirm_max {confirm_max} is not below refute_min {refute_min}: that collapses the "
             "'cannot tell' band, so every distance would be classified and the third outcome "
-            "this gate exists for could never be reached")
+            "this gate exists for could never be reached"
+        )
     expected = grid[0] * grid[1]
 
-    if isinstance(fingerprint, (list, tuple)) and fingerprint and isinstance(fingerprint[0], (list, tuple)):
+    if (
+        isinstance(fingerprint, (list, tuple))
+        and fingerprint
+        and isinstance(fingerprint[0], (list, tuple))
+    ):
         candidates = list(fingerprint)
     elif fingerprint == _SCROLL_TOP_BAND_FINGERPRINT:
         candidates = list(_SCROLL_TOP_BAND_FINGERPRINTS)
@@ -917,14 +2025,23 @@ def confirm_scroll_top(frame: bytes, *,
         if len(fp) != expected:
             raise ScrollTopError(
                 f"fingerprint has {len(fp)} values but grid {grid} needs {expected} — one "
-                "of the two is stale, and comparing them would compare different geometries")
+                "of the two is stale, and comparing them would compare different geometries"
+            )
 
     if identity_band is None:
         return ScrollTopVerdict(
-            state=SCROLL_TOP_UNKNOWN, distance=None, band=None, grid=grid,
-            confirm_max=confirm_max, refute_min=refute_min, alignment_offset_px=0,
-            reason=("no identity_band declared for this app, so the filter-chips signal doc 5.5 "
-                    "requires cannot be read at all — this is 'cannot tell', never 'at top'"))
+            state=SCROLL_TOP_UNKNOWN,
+            distance=None,
+            band=None,
+            grid=grid,
+            confirm_max=confirm_max,
+            refute_min=refute_min,
+            alignment_offset_px=0,
+            reason=(
+                "no identity_band declared for this app, so the filter-chips signal doc 5.5 "
+                "requires cannot be read at all — this is 'cannot tell', never 'at top'"
+            ),
+        )
 
     # ONE decode for the whole sweep -- dy=0 included (2026-08-23 perf pass). Every one of the
     # 2*_ALIGNMENT_SEARCH_PX + 1 candidate crops below used to redecode the whole PNG from
@@ -942,88 +2059,134 @@ def confirm_scroll_top(frame: bytes, *,
         raise ScrollTopError(
             f"identity band {identity_band} could not be read from {len(frame)} bytes of frame "
             "— either the vision extras (PIL/numpy) are missing or the bytes are not an image. "
-            "This is 'could not look', which is not a verdict")
+            "This is 'could not look', which is not a verdict"
+        )
 
-    seen = _band_fingerprint_at_offset(frame, identity_band=identity_band, grid=grid, dy_px=0,
-                                       image=image)
+    seen = _band_fingerprint_at_offset(
+        frame, identity_band=identity_band, grid=grid, dy_px=0, image=image
+    )
     if seen is None:
         raise ScrollTopError(
             f"identity band {identity_band} could not be read from {len(frame)} bytes of frame "
             "— either the vision extras (PIL/numpy) are missing or the bytes are not an image. "
-            "This is 'could not look', which is not a verdict")
+            "This is 'could not look', which is not a verdict"
+        )
     dist = min(fingerprint_distance(seen, fp) for fp in candidates)
     offset = 0
 
     for dy in range(-_ALIGNMENT_SEARCH_PX, _ALIGNMENT_SEARCH_PX + 1):
         if dy == 0:
             continue
-        shifted = _band_fingerprint_at_offset(frame, identity_band=identity_band, grid=grid,
-                                              dy_px=dy, image=image)
+        shifted = _band_fingerprint_at_offset(
+            frame, identity_band=identity_band, grid=grid, dy_px=dy, image=image
+        )
         if shifted is None:
             continue
         shifted_dist = min(fingerprint_distance(shifted, fp) for fp in candidates)
         if shifted_dist < dist:
             dist, offset = shifted_dist, dy
 
-    offset_note = (f", after searching a {offset:+d}px vertical alignment offset within "
-                   f"+/-{_ALIGNMENT_SEARCH_PX}px of layout jitter" if offset else "")
+    offset_note = (
+        f", after searching a {offset:+d}px vertical alignment offset within "
+        f"+/-{_ALIGNMENT_SEARCH_PX}px of layout jitter"
+        if offset
+        else ""
+    )
 
     if dist <= confirm_max and pinned_evidence is not None and pinned_evidence.pinned:
         # The distance is still reported: it is the measurement, and it is exactly the number an
         # operator needs to see that a 0.000 match to the chips row has stopped meaning anything.
         return ScrollTopVerdict(
-            state=SCROLL_TOP_UNAVAILABLE, distance=dist, band=tuple(identity_band), grid=grid,
-            confirm_max=confirm_max, refute_min=refute_min, alignment_offset_px=offset,
-            reason=(f"the identity band matches Hinge's profile-independent filter-chips row at "
-                    f"{dist:.3f} <= {confirm_max}{offset_note}, but this capture PROVES that row "
-                    f"is pinned to the SCREEN rather than drawn only at the top: "
-                    f"{pinned_evidence.reason}. A strip that shows the chips at every scroll "
-                    "offset cannot mean 'at top', so doc 5.5's affirmative confirmation is "
-                    "structurally UNAVAILABLE for this capture's current toolbar state — not "
-                    "refuted, but insufficient to count from. A fresh capture may be considered "
-                    "only if it independently proves that its own scroll-top signal is usable; "
-                    "otherwise recalibrate the scroll-top signal itself: apps.hinge.identity_band "
-                    "and this module's chips-row fingerprints, re-measured against the app's "
-                    "current per-profile header states with the owner and a device. Widening or "
-                    "narrowing a threshold cannot recover scroll information from this capture's "
-                    "pinned strip"))
+            state=SCROLL_TOP_UNAVAILABLE,
+            distance=dist,
+            band=tuple(identity_band),
+            grid=grid,
+            confirm_max=confirm_max,
+            refute_min=refute_min,
+            alignment_offset_px=offset,
+            reason=(
+                f"the identity band matches Hinge's profile-independent filter-chips row at "
+                f"{dist:.3f} <= {confirm_max}{offset_note}, but this capture PROVES that row "
+                f"is pinned to the SCREEN rather than drawn only at the top: "
+                f"{pinned_evidence.reason}. A strip that shows the chips at every scroll "
+                "offset cannot mean 'at top', so doc 5.5's affirmative confirmation is "
+                "structurally UNAVAILABLE for this capture's current toolbar state — not "
+                "refuted, but insufficient to count from. A fresh capture may be considered "
+                "only if it independently proves that its own scroll-top signal is usable; "
+                "otherwise recalibrate the scroll-top signal itself: apps.hinge.identity_band "
+                "and this module's chips-row fingerprints, re-measured against the app's "
+                "current per-profile header states with the owner and a device. Widening or "
+                "narrowing a threshold cannot recover scroll information from this capture's "
+                "pinned strip"
+            ),
+        )
 
     if dist <= confirm_max:
         return ScrollTopVerdict(
-            state=SCROLL_TOP_CONFIRMED, distance=dist, band=tuple(identity_band), grid=grid,
-            confirm_max=confirm_max, refute_min=refute_min, alignment_offset_px=offset,
-            reason=(f"the identity band matches Hinge's profile-independent filter-chips row at "
-                    f"{dist:.3f} <= {confirm_max}{offset_note} — at any scroll offset past the "
-                    "top the app's sticky per-profile header covers this strip with the person's "
-                    "name instead"))
+            state=SCROLL_TOP_CONFIRMED,
+            distance=dist,
+            band=tuple(identity_band),
+            grid=grid,
+            confirm_max=confirm_max,
+            refute_min=refute_min,
+            alignment_offset_px=offset,
+            reason=(
+                f"the identity band matches Hinge's profile-independent filter-chips row at "
+                f"{dist:.3f} <= {confirm_max}{offset_note} — at any scroll offset past the "
+                "top the app's sticky per-profile header covers this strip with the person's "
+                "name instead"
+            ),
+        )
     if dist >= refute_min:
         return ScrollTopVerdict(
-            state=SCROLL_TOP_REFUTED, distance=dist, band=tuple(identity_band), grid=grid,
-            confirm_max=confirm_max, refute_min=refute_min, alignment_offset_px=offset,
-            reason=(f"the identity band is {dist:.3f} from the filter-chips row, at or past the "
-                    f"{refute_min} bound{offset_note} — on a screen already established as a "
-                    "Hinge profile that means the sticky per-profile header is showing and we "
-                    "are scrolled"))
+            state=SCROLL_TOP_REFUTED,
+            distance=dist,
+            band=tuple(identity_band),
+            grid=grid,
+            confirm_max=confirm_max,
+            refute_min=refute_min,
+            alignment_offset_px=offset,
+            reason=(
+                f"the identity band is {dist:.3f} from the filter-chips row, at or past the "
+                f"{refute_min} bound{offset_note} — on a screen already established as a "
+                "Hinge profile that means the sticky per-profile header is showing and we "
+                "are scrolled"
+            ),
+        )
     return ScrollTopVerdict(
-        state=SCROLL_TOP_UNKNOWN, distance=dist, band=tuple(identity_band), grid=grid,
-        confirm_max=confirm_max, refute_min=refute_min, alignment_offset_px=offset,
-        reason=(f"the identity band is {dist:.3f} from the filter-chips row, inside the "
-                f"({confirm_max}, {refute_min}) dead zone{offset_note} — too far to be that row "
-                "and too near to be positively something else. No frame in the calibration "
-                "corpus has ever landed here; this is 'cannot tell', never 'at top'"))
+        state=SCROLL_TOP_UNKNOWN,
+        distance=dist,
+        band=tuple(identity_band),
+        grid=grid,
+        confirm_max=confirm_max,
+        refute_min=refute_min,
+        alignment_offset_px=offset,
+        reason=(
+            f"the identity band is {dist:.3f} from the filter-chips row, inside the "
+            f"({confirm_max}, {refute_min}) dead zone{offset_note} — too far to be that row "
+            "and too near to be positively something else. No frame in the calibration "
+            "corpus has ever landed here; this is 'cannot tell', never 'at top'"
+        ),
+    )
 
 
 def _not_pinned(reason: str, *, band, grid, **evidence) -> PinnedBandEvidence:
-    return PinnedBandEvidence(pinned=False, reason=reason, band=band, grid=grid, **evidence)
+    return PinnedBandEvidence(
+        pinned=False, reason=reason, band=band, grid=grid, **evidence
+    )
 
 
-def band_pinned_evidence(frames: Sequence[bytes], *,
-                         identity_band: tuple[float, float, float, float] | None,
-                         page_offsets: Sequence[int | None],
-                         fingerprint: Sequence[int] | Sequence[Sequence[int]] = _SCROLL_TOP_BAND_FINGERPRINTS,
-                         grid: tuple[int, int] = _FINGERPRINT_GRID,
-                         confirm_max: float = _CONFIRM_MAX_DIST,
-                         refute_min: float = _REFUTE_MIN_DIST) -> PinnedBandEvidence:
+def band_pinned_evidence(
+    frames: Sequence[bytes],
+    *,
+    identity_band: tuple[float, float, float, float] | None,
+    page_offsets: Sequence[int | None],
+    fingerprint: Sequence[int]
+    | Sequence[Sequence[int]] = _SCROLL_TOP_BAND_FINGERPRINTS,
+    grid: tuple[int, int] = _FINGERPRINT_GRID,
+    confirm_max: float = _CONFIRM_MAX_DIST,
+    refute_min: float = _REFUTE_MIN_DIST,
+) -> PinnedBandEvidence:
     """Do these frames prove that this capture's toolbar pins the chips row to the screen?
 
     `frames` are one capture's frames and `page_offsets` the page offset each was taken at, in the
@@ -1090,14 +2253,17 @@ def band_pinned_evidence(frames: Sequence[bytes], *,
         raise ScrollTopError(
             f"{len(frames)} frame(s) against {len(page_offsets)} page offset(s): these describe "
             "different captures, and pairing them would attribute one frame's band to another "
-            "frame's scroll position")
+            "frame's scroll position"
+        )
     band = tuple(identity_band) if identity_band is not None else None
     grid = tuple(grid)
     if identity_band is None:
         return _not_pinned(
             "no identity_band is declared for this app, so there is no strip to test for pinning "
             "and nothing for the scroll-top gate to have been reading in the first place",
-            band=None, grid=grid)
+            band=None,
+            grid=grid,
+        )
 
     usable: list[tuple[int, int, tuple[int, ...], ScrollTopVerdict]] = []
     unreadable: list[int] = []
@@ -1110,8 +2276,9 @@ def band_pinned_evidence(frames: Sequence[bytes], *,
         if image is None:
             unreadable.append(i)
             continue
-        seen = _band_fingerprint_at_offset(frame, identity_band=identity_band, grid=grid, dy_px=0,
-                                           image=image)
+        seen = _band_fingerprint_at_offset(
+            frame, identity_band=identity_band, grid=grid, dy_px=0, image=image
+        )
         if seen is None:
             unreadable.append(i)
             continue
@@ -1124,52 +2291,87 @@ def band_pinned_evidence(frames: Sequence[bytes], *,
             # would let a mixed-device capture disable the scroll-top gate.
             geometry_mismatches.append((i, image.size))
             continue
-        usable.append((i, int(offset), seen,
-                       confirm_scroll_top(frame, identity_band=identity_band,
-                                          fingerprint=fingerprint, grid=grid,
-                                          confirm_max=confirm_max, refute_min=refute_min)))
+        usable.append(
+            (
+                i,
+                int(offset),
+                seen,
+                confirm_scroll_top(
+                    frame,
+                    identity_band=identity_band,
+                    fingerprint=fingerprint,
+                    grid=grid,
+                    confirm_max=confirm_max,
+                    refute_min=refute_min,
+                ),
+            )
+        )
 
-    trailer = (f" ({len(unreadable)} frame(s) could not be read at all: {unreadable})"
-               if unreadable else "")
+    trailer = (
+        f" ({len(unreadable)} frame(s) could not be read at all: {unreadable})"
+        if unreadable
+        else ""
+    )
     if geometry_mismatches:
-        assert frame_size is not None  # the mismatch is defined relative to the first readable frame
+        assert (
+            frame_size is not None
+        )  # the mismatch is defined relative to the first readable frame
         mismatched = ", ".join(
-            f"{i} ({width}x{height})" for i, (width, height) in geometry_mismatches)
+            f"{i} ({width}x{height})" for i, (width, height) in geometry_mismatches
+        )
         return _not_pinned(
             f"this capture's identity-band frames do not share one pixel coordinate space: the "
             f"first readable frame is {frame_size[0]}x{frame_size[1]}, but frame(s) {mismatched} "
             "have different geometry. Page offsets cannot compare those frames, so identical "
             "reduced fingerprints are not proof that the band is pinned to the screen"
             f"{trailer}",
-            band=band, grid=grid, frames_compared=len(usable))
+            band=band,
+            grid=grid,
+            frames_compared=len(usable),
+        )
     if len(usable) < 2:
         return _not_pinned(
             f"only {len(usable)} of this capture's {len(frames)} frame(s) carry both a page offset "
             f"and a readable identity band, and one sighting proves nothing: at a single offset a "
             f"screen-pinned strip and a piece of page content predict identical pixels{trailer}",
-            band=band, grid=grid, frames_compared=len(usable))
+            band=band,
+            grid=grid,
+            frames_compared=len(usable),
+        )
 
     offsets = tuple(sorted({o for _i, o, _b, _v in usable}))
     span = offsets[-1] - offsets[0]
     x0, y0, x1, y1 = identity_band
-    band_height_px = round(y1 * frame_size[1]) - round(y0 * frame_size[1])   # `_band_of_image`'s crop
+    band_height_px = round(y1 * frame_size[1]) - round(
+        y0 * frame_size[1]
+    )  # `_band_of_image`'s crop
     distinct = {b for _i, _o, b, _v in usable}
     worst = max(v.distance for _i, _o, _b, v in usable if v.distance is not None)
-    common = dict(band=band, grid=grid, offsets=offsets, offset_span=span,
-                  band_height_px=band_height_px, frames_compared=len(usable),
-                  distinct_bands=len(distinct), max_chips_distance=worst)
+    common = dict(
+        band=band,
+        grid=grid,
+        offsets=offsets,
+        offset_span=span,
+        band_height_px=band_height_px,
+        frames_compared=len(usable),
+        distinct_bands=len(distinct),
+        max_chips_distance=worst,
+    )
 
     if len(offsets) < 2:
         return _not_pinned(
             f"all {len(usable)} frames sit at the same page offset ({offsets[0]}), so the page did "
             f"not move between them and nothing distinguishes a screen-pinned strip from page "
-            f"content that simply had not scrolled yet{trailer}", **common)
+            f"content that simply had not scrolled yet{trailer}",
+            **common,
+        )
     if span < band_height_px:
         return _not_pinned(
             f"these {len(usable)} frames span only {span}px of scroll, less than the band's own "
             f"{band_height_px}px height, so the page rows it would have had to display still "
             f"overlap and one tall piece of page content could explain every sighting{trailer}",
-            **common)
+            **common,
+        )
     not_chips = [i for i, _o, _b, v in usable if not v.confirmed]
     if not_chips:
         return _not_pinned(
@@ -1178,34 +2380,45 @@ def band_pinned_evidence(frames: Sequence[bytes], *,
             f"evidence FOR the top is not what is on screen at these offsets. A band that is "
             f"constant because it holds the sticky per-profile header is the state this gate was "
             f"calibrated for and still reads correctly; only a pinned CHIPS ROW makes it "
-            f"unanswerable{trailer}", **common)
+            f"unanswerable{trailer}",
+            **common,
+        )
     if len(distinct) != 1:
         return _not_pinned(
             f"the identity band shows {len(distinct)} different contents across these "
             f"{len(usable)} frames, so it is not a static element — an animating or live-updating "
             f"strip reads exactly like this. Unanimity, no tolerance: 'mostly the same' is what a "
-            f"scrolling page looks like{trailer}", **common)
+            f"scrolling page looks like{trailer}",
+            **common,
+        )
 
     return PinnedBandEvidence(
         pinned=True,
-        reason=(f"the identity band {band} holds IDENTICAL pixels, all of them within "
-                f"{confirm_max} of the filter-chips row (worst {worst:.3f}), on {len(usable)} "
-                f"frames spanning {span}px of page scroll ({offsets[0]}..{offsets[-1]}) — more "
-                f"than its own {band_height_px}px height, so the page rows those sightings would "
-                f"otherwise have had to display are disjoint. Page content cannot do that and "
-                f"chrome cannot do anything else, and two frames that far apart cannot both be at "
-                f"the scroll top: this capture's current toolbar state draws the chips row at "
-                f"every observed scroll offset, pinned to the screen{trailer}"),
-        **common)
+        reason=(
+            f"the identity band {band} holds IDENTICAL pixels, all of them within "
+            f"{confirm_max} of the filter-chips row (worst {worst:.3f}), on {len(usable)} "
+            f"frames spanning {span}px of page scroll ({offsets[0]}..{offsets[-1]}) — more "
+            f"than its own {band_height_px}px height, so the page rows those sightings would "
+            f"otherwise have had to display are disjoint. Page content cannot do that and "
+            f"chrome cannot do anything else, and two frames that far apart cannot both be at "
+            f"the scroll top: this capture's current toolbar state draws the chips row at "
+            f"every observed scroll offset, pinned to the screen{trailer}"
+        ),
+        **common,
+    )
 
 
-def require_scroll_top(frame: bytes, *,
-                       identity_band: tuple[float, float, float, float] | None,
-                       fingerprint: Sequence[int] | Sequence[Sequence[int]] = _SCROLL_TOP_BAND_FINGERPRINTS,
-                       grid: tuple[int, int] = _FINGERPRINT_GRID,
-                       confirm_max: float = _CONFIRM_MAX_DIST,
-                       refute_min: float = _REFUTE_MIN_DIST,
-                       pinned_evidence: PinnedBandEvidence | None = None) -> ScrollTopVerdict:
+def require_scroll_top(
+    frame: bytes,
+    *,
+    identity_band: tuple[float, float, float, float] | None,
+    fingerprint: Sequence[int]
+    | Sequence[Sequence[int]] = _SCROLL_TOP_BAND_FINGERPRINTS,
+    grid: tuple[int, int] = _FINGERPRINT_GRID,
+    confirm_max: float = _CONFIRM_MAX_DIST,
+    refute_min: float = _REFUTE_MIN_DIST,
+    pinned_evidence: PinnedBandEvidence | None = None,
+) -> ScrollTopVerdict:
     """`confirm_scroll_top`, but anything short of a confirmed top is `ScrollTopUnconfirmed`.
 
     This is the entry point for every caller that is about to COUNT — building an item index with
@@ -1221,11 +2434,19 @@ def require_scroll_top(frame: bytes, *,
     count", which are three different actions.
     """
     verdict = confirm_scroll_top(
-        frame, identity_band=identity_band, fingerprint=fingerprint, grid=grid,
-        confirm_max=confirm_max, refute_min=refute_min, pinned_evidence=pinned_evidence)
+        frame,
+        identity_band=identity_band,
+        fingerprint=fingerprint,
+        grid=grid,
+        confirm_max=confirm_max,
+        refute_min=refute_min,
+        pinned_evidence=pinned_evidence,
+    )
     if not verdict.confirmed:
         raise ScrollTopUnconfirmed(
             f"scroll top not confirmed ({verdict.state}): {verdict.reason}. Counting items from "
             "an unconfirmed top gives a systematic off-by-N in every heart ordinal, so this is a "
-            "hard stop (ops/OPENER-REDESIGN.md 5.5)", verdict)
+            "hard stop (ops/OPENER-REDESIGN.md 5.5)",
+            verdict,
+        )
     return verdict

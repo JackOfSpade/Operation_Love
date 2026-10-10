@@ -10,7 +10,10 @@ def _legacy_module(monkeypatch):
     """Load the standalone legacy script without requiring its optional requests extra."""
     fake_requests = types.SimpleNamespace()
     monkeypatch.setitem(sys.modules, "requests", fake_requests)
-    path = Path(__file__).parents[1] / "legacy/city_name_to_zip_code/city_name_to_zip_code.py"
+    path = (
+        Path(__file__).parents[1]
+        / "legacy/city_name_to_zip_code/city_name_to_zip_code.py"
+    )
     spec = importlib.util.spec_from_file_location("legacy_zip_code_test", path)
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
@@ -50,7 +53,8 @@ def test_legacy_zip_lookup_rejects_arbitrary_api_response_text(monkeypatch):
 
 
 def test_legacy_main_keeps_public_postal_codes_in_stdout_and_output_file(
-        monkeypatch, tmp_path, capsys):
+    monkeypatch, tmp_path, capsys
+):
     module, _requests = _legacy_module(monkeypatch)
     monkeypatch.setattr(module, "cities_input", ["Cambridge, Massachusetts"])
     monkeypatch.setattr(module, "get_public_postal_token", lambda *_args: "02139")

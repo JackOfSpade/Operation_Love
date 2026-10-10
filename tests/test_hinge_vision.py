@@ -15,6 +15,7 @@ it actually is. The tests above that reference "hinge_heart.png" directly are ex
 _match_glyph's generic mechanics against a real shipped glyph, not the "like" role itself, so
 they are unaffected by that role's re-target and still use it as their fixture on purpose.
 """
+
 import cv2
 import numpy as np
 
@@ -23,12 +24,14 @@ from operation_love.drivers import hinge
 
 def _canvas():
     rng = np.random.default_rng(0)
-    return rng.integers(60, 200, size=(2400, 1080), dtype=np.uint8)   # textured (avoid flat-NCC artifacts)
+    return rng.integers(
+        60, 200, size=(2400, 1080), dtype=np.uint8
+    )  # textured (avoid flat-NCC artifacts)
 
 
 def _paste(canvas, templ, cx, cy):
     th, tw = templ.shape
-    canvas[cy - th // 2: cy - th // 2 + th, cx - tw // 2: cx - tw // 2 + tw] = templ
+    canvas[cy - th // 2 : cy - th // 2 + th, cx - tw // 2 : cx - tw // 2 + tw] = templ
     return canvas
 
 
@@ -50,8 +53,8 @@ def test_locate_like_finds_topmost_right_heart():
     _paste(c, heart, 937, 800)
     pts = hinge._match_glyph(_png(c), heart, side="right")
     assert pts, "heart not found"
-    assert pts[0] == (937, 800)                       # topmost first (the first photo after scroll-to-top)
-    assert all(x > 1080 * 0.55 for x, _ in pts)       # all on the right
+    assert pts[0] == (937, 800)  # topmost first (the first photo after scroll-to-top)
+    assert all(x > 1080 * 0.55 for x, _ in pts)  # all on the right
 
 
 def test_locate_pass_finds_left_x():
@@ -65,7 +68,7 @@ def test_locate_pass_finds_left_x():
 def test_side_filter_excludes_wrong_side():
     heart = hinge._load_template("hinge_heart.png")
     c = _canvas()
-    _paste(c, heart, 140, 1600)                       # heart on the LEFT
+    _paste(c, heart, 140, 1600)  # heart on the LEFT
     assert hinge._match_glyph(_png(c), heart, side="right") == []
 
 
@@ -74,7 +77,9 @@ def test_locate_send_like_anyway_modal_text():
     assert t is not None
     c = _canvas()
     _paste(c, t, 420, 2197)
-    pts = hinge._match_glyph(_png(c), t, side="any")   # centered modal text, no side filter
+    pts = hinge._match_glyph(
+        _png(c), t, side="any"
+    )  # centered modal text, no side filter
     assert pts and pts[0] == (420, 2197)
 
 
@@ -99,6 +104,7 @@ def test_match_glyph_graceful_on_undecodable():
 # ops/calibration/scroll_20260811T211209Z/00050.png. See the templates dict comment on
 # HINGE_SPEC and _LIKE_MATCH_THRESHOLD (both in hinge.py) for the full measured distribution.
 
+
 def test_like_role_resolves_to_the_button_template_not_the_outline_heart():
     assert hinge.HINGE_SPEC.templates["like"] == "hinge_like_button.png"
     assert hinge.HINGE_SPEC.templates["like"] != "hinge_heart.png"
@@ -114,7 +120,9 @@ def test_like_button_template_found_at_its_calibrated_threshold():
     button = hinge._load_template(hinge.HINGE_SPEC.templates["like"])
     c = _canvas()
     _paste(c, button, 938, 660)
-    pts = hinge._match_glyph(_png(c), button, side="right", threshold=hinge._LIKE_MATCH_THRESHOLD)
+    pts = hinge._match_glyph(
+        _png(c), button, side="right", threshold=hinge._LIKE_MATCH_THRESHOLD
+    )
     assert pts and pts[0] == (938, 660)
 
 
@@ -137,8 +145,12 @@ def test_like_button_template_does_not_fire_on_the_old_outline_heart():
     # nothing about the outline heart specifically. hinge._LIKE_MATCH_THRESHOLD is exactly
     # what production uses for role "like" (_locate_button/_locate_target_heart), so this is
     # the real question: does a real deployment ever call this a "like" hit here.
-    assert hinge._match_glyph(_png(c), new_button, side="right",
-                              threshold=hinge._LIKE_MATCH_THRESHOLD) == []
+    assert (
+        hinge._match_glyph(
+            _png(c), new_button, side="right", threshold=hinge._LIKE_MATCH_THRESHOLD
+        )
+        == []
+    )
 
 
 # --- y_band: structurally excluding Hinge's bottom-nav false positives ------------------------
@@ -152,15 +164,20 @@ def test_like_button_template_does_not_fire_on_the_old_outline_heart():
 # the side="right" cutoff (a near-perfect ~1.0 correlation match otherwise). y_band excludes
 # both by geometry instead, regardless of what threshold or side is passed.
 
+
 def test_like_button_found_inside_content_band():
     """POSITIVE: a like-button glyph pasted at a plausible card position (inside
     HINGE_SPEC.content_band) is still found once y_band is passed."""
     button = hinge._load_template(hinge.HINGE_SPEC.templates["like"])
     c = _canvas()
-    _paste(c, button, 938, 1398)                      # well inside content_band (300..2100)
-    pts = hinge._match_glyph(_png(c), button, side="right",
-                             threshold=hinge._LIKE_MATCH_THRESHOLD,
-                             y_band=hinge.HINGE_SPEC.content_band)
+    _paste(c, button, 938, 1398)  # well inside content_band (300..2100)
+    pts = hinge._match_glyph(
+        _png(c),
+        button,
+        side="right",
+        threshold=hinge._LIKE_MATCH_THRESHOLD,
+        y_band=hinge.HINGE_SPEC.content_band,
+    )
     assert pts and pts[0] == (938, 1398)
 
 
@@ -177,11 +194,22 @@ def test_like_button_in_nav_bar_band_excluded_by_y_band():
     remove."""
     button = hinge._load_template(hinge.HINGE_SPEC.templates["like"])
     c = _canvas()
-    _paste(c, button, 938, 2258)                      # real measured nav-bar false-positive y
-    assert hinge._match_glyph(_png(c), button, side="right",
-                              threshold=hinge._LIKE_MATCH_THRESHOLD,
-                              y_band=hinge.HINGE_SPEC.content_band) == []
+    _paste(c, button, 938, 2258)  # real measured nav-bar false-positive y
+    assert (
+        hinge._match_glyph(
+            _png(c),
+            button,
+            side="right",
+            threshold=hinge._LIKE_MATCH_THRESHOLD,
+            y_band=hinge.HINGE_SPEC.content_band,
+        )
+        == []
+    )
     # Without y_band, the same glyph at the same spot IS a hit -- confirms the exclusion above
     # is y_band's doing, not some other unrelated reason (e.g. a bad paste).
-    assert hinge._match_glyph(_png(c), button, side="right",
-                              threshold=hinge._LIKE_MATCH_THRESHOLD) != []
+    assert (
+        hinge._match_glyph(
+            _png(c), button, side="right", threshold=hinge._LIKE_MATCH_THRESHOLD
+        )
+        != []
+    )

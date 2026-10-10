@@ -90,6 +90,7 @@ call it unconditionally with no try/except of its own. The READ side (``load_rep
 loudly about a missing file or a corrupt manifest, not have it silently skipped, so those DO
 raise.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -100,8 +101,19 @@ import shutil
 import stat
 import time
 import uuid
-from ctypes import (POINTER, Structure, byref, c_byte, c_long, c_ulong, c_ushort, c_void_p,
-                    c_wchar_p, create_string_buffer, pointer)
+from ctypes import (
+    POINTER,
+    Structure,
+    byref,
+    c_byte,
+    c_long,
+    c_ulong,
+    c_ushort,
+    c_void_p,
+    c_wchar_p,
+    create_string_buffer,
+    pointer,
+)
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, Sequence
@@ -138,8 +150,9 @@ def _is_safe_capture_id(name: object) -> bool:
     return isinstance(name, str) and bool(_REPLAY_ID_RE.fullmatch(name))
 
 
-_DIR_OPEN_FLAGS = (os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
-                   | getattr(os, "O_NOFOLLOW", 0))
+_DIR_OPEN_FLAGS = (
+    os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+)
 _FILE_OPEN_FLAGS = os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0)
 _HAS_DIR_FD = os.open in os.supports_dir_fd
 
@@ -153,6 +166,7 @@ class _WindowsCorpusFilesystem(Protocol):
     an already-open directory handle (``NtCreateFile``'s ``RootDirectory``) and inspects the
     resulting handle before using it.
     """
+
     def open_root(self, root: str | Path) -> tuple[Path, object]: ...
     def ensure_root(self, root: str | Path) -> tuple[Path, object]: ...
     def close(self, handle: object) -> None: ...
@@ -166,16 +180,26 @@ class _WindowsCorpusFilesystem(Protocol):
     def publish_capture(self, root: object, staging: str, replay_id: str) -> None: ...
     def remove_capture(self, root: object, replay_id: str) -> None: ...
     def capture_identity(self, directory: object) -> object: ...
-    def remove_open_capture(self, directory: object, expected_identity: object) -> bool: ...
+    def remove_open_capture(
+        self, directory: object, expected_identity: object
+    ) -> bool: ...
     def lock_capture(self, root: object, replay_id: str) -> object: ...
 
 
 class _WinByHandleFileInformation(Structure):
     _fields_ = [
-        ("attributes", c_ulong), ("creation_low", c_ulong), ("creation_high", c_ulong),
-        ("access_low", c_ulong), ("access_high", c_ulong), ("write_low", c_ulong),
-        ("write_high", c_ulong), ("volume", c_ulong), ("size_high", c_ulong),
-        ("size_low", c_ulong), ("links", c_ulong), ("index_high", c_ulong),
+        ("attributes", c_ulong),
+        ("creation_low", c_ulong),
+        ("creation_high", c_ulong),
+        ("access_low", c_ulong),
+        ("access_high", c_ulong),
+        ("write_low", c_ulong),
+        ("write_high", c_ulong),
+        ("volume", c_ulong),
+        ("size_high", c_ulong),
+        ("size_low", c_ulong),
+        ("links", c_ulong),
+        ("index_high", c_ulong),
         ("index_low", c_ulong),
     ]
 
@@ -185,9 +209,14 @@ class _WinUnicodeString(Structure):
 
 
 class _WinObjectAttributes(Structure):
-    _fields_ = [("Length", c_ulong), ("RootDirectory", c_void_p),
-                ("ObjectName", POINTER(_WinUnicodeString)), ("Attributes", c_ulong),
-                ("SecurityDescriptor", c_void_p), ("SecurityQualityOfService", c_void_p)]
+    _fields_ = [
+        ("Length", c_ulong),
+        ("RootDirectory", c_void_p),
+        ("ObjectName", POINTER(_WinUnicodeString)),
+        ("Attributes", c_ulong),
+        ("SecurityDescriptor", c_void_p),
+        ("SecurityQualityOfService", c_void_p),
+    ]
 
 
 class _WinIoStatusBlock(Structure):
@@ -198,8 +227,13 @@ class _WinIoStatusBlock(Structure):
 
 
 class _WinOverlapped(Structure):
-    _fields_ = [("Internal", c_void_p), ("InternalHigh", c_void_p),
-                ("Offset", c_ulong), ("OffsetHigh", c_ulong), ("hEvent", c_void_p)]
+    _fields_ = [
+        ("Internal", c_void_p),
+        ("InternalHigh", c_void_p),
+        ("Offset", c_ulong),
+        ("OffsetHigh", c_ulong),
+        ("hEvent", c_void_p),
+    ]
 
 
 class _NativeWindowsCorpusFilesystem:
@@ -212,6 +246,7 @@ class _NativeWindowsCorpusFilesystem:
     adapter: its compact API also lets the Linux suite simulate Windows races without pretending
     that POSIX descriptors behave like Windows handles.
     """
+
     _FILE_ATTRIBUTE_DIRECTORY = 0x10
     _FILE_ATTRIBUTE_REPARSE_POINT = 0x400
     _GENERIC_READ = 0x80000000
@@ -246,33 +281,87 @@ class _NativeWindowsCorpusFilesystem:
     def __init__(self) -> None:
         # Kept lazy so importing this module on Unix never attempts to load WinDLL.
         import ctypes
+
         self._ctypes = ctypes
         self._kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
         self._ntdll = ctypes.WinDLL("ntdll")
-        self._kernel32.CreateFileW.argtypes = [c_wchar_p, c_ulong, c_ulong, c_void_p, c_ulong,
-                                               c_ulong, c_void_p]
+        self._kernel32.CreateFileW.argtypes = [
+            c_wchar_p,
+            c_ulong,
+            c_ulong,
+            c_void_p,
+            c_ulong,
+            c_ulong,
+            c_void_p,
+        ]
         self._kernel32.CreateFileW.restype = c_void_p
-        self._kernel32.GetFileInformationByHandle.argtypes = [c_void_p, POINTER(_WinByHandleFileInformation)]
+        self._kernel32.GetFileInformationByHandle.argtypes = [
+            c_void_p,
+            POINTER(_WinByHandleFileInformation),
+        ]
         self._kernel32.GetFileInformationByHandle.restype = c_byte
         self._kernel32.CloseHandle.argtypes = [c_void_p]
         self._kernel32.CloseHandle.restype = c_byte
-        self._kernel32.ReadFile.argtypes = [c_void_p, c_void_p, c_ulong, POINTER(c_ulong), c_void_p]
+        self._kernel32.ReadFile.argtypes = [
+            c_void_p,
+            c_void_p,
+            c_ulong,
+            POINTER(c_ulong),
+            c_void_p,
+        ]
         self._kernel32.ReadFile.restype = c_byte
-        self._kernel32.WriteFile.argtypes = [c_void_p, c_void_p, c_ulong, POINTER(c_ulong), c_void_p]
+        self._kernel32.WriteFile.argtypes = [
+            c_void_p,
+            c_void_p,
+            c_ulong,
+            POINTER(c_ulong),
+            c_void_p,
+        ]
         self._kernel32.WriteFile.restype = c_byte
-        self._kernel32.LockFileEx.argtypes = [c_void_p, c_ulong, c_ulong, c_ulong, c_ulong,
-                                              POINTER(_WinOverlapped)]
+        self._kernel32.LockFileEx.argtypes = [
+            c_void_p,
+            c_ulong,
+            c_ulong,
+            c_ulong,
+            c_ulong,
+            POINTER(_WinOverlapped),
+        ]
         self._kernel32.LockFileEx.restype = c_byte
-        self._ntdll.NtCreateFile.argtypes = [POINTER(c_void_p), c_ulong, POINTER(_WinObjectAttributes),
-                                             POINTER(_WinIoStatusBlock), c_void_p, c_ulong, c_ulong,
-                                             c_ulong, c_ulong, c_void_p, c_ulong]
+        self._ntdll.NtCreateFile.argtypes = [
+            POINTER(c_void_p),
+            c_ulong,
+            POINTER(_WinObjectAttributes),
+            POINTER(_WinIoStatusBlock),
+            c_void_p,
+            c_ulong,
+            c_ulong,
+            c_ulong,
+            c_ulong,
+            c_void_p,
+            c_ulong,
+        ]
         self._ntdll.NtCreateFile.restype = c_ulong
-        self._ntdll.NtQueryDirectoryFile.argtypes = [c_void_p, c_void_p, c_void_p, c_void_p,
-                                                      POINTER(_WinIoStatusBlock), c_void_p, c_ulong,
-                                                      c_ulong, c_byte, c_void_p, c_byte]
+        self._ntdll.NtQueryDirectoryFile.argtypes = [
+            c_void_p,
+            c_void_p,
+            c_void_p,
+            c_void_p,
+            POINTER(_WinIoStatusBlock),
+            c_void_p,
+            c_ulong,
+            c_ulong,
+            c_byte,
+            c_void_p,
+            c_byte,
+        ]
         self._ntdll.NtQueryDirectoryFile.restype = c_ulong
-        self._ntdll.NtSetInformationFile.argtypes = [c_void_p, POINTER(_WinIoStatusBlock), c_void_p,
-                                                      c_ulong, c_ulong]
+        self._ntdll.NtSetInformationFile.argtypes = [
+            c_void_p,
+            POINTER(_WinIoStatusBlock),
+            c_void_p,
+            c_ulong,
+            c_ulong,
+        ]
         self._ntdll.NtSetInformationFile.restype = c_ulong
 
     @staticmethod
@@ -288,7 +377,9 @@ class _NativeWindowsCorpusFilesystem:
             raise self._error("GetFileInformationByHandle failed")
         return info
 
-    def _validate(self, handle: object, *, directory: bool, regular: bool = False) -> None:
+    def _validate(
+        self, handle: object, *, directory: bool, regular: bool = False
+    ) -> None:
         info = self._info(handle)
         if info.attributes & self._FILE_ATTRIBUTE_REPARSE_POINT:
             raise self._error("reparse point is unsafe")
@@ -310,28 +401,67 @@ class _NativeWindowsCorpusFilesystem:
             raise ValueError("Windows relative object name is too long")
         return encoded, len(encoded) + 2
 
-    def _open_relative(self, parent: object, name: str, *, directory: bool,
-                       disposition: int = _FILE_OPEN, access: int | None = None) -> object:
+    def _open_relative(
+        self,
+        parent: object,
+        name: str,
+        *,
+        directory: bool,
+        disposition: int = _FILE_OPEN,
+        access: int | None = None,
+    ) -> object:
         # Keep the backing unicode buffer alive across NtCreateFile.
         encoded, maximum_length = self._unicode_name(name)
         text = self._ctypes.create_unicode_buffer(name)
-        us = _WinUnicodeString(len(encoded), maximum_length,
-                                  self._ctypes.cast(text, c_void_p))
-        attrs = _WinObjectAttributes(self._ctypes.sizeof(_WinObjectAttributes), c_void_p(parent),
-                                        pointer(us), 0, None, None)
+        us = _WinUnicodeString(
+            len(encoded), maximum_length, self._ctypes.cast(text, c_void_p)
+        )
+        attrs = _WinObjectAttributes(
+            self._ctypes.sizeof(_WinObjectAttributes),
+            c_void_p(parent),
+            pointer(us),
+            0,
+            None,
+            None,
+        )
         iosb = _WinIoStatusBlock()
         handle = c_void_p()
-        options = (self._FILE_DIRECTORY_FILE if directory else self._FILE_NON_DIRECTORY_FILE)
-        options |= (self._FILE_SYNCHRONOUS_IO_NONALERT | self._FILE_OPEN_FOR_BACKUP_INTENT
-                    | self._FILE_OPEN_REPARSE_POINT)
-        desired = access if access is not None else (self._GENERIC_READ | self._FILE_READ_ATTRIBUTES | self._SYNCHRONIZE)
-        status = self._ntdll.NtCreateFile(byref(handle), c_ulong(desired), byref(attrs), byref(iosb),
-                                          None, 0, self._FILE_SHARE_ALL, disposition, options,
-                                          None, 0)
+        options = (
+            self._FILE_DIRECTORY_FILE if directory else self._FILE_NON_DIRECTORY_FILE
+        )
+        options |= (
+            self._FILE_SYNCHRONOUS_IO_NONALERT
+            | self._FILE_OPEN_FOR_BACKUP_INTENT
+            | self._FILE_OPEN_REPARSE_POINT
+        )
+        desired = (
+            access
+            if access is not None
+            else (self._GENERIC_READ | self._FILE_READ_ATTRIBUTES | self._SYNCHRONIZE)
+        )
+        status = self._ntdll.NtCreateFile(
+            byref(handle),
+            c_ulong(desired),
+            byref(attrs),
+            byref(iosb),
+            None,
+            0,
+            self._FILE_SHARE_ALL,
+            disposition,
+            options,
+            None,
+            0,
+        )
         if self._failed(status):
-            if disposition == self._FILE_CREATE and status == self._STATUS_OBJECT_NAME_COLLISION:
+            if (
+                disposition == self._FILE_CREATE
+                and status == self._STATUS_OBJECT_NAME_COLLISION
+            ):
                 raise FileExistsError(name)
-            if status in {self._STATUS_OBJECT_NAME_NOT_FOUND, self._STATUS_OBJECT_PATH_NOT_FOUND}:
+            if status in {
+                self._STATUS_OBJECT_NAME_NOT_FOUND,
+                self._STATUS_OBJECT_PATH_NOT_FOUND,
+            }:
                 raise FileNotFoundError(name)
             raise self._error("NtCreateFile failed")
         try:
@@ -343,11 +473,18 @@ class _NativeWindowsCorpusFilesystem:
 
     def _open_anchor(self, path: Path) -> object:
         """Open the drive/UNC anchor itself without traversing a reparse point."""
-        handle = self._kernel32.CreateFileW(path.anchor, self._GENERIC_READ | self._FILE_LIST_DIRECTORY
-                                            | self._FILE_READ_ATTRIBUTES | self._SYNCHRONIZE,
-                                            self._FILE_SHARE_ALL, None, self._OPEN_EXISTING,
-                                            self._FILE_FLAG_BACKUP_SEMANTICS | self._FILE_FLAG_OPEN_REPARSE_POINT,
-                                            None)
+        handle = self._kernel32.CreateFileW(
+            path.anchor,
+            self._GENERIC_READ
+            | self._FILE_LIST_DIRECTORY
+            | self._FILE_READ_ATTRIBUTES
+            | self._SYNCHRONIZE,
+            self._FILE_SHARE_ALL,
+            None,
+            self._OPEN_EXISTING,
+            self._FILE_FLAG_BACKUP_SEMANTICS | self._FILE_FLAG_OPEN_REPARSE_POINT,
+            None,
+        )
         if handle == self._INVALID_HANDLE_VALUE:
             raise FileNotFoundError(f"replay corpus root is missing or unsafe: {path}")
         try:
@@ -355,13 +492,17 @@ class _NativeWindowsCorpusFilesystem:
             return handle
         except Exception as exc:
             self.close(handle)
-            raise FileNotFoundError(f"replay corpus root is missing or unsafe: {path}") from exc
+            raise FileNotFoundError(
+                f"replay corpus root is missing or unsafe: {path}"
+            ) from exc
 
     def _walk_root(self, root: str | Path, *, create: bool) -> tuple[Path, object]:
         """Traverse every root component by handle, never through a reparse point."""
         path = Path(root).absolute()
         if not path.anchor:
-            raise ValueError(f"replay corpus root is not an absolute Windows path: {path}")
+            raise ValueError(
+                f"replay corpus root is not an absolute Windows path: {path}"
+            )
         handle = self._open_anchor(path)
         try:
             # ``parts[0]`` is the drive or UNC share anchor; all remaining components are opened
@@ -400,8 +541,13 @@ class _NativeWindowsCorpusFilesystem:
         return self._open_relative(root, replay_id, directory=True)
 
     def mkdir_capture(self, root: object, replay_id: str) -> None:
-        handle = self._open_relative(root, replay_id, directory=True, disposition=self._FILE_CREATE,
-                                     access=self._GENERIC_WRITE | self._FILE_READ_ATTRIBUTES | self._SYNCHRONIZE)
+        handle = self._open_relative(
+            root,
+            replay_id,
+            directory=True,
+            disposition=self._FILE_CREATE,
+            access=self._GENERIC_WRITE | self._FILE_READ_ATTRIBUTES | self._SYNCHRONIZE,
+        )
         self.close(handle)
 
     def manifest_exists(self, directory: object) -> bool:
@@ -417,11 +563,13 @@ class _NativeWindowsCorpusFilesystem:
         while True:
             buffer = create_string_buffer(65536)
             count = c_ulong()
-            if not self._kernel32.ReadFile(c_void_p(handle), buffer, len(buffer), byref(count), None):
+            if not self._kernel32.ReadFile(
+                c_void_p(handle), buffer, len(buffer), byref(count), None
+            ):
                 raise self._error("ReadFile failed")
             if not count.value:
                 return b"".join(chunks)
-            chunks.append(buffer.raw[:count.value])
+            chunks.append(buffer.raw[: count.value])
 
     def read_regular(self, directory: object, name: str) -> bytes:
         handle = self._open_relative(directory, name, directory=False)
@@ -431,19 +579,26 @@ class _NativeWindowsCorpusFilesystem:
             self.close(handle)
 
     def write_new(self, directory: object, name: str, data: bytes) -> None:
-        handle = self._open_relative(directory, name, directory=False, disposition=self._FILE_CREATE,
-                                     access=self._GENERIC_WRITE | self._FILE_READ_ATTRIBUTES | self._SYNCHRONIZE)
+        handle = self._open_relative(
+            directory,
+            name,
+            directory=False,
+            disposition=self._FILE_CREATE,
+            access=self._GENERIC_WRITE | self._FILE_READ_ATTRIBUTES | self._SYNCHRONIZE,
+        )
         try:
             view = memoryview(data)
             while view:
                 chunk = view[:65536]
                 buffer = create_string_buffer(chunk.tobytes())
                 count = c_ulong()
-                if not self._kernel32.WriteFile(c_void_p(handle), buffer, len(chunk), byref(count), None):
+                if not self._kernel32.WriteFile(
+                    c_void_p(handle), buffer, len(chunk), byref(count), None
+                ):
                     raise self._error("WriteFile failed")
                 if not count.value:
                     raise self._error("WriteFile made no progress")
-                view = view[count.value:]
+                view = view[count.value :]
         finally:
             self.close(handle)
 
@@ -456,8 +611,8 @@ class _NativeWindowsCorpusFilesystem:
         while offset < limit:
             if limit - offset < 64:
                 raise ValueError("truncated FILE_DIRECTORY_INFORMATION header")
-            next_offset = int.from_bytes(raw[offset:offset + 4], "little")
-            length = int.from_bytes(raw[offset + 60:offset + 64], "little")
+            next_offset = int.from_bytes(raw[offset : offset + 4], "little")
+            length = int.from_bytes(raw[offset + 60 : offset + 64], "little")
             if length % 2:
                 raise ValueError("odd FILE_DIRECTORY_INFORMATION filename length")
             name_end = offset + 64 + length
@@ -466,10 +621,15 @@ class _NativeWindowsCorpusFilesystem:
             if next_offset:
                 # Records are LONGLONG-aligned; the next record must start after this one and
                 # still be wholly inside the byte count NtQueryDirectoryFile reported.
-                if (next_offset % 8 or next_offset < 64 + length
-                        or offset + next_offset > limit):
-                    raise ValueError("invalid FILE_DIRECTORY_INFORMATION NextEntryOffset")
-            name = raw[offset + 64:name_end].decode("utf-16-le")
+                if (
+                    next_offset % 8
+                    or next_offset < 64 + length
+                    or offset + next_offset > limit
+                ):
+                    raise ValueError(
+                        "invalid FILE_DIRECTORY_INFORMATION NextEntryOffset"
+                    )
+            name = raw[offset + 64 : name_end].decode("utf-16-le")
             if name not in {".", ".."}:
                 result.append(name)
             if not next_offset:
@@ -487,18 +647,32 @@ class _NativeWindowsCorpusFilesystem:
         while True:
             buffer = create_string_buffer(buffer_size)
             iosb = _WinIoStatusBlock()
-            status = self._ntdll.NtQueryDirectoryFile(c_void_p(directory), None, None, None, byref(iosb),
-                                                      buffer, len(buffer), self._FILE_DIRECTORY_INFORMATION,
-                                                      False, None, bool(restart))
+            status = self._ntdll.NtQueryDirectoryFile(
+                c_void_p(directory),
+                None,
+                None,
+                None,
+                byref(iosb),
+                buffer,
+                len(buffer),
+                self._FILE_DIRECTORY_INFORMATION,
+                False,
+                None,
+                bool(restart),
+            )
             if status == self._STATUS_NO_MORE_FILES:
                 return result
             written = int(iosb.Information or 0)
             # The API documents both STATUS_BUFFER_OVERFLOW and STATUS_SUCCESS with zero
             # Information for an entry that does not fit.  Restart from a clean result after
             # growing so an entry cannot be lost or duplicated.
-            if status == self._STATUS_BUFFER_OVERFLOW or (not self._failed(status) and not written):
+            if status == self._STATUS_BUFFER_OVERFLOW or (
+                not self._failed(status) and not written
+            ):
                 if buffer_size >= self._DIRECTORY_QUERY_MAX_BUFFER:
-                    raise self._error("NtQueryDirectoryFile entry exceeds maximum buffer")
+                    raise self._error(
+                        "NtQueryDirectoryFile entry exceeds maximum buffer"
+                    )
                 buffer_size = min(buffer_size * 2, self._DIRECTORY_QUERY_MAX_BUFFER)
                 result.clear()
                 restart = True
@@ -511,8 +685,12 @@ class _NativeWindowsCorpusFilesystem:
             restart = False
 
     def replace(self, directory: object, source: str, target: str) -> None:
-        handle = self._open_relative(directory, source, directory=False,
-                                     access=self._DELETE | self._FILE_READ_ATTRIBUTES | self._SYNCHRONIZE)
+        handle = self._open_relative(
+            directory,
+            source,
+            directory=False,
+            access=self._DELETE | self._FILE_READ_ATTRIBUTES | self._SYNCHRONIZE,
+        )
         try:
             # FILE_RENAME_INFORMATION has native pointer alignment before RootDirectory.
             # The trailing WCHAR[] begins after FileNameLength, not at sizeof(struct): x64 has
@@ -521,14 +699,27 @@ class _NativeWindowsCorpusFilesystem:
             encoded = target.encode("utf-16-le")
             buffer = create_string_buffer(prefix + len(encoded))
             buffer[0] = b"\x01"  # ReplaceIfExists
-            self._ctypes.memmove(self._ctypes.addressof(buffer) + (8 if prefix == 20 else 4),
-                                 byref(c_void_p(directory)), self._ctypes.sizeof(c_void_p))
-            self._ctypes.memmove(self._ctypes.addressof(buffer) + (16 if prefix == 20 else 8),
-                                 byref(c_ulong(len(encoded))), 4)
-            self._ctypes.memmove(self._ctypes.addressof(buffer) + prefix, encoded, len(encoded))
+            self._ctypes.memmove(
+                self._ctypes.addressof(buffer) + (8 if prefix == 20 else 4),
+                byref(c_void_p(directory)),
+                self._ctypes.sizeof(c_void_p),
+            )
+            self._ctypes.memmove(
+                self._ctypes.addressof(buffer) + (16 if prefix == 20 else 8),
+                byref(c_ulong(len(encoded))),
+                4,
+            )
+            self._ctypes.memmove(
+                self._ctypes.addressof(buffer) + prefix, encoded, len(encoded)
+            )
             iosb = _WinIoStatusBlock()
-            status = self._ntdll.NtSetInformationFile(c_void_p(handle), byref(iosb), buffer,
-                                                       len(buffer), self._FILE_RENAME_INFORMATION)
+            status = self._ntdll.NtSetInformationFile(
+                c_void_p(handle),
+                byref(iosb),
+                buffer,
+                len(buffer),
+                self._FILE_RENAME_INFORMATION,
+            )
             if self._failed(status):
                 raise self._error("NtSetInformationFile rename failed")
         finally:
@@ -536,21 +727,38 @@ class _NativeWindowsCorpusFilesystem:
 
     def publish_capture(self, root: object, staging: str, replay_id: str) -> None:
         """Atomically publish a completed staging directory, never replacing a winner."""
-        handle = self._open_relative(root, staging, directory=True,
-                                     access=self._DELETE | self._FILE_READ_ATTRIBUTES | self._SYNCHRONIZE)
+        handle = self._open_relative(
+            root,
+            staging,
+            directory=True,
+            access=self._DELETE | self._FILE_READ_ATTRIBUTES | self._SYNCHRONIZE,
+        )
         try:
             prefix = 20 if self._ctypes.sizeof(c_void_p) == 8 else 12
             encoded = replay_id.encode("utf-16-le")
             buffer = create_string_buffer(prefix + len(encoded))
             # ReplaceIfExists stays false: a competing completed capture must win intact.
-            self._ctypes.memmove(self._ctypes.addressof(buffer) + (8 if prefix == 20 else 4),
-                                 byref(c_void_p(root)), self._ctypes.sizeof(c_void_p))
-            self._ctypes.memmove(self._ctypes.addressof(buffer) + (16 if prefix == 20 else 8),
-                                 byref(c_ulong(len(encoded))), 4)
-            self._ctypes.memmove(self._ctypes.addressof(buffer) + prefix, encoded, len(encoded))
+            self._ctypes.memmove(
+                self._ctypes.addressof(buffer) + (8 if prefix == 20 else 4),
+                byref(c_void_p(root)),
+                self._ctypes.sizeof(c_void_p),
+            )
+            self._ctypes.memmove(
+                self._ctypes.addressof(buffer) + (16 if prefix == 20 else 8),
+                byref(c_ulong(len(encoded))),
+                4,
+            )
+            self._ctypes.memmove(
+                self._ctypes.addressof(buffer) + prefix, encoded, len(encoded)
+            )
             iosb = _WinIoStatusBlock()
-            status = self._ntdll.NtSetInformationFile(c_void_p(handle), byref(iosb), buffer,
-                                                       len(buffer), self._FILE_RENAME_INFORMATION)
+            status = self._ntdll.NtSetInformationFile(
+                c_void_p(handle),
+                byref(iosb),
+                buffer,
+                len(buffer),
+                self._FILE_RENAME_INFORMATION,
+            )
             if status == self._STATUS_OBJECT_NAME_COLLISION:
                 raise FileExistsError(replay_id)
             if self._failed(status):
@@ -561,8 +769,13 @@ class _NativeWindowsCorpusFilesystem:
     def _delete_handle(self, handle: object) -> None:
         value = c_byte(1)
         iosb = _WinIoStatusBlock()
-        status = self._ntdll.NtSetInformationFile(c_void_p(handle), byref(iosb), byref(value), 1,
-                                                   self._FILE_DISPOSITION_INFORMATION)
+        status = self._ntdll.NtSetInformationFile(
+            c_void_p(handle),
+            byref(iosb),
+            byref(value),
+            1,
+            self._FILE_DISPOSITION_INFORMATION,
+        )
         if self._failed(status):
             raise self._error("NtSetInformationFile delete failed")
 
@@ -571,12 +784,24 @@ class _NativeWindowsCorpusFilesystem:
             # The open itself rejects junctions/symlinks.  A malicious hard-linked crop is also
             # rejected by _open_relative; leaving it makes the parent deletion fail closed.
             try:
-                child = self._open_relative(directory, name, directory=True,
-                                            access=self._DELETE | self._FILE_LIST_DIRECTORY
-                                            | self._FILE_READ_ATTRIBUTES | self._SYNCHRONIZE)
+                child = self._open_relative(
+                    directory,
+                    name,
+                    directory=True,
+                    access=self._DELETE
+                    | self._FILE_LIST_DIRECTORY
+                    | self._FILE_READ_ATTRIBUTES
+                    | self._SYNCHRONIZE,
+                )
             except OSError:
-                child = self._open_relative(directory, name, directory=False,
-                                            access=self._DELETE | self._FILE_READ_ATTRIBUTES | self._SYNCHRONIZE)
+                child = self._open_relative(
+                    directory,
+                    name,
+                    directory=False,
+                    access=self._DELETE
+                    | self._FILE_READ_ATTRIBUTES
+                    | self._SYNCHRONIZE,
+                )
             try:
                 if self._info(child).attributes & self._FILE_ATTRIBUTE_DIRECTORY:
                     self._delete_tree(child)
@@ -585,9 +810,15 @@ class _NativeWindowsCorpusFilesystem:
                 self.close(child)
 
     def remove_capture(self, root: object, replay_id: str) -> None:
-        handle = self._open_relative(root, replay_id, directory=True,
-                                     access=self._DELETE | self._FILE_LIST_DIRECTORY
-                                     | self._FILE_READ_ATTRIBUTES | self._SYNCHRONIZE)
+        handle = self._open_relative(
+            root,
+            replay_id,
+            directory=True,
+            access=self._DELETE
+            | self._FILE_LIST_DIRECTORY
+            | self._FILE_READ_ATTRIBUTES
+            | self._SYNCHRONIZE,
+        )
         try:
             self._delete_tree(handle)
             self._delete_handle(handle)
@@ -614,12 +845,21 @@ class _NativeWindowsCorpusFilesystem:
         unlike a mkdir sentinel it can never strand future recovery after a crash.
         """
         handle = self._open_relative(
-            root, f".lock-{replay_id}", directory=False, disposition=3,
-            access=(self._GENERIC_READ | self._GENERIC_WRITE | self._FILE_READ_ATTRIBUTES
-                    | self._SYNCHRONIZE))
+            root,
+            f".lock-{replay_id}",
+            directory=False,
+            disposition=3,
+            access=(
+                self._GENERIC_READ
+                | self._GENERIC_WRITE
+                | self._FILE_READ_ATTRIBUTES
+                | self._SYNCHRONIZE
+            ),
+        )
         overlapped = _WinOverlapped()
-        if not self._kernel32.LockFileEx(c_void_p(handle), 0x2, 0, 0xffffffff, 0xffffffff,
-                                         byref(overlapped)):
+        if not self._kernel32.LockFileEx(
+            c_void_p(handle), 0x2, 0, 0xFFFFFFFF, 0xFFFFFFFF, byref(overlapped)
+        ):
             self.close(handle)
             raise self._error("LockFileEx failed")
         return handle
@@ -646,7 +886,8 @@ def _require_safe_open_support() -> None:
         return
     if not hasattr(os, "O_NOFOLLOW") or not _HAS_DIR_FD:
         raise ValueError(
-            "replay corpus safe reads require directory-relative O_NOFOLLOW support on this platform")
+            "replay corpus safe reads require directory-relative O_NOFOLLOW support on this platform"
+        )
 
 
 def _open_corpus_root(root: str | Path) -> tuple[Path, object]:
@@ -693,7 +934,9 @@ def _walk_posix_corpus_root(root: str | Path, *, create: bool) -> tuple[Path, in
     except OSError as exc:
         if fd >= 0:
             os.close(fd)
-        raise FileNotFoundError(f"replay corpus root is missing or unsafe: {root_path}") from exc
+        raise FileNotFoundError(
+            f"replay corpus root is missing or unsafe: {root_path}"
+        ) from exc
     except Exception:
         if fd >= 0:
             os.close(fd)
@@ -710,21 +953,29 @@ def _ensure_corpus_root(root: str | Path) -> tuple[Path, object]:
 def _open_capture_directory(root_fd: object, replay_id: object) -> object:
     """Open one canonical capture directory relative to an already-open corpus root."""
     if not _is_safe_capture_id(replay_id):
-        raise ValueError("replay_id must be exactly 64 lowercase hexadecimal characters")
+        raise ValueError(
+            "replay_id must be exactly 64 lowercase hexadecimal characters"
+        )
     windows = _windows_filesystem()
     if windows is not None:
         try:
             return windows.open_capture(root_fd, replay_id)
         except OSError as exc:
-            raise FileNotFoundError(f"replay capture {replay_id!r} is missing or unsafe") from exc
+            raise FileNotFoundError(
+                f"replay capture {replay_id!r} is missing or unsafe"
+            ) from exc
     try:
-        if stat.S_ISLNK(os.stat(replay_id, dir_fd=root_fd, follow_symlinks=False).st_mode):
+        if stat.S_ISLNK(
+            os.stat(replay_id, dir_fd=root_fd, follow_symlinks=False).st_mode
+        ):
             raise ValueError(f"replay capture {replay_id!r} is a symlink and is unsafe")
         fd = os.open(replay_id, _DIR_OPEN_FLAGS, dir_fd=root_fd)
     except ValueError:
         raise
     except OSError as exc:
-        raise FileNotFoundError(f"replay capture {replay_id!r} is missing or unsafe") from exc
+        raise FileNotFoundError(
+            f"replay capture {replay_id!r} is missing or unsafe"
+        ) from exc
     if not stat.S_ISDIR(os.fstat(fd).st_mode):
         os.close(fd)
         raise ValueError(f"replay capture {replay_id!r} is not a directory")
@@ -734,18 +985,27 @@ def _open_capture_directory(root_fd: object, replay_id: object) -> object:
 def _safe_capture_filename(name: object, *, field: str) -> str:
     """Validate a manifest filename before using it with a directory file descriptor."""
     if not isinstance(name, str) or not name:
-        raise ValueError(f"replay corpus manifest {field} filename must be nonempty text")
+        raise ValueError(
+            f"replay corpus manifest {field} filename must be nonempty text"
+        )
     candidate = Path(name)
     # Check both separator families even on Unix.  Tests intentionally exercise the Windows
     # adapter on Unix, and an NT relative object name treats ``\\`` (and drive/stream ``:``)
     # differently from a POSIX filename.
-    if (candidate.name != name or name in {".", ".."}
-            or any(marker in name for marker in ("/", "\\", ":"))):
-        raise ValueError(f"replay corpus manifest {field} filename is not a flat filename")
+    if (
+        candidate.name != name
+        or name in {".", ".."}
+        or any(marker in name for marker in ("/", "\\", ":"))
+    ):
+        raise ValueError(
+            f"replay corpus manifest {field} filename is not a flat filename"
+        )
     return name
 
 
-def _read_regular_capture_file(directory_fd: object, name: object, *, field: str) -> bytes:
+def _read_regular_capture_file(
+    directory_fd: object, name: object, *, field: str
+) -> bytes:
     """Read one flat, singly-linked regular file without blocking or following links."""
     filename = _safe_capture_filename(name, field=field)
     windows = _windows_filesystem()
@@ -753,16 +1013,21 @@ def _read_regular_capture_file(directory_fd: object, name: object, *, field: str
         try:
             return windows.read_regular(directory_fd, filename)
         except OSError as exc:
-            raise ValueError(f"replay corpus {field} file {filename!r} is missing or unsafe") from exc
+            raise ValueError(
+                f"replay corpus {field} file {filename!r} is missing or unsafe"
+            ) from exc
     try:
         fd = os.open(filename, _FILE_OPEN_FLAGS, dir_fd=directory_fd)
     except OSError as exc:
-        raise ValueError(f"replay corpus {field} file {filename!r} is missing or unsafe") from exc
+        raise ValueError(
+            f"replay corpus {field} file {filename!r} is missing or unsafe"
+        ) from exc
     try:
         metadata = os.fstat(fd)
         if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
             raise ValueError(
-                f"replay corpus {field} file {filename!r} is not a singly-linked regular file")
+                f"replay corpus {field} file {filename!r} is not a singly-linked regular file"
+            )
         stream = os.fdopen(fd, "rb")
         fd = -1  # ownership transferred to the context manager
         with stream:
@@ -775,14 +1040,23 @@ def _read_regular_capture_file(directory_fd: object, name: object, *, field: str
 def _load_manifest(directory_fd: object, directory: Path) -> dict:
     """Read a manifest through the same no-follow regular-file boundary as crops."""
     try:
-        manifest = json.loads(_read_regular_capture_file(
-            directory_fd, _MANIFEST_NAME, field="manifest").decode("utf-8"))
+        manifest = json.loads(
+            _read_regular_capture_file(
+                directory_fd, _MANIFEST_NAME, field="manifest"
+            ).decode("utf-8")
+        )
     except UnicodeDecodeError as exc:
-        raise ValueError(f"replay corpus manifest at {directory / _MANIFEST_NAME} is not UTF-8") from exc
+        raise ValueError(
+            f"replay corpus manifest at {directory / _MANIFEST_NAME} is not UTF-8"
+        ) from exc
     except json.JSONDecodeError as exc:
-        raise ValueError(f"replay corpus manifest at {directory / _MANIFEST_NAME} is invalid JSON") from exc
+        raise ValueError(
+            f"replay corpus manifest at {directory / _MANIFEST_NAME} is invalid JSON"
+        ) from exc
     if not isinstance(manifest, dict):
-        raise ValueError(f"replay corpus manifest at {directory / _MANIFEST_NAME} is not a JSON object")
+        raise ValueError(
+            f"replay corpus manifest at {directory / _MANIFEST_NAME} is not a JSON object"
+        )
     return manifest
 
 
@@ -806,9 +1080,13 @@ def _capture_identity(directory_fd: object) -> object:
     return (metadata.st_dev, metadata.st_ino)
 
 
-def _remove_capture_directory(root_fd: object, replay_id: str, *,
-                              expected_identity: object | None = None,
-                              open_capture: object | None = None) -> bool:
+def _remove_capture_directory(
+    root_fd: object,
+    replay_id: str,
+    *,
+    expected_identity: object | None = None,
+    open_capture: object | None = None,
+) -> bool:
     """Delete a capture only after an identity-bound private quarantine move.
 
     The rename binds the deletion to the already-open corpus, so a concurrent replacement of
@@ -919,9 +1197,14 @@ def _lock_capture(root_fd: object, replay_id: str) -> object:
     if windows is not None:
         return windows.lock_capture(root_fd, replay_id)
     import fcntl
+
     name = f".lock-{replay_id}"
-    fd = os.open(name, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600,
-                 dir_fd=root_fd)
+    fd = os.open(
+        name,
+        os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0),
+        0o600,
+        dir_fd=root_fd,
+    )
     try:
         metadata = os.fstat(fd)
         if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
@@ -933,9 +1216,16 @@ def _lock_capture(root_fd: object, replay_id: str) -> object:
         raise
 
 
-def _validate_completed_capture(directory_fd: object, directory: Path, *, replay_id: str,
-                                name: str, items: Sequence[bytes], context: Sequence[bytes],
-                                truncated: bool) -> None:
+def _validate_completed_capture(
+    directory_fd: object,
+    directory: Path,
+    *,
+    replay_id: str,
+    name: str,
+    items: Sequence[bytes],
+    context: Sequence[bytes],
+    truncated: bool,
+) -> None:
     """Prove a canonical winner is exactly the request this writer wants to persist.
 
     A parseable manifest alone is not an idempotence proof: a corrupted or manually-created
@@ -943,31 +1233,46 @@ def _validate_completed_capture(directory_fd: object, directory: Path, *, replay
     through the no-follow boundary and compare both the canonical manifest fields and bytes.
     """
     manifest = _load_manifest(directory_fd, directory)
-    expected_items = [f"item_{position:03d}{_guess_extension(image)}"
-                      for position, image in enumerate(items, start=1)]
-    expected_context = [f"context_{position:03d}{_guess_extension(image)}"
-                        for position, image in enumerate(context, start=1)]
-    if (manifest.get("format_version") != _FORMAT_VERSION
-            or manifest.get("replay_id") != replay_id
-            or manifest.get("name") != name
-            or type(manifest.get("truncated")) is not bool
-            or manifest["truncated"] != truncated
-            or manifest.get("items") != expected_items
-            or manifest.get("context") != expected_context):
-        raise ValueError("existing replay capture does not match the requested canonical content")
+    expected_items = [
+        f"item_{position:03d}{_guess_extension(image)}"
+        for position, image in enumerate(items, start=1)
+    ]
+    expected_context = [
+        f"context_{position:03d}{_guess_extension(image)}"
+        for position, image in enumerate(context, start=1)
+    ]
+    if (
+        manifest.get("format_version") != _FORMAT_VERSION
+        or manifest.get("replay_id") != replay_id
+        or manifest.get("name") != name
+        or type(manifest.get("truncated")) is not bool
+        or manifest["truncated"] != truncated
+        or manifest.get("items") != expected_items
+        or manifest.get("context") != expected_context
+    ):
+        raise ValueError(
+            "existing replay capture does not match the requested canonical content"
+        )
     expected_names = set(expected_items + expected_context + [_MANIFEST_NAME])
     if set(_list_directory(directory_fd)) != expected_names:
         raise ValueError("existing replay capture contains unexpected files")
-    actual_items = tuple(_read_regular_capture_file(directory_fd, filename, field="items")
-                         for filename in expected_items)
-    actual_context = tuple(_read_regular_capture_file(directory_fd, filename, field="context")
-                           for filename in expected_context)
+    actual_items = tuple(
+        _read_regular_capture_file(directory_fd, filename, field="items")
+        for filename in expected_items
+    )
+    actual_context = tuple(
+        _read_regular_capture_file(directory_fd, filename, field="context")
+        for filename in expected_context
+    )
     if actual_items != tuple(items) or actual_context != tuple(context):
-        raise ValueError("existing replay capture crop bytes do not match its canonical id")
+        raise ValueError(
+            "existing replay capture crop bytes do not match its canonical id"
+        )
 
 
-def _recoverable_incomplete_capture(directory_fd: object, *, items: Sequence[bytes],
-                                    context: Sequence[bytes]) -> bool:
+def _recoverable_incomplete_capture(
+    directory_fd: object, *, items: Sequence[bytes], context: Sequence[bytes]
+) -> bool:
     """True only for an old direct-write partial whose present crops exactly match this request.
 
     Current writers publish only complete staging directories, so a canonical directory with no
@@ -981,21 +1286,28 @@ def _recoverable_incomplete_capture(directory_fd: object, *, items: Sequence[byt
         f"item_{position:03d}{_guess_extension(image)}": image
         for position, image in enumerate(items, start=1)
     }
-    expected.update({
-        f"context_{position:03d}{_guess_extension(image)}": image
-        for position, image in enumerate(context, start=1)
-    })
+    expected.update(
+        {
+            f"context_{position:03d}{_guess_extension(image)}": image
+            for position, image in enumerate(context, start=1)
+        }
+    )
     try:
         names = set(_list_directory(directory_fd))
         if not names.issubset(expected):
             return False
-        return all(_read_regular_capture_file(directory_fd, name, field="incomplete") == data
-                   for name, data in expected.items() if name in names)
+        return all(
+            _read_regular_capture_file(directory_fd, name, field="incomplete") == data
+            for name, data in expected.items()
+            if name in names
+        )
     except (OSError, ValueError):
         return False
 
 
-def _validate_capture_identity(directory_fd: object, directory: Path, replay_id: str) -> None:
+def _validate_capture_identity(
+    directory_fd: object, directory: Path, replay_id: str
+) -> None:
     """Validate a discovered capture before a destructive operation.
 
     This is deliberately stronger than discovery's "parseable manifest" threshold: purge must
@@ -1006,21 +1318,37 @@ def _validate_capture_identity(directory_fd: object, directory: Path, replay_id:
     items = manifest.get("items")
     context = manifest.get("context")
     truncated = manifest.get("truncated")
-    if (manifest.get("format_version") != _FORMAT_VERSION or manifest.get("replay_id") != replay_id
-            or not isinstance(name, str) or not isinstance(items, list) or not items
-            or not isinstance(context, list) or type(truncated) is not bool
-            or len(set(items + context)) != len(items) + len(context)):
+    if (
+        manifest.get("format_version") != _FORMAT_VERSION
+        or manifest.get("replay_id") != replay_id
+        or not isinstance(name, str)
+        or not isinstance(items, list)
+        or not items
+        or not isinstance(context, list)
+        or type(truncated) is not bool
+        or len(set(items + context)) != len(items) + len(context)
+    ):
         raise ValueError("replay capture is not a complete canonical capture")
-    item_bytes = tuple(_read_regular_capture_file(directory_fd, filename, field="items")
-                       for filename in items)
-    context_bytes = tuple(_read_regular_capture_file(directory_fd, filename, field="context")
-                          for filename in context)
-    if compute_replay_id(name=name, items=item_bytes, context=context_bytes,
-                         truncated=truncated) != replay_id:
+    item_bytes = tuple(
+        _read_regular_capture_file(directory_fd, filename, field="items")
+        for filename in items
+    )
+    context_bytes = tuple(
+        _read_regular_capture_file(directory_fd, filename, field="context")
+        for filename in context
+    )
+    if (
+        compute_replay_id(
+            name=name, items=item_bytes, context=context_bytes, truncated=truncated
+        )
+        != replay_id
+    ):
         raise ValueError("replay capture contents do not match its canonical id")
 
 
-def delete_replay_captures(root: str | Path, replay_ids: Sequence[str]) -> tuple[str, ...]:
+def delete_replay_captures(
+    root: str | Path, replay_ids: Sequence[str]
+) -> tuple[str, ...]:
     """Remove selected canonical captures using one stable root descriptor.
 
     This is intentionally narrow: callers must discover the ids separately, and malformed or
@@ -1038,11 +1366,16 @@ def delete_replay_captures(root: str | Path, replay_ids: Sequence[str]) -> tuple
                 lock_fd = _lock_capture(root_fd, replay_id)
                 capture_fd = _open_capture_directory(root_fd, replay_id)
                 try:
-                    _validate_capture_identity(capture_fd, root_path / replay_id, replay_id)
+                    _validate_capture_identity(
+                        capture_fd, root_path / replay_id, replay_id
+                    )
                     identity = _capture_identity(capture_fd)
-                    if not _remove_capture_directory(root_fd, replay_id,
-                                                     expected_identity=identity,
-                                                     open_capture=capture_fd):
+                    if not _remove_capture_directory(
+                        root_fd,
+                        replay_id,
+                        expected_identity=identity,
+                        open_capture=capture_fd,
+                    ):
                         continue
                 finally:
                     _close_directory(capture_fd)
@@ -1074,8 +1407,13 @@ def _guess_extension(data: bytes) -> str:
     return ".bin"
 
 
-def compute_replay_id(*, name: str, items: Sequence[bytes], context: Sequence[bytes] = (),
-                      truncated: bool = False) -> str:
+def compute_replay_id(
+    *,
+    name: str,
+    items: Sequence[bytes],
+    context: Sequence[bytes] = (),
+    truncated: bool = False,
+) -> str:
     """The STABLE identifier for one captured request: a SHA-256 digest of its own content
     (her name, the truncation flag, and every item/context crop's own digest, in order), never
     of wall-clock time or a random value.
@@ -1097,10 +1435,12 @@ def compute_replay_id(*, name: str, items: Sequence[bytes], context: Sequence[by
     for image in items:
         hasher.update(b"\x00")
         hasher.update(hashlib.sha256(bytes(image)).digest())
-    hasher.update(b"\x00\x00")  # a fixed double-NUL boundary between the items tier and the
-                                # context tier, so an items-heavy capture and a context-heavy
-                                # one can never hash the same way merely by shifting crops
-                                # across that boundary.
+    hasher.update(
+        b"\x00\x00"
+    )  # a fixed double-NUL boundary between the items tier and the
+    # context tier, so an items-heavy capture and a context-heavy
+    # one can never hash the same way merely by shifting crops
+    # across that boundary.
     for image in context:
         hasher.update(b"\x00")
         hasher.update(hashlib.sha256(bytes(image)).digest())
@@ -1112,16 +1452,23 @@ class ReplayWriteResult:
     """The outcome of one ``write_replay_capture`` call. Always returned, never raised (see
     this module's docstring's SAFE TO FAIL section) -- a caller checks ``ok`` and moves on
     either way."""
+
     ok: bool
     replay_id: str | None = None
     path: Path | None = None
     error: str | None = None
 
 
-def write_replay_capture(root: str | Path, *, items: Sequence[bytes], name: str = "",
-                         context: Sequence[bytes] = (), truncated: bool = False,
-                         prompt_sha256: str | None = None,
-                         captured_at: float | None = None) -> ReplayWriteResult:
+def write_replay_capture(
+    root: str | Path,
+    *,
+    items: Sequence[bytes],
+    name: str = "",
+    context: Sequence[bytes] = (),
+    truncated: bool = False,
+    prompt_sha256: str | None = None,
+    captured_at: float | None = None,
+) -> ReplayWriteResult:
     """Write one captured item-crop request to the corpus under ``root``. PURE I/O: this
     function has no dependency on ``operation_love.opener`` or any service internals -- it
     takes the numbered request fields (``items``, ``name``, ``truncated``) plus the separately
@@ -1162,13 +1509,17 @@ def write_replay_capture(root: str | Path, *, items: Sequence[bytes], name: str 
         if not items_t:
             raise ValueError(
                 "write_replay_capture requires at least one numbered item crop; a request "
-                "with none is not something a replay could ever reconstruct meaningfully")
+                "with none is not something a replay could ever reconstruct meaningfully"
+            )
         for position, image in enumerate(items_t + context_t):
             if not image:
-                raise ValueError(f"replay capture image at position {position} is empty")
+                raise ValueError(
+                    f"replay capture image at position {position} is empty"
+                )
 
-        replay_id = compute_replay_id(name=name_s, items=items_t, context=context_t,
-                                      truncated=truncated_b)
+        replay_id = compute_replay_id(
+            name=name_s, items=items_t, context=context_t, truncated=truncated_b
+        )
         # Create/open the root once, then do every untrusted child operation relative to that
         # descriptor.  In particular, never let a pre-created ``<id>`` symlink turn a capture
         # into a write outside the corpus.
@@ -1189,16 +1540,24 @@ def write_replay_capture(root: str | Path, *, items: Sequence[bytes], name: str 
                 try:
                     if _manifest_exists(existing_fd):
                         _validate_completed_capture(
-                            existing_fd, directory / replay_id, replay_id=replay_id,
-                            name=name_s, items=items_t, context=context_t,
-                            truncated=truncated_b)
-                        return ReplayWriteResult(ok=True, replay_id=replay_id,
-                                                 path=directory / replay_id)
+                            existing_fd,
+                            directory / replay_id,
+                            replay_id=replay_id,
+                            name=name_s,
+                            items=items_t,
+                            context=context_t,
+                            truncated=truncated_b,
+                        )
+                        return ReplayWriteResult(
+                            ok=True, replay_id=replay_id, path=directory / replay_id
+                        )
                     if not _recoverable_incomplete_capture(
-                            existing_fd, items=items_t, context=context_t):
+                        existing_fd, items=items_t, context=context_t
+                    ):
                         raise ValueError(
                             "existing manifest-absent replay directory is not a verified partial "
-                            "for this request")
+                            "for this request"
+                        )
                 finally:
                     _close_directory(existing_fd)
                 _quarantine_incomplete_capture(root_fd, replay_id)
@@ -1228,7 +1587,9 @@ def write_replay_capture(root: str | Path, *, items: Sequence[bytes], name: str 
                 manifest = {
                     "format_version": _FORMAT_VERSION,
                     "replay_id": replay_id,
-                    "captured_at": float(captured_at) if captured_at is not None else time.time(),
+                    "captured_at": float(captured_at)
+                    if captured_at is not None
+                    else time.time(),
                     "name": name_s,
                     "truncated": truncated_b,
                     "prompt_sha256": str(prompt_sha256) if prompt_sha256 else None,
@@ -1236,16 +1597,20 @@ def write_replay_capture(root: str | Path, *, items: Sequence[bytes], name: str 
                     "context": context_files,
                 }
                 tmp_name = _MANIFEST_NAME + ".tmp"
-                _write_new_capture_file(capture_fd, tmp_name,
-                                        json.dumps(manifest, indent=2, sort_keys=True).encode("utf-8"))
+                _write_new_capture_file(
+                    capture_fd,
+                    tmp_name,
+                    json.dumps(manifest, indent=2, sort_keys=True).encode("utf-8"),
+                )
                 _replace_capture_file(capture_fd, tmp_name, _MANIFEST_NAME)
             finally:
                 _close_directory(capture_fd)
             try:
                 _publish_staging_capture(root_fd, staging, replay_id)
                 published = True
-                return ReplayWriteResult(ok=True, replay_id=replay_id,
-                                         path=directory / replay_id)
+                return ReplayWriteResult(
+                    ok=True, replay_id=replay_id, path=directory / replay_id
+                )
             except OSError as publish_exc:
                 # A concurrent writer (or an already-complete prior request) won.  Its
                 # manifest is the only acceptable proof of idempotent success; never replace,
@@ -1255,9 +1620,14 @@ def write_replay_capture(root: str | Path, *, items: Sequence[bytes], name: str 
                     try:
                         _load_manifest(winner_fd, directory / replay_id)
                         _validate_completed_capture(
-                            winner_fd, directory / replay_id, replay_id=replay_id,
-                            name=name_s, items=items_t, context=context_t,
-                            truncated=truncated_b)
+                            winner_fd,
+                            directory / replay_id,
+                            replay_id=replay_id,
+                            name=name_s,
+                            items=items_t,
+                            context=context_t,
+                            truncated=truncated_b,
+                        )
                     finally:
                         _close_directory(winner_fd)
                 except (FileNotFoundError, ValueError, OSError):
@@ -1265,8 +1635,9 @@ def write_replay_capture(root: str | Path, *, items: Sequence[bytes], name: str 
                     # EEXIST.  Do not mistake any other publish failure for a winner unless its
                     # complete manifest crossed the same safe boundary as a normal read.
                     raise publish_exc
-                return ReplayWriteResult(ok=True, replay_id=replay_id,
-                                         path=directory / replay_id)
+                return ReplayWriteResult(
+                    ok=True, replay_id=replay_id, path=directory / replay_id
+                )
             finally:
                 if not published:
                     try:
@@ -1292,6 +1663,7 @@ class ReplayCapture:
     filenames. A caller can reconstruct the numbered Gemini request without a second filesystem
     pass; the context bytes remain available only for forensic inspection and research.
     """
+
     replay_id: str
     path: Path
     name: str
@@ -1331,7 +1703,11 @@ def list_replay_ids(root: str | Path) -> list[str]:
             except (OSError, ValueError):
                 continue
             captured_at = manifest.get("captured_at")
-            sort_key = float(captured_at) if isinstance(captured_at, (int, float)) else float("inf")
+            sort_key = (
+                float(captured_at)
+                if isinstance(captured_at, (int, float))
+                else float("inf")
+            )
             entries.append((sort_key, name))
     finally:
         _close_directory(root_fd)
@@ -1358,23 +1734,30 @@ def load_replay_capture(root: str | Path, replay_id: str) -> ReplayCapture:
             if manifest_replay_id != replay_id:
                 raise ValueError(
                     f"replay corpus manifest at {manifest_path} declares replay_id "
-                    f"{manifest_replay_id!r}, which does not match its own directory name {replay_id!r}")
+                    f"{manifest_replay_id!r}, which does not match its own directory name {replay_id!r}"
+                )
 
             item_files = manifest.get("items")
             if not isinstance(item_files, list) or not item_files:
                 raise ValueError(
-                    f"replay corpus manifest at {manifest_path} has no numbered items")
+                    f"replay corpus manifest at {manifest_path} has no numbered items"
+                )
             context_files = manifest.get("context")
             if context_files is None:
                 context_files = []
             if not isinstance(context_files, list):
                 raise ValueError(
-                    f"replay corpus manifest at {manifest_path} has a non-list 'context' field")
+                    f"replay corpus manifest at {manifest_path} has a non-list 'context' field"
+                )
 
-            items = tuple(_read_regular_capture_file(capture_fd, fname, field="items")
-                          for fname in item_files)
-            context = tuple(_read_regular_capture_file(capture_fd, fname, field="context")
-                            for fname in context_files)
+            items = tuple(
+                _read_regular_capture_file(capture_fd, fname, field="items")
+                for fname in item_files
+            )
+            context = tuple(
+                _read_regular_capture_file(capture_fd, fname, field="context")
+                for fname in context_files
+            )
             captured_at = manifest.get("captured_at")
             prompt_sha256 = manifest.get("prompt_sha256")
             return ReplayCapture(
@@ -1385,7 +1768,9 @@ def load_replay_capture(root: str | Path, replay_id: str) -> ReplayCapture:
                 context=context,
                 truncated=bool(manifest.get("truncated", False)),
                 prompt_sha256=str(prompt_sha256) if prompt_sha256 else None,
-                captured_at=float(captured_at) if isinstance(captured_at, (int, float)) else None,
+                captured_at=float(captured_at)
+                if isinstance(captured_at, (int, float))
+                else None,
             )
         finally:
             _close_directory(capture_fd)
@@ -1393,8 +1778,12 @@ def load_replay_capture(root: str | Path, replay_id: str) -> ReplayCapture:
         _close_directory(root_fd)
 
 
-def load_replay_corpus(root: str | Path, *, replay_ids: Sequence[str] | None = None,
-                       limit: int | None = None) -> list[ReplayCapture]:
+def load_replay_corpus(
+    root: str | Path,
+    *,
+    replay_ids: Sequence[str] | None = None,
+    limit: int | None = None,
+) -> list[ReplayCapture]:
     """Load a whole selection from the corpus, in order.
 
     ``replay_ids``, when given, is BOTH the subset AND the exact order -- passing the same list
@@ -1419,9 +1808,10 @@ def load_replay_corpus(root: str | Path, *, replay_ids: Sequence[str] | None = N
 class PruneRemoval:
     """One capture ``prune_replay_corpus`` actually removed -- enough to log without a second
     filesystem read (the directory is already gone by the time a caller sees this)."""
+
     replay_id: str
     captured_at: float | None
-    reason: str   # PRUNE_REASON_MAX_CAPTURES or PRUNE_REASON_MAX_AGE_DAYS
+    reason: str  # PRUNE_REASON_MAX_CAPTURES or PRUNE_REASON_MAX_AGE_DAYS
 
 
 PRUNE_REASON_MAX_CAPTURES = "max_captures"
@@ -1433,6 +1823,7 @@ class PruneResult:
     """The outcome of one ``prune_replay_corpus`` call. Always returned, never raised (see that
     function's own SAFE TO FAIL section) -- a caller checks ``ok`` and moves on either way,
     exactly like ``ReplayWriteResult``."""
+
     ok: bool
     removed: tuple[PruneRemoval, ...] = ()
     kept: int = 0
@@ -1440,8 +1831,9 @@ class PruneResult:
     error: str | None = None
 
 
-def prune_replay_corpus(root: str | Path, *, max_captures: int = 0,
-                        max_age_days: float = 0) -> PruneResult:
+def prune_replay_corpus(
+    root: str | Path, *, max_captures: int = 0, max_age_days: float = 0
+) -> PruneResult:
     """Bound the corpus under ``root`` by deleting whole capture directories, OLDEST-FIRST by
     the manifest's own ``captured_at``, until it satisfies both ``max_captures`` (an absolute
     cap on how many captures may exist) and ``max_age_days`` (no surviving capture is older than
@@ -1529,16 +1921,26 @@ def prune_replay_corpus(root: str | Path, *, max_captures: int = 0,
     other candidate is still attempted -- one bad directory can never abort the whole prune.
     """
     try:
-        if isinstance(max_captures, bool) or not isinstance(max_captures, int) or max_captures < 0:
+        if (
+            isinstance(max_captures, bool)
+            or not isinstance(max_captures, int)
+            or max_captures < 0
+        ):
             raise ValueError(
                 "prune_replay_corpus max_captures must be a non-negative integer "
-                f"(0 = unlimited), got {max_captures!r}")
-        if (isinstance(max_age_days, bool) or not isinstance(max_age_days, (int, float))
-                or max_age_days < 0 or max_age_days != max_age_days  # NaN check, no math import
-                or max_age_days in (float("inf"), float("-inf"))):
+                f"(0 = unlimited), got {max_captures!r}"
+            )
+        if (
+            isinstance(max_age_days, bool)
+            or not isinstance(max_age_days, (int, float))
+            or max_age_days < 0
+            or max_age_days != max_age_days  # NaN check, no math import
+            or max_age_days in (float("inf"), float("-inf"))
+        ):
             raise ValueError(
                 "prune_replay_corpus max_age_days must be a non-negative, finite number of days "
-                f"(0 = unlimited), got {max_age_days!r}")
+                f"(0 = unlimited), got {max_age_days!r}"
+            )
 
         candidates: list[tuple[str, float | None]] = []
         skipped_unparseable = 0
@@ -1573,23 +1975,44 @@ def prune_replay_corpus(root: str | Path, *, max_captures: int = 0,
                 finally:
                     _close_directory(capture_fd)
                 captured_at = manifest.get("captured_at")
-                captured_at_f = (float(captured_at)
-                                 if isinstance(captured_at, (int, float)) else None)
+                captured_at_f = (
+                    float(captured_at)
+                    if isinstance(captured_at, (int, float))
+                    else None
+                )
                 candidates.append((name, captured_at_f))
             # Keep this descriptor open through deletion.  Re-opening ``root_path`` here would
             # reintroduce the exact root-swap race the discovery pass avoided.
-            candidates.sort(key=lambda pair: (pair[1] if pair[1] is not None else float("inf"),
-                                              pair[0]))
-            age_ids = {cid for cid, cat in candidates
-                       if max_age_days > 0 and cat is not None
-                       and cat < time.time() - (max_age_days * 86400.0)}
+            candidates.sort(
+                key=lambda pair: (
+                    pair[1] if pair[1] is not None else float("inf"),
+                    pair[0],
+                )
+            )
+            age_ids = {
+                cid
+                for cid, cat in candidates
+                if max_age_days > 0
+                and cat is not None
+                and cat < time.time() - (max_age_days * 86400.0)
+            }
             remaining = [pair for pair in candidates if pair[0] not in age_ids]
-            count_ids = ({cid for cid, _cat in remaining[:len(remaining) - max_captures]}
-                         if max_captures > 0 and len(remaining) > max_captures else set())
+            count_ids = (
+                {cid for cid, _cat in remaining[: len(remaining) - max_captures]}
+                if max_captures > 0 and len(remaining) > max_captures
+                else set()
+            )
             removal_plan = [
-                (cid, cat, PRUNE_REASON_MAX_AGE_DAYS if cid in age_ids
-                 else PRUNE_REASON_MAX_CAPTURES)
-                for cid, cat in candidates if cid in age_ids or cid in count_ids]
+                (
+                    cid,
+                    cat,
+                    PRUNE_REASON_MAX_AGE_DAYS
+                    if cid in age_ids
+                    else PRUNE_REASON_MAX_CAPTURES,
+                )
+                for cid, cat in candidates
+                if cid in age_ids or cid in count_ids
+            ]
 
             removed: list[PruneRemoval] = []
             for cid, cat, reason in removal_plan:
@@ -1605,18 +2028,26 @@ def prune_replay_corpus(root: str | Path, *, max_captures: int = 0,
                         # dry-run age preview intentionally mirrors manifests only.
                         _load_manifest(check_fd, root_path / cid)
                         identity = _capture_identity(check_fd)
-                        if not _remove_capture_directory(root_fd, cid,
-                                                         expected_identity=identity,
-                                                         open_capture=check_fd):
+                        if not _remove_capture_directory(
+                            root_fd,
+                            cid,
+                            expected_identity=identity,
+                            open_capture=check_fd,
+                        ):
                             continue
                     finally:
                         _close_directory(check_fd)
                 except Exception:  # noqa: BLE001 -- one bad directory must never abort prune
                     continue
-                removed.append(PruneRemoval(replay_id=cid, captured_at=cat, reason=reason))
-            return PruneResult(ok=True, removed=tuple(removed),
-                               kept=len(candidates) - len(removed),
-                               skipped_unparseable=skipped_unparseable)
+                removed.append(
+                    PruneRemoval(replay_id=cid, captured_at=cat, reason=reason)
+                )
+            return PruneResult(
+                ok=True,
+                removed=tuple(removed),
+                kept=len(candidates) - len(removed),
+                skipped_unparseable=skipped_unparseable,
+            )
         finally:
             _close_directory(root_fd)
     except Exception as exc:  # noqa: BLE001 -- see docstring: this function must never raise

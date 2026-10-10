@@ -12,6 +12,7 @@ a device. `calibrated` licenses both Training and Auto readiness — see
 operation_love/platforms.py's `_apply_calibration` and
 operation_love/drivers/android/__init__.py, which wire both values into the registry.
 """
+
 from __future__ import annotations
 
 import math
@@ -225,7 +226,9 @@ class AndroidAppSpec:
     # coverage while providing a deliberately smaller retry when the broad crop reaches prompt
     # text/photo texture and Tesseract drops the plainly visible name line.
 
-    identity_top_name_take_another_look_band: tuple[float, float, float, float] | None = None
+    identity_top_name_take_another_look_band: (
+        tuple[float, float, float, float] | None
+    ) = None
     # Optional, separately calibrated card-header OCR crop for Hinge's ``Take another look``
     # layout.  That banner sits inside identity_top_name_band and pushes the person's name below
     # it, so this lower crop is consulted ONLY after BOTH primary-band OCR recipes read that
@@ -336,12 +339,18 @@ class AndroidAppSpec:
         if self.like_flow not in _LIKE_FLOWS:
             raise ValueError(
                 f"AndroidAppSpec({self.app!r}).like_flow must be one of "
-                f"{sorted(_LIKE_FLOWS)} (got {self.like_flow!r})")
+                f"{sorted(_LIKE_FLOWS)} (got {self.like_flow!r})"
+            )
         if self.decide_gesture not in _DECIDE_GESTURES:
             raise ValueError(
                 f"AndroidAppSpec({self.app!r}).decide_gesture must be one of "
-                f"{sorted(_DECIDE_GESTURES)} (got {self.decide_gesture!r})")
-        if self.calibrated and self.has_paid_upsell and "upsell_dismiss" not in self.templates:
+                f"{sorted(_DECIDE_GESTURES)} (got {self.decide_gesture!r})"
+            )
+        if (
+            self.calibrated
+            and self.has_paid_upsell
+            and "upsell_dismiss" not in self.templates
+        ):
             # Only enforced at calibrated=True: an in-progress spec is expected to be
             # incomplete, but "ready for a real account" must mean it can recognise and
             # dismiss the modal that costs money.
@@ -350,7 +359,8 @@ class AndroidAppSpec:
                 f"'upsell_dismiss' template while has_paid_upsell is True. A paid-upgrade "
                 f"modal would go undetected, be recorded as a successful decision, and be "
                 f"left on screen for the next gesture. Capture the template, or set "
-                f"has_paid_upsell=False if this app genuinely has no such interstitial.")
+                f"has_paid_upsell=False if this app genuinely has no such interstitial."
+            )
         if self.like_flow == "comment_sheet" and "confirm" not in self.templates:
             # The comment_sheet flow taps FIXED coordinates into the sheet. Without a way to
             # confirm the sheet is actually up, those taps land on the profile card instead
@@ -358,22 +368,28 @@ class AndroidAppSpec:
             raise ValueError(
                 f"AndroidAppSpec({self.app!r}) uses like_flow='comment_sheet' but declares no "
                 f"'confirm' template — there would be no way to verify the sheet opened before "
-                f"tapping into it")
+                f"tapping into it"
+            )
         if self.decide_gesture == "card_swipe":
             # Fail at import rather than discovering a missing endpoint mid-swipe, where the
             # fallback would be to tap -- exactly what card_swipe exists to avoid.
-            missing = [k for k in ("swipe_start", "swipe_like_end", "swipe_pass_end")
-                       if k not in self.coords]
+            missing = [
+                k
+                for k in ("swipe_start", "swipe_like_end", "swipe_pass_end")
+                if k not in self.coords
+            ]
             if missing:
                 raise ValueError(
                     f"AndroidAppSpec({self.app!r}) uses decide_gesture='card_swipe' but is "
-                    f"missing coords: {', '.join(missing)}")
+                    f"missing coords: {', '.join(missing)}"
+                )
         for zone in self.forbidden_zones:
             x0, y0, x1, y1 = zone
             if not (0.0 <= x0 < x1 <= 1.0 and 0.0 <= y0 < y1 <= 1.0):
                 raise ValueError(
                     f"AndroidAppSpec({self.app!r}).forbidden_zones entry {zone} is not a "
-                    f"normalised (x0, y0, x1, y1) rect with x0<x1 and y0<y1 inside 0..1")
+                    f"normalised (x0, y0, x1, y1) rect with x0<x1 and y0<y1 inside 0..1"
+                )
         if self.upsell_dismiss_zone is not None:
             # Same normalised-rect shape as forbidden_zones above -- a malformed zone here
             # would be silently unusable (or worse, an inverted/degenerate rect that
@@ -383,7 +399,8 @@ class AndroidAppSpec:
             if not (0.0 <= x0 < x1 <= 1.0 and 0.0 <= y0 < y1 <= 1.0):
                 raise ValueError(
                     f"AndroidAppSpec({self.app!r}).upsell_dismiss_zone {self.upsell_dismiss_zone} "
-                    f"is not a normalised (x0, y0, x1, y1) rect with x0<x1 and y0<y1 inside 0..1")
+                    f"is not a normalised (x0, y0, x1, y1) rect with x0<x1 and y0<y1 inside 0..1"
+                )
         if self.identity_band is not None:
             # Same normalised-rect shape as upsell_dismiss_zone above -- this band is what
             # _identity_of (hinge.py) diffs on every poll to prove "still the same card" no
@@ -394,7 +411,8 @@ class AndroidAppSpec:
             if not (0.0 <= x0 < x1 <= 1.0 and 0.0 <= y0 < y1 <= 1.0):
                 raise ValueError(
                     f"AndroidAppSpec({self.app!r}).identity_band {self.identity_band} is not a "
-                    f"normalised (x0, y0, x1, y1) rect with x0<x1 and y0<y1 inside 0..1")
+                    f"normalised (x0, y0, x1, y1) rect with x0<x1 and y0<y1 inside 0..1"
+                )
         if self.identity_top_name_band is not None:
             # Same normalised-rect shape as identity_band above -- a malformed rect here would
             # silently defeat the scroll-top name check (OCR over garbage, or over the wrong
@@ -406,7 +424,8 @@ class AndroidAppSpec:
                 raise ValueError(
                     f"AndroidAppSpec({self.app!r}).identity_top_name_band "
                     f"{self.identity_top_name_band} is not a normalised (x0, y0, x1, y1) rect "
-                    f"with x0<x1 and y0<y1 inside 0..1")
+                    f"with x0<x1 and y0<y1 inside 0..1"
+                )
         if self.identity_top_name_band is not None and self.identity_band is None:
             # The name check is a REFINEMENT of the pixel identity verdict, not a standalone
             # source: it only ever runs when that verdict is exactly "top" (hinge.py's
@@ -418,20 +437,24 @@ class AndroidAppSpec:
                 f"AndroidAppSpec({self.app!r}).identity_top_name_band is set but identity_band "
                 f"is None -- the scroll-top name check refines the pixel identity verdict, it "
                 f"is not a standalone source, and that verdict cannot be produced without "
-                f"identity_band declared")
+                f"identity_band declared"
+            )
         if self.identity_top_name_fallback_band is not None:
             x0, y0, x1, y1 = self.identity_top_name_fallback_band
             if not (0.0 <= x0 < x1 <= 1.0 and 0.0 <= y0 < y1 <= 1.0):
                 raise ValueError(
                     f"AndroidAppSpec({self.app!r}).identity_top_name_fallback_band "
                     f"{self.identity_top_name_fallback_band} is not a normalised "
-                    "(x0, y0, x1, y1) rect with x0<x1 and y0<y1 inside 0..1")
-        if (self.identity_top_name_fallback_band is not None
-                and (self.identity_band is None or self.identity_top_name_band is None)):
+                    "(x0, y0, x1, y1) rect with x0<x1 and y0<y1 inside 0..1"
+                )
+        if self.identity_top_name_fallback_band is not None and (
+            self.identity_band is None or self.identity_top_name_band is None
+        ):
             raise ValueError(
                 f"AndroidAppSpec({self.app!r}).identity_top_name_fallback_band is set but "
                 "identity_band and identity_top_name_band are required -- this compact OCR "
-                "crop is only a fallback refinement of the canonical card-header name path")
+                "crop is only a fallback refinement of the canonical card-header name path"
+            )
         if self.identity_top_name_fallback_band is not None:
             bx0, by0, bx1, by1 = self.identity_top_name_band
             fx0, fy0, fx1, fy1 = self.identity_top_name_fallback_band
@@ -441,29 +464,34 @@ class AndroidAppSpec:
             # manufacture a name candidate from unrelated UI or photo content.
             if not (fx0 == bx0 and fx1 == bx1 and fy0 == by0 and fy1 <= by1):
                 raise ValueError(
-                f"AndroidAppSpec({self.app!r}).identity_top_name_fallback_band must be "
+                    f"AndroidAppSpec({self.app!r}).identity_top_name_fallback_band must be "
                     "the primary band with only y1 allowed to shrink -- a retry with shifted "
-                    "geometry would be a separately unlicensed detector")
+                    "geometry would be a separately unlicensed detector"
+                )
         if self.identity_top_name_take_another_look_band is not None:
             x0, y0, x1, y1 = self.identity_top_name_take_another_look_band
             if not (0.0 <= x0 < x1 <= 1.0 and 0.0 <= y0 < y1 <= 1.0):
                 raise ValueError(
                     f"AndroidAppSpec({self.app!r}).identity_top_name_take_another_look_band "
                     f"{self.identity_top_name_take_another_look_band} is not a normalised "
-                    "(x0, y0, x1, y1) rect with x0<x1 and y0<y1 inside 0..1")
-        if (self.identity_top_name_take_another_look_band is not None
-                and (self.identity_band is None or self.identity_top_name_band is None)):
+                    "(x0, y0, x1, y1) rect with x0<x1 and y0<y1 inside 0..1"
+                )
+        if self.identity_top_name_take_another_look_band is not None and (
+            self.identity_band is None or self.identity_top_name_band is None
+        ):
             raise ValueError(
                 f"AndroidAppSpec({self.app!r}).identity_top_name_take_another_look_band is "
                 "set but identity_band and identity_top_name_band are required -- this lower "
                 "OCR crop is only a structurally gated refinement of the canonical card-header "
-                "name path")
+                "name path"
+            )
         if self.identity_top_name_take_another_look_band is not None:
             if self.app != "hinge":
                 raise ValueError(
                     f"AndroidAppSpec({self.app!r}).identity_top_name_take_another_look_band "
                     "is a Hinge-only calibrated layout and must not authorize OCR geometry for "
-                    "another app")
+                    "another app"
+                )
             bx0, by0, bx1, by1 = self.identity_top_name_band
             lx0, ly0, lx1, ly1 = self.identity_top_name_take_another_look_band
             # The panel inserts itself ABOVE the name.  Keep the same horizontal span and make
@@ -475,14 +503,19 @@ class AndroidAppSpec:
             # panel gate into an OCR-from-photo detector.  These normalized limits retain a
             # 120px upward / 144px downward adjustment window on the 2400px target device while
             # keeping the crop tightly bound to the displaced header.
-            if not (lx0 == bx0 and lx1 == bx1 and by1 - 0.05 <= ly0 < by1 < ly1
-                    <= by1 + 0.06 and ly1 - ly0 <= 0.10):
+            if not (
+                lx0 == bx0
+                and lx1 == bx1
+                and by1 - 0.05 <= ly0 < by1 < ly1 <= by1 + 0.06
+                and ly1 - ly0 <= 0.10
+            ):
                 raise ValueError(
                     f"AndroidAppSpec({self.app!r}).identity_top_name_take_another_look_band "
                     "must keep the primary card-header band's horizontal span and overlap its "
                     "bottom edge within the calibrated tight-header envelope -- the exact Take "
                     "another look OCR gate is not a licence for arbitrary shifted geometry or "
-                    "first-photo content")
+                    "first-photo content"
+                )
         if self.paywall_headline_band is not None:
             # Same normalised-rect shape as identity_top_name_band above -- a malformed rect
             # here would silently defeat the OCR refinement (garbage text, or a crop over the
@@ -495,7 +528,8 @@ class AndroidAppSpec:
                 raise ValueError(
                     f"AndroidAppSpec({self.app!r}).paywall_headline_band "
                     f"{self.paywall_headline_band} is not a normalised (x0, y0, x1, y1) rect "
-                    f"with x0<x1 and y0<y1 inside 0..1")
+                    f"with x0<x1 and y0<y1 inside 0..1"
+                )
         if self.paywall_headline_band is not None and "paywall" not in self.templates:
             # The headline band is an OCR REFINEMENT of the paywall verdict, not a standalone
             # detector -- it only ever runs once the "paywall" template has already matched
@@ -507,7 +541,8 @@ class AndroidAppSpec:
                 f"AndroidAppSpec({self.app!r}).paywall_headline_band is set but no 'paywall' "
                 f"template is declared -- the headline band refines the paywall verdict, it is "
                 f"not a standalone detector, and there is nothing to detect the screen it sits "
-                f"on without a 'paywall' template")
+                f"on without a 'paywall' template"
+            )
         for zone in self.observe_ignore_zones:
             # Same normalised-rect shape as forbidden_zones above -- these are the taps
             # wait_for_decision (hinge.py) must recognise as a resync rather than a decision
@@ -517,7 +552,8 @@ class AndroidAppSpec:
             if not (0.0 <= x0 < x1 <= 1.0 and 0.0 <= y0 < y1 <= 1.0):
                 raise ValueError(
                     f"AndroidAppSpec({self.app!r}).observe_ignore_zones entry {zone} is not a "
-                    f"normalised (x0, y0, x1, y1) rect with x0<x1 and y0<y1 inside 0..1")
+                    f"normalised (x0, y0, x1, y1) rect with x0<x1 and y0<y1 inside 0..1"
+                )
         # content_band: same "fraction, not pixel, and must actually be finite" reasoning as
         # the coords / read_scroll_frac check below, but for a (y0, y1) pair rather than a
         # single value or an (x0,y0,x1,y1) rect -- _vertical_shift_match (hinge.py) slices both
@@ -528,7 +564,8 @@ class AndroidAppSpec:
         if not (_finite(y0) and _finite(y1) and 0.0 <= y0 < y1 <= 1.0):
             raise ValueError(
                 f"AndroidAppSpec({self.app!r}).content_band {self.content_band} must be a "
-                f"finite (y0, y1) pair with 0.0 <= y0 < y1 <= 1.0")
+                f"finite (y0, y1) pair with 0.0 <= y0 < y1 <= 1.0"
+            )
         if self.observe_touch_watch and self.identity_band is None:
             # The touch stream corroborates an identity-proven card advance (wait_for_decision's
             # gesture-corroboration step, hinge.py) -- it is not a standalone decision source.
@@ -538,7 +575,8 @@ class AndroidAppSpec:
             raise ValueError(
                 f"AndroidAppSpec({self.app!r}).observe_touch_watch is True but identity_band "
                 f"is None -- the touch stream corroborates an identity-proven advance, it is "
-                f"not a standalone decision source")
+                f"not a standalone decision source"
+            )
         # coords / read_scroll_frac range check. This is the SPEC-level half of a two-part
         # fix (the other half is config.py's _validate_android_fractions, which covers an
         # OPERATOR's config.yaml override of these same values): an out-of-range coordinate
@@ -553,11 +591,18 @@ class AndroidAppSpec:
         # a forbidden_zones rect (see hinge.py's _assert_tap_allowed for the full mechanism
         # this guards against).
         for key, value in self.coords.items():
-            if (not isinstance(value, tuple) or len(value) != 2
-                    or any(isinstance(v, bool) or not isinstance(v, (int, float)) for v in value)):
+            if (
+                not isinstance(value, tuple)
+                or len(value) != 2
+                or any(
+                    isinstance(v, bool) or not isinstance(v, (int, float))
+                    for v in value
+                )
+            ):
                 raise ValueError(
                     f"AndroidAppSpec({self.app!r}).coords[{key!r}] must be an (x, y) tuple "
-                    f"of numbers (got {value!r})")
+                    f"of numbers (got {value!r})"
+                )
             # The tuple-length check above establishes this 2:2 invariant. Keep strict=True so
             # a future coords shape change cannot silently skip an axis validation.
             for axis, v in zip("xy", value, strict=True):
@@ -567,7 +612,8 @@ class AndroidAppSpec:
                         f"a fraction in 0..1. coords are fractions of the SCREEN, never "
                         f"pixels -- a value outside 0..1 would pass this rect-based check "
                         f"cleanly and then be silently clamped onto a screen edge by the real "
-                        f"touch transport, which can land inside a forbidden zone.")
+                        f"touch transport, which can land inside a forbidden zone."
+                    )
         # read_scroll_frac: same reasoning as the coords check above, for a non-coords fraction
         # field. Named generically ("*_frac") in config.py's sibling check because a future
         # field could add another; this one is checked by name since config.py's check only
@@ -575,15 +621,18 @@ class AndroidAppSpec:
         if not (_finite(self.read_scroll_frac) and 0.0 <= self.read_scroll_frac <= 1.0):
             raise ValueError(
                 f"AndroidAppSpec({self.app!r}).read_scroll_frac must be a fraction in 0..1 "
-                f"(got {self.read_scroll_frac!r})")
+                f"(got {self.read_scroll_frac!r})"
+            )
         # safe_rewind_max_frac: same shape check, but optional -- None means "no cap" (see the
         # field's own comment above), so only a NON-None value is range-checked. This field is
         # not config.yaml-overridable (a driver invariant, not operator tuning -- see its
         # comment), so unlike read_scroll_frac it is never reached by config.py's generic
         # `*_frac` sibling check either; this is its only validation.
-        if (self.safe_rewind_max_frac is not None
-                and not (_finite(self.safe_rewind_max_frac)
-                         and 0.0 <= self.safe_rewind_max_frac <= 1.0)):
+        if self.safe_rewind_max_frac is not None and not (
+            _finite(self.safe_rewind_max_frac)
+            and 0.0 <= self.safe_rewind_max_frac <= 1.0
+        ):
             raise ValueError(
                 f"AndroidAppSpec({self.app!r}).safe_rewind_max_frac must be a fraction in "
-                f"0..1 or None (got {self.safe_rewind_max_frac!r})")
+                f"0..1 or None (got {self.safe_rewind_max_frac!r})"
+            )

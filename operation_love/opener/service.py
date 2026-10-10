@@ -73,6 +73,7 @@ loudly, never silently degrade" rule. A short streak (not a lone failure, since 
 blips are normal and must not halt the run) now latches the service exactly like the 400
 streak does.
 """
+
 from __future__ import annotations
 
 import inspect
@@ -172,6 +173,7 @@ class OpenerPick:
     suggestion is supposed to be about, which is precisely how a mismatch between the opener
     and the item the comment actually hangs under becomes visible instead of silent -- the
     failure this whole opener-to-item binding exists to prevent."""
+
     text: str
     index: int = ITEM_INDEX_ABSENT
     referenced: str = ""
@@ -207,7 +209,8 @@ class OpenerPick:
     # Private, one-run staging envelope.  AUTO and Observe both commit it only after the
     # driver's like boundary returns: a generated opener is not evidence of a landed action.
     _staged_record: "_StagedOpenerRecord | None" = field(
-        default=None, repr=False, compare=False)
+        default=None, repr=False, compare=False
+    )
 
     @property
     def capture_order_index(self) -> int | None:
@@ -268,6 +271,7 @@ class OpenerPick:
 @dataclass(frozen=True)
 class _StagedOpenerRecord:
     """An uncommitted, profile-attributable opener row for one pending like."""
+
     run_id: str
     app: str
     model: str
@@ -374,7 +378,9 @@ _DEADLETTER_TRUNCATION_MARKER = "...<deadletter-truncated>"
 # that second call site exists.
 
 
-def _deadletter_truncate(value: str | None, limit: int = _DEADLETTER_FIELD_LIMIT) -> str | None:
+def _deadletter_truncate(
+    value: str | None, limit: int = _DEADLETTER_FIELD_LIMIT
+) -> str | None:
     """Bound one text field for the dead-letter entry (see _DEADLETTER_FIELD_LIMIT). None
     passes through unchanged -- raw_opener is legitimately None for three of the four
     branches, and that is a meaningful "no raw text was ever parsed", not a value to coerce
@@ -386,9 +392,17 @@ def _deadletter_truncate(value: str | None, limit: int = _DEADLETTER_FIELD_LIMIT
     return value[:limit] + _DEADLETTER_TRUNCATION_MARKER
 
 
-def _rejection_identity_key(*, run_id: str, app: str, model: str, attempt: object,
-                            reason_code: str, reason: str, raw_opener: str | None,
-                            prompt_sha256: str | None) -> tuple:
+def _rejection_identity_key(
+    *,
+    run_id: str,
+    app: str,
+    model: str,
+    attempt: object,
+    reason_code: str,
+    reason: str,
+    raw_opener: str | None,
+    prompt_sha256: str | None,
+) -> tuple:
     """(2026-09-17) Stable, in-run identity for one opener_rejections row, so
     OpenerService can tell supervisor.py's shutdown sweep "I already dead-lettered this row
     myself" -- see OpenerService.is_rejection_row_deadlettered and
@@ -422,15 +436,36 @@ def _rejection_identity_key(*, run_id: str, app: str, model: str, attempt: objec
     _TRANSIENT_LATCH_THRESHOLD, max_attempts) keep the set of keys any one run ever produces
     small enough that this holds in practice.
     """
-    attempt_int = attempt if isinstance(attempt, int) and not isinstance(attempt, bool) else 0
-    return (run_id, app, model, attempt_int, reason_code, reason, raw_opener, prompt_sha256)
+    attempt_int = (
+        attempt if isinstance(attempt, int) and not isinstance(attempt, bool) else 0
+    )
+    return (
+        run_id,
+        app,
+        model,
+        attempt_int,
+        reason_code,
+        reason,
+        raw_opener,
+        prompt_sha256,
+    )
 
 
-def _write_opener_rejection_deadletter(path: str | None, branch: str, store: object, *,
-                                       run_id: str, app: str, model: str, attempt: int,
-                                       reason_code: str, reason: str,
-                                       raw_opener: str | None, prompt_sha256: str,
-                                       exc: Exception) -> None:
+def _write_opener_rejection_deadletter(
+    path: str | None,
+    branch: str,
+    store: object,
+    *,
+    run_id: str,
+    app: str,
+    model: str,
+    attempt: int,
+    reason_code: str,
+    reason: str,
+    raw_opener: str | None,
+    prompt_sha256: str,
+    exc: Exception,
+) -> None:
     """Best-effort, LOCAL record of one opener-rejection row that FAILED to reach
     self.store.record_opener_rejection, kept so a store write that raises is diagnosable
     afterwards instead of silently lost.
@@ -541,14 +576,18 @@ def _write_opener_rejection_deadletter(path: str | None, branch: str, store: obj
             "exc_str": _deadletter_truncate(str(exc)),
             "exc_repr": _deadletter_truncate(_safe_repr(exc)),
             "cause_type": type(cause).__name__ if cause is not None else None,
-            "cause_str": _deadletter_truncate(str(cause)) if cause is not None else None,
+            "cause_str": _deadletter_truncate(str(cause))
+            if cause is not None
+            else None,
             "traceback": _deadletter_truncate(traceback.format_exc()),
         }
         line = json.dumps(entry, default=str)
 
         try:
             with open(path, "r", encoding="utf-8") as f:
-                lines = [stripped for stripped in (raw.strip() for raw in f) if stripped]
+                lines = [
+                    stripped for stripped in (raw.strip() for raw in f) if stripped
+                ]
         except FileNotFoundError:
             lines = []
         lines.append(line)
@@ -560,7 +599,9 @@ def _write_opener_rejection_deadletter(path: str | None, branch: str, store: obj
         # newest entry is kept even if it alone exceeds the ceiling -- truncation above
         # already keeps any one entry small, so this is a last-resort backstop, not the
         # normal case).
-        while len(lines) > 1 and sum(len(ln) + 1 for ln in lines) > _DEADLETTER_MAX_BYTES:
+        while (
+            len(lines) > 1 and sum(len(ln) + 1 for ln in lines) > _DEADLETTER_MAX_BYTES
+        ):
             lines = lines[1:]
 
         directory = os.path.dirname(path)
@@ -569,7 +610,7 @@ def _write_opener_rejection_deadletter(path: str | None, branch: str, store: obj
         with open(path, "w", encoding="utf-8") as f:
             f.write("\n".join(lines) + "\n")
     except Exception:  # noqa: BLE001 -- see docstring: a diagnostic for a failed write must
-        pass          # never itself raise, so this swallows unconditionally.
+        pass  # never itself raise, so this swallows unconditionally.
 
 
 def _safe_repr(value: object) -> str:
@@ -580,11 +621,18 @@ def _safe_repr(value: object) -> str:
         return f"<{type(value).__name__}>"
 
 
-def _record_staged_opener(store, record: "_StagedOpenerRecord", pick: OpenerPick, *,
-                          profile_id: str, decision: str, decision_source: str,
-                          decision_created_at: object | None,
-                          pre_send_evidence: dict[str, object] | None = None,
-                          profile_key: str = "") -> None:
+def _record_staged_opener(
+    store,
+    record: "_StagedOpenerRecord",
+    pick: OpenerPick,
+    *,
+    profile_id: str,
+    decision: str,
+    decision_source: str,
+    decision_created_at: object | None,
+    pre_send_evidence: dict[str, object] | None = None,
+    profile_key: str = "",
+) -> None:
     """Persist a committed draft with modern lineage when the store declares support for it.
 
     OpenerService has long accepted small duck-typed stores.  The action-lineage columns are a
@@ -607,11 +655,16 @@ def _record_staged_opener(store, record: "_StagedOpenerRecord", pick: OpenerPick
         accepts_profile_key = True
     else:
         names = {parameter.name for parameter in parameters}
-        var_keyword = any(parameter.kind is inspect.Parameter.VAR_KEYWORD
-                          for parameter in parameters)
-        accepts_lineage = (var_keyword
-                           or {"profile_id", "decision", "decision_source",
-                               "decision_created_at", "model_item_index"}.issubset(names))
+        var_keyword = any(
+            parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters
+        )
+        accepts_lineage = var_keyword or {
+            "profile_id",
+            "decision",
+            "decision_source",
+            "decision_created_at",
+            "model_item_index",
+        }.issubset(names)
         # ORTHOGONAL to the lineage probe above, deliberately: the action-lineage columns and
         # the prompt-era stamp (prompt_sha256, 2026-09-05 (b)) are separate backward-compatible
         # schema extensions that shipped on different dates, so a duck-typed store can perfectly
@@ -628,21 +681,42 @@ def _record_staged_opener(store, record: "_StagedOpenerRecord", pick: OpenerPick
     if accepts_profile_key:
         stamp["profile_key"] = profile_key
     if accepts_lineage:
-        sink(record.run_id, record.app, record.model, record.opener,
-             record.referenced, record.angle, record.item_description,
-             profile_id=profile_id, decision=decision, decision_source=decision_source,
-             decision_created_at=decision_created_at,
-             model_item_index=(pick.index if pick.index != ITEM_INDEX_ABSENT else None),
-             **stamp)
+        sink(
+            record.run_id,
+            record.app,
+            record.model,
+            record.opener,
+            record.referenced,
+            record.angle,
+            record.item_description,
+            profile_id=profile_id,
+            decision=decision,
+            decision_source=decision_source,
+            decision_created_at=decision_created_at,
+            model_item_index=(pick.index if pick.index != ITEM_INDEX_ABSENT else None),
+            **stamp,
+        )
     else:
-        sink(record.run_id, record.app, record.model, record.opener,
-             record.referenced, record.angle, record.item_description, **stamp)
+        sink(
+            record.run_id,
+            record.app,
+            record.model,
+            record.opener,
+            record.referenced,
+            record.angle,
+            record.item_description,
+            **stamp,
+        )
 
     evidence_sink = getattr(store, "record_opener_send_evidence", None)
     if pre_send_evidence is not None and callable(evidence_sink):
         evidence_sink(
-            record.run_id, record.app, record.opener, profile_id=profile_id,
-            decision_source=decision_source, decision_created_at=decision_created_at,
+            record.run_id,
+            record.app,
+            record.opener,
+            profile_id=profile_id,
+            decision_source=decision_source,
+            decision_created_at=decision_created_at,
             model_item_index=(pick.index if pick.index != ITEM_INDEX_ABSENT else None),
             evidence=pre_send_evidence,
         )
@@ -747,12 +821,19 @@ class OpenerService:
     def last_skip_allows_commentless_like(self, value: bool) -> None:
         self._call_outcome.allows_commentless_like = bool(value)
 
-    def __init__(self, client: OpenerClient | None, tracker: CostTracker, store,
-                 style: str, max_attempts: int = 5, *,
-                 replay_corpus_dir: str | None = None,
-                 replay_corpus_max_captures: int = 0,
-                 replay_corpus_max_age_days: int = 0,
-                 deadletter_path: str | None = None):
+    def __init__(
+        self,
+        client: OpenerClient | None,
+        tracker: CostTracker,
+        store,
+        style: str,
+        max_attempts: int = 5,
+        *,
+        replay_corpus_dir: str | None = None,
+        replay_corpus_max_captures: int = 0,
+        replay_corpus_max_age_days: int = 0,
+        deadletter_path: str | None = None,
+    ):
         # BUG 2 (adversarial audit): max_attempts=0 (or negative) made range(1, max_attempts+1)
         # empty, so maybe_opener()'s retry loop body never ran at all -- 0 API calls, disabled
         # stayed False, stop_requested stayed False, no reason was ever recorded. That is
@@ -764,14 +845,15 @@ class OpenerService:
         # rejected explicitly even though it IS an int subclass in Python (True == 1) --
         # accepting it would silently treat OpenerService(..., max_attempts=True) as
         # max_attempts=1, a confusing coincidence rather than a real configuration.
-        if (type(max_attempts) is not int
-                or not 1 <= max_attempts <= _MAX_ATTEMPTS):
+        if type(max_attempts) is not int or not 1 <= max_attempts <= _MAX_ATTEMPTS:
             raise ValueError(
                 f"OpenerService max_attempts must be an int in [1, {_MAX_ATTEMPTS}], "
-                f"got {_safe_repr(max_attempts)}")
+                f"got {_safe_repr(max_attempts)}"
+            )
         if not isinstance(style, str):
             raise ValueError(
-                f"OpenerService style must be a string, got {_safe_repr(style)}")
+                f"OpenerService style must be a string, got {_safe_repr(style)}"
+            )
         self.client = client
         self.tracker = tracker
         self.store = store
@@ -835,7 +917,7 @@ class OpenerService:
         # into "something is actually wrong".
         self.max_attempts = max_attempts
         self.disabled = client is None
-        self.stop_requested = False     # set once exhaustion stops the whole run
+        self.stop_requested = False  # set once exhaustion stops the whole run
         # Human-readable cause of the FIRST exhaustion (see _exhaust) -- e.g. "run budget
         # reached" or "all configured Gemini models exhausted their free-tier quota; no
         # opener capacity remains". Every worker sharing this service reads the same value,
@@ -867,8 +949,8 @@ class OpenerService:
         # per-call symptom happened to trigger that exhaustion.
         self.last_skip_reason = None
         self.last_skip_allows_commentless_like = False
-        self._consecutive_bad_requests = 0   # streak of back-to-back 400s; see
-                                              # _BAD_REQUEST_LATCH_THRESHOLD
+        self._consecutive_bad_requests = 0  # streak of back-to-back 400s; see
+        # _BAD_REQUEST_LATCH_THRESHOLD
         # Streak of back-to-back TRANSIENT failures (an unclassified exception, or a
         # per-profile OpenerError -- see _register_transient_failure for exactly what counts
         # and _TRANSIENT_LATCH_THRESHOLD for why); reset on any outcome that proves the
@@ -1008,8 +1090,10 @@ class OpenerService:
         try:
             cost = self.tracker.record(model, usage)
         except KeyError:
-            print(f"Warning: no budget.pricing entry for model '{model}'; the {note} was "
-                  "billed but its spend cannot be tracked")
+            print(
+                f"Warning: no budget.pricing entry for model '{model}'; the {note} was "
+                "billed but its spend cannot be tracked"
+            )
             cost = None
         except Exception as e:  # noqa: BLE001
             # Broader than the main path's KeyError-only guard, deliberately: this helper is
@@ -1017,19 +1101,29 @@ class OpenerService:
             # the time. Letting an accounting oddity (a result with no usage, a tracker that
             # raises something new) escape from here would turn a cosmetic style check into a
             # failed generation, which is precisely the inversion the guard must never cause.
-            print(f"Warning: could not track the spend of the {note} "
-                  f"({type(e).__name__}: {e})")
+            print(
+                f"Warning: could not track the spend of the {note} "
+                f"({type(e).__name__}: {e})"
+            )
             cost = None
         try:
             self.store.record_spend(run_id, model, usage, cost)
         except Exception as e:  # noqa: BLE001
-            print(f"Warning: failed to persist the spend record for the {note} "
-                  f"({_display_cost(cost)}): {e}")
+            print(
+                f"Warning: failed to persist the spend record for the {note} "
+                f"({_display_cost(cost)}): {e}"
+            )
 
-    def _apply_entropy_guard(self, run_id: str, profile: Profile, result, *,
-                             items: ItemRequest | None,
-                             should_stop: Callable[[], bool] | None,
-                             skip_models: frozenset[str]) -> tuple[object, str, bool]:
+    def _apply_entropy_guard(
+        self,
+        run_id: str,
+        profile: Profile,
+        result,
+        *,
+        items: ItemRequest | None,
+        should_stop: Callable[[], bool] | None,
+        skip_models: frozenset[str],
+    ) -> tuple[object, str, bool]:
         """THE ENTROPY GUARD (ops/OPENER-REDESIGN.md 3.6, whose stated rationale is half stale
         -- read it with the 2026-09-05 addendum at the end of that file). Given a parsed, usable
         opener, return `(result_to_send, colliding_ngram, regenerated)`: either the result
@@ -1081,26 +1175,32 @@ class OpenerService:
         # perfectly sendable, so this degrades to "ship the repetitive one" rather than to any
         # kind of failure.
         if should_stop is not None and should_stop():
-            print(f"Opener: this draft repeats an earlier opening this run "
-                  f"(\"{collision}\"), but the run is stopping -- sending it as is rather "
-                  "than spending on another draw.")
+            print(
+                f"Opener: this draft repeats an earlier opening this run "
+                f'("{collision}"), but the run is stopping -- sending it as is rather '
+                "than spending on another draw."
+            )
             return result, collision, False
         if self.tracker.budget_reached():
-            print(f"Opener: this draft repeats an earlier opening this run "
-                  f"(\"{collision}\"), but the run budget is reached -- sending it as is "
-                  "rather than spending on another draw.")
+            print(
+                f"Opener: this draft repeats an earlier opening this run "
+                f'("{collision}"), but the run budget is reached -- sending it as is '
+                "rather than spending on another draw."
+            )
             return result, collision, False
 
-        print(f"Opener: this draft opens with words already sent this run (\"{collision}\"); "
-              "asking once for a different opening. This extra call is deliberately EXEMPT "
-              "from the per-profile attempt budget -- see _apply_entropy_guard.")
+        print(
+            f'Opener: this draft opens with words already sent this run ("{collision}"); '
+            "asking once for a different opening. This extra call is deliberately EXEMPT "
+            "from the per-profile attempt budget -- see _apply_entropy_guard."
+        )
         # Written to be read by the MODEL, so: no em dash, no hyphen, plain ASCII, and no
         # suggestion that the previous draft was bad. It was not; it was fine and merely
         # familiar. Telling the model it was "rejected" (the wording the real retry path uses,
         # where the text genuinely was unusable) would push it to change the wrong things.
         retry_hint = (
             f"Your previous draft was fine, but it opened with the same words as an opener "
-            f"already sent to someone else recently: \"{collision}\". Write a different "
+            f'already sent to someone else recently: "{collision}". Write a different '
             f"opener for this profile that does not open with those words. Every other rule "
             f"is unchanged."
         )
@@ -1114,10 +1214,15 @@ class OpenerService:
             # unchanged from this method's own parameter -- this extra draw belongs to the same
             # run as the draft it is replacing, so any cascade print it triggers must carry the
             # same `Run {run_id}: ` tag, not go unattributed.
-            generate_kwargs = dict(items=items, should_stop=should_stop,
-                                   skip_models=skip_models, run_id=run_id)
-            second = self.client.generate(profile, self.style, retry_hint=retry_hint,
-                                          **generate_kwargs)
+            generate_kwargs = dict(
+                items=items,
+                should_stop=should_stop,
+                skip_models=skip_models,
+                run_id=run_id,
+            )
+            second = self.client.generate(
+                profile, self.style, retry_hint=retry_hint, **generate_kwargs
+            )
         except OpenerParseError as e:
             # Billed but unusable. Record the spend (real money, see _record_billed_draw) and
             # keep the original opener. Deliberately NOT written to the opener_rejections
@@ -1125,10 +1230,13 @@ class OpenerService:
             # attempt", and this draw was never gating a send -- counting it there would inflate
             # exactly the statistic it exists to measure. The console line below plus the
             # `entropy_collision` field on the ring-buffer entry are this path's paper trail.
-            self._record_billed_draw(run_id, e.model, e.usage,
-                                     note="rejected entropy regeneration draw")
-            print(f"Opener: the entropy regeneration came back unusable ({e}); keeping the "
-                  "original opener, which was already good enough to send.")
+            self._record_billed_draw(
+                run_id, e.model, e.usage, note="rejected entropy regeneration draw"
+            )
+            print(
+                f"Opener: the entropy regeneration came back unusable ({e}); keeping the "
+                "original opener, which was already good enough to send."
+            )
             return result, collision, False
         except Exception as e:  # noqa: BLE001
             # Anything else at all: a stop signal mid-cascade (OpenerAborted), a per-profile
@@ -1136,8 +1244,10 @@ class OpenerService:
             # with a second call. NONE of them move a latch counter, set last_skip_reason, or
             # exhaust: we are holding a perfectly good opener, so there is no failure to report
             # to anyone -- only a cosmetic improvement we did not get.
-            print(f"Opener: the entropy regeneration failed ({type(e).__name__}: {e}); "
-                  "keeping the original opener, which was already good enough to send.")
+            print(
+                f"Opener: the entropy regeneration failed ({type(e).__name__}: {e}); "
+                "keeping the original opener, which was already good enough to send."
+            )
             return result, collision, False
 
         second_text = str(getattr(second, "opener", "") or "")
@@ -1148,13 +1258,18 @@ class OpenerService:
             # can land `second` here with blank text. But _record_billed_draw's own invariant
             # ("every real call being recorded exactly once") is unconditional, not contingent
             # on which client made the call, so it is recorded anyway.
-            self._record_billed_draw(run_id, getattr(second, "model", "") or "",
-                                     getattr(second, "usage", None),
-                                     note="empty entropy regeneration draw")
+            self._record_billed_draw(
+                run_id,
+                getattr(second, "model", "") or "",
+                getattr(second, "usage", None),
+                note="empty entropy regeneration draw",
+            )
             # A client that returns a result with no text at all would turn a cosmetic guard
             # into a commentless like, the one outcome this whole file exists to prevent.
-            print("Opener: the entropy regeneration returned no opener text; keeping the "
-                  "original opener.")
+            print(
+                "Opener: the entropy regeneration returned no opener text; keeping the "
+                "original opener."
+            )
             return result, collision, False
 
         # ITEM BINDING OUTRANKS THE OPENING WORDS. This guard is about the first few WORDS and
@@ -1172,33 +1287,44 @@ class OpenerService:
         result_index = getattr(result, "item_index", ITEM_INDEX_ABSENT)
         second_index = getattr(second, "item_index", ITEM_INDEX_ABSENT)
         if result_index != ITEM_INDEX_ABSENT and (
-                second_index == ITEM_INDEX_ABSENT
-                or getattr(second, "index_space", "") != getattr(result, "index_space", "")):
-            self._record_billed_draw(run_id, getattr(second, "model", "") or "",
-                                     getattr(second, "usage", None),
-                                     note="entropy regeneration lost its item binding")
-            print("Opener: the entropy regeneration came back without the item binding the "
-                  "original draft had (item_index "
-                  f"{result_index} in {getattr(result, 'index_space', '') or 'an unstated space'}"
-                  f" -> {second_index} in "
-                  f"{getattr(second, 'index_space', '') or 'an unstated space'}); discarding "
-                  "the redraw and keeping the original opener, which was already good enough "
-                  "to send and still knows which item it is about.")
+            second_index == ITEM_INDEX_ABSENT
+            or getattr(second, "index_space", "") != getattr(result, "index_space", "")
+        ):
+            self._record_billed_draw(
+                run_id,
+                getattr(second, "model", "") or "",
+                getattr(second, "usage", None),
+                note="entropy regeneration lost its item binding",
+            )
+            print(
+                "Opener: the entropy regeneration came back without the item binding the "
+                "original draft had (item_index "
+                f"{result_index} in {getattr(result, 'index_space', '') or 'an unstated space'}"
+                f" -> {second_index} in "
+                f"{getattr(second, 'index_space', '') or 'an unstated space'}); discarding "
+                "the redraw and keeping the original opener, which was already good enough "
+                "to send and still knows which item it is about."
+            )
             return result, collision, False
 
         # The first draft is being thrown away, but it was BILLED. Record it here so the money
         # is accounted for exactly once; maybe_opener records the surviving draw itself.
-        self._record_billed_draw(run_id, getattr(result, "model", "") or "",
-                                 getattr(result, "usage", None),
-                                 note="entropy regenerated opener draft")
+        self._record_billed_draw(
+            run_id,
+            getattr(result, "model", "") or "",
+            getattr(result, "usage", None),
+            note="entropy regenerated opener draft",
+        )
         again = self._leading_ngram_collision(second_text)
         if again:
             # ONE extra draw only -- accept and be loud about it. (A second draw that repeats
             # the FIRST draft's opening is covered by this same check: the first draft collided
             # with the buffer, so anything sharing its n-gram collides with the buffer too.)
-            print(f"Opener: the regenerated opener still opens with \"{again}\"; SENDING it "
-                  "anyway. The guard asks once and never loops -- a near-repeat that goes out "
-                  "is a smaller problem than a retry storm or an unbounded spend.")
+            print(
+                f'Opener: the regenerated opener still opens with "{again}"; SENDING it '
+                "anyway. The guard asks once and never loops -- a near-repeat that goes out "
+                "is a smaller problem than a retry storm or an unbounded spend."
+            )
         return second, collision, True
 
     def _capture_replay_corpus(self, items: ItemRequest) -> None:
@@ -1231,9 +1357,13 @@ class OpenerService:
         captured_ok = False
         try:
             result = write_replay_capture(
-                self.replay_corpus_dir, items=items.items, name=items.name,
-                context=items.context, truncated=items.truncated,
-                prompt_sha256=self.prompt_sha256)
+                self.replay_corpus_dir,
+                items=items.items,
+                name=items.name,
+                context=items.context,
+                truncated=items.truncated,
+                prompt_sha256=self.prompt_sha256,
+            )
             captured_ok = result.ok
             if not result.ok:
                 print(f"Warning: opener replay-corpus capture failed: {result.error}")
@@ -1246,19 +1376,30 @@ class OpenerService:
             prune_result = prune_replay_corpus(
                 self.replay_corpus_dir,
                 max_captures=self.replay_corpus_max_captures,
-                max_age_days=self.replay_corpus_max_age_days)
+                max_age_days=self.replay_corpus_max_age_days,
+            )
             if not prune_result.ok:
-                print(f"Warning: opener replay-corpus prune failed: {prune_result.error}")
+                print(
+                    f"Warning: opener replay-corpus prune failed: {prune_result.error}"
+                )
             elif prune_result.removed:
-                print(f"Opener: replay-corpus prune removed {len(prune_result.removed)} "
-                      f"capture(s), kept {prune_result.kept}, from {self.replay_corpus_dir}")
+                print(
+                    f"Opener: replay-corpus prune removed {len(prune_result.removed)} "
+                    f"capture(s), kept {prune_result.kept}, from {self.replay_corpus_dir}"
+                )
         except Exception as exc:  # noqa: BLE001 -- telemetry must never break opener generation
             print(f"Warning: opener replay-corpus prune raised unexpectedly: {exc}")
 
-    def maybe_opener(self, run_id: str, app: str, profile: Profile, *,
-                      items: ItemRequest | None = None,
-                      should_stop: Callable[[], bool] | None = None,
-                      stage: bool = False) -> "OpenerPick | None":
+    def maybe_opener(
+        self,
+        run_id: str,
+        app: str,
+        profile: Profile,
+        *,
+        items: ItemRequest | None = None,
+        should_stop: Callable[[], bool] | None = None,
+        stage: bool = False,
+    ) -> "OpenerPick | None":
         """Return an OpenerPick (text + the MODEL ITEM INDEX the opener is about and the item
         to like -- 1-based, see OpenerPick), or None (disabled / budget
         reached / out of credit / permanent provider error / every retry attempt used up /
@@ -1397,7 +1538,7 @@ class OpenerService:
             if items is not None:
                 self._capture_replay_corpus(items)
 
-            retry_hint = ""   # "" means first attempt; a retry fills this in below
+            retry_hint = ""  # "" means first attempt; a retry fills this in below
             for attempt in range(1, effective_max_attempts + 1):
                 if should_stop is not None and should_stop():
                     # Checked BETWEEN retry attempts (including before the very first one),
@@ -1424,8 +1565,9 @@ class OpenerService:
                         skip_models=frozenset(failed_models),
                         run_id=run_id,
                     )
-                    result = self.client.generate(profile, self.style, retry_hint=retry_hint,
-                                                  **generate_kwargs)
+                    result = self.client.generate(
+                        profile, self.style, retry_hint=retry_hint, **generate_kwargs
+                    )
                 except OpenerAborted as e:
                     # The client itself aborted mid-call (e.g. GeminiOpener's cascade caught a
                     # stop signal BETWEEN models, after already issuing at least one request
@@ -1468,21 +1610,33 @@ class OpenerService:
                     except KeyError:
                         # Same guard as the success path: the API echoed a model with no
                         # budget.pricing entry, so this (real, billed) spend can't be tracked.
-                        self._exhaust(f"no budget.pricing entry for model '{e.model}'; "
-                                      "spend can no longer be tracked")
+                        self._exhaust(
+                            f"no budget.pricing entry for model '{e.model}'; "
+                            "spend can no longer be tracked"
+                        )
                         cost = None
                     try:
                         self.store.record_spend(run_id, e.model, e.usage, cost)
                     except Exception as store_exc:  # noqa: BLE001
-                        print(f"Warning: failed to persist opener spend record "
-                              f"({_display_cost(cost)}): {store_exc}")
+                        print(
+                            f"Warning: failed to persist opener spend record "
+                            f"({_display_cost(cost)}): {store_exc}"
+                        )
                     attempt_outcome = (
-                        "safety-blocked" if e.reason_code in
-                        (REASON_PROMPT_BLOCKED, REASON_RESPONSE_BLOCKED) else "unparseable"
+                        "safety-blocked"
+                        if e.reason_code
+                        in (REASON_PROMPT_BLOCKED, REASON_RESPONSE_BLOCKED)
+                        else "unparseable"
                     )
-                    result_noun = "provider result" if attempt_outcome == "safety-blocked" else "response"
-                    print(f"Opener attempt {attempt}/{effective_max_attempts}: {attempt_outcome} "
-                          f"{result_noun} (billed {_display_cost(cost)}): {e}")
+                    result_noun = (
+                        "provider result"
+                        if attempt_outcome == "safety-blocked"
+                        else "response"
+                    )
+                    print(
+                        f"Opener attempt {attempt}/{effective_max_attempts}: {attempt_outcome} "
+                        f"{result_noun} (billed {_display_cost(cost)}): {e}"
+                    )
                     # Durable record of EVERY rejected attempt, not just successes (see
                     # ranker/bigquery_store.py's opener_rejections table and opener.py's
                     # OpenerParseError docstring for reason_code/raw_opener semantics).
@@ -1497,38 +1651,66 @@ class OpenerService:
                     # file exists to protect.
                     try:
                         self.store.record_opener_rejection(
-                            run_id, app, e.model, attempt, e.reason_code, str(e),
-                            e.raw_opener, prompt_sha256=self.prompt_sha256)
+                            run_id,
+                            app,
+                            e.model,
+                            attempt,
+                            e.reason_code,
+                            str(e),
+                            e.raw_opener,
+                            prompt_sha256=self.prompt_sha256,
+                        )
                     except Exception as store_exc:  # noqa: BLE001
-                        print(f"Warning: failed to persist opener rejection record: {store_exc}")
+                        print(
+                            f"Warning: failed to persist opener rejection record: {store_exc}"
+                        )
                         _write_opener_rejection_deadletter(
-                            self._deadletter_path, "parse_error", self.store,
-                            run_id=run_id, app=app, model=e.model, attempt=attempt,
-                            reason_code=e.reason_code, reason=str(e), raw_opener=e.raw_opener,
-                            prompt_sha256=self.prompt_sha256, exc=store_exc)
+                            self._deadletter_path,
+                            "parse_error",
+                            self.store,
+                            run_id=run_id,
+                            app=app,
+                            model=e.model,
+                            attempt=attempt,
+                            reason_code=e.reason_code,
+                            reason=str(e),
+                            raw_opener=e.raw_opener,
+                            prompt_sha256=self.prompt_sha256,
+                            exc=store_exc,
+                        )
                         # (2026-09-17) Remember this row so supervisor.py's shutdown sweep
                         # (_deadletter_stranded_opener_rejections) does not write a SECOND
                         # entry for it -- the failed store call above leaves this exact row
                         # stuck in the store's buffer, same args as just passed above.
-                        self._deadlettered_rejection_keys.add(_rejection_identity_key(
-                            run_id=run_id, app=app, model=e.model, attempt=attempt,
-                            reason_code=e.reason_code, reason=str(e), raw_opener=e.raw_opener,
-                            prompt_sha256=self.prompt_sha256))
+                        self._deadlettered_rejection_keys.add(
+                            _rejection_identity_key(
+                                run_id=run_id,
+                                app=app,
+                                model=e.model,
+                                attempt=attempt,
+                                reason_code=e.reason_code,
+                                reason=str(e),
+                                raw_opener=e.raw_opener,
+                                prompt_sha256=self.prompt_sha256,
+                            )
+                        )
                     # In-memory mirror of the row just above, independent of the store call's
                     # success -- see recent_rejections' docstring in __init__ for why this
                     # exists (the bug report's Recent opener rejections section reads this,
                     # not the store, exactly like recent_openers/recent_openers_snapshot).
                     # Unconditional now too, for the same reason as the store call just above.
-                    self.recent_rejections.append({
-                        "ts": datetime.now().isoformat(timespec="seconds"),
-                        "app": app,
-                        "model": e.model,
-                        "attempt": attempt,
-                        "reason_code": e.reason_code,
-                        "reason": str(e),
-                        "raw_opener": e.raw_opener,
-                        "prompt_sha256": self.prompt_sha256,
-                    })
+                    self.recent_rejections.append(
+                        {
+                            "ts": datetime.now().isoformat(timespec="seconds"),
+                            "app": app,
+                            "model": e.model,
+                            "attempt": attempt,
+                            "reason_code": e.reason_code,
+                            "reason": str(e),
+                            "raw_opener": e.raw_opener,
+                            "prompt_sha256": self.prompt_sha256,
+                        }
+                    )
 
                     if self.disabled:
                         # _exhaust() already ran above (the unpriceable-model guard) -- the
@@ -1540,7 +1722,10 @@ class OpenerService:
                         # spend must stop further retries immediately.
                         self._exhaust("run budget reached")
                         return None
-                    if e.reason_code in (REASON_PROMPT_BLOCKED, REASON_RESPONSE_BLOCKED):
+                    if e.reason_code in (
+                        REASON_PROMPT_BLOCKED,
+                        REASON_RESPONSE_BLOCKED,
+                    ):
                         # Gemini identified this as a content-policy block, not malformed JSON
                         # or a stochastic bad draw.  Retrying another model with the same
                         # profile captures would simply resubmit the content Gemini withheld;
@@ -1550,7 +1735,8 @@ class OpenerService:
                         # already made the like decision, so this one explicit outcome permits
                         # a commentless like.
                         blocked_stage = (
-                            "the request" if e.reason_code == REASON_PROMPT_BLOCKED
+                            "the request"
+                            if e.reason_code == REASON_PROMPT_BLOCKED
                             else "the generated response"
                         )
                         self.last_skip_reason = (
@@ -1588,8 +1774,10 @@ class OpenerService:
                         f"Your previous attempt was rejected and NOT sent: {e}. Write a new "
                         "opener that fixes this."
                     )
-                    print(f"Opener: retrying this profile "
-                          f"(attempt {attempt + 1}/{effective_max_attempts})...")
+                    print(
+                        f"Opener: retrying this profile "
+                        f"(attempt {attempt + 1}/{effective_max_attempts})..."
+                    )
                     continue
                 except OpenerError as e:
                     # Same class of per-profile failure, but raised without usage attached, so
@@ -1617,8 +1805,12 @@ class OpenerService:
                         # individual symptom.
                         pass
                     else:
-                        self.last_skip_reason = f"opener call failed for this profile: {e}"
-                        print(f"Opener: {e}; swiping without an opener for this profile.")
+                        self.last_skip_reason = (
+                            f"opener call failed for this profile: {e}"
+                        )
+                        print(
+                            f"Opener: {e}; swiping without an opener for this profile."
+                        )
                     # Durable record even though this is not an OpenerParseError -- this branch
                     # was previously one of THREE failure kinds that left opener_rejections at
                     # zero rows forever (2026-09-06; see ops/OPENER-REDESIGN.md's dated
@@ -1629,21 +1821,47 @@ class OpenerService:
                     # generation.
                     try:
                         self.store.record_opener_rejection(
-                            run_id, app, "", attempt, REASON_OPENER_ERROR, str(e), None,
-                            prompt_sha256=self.prompt_sha256)
+                            run_id,
+                            app,
+                            "",
+                            attempt,
+                            REASON_OPENER_ERROR,
+                            str(e),
+                            None,
+                            prompt_sha256=self.prompt_sha256,
+                        )
                     except Exception as store_exc:  # noqa: BLE001
-                        print(f"Warning: failed to persist opener rejection record: {store_exc}")
+                        print(
+                            f"Warning: failed to persist opener rejection record: {store_exc}"
+                        )
                         _write_opener_rejection_deadletter(
-                            self._deadletter_path, "opener_error", self.store,
-                            run_id=run_id, app=app, model="", attempt=attempt,
-                            reason_code=REASON_OPENER_ERROR, reason=str(e), raw_opener=None,
-                            prompt_sha256=self.prompt_sha256, exc=store_exc)
+                            self._deadletter_path,
+                            "opener_error",
+                            self.store,
+                            run_id=run_id,
+                            app=app,
+                            model="",
+                            attempt=attempt,
+                            reason_code=REASON_OPENER_ERROR,
+                            reason=str(e),
+                            raw_opener=None,
+                            prompt_sha256=self.prompt_sha256,
+                            exc=store_exc,
+                        )
                         # (2026-09-17) See the parse_error branch's own comment above --
                         # same reasoning, same shutdown-sweep consumer.
-                        self._deadlettered_rejection_keys.add(_rejection_identity_key(
-                            run_id=run_id, app=app, model="", attempt=attempt,
-                            reason_code=REASON_OPENER_ERROR, reason=str(e), raw_opener=None,
-                            prompt_sha256=self.prompt_sha256))
+                        self._deadlettered_rejection_keys.add(
+                            _rejection_identity_key(
+                                run_id=run_id,
+                                app=app,
+                                model="",
+                                attempt=attempt,
+                                reason_code=REASON_OPENER_ERROR,
+                                reason=str(e),
+                                raw_opener=None,
+                                prompt_sha256=self.prompt_sha256,
+                            )
+                        )
                     return None
                 except Exception as e:  # noqa: BLE001
                     # HTTP-level / provider-level failures land here, and none of them are
@@ -1688,23 +1906,52 @@ class OpenerService:
                         # store outage must never take down opener generation.
                         try:
                             self.store.record_opener_rejection(
-                                run_id, app, "", attempt, REASON_BAD_REQUEST, str(e), None,
-                                prompt_sha256=self.prompt_sha256)
+                                run_id,
+                                app,
+                                "",
+                                attempt,
+                                REASON_BAD_REQUEST,
+                                str(e),
+                                None,
+                                prompt_sha256=self.prompt_sha256,
+                            )
                         except Exception as store_exc:  # noqa: BLE001
-                            print(f"Warning: failed to persist opener rejection record: {store_exc}")
+                            print(
+                                f"Warning: failed to persist opener rejection record: {store_exc}"
+                            )
                             _write_opener_rejection_deadletter(
-                                self._deadletter_path, "bad_request", self.store,
-                                run_id=run_id, app=app, model="", attempt=attempt,
-                                reason_code=REASON_BAD_REQUEST, reason=str(e), raw_opener=None,
-                                prompt_sha256=self.prompt_sha256, exc=store_exc)
+                                self._deadletter_path,
+                                "bad_request",
+                                self.store,
+                                run_id=run_id,
+                                app=app,
+                                model="",
+                                attempt=attempt,
+                                reason_code=REASON_BAD_REQUEST,
+                                reason=str(e),
+                                raw_opener=None,
+                                prompt_sha256=self.prompt_sha256,
+                                exc=store_exc,
+                            )
                             # (2026-09-17) See the parse_error branch's own comment far
                             # above -- same reasoning, same shutdown-sweep consumer.
-                            self._deadlettered_rejection_keys.add(_rejection_identity_key(
-                                run_id=run_id, app=app, model="", attempt=attempt,
-                                reason_code=REASON_BAD_REQUEST, reason=str(e), raw_opener=None,
-                                prompt_sha256=self.prompt_sha256))
+                            self._deadlettered_rejection_keys.add(
+                                _rejection_identity_key(
+                                    run_id=run_id,
+                                    app=app,
+                                    model="",
+                                    attempt=attempt,
+                                    reason_code=REASON_BAD_REQUEST,
+                                    reason=str(e),
+                                    raw_opener=None,
+                                    prompt_sha256=self.prompt_sha256,
+                                )
+                            )
                         self._consecutive_bad_requests += 1
-                        if self._consecutive_bad_requests >= _BAD_REQUEST_LATCH_THRESHOLD:
+                        if (
+                            self._consecutive_bad_requests
+                            >= _BAD_REQUEST_LATCH_THRESHOLD
+                        ):
                             self._exhaust(
                                 f"The opener provider rejected {self._consecutive_bad_requests} opener "
                                 "requests in a row as malformed (bad param/schema) -- this looks "
@@ -1718,10 +1965,12 @@ class OpenerService:
                             f"opener request for this profile was rejected as malformed "
                             f"(HTTP 400): {e}"
                         )
-                        print(f"Opener skipped (400 on this profile's request -- could be a bad "
-                              f"capture; {self._consecutive_bad_requests}/"
-                              f"{_BAD_REQUEST_LATCH_THRESHOLD} in a row before treating it as "
-                              f"permanent, swiping without): {e}")
+                        print(
+                            f"Opener skipped (400 on this profile's request -- could be a bad "
+                            f"capture; {self._consecutive_bad_requests}/"
+                            f"{_BAD_REQUEST_LATCH_THRESHOLD} in a row before treating it as "
+                            f"permanent, swiping without): {e}"
+                        )
                         return None
                     self._consecutive_bad_requests = 0
                     # Transient network/timeout/rate-limit errors: skip this profile's opener
@@ -1740,24 +1989,47 @@ class OpenerService:
                     # exception itself names one.
                     try:
                         self.store.record_opener_rejection(
-                            run_id, app, "", attempt, REASON_TRANSIENT_ERROR,
-                            f"{type(e).__name__}: {e}", None,
-                            prompt_sha256=self.prompt_sha256)
+                            run_id,
+                            app,
+                            "",
+                            attempt,
+                            REASON_TRANSIENT_ERROR,
+                            f"{type(e).__name__}: {e}",
+                            None,
+                            prompt_sha256=self.prompt_sha256,
+                        )
                     except Exception as store_exc:  # noqa: BLE001
-                        print(f"Warning: failed to persist opener rejection record: {store_exc}")
+                        print(
+                            f"Warning: failed to persist opener rejection record: {store_exc}"
+                        )
                         _write_opener_rejection_deadletter(
-                            self._deadletter_path, "transient", self.store,
-                            run_id=run_id, app=app, model="", attempt=attempt,
+                            self._deadletter_path,
+                            "transient",
+                            self.store,
+                            run_id=run_id,
+                            app=app,
+                            model="",
+                            attempt=attempt,
                             reason_code=REASON_TRANSIENT_ERROR,
-                            reason=f"{type(e).__name__}: {e}", raw_opener=None,
-                            prompt_sha256=self.prompt_sha256, exc=store_exc)
+                            reason=f"{type(e).__name__}: {e}",
+                            raw_opener=None,
+                            prompt_sha256=self.prompt_sha256,
+                            exc=store_exc,
+                        )
                         # (2026-09-17) See the parse_error branch's own comment far above --
                         # same reasoning, same shutdown-sweep consumer.
-                        self._deadlettered_rejection_keys.add(_rejection_identity_key(
-                            run_id=run_id, app=app, model="", attempt=attempt,
-                            reason_code=REASON_TRANSIENT_ERROR,
-                            reason=f"{type(e).__name__}: {e}", raw_opener=None,
-                            prompt_sha256=self.prompt_sha256))
+                        self._deadlettered_rejection_keys.add(
+                            _rejection_identity_key(
+                                run_id=run_id,
+                                app=app,
+                                model="",
+                                attempt=attempt,
+                                reason_code=REASON_TRANSIENT_ERROR,
+                                reason=f"{type(e).__name__}: {e}",
+                                raw_opener=None,
+                                prompt_sha256=self.prompt_sha256,
+                            )
+                        )
                     if self._register_transient_failure(e):
                         # Latched -- exhausted_reason now carries the global cause; leave
                         # last_skip_reason (a per-call cause) alone, same reasoning as the
@@ -1768,13 +2040,17 @@ class OpenerService:
                             f"opener call failed for this profile (transient error): "
                             f"{type(e).__name__}: {e}"
                         )
-                        print(f"Opener skipped (transient error, swiping without): "
-                              f"{type(e).__name__}: {e}")
+                        print(
+                            f"Opener skipped (transient error, swiping without): "
+                            f"{type(e).__name__}: {e}"
+                        )
                     return None
 
                 # Success -- whether on the first attempt or after one or more retries.
-                self._consecutive_bad_requests = 0   # success -- request shape is fine
-                self._consecutive_transient_failures = 0   # success -- the pipeline works end to end
+                self._consecutive_bad_requests = 0  # success -- request shape is fine
+                self._consecutive_transient_failures = (
+                    0  # success -- the pipeline works end to end
+                )
                 # A successful, end-to-end call proves the LAST failure (if any) is over -- clear
                 # it so a stale per-call reason from a prior profile never lingers and gets
                 # misread as describing this one (see last_skip_reason's docstring).
@@ -1794,10 +2070,16 @@ class OpenerService:
                 # gets sent. The draft the guard discards was still billed, so the guard records
                 # THAT spend itself -- the money is tracked either way, while the opener row is
                 # written once, below, for whichever draw survives.
-                result, entropy_collision, entropy_regenerated = self._apply_entropy_guard(
-                    run_id, profile, result,
-                    items=items, should_stop=should_stop,
-                    skip_models=frozenset(failed_models))
+                result, entropy_collision, entropy_regenerated = (
+                    self._apply_entropy_guard(
+                        run_id,
+                        profile,
+                        result,
+                        items=items,
+                        should_stop=should_stop,
+                        skip_models=frozenset(failed_models),
+                    )
+                )
 
                 try:
                     cost = self.tracker.record(result.model, result.usage)
@@ -1809,8 +2091,10 @@ class OpenerService:
                     # budget-enforcement contract the rest of this service is built around.
                     # cost=None (not 0.0): the real cost was nonzero, just unrecoverable, and
                     # a fabricated $0.00 would misreport actual spend in the stored record.
-                    self._exhaust(f"no budget.pricing entry for model '{result.model}'; "
-                                  "spend can no longer be tracked")
+                    self._exhaust(
+                        f"no budget.pricing entry for model '{result.model}'; "
+                        "spend can no longer be tracked"
+                    )
                     cost = None
                 # getattr defaults here for the same defensive reason as the pre-existing
                 # getattr on the old referenced_index (this block used to read only that
@@ -1839,8 +2123,10 @@ class OpenerService:
                 # from `result` (not from, say, whether `items` was passed) keeps one producer
                 # of this fact -- generate(), which built the payload -- instead of two that
                 # can drift.
-                index_space = str(getattr(result, "index_space", INDEX_SPACE_MODEL_ITEMS)
-                                  or INDEX_SPACE_MODEL_ITEMS)
+                index_space = str(
+                    getattr(result, "index_space", INDEX_SPACE_MODEL_ITEMS)
+                    or INDEX_SPACE_MODEL_ITEMS
+                )
                 referenced = str(getattr(result, "referenced", "") or "")
                 # The model's own words for what this opener is DOING -- telemetry only, never
                 # read to make a decision (see OpenerPick.angle). "" when the model omitted it
@@ -1859,8 +2145,11 @@ class OpenerService:
                 # consecutive rejections stop the whole run -- gating on it would make an
                 # uncalibrated metric a run-killer. It never rejects anything here, ever.
                 raw_markers = getattr(result, "redundancy_markers", None)
-                redundancy_markers = ([str(m) for m in raw_markers]
-                                      if isinstance(raw_markers, (list, tuple)) else [])
+                redundancy_markers = (
+                    [str(m) for m in raw_markers]
+                    if isinstance(raw_markers, (list, tuple))
+                    else []
+                )
                 staged_for_action = stage
                 if redundancy_markers:
                     # opener.py prints when it computes these, including parsed drafts the
@@ -1875,10 +2164,12 @@ class OpenerService:
                         # but this method still cannot know whether their later device action
                         # will send the text. Keep the redundancy signal while making that
                         # boundary explicit instead of overstating delivery.
-                        print(f"Opener: immediate-flow opener restates "
-                              f"{len(redundancy_markers)} word(s) from its own `referenced` note "
-                              f"({'; '.join(redundancy_markers)}). Delivery is not verified "
-                              "here; logged only for offline calibration, never a rejection.")
+                        print(
+                            f"Opener: immediate-flow opener restates "
+                            f"{len(redundancy_markers)} word(s) from its own `referenced` note "
+                            f"({'; '.join(redundancy_markers)}). Delivery is not verified "
+                            "here; logged only for offline calibration, never a rejection."
+                        )
                 try:
                     self.store.record_spend(run_id, result.model, result.usage, cost)
                     # angle and item_description ride along as the 6th and 7th POSITIONAL
@@ -1911,14 +2202,23 @@ class OpenerService:
                     # try/except and reported under the spend-record message -- so if that path
                     # ever gains real duck-typed sinks, copy the probe rather than the call.
                     if not staged_for_action:
-                        self.store.record_opener(run_id, app, result.model, result.opener,
-                                                 referenced, angle, item_description,
-                                                 prompt_sha256=self.prompt_sha256)
+                        self.store.record_opener(
+                            run_id,
+                            app,
+                            result.model,
+                            result.opener,
+                            referenced,
+                            angle,
+                            item_description,
+                            prompt_sha256=self.prompt_sha256,
+                        )
                 except Exception as e:  # noqa: BLE001
                     # Spend was already tracked in-memory by CostTracker (or deliberately
                     # marked unrecoverable above); store failure is non-fatal.
-                    print(f"Warning: failed to persist opener spend record "
-                          f"({_display_cost(cost)}): {e}")
+                    print(
+                        f"Warning: failed to persist opener spend record "
+                        f"({_display_cost(cost)}): {e}"
+                    )
                 if self.tracker.budget_reached():
                     self._exhaust("run budget reached")
                 # An un-staged legacy/immediate caller records its diagnostic opener here.
@@ -1988,12 +2288,30 @@ class OpenerService:
                 # taken HERE, at generation time, not read off the service when the draft is
                 # later committed, so a staged draft is always attributed to the prompt it was
                 # actually generated under.
-                staged = (_StagedOpenerRecord(
-                    run_id, app, result.model, result.opener, referenced, angle,
-                    item_description, recent_entry,
-                    prompt_sha256=self.prompt_sha256) if staged_for_action else None)
-                return OpenerPick(result.opener, item_index, referenced, angle, item_description,
-                                  index_space=index_space, _staged_record=staged)
+                staged = (
+                    _StagedOpenerRecord(
+                        run_id,
+                        app,
+                        result.model,
+                        result.opener,
+                        referenced,
+                        angle,
+                        item_description,
+                        recent_entry,
+                        prompt_sha256=self.prompt_sha256,
+                    )
+                    if staged_for_action
+                    else None
+                )
+                return OpenerPick(
+                    result.opener,
+                    item_index,
+                    referenced,
+                    angle,
+                    item_description,
+                    index_space=index_space,
+                    _staged_record=staged,
+                )
             # Unreachable in practice: __init__ now rejects any max_attempts that isn't an
             # int >= 1 (see BUG 2), so range(1, effective_max_attempts + 1) always yields at
             # least one iteration, and
@@ -2007,10 +2325,17 @@ class OpenerService:
             # is ever broken by a future edit.
             return None  # pragma: no cover
 
-    def commit_opener(self, pick: OpenerPick, *, profile_id: str = "", decision: str = "like",
-                      decision_source: str = "", decision_created_at: object | None = None,
-                      pre_send_evidence: dict[str, object] | None = None,
-                      profile_key: str = "") -> bool:
+    def commit_opener(
+        self,
+        pick: OpenerPick,
+        *,
+        profile_id: str = "",
+        decision: str = "like",
+        decision_source: str = "",
+        decision_created_at: object | None = None,
+        pre_send_evidence: dict[str, object] | None = None,
+        profile_key: str = "",
+    ) -> bool:
         """Persist one staged AUTO/Training opener after a landed Like, exactly once.
 
         This is intentionally a separate, explicit commit from generation: neither opening a
@@ -2031,15 +2356,25 @@ class OpenerService:
                 return False
             try:
                 _record_staged_opener(
-                    self.store, record, pick, profile_id=profile_id, decision=decision,
-                    decision_source=decision_source, decision_created_at=decision_created_at,
-                    pre_send_evidence=pre_send_evidence, profile_key=profile_key)
+                    self.store,
+                    record,
+                    pick,
+                    profile_id=profile_id,
+                    decision=decision,
+                    decision_source=decision_source,
+                    decision_created_at=decision_created_at,
+                    pre_send_evidence=pre_send_evidence,
+                    profile_key=profile_key,
+                )
             except Exception as exc:  # noqa: BLE001 -- a store outage must not erase a real Like
-                print(f"Warning: failed to persist committed opener after landed like: {exc}")
+                print(
+                    f"Warning: failed to persist committed opener after landed like: {exc}"
+                )
                 return False
             recent_entry = dict(record.recent_entry)
             recent_entry["session_mode"] = (
-                "training" if decision_source == "manual" else "auto")
+                "training" if decision_source == "manual" else "auto"
+            )
             self.recent_openers.append(recent_entry)
             markers = recent_entry.get("redundancy_markers")
             if isinstance(markers, list) and markers:
@@ -2047,16 +2382,24 @@ class OpenerService:
                 # storage and been supplied with the worker's verified Like lineage.  It is
                 # therefore the only staged-flow message allowed to describe the opener as
                 # committed/landed rather than merely proposed for review.
-                print(f"Opener: committed Like opener restates {len(markers)} word(s) from its "
-                      f"own `referenced` note ({'; '.join(str(marker) for marker in markers)}). "
-                      "Logged only for offline calibration, never a rejection.")
+                print(
+                    f"Opener: committed Like opener restates {len(markers)} word(s) from its "
+                    f"own `referenced` note ({'; '.join(str(marker) for marker in markers)}). "
+                    "Logged only for offline calibration, never a rejection."
+                )
             pick._staged_record = None
             return True
 
-    def discard_opener(self, pick: OpenerPick, *, profile_id: str = "",
-                       decision: str = DECISION_NEVER_SENT,
-                       decision_source: str = "", decision_created_at: object | None = None,
-                       profile_key: str = "") -> bool:
+    def discard_opener(
+        self,
+        pick: OpenerPick,
+        *,
+        profile_id: str = "",
+        decision: str = DECISION_NEVER_SENT,
+        decision_source: str = "",
+        decision_created_at: object | None = None,
+        profile_key: str = "",
+    ) -> bool:
         """Persist one staged AUTO/Training opener draft that will NEVER be committed, so the
         durable ``openers`` table stops being survivorship-biased toward only landed Likes.
 
@@ -2098,9 +2441,16 @@ class OpenerService:
                 return False
             try:
                 _record_staged_opener(
-                    self.store, record, pick, profile_id=profile_id, decision=decision,
-                    decision_source=decision_source, decision_created_at=decision_created_at,
-                    pre_send_evidence=None, profile_key=profile_key)
+                    self.store,
+                    record,
+                    pick,
+                    profile_id=profile_id,
+                    decision=decision,
+                    decision_source=decision_source,
+                    decision_created_at=decision_created_at,
+                    pre_send_evidence=None,
+                    profile_key=profile_key,
+                )
             except Exception as exc:  # noqa: BLE001 -- a store outage must not break a run
                 # over telemetry for a draft that was never going to be sent anyway.
                 print(f"Warning: failed to persist discarded opener draft: {exc}")
@@ -2153,10 +2503,15 @@ class OpenerService:
         shutdown path calls this from a different thread.
         """
         key = _rejection_identity_key(
-            run_id=row.get("run_id", ""), app=row.get("app", ""), model=row.get("model", ""),
-            attempt=row.get("attempt", 0), reason_code=row.get("reason_code", ""),
-            reason=row.get("reason", ""), raw_opener=row.get("raw_opener"),
-            prompt_sha256=row.get("prompt_sha256"))
+            run_id=row.get("run_id", ""),
+            app=row.get("app", ""),
+            model=row.get("model", ""),
+            attempt=row.get("attempt", 0),
+            reason_code=row.get("reason_code", ""),
+            reason=row.get("reason", ""),
+            raw_opener=row.get("raw_opener"),
+            prompt_sha256=row.get("prompt_sha256"),
+        )
         with self._lock:
             return key in self._deadlettered_rejection_keys
 

@@ -1,4 +1,5 @@
 """Privacy checks for the reference-only persistent browser driver."""
+
 from __future__ import annotations
 
 import os
@@ -61,7 +62,9 @@ class _Driver(PlaywrightDriver):
     def next_profile(self, *, should_stop=None):
         return None
 
-    def like(self, opener=None, item_index=None, *, model_item_index=None, should_stop=None):
+    def like(
+        self, opener=None, item_index=None, *, model_item_index=None, should_stop=None
+    ):
         pass
 
     def dislike(self):
@@ -72,7 +75,9 @@ class _Driver(PlaywrightDriver):
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX permission bits")
-def test_open_session_tightens_only_persistent_profile_leaf_before_browser_start(tmp_path):
+def test_open_session_tightens_only_persistent_profile_leaf_before_browser_start(
+    tmp_path,
+):
     broad_parent = tmp_path / "shared"
     profile = broad_parent / "browser-profile"
     broad_parent.mkdir(mode=0o755)
@@ -81,7 +86,9 @@ def test_open_session_tightens_only_persistent_profile_leaf_before_browser_start
     profile.chmod(0o755)
 
     observed_modes = []
-    driver = _Driver(profile, lambda: observed_modes.append(stat.S_IMODE(profile.stat().st_mode)))
+    driver = _Driver(
+        profile, lambda: observed_modes.append(stat.S_IMODE(profile.stat().st_mode))
+    )
     try:
         driver.open_session()
     finally:

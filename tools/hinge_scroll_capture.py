@@ -33,6 +33,7 @@ ops/calibration/, which is gitignored (see .gitignore's comment above that line)
 by rule, not by accident. Nothing in this tool uploads, copies outside the repo, or transmits a
 frame anywhere.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -71,9 +72,12 @@ def _list_ready_devices(adb_path: str = "adb") -> list[str]:
     builds for capture, so that object's call surface stays exactly `screencap()`, always."""
     try:
         result = subprocess.run(
-            [adb_path, "devices"], capture_output=True, timeout=10, check=False)
+            [adb_path, "devices"], capture_output=True, timeout=10, check=False
+        )
     except FileNotFoundError:
-        print(f"ERROR: adb binary not found ({adb_path!r} not on PATH).", file=sys.stderr)
+        print(
+            f"ERROR: adb binary not found ({adb_path!r} not on PATH).", file=sys.stderr
+        )
         sys.exit(1)
     except OSError as exc:
         # A path can exist but still be non-executable (or be denied by host policy).  This is
@@ -87,8 +91,10 @@ def _list_ready_devices(adb_path: str = "adb") -> list[str]:
     if result.returncode != 0:
         detail = result.stderr.decode("utf-8", errors="replace").strip()
         suffix = f": {detail}" if detail else ""
-        print(f"ERROR: `adb devices` failed with exit code {result.returncode}{suffix}",
-              file=sys.stderr)
+        print(
+            f"ERROR: `adb devices` failed with exit code {result.returncode}{suffix}",
+            file=sys.stderr,
+        )
         sys.exit(1)
     return parse_devices_output(result.stdout.decode("utf-8", errors="replace"))
 
@@ -99,18 +105,25 @@ def _resolve_serial(requested: str | None, adb_path: str = "adb") -> str:
     --serial was not given to disambiguate."""
     devices = _list_ready_devices(adb_path)
     if not devices:
-        print("ERROR: no ADB device connected (`adb devices` reports none ready).",
-              file=sys.stderr)
+        print(
+            "ERROR: no ADB device connected (`adb devices` reports none ready).",
+            file=sys.stderr,
+        )
         sys.exit(1)
     if requested:
         if requested not in devices:
-            print(f"ERROR: device {requested!r} not connected. Ready devices: {devices}",
-                  file=sys.stderr)
+            print(
+                f"ERROR: device {requested!r} not connected. Ready devices: {devices}",
+                file=sys.stderr,
+            )
             sys.exit(1)
         return requested
     if len(devices) > 1:
-        print(f"ERROR: multiple ADB devices connected {devices} and no --serial given. "
-              "Pass --serial to pick one.", file=sys.stderr)
+        print(
+            f"ERROR: multiple ADB devices connected {devices} and no --serial given. "
+            "Pass --serial to pick one.",
+            file=sys.stderr,
+        )
         sys.exit(1)
     return devices[0]
 
@@ -120,8 +133,15 @@ def _default_out_dir() -> Path:
     return Path("ops/calibration") / f"scroll_{stamp}"
 
 
-def capture(*, adb, seconds: float, interval: float, out_dir: Path,
-            serial: str, progress: bool = True) -> dict:
+def capture(
+    *,
+    adb,
+    seconds: float,
+    interval: float,
+    out_dir: Path,
+    serial: str,
+    progress: bool = True,
+) -> dict:
     """The capture loop. Writes `out_dir/manifest.json` and returns it as a dict.
 
     `adb` only needs a `screencap() -> bytes` method (a real `Adb`, or a fake in tests) — this
@@ -141,7 +161,9 @@ def capture(*, adb, seconds: float, interval: float, out_dir: Path,
     if not math.isfinite(seconds) or seconds <= 0:
         raise ValueError("seconds must be a finite value greater than zero")
     if not math.isfinite(interval) or interval < 0:
-        raise ValueError("interval must be a finite value greater than or equal to zero")
+        raise ValueError(
+            "interval must be a finite value greater than or equal to zero"
+        )
 
     ensure_private_dir(out_dir)
     frames: list[dict] = []
@@ -164,8 +186,9 @@ def capture(*, adb, seconds: float, interval: float, out_dir: Path,
                 # intentional manual scroll. Keep the typed failure in the local manifest so an
                 # offline reviewer can distinguish it from Ctrl-C and normal completion.
                 detail = str(exc)
-                capture_error = (f"{type(exc).__name__}: {detail}" if detail
-                                 else type(exc).__name__)
+                capture_error = (
+                    f"{type(exc).__name__}: {detail}" if detail else type(exc).__name__
+                )
                 break
             digest = hashlib.sha256(png).hexdigest()
             if digest != last_digest:
@@ -173,12 +196,18 @@ def capture(*, adb, seconds: float, interval: float, out_dir: Path,
                 name = f"{idx:05d}.png"
                 atomic_write_private_bytes(out_dir / name, png, parent=out_dir)
                 offset_s = time.monotonic() - start_wall
-                frames.append({"file": name, "sha256": digest, "offset_s": round(offset_s, 3)})
+                frames.append(
+                    {"file": name, "sha256": digest, "offset_s": round(offset_s, 3)}
+                )
                 last_digest = digest
             if progress:
                 elapsed = time.monotonic() - start_wall
-                print(f"\r  frames captured: {len(frames):4d}  |  elapsed: {elapsed:6.1f}s "
-                      f"/ {seconds:.0f}s", end="", flush=True)
+                print(
+                    f"\r  frames captured: {len(frames):4d}  |  elapsed: {elapsed:6.1f}s "
+                    f"/ {seconds:.0f}s",
+                    end="",
+                    flush=True,
+                )
             remaining = interval - (time.monotonic() - loop_start)
             if remaining > 0:
                 time.sleep(remaining)
@@ -202,9 +231,15 @@ def capture(*, adb, seconds: float, interval: float, out_dir: Path,
         "frames": frames,
     }
     atomic_write_private_text(
-        out_dir / "manifest.json", json.dumps(manifest, indent=2) + "\n", parent=out_dir)
-    verb = ("Stopped early (Ctrl-C)" if interrupted else
-            "Stopped after screencap error" if capture_error is not None else "Done")
+        out_dir / "manifest.json", json.dumps(manifest, indent=2) + "\n", parent=out_dir
+    )
+    verb = (
+        "Stopped early (Ctrl-C)"
+        if interrupted
+        else "Stopped after screencap error"
+        if capture_error is not None
+        else "Done"
+    )
     print(f"{verb}. Wrote {len(frames)} frame(s) + manifest to {out_dir}")
     return manifest
 
@@ -212,29 +247,51 @@ def capture(*, adb, seconds: float, interval: float, out_dir: Path,
 def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(
         description="READ-ONLY dense-frame capture of a human-driven Hinge scroll, for "
-                     "card-geometry calibration (ops/OPENER-REDESIGN.md 5.4/5.5/9). Never "
-                     "sends input to the phone.")
-    ap.add_argument("--serial", default=None,
-                     help="ADB device serial; defaults to the single connected device")
-    ap.add_argument("--seconds", type=float, default=_DEFAULT_SECONDS,
-                     help=f"how long to capture, in seconds (default {_DEFAULT_SECONDS:.0f})")
-    ap.add_argument("--interval", type=float, default=_DEFAULT_INTERVAL_S,
-                     help="poll cadence in seconds, matching the driver's own observe poll "
-                          f"cadence (default {_DEFAULT_INTERVAL_S})")
-    ap.add_argument("--out", default=None,
-                     help="output directory (default ops/calibration/scroll_<UTC timestamp>/)")
-    ap.add_argument("--config", default=None,
-                     help="optional config file, accepted for symmetry with the other phone "
-                          "tools; this capture reads no setting from it and takes the run's "
-                          "device lock with or without one")
+        "card-geometry calibration (ops/OPENER-REDESIGN.md 5.4/5.5/9). Never "
+        "sends input to the phone."
+    )
+    ap.add_argument(
+        "--serial",
+        default=None,
+        help="ADB device serial; defaults to the single connected device",
+    )
+    ap.add_argument(
+        "--seconds",
+        type=float,
+        default=_DEFAULT_SECONDS,
+        help=f"how long to capture, in seconds (default {_DEFAULT_SECONDS:.0f})",
+    )
+    ap.add_argument(
+        "--interval",
+        type=float,
+        default=_DEFAULT_INTERVAL_S,
+        help="poll cadence in seconds, matching the driver's own observe poll "
+        f"cadence (default {_DEFAULT_INTERVAL_S})",
+    )
+    ap.add_argument(
+        "--out",
+        default=None,
+        help="output directory (default ops/calibration/scroll_<UTC timestamp>/)",
+    )
+    ap.add_argument(
+        "--config",
+        default=None,
+        help="optional config file, accepted for symmetry with the other phone "
+        "tools; this capture reads no setting from it and takes the run's "
+        "device lock with or without one",
+    )
     args = ap.parse_args(argv)
 
     out_dir = Path(args.out) if args.out else _default_out_dir()
 
-    print("READ-ONLY: this tool never taps or swipes the phone. You stay in control the whole "
-          "time; it only reads screencaps.")
-    print("Frames are LOCAL-ONLY: ops/calibration/ is gitignored — these are real people's "
-          "dating profiles, so do not upload, copy outside the repo, or transmit them anywhere.")
+    print(
+        "READ-ONLY: this tool never taps or swipes the phone. You stay in control the whole "
+        "time; it only reads screencaps."
+    )
+    print(
+        "Frames are LOCAL-ONLY: ops/calibration/ is gitignored — these are real people's "
+        "dating profiles, so do not upload, copy outside the repo, or transmit them anywhere."
+    )
 
     # This capture is NOT gated on a config that validates, and that is deliberate. The device
     # lock is one file per user for "the Android phone" and reads nothing out of a config
@@ -253,8 +310,11 @@ def main(argv: list[str] | None = None) -> None:
             cfg_mod.load(args.config)
         except Exception as exc:  # noqa: BLE001 -- one operator-facing warning, never fatal
             print(f"WARNING: could not load {args.config}: {exc}", file=sys.stderr)
-            print("WARNING: continuing -- this capture reads nothing from the config, and "
-                  "still takes the run's device lock.", file=sys.stderr)
+            print(
+                "WARNING: continuing -- this capture reads nothing from the config, and "
+                "still takes the run's device lock.",
+                file=sys.stderr,
+            )
 
     def _capture_holding_the_device() -> None:
         # The lock spans the WHOLE capture, not just the session open: this reads only, but a
@@ -264,12 +324,19 @@ def main(argv: list[str] | None = None) -> None:
         serial = _resolve_serial(args.serial)
         adb = Adb(serial)
 
-        print(f"\nCapturing from {serial} for {args.seconds:.0f}s at ~{args.interval:.2f}s "
-              f"intervals -> {out_dir}")
+        print(
+            f"\nCapturing from {serial} for {args.seconds:.0f}s at ~{args.interval:.2f}s "
+            f"intervals -> {out_dir}"
+        )
         print("Scroll the profile by hand now. Press Ctrl-C to stop early.\n")
 
-        capture(adb=adb, seconds=args.seconds, interval=args.interval, out_dir=out_dir,
-                serial=serial)
+        capture(
+            adb=adb,
+            seconds=args.seconds,
+            interval=args.interval,
+            out_dir=out_dir,
+            serial=serial,
+        )
 
     # `None` for the config path is the config-FREE acquisition, not a fallback: it takes the
     # same lock via the same class and path (see tools/_devicelock.py). Passing `args.config`

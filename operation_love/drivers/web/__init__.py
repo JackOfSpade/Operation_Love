@@ -1,4 +1,5 @@
 """Reusable Playwright/patchright base for future browser-based dating apps."""
+
 from __future__ import annotations
 
 from .playwright_base import (

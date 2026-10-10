@@ -107,6 +107,7 @@ WHAT THIS IS NOT
   codebase's existing `profile_id=""` convention for "no identity available") simply cannot
   join to anything -- which is the correct, honest answer, not a bug to route around.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -155,8 +156,13 @@ def compute_profile_key(fingerprint: Sequence[int], grid: tuple[int, int]) -> st
         "grid": [int(grid[0]), int(grid[1])],
         "fingerprint": [int(value) for value in fingerprint],
     }
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"),
-                        ensure_ascii=True, allow_nan=False)
+    encoded = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        allow_nan=False,
+    )
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 

@@ -9063,3 +9063,24 @@ def test_deadletter_section_degrades_on_an_unreadable_file_without_raising(tmp_p
     md = bugreport._opener_rejection_deadletter_md(str(cfg))
 
     assert "could not be read" in md
+
+
+def test_config_section_names_the_recall_target_and_the_auto_review_settings(tmp_path):
+    # A bug report that prints only like_threshold hides the number the bot actually uses once a
+    # recall target is set (the threshold is then only a placeholder).
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        "ranker:\n"
+        "  like_recall_target: 0.9\n"
+        "  contextual_recall_budget: 0.03\n"
+        "auto_review:\n"
+        "  enabled: false\n"
+        "  random_share: 0.25\n",
+        encoding="utf-8",
+    )
+
+    text = bugreport._config_md(str(config))
+
+    assert "like_recall_target=0.9" in text
+    assert "contextual_recall_budget=0.03" in text
+    assert "auto_review: enabled=False, random_share=0.25" in text

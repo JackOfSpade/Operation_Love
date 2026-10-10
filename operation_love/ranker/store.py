@@ -9,8 +9,10 @@ the store — so the hot path never blocks on per-row I/O regardless of backend.
 from __future__ import annotations
 
 import datetime
+import hashlib
 import json
 import math
+import numbers
 import sqlite3
 import threading
 import time
@@ -125,6 +127,228 @@ def normalize_timestamp_datetime(
     return _timestamp_parts(value, label=label, allow_epoch_text=allow_epoch_text)[1]
 
 
+# --- auto pass review ------------------------------------------------------------------------
+# AUTO archives every profile the model PASSES (screenshots + score + embedding) so the owner
+# can later say "I would have liked her" or "correct pass". Every answer becomes a training
+# label. Both backends share the vocabulary and the argument validation below, so SQLiteStore
+# and BigQueryStore can never disagree about what a valid archive or review is.
+#
+# `random` passes are drawn uniformly at record time (worker's `auto_review_random_share`) and
+# are the UNBIASED sample the live false-pass rate is measured on; `near_cut` passes are the
+# rest, reviewed closest-to-the-threshold first because those are the labels that move the
+# decision boundary the most.
+AUTO_REVIEW_KIND_RANDOM = "random"
+AUTO_REVIEW_KIND_NEAR_CUT = "near_cut"
+AUTO_REVIEW_KINDS = (AUTO_REVIEW_KIND_RANDOM, AUTO_REVIEW_KIND_NEAR_CUT)
+# `labels.source` of an answer. The shared prefix is what ranker/threshold.py keys on to tell a
+# review label from a MANUAL calibration label (a review label must never calibrate the recall
+# threshold it is also being used to measure).
+AUTO_REVIEW_SOURCE_PREFIX = "auto_review"
+DEFAULT_AUTO_REVIEW_WINDOW = 200
+# What "Remove last saved label" says when the newest label is an answer to an auto-pass review
+# (both backends raise ValueError with it; the hub shows it to the owner as it is).
+REVIEW_ANSWER_IS_LATEST_MESSAGE = (
+    "the latest saved label is an answer to an auto-pass review, so nothing was removed "
+    "(an older swipe is not touched either); use 'Undo last answer' on the review card"
+)
+
+
+def auto_review_label_source(kind: str) -> str:
+    """The `labels.source` an answer to a pass of this kind is stored under."""
+    return f"{AUTO_REVIEW_SOURCE_PREFIX}_{_require_auto_review_kind(kind)}"
+
+
+def _require_auto_review_kind(kind: object) -> str:
+    if kind not in AUTO_REVIEW_KINDS:
+        raise ValueError(
+            f"auto pass review kind must be one of {AUTO_REVIEW_KINDS!r} (got {kind!r})"
+        )
+    return str(kind)
+
+
+def _require_text(value: object, name: str) -> str:
+    """A non-empty string identity field.
+
+    An archive keyed by an empty profile_id could never be found again by the review that has
+    to answer it, so an empty/non-string identity is refused up front instead of stored.
+    """
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"auto pass {name} must be a non-empty string (got {value!r})")
+    return value
+
+
+def _require_optional_app(app: object) -> str | None:
+    return None if app is None else _require_text(app, "app")
+
+
+def _require_window(window: object) -> int:
+    if type(window) is not int or window <= 0:
+        raise ValueError(
+            f"auto review window must be a positive integer (got {window!r})"
+        )
+    return window
+
+
+def require_auto_pass_retention(
+    max_passes: object, max_age_days: object
+) -> tuple[int | None, float | None]:
+    """Normalise ``prune_auto_passes``' two bounds; ``None`` (or 0) means unbounded.
+
+    Both backends share this so a typo in a retention knob raises the same ValueError
+    everywhere instead of silently meaning "keep everything" in one of them.
+    """
+    kept: int | None = None
+    if max_passes is not None:
+        if type(max_passes) is not int or max_passes < 0:
+            raise ValueError(
+                f"auto pass retention max_passes must be a non-negative integer or None "
+                f"(got {max_passes!r})"
+            )
+        kept = max_passes or None
+    age: float | None = None
+    if max_age_days is not None:
+        if isinstance(max_age_days, bool) or not isinstance(max_age_days, numbers.Real):
+            raise ValueError(
+                f"auto pass retention max_age_days must be a finite number >= 0 or None "
+                f"(got {max_age_days!r})"
+            )
+        try:
+            age = float(max_age_days)
+        except (OverflowError, ValueError) as exc:
+            raise ValueError(
+                f"auto pass retention max_age_days must be a finite number >= 0 or None "
+                f"(got {max_age_days!r})"
+            ) from exc
+        if not math.isfinite(age) or age < 0:
+            raise ValueError(
+                f"auto pass retention max_age_days must be a finite number >= 0 or None "
+                f"(got {max_age_days!r})"
+            )
+        age = age or None
+    return kept, age
+
+
+def doomed_auto_passes(
+    passes: list[tuple[str, str, float]],
+    max_passes: int | None,
+    max_age_days: float | None,
+    now: float,
+) -> list[tuple[str, str]]:
+    """The ``(app, profile_id)`` of every archived pass retention removes.
+
+    ``passes`` is ``(app, profile_id, created_at epoch)``, any order.  A pass goes when it is
+    older than ``max_age_days`` OR is not among the ``max_passes`` newest (oldest first), whether
+    or not the owner has answered it: the photos and embedding of a stranger have no use once
+    the answer (a label, which keeps its own embedding) is recorded or the pass has gone stale.
+    """
+    ordered = sorted(passes, key=lambda p: (p[2], p[1]), reverse=True)  # newest first
+    horizon = None if max_age_days is None else now - max_age_days * 86400.0
+    doomed = []
+    for rank, (app, profile_id, created_at) in enumerate(ordered):
+        too_many = max_passes is not None and rank >= max_passes
+        too_old = horizon is not None and created_at < horizon
+        if too_many or too_old:
+            doomed.append((app, profile_id))
+    return doomed
+
+
+def _finite_float(value: object, name: str) -> float:
+    # numbers.Real (not int/float) because the embedding and score arrive as numpy scalars
+    # (np.float32 is not a float subclass); bool is excluded because True is not a score.
+    if isinstance(value, bool) or not isinstance(value, numbers.Real):
+        raise ValueError(f"auto pass {name} must be a finite number (got {value!r})")
+    try:
+        number = float(value)
+    except (OverflowError, ValueError) as exc:
+        raise ValueError(
+            f"auto pass {name} must be a finite number (got {value!r})"
+        ) from exc
+    if not math.isfinite(number):
+        raise ValueError(f"auto pass {name} must be a finite number (got {value!r})")
+    return number
+
+
+def validate_auto_pass(
+    *,
+    run_id: object,
+    app: object,
+    profile_id: object,
+    score: object,
+    threshold: object,
+    embedding: object,
+    random_sample: object,
+) -> dict:
+    """Validate and normalise the scalar half of a pass archive; raises ValueError.
+
+    Everything here is a CALLER bug rather than a transient failure, so it raises instead of
+    returning False: the False return is reserved for "the photos could not be archived".
+    ``random_sample`` must be a real bool -- it decides which pool the pass is reviewed in and
+    therefore which statistic its answer feeds, so a truthy string must not slip through.
+    """
+    if type(random_sample) is not bool:
+        raise ValueError(
+            f"auto pass random_sample must be a bool (got {random_sample!r})"
+        )
+    if isinstance(embedding, (str, bytes)) or not hasattr(embedding, "__iter__"):
+        raise ValueError("auto pass embedding must be a sequence of finite numbers")
+    vector = [_finite_float(x, "embedding element") for x in embedding]
+    if not vector:
+        raise ValueError("auto pass embedding must not be empty")
+    return {
+        "run_id": _require_text(run_id, "run_id"),
+        "app": _require_text(app, "app"),
+        "profile_id": _require_text(profile_id, "profile_id"),
+        "score": _finite_float(score, "score"),
+        "threshold": _finite_float(threshold, "threshold"),
+        "embedding": vector,
+        "random_sample": random_sample,
+    }
+
+
+def clean_auto_pass_photos(photos: object, profile_id: str) -> list[bytes] | None:
+    """The photo list to archive, or None (after a loud print) when nothing valid can be.
+
+    A pass the owner cannot SEE cannot be judged, and an answer given without the screenshots
+    would train the ranker on a guess. So one unusable photo spoils the whole archive: None
+    means "do not record this pass", exactly like record_profile's short-photo-set refusal.
+    """
+    if photos is None:
+        photos = []
+    try:
+        photo_list = list(photos)  # type: ignore[call-overload]
+    except TypeError:
+        print(
+            f"Auto pass archive warning: photos for profile {profile_id} were not a list; "
+            "skipping the pass archive."
+        )
+        return None
+    if not photo_list:
+        print(
+            f"Auto pass archive warning: captured 0 photos for profile {profile_id}; "
+            "skipping the pass archive."
+        )
+        return None
+    out: list[bytes] = []
+    for index, photo in enumerate(photo_list):
+        if not isinstance(photo, (bytes, bytearray)) or not photo:
+            print(
+                f"Auto pass archive warning: photo {index} of profile {profile_id} is not a "
+                "non-empty byte string; skipping the pass archive."
+            )
+            return None
+        out.append(bytes(photo))
+    return out
+
+
+def photo_content_type(data: bytes) -> str:
+    """Sniffed MIME type (same rules as bigquery_store._image_type, which needs the ext too)."""
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if data.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    return "application/octet-stream"
+
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS labels (
     id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT, app TEXT, created_at REAL,
@@ -172,6 +396,32 @@ CREATE TABLE IF NOT EXISTS opener_retractions (
     reason TEXT NOT NULL, evidence_ref TEXT NOT NULL, created_at REAL NOT NULL,
     PRIMARY KEY (correction_id, opener_created_at)
 );
+-- AUTO pass archive + owner review (see the "auto pass review" helpers above). Brand-new
+-- tables: CREATE ... IF NOT EXISTS alone reaches an existing db file, no ALTER needed. They are
+-- deliberately NOT part of `labels`/`decisions` or the retraction machinery: an archived pass
+-- is not a label until the owner answers it, and the answer is written through add_label.
+-- (app, profile_id) is unique: profile_id is a per-card uuid, so a repeat is a bug, and the
+-- UNIQUE index on reviews is what makes "one answer per pass" hold across processes.
+CREATE TABLE IF NOT EXISTS auto_passes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL, app TEXT NOT NULL,
+    profile_id TEXT NOT NULL, created_at REAL NOT NULL, score REAL NOT NULL,
+    threshold REAL NOT NULL, embedding TEXT NOT NULL, photo_count INTEGER NOT NULL,
+    profile_name TEXT, random_sample INTEGER NOT NULL, capture_truncated INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS auto_passes_identity ON auto_passes (app, profile_id);
+CREATE TABLE IF NOT EXISTS auto_pass_photos (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT, app TEXT, profile_id TEXT,
+    created_at REAL, photo_index INTEGER, gcs_uri TEXT, sha256 TEXT, byte_size INTEGER,
+    content_type TEXT, photo BLOB NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS auto_pass_photos_identity
+    ON auto_pass_photos (app, profile_id, photo_index);
+CREATE TABLE IF NOT EXISTS auto_pass_reviews (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, profile_id TEXT NOT NULL, app TEXT NOT NULL,
+    reviewed_at REAL NOT NULL, would_like INTEGER NOT NULL, kind TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS auto_pass_reviews_identity
+    ON auto_pass_reviews (app, profile_id);
 CREATE TABLE IF NOT EXISTS spend (
     id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT, created_at REAL, model TEXT,
     input_tokens INTEGER, output_tokens INTEGER, cache_read_tokens INTEGER,
@@ -353,11 +603,27 @@ class SQLiteStore:
         self._tighten_private_files()
 
     def load_labels(self) -> list[tuple[bool, list[float]]]:
+        # A projection of load_label_rows, never a second query: the two must return the
+        # same rows in the same order (same retraction filter) or a caller zipping them
+        # against each other would silently mislabel.
+        return [(liked, emb) for liked, emb, _source in self.load_label_rows()]
+
+    def load_label_rows(self) -> list[tuple[bool, list[float], str]]:
+        """Exactly the rows load_labels() returns, plus each label's `source` ("" for NULL).
+
+        The source is what lets the ranker split MANUAL calibration labels from auto-review
+        answers (ranker/threshold.py): a review answer is training data but must never set the
+        recall threshold it is also used to audit.
+        """
         with self._lock:
             rows = self.con.execute(
-                f"SELECT l.liked, l.embedding FROM labels l WHERE {_LABEL_NOT_RETRACTED}"
+                "SELECT l.liked, l.embedding, l.source FROM labels l "
+                f"WHERE {_LABEL_NOT_RETRACTED}"
             ).fetchall()
-        return [(bool(liked), json.loads(emb)) for liked, emb in rows]
+        return [
+            (bool(liked), json.loads(emb), str(source or ""))
+            for liked, emb, source in rows
+        ]
 
     def _visible_openers_count(self, run_id: str, app: str) -> int:
         """Count non-tombstoned openers, retaining compatibility with old test/local schemas."""
@@ -410,38 +676,75 @@ class SQLiteStore:
         **_,
     ):
         with self._lock:
-            self.con.execute(
-                "INSERT INTO labels (run_id, app, created_at, liked, source, embedding,"
-                " photo_count, profile_id) VALUES (?,?,?,?,?,?,?,?)",
-                (
-                    run_id,
-                    app,
-                    time.time(),
-                    int(liked),
-                    source,
-                    json.dumps(embedding, allow_nan=False),
-                    photo_count,
-                    profile_id,
-                ),
-            )
-            label_id = self.con.execute("SELECT last_insert_rowid()").fetchone()[0]
-            self.con.execute(
-                "INSERT INTO training_label_names (label_id, profile_name) VALUES (?,?)",
-                (label_id, str(profile_name or "")),
+            self._insert_label_locked(
+                run_id,
+                app,
+                liked,
+                embedding,
+                source,
+                photo_count,
+                profile_id,
+                profile_name,
             )
             self._commit()
 
+    def _insert_label_locked(
+        self,
+        run_id,
+        app,
+        liked,
+        embedding,
+        source,
+        photo_count,
+        profile_id,
+        profile_name,
+    ) -> None:
+        """INSERT one label (+ its display-name row) WITHOUT committing.
+
+        Caller holds ``self._lock`` and owns the commit/rollback. Split out of add_label so
+        record_auto_pass_review can put the label and its review row in ONE transaction.
+        """
+        self.con.execute(
+            "INSERT INTO labels (run_id, app, created_at, liked, source, embedding,"
+            " photo_count, profile_id) VALUES (?,?,?,?,?,?,?,?)",
+            (
+                run_id,
+                app,
+                time.time(),
+                int(liked),
+                source,
+                json.dumps(embedding, allow_nan=False),
+                photo_count,
+                profile_id,
+            ),
+        )
+        label_id = self.con.execute("SELECT last_insert_rowid()").fetchone()[0]
+        self.con.execute(
+            "INSERT INTO training_label_names (label_id, profile_name) VALUES (?,?)",
+            (label_id, str(profile_name or "")),
+        )
+
     def remove_latest_training_label(self) -> dict | None:
-        """Delete and identify the newest currently-active training label."""
+        """Delete and identify the newest currently-active training label.
+
+        When that newest label is an answer to an archived AUTO pass (source
+        ``auto_review...``) this REFUSES with ``ValueError`` instead of deleting anything:
+        deleting the answer would leave its ``auto_pass_reviews`` row marked answered with no
+        label behind it, and reaching past it to delete the newest older MANUAL label (what an
+        earlier version did) silently destroyed an unrelated swipe while the mistaken answer
+        stayed in the training set.  ``undo_latest_auto_review`` is the undo for an answer.
+        """
         with self._lock:
             row = self.con.execute(
-                "SELECT l.id, n.profile_name, l.profile_id FROM labels AS l "
+                "SELECT l.id, n.profile_name, l.profile_id, l.source FROM labels AS l "
                 "LEFT JOIN training_label_names AS n ON n.label_id=l.id "
                 f"WHERE {_LABEL_NOT_RETRACTED} "
-                "ORDER BY l.created_at DESC, l.id DESC LIMIT 1"
+                "ORDER BY l.created_at DESC, l.id DESC LIMIT 1",
             ).fetchone()
             if row is None:
                 return None
+            if str(row[3] or "").startswith(AUTO_REVIEW_SOURCE_PREFIX):
+                raise ValueError(REVIEW_ANSWER_IS_LATEST_MESSAGE)
             self.con.execute("DELETE FROM labels WHERE id=?", (row[0],))
             self.con.execute(
                 "DELETE FROM training_label_names WHERE label_id=?", (row[0],)
@@ -700,11 +1003,22 @@ class SQLiteStore:
                 )
 
             def effective_labels(liked: int):
+                # An answer to an archived AUTO pass is stored under the pass's own run_id with
+                # source `auto_review_*`.  It is not a swipe the owner made in that run, so it
+                # is not "Like evidence" for it: counting it would let one tap on the review
+                # card make the cleanup planner refuse a run it had nothing to say about.
                 return int(
                     self.con.execute(
                         "SELECT COUNT(*) FROM labels l WHERE run_id=? AND app=? AND liked=? "
-                        f"AND {_LABEL_NOT_RETRACTED}",
-                        (run_id, app, liked),
+                        f"AND {_LABEL_NOT_RETRACTED} "
+                        "AND substr(COALESCE(l.source,''), 1, ?) <> ?",
+                        (
+                            run_id,
+                            app,
+                            liked,
+                            len(AUTO_REVIEW_SOURCE_PREFIX),
+                            AUTO_REVIEW_SOURCE_PREFIX,
+                        ),
                     ).fetchone()[0]
                 )
 
@@ -1029,6 +1343,432 @@ class SQLiteStore:
                 ),
             )
             self._commit()
+
+    # --- auto pass archive + owner review ---------------------------------------------
+    def record_auto_pass(
+        self,
+        *,
+        run_id,
+        app,
+        profile_id,
+        score,
+        threshold,
+        embedding,
+        photos,
+        profile_name="",
+        random_sample,
+        capture_truncated=False,
+    ) -> bool:
+        """Archive one AUTO pass (manifest + the exact screenshots the model saw).
+
+        Never writes a label, a decision, or a `profiles`/`profile_photos` row: the training
+        archive is what retraction planning reasons about, and an unanswered pass is not
+        training data. Returns False (after a loud print) when the photos cannot be archived or
+        the pass was already archived; raises ValueError for malformed arguments. The manifest
+        and every photo commit in ONE transaction, so a crash can never leave a pass the owner
+        is shown without its screenshots.
+        """
+        args = validate_auto_pass(
+            run_id=run_id,
+            app=app,
+            profile_id=profile_id,
+            score=score,
+            threshold=threshold,
+            embedding=embedding,
+            random_sample=random_sample,
+        )
+        photo_list = clean_auto_pass_photos(photos, args["profile_id"])
+        if photo_list is None:
+            return False
+        embedding_json = json.dumps(args["embedding"], allow_nan=False)
+        created_at = time.time()
+        with self._lock:
+            try:
+                self.con.execute(
+                    "INSERT INTO auto_passes (run_id, app, profile_id, created_at, score,"
+                    " threshold, embedding, photo_count, profile_name, random_sample,"
+                    " capture_truncated) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        args["run_id"],
+                        args["app"],
+                        args["profile_id"],
+                        created_at,
+                        args["score"],
+                        args["threshold"],
+                        embedding_json,
+                        len(photo_list),
+                        str(profile_name or ""),
+                        int(args["random_sample"]),
+                        int(bool(capture_truncated)),
+                    ),
+                )
+                for index, photo in enumerate(photo_list):
+                    self.con.execute(
+                        "INSERT INTO auto_pass_photos (run_id, app, profile_id, created_at,"
+                        " photo_index, gcs_uri, sha256, byte_size, content_type, photo)"
+                        " VALUES (?,?,?,?,?,?,?,?,?,?)",
+                        (
+                            args["run_id"],
+                            args["app"],
+                            args["profile_id"],
+                            created_at,
+                            index,
+                            "",  # no object store on this backend; the bytes live in `photo`
+                            hashlib.sha256(photo).hexdigest(),
+                            len(photo),
+                            photo_content_type(photo),
+                            photo,
+                        ),
+                    )
+                self._commit()
+            except sqlite3.IntegrityError:
+                self.con.rollback()
+                print(
+                    f"Auto pass archive warning: profile {args['profile_id']} ({args['app']}) "
+                    "was already archived; not writing it again."
+                )
+                return False
+            except BaseException:
+                self.con.rollback()
+                raise
+        return True
+
+    def next_auto_pass_for_review(self, *, kind, app=None) -> dict | None:
+        """One unreviewed pass of ``kind``, or None when that pool is empty.
+
+        ``random``: uniform among the random_sample passes (the unbiased sample).
+        ``near_cut``: among the rest, the one closest below its own threshold, i.e. the
+        largest (score - threshold) -- the answers that teach the boundary the most.
+        """
+        kind = _require_auto_review_kind(kind)
+        app = _require_optional_app(app)
+        where = [
+            "p.random_sample = ?",
+            "NOT EXISTS (SELECT 1 FROM auto_pass_reviews r "
+            "WHERE r.app = p.app AND r.profile_id = p.profile_id)",
+        ]
+        params: list = [1 if kind == AUTO_REVIEW_KIND_RANDOM else 0]
+        if app is not None:
+            where.append("p.app = ?")
+            params.append(app)
+        order = (
+            "RANDOM()"
+            if kind == AUTO_REVIEW_KIND_RANDOM
+            else "(p.score - p.threshold) DESC, p.created_at, p.id"
+        )
+        with self._lock:
+            row = self.con.execute(
+                "SELECT p.profile_id, p.app, p.run_id, p.created_at, p.score, p.threshold,"
+                " p.photo_count, p.profile_name FROM auto_passes p WHERE "
+                + " AND ".join(where)
+                + f" ORDER BY {order} LIMIT 1",
+                params,
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "profile_id": row[0],
+            "app": row[1],
+            "run_id": row[2],
+            "created_at": float(row[3]),
+            "score": float(row[4]),
+            "threshold": float(row[5]),
+            "photo_count": int(row[6]),
+            "profile_name": str(row[7] or ""),
+            "kind": kind,
+        }
+
+    def auto_pass_photo(self, *, profile_id, index) -> bytes | None:
+        """The stored PNG bytes of one archived pass photo, or None when there is none."""
+        _require_text(profile_id, "profile_id")
+        if type(index) is not int or index < 0:
+            raise ValueError(
+                f"auto pass photo index must be a non-negative integer (got {index!r})"
+            )
+        with self._lock:
+            row = self.con.execute(
+                "SELECT photo FROM auto_pass_photos WHERE profile_id=? AND photo_index=?"
+                " ORDER BY id LIMIT 1",
+                (profile_id, index),
+            ).fetchone()
+        return None if row is None else bytes(row[0])
+
+    def record_auto_pass_review(self, *, profile_id, would_like) -> dict:
+        """Record the owner's answer to one archived pass: a review row AND a training label.
+
+        Raises ValueError for an unknown, ambiguous or already-reviewed pass (an answer is
+        final: a second tap must not become a second label). The label and the review row
+        commit in ONE transaction -- a crash leaves neither, never a review without its label
+        or a label without its review.
+        """
+        _require_text(profile_id, "profile_id")
+        if type(would_like) is not bool:
+            raise ValueError(f"would_like must be a bool (got {would_like!r})")
+        with self._lock:
+            passes = self.con.execute(
+                "SELECT run_id, app, embedding, photo_count, profile_name, random_sample"
+                " FROM auto_passes WHERE profile_id=?",
+                (profile_id,),
+            ).fetchall()
+            if not passes:
+                raise ValueError(f"no archived auto pass for profile {profile_id!r}")
+            if len(passes) > 1:
+                raise ValueError(
+                    f"profile {profile_id!r} matches {len(passes)} archived auto passes; "
+                    "refusing to guess which one is being answered"
+                )
+            run_id, app, embedding_json, photo_count, profile_name, random_sample = (
+                passes[0]
+            )
+            if random_sample not in (0, 1):
+                raise ValueError(
+                    f"archived auto pass {profile_id!r} has no valid random_sample flag"
+                )
+            kind = (
+                AUTO_REVIEW_KIND_RANDOM if random_sample else AUTO_REVIEW_KIND_NEAR_CUT
+            )
+            source = auto_review_label_source(kind)
+            if self.con.execute(
+                "SELECT 1 FROM auto_pass_reviews WHERE app=? AND profile_id=?",
+                (app, profile_id),
+            ).fetchone():
+                raise ValueError(f"auto pass {profile_id!r} was already reviewed")
+            try:
+                self._insert_label_locked(
+                    run_id,
+                    app,
+                    would_like,
+                    json.loads(embedding_json),
+                    source,
+                    int(photo_count),
+                    profile_id,
+                    profile_name,
+                )
+                self.con.execute(
+                    "INSERT INTO auto_pass_reviews (profile_id, app, reviewed_at,"
+                    " would_like, kind) VALUES (?,?,?,?,?)",
+                    (profile_id, app, time.time(), int(would_like), kind),
+                )
+                self._commit()
+            except sqlite3.IntegrityError as exc:
+                # Another process answered between our check and our insert; the UNIQUE
+                # index is the authority. Roll the label back with it.
+                self.con.rollback()
+                raise ValueError(
+                    f"auto pass {profile_id!r} was already reviewed"
+                ) from exc
+            except BaseException:
+                self.con.rollback()
+                raise
+        return {"kind": kind, "label_source": source}
+
+    def undo_latest_auto_review(self) -> dict | None:
+        """Undo the newest answer to an archived pass: delete its label AND its review row.
+
+        The pass goes back to the unreviewed pool and can be answered again.  Returns the
+        undone answer (``profile_id``, ``profile_name``, ``kind``, ``would_like``), or ``None``
+        when there is no answer to undo.  One transaction, so a crash can never leave a review
+        row without its label or a label without its review row.
+        """
+        with self._lock:
+            review = self.con.execute(
+                "SELECT id, profile_id, app, kind, would_like FROM auto_pass_reviews"
+                " ORDER BY reviewed_at DESC, id DESC LIMIT 1"
+            ).fetchone()
+            if review is None:
+                return None
+            review_id, profile_id, app, kind, would_like = review
+            source = auto_review_label_source(kind)
+            label = self.con.execute(
+                "SELECT l.id, n.profile_name FROM labels AS l"
+                " LEFT JOIN training_label_names AS n ON n.label_id=l.id"
+                " WHERE l.app=? AND l.profile_id=? AND l.source=?"
+                " ORDER BY l.id DESC LIMIT 1",
+                (app, profile_id, source),
+            ).fetchone()
+            name = label[1] if label is not None else None
+            if name is None:
+                manifest = self.con.execute(
+                    "SELECT profile_name FROM auto_passes WHERE app=? AND profile_id=?",
+                    (app, profile_id),
+                ).fetchone()
+                name = manifest[0] if manifest is not None else None
+            try:
+                self.con.execute(
+                    "DELETE FROM auto_pass_reviews WHERE id=?", (review_id,)
+                )
+                if label is not None:
+                    self.con.execute("DELETE FROM labels WHERE id=?", (label[0],))
+                    self.con.execute(
+                        "DELETE FROM training_label_names WHERE label_id=?", (label[0],)
+                    )
+                self._commit()
+            except BaseException:
+                self.con.rollback()
+                raise
+        return {
+            "profile_id": str(profile_id),
+            "profile_name": str(name or ""),
+            "kind": kind,
+            "would_like": bool(would_like),
+        }
+
+    def prune_auto_passes(self, *, max_passes=None, max_age_days=None, now=None) -> int:
+        """Delete archived passes (manifest + embedding + screenshots) beyond the retention.
+
+        A pass goes when it is older than ``max_age_days`` or not among the ``max_passes``
+        newest, answered or not; ``None``/0 leaves that bound off.  Returns how many passes
+        were removed.  The owner's ANSWERS are untouched: labels, review rows and the decisions
+        that the live false-pass estimate reads all stay.  One transaction.  SQLite does not
+        shrink the file, but freed pages are reused, so the database stops growing.
+        """
+        max_passes, max_age_days = require_auto_pass_retention(max_passes, max_age_days)
+        if max_passes is None and max_age_days is None:
+            return 0
+        clock = (
+            time.time() if now is None else normalize_timestamp_epoch(now, label="now")
+        )
+        with self._lock:
+            passes = [
+                (row[0], row[1], float(row[2]))
+                for row in self.con.execute(
+                    "SELECT app, profile_id, created_at FROM auto_passes"
+                ).fetchall()
+            ]
+            doomed = doomed_auto_passes(passes, max_passes, max_age_days, clock)
+            if not doomed:
+                return 0
+            try:
+                for app, profile_id in doomed:
+                    self.con.execute(
+                        "DELETE FROM auto_pass_photos WHERE app=? AND profile_id=?",
+                        (app, profile_id),
+                    )
+                    self.con.execute(
+                        "DELETE FROM auto_passes WHERE app=? AND profile_id=?",
+                        (app, profile_id),
+                    )
+                self._commit()
+            except BaseException:
+                self.con.rollback()
+                raise
+        return len(doomed)
+
+    def auto_review_stats(self, *, app=None, window=DEFAULT_AUTO_REVIEW_WINDOW) -> dict:
+        """Counts the ranker's live false-pass estimate and the hub's review card read.
+
+        ``random_reviewed`` / ``random_would_like`` cover the most recent ``window`` random
+        reviews only (a rolling estimate that tracks the current model); near-cut counts are
+        cumulative. ``auto_likes`` / ``auto_passes`` count AUTO decisions made since the first
+        archived pass's own decision -- the denominator of "how much of what AUTO decides is a
+        pass" -- and are 0/0 while nothing has been archived.  ``auto_model_passes`` is the part
+        of ``auto_passes`` that is a genuine MODEL pass (it entered the archive); the rest are
+        likes the session policy or like-ratio ceiling demoted, which the random pool never
+        samples.
+        """
+        app = _require_optional_app(app)
+        window = _require_window(window)
+        app_clause = "" if app is None else " AND app=?"
+        app_params: list = [] if app is None else [app]
+        with self._lock:
+
+            def pending(random_flag: int) -> int:
+                clause = "" if app is None else " AND p.app=?"
+                return int(
+                    self.con.execute(
+                        "SELECT COUNT(*) FROM auto_passes p WHERE p.random_sample=?"
+                        + clause
+                        + " AND NOT EXISTS (SELECT 1 FROM auto_pass_reviews r"
+                        " WHERE r.app=p.app AND r.profile_id=p.profile_id)",
+                        [random_flag, *app_params],
+                    ).fetchone()[0]
+                )
+
+            recent_random = self.con.execute(
+                "SELECT COUNT(*), COALESCE(SUM(would_like), 0) FROM ("
+                "SELECT would_like FROM auto_pass_reviews WHERE kind=?"
+                + app_clause
+                + " ORDER BY reviewed_at DESC, id DESC LIMIT ?)",
+                [AUTO_REVIEW_KIND_RANDOM, *app_params, window],
+            ).fetchone()
+            near_cut = self.con.execute(
+                "SELECT COUNT(*), COALESCE(SUM(would_like), 0) FROM auto_pass_reviews"
+                " WHERE kind=?" + app_clause,
+                [AUTO_REVIEW_KIND_NEAR_CUT, *app_params],
+            ).fetchone()
+
+            # The window opens at the DECISION row of the earliest archived pass, not at that
+            # pass's own auto_passes row: the worker records the decision first and archives
+            # afterwards, so counting from auto_passes.created_at would silently drop the very
+            # decision that started the window and bias pass_share by one pass (3 archived
+            # passes read back as auto_passes == 2).  The join is by the pass's lineage
+            # profile_id, so it is exact rather than a time tolerance; a pass whose decision row
+            # is missing falls back to its own timestamp.
+            opened_at = [
+                row[0]
+                for row in (
+                    self.con.execute(
+                        "SELECT MIN(created_at) FROM auto_passes WHERE 1=1"
+                        + app_clause,
+                        app_params,
+                    ).fetchone(),
+                    self.con.execute(
+                        "SELECT MIN(d.created_at) FROM decisions d JOIN auto_passes p"
+                        " ON p.app=d.app AND p.profile_id=d.profile_id"
+                        " WHERE d.source='auto' AND d.decision='dislike'"
+                        + app_clause.replace("app", "d.app"),
+                        app_params,
+                    ).fetchone(),
+                )
+                if row is not None and row[0] is not None
+            ]
+            window_start = min(opened_at, default=None)
+
+            def decisions(decision: str) -> int:
+                if window_start is None:
+                    return 0
+                return int(
+                    self.con.execute(
+                        "SELECT COUNT(*) FROM decisions WHERE source='auto' AND decision=?"
+                        + app_clause
+                        + " AND created_at >= ?",
+                        [decision, *app_params, window_start],
+                    ).fetchone()[0]
+                )
+
+            def model_passes() -> int:
+                # The AUTO passes that actually entered the archive: matched by the pass's
+                # lineage profile_id, exactly like the window start above (EXISTS, not a
+                # join, so a duplicated archive row can never count a decision twice).
+                # `auto_passes` also counts a like the session policy or the like-ratio
+                # ceiling demoted to a pass -- a decision row, but never archived, so the
+                # random pool that measures the false-pass rate cannot have sampled it.
+                if window_start is None:
+                    return 0
+                return int(
+                    self.con.execute(
+                        "SELECT COUNT(*) FROM decisions d"
+                        " WHERE d.source='auto' AND d.decision='dislike'"
+                        " AND EXISTS (SELECT 1 FROM auto_passes p"
+                        " WHERE p.app=d.app AND p.profile_id=d.profile_id)"
+                        + app_clause.replace("app", "d.app")
+                        + " AND d.created_at >= ?",
+                        [*app_params, window_start],
+                    ).fetchone()[0]
+                )
+
+            stats = {
+                "pending_random": pending(1),
+                "pending_near_cut": pending(0),
+                "random_reviewed": int(recent_random[0]),
+                "random_would_like": int(recent_random[1]),
+                "near_cut_reviewed": int(near_cut[0]),
+                "near_cut_would_like": int(near_cut[1]),
+                "auto_likes": decisions("like"),
+                "auto_passes": decisions("dislike"),
+                "auto_model_passes": model_passes(),
+            }
+        return stats
 
     def record_spend(self, run_id, model, usage: Usage, cost):
         with self._lock:

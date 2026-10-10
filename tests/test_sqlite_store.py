@@ -1315,6 +1315,78 @@ def test_sqlite_remove_latest_training_label_reports_its_profile_name(tmp_path):
         store.close()
 
 
+def test_sqlite_remove_latest_training_label_refuses_when_the_newest_is_a_review_answer(
+    tmp_path,
+):
+    """ "Remove last saved label" never deletes a review answer, and never reaches past one.
+
+    Deleting an ``auto_review...`` label would leave its review row marked answered with no
+    label behind it.  Skipping it to delete the newest older SWIPE (the first version) removed
+    an unrelated label while the mistaken answer stayed in the training set.
+    """
+    store = SQLiteStore(tmp_path / "store.db")
+    try:
+        store.add_label("r", "hinge", True, [1.0], profile_id="one", profile_name="Ada")
+        store.add_label(
+            "r",
+            "hinge",
+            False,
+            [2.0],
+            source="auto_review_near_cut",
+            profile_id="two",
+            profile_name="Bea",
+        )
+        store.add_label(
+            "r",
+            "hinge",
+            True,
+            [3.0],
+            source="auto_review_random",
+            profile_id="three",
+        )
+
+        before = store.load_label_rows()
+        assert [row[2] for row in before] == [
+            "manual",
+            "auto_review_near_cut",
+            "auto_review_random",
+        ]
+        with pytest.raises(ValueError, match="Undo last answer"):
+            store.remove_latest_training_label()
+        assert (
+            store.load_label_rows() == before
+        )  # not the answer, and not the older swipe
+
+        # A swipe NEWER than every answer is still removable.
+        store.add_label(
+            "r", "hinge", False, [4.0], profile_id="four", profile_name="Dee"
+        )
+        assert store.remove_latest_training_label() == {
+            "profile_name": "Dee",
+            "profile_id": "four",
+        }
+        assert store.load_label_rows() == before
+    finally:
+        store.close()
+
+
+def test_sqlite_remove_latest_training_label_still_removes_a_legacy_null_source(
+    tmp_path,
+):
+    store = SQLiteStore(tmp_path / "store.db")
+    try:
+        store.add_label("r", "hinge", True, [1.0], profile_id="one")
+        store.con.execute("UPDATE labels SET source=NULL")
+        store.con.commit()
+
+        assert store.remove_latest_training_label() == {
+            "profile_name": "",
+            "profile_id": "one",
+        }
+    finally:
+        store.close()
+
+
 class _LockWatchingConnection:
     """Forwards to the real connection, counting executes issued without the store lock."""
 

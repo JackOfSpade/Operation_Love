@@ -46,6 +46,38 @@ class RankerCfg:
     min_labels_to_engage: int = 40
     retrain_every: int = 1  # retrain live after each new observe label
     min_per_class: int = 5  # each class needs at least this many examples to train
+    # Recall-target threshold (ranker/threshold.py).  None = the legacy fixed `like_threshold`.
+    # A number in (0, 1) = "the bot may pass at most (1 - this) of the people I would like":
+    # every train sets the like cutoff to the highest score that keeps this share of the owner's
+    # MANUALLY labelled likes above it, measured on identity-grouped out-of-fold scores.  The
+    # owner prefers an auto-like they would have passed over an auto-pass they would have
+    # liked.  `like_threshold` is then only the starting value before the first calibration.
+    like_recall_target: float | None = None
+    # How much recall the AutoSessionPolicy contextual demotion (a marginal like declined on a
+    # tired/late session) may cost, in recall points.  Only meaningful with a recall target;
+    # it caps the policy's threshold lift at the lift worth this much recall.
+    contextual_recall_budget: float = 0.02
+
+
+@dataclass
+class AutoReviewCfg:
+    # AUTO archives every profile it passes (screenshots + score + embedding) so the hub can
+    # show it back to the owner, whose answer becomes a training label.  `enabled: false`
+    # stops the archiving (existing archived passes and reviews are untouched).
+    enabled: bool = True
+    # Share of archived passes that go to the RANDOM pool (an unbiased sample of what AUTO
+    # really passed, which measures the live false-pass rate); the rest are reviewed
+    # near-the-cut, where an answer teaches the model the most.  Strictly between 0 and 1.
+    random_share: float = 0.5
+    # RETENTION.  The archive holds real strangers' screenshots (a profile read keeps up to a
+    # dozen full-resolution captures, ~2.4 MB per pass), so it is bounded from the first pass
+    # rather than left to someone remembering to clean it -- the same decision the opener replay
+    # corpus took (ops/OPENER-REDESIGN.md, 2026-09-06 (j)): a maximum COUNT and a maximum AGE,
+    # oldest removed first, 0 meaning unlimited for either.  A pass past either bound loses its
+    # screenshots, embedding and manifest; the owner's ANSWERS (labels, review rows) are never
+    # touched.  Applied at every AUTO run's start and after every few archived passes.
+    max_archived_passes: int = 400
+    max_age_days: float = 30.0
 
 
 @dataclass
@@ -174,6 +206,9 @@ class Config:
     budget: BudgetCfg
     pacing: PacingCfg
     storage: StorageCfg
+    # Defaulted (unlike its siblings) so a Config built by hand -- tests, tools -- predates
+    # nothing: omitting the section is the same as the shipped defaults.
+    auto_review: AutoReviewCfg = field(default_factory=AutoReviewCfg)
 
 
 _TOP_LEVEL_KEYS = {
@@ -189,6 +224,7 @@ _TOP_LEVEL_KEYS = {
     "budget",
     "pacing",
     "limits",
+    "auto_review",
 }
 _PATHS_KEYS = {"data_dir", "db_file"}
 _STORAGE_KEYS = {"backend", "bigquery"}
@@ -484,6 +520,7 @@ def load(path: str | Path = "config.yaml") -> Config:
             backend=storage_raw.get("backend", "bigquery"),
             bigquery=bigquery_raw,
         ),
+        auto_review=_section(AutoReviewCfg, "auto_review", raw.get("auto_review", {})),
     )
 
 
@@ -1647,6 +1684,41 @@ def _validate_core_scalars(cfg: Config) -> None:
     )
     for name in ("min_labels_to_engage", "retrain_every", "min_per_class"):
         _require_positive_int(getattr(cfg.ranker, name), f"ranker.{name}")
+    if cfg.ranker.like_recall_target is not None:
+        _require_finite_real(cfg.ranker.like_recall_target, "ranker.like_recall_target")
+        if not 0 < cfg.ranker.like_recall_target < 1:
+            raise ValueError(
+                "Config: ranker.like_recall_target must be null (fixed like_threshold) or "
+                f"strictly between 0 and 1 (got {_safe_value_repr(cfg.ranker.like_recall_target)})"
+            )
+    _require_finite_real(
+        cfg.ranker.contextual_recall_budget,
+        "ranker.contextual_recall_budget",
+        minimum=0,
+        maximum=0.2,
+    )
+    _require_bool(cfg.auto_review.enabled, "auto_review.enabled")
+    if isinstance(cfg.auto_review.max_archived_passes, bool) or not isinstance(
+        cfg.auto_review.max_archived_passes, int
+    ):
+        raise ValueError(
+            "Config: auto_review.max_archived_passes must be a non-negative integer "
+            f"(0 = unlimited; got {_safe_value_repr(cfg.auto_review.max_archived_passes)})"
+        )
+    _require_finite_real(
+        cfg.auto_review.max_archived_passes,
+        "auto_review.max_archived_passes",
+        minimum=0,
+    )
+    _require_finite_real(
+        cfg.auto_review.max_age_days, "auto_review.max_age_days", minimum=0
+    )
+    _require_finite_real(cfg.auto_review.random_share, "auto_review.random_share")
+    if not 0 < cfg.auto_review.random_share < 1:
+        raise ValueError(
+            "Config: auto_review.random_share must be strictly between 0 and 1 "
+            f"(got {_safe_value_repr(cfg.auto_review.random_share)})"
+        )
 
     _require_bool(cfg.quality_filter.enabled, "quality_filter.enabled")
     _require_nonempty_text(cfg.quality_filter.metric, "quality_filter.metric")

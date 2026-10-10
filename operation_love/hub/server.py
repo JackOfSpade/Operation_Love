@@ -16,7 +16,7 @@ import threading
 import time
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 from ..config import _MAX_REQUEST_TIMEOUT_S
 from ..ranker.bigquery_store import _profile_upload_deadline_s
@@ -31,6 +31,9 @@ from .page import _PAGE
 from .state import (
     HubState,
     validate_apps,
+    validate_auto_review_index,
+    validate_auto_review_kind,
+    validate_auto_review_profile_id,
     validate_max_per_run,
     validate_browser_client_id,
     validate_stop_after_seconds,
@@ -56,6 +59,8 @@ _POST_FIELDS = {
     },
     "/api/training/alert": {"run_id", "app", "profile_token", "notification"},
     "/api/training/remove-latest": set(),
+    "/api/auto-review/answer": {"profile_id", "would_like"},
+    "/api/auto-review/undo": set(),
     "/api/hub/open": {"id"},
     "/api/hub/ping": {"id"},
     "/api/hub/closed": {"id"},
@@ -229,6 +234,31 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def _review_image(self, data: bytes, media_type: str) -> None:
+        """Serve one archived AUTO pass photo.
+
+        Same hardening as `_training_image` -- these are pixels of real people, so never let
+        the browser cache them -- with the media type chosen by the state layer from the
+        bytes' own signature (never echoed from storage) and `nosniff` already on every
+        response via `end_headers`.
+        """
+        self.send_response(200)
+        self.send_header("Content-Type", media_type)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(data)
+
+    @staticmethod
+    def _query_value(query: dict, name: str) -> str | None:
+        """The single value of a query parameter, or ``None`` if absent or repeated.
+
+        A repeated parameter (`kind=random&kind=near_cut`) has no single honest reading, so it
+        is treated as missing and the caller's validator refuses it.
+        """
+        values = query.get(name, [])
+        return values[0] if len(values) == 1 else None
+
     def _request_authority(self) -> tuple[str, int] | None:
         """Return the normalized loopback Host authority, or ``None`` if invalid.
 
@@ -339,6 +369,11 @@ class _Handler(BaseHTTPRequestHandler):
                 self._json({"error": "training profile image not found"}, 404)
             else:
                 self._training_image(data)
+        elif path.startswith("/api/auto-review/"):
+            # A separate method, not inline: do_GET's other branches import parse_qs LOCALLY,
+            # which makes that name function-local for the whole body, so using the module
+            # level import here would raise UnboundLocalError on any request that skipped them.
+            self._auto_review_get(path)
         elif path == "/api/config":
             self._json(self.state.config_defaults())
         elif path == "/api/eval":
@@ -361,6 +396,42 @@ class _Handler(BaseHTTPRequestHandler):
                 self.state, description=desc, config_path=self.state.config_path
             )
             self._send(200, md, "text/markdown; charset=utf-8")
+        else:
+            self._json({"error": "not found"}, 404)
+
+    def _auto_review_get(self, path: str) -> None:
+        """GET routes of the AUTO pass-review card (everything is validated before the state)."""
+        query = parse_qs(urlsplit(self.path).query)
+        if path == "/api/auto-review/next":
+            valid, kind, error = validate_auto_review_kind(
+                self._query_value(query, "kind")
+            )
+            if not valid or kind is None:
+                self._json({"error": error}, 400)
+                return
+            code, payload = self.state.auto_review_next(kind)
+            self._json(payload, code)
+        elif path == "/api/auto-review/image":
+            valid_id, profile_id, id_error = validate_auto_review_profile_id(
+                self._query_value(query, "profile_id")
+            )
+            if not valid_id or profile_id is None:
+                self._json({"error": id_error}, 400)
+                return
+            valid_index, index, index_error = validate_auto_review_index(
+                self._query_value(query, "index")
+            )
+            if not valid_index or index is None:
+                self._json({"error": index_error}, 400)
+                return
+            code, data, info = self.state.auto_review_image(profile_id, index)
+            if code == 200 and data is not None:
+                self._review_image(data, info)
+            else:
+                self._json({"error": info}, code)
+        elif path == "/api/auto-review/stats":
+            code, payload = self.state.auto_review_stats_snapshot()
+            self._json(payload, code)
         else:
             self._json({"error": "not found"}, 404)
 
@@ -546,6 +617,12 @@ class _Handler(BaseHTTPRequestHandler):
         elif self.path == "/api/training/remove-latest":
             ok, result = self.state.remove_latest_training_label()
             self._json({"ok": ok, "result": result}, 200 if ok else 409)
+        elif self.path == "/api/auto-review/answer":
+            ok, result, msg, code = self.state.submit_auto_review_answer(body)
+            self._json({"ok": ok, "result": result, "msg": msg}, code)
+        elif self.path == "/api/auto-review/undo":
+            ok, result, msg, code = self.state.undo_auto_review_answer()
+            self._json({"ok": ok, "result": result, "msg": msg}, code)
         elif self.path == "/api/hub/open":
             start_watch = self.state.browser_client_opened(body.get("id"))
             self._json({"ok": True})

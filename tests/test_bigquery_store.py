@@ -2932,8 +2932,15 @@ class _FakeLabelsBQ:
                 return _FakeDmlJob()
             # created_at DESC LIMIT 1, ties broken toward the most recently seeded row so a
             # test can name exactly which row the SELECT handed to the DELETE.
+            candidates = list(enumerate(self.labels))
+            if "NOT STARTS_WITH(IFNULL(L.SOURCE,''), 'AUTO_REVIEW')" in upper:
+                candidates = [
+                    pair
+                    for pair in candidates
+                    if not str(pair[1].get("source") or "").startswith("auto_review")
+                ]
             newest = sorted(
-                enumerate(self.labels),
+                candidates,
                 key=lambda pair: (pair[1]["created_at"], pair[0]),
                 reverse=True,
             )
@@ -3053,6 +3060,55 @@ def test_remove_latest_training_label_deletes_only_the_row_the_select_chose(
         "profile_id": "p",
     }
     assert client.labels == [other]
+
+
+def test_remove_latest_training_label_refuses_when_the_newest_is_a_review_answer(
+    monkeypatch,
+):
+    """ "Remove last saved label" never deletes a review answer, and never reaches past one.
+
+    Deleting the newest ``auto_review...`` label would leave its auto_pass_reviews row marked
+    answered with no label behind it.  Skipping it (the first version) deleted the newest older
+    SWIPE instead, an unrelated label, while the mistaken answer stayed in the training set.
+    """
+    _stub_bigquery_module(monkeypatch)
+    older = datetime(2026, 9, 1, 12, 0, tzinfo=timezone.utc)
+    newer = datetime(2026, 9, 1, 13, 0, tzinfo=timezone.utc)
+    swipe = {
+        "run_id": "run",
+        "app": "hinge",
+        "source": "manual",
+        "profile_id": "swipe",
+        "profile_name": "Ada",
+        "created_at": older,
+    }
+    answer = {
+        "run_id": "run",
+        "app": "hinge",
+        "source": "auto_review_random",
+        "profile_id": "answer",
+        "profile_name": "Bea",
+        "created_at": newer,
+    }
+    client = _FakeLabelsBQ([swipe, answer])
+    store = _labels_store(client)
+
+    with pytest.raises(ValueError, match="Undo last answer"):
+        store.remove_latest_training_label()
+    # Nothing was deleted -- not the answer, and not the older swipe -- and no DELETE was issued.
+    assert client.labels == [swipe, answer]
+    assert not any(q.upper().startswith("DELETE") for q in client.queries)
+
+    # A swipe NEWER than every answer is still removable.
+    client.labels[:] = [
+        answer,
+        {**swipe, "created_at": datetime(2026, 9, 1, 14, 0, tzinfo=timezone.utc)},
+    ]
+    assert store.remove_latest_training_label() == {
+        "profile_name": "Ada",
+        "profile_id": "swipe",
+    }
+    assert client.labels == [answer]
 
 
 def test_remove_latest_training_label_refuses_to_report_a_removal_that_deleted_nothing(

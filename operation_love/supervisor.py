@@ -49,6 +49,7 @@ from .ranker import make_store
 from .ranker.bigquery_store import _profile_upload_deadline_s
 from .ranker.decider import RankerDecider
 from .ranker.model import PreferenceModel
+from .ranker.threshold import fetch_label_rows, fetch_live_review, format_calibration
 from .runtime import Capabilities
 from .status import RunStatus
 from .training_actions import MAX_PROFILE_REVIEW_FRAMES
@@ -563,6 +564,47 @@ def _validated_daily_spend(value: object) -> float:
     return float(value)
 
 
+def _ranker_threshold_text(cfg, model) -> str:
+    """The threshold shown on the startup ``Ranker:`` line.
+
+    Legacy fixed-threshold configs print exactly what they always did.  With a recall target
+    the configured ``like_threshold`` is only a placeholder until the first calibration, so
+    print the calibrated cutoff -- or say plainly that there is none yet.
+    """
+    if cfg.ranker.like_recall_target is None:
+        return str(cfg.ranker.like_threshold)
+    if model.calibration is None:
+        return f"uncalibrated (recall target {cfg.ranker.like_recall_target})"
+    return f"{model.threshold:.4f} (recall target {cfg.ranker.like_recall_target})"
+
+
+def _auto_review_random_share(cfg) -> float | None:
+    """The random-pool share handed to every Worker, or ``None`` when auto review is off.
+
+    ``None`` is the Worker's "do not archive passes" value.  A Config always carries an
+    ``auto_review`` section (defaulted); a stub that lacks it is treated as feature-off rather
+    than guessing a share.
+    """
+    section = getattr(cfg, "auto_review", None)
+    if section is None or not section.enabled:
+        return None
+    return section.random_share
+
+
+def _auto_review_retention(cfg) -> tuple[int | None, float | None]:
+    """The pass-archive retention bounds handed to every Worker (``None`` = unbounded).
+
+    Unlike the random share, retention does NOT depend on ``auto_review.enabled``: turning the
+    archive off stops NEW passes being kept, but the ones already stored are still real
+    strangers' photos and stay subject to the bounds.  A Config without the section (a stub)
+    is unbounded rather than guessed.
+    """
+    section = getattr(cfg, "auto_review", None)
+    if section is None:
+        return None, None
+    return section.max_archived_passes or None, section.max_age_days or None
+
+
 def _close_store_after_startup_failure(store, run_id: str) -> None:
     """Release a store opened during startup without ever replacing the original failure."""
     try:
@@ -924,7 +966,10 @@ def run(
         if on_store:
             # Publish the live store so the hub eval reads live in-memory labels.
             on_store(store)
-        labels = store.load_labels()
+        # Rows are (liked, embedding, source) triples when the store records label sources
+        # (every real store does); a bare double that only has load_labels() yields pairs.
+        # Either way len(labels) is the label count the hub and the startup line report.
+        labels = fetch_label_rows(store)
         status.set_global(labels=len(labels))
         print(
             f"Store: backend={cfg.storage.backend} labels={len(labels)}  "
@@ -996,13 +1041,23 @@ def run(
             min_labels=cfg.ranker.min_labels_to_engage,
             threshold=cfg.ranker.like_threshold,
             min_per_class=cfg.ranker.min_per_class,
+            recall_target=cfg.ranker.like_recall_target,
+            contextual_recall_budget=cfg.ranker.contextual_recall_budget,
         )
-        ready = model.train(labels)
+        # Best-effort: the live false-pass evidence is an add-on, so a store that cannot
+        # produce it (or raises) trains WITHOUT the correction rather than blocking the run.
+        # fetch_live_review prints the failure loudly itself.
+        live_review = fetch_live_review(store)
+        ready = model.train(labels, live_review=live_review)
         print(
             f"Ranker: labels={len(labels)} ready={ready} "
             f"(min={cfg.ranker.min_labels_to_engage}, "
-            f"threshold={cfg.ranker.like_threshold})"
+            f"threshold={_ranker_threshold_text(cfg, model)})"
         )
+        # The calibration summary sits right under the line above so a glance at startup says
+        # what recall the bot is actually operating at, or why it is not ready.
+        if cfg.ranker.like_recall_target is not None:
+            print(format_calibration(model))
         quality = QualityFilter(
             cfg.quality_filter.enabled,
             cfg.quality_filter.min_score,
@@ -1095,6 +1150,9 @@ def run(
                 limiter=limiter,
                 status=status,
                 targeting_licence=getattr(cfg, "_run_still_photo_licence", None),
+                auto_review_random_share=_auto_review_random_share(cfg),
+                auto_review_max_passes=_auto_review_retention(cfg)[0],
+                auto_review_max_age_days=_auto_review_retention(cfg)[1],
             )
             try:
                 # Hub binding is part of launching a worker, not a precondition outside its

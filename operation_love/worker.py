@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import random
 import inspect
+import math
 import threading
 import time
 import traceback
@@ -28,7 +29,7 @@ from .drivers.base import (
 )
 from .human import human_delay
 from .human_motion import think_time_s
-from .interaction import AutoSessionPolicy
+from .interaction import _THRESHOLD_MAX_LIFT, AutoSessionPolicy
 from .notifications import notify_training_decision_ready
 from .opener.opener import INDEX_SPACE_MODEL_ITEMS, ITEM_INDEX_ABSENT, ItemRequest
 
@@ -39,6 +40,7 @@ from .opener.opener import INDEX_SPACE_MODEL_ITEMS, ITEM_INDEX_ABSENT, ItemReque
 from .opener.service import DECISION_NEVER_SENT, DECISION_SEND_UNVERIFIED
 from .ranker.decider import Decider, Decision
 from .ranker.profile_key import profile_key_from_identity
+from .ranker.store import require_auto_pass_retention
 from .targeting_policy import (
     installed_still_photo_licence,
     still_photo_licence_operator_notice,
@@ -53,6 +55,11 @@ _NO_PHOTO_RETRY_S = 0.5
 # instantly) while think_time_s supplies the measured like-vs-pass asymmetry shape.
 # Derived from PacingCfg's own default so the baseline can't drift from the config.
 _THINK_TIME_BASELINE_S = PacingCfg().swipe_delay_s
+# How many archived AUTO passes between retention sweeps within one run (a sweep also runs when
+# the run starts).  Each sweep is a cheap local delete on SQLite but a few round trips on
+# BigQuery, so it is batched rather than done after every pass; the archive can therefore
+# overshoot its count bound by at most this many passes between sweeps.
+_AUTO_PRUNE_EVERY = 25
 _STATUS_ERROR_MAX_CHARS = 600
 _TARGETING_LICENCE_UNSET = object()
 
@@ -231,6 +238,70 @@ def _model_item_media_ordinal(driver, pick) -> int | None:
     return ordinal
 
 
+def _validated_auto_review_random_share(value) -> float | None:
+    """Return the AUTO pass-review sampling share, or ``None`` when review archiving is off.
+
+    ``Worker`` is public and can be built without ``config.validate()``, so the probability is
+    checked here as well: a bool, a string or a non-finite number would otherwise reach
+    ``random.random() < share`` and quietly mean "always" or "never" (``True`` is the int 1,
+    ``nan`` compares false against everything), which silently turns the review pool into
+    nothing but one stratum.  The closed interval is accepted -- 0.0 and 1.0 are honest
+    probabilities -- while ``config.validate()`` keeps its stricter open (0, 1) for the owner.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(
+            f"auto_review_random_share must be None or a number in [0, 1] (got {value!r})"
+        )
+    share = float(value)
+    # NaN fails both comparisons and is refused here too; no separate isfinite test is needed.
+    if not 0.0 <= share <= 1.0:
+        raise ValueError(
+            f"auto_review_random_share must be None or a number in [0, 1] (got {value!r})"
+        )
+    return share
+
+
+def _draw_random_sample(share: float) -> bool:
+    """One Bernoulli draw: does this pass go into the RANDOM review pool?
+
+    A module-level seam rather than an inline ``random.random()`` so a test can pin the draw
+    without patching the process-wide ``random`` module (which the pacing code shares).
+    """
+    return random.random() < share
+
+
+def _session_max_threshold_lift(model) -> float:
+    """The contextual-demotion headroom this model allows AutoSessionPolicy, validated.
+
+    ``PreferenceModel.max_threshold_lift`` shrinks the policy's lift so that its demotions can
+    cost at most ``contextual_recall_budget`` of recall once a recall target is configured.
+    Absent attribute (a legacy model, a fake decider) means the policy's own historical cap,
+    which keeps every existing caller bit-for-bit unchanged.
+
+    A value that IS present but unusable is not quietly replaced by the historical cap: that
+    would hand a recall-targeted run MORE demotion headroom than its model asked for, i.e. the
+    direction that costs the owner liked profiles.  It falls to 0.0 (no contextual demotion at
+    all) and says so loudly, so a broken model property is visible instead of silent.
+    """
+    raw = getattr(model, "max_threshold_lift", None)
+    if raw is None:
+        return _THRESHOLD_MAX_LIFT
+    try:
+        # ``float(True)`` is 1.0; a bool here is a bug in the model, not a lift.
+        lift = float("nan") if isinstance(raw, bool) else float(raw)
+    except (TypeError, ValueError):
+        lift = float("nan")
+    if not math.isfinite(lift) or lift < 0.0:
+        print(
+            f"Worker: model.max_threshold_lift={raw!r} is not a usable non-negative number; "
+            "disabling AUTO contextual demotion for this session (lift 0.0)."
+        )
+        return 0.0
+    return min(lift, _THRESHOLD_MAX_LIFT)
+
+
 class Worker(threading.Thread):
     def __init__(
         self,
@@ -249,6 +320,9 @@ class Worker(threading.Thread):
         status=None,
         training_action_bridge=None,
         targeting_licence=_TARGETING_LICENCE_UNSET,
+        auto_review_random_share: float | None = None,
+        auto_review_max_passes: int | None = None,
+        auto_review_max_age_days: float | None = None,
     ):
         super().__init__(name=f"worker-{app}", daemon=True)
         self.app = app
@@ -279,6 +353,22 @@ class Worker(threading.Thread):
             and getattr(driver, "supports_training_decision", False)
         )
         self._training_claimed_action = None
+        # AUTO pass review.  ``None`` disables the archive entirely (the default, so every
+        # existing caller is untouched); a probability turns it on and is the share of archived
+        # passes that go into the RANDOM pool -- the pool whose answers measure the live
+        # false-pass rate, as opposed to the near-cut pool the owner reviews for the label value.
+        # Validated at construction so a bad value fails before this thread touches a device.
+        self.auto_review_random_share = _validated_auto_review_random_share(
+            auto_review_random_share
+        )
+        self._auto_review_missing_store_warned = False
+        # Retention of the pass archive (see AutoReviewCfg): both ``None``/0 = unbounded, the
+        # default, so every existing caller is untouched.  Validated like the share, here, so a
+        # typo fails before this thread touches a device instead of silently keeping everything.
+        self._auto_review_retention = require_auto_pass_retention(
+            auto_review_max_passes, auto_review_max_age_days
+        )
+        self._archived_since_prune = 0
         # Set only after open_session() returns.  The normal loop finalizers
         # clear it via _finish_session(); the outer finally owns the narrow
         # post-open/pre-loop failure gap.
@@ -814,6 +904,15 @@ class Worker(threading.Thread):
             self.status.set_global(ranker_ready=ready)
         self._render()
         print(f"Learned {added} labels this run; ranker ready={ready}")
+        if not ready:
+            # A recall-target model refuses to start (rather than fall back to the fixed
+            # threshold) when it cannot calibrate, so the WHY has to be visible mid-run.
+            # getattr-guarded: a decider's model may be a test double without the attribute.
+            reason = getattr(
+                getattr(self.decider, "model", None), "not_ready_reason", None
+            )
+            if reason:
+                print(f"Ranker not ready: {reason}")
 
     # --- Hub-reviewed training: prepare every profile, human decides -----------------
     def _training_loop(self) -> None:
@@ -1545,8 +1644,27 @@ class Worker(threading.Thread):
         except (TypeError, ValueError):
             configured_threshold = 0.5
         if not 0.0 < configured_threshold < 1.0:
+            print(
+                f"Worker: model threshold {configured_threshold!r} is outside (0, 1); "
+                "using 0.5 for this AUTO session's policy and pass-review baseline."
+            )
             configured_threshold = 0.5
-        self._auto_policy = AutoSessionPolicy(base_threshold=configured_threshold)
+        # The model decides how much extra strictness the contextual policy may add: with a
+        # recall target configured it is bounded by contextual_recall_budget, otherwise it is
+        # the policy's historical cap.  Passed ONLY when the model exposes the property (same
+        # guarded-getattr shape as the threshold above), so a legacy model, a fake decider or
+        # a test double that predates the keyword keeps constructing the policy exactly as
+        # before -- see _session_max_threshold_lift for how a present-but-broken value is
+        # handled.
+        policy_model = getattr(self.decider, "model", None)
+        policy_kwargs = {}
+        if getattr(policy_model, "max_threshold_lift", None) is not None:
+            policy_kwargs["max_threshold_lift"] = _session_max_threshold_lift(
+                policy_model
+            )
+        self._auto_policy = AutoSessionPolicy(
+            base_threshold=configured_threshold, **policy_kwargs
+        )
         # AndroidDriver uses this optional hook for both the contextual policy and the
         # unconditional AUTO-session marker. Other drivers can ignore it, while lightweight
         # fakes and older plugins receive the value through a harmless instance attribute.
@@ -1567,6 +1685,9 @@ class Worker(threading.Thread):
         # driver that has no enumeration subsystem to gate (every non-Hinge driver today), so
         # this is a no-op for them, exactly like install_policy above.
         self._install_opener_flag()
+        # Retention sweep BEFORE the first pass of the run: it catches the backlog left by an
+        # earlier run (or a freshly tightened bound) without waiting for this run to archive.
+        self._prune_auto_passes()
         # Session micro-break fatigue model: re-rolled each stretch so a long run's
         # break pattern isn't governed by one fixed hazard rate for its whole duration
         # (see _maybe_session_break).
@@ -1714,6 +1835,14 @@ class Worker(threading.Thread):
                         f"mode and make Hub decisions manually to seed it. Stopping {self.app}."
                     )
                     break
+
+                # The MODEL's own verdict, kept before the session policy or the ratio shaper
+                # below can rewrite it.  Only a genuine model dislike (score under the
+                # threshold) is archived for the owner's pass review: a like that the policy or
+                # the ratio ceiling demoted scored AT OR ABOVE the threshold, so putting it in
+                # the review pool would inflate the measured false-pass rate that the live
+                # recall adjustment is calibrated against.
+                model_decision = d.decision
 
                 # A session can decline a marginal model like according to its bounded
                 # fatigue/context state. This happens before every limit check so a
@@ -2374,6 +2503,20 @@ class Worker(threading.Thread):
                 if self._auto_policy is not None:
                     self._auto_policy.record_landed_action(landed_action)
 
+                # AUTO pass review.  Reached only after the pass physically landed AND its
+                # decision row is durable (a failure of either raised out of this iteration
+                # above), and only for a real model dislike: not no_face (no embedding, nothing
+                # to learn from), not a like, not a demoted like.  The archive is an add-on to a
+                # pass that already happened, so it can never stop the run or become a label --
+                # see _archive_auto_pass.
+                if model_decision == "dislike" and d.decision == "dislike":
+                    self._archive_auto_pass(
+                        profile,
+                        d,
+                        profile_id=lineage_profile_id,
+                        threshold=configured_threshold,
+                    )
+
                 # getattr(..., False): runs after EVERY action, including a dislike-only run
                 # that never once called maybe_opener() above -- so, unlike that call site,
                 # self.opener_service being None must not even be a conditional branch here, it
@@ -2473,6 +2616,112 @@ class Worker(threading.Thread):
             self._break_hazard = random.uniform(0.04, 0.14)
             self._break_due_after = random.uniform(12, 35)
             self.stop_event.wait(pause)
+
+    def _archive_auto_pass(
+        self, profile, decision: Decision, *, profile_id: str, threshold: float
+    ) -> None:
+        """Archive one landed AUTO pass so the owner can later say whether it was a mistake.
+
+        Never raises and never records a label: a pass the owner has not reviewed says nothing
+        about their taste (training on the model's own prediction is the feedback loop AUTO
+        avoids everywhere else), so this writes ONLY the review manifest via the store's
+        ``record_auto_pass``.  A failure -- the store returning anything but True, or raising --
+        is printed loudly and the run carries on: the pass has already happened and the review
+        archive is a measurement aid, not a precondition of swiping.
+
+        ``profile_id`` is the same opaque lineage id the pass's decision row carries, so a
+        reviewed pass can be joined back to the action that produced it.
+        """
+        share = self.auto_review_random_share
+        if share is None:
+            return
+        try:
+            # The embedding is what the label would be trained on, so an archive without one is
+            # of no use to the owner's goal and is skipped (no_face never reaches here; this
+            # guards a decider that returns a dislike with no vector).  Materialised before the
+            # emptiness test: truthiness of an array-like vector is a ValueError, and this
+            # method promises not to raise.
+            embedding = list(decision.embedding)
+            if not embedding:
+                return
+            record = getattr(self.store, "record_auto_pass", None)
+            if not callable(record):
+                # Said once per run, loudly: a missing capability would otherwise look exactly
+                # like "nothing to review" for the whole session.
+                if not self._auto_review_missing_store_warned:
+                    self._auto_review_missing_store_warned = True
+                    print(
+                        f"{self.app.title()} auto pass review is enabled but "
+                        f"{type(self.store).__name__} has no record_auto_pass; this run's "
+                        "passes will NOT be archived for review."
+                    )
+                return
+            photos = list(getattr(profile, "photos", None) or [])
+            if not photos:
+                print(
+                    f"{self.app.title()} auto pass review: this pass captured no photos, so "
+                    "there is nothing for the owner to review; not archived."
+                )
+                return
+            archived = record(
+                run_id=self.run_id,
+                app=self.app,
+                profile_id=profile_id,
+                score=float(decision.score),
+                threshold=threshold,
+                embedding=embedding,
+                photos=photos,
+                profile_name=str(getattr(profile, "name", "") or ""),
+                random_sample=_draw_random_sample(share),
+                capture_truncated=self._label_metadata(profile)["capture_truncated"],
+            )
+        except Exception as exc:  # noqa: BLE001 -- the review archive must never stop a run
+            print(
+                f"{self.app.title()} auto pass review: archiving this pass failed "
+                f"({type(exc).__name__}: {exc}); the run continues and this pass will not be "
+                "offered for review."
+            )
+            return
+        if archived is not True:
+            print(
+                f"{self.app.title()} auto pass review: the store did not archive this pass "
+                f"(record_auto_pass returned {archived!r}); the run continues and it will "
+                "not be offered for review."
+            )
+            return
+        self._archived_since_prune += 1
+        if self._archived_since_prune >= _AUTO_PRUNE_EVERY:
+            self._prune_auto_passes()
+
+    def _prune_auto_passes(self) -> None:
+        """Apply the archive's retention bounds (count and age); never raises.
+
+        The archive holds real strangers' screenshots, so it is bounded from the first pass
+        (``AutoReviewCfg``).  A store without ``prune_auto_passes`` cannot hold an archive, so
+        there is nothing to bound; a failure is printed loudly and the next sweep retries --
+        retention is housekeeping and must never stop a run that is otherwise fine.
+        """
+        self._archived_since_prune = 0
+        max_passes, max_age_days = self._auto_review_retention
+        if max_passes is None and max_age_days is None:
+            return
+        prune = getattr(self.store, "prune_auto_passes", None)
+        if not callable(prune):
+            return
+        try:
+            removed = prune(max_passes=max_passes, max_age_days=max_age_days)
+        except Exception as exc:  # noqa: BLE001 -- housekeeping must never stop a run
+            print(
+                f"{self.app.title()} auto pass review: retention could not prune the archive "
+                f"({type(exc).__name__}: {exc}); the run continues and the next sweep retries."
+            )
+            return
+        if removed:
+            print(
+                f"{self.app.title()} auto pass review: retention removed {removed} archived "
+                f"pass(es) (bounds: newest {max_passes or 'unlimited'}, "
+                f"{max_age_days or 'unlimited'} days)."
+            )
 
     @staticmethod
     def _label_metadata(profile) -> dict:

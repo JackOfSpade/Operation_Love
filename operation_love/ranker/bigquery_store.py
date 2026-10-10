@@ -31,9 +31,24 @@ from ..bigquery_validation import (
 )
 from ..costing import Usage
 from .store import (
+    AUTO_REVIEW_KIND_NEAR_CUT,
+    AUTO_REVIEW_KIND_RANDOM,
+    AUTO_REVIEW_SOURCE_PREFIX,
+    DEFAULT_AUTO_REVIEW_WINDOW,
+    REVIEW_ANSWER_IS_LATEST_MESSAGE,
+    _require_auto_review_kind,
+    _require_optional_app,
+    _require_text,
+    _require_window,
+    auto_review_label_source,
+    clean_auto_pass_photos,
+    doomed_auto_passes,
     local_midnight_epoch,
     normalize_timestamp_datetime,
+    normalize_timestamp_epoch,
     normalize_timestamp_iso,
+    require_auto_pass_retention,
+    validate_auto_pass,
 )
 
 _UPLOAD_ATTEMPTS = 3  # bounded retry so a transient GCS blip doesn't drop a swipe
@@ -206,6 +221,31 @@ _TABLES = {
         "correction_id STRING, run_id STRING, app STRING, opener_created_at TIMESTAMP, model STRING, "
         "opener_fingerprint STRING, reason STRING, evidence_ref STRING, created_at TIMESTAMP"
     ),
+    # AUTO pass archive + owner review (the recall-target feature). Three brand-new tables, so
+    # they need only these CREATE entries and never a _MIGRATIONS line (see the comment above
+    # `_MIGRATIONS`): they reach an existing project through `_ensure_tables`' `missing_tables`
+    # branch. Deliberately NOT in the retraction/archive snapshot machinery (retraction_run_rows,
+    # advisory_opener_run_rows): an archived pass is not a label until the owner answers it, and
+    # the answer is written to `labels` (source 'auto_review_random' / 'auto_review_near_cut')
+    # through add_label like any other label.
+    #
+    # `auto_passes` is the manifest (one row per archived pass: the score and threshold in
+    # force, the embedding the answer will train on, and whether it was drawn into the
+    # unbiased `random_sample` pool). `auto_pass_photos` has EXACTLY profile_photos' columns;
+    # the PNGs live in the same private bucket under `auto_passes/{app}/{run_id}/{profile_id}/`.
+    # `auto_pass_reviews` is the owner's answer; its presence is what makes a pass "reviewed".
+    "auto_passes": (
+        "run_id STRING, app STRING, profile_id STRING, created_at TIMESTAMP, score FLOAT64, "
+        "threshold FLOAT64, embedding ARRAY<FLOAT64>, photo_count INT64, profile_name STRING, "
+        "random_sample BOOL, capture_truncated BOOL"
+    ),
+    "auto_pass_photos": (
+        "run_id STRING, app STRING, profile_id STRING, created_at TIMESTAMP, "
+        "photo_index INT64, gcs_uri STRING, sha256 STRING, byte_size INT64, content_type STRING"
+    ),
+    "auto_pass_reviews": (
+        "profile_id STRING, app STRING, reviewed_at TIMESTAMP, would_like BOOL, kind STRING"
+    ),
     "spend": (
         "run_id STRING, created_at TIMESTAMP, model STRING, input_tokens INT64, output_tokens INT64, "
         "cache_read_tokens INT64, cache_write_tokens INT64, cost_usd FLOAT64"
@@ -255,10 +295,64 @@ def _timestamp(value) -> str:
     return normalize_timestamp_iso(value)
 
 
-def _copy_labels(
-    labels: list[tuple[bool, list[float]]],
-) -> list[tuple[bool, list[float]]]:
-    return [(liked, list(embedding)) for liked, embedding in labels]
+def _copy_label_rows(
+    labels: list[tuple[bool, list[float], str]],
+) -> list[tuple[bool, list[float], str]]:
+    return [(liked, list(embedding), source) for liked, embedding, source in labels]
+
+
+_AUTO_REVIEW_TABLES = ("auto_passes", "auto_pass_photos", "auto_pass_reviews")
+# Passes removed per DML statement by `prune_auto_passes`: each id is a bound scalar parameter
+# (`@p0..@pN`), and BigQuery caps a query at 10,000 parameters, so this is nowhere near a limit
+# -- it just keeps one failed statement from rolling back an entire backlog.
+_PRUNE_CHUNK = 100
+
+
+def _job_config(parameters: list[tuple[str, str, object]]):
+    """QueryJobConfig binding ``(name, type, value)`` scalar parameters.
+
+    Same duck-typed fallback as `_day_start_job_config`: the client is injectable, so a test
+    double must never need the SDK. Every auto-review query binds its values through this --
+    only table ids and constant SQL keywords are ever interpolated.
+    """
+    try:
+        from google.cloud import bigquery
+    except ImportError:
+        return SimpleNamespace(
+            query_parameters=[
+                SimpleNamespace(name=name, type_=kind, value=value)
+                for name, kind, value in parameters
+            ]
+        )
+    return bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter(name, kind, value)
+            for name, kind, value in parameters
+        ]
+    )
+
+
+def _missing_optional_auto_review(exc: Exception, *, ensure: bool) -> bool:
+    """Same accommodation as `_missing_optional_opener_outcomes`, for the pass-review tables.
+
+    A read-only (`ensure=False`) store may open against a project that no `ensure=True` store
+    has touched since these tables were added; a NotFound naming one of THEM is "nothing has
+    been archived yet", not a failure. Anything else still propagates.
+    """
+    return (
+        not ensure
+        and type(exc).__name__ == "NotFound"
+        and any(name in str(exc) for name in _AUTO_REVIEW_TABLES)
+    )
+
+
+def _epoch(value) -> float:
+    """BigQuery TIMESTAMP (datetime) or an already-epoch/ISO value -> epoch seconds."""
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.timestamp()
+    return normalize_timestamp_epoch(value, label="auto pass created_at")
 
 
 def _image_type(data: bytes) -> tuple[str, str]:
@@ -492,7 +586,15 @@ class BigQueryStore:
             self._dropped: dict[str, int] = {name: 0 for name in _TABLES}
             # f"{table}:{row_id}" -> consecutive failed-insert attempts.
             self._fail_counts: dict[str, int] = {}
-            self._labels_cache: list[tuple[bool, list[float]]] | None = None
+            # (liked, embedding, source) -- the source rides along so load_label_rows can
+            # serve the ranker from the SAME cache load_labels projects; a second query per
+            # retrain (training retrains after every label) would be far too slow.
+            self._labels_cache: list[tuple[bool, list[float], str]] | None = None
+            # Process-local memory of what this run already archived / answered. The buffered
+            # rows and BigQuery's streaming buffer both lag a write by a flush or a few
+            # seconds; these sets make "archived once, answered once" hold regardless.
+            self._auto_pass_keys: set[tuple[str, str]] = set()
+            self._reviewed_auto_passes: set[tuple[str, str]] = set()
             # Close the streaming-read visibility gap for retries.
             self._retraction_ids: set[str] = set()
             self._opener_retraction_ids: set[tuple[str, str]] = set()
@@ -697,23 +799,43 @@ class BigQueryStore:
         )
 
     def load_labels(self) -> list[tuple[bool, list[float]]]:
+        # A projection of load_label_rows (and so of the same cache), never a second query:
+        # the two must return identical rows in identical order.
+        return [(liked, emb) for liked, emb, _source in self.load_label_rows()]
+
+    def load_label_rows(self) -> list[tuple[bool, list[float], str]]:
+        """Exactly the rows load_labels() returns plus each label's `source` ("" for NULL).
+
+        The source lets ranker/threshold.py tell MANUAL calibration labels from auto-review
+        answers. Cache-backed like load_labels, and add_label appends the new triple to the
+        cache, so a retrain after every label stays coherent without re-querying BigQuery.
+        """
         # Hold the lock across the whole fill so the cache-miss check, the SELECT,
         # and folding in buffered rows are atomic (no concurrent add_label can be
         # dropped). Called once at startup before workers spawn, so the in-lock
         # query doesn't contend in practice; RLock keeps it reentrancy-safe.
         with self._lock:
             if self._labels_cache is not None:
-                return _copy_labels(self._labels_cache)
+                return _copy_label_rows(self._labels_cache)
             rows = self.client.query(
-                f"SELECT l.liked, l.embedding FROM `{self._tid('labels')}` l "
+                f"SELECT l.liked, l.embedding, l.source FROM `{self._tid('labels')}` l "
                 f"WHERE {self._label_not_retracted()}"
             ).result()
-            out = [(bool(r["liked"]), list(r["embedding"])) for r in rows]
+            # .get, not []: `source` was ALTERed onto old tables and reads back NULL there.
+            out = [
+                (bool(r["liked"]), list(r["embedding"]), str(r.get("source") or ""))
+                for r in rows
+            ]
             out.extend(
-                (bool(r["liked"]), list(r["embedding"])) for r in self._buf["labels"]
+                (
+                    bool(r["liked"]),
+                    list(r["embedding"]),
+                    str(r.get("source") or ""),
+                )
+                for r in self._buf["labels"]
             )
-            self._labels_cache = _copy_labels(out)
-            return _copy_labels(self._labels_cache)
+            self._labels_cache = _copy_label_rows(out)
+            return _copy_label_rows(self._labels_cache)
 
     def count_today(self, app: str, *, source: str = "auto") -> int:
         """One validated decision source's local-day count."""
@@ -1059,10 +1181,16 @@ class BigQueryStore:
             f"(SELECT COUNT(*) FROM `{self._tid('profile_photos')}` WHERE run_id=@run_id AND app=@app) AS profile_photos, "
             f"(SELECT COUNT(*) FROM `{self._tid('labels')}` WHERE run_id=@run_id AND app=@app) AS labels, "
             f"(SELECT COUNT(*) FROM `{self._tid('decisions')}` WHERE run_id=@run_id AND app=@app) AS decisions, "
+            # An answer to an archived AUTO pass is stored under the pass's own run_id with source
+            # `auto_review_*`; it is not a swipe the owner made in that run, so it is not Like
+            # evidence for it (one tap on the review card must not make the cleanup planner
+            # refuse a run it had nothing to say about).
             f"(SELECT COUNT(*) FROM `{self._tid('labels')}` l WHERE run_id=@run_id AND app=@app AND liked=TRUE "
-            f"AND {self._label_not_retracted()}) AS like_labels, "
+            f"AND {self._label_not_retracted()} "
+            f"AND NOT STARTS_WITH(IFNULL(l.source,''), '{AUTO_REVIEW_SOURCE_PREFIX}')) AS like_labels, "
             f"(SELECT COUNT(*) FROM `{self._tid('labels')}` l WHERE run_id=@run_id AND app=@app AND liked=FALSE "
-            f"AND {self._label_not_retracted()}) AS pass_labels, "
+            f"AND {self._label_not_retracted()} "
+            f"AND NOT STARTS_WITH(IFNULL(l.source,''), '{AUTO_REVIEW_SOURCE_PREFIX}')) AS pass_labels, "
             f"(SELECT COUNT(*) FROM `{self._tid('decisions')}` WHERE run_id=@run_id AND app=@app AND decision='like') AS like_decisions, "
             f"(SELECT COUNT(*) FROM `{self._tid('decisions')}` WHERE run_id=@run_id AND app=@app AND decision='dislike') AS pass_decisions"
         )[0]
@@ -1456,7 +1584,11 @@ class BigQueryStore:
         photos: list[bytes],
         *,
         progress=None,
+        prefix: str = "profiles",
     ) -> list[dict]:
+        # `prefix` is the top-level object-name folder: training archives use "profiles", the
+        # AUTO pass archive "auto_passes" -- one upload/deadline/privacy path for both, and the
+        # rows come back in exactly profile_photos' column set (auto_pass_photos shares it).
         rows = []
         deadline = time.monotonic() + _profile_upload_deadline_s(len(photos))
         for i, photo in enumerate(photos):
@@ -1469,7 +1601,7 @@ class BigQueryStore:
             digest = hashlib.sha256(photo).hexdigest()
             content_type, ext = _image_type(photo)
             object_name = (
-                f"profiles/{app}/{run_id}/{profile_id}/{i:02d}-{digest[:16]}.{ext}"
+                f"{prefix}/{app}/{run_id}/{profile_id}/{i:02d}-{digest[:16]}.{ext}"
             )
             blob = self._photo_bucket.blob(object_name)
             # Called directly, NOT through _call_with_supported_keywords: that shim exists for
@@ -1549,13 +1681,20 @@ class BigQueryStore:
                     "profile_name": str(profile_name or ""),
                 }
             )
-            label = (liked, list(embedding_vec))
+            label = (liked, list(embedding_vec), str(source or ""))
             if self._labels_cache is not None:
                 self._labels_cache.append(label)
             self._maybe_flush("labels")
 
     def remove_latest_training_label(self) -> dict | None:
         """Remove the latest visible label and return its operator-readable identity.
+
+        When that newest label is an answer to an archived AUTO pass (source
+        ``auto_review...``) this REFUSES with ``ValueError`` and deletes nothing: removing the
+        answer would leave its ``auto_pass_reviews`` row marked answered with no label behind
+        it, and reaching past it to delete the newest older MANUAL label (what an earlier
+        version did) silently destroyed an unrelated swipe while the mistaken answer stayed in
+        the training set.  ``undo_latest_auto_review`` is the undo for an answer.
 
         Deletes by the FULL identity the visibility predicate above selects on, not by
         profile_id alone, and binds profile_id NULL-safely: `labels.profile_id` arrived via
@@ -1582,6 +1721,8 @@ class BigQueryStore:
             row = next(iter(rows), None)
             if row is None:
                 return None
+            if str(row["source"] or "").startswith(AUTO_REVIEW_SOURCE_PREFIX):
+                raise ValueError(REVIEW_ANSWER_IS_LATEST_MESSAGE)
             created_at = row["created_at"]
             job = bigquery.QueryJobConfig(
                 query_parameters=[
@@ -1925,6 +2066,739 @@ class BigQueryStore:
                 }
             )
             self._maybe_flush("opener_rejections")
+
+    # --- auto pass archive + owner review ---------------------------------------------
+    def record_auto_pass(
+        self,
+        *,
+        run_id,
+        app,
+        profile_id,
+        score,
+        threshold,
+        embedding,
+        photos,
+        profile_name="",
+        random_sample,
+        capture_truncated=False,
+    ) -> bool:
+        """Archive one AUTO pass: the screenshots the model saw, then the manifest row.
+
+        Same contract as record_profile's archive: mandatory-but-non-fatal. Each upload is
+        retried; if any photo cannot be stored, NO manifest is written, the blobs already
+        uploaded are deleted, and False is returned (loudly) -- a pass the owner cannot see
+        cannot be judged. Never writes a label, a decision, or a profiles/profile_photos row:
+        the training archive is what retraction planning reasons about, and an unanswered
+        pass is not training data. Malformed arguments raise ValueError.
+        """
+        args = validate_auto_pass(
+            run_id=run_id,
+            app=app,
+            profile_id=profile_id,
+            score=score,
+            threshold=threshold,
+            embedding=embedding,
+            random_sample=random_sample,
+        )
+        key = (args["app"], args["profile_id"])
+        photo_list = clean_auto_pass_photos(photos, args["profile_id"])
+        if photo_list is None:
+            return False
+        if not self._photo_bucket_private_verified:
+            raise RuntimeError(
+                "Refusing auto-pass photo upload: this BigQueryStore was created with "
+                "ensure=False and its bucket privacy policy was not verified"
+            )
+        with self._lock:
+            already = key in self._auto_pass_keys
+        if already:
+            print(
+                f"BigQuery store warning: auto pass {args['profile_id']} ({args['app']}) "
+                "was already archived this run; not writing it again."
+            )
+            return False
+        self._begin_async_write()
+        try:
+            created_at = _now()
+            photo_rows = self._upload_profile_photos(
+                args["run_id"],
+                args["app"],
+                args["profile_id"],
+                created_at,
+                photo_list,
+                prefix="auto_passes",
+            )
+            if len(photo_rows) != len(photo_list):
+                if photo_rows:
+                    self._delete_profile_photo_rows(photo_rows)
+                print(
+                    f"BigQuery store warning: archived {len(photo_rows)}/{len(photo_list)} "
+                    f"photos for auto pass {args['profile_id']}; skipping its pass archive "
+                    "to keep image data complete."
+                )
+                return False
+            with self._lock:
+                # close waits for this registered write, so its finished manifest must be
+                # buffered before close performs its final flush.
+                self._require_open_for_write(allow_closing=True)
+                self._buf["auto_passes"].append(
+                    {
+                        "run_id": args["run_id"],
+                        "app": args["app"],
+                        "profile_id": args["profile_id"],
+                        "created_at": created_at,
+                        "score": args["score"],
+                        "threshold": args["threshold"],
+                        "embedding": args["embedding"],
+                        "photo_count": len(photo_rows),
+                        "profile_name": str(profile_name or ""),
+                        "random_sample": args["random_sample"],
+                        "capture_truncated": bool(capture_truncated),
+                    }
+                )
+                self._buf["auto_pass_photos"].extend(photo_rows)
+                self._auto_pass_keys.add(key)
+                self._maybe_flush("auto_pass_photos")
+                self._maybe_flush("auto_passes")
+            return True
+        finally:
+            self._finish_async_write()
+
+    def _flush_auto_review_buffers(
+        self,
+        tables: tuple[str, ...] = (
+            "auto_pass_photos",
+            "auto_passes",
+            "auto_pass_reviews",
+        ),
+    ) -> None:
+        """Best-effort flush so a review read sees this process's own recent writes.
+
+        Photos before the manifest and reviews last. A failure is printed, not raised: the
+        read then serves what BigQuery already has, which is stale but never wrong (the
+        process-local sets and the buffer scans in the write path still hold the invariants).
+        """
+        with self._lock:
+            for table in tables:
+                try:
+                    self._flush_table(table)
+                except Exception as exc:  # noqa: BLE001
+                    print(
+                        f"BigQuery store: could not flush '{table}' before a read: {exc}"
+                    )
+
+    def _auto_pass_pool_sql(self, *, random: bool, app: bool) -> str:
+        """FROM/JOIN/WHERE of the passes a review can be shown: complete, unreviewed, in pool.
+
+        "Complete" means every photo the manifest promises is already stored: a manifest whose
+        photo rows were lost (a dropped insert, a failed flush) must never be offered, because
+        an answer given without the screenshots would train the ranker on a guess. The pool
+        flag is spliced in as a constant keyword (the kind was validated before this is
+        built); every VALUE is a bound parameter (@app).
+        """
+        return (
+            f"FROM `{self._tid('auto_passes')}` p "
+            "JOIN (SELECT app, profile_id, COUNT(DISTINCT photo_index) AS stored "
+            f"FROM `{self._tid('auto_pass_photos')}` GROUP BY app, profile_id) ph "
+            "ON ph.app = p.app AND ph.profile_id = p.profile_id "
+            f"WHERE p.random_sample = {'TRUE' if random else 'FALSE'} "
+            "AND p.photo_count > 0 AND ph.stored >= p.photo_count "
+            + ("AND p.app = @app " if app else "")
+            + f"AND NOT EXISTS (SELECT 1 FROM `{self._tid('auto_pass_reviews')}` r "
+            "WHERE r.app = p.app AND r.profile_id = p.profile_id)"
+        )
+
+    def next_auto_pass_for_review(self, *, kind, app=None) -> dict | None:
+        """One unreviewed, fully archived pass of ``kind``, or None when that pool is empty.
+
+        ``random``: uniform among the random_sample passes (the unbiased sample the live
+        false-pass rate is measured on). ``near_cut``: among the rest, the largest
+        (score - threshold), i.e. the pass closest below its own threshold.
+        """
+        kind = _require_auto_review_kind(kind)
+        app = _require_optional_app(app)
+        self._flush_auto_review_buffers()
+        random_pool = kind == AUTO_REVIEW_KIND_RANDOM
+        order = (
+            "RAND()"
+            if random_pool
+            else "(p.score - p.threshold) DESC, p.created_at, p.profile_id"
+        )
+        parameters = [] if app is None else [("app", "STRING", app)]
+        query = (
+            "SELECT p.profile_id, p.app, p.run_id, p.created_at, p.score, p.threshold, "
+            "p.photo_count, p.profile_name "
+            + self._auto_pass_pool_sql(random=random_pool, app=app is not None)
+            + f" ORDER BY {order} LIMIT 1"
+        )
+        try:
+            rows = self.client.query(query, job_config=_job_config(parameters)).result()
+        except Exception as exc:  # noqa: BLE001 - classified by name; SDK optional at import
+            if not _missing_optional_auto_review(exc, ensure=self._ensure):
+                raise
+            return None
+        row = next(iter(rows), None)
+        if row is None:
+            return None
+        return {
+            "profile_id": str(row["profile_id"]),
+            "app": str(row["app"]),
+            "run_id": str(row["run_id"]),
+            "created_at": _epoch(row["created_at"]),
+            "score": float(row["score"]),
+            "threshold": float(row["threshold"]),
+            "photo_count": int(row["photo_count"]),
+            "profile_name": str(row["profile_name"] or ""),
+            "kind": kind,
+        }
+
+    def auto_pass_photo(self, *, profile_id, index) -> bytes | None:
+        """The archived bytes of one pass photo, or None when there is no such photo.
+
+        Reads only from the configured private bucket and checks the bytes against the stored
+        sha256: a mismatch is corruption the owner must hear about, not a picture to judge a
+        person by, so it raises instead of returning the bytes.
+        """
+        _require_text(profile_id, "profile_id")
+        if type(index) is not int or index < 0:
+            raise ValueError(
+                f"auto pass photo index must be a non-negative integer (got {index!r})"
+            )
+        uri = digest = None
+        with self._lock:
+            for row in self._buf["auto_pass_photos"]:
+                if row["profile_id"] == profile_id and row["photo_index"] == index:
+                    uri, digest = row["gcs_uri"], row["sha256"]
+                    break
+        if uri is None:
+            try:
+                rows = self.client.query(
+                    "SELECT gcs_uri, sha256 "
+                    f"FROM `{self._tid('auto_pass_photos')}` "
+                    "WHERE profile_id = @profile_id AND photo_index = @photo_index "
+                    "ORDER BY created_at LIMIT 1",
+                    job_config=_job_config(
+                        [
+                            ("profile_id", "STRING", profile_id),
+                            ("photo_index", "INT64", index),
+                        ]
+                    ),
+                ).result()
+            except Exception as exc:  # noqa: BLE001
+                if not _missing_optional_auto_review(exc, ensure=self._ensure):
+                    raise
+                return None
+            row = next(iter(rows), None)
+            if row is None:
+                return None
+            uri, digest = str(row["gcs_uri"]), str(row["sha256"])
+        prefix = f"gs://{self.photo_bucket_name}/"
+        if not str(uri).startswith(prefix):
+            raise RuntimeError(
+                f"Refusing to read auto pass photo {uri!r}: it is outside the configured "
+                f"private bucket {self.photo_bucket_name!r}"
+            )
+        blob = self._photo_bucket.blob(str(uri)[len(prefix) :])
+        retry = _deadline_retry()
+        kwargs = {"timeout": _GCS_UPLOAD_REQUEST_TIMEOUT_S}
+        if retry is not None:
+            kwargs["retry"] = retry
+        try:
+            data = _call_with_supported_keywords(blob.download_as_bytes, **kwargs)
+        except Exception as exc:  # noqa: BLE001
+            if type(exc).__name__ == "NotFound":
+                print(
+                    f"BigQuery store warning: auto pass photo {uri} is missing: {exc}"
+                )
+                return None
+            raise
+        data = bytes(data)
+        if hashlib.sha256(data).hexdigest() != digest:
+            raise RuntimeError(
+                f"Auto pass photo {uri} does not match its stored sha256; refusing to show it"
+            )
+        return data
+
+    def _find_auto_pass(self, profile_id: str) -> dict:
+        """The one archived pass for ``profile_id`` (buffered or stored), else ValueError."""
+        found: list[dict] = [
+            dict(row)
+            for row in self._buf["auto_passes"]
+            if row["profile_id"] == profile_id
+        ]
+        try:
+            rows = self.client.query(
+                "SELECT run_id, app, profile_id, embedding, photo_count, profile_name, "
+                "random_sample "
+                f"FROM `{self._tid('auto_passes')}` WHERE profile_id = @profile_id "
+                "ORDER BY created_at",
+                job_config=_job_config([("profile_id", "STRING", profile_id)]),
+            ).result()
+        except Exception as exc:  # noqa: BLE001
+            if not _missing_optional_auto_review(exc, ensure=self._ensure):
+                raise
+            rows = []
+        found.extend(
+            {
+                "run_id": str(row["run_id"]),
+                "app": str(row["app"]),
+                "profile_id": str(row["profile_id"]),
+                "embedding": [float(x) for x in row["embedding"]],
+                "photo_count": int(row["photo_count"]),
+                "profile_name": str(row["profile_name"] or ""),
+                "random_sample": row["random_sample"],
+            }
+            for row in rows
+        )
+        if not found:
+            raise ValueError(f"no archived auto pass for profile {profile_id!r}")
+        # The same pass can legitimately appear twice (buffered AND already flushed, or a
+        # re-flushed batch); two DIFFERENT (app, run) identities cannot be told apart by the
+        # profile_id the caller gave, so refuse rather than label the wrong one.
+        identities = {(row["app"], row["run_id"]) for row in found}
+        if len(identities) > 1:
+            raise ValueError(
+                f"profile {profile_id!r} matches {len(identities)} archived auto passes; "
+                "refusing to guess which one is being answered"
+            )
+        return found[0]
+
+    def _auto_pass_reviewed(self, app: str, profile_id: str) -> bool:
+        if (app, profile_id) in self._reviewed_auto_passes:
+            return True
+        if any(
+            row["app"] == app and row["profile_id"] == profile_id
+            for row in self._buf["auto_pass_reviews"]
+        ):
+            return True
+        try:
+            rows = self.client.query(
+                f"SELECT 1 AS one FROM `{self._tid('auto_pass_reviews')}` "
+                "WHERE app = @app AND profile_id = @profile_id LIMIT 1",
+                job_config=_job_config(
+                    [("app", "STRING", app), ("profile_id", "STRING", profile_id)]
+                ),
+            ).result()
+        except Exception as exc:  # noqa: BLE001
+            if not _missing_optional_auto_review(exc, ensure=self._ensure):
+                raise
+            return False
+        return next(iter(rows), None) is not None
+
+    def _existing_review_label(self, pass_row: dict, source: str) -> bool | None:
+        """The ``liked`` of a label this pass's answer already produced, else None.
+
+        This is what makes a retry safe: the label is written (and flushed) BEFORE the review
+        row, so a failure in between leaves a label with no review. The owner then answers the
+        same pass again, and that must find the existing label rather than add a second one.
+        """
+        for row in self._buf["labels"]:
+            if (
+                row["run_id"] == pass_row["run_id"]
+                and row["app"] == pass_row["app"]
+                and row["profile_id"] == pass_row["profile_id"]
+                and row["source"] == source
+            ):
+                return bool(row["liked"])
+        rows = self.client.query(
+            f"SELECT l.liked FROM `{self._tid('labels')}` l "
+            "WHERE l.app = @app AND l.run_id = @run_id AND l.profile_id = @profile_id "
+            "AND l.source = @source ORDER BY l.created_at LIMIT 1",
+            job_config=_job_config(
+                [
+                    ("app", "STRING", pass_row["app"]),
+                    ("run_id", "STRING", pass_row["run_id"]),
+                    ("profile_id", "STRING", pass_row["profile_id"]),
+                    ("source", "STRING", source),
+                ]
+            ),
+        ).result()
+        row = next(iter(rows), None)
+        return None if row is None else bool(row["liked"])
+
+    def record_auto_pass_review(self, *, profile_id, would_like) -> dict:
+        """Record the owner's answer to one archived pass: a training label AND a review row.
+
+        ValueError for an unknown, ambiguous or already-reviewed pass (an answer is final).
+        Ordering is the crash-safety argument, since BigQuery has no multi-table transaction:
+        the LABEL is flushed first, the review row second. A failure between them leaves a
+        label with no review -- never a review with no label -- and the retry finds that label
+        (`_existing_review_label`) and writes only the missing review row, so a pass can never
+        get a second label. If the label already exists with a different answer, the REVIEW
+        row follows the label (it is what training already used) and a notice says so.
+        """
+        _require_text(profile_id, "profile_id")
+        if type(would_like) is not bool:
+            raise ValueError(f"would_like must be a bool (got {would_like!r})")
+        with self._lock:
+            self._require_open_for_write()
+            pass_row = self._find_auto_pass(profile_id)
+            app = pass_row["app"]
+            if self._auto_pass_reviewed(app, profile_id):
+                raise ValueError(f"auto pass {profile_id!r} was already reviewed")
+            random_sample = pass_row["random_sample"]
+            if type(random_sample) is not bool:
+                raise ValueError(
+                    f"archived auto pass {profile_id!r} has no valid random_sample flag"
+                )
+            kind = (
+                AUTO_REVIEW_KIND_RANDOM if random_sample else AUTO_REVIEW_KIND_NEAR_CUT
+            )
+            source = auto_review_label_source(kind)
+            existing = self._existing_review_label(pass_row, source)
+            if existing is None:
+                self.add_label(
+                    run_id=pass_row["run_id"],
+                    app=app,
+                    liked=would_like,
+                    embedding=pass_row["embedding"],
+                    source=source,
+                    photo_count=pass_row["photo_count"],
+                    profile_id=profile_id,
+                    profile_name=pass_row["profile_name"],
+                )
+                recorded = would_like
+            else:
+                recorded = existing
+                print(
+                    f"BigQuery store: auto pass {profile_id} already has a {source} label "
+                    f"(liked={existing}) from an earlier, interrupted answer; reusing it "
+                    "instead of writing a second label."
+                    + (
+                        f" Your new answer ({would_like}) differs and is NOT applied."
+                        if existing != would_like
+                        else ""
+                    )
+                )
+            # Label durable BEFORE the review row exists anywhere. A raise here leaves the
+            # label buffered (and the review unwritten); the retry above finds it.
+            self._flush_table("labels")
+            self._buf["auto_pass_reviews"].append(
+                {
+                    "profile_id": profile_id,
+                    "app": app,
+                    "reviewed_at": _now(),
+                    "would_like": recorded,
+                    "kind": kind,
+                }
+            )
+            self._reviewed_auto_passes.add((app, profile_id))
+            try:
+                self._flush_table("auto_pass_reviews")
+            except Exception as exc:  # noqa: BLE001
+                # The label is already durable and the review row stays buffered (it is
+                # re-sent by the next flush and by close). Raising would invite a retry that
+                # can only answer "already reviewed" -- say so loudly instead.
+                print(
+                    f"BigQuery store: the review row for auto pass {profile_id} is queued "
+                    f"but not yet written ({exc}); it will be re-sent on the next flush."
+                )
+        return {"kind": kind, "label_source": source}
+
+    def _dml(self, sql: str, parameters: list[tuple[str, str, object]]) -> int:
+        """Run one bound DML statement and return the rows it affected (raises if unknown)."""
+        job = self.client.query(sql, job_config=_job_config(parameters))
+        job.result()
+        affected = getattr(job, "num_dml_affected_rows", None)
+        if affected is None:
+            raise RuntimeError(
+                "BigQuery did not report how many rows a DML statement changed; refusing to "
+                "assume it did what was intended"
+            )
+        return int(affected)
+
+    def undo_latest_auto_review(self) -> dict | None:
+        """Undo the newest answer to an archived pass: delete its review row AND its label.
+
+        The pass goes back to the unreviewed pool and can be answered again.  Returns the
+        undone answer (``profile_id``, ``profile_name``, ``kind``, ``would_like``), or ``None``
+        when there is no answer to undo.
+
+        BigQuery has no multi-table transaction, so the ORDER is the safety argument -- the
+        mirror image of ``record_auto_pass_review`` (label first, review second): the REVIEW
+        row goes first, then the label.  A failure between them leaves a label with no review
+        row (the retry path of ``record_auto_pass_review`` already knows how to adopt that),
+        never a review row with no label.  The same streaming-buffer limit as
+        ``remove_latest_training_label`` applies: BigQuery refuses to DELETE rows it received
+        by streaming in roughly the last half hour, and that refusal is raised, not hidden.
+        """
+        with self._lock:
+            self._require_open_for_write()
+            # The answer being undone may still sit in this process's buffers; an undo that
+            # could not see it would undo the PREVIOUS answer instead.  A failing flush raises.
+            self._flush_table("labels")
+            self._flush_table("auto_pass_reviews")
+            try:
+                rows = self.client.query(
+                    "SELECT profile_id, app, kind, would_like "
+                    f"FROM `{self._tid('auto_pass_reviews')}` "
+                    "ORDER BY reviewed_at DESC, profile_id DESC LIMIT 1"
+                ).result()
+            except Exception as exc:  # noqa: BLE001
+                if not _missing_optional_auto_review(exc, ensure=self._ensure):
+                    raise
+                return None
+            review = next(iter(rows), None)
+            if review is None:
+                return None
+            profile_id, app = str(review["profile_id"]), str(review["app"])
+            kind = _require_auto_review_kind(review["kind"])
+            source = auto_review_label_source(kind)
+            identity = [
+                ("app", "STRING", app),
+                ("profile_id", "STRING", profile_id),
+                ("source", "STRING", source),
+            ]
+            label_rows = self.client.query(
+                "SELECT l.run_id, l.profile_name, l.created_at "
+                f"FROM `{self._tid('labels')}` l "
+                "WHERE l.app = @app AND l.profile_id = @profile_id AND l.source = @source "
+                "ORDER BY l.created_at DESC LIMIT 1",
+                job_config=_job_config(identity),
+            ).result()
+            label = next(iter(label_rows), None)
+            name = str(label["profile_name"] or "") if label is not None else ""
+            if not name:
+                manifest = next(
+                    iter(
+                        self.client.query(
+                            "SELECT profile_name "
+                            f"FROM `{self._tid('auto_passes')}` "
+                            "WHERE app = @app AND profile_id = @profile_id LIMIT 1",
+                            job_config=_job_config(identity[:2]),
+                        ).result()
+                    ),
+                    None,
+                )
+                name = (
+                    str(manifest["profile_name"] or "") if manifest is not None else ""
+                )
+            removed = self._dml(
+                f"DELETE FROM `{self._tid('auto_pass_reviews')}` "
+                "WHERE app = @app AND profile_id = @profile_id",
+                identity[:2],
+            )
+            if removed != 1:
+                raise RuntimeError(
+                    f"BigQuery removed {removed} review rows for the answer it selected; "
+                    "refusing to report an undo (rows streamed in the last ~30 minutes cannot "
+                    "be deleted yet -- try again later)"
+                )
+            self._reviewed_auto_passes.discard((app, profile_id))
+            if label is not None:
+                removed = self._dml(
+                    f"DELETE FROM `{self._tid('labels')}` "
+                    "WHERE app = @app AND profile_id = @profile_id AND source = @source "
+                    "AND run_id = @run_id AND created_at = @created_at",
+                    [
+                        *identity,
+                        ("run_id", "STRING", str(label["run_id"])),
+                        ("created_at", "TIMESTAMP", label["created_at"]),
+                    ],
+                )
+                if removed != 1:
+                    raise RuntimeError(
+                        f"BigQuery removed {removed} label rows for the answer it undid; the "
+                        "review row is already gone, so re-answering the pass will adopt "
+                        "whatever label is left"
+                    )
+            self._labels_cache = None
+        return {
+            "profile_id": profile_id,
+            "profile_name": name,
+            "kind": kind,
+            "would_like": bool(review["would_like"]),
+        }
+
+    def prune_auto_passes(self, *, max_passes=None, max_age_days=None, now=None) -> int:
+        """Delete archived passes (manifest, photo rows AND the GCS objects) beyond retention.
+
+        A pass goes when it is older than ``max_age_days`` or not among the ``max_passes``
+        newest, answered or not; ``None``/0 leaves that bound off.  Returns how many passes
+        were removed.  The owner's ANSWERS are untouched (labels, review rows, decisions).
+
+        Each pass is removed object-first so every step can be repeated: GCS objects, then the
+        photo rows, then the manifest.  A crash leaves a manifest that the next prune finds
+        again; it never leaves objects nothing points at.  Only rows old enough to be out of
+        BigQuery's streaming buffer are normally selected; a refusal for that reason is raised
+        after the passes already removed, and the next prune retries.
+        """
+        max_passes, max_age_days = require_auto_pass_retention(max_passes, max_age_days)
+        if max_passes is None and max_age_days is None:
+            return 0
+        clock = (
+            time.time() if now is None else normalize_timestamp_epoch(now, label="now")
+        )
+        with self._lock:
+            self._require_open_for_write()
+            self._flush_auto_review_buffers(("auto_pass_photos", "auto_passes"))
+        # The lock is released for the rest: deleting a backlog is hundreds of Cloud Storage
+        # calls and several DML round trips, and holding the store lock through them would stall
+        # every decision/label write behind housekeeping.  Safe because the doomed set is a
+        # snapshot of specific (app, profile_id) pairs: a pass archived meanwhile is newer than
+        # every one of them and is not in it.
+        try:
+            rows = self.client.query(
+                f"SELECT app, profile_id, created_at FROM `{self._tid('auto_passes')}`"
+            ).result()
+            passes = [
+                (str(r["app"]), str(r["profile_id"]), _epoch(r["created_at"]))
+                for r in rows
+            ]
+        except Exception as exc:  # noqa: BLE001
+            if not _missing_optional_auto_review(exc, ensure=self._ensure):
+                raise
+            return 0
+        doomed = doomed_auto_passes(passes, max_passes, max_age_days, clock)
+        by_app: dict[str, list[str]] = {}
+        for app, profile_id in doomed:
+            by_app.setdefault(app, []).append(profile_id)
+        removed = 0
+        for app, ids in by_app.items():
+            for start in range(0, len(ids), _PRUNE_CHUNK):
+                chunk = ids[start : start + _PRUNE_CHUNK]
+                names = [f"p{i}" for i in range(len(chunk))]
+                params = [("app", "STRING", app)] + [
+                    (n, "STRING", pid) for n, pid in zip(names, chunk, strict=True)
+                ]
+                where = (
+                    "WHERE app = @app AND profile_id IN ("
+                    + ", ".join(f"@{n}" for n in names)
+                    + ")"
+                )
+                photo_rows = self.client.query(
+                    f"SELECT gcs_uri FROM `{self._tid('auto_pass_photos')}` {where}",
+                    job_config=_job_config(params),
+                ).result()
+                self._delete_profile_photo_rows(
+                    [{"gcs_uri": str(r["gcs_uri"])} for r in photo_rows]
+                )
+                self._dml(
+                    f"DELETE FROM `{self._tid('auto_pass_photos')}` {where}", params
+                )
+                self._dml(f"DELETE FROM `{self._tid('auto_passes')}` {where}", params)
+                with self._lock:
+                    for pid in chunk:
+                        self._auto_pass_keys.discard((app, pid))
+                removed += len(chunk)
+        return removed
+
+    def auto_review_stats(self, *, app=None, window=DEFAULT_AUTO_REVIEW_WINDOW) -> dict:
+        """One-query tally for the ranker's live false-pass estimate and the hub's card.
+
+        ``random_reviewed`` / ``random_would_like`` cover the most recent ``window`` random
+        reviews (a rolling estimate that tracks the current model); near-cut counts are
+        cumulative. ``auto_likes`` / ``auto_passes`` count AUTO decisions since the first
+        archived pass's own decision and are 0/0 while nothing has been archived;
+        ``auto_model_passes`` is the part of ``auto_passes`` that entered the archive (the rest
+        are likes the session policy or like-ratio ceiling demoted, which the random pool never
+        samples). This process's own
+        buffered passes, reviews and decisions are flushed first (best effort) so the counts
+        include them -- otherwise the first flush_every passes of a run would be invisible to
+        the very estimate they feed. That is one round trip per table with pending rows, which
+        is why callers on the training path reuse the result for a short TTL
+        (ranker/decider.py's LIVE_REVIEW_TTL_S) instead of asking after every label.
+        """
+        app = _require_optional_app(app)
+        window = _require_window(window)
+        self._flush_auto_review_buffers(
+            ("decisions", "auto_pass_photos", "auto_passes", "auto_pass_reviews")
+        )
+        app_clause = "" if app is None else " AND app = @app"
+        # `review_window`, not `window`: WINDOW is a reserved word in GoogleSQL, and a
+        # parameter name is the one place nobody would think to check.
+        parameters: list[tuple[str, str, object]] = [("review_window", "INT64", window)]
+        if app is not None:
+            parameters.append(("app", "STRING", app))
+        reviews = f"`{self._tid('auto_pass_reviews')}`"
+
+        def recent_random(select: str) -> str:
+            return (
+                f"(SELECT {select} FROM (SELECT would_like FROM {reviews} "
+                f"WHERE kind = 'random'{app_clause} "
+                "ORDER BY reviewed_at DESC LIMIT @review_window))"
+            )
+
+        def near_cut(select: str) -> str:
+            return (
+                f"(SELECT {select} FROM {reviews} WHERE kind = 'near_cut'{app_clause})"
+            )
+
+        # The window opens at the DECISION row of the earliest archived pass, not at that
+        # pass's own auto_passes row: the worker records the decision first and archives
+        # afterwards, so counting from auto_passes.created_at would drop the very decision that
+        # started the window and bias pass_share by one pass.  The join is on the pass's lineage
+        # profile_id (exact, no time tolerance); a pass whose decision row is missing falls back
+        # to its own timestamp.  With no archived pass the MIN is NULL, so the count is 0.
+        passes = f"`{self._tid('auto_passes')}`"
+        window_start = (
+            "(SELECT MIN(ts) FROM ("
+            f"SELECT created_at AS ts FROM {passes} WHERE TRUE{app_clause} "
+            "UNION ALL "
+            "SELECT d.created_at AS ts "
+            f"FROM `{self._tid('decisions')}` d JOIN {passes} p "
+            "ON p.app = d.app AND p.profile_id = d.profile_id "
+            "WHERE d.source = 'auto' AND d.decision = 'dislike'"
+            f"{app_clause.replace('app =', 'd.app =')}))"
+        )
+
+        def decisions(decision: str) -> str:
+            return (
+                f"(SELECT COUNT(*) FROM `{self._tid('decisions')}` "
+                f"WHERE source = 'auto' AND decision = '{decision}'{app_clause} "
+                f"AND created_at >= {window_start})"
+            )
+
+        def model_passes() -> str:
+            # AUTO passes that actually entered the archive, matched by the pass's lineage
+            # profile_id (exact, like the window start above).  EXISTS, not a join: BigQuery
+            # streaming dedup is best effort, and a duplicated archive row must not count a
+            # decision twice (that would push this above auto_passes, which the live-review
+            # parser rejects as a store fault).
+            return (
+                f"(SELECT COUNT(*) FROM `{self._tid('decisions')}` d "
+                "WHERE d.source = 'auto' AND d.decision = 'dislike' "
+                f"AND EXISTS (SELECT 1 FROM {passes} p "
+                "WHERE p.app = d.app AND p.profile_id = d.profile_id)"
+                f"{app_clause.replace('app =', 'd.app =')} "
+                f"AND d.created_at >= {window_start})"
+            )
+
+        query = (
+            "SELECT "
+            f"(SELECT COUNT(*) {self._auto_pass_pool_sql(random=True, app=app is not None)}) "
+            "AS pending_random, "
+            f"(SELECT COUNT(*) {self._auto_pass_pool_sql(random=False, app=app is not None)}) "
+            "AS pending_near_cut, "
+            f"{recent_random('COUNT(*)')} AS random_reviewed, "
+            f"{recent_random('COUNTIF(would_like)')} AS random_would_like, "
+            f"{near_cut('COUNT(*)')} AS near_cut_reviewed, "
+            f"{near_cut('COUNTIF(would_like)')} AS near_cut_would_like, "
+            f"{decisions('like')} AS auto_likes, "
+            f"{decisions('dislike')} AS auto_passes, "
+            f"{model_passes()} AS auto_model_passes"
+        )
+        names = (
+            "pending_random",
+            "pending_near_cut",
+            "random_reviewed",
+            "random_would_like",
+            "near_cut_reviewed",
+            "near_cut_would_like",
+            "auto_likes",
+            "auto_passes",
+            "auto_model_passes",
+        )
+        try:
+            rows = self.client.query(query, job_config=_job_config(parameters)).result()
+        except Exception as exc:  # noqa: BLE001
+            if not _missing_optional_auto_review(exc, ensure=self._ensure):
+                raise
+            return dict.fromkeys(names, 0)
+        row = next(iter(rows), None)
+        if row is None:
+            return dict.fromkeys(names, 0)
+        return {name: int(row[name] or 0) for name in names}
 
     def record_spend(self, run_id, model, usage: Usage, cost):
         # cost is None when the call's price couldn't be determined (e.g. no

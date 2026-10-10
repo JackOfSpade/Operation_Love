@@ -833,6 +833,87 @@ python -m operation_love
   unrelated pool.
 - Every autonomous swipe is recorded for stats and optional daily limits, but is not fed
   back as a training label; learning remains grounded in your manual Training-mode decisions.
+  The one exception is a pass YOU answer in the **Review auto passes** card (below): your
+  answer, never the bot's own prediction, becomes a label.
+
+### 4a. Recall-target threshold and auto pass review
+
+You would rather the bot like someone you would pass than pass someone you would like, so the
+like cutoff is set by a **recall target** instead of a fixed probability.
+
+```yaml
+ranker:
+  like_recall_target: 0.95        # "the bot may pass at most 5% of the people I would like"; null = legacy fixed like_threshold
+  contextual_recall_budget: 0.02  # extra recall the AUTO tired/late-session demotion may cost
+auto_review:
+  enabled: true
+  random_share: 0.5               # share of archived passes sent to the unbiased random pool
+  max_archived_passes: 400        # retention: newest N passes kept (0 = unlimited)
+  max_age_days: 30                # retention: older passes lose their photos (0 = unlimited)
+```
+- **How the cutoff is set.** Every train scores all labels out-of-fold (10 folds, identity-grouped,
+  so one person never sits on both sides of a split) and sets the cutoff to the score that keeps
+  `like_recall_target` of your MANUALLY labelled likes above it. Answers to reviewed passes
+  are training signal but are never calibration positives: each one is a profile the model had
+  already passed, so calibrating on them would grade the model on its own past misses. If the
+  labels cannot support the calibration the ranker is **not ready** and says why (`stats`, the
+  run log, the Hub); it never falls back to the fixed `like_threshold`, which is only a
+  placeholder while a recall target is set. `stats` and the startup banner print a
+  `Calibration:` line with the live cutoff.
+- **What "95%" means, and what it needs.** The cutoff is aimed at the people who come NEXT, not
+  at the labels it was read from, so two corrections apply. (1) The classifier the bot deploys is
+  the average of the 10 fold models whose out-of-fold scores set the cutoff, not a separate fit
+  on all labels (that one scores a little more spread out, which put the cutoff too high: held-out
+  recall landed 1.5-2.5 points under the target). Measured on fresh profiles the target is held or
+  slightly exceeded (the average is a touch narrower, so it errs toward liking). (2) The cutoff
+  keeps the `ceil(target * (n+1))` highest of your `n` liked scores, not `ceil(target * n)`: the
+  k-th highest of n leaves only `k/(n+1)` of fresh likes above it. A recall target also needs
+  enough manual likes to be measurable at all: **19 for 0.95, 9 for 0.90, 99 for 0.99** (below
+  that the cutoff is just your lowest liked score, which keeps only n/(n+1) of fresh likes:
+  83% at 5 likes, 91% at 10, whatever the log says), so with fewer the ranker is not ready and says how many it needs. The calibration depends
+  only on WHICH labels exist, not on the order the store returns them. A `like_recall_target`
+  above 0.99 is honoured as configured (only the live raise below is capped at 0.99).
+- **Review auto passes (Hub card).** AUTO archives every profile the MODEL passes (screenshots,
+  score, embedding) in `auto_passes` / `auto_pass_photos`; this is separate from the training
+  archive (`profiles`) that retraction planning reasons about. The card alternates a
+  **random** pool (uniform, measures the false-pass rate) and a **near-cut** pool (closest to
+  the cutoff, the most informative labels). Tap **Would have liked** or **Correct pass**;
+  either way the answer is stored as a label (`auto_review_random` / `auto_review_near_cut`). A
+  pass you never open stays unlabelled. The card works with no run live, shows the measured
+  random-pool false-pass rate beside the one the out-of-fold scores predicted, and says
+  "unavailable" on a store without the archive tables.
+- **Taking an answer back.** **Undo last answer** (on the card) deletes your NEWEST answer, its
+  training label and its review row, so that person is in the queue again; repeat it to walk
+  back further. "Remove last saved label" never touches a review answer: if the newest label is
+  one it refuses and points you at Undo, rather than deleting an older, unrelated swipe. (On
+  BigQuery, rows streamed in the last ~30 minutes cannot be deleted yet; the Hub shows the error
+  and the undo works once they settle.)
+- **Retention.** The archive holds strangers' screenshots (~2.4 MB per pass), so it is bounded
+  from the first pass, like the opener replay corpus: a pass older than `max_age_days` or beyond
+  the newest `max_archived_passes` loses its screenshots, embedding and manifest (on BigQuery
+  the Cloud Storage objects too), answered or not. Your ANSWERS (labels, review rows) are never
+  touched. The sweep runs when an AUTO run starts and after every 25 archived passes, also when
+  `auto_review.enabled` is false; `0` means unlimited for that bound. A failed sweep is printed
+  and retried, never fatal.
+- **Live correction.** With at least 10 random-pool answers, if the one-sided 95% (Wilson) lower
+  bound of the observed false-pass rate exceeds the expected one, the effective target rises by
+  the whole measured gap, `(observed - expected) * pass_share / base_rate` (capped at 0.99; the
+  bound only decides WHETHER to move, so a real shortfall is not discounted by the confidence
+  margin). `pass_share` counts only genuine model passes: a like the session policy or the
+  like-ratio ceiling demoted to a pass is never in the random pool, so it is not counted. The
+  expected rate is measured at the base target, not the corrected one, so a correction cannot
+  lower its own bar. It is a proportional backstop, not a controller: in simulation it recovers
+  about three quarters of a live shortfall (the discounted version it replaced, about half), not all of it. The cutoff only moves at a
+  retrain; the AUTO loop reads it once at start.
+- **The model-quality card under a recall target.** Recall at a cutoff chosen from the same
+  labels is green for ANY ranker (liking everyone meets it), so the card does not grade those
+  labels: it re-runs the whole calibration inside every fold on that fold's training people and
+  scores the held-out people ("people it never saw"). It also asks whether the cutoff beats
+  chance: the share of people you would pass that the bot also passes (95% lower bound) must
+  exceed the share of people you would like that it passes. `BASELINE PASS` needs both, plus
+  500 independent identities; a recall estimate only fails when its 95% upper bound is under the
+  target, so a correctly calibrated target does not flicker. The cutoff shown as "calibrated" is
+  only taken from a cached or last-run calibration made for the CURRENT target.
 
 ---
 

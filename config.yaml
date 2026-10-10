@@ -418,10 +418,41 @@ storage:
 
 # --- Decision engine (local, learns YOUR taste from YOUR swipes) ---
 ranker:
-  like_threshold: 0.5          # P(like) above which we like
+  like_threshold: 0.5          # P(like) above which we like. With like_recall_target set this is only the
+                               # starting value: every train replaces it with the calibrated cutoff.
+  # Recall-target threshold (operation_love/ranker/threshold.py). 0.95 = "the bot may pass at most 5%
+  # of the people I would like". Every train scores all labels out-of-fold (identity-grouped, so one
+  # person never sits on both sides of a split), reads the scores of your MANUALLY labelled likes, and
+  # sets the like cutoff to the highest score that keeps 95% of them above it. Why not a fixed 0.5:
+  # the ranker's scores are compressed (out-of-fold ~0.46-0.53, AUC ~0.70), so 0.5 passed ~37% of the
+  # people you would like. Cost of a higher target: the bot likes more people you would pass (you
+  # prefer that). `null` restores the fixed like_threshold above. If the labels cannot support the
+  # calibration the ranker is NOT ready (and says why) -- it never falls back to like_threshold.
+  like_recall_target: 0.95
+  # The contextual AUTO demotion (a marginal like declined on a tired/late session) may cost at most
+  # this much recall; it caps how far that demotion can lift the cutoff. 0 disables the lift.
+  contextual_recall_budget: 0.02
   min_labels_to_engage: 40     # ranker stays "not ready" until this many labels (needs both like+pass)
   retrain_every: 1             # training mode: retrain live after each new label
   min_per_class: 5             # each class (like/pass) needs at least this many examples to train
+
+# --- Auto pass review ---
+# AUTO archives every profile it PASSES (screenshots + score + embedding). The hub's "Review auto
+# passes" card shows them back: tap "Would have liked" or "Correct pass". EVERY answer becomes a
+# training label (an untapped pass is never assumed correct). Answers on the random pool measure the
+# live false-pass rate; if it is significantly above what the out-of-fold scores predicted, the
+# effective recall target rises automatically.
+auto_review:
+  enabled: true
+  random_share: 0.5            # share of archived passes sent to the unbiased random pool; the rest are
+                               # reviewed near the cutoff (strictly between 0 and 1)
+  # Retention. The archive holds real strangers' screenshots (~2.4 MB per pass), so it is bounded from
+  # the first pass: a pass older than max_age_days, or beyond the newest max_archived_passes, loses its
+  # screenshots, embedding and manifest (oldest first; on BigQuery the Cloud Storage objects too). Your
+  # ANSWERS (training labels and review rows) are never touched. 0 = unlimited for that bound. Applied
+  # at the start of every AUTO run and after every few archived passes -- also when `enabled` is false.
+  max_archived_passes: 400
+  max_age_days: 30
 
 quality_filter:
   enabled: true

@@ -47,6 +47,13 @@ class Store(Protocol):
     """Shared storage surface both SQLiteStore and BigQueryStore implement."""
 
     def load_labels(self) -> list[tuple[bool, list[float]]]: ...
+    # Exactly the rows load_labels() returns -- same retraction filter, same rows, same order --
+    # plus each label's `source` ("" for a NULL one). ranker/threshold.py needs the source to
+    # tell MANUAL calibration labels from auto-review answers (a source starting with
+    # "auto_review"): a review answer is training data, but it must never set the recall
+    # threshold it is also being used to audit. Both backends serve it from the same cache as
+    # load_labels (training retrains after every label), and add_label keeps that cache coherent.
+    def load_label_rows(self) -> list[tuple[bool, list[float], str]]: ...
     # capture_truncated: the bot hit its per-profile screencap ceiling without ever reaching
     # the profile's true bottom, i.e. this label was made from an INCOMPLETE read. Carried
     # all the way to the store (rather than left in the local, rotating debug log) so the
@@ -86,6 +93,69 @@ class Store(Protocol):
         profile_id: str = "",
         created_at: object | None = None,
     ) -> None: ...
+    # --- AUTO pass archive + owner review -------------------------------------------------
+    # AUTO archives every profile the model PASSES (the screenshots it saw, the score and
+    # threshold in force, the embedding) so the owner can later answer "would have liked" or
+    # "correct pass"; EVERY answer becomes a training label. `random_sample` marks the unbiased
+    # pool the live false-pass rate is measured on. Archiving writes NO label, decision, or
+    # profiles/profile_photos row (the training archive is what retraction planning reasons
+    # about). Returns False (loudly) when the photos cannot be archived; malformed arguments
+    # raise ValueError. All keyword-only.
+    def record_auto_pass(
+        self,
+        *,
+        run_id: str,
+        app: str,
+        profile_id: str,
+        score: float,
+        threshold: float,
+        embedding: list[float],
+        photos: list[bytes],
+        profile_name: str = "",
+        random_sample: bool,
+        capture_truncated: bool = False,
+    ) -> bool: ...
+    # One unreviewed pass of `kind` ("random": uniform among random_sample passes; "near_cut":
+    # among the rest, the largest score - threshold), or None when that pool is empty. Returns
+    # {"profile_id","app","run_id","created_at" (epoch float),"score","threshold",
+    # "photo_count","profile_name","kind"}.
+    def next_auto_pass_for_review(
+        self, *, kind: str, app: str | None = None
+    ) -> dict | None: ...
+    def auto_pass_photo(self, *, profile_id: str, index: int) -> bytes | None: ...
+    # ValueError for an unknown or already-reviewed pass. Writes the review row AND a training
+    # label (source "auto_review_random" / "auto_review_near_cut") as one unit: atomic on
+    # SQLite, label-first and retry-idempotent on BigQuery (a pass whose label already exists
+    # never gets a second one). Returns {"kind", "label_source"}.
+    def record_auto_pass_review(self, *, profile_id: str, would_like: bool) -> dict: ...
+    # {"pending_random","pending_near_cut","random_reviewed","random_would_like" (over the most
+    # recent `window` random reviews),"near_cut_reviewed","near_cut_would_like","auto_likes",
+    # "auto_passes","auto_model_passes"} -- auto_likes/auto_passes count source='auto'
+    # decisions at or after the earliest archived pass's own DECISION row (the worker records
+    # the decision before it archives, so the window must open there to count that pass; 0/0
+    # when none archived). auto_model_passes is the part of auto_passes that entered the archive
+    # (the rest are likes the session policy or like-ratio ceiling demoted to a pass, which the
+    # random pool never samples). app=None means all apps pooled: the model and its calibration
+    # labels are shared.
+    def auto_review_stats(
+        self, *, app: str | None = None, window: int = 200
+    ) -> dict: ...
+    # Undo the NEWEST answer to an archived pass: delete its review row and its training label,
+    # so the pass is unreviewed again. Returns {"profile_id","profile_name","kind","would_like"}
+    # of the undone answer, or None when there is none. ("Remove last saved label" refuses with
+    # ValueError instead of touching an answer, and never reaches past one to an older swipe.)
+    def undo_latest_auto_review(self) -> dict | None: ...
+    # Retention: delete archived passes (manifest, embedding, screenshots -- and on BigQuery the
+    # GCS objects) older than `max_age_days` or beyond the `max_passes` newest, answered or not;
+    # None/0 leaves a bound off. The owner's ANSWERS (labels, review rows, decisions) are never
+    # touched. Returns how many passes were removed.
+    def prune_auto_passes(
+        self,
+        *,
+        max_passes: int | None = None,
+        max_age_days: float | None = None,
+        now: float | None = None,
+    ) -> int: ...
     def retraction_run_rows(self, run_id: str, app: str, source: str) -> dict: ...
     def append_label_retraction(self, row: dict) -> bool: ...
     def advisory_opener_run_rows(self, run_id: str, app: str) -> dict: ...

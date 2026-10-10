@@ -19,6 +19,7 @@ from .model import (
     SKLEARN_LOGREG_KWARGS,
     new_classifier,
 )  # shared ranker hyperparameters (no drift)
+from .threshold import fit_folds, recall_threshold, wilson_lower
 
 _FACE_DIMS = 512  # first 512 of the 1280-d vector = L2-normed ArcFace identity template
 _IDENTITY_EPS = 0.5  # DBSCAN cosine-distance threshold -> cosine similarity >= 0.5,
@@ -81,10 +82,33 @@ def evaluate(
     n_splits: int = 5,
     eps: float = _IDENTITY_EPS,
     like_threshold: float = 0.5,
+    recall_target: float | None = None,
 ) -> dict:
     """Identity-grouped, stratified K-fold CV. Returns a JSON-able dict: status,
     label counts, distinct identities, ranking metrics, and out-of-fold decisions at
-    ``like_threshold``. Never raises — failure modes come back as a status + message."""
+    ``like_threshold``. Never raises — failure modes come back as a status + message.
+
+    ``recall_target`` (a number in (0, 1), default ``None``) switches the decisions to the
+    recall-target regime and makes the accepted-recall figure a TEST rather than a tautology.
+    The deployed ranker sets its cutoff from out-of-fold scores of the very labels it is then
+    judged on, so scoring those same labels at that cutoff reports a recall of at least the
+    target BY CONSTRUCTION, for any ranker at all (a useless one included).  Here the whole
+    calibration is instead re-run inside every outer fold on that fold's TRAINING people only
+    (``fit_folds`` + ``recall_threshold``, exactly what ``PreferenceModel.train`` does), and the
+    held-out people are scored by the resulting fold ensemble at the resulting cutoff.
+    ``like_threshold`` is then only echoed (it is the cutoff the bot would show); the per-fold
+    cutoffs are returned as ``fold_thresholds``.
+
+    Because a recall target can always be met by liking everyone, recall says nothing about how
+    GOOD the ranker is, so every ``ok`` result also reports what the cutoff buys:
+    ``dislikes_passed`` (the share of people the owner would pass that the bot also passes),
+    its one-sided 95% lower bound, ``chance_pass_rate`` (the share of people the owner would
+    LIKE that it passes -- what an uninformative ranker would also pass of the dislikes; never
+    below ``1 - recall_target`` when there is one) and ``discriminates`` (the bound beats
+    chance).  ``accepted_recall_upper`` is the matching upper
+    bound of recall: with ~150 positives a recall estimate is good to a couple of points, so a
+    badge keyed to the point estimate alone would flicker around a correctly calibrated target.
+    """
     empty_base = {
         "labels": 0,
         "likes": 0,
@@ -107,6 +131,12 @@ def evaluate(
         threshold = float(like_threshold)
         if not math.isfinite(threshold) or not 0.0 <= threshold <= 1.0:
             raise ValueError("like_threshold must be a finite number in [0, 1]")
+        if recall_target is not None:
+            if isinstance(recall_target, bool) or not isinstance(recall_target, Real):
+                raise ValueError("recall_target must be None or a number in (0, 1)")
+            recall_target = float(recall_target)
+            if not math.isfinite(recall_target) or not 0.0 < recall_target < 1.0:
+                raise ValueError("recall_target must be None or a number in (0, 1)")
     except (ValueError, TypeError, OverflowError) as exc:
         return {
             **empty_base,
@@ -197,18 +227,33 @@ def evaluate(
 
         folds = list(StratifiedGroupKFold(n_splits=splits).split(X, yv, groups=groups))
         roc, pr, brier = [], [], []
+        fold_thresholds: list[float] = []
         true_accepted = false_dislikes = false_likes = true_dislikes = 0
+        group_ids = np.asarray(groups)
         for tr, va in folds:
             if len(set(yv[tr].tolist())) < 2 or len(set(yv[va].tolist())) < 2:
                 continue  # a fold without both classes can't be scored
-            clf = new_classifier()  # same hyperparameters as the deployed ranker
-            clf.fit(X[tr], yv[tr])
-            p = clf.predict_proba(X[va])[:, 1]
+            if recall_target is None:
+                clf = new_classifier()  # same hyperparameters as the deployed ranker
+                clf.fit(X[tr], yv[tr])
+                p = clf.predict_proba(X[va])[:, 1]
+                fold_threshold = threshold
+            else:
+                # The whole calibration, on the training people only.  The held-out people
+                # contribute nothing to the cutoff and nothing to the scorer.
+                fit = fit_folds(X[tr], yv[tr], group_ids[tr].tolist())
+                if fit is None:
+                    continue  # this fold's training side cannot be calibrated
+                fold_threshold = float(
+                    recall_threshold(fit.oof[yv[tr] == 1].tolist(), recall_target)
+                )
+                fold_thresholds.append(fold_threshold)
+                p = fit.ensemble.predict_proba(X[va])[:, 1]
             roc.append(float(roc_auc_score(yv[va], p)))
             prec, rec, _ = precision_recall_curve(yv[va], p)
             pr.append(float(auc(rec, prec)))
             brier.append(float(brier_score_loss(yv[va], p)))
-            predicted_like = p >= threshold
+            predicted_like = p >= fold_threshold
             true_accepted += int(np.sum((yv[va] == 1) & predicted_like))
             false_dislikes += int(np.sum((yv[va] == 1) & ~predicted_like))
             false_likes += int(np.sum((yv[va] == 0) & predicted_like))
@@ -225,7 +270,31 @@ def evaluate(
 
         accepted_total = true_accepted + false_dislikes
         accepted_recall = true_accepted / accepted_total if accepted_total else None
-        return {
+        rejected_total = false_likes + true_dislikes
+        dislikes_passed = true_dislikes / rejected_total if rejected_total else None
+        dislikes_passed_lower = (
+            wilson_lower(true_dislikes, rejected_total) if rejected_total else None
+        )
+        # What an UNINFORMATIVE ranker at this cutoff would pass of the people the owner
+        # dislikes: the same share it passes of the people the owner likes.  Under a recall
+        # target that share is, by design, about 1 - target, and the observed share jitters
+        # around it (a lucky-low draw of a few missed likes would otherwise let a ranker with no
+        # signal "beat chance" by passing a handful of dislikes), so chance is never taken
+        # below the allowance the cutoff was built for.
+        chance_pass_rate = false_dislikes / accepted_total if accepted_total else None
+        if chance_pass_rate is not None and recall_target is not None:
+            chance_pass_rate = max(chance_pass_rate, 1.0 - recall_target)
+        discriminates = (
+            dislikes_passed_lower is not None
+            and chance_pass_rate is not None
+            and dislikes_passed_lower > chance_pass_rate
+        )
+        recall_upper = (
+            1.0 - wilson_lower(false_dislikes, accepted_total)
+            if accepted_total
+            else None
+        )
+        result = {
             **base,
             "status": "ok",
             "folds": len(roc),
@@ -233,17 +302,32 @@ def evaluate(
             "pr_auc": ms(pr),
             "brier": ms(brier),
             "accepted_recall": accepted_recall,
+            "accepted_recall_upper": recall_upper,
             "false_dislike_rate": (1.0 - accepted_recall)
             if accepted_recall is not None
             else None,
+            "dislikes_passed": dislikes_passed,
+            "dislikes_passed_lower": dislikes_passed_lower,
+            "chance_pass_rate": chance_pass_rate,
+            "discriminates": discriminates,
             "confusion": {
                 "true_accepted": true_accepted,
                 "false_dislikes": false_dislikes,
                 "false_likes": false_likes,
                 "true_dislikes": true_dislikes,
             },
-            "message": f"identity-grouped {len(roc)}-fold CV",
+            "message": f"identity-grouped {len(roc)}-fold CV"
+            + (
+                " (cutoff re-calibrated inside every fold)"
+                if recall_target is not None
+                else ""
+            ),
         }
+        if recall_target is not None:
+            result["recall_target"] = recall_target
+            result["calibration"] = "nested"
+            result["fold_thresholds"] = fold_thresholds
+        return result
     except Exception as exc:  # noqa: BLE001
         return {
             **base,

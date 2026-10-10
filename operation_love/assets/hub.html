@@ -111,6 +111,12 @@
   .current-app { display:inline-block; padding:8px 12px; background:#2f6df0;
                  border:1px solid #2f6df0; border-radius:9px; font-weight:600; }
   .dot { width:6px; height:6px; border-radius:50%; display:inline-block; margin-right:6px; vertical-align:middle; }
+  /* AUTO pass review: the archived screenshots scroll inside the card like the profile did. */
+  .autoreview-photos { display:flex; flex-direction:column; gap:8px; max-height:560px; overflow-y:auto;
+                       margin-top:10px; padding:8px; background:#0c0c10;
+                       border:1px solid rgba(255,255,255,.09); border-radius:9px; }
+  .autoreview-photos img { display:block; width:100%; max-width:420px; margin:0 auto;
+                           border-radius:7px; background:#111116; }
 </style></head>
 <body><div class="hub-layout"><div class="wrap">
   <div class="row"><h1>Operation&nbsp;Love</h1><span id="runpill" class="pill stop">stopped</span></div>
@@ -131,6 +137,18 @@
     <div class="meta" style="margin-top:6px">Available only when stopped. Remove the latest saved label after a mistaken swipe.</div>
     <div class="controls" style="margin-top:10px">
       <button id="removeLatestTraining">↶ Remove last saved label</button>
+    </div>
+  </div>
+
+  <div class="card" id="autoreviewcard">
+    <div class="row"><span class="muted">🟢 review auto passes</span><span class="meta" id="autoreviewhint" aria-live="polite">loading…</span></div>
+    <div class="meta" style="margin-top:6px">People the bot passed on its own. Say whether you would have liked them: every answer becomes a training label, and the random sample measures how often the bot passes someone you would like. Answer each one you open; skipping the ones you are unsure about skews that measurement.</div>
+    <div id="autoreviewsummary" style="margin-top:8px" role="status" aria-live="polite"></div>
+    <div id="autoreviewbody" style="margin-top:10px"></div>
+    <div class="controls" style="margin-top:12px">
+      <button id="autoreviewlike" class="primary" disabled>Would have liked</button>
+      <button id="autoreviewpass" disabled>Correct pass</button>
+      <button id="autoreviewundo" title="Delete your most recent answer (its training label too) and put that person back in the queue">Undo last answer</button>
     </div>
   </div>
 
@@ -1300,7 +1318,12 @@ function renderEval(e){
   const esc = s => String(s).replace(/[&<>"]/g, ch => (
     {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[ch]
   ));
-  const TARGET_RECALL = 0.95;
+  // The 95% default is the legacy bar.  With ranker.like_recall_target set the page reads the
+  // owner's own target from the response, so the card judges the bot against the recall it was
+  // actually asked to hold rather than a hard-coded one.
+  const DEFAULT_TARGET_RECALL = 0.95;
+  const TARGET_RECALL = (typeof e.recall_target === 'number' && e.recall_target > 0 && e.recall_target < 1)
+    ? e.recall_target : DEFAULT_TARGET_RECALL;
   const TARGET_IDENTITIES = 500;
   const clamp = value => Math.max(0, Math.min(1, Number(value) || 0));
   const percent = value => `${(clamp(value)*100).toFixed(1)}%`;
@@ -1334,12 +1357,25 @@ function renderEval(e){
     return;
   }
 
+  // With ranker.like_recall_target set the server re-runs the whole calibration inside every
+  // fold and grades the held-out people (evaluate(recall_target=...)), because scoring the same
+  // labels the cutoff was picked from would report "recall >= target" for ANY ranker.  A recall
+  // target can also always be met by liking everyone, so recall alone says nothing about quality:
+  // the card additionally requires the cutoff to beat chance on the people you would pass.
+  const targeted = typeof e.recall_target === 'number' && e.recall_target > 0 && e.recall_target < 1;
   const recall = clamp(e.accepted_recall);
+  // ~150 positives measure recall to within a couple of points, so a point estimate sitting
+  // just under a CORRECTLY calibrated target would flip the badge on every refresh.  Fail the
+  // check only when the 95% upper bound is under the target; the legacy fixed-threshold card
+  // has no bound and keeps comparing the point estimate.
+  const recallUpper = (targeted && typeof e.accepted_recall_upper === 'number')
+    ? clamp(e.accepted_recall_upper) : recall;
   const falseDislike = clamp(e.false_dislike_rate);
   const identities = Math.max(0, Math.floor(Number(e.identities) || 0));
-  const recallReady = recall >= TARGET_RECALL;
+  const recallReady = recallUpper >= TARGET_RECALL;
   const evidenceReady = identities >= TARGET_IDENTITIES;
-  const ready = recallReady && evidenceReady;
+  const qualityReady = targeted ? e.discriminates === true : true;
+  const ready = recallReady && evidenceReady && qualityReady;
   const threshold = clamp(e.like_threshold);
   const cm = e.confusion || {};
   const count = key => Math.max(0, Math.floor(Number(cm[key]) || 0));
@@ -1348,16 +1384,26 @@ function renderEval(e){
   $('#evalbody').innerHTML =
     `<div class="readiness-title">${ready ? 'Baseline check passes' : 'More baseline evidence needed'}</div>`
     + `<div class="readiness-copy">This leakage-free test measures the base ranker. AUTO can apply additional conservative passes, so this is not an AUTO release approval.</div>`
-    + `<div class="readiness-check"><div class="readiness-check-head"><span>Accepted profiles kept</span>`
+    + `<div class="readiness-check"><div class="readiness-check-head"><span>Accepted profiles kept${targeted ? ' (people it never saw)' : ''}</span>`
     + `<span class="readiness-value" style="color:${recallReady?'#39d98a':'#ff8585'}">${percent(recall)}</span></div>`
-    + `<div class="readiness-target">Target ≥95% · false dislikes ${percent(falseDislike)} (must be ≤5%)</div>`
+    + `<div class="readiness-target">Target ≥${percent(TARGET_RECALL)} · false dislikes ${percent(falseDislike)} (must be ≤${percent(1 - TARGET_RECALL)})`
+    + (targeted ? ` · fails only if the 95% upper bound (${percent(recallUpper)}) is under the target` : '') + `</div>`
     + `<div class="readiness-track"><span class="${recallReady?'ready':''}" style="width:${Math.min(100, recall/TARGET_RECALL*100).toFixed(1)}%"></span></div></div>`
+    + (targeted ? `<div class="readiness-check"><div class="readiness-check-head"><span>Better than chance at that cutoff</span>`
+      + `<span class="readiness-value" style="color:${qualityReady?'#39d98a':'#ff8585'}">${percent(e.dislikes_passed)}</span></div>`
+      + `<div class="readiness-target">It passes ${percent(e.dislikes_passed)} of the people you would pass (at least ${percent(e.dislikes_passed_lower)} with 95% confidence). `
+      + `An uninformative ranker would pass the same share of them as of the people you like: ${percent(e.chance_pass_rate)}. The lower figure must beat that one.</div>`
+      + `<div class="readiness-track"><span class="${qualityReady?'ready':''}" style="width:${Math.min(100, clamp(e.dislikes_passed)*100).toFixed(1)}%"></span></div></div>` : '')
     + `<div class="readiness-check"><div class="readiness-check-head"><span>Independent profiles tested</span>`
     + `<span class="readiness-value" style="color:${evidenceReady?'#39d98a':'#ff8585'}">${identities} / ${TARGET_IDENTITIES}</span></div>`
     + `<div class="readiness-target">Minimum baseline evidence required before the PASS badge appears</div>`
     + `<div class="readiness-track"><span class="${evidenceReady?'ready':''}" style="width:${Math.min(100, identities/TARGET_IDENTITIES*100).toFixed(1)}%"></span></div></div>`
-    + `<div class="decision-rule"><b>Base model rule:</b> likes at or above ${percent(threshold)} predicted chance. AUTO may conservatively pass additional marginal likes.</div>`
-    + `<details class="readiness-details"><summary>Technical details · ${e.folds}-fold leakage-free test</summary>`
+    + `<div class="decision-rule"><b>Base model rule:</b> likes at or above ${percent(threshold)} predicted chance`
+    + (e.threshold_source === 'calibrated' ? ` (the cutoff calibrated to keep ≥${percent(TARGET_RECALL)} of the people you would like).`
+      : e.threshold_source === 'oof_estimate' ? ` (estimated from this test to keep ≥${percent(TARGET_RECALL)} of the people you would like; the bot's own cutoff appears once it trains).`
+      : '.')
+    + ` AUTO may conservatively pass additional marginal likes.</div>`
+    + `<details class="readiness-details"><summary>Technical details · ${e.folds}-fold leakage-free test${targeted ? ' · cutoff re-calibrated inside every fold' : ''}</summary>`
     + `<table class="confusion"><tr><th></th><th>Model likes</th><th>Model dislikes</th></tr>`
     + `<tr><th>You accept</th><td>${count('true_accepted')}</td><td class="risk">${count('false_dislikes')}</td></tr>`
     + `<tr><th>You dislike</th><td>${count('false_likes')}</td><td>${count('true_dislikes')}</td></tr></table></details>`
@@ -1383,6 +1429,250 @@ async function tickLogs(){
     if(stick) el.scrollTop = el.scrollHeight;
   } catch(e){}
 }
+
+// --- AUTO pass review card ---------------------------------------------------------------
+// Informational only. It shows the archive of profiles the bot passed on its own and records
+// the owner's answer to each as a training label. It never reads or changes run state and never
+// touches the GO/WAIT cue, so it uses the same quiet green/neutral styling as the other
+// read-only cards and no red WAIT styling anywhere: nothing here is something the operator must
+// not do.
+//
+// The helpers below are pure and named so the hub test suite can run their real bodies under node.
+function nextAutoReviewKind(lastKind){ return lastKind === 'random' ? 'near_cut' : 'random'; }
+function autoReviewPercent(value){
+  return (typeof value === 'number' && isFinite(value)) ? (value * 100).toFixed(1) + '%' : '—';
+}
+function autoReviewScore(value){
+  return (typeof value === 'number' && isFinite(value)) ? value.toFixed(4) : '—';
+}
+function autoReviewImageUrl(profileId, index){
+  return '/api/auto-review/image?profile_id=' + encodeURIComponent(profileId)
+    + '&index=' + encodeURIComponent(index);
+}
+function autoReviewKindLabel(kind){ return kind === 'near_cut' ? 'NEAR THE CUT' : 'RANDOM SAMPLE'; }
+function autoReviewSourceLabel(source){
+  if (source === 'live_run') return 'the running bot';
+  if (source === 'computed') return 'recomputed from your labels';
+  if (source === 'last_run') return 'the last run';
+  return '';
+}
+function autoReviewSummaryHtml(stats){
+  if (!stats || !stats.available) {
+    return `<div class="meta">${escHtml((stats && stats.reason) || 'Auto pass review is unavailable.')}</div>`;
+  }
+  const count = value => Math.max(0, Math.floor(Number(value) || 0));
+  const store = stats.store || {};
+  const summary = stats.summary || {};
+  const cal = stats.calibration || null;
+  let html = `<div class="meta">Waiting for your review: ${count(store.pending_random)} random sample`
+    + ` · ${count(store.pending_near_cut)} near the cut</div>`;
+  const reviewed = count(summary.random_reviewed);
+  const wouldLike = count(summary.random_would_like);
+  html += `<div class="readiness-check"><div class="readiness-check-head"><span>Passed people you would have liked</span>`
+    + `<span class="readiness-value">${autoReviewPercent(summary.measured_false_pass_rate)}</span></div>`
+    + `<div class="readiness-target">Random sample: ${wouldLike} of ${reviewed} reviewed · the model predicted `
+    + `${autoReviewPercent(summary.expected_false_pass_rate)}</div>`;
+  if (summary.verdict === 'above') {
+    html += `<div class="readiness-target" style="color:#f0c45c">More than predicted (95% lower bound `
+      + `${autoReviewPercent(summary.observed_false_pass_lower)}). The effective recall target is raised `
+      + `automatically at the next training.</div>`;
+  } else if (summary.verdict === 'within') {
+    html += `<div class="readiness-target" style="color:#39d98a">In line with what the model predicted.</div>`;
+  } else if (summary.verdict === 'insufficient') {
+    html += `<div class="readiness-target">Needs ${count(summary.min_random_reviews)} random answers before the `
+      + `live rate can adjust anything (have ${reviewed}).</div>`;
+  } else {
+    html += `<div class="readiness-target">The predicted rate is not available yet.</div>`;
+  }
+  html += `</div>`;
+  if (cal) {
+    const source = autoReviewSourceLabel(stats.calibration_source);
+    html += `<div class="meta" style="margin-top:8px">Recall target ${autoReviewPercent(cal.recall_target)}`
+      + ` · effective ${autoReviewPercent(cal.effective_target)} · like threshold ${autoReviewScore(cal.threshold)}`
+      + (source ? ` · from ${escHtml(source)}` : '') + `</div>`;
+  } else if (stats.calibration_pending) {
+    html += `<div class="meta" style="margin-top:8px">Calculating the predicted rate…</div>`;
+  } else if (stats.calibration_error) {
+    html += `<div class="meta" style="margin-top:8px">Predicted rate unavailable: ${escHtml(stats.calibration_error)}</div>`;
+  }
+  return html;
+}
+function autoReviewItemHtml(item){
+  if (!item) {
+    return `<div class="meta">Nothing is waiting for review. Passes appear here after the bot has run in auto mode.</div>`;
+  }
+  const count = Math.max(0, Math.floor(Number(item.photo_count) || 0));
+  const gap = (typeof item.score === 'number' && typeof item.threshold === 'number')
+    ? item.threshold - item.score : null;
+  const when = (typeof item.created_at === 'number' && isFinite(item.created_at) && item.created_at > 0)
+    ? new Date(item.created_at * 1000).toLocaleString() : '';
+  const facts = [
+    item.app ? escHtml(item.app) : '',
+    `score ${autoReviewScore(item.score)} vs cut ${autoReviewScore(item.threshold)}`
+      + (gap != null && gap > 0 ? ` (${gap.toFixed(4)} below)` : ''),
+    when ? escHtml(when) : '',
+  ].filter(Boolean).join(' · ');
+  let photos = '';
+  for (let i = 0; i < count; i++) {
+    photos += `<img src="${escHtml(autoReviewImageUrl(item.profile_id, i))}" `
+      + `alt="Archived pass screenshot ${i + 1} of ${count}" loading="lazy">`;
+  }
+  return `<div class="row"><span class="b">${escHtml(item.profile_name || 'Unnamed profile')}</span>`
+    + `<span class="readiness-badge ${item.kind === 'near_cut' ? 'learning' : 'ready'}">`
+    + `${autoReviewKindLabel(item.kind)}</span></div>`
+    + `<div class="meta" style="margin-top:2px">${facts}</div>`
+    + (count > 0 ? `<div class="autoreview-photos" id="autoreviewphotos">${photos}</div>`
+                  : `<div class="meta" style="margin-top:8px">This pass has no stored screenshots.</div>`);
+}
+
+let _autoReviewItem = null;
+let _autoReviewKind = 'random';
+let _autoReviewBusy = false;
+let _autoReviewRequest = 0;
+let _autoReviewStatsRequest = 0;
+let _autoReviewStatsTimer = null;
+
+function setAutoReviewButtons(){
+  const disabled = _autoReviewBusy || !_autoReviewItem;
+  for (const id of ['#autoreviewlike', '#autoreviewpass']) {
+    const button = $(id);
+    if (button) button.disabled = disabled;
+  }
+}
+async function loadAutoReview(kind){
+  const request = ++_autoReviewRequest;
+  const hint = $('#autoreviewhint');
+  const body = $('#autoreviewbody');
+  _autoReviewItem = null;
+  setAutoReviewButtons();
+  try {
+    const r = await getJSON('/api/auto-review/next?kind=' + encodeURIComponent(kind));
+    if (request !== _autoReviewRequest) return;
+    if (!r || !r.available) {
+      body.innerHTML = autoReviewSummaryHtml({available: false, reason: r && (r.reason || r.error)});
+      hint.textContent = 'unavailable';
+      return;
+    }
+    _autoReviewItem = r.item || null;
+    if (_autoReviewItem) _autoReviewKind = _autoReviewItem.kind;
+    body.innerHTML = autoReviewItemHtml(_autoReviewItem);
+    hint.textContent = _autoReviewItem
+      ? (r.fell_back ? 'the other pool was empty' : '')
+      : 'nothing to review';
+    for (const img of body.querySelectorAll('img')) {
+      img.addEventListener('error', () => { img.alt = 'screenshot could not be loaded'; });
+    }
+  } catch(_error) {
+    if (request !== _autoReviewRequest) return;
+    body.innerHTML = `<div class="meta">Could not contact the local hub.</div>`;
+    hint.textContent = 'unavailable';
+  } finally {
+    if (request === _autoReviewRequest) setAutoReviewButtons();
+  }
+}
+async function refreshAutoReviewStats(){
+  const request = ++_autoReviewStatsRequest;
+  clearTimeout(_autoReviewStatsTimer);
+  try {
+    const stats = await getJSON('/api/auto-review/stats');
+    if (request !== _autoReviewStatsRequest) return;
+    $('#autoreviewsummary').innerHTML = autoReviewSummaryHtml(stats);
+    // The predicted rate is a background computation on an idle hub: look again shortly.
+    if (stats && stats.calibration_pending) _autoReviewStatsTimer = setTimeout(refreshAutoReviewStats, 5000);
+  } catch(_error) {
+    if (request !== _autoReviewStatsRequest) return;
+    $('#autoreviewsummary').innerHTML = `<div class="meta">Could not contact the local hub.</div>`;
+  }
+}
+async function answerAutoReview(wouldLike){
+  if (_autoReviewBusy || !_autoReviewItem) return;
+  const item = _autoReviewItem;
+  _autoReviewBusy = true;
+  setAutoReviewButtons();
+  const hint = $('#autoreviewhint');
+  hint.textContent = 'saving…';
+  // `recorded`: the store really wrote THIS answer.  `moveOn`: the card can never be answered
+  // here (recorded, or already answered/gone) so the page loads the next one.  They differ for a
+  // refused answer (409 "already reviewed"): nothing was saved, so the page must never say it was.
+  let recorded = false;
+  let moveOn = false;
+  let notice = '';
+  try {
+    const r = await postJSON('/api/auto-review/answer', {profile_id: item.profile_id, would_like: wouldLike});
+    if (r && r.ok) {
+      recorded = true;
+      moveOn = true;
+    } else {
+      notice = (r && r.msg) || 'could not save the answer';
+      hint.textContent = notice;
+      // A pass that was already answered (another tab) or no longer exists can never be
+      // answered here: move on rather than leave the owner stuck on it.
+      if (r && r.result && r.result.retired) moveOn = true;
+    }
+  } catch(_error) {
+    hint.textContent = 'could not contact the local hub';
+  } finally {
+    _autoReviewBusy = false;
+  }
+  if (moveOn) {
+    // Alternate the two pools so both the measurement and the high-value labels keep flowing.
+    await loadAutoReview(nextAutoReviewKind(item.kind));
+    // Say what happened, unless loading the next card has something more important to say.
+    // Loading a card clears the hint, so the refusal is restated rather than lost -- and a
+    // refused answer is NEVER reported as saved.
+    if (!hint.textContent) {
+      hint.textContent = recorded
+        ? (wouldLike ? 'saved as liked' : 'saved as a pass')
+        : (notice || 'not saved');
+    }
+    refreshAutoReviewStats();
+  } else {
+    setAutoReviewButtons();
+  }
+}
+$('#autoreviewlike').onclick = () => answerAutoReview(true);
+$('#autoreviewpass').onclick = () => answerAutoReview(false);
+
+// A mis-tapped answer is a permanent training label and a permanent entry in the random-pool
+// measurement unless it can be taken back.  This deletes the NEWEST answer (label + review row)
+// so that person is in the queue again; it never reaches past it to an older one, and it is not
+// "Remove last saved label", which refuses to touch a review answer.
+async function undoAutoReview(){
+  if (_autoReviewBusy) return;
+  _autoReviewBusy = true;
+  setAutoReviewButtons();
+  const undo = $('#autoreviewundo');
+  if (undo) undo.disabled = true;
+  const hint = $('#autoreviewhint');
+  hint.textContent = 'undoing…';
+  let undone = null;
+  let notice = '';
+  try {
+    const r = await postJSON('/api/auto-review/undo', {});
+    if (r && r.ok) {
+      undone = r.result || {};
+    } else {
+      notice = (r && r.msg) || 'could not undo the answer';
+    }
+  } catch(_error) {
+    notice = 'could not contact the local hub';
+  } finally {
+    _autoReviewBusy = false;
+    if (undo) undo.disabled = false;
+  }
+  if (undone) {
+    // The person is back in the queue: show them again (their pool first) rather than a stale card.
+    await loadAutoReview(undone.kind === 'near_cut' ? 'near_cut' : 'random');
+    if (!hint.textContent) {
+      hint.textContent = `undid your answer for ${undone.profile_name || 'that person'}; they are back in the queue`;
+    }
+    refreshAutoReviewStats();
+  } else {
+    hint.textContent = notice;
+    setAutoReviewButtons();
+  }
+}
+$('#autoreviewundo').onclick = undoAutoReview;
 
 // --- platform picker ---------------------------------------------------------
 // The server sends runnable platforms only. Pending targets are shown as plain status,
@@ -1649,6 +1939,7 @@ $('#bugdl').onclick = async () => {
   tick(); setInterval(tick, 1000);
   tickEval(); setInterval(tickEval, 5000);    // model quality: poll often for live label progress; the CV itself only recomputes every N new labels (server-gated)
   tickLogs(); setInterval(tickLogs, 1500);    // live log: tail the captured stdout/stderr
+  loadAutoReview(_autoReviewKind); refreshAutoReviewStats();   // one look at load; refreshed after each answer, never polled
 })();
 </script>
 </body></html>

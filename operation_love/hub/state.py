@@ -7,8 +7,10 @@ checkpoint that must remain available for the owner to reopen and decide.
 
 from __future__ import annotations
 
+import contextlib
 import copy
 import math
+import re
 import threading
 import time
 
@@ -29,6 +31,28 @@ _EVAL_COLD_WAIT_S = (
 
 
 _MAX_BROWSER_CLIENT_ID_LENGTH = 128
+
+# --- AUTO pass review -----------------------------------------------------------
+# The two pools the review card draws from: a uniform sample of what AUTO really passed (whose
+# answers measure the live false-pass rate) and the passes that scored closest to the cut
+# (whose answers are the most informative labels).  Mirrors the store's `kind` vocabulary.
+AUTO_REVIEW_KINDS = ("random", "near_cut")
+# A pass id is the worker's per-card lineage id, `uuid.uuid4().hex`: exactly 32 lowercase hex
+# digits.  Anything else cannot name a stored pass, and refusing it here -- before it reaches a
+# store query, a GCS object path or a response header -- is the whole path-traversal defence.
+_AUTO_REVIEW_PROFILE_ID_RE = re.compile(r"[0-9a-f]{32}")
+# Photos per archived pass are bounded by the driver's capture ceiling (single digits to low
+# tens); a three-digit index is already nonsense, and bounding it keeps a hostile query string
+# from becoming an arbitrary-size integer.
+_MAX_AUTO_REVIEW_PHOTO_INDEX = 999
+_MAX_AUTO_REVIEW_NAME_CHARS = 200
+# The hub-side recomputation of the model calibration (idle hub, nothing live to read it from)
+# is a full fit plus grouped OOF scoring, so it is cached and refreshed in the background.
+_REVIEW_CALIBRATION_MAX_AGE_S = 300.0
+_REVIEW_PHOTO_SIGNATURES = (
+    (b"\x89PNG\r\n\x1a\n", "image/png"),
+    (b"\xff\xd8\xff", "image/jpeg"),
+)
 
 
 def validate_browser_client_id(value: object) -> tuple[bool, str | None, str | None]:
@@ -102,6 +126,119 @@ def validate_stop_after_seconds(value: object) -> tuple[bool, int | None, str | 
     return True, value, None
 
 
+def validate_auto_review_kind(value: object) -> tuple[bool, str | None, str | None]:
+    """Validate the review pool selector (``random`` or ``near_cut``) without coercion."""
+    if not isinstance(value, str) or value not in AUTO_REVIEW_KINDS:
+        return False, None, f"kind must be one of {', '.join(AUTO_REVIEW_KINDS)}"
+    return True, value, None
+
+
+def validate_auto_review_profile_id(
+    value: object,
+) -> tuple[bool, str | None, str | None]:
+    """Accept only a worker-issued pass id: exactly 32 lowercase hex digits.
+
+    ``re.fullmatch`` (not ``$``, which tolerates a trailing newline) so the accepted set is
+    exactly the ids ``uuid.uuid4().hex`` produces and nothing a path or query could smuggle.
+    """
+    if not isinstance(value, str) or not _AUTO_REVIEW_PROFILE_ID_RE.fullmatch(value):
+        return False, None, "profile_id must be a 32-character lowercase hex id"
+    return True, value, None
+
+
+def validate_auto_review_index(value: object) -> tuple[bool, int | None, str | None]:
+    """Accept a photo index as a real int or a plain digit string (a query parameter)."""
+    if isinstance(value, bool):
+        return False, None, "index must be a non-negative integer"
+    if isinstance(value, str):
+        # isascii: str.isdigit() is true for e.g. superscript digits that int() then rejects.
+        if not (value.isascii() and value.isdigit()) or len(value) > 4:
+            return False, None, "index must be a non-negative integer"
+        value = int(value)
+    if not isinstance(value, int) or not 0 <= value <= _MAX_AUTO_REVIEW_PHOTO_INDEX:
+        return False, None, "index must be a non-negative integer"
+    return True, value, None
+
+
+def validate_auto_review_answer(
+    body: object,
+) -> tuple[bool, tuple[str, bool] | None, str | None]:
+    """Validate an answer body: a pass id and a REAL JSON boolean ``would_like``.
+
+    Truthy strings, 0/1 and null are all refused.  An answer becomes a training label, so the
+    one ambiguity a client could introduce (``"false"`` is truthy) is closed at the boundary
+    instead of being interpreted.
+    """
+    if not isinstance(body, dict):
+        return False, None, "request body must be a JSON object"
+    valid_id, profile_id, id_error = validate_auto_review_profile_id(
+        body.get("profile_id")
+    )
+    if not valid_id or profile_id is None:
+        return False, None, id_error
+    would_like = body.get("would_like")
+    if type(would_like) is not bool:
+        return False, None, "would_like must be a JSON boolean (true or false)"
+    return True, (profile_id, would_like), None
+
+
+def _json_safe(value: object) -> object:
+    """Make a store/model payload strictly JSON-serialisable.
+
+    ``json.dumps`` happily writes ``NaN``/``Infinity``, which are not JSON: the page's
+    ``fetch().json()`` would throw and the whole card would die over one bad number.  Non-finite
+    floats become ``None``; numpy scalars are unwrapped; anything unrecognised becomes ``str``.
+    """
+    if value is None or isinstance(value, (bool, str)):
+        return value
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(v) for v in value]
+    item = getattr(value, "item", None)  # numpy scalar
+    if callable(item):
+        try:
+            return _json_safe(item())
+        except Exception:  # noqa: BLE001 -- fall through to the string form
+            pass
+    return str(value)
+
+
+class _ReviewUnavailable(Exception):
+    """The store in use cannot serve AUTO pass review (a missing capability, not a failure)."""
+
+
+def _require_review_methods(store: object, names: tuple[str, ...]) -> None:
+    missing = [n for n in names if not callable(getattr(store, n, None))]
+    if missing:
+        raise _ReviewUnavailable(
+            f"{type(store).__name__} does not support auto pass review "
+            f"(missing {', '.join(missing)})"
+        )
+
+
+def _sniff_review_image_type(data: object) -> str | None:
+    """The image media type of a stored pass photo, or ``None`` when it is not a known image.
+
+    The bytes are served with `nosniff` and a fixed type chosen HERE rather than echoed from
+    anything stored, so a corrupt or foreign object in the photo bucket is refused instead of
+    being delivered to the browser under an image content type.
+    """
+    if not isinstance(data, (bytes, bytearray)):
+        return None
+    head = bytes(data[:12])
+    for signature, media_type in _REVIEW_PHOTO_SIGNATURES:
+        if head.startswith(signature):
+            return media_type
+    if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
 def _selected_platform(enabled_apps: list[str]) -> "platforms.Platform":
     """Which platform the hub should show pre-selected: the FIRST entry of enabled_apps, if
     it names a real registry id. If enabled_apps is empty or names something the registry
@@ -158,6 +295,29 @@ class HubState:
         # created in-memory model.
         self._training_data_mutating = False
         self._training_actions = TrainingActionBridge()
+        # --- AUTO pass review (hub card) ---------------------------------------------
+        # The running supervisor's PreferenceModel, captured when its Worker is bound, so the
+        # card can show the calibration the live bot is actually using.  Cleared with the run.
+        self._live_model = None
+        # Plain-data calibration frozen when the last run in THIS hub process finished; shown
+        # only while nothing fresher exists.
+        self._last_calibration: dict | None = None
+        # Hub-side recomputation for an idle hub (see _review_calibration).
+        self._calibration_cache: dict | None = None
+        self._calibration_error: str | None = None
+        self._calibration_attempt_at = 0.0
+        self._calibration_dirty = False
+        self._calibration_refreshing = False
+        # An idle hub opens its OWN store for review requests.  The browser fetches a pass's
+        # photos in parallel, so concurrent requests SHARE one short-lived store (a BigQuery
+        # client costs far more than a photo read) and the last one out closes it, which is
+        # what flushes any buffered row.
+        self._review_store = None
+        self._review_store_users = 0
+        self._review_store_lock = threading.Lock()
+        # Serialises answers: a double-click or two open tabs must not race two label writes
+        # for one pass (the store also refuses a second answer; this keeps the refusal clean).
+        self._review_answer_lock = threading.Lock()
 
     def is_running(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
@@ -247,6 +407,7 @@ class HubState:
                 self._live_store,
                 self._live_cfg,
                 self._opener_service,
+                self._live_model,
             )
 
             def _restore_failed_start() -> None:
@@ -260,6 +421,7 @@ class HubState:
                     self._live_store,
                     self._live_cfg,
                     self._opener_service,
+                    self._live_model,
                 ) = previous_run
 
             # No prior timer should survive into a replacement run.  The generation check in
@@ -278,6 +440,7 @@ class HubState:
             # be composed from those same per-run terms -- see server._run_archive_ceiling_s.
             self._live_cfg = effective_cfg
             self._opener_service = None
+            self._live_model = None  # captured again when this run's Worker is bound
             stop = self._stop
 
             if stop_after_seconds is not None:
@@ -333,6 +496,7 @@ class HubState:
                     # store: a completed-run report must be useful without reading a torn-down
                     # object (or retaining its locks/client/store).
                     self._freeze_completed_opener_telemetry()
+                    self._freeze_completed_calibration()
                     with self._lock:
                         if generation == self._run_generation and stop is self._stop:
                             # Completion (including a supervisor-side stop) makes the timer
@@ -344,6 +508,7 @@ class HubState:
                             None  # no run left to price a shutdown wait for
                         )
                         self._opener_service = None  # same reason: don't read a torn-down object after the supervisor tore the run down
+                        self._live_model = None  # frozen into plain data above; don't keep the model object
 
             self._thread = threading.Thread(target=_target, name="hub-run", daemon=True)
             # Start the optional timer first while holding _lock. Its callback also needs
@@ -705,6 +870,522 @@ class HubState:
         print(f"Training label removed for profile: {name}")
         return True, {"profile_name": name}
 
+    # --- AUTO pass review ------------------------------------------------------------
+    # The card works with NO run live: it opens its own store exactly the way the model-quality
+    # card does (make_store(cfg, ensure=False)).  With a run live it uses that run's store
+    # instead, for the same freshness reason as the eval card -- passes the worker archived
+    # seconds ago may still sit in the live store's buffer, invisible to a second connection.
+    def _live_review_store(self):
+        with self._lock:
+            return self._live_store if self.is_running() else None
+
+    @contextlib.contextmanager
+    def _leased_review_store(self):
+        """Lend out a short-lived store of the hub's own, shared by overlapping requests.
+
+        The browser fetches every photo of a pass in parallel; opening (and authenticating) a
+        BigQuery client per photo would dwarf the read itself.  Requests that overlap in time
+        therefore share one store, and the LAST one out closes it -- ``close()`` is what flushes
+        a buffered row, so nothing is left open between interactions.
+        """
+        from ..ranker import make_store
+
+        with self._review_store_lock:
+            if self._review_store is None:
+                cfg = cfg_mod.load(self.config_path)
+                self._review_store = make_store(cfg, ensure=False)
+            self._review_store_users += 1
+            store = self._review_store
+        try:
+            yield store
+        finally:
+            closing = None
+            with self._review_store_lock:
+                self._review_store_users -= 1
+                if self._review_store_users == 0:
+                    closing, self._review_store = self._review_store, None
+            if closing is not None:
+                try:
+                    closing.close()
+                except Exception as exc:  # noqa: BLE001 -- cleanup; writes flush explicitly first
+                    print(
+                        f"Hub: closing the auto-review store failed ({type(exc).__name__}: {exc})"
+                    )
+
+    @staticmethod
+    def _flush_review_store(store) -> None:
+        """Make a just-written review row durable BEFORE the owner is told it was saved."""
+        flush = getattr(store, "flush", None)
+        if callable(flush):
+            flush()
+
+    def _with_review_store(self, work, *, write: bool = False):
+        """Run ``work(store)`` against the live run's store, else a leased one of our own.
+
+        A READ that fails on the live store retries on a fresh one: the run may have ended
+        and its supervisor closed that store between our lookup and the call.  A WRITE never
+        retries -- after an unknown partial failure a second attempt could double-record, and
+        the store itself refuses a second answer for one pass.  Writes are flushed before
+        returning so a success reply means the label is durable, not merely buffered.
+        """
+        live = self._live_review_store()
+        if live is not None:
+            try:
+                result = work(live)
+            except _ReviewUnavailable:
+                raise
+            except Exception:
+                if write:
+                    raise
+            else:
+                if write:
+                    self._flush_review_store(live)
+                return result
+        with self._leased_review_store() as store:
+            result = work(store)
+            if write:
+                self._flush_review_store(store)
+            return result
+
+    @staticmethod
+    def _clean_review_item(item: object, fallback_kind: str | None) -> dict | None:
+        """Whitelist and sanity-check one archived pass before it reaches the page.
+
+        ``None`` means the store handed back something that is not a reviewable pass; the
+        caller reports that as a store fault rather than rendering half a card.
+        """
+        if not isinstance(item, dict):
+            return None
+        valid, profile_id, _ = validate_auto_review_profile_id(item.get("profile_id"))
+        if not valid or profile_id is None:
+            return None
+        photo_count = item.get("photo_count")
+        if isinstance(photo_count, bool) or not isinstance(photo_count, int):
+            return None
+        if not 0 <= photo_count <= _MAX_AUTO_REVIEW_PHOTO_INDEX + 1:
+            return None
+        kind = item.get("kind")
+        if kind not in AUTO_REVIEW_KINDS:
+            kind = fallback_kind
+
+        def _number(key: str) -> float | None:
+            value = item.get(key)
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                return None
+            return float(value) if math.isfinite(value) else None
+
+        return {
+            "profile_id": profile_id,
+            "kind": kind,
+            "app": str(item.get("app") or "")[:32],
+            "run_id": str(item.get("run_id") or "")[:64],
+            "created_at": _number("created_at"),
+            "score": _number("score"),
+            "threshold": _number("threshold"),
+            "photo_count": photo_count,
+            "profile_name": str(item.get("profile_name") or "")[
+                :_MAX_AUTO_REVIEW_NAME_CHARS
+            ],
+        }
+
+    def auto_review_next(self, kind: str) -> tuple[int, dict]:
+        """The next unreviewed archived pass, preferring ``kind`` and falling back to the other.
+
+        The fallback lives here (one store session, one round trip) rather than in the page:
+        when one pool is empty the owner should still be offered something from the other.
+        """
+        order = [kind] + [k for k in AUTO_REVIEW_KINDS if k != kind]
+
+        def work(store):
+            _require_review_methods(
+                store,
+                (
+                    "next_auto_pass_for_review",
+                    "auto_pass_photo",
+                    "record_auto_pass_review",
+                ),
+            )
+            for candidate in order:
+                item = store.next_auto_pass_for_review(kind=candidate)
+                if item is not None:
+                    return item, candidate
+            return None, None
+
+        try:
+            item, found_kind = self._with_review_store(work)
+        except _ReviewUnavailable as exc:
+            return 200, {"available": False, "reason": str(exc), "item": None}
+        except Exception as exc:  # noqa: BLE001 -- surface storage errors to the local operator
+            return 502, {
+                "available": False,
+                "reason": f"{type(exc).__name__}: {exc}",
+                "item": None,
+            }
+        payload: dict = {
+            "available": True,
+            "requested_kind": kind,
+            "item": None,
+            "fell_back": False,
+        }
+        if item is None:
+            return 200, payload
+        clean = self._clean_review_item(item, found_kind)
+        if clean is None:
+            return 502, {
+                "available": False,
+                "reason": "the store returned a malformed archived pass",
+                "item": None,
+            }
+        payload["item"] = clean
+        payload["fell_back"] = clean["kind"] != kind
+        return 200, payload
+
+    def auto_review_image(
+        self, profile_id: str, index: int
+    ) -> tuple[int, bytes | None, str]:
+        """One archived pass photo as ``(status, bytes | None, media type or message)``."""
+
+        def work(store):
+            _require_review_methods(store, ("auto_pass_photo",))
+            return store.auto_pass_photo(profile_id=profile_id, index=index)
+
+        try:
+            data = self._with_review_store(work)
+        except _ReviewUnavailable as exc:
+            return 501, None, str(exc)
+        except ValueError as exc:
+            return 404, None, str(exc) or "auto pass image not found"
+        except Exception as exc:  # noqa: BLE001 -- surface storage errors to the local operator
+            return 502, None, f"{type(exc).__name__}: {exc}"
+        if data is None:
+            return 404, None, "auto pass image not found"
+        media_type = _sniff_review_image_type(data)
+        if media_type is None:
+            return 502, None, "the stored auto pass photo is not a recognised image"
+        return 200, bytes(data), media_type
+
+    def submit_auto_review_answer(
+        self, body: object
+    ) -> tuple[bool, dict | None, str, int]:
+        """Record the owner's answer to one archived pass; it becomes a training label.
+
+        Returns ``(ok, result, message, http status)``.  Nothing is written unless the pass id
+        is a real worker-issued id and ``would_like`` is a real boolean.
+        """
+        valid, parsed, error = validate_auto_review_answer(body)
+        if not valid or parsed is None:
+            return False, None, error or "invalid answer", 400
+        profile_id, would_like = parsed
+        with self._lock:
+            if self._training_data_mutating:
+                return (
+                    False,
+                    None,
+                    "training data is being updated -- try again in a moment",
+                    409,
+                )
+
+        def work(store):
+            _require_review_methods(store, ("record_auto_pass_review",))
+            return store.record_auto_pass_review(
+                profile_id=profile_id, would_like=would_like
+            )
+
+        with self._review_answer_lock:
+            try:
+                result = self._with_review_store(work, write=True)
+            except _ReviewUnavailable as exc:
+                return False, None, str(exc), 501
+            except ValueError as exc:
+                # Unknown pass or one already answered (another tab, a double click).  `retired`
+                # tells the page this card can never be answered, so it moves on instead of
+                # leaving the owner stuck on it.
+                return (
+                    False,
+                    {"retired": True},
+                    str(exc) or "this pass cannot be reviewed",
+                    409,
+                )
+            except Exception as exc:  # noqa: BLE001 -- surface storage errors to the local operator
+                print(
+                    f"Hub: recording an auto-review answer failed ({type(exc).__name__}: {exc})"
+                )
+                return False, None, f"{type(exc).__name__}: {exc}", 500
+            with self._lock:
+                # The answer moves the live false-pass evidence and the training set.
+                self._calibration_dirty = True
+        safe = _json_safe(result)
+        return True, safe if isinstance(safe, dict) else {}, "recorded", 200
+
+    def undo_auto_review_answer(self) -> tuple[bool, dict | None, str, int]:
+        """Undo the newest answer to an archived pass: its label and review row are deleted.
+
+        The pass is unreviewed again, so a mis-tapped "Would have liked" can be corrected
+        instead of living on in the training set and in the random-pool false-pass numerator.
+        Goes through the same store path (and the same answer lock) as an answer, so it sees the
+        answer just given even when that is still buffered in the live run's store.
+
+        Returns ``(ok, result, message, http status)``; ``result`` names the undone answer.
+        """
+        with self._lock:
+            if self._training_data_mutating:
+                return (
+                    False,
+                    None,
+                    "training data is being updated -- try again in a moment",
+                    409,
+                )
+
+        def work(store):
+            _require_review_methods(store, ("undo_latest_auto_review",))
+            return store.undo_latest_auto_review()
+
+        with self._review_answer_lock:
+            try:
+                result = self._with_review_store(work, write=True)
+            except _ReviewUnavailable as exc:
+                return False, None, str(exc), 501
+            except Exception as exc:  # noqa: BLE001 -- surface storage errors to the local operator
+                print(
+                    f"Hub: undoing an auto-review answer failed ({type(exc).__name__}: {exc})"
+                )
+                return False, None, f"{type(exc).__name__}: {exc}", 500
+            if result is None:
+                return False, None, "there is no review answer to undo", 404
+            with self._lock:
+                # The undone answer leaves the live false-pass evidence and the training set.
+                self._calibration_dirty = True
+        safe = _json_safe(result)
+        print(
+            "Hub: undid the auto-review answer for "
+            f"{(safe.get('profile_name') if isinstance(safe, dict) else '') or '<name unavailable>'}"
+        )
+        return True, safe if isinstance(safe, dict) else {}, "undone", 200
+
+    # --- review calibration (the "expected" side of the false-pass comparison) -------------
+    def _freeze_completed_calibration(self) -> None:
+        """Copy the finished run's calibration into plain data before the model is dropped."""
+        with self._lock:
+            model = self._live_model
+        if model is None:
+            return
+        try:
+            calibration = model.calibration
+        except Exception:  # noqa: BLE001 -- diagnostic only; never block run teardown
+            return
+        if isinstance(calibration, dict):
+            with self._lock:
+                self._last_calibration = copy.deepcopy(calibration)
+
+    def _compute_review_calibration(self) -> None:
+        """Train a throwaway model exactly as a run would and keep its calibration (bg thread)."""
+        calibration = None
+        error: str | None = None
+        try:
+            from ..ranker.model import PreferenceModel
+
+            cfg = cfg_mod.load(self.config_path)
+            ranker_cfg = cfg.ranker
+
+            def work(store):
+                rows_fn = getattr(store, "load_label_rows", None)
+                rows = rows_fn() if callable(rows_fn) else store.load_labels()
+                stats_fn = getattr(store, "auto_review_stats", None)
+                live_review = None
+                if callable(stats_fn):
+                    try:
+                        live_review = stats_fn(app=None)
+                    except Exception as exc:  # noqa: BLE001 -- reviews are an add-on
+                        print(
+                            "Hub: auto-review stats unavailable for the calibration "
+                            f"({type(exc).__name__}: {exc}); showing it without live evidence."
+                        )
+                return rows, live_review
+
+            rows, live_review = self._with_review_store(work)
+            recall_target = getattr(ranker_cfg, "like_recall_target", None)
+            model = PreferenceModel(
+                min_labels=ranker_cfg.min_labels_to_engage,
+                threshold=ranker_cfg.like_threshold,
+                min_per_class=ranker_cfg.min_per_class,
+                recall_target=recall_target,
+                contextual_recall_budget=getattr(
+                    ranker_cfg, "contextual_recall_budget", 0.02
+                ),
+            )
+            model.train(rows, live_review=live_review)
+            calibration = model.calibration
+            if calibration is None:
+                error = (
+                    "ranker.like_recall_target is not set, so there is no recall "
+                    "calibration to show"
+                    if recall_target is None
+                    else (model.not_ready_reason or "the ranker is not ready")
+                )
+        except Exception as exc:  # noqa: BLE001 -- the card must degrade, never raise
+            calibration, error = None, f"{type(exc).__name__}: {exc}"
+        with self._lock:
+            self._calibration_cache = (
+                copy.deepcopy(calibration) if calibration is not None else None
+            )
+            self._calibration_error = error
+            self._calibration_attempt_at = time.time()
+
+    def _start_review_calibration_refresh(self) -> bool:
+        with self._lock:
+            if self._calibration_refreshing:
+                return True
+            self._calibration_refreshing = True
+            self._calibration_dirty = False
+
+        def _target():
+            try:
+                self._compute_review_calibration()
+            finally:
+                with self._lock:
+                    self._calibration_refreshing = False
+
+        try:
+            threading.Thread(
+                target=_target, name="hub-review-calibration", daemon=True
+            ).start()
+        except Exception:  # noqa: BLE001 -- a failed spawn must not wedge the single-flight guard
+            with self._lock:
+                self._calibration_refreshing = False
+            return False
+        return True
+
+    def _review_calibration(self) -> tuple[dict | None, str | None, bool, str | None]:
+        """``(calibration, source, pending, error)`` for the review card.
+
+        Preference order: the running bot's own model (what it is actually using right now),
+        then a hub-side recomputation, then the snapshot frozen when the last run in this
+        process ended.  The recomputation is a full fit, so it runs in the background and the
+        card shows ``pending`` (or the older figures) until it lands.
+        """
+        with self._lock:
+            model = self._live_model if self.is_running() else None
+            cached = self._calibration_cache
+            error = self._calibration_error
+            attempt_at = self._calibration_attempt_at
+            dirty = self._calibration_dirty
+            refreshing = self._calibration_refreshing
+            last = self._last_calibration
+        if model is not None:
+            try:
+                live = model.calibration
+            except Exception as exc:  # noqa: BLE001 -- a mid-retrain read must not break the card
+                return None, None, False, f"{type(exc).__name__}: {exc}"
+            if isinstance(live, dict):
+                return live, "live_run", False, None
+            if getattr(model, "recall_target", None) is None:
+                return (
+                    None,
+                    None,
+                    False,
+                    "the running ranker uses a fixed threshold (ranker.like_recall_target is not set)",
+                )
+            return (
+                None,
+                None,
+                False,
+                getattr(model, "not_ready_reason", None)
+                or ("the running ranker has no calibration yet"),
+            )
+        fresh = (
+            attempt_at > 0.0
+            and not dirty
+            and (time.time() - attempt_at) < _REVIEW_CALIBRATION_MAX_AGE_S
+        )
+        if not fresh and not refreshing:
+            refreshing = self._start_review_calibration_refresh()
+        if cached is not None:
+            return cached, "computed", False, None
+        if last is not None:
+            return last, "last_run", False, None
+        return None, None, bool(refreshing), error
+
+    @staticmethod
+    def _review_summary(store_stats: dict, calibration: dict | None) -> dict:
+        """The measured-vs-expected false-pass comparison, computed once server-side."""
+        from ..ranker.threshold import MIN_RANDOM_REVIEWS, wilson_lower
+
+        def _count(key: str) -> int:
+            value = store_stats.get(key)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                return 0
+            return value
+
+        reviewed = _count("random_reviewed")
+        would_like = min(_count("random_would_like"), reviewed)
+        measured = would_like / reviewed if reviewed else None
+        lower = wilson_lower(would_like, reviewed) if reviewed else None
+        expected = (
+            calibration.get("expected_false_pass_rate")
+            if isinstance(calibration, dict)
+            else None
+        )
+        if isinstance(expected, bool) or not isinstance(expected, (int, float)):
+            expected = None
+        if reviewed < MIN_RANDOM_REVIEWS:
+            verdict = "insufficient"
+        elif expected is None:
+            verdict = "unknown"
+        elif lower is not None and lower > expected:
+            verdict = "above"
+        else:
+            verdict = "within"
+        return {
+            "random_reviewed": reviewed,
+            "random_would_like": would_like,
+            "measured_false_pass_rate": measured,
+            "observed_false_pass_lower": lower,
+            "expected_false_pass_rate": expected,
+            "min_random_reviews": MIN_RANDOM_REVIEWS,
+            "verdict": verdict,
+        }
+
+    def auto_review_stats_snapshot(self) -> tuple[int, dict]:
+        """Store counts plus the model calibration, for the review card's header."""
+        result: dict = {
+            "available": False,
+            "reason": None,
+            "store": None,
+            "calibration": None,
+            "calibration_source": None,
+            "calibration_pending": False,
+            "calibration_error": None,
+            "summary": None,
+        }
+
+        def work(store):
+            _require_review_methods(store, ("auto_review_stats",))
+            return store.auto_review_stats(app=None)
+
+        try:
+            store_stats = self._with_review_store(work)
+        except _ReviewUnavailable as exc:
+            result["reason"] = str(exc)
+            return 200, result
+        except Exception as exc:  # noqa: BLE001 -- surface storage errors to the local operator
+            result["reason"] = f"{type(exc).__name__}: {exc}"
+            return 502, result
+        if not isinstance(store_stats, dict):
+            result["reason"] = "the store returned malformed auto-review stats"
+            return 502, result
+        calibration, source, pending, error = self._review_calibration()
+        safe_calibration = _json_safe(calibration) if calibration is not None else None
+        result.update(
+            available=True,
+            store=_json_safe(store_stats),
+            calibration=safe_calibration,
+            calibration_source=source,
+            calibration_pending=pending,
+            calibration_error=error,
+            summary=_json_safe(self._review_summary(store_stats, calibration)),
+        )
+        return 200, result
+
     def _bind_training_worker(self, worker) -> None:
         # Called by supervisor before Thread.start(), so no hub request can observe a half-bound
         # worker.  The worker subsequently registers itself at run entry as a harmless idempotent
@@ -716,6 +1397,13 @@ class HubState:
         # file to explain it.
         worker.training_action_bridge = self._training_actions
         self._training_actions.register(worker)
+        # The model every Worker of this run shares.  Duck-typed and best-effort: a decider
+        # without one (a fake, a third-party Decider) simply leaves the review card without a
+        # live calibration.
+        model = getattr(getattr(worker, "decider", None), "model", None)
+        if model is not None:
+            with self._lock:
+                self._live_model = model
 
     @staticmethod
     def _service_snapshot(service, method_name: str) -> list[dict]:
@@ -1011,7 +1699,7 @@ class HubState:
             samples = None
             if running and live_store is not None:
                 try:
-                    samples = live_store.load_labels()
+                    samples = self._eval_label_pairs(live_store)
                 except Exception:  # noqa: BLE001 — run ended + store closed mid-read; fall back
                     samples = None
             if samples is None:
@@ -1019,7 +1707,7 @@ class HubState:
                     cfg, ensure=False
                 )  # read-only; don't run DDL just to eval
                 try:
-                    samples = store.load_labels()
+                    samples = self._eval_label_pairs(store)
                 finally:
                     store.close()
                 live_store = None  # don't reuse a dead store for the chart
@@ -1028,8 +1716,40 @@ class HubState:
             # AutoSessionPolicy's additional conservative demotions, so this result is useful
             # baseline evidence rather than an AUTO release decision.
             ranker_cfg = getattr(cfg, "ranker", None)
-            like_threshold = getattr(ranker_cfg, "like_threshold", 0.5)
-            result = evaluate(samples, like_threshold=like_threshold)
+            like_threshold, threshold_source, recall_target = self._eval_threshold(
+                ranker_cfg, samples
+            )
+            if recall_target is None or threshold_source == "uncalibrated":
+                result = evaluate(samples, like_threshold=like_threshold)
+            else:
+                # Under a recall target the cutoff is picked from out-of-fold scores of these
+                # same labels, so scoring them at that cutoff would report "recall >= target" for
+                # ANY ranker.  evaluate() re-runs the calibration inside every fold instead and
+                # grades the held-out people (see its docstring).
+                result = evaluate(
+                    samples, like_threshold=like_threshold, recall_target=recall_target
+                )
+            result = {
+                **result,
+                "threshold_source": threshold_source,
+                "recall_target": recall_target,
+            }
+            if threshold_source == "uncalibrated" and result.get("status") == "ok":
+                # A recall-target ranker's configured like_threshold is only a placeholder until
+                # it calibrates.  Recall and false-dislike numbers measured AT the placeholder
+                # describe a threshold the bot never uses, so the card refuses to show them.
+                result = {
+                    **result,
+                    "status": "uncalibrated",
+                    "message": (
+                        "The ranker has no calibrated threshold yet (ranker.like_recall_target "
+                        f"{recall_target}), so recall at the placeholder like_threshold would be "
+                        "misleading."
+                    ),
+                    "accepted_recall": None,
+                    "false_dislike_rate": None,
+                    "confusion": None,
+                }
             training = self._training_mix(samples)
             # Gate baseline must use the SAME counter the gate compares against: the live
             # swipe counter (status.labels), not len(samples). Using len(samples) would lag
@@ -1065,6 +1785,140 @@ class HubState:
             result, every, live, computed_at, status, training=training
         )
 
+    def _eval_threshold(self, ranker_cfg, samples) -> tuple[float, str, float | None]:
+        """``(threshold, source, recall_target)`` the model-quality card should evaluate at.
+
+        Without ``ranker.like_recall_target`` that is the configured ``like_threshold`` (the
+        legacy behavior, unchanged).  WITH a recall target the configured threshold is only a
+        placeholder, and the bot deploys the model's calibrated cutoff instead -- evaluating at
+        the placeholder would report an accepted-recall / false-dislike pair for a threshold the
+        bot never uses.  Preference order for the calibrated cutoff:
+
+        * ``"calibrated"``: the running bot's own threshold, else the hub's cached or last-run
+          calibration (read passively: this never starts the background model fit).  A cached or
+          last-run calibration is only used when it was made for the CURRENT target: after the
+          owner edits ``like_recall_target`` with the hub still open it describes a different
+          bot, and would otherwise be shown as the cutoff "calibrated to keep" the new target.
+          The running bot's own calibration is authoritative and brings its own target with it.
+        * ``"oof_estimate"``: nothing calibrated is on hand (idle hub, first card poll), so
+          derive it from this card's own out-of-fold scores on the same manual labels -- the
+          identical procedure the model uses, minus the review labels and live correction.
+        * ``"uncalibrated"``: calibration is impossible (too little data); the caller must not
+          present recall figures measured at the placeholder.
+        """
+        configured = getattr(ranker_cfg, "like_threshold", 0.5)
+        target = getattr(ranker_cfg, "like_recall_target", None)
+        if target is None:
+            return configured, "configured", None
+        deployed = self._passive_calibrated_threshold(target)
+        if deployed is not None:
+            cutoff, calibrated_target = deployed
+            return cutoff, "calibrated", calibrated_target
+        derived = self._oof_recall_threshold(samples, target)
+        if derived is not None:
+            return derived, "oof_estimate", target
+        return configured, "uncalibrated", target
+
+    def _passive_calibrated_threshold(
+        self, target: float
+    ) -> tuple[float, float] | None:
+        """``(cutoff, the target it was calibrated for)`` already on hand, else ``None``.
+
+        The live model's own calibration wins; otherwise the cached or last run's, but only if
+        it was calibrated for ``target`` (the config's CURRENT ``like_recall_target``): a
+        calibration without a ``recall_target``, or with a different one, is somebody else's
+        cutoff and is ignored, so the caller falls through to its own estimate.
+        """
+        with self._lock:
+            model = self._live_model if self.is_running() else None
+            cached, last = self._calibration_cache, self._last_calibration
+
+        def number(value) -> float | None:
+            if (
+                isinstance(value, (int, float))
+                and not isinstance(value, bool)
+                and math.isfinite(value)
+            ):
+                return float(value)
+            return None
+
+        def cutoff(calibration, *, expect: float | None) -> tuple[float, float] | None:
+            if not isinstance(calibration, dict):
+                return None
+            threshold = number(calibration.get("threshold"))
+            if threshold is None or not 0.0 < threshold < 1.0:
+                return None
+            calibrated_for = number(calibration.get("recall_target"))
+            if expect is not None and (
+                calibrated_for is None or abs(calibrated_for - expect) > 1e-9
+            ):
+                return None
+            return threshold, (calibrated_for if calibrated_for is not None else target)
+
+        if model is not None:
+            # The running bot's own model is authoritative -- it IS what the bot deploys, so
+            # its cutoff is shown with the target it was built for.  If it has no calibration
+            # (yet), an older cached cutoff is not what it deploys, so none is substituted.
+            try:
+                return cutoff(model.calibration, expect=None)
+            except Exception:  # noqa: BLE001 -- a mid-retrain read must not break the card
+                return None
+        found = cutoff(cached, expect=target)
+        return found if found is not None else cutoff(last, expect=target)
+
+    @staticmethod
+    def _oof_recall_threshold(samples, target: float) -> float | None:
+        """The cutoff holding ``target`` recall on these labels' out-of-fold scores, or None."""
+        try:
+            import numpy as np
+
+            from ..ranker.threshold import (
+                min_positives_for_target,
+                oof_scores,
+                recall_threshold,
+            )
+
+            X = np.asarray([row[1] for row in samples], dtype=float)
+            y = np.asarray([1 if row[0] else 0 for row in samples], dtype=int)
+            if y.size < 10 or not y.any() or y.all():
+                return None
+            # The model refuses to calibrate on fewer manual likes than the target can be
+            # measured from (it is NOT ready), so an estimate here would describe a cutoff the
+            # bot never uses.
+            if int(y.sum()) < min_positives_for_target(target):
+                return None
+            oof = oof_scores(X, y)
+            if oof is None:
+                return None
+            return float(recall_threshold(oof[y == 1].tolist(), target))
+        except Exception as exc:  # noqa: BLE001 -- the card degrades to "uncalibrated"
+            print(
+                "Hub: could not derive a recall-target threshold for the model-quality card "
+                f"({type(exc).__name__}: {exc})."
+            )
+            return None
+
+    @staticmethod
+    def _eval_label_pairs(store) -> list:
+        """The labels the model-quality card may judge the ranker on: MANUAL ones only.
+
+        An answer to an archived AUTO pass (source ``auto_review...``) is a good training label
+        but a biased evaluation one: every reviewed profile is something the model had already
+        PASSED, so scoring the model on them would count its own past misses as the whole
+        population (and its correct passes as extra easy negatives).  Stores that predate the
+        review archive have no ``load_label_rows``; their ``load_labels`` already is manual-only.
+        """
+        rows_fn = getattr(store, "load_label_rows", None)
+        if not callable(rows_fn):
+            return store.load_labels()
+        from ..ranker.threshold import is_calibration_source
+
+        return [
+            (row[0], row[1])
+            for row in rows_fn()
+            if len(row) < 3 or is_calibration_source(row[2])
+        ]
+
     @staticmethod
     def _training_mix(samples) -> dict:
         """Return current label totals for the hub without running another CV."""
@@ -1093,7 +1947,7 @@ class HubState:
         if live_store is None:
             return None
         try:
-            return self._training_mix(live_store.load_labels())
+            return self._training_mix(self._eval_label_pairs(live_store))
         except Exception:  # noqa: BLE001 - the run may close the store between poll and read
             return None
 

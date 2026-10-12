@@ -2441,6 +2441,50 @@ def _first_nonempty_ocr_line(text: str) -> str:
     return next((line for line in text.splitlines() if line.strip()), "")
 
 
+# The second structural short-name shape, from run a829bc2e7833 (2026-10-12, Julia -> Em): the
+# card header read ``Em\nshe Active now`` on every recipe, and the 3-letter floor below threw the
+# real name away, so a correctly landed Training dislike halted the run unlabelled.  A short
+# token binds to the name slot only when it is the WHOLE first line, starts with a capital, and
+# the next line is nothing but Hinge's pronoun/activity metadata -- the fixed row Hinge renders
+# directly under the name.  ``Em Active today`` on one line, a lone ``Em``, or a short token over
+# any other text keeps no authority.
+_SHORT_NAME_LINE_RE = re.compile(r"[A-Z][A-Za-z]?")
+_NAME_METADATA_WORDS = frozenset(
+    {"active", "today", "now", "she", "her", "hers", "he", "him", "his"}
+    | {"they", "them", "their", "theirs"}
+)
+
+
+def _short_name_over_metadata_line(text: str) -> str | None:
+    """Return a 1-2 letter name sitting alone above Hinge's pronoun/activity row, or ``None``."""
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if len(lines) < 2 or not _SHORT_NAME_LINE_RE.fullmatch(lines[0]):
+        return None
+    if lines[0].casefold() in _TOP_NAME_CHROME_WORDS:
+        return None
+    meta_tokens = re.findall(r"[A-Za-z]+", lines[1])
+    if not meta_tokens or any(
+        tok.casefold() not in _NAME_METADATA_WORDS for tok in meta_tokens
+    ):
+        return None
+    return lines[0]
+
+
+def _first_line_token_lengths(text: str | None) -> list[int] | None:
+    """Letter counts of the non-chrome name-like tokens on OCR's first line (no text kept).
+
+    Persisted beside each OCR attempt so a report can say WHY no candidate was found -- e.g.
+    ``[2]`` is one short token the length floor refused -- without writing a name to disk.
+    """
+    if not isinstance(text, str) or not text:
+        return None
+    return [
+        sum(ch.isalpha() for ch in tok)
+        for tok in re.findall(r"[A-Za-z][A-Za-z'-]*", _first_nonempty_ocr_line(text))
+        if tok.casefold() not in _TOP_NAME_CHROME_WORDS
+    ][:8]
+
+
 def _clean_first_line_name_candidate(text: str) -> str | None:
     """Return one clean, non-chrome name candidate from OCR's first line, or ``None``.
 
@@ -2456,6 +2500,9 @@ def _clean_first_line_name_candidate(text: str) -> str | None:
     banner_match = _SHORT_SIGNALS_BANNER_RE.fullmatch(first_line)
     if banner_match is not None:
         return banner_match.group(1)
+    short_name = _short_name_over_metadata_line(text)
+    if short_name is not None:
+        return short_name
     first_line_tokens = _TOP_NAME_TOKEN_RE.findall(first_line)
     candidates = [
         tok
@@ -15179,6 +15226,8 @@ class AndroidDriver(DatingAppDriver):
                         candidate
                     ),
                     "token_count": attempt.get("token_count", 0),
+                    # Letter counts only (never text): shows why no candidate was found.
+                    "first_line_token_lengths": attempt.get("first_line_token_lengths"),
                 }
             )
         return result
@@ -16356,6 +16405,9 @@ class AndroidDriver(DatingAppDriver):
                 stored = self._identity_name.strip()
                 seen_tokens = _TOP_NAME_TOKEN_RE.findall(seen_name)
                 identity_attempt["token_count"] = len(seen_tokens)
+                identity_attempt["first_line_token_lengths"] = (
+                    _first_line_token_lengths(seen_name)
+                )
                 if stored and _ocr_tokens_match_stored_name(seen_tokens, stored):
                     state = "same"
                     identity_attempt.update(parser="stored_name_match", verdict="same")
@@ -16457,6 +16509,7 @@ class AndroidDriver(DatingAppDriver):
                     return text
                 tokens = _TOP_NAME_TOKEN_RE.findall(text)
                 attempt["token_count"] = len(tokens)
+                attempt["first_line_token_lengths"] = _first_line_token_lengths(text)
                 stored = self._identity_name.strip()
                 candidate = _clean_first_line_name_candidate(text)
                 stored_name_tokens = _TOP_NAME_TOKEN_RE.findall(
@@ -16565,6 +16618,9 @@ class AndroidDriver(DatingAppDriver):
                         return None, None, text, attempt
                     tokens = _TOP_NAME_TOKEN_RE.findall(text)
                     attempt["token_count"] = len(tokens)
+                    attempt["first_line_token_lengths"] = _first_line_token_lengths(
+                        text
+                    )
                     stored = self._identity_name.strip()
                     candidate = _clean_first_line_name_candidate(text)
                     # This special lower crop can overlap the first photo.  Unlike the ordinary

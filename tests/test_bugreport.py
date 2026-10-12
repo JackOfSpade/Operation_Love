@@ -22,6 +22,93 @@ def _ring_bodies():
     return [line.split(" ", 1)[1] for line in bugreport._LOG_RING]
 
 
+def _ocr_md(**attempt):
+    base = {
+        "recipe": "identity_band_psm7_3x",
+        "verdict": None,
+        "candidate_sha256": None,
+    }
+    base.update(attempt)
+    return bugreport._training_probe_ocr_md({"ocr_attempts": [base]})
+
+
+def test_training_probe_ocr_md_renders_parser_and_valid_token_lengths():
+    out = _ocr_md(
+        parser="no_clean_first_line_candidate",
+        first_line_token_lengths=[2],
+        digest="secret-digest",
+    )
+    assert out == (
+        "identity_band_psm7_3x: verdict=not recorded, "
+        "parser=no_clean_first_line_candidate, no candidate, "
+        "first-line token lengths=[2]"
+    )
+    assert "secret-digest" not in out
+    multi = _ocr_md(
+        parser="stored_name_match",
+        verdict="same",
+        candidate_sha256="abc123digest",
+        first_line_token_lengths=[2, 5],
+    )
+    assert multi == (
+        "identity_band_psm7_3x: verdict=same, parser=stored_name_match, "
+        "candidate redacted, first-line token lengths=[2, 5]"
+    )
+    assert "abc123digest" not in multi
+    empty = _ocr_md(parser="no_text", first_line_token_lengths=[])
+    assert empty.endswith("parser=no_text, no candidate, first-line token lengths=[]")
+    assert _ocr_md(parser="no_text", first_line_token_lengths=[0, 64]).endswith(
+        "first-line token lengths=[0, 64]"
+    )
+    assert _ocr_md(parser="no_text", first_line_token_lengths=[1] * 8).endswith(
+        "first-line token lengths=[1, 1, 1, 1, 1, 1, 1, 1]"
+    )
+
+
+def test_training_probe_ocr_md_every_whitelisted_parser_renders():
+    for parser in bugreport._TRAINING_PROBE_PARSERS:
+        assert f"parser={parser}," in _ocr_md(parser=parser)
+    assert bugreport._TRAINING_PROBE_PARSERS == frozenset(
+        {
+            "inconclusive",
+            "no_clean_first_line_candidate",
+            "no_text",
+            "no_two_recipe_agreement",
+            "nonmatch_not_licensed",
+            "one_first_line_candidate",
+            "one_first_line_candidate_pending_2recipe",
+            "stored_name_match",
+            "stored_name_match_pending_2recipe",
+        }
+    )
+
+
+def test_training_probe_ocr_md_unknown_parser_is_unrecognised():
+    out = _ocr_md(parser="Em was here")
+    assert out == (
+        "identity_band_psm7_3x: verdict=not recorded, parser=unrecognised, no candidate"
+    )
+    assert "Em was here" not in out
+    assert "Em" not in out
+    assert "parser=not recorded" in _ocr_md()
+    assert "parser=unrecognised" in _ocr_md(parser=["no_text"])
+
+
+@pytest.mark.parametrize(
+    "bad", [["Em"], [True], [999], list(range(9)), "[2]", "Em", [-1], [2.0], None, 2]
+)
+def test_training_probe_ocr_md_malformed_token_lengths_are_omitted(bad):
+    out = _ocr_md(parser="no_clean_first_line_candidate", first_line_token_lengths=bad)
+    assert out == (
+        "identity_band_psm7_3x: verdict=not recorded, "
+        "parser=no_clean_first_line_candidate, no candidate"
+    )
+    assert "first-line token lengths" not in out
+    assert "Em" not in out
+    assert "999" not in out
+    assert "True" not in out
+
+
 def test_report_has_core_sections():
     md = bugreport.build_report(None, description="it broke")
     for h in [
@@ -2742,8 +2829,9 @@ def test_debug_log_links_unverified_training_dislike_to_its_draft(tmp_path):
         f"first post-X observation: frame `{landing_shot}` (retained on disk; field "
         "`kept_before`); composer_open=no; deck_ready=yes; current_profile=no; "
         "content(exact=no; shifted=no); identity=identity_unknown; name_verdict=not "
-        "recorded; OCR attempts: identity_band_psm7_3x: verdict=not recorded, no candidate; "
-        "top_card_header_psm6_3x: verdict=new, candidate redacted."
+        "recorded; OCR attempts: identity_band_psm7_3x: verdict=not recorded, "
+        "parser=not recorded, no candidate; "
+        "top_card_header_psm6_3x: verdict=new, parser=not recorded, candidate redacted."
     ) in evidence
     assert "A Private Profile Name" not in evidence
     assert "redacted-candidate-digest" not in evidence
@@ -2844,8 +2932,8 @@ def test_training_unverified_landing_redacts_unrecognised_state_and_malicious_fi
     assert "frame not retained or unsafe" in evidence
     assert "identity=unrecognised; name_verdict=unrecognised" in evidence
     assert (
-        "OCR attempts: unrecognised: verdict=unrecognised, candidate redacted."
-        in evidence
+        "OCR attempts: unrecognised: verdict=unrecognised, parser=not recorded, "
+        "candidate redacted." in evidence
     )
     for secret in ("Private Name", "leaked-token", "candidate-digest", hostile):
         assert secret not in evidence

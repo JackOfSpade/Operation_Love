@@ -4592,6 +4592,19 @@ _TRAINING_PROBE_RECIPES = frozenset(
         "top_card_header_take_another_look_psm6_native",
     }
 )
+_TRAINING_PROBE_PARSERS = frozenset(
+    {
+        "inconclusive",
+        "no_clean_first_line_candidate",
+        "no_text",
+        "no_two_recipe_agreement",
+        "nonmatch_not_licensed",
+        "one_first_line_candidate",
+        "one_first_line_candidate_pending_2recipe",
+        "stored_name_match",
+        "stored_name_match_pending_2recipe",
+    }
+)
 _TRAINING_PROBE_VERDICTS = frozenset({"same", "new"})
 _TRAINING_IDENTITY_STATES = frozenset(
     {
@@ -4857,7 +4870,11 @@ def _generation_context_md(
 
 
 def _training_probe_ocr_md(diagnostics: object) -> str:
-    """Summarise OCR recipe outcomes while keeping OCR text and names out of the report."""
+    """Summarise OCR recipe outcomes while keeping OCR text and names out of the report.
+
+    Each attempt shows its recipe, verdict, whitelisted parser token (WHY no candidate was
+    produced) and, only when it is a short list of small ints, the first-line token lengths.
+    """
     if not isinstance(diagnostics, dict):
         return "not recorded"
     attempts = diagnostics.get("ocr_attempts")
@@ -4880,7 +4897,24 @@ def _training_probe_ocr_md(diagnostics: object) -> str:
             and attempt["candidate_sha256"]
             else "no candidate"
         )
-        summary.append(f"{recipe}: verdict={verdict}, {candidate}")
+        parser = _training_probe_token(attempt.get("parser"), _TRAINING_PROBE_PARSERS)
+        entry = f"{recipe}: verdict={verdict}, parser={parser}, {candidate}"
+        lengths = attempt.get("first_line_token_lengths")
+        # Letter counts only; anything but a short list of plain small ints is dropped unprinted.
+        if (
+            isinstance(lengths, list)
+            and len(lengths) <= 8
+            and all(
+                isinstance(n, int) and not isinstance(n, bool) and 0 <= n <= 64
+                for n in lengths
+            )
+        ):
+            entry += (
+                ", first-line token lengths=["
+                + ", ".join(str(n) for n in lengths)
+                + "]"
+            )
+        summary.append(entry)
     return "; ".join(summary) if summary else "not recorded"
 
 

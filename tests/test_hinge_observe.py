@@ -3145,6 +3145,35 @@ def test_identity_top_name_ocr_accepts_only_structured_two_letter_signals_name(
 
 
 @pytest.mark.parametrize(
+    "stored_name, expected_state, expected_candidate",
+    [("Julia", "new", "Em"), ("Em", "same", None), ("Emma", "same", None)],
+)
+@pytest.mark.parametrize(
+    "ocr_text", ["Em\nshe Active now", "Em\nshe | Active now", "Em\nActive today"]
+)
+def test_identity_top_name_ocr_accepts_short_name_alone_above_metadata_row(
+    monkeypatch, ocr_text, stored_name, expected_state, expected_candidate
+):
+    """Run a829bc2e7833 (Julia -> Em): every card-header recipe read ``Em / she Active now``.
+
+    A short token that is the whole first line, directly above Hinge's pronoun/activity row, is
+    bound to the name slot just as the Signals banner binds it; exact or prefix-compatible stored
+    names still keep the conservative same-profile veto.
+    """
+    drv = _top_state_drv(monkeypatch, stored_name=stored_name)
+    monkeypatch.setattr(
+        drv,
+        "_ocr_band",
+        lambda frame, rect, psm="7", **_kwargs: ocr_text if psm == "6" else None,
+    )
+
+    state, _dist = drv._identity_of(b"frame")
+
+    assert state == expected_state
+    assert drv._identity_name_candidate == expected_candidate
+
+
+@pytest.mark.parametrize(
     "ocr_text",
     [
         "S",
@@ -3153,6 +3182,12 @@ def test_identity_top_name_ocr_accepts_only_structured_two_letter_signals_name(
         "Ri",
         "Ri Active today",
         "Ri shows signals",
+        "Em",
+        "em\nshe Active now",
+        "Em Active now\nshe",
+        "Em\nLet's get together",
+        "Em\nshe Active now Signals",
+        "He\nshe Active now",
     ],
 )
 def test_identity_top_name_ocr_unstructured_short_name_stays_inconclusive(
@@ -3264,9 +3299,19 @@ def test_name_derived_new_reproduced_on_confirm_frame_produces_a_pass(monkeypatc
             "match_scope",
             "candidate_sha256",
             "token_count",
+            "first_line_token_lengths",
         }
         for attempt in decision["identity_ocr_attempts"]
     )
+    # Letter counts only: the header attempt read ``qelix`` and records [5], never the text.
+    assert all(
+        attempt["first_line_token_lengths"] is None
+        or all(type(n) is int for n in attempt["first_line_token_lengths"])
+        for attempt in decision["identity_ocr_attempts"]
+    )
+    assert [5] in [
+        a["first_line_token_lengths"] for a in decision["identity_ocr_attempts"]
+    ]
 
 
 def test_observe_name_proof_refuses_hybrid_primary_and_fallback_reads(monkeypatch):

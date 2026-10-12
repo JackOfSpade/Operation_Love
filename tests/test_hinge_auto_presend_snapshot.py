@@ -956,6 +956,71 @@ def test_training_dislike_accepts_repeated_structured_two_letter_name(
     assert probe["names_agree"] is True
 
 
+def test_training_dislike_accepts_short_name_above_metadata_row(tmp_path, monkeypatch):
+    """Regression for run a829bc2e7833: Julia -> Em halted after a correctly landed dislike.
+
+    Every card-header recipe read ``Em / she Active now``; the 3-letter floor discarded the real
+    name, so no proof existed.  The short name alone above Hinge's metadata row now produces a
+    candidate, and the ordinary canonical-top, repeat and stable-frame gates still decide.  The
+    persisted attempt records the first-line letter count (never the text).
+    """
+    import numpy as np
+
+    driver, _adb = _driver([])
+    driver._dbg = HingeDebugLog(str(tmp_path), run_id="training-short-name-metadata")
+    driver._identity_name = "Julia"
+    driver._identity_sig = np.zeros((16, 64), dtype="int16")
+    driver._identity_top_sig = np.full((16, 64), 200, dtype="int16")
+    frames = iter((b"EM_TOP_FIRST", b"EM_TOP_SECOND"))
+
+    monkeypatch.setattr(driver, "_screencap", lambda: next(frames))
+    monkeypatch.setattr(driver, "_deck_blocked_reason", lambda _frame: None)
+    monkeypatch.setattr(driver, "_locate_inline_composer", lambda _frame: None)
+    monkeypatch.setattr(driver, "_observe_deck_ready", lambda _frame: True)
+    monkeypatch.setattr(driver, "_changed", lambda _before, _after: False)
+    monkeypatch.setattr(driver, "_interruptible_sleep", lambda *_a, **_kw: True)
+    monkeypatch.setattr(
+        hinge, "_band", lambda _frame, _rect: np.full((16, 64), 99, dtype="int16")
+    )
+    monkeypatch.setattr(
+        hinge,
+        "confirm_scroll_top",
+        lambda *_a, **_kw: SimpleNamespace(
+            state="confirmed_top",
+            confirmed=True,
+            distance=0.0,
+            reason="canonical scroll top confirmed",
+        ),
+    )
+    monkeypatch.setattr(
+        driver,
+        "_ocr_band",
+        lambda _frame, _rect, psm="7", **_kw: (
+            "Em\nshe Active now" if psm == "6" else None
+        ),
+    )
+
+    assert driver._verify_training_dislike_landed(3) == "name"
+
+    raw = (driver._dbg.dir / "actions.jsonl").read_text()
+    records = [json.loads(line) for line in raw.splitlines()]
+    probe = next(
+        record for record in records if record["action"] == "training_advance_probe"
+    )
+    assert probe["outcome"] == "accepted"
+    assert probe["first"]["name_candidate"] == "Em"
+    assert probe["second"]["name_candidate"] == "Em"
+    assert probe["stable"] is True
+    assert probe["names_agree"] is True
+    header = [
+        a
+        for a in probe["first"]["ocr_attempts"]
+        if a["recipe"] == "top_card_header_psm6_3x"
+    ]
+    assert header and header[0]["first_line_token_lengths"] == [2]
+    assert "Active now" not in raw
+
+
 def test_training_dislike_accepts_repeated_name_below_take_another_look_panel(
     tmp_path, monkeypatch
 ):

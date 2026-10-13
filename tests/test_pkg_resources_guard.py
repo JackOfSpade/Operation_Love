@@ -27,8 +27,18 @@ clip.load(), which this test never calls).
 from __future__ import annotations
 
 import importlib
+import tomllib
+from pathlib import Path
 
 import pytest
+
+
+def test_ml_extra_excludes_setuptools_versions_without_pkg_resources():
+    project = tomllib.loads(
+        (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text()
+    )
+    ml_dependencies = project["project"]["optional-dependencies"]["ml"]
+    assert "setuptools<82" in ml_dependencies
 
 
 def test_pkg_resources_stays_importable_for_legacy_clip():

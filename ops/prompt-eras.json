@@ -15,8 +15,8 @@
     "operation_love/opener/opener.py"
   ],
   "generated_from": {
-    "total_revisions": 54,
-    "evaluated_revisions": 30,
+    "total_revisions": 55,
+    "evaluated_revisions": 31,
     "unevaluable_revisions": 24
   },
   "eras": [
@@ -514,16 +514,17 @@
       "first_commit": "9abf49bdb5f5a6b7a4b2e597b17b6232ddb77866",
       "first_date": "2026-09-14T17:23:04-04:00",
       "first_subject": "Teach the opener who already knows, and renew Hinge targeting for 10.3.0",
-      "last_commit": "a557e0b64bf8fafe2897cc7d69819e9a462112e1",
-      "last_date": "2026-10-10T07:41:21-04:00",
-      "last_subject": "Add recall-target like threshold and AUTO pass review",
-      "commit_count": 5,
+      "last_commit": "31eca21bbe5f369c508432d2f0616710c7c62e88",
+      "last_date": "2026-10-12T21:56:24-04:00",
+      "last_subject": "Anchor return chains on the direct remeasure; renew Hinge 10.7.0 calibration",
+      "commit_count": 6,
       "commits": [
         "9abf49bdb5f5a6b7a4b2e597b17b6232ddb77866",
         "64e5d6b65e47beac9b0f5b1b133b6f85ca1cd60b",
         "703b0775392f1ca68af7165aaa705c9754e23b22",
         "d43e4d02d36bec55d58a33b90e969c92a985a80d",
-        "a557e0b64bf8fafe2897cc7d69819e9a462112e1"
+        "a557e0b64bf8fafe2897cc7d69819e9a462112e1",
+        "31eca21bbe5f369c508432d2f0616710c7c62e88"
       ],
       "rules": [
         "SHARED CONTEXT RULE",

@@ -2327,6 +2327,59 @@ def test_same_pair_marker_exit_bridges_an_all_weak_video_pair():
     assert links == {0: 511}
 
 
+def test_same_pair_marker_exit_bridges_video_conflict_but_rejects_outside_page_vote():
+    """Hope's video repainted while its mute control left the analysed band.
+
+    Four matched strips inside the video voted for mutually different steps. A fifth,
+    above the video, matched a negative displacement. Exact heart, bottom, and lower
+    gutter motion still identifies the same card at +511. A positive outside-card
+    vote would instead be independent page evidence and must block this exception.
+    """
+    segmentations, markers = _same_pair_marker_exit_segmentations()
+    base = _all_weak_video_exit_shift()
+    votes = (-1074, 360, 420, 305, 321)
+    strips = list(base.strips)
+    for index, vote in enumerate(votes):
+        strips[index] = dataclasses.replace(
+            strips[index],
+            y0=442 + index * 142,
+            y1=538 + index * 142,
+            state=frameshift.STRIP_MATCHED,
+            delta_px=vote,
+            score=0.98,
+        )
+    raw = dataclasses.replace(
+        base,
+        status=frameshift.SHIFT_NO_CONSENSUS,
+        reason="synthetic video pixel conflict",
+        strips=tuple(strips),
+        agreeing=1,
+        dissenting=4,
+        eligible=4,
+    )
+    assert item_index._video_track_deltas(
+        segmentations, (raw,), markers,
+        extent_tolerance_px=item_index._EXTENT_TOLERANCE_PX,
+        max_step_px=690,
+    ) == {0: 511}
+    repaired, _notes, provenance = item_index._repair_video_track_shifts(
+        segmentations, (raw,), markers,
+        extent_tolerance_px=item_index._EXTENT_TOLERANCE_PX,
+        max_step_px=690,
+    )
+    assert repaired[0].delta_px == 511
+    assert provenance == ((0, raw),)
+
+    outside = list(strips)
+    outside[0] = dataclasses.replace(outside[0], delta_px=450)
+    conflicting = dataclasses.replace(raw, strips=tuple(outside))
+    assert item_index._video_track_deltas(
+        segmentations, (conflicting,), markers,
+        extent_tolerance_px=item_index._EXTENT_TOLERANCE_PX,
+        max_step_px=690,
+    ) == {}
+
+
 @pytest.mark.parametrize(
     "gate",
     (

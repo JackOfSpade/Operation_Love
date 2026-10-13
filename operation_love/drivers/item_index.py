@@ -456,7 +456,7 @@ _END_TAIL_GAP_PX = max(_GUTTER_PX) + _GUTTER_TOLERANCE_PX
 # indexer decision path and splitter.  Those values distinguish "the current source replays
 # cleanly" from "the long-lived
 # worker was still executing an older indexer" without trusting the working tree alone.
-ITEM_INDEX_ALGORITHM_ID = "bounded-card-split-v19"
+ITEM_INDEX_ALGORITHM_ID = "bounded-card-split-v20"
 
 
 # =====================================================================================
@@ -1687,13 +1687,13 @@ def _same_pair_marker_exit_bridge(
     after_marker_present: bool,
     max_step_px: int = _MAX_STEP_PX,
 ) -> tuple[Block, Block, int] | None:
-    """Prove the all-weak pair on which one tracked mute control leaves the band.
+    """Prove the pair on which one tracked mute control leaves the band.
 
     This is deliberately distinct from ``_video_exit_bridge_delta``.  That helper reconnects
     the *following* unmarked pair from three exact NCC strips after an exit was already proved.
     Here the active card's last marker is still present in the before frame and the raw bank is
-    wholly silent because its video repainted.  The marker may disappear only when one unique
-    top-clipped destination puts its predicted row above the next content band, while an exact
+    silent or contradictory because its video repainted. The marker may disappear only when one
+    unique top-clipped destination puts its predicted row above the next content band, while an exact
     same-x heart, the card's observed lower edge, and both sides of its lower canonical gutter
     all translate by the same in-range delta.
 
@@ -1704,13 +1704,29 @@ def _same_pair_marker_exit_bridge(
     fold before it may become an effective shift.
     """
     if (
-        raw.status != SHIFT_NO_EVIDENCE
+        raw.status not in (SHIFT_NO_EVIDENCE, SHIFT_NO_CONSENSUS)
         or raw.delta_px is not None
-        or raw.eligible != 0
-        or raw.agreeing != 0
-        or raw.dissenting != 0
         or not raw.strips
-        or any(strip.state != STRIP_WEAK for strip in raw.strips)
+        or (
+            raw.status == SHIFT_NO_EVIDENCE
+            and (
+                raw.eligible != 0
+                or raw.agreeing != 0
+                or raw.dissenting != 0
+                or any(strip.state != STRIP_WEAK for strip in raw.strips)
+            )
+        )
+        or (
+            raw.status == SHIFT_NO_CONSENSUS
+            and (
+                raw.eligible == 0
+                or not any(strip.state == STRIP_MATCHED for strip in raw.strips)
+                # This exception is for a video repaint that produced a dense,
+                # contradictory bank. Sparse under-quorum matches use the ordinary
+                # tracked-video grammar instead.
+                or sum(strip.state == STRIP_MATCHED for strip in raw.strips) < 4
+            )
+        )
         or before_marker is None
         or after_marker_present
     ):
@@ -1742,6 +1758,18 @@ def _same_pair_marker_exit_bridge(
         if edge_delta != heart_delta or not 0 < edge_delta <= max_step_px:
             continue
         if before_marker.y - edge_delta >= after_segmentation.band[0]:
+            continue
+        # A contradictory NCC bank is admissible only when none of its matched strips
+        # independently supports a different positive page displacement outside the video.
+        # Those outside pixels would be stronger page evidence than the card's own geometry.
+        if raw.status == SHIFT_NO_CONSENSUS and any(
+            strip.state == STRIP_MATCHED
+            and strip.delta_px is not None
+            and 0 < strip.delta_px <= max_step_px
+            and abs(strip.delta_px - edge_delta) > _AGREEMENT_TOLERANCE_PX
+            and not (before.y0 <= strip.y0 and strip.y1 <= before.y1)
+            for strip in raw.strips
+        ):
             continue
         after_gutter = _lower_observed_gutter(after_segmentation, after)
         if (
@@ -1908,9 +1936,9 @@ def _video_track_deltas(
 
     A mute hit seeds a card. Between two visible, uniquely contained mute hits, one raw refusal
     (``no_evidence`` or ``no_consensus``) may use their exact direct displacement plus a second
-    card-local anchor. If the last marked frame is followed by an all-weak repaint, the track may
-    cross that same-pair exit only through the exact heart/lower-edge/lower-gutter proof in
-    ``_same_pair_marker_exit_bridge``. Immediately after a proved exit, one unique
+    card-local anchor. If the last marked frame is followed by a silent or contradictory repaint,
+    the track may cross that same-pair exit only through the exact heart/lower-edge/lower-gutter
+    proof in ``_same_pair_marker_exit_bridge``. Immediately after a proved exit, one unique
     three-strip/heart boundary may rejoin cards below the video. It cannot jump to the next card
     merely because a frame contains *some* video. Ambiguity removes authority rather than
     choosing an identity.
@@ -2178,7 +2206,7 @@ def _repair_video_track_shifts(
                     f"{_SAME_PAIR_MARKER_EXIT_REASON_PREFIX} the active positioned app "
                     "control projects above the next content band, while its exact same-x "
                     "heart, observed lower card edge and lower canonical gutter all move "
-                    "together; raw all-weak strips retained in layout_repaired_shifts"
+                    "together; raw strip evidence retained in layout_repaired_shifts"
                 ),
             )
         elif (
@@ -4333,9 +4361,10 @@ def build_item_index(
     Hinge's own mute control. A row first binds to one segmented card and may then follow that
     same card as its overlay leaves the visible band. One raw refused pair may be bridged while
     that same control is affirmatively visible in both frames when its exact displacement agrees
-    with another card-local anchor. An all-weak pair on which the control itself exits has the
-    narrower heart/lower-edge/lower-gutter proof in `_same_pair_marker_exit_bridge`. The pair
-    immediately following a proved overlay exit may instead rejoin the lower cards only with
+    with another card-local anchor. A silent or contradictory pair on which the control itself
+    exits has the narrower heart/lower-edge/lower-gutter proof in
+    `_same_pair_marker_exit_bridge`. The pair immediately following a proved overlay exit may
+    instead rejoin the lower cards only with
     three identical strip values and the tracked card's exact heart displacement. Every form is
     only a proposal until a complete page rebuild succeeds. When the legacy boolean sequence is
     omitted, its frame-aligned compatibility view is derived from these rows; an explicitly

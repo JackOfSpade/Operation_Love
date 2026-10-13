@@ -9377,6 +9377,61 @@ def test_a_back_off_holds_the_stall_count_rather_than_clearing_it(
     ]
 
 
+def test_return_chain_anchor_takes_the_direct_remeasure_over_the_leg_sum(
+    monkeypatch, tmp_path
+):
+    """Run 977a1a7c4c5e: the legs summed to 0 but the direct entry-frame pair measured -35.
+
+    Both are inside the ~219px agreement gate, so the chain returns. The anchor it hands
+    navigation must state the direct measurement: carrying the leg sum put navigation's anchor
+    heart 35px from the index's against a 32px bound and refused a correct like.
+    """
+    drv = _drv(WorldAdb())
+    drv._dbg = HingeDebugLog(str(tmp_path), run_id="direct-anchor-return-chain")
+    monkeypatch.setattr(drv, "_sample_read_step", lambda *_a: (0.0, 0.0, 0.5))
+    monkeypatch.setattr(drv, "_scroll_down_one", lambda *_a: None)
+    monkeypatch.setattr(drv, "_screencap", lambda **_kw: b"leg-1")
+    shifts = iter([300, -35])  # one leg closes the chain exactly, then the direct pair
+    monkeypatch.setattr(drv, "_measured_page_shift", lambda *_a: next(shifts))
+
+    returned = drv._return_to_entry_from_measured_position(
+        hinge._MeasuredItemAnchor(b"entry", 19),
+        frame=b"target",
+        terminal_shift_px=-300,
+    )
+
+    assert returned == hinge._MeasuredItemAnchor(b"leg-1", 19 - 35)
+    record = _return_chain_records(drv)
+    assert len(record) == 1
+    assert record[0]["reason"] == "direct_remeasure_matched"
+    assert record[0]["terminal_shift_px"] == 0
+    assert record[0]["direct_shift_px"] == -35
+    assert record[0]["anchor_shift_px"] == -35
+
+
+def test_return_chain_anchor_falls_back_to_the_leg_sum_without_a_direct_pair(
+    monkeypatch, tmp_path
+):
+    drv = _drv(WorldAdb())
+    drv._dbg = HingeDebugLog(str(tmp_path), run_id="no-direct-return-chain")
+    monkeypatch.setattr(drv, "_sample_read_step", lambda *_a: (0.0, 0.0, 0.5))
+    monkeypatch.setattr(drv, "_scroll_down_one", lambda *_a: None)
+    monkeypatch.setattr(drv, "_screencap", lambda **_kw: b"leg-1")
+    shifts = iter([290, None])  # chain lands at -10; the direct pair cannot be measured
+    monkeypatch.setattr(drv, "_measured_page_shift", lambda *_a: next(shifts))
+
+    returned = drv._return_to_entry_from_measured_position(
+        hinge._MeasuredItemAnchor(b"entry", 19),
+        frame=b"target",
+        terminal_shift_px=-300,
+    )
+
+    assert returned == hinge._MeasuredItemAnchor(b"leg-1", 19 - 10)
+    record = _return_chain_records(drv)
+    assert record[0]["reason"] == "direct_remeasure_unavailable"
+    assert record[0]["anchor_shift_px"] == -10
+
+
 def test_return_chain_direct_remeasure_disagreement_refuses(monkeypatch, tmp_path):
     drv = _drv(WorldAdb())
     drv._dbg = HingeDebugLog(str(tmp_path), run_id="mismatched-return-chain")

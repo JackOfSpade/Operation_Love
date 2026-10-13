@@ -8706,6 +8706,106 @@ def test_geometry_section_never_claims_a_pinned_strip_a_capture_does_not_have(tm
     assert "PROVEN screen-fixed" not in md
 
 
+def _disagreement_run(tmp_path, pair_evidence, *, name="run_layout_disagreement"):
+    run = _refused_run(tmp_path, [], name=name)
+    sidecar = run / "item_index_refused_ab12_evidence.json"
+    payload = json.loads(sidecar.read_text())
+    payload["pair_evidence"] = pair_evidence
+    sidecar.write_text(json.dumps(payload))
+    return run
+
+
+def _disagreement_md(run):
+    return bugreport._item_index_layout_disagreement_md(
+        (run / "actions.jsonl").read_text().splitlines(), run
+    )
+
+
+# The 2026-10-12 Ivory capture's pairs 7->8 (refused) and 8->9 (accepted but wrong), reduced to
+# the fields the section reads, plus one ordinary pair whose layout agrees with its strips.
+_IVORY_PAIRS = [
+    {
+        "pair": [6, 7],
+        "status": "measured",
+        "delta_px": 430,
+        "structural_landmarks": [["top", 430], ["bottom", 430], ["heart", 430]],
+    },
+    {
+        "pair": [7, 8],
+        "status": "no_consensus",
+        "delta_px": None,
+        "structural_landmarks": [["top", 447], ["bottom", 447], ["heart", 447]],
+    },
+    {
+        "pair": [8, 9],
+        "status": "measured",
+        "delta_px": 438,
+        "structural_landmarks": [["top", 479], ["bottom", 479], ["heart", 479]],
+    },
+]
+
+
+def test_layout_disagreement_names_the_accepted_neighbour_that_broke_the_fold(tmp_path):
+    """The refusal named frames 7 and 8; the cause was the ACCEPTED +438 on frames 8 and 9."""
+    md = _disagreement_md(_disagreement_run(tmp_path, _IVORY_PAIRS))
+
+    assert (
+        "- frames 8 and 9: ACCEPTED as measured +438px, but top, bottom and heart all moved "
+        "exactly +479px (41px apart)."
+    ) in md
+    assert (
+        "- frames 7 and 8: refused (no_consensus), while top, bottom and heart all moved "
+        "exactly +447px"
+    ) in md
+    assert "frames 6 and 7" not in md  # its layout agrees with its strips
+    assert "refused-capture pairs whose own layout contradicts their shift" in (
+        bugreport._one_debug_dir_md("hinge", {"debug_dir": str(tmp_path)})
+    )
+
+
+@pytest.mark.parametrize(
+    "landmarks",
+    [
+        [["top", 479], ["bottom", 479]],  # no heart: not a full three-kind layout
+        [
+            ["top", 479],
+            ["bottom", 479],
+            ["heart", 479],
+            ["top", 300],
+            ["bottom", 300],
+            ["heart", 300],
+        ],  # two full layouts: ambiguous
+        [["top", 440], ["bottom", 440], ["heart", 440]],  # within agreement tolerance
+        [["side", 479], ["bottom", 479], ["heart", 479]],  # unknown kind token
+    ],
+)
+def test_layout_disagreement_is_silent_without_one_unambiguous_contradiction(
+    tmp_path, landmarks
+):
+    pairs = [
+        {
+            "pair": [8, 9],
+            "status": "measured",
+            "delta_px": 438,
+            "structural_landmarks": landmarks,
+        }
+    ]
+    assert _disagreement_md(_disagreement_run(tmp_path, pairs)) == ""
+
+
+@pytest.mark.parametrize(
+    "pair_evidence",
+    [
+        "not a list",
+        [None, 7, {"pair": "x"}, {"pair": [1, 2], "structural_landmarks": 5}],
+    ],
+)
+def test_layout_disagreement_degrades_to_silence_on_malformed_evidence(
+    tmp_path, pair_evidence
+):
+    assert _disagreement_md(_disagreement_run(tmp_path, pair_evidence)) == ""
+
+
 def test_geometry_section_is_silent_when_the_sidecar_is_absent(tmp_path):
     run = _refused_run(tmp_path, None, name="absent")  # record names it; file is gone
 
@@ -9172,3 +9272,38 @@ def test_config_section_names_the_recall_target_and_the_auto_review_settings(tmp
     assert "like_recall_target=0.9" in text
     assert "contextual_recall_budget=0.03" in text
     assert "auto_review: enabled=False, random_share=0.25" in text
+
+
+def test_debug_log_surfaces_returned_chain_whose_leg_sum_disagrees_with_direct(tmp_path):
+    """Run 977a1a7c4c5e: a returned chain (legs 0, direct -35) caused the later 35px
+    `count_disagrees_with_index` stop, and the report hid it because only refusals rendered."""
+    run = tmp_path / "run_return_chain_disagreement"
+    run.mkdir(parents=True)
+    base = {
+        "action": "still_photo_dwell_return_chain",
+        "outcome": "returned",
+        "reason": "direct_remeasure_matched",
+        "drift_bound_px": 219,
+        "terminal_shift_px": 0,
+    }
+    records = [
+        {**base, "ts": "2026-10-12T20:00:00", "direct_shift_px": 0},
+        {**base, "ts": "2026-10-12T20:29:14", "direct_shift_px": -35},
+        {
+            **base,
+            "ts": "2026-10-12T20:40:00",
+            "direct_shift_px": 12,
+            "anchor_shift_px": 12,
+        },
+    ]
+    (run / "actions.jsonl").write_text("\n".join(map(json.dumps, records)) + "\n")
+
+    md = bugreport._one_debug_dir_md("hinge", {"debug_dir": str(tmp_path)})
+
+    assert "return chains that returned with leg sum != direct check:" in md
+    rows = [line for line in md.splitlines() if "vs direct entry-frame check" in line]
+    assert len(rows) == 2, "the agreeing 0/0 return must stay out"
+    assert "`2026-10-12T20:29:14`" in rows[0]
+    assert "leg sum +0px vs direct entry-frame check -35px (35px apart)" in rows[0]
+    assert "row predates anchor_shift_px" in rows[0]
+    assert "anchor took +12px" in rows[1]

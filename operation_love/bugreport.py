@@ -154,6 +154,8 @@ _ITEM_INDEX_GEOMETRY_ROWS_SHOWN = 6  # per-line cap inside that section: named f
 # indices, distinct leading rows, run extents, and
 # unanchored strips. A capture with more than this many
 # distinct shapes has no single leading edge to report.
+# Same tolerance as frameshift's `_AGREEMENT_TOLERANCE_PX`: a layout within it agrees.
+_LAYOUT_AGREEMENT_PX = 3
 _ITEM_INDEX_GEOMETRY_SIDECAR_BYTES = (
     8_000_000  # a sidecar larger than this is not read at
 )
@@ -2367,7 +2369,16 @@ def _row_pair(value: object) -> tuple[int, int] | None:
 
 
 def _geometry_sidecar_frames(run: Path, name: object) -> list | None:
-    """``all_frame_geometry`` out of a refusal's geometry sidecar, or None. Never raises.
+    """``all_frame_geometry`` out of a refusal's geometry sidecar, or None. Never raises."""
+    payload = _geometry_sidecar_payload(run, name)
+    if payload is None:
+        return None
+    frames = payload.get("all_frame_geometry")
+    return frames if isinstance(frames, list) else None
+
+
+def _geometry_sidecar_payload(run: Path, name: object) -> dict | None:
+    """A refusal's whole geometry sidecar as a dict, or None. Never raises.
 
     The filename arrives from an actions.jsonl record, so it gets the SAME treatment
     ``_shot_digest`` gives a screenshot name: a bare filename inside the run directory or
@@ -2392,10 +2403,7 @@ def _geometry_sidecar_frames(run: Path, name: object) -> list | None:
         payload = json.loads(path.read_text())
     except Exception:  # noqa: BLE001 -- absent, truncated or malformed evidence stays silent
         return None
-    if not isinstance(payload, dict):
-        return None
-    frames = payload.get("all_frame_geometry")
-    return frames if isinstance(frames, list) else None
+    return payload if isinstance(payload, dict) else None
 
 
 def _named_frames(indices: list[int]) -> str:
@@ -2670,6 +2678,94 @@ def _sidecar_geometry_lines(frames: list) -> list[str]:
             "to the screen"
         )
     return out
+
+
+def _layout_disagreement_lines(pairs: list) -> list[str]:
+    """Pairs whose top, bottom and heart all moved one exact distance other than the strips'.
+
+    See `_item_index_layout_disagreement_md`.  Reads only ints and the closed landmark-kind
+    vocabulary (`top`, `bottom`, `heart`) from `pair_evidence`; anything else is skipped.
+    """
+    out: list[str] = []
+    for entry in pairs:
+        if not isinstance(entry, dict):
+            continue
+        pair = entry.get("pair")
+        if not (isinstance(pair, list) and len(pair) == 2):
+            continue
+        a, b = _plain_int(pair[0]), _plain_int(pair[1])
+        landmarks = entry.get("structural_landmarks")
+        if a is None or b is None or not isinstance(landmarks, list):
+            continue
+        by_delta: dict[int, set[str]] = {}
+        for mark in landmarks:
+            if not (isinstance(mark, list) and len(mark) == 2):
+                continue
+            kind, delta = mark[0], _plain_int(mark[1])
+            if kind in ("top", "bottom", "heart") and delta is not None:
+                by_delta.setdefault(delta, set()).add(kind)
+        full = sorted(
+            delta
+            for delta, kinds in by_delta.items()
+            if kinds == {"top", "bottom", "heart"}
+        )
+        if len(full) != 1:
+            continue
+        layout = full[0]
+        status = entry.get("status")
+        accepted = _plain_int(entry.get("delta_px"))
+        if status == "measured" and accepted is not None:
+            if abs(accepted - layout) <= _LAYOUT_AGREEMENT_PX:
+                continue
+            out.append(
+                f"- frames {a} and {b}: ACCEPTED as measured {accepted:+d}px, but top, bottom "
+                f"and heart all moved exactly {layout:+d}px ({abs(accepted - layout)}px apart). "
+                "A confidently wrong strip majority (typically a playing video's own pixels) "
+                "was taken as page motion; it can make the page fold contradict itself and "
+                "surface as a refusal on a NEIGHBOURING pair"
+            )
+        elif accepted is None and isinstance(status, str):
+            out.append(
+                f"- frames {a} and {b}: refused ({_sanitize_inline(status)}), while top, bottom "
+                f"and heart all moved exactly {layout:+d}px"
+            )
+    return out
+
+
+def _item_index_layout_disagreement_md(lines: list[str], run: Path) -> str:
+    """Open the refusal's sidecar and name pairs whose own layout contradicts their shift.
+
+    ADDED 2026-10-12 (Ivory capture, refusal on frames 7 and 8).  The refusal named only the pair
+    that failed, but the cause sat on the ACCEPTED pair after it: frameshift measured +438px from
+    three strips inside a playing TikTok video while that card's bottom, heart and the next
+    card's top all moved +479px.  The 41px error poisoned the page fold, so the correct repair of
+    frames 7 and 8 was rolled back.  Every fact was in `pair_evidence`; nothing printed it.
+
+    Best-effort and silent on absent/malformed evidence, exactly like `_item_index_geometry_md`.
+    """
+    named: list[object] = []
+    for raw in lines:
+        try:
+            rec = json.loads(raw)
+        except Exception:  # noqa: BLE001 -- a partial JSONL write must not hide a later refusal
+            continue
+        if (
+            isinstance(rec, dict)
+            and rec.get("action") == "item_index_refused"
+            and rec.get("evidence_sidecar")
+        ):
+            named.append(rec["evidence_sidecar"])
+    out: list[str] = []
+    for name in named[-_ITEM_INDEX_GEOMETRY_SIDECARS_SHOWN:]:
+        payload = _geometry_sidecar_payload(run, name)
+        pairs = payload.get("pair_evidence") if payload else None
+        if not isinstance(pairs, list):
+            continue
+        body = _layout_disagreement_lines(pairs)
+        if body:
+            out.append(f"- `{_sanitize_inline(str(name))}`:")
+            out.extend(f"  {line}" for line in body)
+    return "\n".join(out)
 
 
 def _item_index_geometry_md(lines: list[str], run: Path) -> str:
@@ -3090,6 +3186,50 @@ def _shift_trace_lines_md(measurement: object) -> list[str]:
             strip_text += f"; plus {tally}"
         out.append(f"    located strips: {strip_text}")
     return out
+
+
+def _dwell_return_chain_disagreement_md(lines: list[str]) -> str:
+    """Render RETURNED cleanup chains whose leg sum and direct entry-frame pair disagree.
+
+    A return is accepted when the two agree to within its gate (~219px), but navigation's anchor
+    check downstream is ~32px, so a returned chain can still be the cause of a later
+    `count_disagrees_with_index` stop (run 977a1a7c4c5e: legs summed to 0, the direct pair said
+    -35, navigation then refused 35px against 32px). Agreeing returns stay out, as before.
+    ``anchor_shift_px`` is the shift the anchor actually took; rows written before it existed
+    carried the leg sum.
+    """
+    out: list[str] = []
+    for raw in lines:
+        try:
+            rec = json.loads(raw)
+        except Exception:  # noqa: BLE001 -- a partial row must not hide a later one
+            continue
+        if not (
+            isinstance(rec, dict)
+            and rec.get("action") == "still_photo_dwell_return_chain"
+            and rec.get("outcome") == "returned"
+        ):
+            continue
+        terminal = rec.get("terminal_shift_px")
+        direct = rec.get("direct_shift_px")
+        if not all(
+            isinstance(v, int) and not isinstance(v, bool) for v in (terminal, direct)
+        ):
+            continue
+        if terminal == direct:
+            continue
+        anchor = rec.get("anchor_shift_px")
+        anchor_text = (
+            f"anchor took {anchor:+d}px"
+            if isinstance(anchor, int) and not isinstance(anchor, bool)
+            else f"anchor took the leg sum {terminal:+d}px (row predates anchor_shift_px)"
+        )
+        ts = _sanitize_inline(str(rec.get("ts") or "time not recorded"))
+        out.append(
+            f"- `{ts}`: leg sum {terminal:+d}px vs direct entry-frame check {direct:+d}px "
+            f"({abs(direct - terminal)}px apart); {anchor_text}"
+        )
+    return "\n".join(out[-_CAPTURE_SPLITS_SHOWN:])
 
 
 def _dwell_return_chain_refusal_summary_md(lines: list[str]) -> str:
@@ -5942,6 +6082,13 @@ def _one_debug_dir_md(
                     "the refusal names):"
                 )
                 out.extend(f"    {line}" for line in geometry.splitlines())
+            disagreement = _item_index_layout_disagreement_md(raw_lines, run)
+            if disagreement:
+                out.append(
+                    "  - refused-capture pairs whose own layout contradicts their shift "
+                    "(read from the same sidecar):"
+                )
+                out.extend(f"    {line}" for line in disagreement.splitlines())
             dwell_navigation = _dwell_navigation_refusal_summary_md(raw_lines)
             if dwell_navigation:
                 # "and cancellations" is not padding (2026-09-16): `navigation_cancelled` rows
@@ -5961,6 +6108,12 @@ def _one_debug_dir_md(
                     "  - still-photo return-chain refusals (measured cleanup after dwell):"
                 )
                 out.extend(f"    {line}" for line in dwell_return_chains.splitlines())
+            return_disagreements = _dwell_return_chain_disagreement_md(raw_lines)
+            if return_disagreements:
+                out.append(
+                    "  - still-photo return chains that returned with leg sum != direct check:"
+                )
+                out.extend(f"    {line}" for line in return_disagreements.splitlines())
             repairs = _item_index_repair_summary_md(raw_lines)
             if repairs:
                 out.append("  - item-index conservative repairs:")

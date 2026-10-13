@@ -2555,6 +2555,159 @@ def test_same_pair_marker_exit_survives_a_probe_with_only_scroll_top_failure(
     ] == [(0, "v18_mute_card_same_pair_exit", frameshift.SHIFT_NO_EVIDENCE, 511, (0,))]
 
 
+@pytest.mark.parametrize(
+    "break_gate",
+    (
+        None,
+        "majority_outside",
+        "majority_other_card",
+        "single_witness",
+        "no_gutter",
+        "no_heart",
+        "no_marker",
+    ),
+)
+def test_positioned_mute_card_track_overrides_a_majority_voted_inside_the_video(
+    monkeypatch, break_gate
+):
+    """A measured majority cast only by the tracked video's own pixels is not page motion.
+
+    Live 2026-10-12 (Ivory): after the mute control left the band, three strips inside the
+    still-playing video card voted +438 while the card's bottom, heart, the gutter below it and
+    the next card's top all moved +479, with two strips (one outside the video) agreeing.  The
+    wrong +438 was accepted as measured, poisoned the page fold, and the capture was refused.
+
+    Here the Shannon track exits on pair 4; on pair 5 the tracked video occupies frame rows
+    300..941, so strips 0..3 are inside it and strips 4+ are not.
+    """
+    scrolls = (0, 225, 459, 700, 939, 1172, 1419)
+    frames = [_frame(scroll) for scroll in scrolls]
+    real_shift = item_index.estimate_shift
+
+    def pair_votes(base, votes_by_strip, delta):
+        strips = [
+            dataclasses.replace(strip, state=frameshift.STRIP_WEAK, delta_px=None)
+            for strip in base.strips
+        ]
+        for i, vote in votes_by_strip.items():
+            strips[i] = dataclasses.replace(
+                strips[i], state=frameshift.STRIP_MATCHED, delta_px=vote, score=0.99
+            )
+        votes = list(votes_by_strip.values())
+        agreeing = sum(abs(vote - delta) <= 3 for vote in votes)
+        return dataclasses.replace(
+            base,
+            strips=tuple(strips),
+            status=frameshift.SHIFT_MEASURED,
+            delta_px=delta,
+            consensus_px=delta,
+            agreeing=agreeing,
+            dissenting=len(votes) - agreeing,
+            eligible=len(votes),
+            confidence=agreeing / len(votes),
+            reason="synthetic strip-bank evidence",
+        )
+
+    def latest_pair(frame_a, frame_b, **kwargs):
+        result = real_shift(frame_a, frame_b, **kwargs)
+        pair = next(
+            i
+            for i in range(len(frames) - 1)
+            if frame_a == frames[i] and frame_b == frames[i + 1]
+        )
+        if pair in (1, 3):
+            step = scrolls[pair + 1] - scrolls[pair]
+            return dataclasses.replace(
+                _shift_with_votes(
+                    result, [step, step], status=frameshift.SHIFT_NO_CONSENSUS
+                ),
+                agreeing=2,
+                dissenting=0,
+            )
+        if pair == 4:
+            return _shift_with_votes(
+                result,
+                [228, 228, 230, 233],
+                status=frameshift.SHIFT_MEASURED,
+                delta=229,
+            )
+        if pair == 5:
+            votes = {1: 206, 2: 207, 3: 205, 4: 247, 6: 247}
+            if break_gate == "majority_outside":
+                votes = {1: 206, 2: 207, 8: 205, 4: 247, 6: 247}
+            elif break_gate == "majority_other_card":
+                # The whole majority sits inside ONE block, but it is the next card (frame rows
+                # 1262..2100), not the tracked video: page content outvoting two witnesses.
+                votes = {8: 206, 9: 207, 10: 205, 0: 247, 4: 247}
+            elif break_gate == "single_witness":
+                votes = {1: 206, 2: 207, 3: 205, 6: 247}
+            return pair_votes(result, votes, 206)
+        return result
+
+    monkeypatch.setattr(item_index, "estimate_shift", latest_pair)
+    if break_gate == "no_gutter":
+        # Top, bottom and heart still all move +247; only the exact gutter witness is withheld.
+        monkeypatch.setattr(item_index, "_shared_gutter_witnesses", lambda *a, **k: ())
+    if break_gate == "no_heart":
+        # Top, bottom and the gutter still move +247 (the only pair with that step); the heart
+        # landmark does not, so the three-kind exact layout is incomplete.
+        real_landmarks = item_index._structural_landmarks
+        monkeypatch.setattr(
+            item_index,
+            "_structural_landmarks",
+            lambda *a, **k: tuple(
+                mark for mark in real_landmarks(*a, **k) if mark != ("heart", 247)
+            ),
+        )
+    markers = (
+        ()
+        if break_gate == "no_marker"
+        else tuple(
+            item_index.VideoMuteMarker(frame_index=frame_index, x=106, y=row, score=1.0)
+            for frame_index, row in zip(range(1, 5), (1200, 966, 725, 486), strict=True)
+        )
+    )
+    index = item_index.build_item_index(
+        frames,
+        content_band=_CONTENT_BAND,
+        like_template=_TEMPLATE,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD,
+        at_scroll_top=True,
+        identity_band=None,
+        video_mute_markers=markers,
+    )
+
+    override_repairs = [
+        repair
+        for repair in index.repair_provenance
+        if repair.path == "v19_mute_card_video_majority_override"
+    ]
+    if break_gate is not None:
+        # The wrong majority must never be replaced, and its 41px error must not be absorbed
+        # into a usable index either: it contradicts the page fold.
+        assert override_repairs == []
+        assert 5 not in {pair for pair, _raw in index.layout_repaired_shifts}
+        assert not index.usable
+        return
+    assert index.usable, index.failures
+    assert index.offsets == scrolls
+    assert [shift.delta_px for shift in index.shifts] == [225, 234, 241, 239, 233, 247]
+    assert [
+        (
+            repair.pair_index,
+            repair.raw_status,
+            repair.raw_delta_px,
+            repair.effective_status,
+            repair.effective_delta_px,
+            repair.marker_frames,
+        )
+        for repair in override_repairs
+    ] == [(5, frameshift.SHIFT_MEASURED, 206, frameshift.SHIFT_MEASURED, 247, ())]
+    assert index.shifts[5].agreeing == 2
+    assert index.shifts[5].reason.startswith("v19 mute-card video-majority override:")
+    assert dict(index.layout_repaired_shifts)[5].delta_px == 206
+
+
 def test_positioned_mute_card_track_survives_a_static_page_stretch(monkeypatch):
     """The track's authority must reach PAST a run of genuine zero-pixel pairs.
 

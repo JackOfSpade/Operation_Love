@@ -32,7 +32,7 @@ def test_config_yaml_loads_without_error(cfg):
 
 
 def test_the_shipped_targeting_calibration_is_a_complete_bound_calibration(cfg):
-    """The shipped 10.6.0 config carries a complete, exact-build calibration.
+    """The shipped 10.7.0 config carries a complete, exact-build calibration.
 
     This assertion used to be its inverse — the file deliberately shipped WITHOUT one, and
     pinning that absence was how we proved an uncalibrated config was still a loadable,
@@ -53,7 +53,7 @@ def test_the_shipped_targeting_calibration_is_a_complete_bound_calibration(cfg):
     assert cal["device"] == cfg.apps["hinge"]["serial"], (
         "calibration must bind the exact serial"
     )
-    assert cal["hinge_version_name"] == "10.6.0"
+    assert cal["hinge_version_name"] == "10.7.0"
     assert list(cal["frame_size_px"]) == [1080, 2400]
     assert cal["item_selection_policy_id"] == "hinge_photos_only_v2"
     assert cal["composer_layout_id"] == "hinge_inline_v1"

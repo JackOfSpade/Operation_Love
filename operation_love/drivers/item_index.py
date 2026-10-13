@@ -192,6 +192,7 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from itertools import pairwise
+from typing import Literal, overload
 
 from .frameshift import (
     _AGREEMENT_TOLERANCE_PX,
@@ -455,7 +456,7 @@ _END_TAIL_GAP_PX = max(_GUTTER_PX) + _GUTTER_TOLERANCE_PX
 # indexer decision path and splitter.  Those values distinguish "the current source replays
 # cleanly" from "the long-lived
 # worker was still executing an older indexer" without trusting the working tree alone.
-ITEM_INDEX_ALGORITHM_ID = "bounded-card-split-v18"
+ITEM_INDEX_ALGORITHM_ID = "bounded-card-split-v19"
 
 
 # =====================================================================================
@@ -1758,6 +1759,8 @@ def _same_pair_marker_exit_bridge(
 
 _SAME_PAIR_MARKER_EXIT_REASON_PREFIX = "v18 mute-card same-pair exit bridge:"
 _SAME_PAIR_MARKER_EXIT_REPAIR_PATH = "v18_mute_card_same_pair_exit"
+_VIDEO_MAJORITY_OVERRIDE_REASON_PREFIX = "v19 mute-card video-majority override:"
+_VIDEO_MAJORITY_OVERRIDE_REPAIR_PATH = "v19_mute_card_video_majority_override"
 
 
 def _video_exit_bridge_delta(
@@ -1788,6 +1791,69 @@ def _video_exit_bridge_delta(
             if 0 < delta <= max_step_px and matched.count(delta) >= 3
         )
     )
+    return candidates[0] if len(candidates) == 1 else None
+
+
+def _video_majority_override_delta(
+    before: FrameSegmentation,
+    after: FrameSegmentation,
+    raw: ShiftEstimate,
+    *,
+    video_block,
+    max_step_px: int = _MAX_STEP_PX,
+) -> int | None:
+    """The exact layout delta that may replace a measured majority cast wholly by a video card.
+
+    A playing video's own pixels can agree with each other on a CONFIDENTLY WRONG shift (live
+    2026-10-12, Ivory: three strips inside the tracked TikTok card voted +438/+437/+436 while the
+    card's bottom edge, its heart, the canonical gutter below it and the next card's top all moved
+    exactly +479).  Frameshift's quorum is blind to where its voters sit; the mute-card track is
+    not, because it already knows which segmented block is the physical video.
+
+    The override exists only when EVERY strip of the raw majority lies inside that tracked block
+    (so the majority is video content, not page content), and one unique alternative is fixed
+    pixel-for-pixel by all three independently segmented landmark kinds (top, bottom, heart) AND
+    by one exactly moving canonical gutter, with at least two matched NCC strips within the
+    agreement tolerance of it, at least one of them wholly outside the video block.  The caller
+    still requires a unique destination card and the complete page fold before it takes effect.
+    """
+    if (
+        video_block is None
+        or raw.status != SHIFT_MEASURED
+        or raw.delta_px is None
+        or raw.agreeing < 1
+    ):
+        return None
+    matched = tuple(
+        s for s in raw.strips if s.state == STRIP_MATCHED and s.delta_px is not None
+    )
+
+    def inside(strip) -> bool:
+        return video_block.y0 <= strip.y0 and strip.y1 <= video_block.y1
+
+    majority = tuple(
+        s for s in matched if abs(s.delta_px - raw.delta_px) <= _AGREEMENT_TOLERANCE_PX
+    )
+    if not majority or not all(inside(s) for s in majority):
+        return None
+    landmarks = _structural_landmarks(before, after, max_step_px=max_step_px)
+    candidates: list[int] = []
+    for candidate in sorted({delta for _kind, delta in landmarks}):
+        if not 0 < candidate <= max_step_px:
+            continue
+        if abs(candidate - raw.delta_px) <= _AGREEMENT_TOLERANCE_PX:
+            continue
+        exact_kinds = {kind for kind, delta in landmarks if delta == candidate}
+        if exact_kinds != {"top", "bottom", "heart"}:
+            continue
+        if not _shared_gutter_witnesses(before, after, candidate):
+            continue
+        voters = tuple(
+            s for s in matched if abs(s.delta_px - candidate) <= _AGREEMENT_TOLERANCE_PX
+        )
+        if len(voters) < 2 or all(inside(s) for s in voters):
+            continue
+        candidates.append(candidate)
     return candidates[0] if len(candidates) == 1 else None
 
 
@@ -1832,8 +1898,13 @@ def _video_track_deltas(
     *,
     extent_tolerance_px: int,
     max_step_px: int = _MAX_STEP_PX,
+    override_blocks: dict[int, object] | None = None,
 ) -> dict[int, int]:
     """Return adjacent pair -> exact delta for uniquely tracked physical video cards.
+
+    ``override_blocks``, when given, receives pair -> the tracked video block for every link
+    that only `_video_majority_override_delta` proposed, so the repair can recheck that grammar
+    against the TRACKED card rather than whichever block happens to hold the raw majority.
 
     A mute hit seeds a card. Between two visible, uniquely contained mute hits, one raw refusal
     (``no_evidence`` or ``no_consensus``) may use their exact direct displacement plus a second
@@ -1913,6 +1984,7 @@ def _video_track_deltas(
             else None
         )
         candidates: list[tuple[object, object, int]] = []
+        override_sources: dict[int, object] = {}
         for before in current:
             deltas = set(
                 _track_candidate_deltas(
@@ -1936,6 +2008,19 @@ def _video_track_deltas(
                 deltas.add(direct_marker_delta)
             if post_exit_delta is not None:
                 deltas.add(post_exit_delta)
+            # A measured majority voted entirely by this tracked video's own pixels is not page
+            # evidence; see `_video_majority_override_delta`.  The anchor-count match below and
+            # the complete page fold still decide whether the alternative is accepted.
+            majority_override = _video_majority_override_delta(
+                before_seg,
+                after_seg,
+                raw,
+                video_block=before,
+                max_step_px=max_step_px,
+            )
+            if majority_override is not None:
+                deltas.add(majority_override)
+                override_sources[majority_override] = before
             if same_pair_exit is not None and before is same_pair_exit[0]:
                 candidates.append((before, same_pair_exit[1], same_pair_exit[2]))
             # A marker disappearing while its predicted origin remains inside the next content
@@ -1991,6 +2076,8 @@ def _video_track_deltas(
         _before, after, delta = candidates[0]
         active.add((pair_index + 1, after))
         links[pair_index] = delta
+        if override_blocks is not None and override_sources.get(delta) is _before:
+            override_blocks[pair_index] = _before
         if before_marker is not None and after_marker is None:
             # The early return above has already proved this control's expected next origin is
             # above the band, not merely missing from a visible place.
@@ -2015,12 +2102,14 @@ def _repair_video_track_shifts(
     `_pitch_relative_max_step` and passes to this function and to `_repair_shifts_from_layout`
     alike.
     """
+    override_blocks: dict[int, object] = {}
     links = _video_track_deltas(
         segmentations,
         shifts,
         markers,
         extent_tolerance_px=extent_tolerance_px,
         max_step_px=max_step_px,
+        override_blocks=override_blocks,
     )
     markers_by_frame = _unique_markers_by_frame(markers, len(segmentations))
     observed_marker_frames = {
@@ -2145,6 +2234,46 @@ def _repair_video_track_shifts(
             if note is None or proposed.delta_px != delta:
                 continue
             repaired[pair_index] = proposed
+        elif (
+            raw.status == SHIFT_MEASURED
+            and raw.delta_px != delta
+            and _video_majority_override_delta(
+                before,
+                after,
+                raw,
+                video_block=override_blocks.get(pair_index),
+                max_step_px=max_step_px,
+            )
+            == delta
+        ):
+            # The track only links this delta after matching the tracked video card itself; this
+            # recheck proves the local grammar again against that SAME tracked block rather than
+            # trusting the link alone.
+            repair_note_label = "v19 mute-card video-majority override"
+            voters = tuple(
+                s.delta_px
+                for s in raw.strips
+                if s.state == STRIP_MATCHED
+                and s.delta_px is not None
+                and abs(s.delta_px - delta) <= _AGREEMENT_TOLERANCE_PX
+            )
+            repaired[pair_index] = replace(
+                raw,
+                status=SHIFT_MEASURED,
+                delta_px=delta,
+                consensus_px=delta,
+                saturated=False,
+                agreeing=len(voters),
+                dissenting=max(0, raw.eligible - len(voters)),
+                confidence=(len(voters) / raw.eligible if raw.eligible else 0.0),
+                reason=(
+                    f"{_VIDEO_MAJORITY_OVERRIDE_REASON_PREFIX} raw measured "
+                    f"{raw.delta_px:+d}px was voted only by strips inside the tracked video "
+                    f"card; its exact top, bottom, heart and canonical gutter all move "
+                    f"+{delta}px with {len(voters)} NCC strip(s), at least one outside the "
+                    "video; raw strips retained in layout_repaired_shifts"
+                ),
+            )
         elif raw.status == SHIFT_MEASURED and raw.delta_px != delta:
             proposed, note = _measured_layout_bridge(
                 pair_index,
@@ -3707,6 +3836,36 @@ def _split_on_bounded_cards(
     return subgroups, notes
 
 
+@overload
+def _assemble(
+    observations: Sequence[BlockObservation],
+    *,
+    at_scroll_top: bool,
+    card_x: tuple[int, int],
+    extent_tolerance_px: int,
+    min_item_gap_px: int,
+    band_y0: int,
+    include_notes: Literal[False] = ...,
+    scroll_top_signal_confirmed: bool = False,
+    page_coverage: Sequence[tuple[int, int]] = (),
+) -> tuple[tuple[IndexedBlock, ...], tuple[str, ...]]: ...
+
+
+@overload
+def _assemble(
+    observations: Sequence[BlockObservation],
+    *,
+    at_scroll_top: bool,
+    card_x: tuple[int, int],
+    extent_tolerance_px: int,
+    min_item_gap_px: int,
+    band_y0: int,
+    include_notes: Literal[True],
+    scroll_top_signal_confirmed: bool = False,
+    page_coverage: Sequence[tuple[int, int]] = (),
+) -> tuple[tuple[IndexedBlock, ...], tuple[str, ...], tuple[str, ...]]: ...
+
+
 def _assemble(
     observations: Sequence[BlockObservation],
     *,
@@ -4416,6 +4575,13 @@ def build_item_index(
                     accepted_repair_path == "v12_mute_card_track"
                     and shifts[pair_index].reason.startswith(
                         _SAME_PAIR_MARKER_EXIT_REASON_PREFIX
+                    )
+                )
+                else _VIDEO_MAJORITY_OVERRIDE_REPAIR_PATH
+                if (
+                    accepted_repair_path == "v12_mute_card_track"
+                    and shifts[pair_index].reason.startswith(
+                        _VIDEO_MAJORITY_OVERRIDE_REASON_PREFIX
                     )
                 )
                 else accepted_repair_path or "legacy_layout_grammar"

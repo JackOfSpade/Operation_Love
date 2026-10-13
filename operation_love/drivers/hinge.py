@@ -9520,6 +9520,15 @@ class AndroidDriver(DatingAppDriver):
                 keep_after=True,
             )
             return None
+        # THE ANCHOR TAKES THE DIRECT MEASUREMENT WHEN THERE IS ONE (found+fixed 2026-10-12, run
+        # 977a1a7c4c5e). The gate above only asks whether chain and direct agree to within one
+        # minimum read step (~219px); navigation's anchor check downstream is ~32px. The chain
+        # is the SUM of every leg's estimate (17 legs there, one of which measured 491px for a
+        # 456px request), while the direct pair is a single quorate measurement of the very
+        # displacement the anchor states. Recording the chain's 0 while the direct pair said -35
+        # handed navigation an anchor 35px off, and it refused the like 3px past its 32px bound.
+        # The chain's sum is used only when the direct pair cannot be measured at all.
+        anchor_shift_px = int(verified) if verified is not None else int(terminal_shift_px)
         self._dbg_still_photo_return_chain(
             "returned",
             reason=(
@@ -9531,11 +9540,12 @@ class AndroidDriver(DatingAppDriver):
             initial_terminal_shift_px=initial_total,
             terminal_shift_px=terminal_shift_px,
             direct_shift_px=verified,
+            anchor_shift_px=anchor_shift_px,
             drift_bound_px=drift_bound,
             legs=legs,
         )
         return _MeasuredItemAnchor(
-            frame, entry_anchor.page_shift_px + int(terminal_shift_px)
+            frame, entry_anchor.page_shift_px + anchor_shift_px
         )
 
     def _index_captured_items(self, photos: list[bytes], should_stop=None) -> str:

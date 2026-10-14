@@ -744,14 +744,89 @@ Worker/hub/store or make a real profile request. After installing the measured c
   artifact remains evidence for that build only. It does not authorize the live 10.4.0 build.
 
 For a missing, stale, or runtime-rejected calibration, `stop_kind=targeting_calibration` is
-expected safety behaviour: the Hub renders **"targeting calibration must be renewed"**, **AUTO
-stops before any opener request or targeted gesture**, and **Training stops before it can prepare
-a targeted opener**. No action or label is recorded. Recapture and validate schema-v3 calibration
-and still-photo evidence (or explicitly re-accept the assumption) for the live app build/device;
-before enabling AUTO, also collect that calibration's production release evidence. This is not
-permission to use a legacy anchored opener or a fixed first-item fallback. `stop_kind=targeting`
-is different: it is reserved for a failure to attach an opener that already exists to its selected
-item.
+expected safety behaviour: the Hub renders **"Hinge update review needed"**, **AUTO stops before
+any opener request or targeted gesture**, and **Training stops before it can prepare a targeted
+opener**. No action or label is recorded. Open the report in Codex or Claude Code for an update
+review. The assistant checks the installed build and frame size, searches the available official
+release notes, and states when those notes are too generic to establish layout compatibility.
+Then it supervises two real decisions in order: a Pass on a profile the owner chooses to
+Dislike, followed by a real Send Like on the next profile. Review a fresh frame before each
+touch, verify that the deck advances after Pass, verify the selected photo and inline composer
+before Send Like, and verify Hinge's sent-Like confirmation afterward. If a Rose upsell appears,
+choose only **Send Like anyway**. A Like is permanent, so the owner must authorize that action
+for the review. Stop and fix any matcher or targeting error; the 10.8.0 review found that the
+filled Like glyph had changed to a nested heart. The assistant records the exact build, device,
+private screenshots/action logs, and any refusal. Do not edit the old evidence's version strings
+to make it appear newly measured.
+
+For a guarded calibration capture that succeeds on the new build, the deeper photo-1-only
+path below replays the original identity and inline-item bounds. It can take longer and may
+refuse before a decision when the index is incomplete. Keep config bytes unchanged through the
+capture and independent review; use fresh private output directories:
+
+```bash
+python -m tools.hinge_calibrate capture --split calibration --profiles 1 --hybrid-review \
+  --target-items photo-1-only \
+  --confirmation I_ACCEPT_EXTERNAL_REVIEWED_AUTOMATION_RISK \
+  --reviewer-model <reviewer> --reviewer-process <review-process> \
+  --out ops/calibration/<update>-dislike
+python -m tools.hinge_calibrate capture --split heldout --profiles 1 --hybrid-review \
+  --target-items photo-1-only --send-like \
+  --confirmation I_ACCEPT_EXTERNAL_REVIEWED_AUTOMATION_RISK \
+  --send-like-confirmation I_ACCEPT_REAL_PRIORITY_LIKE_SEND_RISK \
+  --reviewer-model <reviewer> --reviewer-process <review-process> \
+  --out ops/calibration/<update>-like
+python -m tools.hinge_calibration_review \
+  ops/calibration/<update>-dislike ops/calibration/<update>-like --config config.yaml \
+  --out ops/calibration/<update>-independent-review.json
+python -m tools.hinge_version_compatibility \
+  --dislike ops/calibration/<update>-dislike --like ops/calibration/<update>-like \
+  --independent-review ops/calibration/<update>-independent-review.json \
+  --release-notes-url <official-source-url> \
+  --release-notes-summary <what-the-source-actually-says> \
+  --confirmation I_ACCEPT_TWO_DECISION_UNMEASURED_UPDATE_COMPATIBILITY \
+  --out ops/calibration/<update>-compatibility.json
+```
+
+When the assistant instead performs the two actions directly under frame-bound review, keep
+`dislike_before.png`, `dislike_after.png`, `dislike.json`, `like_before.png`,
+`like_composer.png`, `send_before.png`, `send_after.png`, `upsell_before.png`,
+`upsell_after.png`, `like.json`, and `upsell.json` together in a private directory. The JSON
+records must contain the SHA-256 links between screenshots and actions. The supervised producer
+checks those links, OCR profile names and Hinge's sent-Like confirmation, the live package
+version, the fixed Like matcher on both deck frames, and the original source evidence hashes:
+
+```bash
+python -m tools.hinge_version_compatibility \
+  --supervised-dir ops/calibration/<update>-two-pass \
+  --dislike-profile <name-of-owner-selected-profile> \
+  --like-profile <name-of-next-profile> \
+  --release-notes-url <official-source-url> \
+  --release-notes-summary <what-the-source-actually-says> \
+  --confirmation I_ACCEPT_TWO_DECISION_UNMEASURED_UPDATE_COMPATIBILITY \
+  --out ops/calibration/<update>-compatibility.json
+python -m tools.hinge_version_compatibility \
+  --private-artifact ops/calibration/<update>-compatibility.json \
+  --out ops/reviews/<update>-compatibility-receipt.json
+```
+
+The second command validates the full private review once more and emits a redacted, portable
+receipt. Commit that receipt with the code and install its printed digest-bound
+`version_compatibility_review` mapping under `apps.hinge`. Keep profile screenshots in the
+ignored private directory. The mapping permits **Training on exactly the
+reviewed new version and existing frame size**; AUTO remains blocked. The supervised UI path is
+a qualitative check and does not remeasure the old numeric targeting bounds. Training keeps its
+item, identity, and composer stop gates, so an unanticipated targeting error stops the run for
+repair. A later version update needs its own two-decision review.
+
+This review is a practical compatibility check, not a statistical video false-accept bound. The
+old schema-v3 calibration and still-photo licence keep their original build provenance. The
+review artifact explicitly records video false-accept risk as **unmeasured** on the new build.
+If a measured video bound is required, collect it through the still-photo campaign above; two
+profiles cannot establish it. Before enabling AUTO, also collect production release evidence.
+This procedure never licenses a legacy anchored opener or a fixed first-item fallback.
+`stop_kind=targeting` is different: it is reserved for a failure to attach an opener that already
+exists to its selected item.
 
 > These are the items deferred to "do live, at the end." Everything they plug
 > into (capture, embed, store, ranker, openers, supervisor) already works and is

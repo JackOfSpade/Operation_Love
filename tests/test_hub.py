@@ -3851,7 +3851,7 @@ def test_render_run_status_names_pre_opener_targeting_calibration_stop():
     }
 
     html = _run_node(_runstatus_script(snap))["html"]
-    assert "targeting calibration must be renewed" in html
+    assert "Hinge update review needed" in html
     assert reason in html
     assert "could not prepare a safe opener" not in html
     assert "could not attach the generated opener" not in html

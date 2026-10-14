@@ -2339,7 +2339,8 @@ def test_training_stale_hinge_calibration_stops_with_recalibration_action(capsys
     app = status.app_view("hinge")["app"]
     assert app["state"] == "stopped"
     assert app["stop_kind"] == "targeting_calibration"
-    assert "Capture and validate a fresh targeting calibration" in app["stop_reason"]
+    assert "supervised Hinge update review" in app["stop_reason"]
+    assert "video false-accept rate" in app["stop_reason"]
     assert mismatch in app["stop_reason"]
     assert (
         terminal_log.count("Hinge: stopped — targeting calibration must be renewed:")
@@ -4115,7 +4116,7 @@ def test_auto_stale_hinge_calibration_stops_before_opener_or_like(capsys):
     app = status.app_view("hinge")["app"]
     assert app["state"] == "stopped"
     assert app["stop_kind"] == "targeting_calibration"
-    assert "fresh targeting calibration" in app["stop_reason"]
+    assert "supervised Hinge update review" in app["stop_reason"]
     assert mismatch in app["stop_reason"]
     assert (
         terminal_log.count("Hinge: stopped — targeting calibration must be renewed:")

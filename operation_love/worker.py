@@ -651,8 +651,11 @@ class Worker(threading.Thread):
         )
         return (
             f"{mode} cannot prepare a verifiable targeted opener because the live Hinge "
-            "session has no valid schema-v3 targeting calibration. Capture and validate a "
-            f"fresh targeting calibration for the live Hinge build/frame before resuming "
+            "session has no valid schema-v3 targeting calibration. Open this stop report in "
+            "Codex or Claude Code for a supervised Hinge update review: check the available "
+            "release notes, then supervise a Dislike and a Like on two real profiles using "
+            "the update compatibility workflow before deciding whether the old implementation "
+            "still works. These checks do not measure the video false-accept rate or authorize "
             f"{mode}. Details: {details}. {outcome}"
         )
 

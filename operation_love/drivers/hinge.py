@@ -2873,6 +2873,7 @@ class AndroidDriver(DatingAppDriver):
                 content_band=self.content_band,
             )
         )
+        self._targeting_compatible_version = getattr(cfg, "hinge_compatible_version", None)
         self._targeting_runtime_version_name: str | None = None
         self._targeting_runtime_frame_size: tuple[int, int] | None = None
         self._targeting_binding_fetched = False
@@ -3960,6 +3961,19 @@ class AndroidDriver(DatingAppDriver):
         this app's spec declares no template for that role at all — _match_glyph's own
         None-template guard then makes every caller here treat it as a clean 'not found'."""
         name = self.spec.templates.get(role)
+        # Hinge 10.8.0 changed the filled like glyph to a nested-heart outline. Keep the
+        # 10.7.0 template for its source calibration; newer builds start with the latest
+        # known glyph and must pass their own supervised update review before Training is
+        # licensed. If a later build changes it again, deck confirmation fails closed.
+        live_version = getattr(self, "_targeting_runtime_version_name", None)
+        version_match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", live_version or "")
+        if (
+            role == "like"
+            and self.spec.app == "hinge"
+            and version_match is not None
+            and tuple(map(int, version_match.groups())) >= (10, 8, 0)
+        ):
+            name = "hinge_like_button_10_8.png"
         return _load_template(name) if name else None
 
     def _locate_button(self, which: str):
@@ -13535,10 +13549,11 @@ class AndroidDriver(DatingAppDriver):
         size = self._targeting_runtime_frame_size
         if self._adb is None and version is None and size is None:
             return "the live app build/frame geometry has not been established for this session"
-        if (
-            version != calibration.hinge_version_name
-            or size != calibration.frame_size_px
-        ):
+        versions = {calibration.hinge_version_name}
+        compatible_version = getattr(self, "_targeting_compatible_version", None)
+        if isinstance(compatible_version, str):
+            versions.add(compatible_version)
+        if version not in versions or size != calibration.frame_size_px:
             self.targeting_calibration = None
             self._targeting_calibration_unavailable = (
                 "the live app build/frame geometry does not exactly match schema-v3 "

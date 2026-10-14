@@ -7877,9 +7877,10 @@ def test_targeting_readiness_overrides_config_ready_when_live_calibration_is_rej
     assert "runtime calibration: REJECTED in the latest hub snapshot" in md
     assert "targeting_calibration" in md
     assert "'10.1.0'/(1080, 2400) != '10.0.1'/(1080, 2400)" in md
-    assert "next step: recapture and validate a schema-v3 targeting calibration" in md
-    assert "explicitly re-accept the unmeasured still-photo assumption" in md
-    assert "for that exact build/device" in md
+    assert "next step: open this report in Codex or Claude Code" in md
+    assert "supervise a Dislike and a Like on two real profiles" in md
+    assert "does not remeasure schema-v3 targeting bounds" in md
+    assert "live build/device" in md
     assert "no targeting setup action remains" not in md
 
 

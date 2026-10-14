@@ -1,0 +1,30 @@
+{
+  "acceptance": "I_ACCEPT_TWO_DECISION_UNMEASURED_UPDATE_COMPATIBILITY",
+  "decision_order": [
+    "dislike",
+    "like"
+  ],
+  "device": "33111JEHN04475",
+  "evidence_sha256": "09000e15fe4744d4de6eb5d8f10eeef3c68823c38bb41425e4f9535d44152cca",
+  "frame_size_px": [
+    1080,
+    2400
+  ],
+  "human_ground_truth": false,
+  "kind": "hinge_two_decision_redacted_compatibility_receipt",
+  "like_sent_confirmed": true,
+  "like_template_path": "operation_love/drivers/assets/hinge_like_button_10_8.png",
+  "like_template_sha256": "4a3a351653fb6f35983f6a477dfa5291ecd9acb86db854fd23c17dff96ddf8a5",
+  "private_artifact_sha256": "fa31dab8ae3396b998cb0d568ce7cf92e476c7435a867899f0e667a63688bdd1",
+  "release_notes_summary": "Google Play lists an October 9, 2026 update with generic performance improvements; no 10.8.0 layout-specific notes were published.",
+  "release_notes_url": "https://play.google.com/store/apps/details?hl=en-US&id=co.hinge.app",
+  "reviewed_at": "2026-10-14T16:37:26.323317+00:00",
+  "schema_version": 3,
+  "source_build": "10.7.0",
+  "source_calibration_sha256": "5a1ef7790180eeb82e382e798faa2ad1f64b3526bfc3184f65632b1d05bb576c",
+  "source_licence_key": "still_photo_assumption_acceptance",
+  "source_licence_sha256": "86b64415c2fbc746a97a55c95bf96954044d75bedcedb2b3cc8bc4a60079f227",
+  "status": "training_only",
+  "target_build": "10.8.0",
+  "video_false_accept_rate": "unmeasured"
+}

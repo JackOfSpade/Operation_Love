@@ -209,6 +209,9 @@ class Config:
     # Defaulted (unlike its siblings) so a Config built by hand -- tests, tools -- predates
     # nothing: omitting the section is the same as the shipped defaults.
     auto_review: AutoReviewCfg = field(default_factory=AutoReviewCfg)
+    # Set only by validate() after digest-bound, two-decision Hinge update evidence passes.
+    # Driver instances built from an unvalidated Config cannot enable a version override.
+    hinge_compatible_version: str | None = field(default=None, init=False, repr=False)
 
 
 _TOP_LEVEL_KEYS = {
@@ -2277,6 +2280,7 @@ def _validate(cfg: Config) -> None:
     # for an unrelated reason (or one that simply omits the evidence key) can never inherit a
     # licence installed by an earlier validate() in this process.
     clear_installed_still_photo_bound()
+    cfg.hinge_compatible_version = None
     _validate_config_shape(cfg)
     if not cfg.enabled_apps:
         raise ValueError("Config: enabled_apps is empty")
@@ -2323,6 +2327,18 @@ def _validate(cfg: Config) -> None:
     # configures both.
     _validate_hinge_still_photo_readiness(cfg)
     _validate_targeting_calibration(cfg)
+    from .hinge_compatibility import validate_review
+
+    hinge_options = (cfg.apps or {}).get("hinge", {}) or {}
+    # The review is a Training-only extension.  In AUTO, leave it inactive so the existing
+    # production-release gate reports the precise missing release evidence (and so unrelated
+    # app readiness probes do not fail on Hinge's optional Training mapping).
+    if hinge_options.get("mode", cfg.mode) == "training":
+        cfg.hinge_compatible_version = validate_review(
+            hinge_options,
+            root=Path.cwd().resolve(),
+            mode="training",
+        )
     _validate_hinge_ai_observe_controller(cfg)
     _reject_retired_auto_trial(cfg)
     _validate_hinge_auto_release_gate(cfg)

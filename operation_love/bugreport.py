@@ -680,6 +680,25 @@ def _targeting_readiness_md(config_path: str, hub_state=None) -> str:
             "or offered"
         )
     lines.append("- `apps.hinge.targeting_calibration`: " + calibration_line)
+    if "version_compatibility_review" in app:
+        try:
+            from .hinge_compatibility import validate_review
+
+            reviewed_version = validate_review(
+                app,
+                root=Path.cwd().resolve(),
+                mode=app.get("mode", raw.get("mode", "training")),
+            )
+            lines.append(
+                "- Hinge update compatibility: reviewed for live build "
+                f"{_sanitize_inline(str(reviewed_version))} in Training only; two real "
+                "decisions, video false-accept rate unmeasured"
+            )
+        except Exception as exc:  # noqa: BLE001 -- malformed evidence remains reportable
+            lines.append(
+                "- Hinge update compatibility: REJECTED: "
+                + _sanitize_inline(str(exc))
+            )
     blocker = tp.hinge_targeting_unavailable_reason()
     lines.append("- targeting-policy blocker: " + (blocker if blocker else "none"))
     runtime_rejection = _runtime_targeting_calibration_rejection(hub_state)
@@ -690,10 +709,12 @@ def _targeting_readiness_md(config_path: str, hub_state=None) -> str:
             + "`"
         )
         lines.append(
-            "- next step: recapture and validate a schema-v3 targeting calibration for "
-            "the live Hinge build/frame geometry; also recapture measured still-photo "
-            "evidence or explicitly re-accept the unmeasured still-photo assumption "
-            "for that exact build/device, then resume training"
+            "- next step: open this report in Codex or Claude Code for a supervised Hinge "
+            "update review. Check the available release notes, then supervise a Dislike and "
+            "a Like on two real profiles with the supervised compatibility workflow. That review "
+            "does not remeasure schema-v3 targeting bounds or establish a video false-accept bound; "
+            "keep Training stopped until the required evidence is validated for the live "
+            "build/device"
         )
     elif blocker is not None and licence_keys:
         # Do not let an unvalidated reporting process contradict the config two lines above.

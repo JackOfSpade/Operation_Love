@@ -1212,7 +1212,7 @@ function renderRunStatus(snap){
     if(state === 'stopped' && a.last_decision === 'defer')
       return box('idle', `${a.app}: stopped — ranker not ready (cold-start)`, 'run training mode first');
     if(state === 'stopped' && a.stop_kind === 'targeting_calibration')
-      return box('idle', `${a.app}: stopped — targeting calibration must be renewed`, a.stop_reason);
+      return box('idle', `${a.app}: stopped — Hinge update review needed`, a.stop_reason);
     if(state === 'stopped' && a.stop_kind === 'targeting')
       return box('idle', `${a.app}: stopped — could not attach the generated opener to its selected item`, a.stop_reason);
     if(state === 'stopped' && a.stop_kind === 'opener')

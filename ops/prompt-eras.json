@@ -15,8 +15,8 @@
     "operation_love/opener/opener.py"
   ],
   "generated_from": {
-    "total_revisions": 55,
-    "evaluated_revisions": 31,
+    "total_revisions": 57,
+    "evaluated_revisions": 33,
     "unevaluable_revisions": 24
   },
   "eras": [
@@ -514,17 +514,18 @@
       "first_commit": "9abf49bdb5f5a6b7a4b2e597b17b6232ddb77866",
       "first_date": "2026-09-14T17:23:04-04:00",
       "first_subject": "Teach the opener who already knows, and renew Hinge targeting for 10.3.0",
-      "last_commit": "31eca21bbe5f369c508432d2f0616710c7c62e88",
-      "last_date": "2026-10-12T21:56:24-04:00",
-      "last_subject": "Anchor return chains on the direct remeasure; renew Hinge 10.7.0 calibration",
-      "commit_count": 6,
+      "last_commit": "6c585247929083577c984b4a95bdb92b89b03fdf",
+      "last_date": "2026-10-14T13:18:32-04:00",
+      "last_subject": "Support supervised Hinge update compatibility on 10.8.0",
+      "commit_count": 7,
       "commits": [
         "9abf49bdb5f5a6b7a4b2e597b17b6232ddb77866",
         "64e5d6b65e47beac9b0f5b1b133b6f85ca1cd60b",
         "703b0775392f1ca68af7165aaa705c9754e23b22",
         "d43e4d02d36bec55d58a33b90e969c92a985a80d",
         "a557e0b64bf8fafe2897cc7d69819e9a462112e1",
-        "31eca21bbe5f369c508432d2f0616710c7c62e88"
+        "31eca21bbe5f369c508432d2f0616710c7c62e88",
+        "6c585247929083577c984b4a95bdb92b89b03fdf"
       ],
       "rules": [
         "SHARED CONTEXT RULE",
@@ -561,6 +562,61 @@
         "VARY THE OPENING",
         "VARY THE SHAPE",
         "GUESS THE WORLD, NOT HER IDENTITY",
+        "NEVER INVENT THE SENDER",
+        "PICK THE ITEM YOURSELF",
+        "APPLICATION RULE",
+        "HARD RULE"
+      ]
+    },
+    {
+      "prompt_sha256": "f637f4324e3d7e7b4bfea5825efd0fd70742cf6e4ad84bb5cefedde191a0c8c7",
+      "label": "2026-10-15 f9f87834: +PLACE PRECISION CAP",
+      "first_commit": "f9f87834a071370508e13c82dd4da2ad7e2ee42c",
+      "first_date": "2026-10-15T05:54:58-04:00",
+      "first_subject": "Cap guessed-place precision: state/province in US/Canada, country elsewhere",
+      "last_commit": "f9f87834a071370508e13c82dd4da2ad7e2ee42c",
+      "last_date": "2026-10-15T05:54:58-04:00",
+      "last_subject": "Cap guessed-place precision: state/province in US/Canada, country elsewhere",
+      "commit_count": 1,
+      "commits": [
+        "f9f87834a071370508e13c82dd4da2ad7e2ee42c"
+      ],
+      "rules": [
+        "SHARED CONTEXT RULE",
+        "SHE IS THE ONE WHO KNOWS",
+        "HEDGE THE CLAIM, NEVER YOURSELF",
+        "MINIMUM SUFFICIENT REFERENCE",
+        "PRIMARY ITEM RULE",
+        "PHOTO HEADER RULE",
+        "PROFILE TEXT FACT CHECK",
+        "CONVERSATIONAL VALUE RULE",
+        "CLAIMS ONLY WHEN NATURAL",
+        "MINIMUM INVENTION",
+        "TRACEABILITY TEST",
+        "INFORMATION GAIN TEST",
+        "PLAYFUL HYPERBOLE",
+        "SAFETY AND DIGNITY",
+        "SETUP PAYOFF CONTINUITY",
+        "QUESTION COHERENCE",
+        "CASUAL OR PUNCTUATION",
+        "SPOKEN REGISTER",
+        "IDIOM FIT",
+        "SAY IT ONCE",
+        "REFERENT CLARITY",
+        "MODIFIER CLARITY",
+        "ROLE CONSISTENCY",
+        "REPLY COMFORT",
+        "POSITIVE SOCIAL FRAMING",
+        "RECIPROCITY BEFORE FUTURE",
+        "CONFIRMATION BOUNDARY",
+        "VISUAL LOCATION TURN BOUNDARY",
+        "COMPLIMENT AS REMARK",
+        "NO GRADING",
+        "SUBSTITUTION TEST",
+        "VARY THE OPENING",
+        "VARY THE SHAPE",
+        "GUESS THE WORLD, NOT HER IDENTITY",
+        "PLACE PRECISION CAP",
         "NEVER INVENT THE SENDER",
         "PICK THE ITEM YOURSELF",
         "APPLICATION RULE",
@@ -764,8 +820,8 @@
   ],
   "working_tree": {
     "provisional": true,
-    "prompt_sha256": "1535b126a5a874353fbce8f6aedfa7d33a960f02c34680178e122e5af7213d49",
-    "label": "UNCOMMITTED WORKING TREE -- PROVISIONAL, not a shipped era (identical to already-known era: '2026-09-14 9abf49bd: +SHE IS THE ONE WHO KNOWS')",
+    "prompt_sha256": "f637f4324e3d7e7b4bfea5825efd0fd70742cf6e4ad84bb5cefedde191a0c8c7",
+    "label": "UNCOMMITTED WORKING TREE -- PROVISIONAL, not a shipped era (identical to already-known era: '2026-10-15 f9f87834: +PLACE PRECISION CAP')",
     "commit": null,
     "rules": [
       "SHARED CONTEXT RULE",
@@ -802,13 +858,14 @@
       "VARY THE OPENING",
       "VARY THE SHAPE",
       "GUESS THE WORLD, NOT HER IDENTITY",
+      "PLACE PRECISION CAP",
       "NEVER INVENT THE SENDER",
       "PICK THE ITEM YOURSELF",
       "APPLICATION RULE",
       "HARD RULE"
     ],
     "reasons": [],
-    "matches_known_committed_era": "1535b126a5a874353fbce8f6aedfa7d33a960f02c34680178e122e5af7213d49",
+    "matches_known_committed_era": "f637f4324e3d7e7b4bfea5825efd0fd70742cf6e4ad84bb5cefedde191a0c8c7",
     "no_metrics_recorded_here": true,
     "note": "Computed from the files on disk right now (Path.read_text), not from git history -- there is no commit behind this digest, and it can change on the very next edit or `git commit`. Regenerate this registry (python tools/backfill_prompt_eras.py) to refresh it. This registry never records measured metrics for ANY entry, committed or provisional -- see tools/opener_corpus_report.py's --rule/--eras for whatever has actually been measured against a real corpus; a rule appearing here is a fact about what was ON THE WIRE, never a claim that it was measured."
   }

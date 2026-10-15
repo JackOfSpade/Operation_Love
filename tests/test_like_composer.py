@@ -114,7 +114,7 @@ def _scrolled_priority_like_composer() -> bytes:
     canvas = np.full((_H, _W), _BG, dtype=np.uint8)
     canvas[comment.y0 : comment.y0 + 2, comment.x0 : comment.x1] = 222
     canvas[comment.y1 - 2 : comment.y1, comment.x0 : comment.x1] = 222
-    canvas[send.y0 : send.y1, send.x0 : send.x1] = 228
+    canvas[send.y0 : send.y1, send.x0 : send.x1] = 26
     _paint_glyph(canvas, center=confirm)
     return _png(canvas, color=False)
 
@@ -307,16 +307,16 @@ def test_rejects_input_and_cta_when_their_vertical_topology_is_reversed():
         locate_inline_composer(_png(canvas, color=True), _TEMPLATE)
 
 
-def test_rejects_two_equally_plausible_send_like_glyphs_in_the_cta():
-    """A detector cannot choose which copied confirmation text licenses input."""
+def test_rejects_two_copied_send_like_glyphs_across_the_cta():
+    """Copied labels extending outside the button cannot license input."""
     canvas = np.full((_H, _W), _BG, dtype=np.uint8)
     canvas[_COMMENT.y0 : _COMMENT.y0 + 2, _COMMENT.x0 : _COMMENT.x1] = 222
     canvas[_COMMENT.y1 - 2 : _COMMENT.y1, _COMMENT.x0 : _COMMENT.x1] = 222
-    canvas[_SEND.y0 : _SEND.y1, _SEND.x0 : _SEND.x1] = 228
+    canvas[_SEND.y0 : _SEND.y1, _SEND.x0 : _SEND.x1] = 26
     _paint_glyph(canvas, center=(520, 1856))
     _paint_glyph(canvas, center=(860, 1856))
 
-    with pytest.raises(ComposerDetectionError, match="ambiguous"):
+    with pytest.raises(ComposerDetectionError, match="ambiguous|CTA is not visibly filled"):
         locate_inline_composer(_png(canvas, color=False), _TEMPLATE)
 
 
@@ -345,6 +345,21 @@ def test_keyboard_open_current_phone_layout_returns_its_shifted_actual_geometry(
     assert surface.send_rect == _KEYBOARD_SEND
     assert surface.confirm_point == _KEYBOARD_CONFIRM_CENTER
     assert surface.send_rect.contains(*surface.confirm_point)
+
+
+def test_hinge_10_8_dark_priority_cta_with_keyboard_open():
+    """The white label must not split the dark filled button into false fragments."""
+    canvas = np.full((_H, _W), _BG, dtype=np.uint8)
+    canvas[1124:1126, 95:985] = 222
+    canvas[1300:1302, 95:985] = 222
+    canvas[1334:1443, 390:985] = 26
+    _paint_glyph(canvas, center=(699, 1384))
+
+    surface = locate_inline_composer(_png(canvas, color=True), _TEMPLATE)
+
+    assert surface.comment_rect == Rect(95, 1124, 985, 1302)
+    assert surface.send_rect == Rect(390, 1334, 985, 1443)
+    assert surface.confirm_point == (699, 1384)
 
 
 def test_keyboard_open_composer_ignores_a_selected_photo_edge_above_its_input():

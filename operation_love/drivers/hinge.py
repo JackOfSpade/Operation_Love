@@ -1459,8 +1459,8 @@ HINGE_SPEC = AndroidAppSpec(
         # reference for what it actually is -- do not repurpose it for "like".
         "like": "hinge_like_button.png",
         "pass": "hinge_pass_x.png",
-        # Filename predates Hinge 10.0.1; the pixels are now the "Send Priority Like" glyph this
-        # HingeX-subscribed account renders (recropped 2026-08-21). If the literal on-screen text
+        # Filename predates Hinge 10.0.1; the pixels are now the white "Send Priority Like"
+        # glyph on Hinge 10.8.0's dark CTA (recropped 2026-10-14). If the literal on-screen text
         # ever changes again (e.g. subscription lapses back to plain "Send Like"), detection fails
         # closed rather than silently matching the wrong button -- recrop, don't rename mid-lineage.
         "confirm": "hinge_send_like.png",  # inline composer's send-confirmation glyph
@@ -3968,8 +3968,7 @@ class AndroidDriver(DatingAppDriver):
         live_version = getattr(self, "_targeting_runtime_version_name", None)
         version_match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", live_version or "")
         if (
-            role == "like"
-            and self.spec.app == "hinge"
+            name == "hinge_like_button.png"
             and version_match is not None
             and tuple(map(int, version_match.groups())) >= (10, 8, 0)
         ):

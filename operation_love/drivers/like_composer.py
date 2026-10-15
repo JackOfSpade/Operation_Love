@@ -179,7 +179,11 @@ def _without_thin_bridges(mask, cv2, np):
     The span is forced odd because OpenCV anchors an even kernel half a pixel
     off centre, which translates the result instead of only eroding it.
     """
-    span = max(3, round(mask.shape[1] * 0.30)) | 1
+    # The 10.8 dark CTA has a white label that divides its middle into two
+    # roughly 150px black side rails. A wider opening erased both rails. The
+    # measured selection handle is 56px, so a 10% screen-width kernel removes
+    # that bridge while retaining the actual button outline.
+    span = max(3, round(mask.shape[1] * 0.10)) | 1
     return cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((1, span), np.uint8))
 
 

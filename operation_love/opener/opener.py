@@ -168,7 +168,9 @@ _SCHEMA = {
             "that only makes sense if it is true. If a location is inferred from "
             "an image rather than stated in her profile text, the location guess "
             "must be the whole conversational move: end after it or ask only "
-            "whether that location itself is right. She was in the world the item "
+            "whether that location itself is right, and confirm the guess obeys PLACE "
+            "PRECISION CAP: no finer than the state or province in the United States "
+            "or Canada, no finer than the country anywhere else. She was in the world the item "
             "shows and you were not, so confirm that the opener states any "
             "inference about it as your own uncertainty, never as an appearance "
             "she is asked to agree with, and never closes it with a tag whose "
@@ -251,7 +253,9 @@ _SCHEMA = {
             "or question may assume it is correct. An image-derived location guess "
             "is the only conversational move before she replies: end after it or "
             "ask only whether the location itself is right, worded as your own "
-            "guess rather than as an appearance she is asked to agree with. Her "
+            "guess rather than as an appearance she is asked to agree with, and "
+            "named no more precisely than PLACE PRECISION CAP allows: the state or "
+            "province in the United States or Canada, the country anywhere else. Her "
             "settling it is the payoff either way and neither ending is the "
             "default; do not ask about an activity, reason, preference, feeling, "
             "experience, or consequence there before she confirms it. "
@@ -873,9 +877,15 @@ _SYSTEM = (
     "repeats message after message is a template even when the words change. "
     "Never apologise for writing, never ask permission, and "
     "never call your own question dumb. GUESS "
-    "THE WORLD, NOT HER IDENTITY: name a country, a region, or a park the way a well travelled "
-    "friend would, never a street, a neighbourhood, a hotel, a specific venue, or anywhere that "
-    "could be where she lives, and never guess her employer, her school, or her age, or identify "
+    "THE WORLD, NOT HER IDENTITY: keep any place you guess coarse, the way a well travelled "
+    "friend would. PLACE PRECISION CAP: a place you guess in the United States or Canada may be "
+    "named no more precisely than its state or province; a place you guess anywhere else may be "
+    "named no more precisely than its country, never a city, town, region, island, or landmark "
+    "inside it. When you cannot tell whether it is in the United States or Canada, use the "
+    "country cap. A broader area spanning several countries, states, or provinces is fine, and a "
+    "place her profile text states may be named as she wrote it. Never a city, a park, a "
+    "landmark, a street, a neighbourhood, a hotel, a specific venue, or anywhere that could be "
+    "where she lives, and never guess her employer, her school, or her age, or identify "
     "anyone else in the photo. When a place comes from recognizing the image rather than from her "
     "profile text, present it only as an inference and obey VISUAL LOCATION TURN BOUNDARY: end "
     "after the guess or ask only whether the location itself is right. Do not build on an inferred "
@@ -1302,7 +1312,11 @@ _LOCATION_CONTEXT_TRAVEL_RE = re.compile(
 # prompt, which produced "My guess is Rome. Did I get the city right?" -- a correct opener under
 # every rule on wire, rejected by this table. Deliberately world-scale nouns only: street,
 # neighbourhood, hotel and venue stay out, because GUESS THE WORLD, NOT HER IDENTITY forbids
-# guessing them at all and this table should not bless confirming one. Widening is safe in this
+# guessing them at all and this table should not bless confirming one. City, town, park and
+# the other sub-country nouns STAY in although PLACE PRECISION CAP (2026-10-15) now forbids
+# guessing at that scale: this table judges only the TURN shape (is the second beat a pure
+# confirmation?), and removing a noun here would reject a precision violation under the wrong
+# reason -- as an unconfirmed follow-up -- while every other phrasing of it passed. Widening is safe in this
 # direction because every pattern here is a full match anchored end to end, so no experience or
 # activity question can be smuggled into the frame.
 _LOCATION_CONFIRMATION_NOUN = (

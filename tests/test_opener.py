@@ -1431,6 +1431,58 @@ def test_no_confirmation_shape_hardcodes_its_own_determiner_or_place_noun():
                     )
 
 
+def _flat(text: str) -> str:
+    return " ".join(text.lower().split())
+
+
+def _on_wire_location_copies() -> dict[str, str]:
+    """Every on-wire copy that tells the model how to word a location guess. The owner config's
+    style is pinned separately in tests/test_config_yaml_real.py, which loads the real file."""
+    props = opener_mod._SCHEMA["properties"]
+    return {
+        "_SYSTEM": _flat(_SYSTEM),
+        "schema angle": _flat(props["angle"]["description"]),
+        "schema opener": _flat(props["opener"]["description"]),
+    }
+
+
+def test_place_precision_cap_is_in_every_on_wire_copy():
+    """Bug report 2026-10-15: "I'm guessing those canal houses and the boats are in Amsterdam"
+    named a foreign CITY, which the owner found eerily precise. The old rule licensed "a country,
+    a region, or a park", so the model obeyed it. Owner rule: a guessed place in the United
+    States or Canada stops at the state or province; anywhere else it stops at the country.
+    A copy that drops either half lets the schema and the system turn disagree, which is how a
+    rule stated once is quietly outvoted by the field description the model fills last."""
+    for name, text in _on_wire_location_copies().items():
+        assert "place precision cap" in text, name
+        assert "state or province" in text, name
+        assert "united states or canada" in text, name
+        assert (
+            "the country anywhere else" in text
+            or "anywhere else may be named no more precisely than its country" in text
+        ), name
+        # The old licence for sub-country precision abroad must be gone everywhere.
+        assert "a country, a region, or a park" not in text, name
+
+
+def test_place_precision_cap_names_the_forbidden_scales_and_the_unsure_default():
+    """The full rule lives in _SYSTEM (and config.yaml). It must forbid the sub-country scales by
+    name -- "Amsterdam" is a city, "Bali" an island, "the Eiffel Tower" a landmark that names its
+    city -- fall back to the stricter country cap when US/Canada is unclear, and keep naming a
+    place her own profile text states as allowed, since that is not a guess."""
+    text = _flat(_SYSTEM)
+    assert (
+        "named no more precisely than its country, never a city, town, region, island, or "
+        "landmark inside it" in text
+    )
+    assert (
+        "when you cannot tell whether it is in the united states or canada, use the country cap"
+        in text
+    )
+    assert "a place her profile text states may be named as she wrote it" in text
+    assert "never a city, a park, a landmark, a street, a neighbourhood" in text
+
+
 def test_location_confirmation_shapes_share_one_noun_and_determiner_set():
     """Regression guard for the 2026-09-14 (b) and 2026-09-15 bugs themselves, not just their
     symptoms: two confirmation shapes once drew from DIFFERENT place-noun lists ("Am I right
@@ -1969,7 +2021,8 @@ def test_system_prompt_keeps_faithful_corey_opener_policy_and_two_sentence_cap()
     assert "never apologise for writing" in lowered
     assert "never call your own question dumb" in lowered
     assert "guess the world, not her identity" in lowered
-    assert "name a country, a region, or a park" in lowered
+    assert "name a country, a region, or a park" not in lowered
+    assert "place precision cap" in lowered
     assert (
         "when a place comes from recognizing the image rather than from her profile text"
         in lowered

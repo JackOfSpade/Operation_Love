@@ -6878,3 +6878,36 @@ here.", "Where there's a will." (the last three were found in review, not in the
 
 WATCH: an unexpected "?" on something that was meant as a statement. Query `openers` for text
 ending in "?" whose raw model output ended in "." (the raw value is only in the debug log).
+
+### Addendum 2026-10-15: PLACE PRECISION CAP narrows GUESS THE WORLD
+
+Bug report (Training, profile "Nataliia"): "I'm guessing those canal houses and the boats are in
+Amsterdam. Am I in the right part of the world?" The owner found a foreign CITY named off a photo
+eerily precise. It was not a disobeyed rule: GUESS THE WORLD licensed "a country, a region, or a
+park", and a well-known city reads as region scale to the model.
+
+WHAT SHIPS (owner rule): a place guessed in the United States or Canada may be named no more
+precisely than its state or province; a place guessed anywhere else no more precisely than its
+country, never a city, town, region, island, or landmark inside it. When the model cannot tell
+whether the place is in the US or Canada, the stricter country cap applies. A broader area that
+spans several countries, states, or provinces is fine, and a place her profile TEXT states may be
+named as she wrote it (that is not a guess). City, park, and landmark joined the never-name list
+everywhere. Stated in all four on-wire copies (config.yaml `opener.style`, `_SYSTEM`, and the
+`angle` and `opener` schema descriptions) and pinned by
+`test_place_precision_cap_is_in_every_on_wire_copy` (mutation-checked: dropping the schema
+`opener` copy fails it) plus `test_config_yaml_real.py`.
+
+The 2.4 text above ("country, region or park scale") is superseded by this addendum for guesses
+and is left as the historical record.
+
+RISK ACCEPTED: this is a PROMPT-ONLY fix with no deterministic backstop. A gazetteer detector was
+considered and rejected for now: a city name is legitimate when her profile text states it, so a
+detector would need the profile text and a world gazetteer, and every false positive spends one
+of the five run-stopping attempts. `_LOCATION_CONFIRMATION_NOUN` deliberately still contains
+city/town/park: it judges the TURN shape only, and rejecting there would mislabel a precision
+violation as an unconfirmed follow-up.
+
+WATCH: this is a new prompt era (see `ops/prompt-eras.json`). Measure it before trusting it:
+openers after this era that name a non-US/Canada city, island, or landmark, or a US/Canadian city,
+where her profile text does not state that place. If the rate is not near zero, the next step is
+the deterministic backstop above, not another prompt rule.

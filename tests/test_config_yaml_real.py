@@ -580,7 +580,27 @@ def test_shipped_opener_style_ships_the_redesign_guardrails(cfg):
     assert "hedge the claim, never yourself" in style
     assert "never apologise for writing, never ask permission" in style
     assert "guess the world, not her identity" in style
-    assert "never a street, a neighbourhood, a hotel, a specific venue" in style
+    assert (
+        "a park, a landmark, a street, a neighbourhood, a hotel, a specific venue"
+        in style
+    )
+    # PLACE PRECISION CAP (owner rule 2026-10-15, after "...are in Amsterdam"): state or
+    # province inside the United States or Canada, country anywhere else, stated in the same
+    # words as _SYSTEM so the two copies cannot drift (see tests/test_opener.py).
+    assert "a country, a region, a park" not in style
+    assert "place precision cap" in style
+    assert (
+        "a place you guess in the united states or canada may be named no more precisely "
+        "than its state or province" in style
+    )
+    assert (
+        "a place you guess anywhere else may be named no more precisely than its country, "
+        "never a city, town, region, island, or landmark inside it" in style
+    )
+    assert (
+        "when you cannot tell whether it is in the united states or canada, use the country cap"
+        in style
+    )
     assert "the way a well travelled friend would" in style
     assert (
         "when a place comes from recognizing the image rather than from her profile text"

@@ -2784,18 +2784,41 @@ def _noise_png(seed: int, size: int = 48) -> bytes:
 def test_oversized_photos_are_compressed_to_fit_the_budget(monkeypatch, capsys):
     photos = [_noise_png(seed) for seed in range(3)]
     # Real cap is 18MB; shrink it to something these tiny fixture photos can exceed so the
-    # test stays fast (no need to synthesize anywhere near 20MB of real pixels).
-    monkeypatch.setattr(opener_module, "_MAX_INLINE_REQUEST_BYTES", 30_000)
+    # test stays fast (no need to synthesize anywhere near 20MB of real pixels). The budget
+    # is DERIVED from the measured request rather than hard-coded: the text part (system
+    # instruction, schema, style) does not shrink and grows with every prompt edit, so a
+    # fixed 30_000 silently stopped leaving room for the images when the 2026-10-15 PLACE
+    # PRECISION CAP added ~1KB of prompt text.
+    sizes: list[int] = []
+    measure = GeminiOpener._request_size_bytes
+
+    def _recording_size(*args, **kwargs):
+        size = measure(*args, **kwargs)
+        sizes.append(size)
+        return size
+
+    monkeypatch.setattr(
+        GeminiOpener, "_request_size_bytes", staticmethod(_recording_size)
+    )
+    _opener(_Transport([(200, _success())])).generate(Profile(photos=photos), style="s")
+    raw_images = sum(len(base64.standard_b64encode(photo)) for photo in photos)
+    text_bytes = sizes[0] - raw_images
+    assert raw_images > 15_000  # the headroom below must force recompression
+    budget = text_bytes + 15_000
+    sizes.clear()
+
+    monkeypatch.setattr(opener_module, "_MAX_INLINE_REQUEST_BYTES", budget)
     transport = _Transport([(200, _success())])
     opener = _opener(transport)
     opener.generate(Profile(photos=photos), style="s")
 
+    assert sizes[0] > budget  # the original request really was over budget
     payload = transport.calls[0][1]
     parts = payload["contents"][0]["parts"]
     image_parts = parts[:-1]  # last part is the text block
     assert len(image_parts) == 3
     sent_size = sum(len(p["inlineData"]["data"]) for p in image_parts)
-    assert sent_size <= 30_000
+    assert sent_size <= budget - text_bytes
     for p in image_parts:
         assert p["inlineData"]["mimeType"] == "image/jpeg"  # recompressed from PNG
 

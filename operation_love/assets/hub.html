@@ -289,7 +289,7 @@ function hubWake(){
 }
 window.addEventListener('pageshow', hubWake);
 // A hidden tab's setInterval ping can be throttled by the browser to ~once/minute, which can
-// look "stale" and trip a server-side shutdown of a live run. Re-register immediately whenever
+// look stale (staleness alone no longer shuts down the Hub). Re-register immediately whenever
 // the tab could be waking up, same as pageshow already does — these fire un-throttled. Named
 // (not inlined) so the hub test suite can eval the real callback with node instead of asserting
 // a substring a comment-only revert could dodge.
@@ -1896,12 +1896,25 @@ async function getReport(){          // generate fresh each time (Copy/Download 
   // produced an unhandled promise rejection and a dead Copy/Download button with no feedback.
   try {
     const r = await fetch('/api/bugreport?desc=' + encodeURIComponent($('#bugdesc').value || ''));
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const md = await r.text();
     $('#bughint').textContent = md.length + ' chars';
     return md;
   } catch (_error) {
-    $('#bughint').textContent = 'could not contact the local hub to generate the report';
-    return null;
+    // The displayed state is the only evidence available when the process is gone.
+    // Read text only: never include profile images, capability URLs or the CSRF token.
+    const sections = [
+      '# Operation Love — offline browser report',
+      'The local hub could not generate a report. Everything below is last displayed, stale browser state; storage and physical actions have NOT been reconciled.',
+      'Description: ' + ($('#bugdesc').value || '(none)'),
+      'Captured: ' + new Date().toISOString(),
+    ];
+    for (const [label, selector] of [['Run', '#runbanner'], ['Error', '#err'], ['Training', '#trainingactionhint'], ['Live log', '#logs']]) {
+      const el = $(selector);
+      if (el && el.textContent) sections.push(label + ':\n' + el.textContent);
+    }
+    $('#bughint').textContent = 'offline report — last displayed state only';
+    return sections.join('\n\n');
   }
 }
 $('#bugcopy').onclick = async () => {

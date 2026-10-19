@@ -1043,6 +1043,12 @@ def _frac_window() -> tuple[float, float]:
 # block (the band's bottom is clean page background, or the trailing block is already complete),
 # meaning this frame places no coverage constraint on the next step at all.
 #
+# A trailing block with neither edge observed can instead use the preceding block's observed
+# bottom as a lower bound on its top. With ordered, disjoint blocks, that boundary cannot lie
+# after the trailing card's true start. The same proof holds with a smaller D, while the index
+# still sees unobserved edges and may never crop that fragment. With no preceding boundary this
+# proof is unavailable; the capped omission-recovery path below remains necessary.
+#
 # This step is capped at `min(trust_ceiling_px, D)` when `D` is not None. Two cases, and both are
 # safe by construction:
 #   * `D <= trust_ceiling_px`: the step is at most `D`, landing the new band's top row at or below
@@ -1224,9 +1230,11 @@ def _open_trailing_block_depth(segmentation: FrameSegmentation) -> int | None:
     Only the BOTTOM-most block can be "open" under this design's own discipline: the throttle
     below never lets a step advance the band's top row past an open block's own top row, so a
     block whose top was never observed at all can also arise when a white-on-white gutter is
-    missed. When neither edge is observed, this helper returns 0 defensively, but
-    `plan_coverage_step` detects that edge state first and routes it through the explicit bounded
-    recovery instead of treating zero as a physical depth. When only the top is unobserved but the
+    missed. If its immediate predecessor has an observed bottom, that row is a conservative
+    lower bound on the trailing block's true top: advancing no farther than that row cannot
+    lose any of the following content. This does not mark the trailing edge observed or make
+    the block croppable. Without that independent boundary, return 0 and let the planner use
+    its explicitly bounded recovery. When only the top is unobserved but the
     bottom is known, the block is leaving the viewport and places no constraint on a forward step.
 
     None when `segmentation.blocks` is empty (nothing segmented at all -- treated as no local
@@ -1246,6 +1254,10 @@ def _open_trailing_block_depth(segmentation: FrameSegmentation) -> int | None:
     if last.bottom.observed:
         return None
     if not last.top.observed:
+        if len(segmentation.blocks) > 1:
+            previous = segmentation.blocks[-2]
+            if previous.bottom.observed and previous.y1 <= last.y0:
+                return max(0, previous.y1 - _scrolling_viewport_top(segmentation))
         return 0
     return max(0, last.y0 - _scrolling_viewport_top(segmentation))
 
@@ -1304,14 +1316,21 @@ def plan_coverage_step(
     lazily via `_frac_window` for the same reason `plan_scroll_step` does.
 
     Raises `ScrollStepError` when the frame contradicts itself (or leaves the trailing block with
-    neither edge observed) and no fallback was opted into, when the geometry cannot be computed
-    (a non-positive screen height or band height, an invalid `x_frac`/`frac_window`), when the
+    neither edge observed and no independently observed predecessor boundary) and no fallback
+    was opted into, when the geometry cannot be computed (a non-positive screen height or band
+    height, an invalid `x_frac`/`frac_window`), when the
     enumeration ceiling leaves frameshift's trust window no room for a bridgeable blind step, or
     when even the driver's smallest sanctioned gesture would risk scrolling an ordinarily open
     trailing card's own top row out of the band before it could complete.
 
-    The no-edge case is a recovery input, not a zero-pixel depth. A real Hinge frame can contain
-    the tail of one white card and the start of the next while their white-on-white gutter is
+    A no-edge trailing block can still have a safe depth: its predecessor's observed bottom
+    is earlier than any following card's true top. Use that conservative bound without changing
+    either edge's observed status. This lets an ordinary heading/carousel section be read while
+    the index independently accounts for its hearts and withholds unbounded fragments from crops.
+
+    Without that preceding boundary the no-edge case is a recovery input, not a zero-pixel depth.
+    A real Hinge frame can contain the tail of one white card and the start of the next while
+    their white-on-white gutter is
     missed; segmenting that whole band as one plausible partial block leaves both edges
     unobserved. Treating it as depth zero makes every legal gesture impossible and prevents the
     indexer's independently measured frame-omission repair from ever seeing the next frame. With
@@ -1326,7 +1345,15 @@ def plan_coverage_step(
         and not trailing.top.observed
         and not trailing.bottom.observed
     )
-    needs_recovery_fallback = segmentation_failed or trailing_has_no_observed_edge
+    predecessor_bounded = bool(
+        trailing_has_no_observed_edge
+        and len(segmentation.blocks) > 1
+        and segmentation.blocks[-2].bottom.observed
+        and segmentation.blocks[-2].y1 <= trailing.y0
+    )
+    needs_recovery_fallback = segmentation_failed or (
+        trailing_has_no_observed_edge and not predecessor_bounded
+    )
     if needs_recovery_fallback and not allow_segmentation_failure_fallback:
         if trailing_has_no_observed_edge and not segmentation_failed:
             raise ScrollStepError(
@@ -1514,6 +1541,11 @@ def plan_coverage_step(
             f"step {step_px}px throttled to protect an open card {depth}px below the "
             f"scrolling viewport's top row (trust ceiling {trust_ceiling_px}px)"
         )
+        if predecessor_bounded:
+            reason += (
+                "; depth uses the preceding block's observed bottom as a conservative "
+                "lower bound on the unknown trailing top; its edges remain unobserved"
+            )
     elif basis == COVERAGE_STEP_OPEN:
         reason = f"step {step_px}px at the {trust_ceiling_px}px trust-window ceiling"
     else:

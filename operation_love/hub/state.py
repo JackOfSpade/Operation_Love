@@ -653,7 +653,7 @@ class HubState:
             return True
 
     def browser_client_ping(self, client_id: str | None) -> bool:
-        """Heartbeat fallback for browsers that drop the pagehide close beacon."""
+        """Refresh liveness, including a suspended page returning after stale expiry."""
         return self.browser_client_opened(client_id)
 
     def browser_client_closed(self, client_id: str | None) -> bool:
@@ -734,7 +734,9 @@ class HubState:
     def expire_stale_browser_clients(self) -> bool:
         """Drop hub pages that stopped heartbeating.
 
-        Return True once if that leaves no live browser pages and should shut down the hub.
+        Missing heartbeats are not evidence of a closed tab: browsers suspend background
+        pages and laptops sleep. Only an explicit close beacon may request shutdown.
+        Keep the return value for the watcher's existing protocol, but never request exit.
         """
         now = time.monotonic()
         cutoff = now - _BROWSER_CLIENT_STALE_S
@@ -747,10 +749,7 @@ class HubState:
             if self._browser_clients:
                 return False
             self._browser_stale_watch_active = False
-            if self._browser_shutdown_requested:
-                return False
-            self._browser_shutdown_requested = True
-            return True
+            return False
 
     def _prune_closed_browser_clients_locked(self, now: float) -> None:
         cutoff = now - _CLOSED_BROWSER_CLIENT_TTL_S

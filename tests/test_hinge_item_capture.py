@@ -484,6 +484,47 @@ def test_auto_capture_enumerates_the_profile_into_numbered_crops():
     assert profile.items_unnumbered == ""
 
 
+def test_capture_reads_past_unbounded_carousel_without_numbering_its_fragments(monkeypatch):
+    """The reported geometry: a bounded photo, heading, then a narrower carousel.
+
+    The section's own corners are not standard card edges. Its preceding photo's observed
+    bottom still bounds forward steps; the independent index must retain its heart ordinal
+    while withholding the unbounded section from both numbered crops and readable context.
+    """
+    world = _build_world(
+        layout=(("card", 1109), ("context", 1184), ("card", 974)), top_gap=697
+    )
+    col = _page_column()
+    world[1859:3043] = col[1859:3043, None]
+    rng = np.random.default_rng(43)
+    world[1935:1974, 180:880] = 40  # section heading
+    world[2049:3043, 53:884] = rng.integers(60, 200, (994, 831), dtype=np.uint8)
+    world[2049:3043, 929:] = rng.integers(60, 200, (994, 151), dtype=np.uint8)
+    th, tw = _TEMPLATE.shape
+    world[
+        2953 - th // 2 : 2953 - th // 2 + th,
+        796 - tw // 2 : 796 - tw // 2 + tw,
+    ] = _TEMPLATE
+    monkeypatch.setitem(globals(), "_WORLD", world)
+    monkeypatch.setitem(globals(), "_FRAMES", {})
+    adb = WorldAdb()
+    drv = _drv(adb, auto=False)
+    dbg = _RecordingLog()
+    drv._dbg = dbg
+
+    profile = drv._capture_current()
+
+    assert profile is not None
+    assert profile.items_unavailable == "", profile.items_unavailable
+    assert len(profile.items) == 2
+    assert profile.item_context == ()
+    assert drv._current_item_payload.translation == (1, 3)
+    coverage = dbg.row("capture")["coverage"]
+    assert coverage["refusals"] == []
+    assert coverage["basis"][scroll_step.COVERAGE_STEP_SEGMENTATION_FALLBACK] == 0
+    assert not adb.taps and not adb.texts
+
+
 def test_hinge_numbers_only_policy_approved_photos_and_preserves_prompt_heart(
     monkeypatch,
 ):

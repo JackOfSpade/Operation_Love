@@ -497,7 +497,7 @@ class _Handler(BaseHTTPRequestHandler):
         except RuntimeError as exc:
             # browser_client_opened() claimed the one active watcher before this allocation.
             # Release that claim so a later heartbeat can retry rather than making stale-tab
-            # shutdown silently unavailable for the rest of this hub process.
+            # liveness tracking silently unavailable for the rest of this hub process.
             if state:
                 state.browser_stale_watch_start_failed()
             print(f"Hub: could not start browser liveness watch ({exc})")

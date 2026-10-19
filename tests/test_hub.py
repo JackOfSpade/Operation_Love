@@ -811,14 +811,25 @@ def test_browser_close_preserves_live_checkpoint_before_worker_reports_waiting_a
         st._thread.join(timeout=_LIVENESS_TIMEOUT_S)
 
 
-def test_hub_tab_stale_heartbeat_shutdown_when_close_beacon_is_missing(monkeypatch):
+@pytest.mark.parametrize('mode', [None, 'training', 'auto'])
+def test_hub_missing_heartbeat_keeps_server_and_run_alive(monkeypatch, mode):
     from operation_love.hub import server as hub_server, state as hub_state
 
     monkeypatch.setattr(hub_state, "_BROWSER_CLIENT_STALE_S", 0.05)
     monkeypatch.setattr(hub_server, "_BROWSER_STALE_CHECK_S", 0.01)
     monkeypatch.setattr(hub_server, "_BROWSER_SHUTDOWN_GRACE_S", 0.01)
 
-    _Handler.state = HubState("config.yaml")
+    state = HubState("config.yaml")
+    stop = threading.Event()
+    if mode:
+        from operation_love.status import RunStatus
+
+        state._stop = stop
+        state._status = RunStatus("run", ["hinge"], min_labels=0, mode=mode)
+        state._status.set_app("hinge", mode=mode, state="scoring")
+        state._thread = threading.Thread(target=stop.wait, daemon=True)
+        state._thread.start()
+    _Handler.state = state
     httpd = _bind("127.0.0.1", 8799)
     t = threading.Thread(target=httpd.serve_forever, daemon=True)
     t.start()
@@ -828,9 +839,23 @@ def test_hub_tab_stale_heartbeat_shutdown_when_close_beacon_is_missing(monkeypat
         code, opened = _post(base, "/api/hub/open", body)
         assert code == 200 and opened["ok"] is True
 
-        t.join(timeout=_LIVENESS_TIMEOUT_S)
-        assert t.is_alive() is False
+        deadline = time.monotonic() + _LIVENESS_TIMEOUT_S
+        while state.browser_stale_watch_active() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert not state.browser_stale_watch_active()
+        assert not state.has_browser_clients()
+        assert t.is_alive()
+        assert not stop.is_set()
+        code, snapshot = _get(base, "/api/status")
+        assert code == 200
+        assert json.loads(snapshot)["running"] is bool(mode)
+        # A suspended page can return with the same ID and resume heartbeating.
+        code, opened = _post(base, "/api/hub/ping", body)
+        assert code == 200 and opened["ok"] is True
+        assert state.has_browser_clients()
     finally:
+        stop.set()
+        state.wait_for_run(timeout=_LIVENESS_TIMEOUT_S)
         httpd.shutdown()
         httpd.server_close()  # release the listening socket too; shutdown() alone leaves it open
         _join_hub_watch_threads()
@@ -1454,8 +1479,10 @@ def test_hubstate_browser_heartbeat_prevents_stale_expiry(monkeypatch):
     assert st.has_browser_clients() is True
 
     now += 11.0
-    assert st.expire_stale_browser_clients() is True
+    assert st.expire_stale_browser_clients() is False
     assert st.has_browser_clients() is False
+    assert st.browser_client_ping("a") is True
+    assert st.has_browser_clients() is True
 
 
 def test_hubstate_browser_liveness_ignores_wall_clock_jumps(monkeypatch):
@@ -5733,22 +5760,27 @@ def test_eval_snapshot_cold_start_single_flights_concurrent_pollers(monkeypatch)
     assert all(r["status"] == "ok" and r["labels"] == 10 for r in results)
 
 
-def test_bug_report_generation_reports_failure_instead_of_an_unhandled_rejection():
-    """getReport() was the lone fetch site in this file with no error path -- a hub that is
-    gone/unreachable at the exact moment a bug report is wanted must not leave a dead button
-    and an unhandled promise rejection behind it; it must say so and hand back null."""
+@pytest.mark.parametrize('failure', ['throw new TypeError("Failed to fetch");',
+                                       'return {ok:false,status:503,text:async()=>"error page"};'])
+def test_bug_report_generation_falls_back_to_stale_browser_evidence(failure):
+    """Copy/download still receive useful diagnostics when the server is unavailable."""
     if NODE_BIN is None:
         pytest.skip("node is not available on this machine")
     fn = _extract_js_function(_PAGE, "getReport")
     script = (
-        "const hint={textContent:''}; const desc={value:''};\n"
-        "function $(selector){return selector==='#bughint'?hint:selector==='#bugdesc'?desc:null;}\n"
-        "async function fetch(){throw new TypeError('Failed to fetch');}\n" + fn + "\n"
+        "const hint={textContent:''}; const desc={value:'my bug'};\n"
+        "const log={textContent:'Learned 1 labels this run'};\n"
+        "function $(selector){return selector==='#bughint'?hint:selector==='#bugdesc'?desc:selector==='#logs'?log:null;}\n"
+        "async function fetch(){" + failure + "}\n" + fn + "\n"
         "getReport().then(md => console.log(JSON.stringify({md, hint: hint.textContent})));\n"
     )
     result = _run_node(script)
-    assert result["md"] is None
-    assert "could not contact the local hub" in result["hint"]
+    assert "offline browser report" in result["md"]
+    assert "stale browser state" in result["md"]
+    assert "my bug" in result["md"]
+    assert "Learned 1 labels this run" in result["md"]
+    assert "error page" not in result["md"]
+    assert "offline report" in result["hint"]
 
 
 def test_unchanged_checkpoint_poll_does_not_rebuild_no_store_review_images():

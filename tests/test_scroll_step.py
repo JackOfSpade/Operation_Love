@@ -1285,9 +1285,8 @@ def test_a_rounded_context_bottom_prevents_a_false_shallow_open_card_refusal():
     """Laura frame 5 merged a details card and the pale photo below across a 65px gap.
 
     Once segmentation uses the details card's independently measured bottom corner to split the
-    regions, the lower region honestly has neither edge observed. The existing bounded recovery
-    cadence can carry that frame; the planner must not mistake the details card's 29px top depth
-    for the open photo's depth and hard-refuse the profile.
+    regions, the lower region honestly has neither edge observed. The preceding observed bottom
+    still supplies a conservative lower bound on its top, without spending omission recovery.
     """
     frame = _Frame()
     frame.card(329, 1473, heart=False)
@@ -1304,12 +1303,51 @@ def test_a_rounded_context_bottom_prevents_a_false_shallow_open_card_refusal():
     ]
     trailing = seg.blocks[-1]
     assert not trailing.top.observed and not trailing.bottom.observed
-    plans = _coverage_draws(seg, n=50, allow_segmentation_failure_fallback=True)
+    plans = _coverage_draws(seg, n=50)
     assert {plan.basis for plan in plans} == {
-        scroll_step.COVERAGE_STEP_SEGMENTATION_FALLBACK
+        scroll_step.COVERAGE_STEP_THROTTLED
     }
+    assert all(plan.depth_px == 1473 - _BAND0 for plan in plans)
     assert min(plan.step_px for plan in plans) >= _GESTURE_FLOOR_PX
-    assert max(plan.step_px for plan in plans) <= _SEGMENTATION_FALLBACK_CAP_PX
+    assert max(plan.step_px for plan in plans) <= min(1473 - _BAND0, 540)
+    assert all("preceding block" in plan.reason for plan in plans)
+    assert not trailing.top.observed and not trailing.bottom.observed
+
+
+@pytest.mark.parametrize("bottom", [480, 750, 1473])
+def test_unknown_trailing_top_never_spends_the_predecessor_boundary(bottom):
+    """A usable predecessor is a bound, never permission to jump past unobserved content."""
+    seg = _Frame().card(100, bottom, heart=False).card(
+        bottom + 129, 2300, heart=False, radius=0
+    ).segment()
+    assert seg.blocks[-2].bottom.observed
+    assert not seg.blocks[-1].top.observed
+    depth = bottom - _BAND0
+    if depth < _GESTURE_FLOOR_PX:
+        with pytest.raises(scroll_step.ScrollStepError, match="smallest sanctioned"):
+            scroll_step.plan_coverage_step(seg)
+    else:
+        plans = _coverage_draws(seg, n=30)
+        assert all(plan.step_px <= depth for plan in plans)
+        assert all(plan.depth_px == depth for plan in plans)
+
+
+def test_a_predecessor_boundary_does_not_waive_a_segmentation_contradiction():
+    frame = _Frame().card(100, 1473, heart=True).card(
+        1602, 2300, heart=False, radius=0
+    )
+    frame.heart(900)
+    seg = frame.segment()
+    assert not seg.ok
+    assert seg.blocks[-2].bottom.observed
+    assert not seg.blocks[-1].top.observed
+    with pytest.raises(scroll_step.ScrollStepError, match="contradicts itself"):
+        scroll_step.plan_coverage_step(seg)
+    plans = _coverage_draws(seg, n=20, allow_segmentation_failure_fallback=True)
+    assert all(
+        plan.basis == scroll_step.COVERAGE_STEP_SEGMENTATION_FALLBACK for plan in plans
+    )
+    assert all(plan.cap_px == _SEGMENTATION_FALLBACK_CAP_PX for plan in plans)
 
 
 def test_a_top_clipped_block_with_an_observed_bottom_does_not_throttle_the_next_step():

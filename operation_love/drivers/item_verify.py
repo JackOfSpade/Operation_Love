@@ -1853,18 +1853,17 @@ def verify_sheet_item(
     # caller supplies an absolute ceiling, however, it is security evidence rather than a
     # cosmetic tolerance: NaN makes ``distance >= ceiling`` false and infinity makes it always
     # false, both silently erasing the foreign-card guard below.
-    if absolute_max_dist is not None:
-        if (
-            isinstance(absolute_max_dist, bool)
-            or not isinstance(absolute_max_dist, (int, float))
-            or not math.isfinite(absolute_max_dist)
-            or absolute_max_dist <= 0
-            or absolute_max_dist >= _SHEET_FALSE_MATCH_DISTANCE
-        ):
-            raise SheetVerificationError(
-                "absolute_max_dist must be a finite positive number strictly below the known "
-                f"{_SHEET_FALSE_MATCH_DISTANCE} foreign-card false-match distance"
-            )
+    if (absolute_max_dist is not None) and (
+        isinstance(absolute_max_dist, bool)
+        or not isinstance(absolute_max_dist, (int, float))
+        or (not math.isfinite(absolute_max_dist))
+        or (absolute_max_dist <= 0)
+        or (absolute_max_dist >= _SHEET_FALSE_MATCH_DISTANCE)
+    ):
+        raise SheetVerificationError(
+            "absolute_max_dist must be a finite positive number strictly below the known "
+            f"{_SHEET_FALSE_MATCH_DISTANCE} foreign-card false-match distance"
+        )
 
     try:
         chosen = payload.item(model_index)

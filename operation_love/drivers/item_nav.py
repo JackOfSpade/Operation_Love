@@ -616,15 +616,17 @@ class ItemNavigationError(RuntimeError):
 
 
 def _navigation_step_shift(
-    before: bytes, after: bytes, *, content_band, trust_window_px: int
+    before: bytes, after: bytes, *, content_band, trust_window_px: int, driver=None
 ) -> tuple[ShiftEstimate, dict]:
-    """Measure one navigation leg, through frameshift's shared reverse-quorum recovery.
+    """Measure one navigation leg through strip quorum or a corroborated video marker.
 
     The strip bank is directional: it cuts source strips from ``before`` and searches for them
     in ``after``. Autoplay can therefore leave too few stable source strips in that direction
     while the same calibrated estimator reaches quorum from ``after`` back to ``before``. Only
     ``SHIFT_NO_CONSENSUS`` earns that reverse check. A beyond-window or no-evidence result stays
-    a refusal; in particular, a nearer reverse correlation must never overrule saturation.
+    a strip refusal; in particular, a nearer reverse correlation must never overrule saturation.
+    The live driver may independently measure a refused pair using the indexer's existing
+    mute-control-plus-card-anchor proof. Saturation cannot earn that recovery either.
 
     THE RECOVERY ITSELF is no longer implemented here (2026-09-02): `hinge.HingeDriver.
     _measured_page_shift` needed the identical policy for the still-photo walk's own return leg
@@ -645,6 +647,12 @@ def _navigation_step_shift(
         trust_window_px=trust_window_px,
         estimator=estimate_shift,
     )
+    # The index already measures video-only pairs from the app-owned mute control plus a
+    # separate card anchor. The live driver's shared proof handles both ascending navigation
+    # and dwell cleanup; drivers without this capability retain the ordinary strip refusal.
+    recover = getattr(driver, "_recover_video_marker_page_shift", None)
+    if recover is not None:
+        result = recover(before, after, result, reverse)
 
     # `trace_estimate` is frameshift's own serialiser, shared with `hinge._measured_page_shift_
     # traced` for the same reason the recovery policy above is shared: two hand-written copies of
@@ -1888,7 +1896,11 @@ def navigate_to_item(
         cancelled()
         nxt = driver._screencap()
         est, measurement_trace = _navigation_step_shift(
-            frames[i], nxt, content_band=content_band, trust_window_px=trust_window_px
+            frames[i],
+            nxt,
+            content_band=content_band,
+            trust_window_px=trust_window_px,
+            driver=driver,
         )
         shifts.append(est)
         if est.delta_px is None:

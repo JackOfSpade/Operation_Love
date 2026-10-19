@@ -316,7 +316,9 @@ def test_rejects_two_copied_send_like_glyphs_across_the_cta():
     _paint_glyph(canvas, center=(520, 1856))
     _paint_glyph(canvas, center=(860, 1856))
 
-    with pytest.raises(ComposerDetectionError, match="ambiguous|CTA is not visibly filled"):
+    with pytest.raises(
+        ComposerDetectionError, match="ambiguous|CTA is not visibly filled"
+    ):
         locate_inline_composer(_png(canvas, color=False), _TEMPLATE)
 
 

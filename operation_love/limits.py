@@ -26,18 +26,7 @@ chase the ratio.
 
 from __future__ import annotations
 
-import math
-from numbers import Real
-
-
-def _finite_real_as_float(value: object) -> float | None:
-    if isinstance(value, bool) or not isinstance(value, Real):
-        return None
-    try:
-        converted = float(value)
-    except (TypeError, ValueError, OverflowError):
-        return None
-    return converted if math.isfinite(converted) else None
+from .numeric import finite_real_as_float as _finite_real_as_float
 
 
 class RateLimiter:
@@ -91,21 +80,17 @@ class RateLimiter:
         self._count("acted_today", acted_today)
         if self.max_per_run is not None and acted_this_run >= self.max_per_run:
             return False
-        if self.max_per_day is not None and acted_today >= self.max_per_day:
-            return False
-        return True
+        return not (self.max_per_day is not None and acted_today >= self.max_per_day)
 
     def allow_like(self, liked_this_run: int) -> bool:
         """False once this run has hit its like budget. The worker then stops the
         run rather than mislabeling a wanted-like as a pass (which would corrupt
         the taste model)."""
         self._count("liked_this_run", liked_this_run)
-        if (
+        return not (
             self.max_likes_per_run is not None
             and liked_this_run >= self.max_likes_per_run
-        ):
-            return False
-        return True
+        )
 
     def allow_like_ratio(
         self,

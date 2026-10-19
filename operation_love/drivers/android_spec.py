@@ -284,6 +284,11 @@ class AndroidAppSpec:
     # stream corroborates an identity-proven advance, it is not a standalone decision source
     # (enforced in __post_init__ below).
 
+    supports_video_marker_shift: bool = False
+    # Allows refused strip measurements to be recovered from the app's mute control plus
+    # an independently observed card anchor. Enable only for an app whose mute glyph and
+    # card geometry support that proof; generic Android specs retain the strip refusal.
+
     auto_policy_calibrated: bool = False
     # Is the calibrated auto-mode BEHAVIOR POLICY (Worker._auto_loop's per-run tuning of read
     # geometry/dwell/capture-ceiling -- see hinge.py's set_auto_session_policy) actually

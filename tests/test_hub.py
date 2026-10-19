@@ -209,6 +209,7 @@ def test_bind_rejects_invalid_ports_without_calling_socket_layer(monkeypatch, po
 def test_bind_retries_only_address_in_use_and_never_scans_past_65535(monkeypatch):
     from operation_love.hub import server as hub_server
 
+    monkeypatch.setattr(hub_server, "_is_existing_hub", lambda host, port: False)
     calls = []
 
     def occupied(address, handler):
@@ -1032,7 +1033,7 @@ def test_serve_shutdown_warns_and_exits_when_run_does_not_finish_in_time(monkeyp
             self.closed = True
 
     httpd = _FakeHttpd()
-    monkeypatch.setattr(hub_server, "_bind", lambda host, port: httpd)
+    monkeypatch.setattr(hub_server, "_bind", lambda host, port, **kwargs: httpd)
 
     printed = []
     monkeypatch.setattr(
@@ -1319,7 +1320,7 @@ def test_serve_browser_timer_is_daemon_and_socket_is_closed(monkeypatch):
     monkeypatch.setattr(
         hub_server, "HubState", lambda config_path: HubState(config_path)
     )
-    monkeypatch.setattr(hub_server, "_bind", lambda host, port: httpd)
+    monkeypatch.setattr(hub_server, "_bind", lambda host, port, **kwargs: httpd)
     monkeypatch.setattr(hub_server.threading, "Timer", _FakeTimer)
 
     hub_server.serve("config.yaml", open_browser=True)
@@ -1361,7 +1362,7 @@ def test_serve_closes_socket_when_optional_browser_timer_cannot_start(
     monkeypatch.setattr(
         hub_server, "HubState", lambda config_path: HubState(config_path)
     )
-    monkeypatch.setattr(hub_server, "_bind", lambda host, port: httpd)
+    monkeypatch.setattr(hub_server, "_bind", lambda host, port, **kwargs: httpd)
     monkeypatch.setattr(hub_server.threading, "Timer", _StartFails)
 
     hub_server.serve("config.yaml", open_browser=True)
@@ -6238,3 +6239,130 @@ def test_mode_picker_exposes_escaped_config_reason_through_accessible_hint():
     assert result["selectTitle"].startswith("Auto unavailable:")
     assert "<img" not in result["hint"]
     assert "&lt;img" in result["hint"] and "&quot;alert(1)&quot;" in result["hint"]
+
+
+def test_duplicate_launch_reopens_live_hub_without_creating_or_stopping_state(
+    monkeypatch,
+):
+    from operation_love.hub import server as hub_server
+
+    original_state = object()
+    monkeypatch.setattr(hub_server._Handler, "state", original_state)
+    opened = []
+    monkeypatch.setattr(hub_server.webbrowser, "open", opened.append)
+
+    def occupied(address, handler):
+        assert address == ("127.0.0.1", 8765)
+        raise OSError(errno.EADDRINUSE, "already in use")
+
+    monkeypatch.setattr(hub_server, "_HubHTTPServer", occupied)
+    monkeypatch.setattr(hub_server, "_is_existing_hub", lambda host, port: True)
+
+    def unexpected_state(config_path):
+        pytest.fail("a duplicate launch must not create another HubState")
+
+    monkeypatch.setattr(hub_server, "HubState", unexpected_state)
+    hub_server.serve()
+    assert opened == ["http://127.0.0.1:8765/"]
+    assert hub_server._Handler.state is original_state
+    opened.clear()
+    hub_server.serve(open_browser=False)
+    assert opened == []
+
+
+@pytest.mark.parametrize(
+    "status,content_type,body,expected",
+    [
+        (
+            200,
+            "text/html; charset=utf-8",
+            '<title>Operation Love — hub</title><meta name="operation-love-csrf" content="x">',
+            True,
+        ),
+        (200, "text/html", "<title>Other app</title>", False),
+        (
+            302,
+            "text/html",
+            '<title>Operation Love — hub</title><meta name="operation-love-csrf">',
+            False,
+        ),
+        (
+            200,
+            "application/json",
+            '<title>Operation Love — hub</title><meta name="operation-love-csrf">',
+            False,
+        ),
+    ],
+)
+def test_existing_hub_probe_recognizes_only_hub_page(
+    monkeypatch, status, content_type, body, expected
+):
+    from operation_love.hub import server as hub_server
+
+    calls = []
+
+    class Response:
+        def getheader(self, name, default):
+            return content_type
+
+        def read(self, limit):
+            assert limit == 4096
+            return body.encode()
+
+    response = Response()
+    response.status = status
+
+    class Connection:
+        def __init__(self, host, port, timeout):
+            assert (host, port, timeout) == ("127.0.0.1", 8765, 1.0)
+
+        def request(self, method, path):
+            calls.append((method, path))
+
+        def getresponse(self):
+            return response
+
+        def close(self):
+            calls.append("closed")
+
+    monkeypatch.setattr(hub_server.http.client, "HTTPConnection", Connection)
+    assert hub_server._is_existing_hub("127.0.0.1", 8765) is expected
+    assert calls == [("GET", "/"), "closed"]
+
+
+def test_bind_still_skips_port_used_by_another_application(monkeypatch):
+    from operation_love.hub import server as hub_server
+
+    calls = []
+
+    def bind(address, handler):
+        calls.append(address)
+        if address[1] == 8765:
+            raise OSError(errno.EADDRINUSE, "already in use")
+        return type("Server", (), {})()
+
+    monkeypatch.setattr(hub_server, "_HubHTTPServer", bind)
+    monkeypatch.setattr(hub_server, "_is_existing_hub", lambda host, port: False)
+    assert hub_server._bind("127.0.0.1", 8765, reuse_existing=True).csrf_token
+    assert calls == [("127.0.0.1", 8765), ("127.0.0.1", 8766)]
+
+
+def test_duplicate_launch_detects_real_running_http_server(monkeypatch):
+    from operation_love.hub import server as hub_server
+
+    httpd = hub_server._HubHTTPServer(("127.0.0.1", 0), hub_server._Handler)
+    httpd.csrf_token = "test-token"
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    original_state = object()
+    monkeypatch.setattr(hub_server._Handler, "state", original_state)
+    try:
+        # This exercises actual socket contention and the real HTML response, then
+        # returns without running a second server or stopping the existing state.
+        hub_server.serve(port=httpd.server_address[1], open_browser=False)
+        assert hub_server._Handler.state is original_state
+        assert thread.is_alive()
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(timeout=5)

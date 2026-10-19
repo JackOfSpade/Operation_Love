@@ -597,6 +597,14 @@ def test_bumble_mode_registration_derives_training_and_auto_and_fails_closed():
 
 
 def test_hinge_and_bumble_spec_declare_the_new_capability_fields():
+    assert HINGE_SPEC.supports_video_marker_shift is True
+    assert BUMBLE_SPEC.supports_video_marker_shift is False
+    assert (
+        AndroidAppSpec(
+            app="x", package="x.y", calibrated=False
+        ).supports_video_marker_shift
+        is False
+    )
     assert HINGE_SPEC.auto_policy_calibrated is True
     assert HINGE_SPEC.observe_input_serialized is True
     assert HINGE_SPEC.safe_rewind_max_frac == 0.55

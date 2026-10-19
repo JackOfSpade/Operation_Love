@@ -10,6 +10,7 @@ from __future__ import annotations
 import errno
 import hmac
 import html
+import http.client
 import json
 import secrets
 import threading
@@ -645,7 +646,36 @@ class _Handler(BaseHTTPRequestHandler):
         pass
 
 
-def _bind(host: str, port: int) -> _HubHTTPServer:
+class _ExistingHub(Exception):
+    def __init__(self, url: str):
+        self.url = url
+        super().__init__(url)
+
+
+def _is_existing_hub(host: str, port: int) -> bool:
+    """Recognize even older Hubs before opening a competing control session.
+
+    Use a bounded direct loopback request (no proxy or redirects), and only read the
+    page header. This probes the UI without touching its run or pending decision.
+    """
+    connection = http.client.HTTPConnection(host, port, timeout=1.0)
+    try:
+        connection.request("GET", "/")
+        response = connection.getresponse()
+        header = response.read(4096)
+        return (
+            response.status == 200
+            and "text/html" in response.getheader("Content-Type", "")
+            and "<title>Operation Love — hub</title>".encode() in header
+            and b'name="operation-love-csrf"' in header
+        )
+    except (OSError, http.client.HTTPException):
+        return False
+    finally:
+        connection.close()
+
+
+def _bind(host: str, port: int, *, reuse_existing: bool = False) -> _HubHTTPServer:
     if not isinstance(host, str) or host not in {"127.0.0.1", "localhost"}:
         raise ValueError("Hub host must be localhost or 127.0.0.1")
     if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
@@ -658,6 +688,8 @@ def _bind(host: str, port: int) -> _HubHTTPServer:
             return httpd
         except OSError as exc:
             if exc.errno == errno.EADDRINUSE or getattr(exc, "winerror", None) == 10048:
+                if reuse_existing and _is_existing_hub(host, p):
+                    raise _ExistingHub(f"http://{host}:{p}/") from None
                 continue
             raise
     raise SystemExit(f"Hub: no free port in {port}..{last_port}")
@@ -674,8 +706,17 @@ def serve(
 
     configure_warnings()
     install_log_capture()  # capture logs so bug reports include them
+    try:
+        httpd = _bind(host, port, reuse_existing=True)
+    except _ExistingHub as existing:
+        print(
+            f"Hub: already running → {existing.url} — reusing its current configuration "
+            "and run. Stop and close that Hub before launching with different settings."
+        )
+        if open_browser:
+            webbrowser.open(existing.url)
+        return
     _Handler.state = HubState(config_path)
-    httpd = _bind(host, port)
     url = f"http://{host}:{httpd.server_address[1]}/"
     print(f"Hub: Operation Love control hub → {url}   (Ctrl-C to quit)")
     try:

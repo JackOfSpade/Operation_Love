@@ -6628,17 +6628,19 @@ def test_measure_source_policy_has_no_device_io_raw_injection_or_fixed_sleep():
         if not isinstance(node, ast.Call):
             continue
         if isinstance(node.func, ast.Attribute) and node.func.attr == "shell":
-            for arg in node.args:
-                if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
-                    if re.search(r"\binput\s+(?:tap|swipe)\b", arg.value):
-                        raw_input_calls.append(arg.value)
-        if isinstance(node.func, ast.Attribute) and node.func.attr == "sleep":
-            if (
-                node.args
-                and isinstance(node.args[0], ast.Constant)
-                and isinstance(node.args[0].value, (int, float))
-            ):
-                bare_sleeps.append(node.args[0].value)
+            raw_input_calls.extend(
+                arg.value
+                for arg in node.args
+                if isinstance(arg, ast.Constant)
+                and isinstance(arg.value, str)
+                and re.search(r"\binput\s+(?:tap|swipe)\b", arg.value)
+            )
+        if (isinstance(node.func, ast.Attribute) and node.func.attr == "sleep") and (
+            node.args
+            and isinstance(node.args[0], ast.Constant)
+            and isinstance(node.args[0].value, (int, float))
+        ):
+            bare_sleeps.append(node.args[0].value)
     assert not raw_input_calls
     assert not bare_sleeps
     # The command writes only its private evidence ledger, never a config mapping.

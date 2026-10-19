@@ -37,11 +37,15 @@
                                                 display:block; margin:10px; }
   .training-image-error[hidden] { display:none !important; }
   .training-image-zoom-overlay { position:fixed; inset:0; z-index:1000; display:grid;
+                                  /* Bound the image's grid area to the viewport; an auto track
+                                     otherwise grows to a portrait screenshot's natural height. */
+                                  grid-template-columns:minmax(0,1fr); grid-template-rows:minmax(0,1fr);
                                   place-items:center; min-height:100dvh; height:100dvh;
                                   padding:max(24px, env(safe-area-inset-top)) max(24px, env(safe-area-inset-right)) max(24px, env(safe-area-inset-bottom)) max(24px, env(safe-area-inset-left)); overflow:hidden;
                                   background:rgba(6,6,9,.94); }
   .training-image-zoom-overlay[hidden] { display:none; }
   .training-image-zoomed-image { display:block; max-width:100%; max-height:100%;
+                                 min-width:0; min-height:0;
                                  object-fit:contain; background:#0c0c10; border:1px solid rgba(255,255,255,.09); border-radius:9px; }
   .training-image-zoom-overlay .training-image-nav { right:max(24px, env(safe-area-inset-right)); bottom:max(24px, env(safe-area-inset-bottom)); }
   .training-image-zoom-overlay .training-image-position { left:max(24px, env(safe-area-inset-left)); bottom:max(24px, env(safe-area-inset-bottom)); }

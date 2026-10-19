@@ -10,18 +10,14 @@ import math
 import threading
 from collections.abc import Mapping
 from dataclasses import dataclass
-from numbers import Real
+
+from .numeric import finite_real_as_float
 
 MILLION = 1_000_000
 
 
 def _is_finite_real(value: object) -> bool:
-    if isinstance(value, bool) or not isinstance(value, Real):
-        return False
-    try:
-        return math.isfinite(value)
-    except OverflowError:
-        return False
+    return finite_real_as_float(value) is not None
 
 
 def _safe_value_repr(value: object) -> str:

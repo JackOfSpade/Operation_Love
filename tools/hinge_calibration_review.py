@@ -567,7 +567,7 @@ def _read_capture(session: Path, config_sha256: str) -> dict:
             return False
         action_predicates = action.get("predicates")
         transport = action.get("transport")
-        if (
+        return not (
             not isinstance(action_predicates, dict)
             or not isinstance(transport, list)
             or any(not isinstance(step, str) for step in transport)
@@ -591,9 +591,7 @@ def _read_capture(session: Path, config_sha256: str) -> dict:
             or action_predicates.get("new_profile_top_confirmed") is not True
             or action.get("post_frame_sha256")
             != frame_by_role_item.get((ordinal, "profile_advance_clear", None))
-        ):
-            return False
-        return True
+        )
 
     skipped_attempts = manifest.get("skipped_attempts", [])
     if not isinstance(skipped_attempts, list):

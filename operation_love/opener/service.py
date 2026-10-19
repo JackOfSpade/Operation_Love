@@ -2151,25 +2151,24 @@ class OpenerService:
                     else []
                 )
                 staged_for_action = stage
-                if redundancy_markers:
-                    # opener.py prints when it computes these, including parsed drafts the
-                    # entropy guard later rejects.  Staged Training/AUTO drafts must
-                    # not get a second service-level message here: the draft monitor is already
-                    # enough diagnostic evidence, and a staged draft can become a Dislike, Stop,
-                    # or pre-send refusal.  Service-level redundancy output is reserved for the
-                    # successful commit below, so each landed Like contributes exactly one such
-                    # lifecycle record.
-                    if not staged_for_action:
-                        # Legacy/immediate callers retain their durable record at generation,
-                        # but this method still cannot know whether their later device action
-                        # will send the text. Keep the redundancy signal while making that
-                        # boundary explicit instead of overstating delivery.
-                        print(
-                            f"Opener: immediate-flow opener restates "
-                            f"{len(redundancy_markers)} word(s) from its own `referenced` note "
-                            f"({'; '.join(redundancy_markers)}). Delivery is not verified "
-                            "here; logged only for offline calibration, never a rejection."
-                        )
+                # opener.py prints when it computes these, including parsed drafts the
+                # entropy guard later rejects.  Staged Training/AUTO drafts must
+                # not get a second service-level message here: the draft monitor is already
+                # enough diagnostic evidence, and a staged draft can become a Dislike, Stop,
+                # or pre-send refusal.  Service-level redundancy output is reserved for the
+                # successful commit below, so each landed Like contributes exactly one such
+                # lifecycle record.
+                # Legacy/immediate callers retain their durable record at generation,
+                # but this method still cannot know whether their later device action
+                # will send the text. Keep the redundancy signal while making that
+                # boundary explicit instead of overstating delivery.
+                if (redundancy_markers) and (not staged_for_action):
+                    print(
+                        f"Opener: immediate-flow opener restates "
+                        f"{len(redundancy_markers)} word(s) from its own `referenced` note "
+                        f"({'; '.join(redundancy_markers)}). Delivery is not verified "
+                        "here; logged only for offline calibration, never a rejection."
+                    )
                 try:
                     self.store.record_spend(run_id, result.model, result.usage, cost)
                     # angle and item_description ride along as the 6th and 7th POSITIONAL

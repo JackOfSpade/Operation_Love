@@ -155,7 +155,11 @@ WHAT THIS MODULE DOES NOT DECIDE, AND WHICH LAYER HAS TO
     Settle `_identity_of`/`_screen_is` BEFORE capturing.
   * Whether a card is ANIMATED. Two screencaps of the same position over animated content can
     differ. Frameshift still refuses ordinary measurements below its three-strip quorum. This
-    layer can repair one narrowly bounded two- or three-pair animation run only when an exact
+    layer can repair a fully bounded isolated repaint with the exact card/heart, both surrounding
+    gutters, a heart-containing NCC strip, and measured full-layout neighbours (see
+    `_bounded_card_repaint_witness`). A top exit instead requires an independent NCC witness
+    on the following card and the exact lower gutter. Otherwise it can repair one bounded two- or
+    three-pair animation run only when an exact
     two-strip alternative is independently fixed by several observed card/heart landmarks.  In
     the narrower one-strip case -- whether it is the only match or a dissenting alternative to
     a failed two-strip candidate -- all three landmark kinds (a card top, a card bottom and a
@@ -218,6 +222,7 @@ from .segment import (
     EDGE_CARD_CORNER,
     EDGE_SCROLL_TOP_MEDIA,
     EDGE_UNANCHORED_ISLAND,
+    RUN_CARD_EDGE,
     RUN_TOO_LONG,
     Block,
     FrameSegmentation,
@@ -456,7 +461,7 @@ _END_TAIL_GAP_PX = max(_GUTTER_PX) + _GUTTER_TOLERANCE_PX
 # indexer decision path and splitter.  Those values distinguish "the current source replays
 # cleanly" from "the long-lived
 # worker was still executing an older indexer" without trusting the working tree alone.
-ITEM_INDEX_ALGORITHM_ID = "bounded-card-split-v20"
+ITEM_INDEX_ALGORITHM_ID = "bounded-card-split-v26"
 
 
 # =====================================================================================
@@ -527,7 +532,7 @@ class BlockObservation:
     # unobserved kind is merely absence of evidence. Defaulted so hand-built records in the
     # tests stay source-compatible, on `BackgroundRun.median_level_delta`'s precedent.
     # INVARIANT: this always describes the row at `page_y0` — never some other row of the same
-    # sighting. Any pass that MOVES `page_y0` (the two virtual splits below) must clear it,
+    # sighting. Any pass that MOVES `page_y0` (the virtual splits below) must clear it,
     # because `_scroll_top_evidence` reads it without consulting `top_observed` and would
     # otherwise credit the new top row with a corner no frame ever saw there.
     top_kind: str = ""
@@ -617,8 +622,9 @@ class VideoMuteMarker:
     control. The indexer never changes frameshift's raw vote. It normally uses this identity
     only to bound a video-card track; the narrow direct-marker bridge additionally derives one
     auditable effective distance when two contained controls and another card-local anchor agree,
-    while the still narrower same-pair exit bridge requires an all-weak bank plus exact heart,
-    lower-edge and lower-gutter motion as the last control leaves the analysed band.
+    while the still narrower same-pair exit bridge requires exact heart, lower-edge and
+    lower-gutter motion as the last control leaves the analysed band. Its raw bank must be
+    all weak, densely contradictory, or reduced to one out-of-window alias.
     """
 
     frame_index: int
@@ -746,8 +752,9 @@ class ItemIndex:
     # (2026-09-17) The SUBSET of `notes` that came from `_screen_fixed_islands`, exposed
     # separately and ADDITIVELY -- `notes` above is unchanged in content and order. A downstream
     # reader (bugreport.py) needs to know WHICH notes are a screen-fixed verdict and which are one
-    # of the four other unrelated producers `_fold_page` also concatenates into `notes`
-    # (`_split_long_background_card_top_merges`, `_split_repeated_near_gutter_merges`, `_assemble`,
+    # of the other unrelated producers `_fold_page` also concatenates into `notes`
+    # (`_split_repeated_card_bottom_seams`, `_split_long_background_card_top_merges`,
+    # `_split_repeated_near_gutter_merges`, `_assemble`,
     # plus repair notes prepended by `build_item_index` itself); `repairs` (this index's own
     # `repair_provenance`) cannot answer that, because the two are orthogonal -- a record can
     # carry a shift repair, a screen-fixed note, both, or neither, independently. Every string
@@ -878,7 +885,8 @@ def _matched_delta_clusters(
     below.  It exposes a single witness only when it is the pair's sole matched strip and the raw
     result is already a refusal; `_layout_repaired_shift` then requires top, bottom, and heart
     geometry, and `_repair_shifts_from_layout` still refuses it unless an adjacent pair forms the
-    same bounded animation run.  Thus a lone NCC coincidence can never repair an isolated pair.
+    same bounded animation run, unless `_bounded_card_repaint_witness` supplies the separate
+    complete-card/two-gutter proof. A lone NCC coincidence by itself cannot repair a pair.
 
     A two-voter candidate uses the same decision surface as ``frameshift._resolve``: both values
     must sit within `_AGREEMENT_TOLERANCE_PX` of their rounded median.  Comparing the values to
@@ -1006,6 +1014,122 @@ def _shared_gutter_witnesses(
     )
 
 
+def _bounded_card_repaint_witness(
+    before: FrameSegmentation,
+    after: FrameSegmentation,
+    raw: ShiftEstimate,
+    candidate: int | None,
+    *,
+    max_step_px: int = _MAX_STEP_PX,
+) -> bool:
+    """Check NCC witnesses against one bounded repainting card, including its top exit.
+
+    This is proposal evidence only. The isolated-run gate additionally requires raw,
+    full-layout measured neighbours, and the builder must rebuild the complete page.
+    For a singleton both canonical gutters must survive. If the top exits the band,
+    a second, nonoverlapping NCC witness on the following card is mandatory instead.
+    The source card remains complete, the lower gutter survives, and a supporting
+    strip must contain the exactly translated same-x heart. Competing observable matches
+    may only come from above the heart on this same card (including its upper gutter).
+    An unobservable match must be reverse, outside the trust window, with a search
+    range that cannot see the proposed forward motion. No score threshold is changed.
+    """
+    if (
+        raw.status != SHIFT_NO_CONSENSUS
+        or candidate is None
+        or not 0 < candidate <= max_step_px
+    ):
+        return False
+    matched = tuple(s for s in raw.strips if s.state == STRIP_MATCHED)
+    supporters = tuple(s for s in matched if s.delta_px == candidate)
+    if len(supporters) not in (1, 2) or any(
+        not s.search[0] <= candidate <= s.search[1] for s in supporters
+    ):
+        return False
+    landmarks = _structural_landmarks(before, after, max_step_px=max_step_px)
+    answers = {
+        delta
+        for _kind, delta in landmarks
+        if {kind for kind, other in landmarks if other == delta}
+        == {"top", "bottom", "heart"}
+    }
+    if answers != {candidate}:
+        return False
+    gutters = _shared_gutter_witnesses(before, after, candidate)
+    cards = []
+    for left in before.blocks:
+        if not left.complete or left.heart is None:
+            continue
+        for right in after.blocks:
+            if (
+                right.heart is None
+                or not right.bottom.observed
+                or left.y1 - right.y1 != candidate
+                or abs(left.heart[0] - right.heart[0]) > 2
+                or left.heart[1] - right.heart[1] != candidate
+            ):
+                continue
+            upper = [g for g in gutters if g[1] == left.y0 and g[3] == right.y0]
+            lower = [g for g in gutters if g[0] == left.y1 and g[2] == right.y1]
+            if len(lower) != 1:
+                continue
+            if len(supporters) == 1:
+                if (
+                    right.complete
+                    and left.y0 - right.y0 == candidate
+                    and len(upper) == 1
+                ):
+                    cards.append((left, upper[0][0]))
+            else:
+                # The top gutter has physically left the analysis band. Do not invent
+                # its position from a clipped edge: use the independently matched next
+                # card as the second witness, alongside the exact lower gutter/heart.
+                source_upper = [g for g in _observed_gutters(before) if g[1] == left.y0]
+                heart_strips = [s for s in supporters if s.y0 <= left.heart[1] < s.y1]
+                next_before = [b for b in before.blocks if b.y0 == lower[0][1]]
+                next_after = [b for b in after.blocks if b.y0 == lower[0][3]]
+                next_strips = [
+                    s
+                    for s in supporters
+                    if len(next_before) == len(next_after) == 1
+                    and next_before[0].y0 <= s.y0 < s.y1 <= next_before[0].y1
+                    and next_after[0].y0 <= s.y0 - candidate
+                    and s.y1 - candidate <= next_after[0].y1
+                ]
+                if (
+                    not right.top.observed
+                    and right.top.kind == "band_edge"
+                    and right.y0 == after.band[0]
+                    and left.y0 - candidate < after.band[0]
+                    and len(source_upper) == len(heart_strips) == len(next_strips) == 1
+                    and heart_strips[0].y1 <= next_strips[0].y0
+                ):
+                    cards.append((left, source_upper[0][0]))
+    if len(cards) != 1:
+        return False
+    card, gutter_start = cards[0]
+    heart_y = card.heart[1]
+    if not any(s.y0 <= heart_y < s.y1 for s in supporters):
+        return False
+    for strip in matched:
+        if strip in supporters:
+            continue
+        if strip.delta_px is None:
+            return False
+        if strip.search[0] <= candidate <= strip.search[1]:
+            if not (
+                0 < strip.delta_px <= max_step_px
+                and gutter_start <= strip.y0 < card.y1
+                and card.y0 < strip.y1 <= heart_y
+            ):
+                return False
+        elif not (
+            strip.delta_px < -raw.trust_window_px and strip.search[1] < candidate
+        ):
+            return False
+    return True
+
+
 def _edge_only_two_strip_shift(
     pair_index: int,
     before: FrameSegmentation,
@@ -1082,7 +1206,8 @@ def _layout_repaired_shift(
     two-strip alternative has failed layout corroboration.  That covers the saved live-video
     bank ``+256,+256,+261``, whose independently segmented top, bottom and heart all move
     ``+261``.  The enclosing run check still prevents either one-strip form from repairing an
-    isolated pair.  More than one passing candidate is ambiguity, hence no repair.
+    isolated pair without the separate complete-card/two-gutter repaint proof. More than one
+    passing candidate is ambiguity, hence no repair.
 
     `max_step_px` -- see `_structural_landmarks`'s docstring (it is threaded straight through to
     build `landmarks` below) and `_pitch_relative_max_step`'s module comment for the full
@@ -1120,8 +1245,8 @@ def _layout_repaired_shift(
     # no two-strip candidate at all, while top, bottom and heart independently fix `+274`.  The
     # singleton must be a unique exact strip delta and all three independently detected landmark
     # kinds must equal it pixel-for-pixel.  Later,
-    # `_repair_shifts_from_layout` still requires an adjacent two-strip repair and the builder
-    # still probes the complete page before committing the run.
+    # `_repair_shifts_from_layout` still requires either an adjacent two-strip repair or the
+    # separate bounded-card repaint proof; the builder probes the complete page either way.
     if not passing and shift.status == SHIFT_NO_CONSENSUS:
         matched = tuple(
             s.delta_px
@@ -1660,6 +1785,24 @@ def _direct_marker_bridge_delta(
     return delta
 
 
+def _measured_marker_projection(raw: ShiftEstimate, delta: int | None) -> bool:
+    """Refine a measured NCC centroid only with an exact positioned-control bridge.
+
+    The caller derives ``delta`` from two unique contained mute controls plus another
+    exact card-local anchor. Require an exact NCC witness too, and keep the correction
+    inside frameshift's existing agreement tolerance. This preserves the physical track
+    when repainting moves its pixel centroid slightly before the control exits the band.
+    """
+    return (
+        delta is not None
+        and raw.status == SHIFT_MEASURED
+        and raw.delta_px is not None
+        and raw.agreeing >= 3
+        and 0 < abs(raw.delta_px - delta) <= _AGREEMENT_TOLERANCE_PX
+        and any(s.state == STRIP_MATCHED and s.delta_px == delta for s in raw.strips)
+    )
+
+
 def _lower_observed_gutter(
     segmentation: FrameSegmentation,
     upper: Block,
@@ -1692,7 +1835,8 @@ def _same_pair_marker_exit_bridge(
     This is deliberately distinct from ``_video_exit_bridge_delta``.  That helper reconnects
     the *following* unmarked pair from three exact NCC strips after an exit was already proved.
     Here the active card's last marker is still present in the before frame and the raw bank is
-    silent or contradictory because its video repainted. The marker may disappear only when one
+    silent, densely contradictory, or reduced to one out-of-window alias after a repaint.
+    The marker may disappear only when one
     unique top-clipped destination puts its predicted row above the next content band, while an exact
     same-x heart, the card's observed lower edge, and both sides of its lower canonical gutter
     all translate by the same in-range delta.
@@ -1721,10 +1865,24 @@ def _same_pair_marker_exit_bridge(
             and (
                 raw.eligible == 0
                 or not any(strip.state == STRIP_MATCHED for strip in raw.strips)
-                # This exception is for a video repaint that produced a dense,
-                # contradictory bank. Sparse under-quorum matches use the ordinary
-                # tracked-video grammar instead.
-                or sum(strip.state == STRIP_MATCHED for strip in raw.strips) < 4
+                # A repaint can leave either a dense contradictory bank or one lone
+                # out-of-window alias (Samantha, 2026-10-17). The latter supplies no
+                # plausible page motion; the exact physical exit proof below still
+                # has to establish the displacement without using that alias.
+                or (
+                    sum(strip.state == STRIP_MATCHED for strip in raw.strips) < 4
+                    and not (
+                        raw.eligible == 1
+                        and sum(strip.state == STRIP_MATCHED for strip in raw.strips)
+                        == 1
+                        and all(
+                            strip.delta_px is not None
+                            and abs(strip.delta_px) > raw.trust_window_px
+                            for strip in raw.strips
+                            if strip.state == STRIP_MATCHED
+                        )
+                    )
+                )
             )
         )
         or before_marker is None
@@ -2024,12 +2182,15 @@ def _video_track_deltas(
                     max_step_px=max_step_px,
                 )
             )
-            # A raw refusal has no trusted strip candidate. A direct marker bridge is permitted
-            # only while both controls remain visible; the separately guarded same-pair exit
-            # below is the one all-weak exception when the active control has physically left.
+            # A direct marker bridge needs both controls visible. It can also refine a
+            # measured centroid within the existing NCC tolerance, with an exact NCC witness.
+            # The separately guarded same-pair exit handles a control physically leaving.
             # A later marker may never re-seed a broken trajectory below the video.
             if (
-                raw.status in (SHIFT_NO_EVIDENCE, SHIFT_NO_CONSENSUS)
+                (
+                    raw.status in (SHIFT_NO_EVIDENCE, SHIFT_NO_CONSENSUS)
+                    or _measured_marker_projection(raw, direct_marker_delta)
+                )
                 and direct_marker_delta is not None
                 and before is _marker_block(before_seg, before_marker)
             ):
@@ -2070,8 +2231,8 @@ def _video_track_deltas(
                 # one extra anchor make a similarly-shaped neighbour look interchangeable.
                 is_direct_bridge = (
                     raw.status in (SHIFT_NO_EVIDENCE, SHIFT_NO_CONSENSUS)
-                    and delta == direct_marker_delta
-                )
+                    or _measured_marker_projection(raw, direct_marker_delta)
+                ) and delta == direct_marker_delta
                 after_pool = (
                     (_marker_block(after_seg, after_marker),)
                     if is_direct_bridge
@@ -2096,7 +2257,13 @@ def _video_track_deltas(
                     )
                 )
                 if len(matches) == 1:
-                    candidates.append((before, matches[0], delta))
+                    candidate = (before, matches[0], delta)
+                    # Independent proofs of the SAME physical mapping are corroboration,
+                    # not ambiguity. The explicit marker-exit path above can nominate
+                    # exactly the mapping that the ordinary landmark/NCC path also finds.
+                    # Distinct cards or deltas remain separate candidates and still refuse.
+                    if candidate not in candidates:
+                        candidates.append(candidate)
         # A direct, single-card continuation is the only authority.  Multiple valid mappings
         # are exactly the situation in which treating animation as a repair would be a guess.
         if len(candidates) != 1:
@@ -2169,11 +2336,11 @@ def _repair_video_track_shifts(
         )
         if (
             raw.status in (SHIFT_NO_CONSENSUS, SHIFT_NO_EVIDENCE)
-            and direct_delta == delta
-        ):
-            # Two contained controls identify the same physical card across an otherwise noisy
-            # pair. This can corroborate a raw no-consensus result just as it can bridge an
-            # all-weak one; raw NCC evidence remains recorded rather than being relabelled.
+            or _measured_marker_projection(raw, direct_delta)
+        ) and direct_delta == delta:
+            # Two contained controls plus an exact card anchor identify the same card.
+            # Refusals can be bridged; measured centroids can only be refined within the
+            # existing NCC tolerance with an exact NCC witness. Retain the raw evidence.
             repaired[pair_index] = replace(
                 raw,
                 status=SHIFT_MEASURED,
@@ -2346,7 +2513,7 @@ def _repair_shifts_from_layout(
 ) -> tuple[
     tuple[ShiftEstimate, ...], tuple[str, ...], tuple[tuple[int, ShiftEstimate], ...]
 ]:
-    """Propose one bounded animation run, never an isolated layout repair.
+    """Propose one bounded animation run or a fully corroborated isolated repaint.
 
     `max_step_px` -- see `_structural_landmarks`'s docstring; threaded to every nested repair
     proposal and every direct `_structural_landmarks` call below, on the same profile-derived
@@ -2362,9 +2529,19 @@ def _repair_shifts_from_layout(
     strips agree to the pixel, the same exact delta moves top, bottom, and heart landmarks, and
     raw measured/full-layout pairs immediately bracket it.  This is the still-photo transition
     where most of one card repaints between captures, leaving the raw bank below frameshift's
-    quorum even though the page geometry is independently complete on both sides.  The narrow
-    grammar does not admit a lone layout proposal at a capture edge, any dissent, a two-kind
-    layout match, or a merely measured (rather than full-layout) bracket; the complete-page
+    quorum even though the page geometry is independently complete on both sides.
+    One additional reverse, out-of-window match is allowed only when its search range could
+    not contain the forward answer and an exact shared gutter also corroborates that answer.
+    A bank with one such reverse alias and two forward aliases beyond the profile's
+    one-step bound additionally requires two exact shared gutters and two exact hearts.
+    A singleton heart-containing NCC strip can instead survive a bounded-card repaint when
+    both surrounding gutters and the complete card/heart move exactly, no other full-layout
+    answer exists, and observable dissent is confined above that same card's heart.
+    If its top leaves the band, two independent NCC strips (heart and following card)
+    plus the exact lower gutter are required instead of the now-invisible upper gutter.
+    It requires the same measured full-layout brackets and complete page probe.
+    The grammar does not admit a lone layout proposal at a capture edge, unexplained dissent,
+    a two-kind layout match, or a merely measured (rather than full-layout) bracket; the complete-page
     assembly probe remains mandatory.
 
     One exact four-pair continuation is narrower still: two ordinary two-strip repairs, one exact
@@ -2562,7 +2739,7 @@ def _repair_shifts_from_layout(
     # repaint can instead leave one *fully bounded* pair with exactly two surviving NCC strips,
     # while the raw measured/full-layout pairs on both sides prove that this is a local evidence
     # loss rather than a new coordinate space.  Keep every component exact and independently
-    # auditable: no disagreement may be hidden in an ineligible strip cluster, and no partial
+    # auditable: an ineligible alias must be independently excluded, and no partial
     # landmark set may be promoted just because its neighbours measured normally.
     if end - start == 1:
         i = start
@@ -2572,6 +2749,80 @@ def _repair_shifts_from_layout(
             strip.delta_px
             for strip in raw.strips
             if strip.state == STRIP_MATCHED and strip.delta_px is not None
+        )
+        # Amanda 2026-10-17: +497,+497 with a -1176 alias from a strip whose search
+        # ends at +426. It cannot vote on +497 at all. Keep the ordinary no-dissent
+        # form, or allow exactly this evidence class with an extra exact gutter proof.
+        # A plausible reverse motion or competing in-range vote still refuses.
+        # The separate multi-alias form below needs stronger two-card geometry.
+        aliases = tuple(
+            strip
+            for strip in raw.strips
+            if strip.state == STRIP_MATCHED and strip.delta_px != proposed.delta_px
+        )
+        exact_supporters = matched.count(proposed.delta_px)
+        excluded_alias = (
+            len(aliases) == 1
+            and raw.dissenting == 1
+            and proposed.delta_px is not None
+            and aliases[0].delta_px is not None
+            and aliases[0].delta_px < -raw.trust_window_px
+            and aliases[0].search[1] < proposed.delta_px
+            and len(
+                _shared_gutter_witnesses(
+                    segmentations[i], segmentations[i + 1], proposed.delta_px
+                )
+            )
+            >= 1
+        )
+        # Amanda's second capture has the same exact forward witnesses, plus a
+        # reverse alias and two forward aliases beyond this profile's one-step
+        # bound. Admit that bank only with TWO complete gutters and TWO hearts:
+        # two independently segmented card transitions must agree pixel-for-pixel.
+        # An in-range alternative remains dissent, regardless of its NCC score.
+        landmarks = _structural_landmarks(
+            segmentations[i], segmentations[i + 1], max_step_px=max_step_px
+        )
+        reverse_aliases = [
+            s for s in aliases if s.delta_px is not None and s.delta_px < 0
+        ]
+        forward_aliases = [
+            s for s in aliases if s.delta_px is not None and s.delta_px > 0
+        ]
+        excluded_multi_aliases = (
+            proposed.delta_px is not None
+            and len(aliases) == raw.dissenting == 3
+            and len(reverse_aliases) == 1
+            and reverse_aliases[0].delta_px < -raw.trust_window_px
+            and reverse_aliases[0].search[1] < proposed.delta_px
+            and len(forward_aliases) == 2
+            and all(s.delta_px > max_step_px for s in forward_aliases)
+            and len(
+                _shared_gutter_witnesses(
+                    segmentations[i], segmentations[i + 1], proposed.delta_px
+                )
+            )
+            >= 2
+            and all(
+                sum(
+                    kind == wanted and delta == proposed.delta_px
+                    for kind, delta in landmarks
+                )
+                >= 2
+                for wanted in ("top", "bottom", "heart")
+            )
+        )
+        bounded_repaint = _bounded_card_repaint_witness(
+            segmentations[i],
+            segmentations[i + 1],
+            raw,
+            proposed.delta_px,
+            max_step_px=max_step_px,
+        )
+        exact_bank = exact_supporters == 2 and (
+            (raw.dissenting == 0 and len(matched) == 2)
+            or excluded_alias
+            or excluded_multi_aliases
         )
         exact_kinds = {
             kind
@@ -2587,10 +2838,12 @@ def _repair_shifts_from_layout(
             and not exact_multi_indices
             and 0 < i < len(shifts) - 1
             and raw.status == SHIFT_NO_CONSENSUS
-            and raw.eligible == raw.agreeing == 2
-            and raw.dissenting == 0
+            and (
+                (raw.agreeing == 2 and (raw.eligible == 2 or excluded_multi_aliases))
+                or bounded_repaint
+            )
             and proposed.delta_px is not None
-            and matched == (proposed.delta_px, proposed.delta_px)
+            and (exact_bank or bounded_repaint)
             and exact_kinds == {"top", "bottom", "heart"}
         ):
             for bracket in (i - 1, i + 1):
@@ -2615,9 +2868,34 @@ def _repair_shifts_from_layout(
                     break
                 bracket_notes.append(bridge_note)
             if len(bracket_notes) == 2:
+                alias_notes = (
+                    (
+                        f"isolated full-layout repair excluded one reverse out-of-window "
+                        f"alias {aliases[0].delta_px}px whose search {aliases[0].search} "
+                        f"cannot contain +{proposed.delta_px}px; exact shared gutter confirmed",
+                    )
+                    if excluded_alias
+                    else (
+                        (
+                            "isolated full-layout repair excluded out-of-bound aliases with "
+                            "two exact shared gutters and two exact hearts",
+                        )
+                        if excluded_multi_aliases
+                        else (
+                            (
+                                "isolated bounded-card repaint: heart-containing NCC witness, "
+                                "exact lower gutter and card/heart geometry; upper gutter "
+                                "or independent following-card NCC witness verified; "
+                                "observable dissent confined above that card's heart",
+                            )
+                            if bounded_repaint
+                            else ()
+                        )
+                    )
+                )
                 return (
                     tuple(repaired),
-                    (notes[i], *bracket_notes),
+                    (notes[i], *bracket_notes, *alias_notes),
                     ((i, raw),),
                 )
         return tuple(shifts), (), ()
@@ -3058,6 +3336,35 @@ def _observation(frame_index: int, block, offset: int) -> BlockObservation:
     )
 
 
+def _split_partial_observation(
+    observation: BlockObservation,
+    upper_end: int,
+    lower_start: int,
+) -> tuple[BlockObservation, BlockObservation]:
+    """Split around a separately proved background seam without inventing edge evidence.
+
+    Callers establish the seam and rule out hearts inside its gap. New boundaries
+    stay unobserved, and the lower piece cannot inherit the original top's corner.
+    """
+    return (
+        replace(
+            observation,
+            page_y1=upper_end,
+            frame_y1=observation.frame_y0 + upper_end - observation.page_y0,
+            bottom_observed=False,
+            hearts=tuple(h for h in observation.hearts if h[1] < upper_end),
+        ),
+        replace(
+            observation,
+            page_y0=lower_start,
+            frame_y0=observation.frame_y0 + lower_start - observation.page_y0,
+            top_observed=False,
+            top_kind="",
+            hearts=tuple(h for h in observation.hearts if h[1] >= lower_start),
+        ),
+    )
+
+
 def _split_repeated_near_gutter_merges(
     observations: Sequence[BlockObservation],
     near_gutters: Sequence[tuple[int, int, int]],
@@ -3147,32 +3454,7 @@ def _split_repeated_near_gutter_merges(
             repaired.append(obs)
             continue
         upper_end, lower_start, frame_indices = boundary
-        split_at_upper = obs.frame_y0 + (upper_end - obs.page_y0)
-        split_at_lower = obs.frame_y0 + (lower_start - obs.page_y0)
-        repaired.extend(
-            (
-                replace(
-                    obs,
-                    page_y1=upper_end,
-                    frame_y1=split_at_upper,
-                    bottom_observed=False,
-                    hearts=tuple((x, y) for x, y in obs.hearts if y < upper_end),
-                ),
-                # `top_kind` describes the row at `page_y0` and nothing else. The lower fragment's
-                # `page_y0` is a VIRTUAL row this pass invented, so carrying the original sighting's
-                # kind forward would fabricate evidence about it — and a leaked `EDGE_CARD_CORNER`
-                # is read by `_scroll_top_evidence` as "some frame saw the first item's own top
-                # edge", which is exactly the positive test that catches a false `at_scroll_top`.
-                replace(
-                    obs,
-                    page_y0=lower_start,
-                    frame_y0=split_at_lower,
-                    top_observed=False,
-                    top_kind="",
-                    hearts=tuple((x, y) for x, y in obs.hearts if y >= lower_start),
-                ),
-            )
-        )
+        repaired.extend(_split_partial_observation(obs, upper_end, lower_start))
         if boundary not in used:
             used.append(boundary)
 
@@ -3185,6 +3467,100 @@ def _split_repeated_near_gutter_merges(
         for upper_end, lower_start, frame_indices in used
     )
     return tuple(repaired), notes
+
+
+def _split_repeated_card_bottom_seams(
+    observations: Sequence[BlockObservation],
+    long_runs: Sequence[tuple[int, int, int]],
+    corner_seams: Sequence[tuple[int, int, int]],
+    *,
+    tolerance: int,
+) -> tuple[tuple[BlockObservation, ...], tuple[str, ...]]:
+    """Keep a missed photo-to-section seam from joining two items in the page fold.
+
+    A long blank region alone proves nothing. At least two other frames must each
+    detect the photo's bottom corner and the same following content start, and a
+    complete, heart-bearing photo must independently end there. The bridging frame
+    must itself record that same background run inside its partial block. No complete
+    sighting may contradict the seam, and no heart may be discarded in its gap.
+    Virtual pieces retain their hearts and stay partial with unobserved new edges;
+    this cannot make an unbounded following section selectable or crop it as a card.
+    """
+    repaired: list[BlockObservation] = []
+    notes: list[str] = []
+    for obs in observations:
+        proposals = []
+        if not obs.complete:
+            for frame, y0, y1 in long_runs:
+                if frame != obs.frame_index or not obs.page_y0 < y0 < y1 < obs.page_y1:
+                    continue
+                witnesses = [
+                    seam
+                    for seam in corner_seams
+                    if seam[0] != frame
+                    and abs(seam[1] - y0) <= tolerance
+                    and abs(seam[2] - y1) <= tolerance
+                    and any(
+                        o.frame_index == seam[0]
+                        and o.bottom_observed
+                        and abs(o.page_y1 - seam[1]) <= tolerance
+                        for o in observations
+                    )
+                    and any(
+                        o.frame_index == seam[0]
+                        and abs(o.page_y0 - seam[2]) <= tolerance
+                        for o in observations
+                    )
+                ]
+                if len({f for f, _a, _b in witnesses}) < 2:
+                    continue
+                ends = [a for _f, a, _b in witnesses]
+                starts = [b for _f, _a, b in witnesses]
+                if (
+                    max(ends) - min(ends) > tolerance
+                    or max(starts) - min(starts) > tolerance
+                ):
+                    continue
+                upper, lower = (
+                    sorted(ends)[len(ends) // 2],
+                    sorted(starts)[len(starts) // 2],
+                )
+                bounded = [
+                    o
+                    for o in observations
+                    if o.complete
+                    and o.frame_index != frame
+                    and len(o.hearts) == 1
+                    and abs(o.page_y1 - upper) <= tolerance
+                    and abs(o.page_y0 - obs.page_y0) <= tolerance
+                ]
+                if not bounded:
+                    continue
+                if any(
+                    upper <= heart_y < lower
+                    for o in observations
+                    for _x, heart_y in o.hearts
+                ):
+                    continue
+                if any(
+                    o.complete and o.page_y0 < lower and o.page_y1 > upper + tolerance
+                    for o in observations
+                ):
+                    continue
+                proposals.append(
+                    (upper, lower, tuple(sorted({f for f, _a, _b in witnesses})))
+                )
+        if len(proposals) != 1:
+            repaired.append(obs)
+            continue
+        upper, lower, frames = proposals[0]
+        repaired.extend(_split_partial_observation(obs, upper, lower))
+        notes.append(
+            f"frame {obs.frame_index}'s spanning partial was split around repeated card-bottom "
+            f"seam {upper}..{lower}, corroborated by a complete photo and corner/background "
+            f"measurements in frames {list(frames)}; both pieces remain partial and all hearts survive"
+        )
+    return tuple(repaired), tuple(notes)
 
 
 def _split_long_background_card_top_merges(
@@ -3315,29 +3691,7 @@ def _split_long_background_card_top_merges(
         run_y0, run_y1, card_y0, card_y1, proving_frames, top_witness_frames = (
             proposals[0]
         )
-        split_at_upper = observation.frame_y0 + (run_y0 - observation.page_y0)
-        split_at_lower = observation.frame_y0 + (run_y1 - observation.page_y0)
-        repaired.extend(
-            (
-                replace(
-                    observation,
-                    page_y1=run_y0,
-                    frame_y1=split_at_upper,
-                    bottom_observed=False,
-                ),
-                # As in `_split_repeated_near_gutter_merges`: the lower fragment starts on the
-                # invented seam row, so it inherits no top evidence. Clearing `top_kind` with
-                # `top_observed` keeps `_scroll_top_evidence` from reading the ORIGINAL top's
-                # card corner as proof that a frame saw this fragment's own top edge.
-                replace(
-                    observation,
-                    page_y0=run_y1,
-                    frame_y0=split_at_lower,
-                    top_observed=False,
-                    top_kind="",
-                ),
-            )
-        )
+        repaired.extend(_split_partial_observation(observation, run_y0, run_y1))
         corroboration = (
             f"complete sightings in frames {list(proving_frames)} independently bounded the "
             f"lower card at {card_y0}..{card_y1}"
@@ -4194,7 +4548,7 @@ def _fold_page(
 ]:
     """Every frame's segmentation plus a page offset each -> the folded page.
 
-    The whole pipeline lives here — screen-fixed islands, observations, the two virtual splits,
+    The whole pipeline lives here — screen-fixed islands, observations, the virtual splits,
     assembly — because `build_item_index` runs it THREE times: once to probe whether a proposed
     shift repair can rebuild the page, once to ask whether a fold contradiction nominates frames
     for omission recovery, and once for real. Those three must see the same page by construction.
@@ -4223,6 +4577,18 @@ def _fold_page(
         if offset is not None
         for run in segmentation.runs
         if run.kind == RUN_TOO_LONG
+    )
+    corner_seams = tuple(
+        (frame_index, run.y0 + offset, run.y1 + offset)
+        for frame_index, (segmentation, offset) in enumerate(
+            zip(segmentations, offsets, strict=True)
+        )
+        if offset is not None
+        for run in segmentation.runs
+        if run.kind == RUN_CARD_EDGE
+    )
+    observations, bottom_seam_notes = _split_repeated_card_bottom_seams(
+        observations, long_runs, corner_seams, tolerance=extent_tolerance_px
     )
     observations, long_run_notes = _split_long_background_card_top_merges(
         observations, long_runs, tolerance=extent_tolerance_px
@@ -4261,7 +4627,11 @@ def _fold_page(
     return (
         blocks,
         failures,
-        island_notes + long_run_notes + near_gutter_notes + assembly_notes,
+        island_notes
+        + bottom_seam_notes
+        + long_run_notes
+        + near_gutter_notes
+        + assembly_notes,
         island_notes,
         screen_fixed,
     )
@@ -4359,7 +4729,9 @@ def build_item_index(
 
     `video_mute_markers` is the v12 form of that evidence: positioned, near-perfect matches of
     Hinge's own mute control. A row first binds to one segmented card and may then follow that
-    same card as its overlay leaves the visible band. One raw refused pair may be bridged while
+    same card as its overlay leaves the visible band. A measured pixel centroid may be refined
+    within the NCC agreement tolerance when that exact control displacement has both another
+    card-local anchor and an exact NCC witness. One raw refused pair may be bridged while
     that same control is affirmatively visible in both frames when its exact displacement agrees
     with another card-local anchor. A silent or contradictory pair on which the control itself
     exits has the narrower heart/lower-edge/lower-gutter proof in

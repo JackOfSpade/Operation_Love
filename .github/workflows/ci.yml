@@ -51,4 +51,5 @@ jobs:
           cache-dependency-path: pyproject.toml
       - run: pip install --quiet -e '.[dev]'
       - run: ruff check operation_love tests tools scripts
+      - run: ruff format --check .
       - run: python tools/backfill_prompt_eras.py --check

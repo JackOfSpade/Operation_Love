@@ -1714,12 +1714,13 @@ def _card_stat(campaign: Path, card: dict, band: tuple[float, float]) -> CardSta
     if times != sorted(times):
         raise VideoBoundRefused(f"card {card_id} frame timestamps are not monotonic")
     prompted = card.get("label_prompted_t")
-    if label in _DENOMINATOR_LABELS:
-        if not isinstance(prompted, (int, float)) or prompted < times[-1]:
-            raise VideoBoundRefused(
-                f"card {card_id} was labeled before its dwell burst closed; the burst may carry "
-                "the owner's tap and cannot be used as dwell evidence"
-            )
+    if (label in _DENOMINATOR_LABELS) and (
+        not isinstance(prompted, (int, float)) or prompted < times[-1]
+    ):
+        raise VideoBoundRefused(
+            f"card {card_id} was labeled before its dwell burst closed; the burst may carry "
+            "the owner's tap and cannot be used as dwell evidence"
+        )
     # The one place BOTH harnesses' spans have to survive, and the reason it lives here rather
     # than at either recorder: `burst_span_s` is what `observed_window_s`, `accepted()` and the
     # margin guard are all computed from, so a span that is not a measurement of the window the

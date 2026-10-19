@@ -12206,3 +12206,257 @@ def test_a_completed_like_reports_the_send_it_actually_made(monkeypatch):
 
     assert drv.like() is None
     assert drv.like_send_attempted() is True
+
+
+@pytest.mark.parametrize("ascending", (False, True))
+@pytest.mark.parametrize("raw_status", ("no_consensus", "no_evidence", "beyond_window"))
+@pytest.mark.parametrize(
+    "break_gate",
+    (
+        None,
+        "missing",
+        "x",
+        "edge",
+        "ambiguous",
+        "window",
+        "saturated",
+        "measured",
+        "zero",
+    ),
+)
+def test_video_marker_navigation_requires_an_independent_exact_card_anchor(
+    monkeypatch, tmp_path, ascending, break_gate, raw_status
+):
+    """Playing video can silence NCC; app UI plus a real edge can still measure a leg.
+
+    Marker detection and segmentation run on synthetic pixels. A wrong control trajectory,
+    absent/ambiguous control, or saturated pixel estimate must never authorize page coordinates.
+    Both navigation and dwell cleanup must use the same proof and preserve the sign.
+    """
+    import dataclasses
+    from operation_love.drivers import frameshift, item_nav
+
+    drv = _drv(WorldAdb())
+    # Measurement authority follows the declared capability, even with a different app id.
+    drv.spec = dataclasses.replace(
+        drv.spec,
+        app="renamed",
+        identity_top_name_take_another_look_band=None,
+    )
+    drv._dbg = HingeDebugLog(str(tmp_path), run_id="video-marker-leg")
+    frames = []
+    template = hinge._video_mute_template()
+    for i, scroll in enumerate((700, 700 if break_gate == "zero" else 933)):
+        image = cv2.imdecode(
+            np.frombuffer(_frame(scroll), np.uint8), cv2.IMREAD_GRAYSCALE
+        )
+        # Card 2 starts at page row 1353. Its app-owned control stays inside that card.
+        y = 1403 - scroll + (7 if i == 1 and break_gate == "edge" else 0)
+        x = 106 + (1 if i == 1 and break_gate == "x" else 0)
+        if not (i == 1 and break_gate == "missing"):
+            image[y : y + template.shape[0], x : x + template.shape[1]] = template
+        frames.append(cv2.imencode(".png", image)[1].tobytes())
+    if ascending:
+        frames.reverse()
+    raw = frameshift.estimate_shift(*frames, content_band=_CONTENT_BAND)
+    raw = dataclasses.replace(
+        raw,
+        delta_px=None,
+        consensus_px=None,
+        status=raw_status,
+        strips=(),
+        saturated=break_gate == "saturated",
+        reason="video obscured the strip bank",
+        trust_window_px=100 if break_gate == "window" else 900,
+    )
+    if break_gate == "measured":
+        raw = dataclasses.replace(
+            raw, delta_px=17, consensus_px=17, status=frameshift.SHIFT_MEASURED
+        )
+    if break_gate == "ambiguous":
+        original = drv._video_mute_marker_rows
+        monkeypatch.setattr(
+            drv, "_video_mute_marker_rows", lambda fs: original(fs) + original(fs)[:1]
+        )
+    monkeypatch.setattr(hinge, "estimate_shift", lambda *args, **kwargs: raw)
+    monkeypatch.setattr(item_nav, "estimate_shift", lambda *args, **kwargs: raw)
+
+    result, trace = item_nav._navigation_step_shift(
+        *frames,
+        content_band=_CONTENT_BAND,
+        trust_window_px=900,
+        driver=drv,
+    )
+    accepted = break_gate is None and raw_status != "beyond_window"
+    expected = (
+        (-233 if ascending else 233)
+        if accepted
+        else (17 if break_gate == "measured" else None)
+    )
+    assert result.delta_px == expected
+    assert drv._measured_page_shift(*frames) == expected
+    assert trace["forward"]["status"] == raw.status
+    if accepted:
+        assert "direct video marker bridge" in result.reason
+        rows = [
+            json.loads(line)
+            for line in (drv._dbg.dir / "actions.jsonl").read_text().splitlines()
+        ]
+        row = next(
+            r for r in rows if r["action"] == "page_shift_video_marker_measurement"
+        )
+        assert row["delta_px"] == expected
+        assert row["forward"]["status"] == raw_status
+        assert (drv._dbg.dir / row["before"]).is_file()
+        assert (drv._dbg.dir / row["after"]).is_file()
+
+
+def test_video_marker_navigation_is_disabled_without_the_spec_capability(monkeypatch):
+    import dataclasses
+    from types import SimpleNamespace
+
+    drv = _drv(WorldAdb())
+    drv.spec = dataclasses.replace(drv.spec, supports_video_marker_shift=False)
+
+    def unexpected_read(*args):
+        pytest.fail("an unsupported spec must not use the video marker proof")
+
+    monkeypatch.setattr(drv, "_video_mute_marker_rows", unexpected_read)
+    refused = SimpleNamespace(status="no_consensus", saturated=False)
+    assert drv._recover_video_marker_page_shift(b"before", b"after", refused) is refused
+
+
+@pytest.mark.parametrize("ascending", (False, True))
+@pytest.mark.parametrize(
+    "gate",
+    (
+        None,
+        "missing",
+        "header",
+        "outside_card",
+        "edge",
+        "ambiguous",
+        "changed_existing",
+        "no_identity",
+        "unsafe_header",
+        "no_anchor",
+        "saturated",
+    ),
+)
+def test_video_navigation_recovers_control_clipped_above_capture_band(
+    monkeypatch,
+    tmp_path,
+    ascending,
+    gate,
+):
+    """Hope's failed 250px leg: one control is above 300px, below the identity header.
+
+    Synthetic image pixels drive the actual control matcher and segmenter. The
+    extended view supplies evidence only; it cannot change the capture/count band.
+    """
+    from operation_love.drivers import frameshift, item_nav
+
+    drv = _drv(WorldAdb())
+    drv._dbg = HingeDebugLog(str(tmp_path), run_id="clipped-video-control")
+    original_band = drv.content_band
+    frames = []
+    template = hinge._video_mute_template()
+    for i, scroll in enumerate((1150, 900)):
+        image = cv2.imdecode(
+            np.frombuffer(_frame(scroll), np.uint8), cv2.IMREAD_GRAYSCALE
+        )
+        if i == 0:
+            # The fixture's generic top chrome normally overwrites these pixels.
+            # Here the playing card continues behind the clipped analysis edge.
+            image[226:300] = 250
+            image[226:300, 53:1027] = np.random.default_rng(27).integers(
+                60,
+                200,
+                size=(74, 974),
+                dtype=np.uint8,
+            )
+        y = 1403 - scroll + (7 if i == 1 and gate == "edge" else 0)
+        x = 20 if i == 0 and gate == "outside_card" else 106
+        if i == 0 and gate == "header":
+            y = 160
+        if not (i == 0 and gate == "missing"):
+            image[y : y + template.shape[0], x : x + template.shape[1]] = template
+        frames.append(cv2.imencode(".png", image)[1].tobytes())
+    if not ascending:
+        frames.reverse()
+    raw = dataclasses.replace(
+        frameshift.estimate_shift(*frames, content_band=original_band),
+        delta_px=None,
+        consensus_px=None,
+        status=frameshift.SHIFT_NO_CONSENSUS,
+        saturated=gate == "saturated",
+        strips=(),
+        reason="animated strip disagreement",
+    )
+    monkeypatch.setattr(hinge, "estimate_shift", lambda *a, **kw: raw)
+    monkeypatch.setattr(item_nav, "estimate_shift", lambda *a, **kw: raw)
+    if gate in ("ambiguous", "changed_existing"):
+        reader = drv._video_mute_marker_rows
+
+        def altered_reader(fs, **kwargs):
+            markers = reader(fs, **kwargs)
+            if kwargs and markers:
+                if gate == "ambiguous":
+                    return (*markers, markers[0])
+                original = reader(fs)
+                return tuple(
+                    dataclasses.replace(m, x=m.x + 1)
+                    if any(m.frame_index == o.frame_index for o in original)
+                    else m
+                    for m in markers
+                )
+            return markers
+
+        monkeypatch.setattr(drv, "_video_mute_marker_rows", altered_reader)
+    if gate == "no_identity":
+        drv.identity_band = None
+    if gate == "unsafe_header":
+        drv.identity_band = (0.1, 0.05, 0.8, 0.13)
+    if gate == "no_anchor":
+        segment = hinge.segment_frame
+
+        def no_anchor(frame, **kwargs):
+            seg = segment(frame, **kwargs)
+            return dataclasses.replace(
+                seg,
+                blocks=tuple(
+                    dataclasses.replace(
+                        b,
+                        hearts=(),
+                        top=dataclasses.replace(b.top, observed=False),
+                        bottom=dataclasses.replace(b.bottom, observed=False),
+                    )
+                    for b in seg.blocks
+                ),
+            )
+
+        monkeypatch.setattr(hinge, "segment_frame", no_anchor)
+    result, trace = item_nav._navigation_step_shift(
+        *frames,
+        content_band=original_band,
+        trust_window_px=900,
+        driver=drv,
+    )
+    expected = (-250 if ascending else 250) if gate is None else None
+    assert result.delta_px == expected
+    assert drv._measured_page_shift(*frames) == expected
+    assert drv.content_band == original_band
+    assert trace["forward"]["status"] == "no_consensus"
+    if gate is None:
+        assert len(drv._video_mute_marker_rows(frames)) == 1
+        assert "direct video marker bridge" in result.reason
+        records = [
+            json.loads(line)
+            for line in (drv._dbg.dir / "actions.jsonl").read_text().splitlines()
+        ]
+        row = next(
+            r for r in records if r["action"] == "page_shift_video_marker_measurement"
+        )
+        assert row["extended_above_content_band"] is True
+        assert row["marker_content_band"] == [drv.identity_band[3], original_band[1]]
+        assert row["delta_px"] == expected

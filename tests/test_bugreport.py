@@ -9275,7 +9275,9 @@ def test_config_section_names_the_recall_target_and_the_auto_review_settings(tmp
     assert "auto_review: enabled=False, random_share=0.25" in text
 
 
-def test_debug_log_surfaces_returned_chain_whose_leg_sum_disagrees_with_direct(tmp_path):
+def test_debug_log_surfaces_returned_chain_whose_leg_sum_disagrees_with_direct(
+    tmp_path,
+):
     """Run 977a1a7c4c5e: a returned chain (legs 0, direct -35) caused the later 35px
     `count_disagrees_with_index` stop, and the report hid it because only refusals rendered."""
     run = tmp_path / "run_return_chain_disagreement"

@@ -131,6 +131,8 @@ from .base import (
 )
 from .frameshift import (
     SHIFT_MEASURED,
+    SHIFT_NO_CONSENSUS,
+    SHIFT_NO_EVIDENCE,
     ShiftEstimationError,
     estimate_shift,
     estimate_shift_with_reverse_recovery,
@@ -167,6 +169,8 @@ from .item_index import (
     ItemIndex,
     ItemIndexError,
     _UNCERTAIN_HEART_NOTE,
+    _direct_marker_bridge_delta,
+    _unique_markers_by_frame,
     _edge_only_two_strip_shift,
     _exact_multi_strip_shift,
     _layout_repaired_shift,
@@ -1572,6 +1576,7 @@ HINGE_SPEC = AndroidAppSpec(
     # This whole redesign -- the auto-mode behavior policy, the OBSERVE input lease, and the
     # capped/bounded recovery rewind lane -- was calibrated on Hinge and only on Hinge. See
     # each field's own comment on AndroidAppSpec (android_spec.py) for what it gates and why.
+    supports_video_marker_shift=True,
     auto_policy_calibrated=True,
     observe_input_serialized=True,
     safe_rewind_max_frac=0.55,
@@ -2873,7 +2878,9 @@ class AndroidDriver(DatingAppDriver):
                 content_band=self.content_band,
             )
         )
-        self._targeting_compatible_version = getattr(cfg, "hinge_compatible_version", None)
+        self._targeting_compatible_version = getattr(
+            cfg, "hinge_compatible_version", None
+        )
         self._targeting_runtime_version_name: str | None = None
         self._targeting_runtime_frame_size: tuple[int, int] | None = None
         self._targeting_binding_fetched = False
@@ -6318,15 +6325,18 @@ class AndroidDriver(DatingAppDriver):
         return tuple(frame_index in marked for frame_index in range(len(frames)))
 
     def _video_mute_marker_rows(
-        self, frames: list[bytes]
+        self, frames: list[bytes], *, content_band: tuple[float, float] | None = None
     ) -> tuple[VideoMuteMarker, ...]:
         """Positioned mute observations for v12's physical-card tracker.
 
         The one production reader of the mute glyph: a video can carry its identity after the
         control itself scrolls offscreen, which a bare per-frame boolean cannot express.
+        The default band is unchanged; single-leg navigation recovery may explicitly
+        search down from the identity header to recover a just-clipped control.
         `_index_captured_items` folds these same rows down to the indexer's per-frame booleans,
         and `_video_mute_frame_markers` is that identical fold for callers that only want them.
         """
+        marker_band = self.content_band if content_band is None else content_band
         markers: list[VideoMuteMarker] = []
         for frame_index, frame in enumerate(frames):
             try:
@@ -6341,9 +6351,9 @@ class AndroidDriver(DatingAppDriver):
                 height, width = image.shape
                 rect = (
                     0,
-                    round(self.content_band[0] * height),
+                    round(marker_band[0] * height),
                     round(0.30 * width),
-                    round(self.content_band[1] * height),
+                    round(marker_band[1] * height),
                 )
                 # `image` is already this exact frame's decode (just above, for height/width) --
                 # hand it through so _locate_video_mute does not decode the same PNG a second
@@ -6761,11 +6771,128 @@ class AndroidDriver(DatingAppDriver):
         except Exception as exc:  # noqa: BLE001 -- same rule, for a non-production estimate double
             return {"error": f"{type(exc).__name__}: {exc}"}
 
+    def _recover_video_marker_page_shift(self, before, after, result, reverse=None):
+        """Measure a refused single leg from app-owned video UI and a separate card anchor.
+
+        Incident 2026-10-16: a playing full-height video left insufficient stable NCC strips
+        in either direction. The mute origin and the observed lower card edge both moved -233px.
+        Reuse the indexer's direct-marker proof in either direction, without changing strip
+        thresholds. Missing/ambiguous controls, no second exact anchor, saturation, zero motion,
+        or a displacement beyond the ordinary pitch/window bounds retain the raw refusal.
+        The counting walk still checks the resulting page geometry against its original index.
+        """
+        refused = (SHIFT_NO_CONSENSUS, SHIFT_NO_EVIDENCE)
+        if (
+            not self.spec.supports_video_marker_shift
+            or result.status not in refused
+            or result.saturated
+            or (
+                reverse is not None
+                and (reverse.status not in refused or reverse.saturated)
+            )
+        ):
+            return result
+        markers = self._video_mute_marker_rows([before, after])
+        by_frame = _unique_markers_by_frame(markers, 2)
+        marker_band = self.content_band
+        if len(by_frame) != 2:
+            # A top-clipped video can retain its mute control below the identity
+            # header but above the calibrated analysis band (Hope, 2026-10-18:
+            # origin 259px versus the band's 300px top). Only this single missing
+            # control earns a wider view. Counting, crops and the raw
+            # strip estimator retain their original calibrated band.
+            if len(markers) != 1 or len(by_frame) != 1 or self.identity_band is None:
+                return result
+            recovery_top = self.identity_band[3]
+            if not 0 < recovery_top < self.content_band[0]:
+                return result
+            marker_band = (recovery_top, self.content_band[1])
+            expanded = self._video_mute_marker_rows(
+                [before, after], content_band=marker_band
+            )
+            expanded_by_frame = _unique_markers_by_frame(expanded, 2)
+            if len(expanded) != 2 or len(expanded_by_frame) != 2:
+                return result
+            for i, marker in by_frame.items():
+                other = expanded_by_frame[i]
+                if (marker.x, marker.y) != (other.x, other.y):
+                    return result
+            missing = next(i for i in (0, 1) if i not in by_frame)
+            # An extension below the header may only recover an origin actually
+            # above the old band, never replace an absent in-band control.
+            if expanded_by_frame[missing].y >= round(
+                self.content_band[0] * result.frame_size[1]
+            ):
+                return result
+            by_frame = expanded_by_frame
+        try:
+            segs = tuple(
+                segment_frame(
+                    frame,
+                    content_band=marker_band,
+                    like_template=self._template("like"),
+                    like_threshold=_LIKE_MATCH_THRESHOLD,
+                )
+                for frame in (before, after)
+            )
+            if any(seg.failures for seg in segs):
+                return result
+            bound = min(result.trust_window_px, _pitch_relative_max_step(segs))
+            delta = _direct_marker_bridge_delta(
+                segs[0],
+                segs[1],
+                before_marker=by_frame[0],
+                after_marker=by_frame[1],
+                max_step_px=bound,
+            )
+            if delta is None:
+                backward = _direct_marker_bridge_delta(
+                    segs[1],
+                    segs[0],
+                    before_marker=by_frame[1],
+                    after_marker=by_frame[0],
+                    max_step_px=bound,
+                )
+                delta = None if backward is None else -backward
+        except (SegmentationError, ItemIndexError):
+            return result
+        if delta is None:
+            return result
+        recovered = dataclasses.replace(
+            result,
+            delta_px=delta,
+            consensus_px=delta,
+            status=SHIFT_MEASURED,
+            reason=(
+                f"direct video marker bridge measured {delta:+d}px: mute control and "
+                "a separate observed card anchor translate by the exact same distance"
+            ),
+        )
+        if self._dbg is not None:
+            try:
+                self._dbg.action(
+                    "page_shift_video_marker_measurement",
+                    before=before,
+                    after=after,
+                    delta_px=delta,
+                    bound_px=bound,
+                    marker_content_band=list(marker_band),
+                    extended_above_content_band=(marker_band != self.content_band),
+                    marker_origins=[[by_frame[i].x, by_frame[i].y] for i in (0, 1)],
+                    forward=trace_estimate(result),
+                    reverse=trace_estimate(reverse),
+                    reason=recovered.reason,
+                )
+            except Exception:  # noqa: BLE001 -- diagnostics cannot change measurement authority
+                pass
+        return recovered
+
     def _measured_page_shift(self, before: bytes, after: bytes) -> int | None:
         """How far the page moved between two frames, or None when frameshift could not tell.
 
-        Only a quorate `SHIFT_MEASURED` is an answer; a saturation report, an estimator failure,
-        or two directions that both refuse are None, and every caller treats None as "this pass
+        A quorate strip measurement or the independently corroborated direct video-marker
+        bridge is an answer. A saturation report, an estimator failure, or an uncorroborated
+        refusal is None, and every caller treats None as "this pass
         cannot claim to know where the card is now" rather than falling back to the distance it
         asked for. Same contract, and same reason, as `_static_pair_is_the_bottom`: this is the
         one comparator in the driver that says "I cannot tell" instead of guessing, and the
@@ -6779,7 +6906,9 @@ class AndroidDriver(DatingAppDriver):
         ascending count's own gesture, so it had been independently re-derived twice. Only
         `SHIFT_NO_CONSENSUS` earns a reverse attempt; every other refusal class stays terminal,
         in particular a beyond-window result must not be contradicted by a reverse search that
-        happened to lock onto some nearer repeated content. What stays HERE is the one piece
+        happened to lock onto some nearer repeated content. If strip recovery still refuses,
+        `_recover_video_marker_page_shift` can measure the same pair from app-owned UI and
+        an exact card anchor, using the indexer's existing proof. What stays HERE is the one piece
         unique to this call site: the debug row below, which `_navigation_step_shift`'s own
         caller does not want in this shape.
 
@@ -6793,6 +6922,8 @@ class AndroidDriver(DatingAppDriver):
             )
         except ShiftEstimationError:
             return None
+        strip_result = result
+        result = self._recover_video_marker_page_shift(before, after, result, reverse)
         # READ `result`, NEVER RE-DERIVE IT (found 2026-09-04). This used to inspect `shift` and
         # `reverse` and rebuild the recovery decision here -- a second copy of the very policy
         # `estimate_shift_with_reverse_recovery` exists to hold once, and the exact duplication
@@ -6803,7 +6934,11 @@ class AndroidDriver(DatingAppDriver):
         if result.status != SHIFT_MEASURED or result.delta_px is None:
             return None
         measured = int(result.delta_px)
-        if shift.status != SHIFT_MEASURED and self._dbg is not None:
+        if (
+            result is strip_result
+            and shift.status != SHIFT_MEASURED
+            and self._dbg is not None
+        ):
             try:
                 self._dbg.action(
                     "page_shift_reverse_measurement",
@@ -9541,7 +9676,9 @@ class AndroidDriver(DatingAppDriver):
         # displacement the anchor states. Recording the chain's 0 while the direct pair said -35
         # handed navigation an anchor 35px off, and it refused the like 3px past its 32px bound.
         # The chain's sum is used only when the direct pair cannot be measured at all.
-        anchor_shift_px = int(verified) if verified is not None else int(terminal_shift_px)
+        anchor_shift_px = (
+            int(verified) if verified is not None else int(terminal_shift_px)
+        )
         self._dbg_still_photo_return_chain(
             "returned",
             reason=(
@@ -9557,9 +9694,7 @@ class AndroidDriver(DatingAppDriver):
             drift_bound_px=drift_bound,
             legs=legs,
         )
-        return _MeasuredItemAnchor(
-            frame, entry_anchor.page_shift_px + anchor_shift_px
-        )
+        return _MeasuredItemAnchor(frame, entry_anchor.page_shift_px + anchor_shift_px)
 
     def _index_captured_items(self, photos: list[bytes], should_stop=None) -> str:
         """Fold this capture's frames into doc 5.3's index and doc 5.2's crops.
@@ -12488,11 +12623,10 @@ class AndroidDriver(DatingAppDriver):
             return None
         if self._refuse_foreground_block():
             return None
-        if not self._session_top_done:
-            if not self._ensure_session_top(should_stop):
-                if should_stop is None or not should_stop():
-                    self._refuse_unconfirmed_session_top()
-                return None
+        if (not self._session_top_done) and (not self._ensure_session_top(should_stop)):
+            if should_stop is None or not should_stop():
+                self._refuse_unconfirmed_session_top()
+            return None
         if self._refuse_foreground_block():
             return None
         if not self._prepare_actionable_capture_entry(should_stop):
@@ -12549,11 +12683,12 @@ class AndroidDriver(DatingAppDriver):
                 return None
             if self._refuse_foreground_block():
                 return None
-            if not self._session_top_done:
-                if not self._ensure_session_top(should_stop):
-                    if should_stop is None or not should_stop():
-                        self._refuse_unconfirmed_session_top()
-                    return None
+            if (not self._session_top_done) and (
+                not self._ensure_session_top(should_stop)
+            ):
+                if should_stop is None or not should_stop():
+                    self._refuse_unconfirmed_session_top()
+                return None
             if self._refuse_foreground_block():
                 return None
             if not self._prepare_actionable_capture_entry(should_stop):

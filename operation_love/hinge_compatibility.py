@@ -18,16 +18,28 @@ SUPERVISED_KIND = "hinge_two_decision_supervised_ui_compatibility"
 PUBLIC_RECEIPT_KIND = "hinge_two_decision_redacted_compatibility_receipt"
 _HEX = frozenset("0123456789abcdef")
 _DECISIONS = {"dislike": "automated_pass", "like": "automated_send_priority_like"}
-_SUPERVISED_FILES = frozenset({
-    "dislike_before.png", "dislike_after.png", "dislike.json",
-    "like_before.png", "like_composer.png", "send_before.png", "send_after.png",
-    "upsell_before.png", "upsell_after.png", "like.json", "upsell.json",
-})
+_SUPERVISED_FILES = frozenset(
+    {
+        "dislike_before.png",
+        "dislike_after.png",
+        "dislike.json",
+        "like_before.png",
+        "like_composer.png",
+        "send_before.png",
+        "send_after.png",
+        "upsell_before.png",
+        "upsell_after.png",
+        "like.json",
+        "upsell.json",
+    }
+)
 
 
 def canonical_sha256(value: object) -> str:
     return hashlib.sha256(
-        json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()
+        json.dumps(
+            value, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+        ).encode()
     ).hexdigest()
 
 
@@ -65,12 +77,30 @@ def _read_bound_bytes(path: str, digest: str, *, root: Path, label: str) -> byte
 
 def _validate_supervised_review(artifact: dict, app_cfg: dict, *, root: Path) -> str:
     expected = {
-        "schema_version", "kind", "status", "acceptance", "human_ground_truth",
-        "video_false_accept_rate", "source_build", "target_build", "device",
-        "frame_size_px", "source_calibration_sha256", "source_licence_key",
-        "source_licence_sha256", "files", "dislike_profile_name", "like_profile_name",
-        "like_confirmation_text", "send_point", "like_template_path", "like_template_sha256",
-        "reviewed_at", "release_notes_url", "release_notes_summary", "evidence_sha256",
+        "schema_version",
+        "kind",
+        "status",
+        "acceptance",
+        "human_ground_truth",
+        "video_false_accept_rate",
+        "source_build",
+        "target_build",
+        "device",
+        "frame_size_px",
+        "source_calibration_sha256",
+        "source_licence_key",
+        "source_licence_sha256",
+        "files",
+        "dislike_profile_name",
+        "like_profile_name",
+        "like_confirmation_text",
+        "send_point",
+        "like_template_path",
+        "like_template_sha256",
+        "reviewed_at",
+        "release_notes_url",
+        "release_notes_summary",
+        "evidence_sha256",
     }
     if set(artifact) != expected or artifact["schema_version"] != 2:
         raise ValueError("supervised compatibility artifact has an unsupported schema")
@@ -86,7 +116,10 @@ def _validate_supervised_review(artifact: dict, app_cfg: dict, *, root: Path) ->
         raise ValueError("supervised compatibility review overstates its evidence")
     calibration = app_cfg.get("targeting_calibration")
     licence_key = artifact["source_licence_key"]
-    if licence_key not in {"still_photo_bound_evidence", "still_photo_assumption_acceptance"}:
+    if licence_key not in {
+        "still_photo_bound_evidence",
+        "still_photo_assumption_acceptance",
+    }:
         raise ValueError("supervised compatibility review names an unsupported licence")
     licence = app_cfg.get(licence_key)
     if not isinstance(calibration, dict) or not isinstance(licence, dict):
@@ -95,7 +128,9 @@ def _validate_supervised_review(artifact: dict, app_cfg: dict, *, root: Path) ->
     if (
         canonical_sha256(calibration) != artifact["source_calibration_sha256"]
         or canonical_sha256(licence) != artifact["source_licence_sha256"]
-        or not isinstance(target, str) or not target or target == source
+        or not isinstance(target, str)
+        or not target
+        or target == source
         or source != calibration.get("hinge_version_name")
         or source != licence.get("hinge_version_name")
         or artifact["device"] != app_cfg.get("serial")
@@ -112,21 +147,28 @@ def _validate_supervised_review(artifact: dict, app_cfg: dict, *, root: Path) ->
     if artifact["dislike_profile_name"] == artifact["like_profile_name"]:
         raise ValueError("supervised compatibility review reused one profile")
     if "your Like sooner" not in artifact["like_confirmation_text"]:
-        raise ValueError("supervised compatibility review lacks a sent-Like confirmation")
+        raise ValueError(
+            "supervised compatibility review lacks a sent-Like confirmation"
+        )
     point = artifact["send_point"]
     if (
-        not isinstance(point, list) or len(point) != 2
+        not isinstance(point, list)
+        or len(point) != 2
         or not all(isinstance(v, int) for v in point)
         or not (100 <= point[0] <= 980 and 1000 <= point[1] <= 2200)
     ):
         raise ValueError("supervised compatibility Send Like point is invalid")
     _read_bound_bytes(
-        artifact["like_template_path"], artifact["like_template_sha256"],
-        root=root, label="reviewed Like template",
+        artifact["like_template_path"],
+        artifact["like_template_sha256"],
+        root=root,
+        label="reviewed Like template",
     )
     files = artifact["files"]
     if not isinstance(files, dict) or set(files) != _SUPERVISED_FILES:
-        raise ValueError("supervised compatibility review needs all decision frames and logs")
+        raise ValueError(
+            "supervised compatibility review needs all decision frames and logs"
+        )
     for name, reference in files.items():
         if not isinstance(reference, dict) or set(reference) != {"path", "sha256"}:
             raise ValueError(f"supervised compatibility file {name} is malformed")
@@ -134,16 +176,22 @@ def _validate_supervised_review(artifact: dict, app_cfg: dict, *, root: Path) ->
             raise ValueError(f"supervised compatibility file {name} is misnamed")
         _read_bound_bytes(reference["path"], reference["sha256"], root=root, label=name)
     dislike = _read_bound_file(
-        files["dislike.json"]["path"], files["dislike.json"]["sha256"],
-        root=root, label="Dislike action record",
+        files["dislike.json"]["path"],
+        files["dislike.json"]["sha256"],
+        root=root,
+        label="Dislike action record",
     )
     like = _read_bound_file(
-        files["like.json"]["path"], files["like.json"]["sha256"],
-        root=root, label="Like action record",
+        files["like.json"]["path"],
+        files["like.json"]["sha256"],
+        root=root,
+        label="Like action record",
     )
     upsell = _read_bound_file(
-        files["upsell.json"]["path"], files["upsell.json"]["sha256"],
-        root=root, label="Like confirmation record",
+        files["upsell.json"]["path"],
+        files["upsell.json"]["sha256"],
+        root=root,
+        label="Like confirmation record",
     )
     if (
         dislike.get("decision") != "dislike"
@@ -159,7 +207,9 @@ def _validate_supervised_review(artifact: dict, app_cfg: dict, *, root: Path) ->
         or upsell.get("dismissed") is not True
         or files["send_after.png"]["sha256"] != files["upsell_before.png"]["sha256"]
     ):
-        raise ValueError("supervised compatibility action record does not match its frames")
+        raise ValueError(
+            "supervised compatibility action record does not match its frames"
+        )
     return target
 
 
@@ -171,12 +221,28 @@ def _validate_redacted_receipt(artifact: dict, app_cfg: dict, *, root: Path) -> 
     a new statistical calibration.
     """
     expected = {
-        "schema_version", "kind", "status", "acceptance", "human_ground_truth",
-        "video_false_accept_rate", "source_build", "target_build", "device",
-        "frame_size_px", "source_calibration_sha256", "source_licence_key",
-        "source_licence_sha256", "decision_order", "like_sent_confirmed",
-        "private_artifact_sha256", "like_template_path", "like_template_sha256",
-        "reviewed_at", "release_notes_url", "release_notes_summary", "evidence_sha256",
+        "schema_version",
+        "kind",
+        "status",
+        "acceptance",
+        "human_ground_truth",
+        "video_false_accept_rate",
+        "source_build",
+        "target_build",
+        "device",
+        "frame_size_px",
+        "source_calibration_sha256",
+        "source_licence_key",
+        "source_licence_sha256",
+        "decision_order",
+        "like_sent_confirmed",
+        "private_artifact_sha256",
+        "like_template_path",
+        "like_template_sha256",
+        "reviewed_at",
+        "release_notes_url",
+        "release_notes_summary",
+        "evidence_sha256",
     }
     if set(artifact) != expected or artifact["schema_version"] != 3:
         raise ValueError("redacted compatibility receipt has an unsupported schema")
@@ -192,10 +258,15 @@ def _validate_redacted_receipt(artifact: dict, app_cfg: dict, *, root: Path) -> 
         or artifact["like_sent_confirmed"] is not True
         or not _digest(artifact["private_artifact_sha256"])
     ):
-        raise ValueError("redacted compatibility receipt overstates or lacks review evidence")
+        raise ValueError(
+            "redacted compatibility receipt overstates or lacks review evidence"
+        )
     calibration = app_cfg.get("targeting_calibration")
     licence_key = artifact["source_licence_key"]
-    if licence_key not in {"still_photo_bound_evidence", "still_photo_assumption_acceptance"}:
+    if licence_key not in {
+        "still_photo_bound_evidence",
+        "still_photo_assumption_acceptance",
+    }:
         raise ValueError("redacted compatibility receipt names an unsupported licence")
     licence = app_cfg.get(licence_key)
     if not isinstance(calibration, dict) or not isinstance(licence, dict):
@@ -204,7 +275,9 @@ def _validate_redacted_receipt(artifact: dict, app_cfg: dict, *, root: Path) -> 
     if (
         canonical_sha256(calibration) != artifact["source_calibration_sha256"]
         or canonical_sha256(licence) != artifact["source_licence_sha256"]
-        or not isinstance(target, str) or not target or target == source
+        or not isinstance(target, str)
+        or not target
+        or target == source
         or source != calibration.get("hinge_version_name")
         or source != licence.get("hinge_version_name")
         or artifact["device"] != app_cfg.get("serial")
@@ -215,11 +288,18 @@ def _validate_redacted_receipt(artifact: dict, app_cfg: dict, *, root: Path) -> 
     for key in ("reviewed_at", "release_notes_url", "release_notes_summary"):
         if not isinstance(artifact[key], str) or not artifact[key].strip():
             raise ValueError(f"redacted compatibility receipt lacks {key}")
-    if artifact["like_template_path"] != "operation_love/drivers/assets/hinge_like_button_10_8.png":
-        raise ValueError("redacted compatibility receipt names an unexpected Like template")
+    if (
+        artifact["like_template_path"]
+        != "operation_love/drivers/assets/hinge_like_button_10_8.png"
+    ):
+        raise ValueError(
+            "redacted compatibility receipt names an unexpected Like template"
+        )
     _read_bound_bytes(
-        artifact["like_template_path"], artifact["like_template_sha256"],
-        root=root, label="reviewed Like template",
+        artifact["like_template_path"],
+        artifact["like_template_sha256"],
+        root=root,
+        label="reviewed Like template",
     )
     return target
 
@@ -235,28 +315,51 @@ def validate_review(app_cfg: dict, *, root: Path, mode: str) -> str | None:
     if raw is None:
         return None
     if mode != "training":
-        raise ValueError("Hinge version compatibility review licenses Training only, never AUTO")
+        raise ValueError(
+            "Hinge version compatibility review licenses Training only, never AUTO"
+        )
     if not isinstance(raw, dict) or set(raw) != {"artifact_path", "artifact_sha256"}:
         raise ValueError(
             "apps.hinge.version_compatibility_review needs exactly artifact_path and "
             "artifact_sha256"
         )
     artifact = _read_bound_file(
-        raw["artifact_path"], raw["artifact_sha256"], root=root, label="compatibility artifact"
+        raw["artifact_path"],
+        raw["artifact_sha256"],
+        root=root,
+        label="compatibility artifact",
     )
     if artifact.get("kind") == PUBLIC_RECEIPT_KIND:
         return _validate_redacted_receipt(artifact, app_cfg, root=root)
     if artifact.get("kind") == SUPERVISED_KIND:
         return _validate_supervised_review(artifact, app_cfg, root=root)
     expected_keys = {
-        "schema_version", "kind", "status", "acceptance", "human_ground_truth",
-        "video_false_accept_rate", "source_build", "target_build", "device",
-        "frame_size_px", "source_calibration_sha256", "source_licence_key",
-        "source_licence_sha256", "captures", "independent_review_path",
-        "independent_review_sha256", "reviewed_at", "release_notes_url",
-        "release_notes_summary", "evidence_sha256",
+        "schema_version",
+        "kind",
+        "status",
+        "acceptance",
+        "human_ground_truth",
+        "video_false_accept_rate",
+        "source_build",
+        "target_build",
+        "device",
+        "frame_size_px",
+        "source_calibration_sha256",
+        "source_licence_key",
+        "source_licence_sha256",
+        "captures",
+        "independent_review_path",
+        "independent_review_sha256",
+        "reviewed_at",
+        "release_notes_url",
+        "release_notes_summary",
+        "evidence_sha256",
     }
-    if set(artifact) != expected_keys or artifact.get("schema_version") != 1 or artifact.get("kind") != KIND:
+    if (
+        set(artifact) != expected_keys
+        or artifact.get("schema_version") != 1
+        or artifact.get("kind") != KIND
+    ):
         raise ValueError("compatibility artifact has an unsupported schema")
     body = {key: value for key, value in artifact.items() if key != "evidence_sha256"}
     if artifact["evidence_sha256"] != canonical_sha256(body):
@@ -267,11 +370,18 @@ def validate_review(app_cfg: dict, *, root: Path, mode: str) -> str | None:
         or artifact["human_ground_truth"] is not False
         or artifact["video_false_accept_rate"] != "unmeasured"
     ):
-        raise ValueError("compatibility artifact overstates its evidence or lacks acceptance")
+        raise ValueError(
+            "compatibility artifact overstates its evidence or lacks acceptance"
+        )
     calibration = app_cfg.get("targeting_calibration")
     licence_key = artifact["source_licence_key"]
-    if licence_key not in {"still_photo_bound_evidence", "still_photo_assumption_acceptance"}:
-        raise ValueError("compatibility artifact names an unsupported still-photo licence")
+    if licence_key not in {
+        "still_photo_bound_evidence",
+        "still_photo_assumption_acceptance",
+    }:
+        raise ValueError(
+            "compatibility artifact names an unsupported still-photo licence"
+        )
     licence = app_cfg.get(licence_key)
     if not isinstance(calibration, dict) or not isinstance(licence, dict):
         raise ValueError("compatibility artifact source evidence is absent")
@@ -282,8 +392,11 @@ def validate_review(app_cfg: dict, *, root: Path, mode: str) -> str | None:
         raise ValueError("compatibility artifact no longer matches source evidence")
     source, target = artifact["source_build"], artifact["target_build"]
     if (
-        not isinstance(source, str) or not isinstance(target, str) or not target
-        or source == target or source != calibration.get("hinge_version_name")
+        not isinstance(source, str)
+        or not isinstance(target, str)
+        or not target
+        or source == target
+        or source != calibration.get("hinge_version_name")
         or source != licence.get("hinge_version_name")
         or artifact["device"] != app_cfg.get("serial")
         or artifact["device"] != calibration.get("device")
@@ -295,23 +408,37 @@ def validate_review(app_cfg: dict, *, root: Path, mode: str) -> str | None:
             raise ValueError(f"compatibility artifact lacks {key}")
     captures = artifact["captures"]
     if not isinstance(captures, list) or len(captures) != 2:
-        raise ValueError("compatibility artifact needs exactly Dislike and Like captures")
+        raise ValueError(
+            "compatibility artifact needs exactly Dislike and Like captures"
+        )
     manifest_by_path: dict[str, tuple[str, str]] = {}
     config_hashes: set[str] = set()
     for capture in captures:
-        if not isinstance(capture, dict) or set(capture) != {"decision", "manifest_path", "manifest_sha256"}:
+        if not isinstance(capture, dict) or set(capture) != {
+            "decision",
+            "manifest_path",
+            "manifest_sha256",
+        }:
             raise ValueError("compatibility capture reference is malformed")
         decision = capture["decision"]
         if decision not in _DECISIONS:
             raise ValueError("compatibility capture has an unsupported decision")
         manifest = _read_bound_file(
-            capture["manifest_path"], capture["manifest_sha256"], root=root,
+            capture["manifest_path"],
+            capture["manifest_sha256"],
+            root=root,
             label=f"{decision} capture manifest",
         )
         device = manifest.get("device")
         acceptance = manifest.get("automation_acceptance")
         profiles = manifest.get("profiles")
-        actions = profiles[0].get("automated_actions") if isinstance(profiles, list) and len(profiles) == 1 and isinstance(profiles[0], dict) else None
+        actions = (
+            profiles[0].get("automated_actions")
+            if isinstance(profiles, list)
+            and len(profiles) == 1
+            and isinstance(profiles[0], dict)
+            else None
+        )
         terminal = _DECISIONS[decision]
         if (
             manifest.get("interrupted") is not False
@@ -325,24 +452,50 @@ def validate_review(app_cfg: dict, *, root: Path, mode: str) -> str | None:
             or acceptance.get("terminal_advance_action") != terminal
             or acceptance.get("send_like_accepted") is not (decision == "like")
             or not isinstance(actions, list)
-            or len([a for a in actions if isinstance(a, dict) and a.get("action") == terminal]) != 1
-            or len([a for a in actions if isinstance(a, dict) and a.get("action") == "automated_photo_heart"]) != 1
+            or len(
+                [
+                    a
+                    for a in actions
+                    if isinstance(a, dict) and a.get("action") == terminal
+                ]
+            )
+            != 1
+            or len(
+                [
+                    a
+                    for a in actions
+                    if isinstance(a, dict)
+                    and a.get("action") == "automated_photo_heart"
+                ]
+            )
+            != 1
         ):
-            raise ValueError(f"{decision} capture does not prove one reviewed photo and {terminal}")
+            raise ValueError(
+                f"{decision} capture does not prove one reviewed photo and {terminal}"
+            )
         provenance = manifest.get("config_provenance")
         if not isinstance(provenance, dict) or not _digest(provenance.get("sha256")):
             raise ValueError(f"{decision} capture lacks config provenance")
         config_hashes.add(provenance["sha256"])
         manifest_by_path[str((root / capture["manifest_path"]).resolve().parent)] = (
-            capture["manifest_sha256"], decision
+            capture["manifest_sha256"],
+            decision,
         )
-    if {capture["decision"] for capture in captures} != set(_DECISIONS) or len(config_hashes) != 1:
-        raise ValueError("compatibility captures are not one Dislike and one Like under one config")
+    if {capture["decision"] for capture in captures} != set(_DECISIONS) or len(
+        config_hashes
+    ) != 1:
+        raise ValueError(
+            "compatibility captures are not one Dislike and one Like under one config"
+        )
     review = _read_bound_file(
-        artifact["independent_review_path"], artifact["independent_review_sha256"],
-        root=root, label="independent compatibility review",
+        artifact["independent_review_path"],
+        artifact["independent_review_sha256"],
+        root=root,
+        label="independent compatibility review",
     )
-    review_body = {key: value for key, value in review.items() if key != "evidence_sha256"}
+    review_body = {
+        key: value for key, value in review.items() if key != "evidence_sha256"
+    }
     if (
         review.get("evidence_sha256") != canonical_sha256(review_body)
         or review.get("kind") != "hinge_unattended_calibration_independent_review"
@@ -359,9 +512,18 @@ def validate_review(app_cfg: dict, *, root: Path, mode: str) -> str | None:
             raise ValueError("independent compatibility review has a malformed capture")
         path = record.get("session")
         pair = manifest_by_path.get(path)
-        if pair is None or path in seen or record.get("manifest_sha256") != pair[0] or record.get("terminal_advance_action") != _DECISIONS[pair[1]]:
-            raise ValueError("independent compatibility review omits or changes a decision")
+        if (
+            pair is None
+            or path in seen
+            or record.get("manifest_sha256") != pair[0]
+            or record.get("terminal_advance_action") != _DECISIONS[pair[1]]
+        ):
+            raise ValueError(
+                "independent compatibility review omits or changes a decision"
+            )
         seen.add(path)
     if seen != set(manifest_by_path):
-        raise ValueError("independent compatibility review does not cover both captures")
+        raise ValueError(
+            "independent compatibility review does not cover both captures"
+        )
     return target

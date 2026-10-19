@@ -8,12 +8,12 @@ with snapshot(), or one app's view (global + that app) with app_view(app).
 
 from __future__ import annotations
 
-import math
 import threading
 import time
 from collections.abc import Collection
 from dataclasses import asdict, dataclass, field
-from numbers import Real
+
+from .numeric import finite_real_as_float
 
 
 @dataclass
@@ -160,13 +160,8 @@ def _finite_nonnegative_float(
     requirement = f"{name} must be a finite nonnegative number" + (
         " or None" if none_ok else ""
     )
-    if isinstance(value, bool) or not isinstance(value, Real):
-        raise ValueError(requirement)
-    try:
-        resolved = float(value)
-    except (TypeError, ValueError, OverflowError) as exc:
-        raise ValueError(requirement) from exc
-    if not math.isfinite(resolved) or resolved < 0:
+    resolved = finite_real_as_float(value)
+    if resolved is None or resolved < 0:
         raise ValueError(requirement)
     return resolved
 
@@ -354,12 +349,10 @@ class RunStatus:
                 normalized[name] = _exact_bool(name, normalized[name])
         if "mode" in normalized:
             normalized["mode"] = _run_mode(normalized["mode"])
-        if "phase" in normalized:
-            if (
-                not isinstance(normalized["phase"], str)
-                or not normalized["phase"].strip()
-            ):
-                raise ValueError("phase must be nonempty text")
+        if "phase" in normalized and (
+            not isinstance(normalized["phase"], str) or not normalized["phase"].strip()
+        ):
+            raise ValueError("phase must be nonempty text")
         with self._lock:
             for k, v in normalized.items():
                 setattr(self, k, v)

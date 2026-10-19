@@ -618,17 +618,14 @@ class _NativeWindowsCorpusFilesystem:
             name_end = offset + 64 + length
             if name_end > limit:
                 raise ValueError("truncated FILE_DIRECTORY_INFORMATION filename")
-            if next_offset:
-                # Records are LONGLONG-aligned; the next record must start after this one and
-                # still be wholly inside the byte count NtQueryDirectoryFile reported.
-                if (
-                    next_offset % 8
-                    or next_offset < 64 + length
-                    or offset + next_offset > limit
-                ):
-                    raise ValueError(
-                        "invalid FILE_DIRECTORY_INFORMATION NextEntryOffset"
-                    )
+            # Records are LONGLONG-aligned; the next record must start after this one and
+            # still be wholly inside the byte count NtQueryDirectoryFile reported.
+            if (next_offset) and (
+                next_offset % 8
+                or next_offset < 64 + length
+                or offset + next_offset > limit
+            ):
+                raise ValueError("invalid FILE_DIRECTORY_INFORMATION NextEntryOffset")
             name = raw[offset + 64 : name_end].decode("utf-16-le")
             if name not in {".", ".."}:
                 result.append(name)

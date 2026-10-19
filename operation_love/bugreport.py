@@ -696,8 +696,7 @@ def _targeting_readiness_md(config_path: str, hub_state=None) -> str:
             )
         except Exception as exc:  # noqa: BLE001 -- malformed evidence remains reportable
             lines.append(
-                "- Hinge update compatibility: REJECTED: "
-                + _sanitize_inline(str(exc))
+                "- Hinge update compatibility: REJECTED: " + _sanitize_inline(str(exc))
             )
     blocker = tp.hinge_targeting_unavailable_reason()
     lines.append("- targeting-policy blocker: " + (blocker if blocker else "none"))
@@ -5900,11 +5899,14 @@ def _stale_evidence_md(lines: list[str], run: Path) -> str:
     composer_since: int | None = None  # where the in-flight composer episode began
     for index, rec in enumerate(records):
         action = rec.get("action")
-        if action == "observe_like_anchor" or (
-            action == "observe_waiting" and rec.get("reason") in _COMPOSER_WAIT_REASONS
-        ):
-            if composer_since is None:
-                composer_since = index
+        if (
+            action == "observe_like_anchor"
+            or (
+                action == "observe_waiting"
+                and rec.get("reason") in _COMPOSER_WAIT_REASONS
+            )
+        ) and composer_since is None:
+            composer_since = index
         digest = _shot_digest(run, rec.get("before"), cache)
         if digest is not None:
             first_seen.setdefault(digest, index)

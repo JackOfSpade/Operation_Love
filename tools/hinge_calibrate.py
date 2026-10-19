@@ -4637,15 +4637,15 @@ def _capture_one_profile_unattended(
                     and exc.code == NAV_ANCHOR_UNMEASURED
                     and isinstance(getattr(exc.anchor, "delta_px", None), int)
                 )
-                if large_measured_entry_drift and not action_trace:
-                    if entry_drift_restart_attempts < (
-                        _MAX_ENTRY_DRIFT_REENUMERATION_RESTARTS_PER_PROFILE
-                    ):
-                        raise _RestartProfile(
-                            "measured pre-action navigation entry drift "
-                            f"{exc.anchor.delta_px:+d}px; discarding the scan and taking the "
-                            "one bounded fresh re-enumeration"
-                        ) from exc
+                if (large_measured_entry_drift and (not action_trace)) and (
+                    entry_drift_restart_attempts
+                    < _MAX_ENTRY_DRIFT_REENUMERATION_RESTARTS_PER_PROFILE
+                ):
+                    raise _RestartProfile(
+                        "measured pre-action navigation entry drift "
+                        f"{exc.anchor.delta_px:+d}px; discarding the scan and taking the "
+                        "one bounded fresh re-enumeration"
+                    ) from exc
                 retry = _PreActionProfileRetry(
                     "pre_heart_navigation_refused",
                     f"item {item_number}: {type(exc).__name__}: {exc}",
@@ -8409,7 +8409,7 @@ def _verified_hybrid_reviewed_evidence(sessions: list[_SessionData]) -> dict:
                 action.get("predicates"),
                 action.get("transport"),
             )
-            if (
+            return not (
                 not isinstance(action_predicates, dict)
                 or not isinstance(transport, list)
                 or any(not isinstance(step, str) for step in transport)
@@ -8434,9 +8434,7 @@ def _verified_hybrid_reviewed_evidence(sessions: list[_SessionData]) -> dict:
                 or action.get("post_frame_sha256")
                 != _sha256(profile_data.profile_advance_clear)
                 or not profile_data.profile_advance_identity
-            ):
-                return False
-            return True
+            )
 
         for profile in manifest.get("profiles", []):
             if not isinstance(profile, dict):

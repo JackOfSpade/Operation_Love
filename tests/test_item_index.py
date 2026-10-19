@@ -2358,12 +2358,16 @@ def test_same_pair_marker_exit_bridges_video_conflict_but_rejects_outside_page_v
         eligible=4,
     )
     assert item_index._video_track_deltas(
-        segmentations, (raw,), markers,
+        segmentations,
+        (raw,),
+        markers,
         extent_tolerance_px=item_index._EXTENT_TOLERANCE_PX,
         max_step_px=690,
     ) == {0: 511}
     repaired, _notes, provenance = item_index._repair_video_track_shifts(
-        segmentations, (raw,), markers,
+        segmentations,
+        (raw,),
+        markers,
         extent_tolerance_px=item_index._EXTENT_TOLERANCE_PX,
         max_step_px=690,
     )
@@ -2373,11 +2377,16 @@ def test_same_pair_marker_exit_bridges_video_conflict_but_rejects_outside_page_v
     outside = list(strips)
     outside[0] = dataclasses.replace(outside[0], delta_px=450)
     conflicting = dataclasses.replace(raw, strips=tuple(outside))
-    assert item_index._video_track_deltas(
-        segmentations, (conflicting,), markers,
-        extent_tolerance_px=item_index._EXTENT_TOLERANCE_PX,
-        max_step_px=690,
-    ) == {}
+    assert (
+        item_index._video_track_deltas(
+            segmentations,
+            (conflicting,),
+            markers,
+            extent_tolerance_px=item_index._EXTENT_TOLERANCE_PX,
+            max_step_px=690,
+        )
+        == {}
+    )
 
 
 @pytest.mark.parametrize(
@@ -6674,3 +6683,723 @@ def test_two_overlapping_sightings_from_one_frame_still_say_self_contradictory()
     assert "self-contradictory frame" in contradiction
     # A sighting that really does span the boundary is a bridge, whoever's frame it came from.
     assert item_index._fragment_overrun_frame_indices(failures) == (14,)
+
+
+@pytest.mark.parametrize(
+    "gate",
+    (
+        None,
+        "no_marker",
+        "centroid_too_far",
+        "no_exact_vote",
+        "plausible_alias",
+        "no_gutter",
+    ),
+)
+def test_video_centroid_then_sparse_exit_preserves_complete_page(monkeypatch, gate):
+    """Reproduce the 2026-10-17 stop without retaining personal profile pixels.
+
+    A measured centroid misses the positioned control by 3px just before it exits.
+    The exit repaint leaves only an out-of-window alias. Both physical bridges must
+    survive the ordinary complete-page fold; weaker evidence must still stop it.
+    """
+    scrolls = (0, 450, 900, 1350, 1700, 2100, 2500, 2700)
+    frames = [_frame(s) for s in scrolls]
+    raw_estimate = item_index.estimate_shift
+    raw_segment = item_index.segment_frame
+
+    def estimate(before, after, **kwargs):
+        raw = raw_estimate(before, after, **kwargs)
+        pair = frames.index(before)
+        if pair == 4:
+            return _shift_with_votes(
+                raw,
+                ([401, 401] if gate == "no_exact_vote" else [400, 400])
+                + [397, 395, 235],
+                status=frameshift.SHIFT_MEASURED,
+                delta=396 if gate == "centroid_too_far" else 397,
+            )
+        if pair == 5:
+            return _shift_with_votes(
+                raw,
+                [350 if gate == "plausible_alias" else -1062],
+                status=frameshift.SHIFT_NO_CONSENSUS,
+            )
+        return raw
+
+    def segment_without_gutter(frame, **kwargs):
+        seg = raw_segment(frame, **kwargs)
+        if gate == "no_gutter" and frame == frames[6]:
+            blocks = list(seg.blocks)
+            blocks[1] = dataclasses.replace(
+                blocks[1], top=dataclasses.replace(blocks[1].top, observed=False)
+            )
+            seg = dataclasses.replace(seg, blocks=tuple(blocks))
+        return seg
+
+    markers = (
+        tuple(
+            item_index.VideoMuteMarker(i, 106, _CARD3[1] - scrolls[i] + 53, 1.0)
+            for i in (3, 4, 5)
+        )
+        if gate != "no_marker"
+        else ()
+    )
+    monkeypatch.setattr(item_index, "estimate_shift", estimate)
+    monkeypatch.setattr(item_index, "segment_frame", segment_without_gutter)
+    index = item_index.build_item_index(
+        frames,
+        content_band=_CONTENT_BAND,
+        like_template=_TEMPLATE,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD,
+        at_scroll_top=True,
+        identity_band=None,
+        video_mute_markers=markers,
+        _allow_frame_omission_recovery=False,
+    )
+    if gate is not None:
+        assert not index.usable
+        assert index.layout_repaired_shifts == ()
+        return
+    assert index.usable, index.failures
+    assert index.offsets == scrolls
+    assert len(index.selectable) == 4
+    assert [b.heart_ordinal for b in index.selectable] == [1, 2, 3, 4]
+    assert [(i, s.delta_px) for i, s in index.layout_repaired_shifts] == [
+        (4, 397),
+        (5, None),
+    ]
+    assert index.shifts[4].delta_px == index.shifts[5].delta_px == 400
+
+
+@pytest.mark.parametrize(
+    "gate",
+    (
+        None,
+        "eligible_alias",
+        "plausible_reverse",
+        "forward_alias",
+        "multiple_aliases",
+        "inexact_votes",
+        "missing_gutter",
+        "missing_bracket",
+        "contradictory_fold",
+    ),
+)
+def test_isolated_repaint_with_unobservable_reverse_alias(monkeypatch, gate):
+    """Amanda's +497,+497,-1176 bank, using synthetic profile pixels.
+
+    The reverse strip cannot search the forward displacement. Exact card geometry,
+    a shared gutter, raw full-layout brackets and the full fold must still agree.
+    """
+    frames = [_frame(_STEP * i) for i in range(5)]
+    real_estimate = item_index.estimate_shift
+
+    def repaint(before, after, **kwargs):
+        raw = real_estimate(before, after, **kwargs)
+        if before != frames[2] or after != frames[3]:
+            return raw
+        votes = [-1176, _STEP, _STEP]
+        if gate == "plausible_reverse":
+            votes[0] = -100
+        if gate == "forward_alias":
+            votes[0] = 1176
+        if gate == "multiple_aliases":
+            votes.append(-1200)
+        if gate == "inexact_votes":
+            votes[2] += 2
+        result = _shift_with_votes(raw, votes, status=frameshift.SHIFT_NO_CONSENSUS)
+        strips = list(result.strips)
+        for i in range(len(votes)):
+            strips[i] = dataclasses.replace(
+                strips[i],
+                search=(-1700, 500 if gate == "eligible_alias" else 300)
+                if votes[i] < 0
+                else (-1000, 1000),
+            )
+        return dataclasses.replace(
+            result,
+            strips=tuple(strips),
+            agreeing=2,
+            eligible=2,
+            dissenting=len(votes) - 2,
+            confidence=1.0,
+        )
+
+    monkeypatch.setattr(item_index, "estimate_shift", repaint)
+    if gate == "missing_gutter":
+        monkeypatch.setattr(item_index, "_shared_gutter_witnesses", lambda *_: ())
+    if gate == "missing_bracket":
+        original = item_index._structural_landmarks
+        right_digest = hashlib.sha256(frames[3]).hexdigest()
+
+        def missing_heart(before, after, **kwargs):
+            landmarks = original(before, after, **kwargs)
+            return (
+                tuple((kind, delta) for kind, delta in landmarks if kind != "heart")
+                if before.frame_digest == right_digest
+                else landmarks
+            )
+
+        monkeypatch.setattr(item_index, "_structural_landmarks", missing_heart)
+    if gate == "contradictory_fold":
+        original_fold = item_index._fold_page
+
+        def contradictory(*args, **kwargs):
+            blocks, failures, *rest = original_fold(*args, **kwargs)
+            return blocks, (*failures, "synthetic contradictory extent"), *rest
+
+        monkeypatch.setattr(item_index, "_fold_page", contradictory)
+    index = item_index.build_item_index(
+        frames,
+        content_band=_CONTENT_BAND,
+        like_template=_TEMPLATE,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD,
+        at_scroll_top=True,
+        identity_band=None,
+        scroll_top_signal_confirmed=True,
+        _allow_frame_omission_recovery=False,
+    )
+    if gate is not None:
+        assert not index.usable
+        assert index.shifts[2].status == frameshift.SHIFT_NO_CONSENSUS
+        assert index.layout_repaired_shifts == ()
+        return
+    assert index.usable, index.failures
+    assert index.offsets == tuple(_STEP * i for i in range(5))
+    assert [i for i, _ in index.layout_repaired_shifts] == [2]
+    assert index.layout_repaired_shifts[0][1].dissenting == 1
+    assert any("reverse out-of-window alias" in note for note in index.notes)
+
+
+@pytest.mark.parametrize(
+    "gate",
+    (
+        None,
+        "in_range_alias",
+        "eligible_reverse",
+        "missing_gutter",
+        "missing_heart",
+        "missing_bracket",
+        "inexact_vote",
+        "contradictory_fold",
+    ),
+)
+def test_isolated_repaint_with_two_gutters_and_out_of_bound_aliases(monkeypatch, gate):
+    """The second Amanda capture: exact page motion survives three false NCC matches."""
+    frames = [_frame(_STEP * i) for i in range(5)]
+    real_estimate = item_index.estimate_shift
+    real_landmarks = item_index._structural_landmarks
+
+    def repaint(before, after, **kwargs):
+        raw = real_estimate(before, after, **kwargs)
+        if before != frames[1]:
+            return raw
+        result = _shift_with_votes(
+            raw,
+            [
+                -1197,
+                _STEP,
+                _STEP + (2 if gate == "inexact_vote" else 0),
+                _STEP if gate == "in_range_alias" else 1232,
+                1237,
+            ],
+            status=frameshift.SHIFT_NO_CONSENSUS,
+        )
+        strips = list(result.strips)
+        strips[0] = dataclasses.replace(
+            strips[0],
+            search=(-1700, _STEP + 1 if gate == "eligible_reverse" else _STEP - 1),
+        )
+        return dataclasses.replace(
+            result,
+            strips=tuple(strips),
+            agreeing=2,
+            eligible=4,
+            dissenting=3,
+            confidence=0.5,
+        )
+
+    def landmarks(before, after, **kwargs):
+        result = real_landmarks(before, after, **kwargs)
+        if (
+            gate == "missing_heart"
+            and before.frame_digest == hashlib.sha256(frames[1]).hexdigest()
+        ):
+            hearts = [x for x in result if x[0] == "heart"]
+            return tuple(x for x in result if x[0] != "heart") + tuple(hearts[:1])
+        if (
+            gate == "missing_bracket"
+            and before.frame_digest == hashlib.sha256(frames[2]).hexdigest()
+        ):
+            return tuple(x for x in result if x[0] != "heart")
+        return result
+
+    monkeypatch.setattr(item_index, "estimate_shift", repaint)
+    monkeypatch.setattr(item_index, "_structural_landmarks", landmarks)
+    if gate == "missing_gutter":
+        original = item_index._shared_gutter_witnesses
+        monkeypatch.setattr(
+            item_index, "_shared_gutter_witnesses", lambda *args: original(*args)[:1]
+        )
+    if gate == "contradictory_fold":
+        original_fold = item_index._fold_page
+
+        def contradictory(*args, **kwargs):
+            blocks, failures, *rest = original_fold(*args, **kwargs)
+            return blocks, (*failures, "synthetic contradictory extent"), *rest
+
+        monkeypatch.setattr(item_index, "_fold_page", contradictory)
+    index = item_index.build_item_index(
+        frames,
+        content_band=_CONTENT_BAND,
+        like_template=_TEMPLATE,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD,
+        at_scroll_top=True,
+        identity_band=None,
+        scroll_top_signal_confirmed=True,
+        _allow_frame_omission_recovery=False,
+    )
+    if gate is not None:
+        assert not index.usable
+        assert index.layout_repaired_shifts == ()
+        return
+    assert index.usable, index.failures
+    assert index.offsets == tuple(_STEP * i for i in range(5))
+    assert [i for i, _ in index.layout_repaired_shifts] == [1]
+    assert index.layout_repaired_shifts[0][1].dissenting == 3
+    assert any("two exact shared gutters" in note for note in index.notes)
+
+
+@pytest.mark.parametrize(
+    "gate",
+    (
+        None,
+        "no_support",
+        "outside_card",
+        "outside_heart",
+        "observable_reverse",
+        "missing_gutter",
+        "missing_heart",
+        "missing_bracket",
+        "contradictory_fold",
+        "ambiguous_geometry",
+        "support_cannot_see",
+    ),
+)
+def test_isolated_bounded_card_repaint(monkeypatch, gate):
+    """The third saved repaint: only the heart strip survives at the true delta.
+
+    Other visible matches lie above that heart on the repainting card; a reverse
+    alias cannot see the displacement. Both gutters, complete card, raw brackets
+    and complete page must still agree. Pixels here are entirely synthetic.
+    """
+    scrolls = (0, 450, 900, 1250, 1650, 2050, 2500, 3000)
+    frames = [_frame(s) for s in scrolls]
+    real_estimate = item_index.estimate_shift
+    real_landmarks = item_index._structural_landmarks
+
+    def repaint(before, after, **kwargs):
+        raw = real_estimate(before, after, **kwargs)
+        if before != frames[4]:
+            return raw
+        result = _shift_with_votes(
+            raw,
+            [-1195, 341, 357, 327, 401 if gate == "no_support" else 400],
+            status=frameshift.SHIFT_NO_CONSENSUS,
+        )
+        strips = list(result.strips)
+        rows = [(600, 696), (770, 866), (1100, 1196), (1300, 1396), (1646, 1742)]
+        if gate == "outside_card":
+            rows[1] = (500, 596)
+        if gate == "outside_heart":
+            rows[4] = (1500, 1596)
+        for i, (y0, y1) in enumerate(rows):
+            strips[i] = dataclasses.replace(
+                strips[i],
+                y0=y0,
+                y1=y1,
+                search=(-1700, 426 if gate == "observable_reverse" else 396)
+                if i == 0
+                else (-1700, 1700),
+            )
+        if gate == "support_cannot_see":
+            strips[4] = dataclasses.replace(strips[4], search=(-1700, 399))
+        return dataclasses.replace(
+            result,
+            strips=tuple(strips),
+            agreeing=1,
+            eligible=4,
+            dissenting=4,
+            confidence=0.25,
+        )
+
+    def landmarks(before, after, **kwargs):
+        result = real_landmarks(before, after, **kwargs)
+        digest = hashlib.sha256(
+            frames[4 if gate in ("missing_heart", "ambiguous_geometry") else 5]
+        ).hexdigest()
+        if gate == "ambiguous_geometry" and before.frame_digest == digest:
+            return (*result, ("top", 357), ("bottom", 357), ("heart", 357))
+        if (
+            gate in ("missing_heart", "missing_bracket")
+            and before.frame_digest == digest
+        ):
+            return tuple(x for x in result if x[0] != "heart")
+        return result
+
+    monkeypatch.setattr(item_index, "estimate_shift", repaint)
+    monkeypatch.setattr(item_index, "_structural_landmarks", landmarks)
+    if gate == "missing_gutter":
+        original = item_index._shared_gutter_witnesses
+        monkeypatch.setattr(
+            item_index, "_shared_gutter_witnesses", lambda *a: original(*a)[:1]
+        )
+    if gate == "contradictory_fold":
+        original_fold = item_index._fold_page
+
+        def contradictory(*args, **kwargs):
+            blocks, failures, *rest = original_fold(*args, **kwargs)
+            return blocks, (*failures, "synthetic contradictory extent"), *rest
+
+        monkeypatch.setattr(item_index, "_fold_page", contradictory)
+    index = item_index.build_item_index(
+        frames,
+        content_band=_CONTENT_BAND,
+        like_template=_TEMPLATE,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD,
+        at_scroll_top=True,
+        identity_band=None,
+        scroll_top_signal_confirmed=True,
+        _allow_frame_omission_recovery=False,
+    )
+    if gate is not None:
+        assert not index.usable
+        assert index.layout_repaired_shifts == ()
+        return
+    assert index.usable, index.failures
+    assert index.offsets == scrolls
+    assert [b.heart_ordinal for b in index.selectable] == [1, 2, 3, 4]
+    assert [(i, s.delta_px) for i, s in index.layout_repaired_shifts] == [(4, None)]
+    assert any("bounded-card repaint" in note for note in index.notes)
+
+
+@pytest.mark.parametrize(
+    "gate",
+    (
+        None,
+        "no_next_card_witness",
+        "no_heart_witness",
+        "outside_card_dissent",
+        "observable_reverse",
+        "missing_lower_gutter",
+        "missing_source_gutter",
+        "unbounded_source",
+        "observed_destination_top",
+        "missing_bracket",
+        "ambiguous_geometry",
+        "contradictory_fold",
+    ),
+)
+def test_repainting_card_top_exit_requires_independent_following_card(
+    monkeypatch, gate
+):
+    """The 2026-10-18 refusal: +519 on heart/next card, false matches on video.
+
+    The source is bounded, but its top exits the next band. An exact lower gutter
+    and a second NCC strip on the following card replace the invisible upper gutter.
+    """
+    scrolls = (0, 450, 900, 1250, 1703, 2222, 2650, 3000)
+    frames = [_frame(s) for s in scrolls]
+    real_estimate = item_index.estimate_shift
+    real_segment = item_index.segment_frame
+    real_landmarks = item_index._structural_landmarks
+    affected = hashlib.sha256(frames[4]).hexdigest()
+    following = hashlib.sha256(frames[5]).hexdigest()
+
+    def repaint(before, after, **kwargs):
+        raw = real_estimate(before, after, **kwargs)
+        if before != frames[4]:
+            return raw
+        result = _shift_with_votes(
+            raw,
+            [-1154, 556, 584, 564, 560, 596, 519, 519],
+            status=frameshift.SHIFT_NO_CONSENSUS,
+        )
+        strips = list(result.strips)
+        rows = [
+            (584, 680),
+            (868, 964),
+            (1010, 1106),
+            (1152, 1248),
+            (1294, 1390),
+            (1436, 1532),
+            (1578, 1674),
+            (2004, 2100),
+        ]
+        if gate == "no_next_card_witness":
+            rows[7] = (1500, 1596)
+        if gate == "no_heart_witness":
+            rows[6] = (1540, 1636)
+        if gate == "outside_card_dissent":
+            rows[1] = (442, 538)
+        for i, (y0, y1) in enumerate(rows):
+            strips[i] = dataclasses.replace(
+                strips[i],
+                y0=y0,
+                y1=y1,
+                search=(-1420, 568 if gate == "observable_reverse" else 284)
+                if i == 0
+                else (-1700, 1704),
+            )
+        return dataclasses.replace(
+            result,
+            strips=tuple(strips),
+            agreeing=2,
+            eligible=7,
+            dissenting=6,
+            confidence=2 / 7,
+        )
+
+    def segment_with_missing_edge(frame, **kwargs):
+        seg = real_segment(frame, **kwargs)
+        if gate == "unbounded_source" and frame == frames[4]:
+            blocks = tuple(
+                dataclasses.replace(b, top=dataclasses.replace(b.top, observed=False))
+                if b.complete and b.heart
+                else b
+                for b in seg.blocks
+            )
+            return dataclasses.replace(seg, blocks=blocks)
+        if gate == "observed_destination_top" and frame == frames[5]:
+            blocks = list(seg.blocks)
+            blocks[0] = dataclasses.replace(
+                blocks[0], top=dataclasses.replace(blocks[0].top, observed=True)
+            )
+            return dataclasses.replace(seg, blocks=tuple(blocks))
+        return seg
+
+    def landmarks(before, after, **kwargs):
+        result = real_landmarks(before, after, **kwargs)
+        if gate == "ambiguous_geometry" and before.frame_digest == affected:
+            return (*result, ("top", 556), ("bottom", 556), ("heart", 556))
+        if gate == "missing_bracket" and before.frame_digest == following:
+            return tuple(x for x in result if x[0] != "heart")
+        return result
+
+    monkeypatch.setattr(item_index, "estimate_shift", repaint)
+    monkeypatch.setattr(item_index, "segment_frame", segment_with_missing_edge)
+    monkeypatch.setattr(item_index, "_structural_landmarks", landmarks)
+    if gate == "missing_lower_gutter":
+        real_gutters = item_index._shared_gutter_witnesses
+        monkeypatch.setattr(
+            item_index,
+            "_shared_gutter_witnesses",
+            lambda a, b, d: () if a.frame_digest == affected else real_gutters(a, b, d),
+        )
+    if gate == "missing_source_gutter":
+        real_gutters = item_index._observed_gutters
+        monkeypatch.setattr(
+            item_index,
+            "_observed_gutters",
+            lambda a: () if a.frame_digest == affected else real_gutters(a),
+        )
+    if gate == "contradictory_fold":
+        real_fold = item_index._fold_page
+
+        def contradictory(*args, **kwargs):
+            blocks, failures, *rest = real_fold(*args, **kwargs)
+            return blocks, (*failures, "synthetic contradictory extent"), *rest
+
+        monkeypatch.setattr(item_index, "_fold_page", contradictory)
+    index = item_index.build_item_index(
+        frames,
+        content_band=_CONTENT_BAND,
+        like_template=_TEMPLATE,
+        like_threshold=hinge._LIKE_MATCH_THRESHOLD,
+        at_scroll_top=True,
+        identity_band=None,
+        scroll_top_signal_confirmed=True,
+        _allow_frame_omission_recovery=False,
+    )
+    if gate is not None:
+        assert not index.usable
+        assert index.layout_repaired_shifts == ()
+        return
+    assert index.usable, index.failures
+    assert index.offsets == scrolls
+    assert [b.heart_ordinal for b in index.selectable] == [1, 2, 3, 4]
+    assert [(i, s.delta_px) for i, s in index.layout_repaired_shifts] == [(4, None)]
+    assert index.shifts[4].delta_px == 519
+    assert any("following-card NCC witness" in note for note in index.notes)
+
+
+@pytest.mark.parametrize(
+    "gate",
+    (
+        None,
+        "no_local_background",
+        "one_corner",
+        "duplicate_frame",
+        "moved_seam",
+        "unbounded_photo",
+        "heartless_photo",
+        "heart_in_gap",
+        "contradictory_complete",
+        "different_photo_top",
+        "wide_cluster",
+        "no_lower_start",
+    ),
+)
+def test_repeated_photo_bottom_seam_preserves_unbounded_following_section(gate):
+    """Numeric geometry from the 2026-10-18 refusal, with no profile pixels/text.
+
+    Frame zero joins the photo and testimonial heading. The photo is bounded in
+    frame one and its lower corner/background seam recurs in frame two. The lower
+    section never becomes a complete or selectable card merely through splitting.
+    """
+    observations = [
+        _obs(0, 955, 2096, complete=False, hearts=(1839,), top_observed=True),
+        _obs(1, 955, 1929, hearts=(1839,)),
+        _obs(1, 2058, 2574, complete=False),
+        _obs(2, 997, 1929, complete=False, hearts=(1839,), bottom_observed=True),
+        _obs(2, 2058, 2797, complete=False),
+        _obs(4, 2058, 3114, complete=False, hearts=(3024,), bottom_observed=True),
+    ]
+    long_runs = [(0, 1929, 2057)]
+    corners = [(1, 1929, 2058), (2, 1929, 2058)]
+    if gate == "no_local_background":
+        long_runs = []
+    if gate == "one_corner":
+        corners = corners[:1]
+    if gate == "duplicate_frame":
+        corners = [corners[0], corners[0]]
+    if gate == "moved_seam":
+        corners[1] = (2, 1940, 2069)
+    if gate == "wide_cluster":
+        corners = [(1, 1921, 2050), (2, 1937, 2064)]
+    if gate == "no_lower_start":
+        observations.pop(4)
+    if gate == "unbounded_photo":
+        observations[1] = dataclasses.replace(observations[1], complete=False)
+    if gate == "heartless_photo":
+        observations[1] = dataclasses.replace(observations[1], hearts=())
+    if gate == "heart_in_gap":
+        observations[0] = dataclasses.replace(
+            observations[0], hearts=((937, 1839), (937, 1970))
+        )
+    if gate == "contradictory_complete":
+        observations.append(_obs(6, 955, 2400, hearts=(1839,)))
+    if gate == "different_photo_top":
+        observations[0] = dataclasses.replace(observations[0], page_y0=900)
+    repaired, notes = item_index._split_repeated_card_bottom_seams(
+        observations,
+        long_runs,
+        corners,
+        tolerance=8,
+    )
+    if gate is not None:
+        assert repaired == tuple(observations)
+        assert notes == ()
+        return
+    before, failures = _assemble(observations, at_scroll_top=False)
+    assert failures
+    assert len(before) == 1
+    blocks, failures = _assemble(repaired, at_scroll_top=False)
+    assert not failures
+    assert [(b.page_y0, b.page_y1) for b in blocks] == [(955, 1929), (2058, 3114)]
+    assert [b.heart_ordinal for b in blocks] == [1, 2]
+    assert blocks[0].kind == item_index.ITEM_SELECTABLE
+    assert blocks[1].kind == item_index.ITEM_PARTIAL
+    assert not blocks[1].complete
+    assert not repaired[1].top_observed
+    assert repaired[1].top_kind == ""
+    assert sorted(h for o in repaired if o.frame_index == 0 for h in o.hearts) == [
+        (937, 1839)
+    ]
+    assert any("repeated card-bottom seam" in note for note in notes)
+
+
+@pytest.mark.parametrize("conflicting_delta", (False, True))
+def test_identical_video_exit_proofs_are_one_mapping_not_an_ambiguity(
+    monkeypatch,
+    conflicting_delta,
+):
+    """The saved Hope capture proved its exit twice and was refused as ambiguous.
+
+    Exact marker-exit geometry and the singleton NCC/layout path independently
+    identify the same card and delta. A genuinely different delta must still stop.
+    """
+    segmentations, markers = _same_pair_marker_exit_segmentations()
+    base = _all_weak_video_exit_shift()
+    strips = list(base.strips)
+    for i, (y0, vote) in enumerate(((726, 355), (868, 443), (1010, 581), (1862, 511))):
+        strips[i] = dataclasses.replace(
+            strips[i],
+            y0=y0,
+            y1=y0 + 96,
+            state=frameshift.STRIP_MATCHED,
+            delta_px=vote,
+            score=0.99,
+        )
+    raw = dataclasses.replace(
+        base,
+        status=frameshift.SHIFT_NO_CONSENSUS,
+        strips=tuple(strips),
+        agreeing=0,
+        dissenting=4,
+        eligible=3,
+    )
+    # Both evidence paths must actually nominate the identical physical mapping.
+    proposal = item_index._same_pair_marker_exit_bridge(
+        *segmentations,
+        raw,
+        before_marker=markers[0],
+        after_marker_present=False,
+        max_step_px=690,
+    )
+    assert proposal == (segmentations[0].blocks[0], segmentations[1].blocks[0], 511)
+    assert 511 in item_index._track_candidate_deltas(
+        0,
+        *segmentations,
+        raw,
+        extent_tolerance_px=8,
+        max_step_px=690,
+    )
+    if conflicting_delta:
+        original = item_index._track_candidate_deltas
+        monkeypatch.setattr(
+            item_index,
+            "_track_candidate_deltas",
+            lambda *a, **kw: (*original(*a, **kw), 512),
+        )
+        # A second independently passing correspondence is still ambiguity.
+        monkeypatch.setattr(
+            item_index,
+            "_track_anchor_count",
+            lambda before, after, delta, **kw: (
+                2 if after is segmentations[1].blocks[0] else 0
+            ),
+        )
+    links = item_index._video_track_deltas(
+        segmentations,
+        (raw,),
+        markers,
+        extent_tolerance_px=8,
+        max_step_px=690,
+    )
+    assert links == ({} if conflicting_delta else {0: 511})
+    repaired, notes, provenance = item_index._repair_video_track_shifts(
+        segmentations,
+        (raw,),
+        markers,
+        extent_tolerance_px=8,
+        max_step_px=690,
+    )
+    if conflicting_delta:
+        assert repaired == (raw,)
+        assert notes == provenance == ()
+    else:
+        assert repaired[0].delta_px == 511
+        assert provenance == ((0, raw),)
+        assert len(notes) == 1

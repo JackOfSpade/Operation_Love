@@ -101,11 +101,12 @@ def _debug_evidence(actions: Path, *, run_id: str, app: str) -> tuple[str, dict]
 def dry_run(*, store, run_id: str, app: str, reason: str, debug_actions: Path) -> dict:
     evidence_ref, metadata = _debug_evidence(debug_actions, run_id=run_id, app=app)
     rows = store.advisory_opener_run_rows(run_id, app)
-    if run_id == _LEGACY_712_RUN:
-        if app != "hinge" or rows.get("openers") != [_LEGACY_712_OPENER]:
-            raise RetractionRefused(
-                "legacy 712 BigQuery opener snapshot is not the exact approved row"
-            )
+    if (run_id == _LEGACY_712_RUN) and (
+        app != "hinge" or rows.get("openers") != [_LEGACY_712_OPENER]
+    ):
+        raise RetractionRefused(
+            "legacy 712 BigQuery opener snapshot is not the exact approved row"
+        )
     return make_plan(
         rows=rows,
         run_id=run_id,

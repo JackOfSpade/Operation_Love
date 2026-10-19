@@ -15,8 +15,8 @@
     "operation_love/opener/opener.py"
   ],
   "generated_from": {
-    "total_revisions": 57,
-    "evaluated_revisions": 33,
+    "total_revisions": 58,
+    "evaluated_revisions": 34,
     "unevaluable_revisions": 24
   },
   "eras": [
@@ -622,6 +622,62 @@
         "APPLICATION RULE",
         "HARD RULE"
       ]
+    },
+    {
+      "prompt_sha256": "6ed9bf3d53d6d9f52f0d9f7e0c3e5c8e12f2c5070d292b7b553abad2a17d84f6",
+      "label": "2026-10-19 6280d3eb: +GUESS CHECK TENSE",
+      "first_commit": "6280d3eb40a476ccd47f0ad84d6329be5cfbb336",
+      "first_date": "2026-10-19T02:51:17-04:00",
+      "first_subject": "Harden Hinge targeting and compatibility workflows; consolidate numeric validation",
+      "last_commit": "6280d3eb40a476ccd47f0ad84d6329be5cfbb336",
+      "last_date": "2026-10-19T02:51:17-04:00",
+      "last_subject": "Harden Hinge targeting and compatibility workflows; consolidate numeric validation",
+      "commit_count": 1,
+      "commits": [
+        "6280d3eb40a476ccd47f0ad84d6329be5cfbb336"
+      ],
+      "rules": [
+        "SHARED CONTEXT RULE",
+        "SHE IS THE ONE WHO KNOWS",
+        "HEDGE THE CLAIM, NEVER YOURSELF",
+        "MINIMUM SUFFICIENT REFERENCE",
+        "PRIMARY ITEM RULE",
+        "PHOTO HEADER RULE",
+        "PROFILE TEXT FACT CHECK",
+        "CONVERSATIONAL VALUE RULE",
+        "CLAIMS ONLY WHEN NATURAL",
+        "MINIMUM INVENTION",
+        "TRACEABILITY TEST",
+        "INFORMATION GAIN TEST",
+        "PLAYFUL HYPERBOLE",
+        "SAFETY AND DIGNITY",
+        "SETUP PAYOFF CONTINUITY",
+        "QUESTION COHERENCE",
+        "CASUAL OR PUNCTUATION",
+        "SPOKEN REGISTER",
+        "IDIOM FIT",
+        "SAY IT ONCE",
+        "REFERENT CLARITY",
+        "MODIFIER CLARITY",
+        "ROLE CONSISTENCY",
+        "REPLY COMFORT",
+        "POSITIVE SOCIAL FRAMING",
+        "RECIPROCITY BEFORE FUTURE",
+        "GUESS CHECK TENSE",
+        "CONFIRMATION BOUNDARY",
+        "VISUAL LOCATION TURN BOUNDARY",
+        "COMPLIMENT AS REMARK",
+        "NO GRADING",
+        "SUBSTITUTION TEST",
+        "VARY THE OPENING",
+        "VARY THE SHAPE",
+        "GUESS THE WORLD, NOT HER IDENTITY",
+        "PLACE PRECISION CAP",
+        "NEVER INVENT THE SENDER",
+        "PICK THE ITEM YOURSELF",
+        "APPLICATION RULE",
+        "HARD RULE"
+      ]
     }
   ],
   "unevaluable_revisions": [
@@ -821,7 +877,7 @@
   "working_tree": {
     "provisional": true,
     "prompt_sha256": "6ed9bf3d53d6d9f52f0d9f7e0c3e5c8e12f2c5070d292b7b553abad2a17d84f6",
-    "label": "UNCOMMITTED WORKING TREE -- PROVISIONAL, not a shipped era (+GUESS CHECK TENSE)",
+    "label": "UNCOMMITTED WORKING TREE -- PROVISIONAL, not a shipped era (identical to already-known era: '2026-10-19 6280d3eb: +GUESS CHECK TENSE')",
     "commit": null,
     "rules": [
       "SHARED CONTEXT RULE",
@@ -866,7 +922,7 @@
       "HARD RULE"
     ],
     "reasons": [],
-    "matches_known_committed_era": null,
+    "matches_known_committed_era": "6ed9bf3d53d6d9f52f0d9f7e0c3e5c8e12f2c5070d292b7b553abad2a17d84f6",
     "no_metrics_recorded_here": true,
     "note": "Computed from the files on disk right now (Path.read_text), not from git history -- there is no commit behind this digest, and it can change on the very next edit or `git commit`. Regenerate this registry (python tools/backfill_prompt_eras.py) to refresh it. This registry never records measured metrics for ANY entry, committed or provisional -- see tools/opener_corpus_report.py's --rule/--eras for whatever has actually been measured against a real corpus; a rule appearing here is a fact about what was ON THE WIRE, never a claim that it was measured."
   }

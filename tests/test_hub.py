@@ -811,7 +811,7 @@ def test_browser_close_preserves_live_checkpoint_before_worker_reports_waiting_a
         st._thread.join(timeout=_LIVENESS_TIMEOUT_S)
 
 
-@pytest.mark.parametrize('mode', [None, 'training', 'auto'])
+@pytest.mark.parametrize("mode", [None, "training", "auto"])
 def test_hub_missing_heartbeat_keeps_server_and_run_alive(monkeypatch, mode):
     from operation_love.hub import server as hub_server, state as hub_state
 
@@ -5760,8 +5760,13 @@ def test_eval_snapshot_cold_start_single_flights_concurrent_pollers(monkeypatch)
     assert all(r["status"] == "ok" and r["labels"] == 10 for r in results)
 
 
-@pytest.mark.parametrize('failure', ['throw new TypeError("Failed to fetch");',
-                                       'return {ok:false,status:503,text:async()=>"error page"};'])
+@pytest.mark.parametrize(
+    "failure",
+    [
+        'throw new TypeError("Failed to fetch");',
+        'return {ok:false,status:503,text:async()=>"error page"};',
+    ],
+)
 def test_bug_report_generation_falls_back_to_stale_browser_evidence(failure):
     """Copy/download still receive useful diagnostics when the server is unavailable."""
     if NODE_BIN is None:

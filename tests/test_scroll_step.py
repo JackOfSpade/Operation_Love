@@ -1304,9 +1304,7 @@ def test_a_rounded_context_bottom_prevents_a_false_shallow_open_card_refusal():
     trailing = seg.blocks[-1]
     assert not trailing.top.observed and not trailing.bottom.observed
     plans = _coverage_draws(seg, n=50)
-    assert {plan.basis for plan in plans} == {
-        scroll_step.COVERAGE_STEP_THROTTLED
-    }
+    assert {plan.basis for plan in plans} == {scroll_step.COVERAGE_STEP_THROTTLED}
     assert all(plan.depth_px == 1473 - _BAND0 for plan in plans)
     assert min(plan.step_px for plan in plans) >= _GESTURE_FLOOR_PX
     assert max(plan.step_px for plan in plans) <= min(1473 - _BAND0, 540)
@@ -1317,9 +1315,12 @@ def test_a_rounded_context_bottom_prevents_a_false_shallow_open_card_refusal():
 @pytest.mark.parametrize("bottom", [480, 750, 1473])
 def test_unknown_trailing_top_never_spends_the_predecessor_boundary(bottom):
     """A usable predecessor is a bound, never permission to jump past unobserved content."""
-    seg = _Frame().card(100, bottom, heart=False).card(
-        bottom + 129, 2300, heart=False, radius=0
-    ).segment()
+    seg = (
+        _Frame()
+        .card(100, bottom, heart=False)
+        .card(bottom + 129, 2300, heart=False, radius=0)
+        .segment()
+    )
     assert seg.blocks[-2].bottom.observed
     assert not seg.blocks[-1].top.observed
     depth = bottom - _BAND0
@@ -1333,9 +1334,7 @@ def test_unknown_trailing_top_never_spends_the_predecessor_boundary(bottom):
 
 
 def test_a_predecessor_boundary_does_not_waive_a_segmentation_contradiction():
-    frame = _Frame().card(100, 1473, heart=True).card(
-        1602, 2300, heart=False, radius=0
-    )
+    frame = _Frame().card(100, 1473, heart=True).card(1602, 2300, heart=False, radius=0)
     frame.heart(900)
     seg = frame.segment()
     assert not seg.ok

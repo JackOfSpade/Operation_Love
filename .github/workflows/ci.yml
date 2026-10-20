@@ -3,6 +3,7 @@ name: CI
 on:
   push:
   pull_request:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -53,3 +54,39 @@ jobs:
       - run: ruff check operation_love tests tools scripts
       - run: ruff format --check .
       - run: python tools/backfill_prompt_eras.py --check
+
+  compatibility:
+    name: Python 3.12 macOS package and launcher
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Check supported runtime without model downloads
+        run: |
+          python -m pip install -e '.[dev,hinge]' build pillow
+          python -m pytest -o addopts= tests/test_config.py tests/test_runtime.py tests/test_main_cli.py tests/test_launcher_smoke.py -q
+          zsh -n "Operation Love.command"
+          python -m build
+      - name: Smoke installed wheel outside checkout
+        run: |
+          python -m venv "$RUNNER_TEMP/operation-love-installed"
+          "$RUNNER_TEMP/operation-love-installed/bin/python" -m pip install dist/*.whl
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/operation-love-installed/bin/operation-love" --help
+
+  required:
+    name: CI required
+    if: always()
+    needs: [test, lint, compatibility]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every CI job to succeed
+        env:
+          ALL_PASSED: ${{ needs.test.result == 'success' && needs.lint.result == 'success' && needs.compatibility.result == 'success' }}
+        run: test "$ALL_PASSED" = true

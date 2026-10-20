@@ -4,6 +4,7 @@
 This script never enumerates branches, executes PR code, or deletes a branch.
 It uses only the authenticated GitHub CLI and the Python standard library.
 """
+
 import json
 import os
 import subprocess
@@ -33,7 +34,9 @@ def validate(pr, base_sha, comparison, checks, required):
         if check.get("status") != "completed" or check.get("conclusion") != "success":
             failures.append(name)
     if failures:
-        raise ValueError("Required checks missing or unsuccessful: " + ", ".join(failures))
+        raise ValueError(
+            "Required checks missing or unsuccessful: " + ", ".join(failures)
+        )
 
 
 def gh(*args):
@@ -64,13 +67,25 @@ def main():
     # match-head-commit also rejects a branch that moved after our inspection.
     # Private Free repos lack server-side protection: the explicit checks above
     # remain a guard for this workflow, but do not protect other write paths.
-    gh("pr", "merge", str(int(number)), "--repo", repo, "--merge", "--match-head-commit", head)
+    gh(
+        "pr",
+        "merge",
+        str(int(number)),
+        "--repo",
+        repo,
+        "--merge",
+        "--match-head-commit",
+        head,
+    )
     merged = api(f"repos/{repo}/pulls/{int(number)}")
     if not merged.get("merged"):
         raise RuntimeError("GitHub did not confirm the selected PR was merged")
     if os.environ.get("GITHUB_OUTPUT"):
-        outputs = {"base_sha": base, "head_sha": head,
-                   "merge_sha": merged["merge_commit_sha"]}
+        outputs = {
+            "base_sha": base,
+            "head_sha": head,
+            "merge_sha": merged["merge_commit_sha"],
+        }
         with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
             for key, value in outputs.items():
                 if not isinstance(value, str) or not value.isalnum():

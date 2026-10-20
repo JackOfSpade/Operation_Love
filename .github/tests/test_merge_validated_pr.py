@@ -15,13 +15,23 @@ spec.loader.exec_module(policy)
 
 class MergePolicyTests(unittest.TestCase):
     def setUp(self):
-        self.pr = {"state": "open", "draft": False,
-                   "base": {"ref": "main", "repo": {"id": 1}},
-                   "head": {"sha": "head", "repo": {"id": 1}}}
+        self.pr = {
+            "state": "open",
+            "draft": False,
+            "base": {"ref": "main", "repo": {"id": 1}},
+            "head": {"sha": "head", "repo": {"id": 1}},
+        }
         self.comparison = {"merge_base_commit": {"sha": "base"}}
-        self.checks = [{"id": 10, "name": "CI required", "head_sha": "head",
-                        "app": {"slug": "github-actions"}, "status": "completed",
-                        "conclusion": "success"}]
+        self.checks = [
+            {
+                "id": 10,
+                "name": "CI required",
+                "head_sha": "head",
+                "app": {"slug": "github-actions"},
+                "status": "completed",
+                "conclusion": "success",
+            }
+        ]
 
     def validate(self):
         policy.validate(self.pr, "base", self.comparison, self.checks, ["CI required"])
@@ -61,47 +71,88 @@ class MergePolicyTests(unittest.TestCase):
         for change in ["closed", "draft", "fork", "wrong-base"]:
             with self.subTest(change=change):
                 original = copy.deepcopy(self.pr)
-                if change == "closed": self.pr["state"] = "closed"
-                if change == "draft": self.pr["draft"] = True
-                if change == "fork": self.pr["head"]["repo"]["id"] = 2
-                if change == "wrong-base": self.pr["base"]["ref"] = "development"
-                with self.assertRaises(ValueError): self.validate()
+                if change == "closed":
+                    self.pr["state"] = "closed"
+                if change == "draft":
+                    self.pr["draft"] = True
+                if change == "fork":
+                    self.pr["head"]["repo"]["id"] = 2
+                if change == "wrong-base":
+                    self.pr["base"]["ref"] = "development"
+                with self.assertRaises(ValueError):
+                    self.validate()
                 self.pr = original
 
     def test_all_required_checks_are_needed(self):
         with self.assertRaises(ValueError):
-            policy.validate(self.pr, "base", self.comparison, self.checks,
-                            ["CI required", "Security required"])
+            policy.validate(
+                self.pr,
+                "base",
+                self.comparison,
+                self.checks,
+                ["CI required", "Security required"],
+            )
 
     def test_merge_targets_one_exact_head_then_dispatches_main_validation(self):
         calls = []
+
         def api(path, paginated=False):
-            if path.endswith('/pulls/7'):
+            if path.endswith("/pulls/7"):
                 result = copy.deepcopy(self.pr)
-                result['merged'] = bool(calls)
-                result['merge_commit_sha'] = 'merged'
+                result["merged"] = bool(calls)
+                result["merge_commit_sha"] = "merged"
                 return result
-            if path.endswith('/git/ref/heads/main'):
-                return {'object': {'sha': 'base'}}
-            if '/compare/' in path:
+            if path.endswith("/git/ref/heads/main"):
+                return {"object": {"sha": "base"}}
+            if "/compare/" in path:
                 return self.comparison
-            if '/check-runs?' in path:
-                return [{'check_runs': self.checks}]
+            if "/check-runs?" in path:
+                return [{"check_runs": self.checks}]
             raise AssertionError(path)
-        env = {'GITHUB_REPOSITORY': 'owner/repo', 'PR_NUMBER': '7',
-               'REQUIRED_CHECKS': '["CI required"]',
-               'MAIN_WORKFLOWS': '["ci.yml", "codeql.yml"]'}
+
+        env = {
+            "GITHUB_REPOSITORY": "owner/repo",
+            "PR_NUMBER": "7",
+            "REQUIRED_CHECKS": '["CI required"]',
+            "MAIN_WORKFLOWS": '["ci.yml", "codeql.yml"]',
+        }
         with tempfile.TemporaryDirectory() as directory:
-            output = pathlib.Path(directory) / 'output'
-            env['GITHUB_OUTPUT'] = str(output)
-            with patch.dict(policy.os.environ, env, clear=True), patch.object(policy, 'api', api), \
-                    patch.object(policy, 'gh', lambda *args: calls.append(args)):
+            output = pathlib.Path(directory) / "output"
+            env["GITHUB_OUTPUT"] = str(output)
+            with (
+                patch.dict(policy.os.environ, env, clear=True),
+                patch.object(policy, "api", api),
+                patch.object(policy, "gh", lambda *args: calls.append(args)),
+            ):
                 policy.main()
-            self.assertEqual(output.read_text(), 'base_sha=base\nhead_sha=head\nmerge_sha=merged\n')
-        self.assertEqual(calls, [
-            ('pr', 'merge', '7', '--repo', 'owner/repo', '--merge', '--match-head-commit', 'head'),
-            ('workflow', 'run', 'ci.yml', '--repo', 'owner/repo', '--ref', 'main'),
-            ('workflow', 'run', 'codeql.yml', '--repo', 'owner/repo', '--ref', 'main')])
+            self.assertEqual(
+                output.read_text(), "base_sha=base\nhead_sha=head\nmerge_sha=merged\n"
+            )
+        self.assertEqual(
+            calls,
+            [
+                (
+                    "pr",
+                    "merge",
+                    "7",
+                    "--repo",
+                    "owner/repo",
+                    "--merge",
+                    "--match-head-commit",
+                    "head",
+                ),
+                ("workflow", "run", "ci.yml", "--repo", "owner/repo", "--ref", "main"),
+                (
+                    "workflow",
+                    "run",
+                    "codeql.yml",
+                    "--repo",
+                    "owner/repo",
+                    "--ref",
+                    "main",
+                ),
+            ],
+        )
 
 
 if __name__ == "__main__":

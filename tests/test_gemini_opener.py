@@ -1980,6 +1980,8 @@ def test_nonempty_retry_hint_appears_in_user_text_after_profile_content():
     # coherence sentence carries the owner rule that every offered answer must feel good.
     assert "must not ask whether a moment in her photo was set up for the camera" in lower
     assert "every answer it offers must be one she would be glad to give" in lower
+    assert "if her photo's header offers a choice between alternatives" in lower
+    assert "instead of handing the choice back" in lower
     # ...and the inversion the block's own comment warns against: emphasising the dash rule,
     # which _sanitize launders silently, as though it could be why an attempt was rejected.
     assert "especially the hard rule against em dashes and hyphens" not in lower

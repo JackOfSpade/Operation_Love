@@ -6967,3 +6967,25 @@ So the prompt change alone fixed 1 of 3 samples. The clean sample suggests the m
 her header itself poses a choice, the sender should answer it rather than hand the choice back.
 That is NOT shipped here; measure the post-era rate first.
 
+### Addendum 2026-10-20 (b): a header that offers a choice is answered by the sender
+
+The replay above showed the missing idea: her header "Plandid or candid?" is a question put to the
+viewer, and the clean draft answered it while both misses handed it back to her. Owner decision:
+PHOTO HEADER RULE now says that when the header itself offers a choice between alternatives, the
+sender answers it himself, on the side kinder to her when one is, and never hands the choice back.
+General wording only, no example, in all five copies (config.yaml `opener.style`, `_SYSTEM`,
+`_SCHEMA` angle and opener descriptions, retry hint). Prompt only: no guard, HARD REJECTION list
+unchanged. New era 747315ea....
+
+REPLAY (tub capture, 3 live samples):
+- gemini-3-flash-preview: "I'm going with candid. You clearly just happened to be hanging out
+  there with those boots on." Clean.
+- gemini-3-flash-preview: "Candid for sure. I imagine those are just your standard house shoes
+  for when you are relaxing." Clean.
+- gemini-3.5-flash-lite: "Those boots mean it has to be plandid. What song plays in your head when
+  you suit up in full climbing gear for a bath?" Answers the header itself (no hand-back), but
+  picks the less kind side and then builds its question on that unconfirmed guess (a CONFIRMATION
+  BOUNDARY miss), and "climbing gear" misreads the boots.
+3 of 3 now answer the header rather than hand it back (was 1 of 3); 2 of 3 fully clean. Flash-lite
+remains the weak model on this profile in both replays. Three samples is anecdote, not a rate:
+WATCH header-choice items in the next live Training batch.

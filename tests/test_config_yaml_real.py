@@ -959,3 +959,13 @@ def test_shipped_opener_style_requires_every_offered_answer_to_feel_good(cfg):
     assert "the whole question fails, however good the other answers are" in style
     for primed in ("staged", "plandid", "spontaneous"):
         assert primed not in style, primed
+
+
+def test_shipped_opener_style_answers_a_header_choice_itself(cfg):
+    """Addendum 2026-10-20 (b): when her photo's header offers a choice, the sender answers it
+    instead of handing it back. Prompt only, with no example wording on wire."""
+    style = " ".join(cfg.opener.style.lower().split())
+    assert "when the header itself offers a choice between alternatives" in style
+    assert "it is a question put to the viewer" in style
+    assert "never hand the choice back by asking her which side it is" in style
+    assert "plandid" not in style and "candid" not in style

@@ -1486,6 +1486,18 @@ def test_every_offered_answer_rule_is_in_every_on_wire_copy():
     )
 
 
+def test_header_choice_is_answered_by_the_sender_in_every_on_wire_copy():
+    """Owner decision 2026-10-20 (b). Replaying the "Plandid or candid?" capture after the
+    every-offered-answer rule gave 1 clean draft in 3: the clean one answered her header's
+    choice itself, on the side kinder to her, and both misses handed the choice back. Every copy
+    must say the sender answers such a choice, and none may quote the header that prompted it."""
+    for name, text in _on_wire_location_copies().items():
+        assert "offers a choice between alternatives" in text, name
+        assert "the side kinder to her when one is" in text, name
+        assert "plandid" not in text and "candid" not in text, name
+    assert "it is a question put to the viewer" in _flat(_SYSTEM)
+
+
 def test_place_precision_cap_names_the_forbidden_scales_and_the_unsure_default():
     """The full rule lives in _SYSTEM (and config.yaml). It must forbid the sub-country scales by
     name -- "Amsterdam" is a city, "Bali" an island, "the Eiffel Tower" a landmark that names its

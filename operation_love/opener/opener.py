@@ -155,7 +155,10 @@ _SCHEMA = {
             "for the Like; explicit profile text may sharpen a connection but "
             "cannot replace the selected item as the subject or payoff. "
             "The angle must respect any header, caption, or prompt attached to "
-            "the photo; that text defines the photo's intended context. "
+            "the photo; that text defines the photo's intended context. When "
+            "that text offers a choice between alternatives, the angle answers it "
+            "from the sender's side, on the side kinder to her when one is, rather "
+            "than asking her to choose. "
             "A guess is optional. If you use one, choose the least speculative "
             "interpretation that fits ordinary explanations of the scene and do "
             "not invent a motive, purpose, cause, or unseen circumstance. The "
@@ -247,7 +250,9 @@ _SCHEMA = {
             "perspective, inspiration, or experience, never require self "
             "justification. Every answer a question offers must be one she would "
             "be glad to give; never make one of them an admission she would rather "
-            "not make. "
+            "not make. When her photo's header offers a choice between "
+            "alternatives, answer it yourself, on the side kinder to her when one "
+            "is, rather than handing the choice back to her. "
             "She was in the world the item shows and you were not, so write any "
             "inference about it from your own not knowing: never ask her to agree "
             "about how something appears, and never close a claim about her own "
@@ -702,6 +707,13 @@ _SCHEMA = {
 # its cause. Copies touched: config.yaml's style, this constant, the _SCHEMA opener AND angle
 # descriptions, and the retry hint. This changes prompt_stamp(); see ops/OPENER-REDESIGN.md,
 # Addendum 2026-10-20.
+#
+# Addendum 2026-10-20 (b) (answer the header's choice yourself): replaying the tub capture through
+# the rule above gave 1 clean draft in 3. The clean one ANSWERED her header's own choice from the
+# sender's side, on the side kinder to her; both misses handed the choice back to her, one in a
+# shape no lexical guard can see. Owner decision: PHOTO HEADER RULE now says a header that offers
+# a choice between alternatives is a question put to the viewer, to be answered by the sender.
+# Prompt only, no new guard, so the HARD REJECTION list is correctly unchanged. Same five copies.
 _SYSTEM = (
     "You write the opening message a man sends a woman on a dating app. Use the dating and "
     "conversational principles associated with Coach Corey Wayne's 'How to Be a 3% Man', without "
@@ -746,7 +758,10 @@ _SYSTEM = (
     "PHOTO HEADER RULE: any title, caption, or prompt printed with a photo is part of that same "
     "item and defines how the photo is meant to be read. Interpret the visible scene through "
     "that text before choosing an angle. The angle and opener must respect the combined meaning, "
-    "never contradict, reverse, or ignore the header's framing. "
+    "never contradict, reverse, or ignore the header's framing. When the header itself offers a "
+    "choice between alternatives, it is a question put to the viewer: answer it yourself by "
+    "committing to one side, the side kinder to her when one is, and never hand the choice back "
+    "by asking her which side it is. "
     "PROFILE TEXT FACT CHECK: the HER PROFILE TEXT section contains facts she has already told you. "
     "Before writing any question, check it against every stated bio and prompt answer. Never ask for "
     "a fact, preference, activity, place, or opinion that the profile text already answers. Use those "
@@ -3639,7 +3654,9 @@ class GeminiOpener:
                 "works. Ask one coherent thing at a time. Use "
                 "'or' only for parallel, genuinely contrasting answers to one underlying "
                 "question, never unrelated dimensions, and every answer it offers must be "
-                "one she would be glad to give. Every pronoun, shorthand noun, and "
+                "one she would be glad to give. If her photo's header offers a choice between "
+                "alternatives, answer it yourself, on the side kinder to her when one is, "
+                "instead of handing the choice back. Every pronoun, shorthand noun, and "
                 "question subject must have one immediately obvious referent. Across two beats, "
                 "any change of referent must be explicit and immediately clear. "
                 "Make the most natural honest reply feel good to give: invite a preference, "

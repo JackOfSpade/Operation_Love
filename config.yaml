@@ -1145,6 +1145,10 @@ opener:
   # its least comfortable honest answer, so both rules now say so, in general terms with no
   # example wording. A deterministic guard (_camera_motive_question_markers in opener.py) backs
   # the recurring shape. See ops/OPENER-REDESIGN.md, Addendum 2026-10-20.
+  #
+  # Addendum 2026-10-20 (b): a replay showed the model still handing her own header's choice
+  # back to her, so PHOTO HEADER RULE now says the sender answers such a choice himself, on the
+  # side kinder to her. Prompt only. See ops/OPENER-REDESIGN.md, Addendum 2026-10-20 (b).
   style: |
     Use the dating and conversational principles associated with Coach Corey Wayne's
     "How to Be a 3% Man", without copying his wording. Be a charming gentleman first:
@@ -1197,7 +1201,10 @@ opener:
     PHOTO HEADER RULE: any title, caption, or prompt printed with a photo is part of that same
     item and defines how the photo is meant to be read. Interpret the visible scene through that
     text before choosing an angle. The angle and opener must respect the combined meaning, never
-    contradict, reverse, or ignore the header's framing.
+    contradict, reverse, or ignore the header's framing. When the header itself offers a choice
+    between alternatives, it is a question put to the viewer: answer it yourself by committing
+    to one side, the side kinder to her when one is, and never hand the choice back by asking
+    her which side it is.
 
     CONVERSATIONAL VALUE RULE: do more than label what she can already see. Subject to MINIMUM
     SUFFICIENT REFERENCE, a visible detail may be named and may be the subject, premise, or setup.

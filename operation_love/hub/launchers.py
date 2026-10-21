@@ -56,11 +56,11 @@ fi
 echo "OK - launching the control hub (Ctrl-C to quit)..."
 TTY_NAME="$(tty 2>/dev/null || true)"
 "$PY" -m operation_love hub__CONFIG_ARG__
-status=$?
+launch_status=$?
 # `tty` reports a non-terminal invocation with a human-readable string on
 # some macOS versions. Only a real device path is safe to put in the
 # AppleScript matcher below; otherwise leave Terminal alone.
-if [ "$status" -eq 0 ] && [[ "$TTY_NAME" == /dev/* ]]; then
+if [ "$launch_status" -eq 0 ] && [[ "$TTY_NAME" == /dev/* ]]; then
   /usr/bin/nohup /usr/bin/osascript \
     -e 'delay 0.2' \
     -e 'tell application "Terminal"' \
@@ -74,7 +74,7 @@ if [ "$status" -eq 0 ] && [[ "$TTY_NAME" == /dev/* ]]; then
     -e 'end repeat' \
     -e 'end tell' >/dev/null 2>&1 &
 fi
-exit "$status"
+exit "$launch_status"
 """
 
 _LINUX_UPDATE_RUN = (

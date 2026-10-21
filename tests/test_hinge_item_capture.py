@@ -484,7 +484,9 @@ def test_auto_capture_enumerates_the_profile_into_numbered_crops():
     assert profile.items_unnumbered == ""
 
 
-def test_capture_reads_past_unbounded_carousel_without_numbering_its_fragments(monkeypatch):
+def test_capture_reads_past_unbounded_carousel_without_numbering_its_fragments(
+    monkeypatch,
+):
     """The reported geometry: a bounded photo, heading, then a narrower carousel.
 
     The section's own corners are not standard card edges. Its preceding photo's observed

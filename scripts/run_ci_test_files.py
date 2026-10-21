@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
-"""Run every configured pytest module in an isolated serial process."""
+"""Run one deterministic shard, keeping each module in an isolated serial process."""
 
 from __future__ import annotations
 
+import argparse
 import fnmatch
+import json
+import os
 import signal
 import shlex
 import subprocess
@@ -11,6 +14,26 @@ import sys
 import tomllib
 from collections import Counter
 from pathlib import Path
+from tempfile import TemporaryDirectory
+
+if __package__:
+    from .ci_test_shards import (
+        SUCCESS_OUTCOMES,
+        canonical_inventory,
+        inventory_digest,
+        outcome_from_reports,
+        partition,
+        write_json,
+    )
+else:
+    from ci_test_shards import (
+        SUCCESS_OUTCOMES,
+        canonical_inventory,
+        inventory_digest,
+        outcome_from_reports,
+        partition,
+        write_json,
+    )
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -88,14 +111,87 @@ def collected_nodeids(modules: list[str]) -> list[str]:
     return nodeids
 
 
-def main() -> int:
+def run_test_process(nodeids: list[str], report_path: Path) -> tuple[int, dict | None]:
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "-n",
+            "0",
+            "-p",
+            "scripts.ci_pytest_manifest",
+            *nodeids,
+        ],
+        cwd=REPO_ROOT,
+        env={**os.environ, "CI_PYTEST_REPORT_PATH": str(report_path)},
+        check=False,
+    )
+    report = (
+        json.loads(report_path.read_text(encoding="utf-8"))
+        if report_path.exists()
+        else None
+    )
+    return result.returncode, report
+
+
+def verified_outcomes(nodeids: list[str], report: dict | None) -> list[dict]:
+    if report is None or report.get("exitstatus") != 0:
+        raise ValueError("Successful pytest process did not record a successful report")
+    if report.get("collected_nodeids") != sorted(nodeids):
+        raise ValueError("Executed pytest collection differs from selected node IDs")
+    outcomes = report["outcomes"]
+    if sorted(r["nodeid"] for r in outcomes) != sorted(nodeids):
+        raise ValueError("Pytest outcomes are missing, duplicated or unexpected")
+    for result in outcomes:
+        actual = outcome_from_reports(result["reports"])
+        if actual not in SUCCESS_OUTCOMES or result.get("outcome") != actual:
+            raise ValueError("Pytest recorded a failed or incomplete outcome")
+    return outcomes
+
+
+def run_module(
+    nodeids: list[str], directory: Path
+) -> tuple[list[dict], list[dict], str | None]:
+    code, report = run_test_process(nodeids, directory / "module.json")
+    attempts = [{"selected_count": len(nodeids), "returncode": code}]
+    if code in (-signal.SIGKILL, 128 + signal.SIGKILL, 137):
+        print(
+            "CI isolation warning: module was SIGKILLed; retrying selected nodes individually",
+            flush=True,
+        )
+        outcomes = []
+        for index, nodeid in enumerate(nodeids):
+            print(
+                f"::group::SIGKILL fallback [{index + 1}/{len(nodeids)}] {nodeid}",
+                flush=True,
+            )
+            code, report = run_test_process([nodeid], directory / f"node-{index}.json")
+            print("::endgroup::", flush=True)
+            attempts.append({"selected_count": 1, "returncode": code})
+            if code != 0:
+                outcomes.extend((report or {}).get("outcomes", []))
+                return (
+                    outcomes,
+                    attempts,
+                    f"CI isolation failed in {nodeid} (exit {code})",
+                )
+            outcomes.extend(verified_outcomes([nodeid], report))
+        return outcomes, attempts, None
+    if code != 0:
+        return (
+            (report or {}).get("outcomes", []),
+            attempts,
+            f"CI isolation failed (exit {code})",
+        )
+    return verified_outcomes(nodeids, report), attempts, None
+
+
+def execute_shard(index: int, count: int, manifest: dict, save) -> int:
     modules = configured_modules()
-    nodeids = collected_nodeids(modules)
+    nodeids = canonical_inventory(collected_nodeids(modules))
     counts = Counter(nodeid.split("::", 1)[0] for nodeid in nodeids)
-    nodeids_by_module = {
-        module: [nodeid for nodeid in nodeids if nodeid.split("::", 1)[0] == module]
-        for module in modules
-    }
     discovered = set(modules)
     collected = set(counts)
     if discovered != collected:
@@ -106,65 +202,96 @@ def main() -> int:
             f"uncollected={missing or 'none'}, undiscovered={unexpected or 'none'}"
         )
 
-    expected_tests = len(nodeids)
-    completed_tests = 0
+    selected = partition(nodeids, count)[index]
+    manifest.update(
+        inventory=nodeids,
+        inventory_digest=inventory_digest(nodeids),
+        inventory_count=len(nodeids),
+        selected_nodeids=selected,
+        selected_count=len(selected),
+    )
+    save()
     print(
-        f"CI isolation plan: {len(modules)} modules, {expected_tests} collected tests",
+        f"CI isolation plan: {len(modules)} modules, {len(nodeids)} collected tests; "
+        f"shard {index + 1}/{count} selects {len(selected)}; inventory {manifest['inventory_digest']}",
         flush=True,
     )
-    oom_fallbacks: list[str] = []
-    for index, module in enumerate(modules, start=1):
-        print(f"::group::[{index}/{len(modules)}] {module}", flush=True)
-        result = subprocess.run(
-            [sys.executable, "-m", "pytest", "-q", "-n", "0", module],
-            cwd=REPO_ROOT,
-            check=False,
-        )
-        print("::endgroup::", flush=True)
-        if result.returncode in (-signal.SIGKILL, 128 + signal.SIGKILL, 137):
-            oom_fallbacks.append(module)
+    with TemporaryDirectory(prefix="operation-love-ci-") as temporary:
+        for module_index, module in enumerate(modules, start=1):
+            subset = [
+                nodeid for nodeid in selected if nodeid.split("::", 1)[0] == module
+            ]
+            if not subset:
+                continue
             print(
-                f"CI isolation warning: {module} was SIGKILLed; "
-                "retrying its collected tests one at a time",
+                f"::group::[{module_index}/{len(modules)}] {module} ({len(subset)} selected)",
                 flush=True,
             )
-            for node_index, nodeid in enumerate(nodeids_by_module[module], start=1):
-                print(
-                    f"::group::[{index}/{len(modules)}:{node_index}/"
-                    f"{counts[module]}] {nodeid}",
-                    flush=True,
-                )
-                node_result = subprocess.run(
-                    [sys.executable, "-m", "pytest", "-q", "-n", "0", nodeid],
-                    cwd=REPO_ROOT,
-                    check=False,
-                )
-                print("::endgroup::", flush=True)
-                if node_result.returncode != 0:
-                    print(
-                        f"CI isolation failed in {nodeid} (exit {node_result.returncode})",
-                        flush=True,
-                    )
-                    return node_result.returncode
-        elif result.returncode != 0:
-            print(
-                f"CI isolation failed in {module} (exit {result.returncode})",
-                flush=True,
+            directory = Path(temporary) / str(module_index)
+            directory.mkdir()
+            outcomes, attempts, error = run_module(subset, directory)
+            manifest["outcomes"].extend(outcomes)
+            manifest["attempts"].append({"module": module, "processes": attempts})
+            manifest["completed_count"] = len(manifest["outcomes"])
+            manifest["outcome_counts"] = dict(
+                Counter(r["outcome"] for r in manifest["outcomes"])
             )
-            return result.returncode
-        completed_tests += counts[module]
-
-    if completed_tests != expected_tests:
+            print("::endgroup::", flush=True)
+            save()
+            if error:
+                raise RuntimeError(f"{module}: {error}")
+    if manifest["completed_count"] != len(selected):
         raise SystemExit(
-            f"Executed-count mismatch: expected {expected_tests}, accounted for {completed_tests}"
+            f"Executed-count mismatch: expected {len(selected)}, recorded {manifest['completed_count']}"
         )
+    manifest["completed"] = True
     print(
-        f"CI isolation summary: {len(modules)} modules, "
-        f"{completed_tests}/{expected_tests} collected tests passed; "
-        f"SIGKILL fallbacks: {oom_fallbacks or 'none'}",
+        f"CI isolation summary: {manifest['completed_count']}/{len(selected)} selected tests completed; "
+        f"outcomes={manifest['outcome_counts']}",
         flush=True,
     )
     return 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--shard-index", type=int, default=0)
+    parser.add_argument("--shard-count", type=int, default=1)
+    parser.add_argument("--manifest", type=Path)
+    parser.add_argument("--source-sha", default=os.environ.get("GITHUB_SHA", "local"))
+    args = parser.parse_args()
+    if args.shard_count < 1 or not 0 <= args.shard_index < args.shard_count:
+        parser.error("Shard index must be in [0, shard count)")
+    manifest = {
+        "version": 1,
+        "source_sha": args.source_sha,
+        "shard_index": args.shard_index,
+        "shard_count": args.shard_count,
+        "inventory": [],
+        "inventory_digest": inventory_digest([]),
+        "inventory_count": 0,
+        "selected_nodeids": [],
+        "selected_count": 0,
+        "outcomes": [],
+        "outcome_counts": {},
+        "completed_count": 0,
+        "attempts": [],
+        "completed": False,
+        "errors": [],
+    }
+
+    def save():
+        if args.manifest:
+            write_json(args.manifest, manifest)
+
+    try:
+        return execute_shard(args.shard_index, args.shard_count, manifest, save)
+    except (SystemExit, RuntimeError, ValueError, KeyError, OSError) as error:
+        manifest["errors"].append(str(error))
+        print(f"CI isolation failed: {error}", flush=True)
+        return 1
+    finally:
+        save()
 
 
 if __name__ == "__main__":

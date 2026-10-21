@@ -29,6 +29,7 @@ from operation_love.opener.opener import (
     ItemRequest,
     OpenerParseError,
     OpenerResult,
+    REASON_CAMERA_MOTIVE_QUESTION,
     REASON_PREEMPTIVE_DISCLAIMER,
     REASON_PREMATURE_SHARED_FUTURE,
     REASON_SCAFFOLDING,
@@ -39,6 +40,7 @@ from operation_love.opener.opener import (
     REASON_UNDELIVERABLE_SEQUENCE,
     _ITEM_PREAMBLE,
     _SYSTEM,
+    _camera_motive_question_markers,
     _image_media_type,
     _leading_ngram,
     _preemptive_disclaimer_markers,
@@ -1463,6 +1465,25 @@ def test_place_precision_cap_is_in_every_on_wire_copy():
         ), name
         # The old licence for sub-country precision abroad must be gone everywhere.
         assert "a country, a region, or a park" not in text, name
+
+
+def test_every_offered_answer_rule_is_in_every_on_wire_copy():
+    """Owner rule 2026-10-20: a question is only as comfortable as its least comfortable honest
+    answer. "Was that staged or totally spontaneous?" passed because QUESTION COHERENCE licensed
+    any genuinely contrasting "or" and REPLY COMFORT never said one bad option sinks the whole
+    question. Each copy must say every offered answer is one she would be glad to give, and none
+    may name the incident's vocabulary: per the negation-priming finding, naming a construction
+    in order to forbid it has raised its frequency before."""
+    for name, text in _on_wire_location_copies().items():
+        assert "she would be glad to give" in text, name
+        for primed in ("staged", "plandid", "spontaneous"):
+            assert primed not in text, (name, primed)
+    system = _flat(_SYSTEM)
+    assert "judge a choice by its least comfortable option" in system
+    assert (
+        "never to join unrelated dimensions, and every answer offered must be one she would "
+        "be glad to give" in system
+    )
 
 
 def test_place_precision_cap_names_the_forbidden_scales_and_the_unsure_default():
@@ -3134,6 +3155,122 @@ def test_generate_rejects_the_reported_courage_to_jump_inference_before_send():
     assert exc.value.raw_opener == (
         "Did you work up the courage to jump or were you happy just taking in the scenery?"
     )
+
+
+# The five openers that asked whether her moment was arranged for the camera, from 410 distinct
+# openers (BigQuery plus local runs) as of 2026-10-20, plus one replay draft. The first is the sent Training draft that
+# prompted the owner rule: a question is only as comfortable as its least comfortable answer.
+_CAMERA_MOTIVE_CORPUS_HITS = (
+    (
+        "Those platform boots in an empty tub feel entirely intentional. Was that staged or "
+        "totally spontaneous?",
+        ["asked whether it was staged"],
+    ),
+    (
+        "Did you actually pose with your eyes completely shut like that or did someone catch "
+        "you mid laugh?",
+        ["asked whether it was staged"],
+    ),
+    (
+        "The infinite mirror reflection in this elevator shot is pretty cool. Did you set out "
+        "to capture an endless line of Nataliias or did that just happen by accident?",
+        ["asked whether it was done on purpose"],
+    ),
+    (
+        "Was there something to catch in there or did you suit up purely for the cover shot?",
+        ["asked whether it was done for the photo"],
+    ),
+    (
+        "Is that move part of a daily routine or strictly for mirror photos?",
+        ["asked whether it was done for the photo"],
+    ),
+    # Not from the corpus: the replay of the tub profile through the 2026-10-20 prompt produced
+    # this, and the first version of the guard missed it because its "was it ... posed" filler
+    # was a closed word list that lacked "strictly".
+    (
+        "Definitely candid. Does that actually make a comfortable seat or was it strictly "
+        "posed?",
+        ["asked whether it was staged"],
+    ),
+)
+
+
+@pytest.mark.parametrize(("opener", "expected"), _CAMERA_MOTIVE_CORPUS_HITS)
+def test_camera_motive_guard_catches_every_corpus_hit(opener, expected):
+    assert _camera_motive_question_markers(opener) == expected
+
+
+@pytest.mark.parametrize(
+    "opener",
+    [
+        # A remark that a shot looks deliberate asks her to admit nothing; only questions count.
+        "Those platform boots in an empty tub feel entirely intentional.",
+        # The subject is her dog: hamming it up for the camera is his admission, not hers. This
+        # real opener is the one false positive the first draft of the guard produced.
+        "That dog looks like he just won the lottery. Is he always that dramatic or was that "
+        "just for the camera?",
+        "That tiny pink duck looks like a surprisingly reliable travel companion for an Italian "
+        "getaway. Does he handle navigation or just pose for photos?",
+        "Did you have to bribe them to pose like that or did they just photobomb you?",
+        # The same replay's clean draft: the sender answers her header himself, flatteringly.
+        "Definitely candid. Who doesn't unwind like that on a Tuesday?",
+        # Real openers near the vocabulary whose every answer is comfortable.
+        "That trench coat in the spotlight has total classic film energy. Was this for a "
+        "creative project or were you just having fun with the camera?",
+        "Did you style this outfit specifically for the coast or just bring Fashion Week "
+        "wherever you go?",
+        "Between project management and chess, you clearly have a mind for strategy. Do you "
+        "usually have your next five moves planned out or do you prefer to see how things "
+        "unfold?",
+        "Did you actually help crew that ship or were you out there purely for the view?",
+        "Are you using an app to identify that turtle or giving him a personal photo shoot?",
+    ],
+)
+def test_camera_motive_guard_leaves_comfortable_questions_alone(opener):
+    assert _camera_motive_question_markers(opener) == []
+
+
+def test_generate_rejects_the_reported_staged_question_before_send():
+    reported = _CAMERA_MOTIVE_CORPUS_HITS[0][0]
+    payload = _gemini_response(
+        {
+            "opener": reported,
+            "referenced": "a photo in an empty bathtub under the header Plandid or candid",
+            "item_index": 1,
+        }
+    )
+    with pytest.raises(OpenerParseError, match="arranged for the camera") as exc:
+        _opener(_Transport([(200, payload)])).generate(
+            Profile(photos=[b"a"]), style="s"
+        )
+    assert exc.value.reason_code == REASON_CAMERA_MOTIVE_QUESTION
+    assert exc.value.raw_opener == reported
+    # The retry hint must carry the owner rule, not just the diagnosis.
+    assert "one she would be glad to give" in str(exc.value)
+
+
+def test_camera_motive_question_is_retried_and_a_comfortable_second_attempt_succeeds():
+    bad = _gemini_response(
+        {
+            "opener": _CAMERA_MOTIVE_CORPUS_HITS[0][0],
+            "referenced": "a photo in an empty bathtub",
+            "item_index": 1,
+        }
+    )
+    clean = _gemini_response(
+        {
+            "opener": "Platform boots in an empty tub is a bold way to relax.",
+            "referenced": "a photo in an empty bathtub",
+            "item_index": 1,
+        }
+    )
+    client = _opener(_Transport([(200, bad), (200, clean)]))
+    service = OpenerService(client, _NeverBudgetTracker(), _DiscardingStore(), "casual")
+
+    pick = service.maybe_opener("r", "hinge", Profile(photos=[b"a"]))
+
+    assert pick is not None
+    assert pick.text == "Platform boots in an empty tub is a bold way to relax."
 
 
 def test_generate_rejects_the_reported_unconfirmed_location_followup_before_send():

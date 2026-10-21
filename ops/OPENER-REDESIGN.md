@@ -6911,3 +6911,59 @@ WATCH: this is a new prompt era (see `ops/prompt-eras.json`). Measure it before 
 openers after this era that name a non-US/Canada city, island, or landmark, or a US/Canadian city,
 where her profile text does not state that place. If the rate is not near zero, the next step is
 the deterministic backstop above, not another prompt rule.
+
+### Addendum 2026-10-20: every answer a question offers must feel good to give
+
+Owner feedback on a SENT Training opener (header "Plandid or candid", photo of her in platform
+boots in an empty tub): "Those platform boots in an empty tub feel entirely intentional. Was that
+staged or totally spontaneous?" If it was staged, the honest reply is "yeah, I set it up for the
+camera", which does not feel good to say. Owner rule: never ask a question where either of the
+offered answers has a bad connotation for her.
+
+WHY THE EXISTING RULE DID NOT CATCH IT: REPLY COMFORT (2026-08-17) already forbade a forced choice
+that embarrasses her and testing "whether a visible detail is genuine", but it was prompt only,
+and QUESTION COHERENCE licensed "or" for "genuinely contrasting" answers, which staged versus
+spontaneous is a textbook case of. Her own header supplied the binary. The draft passed on its
+first attempt.
+
+MEASURED FIRST: 410 distinct openers (BigQuery `openers` plus local `data/hinge_debug` jsonl, as of
+2026-10-20). 5 asked whether her moment was arranged for the camera, every one after REPLY COMFORT
+shipped, from several models: "staged or totally spontaneous", "suit up purely for the cover
+shot", "strictly for mirror photos", "set out to capture an endless line of Nataliias or did that
+just happen by accident", "Did you actually pose with your eyes completely shut".
+
+WHAT SHIPS:
+- Prompt (config.yaml `opener.style`, `_SYSTEM`, `_SCHEMA` opener and angle descriptions, retry
+  hint): QUESTION COHERENCE requires every offered answer to be one she would be glad to give;
+  REPLY COMFORT judges a choice by its least comfortable option. General wording only, no example
+  and no mention of staging, per the de-templating and negation-priming findings.
+- Deterministic guard `_camera_motive_question_markers`, reason code `camera_motive_question`:
+  rejects a QUESTION sentence asking whether the moment was staged, posed, done on purpose, or done
+  just for the photo. Statements are not checked, "or" is not required (a yes/no question offers
+  the same admission), and a question naming a third person (he/she/they) is skipped, since a pet
+  hamming it up is not her admission. On the 410-opener corpus it flags exactly the 5 above and
+  nothing else. Its cause is listed in the retry HARD REJECTION list (now 9 clauses).
+
+RISK ACCEPTED: the guard covers only the camera-motive shape. Other loaded either/ors (for example
+"Did you hit the floor or did someone manage a save?") rely on the prompt alone. A statement guess
+such as "Definitely plandid. Am I right?" is not matched, because it answers her own prompt's game
+rather than asking her to own up.
+
+WATCH: new prompt era. Re-run the guard over openers generated after this era; it should log
+`camera_motive_question` rejections (BigQuery or the SQLite fallback) rather than sent openers. If
+other bad-option either/ors keep appearing in watched batches, measure that shape before adding a
+second guard.
+
+REPLAY (same day, tub capture 384d86e6..., new era b9c98a91..., 3 live samples):
+- gemini-3.5-flash-lite: "I'm guessing zero percent of those boots happened by accident. Which
+  side of the question do you actually fall on?" Still asks HER to pick a side of her own binary.
+  No lexical guard catches this; it is a prompt miss.
+- gemini-3.5-flash: "Definitely candid. Who doesn't unwind like that on a Tuesday?" Clean: the
+  sender answers the header himself, on the side that flatters her.
+- gemini-3.6-flash: "Definitely candid. Does that actually make a comfortable seat or was it
+  strictly posed?" The guard's first version MISSED this (its "was it ... posed" filler was a
+  closed word list). Widened to any three words; still exactly 5 hits on the 410-opener corpus.
+So the prompt change alone fixed 1 of 3 samples. The clean sample suggests the missing idea: when
+her header itself poses a choice, the sender should answer it rather than hand the choice back.
+That is NOT shipped here; measure the post-era rate first.
+

@@ -1976,6 +1976,10 @@ def test_nonempty_retry_hint_appears_in_user_text_after_profile_content():
     # turn, which the same rewrite otherwise removed along with the dash "especially" clause --
     # and SPOKEN REGISTER pushes the model toward informality, the direction emoji come from.
     assert "plain ascii letters and punctuation with no emoji" in lower
+    # 2026-10-20: _camera_motive_question_markers raises, so its cause is listed too, and the
+    # coherence sentence carries the owner rule that every offered answer must feel good.
+    assert "must not ask whether a moment in her photo was set up for the camera" in lower
+    assert "every answer it offers must be one she would be glad to give" in lower
     # ...and the inversion the block's own comment warns against: emphasising the dash rule,
     # which _sanitize launders silently, as though it could be why an attempt was rejected.
     assert "especially the hard rule against em dashes and hyphens" not in lower
@@ -2081,8 +2085,9 @@ def test_nonempty_retry_hint_carries_the_she_is_the_one_who_knows_amendment():
     # MUTATION GUARD: an editor who adds a new raising guard's cause to this list without
     # otherwise touching this test changes this count -- it is the trip wire the code comment
     # asks for.
-    assert len(clauses) == 8, (
-        f"HARD REJECTION RULES list gained or lost a clause (expected 8, got {len(clauses)}): "
+    # 9 since 2026-10-20: _camera_motive_question_markers added a raising guard to _parse().
+    assert len(clauses) == 9, (
+        f"HARD REJECTION RULES list gained or lost a clause (expected 9, got {len(clauses)}): "
         f"{segment!r}"
     )
     assert (

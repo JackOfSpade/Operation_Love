@@ -942,3 +942,20 @@ def test_shipped_config_selects_something_the_registry_can_actually_run():
         f"config.yaml ships enabled_apps={cfg.enabled_apps}, which cannot start: "
         f"{platforms.check_runnable(cfg.enabled_apps)}"
     )
+
+
+def test_shipped_opener_style_requires_every_offered_answer_to_feel_good(cfg):
+    """Owner rule 2026-10-20, after the sent Training opener "Was that staged or totally
+    spontaneous?": a question is only as comfortable as its least comfortable honest answer.
+    QUESTION COHERENCE's licence for a contrasting "or" now carries that limit and REPLY COMFORT
+    judges a choice by its worst option. The incident's vocabulary must not become prompt copy
+    (de-templating, 2026-08-16; negation priming, 2026-09-05)."""
+    style = " ".join(cfg.opener.style.lower().split())
+    assert (
+        "never to join unrelated dimensions, and every answer offered must be one she would "
+        "be glad to give" in style
+    )
+    assert "judge a choice by its least comfortable option" in style
+    assert "the whole question fails, however good the other answers are" in style
+    for primed in ("staged", "plandid", "spontaneous"):
+        assert primed not in style, primed

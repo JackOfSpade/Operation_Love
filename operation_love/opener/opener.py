@@ -196,7 +196,8 @@ _SCHEMA = {
             "unchanged under a different woman's different photo. "
             "Confirm that its "
             "most natural honest reply lets her share a preference, perspective, "
-            "inspiration, or experience rather than defend or diminish herself. "
+            "inspiration, or experience rather than defend or diminish herself, "
+            "and that every answer it offers is one she would be glad to give. "
             "Confirm that the opener does not audition for a role described in "
             "her profile, promise how the sender will perform for her, or assume "
             "a match, date, relationship, or shared future before she replies. A "
@@ -244,7 +245,9 @@ _SCHEMA = {
             "plausible unintended meaning, reorder or rephrase the line. "
             "Its most natural honest reply should let her share a preference, "
             "perspective, inspiration, or experience, never require self "
-            "justification. "
+            "justification. Every answer a question offers must be one she would "
+            "be glad to give; never make one of them an admission she would rather "
+            "not make. "
             "She was in the world the item shows and you were not, so write any "
             "inference about it from your own not knowing: never ask her to agree "
             "about how something appears, and never close a claim about her own "
@@ -684,6 +687,21 @@ _SCHEMA = {
 # string per the 2026-08-16 de-templating rule; the incident is pinned off wire in the tests. This
 # changes prompt_stamp() and begins a distinct prompt era; see ops/OPENER-REDESIGN.md,
 # Addendum -- 2026-09-14 (a).
+#
+# Addendum 2026-10-20 (every offered answer must feel good): owner feedback on a sent Training
+# opener under the header "Plandid or candid", "Was that staged or totally spontaneous?". REPLY
+# COMFORT already forbade a forced choice that embarrasses her, but AN EXISTING RULE PRODUCED IT
+# again: QUESTION COHERENCE licenses "or" for "genuinely contrasting" answers, and staged versus
+# spontaneous is exactly that. Owner rule: a question is only as comfortable as its least
+# comfortable honest answer. QUESTION COHERENCE now requires every offered answer to be one she
+# would be glad to give, and REPLY COMFORT judges a choice by its least comfortable option.
+# Stated in general terms only, never naming staging or the camera, per the 2026-08-16
+# de-templating and 2026-09-05 negation-priming findings. Unlike 2026-09-14 this one IS backed
+# by a raising guard, _camera_motive_question_markers, because the shape recurred 5 times in 410
+# distinct openers, all after REPLY COMFORT shipped; the retry block's HARD REJECTION list gains
+# its cause. Copies touched: config.yaml's style, this constant, the _SCHEMA opener AND angle
+# descriptions, and the retry hint. This changes prompt_stamp(); see ops/OPENER-REDESIGN.md,
+# Addendum 2026-10-20.
 _SYSTEM = (
     "You write the opening message a man sends a woman on a dating app. Use the dating and "
     "conversational principles associated with Coach Corey Wayne's 'How to Be a 3% Man', without "
@@ -776,7 +794,8 @@ _SYSTEM = (
     "replacing it with an immediately clear implicit reference leaves the later point or question "
     "unchanged, use the shorter implicit version. QUESTION COHERENCE: ask one coherent thing at a time. An 'or' "
     "is allowed only for parallel, genuinely contrasting answers to that same underlying "
-    "question, never to join unrelated dimensions. CASUAL OR PUNCTUATION: never put a comma "
+    "question, never to join unrelated dimensions, and every answer offered must be one she "
+    "would be glad to give. CASUAL OR PUNCTUATION: never put a comma "
     "immediately before 'or', even where formal grammar would allow one. Write it the way a "
     "person would text casually. SPOKEN REGISTER: write it the way the sender would say it "
     "out loud: use the contractions a relaxed speaker would use, prefer plain everyday words "
@@ -809,6 +828,8 @@ _SYSTEM = (
     "preference, perspective, inspiration, or experience, not self justification. Never test her "
     "intelligence, sincerity, knowledge, effort, or whether a visible detail is genuine. Do not "
     "offer a forced choice whose honest answers make her defend, diminish, or embarrass herself. "
+    "Judge a choice by its least comfortable option: if any one honest answer would feel like "
+    "owning up to something, the whole question fails, however good the other answers are. "
     "If a visible detail could have more than one explanation, respond to its visible effect or "
     "choose another angle rather than asking her to verify its status. Asking only whether an "
     "inferred location itself is right is the narrow confirmation required by CONFIRMATION "
@@ -1984,6 +2005,75 @@ def _sensitive_inference_markers(text: str) -> list[str]:
     ]
 
 
+# Owner rule 2026-10-20: a question is only as comfortable as its least comfortable honest
+# answer. "Was that staged or totally spontaneous?" (header "Plandid or candid") reached the
+# comment box because REPLY COMFORT was prompt only and QUESTION COHERENCE's licence for
+# "genuinely contrasting" alternatives describes staged versus spontaneous exactly; answering
+# "yes, I set that up for the camera" is an admission, not a reply she enjoys giving. The
+# prompt owns the general rule; this backstop covers only the recurring shape: a QUESTION
+# sentence asking whether the moment was arranged for the camera. It looks at question
+# sentences alone, so a remark that a shot looks intentional is not rejected, and it does not
+# require "or" because a yes/no question offers the same admission as its "yes".
+# A question about someone else ("Is he always that dramatic or was that just for the
+# camera?" about her dog) is skipped: hamming it up is the pet's admission, not hers. Over
+# 410 distinct openers (BigQuery plus local debug runs, 2026-10-20) it matches 5, every one
+# the shape it names and every one generated after REPLY COMFORT shipped.
+_CAMERA_MOTIVE_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    (
+        "asked whether it was staged",
+        re.compile(
+            r"\b(?:staged|plandid)\b"
+            r"|\b(?:was|were|is|are)\s+(?:\w+\s+){0,3}posed\b"
+            r"|\b(?:did|do|were|are)\s+you\s+(?:(?:actually|really|just)\s+)?pos(?:e|ing)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "asked whether it was done on purpose",
+        re.compile(
+            r"\b(?:on\s+purpose|intentional(?:ly)?|"
+            r"set\s+out\s+to\s+(?:capture|get|take|shoot|create))\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "asked whether it was done for the photo",
+        re.compile(
+            r"\b(?:purely|strictly|just|only|specifically|mostly|simply|all)\s+for\s+"
+            r"(?:(?:the|a|your|this|that)\s+)?(?:cover\s+|mirror\s+|profile\s+)?"
+            r"(?:photo|pic|picture|camera|shot|selfie|gram|insta(?:gram)?|feed)s?\b"
+            r"(?!\s+(?:shoot|op)\b)"
+            r"|\bfor\s+the\s+(?:camera|gram|cover\s+shot)\b",
+            re.IGNORECASE,
+        ),
+    ),
+)
+_QUESTION_SENTENCE_RE = re.compile(r"[^.?!]*\?")
+_THIRD_PERSON_SUBJECT_RE = re.compile(
+    r"\b(?:he|him|his|she|her|they|them|their)\b", re.IGNORECASE
+)
+
+
+def _camera_motive_question_markers(text: str) -> list[str]:
+    """Return the ways a question in *text* asks whether her moment was set up for the camera.
+
+    Only question sentences are examined: the reply-comfort failure is the answer she would
+    have to give, so a statement that a photo looks deliberate is left to the prompt. A question
+    naming a third person is about that subject, not her, and is skipped. Labels are
+    de-duplicated in pattern order so a two-question opener names each shape once.
+    """
+    questions = [
+        question
+        for question in _QUESTION_SENTENCE_RE.findall(text)
+        if not _THIRD_PERSON_SUBJECT_RE.search(question)
+    ]
+    return [
+        label
+        for label, pattern in _CAMERA_MOTIVE_PATTERNS
+        if any(pattern.search(question) for question in questions)
+    ]
+
+
 def _is_location_confirmation_phrase(text: str) -> bool:
     """Return whether *text* contains only a place identification or correction.
 
@@ -2517,6 +2607,7 @@ REASON_PREEMPTIVE_DISCLAIMER = "preemptive_disclaimer"
 REASON_PREMATURE_SHARED_FUTURE = "premature_shared_future"
 REASON_SENSITIVE_INFERENCE = "sensitive_inference"
 REASON_UNCONFIRMED_LOCATION_FOLLOWUP = "unconfirmed_location_followup"
+REASON_CAMERA_MOTIVE_QUESTION = "camera_motive_question"
 REASON_TOO_MANY_SENTENCES = "too_many_sentences"
 
 # The three codes below are NOT OpenerParseError.reason_code values -- nothing in _parse below
@@ -2566,8 +2657,8 @@ class OpenerParseError(OpenerError):
       - post-sanitize (after fold_to_ascii) when the guard runs on the already-sanitized
         string (empty_after_sanitize, undeliverable_chars, undeliverable_sequence,
         too_many_sentences, scaffolding, preemptive_disclaimer, premature_shared_future,
-        sensitive_inference, unconfirmed_location_followup) -- these all call their check
-        function with `sanitized`, so that is unambiguously the value being judged, even for
+        sensitive_inference, unconfirmed_location_followup, camera_motive_question) -- these
+        all call their check function with `sanitized`, so that is unambiguously the value being judged, even for
         empty_after_sanitize where the result is "" itself.
       - the raw response text (no per-field candidate exists to point at) for bad_json and
         missing_field: neither ever produced a usable "opener" value, so the whole raw text
@@ -3513,7 +3604,8 @@ class GeminiOpener:
                 "surrounding quotes; it must not open by naming and denying a negative reading "
                 "of itself; it must not assume a match, date, or other shared future; it "
                 "must not use an unconfirmed inferred location as the premise of a later "
-                "statement or question; it "
+                "statement or question; it must not ask whether a moment in her photo was "
+                "set up for the camera; it "
                 "must not infer or tease about self harm, death, injury, an accident, or danger "
                 "unless her profile explicitly states the activity; and it must be plain ASCII "
                 "letters and punctuation with no emoji. Also keep following the "
@@ -3546,7 +3638,8 @@ class GeminiOpener:
                 "it or use an immediately clear implicit reference if the later point still "
                 "works. Ask one coherent thing at a time. Use "
                 "'or' only for parallel, genuinely contrasting answers to one underlying "
-                "question, never unrelated dimensions. Every pronoun, shorthand noun, and "
+                "question, never unrelated dimensions, and every answer it offers must be "
+                "one she would be glad to give. Every pronoun, shorthand noun, and "
                 "question subject must have one immediately obvious referent. Across two beats, "
                 "any change of referent must be explicit and immediately clear. "
                 "Make the most natural honest reply feel good to give: invite a preference, "
@@ -4285,6 +4378,22 @@ class GeminiOpener:
                 usage,
                 model,
                 reason_code=REASON_SENSITIVE_INFERENCE,
+                raw_opener=sanitized,
+            )
+        # Reply-comfort backstop for the owner rule above _CAMERA_MOTIVE_PATTERNS: a question
+        # whose honest "yes, it was set up" is an admission she would not enjoy making. The
+        # prompt owns the general rule that every offered answer must feel good to give.
+        camera_motive_markers = _camera_motive_question_markers(sanitized)
+        if camera_motive_markers:
+            raise OpenerParseError(
+                "Gemini's opener asked whether a moment in her photo was arranged for the "
+                f"camera ({'; '.join(camera_motive_markers)}). One honest answer to that "
+                "question is an unflattering admission. Respond to what the moment looks "
+                "like, or choose another angle, and make every answer a question offers one "
+                "she would be glad to give.",
+                usage,
+                model,
+                reason_code=REASON_CAMERA_MOTIVE_QUESTION,
                 raw_opener=sanitized,
             )
         # `or ""` for the same reason as `angle` and `item_description` above: _SCHEMA's

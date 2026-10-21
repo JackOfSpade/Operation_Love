@@ -1138,6 +1138,13 @@ opener:
   # No example opener copy ships anywhere, per the 2026-08-16 de-templating rule; "Looks like
   # Rome, right?" is pinned off wire in the tests. This changes the prompt era; see
   # ops/OPENER-REDESIGN.md, Addendum -- 2026-09-14 (a).
+  #
+  # Addendum 2026-10-20 (every offered answer must feel good): a sent Training opener asked
+  # whether a photo was staged or spontaneous. QUESTION COHERENCE licensed the "or" and REPLY
+  # COMFORT's forced choice ban did not stop it. Owner rule: a question is only as comfortable as
+  # its least comfortable honest answer, so both rules now say so, in general terms with no
+  # example wording. A deterministic guard (_camera_motive_question_markers in opener.py) backs
+  # the recurring shape. See ops/OPENER-REDESIGN.md, Addendum 2026-10-20.
   style: |
     Use the dating and conversational principles associated with Coach Corey Wayne's
     "How to Be a 3% Man", without copying his wording. Be a charming gentleman first:
@@ -1252,7 +1259,8 @@ opener:
     with an immediately clear implicit reference leaves the later point or question unchanged,
     use the shorter implicit version. QUESTION COHERENCE: ask one coherent thing at a time. An
     'or' is allowed only for parallel, genuinely contrasting answers to that same underlying
-    question, never to join unrelated dimensions. CASUAL OR PUNCTUATION: never put a comma immediately before 'or',
+    question, never to join unrelated dimensions, and every answer offered must be one she
+    would be glad to give. CASUAL OR PUNCTUATION: never put a comma immediately before 'or',
     even where formal grammar would allow one. Write it the way a person would text casually.
 
     SPOKEN REGISTER: write the message the way the sender would say it out loud, then type that.
@@ -1296,6 +1304,8 @@ opener:
     preference, perspective, inspiration, or experience, not self justification. Never test her
     intelligence, sincerity, knowledge, effort, or whether a visible detail is genuine. Do not
     offer a forced choice whose honest answers make her defend, diminish, or embarrass herself.
+    Judge a choice by its least comfortable option: if any one honest answer would feel like
+    owning up to something, the whole question fails, however good the other answers are.
     If a visible detail could have more than one explanation, respond to its visible effect or
     choose another angle rather than asking her to verify its status. Asking only whether an
     inferred location itself is right is the narrow confirmation required by CONFIRMATION

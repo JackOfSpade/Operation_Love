@@ -2,6 +2,7 @@ name: CI
 
 on:
   push:
+    branches: [main]
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -15,9 +16,14 @@ concurrency:
 
 jobs:
   test:
-    name: pytest
+    name: pytest shard ${{ matrix.shard }}
     runs-on: ubuntu-latest
-    # The isolated 88-module suite needs headroom for variable hosted-runner runtime.
+    # Independent runners release module memory without multiplying workers on one host.
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5]
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -35,7 +41,40 @@ jobs:
       - name: Install package and test dependencies
         run: pip install --quiet -e '.[dev,hinge,ml]'
       - name: Run tests
-        run: python scripts/run_ci_test_files.py
+        run: >
+          python scripts/run_ci_test_files.py
+          --shard-index ${{ matrix.shard }} --shard-count 6
+          --manifest ci-manifests/shard-${{ matrix.shard }}.json
+      - name: Preserve actual inventory and outcomes, including failures
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: pytest-shard-${{ matrix.shard }}
+          path: ci-manifests/shard-${{ matrix.shard }}.json
+          if-no-files-found: error
+          retention-days: 1
+          # A failed-job rerun replaces only that shard's manifest in this same run.
+          overwrite: true
+
+  reconcile-tests:
+    name: Reconcile all pytest shards
+    if: ${{ always() }}
+    needs: [test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          pattern: pytest-shard-*
+          path: ci-manifests
+          merge-multiple: true
+      - name: Require the same inventory and complete, disjoint successful outcomes
+        run: >
+          python3 scripts/reconcile_ci_test_shards.py
+          --manifest-dir ci-manifests --shard-count 6 --source-sha '${{ github.sha }}'
 
   lint:
     name: ruff and prompt-era registry
@@ -82,7 +121,7 @@ jobs:
   required:
     name: CI required
     if: ${{ always() }}
-    needs: ["test", "lint", "compatibility", "merge-policy"]
+    needs: ["test", "reconcile-tests", "lint", "compatibility", "merge-policy"]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

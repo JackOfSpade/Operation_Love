@@ -1978,7 +1978,9 @@ def test_nonempty_retry_hint_appears_in_user_text_after_profile_content():
     assert "plain ascii letters and punctuation with no emoji" in lower
     # 2026-10-20: _camera_motive_question_markers raises, so its cause is listed too, and the
     # coherence sentence carries the owner rule that every offered answer must feel good.
-    assert "must not ask whether a moment in her photo was set up for the camera" in lower
+    assert (
+        "must not ask whether a moment in her photo was set up for the camera" in lower
+    )
     assert "every answer it offers must be one she would be glad to give" in lower
     assert "if her photo's header offers a choice between alternatives" in lower
     assert "instead of handing the choice back" in lower

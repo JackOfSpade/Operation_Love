@@ -38,6 +38,11 @@ else:
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PYPROJECT = REPO_ROOT / "pyproject.toml"
+# Each module's node IDs are passed to pytest as command-line arguments, and Linux refuses any
+# single argument over 128 KiB (MAX_ARG_STRLEN) with a bare "Argument list too long". A test
+# parametrized with raw bytes and no ids= gets the whole value escaped into its ID (a PNG once
+# produced a 7 MB one), so refuse long IDs up front and name them.
+MAX_NODEID_CHARS = 4096
 
 
 def _words(value: object, default: tuple[str, ...]) -> tuple[str, ...]:
@@ -191,6 +196,13 @@ def run_module(
 def execute_shard(index: int, count: int, manifest: dict, save) -> int:
     modules = configured_modules()
     nodeids = canonical_inventory(collected_nodeids(modules))
+    oversized = [nodeid for nodeid in nodeids if len(nodeid) > MAX_NODEID_CHARS]
+    if oversized:
+        names = ", ".join(sorted({nodeid.split("[", 1)[0] for nodeid in oversized}))
+        raise SystemExit(
+            f"Pytest node IDs longer than {MAX_NODEID_CHARS} characters cannot be passed on "
+            f"a command line; give these tests short parametrize ids=: {names}"
+        )
     counts = Counter(nodeid.split("::", 1)[0] for nodeid in nodeids)
     discovered = set(modules)
     collected = set(counts)

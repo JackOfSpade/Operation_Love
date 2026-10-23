@@ -42,7 +42,11 @@ def test_confirmation_follows_shifted_control_instead_of_fixed_coordinates():
     assert hinge._message_warning_controls(output.getvalue()) == (True, (565, 2172))
 
 
-@pytest.mark.parametrize("frame", [b"invalid", _action_frame(), _modal_frame()])
+@pytest.mark.parametrize(
+    "frame",
+    [b"invalid", _action_frame(), _modal_frame()],
+    ids=["undecodable", "deck", "rose_modal"],
+)
 def test_other_screens_do_not_authorise_confirmation(frame):
     assert hinge._message_warning_controls(frame) == (False, None)
 

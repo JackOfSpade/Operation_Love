@@ -313,6 +313,32 @@ def test_uncollected_configured_module_cannot_disappear(monkeypatch, tmp_path):
     assert not manifest["attempts"] and not manifest["completed"]
 
 
+def test_an_oversized_node_id_is_refused_by_name_before_any_module_runs(
+    monkeypatch, tmp_path
+):
+    target = tmp_path / "shard.json"
+    monkeypatch.setattr(
+        sys, "argv", ["run_ci_test_files.py", "--manifest", str(target)]
+    )
+    monkeypatch.setattr(driver, "configured_modules", lambda: ["tests/a.py"])
+    long_id = "tests/a.py::test_bytes[" + "x" * driver.MAX_NODEID_CHARS + "]"
+    monkeypatch.setattr(
+        driver,
+        "collected_nodeids",
+        lambda modules: ["tests/a.py::test_ok", long_id],
+    )
+    monkeypatch.setattr(
+        driver,
+        "run_test_process",
+        lambda *_a: pytest.fail("no module may run with an oversized node ID"),
+    )
+    assert driver.main() == 1
+    manifest = json.loads(target.read_text())
+    assert "tests/a.py::test_bytes" in manifest["errors"][0]
+    assert "ids=" in manifest["errors"][0]
+    assert not manifest["attempts"] and not manifest["completed"]
+
+
 def make_fixture_repo(tmp_path):
     scripts = tmp_path / "scripts"
     scripts.mkdir()

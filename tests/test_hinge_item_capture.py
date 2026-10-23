@@ -7920,11 +7920,65 @@ def test_real_chain_broken_from_navigate_to_model_item_writes_a_kept_debug_pair(
     assert row["outcome"] == "stop"
     refusal = row["navigation_refusal"]
     assert refusal["code"] == item_nav.NAV_CHAIN_BROKEN
-    assert refusal["achieved"]["measurement_status"] in (
+    assert adb.scroll == 0, "the fixture teleports the page to world row 0"
+
+    # The single gesture-free passive resample WAS spent (the initial refusal carried no
+    # saturation/beyond-window evidence), and it failed on the very first fresh frame: the page
+    # still sits at the teleported top, whose identity band shows the chips strip rather than
+    # the indexed header, so no measurement was attempted on a possibly foreign frame. The world
+    # is static, so a second capture could only have repeated the first one's verdict.
+    passive = refusal["passive_resample"]
+    assert refusal["latest_frame_source"] == "passive_resample"
+    assert passive["attempts"] == 1
+    assert passive["frames_captured"] == 1
+    assert passive["recovered"] is False
+    assert passive["stationarity"] is None
+    assert len(passive["identity"]) == 1
+    verdict = passive["identity"][0]
+    assert verdict["matched"] is False
+    assert passive["outcome"] == (
+        item_nav.PASSIVE_IDENTITY_UNCONFIRMED
+        if verdict["unknown"]
+        else item_nav.PASSIVE_IDENTITY_MISMATCH
+    )
+    assert passive["terminal"]["available"] is False
+
+    # The main `achieved` describes the KEPT pair (original before-step frame -> latest passive
+    # screenshot), which was deliberately never measured: explicitly unavailable, no delta, no
+    # traces, and never authorizing.
+    achieved = refusal["achieved"]
+    assert achieved["measurement_status"] == "unavailable"
+    assert achieved["measurement_unavailable"] is True
+    assert achieved["measurement_delta_px"] is None
+    assert achieved["forward"] is None
+    assert achieved["reverse"] is None
+    assert achieved["source"] == "passive_terminal"
+    assert achieved["authorizing"] is False
+    assert achieved["result"] is None
+
+    # The INITIAL post-gesture refusal is preserved intact beside it: the real, unmocked
+    # estimator's own refusal, with the legacy scalars agreeing with the whole forward trace.
+    initial = passive["initial"]
+    forward = initial["forward"]
+    assert initial["measurement_status"] in (
         frameshift.SHIFT_NO_CONSENSUS,
         frameshift.SHIFT_NO_EVIDENCE,
-        frameshift.SHIFT_BEYOND_WINDOW,
     )
+    assert forward["status"] == initial["measurement_status"]
+    assert initial["measurement_delta_px"] is None
+    assert forward.get("delta_px") is None
+    for scalar in (
+        "reason",
+        "consensus_px",
+        "confidence",
+        "agreeing",
+        "dissenting",
+        "eligible",
+        "saturated",
+    ):
+        assert initial[f"measurement_{scalar}"] == forward.get(scalar), scalar
+    assert not initial["measurement_saturated"]
+
     # The kept PAIR, not just the single frame the old handler logged -- and actually present on
     # disk, not merely named in the record (the whole point being tested is that the row and its
     # bytes both survived DebugLog's JSON-safety guard).
@@ -7932,6 +7986,10 @@ def test_real_chain_broken_from_navigate_to_model_item_writes_a_kept_debug_pair(
     assert row["after"] == row["kept_after"]
     assert (drv._dbg.dir / row["before"]).exists()
     assert (drv._dbg.dir / row["after"]).exists()
+    # And the pair is the right pair: the before-step frame at the read's terminal scroll, and
+    # the latest passive screenshot of the teleported page -- the frame `achieved` now describes.
+    assert (drv._dbg.dir / row["before"]).read_bytes() == _frame(_FULL_READ_SCROLLS[-1])
+    assert (drv._dbg.dir / row["after"]).read_bytes() == _frame(0)
 
 
 def test_the_number_of_candidates_never_exceeds_k(installed_still_photo_bound):

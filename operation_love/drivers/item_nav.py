@@ -332,6 +332,10 @@ from dataclasses import dataclass
 
 from .base import ActionCancelled
 from .frameshift import (
+    SHIFT_BEYOND_WINDOW,
+    SHIFT_MEASURED,
+    SHIFT_NO_CONSENSUS,
+    SHIFT_NO_EVIDENCE,
     ShiftEstimate,
     estimate_shift,
     estimate_shift_with_reverse_recovery,
@@ -666,6 +670,355 @@ def _navigation_step_shift(
         "forward": trace_estimate(forward),
         "reverse": trace_estimate(reverse),
     }
+
+
+# --- bounded passive recovery of one ascending chain refusal --------------------------
+# A refused ascending leg may be a transient render (an autoplaying card mid-frame) rather than a
+# lost correspondence. ONE gesture-free resample per navigation looks again: two fresh, identity-
+# checked screenshots that must agree with each other at exactly 0px (the page is at rest), then
+# the ORIGINAL before-step frame is measured against the second of them. No gesture distance is
+# ever substituted and no estimator rule is changed; every gate failing leaves the refusal intact.
+_PASSIVE_RESAMPLE_SCHEMA = 1
+_PASSIVE_RESAMPLE_WAIT_S = 0.25
+_PASSIVE_RESAMPLE_FRAMES = 2
+_PASSIVE_REASON_MAX_CHARS = 300
+
+PASSIVE_RECOVERED = "recovered"
+PASSIVE_INELIGIBLE = "ineligible"
+PASSIVE_BUDGET_EXHAUSTED = "budget_exhausted"
+PASSIVE_IDENTITY_MISMATCH = "identity_mismatch"
+PASSIVE_IDENTITY_UNCONFIRMED = "identity_unconfirmed"
+PASSIVE_NONSTATIONARY = "nonstationary"
+PASSIVE_TERMINAL_UNMEASURED = "terminal_unmeasured"
+PASSIVE_OUTCOMES = (
+    PASSIVE_RECOVERED,
+    PASSIVE_INELIGIBLE,
+    PASSIVE_BUDGET_EXHAUSTED,
+    PASSIVE_IDENTITY_MISMATCH,
+    PASSIVE_IDENTITY_UNCONFIRMED,
+    PASSIVE_NONSTATIONARY,
+    PASSIVE_TERMINAL_UNMEASURED,
+)
+
+
+def _passive_sleep(seconds: float) -> None:
+    """The fixed settle wait before each passive capture; a seam so tests never really sleep."""
+    time.sleep(seconds)
+
+
+def _bounded_reason(reason) -> str | None:
+    if reason is None:
+        return None
+    text = str(reason)
+    return text[:_PASSIVE_REASON_MAX_CHARS]
+
+
+def _passive_ineligibility(est: ShiftEstimate, measurement_trace: dict) -> str | None:
+    """Why this refused leg may NOT earn a passive resample, or None when it may.
+
+    Only a refusal that is pure silence or disagreement qualifies. Any saturation or beyond-window
+    evidence anywhere -- the result, the forward pass, the reverse pass -- says the gesture may have
+    left the trusted window, and looking again at the same position cannot make that safe.
+    """
+    if est.status not in (SHIFT_NO_CONSENSUS, SHIFT_NO_EVIDENCE):
+        return f"status {est.status!s} is not no_consensus/no_evidence"
+    if est.saturated:
+        return "the refused result is saturated"
+    for leg in ("forward", "reverse"):
+        trace = (
+            measurement_trace.get(leg) if isinstance(measurement_trace, dict) else None
+        )
+        if not trace:
+            continue
+        if trace.get("saturated"):
+            return f"the {leg} pass is saturated"
+        if trace.get("status") == SHIFT_BEYOND_WINDOW:
+            return f"the {leg} pass is beyond_window"
+    return None
+
+
+def _identity_record(verdict) -> dict:
+    distance = getattr(verdict, "distance", None)
+    try:
+        distance = None if distance is None else float(distance)
+    except (TypeError, ValueError):
+        distance = None
+    if distance is not None and not math.isfinite(distance):
+        distance = None
+    return {
+        "matched": bool(getattr(verdict, "matched", False)),
+        "unknown": bool(getattr(verdict, "unknown", False)),
+        "distance": distance,
+        "reason": _bounded_reason(getattr(verdict, "reason", None)),
+    }
+
+
+@dataclass(frozen=True)
+class PassiveResample:
+    """One passive resample's outcome. `estimate`/`frame` authorize continuation ONLY when
+    `recovered`; `latest_frame` is always the last screenshot actually read (or None)."""
+
+    recovered: bool
+    outcome: str
+    estimate: ShiftEstimate | None
+    frame: bytes | None
+    latest_frame: bytes | None
+    metadata: dict
+
+
+def _passive_resample(
+    driver,
+    *,
+    before: bytes,
+    reference_identity,
+    identity_match_max_dist: float,
+    content_band,
+    trust_window_px,
+    cancelled,
+) -> PassiveResample:
+    """Spend the navigation's single passive resample: two waits, two captures, zero gestures."""
+    meta: dict = {
+        "schema_version": _PASSIVE_RESAMPLE_SCHEMA,
+        "attempts": 1,
+        "frames_captured": 0,
+        "wait_s": _PASSIVE_RESAMPLE_WAIT_S,
+        "outcome": None,
+        "recovered": False,
+        "reason": None,
+        "identity": [],
+        "stationarity": None,
+        "terminal": None,
+    }
+    fresh: list[bytes] = []
+
+    def fail(outcome: str, reason: str) -> PassiveResample:
+        meta["outcome"] = outcome
+        meta["reason"] = _bounded_reason(reason)
+        return PassiveResample(
+            recovered=False,
+            outcome=outcome,
+            estimate=None,
+            frame=None,
+            latest_frame=fresh[-1] if fresh else None,
+            metadata=meta,
+        )
+
+    for k in range(_PASSIVE_RESAMPLE_FRAMES):
+        cancelled()
+        _passive_sleep(_PASSIVE_RESAMPLE_WAIT_S)
+        cancelled()
+        frame = driver._screencap()
+        fresh.append(frame)
+        meta["frames_captured"] = len(fresh)
+        cancelled()
+        try:
+            verdict = compare_profile_identity(
+                frame,
+                reference_identity,
+                identity_band=driver.identity_band,
+                match_max_dist=identity_match_max_dist,
+            )
+        except IdentityError as exc:
+            meta["identity"].append(
+                {
+                    "matched": False,
+                    "unknown": True,
+                    "distance": None,
+                    "reason": _bounded_reason(f"{type(exc).__name__}: {exc}"),
+                }
+            )
+            meta["terminal"] = {
+                "available": False,
+                "reason": "identity of the latest frame could not be read; no measurement "
+                "was attempted on it",
+            }
+            return fail(
+                PASSIVE_IDENTITY_UNCONFIRMED,
+                f"passive frame {k + 1} identity could not be read",
+            )
+        meta["identity"].append(_identity_record(verdict))
+        if not verdict.matched:
+            meta["terminal"] = {
+                "available": False,
+                "reason": "the latest frame did not match the index identity; no measurement "
+                "was attempted on a possibly foreign frame",
+            }
+            return fail(
+                PASSIVE_IDENTITY_UNCONFIRMED
+                if verdict.unknown
+                else PASSIVE_IDENTITY_MISMATCH,
+                f"passive frame {k + 1} identity not matched",
+            )
+
+    fresh1, fresh2 = fresh
+    # Stationarity is the plain strip estimator only -- never the video-marker bridge, which
+    # answers "how far did the page move" and not "did anything on screen move at all".
+    still, still_fwd, still_rev = estimate_shift_with_reverse_recovery(
+        fresh1,
+        fresh2,
+        content_band=content_band,
+        trust_window_px=trust_window_px,
+        estimator=estimate_shift,
+    )
+    meta["stationarity"] = {
+        "result": trace_estimate(still),
+        "forward": trace_estimate(still_fwd),
+        "reverse": trace_estimate(still_rev),
+    }
+    stationary = still.status == SHIFT_MEASURED and still.delta_px == 0
+
+    # The ORIGINAL before-step frame against the latest identity-matched frame. Recorded even when
+    # the page was not at rest, as a diagnostic only: it authorizes nothing in that case.
+    terminal, terminal_trace = _navigation_step_shift(
+        before,
+        fresh2,
+        content_band=content_band,
+        trust_window_px=trust_window_px,
+        driver=driver,
+    )
+    meta["terminal"] = {
+        "available": True,
+        "authorizing": False,
+        "result": trace_estimate(terminal),
+        "forward": terminal_trace.get("forward"),
+        "reverse": terminal_trace.get("reverse"),
+    }
+    if not stationary:
+        return fail(
+            PASSIVE_NONSTATIONARY,
+            f"the two passive frames did not measure 0px apart ({still.status}, "
+            f"delta {still.delta_px})",
+        )
+    if terminal.status != SHIFT_MEASURED or terminal.delta_px is None:
+        return fail(
+            PASSIVE_TERMINAL_UNMEASURED,
+            f"the original before-step frame still does not measure against the settled "
+            f"frame: {terminal.status}",
+        )
+    meta["terminal"]["authorizing"] = True
+    meta["outcome"] = PASSIVE_RECOVERED
+    meta["recovered"] = True
+    return PassiveResample(
+        recovered=True,
+        outcome=PASSIVE_RECOVERED,
+        estimate=terminal,
+        frame=fresh2,
+        latest_frame=fresh2,
+        metadata=meta,
+    )
+
+
+def _passive_not_attempted(outcome: str, reason: str) -> dict:
+    return {
+        "schema_version": _PASSIVE_RESAMPLE_SCHEMA,
+        "attempts": 0,
+        "frames_captured": 0,
+        "wait_s": _PASSIVE_RESAMPLE_WAIT_S,
+        "outcome": outcome,
+        "recovered": False,
+        "reason": _bounded_reason(reason),
+        "identity": [],
+        "stationarity": None,
+        "terminal": None,
+    }
+
+
+def _achieved_from_traces(forward_trace, reverse_trace) -> dict:
+    """The schema-3 `achieved` shape: legacy `measurement_*` scalars plus whole traces."""
+    forward = forward_trace if isinstance(forward_trace, dict) else {}
+    return {
+        "measurement_status": forward.get("status"),
+        "measurement_reason": forward.get("reason"),
+        "measurement_delta_px": forward.get("delta_px"),
+        "measurement_consensus_px": forward.get("consensus_px"),
+        "measurement_confidence": forward.get("confidence"),
+        "measurement_agreeing": forward.get("agreeing"),
+        "measurement_dissenting": forward.get("dissenting"),
+        "measurement_eligible": forward.get("eligible"),
+        "measurement_saturated": forward.get("saturated"),
+        "forward": forward,
+        "reverse": reverse_trace,
+    }
+
+
+def _passive_failure_achieved(passive: PassiveResample) -> dict:
+    """The main `achieved` for a FAILED passive attempt: describes the kept pair
+    (original before-step frame -> latest passive screenshot), diagnostic only."""
+    terminal = passive.metadata.get("terminal")
+    if isinstance(terminal, dict) and terminal.get("available"):
+        achieved = _achieved_from_traces(
+            terminal.get("forward"), terminal.get("reverse")
+        )
+        achieved["source"] = "passive_terminal"
+        achieved["authorizing"] = False
+        achieved["result"] = terminal.get("result")
+        return achieved
+    reason = terminal.get("reason") if isinstance(terminal, dict) else None
+    return {
+        "measurement_status": "unavailable",
+        "measurement_reason": _bounded_reason(
+            f"no measurement against the latest passive frame ({passive.outcome}): "
+            + (reason or "its identity was not confirmed")
+        ),
+        "measurement_delta_px": None,
+        "measurement_consensus_px": None,
+        "measurement_confidence": None,
+        "measurement_agreeing": None,
+        "measurement_dissenting": None,
+        "measurement_eligible": None,
+        "measurement_saturated": None,
+        "measurement_unavailable": True,
+        "forward": None,
+        "reverse": None,
+        "source": "passive_terminal",
+        "authorizing": False,
+        "result": None,
+    }
+
+
+def _passive_failure_tail(passive: PassiveResample) -> str:
+    """Error-string tail separating the initial refusal from the latest passive rejection."""
+    reason = passive.metadata.get("reason")
+    tail = (
+        f". A gesture-free passive resample was then rejected ({passive.outcome}"
+        + (f": {reason}" if reason else "")
+        + "); the reported frame is the latest passive screenshot"
+    )
+    terminal = passive.metadata.get("terminal")
+    if isinstance(terminal, dict) and terminal.get("available"):
+        result = terminal.get("result") or {}
+        delta = result.get("delta_px")
+        delta_text = "" if delta is None else f" {delta:+d}px"
+        tail += (
+            f", against which the original before-step frame measured "
+            f"{result.get('status')}{delta_text} (diagnostic only, not authorizing)."
+        )
+    else:
+        tail += (
+            ", which was not measured because its identity was unconfirmed or "
+            "mismatched."
+        )
+    return tail
+
+
+def _log_passive_recovery(
+    driver, *, before, after, frame_index, initial, metadata
+) -> None:
+    """Best-effort debug record of a successful passive recovery; never affects navigation."""
+    try:
+        dbg = getattr(driver, "_dbg", None)
+        action = getattr(dbg, "action", None)
+        if callable(action):
+            action(
+                "item_nav_passive_recovery",
+                before=before,
+                after=after,
+                frame_index=frame_index,
+                initial=initial,
+                passive_resample=metadata,
+            )
+    except Exception:  # noqa: BLE001 -- diagnostics must never gate navigation
+        pass
 
 
 @dataclass(frozen=True)
@@ -1463,6 +1816,8 @@ def navigate_to_item(
     agreement = 0
     heart_was_visible = False
     entry_position_attempted = False
+    # ONE passive (gesture-free) resample per whole navigation; consumed when attempted.
+    passive_resample_available = True
 
     while True:
         i = len(segmentations)
@@ -1950,18 +2305,75 @@ def navigate_to_item(
                     "reverse": reverse_trace,
                 },
             }
-            raise ItemNavigationError(
-                NAV_CHAIN_BROKEN,
-                f"frames {i} and {i + 1} of this navigation could not be put in one coordinate "
-                f"space: {est.status} — {est.reason}. Without the shift there is no way to tell "
-                "a heart that moved from a heart that arrived, which is exactly how doc 5.10's "
-                "phantom item was fabricated, so the count stops here",
-                frame=nxt,
-                frame_index=i + 1,
-                anchor=anchor,
-                pair_before=frames[i],
-                measurement=navigation_refusal,
-            )
+            # BOUNDED PASSIVE RECOVERY: at most one gesture-free resample per navigation, and
+            # only for a refusal carrying no saturation/beyond-window evidence anywhere.
+            ineligible = _passive_ineligibility(est, measurement_trace)
+            latest_frame = nxt
+            passive_tail = ""
+            if ineligible is not None:
+                passive_meta = _passive_not_attempted(PASSIVE_INELIGIBLE, ineligible)
+            elif not passive_resample_available:
+                passive_meta = _passive_not_attempted(
+                    PASSIVE_BUDGET_EXHAUSTED,
+                    "this navigation already spent its single passive resample",
+                )
+            else:
+                passive_resample_available = False
+                passive = _passive_resample(
+                    driver,
+                    before=frames[i],
+                    reference_identity=index.identity,
+                    identity_match_max_dist=identity_match_max_dist,
+                    content_band=content_band,
+                    trust_window_px=trust_window_px,
+                    cancelled=cancelled,
+                )
+                passive_meta = passive.metadata
+                if passive.latest_frame is not None:
+                    latest_frame = passive.latest_frame
+                if passive.recovered:
+                    initial_achieved = navigation_refusal["achieved"]
+                    est = passive.estimate
+                    nxt = passive.frame
+                    shifts[-1] = est
+                    _log_passive_recovery(
+                        driver,
+                        before=frames[i],
+                        after=nxt,
+                        frame_index=i + 1,
+                        initial=initial_achieved,
+                        metadata=passive_meta,
+                    )
+                else:
+                    # The kept pair is ORIGINAL before -> latest passive frame, so the main
+                    # `achieved` must describe that pair; the initial trace moves aside.
+                    # Diagnostic only: `est` stays the initial refusal, so nothing measured
+                    # here can authorize continuation or build a NavigationRecovery.
+                    passive_meta["initial"] = navigation_refusal["achieved"]
+                    navigation_refusal["achieved"] = _passive_failure_achieved(passive)
+                    passive_tail = _passive_failure_tail(passive)
+            if est.delta_px is None:
+                navigation_refusal["passive_resample"] = passive_meta
+                navigation_refusal["latest_frame_source"] = (
+                    "passive_resample"
+                    if int(passive_meta.get("frames_captured") or 0) > 0
+                    else "initial_post_gesture"
+                )
+                raise ItemNavigationError(
+                    NAV_CHAIN_BROKEN,
+                    f"frames {i} and {i + 1} of this navigation"
+                    + (" (the initial post-gesture pair)" if passive_tail else "")
+                    + " could not be put in one "
+                    f"coordinate space: {est.status} — {est.reason}. Without the shift there "
+                    "is no way to tell a heart that moved from a heart that arrived, which is "
+                    "exactly how doc 5.10's phantom item was fabricated, so the count stops "
+                    "here" + passive_tail,
+                    frame=latest_frame,
+                    frame_index=i + 1,
+                    anchor=anchor,
+                    pair_before=frames[i],
+                    measurement=navigation_refusal,
+                )
         # THE SIGN FLIP, and it is one line. `estimate_shift` is positive when content moves UP,
         # i.e. for a forward scroll; an upward gesture must therefore measure NEGATIVE, and how
         # far it climbed is the negation. `step_overshoot` is handed that magnitude, so its own

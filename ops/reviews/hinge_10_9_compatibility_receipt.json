@@ -1,0 +1,30 @@
+{
+  "acceptance": "I_ACCEPT_TWO_DECISION_UNMEASURED_UPDATE_COMPATIBILITY",
+  "decision_order": [
+    "dislike",
+    "like"
+  ],
+  "device": "33111JEHN04475",
+  "evidence_sha256": "f7c6155d9132f0f9429947b3323fd829845ec84e3bf4f14bfc4c626221bde60f",
+  "frame_size_px": [
+    1080,
+    2400
+  ],
+  "human_ground_truth": false,
+  "kind": "hinge_two_decision_redacted_compatibility_receipt",
+  "like_sent_confirmed": true,
+  "like_template_path": "operation_love/drivers/assets/hinge_like_button_10_8.png",
+  "like_template_sha256": "4a3a351653fb6f35983f6a477dfa5291ecd9acb86db854fd23c17dff96ddf8a5",
+  "private_artifact_sha256": "d85044324f74beb03c31760c0faaab883d887ece73c8bbd8e609ca67fa76a0d7",
+  "release_notes_summary": "Official Google Play listing checked 2026-10-22: updated Oct 16, 2026; notes describe performance improvements only and do not establish layout compatibility. Live 10.9.0 at 1080x2400: supervised Pass and continuously recorded direct Send Priority Like to a stable successor deck. No sent-Like toast or upsell appeared in the recorded direct-send flow. Additional authorized decisions and incomplete captures remain in private review history. Qualitative Training compatibility only.",
+  "release_notes_url": "https://play.google.com/store/apps/details?id=co.hinge.app",
+  "reviewed_at": "2026-10-23T01:33:04.300778+00:00",
+  "schema_version": 3,
+  "source_build": "10.7.0",
+  "source_calibration_sha256": "5a1ef7790180eeb82e382e798faa2ad1f64b3526bfc3184f65632b1d05bb576c",
+  "source_licence_key": "still_photo_assumption_acceptance",
+  "source_licence_sha256": "86b64415c2fbc746a97a55c95bf96954044d75bedcedb2b3cc8bc4a60079f227",
+  "status": "training_only",
+  "target_build": "10.9.0",
+  "video_false_accept_rate": "unmeasured"
+}

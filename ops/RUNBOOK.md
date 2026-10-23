@@ -825,6 +825,17 @@ review artifact explicitly records video false-accept risk as **unmeasured** on 
 If a measured video bound is required, collect it through the still-photo campaign above; two
 profiles cannot establish it. Before enabling AUTO, also collect production release evidence.
 This procedure never licenses a legacy anchored opener or a fixed first-item fallback.
+For the direct-send flow observed on 10.9.0, the sent-Like toast and Rose prompt may both be
+absent. Do not repeat Likes just to obtain either old screen. Start continuous recording
+before Send Priority Like and retain an ordered screenshot series through a stable successor
+deck. Use `--supervised-dir ... --direct-send` with a separate `transition_review.json`
+bound to the recording and frame manifest. The primary reviewer must inspect the recording,
+selected photo, blank/approved comment, one Send input, absence of refusal/upsell, and the
+different successor name in two confirmed deck frames at least two seconds apart. Schema 4
+validates the recording and frame hashes, action bindings, ordered timestamps, source composer
+OCR, and successor deck/name checks. It does not infer the old toast or modify schema 2's
+confirmation requirements. Keep earlier incomplete attempts and additional authorized
+decisions in the private review history. The 10.9.0 receipt licenses Training only.
 `stop_kind=targeting` is different: it is reserved for a failure to attach an opener that already
 exists to its selected item.
 

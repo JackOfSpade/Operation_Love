@@ -28,6 +28,7 @@ from operation_love.hinge_compatibility import (
     PUBLIC_RECEIPT_KIND,
     SUPERVISED_KIND,
     _SUPERVISED_FILES,
+    _DIRECT_SEND_FILES,
     canonical_sha256,
     validate_review,
 )
@@ -114,6 +115,7 @@ def produce_supervised(
     release_notes_url: str,
     release_notes_summary: str,
     confirmation: str,
+    direct_send: bool = False,
 ) -> dict:
     """Bind a visibly reviewed Dislike, photo heart, Send Like, and upsell outcome.
 
@@ -160,12 +162,16 @@ def produce_supervised(
     if target == old["hinge_version_name"]:
         raise ValueError("live Hinge already matches the source calibration")
     files = {}
-    for name in _SUPERVISED_FILES:
+    for name in _DIRECT_SEND_FILES if direct_send else _SUPERVISED_FILES:
         path = evidence_dir / name
         if not path.is_file():
             raise ValueError(f"missing supervised evidence {name}")
         files[name] = {"path": _repo_relative(path, root), "sha256": _sha(path)}
-    for name in ("dislike_before.png", "like_before.png", "upsell_after.png"):
+    for name in (
+        "dislike_before.png",
+        "like_before.png",
+        "send_settled.png" if direct_send else "upsell_after.png",
+    ):
         with Image.open(evidence_dir / name) as image:
             if list(image.size) != old["frame_size_px"]:
                 raise ValueError(f"{name} frame size differs from source calibration")
@@ -181,17 +187,23 @@ def produce_supervised(
 
     dislike_ocr = ocr("dislike_before.png")
     like_ocr = ocr("like_before.png")
-    confirmation_ocr = " ".join(ocr("upsell_after.png").split())
+    confirmation_ocr = (
+        "Continuous direct-send recording reviewed"
+        if direct_send
+        else " ".join(ocr("upsell_after.png").split())
+    )
     if dislike_profile not in dislike_ocr or like_profile not in like_ocr:
         raise ValueError("profile names are not visible in the reviewed before frames")
-    if (
+    if not direct_send and (
         "your Like sooner" not in confirmation_ocr
         or like_profile not in confirmation_ocr
     ):
         raise ValueError("Hinge's sent-Like confirmation is not visible")
     dislike = json.loads((evidence_dir / "dislike.json").read_text())
     like = json.loads((evidence_dir / "like.json").read_text())
-    upsell = json.loads((evidence_dir / "upsell.json").read_text())
+    upsell = (
+        {} if direct_send else json.loads((evidence_dir / "upsell.json").read_text())
+    )
     if (
         dislike.get("decision") != "dislike"
         or dislike.get("before_sha256") != files["dislike_before.png"]["sha256"]
@@ -199,7 +211,10 @@ def produce_supervised(
         or like.get("decision") != "like"
         or like.get("before_sha256") != files["send_before.png"]["sha256"]
         or like.get("after_sha256") != files["send_after.png"]["sha256"]
-        or upsell.get("decision") != "like"
+    ):
+        raise ValueError("decision records do not bind the reviewed frames")
+    if not direct_send and (
+        upsell.get("decision") != "like"
         or upsell.get("upsell_before_sha256") != files["upsell_before.png"]["sha256"]
         or upsell.get("upsell_after_sha256") != files["upsell_after.png"]["sha256"]
         or upsell.get("dismissed") is not True
@@ -209,6 +224,32 @@ def produce_supervised(
     template_path = Path("operation_love/drivers/assets/hinge_like_button_10_8.png")
     driver = HingeDriver(cfg)
     driver._targeting_runtime_version_name = target
+    if direct_send:
+        review = json.loads((evidence_dir / "transition_review.json").read_text())
+        for name in ("send_after.png", "send_settled.png"):
+            if not driver._observe_deck_ready((evidence_dir / name).read_bytes()):
+                raise ValueError("direct-send successor is not a confirmed deck")
+            if review["after_profile"] not in ocr(name):
+                raise ValueError("direct-send successor name is not visible")
+        # A recording review never replaces a visible source composer and send control.
+        import io
+
+        with Image.open(evidence_dir / "send_before.png") as frame:
+            for box, expected_text in (
+                ((0, 100, frame.width, 230), like_profile),
+                ((350, 1300, 1000, 1460), "Send Priority Like"),
+            ):
+                output = io.BytesIO()
+                frame.crop(box).save(output, format="PNG")
+                text = subprocess.run(
+                    ["tesseract", "stdin", "stdout", "--psm", "6"],
+                    input=output.getvalue(),
+                    capture_output=True,
+                    check=True,
+                    timeout=20,
+                ).stdout.decode()
+                if expected_text not in text:
+                    raise ValueError("direct-send composer/name/control is not visible")
     if not driver._observe_deck_ready(
         (evidence_dir / "dislike_before.png").read_bytes()
     ):
@@ -220,7 +261,7 @@ def produce_supervised(
             "reviewed Like frame is not a confirmed deck under the fixed matcher"
         )
     body = {
-        "schema_version": 2,
+        "schema_version": 4 if direct_send else 2,
         "kind": SUPERVISED_KIND,
         "status": "training_only",
         "acceptance": ACCEPTANCE,
@@ -419,6 +460,11 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--like")
     parser.add_argument("--independent-review")
     parser.add_argument("--supervised-dir")
+    parser.add_argument(
+        "--direct-send",
+        action="store_true",
+        help="require a separately reviewed continuous recording of a direct send",
+    )
     parser.add_argument("--private-artifact")
     parser.add_argument("--dislike-profile")
     parser.add_argument("--like-profile")
@@ -427,6 +473,8 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--release-notes-summary")
     parser.add_argument("--confirmation")
     args = parser.parse_args(argv)
+    if args.direct_send and (not args.supervised_dir or args.private_artifact):
+        parser.error("--direct-send requires --supervised-dir")
     try:
         if args.private_artifact:
             mapping = produce_redacted_receipt(
@@ -456,6 +504,7 @@ def main(argv: list[str] | None = None) -> None:
                 release_notes_url=args.release_notes_url,
                 release_notes_summary=args.release_notes_summary,
                 confirmation=args.confirmation,
+                direct_send=args.direct_send,
             )
         else:
             if not args.dislike or not args.like or not args.independent_review:

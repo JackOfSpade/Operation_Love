@@ -33,6 +33,86 @@ _SUPERVISED_FILES = frozenset(
         "upsell.json",
     }
 )
+_DIRECT_SEND_FILES = (
+    _SUPERVISED_FILES
+    - {
+        "upsell_before.png",
+        "upsell_after.png",
+        "upsell.json",
+    }
+) | {"send_settled.png", "transition.json", "transition.mp4", "transition_review.json"}
+
+
+def _validate_direct_send(files: dict, artifact: dict, *, root: Path) -> None:
+    """Validate a separately reviewed continuous send, never an inferred toast.
+
+    This is qualitative supervised evidence. Runtime checks bind the review to the
+    recording and ordered frames; the producer must also inspect the actual pixels.
+    """
+
+    def read(name):
+        ref = files[name]
+        return _read_bound_file(ref["path"], ref["sha256"], root=root, label=name)
+
+    transition, review = read("transition.json"), read("transition_review.json")
+    if (
+        review.get("method") != "continuous_direct_send"
+        or review.get("video_sha256") != files["transition.mp4"]["sha256"]
+        or review.get("transition_sha256") != files["transition.json"]["sha256"]
+        or review.get("before_profile") != artifact["like_profile_name"]
+        or not isinstance(review.get("after_profile"), str)
+        or not review["after_profile"].strip()
+        or review["after_profile"] == review["before_profile"]
+        or review.get("reviewed_complete_recording") is not True
+        or review.get("no_refusal_or_upsell") is not True
+        or review.get("only_input")
+        != {"action": "send_priority_like", "point": artifact["send_point"]}
+        or transition.get("decision") != "like"
+        or transition.get("profile_name") != artifact["like_profile_name"]
+        or transition.get("send_point") != artifact["send_point"]
+        or transition.get("before_sha256") != files["send_before.png"]["sha256"]
+        or not isinstance(review.get("reviewer"), str)
+        or not review["reviewer"].strip()
+    ):
+        raise ValueError("direct-send recording review is incomplete or mismatched")
+    frames = transition.get("frames")
+    if not isinstance(frames, list) or len(frames) < 4:
+        raise ValueError("direct-send transition needs ordered frames")
+    from datetime import datetime
+
+    times = []
+    parent = Path(files["transition.json"]["path"]).parent
+    for frame in frames:
+        if not isinstance(frame, dict) or set(frame) != {"path", "sha256", "at"}:
+            raise ValueError("direct-send transition frame is malformed")
+        _read_bound_bytes(
+            str(parent / frame["path"]),
+            frame["sha256"],
+            root=root,
+            label="transition frame",
+        )
+        stamp = datetime.fromisoformat(frame["at"])
+        if stamp.tzinfo is None:
+            raise ValueError("direct-send frame time needs timezone")
+        times.append(stamp.timestamp())
+    if (
+        any(b <= a for a, b in zip(times, times[1:], strict=False))
+        or times[-1] - times[0] < 3
+    ):
+        raise ValueError("direct-send transition is too short or unordered")
+    first, settled = (
+        review.get("first_successor_frame"),
+        review.get("settled_successor_frame"),
+    )
+    if (
+        not isinstance(first, int)
+        or not isinstance(settled, int)
+        or not 0 <= first < settled < len(frames)
+        or times[settled] - times[first] < 2
+        or frames[first]["sha256"] != files["send_after.png"]["sha256"]
+        or frames[settled]["sha256"] != files["send_settled.png"]["sha256"]
+    ):
+        raise ValueError("direct-send successor evidence is not stable and bound")
 
 
 def canonical_sha256(value: object) -> str:
@@ -102,7 +182,8 @@ def _validate_supervised_review(artifact: dict, app_cfg: dict, *, root: Path) ->
         "release_notes_summary",
         "evidence_sha256",
     }
-    if set(artifact) != expected or artifact["schema_version"] != 2:
+    direct = artifact.get("schema_version") == 4
+    if set(artifact) != expected or artifact["schema_version"] not in (2, 4):
         raise ValueError("supervised compatibility artifact has an unsupported schema")
     body = {key: value for key, value in artifact.items() if key != "evidence_sha256"}
     if artifact["evidence_sha256"] != canonical_sha256(body):
@@ -146,7 +227,7 @@ def _validate_supervised_review(artifact: dict, app_cfg: dict, *, root: Path) ->
             raise ValueError(f"supervised compatibility review lacks {key}")
     if artifact["dislike_profile_name"] == artifact["like_profile_name"]:
         raise ValueError("supervised compatibility review reused one profile")
-    if "your Like sooner" not in artifact["like_confirmation_text"]:
+    if not direct and "your Like sooner" not in artifact["like_confirmation_text"]:
         raise ValueError(
             "supervised compatibility review lacks a sent-Like confirmation"
         )
@@ -165,7 +246,8 @@ def _validate_supervised_review(artifact: dict, app_cfg: dict, *, root: Path) ->
         label="reviewed Like template",
     )
     files = artifact["files"]
-    if not isinstance(files, dict) or set(files) != _SUPERVISED_FILES:
+    required_files = _DIRECT_SEND_FILES if direct else _SUPERVISED_FILES
+    if not isinstance(files, dict) or set(files) != required_files:
         raise ValueError(
             "supervised compatibility review needs all decision frames and logs"
         )
@@ -187,11 +269,15 @@ def _validate_supervised_review(artifact: dict, app_cfg: dict, *, root: Path) ->
         root=root,
         label="Like action record",
     )
-    upsell = _read_bound_file(
-        files["upsell.json"]["path"],
-        files["upsell.json"]["sha256"],
-        root=root,
-        label="Like confirmation record",
+    upsell = (
+        {}
+        if direct
+        else _read_bound_file(
+            files["upsell.json"]["path"],
+            files["upsell.json"]["sha256"],
+            root=root,
+            label="Like confirmation record",
+        )
     )
     if (
         dislike.get("decision") != "dislike"
@@ -201,7 +287,14 @@ def _validate_supervised_review(artifact: dict, app_cfg: dict, *, root: Path) ->
         or like.get("before_sha256") != files["send_before.png"]["sha256"]
         or like.get("after_sha256") != files["send_after.png"]["sha256"]
         or like.get("send_point") != point
-        or upsell.get("decision") != "like"
+    ):
+        raise ValueError(
+            "supervised compatibility action record does not match its frames"
+        )
+    if direct:
+        _validate_direct_send(files, artifact, root=root)
+    elif (
+        upsell.get("decision") != "like"
         or upsell.get("upsell_before_sha256") != files["upsell_before.png"]["sha256"]
         or upsell.get("upsell_after_sha256") != files["upsell_after.png"]["sha256"]
         or upsell.get("dismissed") is not True

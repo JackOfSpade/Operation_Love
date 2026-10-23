@@ -3103,7 +3103,83 @@ def _dwell_navigation_refusal_summary_md(lines: list[str]) -> str:
         schema_version = number(telemetry.get("schema_version"))
         if schema_version is not None and schema_version >= 3:
             out.extend(_shift_trace_lines_md(achieved))
+        # Passive screenshot recovery (schema_version 1 of its own sub-dict). Absent key -> no
+        # output at all, so rows written before this telemetry existed render byte-identically.
+        if "passive_resample" in telemetry:
+            out.extend(_passive_resample_lines_md(telemetry.get("passive_resample")))
     return "\n".join(out)
+
+
+_PASSIVE_RESAMPLE_TOKEN_RE = re.compile(r"[a-z][a-z0-9_]{0,47}")
+
+
+def _passive_resample_lines_md(meta: object) -> list[str]:
+    """Compact sub-bullet for ``navigation_refusal.passive_resample`` telemetry.
+
+    Reports only what the record states: outcome token, attempt count, extra screenshots
+    captured and whether the estimator recovered. Nothing is inferred from a missing field.
+    Malformed or unknown-version metadata is named as such and not interpreted; counts must be
+    real in-range ints (bools rejected) and the outcome must be a short lowercase token, so no
+    free text, secret or image payload can reach the report through this path.
+    """
+    try:
+        if not isinstance(meta, dict):
+            return [
+                "  - passive screenshot recovery: metadata malformed; not interpreted"
+            ]
+        version = meta.get("schema_version")
+        if not isinstance(version, int) or isinstance(version, bool) or version != 1:
+            return [
+                "  - passive screenshot recovery: unrecognised metadata schema; "
+                "not interpreted"
+            ]
+
+        def bounded_int(value: object, low: int, high: int) -> int | None:
+            if isinstance(value, int) and not isinstance(value, bool):
+                if low <= value <= high:
+                    return value
+            return None
+
+        outcome_raw = meta.get("outcome")
+        if isinstance(outcome_raw, str) and _PASSIVE_RESAMPLE_TOKEN_RE.fullmatch(
+            outcome_raw
+        ):
+            outcome_text = f"outcome `{outcome_raw}`"
+        elif outcome_raw is None:
+            outcome_text = "outcome not recorded"
+        else:
+            outcome_text = "outcome unrecognised"
+        attempts = bounded_int(meta.get("attempts"), 0, 1)
+        frames = bounded_int(meta.get("frames_captured"), 0, 2)
+        recovered = meta.get("recovered")
+        bits = [outcome_text]
+        if attempts is None:
+            bits.append("attempts not recorded")
+        elif attempts == 0:
+            bits.append("not attempted (0 attempts)")
+        else:
+            bits.append(f"{attempts} attempt")
+        bits.append(
+            f"{frames} extra screenshot{'' if frames == 1 else 's'}"
+            if frames is not None
+            else "extra screenshots not recorded"
+        )
+        if recovered is True:
+            bits.append("estimator recovered")
+        elif recovered is False:
+            bits.append("estimator not recovered")
+        else:
+            bits.append("recovery not recorded")
+        out = ["  - passive screenshot recovery: " + "; ".join(bits)]
+        stationarity = meta.get("stationarity")
+        if isinstance(stationarity, dict):
+            nested = _shift_trace_lines_md(stationarity)
+            if nested:
+                out.append("    - stationarity check between extra screenshots:")
+                out.extend("    " + line for line in nested)
+        return out
+    except Exception:  # noqa: BLE001 -- diagnostics must never crash the report
+        return ["  - passive screenshot recovery: metadata malformed; not interpreted"]
 
 
 def _shift_trace_lines_md(measurement: object) -> list[str]:

@@ -10,6 +10,7 @@ from operation_love.hinge_compatibility import (
     PUBLIC_RECEIPT_KIND,
     SUPERVISED_KIND,
     _SUPERVISED_FILES,
+    _DIRECT_SEND_FILES,
     canonical_sha256,
     validate_review,
 )
@@ -279,6 +280,103 @@ def test_supervised_two_pass_review_is_training_only_and_digest_bound(tmp_path):
         validate_review(app, root=tmp_path, mode="auto")
     (tmp_path / "upsell_after.png").write_bytes(b"changed")
     with pytest.raises(ValueError, match="SHA-256 mismatch"):
+        validate_review(app, root=tmp_path, mode="training")
+
+
+def _direct_fixture(root, *, review_change=None, frame_times=None):
+    app = _supervised_fixture(root)
+    artifact = json.loads((root / "supervised.json").read_text())
+    files = artifact["files"]
+    for name in ("send_settled.png", "transition.mp4"):
+        (root / name).write_bytes(name.encode())
+        files[name] = {
+            "path": name,
+            "sha256": hashlib.sha256((root / name).read_bytes()).hexdigest(),
+        }
+    frames = []
+    for i, second in enumerate(frame_times or [0, 1, 2, 4]):
+        path = f"frame_{i}.png"
+        content = (
+            root / ("send_settled.png" if i == 3 else "send_after.png")
+        ).read_bytes()
+        (root / path).write_bytes(content)
+        frames.append(
+            {
+                "path": path,
+                "sha256": hashlib.sha256(content).hexdigest(),
+                "at": f"2026-10-23T01:00:0{second}+00:00",
+            }
+        )
+    files["transition.json"] = _save(
+        root,
+        "transition.json",
+        {
+            "decision": "like",
+            "profile_name": "ProfileB",
+            "send_point": [687, 1388],
+            "before_sha256": files["send_before.png"]["sha256"],
+            "frames": frames,
+        },
+    )
+    review = {
+        "method": "continuous_direct_send",
+        "reviewer": "independent visual reviewer",
+        "video_sha256": files["transition.mp4"]["sha256"],
+        "transition_sha256": files["transition.json"]["sha256"],
+        "before_profile": "ProfileB",
+        "after_profile": "ProfileC",
+        "reviewed_complete_recording": True,
+        "no_refusal_or_upsell": True,
+        "only_input": {"action": "send_priority_like", "point": [687, 1388]},
+        "first_successor_frame": 1,
+        "settled_successor_frame": 3,
+    }
+    review.update(review_change or {})
+    files["transition_review.json"] = _save(root, "transition_review.json", review)
+    artifact["files"] = {name: files[name] for name in _DIRECT_SEND_FILES}
+    artifact["schema_version"] = 4
+    artifact["like_confirmation_text"] = "Continuous direct-send recording reviewed"
+    artifact["evidence_sha256"] = canonical_sha256(
+        {k: v for k, v in artifact.items() if k != "evidence_sha256"}
+    )
+    ref = _save(root, "supervised.json", artifact)
+    app["version_compatibility_review"]["artifact_sha256"] = ref["sha256"]
+    return app
+
+
+def test_direct_send_requires_recording_and_stable_successor(tmp_path):
+    app = _direct_fixture(tmp_path)
+    assert validate_review(app, root=tmp_path, mode="training") == "10.8.0"
+    with pytest.raises(ValueError, match="Training only"):
+        validate_review(app, root=tmp_path, mode="auto")
+    (tmp_path / "frame_2.png").write_bytes(b"tampered")
+    with pytest.raises(ValueError, match="SHA-256 mismatch"):
+        validate_review(app, root=tmp_path, mode="training")
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"reviewed_complete_recording": False},
+        {"no_refusal_or_upsell": False},
+        {"before_profile": "Wrong"},
+        {"after_profile": "ProfileB"},
+        {"video_sha256": "0" * 64},
+        {"transition_sha256": "0" * 64},
+        {"only_input": {"action": "pass", "point": [687, 1388]}},
+        {"first_successor_frame": 3, "settled_successor_frame": 1},
+    ],
+)
+def test_direct_send_rejects_incomplete_or_conflicting_review(tmp_path, change):
+    app = _direct_fixture(tmp_path, review_change=change)
+    with pytest.raises(ValueError, match="direct-send"):
+        validate_review(app, root=tmp_path, mode="training")
+
+
+@pytest.mark.parametrize("times", [[0, 1, 2, 2], [0, 2, 1, 4]])
+def test_direct_send_rejects_short_or_reordered_capture(tmp_path, times):
+    app = _direct_fixture(tmp_path, frame_times=times)
+    with pytest.raises(ValueError, match="too short or unordered"):
         validate_review(app, root=tmp_path, mode="training")
 
 

@@ -341,17 +341,17 @@ apps:
         detectable by the byte-exactness test. Accepted residual: a video that is not playing at
         all while observed, meaning stalled, buffering, unloaded, or an ended non-looping clip.
         The re-attach probe gives such a card a second trigger before anything is called a photo.
-    # AI-supervised 10.8.0 update check: one owner-selected Dislike, followed by a confirmed
-    # Send Priority Like on the next profile. The revised nested-heart matcher was checked on
+    # AI-supervised 10.9.0 update check: owner-selected Dislike and a continuously recorded
+    # direct Send Priority Like to a stable successor deck. The nested-heart matcher was checked on
     # both deck frames. This is qualitative Training compatibility, not a new numerical or
     # video false-accept measurement; the 10.7.0 source evidence above retains its provenance.
     version_compatibility_review:
-      artifact_path: ops/reviews/hinge_10_8_compatibility_receipt.json
-      artifact_sha256: 755b46335e845c7793c8b8a3d1e26e61db16c763a7198d086e39858982f4160c
+      artifact_path: ops/reviews/hinge_10_9_compatibility_receipt.json
+      artifact_sha256: 3a5d31aac3e033f9302abc05359acf872d9db653c9b738a20eee4b8953aa8021
     # HISTORICAL MANUAL AUTO RELEASE (2026-08-25): this exact legacy production artifact binds
-    # the historical 10.0.1 calibration to run d8547ff144b4. The phone is now on 10.8.0, so
+    # the historical 10.0.1 calibration to run d8547ff144b4. The phone is now on 10.9.0, so
     # this release artifact does not license AUTO on the live build. Keep it as an immutable
-    # audit record; the 10.7.0 source calibration plus 10.8.0 compatibility review above
+    # audit record; the 10.7.0 source calibration plus 10.9.0 compatibility review above
     # license Training only, and fresh
     # production-observe release evidence is still required before AUTO. The still-photo
     # assumption remains explicitly UNMEASURED and cannot by itself authorize AUTO.

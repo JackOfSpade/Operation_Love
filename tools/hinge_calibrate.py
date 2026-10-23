@@ -6773,6 +6773,46 @@ def _load_session(
     )
 
 
+def _bind_offline_driver_build(
+    driver: HingeDriver, sessions: list[_SessionData]
+) -> str:
+    """Give an ADB-less replay driver the Hinge build its sessions were captured on.
+
+    ``HingeDriver._template("like")`` picks the heart glyph from
+    ``_targeting_runtime_version_name``, which only a live ``open_session()`` reads from the
+    phone.  measure, verify-entry-anchor and attach-operational-evidence never open one, so a
+    10.8+ capture would otherwise be replayed against the pre-10.8 heart and find no hearts.
+    The build is each manifest's ``device.hinge_version_name`` (the ``dumpsys package`` read
+    capture recorded); it must be present and identical in every session, because one replay
+    has exactly one like glyph.  Returns the bound version.
+    """
+    if not sessions:
+        raise _MeasureRefused("no captured session supplies the Hinge build to replay")
+    versions: dict[str, list[str]] = {}
+    for sess in sessions:
+        device = sess.manifest.get("device")
+        version = device.get("hinge_version_name") if isinstance(device, dict) else None
+        # The same shape the live `versionName=(\S+)` read can produce, so a padded or empty
+        # value cannot quietly miss the version gate and select the older glyph.
+        if not isinstance(version, str) or re.fullmatch(r"\S+", version) is None:
+            raise _MeasureRefused(
+                f"session {sess.dir} manifest lacks a usable device.hinge_version_name "
+                f"({version!r}); refusing to replay its frames against a guessed build's "
+                "like glyph"
+            )
+        versions.setdefault(version, []).append(str(sess.dir))
+    if len(versions) != 1:
+        raise _MeasureRefused(
+            "sessions disagree on device.hinge_version_name "
+            + "; ".join(f"{version!r}: {dirs}" for version, dirs in versions.items())
+            + ". One offline replay cannot use two builds' like glyphs; recapture every "
+            "session under one Hinge build"
+        )
+    version = next(iter(versions))
+    driver._targeting_runtime_version_name = version
+    return version
+
+
 def _cmd_verify_entry_anchor(args: argparse.Namespace) -> None:
     """Attach one offline replay ledger to a completed, previously unledgered capture.
 
@@ -6811,6 +6851,7 @@ def _cmd_verify_entry_anchor(args: argparse.Namespace) -> None:
                 "current config's effective identity/content bands do not exactly match this "
                 "captured manifest; refusing to replay with a different detector binding"
             )
+        _bind_offline_driver_build(replay_driver, [session])
         ref = _write_entry_anchor_ledger(
             sess_dir,
             frames_meta=session.manifest["frames"],
@@ -6910,6 +6951,7 @@ def _cmd_attach_operational_evidence(args: argparse.Namespace) -> None:
                 "current config's effective identity/content bands do not exactly match this "
                 "captured manifest; refusing to attach evidence under a different binding"
             )
+        _bind_offline_driver_build(replay_driver, [session])
         entry_candidate = sess_dir / _ENTRY_ANCHOR_LEDGER_FILE
         created_ledger = entry_candidate
         entry_ref = _write_entry_anchor_ledger(
@@ -8682,7 +8724,6 @@ def _cmd_measure(args: argparse.Namespace) -> None:
         sys.exit(1)
     effective_identity = tuple(driver.identity_band)
     effective_content = tuple(driver.content_band)
-    like_template = driver._template("like")
     confirm_template = driver._template("confirm")
     like_threshold = hinge_mod._LIKE_MATCH_THRESHOLD
 
@@ -8703,6 +8744,13 @@ def _cmd_measure(args: argparse.Namespace) -> None:
         except Exception as exc:  # noqa: BLE001 -- report clearly, exit non-zero
             print(f"ERROR: could not load session {sess_dir}: {exc}", file=sys.stderr)
             sys.exit(1)
+    # The like glyph is build-specific, and this driver never reads the build from a phone.
+    try:
+        _bind_offline_driver_build(driver, loaded)
+    except _MeasureRefused as exc:
+        print(f"REFUSED: {exc}", file=sys.stderr)
+        sys.exit(1)
+    like_template = driver._template("like")
 
     for sess in loaded:
         if (

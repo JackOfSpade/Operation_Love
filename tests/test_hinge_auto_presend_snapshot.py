@@ -136,10 +136,17 @@ def test_auto_retains_typed_target_snapshot_before_send_touch(tmp_path, monkeypa
     )
     monkeypatch.setattr(driver, "_interruptible_sleep", lambda *_args, **_kw: True)
     monkeypatch.setattr(driver, "_handle_rose_upsell", lambda: False)
-    monkeypatch.setattr(driver, "_verify_like_landed", lambda _before: None)
+    landed_kwargs = []
+    monkeypatch.setattr(
+        driver,
+        "_verify_like_landed",
+        lambda _before, **kwargs: landed_kwargs.append(kwargs),
+    )
 
     opener = "A specifically targeted opener"
     driver.like(opener, model_item_index=1)
+    # Nobody reviewed an AUTO opener, so Hinge's message warning must never be confirmed.
+    assert [kw["confirm_message_warning"] for kw in landed_kwargs] == [False]
 
     records = [
         json.loads(line)
@@ -290,7 +297,7 @@ def test_training_relocates_and_rechecks_the_scrolled_composer_after_decision(
     monkeypatch.setattr(driver, "_verify_training_checkpoint", training_checkpoint)
     monkeypatch.setattr(driver, "_interruptible_sleep", lambda *_args, **_kw: True)
     monkeypatch.setattr(driver, "_handle_rose_upsell", lambda: False)
-    monkeypatch.setattr(driver, "_verify_like_landed", lambda _before: None)
+    monkeypatch.setattr(driver, "_verify_like_landed", lambda _before, **_kwargs: None)
     monkeypatch.setattr(
         driver, "_verify_training_like_landed", lambda _item: "identity"
     )
@@ -414,7 +421,12 @@ def test_training_hides_keyboard_and_freshly_revalidates_like_after_hub_choice(
     )
     monkeypatch.setattr(driver, "_interruptible_sleep", lambda *_a, **_kw: True)
     monkeypatch.setattr(driver, "_handle_rose_upsell", lambda: False)
-    monkeypatch.setattr(driver, "_verify_like_landed", lambda _before: None)
+    landed_kwargs = []
+    monkeypatch.setattr(
+        driver,
+        "_verify_like_landed",
+        lambda _before, **kwargs: landed_kwargs.append(kwargs),
+    )
     monkeypatch.setattr(
         driver, "_verify_training_like_landed", lambda _item: "identity"
     )
@@ -429,6 +441,8 @@ def test_training_hides_keyboard_and_freshly_revalidates_like_after_hub_choice(
 
     driver.set_training_decision(decide)
     assert driver.like("A targeted opener", model_item_index=1) == "like"
+    # The owner approved this exact draft in the Hub, so a flagged message may be confirmed.
+    assert [kw["confirm_message_warning"] for kw in landed_kwargs] == [True]
 
     assert ("tap", resumed.confirm_point) in events
     assert ("tap", checkpoint.confirm_point) not in events
@@ -561,7 +575,7 @@ def test_training_like_rejects_reflowed_same_profile_after_send(monkeypatch):
     monkeypatch.setattr(driver, "_handle_rose_upsell", lambda: False)
     # Isolate the existing generic post-Send checks. The regression is the stronger Training
     # proof that runs immediately afterwards and must refuse a reflowed current card.
-    monkeypatch.setattr(driver, "_verify_like_landed", lambda _before: None)
+    monkeypatch.setattr(driver, "_verify_like_landed", lambda _before, **_kwargs: None)
     monkeypatch.setattr(driver, "_deck_blocked_reason", lambda _frame: None)
     monkeypatch.setattr(driver, "_observe_deck_ready", lambda _frame: True)
     monkeypatch.setattr(driver, "_is_current_profile_frame", lambda *_a, **_kw: True)
@@ -2158,7 +2172,7 @@ def _training_like_run(tmp_path, monkeypatch, *, recovered_draft: str, run_id: s
     monkeypatch.setattr(driver, "_verify_sheet_shows", lambda *_a, **_kw: None)
     monkeypatch.setattr(driver, "_interruptible_sleep", lambda *_a, **_kw: True)
     monkeypatch.setattr(driver, "_handle_rose_upsell", lambda: False)
-    monkeypatch.setattr(driver, "_verify_like_landed", lambda _before: None)
+    monkeypatch.setattr(driver, "_verify_like_landed", lambda _before, **_kwargs: None)
     monkeypatch.setattr(
         driver, "_verify_training_like_landed", lambda _item: "identity"
     )

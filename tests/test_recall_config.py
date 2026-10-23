@@ -98,7 +98,7 @@ def test_null_auto_review_and_null_recall_target_load_as_defaults():
 def test_shipped_config_yaml_carries_the_owner_recall_target():
     cfg = c.load("config.yaml")
     c.validate(cfg)
-    assert cfg.ranker.like_recall_target == 0.95
+    assert cfg.ranker.like_recall_target == 0.90
     assert cfg.ranker.contextual_recall_budget == 0.02
     assert cfg.auto_review.enabled is True
     assert cfg.auto_review.random_share == 0.5

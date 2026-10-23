@@ -314,6 +314,19 @@ class AndroidAppSpec:
     # `self.spec.app != "hinge"` early-return inside hinge.py; moved here for the same reason
     # as auto_policy_calibrated above.
 
+    has_message_warning: bool = False
+    # Does this app show a send-time message warning ("Are you sure you want to send this?",
+    # Keep editing / Send anyway) after Send Like? True only for Hinge, whose 10.9.0 chrome
+    # templates were measured 2026-10-23 (ops/reviews/hinge_10_9_message_warning.md).
+    # hinge.py's _verify_like_landed looks for it only when this is True; it may confirm the
+    # warning once for an owner-reviewed send and never in AUTO.
+
+    restores_scrolled_training_composer: bool = False
+    # May Training drag a reviewer-scrolled inline composer back into the strict CTA band
+    # (hinge.py's _restore_scrolled_training_composer) before the full checkpoint proof runs
+    # again? True only for Hinge, whose inline composer that recovery was measured on
+    # (ops/reviews/hinge_10_9_training_viewport.md).
+
     safe_rewind_max_frac: float | None = None
     # Ceiling (fraction of screen height) on the RECOVERY rewind stroke's DISTANCE and, when
     # set, ALSO selects the bounded central-corridor LANE (fixed x=0.5, no independently

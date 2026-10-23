@@ -179,11 +179,13 @@ apps:
     # this rule exists to collect will accumulate exactly as they did before it was written.
     debug_keep_runs: 50
     # Run directories cited from OUTSIDE data/hinge_debug, which retention must never delete no
-    # matter how old they get -- age is a terrible proxy for value here. The release-evidence run
-    # is NOT listed: it is derived from observe_release_evidence.production_run_id below, so the
-    # two cannot drift apart. These are the rest:
+    # matter how old they get -- age is a terrible proxy for value here. The INSTALLED release
+    # gate's run is also derived (observe_release_evidence or training_release_evidence
+    # .production_run_id), but every run with signed ops/release/<id>/ artifacts is listed here
+    # too, because the gate that derives it can be swapped out (exactly one may be installed).
     debug_protect_runs:
       - 312b80bf4b50    # ops/release/312b80bf4b50/ holds this run's signed release artifacts
+      - d8547ff144b4    # ops/release/d8547ff144b4/ holds this run's signed release artifacts
       - e7b13ac6fd21    # frames cited as fixture provenance by tests/test_hinge_out_of_likes.py
       - a01fbcd1e9a0    # actions.jsonl cited as evidence_ref by tests/test_label_retractions.py
       # Listed after the fact: BOTH of these were destroyed by the first retention pass on
@@ -350,11 +352,14 @@ apps:
       artifact_sha256: 3a5d31aac3e033f9302abc05359acf872d9db653c9b738a20eee4b8953aa8021
     # HISTORICAL MANUAL AUTO RELEASE (2026-08-25): this exact legacy production artifact binds
     # the historical 10.0.1 calibration to run d8547ff144b4. The phone is now on 10.9.0, so
-    # this release artifact does not license AUTO on the live build. Keep it as an immutable
-    # audit record; the 10.7.0 source calibration plus 10.9.0 compatibility review above
-    # license Training only, and fresh
-    # production-observe release evidence is still required before AUTO. The still-photo
-    # assumption remains explicitly UNMEASURED and cannot by itself authorize AUTO.
+    # this release artifact does not license AUTO on the live build. The 10.7.0 source
+    # calibration plus 10.9.0 compatibility review above license Training only. Production
+    # OBSERVE is retired: AUTO now needs a fresh calibration measured on the live build, then a
+    # supervised Training run on it verified by `python -m tools.hinge_training_release`, whose
+    # printed training_release_evidence mapping REPLACES this one (exactly one gate; the artifact
+    # files under ops/release/d8547ff144b4/ stay as the audit record, and the run stays protected
+    # above). The still-photo assumption remains explicitly UNMEASURED and cannot by itself
+    # authorize AUTO.
     observe_release_evidence:
       schema_version: 1
       calibration_calibrated_at: "2026-08-22T23:50:45.216285+00:00 — measured from session(s): targeting_20260822T_calA, targeting_20260822T_heldB"
@@ -421,15 +426,18 @@ storage:
 ranker:
   like_threshold: 0.5          # P(like) above which we like. With like_recall_target set this is only the
                                # starting value: every train replaces it with the calibrated cutoff.
-  # Recall-target threshold (operation_love/ranker/threshold.py). 0.95 = "the bot may pass at most 5%
+  # Recall-target threshold (operation_love/ranker/threshold.py). 0.90 = "the bot may pass at most 10%
   # of the people I would like". Every train scores all labels out-of-fold (identity-grouped, so one
   # person never sits on both sides of a split), reads the scores of your MANUALLY labelled likes, and
-  # sets the like cutoff to the highest score that keeps 95% of them above it. Why not a fixed 0.5:
-  # the ranker's scores are compressed (out-of-fold ~0.46-0.53, AUC ~0.70), so 0.5 passed ~37% of the
+  # sets the like cutoff to the highest score that keeps 90% of them above it. Why not a fixed 0.5:
+  # the ranker's scores are compressed (out-of-fold ~0.46-0.53, AUC ~0.73), so 0.5 passed ~37% of the
   # people you would like. Cost of a higher target: the bot likes more people you would pass (you
-  # prefer that). `null` restores the fixed like_threshold above. If the labels cannot support the
-  # calibration the ranker is NOT ready (and says why) -- it never falls back to like_threshold.
-  like_recall_target: 0.95
+  # prefer that) and its like share climbs toward Hinge's ">85% = bot" line. Owner decision
+  # 2026-10-23: 0.90, lowered from 0.95 (~84% of the deck liked, ~88% on newer profiles) to ~78%;
+  # see ops/ANTI-BOT-RESEARCH.md §4 addendum 2026-10-23. `null` restores the fixed like_threshold
+  # above. If the labels cannot support the calibration the ranker is NOT ready (and says why) -- it
+  # never falls back to like_threshold.
+  like_recall_target: 0.90
   # The contextual AUTO demotion (a marginal like declined on a tired/late session) may cost at most
   # this much recall; it caps how far that demotion can lift the cutoff. 0 disables the lift.
   contextual_recall_budget: 0.02

@@ -868,14 +868,48 @@ from `defer` → ready mid-session. Training never calls the ranker to make the 
 
 ## 4. Go autonomous — auto mode (it swipes for you)
 
-**Current release state: AUTO is blocked pending a fresh production release.** The
-legacy-named manual `observe_release_evidence` artifact for production run `d8547ff144b4`
-remains installed beside the historical 10.0.1 calibration, but the live app is 10.4.0 on device
-`33111JEHN04475` (1080x2400). The separately measured 10.4.0 schema-v3 hybrid AI-reviewed
-circular-risk photo-item-1-only calibration and matching still-photo-assumption acceptance enable
-Training; this evidence is not human ground truth and does not release AUTO. Perform a fresh
-production release for the 10.4.0 calibration and install its release evidence before AUTO. The
-still-photo licence cannot substitute for release evidence.
+**Current release state (2026-10-23): AUTO is blocked pending a fresh calibration and a Training
+release.** The legacy-named manual `observe_release_evidence` artifact for production run
+`d8547ff144b4` remains installed beside it, but it binds the historical 10.0.1 calibration. The
+installed calibration is 10.7.0, and the live app is 10.9.0 on device `33111JEHN04475`
+(1080x2400) under a `training_only` compatibility review. Production OBSERVE is retired, so the
+old release tools cannot run. The supported path is a supervised Training release:
+
+1. **Calibrate the live build.** Run a fresh targeting campaign on 10.9.0 (section 2, the hybrid
+   AI-reviewed `capture` → `tools.hinge_calibration_review` → `measure` path). Keep `config.yaml`
+   unchanged while capturing: the live capture reads the build, and so picks the 10.8+ heart
+   glyph, only while a targeting calibration is configured. `measure`, `verify-entry-anchor` and
+   `attach-operational-evidence` now take the build from the sessions' manifests and refuse
+   sessions that disagree on it. Choose Pass or `--send-like` per run.
+2. **Install it.** Paste the emitted calibration, re-accept the still-photo assumption for the new
+   build (owner decision), and delete `version_compatibility_review`. A release binds only an
+   exact-build calibration.
+3. **Record a short Training run** with at least one Like and one Pass on that build. Keep it
+   short: the verifier needs that Like's and that Pass's retained frames, and the retained pool
+   rotates in long sessions.
+4. **Verify it**, still in `mode: training`:
+   `python -m tools.hinge_training_release --config config.yaml --debug-run data/hinge_debug/<run> --run-id <run> --out ops/release/<run>/training-release`.
+   The tool needs that run's first rows: the run binding, then a `training_session_environment`
+   row whose live build, frame, device and calibration digest match the calibration, with no
+   compatibility version active. It also needs one complete Like chain and one complete Pass chain
+   inside single captures: verified sheet, anchor, the approved pre-send snapshot (its evidence id
+   recomputed from the kept PNG), Hub publication and the claimed decision, the resumed send,
+   the accepted successor proof, the verified action, and the persisted action. Finally, the
+   store must hold the manual label, decision, Like opener and Like send-evidence rows for exactly
+   those profiles.
+5. **Install the release.** Paste the printed `training_release_evidence` mapping, remove
+   `observe_release_evidence` (AUTO accepts exactly one gate; `d8547ff144b4` stays protected in
+   `debug_protect_runs` and its `ops/release/` files stay as the audit record), then set
+   `mode: auto`. Config re-hashes the run's `actions.jsonl` at every AUTO start, so that
+   retention-protected log must stay untouched.
+
+The Training release proves human-approved, verified Like and Pass chains on the calibrated
+build. It does not exercise three AUTO-only paths, and its artifact says so (`not_exercised`):
+AUTO's keyboard-up pre-send verification, AUTO's deck pass, and AUTO's like landing without
+Training's successor proof. The retired OBSERVE release did not prove those either; watch the first
+AUTO run. In AUTO, a Hinge "Are you sure you want to send this?" warning is never confirmed: the
+run stops with the warning left on screen. The still-photo licence cannot substitute for release
+evidence.
 It does not bypass opener generation, exact-item targeting, foreground ownership, paid-upsell
 refusal, post-action verification, `halt_on_error`, or Stop. A failed/untargetable opener stops
 the run; it never degrades to a bare like. The driver retains a private
@@ -929,7 +963,7 @@ like cutoff is set by a **recall target** instead of a fixed probability.
 
 ```yaml
 ranker:
-  like_recall_target: 0.95        # "the bot may pass at most 5% of the people I would like"; null = legacy fixed like_threshold
+  like_recall_target: 0.90        # "the bot may pass at most 10% of the people I would like"; null = legacy fixed like_threshold
   contextual_recall_budget: 0.02  # extra recall the AUTO tired/late-session demotion may cost
 auto_review:
   enabled: true

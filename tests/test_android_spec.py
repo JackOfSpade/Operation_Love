@@ -611,6 +611,13 @@ def test_hinge_and_bumble_spec_declare_the_new_capability_fields():
     assert BUMBLE_SPEC.auto_policy_calibrated is False
     assert BUMBLE_SPEC.observe_input_serialized is False
     assert BUMBLE_SPEC.safe_rewind_max_frac is None
+    assert HINGE_SPEC.has_message_warning is True
+    assert HINGE_SPEC.restores_scrolled_training_composer is True
+    assert BUMBLE_SPEC.has_message_warning is False
+    assert BUMBLE_SPEC.restores_scrolled_training_composer is False
+    generic = AndroidAppSpec(app="x", package="x.y", calibrated=False)
+    assert generic.has_message_warning is False
+    assert generic.restores_scrolled_training_composer is False
 
 
 def test_safe_rewind_max_frac_out_of_range_is_rejected():

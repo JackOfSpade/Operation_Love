@@ -977,6 +977,71 @@ class SQLiteStore:
             "successful_hinge_openers": int(openers),
         }
 
+    def training_release_persistence_summary(
+        self,
+        run_id: str,
+        app: str,
+        *,
+        like_profile_id: str,
+        pass_profile_id: str,
+        like_send_evidence_id: str,
+    ) -> dict[str, int]:
+        """Read-only per-profile counts for the Hinge supervised-Training release verifier.
+
+        Counts only, bound to the profile ids the verified debug chains persisted. The label,
+        decision and opener visibility clauses are the same ones the observe summaries use. A
+        Training Pass also writes an ``openers`` row (``decision='dislike'``), so only a manual
+        ``'like'`` opener counts for the Like. This backend has no ``opener_send_evidence``
+        table (that archive lives in BigQuery beside the private frame bucket), so
+        ``like_send_evidence`` is always 0 here and a SQLite store alone can never satisfy the
+        release verifier. ``like_send_evidence_id`` is accepted for protocol parity.
+        """
+        del like_send_evidence_id
+        decision_not_retracted = (
+            "NOT EXISTS (SELECT 1 FROM label_retractions r WHERE r.run_id=d.run_id AND r.app=d.app "
+            "AND r.source=d.source AND r.decision_created_at=d.created_at)"
+        )
+        with self._lock:
+
+            def count(sql: str, params: tuple) -> int:
+                return int(self.con.execute(sql, params).fetchone()[0])
+
+            like_labels = count(
+                "SELECT COUNT(*) FROM labels l WHERE run_id=? AND app=? AND source='manual' "
+                f"AND liked=1 AND profile_id=? AND {_LABEL_NOT_RETRACTED}",
+                (run_id, app, like_profile_id),
+            )
+            like_decisions = count(
+                "SELECT COUNT(*) FROM decisions d WHERE run_id=? AND app=? AND source='manual' "
+                f"AND decision='like' AND profile_id=? AND {decision_not_retracted}",
+                (run_id, app, like_profile_id),
+            )
+            like_openers = count(
+                """SELECT COUNT(*) FROM openers AS o WHERE o.run_id=? AND o.app=?
+                AND o.decision='like' AND o.decision_source='manual' AND o.profile_id=?
+                AND NOT EXISTS (SELECT 1 FROM opener_retractions AS r WHERE r.run_id=o.run_id
+                AND r.app=o.app AND r.opener_created_at=o.created_at)""",
+                (run_id, app, like_profile_id),
+            )
+            pass_labels = count(
+                "SELECT COUNT(*) FROM labels l WHERE run_id=? AND app=? AND source='manual' "
+                f"AND liked=0 AND profile_id=? AND {_LABEL_NOT_RETRACTED}",
+                (run_id, app, pass_profile_id),
+            )
+            pass_decisions = count(
+                "SELECT COUNT(*) FROM decisions d WHERE run_id=? AND app=? AND source='manual' "
+                f"AND decision='dislike' AND profile_id=? AND {decision_not_retracted}",
+                (run_id, app, pass_profile_id),
+            )
+        return {
+            "like_labels": like_labels,
+            "like_decisions": like_decisions,
+            "like_openers": like_openers,
+            "like_send_evidence": 0,
+            "pass_labels": pass_labels,
+            "pass_decisions": pass_decisions,
+        }
+
     def advisory_opener_run_rows(self, run_id: str, app: str) -> dict:
         """Exact no-text opener identities plus effective Like/Pass proof for cleanup planning."""
         from .retractions import canonical_sha

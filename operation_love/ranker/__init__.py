@@ -342,6 +342,25 @@ class Store(Protocol):
         """
         ...
 
+    def training_release_persistence_summary(
+        self,
+        run_id: str,
+        app: str,
+        *,
+        like_profile_id: str,
+        pass_profile_id: str,
+        like_send_evidence_id: str,
+    ) -> dict[str, int]:
+        """Return run-scoped manual counts bound to the two profiles a Training release cites.
+
+        Exactly ``like_labels``, ``like_decisions``, ``like_openers``, ``like_send_evidence``,
+        ``pass_labels`` and ``pass_decisions``. Each count is filtered to the profile id the
+        verified debug chain persisted (and, for the send evidence, the landed evidence id), so
+        a Disliked or never-sent draft, another profile's rows, or a retracted label cannot
+        stand in for the Like or Pass the release names.
+        """
+        ...
+
     def flush(self) -> None: ...
     # Per-table count of rows this store PERMANENTLY GAVE UP ON during this run -- rows that
     # were accepted by a record_* call, never reached the system of record, and never will.

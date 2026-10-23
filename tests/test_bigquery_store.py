@@ -354,6 +354,132 @@ def test_read_only_summary_treats_only_missing_opener_retractions_as_empty(monke
         _store(_MissingRequired()).observe_release_persistence_summary("run", "hinge")
 
 
+_TRAINING_RELEASE_KEYS = (
+    "like_labels",
+    "like_decisions",
+    "like_openers",
+    "like_send_evidence",
+    "pass_labels",
+    "pass_decisions",
+)
+
+
+def _training_release_summary(store):
+    return store.training_release_persistence_summary(
+        "run'unsafe",
+        "hinge",
+        like_profile_id="like'p",
+        pass_profile_id="pass'p",
+        like_send_evidence_id="evidence'id",
+    )
+
+
+def test_bigquery_training_release_summary_is_bound_and_profile_specific(monkeypatch):
+    """Every count is bound to the cited profile, and no value is interpolated into SQL."""
+    _stub_bigquery_module(monkeypatch)
+    canned = {key: index + 1 for index, key in enumerate(_TRAINING_RELEASE_KEYS)}
+    client = _FakeBQ(label_rows=[canned])
+    store = _store(client)
+
+    assert _training_release_summary(store) == canned
+    sql = client.queries[-1]
+    for literal in ("run'unsafe", "like'p", "pass'p", "evidence'id"):
+        assert literal not in sql
+    assert [(p.name, p.value) for p in client.job_configs[-1].query_parameters] == [
+        ("run_id", "run'unsafe"),
+        ("app", "hinge"),
+        ("like_profile_id", "like'p"),
+        ("pass_profile_id", "pass'p"),
+        ("like_send_evidence_id", "evidence'id"),
+    ]
+    parts = dict(_scalar_subqueries(sql))
+    assert set(parts) == set(_TRAINING_RELEASE_KEYS)
+    for key, part in parts.items():
+        assert "run_id=@run_id AND app=@app" in part
+        profile = "like_profile_id" if key.startswith("like_") else "pass_profile_id"
+        other = "pass_profile_id" if profile == "like_profile_id" else "like_profile_id"
+        assert f"profile_id=@{profile}" in part and f"@{other}" not in part
+    visibility = store._label_not_retracted()
+    for key, liked in (("like_labels", "TRUE"), ("pass_labels", "FALSE")):
+        assert "source='manual'" in parts[key] and f"liked={liked}" in parts[key]
+        assert visibility in parts[key]
+    for key, decision in (("like_decisions", "like"), ("pass_decisions", "dislike")):
+        assert (
+            "source='manual'" in parts[key] and f"decision='{decision}'" in parts[key]
+        )
+        assert "label_retractions" in parts[key]
+        assert "r.decision_created_at=d.created_at" in parts[key]
+    assert "decision='like' AND decision_source='manual'" in parts["like_openers"]
+    assert "opener_retractions" in parts["like_openers"]
+    evidence = parts["like_send_evidence"]
+    assert "opener_send_evidence" in evidence
+    assert "decision_source='manual' AND outcome='like_landed'" in evidence
+    assert "evidence_id=@like_send_evidence_id" in evidence
+    assert "opener_rejections" not in sql and "spend" not in sql
+
+
+@pytest.mark.parametrize(
+    "missing",
+    [
+        ("opener_retractions",),
+        ("opener_send_evidence",),
+        ("opener_retractions", "opener_send_evidence"),
+    ],
+)
+def test_bigquery_training_release_summary_treats_only_optional_tables_as_empty(
+    monkeypatch, missing
+):
+    _stub_bigquery_module(monkeypatch)
+
+    class NotFound(Exception):
+        pass
+
+    class _Missing(_FakeBQ):
+        def query(self, sql, job_config=None):
+            self.queries.append(sql)
+            self.job_configs.append(job_config)
+            for table in missing:
+                if f".{table}`" in sql:
+                    raise NotFound(f"Not found: Table proj:ds.{table}")
+            return _FakeJob(self._label_rows)
+
+    canned = dict.fromkeys(_TRAINING_RELEASE_KEYS, 1) | {"like_send_evidence": 0}
+    client = _Missing(label_rows=[canned])
+    assert _training_release_summary(_store(client)) == canned
+    assert len(client.queries) == 1 + len(missing)
+    final = client.queries[-1]
+    for table in missing:
+        assert table not in final
+    if "opener_send_evidence" in missing:
+        assert "0 AS like_send_evidence" in final
+    else:
+        assert "opener_send_evidence" in final
+
+    # A store that owns its schema (ensure=True) treats the same NotFound as a real failure.
+    owning = _store(_Missing(label_rows=[canned]))
+    owning._ensure = True
+    with pytest.raises(NotFound):
+        _training_release_summary(owning)
+
+    class _MissingRequired(_FakeBQ):
+        def query(self, sql, job_config=None):
+            raise NotFound("Not found: Table proj:ds.decisions")
+
+    with pytest.raises(NotFound):
+        _training_release_summary(_store(_MissingRequired()))
+
+
+def test_bigquery_training_release_summary_signature_matches_the_store_protocol():
+    params = inspect.signature(
+        BigQueryStore.training_release_persistence_summary
+    ).parameters
+    assert list(params) == list(
+        inspect.signature(Store.training_release_persistence_summary).parameters
+    )
+    for name in ("like_profile_id", "pass_profile_id", "like_send_evidence_id"):
+        assert params[name].kind is inspect.Parameter.KEYWORD_ONLY
+
+
 def test_bigquery_two_opener_tombstones_are_per_row_idempotent(monkeypatch):
     import sys
     from types import SimpleNamespace

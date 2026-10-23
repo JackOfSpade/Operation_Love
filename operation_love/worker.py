@@ -10,6 +10,7 @@ the affected worker so its failure state and diagnostics remain visible.
 
 from __future__ import annotations
 
+import hashlib
 import random
 import inspect
 import math
@@ -121,6 +122,20 @@ def _explicitly_accepts_keyword(callback, name: str) -> bool:
         return name in inspect.signature(callback).parameters
     except (TypeError, ValueError):
         return False
+
+
+def _token_sha256(token) -> str | None:
+    """Hex sha256 of a Hub token, so a release fact proves which token without holding it.
+
+    ``None`` (never an exception) for anything that is not an encodable string; the driver then
+    refuses the fact, which the Worker's best-effort release-fact helper swallows.
+    """
+    if not isinstance(token, str):
+        return None
+    try:
+        return hashlib.sha256(token.encode("utf-8")).hexdigest()
+    except UnicodeEncodeError:
+        return None
 
 
 def _record_decision_with_lineage(
@@ -353,6 +368,9 @@ class Worker(threading.Thread):
             and getattr(driver, "supports_training_decision", False)
         )
         self._training_claimed_action = None
+        # The evidence id of the published checkpoint card whose Hub action was claimed, carried
+        # to that action's persistence release fact.  Cleared with the claimed action per card.
+        self._training_published_evidence_id = None
         # AUTO pass review.  ``None`` disables the archive entirely (the default, so every
         # existing caller is untouched); a probability turns it on and is the share of archived
         # passes that go into the RANDOM pool -- the pool whose answers measure the live
@@ -659,6 +677,19 @@ class Worker(threading.Thread):
             f"{mode}. Details: {details}. {outcome}"
         )
 
+    def _training_release_fact(self, fact: str, **fields) -> None:
+        """Ask an opt-in driver to log one Training release fact, best effort.
+
+        A missing or refused fact only makes a later release verification refuse; it must never
+        stop or fail a Training run, so every exception is swallowed here.
+        """
+        try:
+            recorder = getattr(self.driver, "training_release_fact", None)
+            if callable(recorder):
+                recorder(fact, **fields)
+        except Exception:  # noqa: BLE001 -- release evidence is never a Training dependency
+            pass
+
     def _request_training_decision(
         self, profile, pick, pre_send_frame: bytes, evidence=None
     ) -> str:
@@ -714,6 +745,14 @@ class Worker(threading.Thread):
             )
             self.stop_event.set()
             return "stop"
+        published_at = time.monotonic()
+        published_evidence_id = card.get("evidence_id")
+        self._training_release_fact(
+            "checkpoint_published",
+            evidence_id=published_evidence_id,
+            profile_token_sha256=_token_sha256(card.get("profile_token")),
+            approval_token_sha256=_token_sha256(card.get("approval_token")),
+        )
         self._stat(state="waiting_approval", detail=None)
         # The checkpoint is now complete and actionable, and the worker is about to block for
         # the operator.  Keep this best-effort host alert outside TrainingActionBridge: bridge
@@ -724,6 +763,14 @@ class Worker(threading.Thread):
             bridge.cancel_checkpoint(self, card["profile_token"])
             self.stop_event.set()
             return "stop"
+        self._training_release_fact(
+            "decision_claimed",
+            command=action.get("command"),
+            evidence_id=published_evidence_id,
+            idempotency_token_sha256=_token_sha256(action.get("idempotency_token")),
+            waited_s=time.monotonic() - published_at,
+        )
+        self._training_published_evidence_id = published_evidence_id
         self._training_claimed_action = action
         self._stat(state="acting", detail=None)
         return action["command"]
@@ -1263,6 +1310,7 @@ class Worker(threading.Thread):
                     break
 
                 self._training_claimed_action = None
+                self._training_published_evidence_id = None
                 # The staged record is intentionally not committed until a reviewed Like lands.
                 # Give an opt-in driver its private generation notes only for this checkpoint so
                 # an unacted draft remains diagnosable without pretending it is an opener row.
@@ -1459,11 +1507,11 @@ class Worker(threading.Thread):
                         raise RuntimeError(
                             "the training profile could not be archived; no label was saved"
                         )
+                    landed_evidence = None
                     if outcome == "like":
                         self._training_persistence_status(outcome, "opener_evidence")
                         commit = getattr(self.opener_service, "commit_opener", None)
                         if callable(commit):
-                            landed_evidence = None
                             evidence_hook = getattr(
                                 self.driver, "landed_auto_opener_evidence", None
                             )
@@ -1553,6 +1601,18 @@ class Worker(threading.Thread):
                     # result into missing training data.
                     self._training_persistence_status(outcome, "flush")
                     flush()
+                    # Durable data now exists; record that before the Hub hears "completed".
+                    self._training_release_fact(
+                        "action_persisted",
+                        decision=outcome,
+                        evidence_id=self._training_published_evidence_id,
+                        send_evidence_id=(
+                            landed_evidence.get("evidence_id")
+                            if outcome == "like" and isinstance(landed_evidence, dict)
+                            else None
+                        ),
+                        profile_id=profile_id,
+                    )
                     self.training_action_bridge.complete(action, status="completed")
                 except Exception:
                     self.training_action_bridge.complete(

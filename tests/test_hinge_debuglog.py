@@ -517,6 +517,37 @@ def test_debug_log_never_prunes_a_protected_run(tmp_path):
     assert not (base / "run_000").exists()
 
 
+def _runs_retention_can_delete(repo, cfg, config_text: str) -> dict[str, list[str]]:
+    """Run dirs that tests/ or ``config_text`` name under hinge_debug, that exist on disk, and
+    that the driver's own derivation (debug_protect_runs plus the run of whichever release gate
+    is installed) does not protect."""
+    import re
+
+    from operation_love.drivers.hinge import HingeDriver
+
+    protected = HingeDriver(cfg).debug_protect_runs
+    pattern = re.compile(r'hinge_debug["\']?\s*(?:/|,)\s*["\']?([A-Za-z0-9_-]{8,})')
+    referenced: dict[str, set[str]] = {}
+    sources = [
+        (path.name, path.read_text(errors="replace"))
+        for path in (repo / "tests").rglob("*.py")
+    ]
+    sources.append(("config.yaml", config_text))
+    for name, text in sources:
+        for match in pattern.finditer(text):
+            referenced.setdefault(match.group(1), set()).add(name)
+
+    # Only runs that ACTUALLY EXIST can be destroyed, and that is precisely the state the
+    # 2026-08-28 prune found: present on disk, named by a test, protected by nothing. Synthetic
+    # fixture strings that never name a real directory are not a hazard and are skipped.
+    debug_dir = repo / cfg.apps["hinge"].get("debug_dir", "./data/hinge_debug")
+    return {
+        run: sorted(where)
+        for run, where in referenced.items()
+        if run not in protected and (debug_dir / run).is_dir()
+    }
+
+
 def test_every_run_directory_a_test_depends_on_is_protected_from_retention():
     """A test fixture must never be prunable by age. This guard is written in hindsight.
 
@@ -528,42 +559,55 @@ def test_every_run_directory_a_test_depends_on_is_protected_from_retention():
 
     Age is the wrong signal for these: a historical corpus is old BY DEFINITION. This asserts the
     static invariant instead -- anything tests/ or config.yaml names under hinge_debug must be
-    listed in debug_protect_runs (or be the derived release-evidence run) -- and it holds whether
-    or not the data currently exists, so it would have failed BEFORE that prune.
+    listed in debug_protect_runs (or be the run the driver derives from the installed
+    observe_release_evidence or training_release_evidence gate) -- and it holds whether or not
+    the data currently exists, so it would have failed BEFORE that prune.
     """
-    import re
     from pathlib import Path
 
-    import yaml
+    from operation_love.config import load
 
     repo = Path(__file__).resolve().parent.parent
-    cfg = yaml.safe_load((repo / "config.yaml").read_text())
-    hinge = cfg["apps"]["hinge"]
-    protected = set(hinge.get("debug_protect_runs") or ())
-    release_run = (hinge.get("observe_release_evidence") or {}).get("production_run_id")
-    if release_run:
-        protected.add(release_run)
-
-    pattern = re.compile(r'hinge_debug["\']?\s*(?:/|,)\s*["\']?([A-Za-z0-9_-]{8,})')
-    referenced: dict[str, set[str]] = {}
-    sources = list((repo / "tests").rglob("*.py")) + [repo / "config.yaml"]
-    for path in sources:
-        for match in pattern.finditer(path.read_text(errors="replace")):
-            referenced.setdefault(match.group(1), set()).add(path.name)
-
-    # Only runs that ACTUALLY EXIST can be destroyed, and that is precisely the state the
-    # 2026-08-28 prune found: present on disk, named by a test, protected by nothing. Synthetic
-    # fixture strings that never name a real directory are not a hazard and are skipped.
-    debug_dir = repo / hinge.get("debug_dir", "./data/hinge_debug")
-    unprotected = {
-        run: sorted(where)
-        for run, where in referenced.items()
-        if run not in protected and (debug_dir / run).is_dir()
-    }
+    unprotected = _runs_retention_can_delete(
+        repo, load(repo / "config.yaml"), (repo / "config.yaml").read_text()
+    )
     assert not unprotected, (
         "these run directories exist on disk and are named by tests/config, but are not in "
         f"apps.hinge.debug_protect_runs, so retention will eventually delete them: {unprotected}"
     )
+
+
+def test_the_retention_guard_derives_the_installed_training_release_run(tmp_path):
+    """tools.hinge_training_release has the operator swap observe_release_evidence for
+    training_release_evidence, whose production_run_reference names the run under hinge_debug.
+    The guard derives that run exactly as the driver does, so the swap is not reported as an
+    unprotected run -- and a placeholder that is not a mapping protects nothing."""
+    from pathlib import Path
+
+    import yaml
+
+    from operation_love.config import load
+
+    repo = Path(__file__).resolve().parent.parent
+    cfg = load(repo / "config.yaml")
+    hinge = cfg.apps["hinge"]
+    hinge.pop("observe_release_evidence", None)
+    hinge.pop("ai_reviewed_observe_release_evidence", None)
+    run = "training_release_run"
+    hinge["debug_dir"] = str(tmp_path / "hinge_debug")
+    (tmp_path / "hinge_debug" / run).mkdir(parents=True)
+    evidence = {
+        "production_run_reference": f"data/hinge_debug/{run}",
+        "production_run_id": run,
+    }
+    config_text = yaml.safe_dump(
+        {"apps": {"hinge": {"training_release_evidence": evidence}}}
+    )
+
+    hinge["training_release_evidence"] = evidence
+    assert _runs_retention_can_delete(repo, cfg, config_text) == {}
+    hinge["training_release_evidence"] = "pending"
+    assert _runs_retention_can_delete(repo, cfg, config_text) == {run: ["config.yaml"]}
 
 
 # --- empty run directories (2026-09-16) -------------------------------------------------

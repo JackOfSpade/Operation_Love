@@ -119,6 +119,40 @@ def _scrolled_priority_like_composer() -> bytes:
     return _png(canvas, color=False)
 
 
+def _scrolled_up_priority_like_composer(*, input_present=True, cta_present=True):
+    """2026-10-23 review viewport: geometry and generic label only, no profile pixels."""
+    canvas = np.full((_H, _W), _BG, dtype=np.uint8)
+    if input_present:
+        canvas[778:780, 95:985] = 222
+        canvas[954:956, 95:985] = 222
+    if cta_present:
+        canvas[988:1097, 390:985] = 26
+    _paint_glyph(canvas, center=(699, 1038))
+    return _png(canvas, color=False)
+
+
+def test_scrolled_up_review_is_navigation_evidence_only():
+    frame = _scrolled_up_priority_like_composer()
+    with pytest.raises(
+        ComposerDetectionError, match="outside the inline composer's measured CTA"
+    ):
+        locate_inline_composer(frame, _TEMPLATE)
+    surface = locate_inline_composer(frame, _TEMPLATE, allow_scrolled=True)
+    assert surface.comment_rect == Rect(95, 778, 985, 956)
+    assert surface.send_rect == Rect(390, 988, 985, 1097)
+    assert surface.confirm_point == (699, 1038)
+
+
+@pytest.mark.parametrize("missing", ["input_present", "cta_present"])
+def test_scrolled_navigation_still_requires_complete_control_topology(missing):
+    with pytest.raises(ComposerDetectionError):
+        locate_inline_composer(
+            _scrolled_up_priority_like_composer(**{missing: False}),
+            _TEMPLATE,
+            allow_scrolled=True,
+        )
+
+
 def _keyboard_open_composer_with_selected_photo_edge() -> bytes:
     """Synthetic keyboard layout with a wide selected-photo edge above the input.
 

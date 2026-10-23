@@ -312,6 +312,53 @@ _AI_OBSERVE_RELEASE_ARTIFACT_KEYS = {
 }
 _AI_OBSERVE_RELEASE_ACCEPTANCE = "I_ACCEPT_AI_REVIEWED_OBSERVE_RELEASE_RISK"
 
+# A third, separately named namespace: a supervised Training run on the exact calibrated build,
+# verified by tools.hinge_training_release.  It is human ground truth like the manual OBSERVE
+# gate, but it proves a different control flow (the Hub checkpoint, not a human tap), so it must
+# not be read as either artifact above.  Unlike them, the mapping also carries the debug log's
+# digest, which config re-hashes against the retention-protected run at every AUTO validation.
+_TRAINING_RELEASE_EVIDENCE_KEYS = {
+    "schema_version",
+    "calibration_calibrated_at",
+    "calibration_sha256",
+    "device",
+    "hinge_version_name",
+    "frame_size_px",
+    "production_run_reference",
+    "production_run_id",
+    "debug_actions_sha256",
+    "verification_file",
+    "verification_sha256",
+    "verified_at",
+}
+_TRAINING_RELEASE_ARTIFACT_KEYS = {
+    "schema_version",
+    "kind",
+    "completed",
+    "human_ground_truth",
+    "source",
+    "calibration_calibrated_at",
+    "calibration_sha256",
+    "device",
+    "hinge_version_name",
+    "frame_size_px",
+    "production_run_reference",
+    "production_run_id",
+    "debug_actions_sha256",
+    "chain_evidence_sha256",
+    "store_persistence_evidence_sha256",
+    "not_exercised",
+    "verified_at",
+}
+_TRAINING_RELEASE_KIND = "hinge_supervised_training_release"
+# The AUTO-only paths a Training run never takes.  The artifact states them rather than claiming
+# them; the retired OBSERVE gate did not exercise them either.
+_TRAINING_RELEASE_NOT_EXERCISED = [
+    "auto_keyboard_up_presend_verification",
+    "auto_deck_pass",
+    "auto_like_landing_without_training_successor_proof",
+]
+
 # Hinge's current fixed bottom navigation begins below the ordinary 0.55-screen read corridor.
 # A 0.78 recovery flick released inside that chrome and was repeatedly swallowed in live run
 # de89edfe05e1. Keep configuration aligned with AndroidDriver's Hinge-only gesture invariant:
@@ -1209,9 +1256,11 @@ def _canonical_sha256(value) -> str:
 def _validate_hinge_auto_release_evidence(cfg: Config) -> None:
     """Require a verified production-OBSERVE artifact before Hinge AUTO can start.
 
-    This runs only for an enabled Hinge app whose effective mode is AUTO.  Observe deliberately
-    remains allowed with a targeting calibration but without this evidence so the required
-    production validation can actually be performed.
+    This runs only for an enabled Hinge app whose effective mode is AUTO.  Observe mode is
+    retired, so no new artifact of this kind can be produced; the validator stays so a historical
+    artifact keeps exactly its old meaning.  Training is the mode that runs with a targeting
+    calibration and no release evidence, and ``_validate_hinge_training_release_evidence`` is
+    the gate a new supervised Training run feeds.
     """
     if "hinge" not in cfg.enabled_apps:
         return
@@ -1503,24 +1552,241 @@ def _validate_hinge_ai_reviewed_auto_release_evidence(cfg: Config) -> None:
             )
 
 
+def _is_sha256_hex(value) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(c in "0123456789abcdef" for c in value)
+    )
+
+
+def _validate_hinge_training_release_evidence(cfg: Config) -> None:
+    """Validate the supervised-Training release artifact from ``tools.hinge_training_release``.
+
+    The calibration binding is the manual OBSERVE gate's.  The artifact must declare human
+    ground truth from the Hub's manual decisions and list, verbatim, the AUTO-only paths a
+    Training run never exercises.  Unlike the two OBSERVE gates, the mapping also carries the
+    debug log's digest and this validator re-hashes ``<production_run_reference>/actions.jsonl``
+    (a retention-protected run), so an edited, replaced or deleted log blocks AUTO.  Like the
+    OBSERVE gates, config does not re-derive the Like/Pass chains, the environment rows or the
+    store counts: it trusts that ``tools.hinge_training_release`` wrote the artifact, which it
+    does only after all three verify.
+    """
+    app_cfg = (cfg.apps or {}).get("hinge", {}) or {}
+    policy_blocker = hinge_targeting_unavailable_reason()
+    if policy_blocker is not None:
+        raise ValueError(
+            "Config: Hinge AUTO is blocked because numbered still-photo targeting cannot "
+            f"be licensed: {policy_blocker}"
+        )
+    calibration = app_cfg.get("targeting_calibration")
+    if not isinstance(calibration, dict):
+        raise ValueError(
+            "Config: Hinge AUTO requires apps.hinge.targeting_calibration before "
+            "training_release_evidence can bind it"
+        )
+    raw = app_cfg.get("training_release_evidence")
+    if not isinstance(raw, dict):
+        raise ValueError(
+            "Config: apps.hinge.training_release_evidence must be the exact mapping "
+            "python -m tools.hinge_training_release printed"
+        )
+    unknown = set(raw) - _TRAINING_RELEASE_EVIDENCE_KEYS
+    missing = _TRAINING_RELEASE_EVIDENCE_KEYS - set(raw)
+    if unknown or missing:
+        raise ValueError(
+            "Config: apps.hinge.training_release_evidence must carry exactly "
+            f"{sorted(_TRAINING_RELEASE_EVIDENCE_KEYS)} (missing {sorted(missing)}, "
+            f"unknown {sorted(unknown)})"
+        )
+    if type(raw["schema_version"]) is not int or raw["schema_version"] != 1:
+        raise ValueError(
+            "Config: apps.hinge.training_release_evidence.schema_version must be integer 1"
+        )
+    if raw["calibration_calibrated_at"] != calibration.get("calibrated_at"):
+        raise ValueError(
+            "Config: training_release_evidence.calibration_calibrated_at does not bind this "
+            "calibration"
+        )
+    if raw["calibration_sha256"] != _canonical_sha256(calibration):
+        raise ValueError(
+            "Config: training_release_evidence.calibration_sha256 does not bind this calibration"
+        )
+    for key in ("device", "hinge_version_name", "frame_size_px"):
+        if raw[key] != calibration.get(key):
+            raise ValueError(
+                f"Config: training_release_evidence.{key} does not bind this calibration"
+            )
+    for key in (
+        "production_run_reference",
+        "production_run_id",
+        "debug_actions_sha256",
+        "verification_file",
+        "verification_sha256",
+        "verified_at",
+    ):
+        if not isinstance(raw[key], str) or not raw[key].strip():
+            raise ValueError(
+                f"Config: training_release_evidence.{key} must be nonempty text"
+            )
+    if not _is_sha256_hex(raw["debug_actions_sha256"]):
+        raise ValueError(
+            "Config: training_release_evidence.debug_actions_sha256 is not a SHA-256 digest"
+        )
+    if Path(raw["production_run_reference"]).name != raw["production_run_id"]:
+        raise ValueError(
+            "Config: training_release_evidence production_run_reference does not bind "
+            "production_run_id"
+        )
+    root = Path.cwd().resolve()
+
+    def inside_repo(value: str, key: str) -> Path:
+        path = Path(value)
+        if path.is_absolute():
+            raise ValueError(
+                f"Config: training_release_evidence.{key} must be a repo-relative local path"
+            )
+        resolved = (root / path).resolve()
+        try:
+            resolved.relative_to(root)
+        except ValueError as exc:
+            raise ValueError(
+                f"Config: training_release_evidence.{key} escapes the repository"
+            ) from exc
+        return resolved
+
+    run_dir = inside_repo(raw["production_run_reference"], "production_run_reference")
+    resolved = inside_repo(raw["verification_file"], "verification_file")
+    try:
+        content = resolved.read_bytes()
+    except OSError as exc:
+        raise ValueError(
+            f"Config: training_release_evidence verification artifact is unreadable: {resolved}"
+        ) from exc
+    if hashlib.sha256(content).hexdigest() != raw["verification_sha256"]:
+        raise ValueError(
+            "Config: training_release_evidence.verification_sha256 does not match its artifact"
+        )
+    try:
+        artifact = json.loads(content)
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            "Config: training_release_evidence artifact is not JSON"
+        ) from exc
+    if (
+        not isinstance(artifact, dict)
+        or set(artifact) != _TRAINING_RELEASE_ARTIFACT_KEYS
+    ):
+        raise ValueError(
+            "Config: training_release_evidence artifact has an invalid exact schema"
+        )
+    if (
+        type(artifact["schema_version"]) is not int
+        or artifact["schema_version"] != 1
+        or artifact["kind"] != _TRAINING_RELEASE_KIND
+    ):
+        raise ValueError(
+            "Config: training_release_evidence artifact has unsupported schema/kind"
+        )
+    if artifact["completed"] is not True:
+        raise ValueError("Config: training_release_evidence artifact is incomplete")
+    if artifact["human_ground_truth"] is not True or artifact["source"] != "manual":
+        raise ValueError(
+            "Config: training_release_evidence artifact must declare manual human ground truth"
+        )
+    if artifact["not_exercised"] != _TRAINING_RELEASE_NOT_EXERCISED:
+        raise ValueError(
+            "Config: training_release_evidence artifact must state exactly the AUTO-only "
+            f"paths a Training run does not exercise: {_TRAINING_RELEASE_NOT_EXERCISED}"
+        )
+    for key in sorted(
+        _TRAINING_RELEASE_EVIDENCE_KEYS & _TRAINING_RELEASE_ARTIFACT_KEYS
+    ):
+        if artifact[key] != raw[key]:
+            raise ValueError(
+                f"Config: training_release_evidence artifact disagrees on {key}"
+            )
+    for key in (
+        "calibration_sha256",
+        "debug_actions_sha256",
+        "chain_evidence_sha256",
+        "store_persistence_evidence_sha256",
+    ):
+        if not _is_sha256_hex(artifact[key]):
+            raise ValueError(
+                f"Config: training_release_evidence artifact {key} is not a SHA-256 digest"
+            )
+    actions = (run_dir / "actions.jsonl").resolve()
+    try:
+        actions.relative_to(root)
+    except ValueError as exc:
+        raise ValueError(
+            "Config: training_release_evidence debug actions.jsonl escapes the repository"
+        ) from exc
+    try:
+        actions_bytes = actions.read_bytes()
+    except OSError as exc:
+        raise ValueError(
+            "Config: training_release_evidence debug run actions.jsonl is unreadable; the "
+            f"verified run must stay retained: {actions}"
+        ) from exc
+    if hashlib.sha256(actions_bytes).hexdigest() != raw["debug_actions_sha256"]:
+        raise ValueError(
+            "Config: training_release_evidence.debug_actions_sha256 does not match the "
+            "retained run's actions.jsonl"
+        )
+
+
+# Each AUTO release gate is a separately named provenance.  A config naming two of them would
+# make the effective claim depend on which validator ran, so exactly one may be present.
+_HINGE_AUTO_RELEASE_GATES = (
+    "observe_release_evidence",
+    "ai_reviewed_observe_release_evidence",
+    "training_release_evidence",
+)
+
+
+def _training_release_pointer(replacing: str | None) -> str:
+    """The step that can still release AUTO, appended to an OBSERVE gate's refusal."""
+    install = "install the apps.hinge.training_release_evidence mapping it prints"
+    if replacing is not None:
+        install += f" in place of apps.hinge.{replacing}"
+    return (
+        "Production OBSERVE is retired: verify a supervised Training run on the exact "
+        f"calibrated build with python -m tools.hinge_training_release and {install}"
+    )
+
+
 def _validate_hinge_auto_release_gate(cfg: Config) -> None:
-    """Select exactly one release-gate provenance mode; legacy manual validator stays intact."""
+    """Select exactly one release-gate provenance mode; each validator keeps its own meaning."""
     if "hinge" not in cfg.enabled_apps:
         return
     app_cfg = (cfg.apps or {}).get("hinge", {}) or {}
     if app_cfg.get("mode", cfg.mode) != "auto":
         return
-    manual = app_cfg.get("observe_release_evidence")
-    ai_reviewed = app_cfg.get("ai_reviewed_observe_release_evidence")
-    if manual is not None and ai_reviewed is not None:
+    present = [key for key in _HINGE_AUTO_RELEASE_GATES if app_cfg.get(key) is not None]
+    if len(present) > 1:
         raise ValueError(
-            "Config: Hinge AUTO requires exactly one release gate: manual observe_release_evidence "
-            "or explicitly accepted ai_reviewed_observe_release_evidence, never both"
+            "Config: Hinge AUTO requires exactly one release gate: manual "
+            "observe_release_evidence, explicitly accepted ai_reviewed_observe_release_evidence, "
+            f"or supervised-Training training_release_evidence, never more than one (got {present})"
         )
-    if ai_reviewed is not None:
-        _validate_hinge_ai_reviewed_auto_release_evidence(cfg)
-    else:
-        _validate_hinge_auto_release_evidence(cfg)
+    if present == ["training_release_evidence"]:
+        _validate_hinge_training_release_evidence(cfg)
+        return
+    # An OBSERVE gate, or none: that validator's own refusal still names what is missing, but no
+    # OBSERVE run can be recorded any more, so name the path that can.
+    observe_validator = (
+        _validate_hinge_ai_reviewed_auto_release_evidence
+        if present == ["ai_reviewed_observe_release_evidence"]
+        else _validate_hinge_auto_release_evidence
+    )
+    try:
+        observe_validator(cfg)
+    except ValueError as exc:
+        raise ValueError(
+            f"{exc}. {_training_release_pointer(present[0] if present else None)}"
+        ) from exc
 
 
 def _validate_hinge_ai_observe_controller(cfg: Config) -> None:

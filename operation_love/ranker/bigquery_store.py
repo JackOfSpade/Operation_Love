@@ -493,6 +493,19 @@ def _missing_optional_opener_retractions(exc: Exception, *, ensure: bool) -> boo
     )
 
 
+def _missing_optional_opener_send_evidence(exc: Exception, *, ensure: bool) -> bool:
+    """Same accommodation as `_missing_optional_opener_retractions`, for the send-evidence archive.
+
+    Only the Training release summary reads ``opener_send_evidence``; a read-only store against a
+    project that has never archived a landed opener counts no evidence rather than failing.
+    """
+    return (
+        not ensure
+        and type(exc).__name__ == "NotFound"
+        and "opener_send_evidence" in str(exc)
+    )
+
+
 def _missing_optional_opener_outcomes(exc: Exception, *, ensure: bool) -> bool:
     """Same accommodation as `_missing_optional_opener_retractions`, for the newer table.
 
@@ -977,6 +990,105 @@ class BigQueryStore:
             "ai_like_decisions": 0,
             "successful_hinge_openers": 0,
         }
+
+    def training_release_persistence_summary(
+        self,
+        run_id: str,
+        app: str,
+        *,
+        like_profile_id: str,
+        pass_profile_id: str,
+        like_send_evidence_id: str,
+    ) -> dict[str, int]:
+        """Read-only per-profile counts for the Hinge supervised-Training release verifier.
+
+        One aggregate statement with bound parameters; counts only. Each count is filtered to
+        the profile id the verified debug chain persisted, and the send evidence also to the
+        landed resumed-send evidence id, so a Disliked or never-sent draft (Training writes both
+        to ``openers``) or another profile's rows cannot stand in for the Like or Pass the
+        release names. The label, decision and opener visibility clauses are the observe
+        summaries'. A read-only store may meet a project that has no ``opener_retractions`` or
+        ``opener_send_evidence`` table yet: the first then hides nothing and the second counts 0.
+        """
+        from google.cloud import bigquery
+
+        job = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("run_id", "STRING", run_id),
+                bigquery.ScalarQueryParameter("app", "STRING", app),
+                bigquery.ScalarQueryParameter(
+                    "like_profile_id", "STRING", like_profile_id
+                ),
+                bigquery.ScalarQueryParameter(
+                    "pass_profile_id", "STRING", pass_profile_id
+                ),
+                bigquery.ScalarQueryParameter(
+                    "like_send_evidence_id", "STRING", like_send_evidence_id
+                ),
+            ]
+        )
+        opener_visibility = (
+            f"AND NOT EXISTS (SELECT 1 FROM `{self._tid('opener_retractions')}` r WHERE r.run_id=o.run_id "
+            "AND r.app=o.app AND r.opener_created_at=o.created_at)"
+        )
+        send_evidence = (
+            f"(SELECT COUNT(*) FROM `{self._tid('opener_send_evidence')}` e WHERE run_id=@run_id "
+            "AND app=@app AND decision_source='manual' AND outcome='like_landed' "
+            "AND profile_id=@like_profile_id AND evidence_id=@like_send_evidence_id)"
+        )
+
+        def decisions(decision: str, profile_param: str) -> str:
+            return (
+                f"(SELECT COUNT(*) FROM `{self._tid('decisions')}` d WHERE run_id=@run_id AND app=@app "
+                f"AND source='manual' AND decision='{decision}' AND profile_id=@{profile_param} "
+                f"AND NOT EXISTS (SELECT 1 FROM `{self._tid('label_retractions')}` r "
+                "WHERE r.run_id=d.run_id AND r.app=d.app AND r.source=d.source "
+                "AND r.decision_created_at=d.created_at))"
+            )
+
+        query = (
+            "SELECT "
+            f"(SELECT COUNT(*) FROM `{self._tid('labels')}` l WHERE run_id=@run_id AND app=@app "
+            "AND source='manual' AND liked=TRUE AND profile_id=@like_profile_id "
+            f"AND {self._label_not_retracted()}) AS like_labels, "
+            f"{decisions('like', 'like_profile_id')} AS like_decisions, "
+            f"(SELECT COUNT(*) FROM `{self._tid('openers')}` o WHERE run_id=@run_id AND app=@app "
+            "AND decision='like' AND decision_source='manual' AND profile_id=@like_profile_id "
+            f"{opener_visibility}) AS like_openers, "
+            f"{send_evidence} AS like_send_evidence, "
+            f"(SELECT COUNT(*) FROM `{self._tid('labels')}` l WHERE run_id=@run_id AND app=@app "
+            "AND source='manual' AND liked=FALSE AND profile_id=@pass_profile_id "
+            f"AND {self._label_not_retracted()}) AS pass_labels, "
+            f"{decisions('dislike', 'pass_profile_id')} AS pass_decisions"
+        )
+        # Each optional table can be missing independently. Every retry removes one table's
+        # clause from the statement, so this ends after at most two retries.
+        while True:
+            try:
+                rows = self.client.query(query, job_config=job).result()
+                break
+            except Exception as exc:
+                if opener_visibility in query and _missing_optional_opener_retractions(
+                    exc, ensure=self._ensure
+                ):
+                    query = query.replace(opener_visibility, "")
+                elif send_evidence in query and _missing_optional_opener_send_evidence(
+                    exc, ensure=self._ensure
+                ):
+                    query = query.replace(send_evidence, "0")
+                else:
+                    raise
+        keys = (
+            "like_labels",
+            "like_decisions",
+            "like_openers",
+            "like_send_evidence",
+            "pass_labels",
+            "pass_decisions",
+        )
+        for row in rows:
+            return {key: int(row[key]) for key in keys}
+        return dict.fromkeys(keys, 0)
 
     def retraction_run_rows(self, run_id: str, app: str, source: str) -> dict:
         """Read the exact, minimal committed rows needed to plan a safe correction."""

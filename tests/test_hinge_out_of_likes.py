@@ -828,7 +828,7 @@ def _run_logged_like(monkeypatch, tmp_path, verifier):
 def test_like_debug_records_attempt_then_completed_like_only_after_verification(
     monkeypatch, tmp_path
 ):
-    drv = _run_logged_like(monkeypatch, tmp_path, lambda _before: None)
+    drv = _run_logged_like(monkeypatch, tmp_path, lambda _before, **_kwargs: None)
 
     drv.like()
 
@@ -846,7 +846,7 @@ def test_paywall_debug_records_attempt_then_rejection_never_a_completed_like(
     drv = _run_logged_like(
         monkeypatch,
         tmp_path,
-        lambda _before: (_ for _ in ()).throw(HingeDeckBlockedError(reason)),
+        lambda _before, **_kwargs: (_ for _ in ()).throw(HingeDeckBlockedError(reason)),
     )
 
     with pytest.raises(HingeDeckBlockedError, match="upgrade screen"):
@@ -865,7 +865,7 @@ def test_paywall_debug_records_attempt_then_rejection_never_a_completed_like(
 
 def test_stuck_post_send_upsell_still_records_the_send_attempt(monkeypatch, tmp_path):
     """A modal failure follows Send Like, so it cannot erase the attempted-action record."""
-    drv = _run_logged_like(monkeypatch, tmp_path, lambda _before: None)
+    drv = _run_logged_like(monkeypatch, tmp_path, lambda _before, **_kwargs: None)
     monkeypatch.setattr(
         drv,
         "_handle_rose_upsell",

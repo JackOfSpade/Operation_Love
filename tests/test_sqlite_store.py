@@ -2182,3 +2182,208 @@ def test_sqlite_dropped_rows_is_empty_because_this_backend_cannot_lose_a_row(tmp
         assert store.dropped_rows() == {}
     finally:
         store.close()
+
+
+# --- training_release_persistence_summary --------------------------------------------------
+
+
+def _seed_training_release_cycle(store):
+    """One persisted Training Like and Pass, plus rows that must never stand in for them."""
+    # The two cited profiles, written the way Worker persists a verified Training action.
+    store.record_opener(
+        "r",
+        "hinge",
+        "gemini-x",
+        "liked opener",
+        "photo",
+        profile_id="like-p",
+        decision="like",
+        decision_source="manual",
+        decision_created_at=10.0,
+    )
+    store.record_decision(
+        "r", "hinge", "like", 1.0, source="manual", profile_id="like-p", created_at=10.0
+    )
+    store.add_label("r", "hinge", True, [0.1], source="manual", profile_id="like-p")
+    store.record_opener(
+        "r",
+        "hinge",
+        "gemini-x",
+        "declined opener",
+        "photo",
+        profile_id="pass-p",
+        decision="dislike",
+        decision_source="manual",
+        decision_created_at=20.0,
+    )
+    store.record_decision(
+        "r",
+        "hinge",
+        "dislike",
+        0.0,
+        source="manual",
+        profile_id="pass-p",
+        created_at=20.0,
+    )
+    store.add_label("r", "hinge", False, [0.2], source="manual", profile_id="pass-p")
+    # Same profiles, wrong source / decision / run: none of these is the cited action.
+    store.add_label("r", "hinge", True, [0.3], source="auto", profile_id="like-p")
+    store.add_label("r", "hinge", True, [0.4], source="manual", profile_id="pass-p")
+    store.add_label(
+        "other", "hinge", False, [0.5], source="manual", profile_id="pass-p"
+    )
+    store.record_decision("r", "hinge", "like", 1.0, source="auto", profile_id="like-p")
+    store.record_decision(
+        "r", "hinge", "like", 1.0, source="manual", profile_id="pass-p"
+    )
+    store.record_decision(
+        "r", "bumble", "dislike", 0.0, source="manual", profile_id="pass-p"
+    )
+    for decision, source in (
+        ("never_sent", "manual"),
+        ("send_unverified", "manual"),
+        ("dislike", "manual"),
+        ("like", "auto"),
+    ):
+        store.record_opener(
+            "r",
+            "hinge",
+            "gemini-x",
+            f"{decision} draft",
+            "photo",
+            profile_id="like-p",
+            decision=decision,
+            decision_source=source,
+        )
+    # Distinct stamps, so a tombstone in the tests below can only ever reach its own row.
+    store.con.execute("UPDATE labels SET created_at = 100.0 + id")
+    store.con.execute("UPDATE openers SET created_at = 200.0 + id")
+    store.con.commit()
+
+
+def _training_summary(store, **overrides):
+    kwargs = {
+        "like_profile_id": "like-p",
+        "pass_profile_id": "pass-p",
+        "like_send_evidence_id": "e" * 64,
+        **overrides,
+    }
+    return store.training_release_persistence_summary("r", "hinge", **kwargs)
+
+
+def test_sqlite_training_release_summary_counts_only_the_cited_profiles(tmp_path):
+    store = SQLiteStore(tmp_path / "store.db")
+    try:
+        _seed_training_release_cycle(store)
+        assert _training_summary(store) == {
+            "like_labels": 1,
+            "like_decisions": 1,
+            "like_openers": 1,
+            # No opener_send_evidence archive in SQLite: a SQLite store alone never releases.
+            "like_send_evidence": 0,
+            "pass_labels": 1,
+            "pass_decisions": 1,
+        }
+        assert _training_summary(
+            store, like_profile_id="unrelated", pass_profile_id="also-unrelated"
+        ) == dict.fromkeys(
+            (
+                "like_labels",
+                "like_decisions",
+                "like_openers",
+                "like_send_evidence",
+                "pass_labels",
+                "pass_decisions",
+            ),
+            0,
+        )
+        # The observe summary's broad totals see the noise; the Training summary does not.
+        assert (
+            store.observe_release_persistence_summary("r", "hinge")[
+                "successful_hinge_openers"
+            ]
+            == 6
+        )
+    finally:
+        store.close()
+
+
+def test_sqlite_training_release_summary_hides_retracted_rows_like_every_read_path(
+    tmp_path,
+):
+    store = SQLiteStore(tmp_path / "store.db")
+    try:
+        _seed_training_release_cycle(store)
+        like_label_at, pass_label_at = (
+            store.con.execute(
+                "SELECT created_at FROM labels WHERE run_id='r' AND source='manual' "
+                "AND profile_id=? AND liked=?",
+                (profile_id, liked),
+            ).fetchone()[0]
+            for profile_id, liked in (("like-p", 1), ("pass-p", 0))
+        )
+        for correction_id, profile_id, label_at, decision_at in (
+            ("c-like", "like-p", like_label_at, 10.0),
+            ("c-pass", "pass-p", pass_label_at, 20.0),
+        ):
+            store.con.execute(
+                "INSERT INTO label_retractions VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    correction_id,
+                    "r",
+                    "hinge",
+                    "manual",
+                    profile_id,
+                    label_at,
+                    decision_at,
+                    "fingerprint",
+                    "false training action",
+                    "debug#1",
+                    99.0,
+                ),
+            )
+        like_opener_at = store.con.execute(
+            "SELECT created_at FROM openers WHERE profile_id='like-p' AND decision='like' "
+            "AND decision_source='manual'"
+        ).fetchone()[0]
+        store.con.execute(
+            "INSERT INTO opener_retractions VALUES (?,?,?,?,?,?,?,?,?)",
+            (
+                "c-opener",
+                "r",
+                "hinge",
+                like_opener_at,
+                "gemini-x",
+                "fingerprint",
+                "false training action",
+                "debug#1",
+                99.0,
+            ),
+        )
+        store.con.commit()
+
+        assert _training_summary(store) == dict.fromkeys(
+            (
+                "like_labels",
+                "like_decisions",
+                "like_openers",
+                "like_send_evidence",
+                "pass_labels",
+                "pass_decisions",
+            ),
+            0,
+        )
+        assert store.load_labels() == [(True, [0.3]), (True, [0.4]), (False, [0.5])]
+    finally:
+        store.close()
+
+
+def test_sqlite_training_release_summary_signature_matches_the_store_protocol():
+    params = inspect.signature(
+        SQLiteStore.training_release_persistence_summary
+    ).parameters
+    assert list(params) == list(
+        inspect.signature(Store.training_release_persistence_summary).parameters
+    )
+    for name in ("like_profile_id", "pass_profile_id", "like_send_evidence_id"):
+        assert params[name].kind is inspect.Parameter.KEYWORD_ONLY

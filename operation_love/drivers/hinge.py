@@ -78,6 +78,7 @@ import difflib
 import fcntl
 import functools
 import hashlib
+import io
 import json
 import marshal
 import math
@@ -684,6 +685,84 @@ def _parse_targeting_calibration(
         identity_band=calibrated_identity,
         content_band=calibrated_content,
     ), None
+
+
+def _configured_calibration_sha256(raw) -> str | None:
+    """Digest the configured calibration mapping exactly as config's release gates do.
+
+    ``None`` when nothing is configured, the value is not a mapping, or it cannot be
+    canonically serialized; release verification then refuses rather than this driver failing
+    to construct.  config.py is imported lazily so loading this driver module does not also
+    load the config module.
+    """
+    if not isinstance(raw, dict):
+        return None
+    from ..config import _canonical_sha256
+
+    try:
+        return _canonical_sha256(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+# Training release facts (AndroidDriver.training_release_fact).  Each validator returns the value
+# to log, or _INVALID_RELEASE_FIELD.  The per-fact field dicts are the exact whitelist and their
+# order is the logged field order.
+_INVALID_RELEASE_FIELD = object()
+_RELEASE_SHA256_HEX = re.compile(r"[0-9a-f]{64}")
+
+
+def _release_optional_id(value):
+    if value is None or isinstance(value, str):
+        return value
+    return _INVALID_RELEASE_FIELD
+
+
+def _release_sha256_hex(value):
+    if isinstance(value, str) and _RELEASE_SHA256_HEX.fullmatch(value):
+        return value
+    return _INVALID_RELEASE_FIELD
+
+
+def _release_decision(value):
+    if isinstance(value, str) and value in {"like", "dislike"}:
+        return value
+    return _INVALID_RELEASE_FIELD
+
+
+def _release_waited_s(value):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return _INVALID_RELEASE_FIELD
+    if not math.isfinite(value) or value < 0:
+        return _INVALID_RELEASE_FIELD
+    return round(float(value), 1)
+
+
+def _release_profile_id(value):
+    if isinstance(value, str) and value:
+        return value
+    return _INVALID_RELEASE_FIELD
+
+
+_TRAINING_RELEASE_FACT_FIELDS = {
+    "checkpoint_published": {
+        "evidence_id": _release_optional_id,
+        "profile_token_sha256": _release_sha256_hex,
+        "approval_token_sha256": _release_sha256_hex,
+    },
+    "decision_claimed": {
+        "command": _release_decision,
+        "evidence_id": _release_optional_id,
+        "idempotency_token_sha256": _release_sha256_hex,
+        "waited_s": _release_waited_s,
+    },
+    "action_persisted": {
+        "decision": _release_decision,
+        "evidence_id": _release_optional_id,
+        "send_evidence_id": _release_optional_id,
+        "profile_id": _release_profile_id,
+    },
+}
 
 
 class HingeActionError(RuntimeError):
@@ -1579,6 +1658,8 @@ HINGE_SPEC = AndroidAppSpec(
     supports_video_marker_shift=True,
     auto_policy_calibrated=True,
     observe_input_serialized=True,
+    has_message_warning=True,
+    restores_scrolled_training_composer=True,
     safe_rewind_max_frac=0.55,
 )
 
@@ -2620,6 +2701,53 @@ def _match_glyph(
         return []
 
 
+def _message_warning_controls(frame: bytes) -> tuple[bool, tuple[int, int] | None]:
+    """Recognise Hinge's message warning and its explicit Send anyway control.
+
+    Chrome-only templates measured on 10.9.0, 2026-10-23. Require the heading
+    and both ordered, centred button labels; never guess a coordinate or confuse
+    this with the Rose upsell's different "Send Like anyway" control.
+    """
+    try:
+        from PIL import Image
+
+        with Image.open(io.BytesIO(frame)) as image:
+            width, height = image.size
+        heading = _match_glyph(
+            frame,
+            _load_template("hinge_message_warning_heading.png"),
+            side="any",
+            threshold=0.9,
+        )
+        if len(heading) != 1:
+            return False, None
+        editing = _match_glyph(
+            frame,
+            _load_template("hinge_keep_editing.png"),
+            side="any",
+            threshold=0.9,
+        )
+        send = _match_glyph(
+            frame,
+            _load_template("hinge_send_anyway.png"),
+            side="any",
+            threshold=0.9,
+        )
+        if len(editing) == len(send) == 1:
+            hx, hy = heading[0]
+            ex, ey = editing[0]
+            sx, sy = send[0]
+            if (
+                height * 0.5 < hy < ey < sy < height * 0.98
+                and all(abs(x - width / 2) < width * 0.1 for x in (hx, ex, sx))
+                and height * 0.03 < sy - ey < height * 0.12
+            ):
+                return True, send[0]
+        return True, None
+    except Exception:  # noqa: BLE001 — unavailable/undecodable pixels cannot authorise a tap
+        return False, None
+
+
 # Correlation floor for the "like" role specifically -- NOT a change to _match_glyph's own 0.6
 # default above, which stays as-is for every other role (pass/confirm/upsell_dismiss/paywall
 # weren't touched by this recalibration and their own margins against 0.6 are unverified here).
@@ -2868,6 +2996,12 @@ class AndroidDriver(DatingAppDriver):
                 f"named above in config.yaml -- leaving it broken would silently disable the "
                 f"identity anchor (or worse) for the whole run with no further warning."
             ) from exc
+        # The session-environment debug row binds a run to the configured calibration MAPPING,
+        # hashed exactly as config.py hashes it for release evidence. Digested here, before
+        # parsing, so the row names the mapping the operator configured rather than a parsed view.
+        self._targeting_calibration_sha256 = _configured_calibration_sha256(
+            app_cfg.get("targeting_calibration")
+        )
         # Parse this only AFTER the effective config-overridden geometry exists.  Bounds measured
         # over one header/content crop cannot license targeting after either crop changes.
         self.targeting_calibration, self._targeting_calibration_unavailable = (
@@ -3185,14 +3319,18 @@ class AndroidDriver(DatingAppDriver):
         # data/hinge_debug to 12GB across 274 runs.
         self.debug_keep_runs = app_cfg.get("debug_keep_runs")
         # Run directories cited from OUTSIDE themselves must survive retention regardless of age
-        # -- see DebugLog._trim_old_runs. The release-evidence run is derived rather than listed
-        # twice, so the two can never drift apart.
+        # -- see DebugLog._trim_old_runs. Each release-evidence run is derived rather than listed
+        # twice, so the two can never drift apart. Removing a gate therefore drops its run's
+        # protection unless debug_protect_runs lists that run.
         protect = set(app_cfg.get("debug_protect_runs") or ())
-        release_run = (app_cfg.get("observe_release_evidence") or {}).get(
-            "production_run_id"
-        )
-        if isinstance(release_run, str) and release_run:
-            protect.add(release_run)
+        for evidence_key in ("observe_release_evidence", "training_release_evidence"):
+            # Only AUTO validates these mappings; a non-mapping placeholder names no run.
+            evidence = app_cfg.get(evidence_key)
+            if not isinstance(evidence, dict):
+                continue
+            release_run = evidence.get("production_run_id")
+            if isinstance(release_run, str) and release_run:
+                protect.add(release_run)
         self.debug_protect_runs = frozenset(protect)
         self.halt_on_error = bool(
             app_cfg.get("halt_on_error", True)
@@ -3465,6 +3603,14 @@ class AndroidDriver(DatingAppDriver):
                         "observe_release_run_binding",
                         run_id=self._debug_run_id,
                         app=self.spec.app,
+                    )
+                if self._dbg is not None:
+                    # Directly after the run binding: Training release verification compares
+                    # this live build/frame/device/calibration digest with the calibration the
+                    # release artifact binds. Transport-free; every value was read above.
+                    self._dbg.action(
+                        "training_session_environment",
+                        **self._training_session_environment(),
                     )
         except BaseException:
             # Anything after the UHID touch transport registers (the line right above this
@@ -4579,6 +4725,52 @@ class AndroidDriver(DatingAppDriver):
         # handling.  DebugLog.action is itself locked, so it is safe to append directly.
         if self._dbg is not None:
             self._dbg.action(f"observe_release_{fact}")
+
+    def training_release_fact(self, fact: str, **fields) -> None:
+        """Append one thread-safe, transport-free supervised-Training release fact.
+
+        The Worker records the Hub checkpoint publication, the human command it claimed, and
+        the durable persistence of that command.  Each fact carries an exact field whitelist:
+        evidence ids, token DIGESTS and the store profile id only -- never opener text, a
+        profile name, or a raw token.  Unknown facts, missing or extra fields, and malformed
+        values raise ``ValueError`` whether or not a debug log is open.  Like
+        ``observe_release_fact`` this appends directly to the locked DebugLog and never takes
+        a screenshot.
+        """
+        validators = _TRAINING_RELEASE_FACT_FIELDS.get(fact)
+        if validators is None:
+            raise ValueError(f"unknown training release fact {fact!r}")
+        unknown = set(fields) - set(validators)
+        missing = set(validators) - set(fields)
+        if unknown or missing:
+            raise ValueError(
+                f"training release fact {fact!r} must carry exactly "
+                f"{sorted(validators)} (missing {sorted(missing)}, "
+                f"unknown {sorted(unknown)})"
+            )
+        row = {}
+        for name, validate in validators.items():
+            value = validate(fields[name])
+            if value is _INVALID_RELEASE_FIELD:
+                raise ValueError(
+                    f"training release fact {fact!r} has an invalid {name!r}"
+                )
+            row[name] = value
+        if self._dbg is not None:
+            self._dbg.action(f"training_release_{fact}", **row)
+
+    def _training_session_environment(self) -> dict[str, object]:
+        """The live session facts a Training release binds, read without device I/O."""
+        frame_size = self._targeting_runtime_frame_size
+        return {
+            "session_mode": self._session_mode(),
+            "hinge_version_name": self._targeting_runtime_version_name,
+            "frame_size_px": list(frame_size) if frame_size is not None else None,
+            "device": self.serial,
+            "calibration_sha256": self._targeting_calibration_sha256,
+            "compatible_version": self._targeting_compatible_version,
+            "targeting_available": self.targeting_calibration is not None,
+        }
 
     def _sample_read_step(self, depth: int, complexity_hint: float | None):
         """Return one coherent ``(dwell, distance, lane)`` read step.
@@ -13497,7 +13689,9 @@ class AndroidDriver(DatingAppDriver):
             return None
         return media if media > 0 else None
 
-    def _verify_like_landed(self, before) -> None:
+    def _verify_like_landed(
+        self, before, *, should_stop=None, confirm_message_warning: bool = False
+    ) -> None:
         """comment_sheet flow only. A like is COMPLETE only when the comment sheet AND any
         paid-upsell modal are gone AND the deck has moved off the pre-tap card. If the sheet is
         still up (missed Send Like tap) or the screen never changed (missed heart tap), raise so
@@ -13512,11 +13706,21 @@ class AndroidDriver(DatingAppDriver):
         ``halt_on_error=False`` mode. Paywall detection does not: Hinge's known refusal screen
         is affirmative evidence that this particular like did NOT land, so returning normally
         there would let even a direct driver caller record a completed action that Hinge refused.
-        Unlike a bare change-check, the scroll-to-top can't spoof this."""
+        Unlike a bare change-check, the scroll-to-top can't spoof this.
+
+        ``confirm_message_warning`` is True only when a human reviewed this exact opener before
+        Send Like (a Training Like, a reviewed comment sheet). Hinge's "Are you sure you want to
+        send this?" warning may then be confirmed once with Send anyway. Without that review
+        (AUTO), nobody has read the text Hinge flagged, so the warning is refused: nothing is
+        tapped and the screen is left as it is (owner decision 2026-10-23)."""
         sheet_up = modal_up = landed_candidate = False
-        for attempt in range(
-            3
-        ):  # extra passes tolerate late-animating modals and paywalls
+        warning_sent = False
+        warning_up = False
+        attempt = 0
+        # The message warning permits one further Send anyway tap, followed by
+        # a fresh bounded settle window. Its disappearance alone is not delivery.
+        while attempt < 3:
+            attempt += 1
             frame = self._screencap()
             # A recognised paywall is a purchase screen, so it wins over every other post-send
             # interpretation of this frame.  In particular, do this BEFORE the late-upsell
@@ -13526,12 +13730,61 @@ class AndroidDriver(DatingAppDriver):
             if blocked is not None:
                 self._blocked_reason = blocked
                 raise HingeDeckBlockedError(blocked)
+            warning_up, warning_point = (
+                _message_warning_controls(frame)
+                if self.spec.has_message_warning
+                else (False, None)
+            )
+            if warning_up:
+                landed_candidate = False
+                if not confirm_message_warning:
+                    self._dbg_action(
+                        "message_warning",
+                        frame,
+                        after=None,
+                        keep_before=True,
+                        outcome="unreviewed_refused",
+                    )
+                    raise HingeActionError(
+                        "Hinge flagged this opener with its message warning ('Are you sure "
+                        "you want to send this?'). Nobody reviewed it, so AUTO does not "
+                        "confirm it: nothing more was tapped and the warning is left on screen"
+                    )
+                if warning_point is None:
+                    self._dbg_action(
+                        "message_warning",
+                        frame,
+                        after=None,
+                        keep_before=True,
+                        outcome="unrecognised_controls",
+                    )
+                    raise HingeActionError(
+                        "Hinge message warning is open but its Send anyway controls "
+                        "could not be verified; no confirmation was tapped"
+                    )
+                if not warning_sent:
+                    self._raise_if_action_cancelled(
+                        should_stop, boundary="Send anyway tap"
+                    )
+                    self._dbg_action(
+                        "message_warning",
+                        frame,
+                        after=None,
+                        keep_before=True,
+                        outcome="send_anyway_attempt",
+                        point=list(warning_point),
+                    )
+                    self._tap(*warning_point, should_stop=should_stop)
+                    warning_sent = True
+                    attempt = 0
+                time.sleep(human_delay(0.6))
+                continue
             if not self.halt_on_error:
                 # A screen change alone is NOT proof that Hinge accepted the like: the measured
                 # out-of-free-likes path closes the sheet and replaces the card with its Hinge+
                 # paywall.  This check is deliberately BEFORE the halt_on_error return: a
                 # recognised rejection is not an optional generic verification failure.
-                if attempt < 2:
+                if attempt < 3:
                     time.sleep(human_delay(0.6))
                 continue
             sheet_up = self._observe_like_sheet_visible(frame)
@@ -13551,10 +13804,22 @@ class AndroidDriver(DatingAppDriver):
                 continue
             # Require the apparently-advanced deck to survive one more poll. A transition frame
             # can be both changed and free of sheet glyphs just before a paywall animates in.
-            if landed_candidate or attempt == 2:
+            if landed_candidate or attempt == 3:
                 return  # stable closed sheet + advanced deck -> sent
             landed_candidate = True
             time.sleep(human_delay(0.6))
+        if warning_up:
+            self._dbg_action(
+                "message_warning",
+                frame,
+                after=None,
+                keep_before=True,
+                outcome="still_open",
+            )
+            raise HingeActionError(
+                "like did not complete — Hinge's message warning is still open "
+                "after Send anyway; no second confirmation was attempted"
+            )
         if not self.halt_on_error:
             return
         if sheet_up and modal_up:
@@ -14498,7 +14763,9 @@ class AndroidDriver(DatingAppDriver):
                 verified=True,
             )
             self._handle_rose_upsell()
-            self._verify_like_landed(before)
+            self._verify_like_landed(
+                before, should_stop=should_stop, confirm_message_warning=True
+            )
             self._dbg_action(
                 "observe_decision",
                 before,
@@ -14898,18 +15165,85 @@ class AndroidDriver(DatingAppDriver):
             return None
         return frame, composer, pass_point
 
-    def _settle_resumed_checkpoint(self, frame: bytes, *, should_stop=None) -> bytes:
+    def _restore_scrolled_training_composer(
+        self, frame: bytes, model_item_index: int | None, *, should_stop=None
+    ) -> bool:
+        """Restore a reviewer-scrolled composer without accepting its clipped item preview.
+
+        The wider detector is navigation evidence only. Prove profile identity and
+        full control topology, then drag down above the input/CTA. The caller
+        re-captures and runs the original strict checkpoint proof before any decision.
+        """
+        if (
+            not self.spec.restores_scrolled_training_composer
+            or model_item_index is None
+            or self._current_item_index is None
+            or getattr(self, "_last_composer_detection_failure", None)
+            != "Send Like glyph matched only outside the inline composer's measured CTA region"
+        ):
+            return False
+        try:
+            composer = locate_inline_composer(
+                frame, self._template("confirm"), threshold=0.8, allow_scrolled=True
+            )
+        except ComposerDetectionError:
+            return False
+        width, height = self.adb.screen_size()
+        if composer.confirm_point[1] >= round(height * 0.54):
+            return False
+        calibration = self._require_targeting_calibration(model_item_index)
+        identity = compare_profile_identity(
+            frame,
+            self._current_item_index.identity,
+            identity_band=self.identity_band,
+            match_max_dist=calibration.identity_match_max_dist,
+        )
+        if not identity.matched:
+            return False
+        start_y = round((height * 0.10 + composer.comment_rect.y0) / 2)
+        end_y = min(
+            start_y + round(height * 0.10),
+            composer.comment_rect.y0 - round(height * 0.02),
+        )
+        if end_y - start_y < round(height * 0.03):
+            return False
+        self._raise_if_action_cancelled(
+            should_stop, boundary="training viewport restore"
+        )
+        self._dbg_action(
+            "training_checkpoint_viewport_restore",
+            frame,
+            after=None,
+            keep_before=True,
+            model_item_index=model_item_index,
+            confirm_y=composer.confirm_point[1],
+            start=[width // 2, start_y],
+            end=[width // 2, end_y],
+            reason="review scrolled the composer above the strict CTA band; restore before full checkpoint verification",
+        )
+        self._swipe(width // 2, start_y, width // 2, end_y, should_stop=should_stop)
+        return True
+
+    def _settle_resumed_checkpoint(
+        self, frame: bytes, *, should_stop=None, model_item_index: int | None = None
+    ) -> bytes:
         """Re-capture a resumed training checkpoint whose composer is not (yet) locatable.
 
         2026-10-06: a Like resumed 3h12m after its opener was staged captured ONE frame
         mid-animation (photo overlapping the comment box, grey scrim) and the whole run halted
         on it.  Returns the first frame that locates the composer, or the last frame captured
         once the attempts are spent, so the full proof in `_training_checkpoint_geometry` still
-        decides -- this relaxes no check and sends no input.
+        decides. When the complete composer is persistently scrolled above the
+        strict CTA band, restore its viewport with a guarded downward drag after
+        proving profile identity. This shares the same attempt bound, relaxes no
+        checkpoint check, and never taps a decision or types text.
         """
         for attempt in range(1, _RESUME_SETTLE_ATTEMPTS + 1):
             if self._locate_inline_composer(frame) is not None:
                 return frame
+            self._restore_scrolled_training_composer(
+                frame, model_item_index, should_stop=should_stop
+            )
             self._dbg_action(
                 "training_checkpoint_settle_retry",
                 frame,
@@ -14994,9 +15328,13 @@ class AndroidDriver(DatingAppDriver):
         after a human review window of arbitrary length, where one frame can be mid-animation.
         Every fresh frame faces the complete proof below.  The pre-send call site is excluded --
         no human window has opened there, so a missing composer is an unknown screen.
+        A complete composer scrolled above the strict CTA band is restored under the same
+        bounded settle loop; its partial photo is never accepted by widening item verification.
         """
         if keyboard_recovery:
-            frame = self._settle_resumed_checkpoint(frame, should_stop=should_stop)
+            frame = self._settle_resumed_checkpoint(
+                frame, should_stop=should_stop, model_item_index=model_item_index
+            )
         located = self._training_checkpoint_geometry(
             frame, payload, model_item_index, before
         )
@@ -15629,16 +15967,18 @@ class AndroidDriver(DatingAppDriver):
                         # licensing a training label as human ground truth, and until 2026-08-28
                         # it retained no image at all -- so "the deck advanced to a new card"
                         # could never be re-checked against what was actually on screen. Both
-                        # settled frames are already in hand here; `keep_before` puts the first
-                        # into the bounded retained-evidence pool so ordinary screenshot rotation
-                        # cannot erase the one frame a disputed label would need. Earlier retries
-                        # stay diagnostics-only; the final refused probe is retained below too.
+                        # settled frames are already in hand here; `keep_before`/`keep_after`
+                        # put both into the bounded retained-evidence pool so ordinary
+                        # screenshot rotation cannot erase the pair a disputed label (or the
+                        # Training release verifier) would need. Earlier retries stay
+                        # diagnostics-only; the final refused probe is retained below too.
                         self._dbg.action(
                             "training_advance_probe",
                             attempt=attempt + 1,
                             before=first,
                             after=second,
                             keep_before=True,
+                            keep_after=True,
                             outcome="accepted",
                             first=first_diagnostics,
                             second=second_diagnostics,
@@ -16092,7 +16432,12 @@ class AndroidDriver(DatingAppDriver):
         )  # paid-upsell interstitial: dismiss, NEVER pay
         action_fields = {**attempt_fields, "rose_modal": rose}
         try:
-            self._verify_like_landed(before)
+            # Only a Training Like was reviewed by the owner on this exact draft; AUTO's was not.
+            self._verify_like_landed(
+                before,
+                should_stop=should_stop,
+                confirm_message_warning=training_hook is not None,
+            )
         except HingeDeckBlockedError as exc:
             self._dbg_action(
                 "like_rejected",

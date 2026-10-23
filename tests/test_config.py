@@ -3018,3 +3018,42 @@ def test_hinge_auto_without_a_calibration_still_demands_the_release_evidence(
         _assumption_config(mode="auto"),
         "separately verified apps.hinge.observe_release_evidence",
     )
+
+
+@pytest.mark.parametrize("calibrated", [True, False])
+def test_hinge_auto_without_any_release_gate_names_the_training_release_tool(
+    tmp_path, monkeypatch, calibrated
+):
+    """Observe is retired, so the refusal must name the one path that can still mint evidence."""
+    monkeypatch.chdir(tmp_path)
+    app = {"targeting_calibration": _calibration()} if calibrated else {}
+    auto = _assumption_config(mode="auto", **app)
+
+    _expect_error(auto, "python -m tools.hinge_training_release")
+    _expect_error(auto, "apps.hinge.training_release_evidence")
+
+
+def test_hinge_auto_refuses_a_training_release_beside_an_observe_release(
+    tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+    auto = _assumption_config(
+        mode="auto",
+        targeting_calibration=_calibration(),
+        observe_release_evidence={"historical": "gate"},
+        training_release_evidence={"new": "gate"},
+    )
+
+    _expect_error(auto, "exactly one release gate")
+    _expect_error(auto, "training_release_evidence")
+
+
+def test_hinge_auto_validates_a_training_release_mapping_exactly(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    auto = _assumption_config(
+        mode="auto",
+        targeting_calibration=_calibration(),
+        training_release_evidence={"schema_version": 1},
+    )
+
+    _expect_error(auto, "apps.hinge.training_release_evidence must carry exactly")

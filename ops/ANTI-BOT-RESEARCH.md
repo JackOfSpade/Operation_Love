@@ -864,6 +864,44 @@ demands, but it means expanded-header profiles cannot currently be targeted at a
 whose PREMISE the app has invalidated does not fail. It passes vacuously, keeps reporting success,
 and there is no banner. Checking that captures still go green cannot detect this class.
 
+### Addendum 2026-10-23 — AUTO's like rate is now set by a recall target; an ~78-84% like share is the accepted risk
+
+The 2026-08-09 addendum accepted an ungoverned like rate because the ranker's natural rate should
+converge on the owner's manual rate (~45%). That premise no longer holds. Since `a557e0b6`
+(2026-10-10) the like cutoff is set by `ranker.like_recall_target`, which picks the cutoff that
+keeps a fixed share of the owner's likes. At the ranker's measured accuracy, keeping most likes
+means liking most of the deck.
+
+**What ships now (owner decision 2026-10-23).** `like_recall_target: 0.90`, lowered from 0.95.
+Measured on 503 manual labels (229 like) with nested identity-grouped CV, where the cutoff is
+recalibrated inside every fold and scored on people the model never saw (means over 40 row orders;
+AUC 0.727):
+
+| Target | Recall kept | Deck liked | Would-likes lost / 100 profiles | Unwanted likes / 100 |
+|---|---|---|---|---|
+| 0.95 | 0.956 | 84.3% | 2.0 | 40.8 |
+| **0.90 (ships)** | **0.916** | **77.8%** | **3.8** | **36.1** |
+| fixed 0.5 (pre-2026-10-10) | 0.634 | 46.8% | 16.7 | 17.9 |
+
+A time-forward check at 0.95 (train on older labels, score newer ones) kept recall but put the like
+share 3-6 points above the nested figure (~88%). Assuming the same shift, 0.90 lands at about
+81-84%. That figure is inferred; it was not measured at 0.90.
+
+**Accepted risk, stated plainly.** This is far above §2's human Hinge band (like:pass ~20-45%)
+and only a few points under its ">85% = bot" line. The owner accepts it on the burner account
+rather than lose matches. Holding a ~45% like share at this accuracy would lose ~39% of the
+owner's likes. Better features barely help: AUC 0.76 would lower the like share at the same recall
+by only ~2-3 points. Even a perfect ranker keeping 90% of likes would like ~41% of the deck,
+because the owner's own like rate is 45.5%.
+
+**`target_like_ratio` stays unset and must not become the governor at this score spread.** Its
+strong-like exemption (`_STRONG_LIKE_MARGIN`, 0.15 above the cutoff) is wider than the whole score
+band (OOF max ~0.60 against a cutoff ~0.48), so no like is ever exempt. It would demote likes in
+arrival order, blind to score, at a recall cost nothing measures.
+
+**Still unmeasured:** the realized AUTO like share. No AUTO run has happened since 2026-08-25;
+AUTO is blocked by the release gate. See the §5 trigger added the same day.
+
 ## 5. Re-check triggers
 - **Read-pause shape is reasoned, not measured (added 2026-08-24)** — the per-frame read dwell
   (a metronome: fixed-mean, repeating after every one of ~11–13 frames) was replaced with ONE
@@ -967,6 +1005,13 @@ and there is no banner. Checking that captures still go green cannot detect this
   the calibration corpus reaches it (smallest measured spacing 737px), so it is a "has Hinge
   started drawing much shorter cards" signal, not a tuning knob — the answer is not to widen the
   ratio window, which would alias the item index instead.
+- **Realized AUTO like share above ~85% (added 2026-10-23)** — the 0.90 recall target was accepted
+  at an expected ~78-84% like share (§4's 2026-10-23 addendum). After each AUTO run, measure the
+  realized share from `decisions` (source `auto`). If it passes ~85% over a few hundred decisions,
+  or the account shows any enforcement signal (shadowban symptoms, a sudden match drop,
+  verification prompts), lower the recall target first. Do not reinstate `target_like_ratio`,
+  which is score-blind at this score spread. Re-measure the addendum's table after any ranker
+  feature change: a better ranker lowers the like share at the same target.
 
 ### Addendum 2026-08-28 (b) — LIVE follow-up on the pinned header: the mechanism is a collapsing toolbar, `identity_band` needs NO recalibration, and the fix is verified on the phone
 

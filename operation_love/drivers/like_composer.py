@@ -106,7 +106,7 @@ def _background_level(gray, np, confirm_y: int) -> float:
 
 
 def _confirm_matches(
-    gray, template, cv2, np, *, threshold: float
+    gray, template, cv2, np, *, threshold: float, allow_scrolled: bool = False
 ) -> list[tuple[float, tuple[int, int]]]:
     """Return distinct template peaks in Hinge's possible inline-composer band.
 
@@ -131,14 +131,15 @@ def _confirm_matches(
             f"no Send Like confirmation glyph matched at the required threshold {threshold:.2f}"
         )
     candidates: list[tuple[float, tuple[int, int]]] = []
+    y0, y1 = (0.125, 0.875) if allow_scrolled else (0.54, 0.84)
     for y, x in zip(ys.tolist(), xs.tolist(), strict=True):
         point = (x + tw // 2, y + th // 2)
         # The template's literal phrase can occur in selected-item text.  This
         # coarse envelope is deliberately broad enough for either keyboard
         # state; detected surface topology does the affirmative validation.
         if round(width * 0.45) <= point[0] <= round(width * 0.82) and round(
-            height * 0.54
-        ) <= point[1] <= round(height * 0.84):
+            height * y0
+        ) <= point[1] <= round(height * y1):
             candidates.append((float(result[y, x]), point))
     if not candidates:
         raise ComposerDetectionError(
@@ -316,7 +317,12 @@ def _comment_for_cta(mask, cv2, np, *, send: Rect) -> Rect:
 
 
 def locate_inline_composer(
-    frame: bytes, confirm_template, threshold: float = 0.8, *, image=None
+    frame: bytes,
+    confirm_template,
+    threshold: float = 0.8,
+    *,
+    image=None,
+    allow_scrolled: bool = False,
 ) -> ComposerSurface:
     """Affirmatively locate Hinge 9.134.0's inline composer or fail closed.
 
@@ -325,6 +331,12 @@ def locate_inline_composer(
     are; the caller must separately establish profile identity and that the selected item is the
     model-selected item before typing.  A detection failure must be treated as *no safe tap*,
     never as permission to use legacy modal coordinates.
+
+    ``allow_scrolled`` widens only the vertical search envelope to the profile's
+    content band. Training uses this solely to recognise a scrolled composer
+    before restoring its viewport. That recovery result never supplies a send
+    or pass coordinate: the restored frame must pass the default detector and
+    the complete profile/item/checkpoint proof again.
 
     ``image`` lets a caller that already decoded this exact ``frame`` to grayscale (Hinge's
     passive observation path calls this function TWICE on the same frame -- once at the strict
@@ -371,7 +383,12 @@ def locate_inline_composer(
         )
 
     matches = _confirm_matches(
-        gray, confirm_template, cv2, np, threshold=float(threshold)
+        gray,
+        confirm_template,
+        cv2,
+        np,
+        threshold=float(threshold),
+        allow_scrolled=allow_scrolled,
     )
     validated: list[tuple[float, ComposerSurface]] = []
     first_failure: ComposerDetectionError | None = None
